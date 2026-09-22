@@ -1,187 +1,626 @@
-# masGold v2 - Project Instructions
+# masGold v2 — Project Instructions
 
-## Project
-masGold v2 is an internal gold jewelry shop management system.
+## 1. Project
 
-Stack:
+masGold v2 is an internal management system for a gold jewelry shop.
+
+Technology:
 - Python
 - PySide6
 - Qt Quick / QML
 - MySQL
 
 Architecture:
-QML -> ViewModels -> Services -> Repositories -> MySQL
+
+QML
+→ ViewModels
+→ Services
+→ Repositories
+→ MySQL
 
 QML must never contain SQL or database business logic.
 
-## Current priority
+---
 
-Current development priority is CUSTOMERS.
+## 2. Critical working rule
+
+ALWAYS inspect the actual current project files before making changes.
+
+Do not assume that code discussed previously has already been installed.
+
+The files currently present in the workspace are the source of truth.
+
+Before changing database-dependent code:
+- inspect the actual schema
+- inspect existing foreign keys
+- inspect existing movement-type codes
+- reuse existing tables and architecture
+
+Do not invent missing schema.
+
+---
+
+## 3. Current development priority
+
+CURRENT PRIORITY:
+
+CUSTOMERS
 
 Billing is temporarily frozen.
-Cash comes after Customers and Billing architecture are stable.
 
-## Working rules
+Cash comes later.
 
-Before changing code:
-1. Inspect the actual existing files.
-2. Do not assume database schema.
-3. Do not create duplicate systems.
-4. Preserve working functionality.
-5. Do not modify production/legacy data.
-6. Do not run migrations unless explicitly approved.
-7. Never delete ledger history to fix accounting mistakes.
-8. Prefer reversal/correction entries.
-9. Resolve movement type IDs by code, never hard-coded numeric IDs.
-10. Use DB transactions for multi-ledger operations.
+Do not extend Billing or Cash unless explicitly requested.
 
-## UI rules
+---
+
+## 4. Change workflow
+
+Before implementing a non-trivial change:
+
+1. Inspect relevant files.
+2. Explain what already exists.
+3. Identify exactly which files/classes/methods need changing.
+4. Propose the change.
+5. Only then modify files.
+
+When reporting changes, use:
+
+File → Class → Method/component
+
+Example:
+
+repositories/customer_repository.py
+→ CustomerRepository
+→ search_customers()
+
+Do not give vague placement instructions.
+
+---
+
+## 5. Database safety
+
+This application contains financial and inventory history.
+
+Rules:
+
+- Never delete ledger history to correct a mistake.
+- Use reversal/correction movements.
+- Never modify legacy production data.
+- Never invent missing historical information.
+- Never run destructive SQL without explicit approval.
+- Never run database migrations without explicit approval.
+- Never create duplicate tables when suitable tables already exist.
+- Resolve movement types by stable CODE, not numeric ID.
+- Use transactions for operations touching multiple ledgers/tables.
+
+Do not hard-code IDs such as:
+
+movement_type_id = 1
+
+Instead query by code.
+
+---
+
+## 6. UI rules — LOCKED
 
 Employee-facing UI is Arabic.
 
-All Arabic UI:
-- Cairo font
-- RTL
-- right-aligned
+All Arabic UI must use:
+
+- font: Cairo
+- RTL text direction
+- right alignment
+
+This includes:
+- Labels
+- TextFields
+- TextAreas
+- ComboBoxes
+- dialogs
+- buttons
+- tables
+- placeholders
+- titles
 
 Form convention:
-[value/control] <- [Arabic label on right]
 
-Do not enable global LayoutMirroring because the physical sidebar must remain on the right.
+[value/control] ← [Arabic label on right]
+
+Do NOT enable global LayoutMirroring because the physical sidebar must remain on the right.
 
 Visual style:
+
 - dark background
-- gold accent
+- gold accents
 - thin borders
 - compact rounded cards
-- right-side physical navigation menu
-- brand: مجوهرات ماس
+- serious jewelry-shop appearance
+- physical navigation sidebar on the RIGHT
+
+Brand:
+
+مجوهرات ماس
 
 Internal Python/QML/database identifiers remain English.
 
-## Inventory
+---
 
-inventory_item_id is permanent identity.
+## 7. Terminology
 
-Barcode:
+Inventory = المخزون
+
+Billing = الفواتير
+
+Cash = النقدية
+
+Old Stock = بضاعة قديمة
+
+Old Gold = كسر
+
+Factory = المصنع
+
+Item Type = الصنف
+
+Category = الفئة
+
+Dead Cash = الديون المعدومة / الرصيد المشطوب depending on context
+
+---
+
+## 8. Inventory identity
+
+Permanent inventory identity:
+
+inventory_item_id
+
+Barcode is:
+
 - optional
 - replaceable
-- never permanent identity
+- not permanent identity
 
-inventory status:
+An inventory item can exist without a barcode.
+
+Do not design inventory logic around barcode as primary identity.
+
+Employee attribution is required for new inventory writes.
+
+---
+
+## 9. Inventory states
+
+stock_classification:
+
+- NEW_STOCK
+- OLD_STOCK
+
+inventory_status:
+
 - IN_STOCK
 - SOLD
 - SCRAPPED
 - REMOVED
 
-stock classification:
-- NEW_STOCK
-- OLD_STOCK
+OLD_STOCK means an individual physical inventory item.
 
-OLD_STOCK is still itemized inventory.
+OLD_STOCK is NOT the same thing as OLD_GOLD.
 
-## Old Gold - CRITICAL
+---
 
-OLD_GOLD / كسر is NOT itemized inventory.
+## 10. Old Gold / كسر — CRITICAL
 
-It is a bulk gram ledger by karat.
+OLD_GOLD is bulk gold measured in grams by karat.
 
-Do not give old gold:
+It is NOT itemized inventory.
+
+Old Gold does NOT have:
+
 - barcode
 - item type
-- factory
 - category
+- factory
 - size
 
-old_gold_movements is append-only.
+Primary ledger:
 
-Positive weight_delta_grams = gold enters shop.
-Negative weight_delta_grams = gold leaves ledger.
+old_gold_movements
 
-Customer old-gold purchase movement code:
+Positive weight_delta_grams:
+gold enters old-gold balance
+
+Negative weight_delta_grams:
+gold leaves old-gold balance
+
+Movement codes are resolved dynamically.
+
+Important codes:
+
 CUSTOMER_BUY_IN
+= shop buys old gold from customer
 
-Manufacturing consumption:
 MANUFACTURE_OUT
+= old-gold grams consumed to manufacture new stock
 
-A manufactured result becomes a normal NEW_STOCK inventory item.
+A manufactured result becomes a normal inventory_items row:
 
-## Customers
+stock_classification = NEW_STOCK
 
-Customer ID is permanent identity.
+acquisition_source = OLD_GOLD_MANUFACTURE
+
+Consumed old-gold weight and resulting item weight may differ.
+
+Both values must be preserved.
+
+---
+
+## 11. Customer identity
+
+Customer permanent identity:
+
+customers.id
 
 Customer names are NOT unique.
 
+Never use customer name as permanent identity.
+
+customer_code is separate and may be unique.
+
 Current customer types:
-- REGULAR
-- VIP
 
-Customer balance comes from customer_transactions / vw_customer_balances.
+REGULAR
+VIP
 
-Positive balance:
-CUSTOMER_OWES_SHOP
+---
 
-Negative balance:
-SHOP_OWES_CUSTOMER
+## 12. Customer balance — CRITICAL
 
-Zero:
-SETTLED
+Customer financial balance is ledger-derived.
 
-Current transaction codes:
-- SALE_BALANCE_DUE
-- BUY_BALANCE_DUE
-- CUSTOMER_PAYMENT
-- SHOP_PAYMENT
-- CUSTOMER_ADVANCE
-- ADVANCE_APPLIED
-- DEAD_CASH_WRITE_OFF
-- DEAD_CASH_REVERSAL
-- MANUAL_ADJUSTMENT
-- LEGACY_ADJUSTMENT
+Source:
 
-Never create a second mutable customer balance field.
+customer_transactions
 
-Customer module should support:
+Current derived view:
+
+vw_customer_balances
+
+Do NOT add a mutable balance column to customers.
+
+Meaning:
+
+balance > 0
+= CUSTOMER_OWES_SHOP
+= customer owes money to the shop
+
+balance < 0
+= SHOP_OWES_CUSTOMER
+= shop owes money to customer / customer has credit
+
+balance = 0
+= SETTLED
+
+UI should express the meaning clearly, not only show +/-.
+
+Examples:
+
++8,500
+→ على العميل للمحل
+
+-3,200
+→ للعميل عند المحل
+
+0
+→ الحساب متزن
+
+---
+
+## 13. Customer transaction types
+
+Existing transaction codes:
+
+SALE_BALANCE_DUE
+Purchase meaning:
+unpaid amount from sale
+direction INCREASE
+
+BUY_BALANCE_DUE
+shop buys from customer and still owes customer
+direction DECREASE
+
+CUSTOMER_PAYMENT
+customer pays shop
+direction DECREASE
+
+SHOP_PAYMENT
+shop pays customer
+direction INCREASE
+
+CUSTOMER_ADVANCE
+customer deposits advance
+direction DECREASE
+
+ADVANCE_APPLIED
+customer credit is consumed
+direction INCREASE
+
+DEAD_CASH_WRITE_OFF
+direction DECREASE
+
+DEAD_CASH_REVERSAL
+direction INCREASE
+
+MANUAL_ADJUSTMENT
+direction EITHER
+
+LEGACY_ADJUSTMENT
+direction EITHER
+
+Never infer direction from the English label alone.
+Respect the existing ledger convention.
+
+---
+
+## 14. Customer subsystem
+
+Existing important database objects include:
+
+customers
+customer_types
+customer_transactions
+customer_transaction_types
+customer_flags
+dead_cash_writeoffs
+vw_customer_balances
+
+Current customer types:
+
+REGULAR
+VIP
+
+Customer module should eventually support:
+
 - search
-- add/edit
-- customer type
-- active/inactive
+- customer ID/code
+- add
+- edit
+- activate/deactivate
+- type
+- mobile
+- place
+- notes
 - current balance
-- balance semantic status
+- balance meaning/status
 - last activity
-- financial history
+- transaction history
 - flags
-- Dead Cash history/warnings
-- invoice history later
-- payment/cash history later
+- Dead Cash warning/history
+- invoice history
+- payment/cash history
 
-## Dead Cash
+Do not fabricate invoice or payment history if those parts are not yet connected.
 
-Dead Cash must preserve accounting history.
+---
 
-Write-off and reversal must be explicit auditable transactions.
+## 15. Customer flags
 
-Never delete the original customer transactions.
+customer_flags are persistent audit-style warnings/flags.
 
-## Billing
+Do not delete historical flags.
 
-Billing is currently frozen while Customers is completed.
+Use active/inactive lifecycle where appropriate.
 
-Future billing must support:
+Dead Cash flags may link through:
+
+related_dead_cash_id
+
+Respect the existing unique active-flag behavior.
+
+---
+
+## 16. Dead Cash
+
+Dead Cash must preserve history.
+
+Never erase the original receivable.
+
+Write-off:
+
+- creates an explicit customer transaction
+- creates a dead_cash_writeoffs record
+- can create/activate warning flag
+
+Reversal:
+
+- creates a reversal transaction
+- records reversal metadata
+- does not delete the original write-off
+
+Do not implement Dead Cash actions until explicitly requested.
+
+Read-only display is safe.
+
+---
+
+## 17. Billing — CURRENTLY FROZEN
+
+Do not continue Billing unless explicitly requested.
+
+Future Billing must support in ONE invoice/window:
+
 1. customer buys new gold only
 2. customer sells old gold only
-3. customer sells old gold and buys new gold in one invoice
+3. customer sells old gold and buys new gold in the same transaction
 
-Future billing must be atomic.
+Old gold bought from a customer enters:
 
-Do not extend billing schema until the canonical invoice architecture is reviewed.
+old_gold_movements
 
-## Safety
+using:
 
-If uncertain about:
-- database schema
-- accounting direction
-- existing architecture
-- business meaning
+CUSTOMER_BUY_IN
 
-stop and inspect instead of inventing behavior.
+Do not create inventory items for purchased old gold.
+
+Exchange settlement concept:
+
+new-gold sale total
+− old-gold purchase total
+= net settlement
+
+Net may mean:
+
+customer owes shop
+
+or
+
+shop owes customer
+
+Billing finalization must eventually be atomic.
+
+---
+
+## 18. Important Billing warning
+
+The database currently contains both families:
+
+billing_invoices
+billing_sale_lines
+billing_old_gold_lines
+
+AND
+
+invoices
+invoice_lines
+invoice_payments
+invoice_customer_snapshots
+invoice_price_snapshots
+invoice_documents
+invoice_events
+
+Do NOT assume which family is canonical.
+
+Before future Billing work:
+inspect both architectures and decide deliberately.
+
+Do not create a third invoice architecture.
+
+---
+
+## 19. Gold prices
+
+Gold prices must eventually support frozen invoice snapshots.
+
+Do not assume current market price when reviewing historical invoices.
+
+Important existing tables include:
+
+gold_price_quotes
+active_gold_prices
+gold_price_sources
+gold_price_activations
+
+Do not change price architecture unless explicitly requested.
+
+---
+
+## 20. Payments / Cash
+
+Invoice and payment are separate concepts.
+
+Do not treat invoice total as cash automatically.
+
+Future payment methods may include:
+
+- cash
+- bank
+- card
+- InstaPay
+- mixed
+- remaining customer balance
+
+Existing database objects include:
+
+payment_methods
+invoice_payments
+cash_accounts
+cash_movements
+bank_accounts
+bank_movements
+
+Cash implementation is not current priority.
+
+---
+
+## 21. Printing
+
+Do not redesign physical print dimensions without checking the existing/prototype implementation.
+
+Barcode printing currently targets:
+
+ZDesigner GK420t
+
+Existing implementation uses ZPL and two jewelry labels side by side.
+
+Preserve known working physical layout unless explicitly requested.
+
+---
+
+## 22. Python/QML quality
+
+After Python changes:
+
+- run syntax checks
+- catch import errors
+- preserve existing layers
+
+After QML changes:
+
+- preserve Cairo
+- preserve RTL/right alignment
+- preserve sidebar on right
+- avoid duplicate component IDs
+- inspect runtime errors
+
+Prefer editing the existing complete Main.qml rather than creating disconnected duplicate screens.
+
+---
+
+## 23. Concurrency / transactions
+
+Financial, inventory and old-gold operations must be safe under concurrent use.
+
+When changing balance-sensitive code:
+
+- use transactions
+- lock appropriate rows/resources
+- do not rely only on UI validation
+
+---
+
+## 24. Legacy data
+
+Legacy production database/history may be incomplete.
+
+Rules:
+
+- preserve what can be proven
+- do not invent missing customer/employee/invoice relationships
+- migration must remain auditable
+- legacy data should be treated carefully/read-only until migration is deliberately performed
+
+---
+
+## 25. Current task behavior
+
+At the start of every new task:
+
+1. Read this AGENTS.md.
+2. Inspect actual current files.
+3. Do not assume previously generated files were installed.
+4. Do not make schema changes unless requested.
+5. Do not expand scope beyond the requested feature.
+
+If something is ambiguous:
+
+STOP and ask/inspect rather than inventing business behavior.
