@@ -2414,9 +2414,8 @@ ApplicationWindow {
                 }
 
 
-                PlaceholderPage {
+                CustomersPage {
                     pageTitle: "👥 العملاء"
-                    description: "بيانات العملاء والحسابات والحركات"
                 }
 
 
@@ -2681,6 +2680,968 @@ ApplicationWindow {
     // ========================================================
     // PLACEHOLDER PAGE
     // ========================================================
+
+    // CUSTOMERS V1 BEGIN
+    // Customer controls keep Arabic direction local to this screen.
+    component CustomerLabel: Label {
+        property string value: ""
+        text: "\u200f" + value
+        textFormat: Text.PlainText
+        font.family: "Cairo"
+        font.pixelSize: 12
+        color: theme.textPrimary
+        horizontalAlignment: Text.AlignRight
+        verticalAlignment: Text.AlignVCenter
+        wrapMode: Text.Wrap
+    }
+
+    component CustomerButton: Button {
+        id: customerButton
+        font.family: "Cairo"
+        implicitHeight: 38
+        leftPadding: 12
+        rightPadding: 12
+        contentItem: CustomerLabel {
+            value: customerButton.text
+            color: customerButton.enabled ? theme.textPrimary : theme.textDisabled
+        }
+        background: Rectangle {
+            radius: theme.radiusSmall
+            color: customerButton.down || customerButton.checked
+                   ? theme.goldDark : customerButton.hovered ? theme.panelHover : theme.bgTertiary
+            border.color: customerButton.checked ? theme.gold : theme.border
+        }
+    }
+
+    component CustomerField: TextField {
+        font.family: "Cairo"
+        horizontalAlignment: Text.AlignRight
+        selectByMouse: true
+        color: theme.textPrimary
+        placeholderTextColor: theme.textMuted
+        implicitHeight: 40
+        leftPadding: 10
+        rightPadding: 10
+        background: Rectangle {
+            radius: theme.radiusSmall
+            color: theme.bgPrimary
+            border.color: parent.activeFocus ? theme.gold : theme.border
+        }
+    }
+
+    component CustomerCombo: ComboBox {
+        id: customerCombo
+        font.family: "Cairo"
+        textRole: "label"
+        valueRole: "value"
+        implicitHeight: 40
+        leftPadding: 28
+        rightPadding: 10
+        contentItem: CustomerLabel {
+            value: customerCombo.displayText
+            elide: Text.ElideLeft
+            wrapMode: Text.NoWrap
+        }
+        delegate: ItemDelegate {
+            width: customerCombo.width
+            highlighted: customerCombo.highlightedIndex === index
+            font.family: "Cairo"
+            contentItem: CustomerLabel {
+                value: String(modelData[customerCombo.textRole] || "")
+            }
+        }
+        indicator: CustomerLabel {
+            x: 10
+            y: (customerCombo.height - height) / 2
+            value: "▾"
+            color: theme.gold
+        }
+        background: Rectangle {
+            radius: theme.radiusSmall
+            color: theme.bgPrimary
+            border.color: customerCombo.activeFocus ? theme.gold : theme.border
+        }
+    }
+
+    component CustomerCard: Rectangle {
+        color: theme.bgSecondary
+        radius: theme.radiusSmall
+        border.color: theme.border
+    }
+
+    component CustomerDetail: RowLayout {
+        property string caption: ""
+        property string value: ""
+        spacing: 10
+        CustomerLabel {
+            Layout.fillWidth: true
+            value: parent.value.length ? parent.value : "—"
+        }
+        CustomerLabel {
+            Layout.preferredWidth: 95
+            value: parent.caption
+            color: theme.textMuted
+        }
+    }
+
+    component CustomerFormRow: RowLayout {
+        property string caption: ""
+        property alias text: customerFormField.text
+        property alias maximumLength: customerFormField.maximumLength
+        spacing: 12
+        CustomerField {
+            id: customerFormField
+            Layout.fillWidth: true
+        }
+        CustomerLabel {
+            Layout.preferredWidth: 100
+            value: parent.caption
+            color: theme.textSecondary
+        }
+    }
+
+    component CustomerMessageBox: CustomerCard {
+        property string message: ""
+        property bool success: false
+        Layout.fillWidth: true
+        implicitHeight: customerMessage.implicitHeight + 20
+        visible: message.length > 0
+        border.color: success ? theme.green : theme.red
+        CustomerLabel {
+            id: customerMessage
+            anchors.fill: parent
+            anchors.margins: 10
+            value: parent.message
+            color: parent.success ? theme.green : theme.red
+        }
+    }
+
+    component CustomersPage: Item {
+        id: customersPage
+        objectName: "customersPage"
+        property string pageTitle: ""
+        property bool initialized: false
+        property int historyTab: 0
+        readonly property var customer: customerVM.selectedCustomer || ({})
+        readonly property var filterTypes: [{"id": 0, "label": "كل أنواع العملاء"}].concat(customerVM.customerTypes)
+
+        function initialize() {
+            if (visible && !initialized) {
+                initialized = true
+                customerVM.refresh()
+            }
+        }
+
+        function typeIndex(rows, typeId) {
+            for (var i = 0; i < rows.length; ++i) {
+                if (rows[i].id === typeId)
+                    return i
+            }
+            return 0
+        }
+
+        function applyFilters() {
+            customerVM.setFilters(
+                customerStatusFilter.currentValue || "ALL",
+                customerTypeFilter.currentValue || 0,
+                customerBalanceFilter.currentValue || "ALL"
+            )
+        }
+
+        function requestStatusChange() {
+            var customerId = customerVM.selectedCustomerId
+            // Refresh the profile and warnings immediately before confirmation.
+            if (!customerVM.selectCustomer(customerId))
+                return
+            customerStatusDialog.customerId = customerId
+            customerStatusDialog.customerName = String(customerVM.selectedCustomer.name || "")
+            customerStatusDialog.deactivating = !!customerVM.selectedCustomer.is_active
+            customerStatusDialog.hasBalance = !!customerVM.selectedCustomer.balance_nonzero
+            customerStatusDialog.balanceText = String(customerVM.selectedCustomer.balance_text || "")
+            customerStatusDialog.balanceMeaning = String(customerVM.selectedCustomer.balance_meaning || "")
+            customerStatusDialog.flagCount = customerVM.activeFlags.length
+            customerVM.clearActionMessage()
+            customerStatusDialog.open()
+        }
+
+        onVisibleChanged: initialize()
+        Component.onCompleted: initialize()
+
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 16
+            spacing: 9
+
+            RowLayout {
+                Layout.fillWidth: true
+                CustomerButton {
+                    objectName: "addCustomerButton"
+                    text: "إضافة عميل"
+                    enabled: !customerVM.busy
+                    onClicked: customerFormDialog.openCreate()
+                }
+                CustomerButton {
+                    text: "تحديث"
+                    enabled: !customerVM.busy
+                    onClicked: customerVM.refresh()
+                }
+                Item { Layout.fillWidth: true }
+                CustomerLabel {
+                    value: customerVM.busy ? "جارٍ التحميل…" : "بيانات العملاء وحساباتهم"
+                    color: theme.gold
+                    font.pixelSize: 18
+                    font.bold: true
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                CustomerButton {
+                    text: "مسح البحث"
+                    enabled: !customerVM.busy
+                    onClicked: {
+                        customerSearchField.clear()
+                        customerVM.clearSearch()
+                    }
+                }
+                CustomerButton {
+                    text: "بحث"
+                    enabled: !customerVM.busy
+                    onClicked: customerVM.search(customerSearchField.text)
+                }
+                CustomerField {
+                    id: customerSearchField
+                    objectName: "customerSearchField"
+                    Layout.fillWidth: true
+                    placeholderText: "بحث بالاسم أو الهاتف أو المكان أو الكود أو رقم العميل"
+                    maximumLength: 255
+                    onAccepted: customerVM.search(text)
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                CustomerButton {
+                    text: "إلغاء الفلاتر"
+                    enabled: !customerVM.busy
+                    onClicked: {
+                        customerSearchField.clear()
+                        customerStatusFilter.currentIndex = 0
+                        customerTypeFilter.currentIndex = 0
+                        customerBalanceFilter.currentIndex = 0
+                        customerVM.resetFilters()
+                    }
+                }
+                CustomerCombo {
+                    id: customerBalanceFilter
+                    objectName: "customerBalanceFilter"
+                    Layout.fillWidth: true
+                    model: [
+                        {"label": "كل الأرصدة", "value": "ALL"},
+                        {"label": "على العميل للمحل", "value": "CUSTOMER_OWES_SHOP"},
+                        {"label": "للعميل عند المحل", "value": "SHOP_OWES_CUSTOMER"},
+                        {"label": "الحساب متزن", "value": "SETTLED"}
+                    ]
+                    enabled: !customerVM.busy
+                    onActivated: customersPage.applyFilters()
+                }
+                CustomerCombo {
+                    id: customerTypeFilter
+                    objectName: "customerTypeFilter"
+                    Layout.preferredWidth: 150
+                    model: customersPage.filterTypes
+                    valueRole: "id"
+                    enabled: !customerVM.busy
+                    onActivated: customersPage.applyFilters()
+                }
+                CustomerCombo {
+                    id: customerStatusFilter
+                    objectName: "customerStatusFilter"
+                    Layout.preferredWidth: 150
+                    model: [
+                        {"label": "كل العملاء", "value": "ALL"},
+                        {"label": "النشطون فقط", "value": "ACTIVE"},
+                        {"label": "غير النشطين فقط", "value": "INACTIVE"}
+                    ]
+                    enabled: !customerVM.busy
+                    onActivated: customersPage.applyFilters()
+                }
+            }
+
+            CustomerMessageBox { message: customerVM.errorMessage }
+            CustomerMessageBox {
+                message: customerVM.actionMessage
+                success: customerVM.actionSuccess
+            }
+
+            ScrollView {
+                id: customerBodyScroll
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                contentWidth: availableWidth
+                ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+                GridLayout {
+                    id: customerBody
+                    width: customerBodyScroll.availableWidth
+                    columns: width >= 950 ? 2 : 1
+                    layoutDirection: Qt.RightToLeft
+                    columnSpacing: 12
+                    rowSpacing: 12
+                    readonly property bool wide: columns === 2
+
+                    CustomerCard {
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: customerBody.wide ? customerBody.width * 0.42 : customerBody.width
+                        Layout.preferredHeight: customerBody.wide ? 680 : 390
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: 12
+                            spacing: 8
+                            CustomerLabel {
+                                Layout.fillWidth: true
+                                value: "العملاء — " + customerVM.customerCount + " في هذه الصفحة"
+                                color: theme.gold
+                                font.bold: true
+                            }
+                            ListView {
+                                id: customerList
+                                objectName: "customerList"
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                clip: true
+                                spacing: 7
+                                model: customerVM.customers
+                                ScrollBar.vertical: ScrollBar {}
+                                delegate: CustomerCard {
+                                    required property var modelData
+                                    width: customerList.width - 12
+                                    height: customerRow.implicitHeight + 20
+                                    color: customerVM.selectedCustomerId === modelData.id ? theme.bgTertiary : theme.bgPrimary
+                                    border.color: customerVM.selectedCustomerId === modelData.id ? theme.gold : theme.border
+                                    ColumnLayout {
+                                        id: customerRow
+                                        anchors.fill: parent
+                                        anchors.margins: 10
+                                        spacing: 3
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            CustomerLabel {
+                                                value: String(modelData.status_label || "")
+                                                color: modelData.is_active ? theme.green : theme.textMuted
+                                                font.pixelSize: 10
+                                            }
+                                            CustomerLabel {
+                                                Layout.fillWidth: true
+                                                value: String(modelData.name || "")
+                                                font.bold: true
+                                            }
+                                        }
+                                        CustomerLabel {
+                                            Layout.fillWidth: true
+                                            value: "رقم العميل: " + modelData.id
+                                            color: theme.gold
+                                            font.pixelSize: 13
+                                            font.bold: true
+                                        }
+                                        CustomerLabel {
+                                            Layout.fillWidth: true
+                                            value: "الكود: " + (modelData.customer_code || "—")
+                                            color: theme.textMuted
+                                            font.pixelSize: 10
+                                        }
+                                        CustomerLabel {
+                                            Layout.fillWidth: true
+                                            value: "الهاتف: " + (modelData.mobile || "—") + "  |  " + (modelData.type_label || "—")
+                                            color: theme.textSecondary
+                                            font.pixelSize: 10
+                                        }
+                                        CustomerLabel {
+                                            Layout.fillWidth: true
+                                            value: "المكان: " + (modelData.place || "—")
+                                            color: theme.textSecondary
+                                            font.pixelSize: 10
+                                        }
+                                        CustomerLabel {
+                                            Layout.fillWidth: true
+                                            value: String(modelData.balance_text || "") + " — " + (modelData.balance_meaning || "")
+                                            color: modelData.balance_nonzero ? theme.gold : theme.green
+                                        }
+                                        CustomerLabel {
+                                            Layout.fillWidth: true
+                                            value: "آخر حركة: " + (modelData.last_transaction_text || "—")
+                                            color: theme.textMuted
+                                            font.pixelSize: 10
+                                        }
+                                    }
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        enabled: !customerVM.busy
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            customersPage.historyTab = 0
+                                            customerVM.selectCustomer(modelData.id)
+                                        }
+                                    }
+                                }
+                                CustomerLabel {
+                                    anchors.fill: parent
+                                    anchors.margins: 12
+                                    visible: customerList.count === 0
+                                    value: customerVM.busy ? "جارٍ تحميل العملاء…" : customerVM.errorMessage.length ? "تعذر تحميل قائمة العملاء." : "لا توجد نتائج مطابقة."
+                                    color: theme.textMuted
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                CustomerButton {
+                                    text: "التالي"
+                                    enabled: !customerVM.busy && customerVM.hasMoreCustomers
+                                    onClicked: customerVM.loadPage(customerVM.page + 1)
+                                }
+                                CustomerLabel {
+                                    Layout.fillWidth: true
+                                    value: "صفحة " + customerVM.page + " · حتى " + customerVM.pageSize + " عميل"
+                                    color: theme.textMuted
+                                    font.pixelSize: 10
+                                }
+                                CustomerButton {
+                                    text: "السابق"
+                                    enabled: !customerVM.busy && customerVM.page > 1
+                                    onClicked: customerVM.loadPage(customerVM.page - 1)
+                                }
+                            }
+                        }
+                    }
+
+                    CustomerCard {
+                        objectName: "customerProfileCard"
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: customerBody.wide ? customerBody.width * 0.58 : customerBody.width
+                        Layout.preferredHeight: Math.max(680, customerProfile.implicitHeight + 24)
+                        ColumnLayout {
+                            id: customerProfile
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.margins: 12
+                            spacing: 8
+                            CustomerLabel {
+                                Layout.fillWidth: true
+                                value: customerVM.hasSelection ? String(customersPage.customer.name || "") : "ملف العميل"
+                                color: theme.gold
+                                font.pixelSize: 18
+                                font.bold: true
+                            }
+                            CustomerMessageBox { message: customerVM.profileErrorMessage }
+                            CustomerLabel {
+                                Layout.fillWidth: true
+                                visible: !customerVM.hasSelection
+                                value: "اختر عميلاً من القائمة لعرض بياناته ورصيده وسجله."
+                                color: theme.textMuted
+                            }
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                visible: customerVM.hasSelection
+                                spacing: 5
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    CustomerButton {
+                                        text: "تعديل البيانات"
+                                        enabled: !customerVM.busy
+                                        onClicked: customerFormDialog.openEdit(customerVM.selectedCustomerId)
+                                    }
+                                    CustomerButton {
+                                        objectName: "customerStatusButton"
+                                        text: customersPage.customer.is_active ? "تعطيل العميل" : "إعادة التفعيل"
+                                        enabled: !customerVM.busy
+                                        onClicked: customersPage.requestStatusChange()
+                                    }
+                                    CustomerLabel {
+                                        Layout.fillWidth: true
+                                        value: String(customersPage.customer.status_label || "")
+                                        color: customersPage.customer.is_active ? theme.green : theme.textMuted
+                                    }
+                                }
+                                CustomerLabel {
+                                    Layout.fillWidth: true
+                                    value: "رقم العميل: " + String(customersPage.customer.id || "")
+                                    color: theme.gold
+                                    font.pixelSize: 14
+                                    font.bold: true
+                                }
+                                CustomerDetail {
+                                    Layout.fillWidth: true
+                                    caption: "الكود / النوع"
+                                    value: (customersPage.customer.customer_code || "—") + " / " + (customersPage.customer.type_label || "—")
+                                }
+                                CustomerDetail {
+                                    Layout.fillWidth: true
+                                    caption: "الهاتف"
+                                    value: String(customersPage.customer.mobile || "")
+                                }
+                                CustomerDetail {
+                                    Layout.fillWidth: true
+                                    caption: "المكان"
+                                    value: String(customersPage.customer.place || "")
+                                }
+                                CustomerDetail {
+                                    Layout.fillWidth: true
+                                    caption: "آخر حركة"
+                                    value: String(customersPage.customer.last_transaction_text || "")
+                                }
+                                CustomerLabel {
+                                    Layout.fillWidth: true
+                                    value: "الرصيد: " + (customersPage.customer.balance_text || "—") + " — " + (customersPage.customer.balance_meaning || "")
+                                    color: customersPage.customer.balance_nonzero ? theme.gold : theme.green
+                                    font.bold: true
+                                }
+                                CustomerDetail {
+                                    Layout.fillWidth: true
+                                    caption: "ملاحظات"
+                                    value: String(customersPage.customer.notes || "")
+                                }
+                                CustomerLabel {
+                                    Layout.fillWidth: true
+                                    visible: customerVM.activeFlags.length > 0
+                                    value: "تنبيه: لدى العميل " + customerVM.activeFlags.length + " تحذير نشط. راجع تبويب التحذيرات."
+                                    color: theme.amber
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    layoutDirection: Qt.RightToLeft
+                                    CustomerButton {
+                                        Layout.fillWidth: true
+                                        text: "الحركات"
+                                        checked: customersPage.historyTab === 0
+                                        onClicked: customersPage.historyTab = 0
+                                    }
+                                    CustomerButton {
+                                        Layout.fillWidth: true
+                                        text: "التحذيرات"
+                                        checked: customersPage.historyTab === 1
+                                        onClicked: customersPage.historyTab = 1
+                                    }
+                                    CustomerButton {
+                                        Layout.fillWidth: true
+                                        text: "الرصيد المشطوب"
+                                        checked: customersPage.historyTab === 2
+                                        onClicked: customersPage.historyTab = 2
+                                    }
+                                }
+                                CustomerLabel {
+                                    Layout.fillWidth: true
+                                    value: "السجل للعرض فقط"
+                                    color: theme.textMuted
+                                    font.pixelSize: 10
+                                }
+                                ListView {
+                                    id: customerHistory
+                                    objectName: "customerHistory"
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 245
+                                    clip: true
+                                    spacing: 6
+                                    model: customersPage.historyTab === 0 ? customerVM.transactions : customersPage.historyTab === 1 ? customerVM.activeFlags : customerVM.deadCashHistory
+                                    ScrollBar.vertical: ScrollBar {}
+                                    delegate: CustomerCard {
+                                        required property var modelData
+                                        width: customerHistory.width - 12
+                                        height: customerHistoryRow.implicitHeight + 20
+                                        color: theme.bgPrimary
+                                        ColumnLayout {
+                                            id: customerHistoryRow
+                                            anchors.fill: parent
+                                            anchors.margins: 10
+                                            spacing: 3
+                                            CustomerLabel {
+                                                Layout.fillWidth: true
+                                                value: customersPage.historyTab === 0
+                                                       ? (modelData.type_label || "حركة") + " — " + (modelData.amount_text || "—")
+                                                       : customersPage.historyTab === 1
+                                                         ? (modelData.type_label || "تحذير") + " — " + (modelData.severity_label || "")
+                                                         : "المبلغ المشطوب: " + (modelData.amount_text || "—") + " — " + (modelData.status_label || "")
+                                                color: customersPage.historyTab === 1 ? theme.amber : theme.gold
+                                                font.bold: true
+                                            }
+                                            CustomerLabel {
+                                                Layout.fillWidth: true
+                                                value: "رقم السجل: " + modelData.id + "  |  " + (modelData.occurred_at || modelData.created_at || "—")
+                                                color: theme.textMuted
+                                                font.pixelSize: 10
+                                            }
+                                            CustomerLabel {
+                                                Layout.fillWidth: true
+                                                visible: customersPage.historyTab === 0
+                                                value: "المرجع: " + (modelData.reference_code || modelData.reference_id || "—")
+                                                color: theme.textSecondary
+                                                font.pixelSize: 10
+                                            }
+                                            CustomerLabel {
+                                                Layout.fillWidth: true
+                                                visible: customersPage.historyTab === 2
+                                                value: "الرصيد قبل الشطب: " + (modelData.balance_before_text || "—") + " | بعده: " + (modelData.balance_after_text || "—")
+                                                color: theme.textSecondary
+                                                font.pixelSize: 10
+                                            }
+                                            CustomerLabel {
+                                                Layout.fillWidth: true
+                                                visible: customersPage.historyTab === 1 && !!modelData.related_dead_cash_id
+                                                value: "سجل الشطب المرتبط: " + (modelData.related_dead_cash_id || "—")
+                                                color: theme.textMuted
+                                                font.pixelSize: 10
+                                            }
+                                            CustomerLabel {
+                                                Layout.fillWidth: true
+                                                value: String(modelData.reason || modelData.description || modelData.notes || "—")
+                                            }
+                                            CustomerLabel {
+                                                Layout.fillWidth: true
+                                                visible: customersPage.historyTab !== 1
+                                                         && !!modelData.notes
+                                                         && modelData.notes !== (modelData.reason || modelData.description || modelData.notes)
+                                                value: "ملاحظات: " + String(modelData.notes || "")
+                                                color: theme.textSecondary
+                                            }
+                                            CustomerLabel {
+                                                Layout.fillWidth: true
+                                                visible: customersPage.historyTab === 2 && !!modelData.is_reversed
+                                                value: "تم التراجع: " + (modelData.reversed_at || "—") + " | " + (modelData.reversal_reason || "—")
+                                                color: theme.textMuted
+                                                font.pixelSize: 10
+                                            }
+                                        }
+                                    }
+                                    CustomerLabel {
+                                        anchors.fill: parent
+                                        anchors.margins: 10
+                                        visible: customerHistory.count === 0
+                                        value: customerVM.profileErrorMessage.length ? "تعذر تحميل السجل." : customersPage.historyTab === 0 ? "لا توجد حركات مسجلة." : customersPage.historyTab === 1 ? "لا توجد تحذيرات نشطة." : "لا يوجد سجل شطب."
+                                        color: theme.textMuted
+                                    }
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    visible: customersPage.historyTab !== 1
+                                    CustomerButton {
+                                        text: "التالي"
+                                        enabled: !customerVM.busy && (customersPage.historyTab === 0 ? customerVM.hasMoreTransactions : customerVM.hasMoreDeadCash)
+                                        onClicked: {
+                                            if (customersPage.historyTab === 0)
+                                                customerVM.loadTransactionsPage(customerVM.transactionsPage + 1)
+                                            else
+                                                customerVM.loadDeadCashPage(customerVM.deadCashPage + 1)
+                                        }
+                                    }
+                                    CustomerLabel {
+                                        Layout.fillWidth: true
+                                        value: "صفحة " + (customersPage.historyTab === 0 ? customerVM.transactionsPage : customerVM.deadCashPage)
+                                        color: theme.textMuted
+                                    }
+                                    CustomerButton {
+                                        text: "السابق"
+                                        enabled: !customerVM.busy && (customersPage.historyTab === 0 ? customerVM.transactionsPage : customerVM.deadCashPage) > 1
+                                        onClicked: {
+                                            if (customersPage.historyTab === 0)
+                                                customerVM.loadTransactionsPage(customerVM.transactionsPage - 1)
+                                            else
+                                                customerVM.loadDeadCashPage(customerVM.deadCashPage - 1)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Dialog {
+            id: customerFormDialog
+            objectName: "customerFormDialog"
+            parent: Overlay.overlay
+            anchors.centerIn: parent
+            width: Math.min(650, root.width - 60)
+            height: Math.min(690, root.height - 40)
+            modal: true
+            closePolicy: Popup.CloseOnEscape
+            property string customerId: ""
+            readonly property bool editing: customerId.length > 0
+            property string storedCustomerCode: ""
+            property int existingTypeId: 0
+            readonly property var allowedTypes: {
+                var rows = [{"id": 0, "label": "غير محدد"}]
+                var types = customerVM.customerTypes
+                var includesExisting = existingTypeId === 0
+                for (var i = 0; i < types.length; ++i) {
+                    if (types[i].is_active || (editing && types[i].id === existingTypeId)) {
+                        rows.push(types[i])
+                        if (types[i].id === existingTypeId)
+                            includesExisting = true
+                    }
+                }
+                // A failed/stale type lookup must never clear an existing type.
+                if (editing && !includesExisting)
+                    rows.push({"id": existingTypeId, "label": "النوع الحالي (غير متاح في القائمة)"})
+                return rows
+            }
+
+            function fill(row) {
+                customerNameInput.text = String(row.name || "")
+                storedCustomerCode = String(row.customer_code || "")
+                customerMobileInput.text = String(row.mobile || "")
+                customerPlaceInput.text = String(row.place || "")
+                customerNotesInput.text = String(row.notes || "")
+                existingTypeId = row.customer_type_id || 0
+                customerFormType.currentIndex = customersPage.typeIndex(allowedTypes, existingTypeId)
+            }
+
+            function openCreate() {
+                customerId = ""
+                fill({})
+                customerVM.clearActionMessage()
+                open()
+            }
+
+            function openEdit(id) {
+                if (!customerVM.beginEdit(id))
+                    return
+                customerId = id
+                fill(customerVM.editCustomer)
+                customerVM.clearActionMessage()
+                open()
+            }
+
+            background: CustomerCard { border.color: theme.goldDark }
+            header: CustomerLabel {
+                value: customerFormDialog.editing ? "تعديل بيانات العميل" : "إضافة عميل"
+                padding: 16
+                color: theme.gold
+                font.pixelSize: 18
+                font.bold: true
+            }
+            contentItem: ScrollView {
+                id: customerFormScroll
+                clip: true
+                contentWidth: availableWidth
+                ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                ColumnLayout {
+                    width: customerFormScroll.availableWidth
+                    spacing: 10
+                    CustomerLabel {
+                        Layout.fillWidth: true
+                        visible: customerFormDialog.editing
+                        value: "رقم العميل: " + customerFormDialog.customerId
+                        color: theme.textMuted
+                    }
+                    CustomerFormRow {
+                        id: customerNameInput
+                        objectName: "customerNameInput"
+                        Layout.fillWidth: true
+                        caption: "الاسم *"
+                        maximumLength: 150
+                    }
+                    CustomerDetail {
+                        Layout.fillWidth: true
+                        visible: customerFormDialog.editing
+                        caption: "الكود"
+                        value: customerFormDialog.storedCustomerCode
+                    }
+                    CustomerLabel {
+                        Layout.fillWidth: true
+                        visible: !customerFormDialog.editing
+                        value: "يُنشأ كود العميل تلقائياً بعد الحفظ."
+                        color: theme.textMuted
+                        font.pixelSize: 10
+                    }
+                    CustomerFormRow {
+                        id: customerMobileInput
+                        Layout.fillWidth: true
+                        caption: "الهاتف"
+                        maximumLength: 50
+                    }
+                    CustomerFormRow {
+                        id: customerPlaceInput
+                        Layout.fillWidth: true
+                        caption: "المكان"
+                        maximumLength: 150
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 12
+                        CustomerCombo {
+                            id: customerFormType
+                            Layout.fillWidth: true
+                            model: customerFormDialog.allowedTypes
+                            valueRole: "id"
+                        }
+                        CustomerLabel {
+                            Layout.preferredWidth: 100
+                            value: "النوع"
+                            color: theme.textSecondary
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 12
+                        ScrollView {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 110
+                            clip: true
+                            TextArea {
+                                id: customerNotesInput
+                                font.family: "Cairo"
+                                horizontalAlignment: Text.AlignRight
+                                wrapMode: TextEdit.Wrap
+                                selectByMouse: true
+                                placeholderText: "ملاحظات العميل"
+                                color: theme.textPrimary
+                                background: Rectangle {
+                                    color: theme.bgPrimary
+                                    radius: theme.radiusSmall
+                                    border.color: customerNotesInput.activeFocus ? theme.gold : theme.border
+                                }
+                            }
+                        }
+                        CustomerLabel {
+                            Layout.preferredWidth: 100
+                            Layout.alignment: Qt.AlignTop
+                            value: "ملاحظات"
+                            color: theme.textSecondary
+                        }
+                    }
+                    CustomerMessageBox {
+                        message: customerVM.actionMessage
+                        success: customerVM.actionSuccess
+                    }
+                    CustomerLabel {
+                        Layout.fillWidth: true
+                        value: "الاسم مطلوب. يمكن تكرار الأسماء؛ لكل عميل رقم مستقل."
+                        color: theme.textMuted
+                        font.pixelSize: 10
+                    }
+                }
+            }
+            footer: RowLayout {
+                spacing: 10
+                CustomerButton {
+                    Layout.leftMargin: 16
+                    Layout.bottomMargin: 12
+                    text: "إلغاء"
+                    enabled: !customerVM.busy
+                    onClicked: customerFormDialog.close()
+                }
+                Item { Layout.fillWidth: true }
+                CustomerButton {
+                    objectName: "saveCustomerButton"
+                    Layout.rightMargin: 16
+                    Layout.bottomMargin: 12
+                    text: "حفظ"
+                    enabled: !customerVM.busy && customerNameInput.text.trim().length > 0 && customerFormType.currentIndex >= 0
+                    onClicked: {
+                        var saved
+                        if (customerFormDialog.editing) {
+                            saved = customerVM.updateCustomer(
+                                customerFormDialog.customerId, customerNameInput.text,
+                                customerMobileInput.text,
+                                customerPlaceInput.text, customerFormType.currentValue,
+                                customerNotesInput.text)
+                        } else {
+                            saved = customerVM.createCustomer(
+                                customerNameInput.text,
+                                customerMobileInput.text, customerPlaceInput.text,
+                                customerFormType.currentValue, customerNotesInput.text)
+                        }
+                        if (saved)
+                            customerFormDialog.close()
+                    }
+                }
+            }
+        }
+
+        Dialog {
+            id: customerStatusDialog
+            objectName: "customerStatusDialog"
+            parent: Overlay.overlay
+            anchors.centerIn: parent
+            width: Math.min(570, root.width - 60)
+            modal: true
+            closePolicy: Popup.CloseOnEscape
+            property string customerId: ""
+            property string customerName: ""
+            property bool deactivating: false
+            property bool hasBalance: false
+            property string balanceText: ""
+            property string balanceMeaning: ""
+            property int flagCount: 0
+            background: CustomerCard { border.color: theme.goldDark }
+            header: CustomerLabel {
+                value: customerStatusDialog.deactivating ? "تأكيد تعطيل العميل" : "تأكيد إعادة التفعيل"
+                padding: 16
+                color: theme.gold
+                font.pixelSize: 18
+                font.bold: true
+            }
+            contentItem: ColumnLayout {
+                spacing: 12
+                CustomerLabel {
+                    Layout.fillWidth: true
+                    value: customerStatusDialog.customerName + " — رقم " + customerStatusDialog.customerId
+                    font.bold: true
+                }
+                CustomerLabel {
+                    Layout.fillWidth: true
+                    visible: customerStatusDialog.deactivating && customerStatusDialog.hasBalance
+                    value: "تحذير: لدى العميل رصيد غير صفري: " + customerStatusDialog.balanceText + " — " + customerStatusDialog.balanceMeaning
+                    color: theme.amber
+                }
+                CustomerLabel {
+                    Layout.fillWidth: true
+                    visible: customerStatusDialog.deactivating && customerStatusDialog.flagCount > 0
+                    value: "تحذير: لدى العميل " + customerStatusDialog.flagCount + " تحذير نشط."
+                    color: theme.amber
+                }
+                CustomerLabel {
+                    Layout.fillWidth: true
+                    value: customerStatusDialog.deactivating
+                           ? "يمكن تعطيل العميل مع وجود رصيد أو تحذيرات. ستبقى بياناته ورصيده وجميع حركاته محفوظة. هل تريد المتابعة؟"
+                           : "سيصبح العميل نشطاً مرة أخرى. هل تريد المتابعة؟"
+                }
+                CustomerMessageBox {
+                    message: customerVM.actionMessage
+                    success: customerVM.actionSuccess
+                }
+            }
+            footer: RowLayout {
+                spacing: 10
+                CustomerButton {
+                    Layout.leftMargin: 16
+                    Layout.bottomMargin: 12
+                    text: "إلغاء"
+                    enabled: !customerVM.busy
+                    onClicked: customerStatusDialog.close()
+                }
+                Item { Layout.fillWidth: true }
+                CustomerButton {
+                    objectName: "confirmCustomerStatusButton"
+                    Layout.rightMargin: 16
+                    Layout.bottomMargin: 12
+                    text: customerStatusDialog.deactivating ? "تأكيد التعطيل" : "إعادة التفعيل"
+                    enabled: !customerVM.busy
+                    onClicked: {
+                        var saved = customerStatusDialog.deactivating
+                                ? customerVM.deactivateCustomer(customerStatusDialog.customerId)
+                                : customerVM.reactivateCustomer(customerStatusDialog.customerId)
+                        if (saved)
+                            customerStatusDialog.close()
+                    }
+                }
+            }
+        }
+    }
+
+    // CUSTOMERS V1 END
 
     component PlaceholderPage: Item {
 

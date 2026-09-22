@@ -21,6 +21,9 @@ from app.viewmodels.old_gold_conversion_viewmodel import (
 from app.viewmodels.billing_viewmodel import (
     BillingViewModel,
 )
+from app.viewmodels.customer_viewmodel import (
+    CustomerViewModel,
+)
 
 
 def main():
@@ -65,6 +68,10 @@ def main():
         BillingViewModel()
     )
 
+    customer_vm = (
+        CustomerViewModel()
+    )
+
     engine.rootContext().setContextProperty(
         "masterDataVM",
         master_data_vm,
@@ -88,6 +95,11 @@ def main():
     engine.rootContext().setContextProperty(
         "billingVM",
         billing_vm,
+    )
+
+    engine.rootContext().setContextProperty(
+        "customerVM",
+        customer_vm,
     )
 
     project_root = (
