@@ -1,16 +1,11 @@
 """Customer profile editing and read-only account presentation for QML."""
 
 from copy import deepcopy
-from datetime import date, datetime
-from decimal import Decimal
-import logging
 
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
 from services.customer_service import CustomerService
-
-
-logger = logging.getLogger(__name__)
+from app.viewmodels import customer_presentation as presentation
 
 
 class CustomerViewModel(QObject):
@@ -23,38 +18,23 @@ class CustomerViewModel(QObject):
     busyChanged = Signal()
     errorChanged = Signal()
     actionChanged = Signal()
+    transactionTypesChanged = Signal()
+    statementFiltersChanged = Signal()
+    statementChanged = Signal()
+    statementErrorChanged = Signal()
 
     PAGE_SIZE = 100
     EDITABLE_FIELDS = (
         "name", "mobile", "place", "customer_type_id", "notes",
         "is_active",
     )
-    CUSTOMER_TYPE_LABELS = {"REGULAR": "عادي", "VIP": "مميز"}
-    BALANCE_LABELS = {
-        "CUSTOMER_OWES_SHOP": "على العميل للمحل",
-        "SHOP_OWES_CUSTOMER": "للعميل عند المحل",
-        "SETTLED": "الحساب متزن",
-    }
-    TRANSACTION_LABELS = {
-        "SALE_BALANCE_DUE": "متبقي بيع",
-        "BUY_BALANCE_DUE": "متبقي شراء من العميل",
-        "CUSTOMER_PAYMENT": "سداد من العميل",
-        "SHOP_PAYMENT": "سداد للعميل",
-        "CUSTOMER_ADVANCE": "دفعة مقدمة من العميل",
-        "ADVANCE_APPLIED": "استخدام رصيد العميل",
-        "DEAD_CASH_WRITE_OFF": "شطب دين معدوم",
-        "DEAD_CASH_REVERSAL": "عكس شطب دين معدوم",
-        "MANUAL_ADJUSTMENT": "تسوية يدوية",
-        "LEGACY_ADJUSTMENT": "تسوية تاريخية مرحّلة",
-    }
+    CUSTOMER_TYPE_LABELS = presentation.CUSTOMER_TYPE_LABELS
+    BALANCE_LABELS = presentation.BALANCE_LABELS
+    TRANSACTION_LABELS = presentation.TRANSACTION_LABELS
     SEVERITY_LABELS = {
         "INFO": "معلومة", "WARNING": "تحذير", "CRITICAL": "تحذير مهم",
     }
-    BIGINT_FIELDS = {
-        "id", "customer_id", "reference_id", "related_dead_cash_id",
-        "writeoff_transaction_id", "reversal_transaction_id", "legacy_source_id",
-        "transaction_id", "flag_id", "dead_cash_id",
-    }
+    BIGINT_FIELDS = presentation.BIGINT_FIELDS
 
     def __init__(self, parent=None, service=None):
         super().__init__(parent)
@@ -76,6 +56,15 @@ class CustomerViewModel(QObject):
         self._dead_cash_page = 1
         self._has_more_transactions = False
         self._has_more_dead_cash = False
+        self._transaction_types = [{"code": "", "label": "كل أنواع الحركات", "is_active": True}]
+        self._statement_from_date = ""
+        self._statement_to_date = ""
+        self._statement_type_code = ""
+        self._statement_summary = {}
+        self._statement_loaded_at = ""
+        self._statement_error_message = ""
+        self._statement_stale = False
+        self._ledger_token = None
         self._edit_customer = {}
         self._edit_customer_id = ""
         self._edit_original_values = None
@@ -172,6 +161,38 @@ class CustomerViewModel(QObject):
     def editCustomer(self):
         return self._edit_customer
 
+    @Property("QVariantList", notify=transactionTypesChanged)
+    def transactionTypes(self):
+        return self._transaction_types
+
+    @Property(str, notify=statementFiltersChanged)
+    def statementFromDate(self):
+        return self._statement_from_date
+
+    @Property(str, notify=statementFiltersChanged)
+    def statementToDate(self):
+        return self._statement_to_date
+
+    @Property(str, notify=statementFiltersChanged)
+    def statementTypeCode(self):
+        return self._statement_type_code
+
+    @Property("QVariantMap", notify=statementChanged)
+    def statementSummary(self):
+        return self._statement_summary
+
+    @Property(str, notify=statementChanged)
+    def statementLoadedAt(self):
+        return self._statement_loaded_at
+
+    @Property(str, notify=statementErrorChanged)
+    def statementErrorMessage(self):
+        return self._statement_error_message
+
+    @Property(bool, notify=statementErrorChanged)
+    def statementStale(self):
+        return self._statement_stale
+
     @Property(bool, notify=busyChanged)
     def busy(self):
         return self._busy
@@ -192,53 +213,9 @@ class CustomerViewModel(QObject):
     def actionSuccess(self):
         return self._action_success
 
-    @classmethod
-    def _qml_safe(cls, value, key=None):
-        if value is None:
-            return None
-        if key in cls.BIGINT_FIELDS:
-            return str(value)
-        if isinstance(value, Decimal):
-            return format(value, "f")
-        if isinstance(value, datetime):
-            return value.strftime("%Y-%m-%d %H:%M:%S")
-        if isinstance(value, date):
-            return value.strftime("%Y-%m-%d")
-        if isinstance(value, dict):
-            return {k: cls._qml_safe(v, k) for k, v in value.items()}
-        if isinstance(value, (list, tuple)):
-            return [cls._qml_safe(v) for v in value]
-        return value
-
-    @staticmethod
-    def _money_text(value, signed=False):
-        if value is None:
-            return "غير متاح"
-        amount = value if isinstance(value, Decimal) else Decimal(str(value))
-        if signed and amount != 0:
-            return format(amount, "+,.2f")
-        return format(amount, ",.2f")
-
-    @classmethod
-    def _customer_row(cls, raw):
-        row = cls._qml_safe(raw)
-        row["id"] = str(raw["customer_id"])
-        row["is_active"] = bool(raw.get("is_active"))
-        row["status_label"] = "نشط" if row["is_active"] else "غير نشط"
-        type_code = raw.get("customer_type_code")
-        row["type_label"] = cls.CUSTOMER_TYPE_LABELS.get(
-            type_code, "نوع آخر" if type_code else "غير محدد",
-        )
-        row["balance_text"] = cls._money_text(raw.get("balance"), signed=True)
-        row["balance_meaning"] = cls.BALANCE_LABELS.get(
-            raw.get("balance_status"), "الرصيد غير متاح",
-        )
-        row["balance_nonzero"] = (
-            raw.get("balance") is not None
-            and Decimal(str(raw["balance"])) != 0
-        )
-        row["last_transaction_text"] = row.get("last_transaction_at") or "—"
-        return row
+    _qml_safe = staticmethod(presentation.qml_safe)
+    _money_text = staticmethod(presentation.money_text)
+    _customer_row = staticmethod(presentation.customer_row)
 
     @classmethod
     def _type_row(cls, raw):
@@ -249,15 +226,7 @@ class CustomerViewModel(QObject):
         row["type_label"] = row["label"]
         return row
 
-    @classmethod
-    def _transaction_row(cls, raw):
-        row = cls._qml_safe(raw)
-        row["id"] = str(raw["transaction_id"])
-        row["amount_text"] = cls._money_text(raw.get("amount_delta"), signed=True)
-        row["type_label"] = cls.TRANSACTION_LABELS.get(
-            raw.get("transaction_type_code"), "حركة أخرى",
-        )
-        return row
+    _transaction_row = staticmethod(presentation.transaction_row)
 
     @classmethod
     def _flag_row(cls, raw):
@@ -291,13 +260,7 @@ class CustomerViewModel(QObject):
         self._action_success = success
         self.actionChanged.emit()
 
-    @staticmethod
-    def _error_text(exc, fallback):
-        # Validation errors are intentionally translated by CustomerService.
-        if isinstance(exc, ValueError) and any("\u0600" <= char <= "\u06ff" for char in str(exc)):
-            return str(exc)
-        logger.error("Customer operation failed", exc_info=True)
-        return fallback
+    _error_text = staticmethod(presentation.error_text)
 
     def _publish_errors(self):
         self._error_message = "\n".join(self._read_errors.values())
@@ -354,7 +317,40 @@ class CustomerViewModel(QObject):
             self.dataChanged.emit()
             self._publish_errors()
 
+    def _load_transaction_types(self):
+        try:
+            rows = self._service.get_customer_transaction_types()
+            self._transaction_types = [{"code": "", "label": "كل أنواع الحركات", "is_active": True}] + [
+                {
+                    "code": row["code"],
+                    "label": self.TRANSACTION_LABELS.get(row["code"], "حركة أخرى")
+                             + (" (غير نشط)" if not row["is_active"] else ""),
+                    "is_active": bool(row["is_active"]),
+                }
+                for row in rows
+            ]
+            self._read_errors.pop("transaction_types", None)
+            self.transactionTypesChanged.emit()
+        except Exception as exc:
+            self._read_errors["transaction_types"] = self._error_text(exc, "تعذر تحميل أنواع الحركات.")
+        finally:
+            self._publish_errors()
+
+    def _reset_statement(self):
+        self._statement_from_date = ""
+        self._statement_to_date = ""
+        self._statement_type_code = ""
+        self._statement_summary = {}
+        self._statement_loaded_at = ""
+        self._statement_error_message = ""
+        self._statement_stale = False
+        self._ledger_token = None
+        self.statementFiltersChanged.emit()
+        self.statementChanged.emit()
+        self.statementErrorChanged.emit()
+
     def _clear_profile(self, customer_id=""):
+        self._reset_statement()
         self._selected_customer_id = customer_id
         self._selected_customer = {}
         self._transactions = []
@@ -378,6 +374,8 @@ class CustomerViewModel(QObject):
             transactions = [self._transaction_row(row) for row in transaction_page["items"]]
             dead_cash_page = result["dead_cash_page"]
             dead_cash = [self._dead_cash_row(row) for row in dead_cash_page["items"]]
+            summary = presentation.statement_summary(result["statement_summary"])
+            loaded_at = self._qml_safe(result["statement_loaded_at"])
             # Publish all sections together: never mix two customers' data.
             self._selected_customer = customer
             self._selected_customer_id = customer["customer_id"]
@@ -388,6 +386,10 @@ class CustomerViewModel(QObject):
             self._dead_cash_page = dead_cash_page["page"]
             self._has_more_transactions = transaction_page["has_more"]
             self._has_more_dead_cash = dead_cash_page["has_more"]
+            self._reset_statement()
+            self._statement_summary = summary
+            self._statement_loaded_at = loaded_at
+            self._ledger_token = result["ledger_token"]
             self._profile_errors.clear()
             return True
         except Exception as exc:
@@ -399,6 +401,7 @@ class CustomerViewModel(QObject):
         finally:
             self.selectionChanged.emit()
             self.historyChanged.emit()
+            self.statementChanged.emit()
             self._publish_errors()
 
     @Slot()
@@ -408,6 +411,7 @@ class CustomerViewModel(QObject):
         self._set_busy(True)
         try:
             self._load_types()
+            self._load_transaction_types()
             self._load_customers(self._page)
             if self._selected_customer_id:
                 self._load_profile(self._selected_customer_id)
@@ -470,39 +474,99 @@ class CustomerViewModel(QObject):
             self._clear_profile()
 
     def _load_history_page(self, page, dead_cash=False):
+        if not dead_cash:
+            self._load_statement(page, expected_token=self._ledger_token)
+            return
         if self._busy or not self.hasSelection:
             return
         self._set_busy(True)
-        error_key = "dead_cash" if dead_cash else "transactions"
         try:
-            if dead_cash:
-                result = self._service.get_dead_cash_history(self._selected_customer_id, page=page)
-                rows = [self._dead_cash_row(row) for row in result["items"]]
-                self._dead_cash_history = rows
-                self._dead_cash_page = result["page"]
-                self._has_more_dead_cash = result["has_more"]
-            else:
-                result = self._service.get_customer_transactions(self._selected_customer_id, page=page)
-                rows = [self._transaction_row(row) for row in result["items"]]
-                self._transactions = rows
-                self._transactions_page = result["page"]
-                self._has_more_transactions = result["has_more"]
-            self._profile_errors.pop(error_key, None)
+            result = self._service.get_dead_cash_history(self._selected_customer_id, page=page)
+            rows = [self._dead_cash_row(row) for row in result["items"]]
+            self._dead_cash_history = rows
+            self._dead_cash_page = result["page"]
+            self._has_more_dead_cash = result["has_more"]
+            self._profile_errors.pop("dead_cash", None)
         except Exception as exc:
-            if dead_cash:
-                self._dead_cash_history = []
-                self._has_more_dead_cash = False
-            else:
-                self._transactions = []
-                self._has_more_transactions = False
-            self._profile_errors[error_key] = self._error_text(
-                exc,
-                "تعذر تحميل سجل الديون المعدومة." if dead_cash else "تعذر تحميل حركات العميل.",
-            )
+            self._dead_cash_history = []
+            self._has_more_dead_cash = False
+            self._profile_errors["dead_cash"] = self._error_text(exc, "تعذر تحميل سجل الديون المعدومة.")
         finally:
             self.historyChanged.emit()
             self._publish_errors()
             self._set_busy(False)
+
+    def _load_statement(self, page, expected_token=None):
+        if self._busy or not self.hasSelection:
+            return
+        self._set_busy(True)
+        try:
+            result = self._service.get_customer_statement(
+                self._selected_customer_id,
+                from_date=self._statement_from_date or None,
+                to_date=self._statement_to_date or None,
+                transaction_type_code=self._statement_type_code or None,
+                page=page,
+                expected_ledger_token=expected_token,
+            )
+            # Prepare everything first; view balance, summary and movements must
+            # be published from the same successful repository snapshot.
+            customer = self._customer_row(result["customer"])
+            rows = [self._transaction_row(row) for row in result["items"]]
+            summary = presentation.statement_summary(result["summary"])
+            loaded_at = self._qml_safe(result["loaded_at"])
+            flags = [self._flag_row(row) for row in result["active_flags"]]
+            dead_cash_page = result["dead_cash_page"]
+            dead_cash = [self._dead_cash_row(row) for row in dead_cash_page["items"]]
+            self._selected_customer = customer
+            self._transactions = rows
+            self._statement_summary = summary
+            self._statement_loaded_at = loaded_at
+            self._ledger_token = result["ledger_token"]
+            self._transactions_page = result["page"]
+            self._has_more_transactions = result["has_more"]
+            self._statement_stale = bool(result.get("ledger_changed"))
+            self._statement_error_message = result.get("message", "")
+            self._active_flags = flags
+            self._dead_cash_history = dead_cash
+            self._dead_cash_page = dead_cash_page["page"]
+            self._has_more_dead_cash = dead_cash_page["has_more"]
+            self._profile_errors.pop("dead_cash", None)
+        except Exception as exc:
+            # Never show old totals under newly entered date/type filters.
+            self._transactions = []
+            self._statement_summary = {}
+            self._statement_loaded_at = ""
+            self._has_more_transactions = False
+            self._transactions_page = 1
+            self._ledger_token = None
+            self._statement_stale = True
+            self._statement_error_message = self._error_text(exc, "تعذر تحميل كشف الحساب. حاول التحديث مرة أخرى.")
+        finally:
+            self.selectionChanged.emit()
+            self.historyChanged.emit()
+            self.statementChanged.emit()
+            self.statementErrorChanged.emit()
+            self._publish_errors()
+            self._set_busy(False)
+
+    @Slot(str, str, str)
+    def applyStatementFilters(self, from_date, to_date, type_code):
+        if self._busy or not self.hasSelection:
+            return
+        self._statement_from_date = from_date.strip()
+        self._statement_to_date = to_date.strip()
+        self._statement_type_code = type_code.strip()
+        self.statementFiltersChanged.emit()
+        self._load_statement(1)
+
+    @Slot()
+    def resetStatementFilters(self):
+        self.applyStatementFilters("", "", "")
+
+    @Slot()
+    def refreshStatement(self):
+        self._load_statement(1)
 
     @Slot(int)
     def loadTransactionsPage(self, page):

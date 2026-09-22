@@ -3,7 +3,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QUrl, Qt
 from PySide6.QtGui import QGuiApplication, QFont
-from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQml import QQmlApplicationEngine, qmlRegisterType
 from PySide6.QtQuickControls2 import QQuickStyle
 
 from app.viewmodels.master_data_viewmodel import (
@@ -24,6 +24,7 @@ from app.viewmodels.billing_viewmodel import (
 from app.viewmodels.customer_viewmodel import (
     CustomerViewModel,
 )
+from app.viewmodels.customer_picker_viewmodel import CustomerPickerViewModel
 
 
 def main():
@@ -46,6 +47,10 @@ def main():
         Qt.LayoutDirection.RightToLeft
     )
 
+    qmlRegisterType(
+        CustomerPickerViewModel, "MasGold.Customers", 1, 0,
+        "CustomerPickerViewModel",
+    )
     engine = QQmlApplicationEngine()
 
     master_data_vm = (

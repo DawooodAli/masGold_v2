@@ -142,7 +142,7 @@ class CustomerRepositorySearchTests(NoDatabaseTestCase):
 
     def test_normalized_search_applies_in_where_before_pagination(self):
         query, params = self.search_query("  أَحـمد  ")
-        select, where = query.split("WHERE", 1)
+        select, where = query.split("WHERE (", 1)
         for original in ("c.name", "c.mobile", "c.place"):
             self.assertIn(original, select)
             self.assertIn(original, where)
@@ -225,6 +225,20 @@ class CustomerServiceSearchAndSaveTests(NoDatabaseTestCase):
                 })
                 _, params = self.cursor.execute.call_args.args
                 self.assertEqual(params[-8:], (False, False, 7, 7, "CUSTOMER_OWES_SHOP", "CUSTOMER_OWES_SHOP", 101, 200))
+
+    def test_picker_page_size_reuses_search_and_fetches_one_extra(self):
+        self.cursor.fetchall.return_value = [{"customer_id": number} for number in range(21)]
+        result = self.service.search_customers("أحمد", status="ACTIVE", page=3, page_size=20)
+        self.assertEqual(len(result["items"]), 20)
+        self.assertEqual(result["page_size"], 20)
+        self.assertTrue(result["has_more"])
+        self.assertEqual(self.cursor.execute.call_args.args[1][-2:], (21, 40))
+
+    def test_page_size_cannot_be_zero_negative_fractional_or_over_limit(self):
+        for page_size in (0, -1, 1.5, True, 101):
+            with self.subTest(page_size=page_size), self.assertRaises(ValueError):
+                self.service.search_customers(page_size=page_size)
+        self.transactions.assert_not_called()
 
     def test_create_preserves_exact_text_in_insert_and_generates_code_separately(self):
         self.assertEqual(self.service.create_customer(**self.raw_values), 143)

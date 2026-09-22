@@ -1,3 +1,5 @@
+from datetime import date, datetime, time, timedelta
+
 from mysql.connector import IntegrityError
 
 from database.transaction import DatabaseTransaction
@@ -74,12 +76,12 @@ class CustomerService:
         return cls._required_id(page, "رقم الصفحة", 2147483647)
 
     @classmethod
-    def _paged(cls, rows: list[dict], page: int) -> dict:
+    def _paged(cls, rows: list[dict], page: int, page_size: int = 100) -> dict:
         return {
-            "items": rows[:cls.PAGE_SIZE],
+            "items": rows[:page_size],
             "page": page,
-            "page_size": cls.PAGE_SIZE,
-            "has_more": len(rows) > cls.PAGE_SIZE,
+            "page_size": page_size,
+            "has_more": len(rows) > page_size,
         }
 
     @staticmethod
@@ -117,6 +119,10 @@ class CustomerService:
         with DatabaseTransaction() as transaction:
             return CustomerRepository(transaction.connection).get_customer_types()
 
+    def get_customer_transaction_types(self) -> list[dict]:
+        with DatabaseTransaction() as transaction:
+            return CustomerRepository(transaction.connection).get_customer_transaction_types()
+
     def search_customers(
         self,
         search: str = "",
@@ -124,6 +130,7 @@ class CustomerService:
         customer_type_id: int | None = None,
         balance_status: str = "ALL",
         page: int = 1,
+        page_size: int = 100,
     ) -> dict:
         if not isinstance(search, str):
             raise ValueError("نص البحث غير صحيح.")
@@ -133,6 +140,7 @@ class CustomerService:
             raise ValueError("حالة الرصيد المحددة غير صحيحة.")
         customer_type_id = self._optional_id(customer_type_id, "نوع العميل", 65535)
         page = self._page_number(page)
+        page_size = self._required_id(page_size, "حجم الصفحة", self.PAGE_SIZE)
         active = None if status == "ALL" else status == "ACTIVE"
         balance = None if balance_status == "ALL" else balance_status
         with DatabaseTransaction() as transaction:
@@ -142,10 +150,10 @@ class CustomerService:
                 is_active=active,
                 customer_type_id=customer_type_id,
                 balance_status=balance,
-                limit=self.PAGE_SIZE + 1,
-                offset=(page - 1) * self.PAGE_SIZE,
+                limit=page_size + 1,
+                offset=(page - 1) * page_size,
             )
-            return self._paged(rows, page)
+            return self._paged(rows, page, page_size)
 
     def get_customer_details(self, customer_id: int) -> dict:
         customer_id = self._customer_id(customer_id)
@@ -154,20 +162,152 @@ class CustomerService:
                 CustomerRepository(transaction.connection), customer_id,
             )
 
+    def get_customer_for_selection(
+        self, customer_id: int, allow_inactive: bool = False,
+    ) -> dict:
+        if not isinstance(allow_inactive, bool):
+            raise ValueError("خيار السماح بالعملاء غير النشطين غير صحيح.")
+        customer = self.get_customer_details(customer_id)
+        if not allow_inactive and not customer["is_active"]:
+            raise ValueError("العميل غير نشط ولا يمكن اختياره في هذه الشاشة.")
+        return customer
+
+    @staticmethod
+    def _statement_date(value: str | None, label: str) -> date | None:
+        if value is None or value == "":
+            return None
+        if not isinstance(value, str):
+            raise ValueError(f"{label} غير صحيح. استخدم الصيغة سنة-شهر-يوم.")
+        value = value.strip()
+        if not value:
+            return None
+        try:
+            parsed = date.fromisoformat(value)
+        except ValueError:
+            raise ValueError(f"{label} غير صحيح. استخدم الصيغة سنة-شهر-يوم.") from None
+        if parsed.isoformat() != value or parsed.year < 1000:
+            raise ValueError(f"{label} غير صحيح. استخدم الصيغة سنة-شهر-يوم.")
+        return parsed
+
+    @classmethod
+    def _statement_result(
+        cls, raw: dict | None, page: int,
+        from_date: date | None, to_date: date | None,
+        transaction_type_code: str | None,
+    ) -> dict:
+        if raw is None:
+            raise ValueError("العميل غير موجود أو تعذر العثور على بيانات رصيده.")
+        summary = dict(raw["summary"])
+        current_balance = raw["customer"]["balance"]
+        if current_balance is None or summary["ledger_balance"] != current_balance:
+            raise ValueError("تعذر عرض كشف الحساب: رصيد الحركات لا يطابق الرصيد الحالي. يلزم مراجعة البيانات.")
+        summary.update({
+            "current_balance": current_balance,
+            "from_date": from_date.isoformat() if from_date else "",
+            "to_date": to_date.isoformat() if to_date else "",
+            "transaction_type_code": transaction_type_code or "",
+            "type_filter_active": transaction_type_code is not None,
+        })
+        return {
+            "customer": raw["customer"],
+            "summary": summary,
+            **cls._paged(raw["items"], page),
+            # Count is essential: lower allocated IDs can commit after higher
+            # IDs. This detects append-only changes, not arbitrary old-row edits.
+            "ledger_token": (
+                int(summary["ledger_count"]), int(summary["ledger_max_id"]),
+                summary["ledger_balance"],
+            ),
+            "loaded_at": raw["loaded_at"],
+            "ledger_changed": False,
+            "message": "",
+        }
+
+    def get_customer_statement(
+        self,
+        customer_id: int,
+        *,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        transaction_type_code: str | None = None,
+        page: int = 1,
+        expected_ledger_token: tuple | None = None,
+    ) -> dict:
+        customer_id = self._customer_id(customer_id)
+        page = self._page_number(page)
+        first_date = self._statement_date(from_date, "تاريخ البداية")
+        last_date = self._statement_date(to_date, "تاريخ النهاية")
+        if first_date and last_date and first_date > last_date:
+            raise ValueError("تاريخ البداية يجب ألا يتجاوز تاريخ النهاية.")
+        from_at = datetime.combine(first_date, time.min) if first_date else None
+        try:
+            to_exclusive = (
+                datetime.combine(last_date + timedelta(days=1), time.min)
+                if last_date else None
+            )
+        except OverflowError:
+            raise ValueError("تاريخ النهاية خارج النطاق المتاح.") from None
+        if transaction_type_code is not None:
+            if not isinstance(transaction_type_code, str) or len(transaction_type_code) > 60:
+                raise ValueError("نوع الحركة المحدد غير صحيح.")
+            transaction_type_code = transaction_type_code.strip() or None
+        if expected_ledger_token is not None and (
+            not isinstance(expected_ledger_token, tuple) or len(expected_ledger_token) != 3
+        ):
+            raise ValueError("أعد تحميل كشف الحساب قبل الانتقال بين الصفحات.")
+
+        with DatabaseTransaction() as transaction:
+            repository = CustomerRepository(transaction.connection)
+            if transaction_type_code is not None:
+                types = repository.get_customer_transaction_types()
+                if not any(row["code"] == transaction_type_code for row in types):
+                    raise ValueError("نوع الحركة المحدد غير موجود.")
+            parameters = dict(
+                from_at=from_at, to_exclusive=to_exclusive,
+                transaction_type_code=transaction_type_code,
+                limit=self.PAGE_SIZE + 1,
+            )
+            raw = repository.get_customer_statement(
+                customer_id, **parameters, offset=(page - 1) * self.PAGE_SIZE,
+            )
+            result = self._statement_result(raw, page, first_date, last_date, transaction_type_code)
+            if expected_ledger_token is not None and expected_ledger_token != result["ledger_token"]:
+                # Discard the requested old page, then atomically publish one
+                # fresh first-page snapshot and its matching totals/profile.
+                if page != 1:
+                    raw = repository.get_customer_statement(customer_id, **parameters, offset=0)
+                    result = self._statement_result(raw, 1, first_date, last_date, transaction_type_code)
+                result["ledger_changed"] = True
+                result["message"] = "تغيرت حركات العميل؛ تم تحديث كشف الحساب والعودة إلى الصفحة الأولى."
+            # Refresh the associated panels before publishing a new customer
+            # summary. Under the configured REPEATABLE READ isolation these
+            # reads share the transaction snapshot with the final statement.
+            result["active_flags"] = repository.get_active_customer_flags(customer_id)
+            result["dead_cash_page"] = self._paged(
+                repository.get_dead_cash_history(
+                    customer_id, limit=self.PAGE_SIZE + 1, offset=0,
+                ),
+                1,
+            )
+            return result
+
     def get_customer_profile(self, customer_id: int) -> dict:
         customer_id = self._customer_id(customer_id)
         with DatabaseTransaction() as transaction:
             repository = CustomerRepository(transaction.connection)
-            customer = self._require_customer(repository, customer_id)
+            statement = self._statement_result(
+                repository.get_customer_statement(customer_id, limit=self.PAGE_SIZE + 1),
+                1, None, None, None,
+            )
             return {
-                "customer": customer,
+                "customer": statement["customer"],
                 "active_flags": repository.get_active_customer_flags(customer_id),
-                "transactions_page": self._paged(
-                    repository.get_customer_transactions(
-                        customer_id, limit=self.PAGE_SIZE + 1, offset=0,
-                    ),
-                    1,
-                ),
+                "transactions_page": {
+                    key: statement[key] for key in ("items", "page", "page_size", "has_more")
+                },
+                "statement_summary": statement["summary"],
+                "ledger_token": statement["ledger_token"],
+                "statement_loaded_at": statement["loaded_at"],
                 "dead_cash_page": self._paged(
                     repository.get_dead_cash_history(
                         customer_id, limit=self.PAGE_SIZE + 1, offset=0,
@@ -177,17 +317,8 @@ class CustomerService:
             }
 
     def get_customer_transactions(self, customer_id: int, page: int = 1) -> dict:
-        customer_id = self._customer_id(customer_id)
-        page = self._page_number(page)
-        with DatabaseTransaction() as transaction:
-            repository = CustomerRepository(transaction.connection)
-            self._require_customer(repository, customer_id)
-            rows = repository.get_customer_transactions(
-                customer_id,
-                limit=self.PAGE_SIZE + 1,
-                offset=(page - 1) * self.PAGE_SIZE,
-            )
-            return self._paged(rows, page)
+        statement = self.get_customer_statement(customer_id, page=page)
+        return {key: statement[key] for key in ("items", "page", "page_size", "has_more")}
 
     def get_dead_cash_history(self, customer_id: int, page: int = 1) -> dict:
         customer_id = self._customer_id(customer_id)
