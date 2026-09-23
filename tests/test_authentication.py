@@ -297,6 +297,12 @@ class AuthenticationTests(unittest.TestCase):
         self.assertEqual(result.employee_id, 42)
         self.assertEqual(self.repo.create_first_user.call_args.args[3], 42)
 
+    def test_first_owner_accepts_six_character_password(self):
+        self.password = 'abcdef'
+        self.setup_first_owner()
+        encoded = self.repo.create_first_user.call_args.args[2]
+        self.assertTrue(self.passwords.verify(encoded, self.password))
+
     def test_first_owner_password_validation_before_any_writes(self):
         for password, confirmation in [('', ''), ('short', 'short'), (self.password, 'different-password')]:
             with self.subTest(length=len(password)):

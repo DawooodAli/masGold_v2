@@ -138,7 +138,7 @@ ApplicationWindow {
             SetupLabel {
                 Layout.fillWidth: true
                 visible: authenticationVM.stage === "FIRST_RUN_SETUP"
-                text: "\u200fاستخدم كلمة مرور لا تقل عن ١٢ حرفاً. لا يتم ربط موظف إلا باختيارك."
+                text: "\u200fاستخدم كلمة مرور لا تقل عن ٦ أحرف. لا يتم ربط موظف إلا باختيارك."
                 color: theme.textSecondary
             }
             SetupLabel {
@@ -153,7 +153,7 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 visible: authenticationVM.stage === "FIRST_RUN_SETUP"
                 enabled: !authenticationVM.busy && displayField.text.trim().length > 0
-                         && passwordField.text.length >= 12 && confirmationField.text.length >= 12
+                         && passwordField.text.length >= 6 && confirmationField.text.length >= 6
                 text: "إنشاء حساب المالك وبدء البرنامج"
                 font.family: "Cairo"
                 contentItem: SetupLabel { text: "\u200f" + parent.text; verticalAlignment: Text.AlignVCenter }

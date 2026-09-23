@@ -72,6 +72,429 @@ ApplicationWindow {
         id: theme
     }
 
+    component GoldPriceLabel: Label {
+        property string value: ""
+        text: "\u200f" + value
+        font.family: "Cairo"
+        font.pixelSize: 12
+        color: theme.textPrimary
+        horizontalAlignment: Text.AlignRight
+        verticalAlignment: Text.AlignVCenter
+        wrapMode: Text.WordWrap
+    }
+
+    component GoldPriceButton: Button {
+        id: priceButton
+        property bool primaryAction: false
+        implicitHeight: 36
+        leftPadding: 12
+        rightPadding: 12
+        font.family: "Cairo"
+        contentItem: GoldPriceLabel {
+            value: priceButton.text
+            color: !priceButton.enabled ? theme.textMuted : priceButton.primaryAction ? theme.bgPrimary : theme.textPrimary
+        }
+        background: Rectangle {
+            color: priceButton.primaryAction && priceButton.enabled ? (priceButton.down ? theme.goldDark : theme.gold) : theme.bgTertiary
+            border.color: priceButton.primaryAction ? theme.goldDark : theme.border
+            radius: theme.radiusSmall
+        }
+    }
+
+    component GoldPriceInput: TextField {
+        font.family: "Cairo"
+        horizontalAlignment: Text.AlignRight
+        verticalAlignment: Text.AlignVCenter
+        topPadding: 6; bottomPadding: 6; leftPadding: 10; rightPadding: 10
+        topInset: 0; bottomInset: 0
+        selectByMouse: true
+        placeholderText: text.length ? "" : "\u200f0.00"
+        inputMethodHints: Qt.ImhFormattedNumbersOnly
+        color: theme.textPrimary
+        background: Rectangle {
+            color: theme.bgTertiary
+            border.color: parent.activeFocus ? theme.gold : theme.border
+            radius: theme.radiusSmall
+        }
+    }
+
+    component GoldPriceGrid: GridLayout {
+        id: priceGrid
+        property var priceRows: []
+        columns: 3
+        columnSpacing: 18
+        rowSpacing: 5
+        layoutDirection: Qt.RightToLeft
+        GoldPriceLabel { Layout.preferredWidth: 72; value: "العيار"; color: theme.gold }
+        GoldPriceLabel { Layout.fillWidth: true; value: "شراء المحل"; color: theme.gold }
+        GoldPriceLabel { Layout.fillWidth: true; value: "بيع المحل"; color: theme.gold }
+        Repeater {
+            model: priceGrid.priceRows.length * 3
+            delegate: GoldPriceLabel {
+                required property int index
+                readonly property int column: index % 3
+                readonly property var row: priceGrid.priceRows[Math.floor(index / 3)]
+                Layout.fillWidth: column !== 0
+                Layout.preferredWidth: column === 0 ? 72 : 145
+                value: column === 0 ? "عيار " + row.karat
+                       : "\u2066" + (column === 1 ? row.shop_buy_price_per_gram : row.shop_sell_price_per_gram) + "\u2069"
+                wrapMode: Text.NoWrap
+                font.bold: column === 0
+            }
+        }
+    }
+
+    Dialog {
+        id: goldPriceDialog
+        objectName: "goldPriceDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(root.width - 40, 620)
+        height: Math.min(root.height - 40, goldBody.implicitHeight + header.implicitHeight
+                         + footer.implicitHeight + topPadding + bottomPadding + 12)
+        modal: true
+        padding: 16
+        font.family: "Cairo"
+        onOpened: {
+            goldBuy21.text = ""
+            goldSell21.text = ""
+            goldManualReason.text = ""
+            goldPriceVM.invalidatePreview()
+        }
+        onClosed: goldManualConfirmation.close()
+        header: GoldPriceLabel {
+            value: "أسعار الذهب"
+            color: theme.gold
+            font.bold: true
+            font.pixelSize: 20
+            leftPadding: 24; rightPadding: 24; topPadding: 12; bottomPadding: 4
+        }
+        background: Rectangle {
+            color: theme.bgSecondary
+            border.color: theme.goldDark
+            radius: theme.radiusSmall
+        }
+        contentItem: ScrollView {
+            id: goldPriceScroll
+            objectName: "goldPriceScroll"
+            clip: true
+            contentWidth: availableWidth
+            contentHeight: goldBody.implicitHeight
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+            ColumnLayout {
+                id: goldBody
+                objectName: "goldPriceBody"
+                width: Math.min(goldPriceScroll.availableWidth, 548)
+                x: (goldPriceScroll.availableWidth - width) / 2
+                spacing: 10
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: goldStatus.implicitHeight + 20
+                    color: theme.bgTertiary
+                    radius: theme.radiusSmall
+                    border.color: theme.border
+                    ColumnLayout {
+                        id: goldStatus
+                        anchors.fill: parent
+                        anchors.margins: 10
+                        spacing: 5
+                        RowLayout {
+                            Layout.fillWidth: true
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 16
+                            GoldPriceLabel {
+                                value: "الحالة: " + goldPriceVM.statusText
+                                color: goldPriceVM.status === "FRESH" ? theme.green : theme.gold
+                            }
+                            GoldPriceLabel { value: "الوضع: " + goldPriceVM.modeText }
+                            GoldPriceLabel { value: "المصدر: " + goldPriceVM.source }
+                            Item { Layout.fillWidth: true }
+                        }
+                        GoldPriceLabel {
+                            Layout.fillWidth: true
+                            visible: goldPriceVM.prices.length > 0
+                            value: "آخر تحديث: \u2066" + goldPriceVM.activatedAt + "\u2069  |  عمر السعر: " + goldPriceVM.ageText
+                            color: theme.textSecondary
+                            font.pixelSize: 11
+                            ToolTip.visible: goldStatusHover.hovered
+                            ToolTip.text: "وقت المصدر: " + goldPriceVM.providerTimestamp + "\nوقت الجلب: " + goldPriceVM.fetchedAt
+                            HoverHandler { id: goldStatusHover }
+                        }
+                    }
+                }
+                GoldPriceLabel {
+                    objectName: "goldPriceEmptyState"
+                    Layout.fillWidth: true
+                    visible: goldPriceVM.prices.length === 0
+                    value: "لا توجد أسعار ذهب معتمدة حالياً"
+                    color: theme.textMuted
+                    topPadding: 4; bottomPadding: 4
+                }
+                GoldPriceGrid {
+                    objectName: "goldCurrentPrices"
+                    Layout.fillWidth: true
+                    visible: goldPriceVM.prices.length > 0
+                    priceRows: goldPriceVM.prices
+                }
+                GoldPriceLabel {
+                    Layout.fillWidth: true
+                    value: "جنيه مصري / جرام · الشراء والبيع من منظور المحل"
+                    color: theme.textMuted
+                    font.pixelSize: 11
+                }
+                Repeater {
+                    model: goldPriceVM.warnings
+                    delegate: GoldPriceLabel {
+                        required property string modelData
+                        Layout.fillWidth: true
+                        value: modelData
+                        color: theme.gold
+                        font.pixelSize: 11
+                    }
+                }
+                ColumnLayout {
+                    objectName: "goldPriceManagement"
+                    Layout.fillWidth: true
+                    visible: goldPriceVM.canManage
+                    enabled: !goldPriceVM.busy
+                    spacing: 8
+                    Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: theme.border }
+                    GoldPriceLabel {
+                        Layout.fillWidth: true
+                        value: "السعر اليدوي — عيار 21"
+                        font.bold: true
+                        color: theme.gold
+                    }
+                    GridLayout {
+                        Layout.alignment: Qt.AlignRight
+                        Layout.fillWidth: true
+                        Layout.maximumWidth: 430
+                        columns: 2
+                        layoutDirection: Qt.RightToLeft
+                        columnSpacing: 12
+                        rowSpacing: 6
+                        GoldPriceLabel { Layout.preferredWidth: 158; value: "شراء المحل — عيار 21" }
+                        GoldPriceInput {
+                            id: goldBuy21
+                            objectName: "goldBuy21"
+                            Layout.fillWidth: true
+                            Layout.maximumWidth: 260
+                            Layout.preferredHeight: 34
+                            maximumLength: 32
+                            onTextChanged: goldPriceVM.invalidatePreview()
+                        }
+                        GoldPriceLabel { Layout.preferredWidth: 158; value: "بيع المحل — عيار 21" }
+                        GoldPriceInput {
+                            id: goldSell21
+                            objectName: "goldSell21"
+                            Layout.fillWidth: true
+                            Layout.maximumWidth: 260
+                            Layout.preferredHeight: 34
+                            maximumLength: 32
+                            onTextChanged: goldPriceVM.invalidatePreview()
+                        }
+                        GoldPriceLabel { Layout.preferredWidth: 158; value: "سبب التغيير" }
+                        ScrollView {
+                            Layout.fillWidth: true
+                            Layout.maximumWidth: 260
+                            Layout.preferredHeight: 54
+                            clip: true
+                            TextArea {
+                                id: goldManualReason
+                                objectName: "goldManualReason"
+                                font.family: "Cairo"
+                                font.pixelSize: 12
+                                horizontalAlignment: Text.AlignRight
+                                topPadding: 8; bottomPadding: 8; leftPadding: 10; rightPadding: 10
+                                topInset: 0; bottomInset: 0
+                                wrapMode: TextEdit.Wrap
+                                selectByMouse: true
+                                placeholderText: text.length ? "" : "\u200fسبب التغيير (مطلوب)"
+                                onTextChanged: goldPriceVM.invalidatePreview()
+                                background: Rectangle {
+                                    color: theme.bgTertiary
+                                    border.color: goldManualReason.activeFocus ? theme.gold : theme.border
+                                    radius: theme.radiusSmall
+                                }
+                            }
+                        }
+                    }
+                    GoldPriceButton {
+                        objectName: "goldPreviewButton"
+                        Layout.alignment: Qt.AlignRight
+                        text: "عرض الأسعار المشتقة"
+                        onClicked: goldPriceVM.previewManual(goldBuy21.text, goldSell21.text, goldManualReason.text)
+                    }
+                    Rectangle {
+                        objectName: "goldManualPreviewCard"
+                        Layout.fillWidth: true
+                        visible: goldPriceVM.previewReady
+                        implicitHeight: goldPreviewContent.implicitHeight + 20
+                        color: theme.bgTertiary
+                        border.color: theme.goldDark
+                        radius: theme.radiusSmall
+                        ColumnLayout {
+                            id: goldPreviewContent
+                            anchors.fill: parent
+                            anchors.margins: 10
+                            spacing: 6
+                            GoldPriceLabel {
+                                Layout.fillWidth: true
+                                value: "الأسعار المشتقة — راجعها ثم اعتمد السعر اليدوي"
+                                color: theme.gold
+                                font.pixelSize: 11
+                            }
+                            GoldPriceGrid { Layout.fillWidth: true; priceRows: goldPriceVM.previewPrices }
+                        }
+                    }
+                }
+            }
+        }
+        // Save and feedback stay outside the scroll area at every supported size.
+        footer: Item {
+            implicitHeight: goldFooter.implicitHeight + 20
+            ColumnLayout {
+                id: goldFooter
+                width: Math.min(parent.width - 32, 548)
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.top: parent.top
+                spacing: 6
+                GoldPriceLabel {
+                    objectName: "goldPriceError"
+                    Layout.fillWidth: true
+                    visible: goldPriceVM.errorMessage.length > 0
+                    value: goldPriceVM.errorMessage
+                    color: theme.red
+                }
+                GoldPriceLabel {
+                    objectName: "goldPriceSuccess"
+                    Layout.fillWidth: true
+                    visible: goldPriceVM.successMessage.length > 0
+                    value: goldPriceVM.successMessage
+                    color: theme.green
+                }
+                GoldPriceLabel {
+                    Layout.fillWidth: true
+                    visible: goldPriceVM.busy
+                    value: "جارٍ تحديث الأسعار…"
+                    color: theme.textMuted
+                }
+                RowLayout {
+                    Layout.alignment: Qt.AlignRight
+                    layoutDirection: Qt.LeftToRight
+                    spacing: 6
+                    GoldPriceButton { text: "إغلاق"; onClicked: goldPriceDialog.close() }
+                    GoldPriceButton {
+                        text: "تحديث"
+                        enabled: !goldPriceVM.busy
+                        onClicked: goldPriceVM.refresh()
+                    }
+                    GoldPriceButton {
+                        objectName: "goldReturnAutoButton"
+                        visible: goldPriceVM.canManage && goldPriceVM.mode === "MANUAL"
+                        enabled: !goldPriceVM.busy
+                        text: "العودة للتلقائي"
+                        onClicked: goldAutoConfirmation.open()
+                    }
+                    GoldPriceButton {
+                        objectName: "goldConfirmManualButton"
+                        visible: goldPriceVM.canManage && goldPriceVM.previewReady
+                        enabled: !goldPriceVM.busy
+                        primaryAction: true
+                        text: "اعتماد السعر اليدوي"
+                        onClicked: goldManualConfirmation.open()
+                    }
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: goldManualConfirmation
+        objectName: "goldManualConfirmation"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(root.width - 64, 500)
+        modal: true
+        padding: 16
+        font.family: "Cairo"
+        background: Rectangle { color: theme.bgSecondary; border.color: theme.goldDark; radius: theme.radiusSmall }
+        header: GoldPriceLabel { value: "تأكيد اعتماد السعر اليدوي"; padding: 16; color: theme.gold; font.bold: true }
+        contentItem: ColumnLayout {
+            spacing: 10
+            GoldPriceGrid { Layout.fillWidth: true; priceRows: goldPriceVM.previewPrices }
+            GoldPriceLabel {
+                Layout.fillWidth: true
+                value: "سيتم حفظ أسعار العيارات الثلاثة والتحويل إلى الوضع اليدوي."
+            }
+            GoldPriceLabel {
+                Layout.fillWidth: true
+                value: "السبب: " + goldManualReason.text
+                maximumLineCount: 3
+                elide: Text.ElideRight
+                color: theme.textSecondary
+            }
+        }
+        footer: RowLayout {
+            layoutDirection: Qt.RightToLeft
+            spacing: 8
+            GoldPriceButton {
+                objectName: "goldApplyManualButton"
+                text: "تأكيد الاعتماد"
+                primaryAction: true
+                enabled: goldPriceVM.canManage && goldPriceVM.previewReady && !goldPriceVM.busy
+                onClicked: {
+                    if (goldPriceVM.confirmManual())
+                        goldManualConfirmation.close()
+                }
+            }
+            GoldPriceButton {
+                objectName: "goldCancelManualButton"
+                text: "إلغاء"
+                onClicked: goldManualConfirmation.close()
+            }
+            Item { Layout.fillWidth: true }
+        }
+        Connections {
+            target: goldPriceVM
+            function onChanged() {
+                if (!goldPriceVM.previewReady || !goldPriceVM.canManage)
+                    goldManualConfirmation.close()
+            }
+        }
+    }
+
+    Dialog {
+        id: goldAutoConfirmation
+        objectName: "goldAutoConfirmation"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(root.width - 64, 500)
+        modal: true
+        padding: 16
+        font.family: "Cairo"
+        background: Rectangle { color: theme.bgSecondary; border.color: theme.goldDark; radius: theme.radiusSmall }
+        header: GoldPriceLabel { value: "تأكيد العودة إلى التلقائي"; padding: 16; color: theme.gold; font.bold: true }
+        contentItem: GoldPriceLabel {
+            value: "سيُسمح للمصدر التلقائي باعتماد أسعار جديدة. تظل آخر أسعار معتمدة محفوظة إذا تعذر جلب مجموعة صحيحة."
+        }
+        footer: RowLayout {
+            layoutDirection: Qt.RightToLeft
+            spacing: 8
+            GoldPriceButton {
+                objectName: "goldConfirmAutoButton"
+                text: "تأكيد العودة للتلقائي"
+                enabled: goldPriceVM.canManage && !goldPriceVM.busy
+                onClicked: {
+                    goldPriceVM.returnToAuto("")
+                    goldAutoConfirmation.close()
+                }
+            }
+            GoldPriceButton { text: "إلغاء"; onClicked: goldAutoConfirmation.close() }
+            Item { Layout.fillWidth: true }
+        }
+    }
+
     // ========================================================
     // CATEGORY MODEL FOR ITEM TYPES
     // ========================================================
@@ -190,6 +613,10 @@ ApplicationWindow {
                         font.pixelSize: 20
                         font.bold: true
 
+                        Layout.maximumWidth: 140
+                        Layout.minimumWidth: 0
+                        elide: Text.ElideLeft
+
                         horizontalAlignment:
                             Text.AlignRight
                     }
@@ -206,7 +633,9 @@ ApplicationWindow {
                         color: theme.textSecondary
                         horizontalAlignment: Text.AlignRight
                         elide: Text.ElideLeft
-                        Layout.maximumWidth: 160
+                        Layout.preferredWidth: 130
+                        Layout.maximumWidth: 130
+                        Layout.minimumWidth: 70
                     }
                     Button {
                         objectName: "logoutButton"
@@ -224,8 +653,9 @@ ApplicationWindow {
 
 
                     Rectangle {
-                        Layout.preferredWidth: 220
-                        Layout.preferredHeight: 42
+                        objectName: "goldPriceArea"
+                        Layout.preferredWidth: 315
+                        Layout.preferredHeight: 52
 
                         radius: theme.radiusSmall
 
@@ -235,31 +665,34 @@ ApplicationWindow {
                         border.width: 1
 
 
-                        Row {
-                            anchors.centerIn: parent
-
-                            spacing: 10
-
-
-                            Label {
-                                text: "عيار 21"
-
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: 6
+                            spacing: 0
+                            GoldPriceLabel {
+                                Layout.fillWidth: true
+                                objectName: "goldPriceHeadline"
+                                value: goldPriceVM.headline
                                 color: theme.gold
-
-                                font.family: "Cairo"
                                 font.bold: true
-                                font.pixelSize: 13
-                            }
-
-
-                            Label {
-                                text: "السعر غير متاح"
-
-                                color: theme.textMuted
-
-                                font.family: "Cairo"
                                 font.pixelSize: 12
+                                elide: Text.ElideLeft
+                                wrapMode: Text.NoWrap
                             }
+                            GoldPriceLabel {
+                                Layout.fillWidth: true
+                                value: goldPriceVM.source + " | " + goldPriceVM.modeText
+                                       + " | " + goldPriceVM.statusText
+                                color: goldPriceVM.status === "FRESH" ? theme.green : theme.gold
+                                font.pixelSize: 10
+                                elide: Text.ElideLeft
+                                wrapMode: Text.NoWrap
+                            }
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: goldPriceDialog.open()
                         }
                     }
 

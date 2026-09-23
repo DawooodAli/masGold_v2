@@ -8,6 +8,7 @@ from PySide6.QtQuickControls2 import QQuickStyle
 
 from app.session import AppSession
 from app.viewmodels.authentication_viewmodel import AuthenticationViewModel
+from app.viewmodels.gold_price_viewmodel import GoldPriceViewModel
 
 
 def create_operational_viewmodels():
@@ -41,12 +42,16 @@ class ApplicationController(QObject):
         return self.authentication.stage
 
     def __init__(self, app, *, authentication_service=None,
-                 operational_factory=create_operational_viewmodels, qml_directory=None):
+                 operational_factory=create_operational_viewmodels, qml_directory=None,
+                 gold_price_service=None):
         super().__init__(app)
         self.app = app
         self.qml_directory = qml_directory or Path(__file__).resolve().parent / "qml"
         self.session = AppSession(self)
         self.authentication = AuthenticationViewModel(self.session, authentication_service, self)
+        # Workers outlive operational QML engines during logout. Their session generation
+        # is checked before publishing any result into the next user's window.
+        self.gold_prices = GoldPriceViewModel(self.session, gold_price_service, self)
         self._operational_factory = operational_factory
         self.operational_engine = None
         self.operational_viewmodels = {}
@@ -62,6 +67,7 @@ class ApplicationController(QObject):
         self.authentication.authenticated.connect(self._open_operational)
         self.session.changed.connect(self._session_changed)
         app.aboutToQuit.connect(self.authentication.shutdown)
+        app.aboutToQuit.connect(self.gold_prices.shutdown)
         QTimer.singleShot(0, self.authentication.checkStartup)
 
     def _engine(self):
@@ -79,6 +85,7 @@ class ApplicationController(QObject):
         self.operational_engine = engine
         try:
             self.operational_viewmodels = self._operational_factory()
+            engine.rootContext().setContextProperty("goldPriceVM", self.gold_prices)
             for name, viewmodel in self.operational_viewmodels.items():
                 viewmodel.setParent(engine)
                 engine.rootContext().setContextProperty(name, viewmodel)

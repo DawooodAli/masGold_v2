@@ -1,0 +1,11 @@
+{
+  "exit_code": 0,
+  "diagnostic_count": 1063,
+  "diagnostic_types": {
+    "warning": 1063
+  },
+  "dialog_diagnostic_categories": {
+    "unqualified": 66
+  },
+  "baseline_diagnostic_count": 992
+}

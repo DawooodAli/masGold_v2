@@ -56,6 +56,14 @@ class EmptyService:
         return lambda *args, **kwargs: []
 
 
+class EmptyGoldPrices:
+    def snapshot(self, **kwargs):
+        return {'mode': 'AUTO', 'status': 'UNAVAILABLE', 'source': '',
+                'prices': [], 'warnings': [], 'refresh_seconds': 60}
+
+    refresh = snapshot
+
+
 class AuthenticationQmlTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -82,7 +90,8 @@ class AuthenticationQmlTests(unittest.TestCase):
                 return create_operational_viewmodels()
         self.factory = factory
         self.controller = ApplicationController(self.app, authentication_service=self.fake,
-                                                operational_factory=factory)
+                                                operational_factory=factory,
+                                                gold_price_service=EmptyGoldPrices())
         self.warnings = []
         self.controller.login_engine.warnings.connect(
             lambda errors: self.warnings.extend(e.toString() for e in errors))
@@ -92,19 +101,22 @@ class AuthenticationQmlTests(unittest.TestCase):
 
     def restart(self, setup_required):
         self.controller.authentication.shutdown()
+        self.controller.gold_prices.shutdown()
         self.root.hide()
         self.controller.setup_engine.rootObjects()[0].hide()
         self.controller.deleteLater()
         QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
         self.fake.setup_required = setup_required
         self.controller = ApplicationController(self.app, authentication_service=self.fake,
-                                                operational_factory=self.factory)
+                                                operational_factory=self.factory,
+                                                gold_price_service=EmptyGoldPrices())
         self.root = self.controller.login_engine.rootObjects()[0]
         self.wait_until(lambda: self.controller.state != 'CHECKING_SETUP')
 
     def tearDown(self):
         self.fake.gate.set()
         self.controller.authentication.shutdown()
+        self.controller.gold_prices.shutdown()
         QTest.qWait(30)
         self.root.hide()
         self.controller.setup_engine.rootObjects()[0].hide()

@@ -57,9 +57,9 @@ class AuthenticationService:
         """The GUI and emergency CLI share this single bootstrap transaction."""
         if not isinstance(display_name, str) or not display_name.strip() or len(display_name) > 100:
             raise ValueError("اسم العرض مطلوب وبحد أقصى ١٠٠ حرف.")
-        if not isinstance(password, str) or not 12 <= len(password) <= 1024:
-            raise ValueError("استخدم كلمة مرور من ١٢ إلى ١٠٢٤ حرفاً.")
-        if not isinstance(confirmation, str) or not 12 <= len(confirmation) <= 1024:
+        if not isinstance(password, str) or not 6 <= len(password) <= 1024:
+            raise ValueError("استخدم كلمة مرور من ٦ إلى ١٠٢٤ حرفاً.")
+        if not isinstance(confirmation, str) or not 6 <= len(confirmation) <= 1024:
             raise ValueError("تأكيد كلمة المرور غير مطابق.")
         if employee_id is not None and (type(employee_id) is not int or not 0 < employee_id <= 4294967295):
             raise ValueError("رقم الموظف غير صحيح.")
