@@ -134,7 +134,9 @@ Control {
             PickerButton {
                 objectName: "customerPickerOpenButton"
                 Layout.fillWidth: true
-                implicitHeight: picker.hasSelection ? 65 : 40
+                implicitHeight: picker.hasSelection ? 48 : 40
+                topPadding: 2
+                bottomPadding: 2
                 enabled: !picker.busy
                 onClicked: picker.open()
                 contentItem: ColumnLayout {

@@ -2927,6 +2927,8 @@ ApplicationWindow {
                 CustomerPicker {
                     objectName: "customersQuickPicker"
                     Layout.fillWidth: true
+                    Layout.fillHeight: false
+                    Layout.maximumHeight: implicitHeight
                     Layout.maximumWidth: 580
                     placeholderText: "ابحث واختر عميلاً لفتح ملفه"
                     onCustomerSelected: function(customerId) {
@@ -3022,6 +3024,7 @@ ApplicationWindow {
 
             ScrollView {
                 id: customerBodyScroll
+                implicitHeight: 0
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 clip: true
@@ -3040,7 +3043,8 @@ ApplicationWindow {
                     CustomerCard {
                         Layout.fillWidth: true
                         Layout.preferredWidth: customerBody.wide ? customerBody.width * 0.42 : customerBody.width
-                        Layout.preferredHeight: customerBody.wide ? 680 : 390
+                        Layout.alignment: Qt.AlignTop
+                        Layout.preferredHeight: Math.max(300, customerBodyScroll.availableHeight)
                         ColumnLayout {
                             anchors.fill: parent
                             anchors.margins: 12
@@ -3164,6 +3168,7 @@ ApplicationWindow {
                     CustomerCard {
                         objectName: "customerProfileCard"
                         Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignTop
                         Layout.preferredWidth: customerBody.wide ? customerBody.width * 0.58 : customerBody.width
                         Layout.preferredHeight: Math.max(680, customerProfile.implicitHeight + 24)
                         ColumnLayout {
