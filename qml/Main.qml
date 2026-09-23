@@ -15,6 +15,7 @@ ApplicationWindow {
     minimumHeight: 680
 
     title: "مجوهرات ماس"
+    onClosing: Qt.quit()
 
     // Global application font. Qt Quick Controls inherit this font,
     // including Button, ComboBox popup items, TextField, TextArea and Label.
@@ -196,6 +197,29 @@ ApplicationWindow {
 
                     Item {
                         Layout.fillWidth: true
+                    }
+
+
+                    Label {
+                        text: "\u200f" + appSession.displayName
+                        font.family: "Cairo"
+                        color: theme.textSecondary
+                        horizontalAlignment: Text.AlignRight
+                        elide: Text.ElideLeft
+                        Layout.maximumWidth: 160
+                    }
+                    Button {
+                        objectName: "logoutButton"
+                        font.family: "Cairo"
+                        text: "تسجيل الخروج"
+                        contentItem: Label {
+                            text: "\u200f" + parent.text
+                            font.family: "Cairo"
+                            color: theme.textPrimary
+                            horizontalAlignment: Text.AlignRight
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        onClicked: authenticationVM.logout()
                     }
 
 
