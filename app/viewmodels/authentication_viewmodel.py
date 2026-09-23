@@ -17,6 +17,8 @@ class AuthenticationViewModel(QObject):
         self._request = 0
         self._busy = False
         self._error = ""
+        self._stage = "CHECKING_SETUP"
+        self._employees = []
         self._session.changed.connect(self._session_changed)
 
     @Slot()
@@ -24,7 +26,38 @@ class AuthenticationViewModel(QObject):
         if not self._session.authenticated:
             self._request += 1
             self._busy, self._error = False, ""
+            if self._stage == "OPERATIONAL":
+                self._stage = "LOGIN"
             self.changed.emit()
+
+    @Property(str, notify=changed)
+    def stage(self):
+        return self._stage
+
+    @Property("QVariantList", notify=changed)
+    def employees(self):
+        return self._employees
+
+    @Slot()
+    def checkStartup(self):
+        if self._busy or self._session.authenticated or self._stage not in ("CHECKING_SETUP", "FIRST_RUN_SETUP"):
+            return
+        self._stage = "CHECKING_SETUP"
+        self._start_worker(operation="check")
+
+    @Slot(str, str, str, str)
+    def createFirstOwner(self, display_name, password, confirmation, employee_id):
+        if self._busy or self._session.authenticated or self._stage != "FIRST_RUN_SETUP":
+            return
+        try:
+            employee = int(employee_id) if employee_id else None
+        except ValueError:
+            self._error = "رقم الموظف غير صحيح."
+            self.changed.emit()
+            return
+        self._start_worker(operation="setup", payload={
+            "display_name": display_name, "password": password,
+            "confirmation": confirmation, "employee_id": employee})
 
     @Property(bool, notify=changed)
     def busy(self):
@@ -36,12 +69,16 @@ class AuthenticationViewModel(QObject):
 
     @Slot(str, str)
     def login(self, username, password):
-        if self._busy or self._session.authenticated:
+        if self._busy or self._session.authenticated or self._stage != "LOGIN":
             return
+        self._start_worker(username, password)
+
+    def _start_worker(self, username="", password="", *, operation="login", payload=None):
         self._request += 1
         self._busy, self._error = True, ""
         worker = AuthenticationWorker(self._service, username, password,
-                                      self._request, self._session.generation, self)
+                                      self._request, self._session.generation, self,
+                                      operation=operation, payload=payload)
         self._workers.add(worker)
         worker.completed.connect(self._completed)
         worker.finished.connect(self._worker_finished)
@@ -53,8 +90,16 @@ class AuthenticationViewModel(QObject):
         if request != self._request or generation != self._session.generation:
             return
         self._busy = False
+        if isinstance(result, dict) and "setup_required" in result and not error:
+            self._stage = "FIRST_RUN_SETUP" if result["setup_required"] else "LOGIN"
+            self._employees = result["employees"] if result["setup_required"] else []
+            self._error = ""
+            self.changed.emit()
+            return
         if result is not None and not error:
             if self._session._establish(result, int(generation)):
+                self._stage = "OPERATIONAL"
+                self._employees = []
                 self._error = ""
                 self.changed.emit()
                 self.authenticated.emit()

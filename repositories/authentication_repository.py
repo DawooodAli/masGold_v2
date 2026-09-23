@@ -80,6 +80,13 @@ class AuthenticationRepository(BaseRepository):
     def has_users(self):
         return self._fetch_one("SELECT id FROM users LIMIT 1") is not None
 
+    def user_count(self):
+        return int(self._fetch_one("SELECT COUNT(*) AS total FROM users")["total"])
+
+    def active_employees(self):
+        return self._fetch_all(
+            "SELECT id, employee_code, name FROM employees WHERE is_active = TRUE ORDER BY id")
+
     def bootstrap_owner_role(self):
         role = self._fetch_one(
             "SELECT id FROM roles WHERE code = 'OWNER' AND is_active = TRUE FOR UPDATE")

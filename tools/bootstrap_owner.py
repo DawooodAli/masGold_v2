@@ -8,34 +8,21 @@ if __package__ in (None, ""):
 
 from repositories.authentication_repository import AuthenticationRepository, authentication_transaction
 from services.password_service import PasswordService
+from services.authentication_service import AuthenticationService
 
 
 def bootstrap_owner(username, display_name, password, employee_id=None, *,
                     transaction_factory=authentication_transaction,
                     repository_factory=AuthenticationRepository, passwords=None):
-    if not isinstance(username, str) or not username.strip() or len(username) > 100:
-        raise ValueError("اسم المستخدم مطلوب وبحد أقصى ١٠٠ حرف.")
-    if not isinstance(display_name, str) or not display_name.strip() or len(display_name) > 100:
-        raise ValueError("اسم العرض مطلوب وبحد أقصى ١٠٠ حرف.")
-    if employee_id is not None and (type(employee_id) is not int or not 0 < employee_id <= 4294967295):
-        raise ValueError("رقم الموظف غير صحيح.")
-    if not isinstance(password, str) or not 12 <= len(password) <= 1024:
-        raise ValueError("استخدم كلمة مرور من ١٢ إلى ١٠٢٤ حرفاً.")
-    encoded = (passwords or PasswordService()).hash(password)
-    with transaction_factory() as connection:
-        repository = repository_factory(connection)
-        repository.acquire_bootstrap_lock()
-        if repository.has_users():
-            raise ValueError("يوجد مستخدم بالفعل؛ تهيئة المستخدم الأول مرفوضة.")
-        role_id = repository.bootstrap_owner_role()
-        user_id = repository.create_first_user(username, display_name, encoded, employee_id, role_id)
-        if "APP_LOGIN" not in repository.effective_permissions(user_id, lock=True):
-            raise ValueError("المستخدم الجديد لا يملك صلاحية APP_LOGIN النشطة.")
-    return user_id
+    # Compatibility entry point; the service owns all creation/transaction logic.
+    if username != "admin":
+        raise ValueError("اسم المستخدم الأول ثابت: admin")
+    service = AuthenticationService(transaction_factory, repository_factory, passwords)
+    return service.create_first_owner(display_name, password, password, employee_id).user_id
 
 
 def main():
-    username = input("اسم المستخدم: ")
+    print("اسم المستخدم: admin")
     display_name = input("اسم العرض: ")
     employee = input("رقم موظف نشط للربط (اتركه فارغاً دون ربط): ").strip()
     import warnings
@@ -46,12 +33,8 @@ def main():
             warnings.simplefilter('error', getpass.GetPassWarning)
             password = getpass.getpass("كلمة المرور: ")
             confirmation = getpass.getpass("تأكيد كلمة المرور: ")
-        passwords = PasswordService()
-        if not passwords.verify(passwords.hash(password), confirmation):
-            print("تأكيد كلمة المرور غير مطابق.")
-            return 1
-        bootstrap_owner(username, display_name, password, int(employee) if employee else None,
-                        passwords=passwords)
+        AuthenticationService().create_first_owner(
+            display_name, password, confirmation, int(employee) if employee else None)
     except getpass.GetPassWarning:
         print("شغّل الأداة من طرفية تدعم إدخال كلمة المرور دون إظهارها.")
         return 1

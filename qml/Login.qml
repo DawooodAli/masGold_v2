@@ -6,7 +6,7 @@ import QtQuick.Layouts
 ApplicationWindow {
     id: loginWindow
     objectName: "loginWindow"
-    visible: true
+    visible: authenticationVM.stage === "LOGIN"
     width: 580
     height: 470
     minimumWidth: 460

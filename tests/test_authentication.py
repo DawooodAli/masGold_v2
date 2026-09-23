@@ -13,6 +13,7 @@ from repositories.authentication_repository import AuthenticationRepository
 from services.authentication_service import (
     AuthenticationService, AuthenticationError, AuthenticationResult,
     GENERIC_ERROR, CHANGE_REQUIRED,
+    SetupAlreadyCompleted,
 )
 from services.authorization_service import AuthorizationService
 from services.password_service import PasswordService
@@ -187,7 +188,7 @@ class AuthenticationTests(unittest.TestCase):
     def test_bootstrap_refuses_existing_users(self):
         self.repo.has_users.return_value = True
         with self.assertRaises(ValueError):
-            bootstrap_owner('owner', 'Owner', self.password, transaction_factory=self.transaction,
+            bootstrap_owner('admin', 'Owner', self.password, transaction_factory=self.transaction,
                             repository_factory=lambda c: self.repo, passwords=self.passwords)
         self.repo.create_first_user.assert_not_called()
         self.assertEqual(self.rollbacks, 1)
@@ -196,7 +197,7 @@ class AuthenticationTests(unittest.TestCase):
         self.repo.has_users.return_value = False
         self.repo.bootstrap_owner_role.side_effect = ValueError('Missing APP_LOGIN')
         with self.assertRaises(ValueError):
-            bootstrap_owner('owner', 'Owner', self.password, transaction_factory=self.transaction,
+            bootstrap_owner('admin', 'Owner', self.password, transaction_factory=self.transaction,
                             repository_factory=lambda c: self.repo, passwords=self.passwords)
         self.assertEqual(self.commits, 0)
         self.assertEqual(self.rollbacks, 1)
@@ -207,7 +208,7 @@ class AuthenticationTests(unittest.TestCase):
         self.repo.create_first_user.return_value = 12
         self.repo.effective_permissions.return_value = frozenset()
         with self.assertRaises(ValueError):
-            bootstrap_owner('owner', 'Owner', self.password, transaction_factory=self.transaction,
+            bootstrap_owner('admin', 'Owner', self.password, transaction_factory=self.transaction,
                             repository_factory=lambda c: self.repo, passwords=self.passwords)
         self.assertEqual(self.commits, 0)
         self.assertEqual(self.rollbacks, 1)
@@ -216,7 +217,7 @@ class AuthenticationTests(unittest.TestCase):
         self.repo.has_users.return_value = False
         self.repo.bootstrap_owner_role.return_value = 7
         self.repo.create_first_user.return_value = 12
-        self.assertEqual(bootstrap_owner('owner', 'Owner', self.password,
+        self.assertEqual(bootstrap_owner('admin', 'Owner', self.password,
                          transaction_factory=self.transaction, repository_factory=lambda c: self.repo,
                          passwords=self.passwords), 12)
         args = self.repo.create_first_user.call_args.args
@@ -259,6 +260,88 @@ class AuthenticationTests(unittest.TestCase):
              redirect_stdout(StringIO()):
             self.assertEqual(main(), 1)
             create.assert_not_called()
+
+    def test_first_run_count_and_active_employee_options(self):
+        self.repo.user_count.return_value = 0
+        self.repo.active_employees.return_value = [dict(id=42, employee_code='EMP042', name='موظف')]
+        self.assertTrue(self.service.requires_first_run_setup())
+        status = self.service.first_run_status()
+        self.assertTrue(status['setup_required'])
+        self.assertEqual(status['employees'][0]['id'], '42')
+        self.repo.user_count.return_value = 1
+        self.assertFalse(self.service.requires_first_run_setup())
+        self.assertEqual(self.service.first_run_status(), {'setup_required': False, 'employees': []})
+
+    def setup_first_owner(self, employee_id=None):
+        self.repo.has_users.return_value = False
+        self.repo.bootstrap_owner_role.return_value = 7
+        self.repo.create_first_user.return_value = 12
+        return self.service.create_first_owner('Owner', self.password, self.password, employee_id)
+
+    def test_first_owner_fixed_admin_hash_and_session_after_commit(self):
+        result = self.setup_first_owner()
+        self.assertEqual(self.commits, 1)
+        args = self.repo.create_first_user.call_args.args
+        self.assertEqual(args[0], 'admin')
+        self.assertTrue(args[2].startswith('$argon2id$'))
+        self.assertTrue(self.passwords.verify(args[2], self.password))
+        self.assertIsNone(args[3])
+        self.assertEqual(args[4], 7)
+        session = AppSession()
+        self.assertTrue(session._establish(result, 0))
+        self.assertEqual(session.userId, '12')
+        self.assertTrue(session.hasPermission('APP_LOGIN'))
+
+    def test_first_owner_optional_explicit_employee(self):
+        result = self.setup_first_owner(42)
+        self.assertEqual(result.employee_id, 42)
+        self.assertEqual(self.repo.create_first_user.call_args.args[3], 42)
+
+    def test_first_owner_password_validation_before_any_writes(self):
+        for password, confirmation in [('', ''), ('short', 'short'), (self.password, 'different-password')]:
+            with self.subTest(length=len(password)):
+                with self.assertRaises(ValueError):
+                    self.service.create_first_owner('Owner', password, confirmation)
+        self.repo.create_first_user.assert_not_called()
+        self.assertEqual(self.commits, 0)
+
+    def test_first_owner_concurrent_winner_is_rechecked_under_lock(self):
+        self.repo.user_count.return_value = 0
+        self.assertTrue(self.service.requires_first_run_setup())
+        self.repo.has_users.return_value = True
+        with self.assertRaises(SetupAlreadyCompleted):
+            self.service.create_first_owner('Owner', self.password, self.password)
+        names = [call[0] for call in self.repo.mock_calls]
+        self.assertLess(names.index('acquire_bootstrap_lock'), names.index('has_users'))
+        self.repo.create_first_user.assert_not_called()
+        self.assertEqual(self.rollbacks, 1)
+
+    def test_first_owner_failure_after_insert_rolls_back(self):
+        self.repo.record_login.side_effect = RuntimeError('Simulated failure')
+        with self.assertRaises(RuntimeError):
+            self.setup_first_owner()
+        self.assertEqual(self.commits, 0)
+        self.assertEqual(self.rollbacks, 1)
+
+    def test_first_owner_commit_failure_returns_no_verified_result(self):
+        @contextmanager
+        def fail_commit():
+            yield object()
+            raise RuntimeError('Commit failed')
+        self.service._transaction = fail_commit
+        with self.assertRaises(RuntimeError):
+            self.setup_first_owner()
+
+    def test_first_owner_normal_admin_login_and_no_blank_password(self):
+        self.setup_first_owner()
+        username, display_name, encoded, employee_id, role = self.repo.create_first_user.call_args.args
+        self.user.update(id=12, password_hash=encoded, display_name=display_name, employee_id=employee_id)
+        self.repo.find_credentials.return_value = dict(id=12, password_hash=encoded)
+        restarted = AuthenticationService(self.transaction, lambda c: self.repo, self.passwords)
+        self.assertEqual(restarted.authenticate('admin', self.password).user_id, 12)
+        self.repo.find_credentials.assert_called_with('admin')
+        with self.assertRaises(AuthenticationError):
+            restarted.authenticate('admin', '')
 
 
 class PermissionQueryTests(unittest.TestCase):

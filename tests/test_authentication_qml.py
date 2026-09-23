@@ -14,7 +14,7 @@ from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtTest import QTest
 
 from main import ApplicationController, create_operational_viewmodels
-from services.authentication_service import AuthenticationResult, _VERIFIED, AuthenticationError, GENERIC_ERROR
+from services.authentication_service import AuthenticationResult, _VERIFIED, AuthenticationError, GENERIC_ERROR, SetupAlreadyCompleted
 
 
 class FakeAuthentication:
@@ -24,6 +24,22 @@ class FakeAuthentication:
         self.started = Event()
         self.thread = None
         self.error = False
+        self.setup_required = False
+        self.concurrent_setup = False
+        self.selected_employee = None
+
+    def first_run_status(self):
+        return {'setup_required': self.setup_required, 'employees': [
+            {'id': '42', 'label': '42 | EMP042 | موظف'}] if self.setup_required else []}
+
+    def create_first_owner(self, display_name, password, confirmation, employee_id=None):
+        if self.concurrent_setup:
+            self.setup_required = False
+            raise SetupAlreadyCompleted()
+        self.setup_required = False
+        self.selected_employee = employee_id
+        return AuthenticationResult(12, employee_id, display_name,
+                                    frozenset({'APP_LOGIN', 'SETTINGS_MANAGE'}), _VERIFIED)
 
     def authenticate(self, username, password):
         self.thread = get_ident()
@@ -64,6 +80,7 @@ class AuthenticationQmlTests(unittest.TestCase):
                  patch('app.viewmodels.barcode_viewmodel.BarcodePrintService', EmptyService), \
                  patch('app.viewmodels.billing_viewmodel.BillingService', EmptyService):
                 return create_operational_viewmodels()
+        self.factory = factory
         self.controller = ApplicationController(self.app, authentication_service=self.fake,
                                                 operational_factory=factory)
         self.warnings = []
@@ -71,12 +88,26 @@ class AuthenticationQmlTests(unittest.TestCase):
             lambda errors: self.warnings.extend(e.toString() for e in errors))
         self.root = self.controller.login_engine.rootObjects()[0]
         QTest.qWait(30)
+        self.wait_until(lambda: self.controller.state != 'CHECKING_SETUP')
+
+    def restart(self, setup_required):
+        self.controller.authentication.shutdown()
+        self.root.hide()
+        self.controller.setup_engine.rootObjects()[0].hide()
+        self.controller.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        self.fake.setup_required = setup_required
+        self.controller = ApplicationController(self.app, authentication_service=self.fake,
+                                                operational_factory=self.factory)
+        self.root = self.controller.login_engine.rootObjects()[0]
+        self.wait_until(lambda: self.controller.state != 'CHECKING_SETUP')
 
     def tearDown(self):
         self.fake.gate.set()
         self.controller.authentication.shutdown()
         QTest.qWait(30)
         self.root.hide()
+        self.controller.setup_engine.rootObjects()[0].hide()
         self.controller.deleteLater()
         QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
@@ -165,6 +196,78 @@ class AuthenticationQmlTests(unittest.TestCase):
         self.assertEqual(self.controller.authentication.errorMessage, GENERIC_ERROR)
         self.assertEqual(self.root.findChild(QObject, 'loginPassword').property('text'), '')
         self.assertEqual(self.factory_calls, 0)
+
+    def setup_form(self, employee_index=0):
+        setup = self.controller.setup_engine.rootObjects()[0]
+        setup.findChild(QObject, 'setupDisplayName').setProperty('text', 'Owner')
+        setup.findChild(QObject, 'setupPassword').setProperty('text', 'a-strong-test-password')
+        setup.findChild(QObject, 'setupConfirmation').setProperty('text', 'a-strong-test-password')
+        setup.findChild(QObject, 'setupEmployee').setProperty('currentIndex', employee_index)
+        return setup
+
+    def test_zero_users_show_setup_not_login_or_operational(self):
+        self.restart(True)
+        self.assertEqual(self.controller.state, 'FIRST_RUN_SETUP')
+        self.assertFalse(self.root.property('visible'))
+        setup = self.controller.setup_engine.rootObjects()[0]
+        self.assertTrue(setup.property('visible'))
+        self.assertEqual(setup.findChild(QObject, 'setupUsername').property('text'), 'admin')
+        self.assertEqual(setup.findChild(QObject, 'setupEmployee').property('currentValue'), '')
+        self.assertIsNone(self.controller.operational_engine)
+        self.assertEqual(self.factory_calls, 0)
+        self.controller.authentication.login('admin', '')
+        self.assertFalse(self.controller.authentication.busy)
+        self.assertFalse(self.controller.session.authenticated)
+
+    def test_setup_completes_session_then_logout_and_restart_show_login(self):
+        self.restart(True)
+        setup = self.setup_form()
+        QMetaObject.invokeMethod(setup.findChild(QObject, 'createFirstOwnerButton'), 'clicked')
+        self.assertEqual(setup.findChild(QObject, 'setupPassword').property('text'), '')
+        self.assertEqual(setup.findChild(QObject, 'setupConfirmation').property('text'), '')
+        self.wait_until(lambda: self.controller.state == 'OPERATIONAL')
+        self.assertTrue(self.controller.session.authenticated)
+        self.assertEqual(self.controller.session.userId, '12')
+        self.assertIsNone(self.fake.selected_employee)
+        self.assertFalse(setup.property('visible'))
+        self.controller.authentication.logout()
+        self.assertEqual(self.controller.state, 'LOGIN')
+        self.controller.authentication.checkStartup()
+        self.assertEqual(self.controller.state, 'LOGIN')
+        self.restart(False)
+        self.assertEqual(self.controller.state, 'LOGIN')
+        self.assertFalse(self.controller.setup_engine.rootObjects()[0].property('visible'))
+
+    def test_setup_explicit_employee_and_concurrent_creator(self):
+        self.restart(True)
+        setup = self.setup_form(1)
+        self.fake.concurrent_setup = True
+        QMetaObject.invokeMethod(setup.findChild(QObject, 'createFirstOwnerButton'), 'clicked')
+        self.wait_until(lambda: self.controller.state == 'LOGIN')
+        self.assertFalse(self.controller.session.authenticated)
+        self.assertEqual(self.factory_calls, 0)
+        self.assertFalse(setup.property('visible'))
+
+    def test_setup_selected_employee_is_passed_explicitly(self):
+        self.restart(True)
+        setup = self.setup_form(1)
+        QMetaObject.invokeMethod(setup.findChild(QObject, 'createFirstOwnerButton'), 'clicked')
+        self.wait_until(lambda: self.controller.state == 'OPERATIONAL')
+        self.assertEqual(self.fake.selected_employee, 42)
+
+    def test_startup_failure_never_opens_setup_or_main(self):
+        original = self.fake.first_run_status
+        self.fake.first_run_status = lambda: (_ for _ in ()).throw(RuntimeError('offline'))
+        # Recreate without restart's success wait: failure stays CHECKING_SETUP.
+        self.controller.authentication._stage = 'CHECKING_SETUP'
+        self.controller.authentication.checkStartup()
+        self.wait_until(lambda: not self.controller.authentication.busy)
+        self.assertEqual(self.controller.state, 'CHECKING_SETUP')
+        self.assertTrue(self.controller.authentication.errorMessage)
+        self.assertEqual(self.factory_calls, 0)
+        self.fake.first_run_status = original
+        self.controller.authentication.checkStartup()
+        self.wait_until(lambda: self.controller.state == 'LOGIN')
 
 
 if __name__ == '__main__':

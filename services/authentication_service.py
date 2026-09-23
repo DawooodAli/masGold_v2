@@ -15,6 +15,10 @@ class AuthenticationError(Exception):
     pass
 
 
+class SetupAlreadyCompleted(ValueError):
+    pass
+
+
 @dataclass(frozen=True)
 class AuthenticationResult:
     user_id: int
@@ -34,6 +38,56 @@ class AuthenticationService:
         self._lock = Lock()
         self._failures = 0
         self._retry_at = 0
+
+    def requires_first_run_setup(self):
+        with self._transaction() as connection:
+            return self._repository(connection).user_count() == 0
+
+    def first_run_status(self):
+        with self._transaction() as connection:
+            repository = self._repository(connection)
+            required = repository.user_count() == 0
+            employees = repository.active_employees() if required else []
+            return {"setup_required": required, "employees": [
+                {"id": str(row["id"]), "label": " | ".join(
+                    [str(row["id"]), row["employee_code"] or "—", row["name"]])}
+                for row in employees]}
+
+    def create_first_owner(self, display_name, password, confirmation, employee_id=None):
+        """The GUI and emergency CLI share this single bootstrap transaction."""
+        if not isinstance(display_name, str) or not display_name.strip() or len(display_name) > 100:
+            raise ValueError("اسم العرض مطلوب وبحد أقصى ١٠٠ حرف.")
+        if not isinstance(password, str) or not 12 <= len(password) <= 1024:
+            raise ValueError("استخدم كلمة مرور من ١٢ إلى ١٠٢٤ حرفاً.")
+        if not isinstance(confirmation, str) or not 12 <= len(confirmation) <= 1024:
+            raise ValueError("تأكيد كلمة المرور غير مطابق.")
+        if employee_id is not None and (type(employee_id) is not int or not 0 < employee_id <= 4294967295):
+            raise ValueError("رقم الموظف غير صحيح.")
+        if not self._lock.acquire(blocking=False):
+            raise ValueError("جارٍ التحقق من طلب آخر. حاول مرة أخرى.")
+        try:
+            encoded = self._passwords.hash(password)
+            if not self._passwords.verify(encoded, confirmation):
+                raise ValueError("تأكيد كلمة المرور غير مطابق.")
+            with self._transaction() as connection:
+                repository = self._repository(connection)
+                repository.acquire_bootstrap_lock()
+                if repository.has_users():
+                    raise SetupAlreadyCompleted("تم إعداد حساب بالفعل. سجّل الدخول بكلمة المرور.")
+                role_id = repository.bootstrap_owner_role()
+                user_id = repository.create_first_user(
+                    "admin", display_name, encoded, employee_id, role_id)
+                permissions = repository.effective_permissions(user_id, lock=True)
+                if "APP_LOGIN" not in permissions:
+                    raise ValueError("المستخدم الجديد لا يملك صلاحية APP_LOGIN النشطة.")
+                repository.record_login(user_id)
+                result = AuthenticationResult(int(user_id), employee_id, display_name,
+                                              permissions, _VERIFIED)
+            # A verified result is published only after the transaction commits.
+            return result
+        finally:
+            password = confirmation = None
+            self._lock.release()
 
     def authenticate(self, username, password):
         # One attempt in flight, plus bounded process-local failed-attempt cooldown.

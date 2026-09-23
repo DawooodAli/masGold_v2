@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QUrl, Qt, Slot
+from PySide6.QtCore import QObject, QUrl, Qt, Slot, Property, Signal, QTimer
 from PySide6.QtGui import QGuiApplication, QFont
 from PySide6.QtQml import QQmlApplicationEngine, qmlRegisterType, qmlTypeId
 from PySide6.QtQuickControls2 import QQuickStyle
@@ -34,6 +34,12 @@ def create_operational_viewmodels():
 
 
 class ApplicationController(QObject):
+    stateChanged = Signal()
+
+    @Property(str, notify=stateChanged)
+    def state(self):
+        return self.authentication.stage
+
     def __init__(self, app, *, authentication_service=None,
                  operational_factory=create_operational_viewmodels, qml_directory=None):
         super().__init__(app)
@@ -48,9 +54,15 @@ class ApplicationController(QObject):
         self.login_engine.load(QUrl.fromLocalFile(str(self.qml_directory / "Login.qml")))
         if not self.login_engine.rootObjects():
             raise RuntimeError("Could not load Login.qml")
+        self.setup_engine = self._engine()
+        self.setup_engine.load(QUrl.fromLocalFile(str(self.qml_directory / "FirstRunOwnerSetup.qml")))
+        if not self.setup_engine.rootObjects():
+            raise RuntimeError("Could not load FirstRunOwnerSetup.qml")
+        self.authentication.changed.connect(self.stateChanged)
         self.authentication.authenticated.connect(self._open_operational)
         self.session.changed.connect(self._session_changed)
         app.aboutToQuit.connect(self.authentication.shutdown)
+        QTimer.singleShot(0, self.authentication.checkStartup)
 
     def _engine(self):
         engine = QQmlApplicationEngine(self)
@@ -73,7 +85,6 @@ class ApplicationController(QObject):
             engine.load(QUrl.fromLocalFile(str(self.qml_directory / "Main.qml")))
             if not engine.rootObjects():
                 raise RuntimeError("Could not load Main.qml")
-            self.login_engine.rootObjects()[0].hide()
         except Exception:
             self.authentication.logout()
             self.authentication.show_application_error()
@@ -82,8 +93,6 @@ class ApplicationController(QObject):
     def _session_changed(self):
         if self.session.authenticated:
             return
-        for root in self.login_engine.rootObjects():
-            root.show()
         if self.operational_engine is not None:
             for root in self.operational_engine.rootObjects():
                 root.hide()
