@@ -2,3 +2,4 @@ mysql-connector-python
 python-dotenv
 PySide6
 argon2-cffi>=25.1,<26
+keyring>=25.7,<26

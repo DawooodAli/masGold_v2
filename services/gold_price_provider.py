@@ -9,12 +9,15 @@ This fixed semantic mapping never changes based on the numerical spread.
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
-from http.client import HTTPException
+from http.client import HTTPException, HTTPSConnection
 import json
+import logging
+import os
 import time
 from typing import Iterable, Protocol
+from uuid import uuid4
 from urllib.error import HTTPError, URLError
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
 
 from config.gold_price_config import GoldTimoConfig
 
@@ -23,14 +26,21 @@ EXPECTED_KARATS = frozenset({18, 21, 24})
 PRICE_QUANTUM = Decimal("0.0001")
 MAX_PRICE = Decimal("9999999999.9999")
 MAX_RESPONSE_BYTES = 65536
+GOLDTIMO_MAX_SKEW_SECONDS = 5
 
 
 class ProviderError(RuntimeError):
     """Transport/configuration failure safe to show without credentials."""
+    def __init__(self, message, *, code="NETWORK", http_status=None):
+        super().__init__(message)
+        self.code, self.http_status = code, http_status
 
 
 class QuoteValidationError(ValueError):
     """Untrusted provider data must not be activated."""
+    def __init__(self, message, *, code="QUOTE_VALIDATION"):
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -43,6 +53,7 @@ class NormalizedQuote:
     unit: str
     provider_timestamp: datetime
     fetched_at: datetime
+    refresh_attempt_id: str | None = None
 
 
 class GoldPriceProvider(Protocol):
@@ -81,8 +92,8 @@ def validate_quotes(
 ) -> tuple[NormalizedQuote, ...]:
     """Validate an entire coherent publication, then return its canonical form.
 
-    All three karats must share a provider timestamp. Separate HTTP calls that
-    straddle a provider update are rejected, retaining the last good active set.
+    GoldTimo's separate requests may differ by at most five seconds within one
+    refresh attempt. Other providers still require exact timestamp equality.
     Age is based on provider_timestamp, never a newly assigned fetched_at.
     """
     now = _utc(now, "Validation time")
@@ -128,7 +139,13 @@ def validate_quotes(
             unit="GRAM", provider_timestamp=provider_timestamp.replace(microsecond=0),
             fetched_at=fetched_at.replace(microsecond=0),
         ))
-    if len(provider_timestamps) != 1:
+    if expected_source == "GOLDTIMO":
+        attempts = {quote.refresh_attempt_id for quote in quotes}
+        if len(attempts) != 1 or not next(iter(attempts)):
+            raise QuoteValidationError("GoldTimo quotes must belong to the same refresh attempt.")
+        if (max(provider_timestamps) - min(provider_timestamps)).total_seconds() > GOLDTIMO_MAX_SKEW_SECONDS:
+            raise QuoteValidationError("GoldTimo timestamp skew exceeds five seconds.")
+    elif len(provider_timestamps) != 1:
         raise QuoteValidationError("Provider karats do not share one coherent timestamp.")
     if len({quote.fetched_at for quote in normalized}) != 1:
         raise QuoteValidationError("Provider karats must share their set's fetch completion time.")
@@ -142,16 +159,28 @@ class _RejectRedirects(HTTPRedirectHandler):
 
 
 def _reject_constant(value):
-    raise QuoteValidationError("Provider JSON contains a non-finite number.")
+    raise QuoteValidationError("Provider JSON contains a non-finite number.", code="INVALID_JSON")
 
 
 def _unique_object(pairs):
     result = {}
     for key, value in pairs:
         if key in result:
-            raise QuoteValidationError("Provider JSON contains a duplicate field.")
+            raise QuoteValidationError("Provider JSON contains a duplicate field.", code="INVALID_JSON")
         result[key] = value
     return result
+
+
+class _GoldTimoHTTPSConnection(HTTPSConnection):
+    def request(self, method, url, body=None, headers=None, *, encode_chunked=False):
+        headers = {("x-api-key" if name.lower() == "x-api-key" else name): value
+                   for name, value in (headers or {}).items()}
+        return super().request(method, url, body, headers, encode_chunked=encode_chunked)
+
+
+class _GoldTimoHTTPSHandler(HTTPSHandler):
+    def https_open(self, request):
+        return self.do_open(_GoldTimoHTTPSConnection, request, context=self._context)
 
 
 class GoldTimoProvider:
@@ -159,33 +188,56 @@ class GoldTimoProvider:
 
     def __init__(self, config: GoldTimoConfig, *, opener=None, clock=None, monotonic=None):
         self.config = config
-        self._open = opener or build_opener(_RejectRedirects()).open
+        self._open = opener or build_opener(_RejectRedirects(), _GoldTimoHTTPSHandler()).open
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._monotonic = monotonic or time.monotonic
+        self.request_diagnostics = []
 
-    def fetch(self) -> tuple[NormalizedQuote, ...]:
-        if not self.config.api_key:
-            raise ProviderError("GoldTimo API key is not configured.")
-        deadline = self._monotonic() + self.config.timeout_seconds
+    def _request_config(self, entered_key):
+        if entered_key is None:
+            return self.config
+        # Debug path: direct transient input, with no keyring/environment read.
+        return GoldTimoConfig(base_url=self.config.base_url, api_key=entered_key,
+                              timeout_seconds=self.config.timeout_seconds)
+
+    def fetch(self, *, entered_key=None) -> tuple[NormalizedQuote, ...]:
+        config = self._request_config(entered_key)
+        quotes = self._fetch_quotes(config, sorted(EXPECTED_KARATS))
+        fetched_at = self._clock()
+        quotes = [replace(quote, fetched_at=fetched_at) for quote in quotes]
+        return validate_quotes(quotes, self.source_code, fetched_at)
+
+    def probe_21(self, *, entered_key=None):
+        """Fetch-only diagnostic preflight, never a complete publishable set."""
+        return self._fetch_quotes(self._request_config(entered_key), (21,))[0]
+
+    def _fetch_quotes(self, config, karats):
+        self.request_diagnostics = []
+        attempt_id = str(uuid4())
+        if not config.api_key:
+            raise ProviderError("GoldTimo API key is not configured.", code="KEY_MISSING")
+        deadline = self._monotonic() + config.timeout_seconds
         quotes = []
-        for karat in sorted(EXPECTED_KARATS):
+        for karat in karats:
             remaining = deadline - self._monotonic()
             if remaining <= 0:
-                raise ProviderError("GoldTimo request timed out.")
+                raise ProviderError("GoldTimo request timed out.", code="TIMEOUT")
             request = Request(
-                f"{self.config.base_url.rstrip('/')}/price/XAU/EGP/{karat}",
-                headers={"x-api-key": self.config.api_key, "Accept": "application/json"},
+                f"{config.base_url.rstrip('/')}/price/XAU/EGP/{karat}",
+                headers={"x-api-key": config.api_key.strip(), "Accept": "application/json",
+                         "User-Agent": "masGold/2 GoldTimoProvider"},
                 method="GET",
             )
             try:
                 with self._open(request, timeout=remaining) as response:
+                    self._log_request(karat, response.status, config)
                     if response.status != 200:
-                        raise ProviderError(f"GoldTimo returned HTTP {response.status}.")
+                        raise self._http_error(response.status)
                     chunks = []
                     size = 0
                     while True:
                         if self._monotonic() >= deadline:
-                            raise ProviderError("GoldTimo request timed out.")
+                            raise ProviderError("GoldTimo request timed out.", code="TIMEOUT")
                         chunk = response.read1(min(8192, MAX_RESPONSE_BYTES + 1 - size))
                         if not chunk:
                             break
@@ -194,35 +246,66 @@ class GoldTimoProvider:
                             raise ProviderError("GoldTimo response exceeds the size limit.")
                         chunks.append(chunk)
                 if self._monotonic() >= deadline:
-                    raise ProviderError("GoldTimo request timed out.")
+                    raise ProviderError("GoldTimo request timed out.", code="TIMEOUT")
                 payload = json.loads(
                     b"".join(chunks), parse_float=Decimal, parse_int=Decimal,
                     parse_constant=_reject_constant, object_pairs_hook=_unique_object,
                 )
             except HTTPError as exc:
+                self._log_request(karat, exc.code, config)
                 # HTTP error bodies/URLs may echo credentials; expose only status.
-                raise ProviderError(f"GoldTimo returned HTTP {exc.code}.") from None
-            except (TimeoutError, URLError, OSError, HTTPException):
+                raise self._http_error(exc.code) from None
+            except TimeoutError:
+                self._log_request(karat, None, config)
+                raise ProviderError("GoldTimo request timed out.", code="TIMEOUT") from None
+            except URLError as exc:
+                self._log_request(karat, None, config)
+                code = "TIMEOUT" if isinstance(exc.reason, TimeoutError) else "NETWORK"
+                raise ProviderError("GoldTimo request failed or timed out.", code=code) from None
+            except (OSError, HTTPException):
+                self._log_request(karat, None, config)
                 raise ProviderError("GoldTimo request failed or timed out.") from None
-            except (json.JSONDecodeError, UnicodeError, RecursionError):
-                raise QuoteValidationError("GoldTimo returned invalid JSON.") from None
-            quotes.append(self._normalize(payload, karat, self._clock()))
-        fetched_at = self._clock()
-        quotes = [replace(quote, fetched_at=fetched_at) for quote in quotes]
-        return validate_quotes(quotes, self.source_code, fetched_at)
+            except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
+                raise QuoteValidationError("GoldTimo returned invalid JSON.", code="INVALID_JSON") from None
+            except QuoteValidationError:
+                raise
+            except (ValueError, UnicodeEncodeError):
+                raise ProviderError("GoldTimo API key has an invalid header format.", code="CONFIGURATION") from None
+            quotes.append(replace(self._normalize(payload, karat, self._clock()),
+                                  refresh_attempt_id=attempt_id))
+        return quotes
+
+    def _log_request(self, karat, status, config):
+        # Temporary credential diagnostics expose only these four safe fields.
+        source = config.credential_trace.get("credential_source")
+        metadata = {"credential_source": source if source in ("ENTERED", "KEYRING", "ENV", "NONE") else "NONE",
+                    "configured": bool(config.api_key), "character_count": len(config.api_key),
+                    "http_status": status if type(status) is int and 100 <= status <= 599 else None}
+        self.request_diagnostics.append(metadata)
+        level = logging.WARNING if os.getenv("MASGOLD_GOLDTIMO_TRACE") == "1" else logging.INFO
+        logging.getLogger(__name__).log(level, " ".join(f"{key}={value}" for key, value in metadata.items()))
+
+    @staticmethod
+    def _http_error(status):
+        code = "HTTP_AUTH" if status in (401, 403) else "RATE_LIMIT" if status == 429 else "HTTP_ERROR"
+        return ProviderError(f"GoldTimo returned HTTP {status}.", code=code, http_status=status)
 
     def _normalize(self, payload, karat, fetched_at):
         if not isinstance(payload, dict):
-            raise QuoteValidationError("GoldTimo response must be a JSON object.")
+            raise QuoteValidationError("GoldTimo response must be a JSON object.", code="SCHEMA_UNIT")
         required = {"symbol", "currency", "unit", "karat", "gramBuy", "gramSell", "updatedAt"}
         if not required.issubset(payload):
-            raise QuoteValidationError("GoldTimo response is missing required fields.")
-        if payload["symbol"] != "XAU" or payload["karat"] != Decimal(karat):
-            raise QuoteValidationError("GoldTimo returned an unexpected metal or karat.")
+            raise QuoteValidationError("GoldTimo response is missing required fields.", code="SCHEMA_UNIT")
+        if payload["symbol"] != "XAU":
+            raise QuoteValidationError("GoldTimo returned an unexpected metal.", code="SCHEMA_UNIT")
+        if payload["karat"] != Decimal(karat):
+            raise QuoteValidationError("GoldTimo returned an unexpected karat.", code="KARAT_MISMATCH")
+        if payload["currency"] != "EGP":
+            raise QuoteValidationError("GoldTimo currency must be EGP.", code="CURRENCY_MISMATCH")
         # The documented ounce price and gram fields coexist. Do not convert
         # gramBuy/gramSell by the ounce unit, and reject an unknown contract.
         if payload["unit"] != "oz":
-            raise QuoteValidationError("GoldTimo ounce unit does not match its documented contract.")
+            raise QuoteValidationError("GoldTimo ounce unit does not match its documented contract.", code="SCHEMA_UNIT")
         if not isinstance(payload["updatedAt"], str):
             raise QuoteValidationError("GoldTimo timestamp must be an ISO 8601 string.")
         try:

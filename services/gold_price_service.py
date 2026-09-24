@@ -16,7 +16,7 @@ from repositories.gold_price_repository import GoldPriceRepository, gold_price_t
 from services.authorization_service import AuthorizationService
 from services.gold_price_provider import (
     NormalizedQuote, ProviderError, QuoteValidationError, configured_providers,
-    validate_quotes,
+    validate_quotes, GOLDTIMO_MAX_SKEW_SECONDS,
 )
 
 
@@ -81,6 +81,7 @@ class GoldPriceService:
         self._transaction = transaction_factory
         self._repository = repository_factory
         self._configuration_error = ""
+        self._dynamic_providers = providers is None
         try:
             self._providers = configured_providers() if providers is None else dict(providers)
         except ValueError:
@@ -119,11 +120,15 @@ class GoldPriceService:
     def _coherent(rows):
         if len(rows) != 3 or {int(r["karat_value"]) for r in rows} != set(KARATS):
             return False
-        for field in ("quote_group_id", "source_code", "provider_timestamp", "fetched_at",
+        for field in ("quote_group_id", "source_code", "fetched_at",
                       "activation_type", "activated_at"):
             if len({r[field] for r in rows}) != 1:
                 return False
         try:
+            timestamps = [as_utc(r["provider_timestamp"]) for r in rows]
+            skew = (max(timestamps) - min(timestamps)).total_seconds()
+            if skew > (GOLDTIMO_MAX_SKEW_SECONDS if rows[0]["source_code"] == "GOLDTIMO" else 0):
+                return False
             return all(
                 isinstance(r["shop_buy_price_per_gram"], Decimal)
                 and isinstance(r["shop_sell_price_per_gram"], Decimal)
@@ -164,7 +169,9 @@ class GoldPriceService:
                 result.update(status="ERROR", warnings=result["warnings"] + [error])
             return result
         first = rows[0]
-        age = max(0, int((now - as_utc(first["provider_timestamp"])).total_seconds()))
+        timestamps = [as_utc(r["provider_timestamp"]) for r in rows]
+        earliest, latest = min(timestamps), max(timestamps)
+        age = max(0, int((now - earliest).total_seconds()))
         stale = age > int(settings["stale_after_seconds"])
         warnings = list(self._last_warnings) if settings["mode"] == "AUTO" else []
         if self._configuration_error:
@@ -178,19 +185,19 @@ class GoldPriceService:
         if error:
             warnings.append(error)
         status = "ERROR" if error else ("STALE_ALLOWED" if stale else "FRESH")
-        if as_utc(first["provider_timestamp"]) > now and (
-                as_utc(first["provider_timestamp"]) - now).total_seconds() > 120:
+        if (latest - now).total_seconds() > 120:
             status = "ERROR"
             warnings.append("توقيت الأسعار في المستقبل؛ راجع الساعة والمصدر.")
         result.update(
             status=status, source=first["source_code"],
-            provider_timestamp=stamp(first["provider_timestamp"]),
+            provider_timestamp=stamp(latest), timestamp_skew_seconds=(latest - earliest).total_seconds(),
             fetched_at=stamp(first["fetched_at"]), activated_at=stamp(first["activated_at"]),
             age_seconds=age, warnings=list(dict.fromkeys(warnings)),
             price_token=self._token(settings, rows),
             prices=[dict(karat=str(r["karat_value"]), karat_id=str(r["karat_id"]),
                          shop_buy_price_per_gram=format(r["shop_buy_price_per_gram"], ".4f"),
-                         shop_sell_price_per_gram=format(r["shop_sell_price_per_gram"], ".4f"))
+                         shop_sell_price_per_gram=format(r["shop_sell_price_per_gram"], ".4f"),
+                         provider_timestamp=stamp(r["provider_timestamp"]))
                     for r in sorted(rows, key=lambda r: int(r["karat_value"]))],
         )
         return result
@@ -300,10 +307,16 @@ class GoldPriceService:
                 "LOCAL_MARKET", "GLOBAL_REFERENCE"):
             raise ProviderError("مصدر الأسعار التلقائي غير مهيأ أو غير مفعل.")
         provider = self._providers.get(source["code"])
+        if self._dynamic_providers and source["code"] == "GOLDTIMO":
+            from config.gold_price_config import GoldTimoConfig
+            from services.gold_price_provider import GoldTimoProvider
+            with self._transaction() as connection:
+                options = self._repository(connection).get_provider_options()
+            provider = GoldTimoProvider(GoldTimoConfig.from_env(options=options))
         if provider is None:
             raise ProviderError("موفر الأسعار غير مهيأ في إعدادات الاتصال.")
         quotes = validate_quotes(provider.fetch(), source["code"], as_utc(self._clock()))
-        age = (as_utc(self._clock()) - quotes[0].provider_timestamp).total_seconds()
+        age = (as_utc(self._clock()) - min(q.provider_timestamp for q in quotes)).total_seconds()
         if age > int(settings["stale_after_seconds"]):
             raise QuoteValidationError("المصدر أعاد أسعاراً قديمة.")
         return quotes
@@ -380,6 +393,20 @@ class GoldPriceService:
     def _check_history(cls, quotes, latest):
         if not latest:
             return
+        if quotes[0].source_code == "GOLDTIMO":
+            previous = {int(row["karat_value"]): row for row in latest}
+            for quote in quotes:
+                row = previous.get(quote.karat)
+                if row is None:
+                    raise QuoteValidationError("Previous GoldTimo publication is incomplete.")
+                stamp = as_utc(row["provider_timestamp"])
+                if quote.provider_timestamp < stamp:
+                    raise QuoteValidationError("GoldTimo returned an older karat timestamp.")
+                if quote.provider_timestamp == stamp and any(
+                        getattr(quote, field) != row[field] for field in
+                        ("shop_buy_price_per_gram", "shop_sell_price_per_gram")):
+                    raise QuoteValidationError("GoldTimo changed a karat price without a newer timestamp.")
+            return
         newest = max(as_utc(r["provider_timestamp"]) for r in latest)
         if quotes[0].provider_timestamp < newest:
             raise QuoteValidationError("المصدر أعاد توقيتاً أقدم من آخر سعر محفوظ.")
@@ -409,7 +436,7 @@ class GoldPriceService:
             karats = repo.get_karats()
             self._check_karats(karats)
             now = as_utc(self._clock())
-            if (now - quotes[0].provider_timestamp).total_seconds() > int(settings["stale_after_seconds"]):
+            if (now - min(q.provider_timestamp for q in quotes)).total_seconds() > int(settings["stale_after_seconds"]):
                 raise PriceUnavailable("أصبحت أسعار المصدر قديمة قبل اعتمادها.")
             active = repo.get_active(lock=True)
             if self._coherent(active):

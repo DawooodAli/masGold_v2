@@ -7,12 +7,28 @@ perspective. The fixed mapping is `gramSell -> SHOP_BUY`,
 The API's `unit: oz` describes the separate ounce `price`; the documented
 `gramBuy` and `gramSell` fields already contain prices per gram.
 
-Set these in the environment or local `.env` (never commit API keys):
+Normal operation uses **Settings → إعدادات مصدر أسعار الذهب**. Enter the key,
+optionally test it before saving, then save. The key is stored in the current
+Windows user's Credential Manager using keyring's Windows backend, service
+`masGold`, account `goldtimo_api_key`. It is never returned to QML. The source
+URL and timeout use the existing GOLDTIMO source's `notes.connection` JSON;
+refresh/staleness and primary selection use existing engine settings. Saving
+preserves the current mode, fallback/reference sources and active prices.
+
+Credential precedence is OS credential, then environment fallback, then not
+configured. Deleting the local credential does not remove an independently set
+developer environment key. Normal employees need no PowerShell setup.
+OS-store failures are reported safely; the app never substitutes a plaintext
+credential file. DB configuration and the OS store cannot share a transaction:
+if key storage fails after configuration commits, the UI explicitly reports that
+only connection settings were saved and asks the employee to retry the key.
+
+Optional developer environment or local `.env` fallback (never commit keys):
 
 ```dotenv
 MASGOLD_GOLDTIMO_BASE_URL=https://goldtimo.com/api/v1
 MASGOLD_GOLDTIMO_API_KEY=your-private-key
-MASGOLD_GOLDTIMO_TIMEOUT_SECONDS=5
+MASGOLD_GOLDTIMO_TIMEOUT_SECONDS=10
 ```
 
 The key is sent in the `x-api-key` header. Only HTTPS base URLs are accepted;
@@ -29,6 +45,14 @@ create or enable a database source, change source selection, or switch mode.
 The existing database settings determine refresh, primary/fallback/reference
 selection, staleness, and deviation. Source rows must use the code `GOLDTIMO`
 for this adapter; credentials are never stored in those rows.
+
+`GoldPriceService._fetch()` resolves the saved connection options and credential
+again before each production fetch, so saving/deleting takes effect without a
+restart. The UI only accepts GoldTimo's documented HTTPS base URL, preventing
+credential forwarding to an arbitrary hostname. Connection tests use the
+entered unsaved key when present and run in a background thread. They perform
+no quote/activation/audit writes and never change engine mode. All settings
+operations, including tests, freshly authorize SETTINGS_MANAGE from AppSession.
 
 The provider fetches 18K, 21K and 24K using three documented endpoints. All three
 must be valid and have the same `updatedAt` timestamp. A request that straddles

@@ -81,8 +81,20 @@ class GoldPriceViewModel(QObject):
         if age is None:
             return "—"
         seconds = max(0, int(age))
-        return (f"{seconds} ثانية" if seconds < 60 else
-                f"{seconds // 60} دقيقة" if seconds < 3600 else f"{seconds // 3600} ساعة")
+        if seconds < 60:
+            return self._arabic_count(seconds, "ثانية", "ثانيتين", "ثوانٍ")
+        if seconds < 3600:
+            return self._arabic_count(seconds // 60, "دقيقة", "دقيقتين", "دقائق")
+        return self._arabic_count(seconds // 3600, "ساعة", "ساعتين", "ساعات")
+
+    @staticmethod
+    def _arabic_count(count, singular, dual, plural):
+        # Arabic counted nouns: 1 singular, 2 dual, 3-10 plural, 11+ singular.
+        if count == 1:
+            return singular
+        if count == 2:
+            return dual
+        return f"{count} {plural if 3 <= count % 100 <= 10 else singular}"
 
     @Property("QVariantList", notify=changed)
     def prices(self):
@@ -118,6 +130,29 @@ class GoldPriceViewModel(QObject):
             return "عيار 21 | السعر غير متاح"
         return (f"عيار 21 | شراء {self._compact_price(row['shop_buy_price_per_gram'])} | "
                 f"بيع {self._compact_price(row['shop_sell_price_per_gram'])}")
+
+    def _headline_value(self, field):
+        row = next((price for price in self.prices if str(price["karat"]) == "21"), None)
+        return self._compact_price(row[field]) if row else "—"
+
+    @Property(str, notify=changed)
+    def headlineBuy(self):
+        return self._headline_value("shop_buy_price_per_gram")
+
+    @Property(str, notify=changed)
+    def headlineSell(self):
+        return self._headline_value("shop_sell_price_per_gram")
+
+    @Property(str, notify=changed)
+    def compactStatus(self):
+        source = "GoldTimo" if self._data.get("source") == "GOLDTIMO" else self.source
+        prefix = self.modeText if self.mode == "MANUAL" else self.modeText + " • " + source
+        if self.status == "STALE_ALLOWED":
+            return prefix + " • السعر قديم"
+        if self.status != "FRESH":
+            return prefix + " • " + self.statusText
+        age = self._data.get("age_seconds")
+        return prefix + " • " + ("محدث الآن" if age is not None and int(age) < 10 else "منذ " + self.ageText)
 
     @staticmethod
     def _compact_price(value):

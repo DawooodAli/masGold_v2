@@ -130,6 +130,42 @@ class Provider:
 
 
 class GoldPriceServiceTests(unittest.TestCase):
+    def use_gold_timo(self, offsets):
+        source = self.store.sources.pop("PRIMARY")
+        source["code"] = "GOLDTIMO"
+        self.store.sources["GOLDTIMO"] = source
+        quotes = tuple(replace(q, source_code="GOLDTIMO", refresh_attempt_id="attempt-one",
+            provider_timestamp=NOW - timedelta(seconds=offsets[q.karat]), fetched_at=NOW)
+            for q in self.primary.fetch())
+        self.providers["GOLDTIMO"] = SimpleNamespace(fetch=lambda: quotes)
+        self.service = self.new_service()
+        return quotes
+
+    def test_gold_timo_skew_survives_publication_snapshot_and_repeat_refresh(self):
+        quotes = self.use_gold_timo({18: 1, 21: 0, 24: 0})
+        result = self.service.refresh()
+        self.assertEqual(result["source"], "GOLDTIMO")
+        self.assertEqual(result["timestamp_skew_seconds"], 1)
+        self.assertEqual(result["provider_timestamp"], NOW.isoformat())
+        self.assertEqual(result["prices"][0]["provider_timestamp"], quotes[0].provider_timestamp.isoformat())
+        self.assertEqual(self.service.refresh()["price_token"], result["price_token"])
+        self.assertEqual(self.store.publications, 1)
+        self.store.active[1]["quote_group_id"] = "different-attempt"
+        self.assertFalse(self.service.snapshot()["prices"])
+
+    def test_gold_timo_history_checks_each_karat_and_freshness_checks_oldest(self):
+        quotes = self.use_gold_timo({18: 0, 21: 1, 24: 0})
+        self.service.refresh()
+        self.now = NOW + timedelta(seconds=300)
+        self.assertEqual(self.service.snapshot()["status"], "STALE_ALLOWED")
+        with self.assertRaises(ValueError):
+            self.service._fetch(self.store.sources["GOLDTIMO"], self.store.settings)
+        self.now = NOW
+        changed = tuple(replace(q, provider_timestamp=q.provider_timestamp + timedelta(seconds=1)) if q.karat == 21 else q for q in quotes)
+        self.service._check_history(changed, self.store.active)
+        backwards = (replace(quotes[0], provider_timestamp=NOW - timedelta(seconds=2)), *quotes[1:])
+        with self.assertRaises(ValueError): self.service._check_history(backwards, self.store.active)
+
     def setUp(self):
         self.store = Store()
         self.session = AppSession()

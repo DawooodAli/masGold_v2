@@ -26,6 +26,10 @@ QtObject {
     readonly property color blue: "#5AA7E8"
     readonly property color amber: "#E4A853"
     readonly property color red: "#E06C75"
+    readonly property color priceBuy: "#60C9AF"
+    readonly property color priceSell: goldBright
+    readonly property color priceWarning: "#E89A68"
+    readonly property color priceError: red
 
     readonly property color redBackground: "#2D1A1D"
 

@@ -126,20 +126,22 @@ ApplicationWindow {
         rowSpacing: 5
         layoutDirection: Qt.RightToLeft
         GoldPriceLabel { Layout.preferredWidth: 72; value: "العيار"; color: theme.gold }
-        GoldPriceLabel { Layout.fillWidth: true; value: "شراء المحل"; color: theme.gold }
-        GoldPriceLabel { Layout.fillWidth: true; value: "بيع المحل"; color: theme.gold }
+        GoldPriceLabel { Layout.fillWidth: true; value: "شراء المحل"; color: theme.priceBuy }
+        GoldPriceLabel { Layout.fillWidth: true; value: "بيع المحل"; color: theme.priceSell }
         Repeater {
             model: priceGrid.priceRows.length * 3
             delegate: GoldPriceLabel {
                 required property int index
                 readonly property int column: index % 3
                 readonly property var row: priceGrid.priceRows[Math.floor(index / 3)]
+                objectName: priceGrid.objectName + "-" + column + "-" + row.karat
                 Layout.fillWidth: column !== 0
                 Layout.preferredWidth: column === 0 ? 72 : 145
                 value: column === 0 ? "عيار " + row.karat
                        : "\u2066" + (column === 1 ? row.shop_buy_price_per_gram : row.shop_sell_price_per_gram) + "\u2069"
                 wrapMode: Text.NoWrap
                 font.bold: column === 0
+                color: column === 1 ? theme.priceBuy : column === 2 ? theme.priceSell : theme.textSecondary
             }
         }
     }
@@ -204,7 +206,7 @@ ApplicationWindow {
                             spacing: 16
                             GoldPriceLabel {
                                 value: "الحالة: " + goldPriceVM.statusText
-                                color: goldPriceVM.status === "FRESH" ? theme.green : theme.gold
+                                color: goldPriceVM.status === "ERROR" ? theme.priceError : goldPriceVM.status === "STALE_ALLOWED" ? theme.priceWarning : theme.textSecondary
                             }
                             GoldPriceLabel { value: "الوضع: " + goldPriceVM.modeText }
                             GoldPriceLabel { value: "المصدر: " + goldPriceVM.source }
@@ -273,7 +275,7 @@ ApplicationWindow {
                         layoutDirection: Qt.RightToLeft
                         columnSpacing: 12
                         rowSpacing: 6
-                        GoldPriceLabel { Layout.preferredWidth: 158; value: "شراء المحل — عيار 21" }
+                        GoldPriceLabel { Layout.preferredWidth: 158; value: "شراء المحل — عيار 21"; color: theme.priceBuy }
                         GoldPriceInput {
                             id: goldBuy21
                             objectName: "goldBuy21"
@@ -283,7 +285,7 @@ ApplicationWindow {
                             maximumLength: 32
                             onTextChanged: goldPriceVM.invalidatePreview()
                         }
-                        GoldPriceLabel { Layout.preferredWidth: 158; value: "بيع المحل — عيار 21" }
+                        GoldPriceLabel { Layout.preferredWidth: 158; value: "بيع المحل — عيار 21"; color: theme.priceSell }
                         GoldPriceInput {
                             id: goldSell21
                             objectName: "goldSell21"
@@ -344,7 +346,7 @@ ApplicationWindow {
                                 color: theme.gold
                                 font.pixelSize: 11
                             }
-                            GoldPriceGrid { Layout.fillWidth: true; priceRows: goldPriceVM.previewPrices }
+                            GoldPriceGrid { objectName: "goldPreviewPrices"; Layout.fillWidth: true; priceRows: goldPriceVM.previewPrices }
                         }
                     }
                 }
@@ -654,8 +656,9 @@ ApplicationWindow {
 
                     Rectangle {
                         objectName: "goldPriceArea"
-                        Layout.preferredWidth: 315
-                        Layout.preferredHeight: 52
+                        Layout.preferredWidth: 340
+                        Layout.minimumWidth: 300
+                        Layout.preferredHeight: 54
 
                         radius: theme.radiusSmall
 
@@ -669,21 +672,31 @@ ApplicationWindow {
                             anchors.fill: parent
                             anchors.margins: 6
                             spacing: 0
-                            GoldPriceLabel {
+                            RowLayout {
                                 Layout.fillWidth: true
                                 objectName: "goldPriceHeadline"
-                                value: goldPriceVM.headline
-                                color: theme.gold
-                                font.bold: true
-                                font.pixelSize: 12
-                                elide: Text.ElideLeft
-                                wrapMode: Text.NoWrap
+                                property string text: goldPriceVM.headline
+                                layoutDirection: Qt.RightToLeft
+                                spacing: 10
+                                GoldPriceLabel { value: "عيار 21"; color: theme.gold; font.bold: true; font.pixelSize: 11; wrapMode: Text.NoWrap }
+                                GoldPriceLabel {
+                                    objectName: "goldTopBuy"
+                                    value: "شراء " + goldPriceVM.headlineBuy; color: theme.priceBuy
+                                    font.bold: true; font.pixelSize: 12; wrapMode: Text.NoWrap
+                                }
+                                GoldPriceLabel {
+                                    objectName: "goldTopSell"
+                                    value: "بيع " + goldPriceVM.headlineSell; color: theme.priceSell
+                                    font.bold: true; font.pixelSize: 12; wrapMode: Text.NoWrap
+                                }
+                                Item { Layout.fillWidth: true }
                             }
                             GoldPriceLabel {
+                                objectName: "goldTopStatus"
                                 Layout.fillWidth: true
-                                value: goldPriceVM.source + " | " + goldPriceVM.modeText
-                                       + " | " + goldPriceVM.statusText
-                                color: goldPriceVM.status === "FRESH" ? theme.green : theme.gold
+                                value: goldPriceVM.compactStatus
+                                color: goldPriceVM.status === "ERROR" ? theme.priceError
+                                       : goldPriceVM.status === "STALE_ALLOWED" ? theme.priceWarning : theme.textMuted
                                 font.pixelSize: 10
                                 elide: Text.ElideLeft
                                 wrapMode: Text.NoWrap
@@ -4373,183 +4386,240 @@ ApplicationWindow {
     // SETTINGS PAGE
     // ========================================================
 
-    component SettingsPage: Item {
-
-        property string pageTitle: ""
-
-
+    component SettingsSectionCard: Rectangle {
+        id: sectionCard
+        property string sectionTitle: ""
+        property color accentColor: theme.gold
+        property alias content: sectionBody.data
+        implicitHeight: sectionLayout.implicitHeight + 28
+        color: theme.bgSecondary
+        radius: theme.radiusSmall
+        border.color: theme.border
+        border.width: 1
         Rectangle {
-            anchors.fill: parent
-            color: theme.bgPrimary
+            anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
+            height: 3; radius: 2; color: sectionCard.accentColor
         }
-
-
         ColumnLayout {
-            anchors.fill: parent
-            anchors.margins: 22
-            spacing: 14
-
-
-            Label {
-                text: "⚙️ البيانات الأساسية"
-
-                color: theme.gold
-
-                font.family: "Cairo"
-                font.pixelSize: 19
-                font.bold: true
+            id: sectionLayout
+            anchors.fill: parent; anchors.margins: 14; spacing: 10
+            GoldPriceLabel {
+                Layout.fillWidth: true; visible: sectionCard.sectionTitle.length > 0
+                value: sectionCard.sectionTitle; color: sectionCard.accentColor
+                font.pixelSize: 15; font.bold: true
             }
+            ColumnLayout { id: sectionBody; Layout.fillWidth: true; spacing: 10 }
+        }
+    }
 
-
-            Label {
-                text: "إدارة الفئات والمصانع والأصناف"
-
-                color: theme.textMuted
-
-                font.family: "Cairo"
-                font.pixelSize: 12
+    component GoldProviderSettings: SettingsSectionCard {
+        id: providerPanel
+        objectName: "goldProviderSettings"
+        property var vm: typeof goldSettingsVM !== "undefined" ? goldSettingsVM : null
+        sectionTitle: "إعدادات مصدر أسعار الذهب"
+        onVisibleChanged: {
+            providerKey.clear()
+            if (visible && vm && vm.canManage) vm.load()
+        }
+        Component.onCompleted: { if (visible && vm && vm.canManage) vm.load() }
+        Connections {
+            target: providerPanel.vm
+            function onClearSecret() { providerKey.clear() }
+            function onLoaded() {
+                providerUrl.text = providerPanel.vm.data.base_url || "https://goldtimo.com/api/v1"
+                providerTimeout.text = providerPanel.vm.data.timeout || "10"
+                providerRefresh.text = providerPanel.vm.data.refresh || "60"
+                providerStale.text = providerPanel.vm.data.stale || "300"
             }
-
-
+        }
+        content: [
             RowLayout {
-                Layout.fillWidth: true
-                spacing: 10
-
-
-                SettingsCard {
-                    title: "الفئات"
-
-                    value:
-                        masterDataVM.categoryCount.toString()
-
-                    subtitle:
-                        masterDataVM.disabledCategoryCount > 0
-                        ? masterDataVM.disabledCategoryCount
-                          + " فئة معطلة"
-                        : masterDataVM.categoryCodes
-
-                    accentColor: theme.gold
-                    clickable: true
-
-                    onClicked: {
-                        masterDataVM.refresh()
-                        root.currentPage = 9
-                    }
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 12
+                GoldPriceLabel { value: "حالة المفتاح"; color: theme.textMuted }
+                GoldPriceLabel {
+                    objectName: "providerKeyStatus"; Layout.fillWidth: true
+                    value: !providerPanel.vm || !providerPanel.vm.canManage ? "يتطلب صلاحية الإدارة" :
+                        providerPanel.vm.data.stored ? "مفتاح API محفوظ" :
+                        providerPanel.vm.data.configured ? "مُعد من بيئة التطوير" : "لم يُحفظ مفتاح API"
+                    color: providerPanel.vm && providerPanel.vm.data.stored ? theme.green : theme.textSecondary
                 }
-
-                SettingsCard {
-                    title: "المصانع"
-
-                    value:
-                        masterDataVM.factoryCount.toString()
-
-                    subtitle:
-                        masterDataVM.disabledFactoryCount > 0
-                        ? masterDataVM.disabledFactoryCount
-                          + " مصنع معطل"
-                        : "إدارة المصانع"
-
-                    accentColor: theme.blue
-                    clickable: true
-
-                    onClicked: {
-                        masterDataVM.refresh()
-                        root.currentPage = 7
-                    }
+            },
+            GridLayout {
+                id: providerFields
+                objectName: "providerFields"
+                columns: providerPanel.width >= 760 ? 4 : 2
+                layoutDirection: Qt.RightToLeft
+                Layout.fillWidth: true; Layout.maximumWidth: Number.POSITIVE_INFINITY
+                Layout.alignment: Qt.AlignRight; columnSpacing: 12; rowSpacing: 8
+                enabled: providerPanel.vm && providerPanel.vm.canManage && !providerPanel.vm.busy
+                GoldPriceLabel { Layout.preferredWidth: 112; value: "المصدر التلقائي" }
+                ComboBox {
+                    objectName: "providerSource"; Layout.fillWidth: true; Layout.maximumWidth: 300
+                    Layout.preferredHeight: 34; model: ["GoldTimo"]; font.family: "Cairo"
+                    contentItem: GoldPriceLabel { value: "GoldTimo"; rightPadding: 28 }
+                    background: Rectangle { color: theme.bgTertiary; radius: theme.radiusSmall; border.color: theme.border }
                 }
-
-
-                SettingsCard {
-                    title: "الأصناف"
-
-                    value:
-                        masterDataVM.itemTypeCount.toString()
-
-                    subtitle:
-                        masterDataVM.disabledItemTypeCount > 0
-                        ? masterDataVM.disabledItemTypeCount
-                          + " صنف معطل"
-                        : "إدارة أنواع الأصناف"
-
-                    accentColor: theme.green
-                    clickable: true
-
-                    onClicked: {
-                        masterDataVM.refresh()
-                        root.currentPage = 8
-                    }
+                GoldPriceLabel { Layout.preferredWidth: 112; value: "رابط الخدمة" }
+                GoldPriceInput {
+                    id: providerUrl; objectName: "providerUrl"; Layout.fillWidth: true
+                    Layout.maximumWidth: 300; Layout.preferredHeight: 34
+                    font.pixelSize: 11; inputMethodHints: Qt.ImhUrlCharactersOnly
+                    text: "https://goldtimo.com/api/v1"
                 }
+                GoldPriceLabel { Layout.preferredWidth: 112; value: "مهلة الاتصال / ث" }
+                GoldPriceInput { id: providerTimeout; objectName: "providerTimeout"; Layout.fillWidth: true; Layout.maximumWidth: 300; Layout.preferredHeight: 34; text: "10" }
+                GoldPriceLabel { Layout.preferredWidth: 112; value: "فترة التحديث / ث" }
+                GoldPriceInput { id: providerRefresh; objectName: "providerRefresh"; Layout.fillWidth: true; Layout.maximumWidth: 300; Layout.preferredHeight: 34; text: "60" }
+                GoldPriceLabel { Layout.preferredWidth: 112; value: "حد قِدم السعر / ث" }
+                GoldPriceInput { id: providerStale; objectName: "providerStale"; Layout.fillWidth: true; Layout.maximumWidth: 300; Layout.preferredHeight: 34; text: "300" }
+                GoldPriceLabel { Layout.preferredWidth: 112; value: "مفتاح API" }
+                GoldPriceInput {
+                    id: providerKey; objectName: "providerApiKey"; Layout.fillWidth: true
+                    Layout.maximumWidth: 300; Layout.preferredHeight: 34
+                    echoMode: TextInput.Password
+                    inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
+                    placeholderText: text.length ? "" : "أدخل مفتاحاً جديداً لتغييره"
+                }
+            },
+            GoldPriceLabel {
+                Layout.fillWidth: true; font.pixelSize: 11; color: theme.textMuted
+                value: "الحفظ يحدد GoldTimo كمصدر أساسي ويحافظ على الوضع الحالي. اختبار الاتصال لا يعتمد أي أسعار."
+            },
+            Flow {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                enabled: providerPanel.vm && providerPanel.vm.canManage && !providerPanel.vm.busy
+                GoldPriceButton {
+                    objectName: "testProviderConnection"; text: "اختبار الاتصال"
+                    onClicked: providerPanel.vm.test(providerUrl.text, providerTimeout.text, providerKey.text)
+                }
+                GoldPriceButton {
+                    objectName: "saveProviderSettings"; text: "حفظ الإعدادات"; primaryAction: true
+                    onClicked: providerPanel.vm.save(providerUrl.text, providerTimeout.text, providerRefresh.text, providerStale.text, providerKey.text)
+                }
+                GoldPriceButton { objectName: "deleteProviderKey"; text: "حذف مفتاح API"; onClicked: providerPanel.vm.delete() }
+            },
+            GoldPriceLabel {
+                Layout.fillWidth: true; visible: value.length > 0
+                value: providerPanel.vm && providerPanel.vm.busy ? "جارٍ تنفيذ العملية…" : ""
+                color: theme.textMuted
+            },
+            GoldPriceLabel {
+                objectName: "providerFeedback"; Layout.fillWidth: true
+                visible: value.length > 0 && !(providerPanel.vm && providerPanel.vm.result.source)
+                value: providerPanel.vm ? providerPanel.vm.message : ""
+                color: providerPanel.vm && providerPanel.vm.isError ? theme.priceError : theme.green
+            },
+            SettingsSectionCard {
+                id: testResultCard
+                objectName: "providerTestResult"; Layout.fillWidth: true
+                readonly property var testResult: providerPanel.vm ? providerPanel.vm.result : ({})
+                visible: !!testResult.source
+                sectionTitle: testResult.title_text || ""
+                accentColor: testResult.passed === false ? theme.priceError : theme.green
+                color: theme.bgTertiary
+                content: [
+                    GoldPriceLabel {
+                        objectName: "providerTestError"; Layout.fillWidth: true
+                        visible: value.length > 0; color: theme.priceError
+                        value: testResultCard.testResult.passed === false ? (testResultCard.testResult.error || "") : ""
+                    },
+                    GoldPriceLabel { Layout.fillWidth: true; value: "GoldTimo"; color: theme.textSecondary },
+                    GoldPriceGrid {
+                        objectName: "providerTestPrices"; Layout.fillWidth: true
+                        Layout.maximumWidth: 460; Layout.alignment: Qt.AlignRight
+                        priceRows: testResultCard.testResult.display_prices || []
+                    },
+                    GoldPriceLabel {
+                        objectName: "providerTestTimestamp"; Layout.fillWidth: true; font.pixelSize: 11; color: theme.textMuted
+                        value: "آخر تحديث: " + (testResultCard.testResult.provider_time_text || "—")
+                    },
+                    GoldPriceLabel {
+                        objectName: "providerTestSkew"; Layout.fillWidth: true; font.pixelSize: 11
+                        color: testResultCard.testResult.passed === false ? theme.priceWarning : theme.textMuted
+                        value: "فرق التوقيت بين الأسعار: " + (testResultCard.testResult.skew_text || "—") + " ثانية"
+                    },
+                    GoldPriceLabel {
+                        objectName: "providerTestCredential"; Layout.fillWidth: true; font.pixelSize: 11; color: theme.textMuted
+                        value: "مصدر المفتاح: " + (testResultCard.testResult.credential_source_text || "—")
+                    }
+                ]
             }
+        ]
+    }
 
-
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.preferredHeight: 64
-
-                Layout.topMargin: 8
-
-                color: theme.bgSecondary
-
-                radius: theme.radiusSmall
-
-                border.color: theme.border
-                border.width: 1
-
-
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: 14
-                    anchors.rightMargin: 14
-                    spacing: 12
-
-
-                    Rectangle {
-                        width: 9
-                        height: 9
-
-                        radius: 5
-
-                        color:
-                            masterDataVM.errorMessage.length > 0
-                            ? theme.red
-                            : theme.green
+    component SettingsPage: Item {
+        property string pageTitle: ""
+        Rectangle { anchors.fill: parent; color: theme.bgPrimary }
+        // The Test Connection result card is the last item on this page:
+        // once the layout settles, scroll to the end so the whole card shows.
+        Connections {
+            target: typeof goldSettingsVM !== "undefined" ? goldSettingsVM : null
+            function onTestCompleted() { settingsResultScroll.restart() }
+        }
+        Timer {
+            id: settingsResultScroll
+            interval: 50
+            onTriggered: {
+                var flick = settingsScroll.contentItem
+                flick.contentY = Math.max(0, flick.contentHeight - flick.height)
+            }
+        }
+        ScrollView {
+            id: settingsScroll; objectName: "settingsScroll"
+            anchors.fill: parent; anchors.margins: 16; clip: true
+            contentWidth: availableWidth
+            contentHeight: settingsBody.implicitHeight
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+            ColumnLayout {
+                id: settingsBody
+                width: Math.min(settingsScroll.availableWidth, 980)
+                x: settingsScroll.availableWidth - width
+                spacing: 12
+                GoldPriceLabel {
+                    Layout.fillWidth: true; value: "الإعدادات والبيانات الأساسية"
+                    color: theme.gold; font.pixelSize: 19; font.bold: true
+                }
+                GoldPriceLabel { Layout.fillWidth: true; value: "إدارة بيانات المحل ومصدر أسعار الذهب"; color: theme.textMuted }
+                GridLayout {
+                    Layout.fillWidth: true; columns: width < 580 ? 1 : 3
+                    layoutDirection: Qt.RightToLeft; columnSpacing: 10; rowSpacing: 10
+                    SettingsCard {
+                        objectName: "settingsCategories"
+                        title: "الفئات"; value: masterDataVM.categoryCount.toString()
+                        subtitle: masterDataVM.disabledCategoryCount > 0 ? masterDataVM.disabledCategoryCount + " فئة معطلة" : masterDataVM.categoryCodes
+                        accentColor: theme.gold; clickable: true; Layout.preferredHeight: 92
+                        onClicked: { masterDataVM.refresh(); root.currentPage = 9 }
                     }
-
-
-                    Label {
-                        text:
-                            masterDataVM.errorMessage.length > 0
-                            ? masterDataVM.errorMessage
-                            : "البيانات متصلة بقاعدة البيانات"
-
-                        color:
-                            masterDataVM.errorMessage.length > 0
-                            ? theme.red
-                            : theme.textMuted
-
-                        font.family: "Cairo"
-                        font.pixelSize: 12
-
-                        elide: Text.ElideRight
-
-                        Layout.fillWidth: true
+                    SettingsCard {
+                        objectName: "settingsFactories"
+                        title: "المصانع"; value: masterDataVM.factoryCount.toString()
+                        subtitle: masterDataVM.disabledFactoryCount > 0 ? masterDataVM.disabledFactoryCount + " مصنع معطل" : "إدارة المصانع"
+                        accentColor: theme.blue; clickable: true; Layout.preferredHeight: 92
+                        onClicked: { masterDataVM.refresh(); root.currentPage = 7 }
                     }
-
-
-                    Button {
-                        text: "↻  تحديث"
-
-                        font.family: "Cairo"
-
-                        onClicked:
-                            masterDataVM.refresh()
+                    SettingsCard {
+                        objectName: "settingsItemTypes"
+                        title: "الأصناف"; value: masterDataVM.itemTypeCount.toString()
+                        subtitle: masterDataVM.disabledItemTypeCount > 0 ? masterDataVM.disabledItemTypeCount + " صنف معطل" : "إدارة أنواع الأصناف"
+                        accentColor: theme.green; clickable: true; Layout.preferredHeight: 92
+                        onClicked: { masterDataVM.refresh(); root.currentPage = 8 }
                     }
                 }
-            }
-
-
-            Item {
-                Layout.fillHeight: true
+                SettingsSectionCard {
+                    Layout.fillWidth: true
+                    accentColor: masterDataVM.errorMessage.length > 0 ? theme.priceError : theme.green
+                    content: RowLayout {
+                        Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 12
+                        Rectangle { implicitWidth: 8; implicitHeight: 8; radius: 4; color: masterDataVM.errorMessage.length > 0 ? theme.priceError : theme.green }
+                        GoldPriceLabel {
+                            Layout.fillWidth: true
+                            value: masterDataVM.errorMessage.length > 0 ? masterDataVM.errorMessage : "البيانات متصلة بقاعدة البيانات"
+                            color: masterDataVM.errorMessage.length > 0 ? theme.priceError : theme.textMuted
+                        }
+                        GoldPriceButton { text: "تحديث"; onClicked: masterDataVM.refresh() }
+                    }
+                }
+                GoldProviderSettings { Layout.fillWidth: true }
             }
         }
     }
@@ -6988,44 +7058,17 @@ ApplicationWindow {
             spacing: 3
 
 
-            Label {
-                text: settingsCardRoot.title
-
-                color: theme.textMuted
-
-                font.family: "Cairo"
-                font.pixelSize: 12
-
-                Layout.alignment: Qt.AlignHCenter
-            }
-
-
-            Label {
-                text: settingsCardRoot.value
-
-                color:
-                    settingsCardRoot.accentColor
-
-                font.family: "Cairo"
-                font.pixelSize: 23
-                font.bold: true
-
-                Layout.alignment: Qt.AlignHCenter
-            }
-
-
-            Label {
-                text: settingsCardRoot.subtitle
-
-                color: theme.textSecondary
-
-                font.family: "Cairo"
-                font.pixelSize: 11
-
-                horizontalAlignment: Text.AlignHCenter
-
+            RowLayout {
                 Layout.fillWidth: true
-                Layout.alignment: Qt.AlignHCenter
+                layoutDirection: Qt.RightToLeft
+                GoldPriceLabel { Layout.fillWidth: true; value: settingsCardRoot.title; color: theme.textMuted }
+                GoldPriceLabel { value: settingsCardRoot.value; color: settingsCardRoot.accentColor; font.pixelSize: 22; font.bold: true }
+            }
+            GoldPriceLabel {
+                objectName: settingsCardRoot.objectName + "Subtitle"
+                value: settingsCardRoot.subtitle; color: theme.textSecondary
+                font.pixelSize: 11; Layout.fillWidth: true
+                wrapMode: Text.NoWrap; elide: Text.ElideLeft
             }
         }
 

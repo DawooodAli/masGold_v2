@@ -67,6 +67,37 @@ def _json(value):
 
 
 class GoldPriceRepository(BaseRepository):
+    def get_provider_options(self):
+        row = self._fetch_one("SELECT notes FROM gold_price_sources WHERE code = 'GOLDTIMO'")
+        try:
+            data = json.loads(row["notes"] or "{}") if row else {}
+            return data.get("connection", {}) if isinstance(data, dict) else {}
+        except (ValueError, TypeError):
+            return {}
+
+    def save_provider_settings(self, options, refresh, stale, actor, occurred_at):
+        before = self.get_settings(lock=True)
+        if before is None:
+            raise ValueError("إعدادات محرك الذهب غير موجودة.")
+        previous_options = self.get_provider_options()
+        sources = self.get_sources()
+        source = sources.get("GOLDTIMO")
+        notes = _json({"connection": options})
+        if source:
+            source_id = source["id"]
+            self._execute("UPDATE gold_price_sources SET notes=%s, is_enabled=1 WHERE id=%s", (notes, source_id))
+        else:
+            source_id = self._execute(
+                "INSERT INTO gold_price_sources (code,name,source_type,priority,is_enabled,notes) "
+                "VALUES ('GOLDTIMO','GoldTimo Egypt','LOCAL_MARKET',10,1,%s)", (notes,))
+        self._execute("UPDATE gold_price_engine_settings SET primary_source_id=%s, "
+                      "refresh_seconds=%s, stale_after_seconds=%s, updated_by_user_id=%s, "
+                      "updated_at=%s WHERE id=1", (source_id, refresh, stale, actor.user_id, _utc(occurred_at)))
+        self._audit("GOLD_PRICE_CONFIG_CHANGED", actor=actor, reference="GOLDTIMO",
+                    description="تحديث إعدادات مصدر الذهب.", occurred_at=occurred_at,
+                    before={"settings": before, "connection": previous_options},
+                    after={"settings": self.get_settings(), "connection": options}, metadata={})
+
     def _execute(self, sql, params=()):
         cursor = self.connection.cursor()
         try:
@@ -158,6 +189,8 @@ class GoldPriceRepository(BaseRepository):
         activated = _utc(activated_at)
         group_id = str(uuid4())
         publication_rows = []
+        timestamps = [q.provider_timestamp for q in quotes]
+        skew = (max(timestamps) - min(timestamps)).total_seconds()
         for quote in sorted(quotes, key=lambda item: item.karat):
             method = ("DERIVED" if derivation and quote.karat != 21 else "MANUAL"
                       ) if activation_type == "MANUAL" else "DIRECT"
@@ -165,6 +198,8 @@ class GoldPriceRepository(BaseRepository):
                 "currency": quote.currency, "unit": quote.unit,
                 "employee_id": actor.employee_id if actor else None,
                 "derivation": derivation,
+                "refresh_attempt_id": getattr(quote, "refresh_attempt_id", None),
+                "timestamp_skew_seconds": skew,
             })
             if len(notes) > 500:
                 raise ValueError("Gold price provenance exceeds the quote notes capacity.")
@@ -211,6 +246,7 @@ class GoldPriceRepository(BaseRepository):
                 "user_id": actor.user_id if actor else None,
                 "employee_id": actor.employee_id if actor else None,
                 "reason": reason, "derivation": derivation, "quotes": publication_rows,
+                "timestamp_skew_seconds": skew,
             })
         return group_id
 

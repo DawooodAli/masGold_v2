@@ -121,6 +121,62 @@ class NormalizedQuoteTests(unittest.TestCase):
 
 
 class GoldTimoProviderTests(unittest.TestCase):
+    def test_key_normalization_only_strips_outer_whitespace(self):
+        config = GoldTimoConfig(api_key="  private-test-key\n")
+        self.assertEqual(config.api_key, "private-test-key")
+        self.assertTrue(config.key_had_whitespace)
+        for value in ("MiXeD-Key_123+=/", "'secret'", '"secret"', "Bearer secret", "ApiKey secret", "b'secret'"):
+            with self.subTest(value=value):
+                self.assertEqual(GoldTimoConfig(api_key="  " + value + "  ").api_key, value)
+        for value in (b"secret", "secret\r\ninjected"):
+            with self.subTest(kind=type(value).__name__), self.assertRaises(ValueError):
+                GoldTimoConfig(api_key=value)
+
+    def test_direct_fetch_bypasses_config_resolution_and_does_not_replace_saved_config(self):
+        with patch("services.secret_store.SecretStore.get_secret", side_effect=AssertionError("No keyring")), \
+             patch.object(GoldTimoConfig, "from_env", side_effect=AssertionError("No environment")):
+            quotes = self.provider.fetch(entered_key="  MiXeD-Key_123+=/  ")
+        self.assertEqual(len(quotes), 3)
+        self.assertEqual(self.provider.config.api_key, "private-test-key")
+        for request, _ in self.requests:
+            self.assertEqual(request.get_header("X-api-key"), "MiXeD-Key_123+=/")
+            self.assertFalse(request.has_header("Authorization"))
+        self.assertTrue(all(row["credential_source"] == "ENTERED"
+                            for row in self.provider.request_diagnostics))
+
+    def test_21_probe_hits_only_exact_endpoint(self):
+        quote = self.provider.probe_21(entered_key="transient")
+        self.assertEqual(quote.karat, 21)
+        self.assertEqual([r.full_url for r, _ in self.requests],
+                         ["https://goldtimo.com/api/v1/price/XAU/EGP/21"])
+
+    def test_trace_allowlist_and_no_credential_contents(self):
+        allowed = {"credential_source", "configured", "character_count", "http_status"}
+        with self.assertLogs("services.gold_price_provider", level="INFO") as logs:
+            self.provider.fetch(entered_key="  MiXeD-Private_123+=/  ")
+        self.assertNotIn("MiXeD-Private_123+=/", str(logs.output))
+        for row in self.provider.request_diagnostics:
+            self.assertEqual(set(row), allowed)
+            self.assertTrue(row["configured"])
+            self.assertEqual(row["http_status"], 200)
+
+    def test_wire_header_is_exact_lowercase_raw_key(self):
+        from services.gold_price_provider import _GoldTimoHTTPSConnection
+        from http.client import HTTPSConnection
+        connection = _GoldTimoHTTPSConnection("goldtimo.com")
+        with patch.object(HTTPSConnection, "request") as request:
+            connection.request("GET", "/api/v1/price/XAU/EGP/21", headers={"X-Api-Key":"raw-secret"})
+        self.assertEqual(request.call_args.args[3], {"x-api-key":"raw-secret"})
+
+    def test_exact_documented_ounce_example_uses_gram_fields_without_conversion(self):
+        self.payload_transform = lambda p: {**p, "price": 154820.55, "gram": 4355.74,
+                                           "gramBuy": 4364.45, "gramSell": 4347.03}
+        quotes = self.provider.fetch()
+        self.assertEqual(quotes[1].karat, 21)
+        self.assertEqual(quotes[1].shop_buy_price_per_gram, Decimal("4347.0300"))
+        self.assertEqual(quotes[1].shop_sell_price_per_gram, Decimal("4364.4500"))
+        self.assertEqual(quotes[1].unit, "GRAM")
+
     def setUp(self):
         self.requests = []
         self.payload_transform = lambda payload: payload
@@ -174,8 +230,28 @@ class GoldTimoProviderTests(unittest.TestCase):
         self.payload_transform = lambda payload: {
             **payload, "updatedAt": (NOW - timedelta(seconds=payload["karat"])).isoformat(),
         }
-        with self.assertRaisesRegex(QuoteValidationError, "coherent timestamp"):
+        with self.assertRaisesRegex(QuoteValidationError, "skew"):
             self.provider.fetch()
+
+    def test_gold_timo_skew_boundaries_preserve_individual_timestamps(self):
+        for seconds in (0, 1, 5, 5.000001, 6):
+            self.payload_transform = lambda payload: {**payload, "updatedAt": (
+                NOW - timedelta(seconds=seconds if payload["karat"] == 18 else 0)).isoformat()}
+            with self.subTest(seconds=seconds):
+                if seconds <= 5:
+                    quotes = self.provider.fetch()
+                    self.assertEqual((max(q.provider_timestamp for q in quotes) -
+                                      min(q.provider_timestamp for q in quotes)).total_seconds(), seconds)
+                    self.assertEqual(len({q.refresh_attempt_id for q in quotes}), 1)
+                else:
+                    with self.assertRaises(QuoteValidationError): self.provider.fetch()
+
+    def test_different_attempts_rejected_even_with_identical_timestamps(self):
+        first = self.provider.fetch()
+        second = self.provider.fetch()
+        self.assertNotEqual(first[0].refresh_attempt_id, second[0].refresh_attempt_id)
+        with self.assertRaisesRegex(QuoteValidationError, "refresh attempt"):
+            validate_quotes((first[0], second[1], second[2]), "GOLDTIMO", NOW)
 
     def test_invalid_json_or_duplicate_fields(self):
         for content in (b"not json", b"[]", b'{"karat": 18, "karat": 21}', b"\xff"):

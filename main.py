@@ -9,6 +9,7 @@ from PySide6.QtQuickControls2 import QQuickStyle
 from app.session import AppSession
 from app.viewmodels.authentication_viewmodel import AuthenticationViewModel
 from app.viewmodels.gold_price_viewmodel import GoldPriceViewModel
+from app.viewmodels.gold_price_settings_viewmodel import GoldPriceSettingsViewModel
 
 
 def create_operational_viewmodels():
@@ -52,6 +53,7 @@ class ApplicationController(QObject):
         # Workers outlive operational QML engines during logout. Their session generation
         # is checked before publishing any result into the next user's window.
         self.gold_prices = GoldPriceViewModel(self.session, gold_price_service, self)
+        self.gold_settings = GoldPriceSettingsViewModel(self.session, self)
         self._operational_factory = operational_factory
         self.operational_engine = None
         self.operational_viewmodels = {}
@@ -68,6 +70,7 @@ class ApplicationController(QObject):
         self.session.changed.connect(self._session_changed)
         app.aboutToQuit.connect(self.authentication.shutdown)
         app.aboutToQuit.connect(self.gold_prices.shutdown)
+        app.aboutToQuit.connect(self.gold_settings.shutdown)
         QTimer.singleShot(0, self.authentication.checkStartup)
 
     def _engine(self):
@@ -86,6 +89,7 @@ class ApplicationController(QObject):
         try:
             self.operational_viewmodels = self._operational_factory()
             engine.rootContext().setContextProperty("goldPriceVM", self.gold_prices)
+            engine.rootContext().setContextProperty("goldSettingsVM", self.gold_settings)
             for name, viewmodel in self.operational_viewmodels.items():
                 viewmodel.setParent(engine)
                 engine.rootContext().setContextProperty(name, viewmodel)
