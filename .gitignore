@@ -16,3 +16,6 @@ logs/
 
 .DS_Store
 Thumbs.db
+
+# Generated review screenshots/JSON (UI checks, diagnostics)
+reports/
