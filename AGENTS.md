@@ -44,13 +44,16 @@ Do not invent missing schema.
 
 CURRENT PRIORITY:
 
-CUSTOMERS
+CANONICAL BILLING V2 (on the `invoices` family)
 
-Billing is temporarily frozen.
+Customers, Gold Price Engine V1 and the controlled Gold Price AUTO
+activation are complete.
+
+The old `billing_*` family stays frozen as read-only history.
 
 Cash comes later.
 
-Do not extend Billing or Cash unless explicitly requested.
+Do not extend Cash/Bank unless explicitly requested.
 
 ---
 
