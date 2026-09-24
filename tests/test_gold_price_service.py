@@ -483,6 +483,32 @@ class GoldPriceServiceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.service.get_billing_price_set(ids)
 
+    def test_billing_set_uses_newest_provider_time_and_keeps_each_karat_time(self):
+        # 18K row is first and oldest; the set-level time must not come from it.
+        quotes = self.use_gold_timo({18: 3, 21: 0, 24: 1})
+        self.service.refresh()
+        self.store.active.sort(key=lambda r: r["karat_value"])
+        self.assertEqual(self.store.active[0]["karat_value"], 18)
+        price = self.service.get_billing_price_set([1, 2, 3])
+        self.assertEqual(price.provenance["provider_timestamp"], NOW)
+        self.assertEqual(price.provenance["timestamp_skew_seconds"], 3)
+        by_karat = {q.karat: q.provider_timestamp for q in quotes}
+        for karat_price in price.prices.values():
+            self.assertEqual(karat_price.provider_timestamp, by_karat[karat_price.karat])
+            self.assertEqual(karat_price.provider_timestamp.tzinfo, timezone.utc)
+        self.assertEqual(price.prices[2].provider_timestamp, NOW - timedelta(seconds=3))
+        self.assertEqual(price.price_token, self.service.snapshot()["price_token"])
+
+    def test_billing_future_check_uses_newest_karat_not_first_row(self):
+        self.use_gold_timo({18: 0, 21: 0, 24: 0})
+        self.service.refresh()
+        self.store.active.sort(key=lambda r: r["karat_value"])
+        # Coherent GoldTimo skew (4 s); only the newest (24K) row is >120 s ahead.
+        for row, seconds in zip(self.store.active, (118, 119, 122)):
+            row["provider_timestamp"] = NOW + timedelta(seconds=seconds)
+        with self.assertRaises(PriceUnavailable):
+            self.service.get_billing_price_set([2])
+
     def test_finalization_locks_callers_transaction_and_acknowledges_staleness(self):
         self.service.refresh()
         price = self.service.get_billing_price_set([1])

@@ -46,6 +46,7 @@ class BillingKaratPrice:
     shop_sell_price_per_gram: Decimal
     quote_id: int
     activation_id: int
+    provider_timestamp: datetime  # this karat's own provider time (UTC)
 
 
 @dataclass(frozen=True)
@@ -519,11 +520,16 @@ class GoldPriceService:
         if not set(requested).issubset(by_id):
             raise PriceUnavailable("أحد عيارات الفاتورة لا يملك سعراً معتمداً.")
         first = rows[0]
-        if (as_utc(first["provider_timestamp"]) - as_utc(self._clock())).total_seconds() > 120:
+        # GoldTimo karats carry separate provider times; the set-level time is
+        # the newest one, never a fabricated common value (see CLAUDE.md §13).
+        timestamps = [as_utc(r["provider_timestamp"]) for r in rows]
+        earliest, latest = min(timestamps), max(timestamps)
+        if (latest - as_utc(self._clock())).total_seconds() > 120:
             raise PriceUnavailable("توقيت الأسعار في المستقبل؛ لا يمكن اعتمادها للفاتورة.")
         provenance = MappingProxyType(dict(
             source_code=first["source_code"], quote_group_id=first["quote_group_id"],
-            currency="EGP", unit="GRAM", provider_timestamp=as_utc(first["provider_timestamp"]),
+            currency="EGP", unit="GRAM", provider_timestamp=latest,
+            timestamp_skew_seconds=(latest - earliest).total_seconds(),
             fetched_at=as_utc(first["fetched_at"]), activated_at=as_utc(first["activated_at"]),
             activation_type=first["activation_type"],
             activated_by_user_id=first.get("activated_by_user_id"),
@@ -534,6 +540,7 @@ class GoldPriceService:
             shop_buy_price_per_gram=by_id[key]["shop_buy_price_per_gram"],
             shop_sell_price_per_gram=by_id[key]["shop_sell_price_per_gram"],
             quote_id=int(by_id[key]["quote_id"]), activation_id=int(by_id[key]["activation_id"]),
+            provider_timestamp=as_utc(by_id[key]["provider_timestamp"]),
         ) for key in sorted(set(requested))})
         return BillingPriceSet(snapshot["price_token"], snapshot["mode"], snapshot["status"],
                                tuple(snapshot["warnings"]), snapshot["status"] != "FRESH",
