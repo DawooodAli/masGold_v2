@@ -445,11 +445,17 @@ Read-only display is safe.
 
 ---
 
-## 17. Billing — CURRENTLY FROZEN
+## 17. Billing — Canonical Billing V2 (ACTIVE PRIORITY)
 
-Do not continue Billing unless explicitly requested.
+Canonical Billing V2 is the active priority.
 
-Future Billing must support in ONE invoice/window:
+It is built on the canonical `invoices` family (see §18).
+The old Billing V1 persistence (`billing_*` tables) is frozen:
+do not extend it.
+
+Cash/Bank remains out of scope until Billing V2 is complete.
+
+Billing V2 must support in ONE invoice/window:
 
 1. customer buys new gold only
 2. customer sells old gold only
@@ -479,19 +485,20 @@ or
 
 shop owes customer
 
-Billing finalization must eventually be atomic.
+Billing finalization must be atomic.
 
 ---
 
-## 18. Important Billing warning
+## 18. Billing architecture — canonical family decided
 
-The database currently contains both families:
+The database contains both families:
 
 billing_invoices
 billing_sale_lines
 billing_old_gold_lines
-
-AND
+(and billing_invoice_sequences)
+→ FROZEN historical/read-only Billing V1 data.
+Do not write new invoices to these tables and do not alter their history.
 
 invoices
 invoice_lines
@@ -500,13 +507,14 @@ invoice_customer_snapshots
 invoice_price_snapshots
 invoice_documents
 invoice_events
-
-Do NOT assume which family is canonical.
-
-Before future Billing work:
-inspect both architectures and decide deliberately.
+→ CANONICAL architecture for Billing V2.
 
 Do not create a third invoice architecture.
+
+Before implementing Billing V2:
+inspect the actual current schema (columns, keys, constraints,
+movement/transaction codes) and the existing Billing code.
+Do not assume undocumented details; ask when something is unclear.
 
 ---
 
