@@ -50,7 +50,6 @@ Item {
         customerPicker.clear()
         barcodeField.text = ""
         oldGoldWeight.text = ""
-        oldGoldKarat.currentIndex = -1
     }
 
     Connections {
@@ -519,14 +518,24 @@ Item {
                             ComboBox {
                                 id: oldGoldKarat
                                 objectName: "oldGoldKarat"
-                                Layout.preferredWidth: 96
+                                Layout.preferredWidth: 124
                                 Layout.preferredHeight: 38
                                 font.family: "Cairo"
                                 model: invoiceVM.priceRows
                                 textRole: "karat"
                                 valueRole: "karatId"
-                                displayText: currentIndex < 0 ? "العيار" : "عيار " + currentText
-                                currentIndex: -1
+                                displayText: currentIndex < 0 ? "اختر العيار" : "عيار " + currentText
+                                // Bound to the view-model: a model reload can never preselect a karat.
+                                currentIndex: {
+                                    var rows = invoiceVM.priceRows
+                                    for (var i = 0; i < rows.length; ++i)
+                                        if (rows[i].karatId === invoiceVM.oldGoldKaratId)
+                                            return i
+                                    return -1
+                                }
+                                onActivated: function(index) {
+                                    invoiceVM.setOldGoldKarat(invoiceVM.priceRows[index].karatId)
+                                }
                             }
                             AmountField {
                                 id: oldGoldWeight
@@ -538,9 +547,9 @@ Item {
                                 objectName: "addOldGold"
                                 text: "إضافة"
                                 font.family: "Cairo"
-                                enabled: oldGoldKarat.currentIndex >= 0 && oldGoldWeight.text.length > 0
+                                enabled: invoiceVM.oldGoldKaratId >= 0 && oldGoldWeight.text.length > 0
                                 onClicked: {
-                                    invoiceVM.addOldGold(oldGoldKarat.currentValue, oldGoldWeight.text)
+                                    invoiceVM.addOldGold(invoiceVM.oldGoldKaratId, oldGoldWeight.text)
                                     oldGoldWeight.text = ""
                                 }
                             }

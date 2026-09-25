@@ -64,6 +64,11 @@ class GoldPriceViewModel(QObject):
         return "يدوي" if source == "MANUAL" else str(source or "—")
 
     @Property(str, notify=changed)
+    def priceToken(self):
+        """Identity of the active price set; changes when a new set is published."""
+        return str(self._data.get("price_token") or "")
+
+    @Property(str, notify=changed)
     def providerTimestamp(self):
         return str(self._data.get("provider_timestamp") or "—")
 

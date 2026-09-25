@@ -389,6 +389,49 @@ class InvoicePageTests(unittest.TestCase):
         self.finalize(("stalePriceDialog", "stalePriceConfirm"))
         self.assertTrue(self.store.events[1]["details"]["stale_acknowledged"])
 
+    def test_old_gold_add_needs_an_explicit_karat_at_1080(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.select_salesperson()
+        combo, add = self.item("oldGoldKarat"), self.item("addOldGold")
+        self.assertEqual((combo.property("currentIndex"), combo.property("displayText")), (-1, "اختر العيار"))
+        self.type_into("oldGoldWeight", "5")
+        self.assertFalse(add.property("enabled"))
+        self.scroll_into_view(add)
+        QTest.mouseClick(self.root, Qt.LeftButton, Qt.NoModifier,
+                         add.mapToScene(QPointF(add.width() / 2, add.height() / 2)).toPoint())
+        QTest.qWait(60)
+        self.assertEqual(self.vm.oldGoldCount, 0)                      # a disabled Add does nothing
+        self.choose("oldGoldKarat", 1)                                 # 21K
+        self.assertTrue(add.property("enabled"))
+        self.click("addOldGold")
+        self.wait_until(lambda: self.vm.oldGoldCount == 1)
+        self.assertEqual(self.vm.oldGoldLinesModel.rows()[0]["karat"], "21")
+        self.wait_until(lambda: combo.property("currentIndex") == -1, "karat not cleared")
+        self.vm.refreshPrices()                                        # a model reload must not preselect
+        self.wait_until(lambda: not self.vm.busy)
+        QTest.qWait(60)
+        self.assertEqual((combo.property("currentIndex"), combo.property("displayText")), (-1, "اختر العيار"))
+        self.assertFalse(add.property("enabled"))
+        self.assertEqual(self.warnings, [])
+
+    def test_price_bar_follows_global_price_updates_at_1080(self):
+        from tests import test_invoice_service as fixtures
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        sell = self.item("priceSell_21")
+        self.assertEqual(sell.property("text"), "بيع 6,232.00")
+        with patch.dict(fixtures.PRICES, {1: (D("6250.0000"), D("6275.0000"))}):
+            self.prices.token = "T2"
+            gold = self.controller.gold_prices
+            gold._data = {**gold._data, "price_token": "T2", "status": "FRESH"}
+            gold.changed.emit()                                        # the top bar publishes a new set
+            self.wait_until(lambda: self.item("priceSell_21").property("text") == "بيع 6,275.00",
+                            "Billing price bar did not follow the new set")
+        self.assertEqual(self.item("priceBuy_21").property("text"), "شراء 6,250.00")
+        self.assertEqual(self.vm._board["price_token"], "T2")
+        self.assertEqual(self.warnings, [])
+
     def test_layout_colors_and_screenshots_at_all_sizes(self):
         self.select_salesperson()
         self.select_customer("12")

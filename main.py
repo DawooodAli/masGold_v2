@@ -97,6 +97,9 @@ class ApplicationController(QObject):
         try:
             self.operational_viewmodels = self._operational_factory()
             self.operational_viewmodels.setdefault("invoiceVM", self._invoice_factory(self.session))
+            invoice_vm = self.operational_viewmodels["invoiceVM"]
+            if hasattr(invoice_vm, "attach_price_source"):
+                invoice_vm.attach_price_source(self.gold_prices)
             engine.rootContext().setContextProperty("goldPriceVM", self.gold_prices)
             engine.rootContext().setContextProperty("goldSettingsVM", self.gold_settings)
             for name, viewmodel in self.operational_viewmodels.items():

@@ -3,7 +3,10 @@ from decimal import Decimal
 import unittest
 from unittest.mock import patch
 
-from PySide6.QtCore import QCoreApplication
+import os
+
+from PySide6.QtCore import QObject, Signal
+from PySide6.QtGui import QGuiApplication
 
 from app.session import AppSession
 from app.viewmodels.invoice_viewmodel import InvoiceViewModel, LinesModel, balance_text, grams, money
@@ -87,7 +90,9 @@ class InlineViewModel(InvoiceViewModel):
 class InvoiceViewModelTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = QCoreApplication.instance() or QCoreApplication([])
+        # QGuiApplication so the order of test modules in one process never matters.
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        cls.app = QGuiApplication.instance() or QGuiApplication([])
 
     def setUp(self):
         guard = patch.object(DatabaseConnection, "connect", side_effect=AssertionError("no database"))
@@ -231,6 +236,48 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.session.logout()
         self.vm._completed(self.vm._request, generation, "barcode", dict(ITEM, inventory_item_id="101"), "", "", "")
         self.assertEqual(self.vm.saleCount, 1)
+
+    def test_old_gold_requires_an_explicit_karat_for_every_line(self):
+        self.assertEqual(self.vm.oldGoldKaratId, -1)                  # no preselected karat
+        self.vm.addOldGold(-1, "5")
+        self.assertEqual((self.vm.oldGoldCount, self.vm.errorMessage), (0, "اختر عيار الكسر."))
+        self.vm.setOldGoldKarat(9)                                     # unknown karat is not accepted
+        self.assertEqual(self.vm.oldGoldKaratId, -1)
+        self.vm.setOldGoldKarat(1)
+        self.vm.addOldGold(-1, "5")
+        self.assertEqual((self.vm.oldGoldCount, self.vm.oldGoldLinesModel.rows()[0]["karat"]), (1, "21"))
+        self.assertEqual(self.vm.oldGoldKaratId, -1)                  # next line needs its own choice
+        self.vm.setOldGoldKarat(2)
+        self.vm.newInvoice()
+        self.assertEqual(self.vm.oldGoldKaratId, -1)
+
+    def test_price_board_follows_the_global_price_set(self):
+        class Source(QObject):
+            changed = Signal()
+
+            def __init__(self):
+                super().__init__()
+                self.priceToken, self.status = "T1", "FRESH"
+
+        source = Source()
+        vm = InlineViewModel(self.session, service=self.service, master_data=Master(), preview_delay_ms=0)
+        vm.attach_price_source(source)
+        boards = self.service.calls.count("price_board")
+        source.priceToken = "T0"
+        source.changed.emit()                                          # page not opened yet: no read
+        self.assertEqual(self.service.calls.count("price_board"), boards)
+        vm.activate()                                                  # board T1
+        self.assertEqual(self.service.calls.count("price_board"), boards + 1)
+        source.priceToken = "T1"
+        source.changed.emit()                                          # same set as the board: no reload
+        self.assertEqual(self.service.calls.count("price_board"), boards + 1)
+        source.priceToken = "T2"
+        source.changed.emit()                                          # newly published set: reload
+        source.changed.emit()                                          # repeated signal: no extra reload
+        self.assertEqual(self.service.calls.count("price_board"), boards + 2)
+        source.status = "STALE_ALLOWED"
+        source.changed.emit()                                          # status change also reloads
+        self.assertEqual(self.service.calls.count("price_board"), boards + 3)
 
     def test_lines_model_updates_rows_in_place(self):
         model = LinesModel(("a",))

@@ -108,6 +108,7 @@ class InvoiceViewModel(QObject):
         self._timer.setSingleShot(True)
         self._timer.setInterval(preview_delay_ms)
         self._timer.timeout.connect(self._start_preview)
+        self._price_source, self._seen_price_key, self._activated = None, None, False
         self._sale_model = LinesModel(SALE_KEYS, self)
         self._old_gold_model = LinesModel(OLD_GOLD_KEYS, self)
         self.changed.connect(self._sync_models)
@@ -121,6 +122,7 @@ class InvoiceViewModel(QObject):
         self._salesperson_id, self._customer_id = "", ""
         self._sales, self._olds = [], []
         self._cash, self._wallet = "", ""
+        self._old_gold_karat_id = -1                  # explicit choice required for every line
         self._version, self._preview, self._preview_version = 0, {}, -1
         self._preview_error, self._error = "", ""
         self._busy_ops, self._success = set(), {}
@@ -185,9 +187,30 @@ class InvoiceViewModel(QObject):
 
     # ------------------------------------------------------------ reference data
 
+    def attach_price_source(self, source):
+        """Keep the Billing price bar in step with the global Gold Price view-model.
+
+        Only the displayed board is reloaded; finalize still revalidates the
+        authoritative price token inside InvoiceService.
+        """
+        self._price_source = source
+        source.changed.connect(self._global_prices_changed)
+
+    @Slot()
+    def _global_prices_changed(self):
+        source = self._price_source
+        key = (source.priceToken, source.status)
+        if not key[0] or key == self._seen_price_key:
+            return
+        self._seen_price_key = key
+        board_key = (self._board.get("price_token"), self._board.get("price_status"))
+        if self._activated and board_key != key:
+            self.refreshPrices()
+
     @Slot()
     def activate(self):
         """Load salespeople and the price board (called when the page opens)."""
+        self._activated = True
         master = self._master()
         self._start("salespeople", lambda _expected_actor: master.get_employees())
         self.refreshPrices()
@@ -257,9 +280,17 @@ class InvoiceViewModel(QObject):
             self._sales[index]["making_mode"], self._sales[index]["making_value"] = mode, (value or "").strip()
             self._touched()
 
+    @Slot(int)
+    def setOldGoldKarat(self, karat_id):
+        known = {int(p["karat_id"]) for p in self._board.get("prices", [])}
+        self._old_gold_karat_id = karat_id if karat_id in known else -1
+        self.changed.emit()
+
     @Slot(int, str)
     def addOldGold(self, karat_id, weight):
         weight = (weight or "").strip()
+        if karat_id < 0:
+            karat_id = self._old_gold_karat_id
         karat = next((p for p in self._board.get("prices", []) if int(p["karat_id"]) == karat_id), None)
         if karat is None:
             self._error = "اختر عيار الكسر."
@@ -272,6 +303,7 @@ class InvoiceViewModel(QObject):
         self._error = ""
         self._olds.append({"karat_id": karat_id, "karat": karat["karat"], "weight": weight,
                            "discount_type": "NONE", "discount_value": ""})
+        self._old_gold_karat_id = -1                  # the next line needs its own explicit karat
         self._touched()
 
     @Slot(int)
@@ -488,6 +520,10 @@ class InvoiceViewModel(QObject):
     @Property(int, notify=changed)
     def oldGoldCount(self):
         return len(self._olds)
+
+    @Property(int, notify=changed)
+    def oldGoldKaratId(self):
+        return self._old_gold_karat_id
 
     @Property(str, notify=changed)
     def cashAmount(self):
