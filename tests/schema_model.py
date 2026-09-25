@@ -91,7 +91,10 @@ class SchemaModel:
             t = self.tables[table]
             for clause in migration_sql._split_top_level(alter.group(2)):
                 clause = clause.strip()
-                if m := re.match(r"ADD COLUMN\s+(.*?)(\s+(AFTER\s+\w+|FIRST))?$", clause, re.I | re.S):
+                if m := re.match(r"ADD COLUMN\s+(.*?)(\s+(AFTER\s+(\w+)|FIRST))?$", clause, re.I | re.S):
+                    # MySQL rejects AFTER <column> when that column does not exist (error 1054).
+                    if m.group(4) and m.group(4) not in t["columns"]:
+                        self.problems.append(f"{source}: ADD COLUMN {table} AFTER missing column {m.group(4)}")
                     self._item(table, m.group(1))
                 elif m := re.match(r"MODIFY (?:COLUMN )?(.*)$", clause, re.I | re.S):
                     name, column = _column(m.group(1))

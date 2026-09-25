@@ -72,6 +72,28 @@ class SchemaChainTests(unittest.TestCase):
         self.assertIn("old_gold_conversion_batches.fk_old_gold_conversion_karat: karat_id int unsigned "
                       "-> karats.id tinyint unsigned", fk_problems(model))
 
+    def test_after_clause_must_name_an_existing_column(self):
+        model = schema_model.build(schema_model.chain_files()[:11])
+        model.apply("ALTER TABLE karats ADD COLUMN extra INT NULL AFTER no_such_column", "synthetic")
+        model.apply("ALTER TABLE karats ADD COLUMN extra2 INT NULL AFTER extra", "synthetic")
+        self.assertEqual(model.problems, ["synthetic: ADD COLUMN karats AFTER missing column no_such_column"])
+
+    def test_012_places_movement_employee_after_an_existing_column(self):
+        """Regression: 012 once used AFTER created_by_user_id, which inventory_movements
+        (003) does not have; MySQL failed the first fresh rehearsal with error 1054."""
+        model = schema_model.build(schema_model.chain_files()[:11])
+        self.assertNotIn("created_by_user_id", model.tables["inventory_movements"]["columns"])
+        self.assertIn("performed_by_user_id", model.tables["inventory_movements"]["columns"])
+        model.apply("ALTER TABLE inventory_movements ADD COLUMN performed_by_employee_id INT UNSIGNED NULL "
+                    "AFTER created_by_user_id", "012 as first committed")
+        self.assertEqual(model.problems, ["012 as first committed: ADD COLUMN inventory_movements "
+                                          "AFTER missing column created_by_user_id"])
+        fixed = [s.sql for s in sql.statements(sql.read("012_actor_attribution.sql"))
+                 if s.sql.startswith("ALTER TABLE inventory_movements ADD COLUMN")]
+        self.assertEqual(fixed, ["ALTER TABLE inventory_movements ADD COLUMN performed_by_employee_id "
+                                 "INT UNSIGNED NULL AFTER performed_by_user_id"])
+        self.assertEqual(schema_model.build().problems, [])
+
     def test_prototype_era_objects_are_reproduced(self):
         self.assertLessEqual(PROTOTYPE_TABLES, set(self.model.tables))
         for table in PROTOTYPE_TABLES:

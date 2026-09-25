@@ -37,7 +37,7 @@ CREATE INDEX idx_inventory_items_entered_employee
 
 ALTER TABLE inventory_movements
     ADD COLUMN performed_by_employee_id INT UNSIGNED NULL
-    AFTER created_by_user_id;
+    AFTER performed_by_user_id;
 
 ALTER TABLE inventory_movements
     ADD CONSTRAINT fk_inventory_movements_employee
