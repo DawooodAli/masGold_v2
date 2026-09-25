@@ -159,7 +159,7 @@ class InvoicePageTests(unittest.TestCase):
         self.fail(message)
 
     def visual_item(self, name, parent=None):
-        # Repeater delegates live only in the visual tree, not the QObject tree.
+        # Repeater / ListView delegates live only in the visual tree, not the QObject tree.
         parent = parent or self.root.contentItem()
         if parent.objectName() == name:
             return parent
@@ -178,36 +178,30 @@ class InvoicePageTests(unittest.TestCase):
             QTest.qWait(20)
         self.fail(f"{name} not found")
 
-    def scroll_into_view(self, item):
-        flick = self.item("invoiceScroll").property("contentItem")
-        viewport_top = flick.mapToScene(QPointF(0, 0)).y()
-        top = item.mapToScene(QPointF(0, 0)).y()
-        height = flick.property("height")
-        if top < viewport_top or top + item.height() > viewport_top + height:
-            content_y = flick.property("contentY") + (top - viewport_top) - 20
-            flick.setProperty("contentY", max(0, content_y))
-            QTest.qWait(30)
-
     def click(self, item):
         if isinstance(item, str):
             item = self.item(item)
-        self.scroll_into_view(item) if self._inside_scroll(item) else None
         self.assertTrue(item.property("visible"), item.objectName())
         self.assertTrue(item.property("enabled"), item.objectName())
         point = item.mapToScene(QPointF(item.width() / 2, item.height() / 2)).toPoint()
+        self.assertTrue(0 <= point.x() <= self.root.width() and 0 <= point.y() <= self.root.height(),
+                        f"{item.objectName()} is outside the window")
         QTest.mouseClick(self.root, Qt.LeftButton, Qt.NoModifier, point)
         QTest.qWait(30)
 
-    def _inside_scroll(self, item):
-        scroll, parent = self.root.findChild(QObject, "invoiceScroll"), item.parentItem()
-        while parent is not None:
-            if parent == scroll.property("contentItem"):
-                return True
-            parent = parent.parentItem()
-        return False
+    def assert_inside_window(self, item, label=""):
+        # One screen, no page scrolling: every control must be fully inside the window.
+        point = item.mapToScene(QPointF(0, 0))
+        width, height = self.root.width(), self.root.height()
+        name = f"{item.objectName()} {label} at {width}x{height}"
+        self.assertGreaterEqual(point.x(), -1, name)
+        self.assertGreaterEqual(point.y(), -1, name)
+        self.assertLessEqual(point.x() + item.width(), width + 1, name)
+        self.assertLessEqual(point.y() + item.height(), height + 1, name)
 
     def type_into(self, name, text):
         self.click(name)
+        QTest.keyClick(self.root, Qt.Key_A, Qt.ControlModifier)
         for char in text:
             QTest.keyClick(self.root, char)
         QTest.qWait(20)
@@ -245,36 +239,45 @@ class InvoicePageTests(unittest.TestCase):
         self.wait_until(lambda: self.vm.customerId == customer_id, "customer not selected")
         self.wait_until(lambda: not popup.property("visible"), "picker popup still open")
 
-    def add_barcode(self, barcode):
+    def scan(self, barcode):
+        """A scanner types the code and sends Enter into the focused barcode field."""
         count = self.vm.saleCount
         self.type_into("invoiceBarcodeField", barcode)
-        self.click("invoiceAddBarcode")
+        QTest.keyClick(self.root, Qt.Key_Return)
         self.wait_until(lambda: self.vm.saleCount == count + 1, "barcode not added")
+        self.wait_until(lambda: self.item("invoiceBarcodeField").property("activeFocus"), "barcode not refocused")
 
-    def add_old_gold(self, karat_row, weight):
+    def add_old_gold(self, karat, weight):
         count = self.vm.oldGoldCount
-        self.choose("oldGoldKarat", karat_row)
+        self.click(f"karatChip_{karat}")
         self.type_into("oldGoldWeight", weight)
-        self.click("addOldGold")
+        QTest.keyClick(self.root, Qt.Key_Return)
         self.wait_until(lambda: self.vm.oldGoldCount == count + 1, "old gold not added")
 
     def settle(self):
         QTest.qWait(60)
         self.wait_until(lambda: not self.vm.busy and (self.vm.previewReady or self.vm.previewError), "no preview")
 
-    def finalize(self, *confirm_first):
+    def pay_full(self):
+        self.settle()
+        self.click("payFullButton")
+        self.settle()
+
+    def finalize(self, *acknowledge):
         self.wait_until(lambda: self.vm.canFinalize, "finalize not enabled")
         self.click("finalizeInvoice")
-        for dialog, button in confirm_first:
-            self.wait_until(lambda: self.item(dialog).property("opened"), f"{dialog} not opened")
-            self.click(button)
-        self.wait_until(lambda: self.item("confirmFinalizeDialog").property("opened"), "confirm not opened")
+        dialog = self.item("confirmFinalizeDialog")
+        self.wait_until(lambda: dialog.property("opened"), "confirmation not opened")
+        QTest.qWait(250)
+        for name in acknowledge:
+            self.assertFalse(self.item("confirmFinalize").property("enabled"), "saved before acknowledgement")
+            self.click(name)
         self.snapshot("confirm")
         self.click("confirmFinalize")
-        self.wait_until(lambda: self.item("invoiceSuccessDialog").property("opened"), "no success")
-        QTest.qWait(250)                                               # let the dialog finish opening
+        self.wait_until(lambda: self.vm.hasSuccess, f"no success: {self.vm.errorMessage!r} {self.vm.previewError!r}")
+        self.wait_until(lambda: not dialog.property("visible"), "confirmation still open")
         self.snapshot("success")
-        return self.item("successInvoiceNumber").property("text")
+        return self.text("successInvoiceNumber")
 
     def snapshot(self, label):
         target = os.getenv("MASGOLD_UI_REVIEW_DIR")
@@ -289,71 +292,81 @@ class InvoicePageTests(unittest.TestCase):
 
     def test_sale_only(self):
         self.select_salesperson()
-        self.add_barcode("01260925")
-        self.type_into("saleMaking_0", "150")
-        self.type_into("cashAmountField", "67011")
+        self.scan("01260925")
+        self.type_into("invoiceMakingField", "150")                    # one making for the invoice
         self.settle()
         self.assertEqual(self.text("summarySale"), "67,011.00 ج")
-        self.assertEqual(self.text("summaryResidual"), "مسددة بالكامل")
+        self.assertEqual(self.text("summaryDue"), "67,011.00 ج")
+        self.assertEqual(self.item("summaryDueBox").property("title"), "المطلوب من العميل")
+        self.pay_full()
+        self.assertEqual(self.vm.cashAmount, "67011.00")
+        self.assertEqual(self.text("summaryResidualLabel"), "لا يوجد متبقٍ")
         number = self.finalize()
         self.assertIn("26092501", number)
         header = self.store.invoices[0]
         self.assertEqual((header["invoice_type"], header["employee_id"], header["created_by_user_id"]), ("SELL", 5, 17))
         self.assertEqual(self.store.items["100"]["inventory_status"], "SOLD")
-        self.click("successNewInvoice")
-        self.wait_until(lambda: self.vm.saleCount == 0 and not self.vm.hasSuccess)
+        # Ready for the next customer: empty draft, same salesperson, focus on the barcode.
+        self.assertEqual((self.vm.saleCount, self.vm.salespersonId), (0, "5"))
+        self.assertTrue(self.item("invoiceBarcodeField").property("activeFocus"))
+        self.assertTrue(self.item("invoiceSuccessBanner").property("visible"))
         self.assertEqual(self.v1_calls, [])
         self.assertEqual(self.warnings, [])
 
     def test_old_gold_only(self):
         self.select_salesperson()
         self.select_customer("12")
-        self.add_old_gold(1, "10")                                     # rows 18, 21, 24 -> 21K
-        self.choose("oldGoldDiscountType_0", 1)                         # خصم %
-        self.type_into("oldGoldDiscountValue_0", "1.5")
+        self.add_old_gold("21", "10")
+        self.type_into("oldGoldDiscountField", "1.5")                   # one discount for the invoice
         self.type_into("walletAmountField", "50000")
         self.settle()
         self.assertEqual(self.text("summaryOldGold"), "61,138.95 ج")
-        self.assertIn("متبقي للعميل", self.text("summaryResidual"))
+        self.assertEqual(self.item("summaryDueBox").property("title"), "المستحق للعميل")
+        self.assertEqual(self.text("summaryResidualLabel"), "متبقي للعميل (يُسجل لحسابه)")
+        self.assertEqual(self.text("summaryResidual"), "11,138.95 ج")
+        self.assertEqual(self.text("boughtWeights_21"), "21: 10.000")
         self.finalize()
         self.assertEqual(self.store.invoices[0]["invoice_type"], "BUY")
+        self.assertEqual(self.store.lines[0][1]["discount_type"], "PERCENT")
         self.assertEqual([(p["direction"], p["amount"]) for p in self.store.payments], [("OUT", D("50000.00"))])
         self.assertEqual(self.store.ledger[0]["amount_delta"], D("-11138.95"))
         self.assertEqual(self.warnings, [])
 
-    def test_mixed_exchange(self):
+    def test_mixed_exchange_with_line_override(self):
         self.select_salesperson()
-        self.add_barcode("01260925")
-        self.type_into("saleMaking_0", "150")
-        self.add_old_gold(1, "5")
-        self.choose("oldGoldDiscountType_0", 2)                         # خصم مبلغ
-        self.type_into("oldGoldDiscountValue_0", "35")
-        self.type_into("cashAmountField", "36011")
+        self.scan("01260925")
+        self.type_into("invoiceMakingField", "150")
+        self.type_into("saleMaking_0", "200")                          # this piece only
+        self.add_old_gold("21", "5")
         self.settle()
-        self.assertEqual(self.text("summaryNet"), "على العميل 36,011.00 ج")
+        self.assertEqual(self.text("summarySale"), "67,536.00 ج")
+        self.assertEqual(self.text("summaryDue"), "36,501.00 ج")
+        self.assertEqual(self.text("soldWeights_21"), "21: 10.500")
+        self.assertEqual(self.text("boughtWeights_21"), "21: 5.000")
+        self.pay_full()
         self.finalize()
-        self.assertEqual((self.store.invoices[0]["invoice_type"], self.store.invoices[0]["settlement_status"]),
-                         ("MIXED", "SETTLED"))
-        self.assertEqual(self.store.lines[1][1]["discount_amount"], D("35.00"))
+        header = self.store.invoices[0]
+        self.assertEqual((header["invoice_type"], header["settlement_status"]), ("MIXED", "SETTLED"))
+        self.assertEqual(self.store.lines[0][1]["making_per_gram"], D("200.00"))
 
-    def test_partial_payment_with_residual(self):
+    def test_partial_payment_goes_to_customer_account(self):
         self.select_salesperson()
         self.select_customer("12")
-        self.add_barcode("01260925")
-        self.type_into("saleMaking_0", "150")
+        self.scan("01260925")
+        self.type_into("invoiceMakingField", "150")
         self.type_into("cashAmountField", "60000")
         self.settle()
-        self.assertEqual(self.text("summaryResidual"), "متبقي على العميل 7,011.00 ج")
+        self.assertEqual(self.text("summaryResidualLabel"), "متبقي على العميل (يُسجل على حسابه)")
+        self.assertEqual(self.text("summaryResidual"), "7,011.00 ج")
         self.assertEqual(self.text("customerBalance"), "لا يوجد رصيد")
-        self.assertEqual(self.text("customerBalanceAfter"), "على العميل 7,011.00 ج")
         self.finalize()
         self.assertEqual((self.store.ledger[0]["type_code"], self.store.ledger[0]["amount_delta"]),
                          ("SALE_BALANCE_DUE", D("7011.00")))
 
-    def test_customer_required(self):
+    def test_customer_required_for_a_remainder(self):
         self.select_salesperson()
-        self.add_barcode("01260925")
-        self.type_into("saleMaking_0", "150")
+        self.scan("01260925")
+        self.type_into("invoiceMakingField", "150")
         self.type_into("cashAmountField", "100")
         self.settle()
         self.assertIn("يجب اختيار عميل", self.text("invoiceProblems"))
@@ -363,56 +376,154 @@ class InvoicePageTests(unittest.TestCase):
         self.wait_until(lambda: self.vm.canFinalize)
         self.assertFalse(self.item("invoiceProblems").property("visible"))
 
-    def test_dead_cash_confirmation(self):
+    def test_dead_cash_is_a_tick_in_the_one_confirmation(self):
         self.store.warnings[12] = {"flag_id": "8"}
         self.select_salesperson()
         self.select_customer("12")
-        self.add_barcode("01260925")
-        self.type_into("saleMaking_0", "150")
+        self.scan("01260925")
+        self.type_into("invoiceMakingField", "150")
         self.type_into("cashAmountField", "60000")
         self.settle()
         self.assertTrue(self.item("deadCashBanner").property("visible"))
-        self.finalize(("deadCashDialog", "deadCashConfirm"))
+        self.finalize("deadCashAcknowledge")
         self.assertTrue(self.store.events[1]["details"]["dead_cash_confirmed"])
 
-    def test_stale_price_confirmation(self):
+    def test_stale_price_is_a_tick_in_the_one_confirmation(self):
         self.prices.status = "STALE"
         QTest.qWait(20)
         self.vm.refreshPrices()
         self.wait_until(lambda: self.vm.priceStale)
         self.assertEqual(self.text("invoicePriceStatus"), "السعر قديم")
         self.select_salesperson()
-        self.add_barcode("01260925")
-        self.type_into("saleMaking_0", "150")
-        self.type_into("cashAmountField", "67011")
-        self.settle()
-        self.finalize(("stalePriceDialog", "stalePriceConfirm"))
+        self.scan("01260925")
+        self.type_into("invoiceMakingField", "150")
+        self.pay_full()
+        self.finalize("staleAcknowledge")
         self.assertTrue(self.store.events[1]["details"]["stale_acknowledged"])
+
+    def test_back_from_confirmation_saves_nothing(self):
+        self.select_salesperson()
+        self.scan("01260925")
+        self.type_into("invoiceMakingField", "150")
+        self.pay_full()
+        self.click("finalizeInvoice")
+        dialog = self.item("confirmFinalizeDialog")
+        self.wait_until(lambda: dialog.property("opened"))
+        QTest.qWait(250)
+        self.click("confirmBack")
+        self.wait_until(lambda: not dialog.property("visible"))
+        self.assertEqual((self.store.invoices, self.vm.saleCount), ([], 1))
+
+    def test_keyboard_only_invoice_at_1080(self):
+        """Scan, making, karat, weight, pay in full and save without touching the mouse."""
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.select_salesperson()
+        self.item("invoiceBarcodeField").forceActiveFocus()
+        for key in "01260925":
+            QTest.keyClick(self.root, key)
+        QTest.keyClick(self.root, Qt.Key_Return)
+        self.wait_until(lambda: self.vm.saleCount == 1)
+        QTest.keyClick(self.root, Qt.Key_M, Qt.ControlModifier)       # making (F7 is reserved)
+        self.wait_until(lambda: self.item("invoiceMakingField").property("activeFocus"))
+        for key in "150":
+            QTest.keyClick(self.root, key)
+        QTest.keyClick(self.root, Qt.Key_2, Qt.AltModifier)            # karat 21, focus weight
+        self.wait_until(lambda: self.item("oldGoldWeight").property("activeFocus"))
+        QTest.keyClick(self.root, Qt.Key_5)
+        QTest.keyClick(self.root, Qt.Key_Return)
+        self.wait_until(lambda: self.vm.oldGoldCount == 1)
+        self.settle()
+        QTest.keyClick(self.root, Qt.Key_F8)                          # pay the full amount
+        self.settle()
+        self.assertEqual(self.vm.cashAmount, "35976.00")
+        QTest.keyClick(self.root, Qt.Key_F9)                          # save -> confirmation
+        dialog = self.item("confirmFinalizeDialog")
+        self.wait_until(lambda: dialog.property("opened"))
+        QTest.qWait(250)
+        QTest.keyClick(self.root, Qt.Key_Return)                       # confirm
+        self.wait_until(lambda: self.vm.hasSuccess, "keyboard save failed")
+        self.assertEqual(self.store.invoices[0]["settlement_status"], "SETTLED")
+        self.wait_until(lambda: not dialog.property("visible"), "confirmation still closing")
+        self.assertTrue(self.item("invoiceBarcodeField").property("activeFocus"))
+        QTest.keyClick(self.root, Qt.Key_F2)                          # new invoice
+        self.wait_until(lambda: not self.vm.hasSuccess and self.vm.saleCount == 0,
+                        f"F2: success={self.vm.hasSuccess} lines={self.vm.saleCount} "
+                        f"opened={dialog.property('visible')}")
+        self.assertEqual(self.warnings, [])
+
+    def test_reserved_function_keys_do_nothing_yet(self):
+        self.select_salesperson()
+        self.scan("01260925")
+        for key in (Qt.Key_F3, Qt.Key_F5, Qt.Key_F7):
+            QTest.keyClick(self.root, key)
+            QTest.qWait(30)
+            self.assertTrue(self.item("invoiceBarcodeField").property("activeFocus"), f"{key} moved focus")
+        self.assertFalse(self.item("invoiceMakingField").property("activeFocus"))
+
+    def click_row(self, name, button=Qt.LeftButton):
+        row = self.item(name)
+        # Click the row's description cell (the right side), not a field or button.
+        point = row.mapToScene(QPointF(row.width() - 30, row.height() / 2)).toPoint()
+        QTest.mouseClick(self.root, button, Qt.NoModifier, point)
+        QTest.qWait(60)
+
+    def test_fast_row_deletion_with_delete_key_and_right_click_at_1080(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.select_salesperson()
+        self.scan("01260925")
+        self.scan("02260925")
+        self.add_old_gold("21", "5")
+        self.add_old_gold("18", "2")
+        # Sale table: select the first piece, Delete removes it.
+        self.click_row("saleRow_0")
+        self.assertTrue(self.item("saleRow_0").property("selected"))
+        QTest.keyClick(self.root, Qt.Key_Delete)
+        self.wait_until(lambda: self.vm.saleCount == 1)
+        self.assertEqual(self.vm.saleLinesModel.rows()[0]["barcode"], "02260925")
+        # Old-gold table: right-click → حذف.
+        self.click_row("oldGoldRow_1", Qt.RightButton)
+        menu = self.item("rowMenu")
+        self.wait_until(lambda: menu.property("opened"), "row menu not opened")
+        self.click("rowMenuDelete")
+        self.wait_until(lambda: self.vm.oldGoldCount == 1)
+        self.assertEqual(self.vm.oldGoldLinesModel.rows()[0]["karat"], "21")
+        # Delete inside a text field edits the text, never a row.
+        self.type_into("invoiceMakingField", "150")
+        QTest.keyClick(self.root, Qt.Key_Home)
+        QTest.keyClick(self.root, Qt.Key_Delete)
+        QTest.qWait(40)
+        self.assertEqual((self.vm.saleCount, self.vm.oldGoldCount, self.vm.invoiceMaking), (1, 1, "50"))
+        # The visible حذف button still works.
+        self.click("removeOldGold_0")
+        self.wait_until(lambda: self.vm.oldGoldCount == 0)
+        self.assertEqual(self.warnings, [])
 
     def test_old_gold_add_needs_an_explicit_karat_at_1080(self):
         self.root.setWidth(1080)
         self.root.setHeight(680)
         self.select_salesperson()
-        combo, add = self.item("oldGoldKarat"), self.item("addOldGold")
-        self.assertEqual((combo.property("currentIndex"), combo.property("displayText")), (-1, "اختر العيار"))
+        add = self.item("addOldGold")
+        self.assertEqual(self.vm.oldGoldKaratId, -1)
         self.type_into("oldGoldWeight", "5")
         self.assertFalse(add.property("enabled"))
-        self.scroll_into_view(add)
+        QTest.keyClick(self.root, Qt.Key_Return)                       # Enter without a karat adds nothing
         QTest.mouseClick(self.root, Qt.LeftButton, Qt.NoModifier,
                          add.mapToScene(QPointF(add.width() / 2, add.height() / 2)).toPoint())
         QTest.qWait(60)
-        self.assertEqual(self.vm.oldGoldCount, 0)                      # a disabled Add does nothing
-        self.choose("oldGoldKarat", 1)                                 # 21K
+        self.assertEqual(self.vm.oldGoldCount, 0)
+        self.click("karatChip_21")
+        self.assertTrue(self.item("karatChip_21").property("selected"))
         self.assertTrue(add.property("enabled"))
         self.click("addOldGold")
         self.wait_until(lambda: self.vm.oldGoldCount == 1)
         self.assertEqual(self.vm.oldGoldLinesModel.rows()[0]["karat"], "21")
-        self.wait_until(lambda: combo.property("currentIndex") == -1, "karat not cleared")
+        self.wait_until(lambda: self.vm.oldGoldKaratId == -1, "karat not cleared")
         self.vm.refreshPrices()                                        # a model reload must not preselect
         self.wait_until(lambda: not self.vm.busy)
         QTest.qWait(60)
-        self.assertEqual((combo.property("currentIndex"), combo.property("displayText")), (-1, "اختر العيار"))
-        self.assertFalse(add.property("enabled"))
+        self.assertFalse(any(self.item(f"karatChip_{k}").property("selected") for k in ("18", "21", "24")))
         self.assertEqual(self.warnings, [])
 
     def test_price_bar_follows_global_price_updates_at_1080(self):
@@ -432,13 +543,16 @@ class InvoicePageTests(unittest.TestCase):
         self.assertEqual(self.vm._board["price_token"], "T2")
         self.assertEqual(self.warnings, [])
 
-    def test_layout_colors_and_screenshots_at_all_sizes(self):
+    def test_one_screen_layout_colors_and_screenshots_at_all_sizes(self):
         self.select_salesperson()
         self.select_customer("12")
         self.store.warnings[12] = {"flag_id": "8"}
-        self.add_barcode("01260925")
-        self.type_into("saleMaking_0", "150")
-        self.add_old_gold(1, "5")
+        self.scan("01260925")
+        self.scan("02260925")
+        self.type_into("invoiceMakingField", "150")
+        self.add_old_gold("21", "5")
+        self.add_old_gold("18", "2.5")
+        self.type_into("oldGoldDiscountField", "1")
         self.type_into("cashAmountField", "20000")
         self.settle()
         buy, sell = self.item("priceBuy_21"), self.item("priceSell_21")
@@ -450,24 +564,23 @@ class InvoicePageTests(unittest.TestCase):
         for width, height in SIZES:
             self.root.setWidth(width)
             self.root.setHeight(height)
-            QTest.qWait(120)
-            for name in ("invoicePriceBar", "invoiceSummaryBar", "finalizeInvoice", "summaryResidual"):
+            QTest.qWait(150)
+            for name in ("invoicePriceBar", "invoiceSalesperson", "invoiceCustomerPicker", "deadCashBanner",
+                         "invoiceBarcodeField", "invoiceAddBarcode", "saleMaking_0", "saleMaking_1",
+                         "removeSale_1", "karatChip_18", "karatChip_21", "karatChip_24", "oldGoldWeight",
+                         "addOldGold", "removeOldGold_1", "soldWeights", "boughtWeights",
+                         "invoiceSummaryBar", "invoiceMakingField", "oldGoldDiscountField", "summarySale",
+                         "summaryOldGold", "summaryDue", "cashAmountField", "payFullButton",
+                         "walletAmountField", "summaryResidual", "finalizeInvoice"):
                 item = self.item(name)
-                point = item.mapToScene(QPointF(0, 0))
-                self.assertTrue(item.property("visible"), name)
-                self.assertGreaterEqual(point.x(), -1, f"{name} at {width}")
-                self.assertLessEqual(point.x() + item.width(), width + 1, f"{name} at {width}")
-                self.assertLessEqual(point.y() + item.height(), height + 1, f"{name} at {width}x{height}")
-            for name in ("invoiceBarcodeField", "invoiceAddBarcode", "saleMaking_0", "oldGoldWeight",
-                         "addOldGold", "oldGoldDiscountType_0", "cashAmountField", "walletAmountField",
-                         "invoiceSalesperson", "invoiceCustomerPicker"):
-                item = self.item(name)
-                self.scroll_into_view(item)
-                point = item.mapToScene(QPointF(0, 0))
-                self.assertGreaterEqual(point.x(), -1, f"{name} at {width}")
-                self.assertLessEqual(point.x() + item.width(), width + 1, f"{name} clipped at {width}")
-            self.item("invoiceScroll").property("contentItem").setProperty("contentY", 0)
-            QTest.qWait(60)
+                self.assertTrue(item.property("visible"), f"{name} hidden at {width}x{height}")
+                self.assert_inside_window(item)
+            sale_panel, old_panel = self.item("salePanel"), self.item("oldGoldPanel")
+            # Side by side: the sale panel on the physical right.
+            self.assertGreater(sale_panel.mapToScene(QPointF(0, 0)).x(), old_panel.mapToScene(QPointF(0, 0)).x())
+            self.assertGreaterEqual(self.item("saleList").property("height"), 80, f"sale table at {width}x{height}")
+            # The old-gold hint ("اختر العيار أولاً") has room for its full text.
+            self.assertGreaterEqual(self.item("oldGoldWeight").width(), 160, f"old-gold weight at {width}")
             if target:
                 self.assertTrue(self.root.grabWindow().save(str(Path(target) / f"billing-{width}x{height}.png")))
         self.assertEqual(self.warnings, [])

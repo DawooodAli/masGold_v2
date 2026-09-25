@@ -289,6 +289,96 @@ class InvoiceViewModelTests(unittest.TestCase):
         model.set_rows([{"a": "2"}])
         self.assertEqual((len(resets), len(changes)), (1, 1))
 
+    # ------------------------------------------------------------ Stage 1: one-screen workflow
+
+    def test_invoice_making_applies_to_every_line_unless_overridden(self):
+        self.vm.setSalesperson("5")
+        self.vm.addBarcode("01260925")
+        self.service.find_item_by_barcode = lambda b, _expected_actor=None: {**ITEM, "inventory_item_id": "101"}
+        self.vm.addBarcode("02260925")
+        self.vm.setInvoiceMaking("150")
+        draft = self.vm._draft()
+        self.assertEqual([l.making_per_gram for l in draft.sale_lines], ["150", "150"])
+        self.vm.setSaleMaking(1, "PER_GRAM", "200")               # this piece only
+        draft = self.vm._draft()
+        self.assertEqual([l.making_per_gram for l in draft.sale_lines], ["150", "200"])
+        self.assertEqual([r["makingOverride"] for r in self.vm.saleLinesModel.rows()], [False, True])
+        self.vm.setSaleMaking(1, "PER_GRAM", "")                  # cleared -> back to the invoice making
+        self.assertEqual([l.making_per_gram for l in self.vm._draft().sale_lines], ["150", "150"])
+
+    def test_invoice_old_gold_discount_percent_applies_to_every_line(self):
+        self.vm.addOldGold(1, "5")
+        self.vm.addOldGold(2, "3")
+        self.vm.setOldGoldDiscountPercent("1.5")
+        lines = self.vm._draft().old_gold_lines
+        self.assertEqual([(l.discount_type, l.discount_value) for l in lines], [("PERCENT", "1.5")] * 2)
+        self.vm.setOldGoldDiscountPercent("0")
+        lines = self.vm._draft().old_gold_lines
+        self.assertEqual([(l.discount_type, l.discount_value) for l in lines], [(None, None)] * 2)
+
+    def test_pay_full_amount_fills_the_amount_due_after_wallet(self):
+        self.vm.setSalesperson("5")
+        self.vm.addBarcode("01260925")
+        self.vm.payFullAmount()                                   # no preview yet: nothing happens
+        self.assertEqual(self.vm.cashAmount, "")
+        self.preview_now()
+        self.vm.setWalletAmount("1000")
+        self.preview_now()
+        self.vm.payFullAmount()
+        self.assertEqual(self.vm.cashAmount, "66011.00")
+        self.assertEqual([(p.method_code, p.amount) for p in self.vm._draft().payments],
+                         [("PHYSICAL_CASH", "66011.00"), ("MOBILE_WALLET", "1000")])
+
+    def test_salesman_wording_in_summary(self):
+        self.vm.setSalesperson("5")
+        self.vm.addBarcode("01260925")
+        self.preview_now()
+        s = self.vm.summary
+        self.assertEqual((s["dueLabel"], s["dueAmount"], s["paidLabel"], s["paidAmount"]),
+                         ("المطلوب من العميل", "67,011.00 ج", "المدفوع من العميل", "60,000.00 ج"))
+        self.assertEqual((s["remainingLabel"], s["remainingAmount"]),
+                         ("متبقي على العميل (يُسجل على حسابه)", "7,011.00 ج"))
+        self.service.preview_result = preview(net_direction="SHOP_PAYS_CUSTOMER", money_received="0.00",
+                                              money_paid="67011.00", residual_amount="0.00",
+                                              residual_direction="NONE", settlement_status="SETTLED")
+        self.vm.setCashAmount("67011")
+        self.preview_now()
+        s = self.vm.summary
+        self.assertEqual((s["dueLabel"], s["paidLabel"], s["paidAmount"], s["remainingLabel"], s["remainingAmount"]),
+                         ("المستحق للعميل", "المدفوع للعميل", "67,011.00 ج", "لا يوجد متبقٍ", ""))
+
+    def test_weight_totals_per_karat(self):
+        self.vm.addBarcode("01260925")
+        self.vm.addOldGold(1, "5")
+        self.vm.addOldGold(1, "2.25")
+        self.vm.addOldGold(2, "x")                                # invalid weight is not counted
+        totals = self.vm.weightTotals
+        self.assertEqual(totals["sold"], {"18": "—", "21": "10.500", "24": "—"})
+        self.assertEqual(totals["bought"], {"18": "—", "21": "7.250", "24": "—"})
+
+    def test_salesperson_defaults_to_the_linked_employee_and_survives_new_invoice(self):
+        session = AppSession()
+        session._establish(AuthenticationResult(18, 5, "علي", PERMISSIONS, _VERIFIED), int(session.generation))
+        vm = InlineViewModel(session, service=self.service, master_data=Master(), preview_delay_ms=0)
+        vm.activate()
+        self.assertEqual(vm.salespersonId, "5")
+        self.assertEqual(self.vm.salespersonId, "")               # actor employee 7 is not a salesperson
+        vm.addBarcode("01260925")
+        vm.newInvoice()
+        self.assertEqual((vm.saleCount, vm.salespersonId), (0, "5"))
+
+    def test_unchanged_customer_keeps_the_success_banner(self):
+        self.vm.setSalesperson("5")
+        self.vm.addBarcode("01260925")
+        self.preview_now()
+        self.vm.finalizeInvoice(False, False)
+        self.assertTrue(self.vm.hasSuccess)
+        self.vm.setCustomer("")                                   # the picker clears after saving
+        self.vm.setSalesperson("5")
+        self.assertTrue(self.vm.hasSuccess)
+        self.vm.addBarcode("01260925")                           # the next invoice starts
+        self.assertFalse(self.vm.hasSuccess)
+
     def test_formatting_helpers(self):
         self.assertEqual(money("1234.5"), "1,234.50 ج")
         self.assertEqual(grams("10.5"), "10.500 جم")

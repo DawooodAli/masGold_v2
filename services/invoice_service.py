@@ -288,7 +288,8 @@ class InvoiceService:
         item = self._read_only(lookup)
         return {"inventory_item_id": item["inventory_item_id"], "barcode": item.get("barcode_value"),
                 "item_name": item.get("item_type_name"), "karat_id": int(item["karat_id"]),
-                "karat": item.get("karat_value"), "weight_grams": _money(item["weight_grams"])}
+                "karat": item.get("karat_value"), "weight_grams": _money(item["weight_grams"]),
+                "factory_name": item.get("factory_name"), "size": item.get("size")}
 
     def preview(self, draft: InvoiceDraft, *, _expected_actor=None):
         """Read-only recalculation for the screen; nothing is written."""

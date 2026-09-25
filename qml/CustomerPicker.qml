@@ -177,14 +177,20 @@ Control {
         parent: Overlay.overlay
         width: Math.min(Math.max(picker.width, 430), parent ? parent.width - 24 : 430)
         height: Math.min(530, parent ? parent.height - 24 : 530)
-        x: parent ? Math.max(12, Math.min(picker.mapToItem(parent, 0, 0).x, parent.width - width - 12)) : 0
-        y: {
+        // Placed each time it opens: mapToItem() is not re-evaluated when the page
+        // layout moves the picker, so a declarative binding could go off-screen.
+        function place() {
             if (!parent)
-                return picker.height
-            var below = picker.mapToItem(parent, 0, picker.height).y + 4
-            return below + height <= parent.height - 12
-                    ? below : Math.max(12, picker.mapToItem(parent, 0, 0).y - height - 4)
+                return
+            var origin = picker.mapToItem(parent, 0, 0)
+            x = Math.max(12, Math.min(origin.x, parent.width - width - 12))
+            var below = origin.y + picker.height + 4
+            var above = origin.y - height - 4
+            y = below + height <= parent.height - 12 ? below
+              : above >= 12 ? above
+              : Math.max(12, parent.height - height - 12)
         }
+        onAboutToShow: place()
         padding: 12
         modal: true
         focus: true

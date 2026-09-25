@@ -12,6 +12,12 @@ NET_TEXT = {"CUSTOMER_PAYS_SHOP": "على العميل", "SHOP_PAYS_CUSTOMER": "
 RESIDUAL_TEXT = {"CUSTOMER_OWES_SHOP": "متبقي على العميل", "SHOP_OWES_CUSTOMER": "متبقي للعميل",
                  "NONE": "مسددة بالكامل"}
 STATUS_TEXT = {"SETTLED": "مسددة", "PARTIAL": "مسددة جزئياً", "UNSETTLED": "غير مسددة"}
+# Salesman wording: what the customer must pay / receive and what stays on the account.
+DUE_TEXT = {"CUSTOMER_PAYS_SHOP": "المطلوب من العميل", "SHOP_PAYS_CUSTOMER": "المستحق للعميل",
+            "SETTLED": "الفاتورة متعادلة"}
+REMAINING_TEXT = {"CUSTOMER_OWES_SHOP": "متبقي على العميل (يُسجل على حسابه)",
+                  "SHOP_OWES_CUSTOMER": "متبقي للعميل (يُسجل لحسابه)", "NONE": "لا يوجد متبقٍ"}
+WEIGHT_KARATS = ("18", "21", "24")
 PRICE_STATUS_TEXT = {"FRESH": "", "STALE_ALLOWED": "السعر قديم", "STALE": "السعر قديم"}
 
 
@@ -85,7 +91,7 @@ class LinesModel(QAbstractListModel):
 
 
 SALE_KEYS = ("barcode", "itemName", "karat", "weight", "makingMode", "makingValue", "goldPrice",
-             "makingTotal", "lineTotal")
+             "makingTotal", "lineTotal", "factory", "makingOverride")
 OLD_GOLD_KEYS = ("karat", "weight", "discountType", "discountValue", "goldPrice", "grossTotal",
                  "discountAmount", "lineTotal")
 
@@ -122,6 +128,9 @@ class InvoiceViewModel(QObject):
         self._salesperson_id, self._customer_id = "", ""
         self._sales, self._olds = [], []
         self._cash, self._wallet = "", ""
+        # Invoice-level entry: one making per gram and one old-gold discount % for the
+        # whole invoice; a sale line may still override its own making.
+        self._invoice_making, self._old_gold_discount = "", ""
         self._old_gold_karat_id = -1                  # explicit choice required for every line
         self._version, self._preview, self._preview_version = 0, {}, -1
         self._preview_error, self._error = "", ""
@@ -141,7 +150,7 @@ class InvoiceViewModel(QObject):
 
     def _touched(self):
         self._version += 1
-        self._preview_error = ""
+        self._preview_error, self._success = "", {}
         self.changed.emit()
         if self._sales or self._olds:
             self._timer.start()
@@ -225,8 +234,14 @@ class InvoiceViewModel(QObject):
             self._error = error
             return
         self._salespeople = [{"employeeId": str(r["id"]), "name": r["name"]} for r in result or []]
-        if self._salesperson_id and self._salesperson_id not in {s["employeeId"] for s in self._salespeople}:
+        known = {s["employeeId"] for s in self._salespeople}
+        if self._salesperson_id and self._salesperson_id not in known:
             self._salesperson_id = ""
+        # Default to the logged-in user's own employee record; it stays visible and changeable.
+        actor = self._session.current_actor()
+        own = str(actor.employee_id) if actor is not None and actor.employee_id is not None else ""
+        if not self._salesperson_id and own in known:
+            self._salesperson_id = own
 
     def _on_prices(self, result, error, code, kind):
         if error:
@@ -240,11 +255,15 @@ class InvoiceViewModel(QObject):
 
     @Slot(str)
     def setSalesperson(self, employee_id):
+        if (employee_id or "") == self._salesperson_id:
+            return                                    # no change: keep the preview and success banner
         self._salesperson_id = employee_id or ""
         self._touched()
 
     @Slot(str)
     def setCustomer(self, customer_id):
+        if (customer_id or "") == self._customer_id:
+            return                                    # e.g. the picker cleared after a finalized invoice
         self._customer_id = customer_id or ""
         self._touched()
 
@@ -265,7 +284,7 @@ class InvoiceViewModel(QObject):
         if any(line["inventory_item_id"] == result["inventory_item_id"] for line in self._sales):
             self._error = "القطعة مضافة بالفعل إلى الفاتورة."
             return
-        self._sales.append({**result, "making_mode": "PER_GRAM", "making_value": ""})
+        self._sales.append({**result, "making_mode": "PER_GRAM", "making_value": "", "making_override": False})
         self._touched()
 
     @Slot(int)
@@ -277,8 +296,34 @@ class InvoiceViewModel(QObject):
     @Slot(int, str, str)
     def setSaleMaking(self, index, mode, value):
         if 0 <= index < len(self._sales) and mode in ("PER_GRAM", "TOTAL"):
-            self._sales[index]["making_mode"], self._sales[index]["making_value"] = mode, (value or "").strip()
+            value = (value or "").strip()
+            line = self._sales[index]
+            # An empty override returns the line to the invoice making.
+            line["making_mode"], line["making_value"], line["making_override"] = mode, value, bool(value)
             self._touched()
+
+    @Slot(str)
+    def setInvoiceMaking(self, value):
+        self._invoice_making = (value or "").strip()
+        self._touched()
+
+    @Slot(str)
+    def setOldGoldDiscountPercent(self, value):
+        self._old_gold_discount = (value or "").strip()
+        self._touched()
+
+    @Slot()
+    def payFullAmount(self):
+        """Fill the cash field with the amount still due (after any wallet amount)."""
+        if not self.previewReady or self._preview["net_direction"] == "SETTLED":
+            return
+        try:
+            wallet = Decimal(self._wallet) if self._wallet else Decimal("0")
+        except InvalidOperation:
+            wallet = Decimal("0")
+        amount = Decimal(str(self._preview["net_amount"])) - wallet
+        self._cash = f"{max(amount, Decimal('0')):.2f}"
+        self._touched()
 
     @Slot(int)
     def setOldGoldKarat(self, karat_id):
@@ -333,16 +378,21 @@ class InvoiceViewModel(QObject):
 
     def _draft(self):
         from services.invoice_service import InvoiceDraft, OldGoldLineInput, PaymentInput, SaleLineInput
-        sales = tuple(SaleLineInput(line["inventory_item_id"],
-                                    making_per_gram=line["making_value"] or None
-                                    if line["making_mode"] == "PER_GRAM" else None,
-                                    making_total=line["making_value"] or None
-                                    if line["making_mode"] == "TOTAL" else None)
-                      for line in self._sales)
-        olds = tuple(OldGoldLineInput(line["karat_id"], line["weight"],
-                                      None if line["discount_type"] == "NONE" else line["discount_type"],
-                                      None if line["discount_type"] == "NONE" else (line["discount_value"] or None))
-                     for line in self._olds)
+        sales = []
+        for line in self._sales:
+            mode, value = ((line["making_mode"], line["making_value"]) if line.get("making_override")
+                           else ("PER_GRAM", self._invoice_making))
+            sales.append(SaleLineInput(line["inventory_item_id"],
+                                       making_per_gram=(value or None) if mode == "PER_GRAM" else None,
+                                       making_total=(value or None) if mode == "TOTAL" else None))
+        olds = []
+        for line in self._olds:
+            kind, value = line["discount_type"], line["discount_value"]
+            if kind == "NONE" and self._old_gold_discount and self._nonzero(self._old_gold_discount):
+                kind, value = "PERCENT", self._old_gold_discount
+            olds.append(OldGoldLineInput(line["karat_id"], line["weight"], None if kind == "NONE" else kind,
+                                         None if kind == "NONE" else (value or None)))
+        sales, olds = tuple(sales), tuple(olds)
         payments = tuple(PaymentInput(code, amount) for code, amount in
                          (("PHYSICAL_CASH", self._cash), ("MOBILE_WALLET", self._wallet))
                          if amount and self._nonzero(amount))
@@ -416,10 +466,16 @@ class InvoiceViewModel(QObject):
 
     @Slot()
     def newInvoice(self):
-        salespeople, board = self._salespeople, self._board
+        # The salesperson stays for the next customer, as after a finalized invoice.
+        salespeople, board, salesperson = self._salespeople, self._board, self._salesperson_id
         self._timer.stop()
         self._reset_state()
-        self._salespeople, self._board = salespeople, board
+        self._salespeople, self._board, self._salesperson_id = salespeople, board, salesperson
+        self.changed.emit()
+
+    @Slot()
+    def dismissSuccess(self):
+        self._success = {}
         self.changed.emit()
 
     @Slot()
@@ -495,7 +551,10 @@ class InvoiceViewModel(QObject):
             calc = self._preview_line("sale_lines", index)
             rows.append({"barcode": line.get("barcode") or "", "itemName": line.get("item_name") or "",
                          "karat": str(line.get("karat") or ""), "weight": grams(line["weight_grams"]),
-                         "makingMode": line["making_mode"], "makingValue": line["making_value"],
+                         "makingMode": line["making_mode"],
+                         "makingValue": line["making_value"] if line.get("making_override") else "",
+                         "makingOverride": bool(line.get("making_override")),
+                         "factory": line.get("factory_name") or "",
                          "goldPrice": price(calc.get("gold_price_per_gram")),
                          "makingTotal": money(calc.get("making_total")),
                          "lineTotal": money(calc.get("line_total"))})
@@ -533,6 +592,30 @@ class InvoiceViewModel(QObject):
     def walletAmount(self):
         return self._wallet
 
+    @Property(str, notify=changed)
+    def invoiceMaking(self):
+        return self._invoice_making
+
+    @Property(str, notify=changed)
+    def oldGoldDiscountPercent(self):
+        return self._old_gold_discount
+
+    @Property("QVariantMap", notify=changed)
+    def weightTotals(self):
+        """Display-only grams per karat (the prototype's مباع / مشترى strip)."""
+        def totals(lines, weight_key):
+            sums = {karat: Decimal("0") for karat in WEIGHT_KARATS}
+            for line in lines:
+                karat = str(line.get("karat") or "")
+                try:
+                    weight = Decimal(str(line.get(weight_key) or "0"))
+                except InvalidOperation:
+                    continue
+                if karat in sums:
+                    sums[karat] += weight
+            return {karat: (f"{value:.3f}" if value else "—") for karat, value in sums.items()}
+        return {"sold": totals(self._sales, "weight_grams"), "bought": totals(self._olds, "weight")}
+
     @Property(bool, notify=changed)
     def previewReady(self):
         return bool(self._preview) and self._preview_version == self._version
@@ -542,9 +625,18 @@ class InvoiceViewModel(QObject):
         p = self._preview if self.previewReady else {}
         if not p:
             return {"saleTotal": "", "oldGoldTotal": "", "netText": "", "netDirection": "", "receivedText": "",
-                    "paidText": "", "residualText": "", "residualDirection": "", "statusText": ""}
+                    "paidText": "", "residualText": "", "residualDirection": "", "statusText": "",
+                    "dueLabel": "صافي الفاتورة", "dueAmount": "", "paidLabel": "المدفوع", "paidAmount": "",
+                    "remainingLabel": "المتبقي", "remainingAmount": ""}
         residual = p["residual_direction"]
-        return {"saleTotal": money(p["sale_total"]), "oldGoldTotal": money(p["old_gold_total"]),
+        pays_customer = p["net_direction"] == "SHOP_PAYS_CUSTOMER"
+        return {"dueLabel": DUE_TEXT[p["net_direction"]],
+                "dueAmount": "" if p["net_direction"] == "SETTLED" else money(p["net_amount"]),
+                "paidLabel": "المدفوع للعميل" if pays_customer else "المدفوع من العميل",
+                "paidAmount": money(p["money_paid"] if pays_customer else p["money_received"]),
+                "remainingLabel": REMAINING_TEXT[residual],
+                "remainingAmount": "" if residual == "NONE" else money(p["residual_amount"]),
+                "saleTotal": money(p["sale_total"]), "oldGoldTotal": money(p["old_gold_total"]),
                 "netText": f"{NET_TEXT[p['net_direction']]} {money(p['net_amount'])}",
                 "netDirection": p["net_direction"],
                 "receivedText": money(p["money_received"]), "paidText": money(p["money_paid"]),
