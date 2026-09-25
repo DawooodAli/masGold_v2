@@ -428,32 +428,16 @@ class BarcodePrintService:
             assigned_count = 0
 
             if missing_items:
-                date_part = (
-                    date.today().strftime(
-                        "%y%m%d"
-                    )
-                )
-
-                sequence = (
-                    repository
-                    .get_max_sequence_for_date(
-                        date_part
-                    )
-                )
+                today = date.today()
 
                 for item in missing_items:
-                    while True:
-                        sequence += 1
-
-                        barcode_value = (
-                            f"{sequence:02d}"
-                            f"{date_part}"
+                    # barcode_number_sequences, never a reused historical value.
+                    barcode_value = (
+                        repository
+                        .allocate_barcode_value(
+                            today
                         )
-
-                        if not repository.barcode_exists(
-                            barcode_value
-                        ):
-                            break
+                    )
 
                     item_id = int(
                         item[

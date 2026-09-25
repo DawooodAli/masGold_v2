@@ -1,3 +1,13 @@
+from datetime import date
+
+
+BARCODE_SEQUENCE_MAX = 999
+
+
+class BarcodeSequenceExhausted(RuntimeError):
+    """All 999 barcode numbers of a day are used."""
+
+
 class BarcodeRepository:
     """
     Database access for barcode queue preparation, barcode assignment,
@@ -120,49 +130,67 @@ class BarcodeRepository:
         finally:
             cursor.close()
 
-    def get_max_sequence_for_date(self, date_part):
+    def allocate_barcode_value(self, for_date):
         """
-        Preserve the prototype barcode style:
-            01YYMMDD
-            02YYMMDD
-            ...
+        Allocate the next NNYYMMDD barcode (NN = 01..999) from
+        barcode_number_sequences, e.g. 01260921, 02260921 ... 999260921.
 
-        Example:
-            01260921
+        The day's sequence row stays locked until the caller's transaction
+        ends. On first use of a day it is seeded from every existing numeric
+        barcode of that day, whatever its status (ACTIVE, REPLACED, RETIRED),
+        and any value already stored is skipped: a historical barcode is
+        never issued again.
         """
 
+        if not isinstance(for_date, date):
+            raise ValueError("for_date must be a date.")
+
+        date_part = for_date.strftime("%y%m%d")
         cursor = self.connection.cursor()
 
         try:
             cursor.execute(
                 """
-                SELECT barcode_value
+                INSERT INTO barcode_number_sequences (sequence_date, last_seq)
+                SELECT %s, COALESCE(MAX(CAST(LEFT(barcode_value, CHAR_LENGTH(barcode_value) - 6)
+                                             AS UNSIGNED)), 0)
                 FROM inventory_barcodes
-                WHERE
-                    barcode_status = 'ACTIVE'
-                    AND barcode_value REGEXP '^[0-9]+$'
-                    AND RIGHT(barcode_value, 6) = %s
+                WHERE barcode_value REGEXP '^[0-9]{8,9}$'
+                  AND RIGHT(barcode_value, 6) = %s
+                ON DUPLICATE KEY UPDATE sequence_date = sequence_date
                 """,
-                (date_part,),
+                (for_date, date_part),
             )
+            cursor.execute(
+                """
+                SELECT last_seq
+                FROM barcode_number_sequences
+                WHERE sequence_date = %s
+                FOR UPDATE
+                """,
+                (for_date,),
+            )
+            sequence = int(cursor.fetchone()[0])
 
-            maximum = 0
-
-            for (barcode_value,) in cursor.fetchall():
-                value = str(barcode_value or "")
-
-                if len(value) <= 6:
-                    continue
-
-                prefix = value[:-6]
-
-                if prefix.isdigit():
-                    maximum = max(
-                        maximum,
-                        int(prefix),
+            while True:
+                if sequence >= BARCODE_SEQUENCE_MAX:
+                    raise BarcodeSequenceExhausted(
+                        f"تم استخدام كل أرقام باركود يوم {for_date.isoformat()} (999)."
                     )
+                sequence += 1
+                barcode_value = f"{sequence:02d}{date_part}"
+                if not self.barcode_exists(barcode_value):
+                    break
 
-            return maximum
+            cursor.execute(
+                """
+                UPDATE barcode_number_sequences
+                SET last_seq = %s
+                WHERE sequence_date = %s
+                """,
+                (sequence, for_date),
+            )
+            return barcode_value
 
         finally:
             cursor.close()

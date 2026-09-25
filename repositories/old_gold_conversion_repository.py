@@ -4,7 +4,8 @@ class OldGoldConversionRepository:
     into one new inventory item.
 
     Old gold is NOT an inventory-item table.
-    Balance = SUM(old_gold_movements.weight_delta_grams) per karat.
+    Balance = SUM(old_gold_movements.weight_delta_grams) per karat,
+    over COUNTED movements only (REFERENCE_ONLY legacy history is excluded).
     """
 
     def __init__(self, connection):
@@ -203,6 +204,9 @@ class OldGoldConversionRepository:
                 LEFT JOIN old_gold_movements og
                     ON og.karat_id = k.id
                     AND og.weight_delta_grams IS NOT NULL
+                    -- Imported legacy history is REFERENCE_ONLY and never
+                    -- part of the live balance.
+                    AND og.balance_effect = 'COUNTED'
 
                 WHERE k.is_active = TRUE
 
@@ -241,6 +245,7 @@ class OldGoldConversionRepository:
                 WHERE
                     karat_id = %s
                     AND weight_delta_grams IS NOT NULL
+                    AND balance_effect = 'COUNTED'
                 FOR UPDATE
                 """,
                 (int(karat_id),),

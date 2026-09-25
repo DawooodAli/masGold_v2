@@ -183,7 +183,9 @@ class CustomerRepositorySearchTests(NoDatabaseTestCase):
             "فاطمة", is_active=False, customer_type_id=7,
             balance_status="SHOP_OWES_CUSTOMER", limit=101, offset=200,
         )
-        self.assertEqual(params[-8:], (False, False, 7, 7, "SHOP_OWES_CUSTOMER", "SHOP_OWES_CUSTOMER", 101, 200))
+        # Trailing False, False: LEGACY_PLACEHOLDER accounts hidden by default.
+        self.assertEqual(params[-10:], (False, False, 7, 7, "SHOP_OWES_CUSTOMER", "SHOP_OWES_CUSTOMER",
+                                        False, False, 101, 200))
         self.assertIn("c.is_active = %s", query)
         self.assertIn("c.customer_type_id = %s", query)
         self.assertIn("b.balance_status = %s", query)
@@ -224,7 +226,8 @@ class CustomerServiceSearchAndSaveTests(NoDatabaseTestCase):
                     "items": rows[:100], "page": 3, "page_size": 100, "has_more": has_more,
                 })
                 _, params = self.cursor.execute.call_args.args
-                self.assertEqual(params[-8:], (False, False, 7, 7, "CUSTOMER_OWES_SHOP", "CUSTOMER_OWES_SHOP", 101, 200))
+                self.assertEqual(params[-10:], (False, False, 7, 7, "CUSTOMER_OWES_SHOP", "CUSTOMER_OWES_SHOP",
+                                                False, False, 101, 200))
 
     def test_picker_page_size_reuses_search_and_fetches_one_extra(self):
         self.cursor.fetchall.return_value = [{"customer_id": number} for number in range(21)]

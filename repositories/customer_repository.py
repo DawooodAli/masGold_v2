@@ -1,4 +1,6 @@
 from datetime import datetime
+from decimal import Decimal
+import json
 
 from repositories.base_repository import BaseRepository
 from utils.search_normalization import (
@@ -23,6 +25,8 @@ class CustomerRepository(BaseRepository):
             ty.name AS customer_type_name,
             ty.is_active AS customer_type_is_active,
             c.is_active,
+            c.record_origin,
+            c.data_completeness,
             c.notes,
             c.created_at,
             c.updated_at,
@@ -96,7 +100,12 @@ class CustomerRepository(BaseRepository):
         balance_status: str | None = None,
         limit: int = 101,
         offset: int = 0,
+        *,
+        include_legacy_placeholders: bool = False,
+        only_legacy_placeholders: bool = False,
     ) -> list[dict]:
+        # LEGACY_PLACEHOLDER accounts (missing legacy customers) exist only to
+        # settle their historical balance: hidden from normal search/pickers.
         search = search.strip()
         text = normalize_search_text(search)
         mobile = normalize_mobile_search(search)
@@ -135,6 +144,8 @@ class CustomerRepository(BaseRepository):
             AND (%s IS NULL OR c.is_active = %s)
             AND (%s IS NULL OR c.customer_type_id = %s)
             AND (%s IS NULL OR b.balance_status = %s)
+            AND (%s OR c.record_origin <> 'LEGACY_PLACEHOLDER')
+            AND (NOT %s OR c.record_origin = 'LEGACY_PLACEHOLDER')
             ORDER BY c.id DESC
             LIMIT %s OFFSET %s
             """,
@@ -146,8 +157,21 @@ class CustomerRepository(BaseRepository):
                 is_active, is_active,
                 customer_type_id, customer_type_id,
                 balance_status, balance_status,
+                include_legacy_placeholders or only_legacy_placeholders,
+                only_legacy_placeholders,
                 limit, offset,
             ),
+        )
+
+    def search_legacy_placeholder_accounts(
+        self,
+        search: str = "",
+        limit: int = 101,
+        offset: int = 0,
+    ) -> list[dict]:
+        """Explicit path for the later legacy-account settlement flow only."""
+        return self.search_customers(
+            search, limit=limit, offset=offset, only_legacy_placeholders=True,
         )
 
     def get_customer_by_id(self, customer_id: int) -> dict | None:
@@ -161,7 +185,8 @@ class CustomerRepository(BaseRepository):
             """
             SELECT
                 id, customer_code, name, mobile, place,
-                customer_type_id, is_active, notes, updated_at
+                customer_type_id, is_active, record_origin, data_completeness,
+                notes, updated_at
             FROM customers
             WHERE id = %s
             FOR UPDATE
@@ -465,5 +490,77 @@ class CustomerRepository(BaseRepository):
                 """,
                 (is_active, updated_by_user_id, customer_id),
             )
+        finally:
+            cursor.close()
+
+    # ------------------------------------------------------------ ledger writes
+
+    def get_balance(self, customer_id: int) -> Decimal:
+        """Balance recomputed from the complete ledger (lock the customer first).
+
+        positive = customer owes the shop, negative = the shop owes the customer.
+        """
+        row = self._fetch_one(
+            """
+            SELECT CAST(COALESCE(SUM(amount_delta), 0) AS DECIMAL(16,2)) AS balance
+            FROM customer_transactions
+            WHERE customer_id = %s
+            """,
+            (int(customer_id),),
+        )
+        return Decimal(str(row["balance"]))
+
+    def get_transaction_type(self, code: str) -> dict | None:
+        return self._fetch_one(
+            """
+            SELECT id, code, name, expected_direction, is_active
+            FROM customer_transaction_types
+            WHERE code = %s
+            """,
+            (code,),
+        )
+
+    def add_transaction(
+        self,
+        *,
+        customer_id: int,
+        type_code: str,
+        amount_delta: Decimal,
+        created_by_user_id: int | None,
+        reference_type: str | None = None,
+        reference_id: int | str | None = None,
+        reference_code: str | None = None,
+        description: str | None = None,
+        notes: str | None = None,
+        metadata: dict | None = None,
+    ) -> str:
+        """Append one ledger row; the sign must match the type's direction."""
+        if not isinstance(amount_delta, Decimal) or not amount_delta.is_finite() or amount_delta == 0:
+            raise ValueError("amount_delta must be a non-zero Decimal.")
+        transaction_type = self.get_transaction_type(type_code)
+        if transaction_type is None or not transaction_type["is_active"]:
+            raise ValueError(f"Unknown or inactive customer transaction type {type_code}.")
+        direction = transaction_type["expected_direction"]
+        if (direction == "INCREASE" and amount_delta < 0) or (direction == "DECREASE" and amount_delta > 0):
+            raise ValueError(f"{type_code} expects {direction}, got {amount_delta}.")
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(
+                """
+                INSERT INTO customer_transactions (
+                    customer_id, transaction_type_id, amount_delta,
+                    reference_type, reference_id, reference_code,
+                    description, notes, created_by_user_id, metadata_json
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    int(customer_id), int(transaction_type["id"]), amount_delta,
+                    reference_type, None if reference_id is None else int(reference_id),
+                    reference_code, description, notes, created_by_user_id,
+                    None if metadata is None else json.dumps(metadata, ensure_ascii=False, default=str),
+                ),
+            )
+            return str(cursor.lastrowid)
         finally:
             cursor.close()

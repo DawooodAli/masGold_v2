@@ -22,6 +22,7 @@ def fixture_tables(movements=None):
     customer_columns = (
         "id", "customer_code", "name", "mobile", "place", "customer_type_id",
         "is_active", "notes", "created_at", "updated_at", "created_by_user_id", "updated_by_user_id",
+        "record_origin", "data_completeness",
     )
     transaction_columns = (
         "id", "customer_id", "transaction_type_id", "amount_delta", "reference_type",
@@ -44,8 +45,10 @@ def fixture_tables(movements=None):
     ]
     return {
         "customers": (customer_columns, [
-            (1, "C000001", "First", "010", "Cairo", 1, 1, "customer notes", "2026-01-01", "2026-01-01", 11, 12),
-            (2, None, "Inactive", None, None, None, 0, None, "2026-01-01", "2026-01-01", None, None),
+            (1, "C000001", "First", "010", "Cairo", 1, 1, "customer notes", "2026-01-01", "2026-01-01", 11, 12,
+             "NATIVE", "COMPLETE"),
+            (2, None, "Inactive", None, None, None, 0, None, "2026-01-01", "2026-01-01", None, None,
+             "NATIVE", "COMPLETE"),
         ]),
         "customer_types": (("id", "code", "name", "is_active", "sort_order"), [(1, "REGULAR", "Regular", 1, 1)]),
         "customer_transaction_types": (("id", "code", "name", "expected_direction", "is_active"), [
