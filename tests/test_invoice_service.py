@@ -120,6 +120,31 @@ class InvoiceRepo:
 
     lock_sale_items = read_sale_items = _items
 
+    def search_sellable_items(self, *, text="", karat_id=None, weight_min=None, weight_max=None, size="",
+                              exclude_ids=(), weight_target=None, limit=31):
+        """Same contract as InvoiceRepository.search_sellable_items (IN_STOCK only, no choice made)."""
+        self.store.searches = getattr(self.store, "searches", []) + [dict(text=text, karat_id=karat_id)]
+        excluded = {str(int(i)) for i in exclude_ids}
+        rows = []
+        for item in self.store.items.values():
+            fields = [item.get("item_type_name"), item.get("factory_name"), item.get("category_name"),
+                      item.get("category_code"), item.get("barcode_value")]
+            if item["inventory_status"] != "IN_STOCK" or item["inventory_item_id"] in excluded:
+                continue
+            from utils.search_normalization import normalize_search_text as fold
+            if text and not any(fold(text) in fold(value) or text in (value or "") for value in fields):
+                continue
+            if karat_id is not None and item["karat_id"] != karat_id:
+                continue
+            if weight_min is not None and not weight_min <= item["weight_grams"] <= weight_max:
+                continue
+            if size and size not in (item.get("size") or ""):
+                continue
+            rows.append(dict(item))
+        key = ((lambda r: (abs(r["weight_grams"] - weight_target), -int(r["inventory_item_id"])))
+               if weight_target is not None else (lambda r: -int(r["inventory_item_id"])))
+        return sorted(rows, key=key)[:limit]
+
     def get_payment_method(self, code):
         if code not in self.store.methods:
             return None
@@ -476,6 +501,72 @@ class AtomicityAndAttributionTests(InvoiceServiceTestCase):
         self.assertEqual(times, {1: datetime(2026, 9, 25, 11, 29, 56), 2: datetime(2026, 9, 25, 11, 29, 57),
                                  3: datetime(2026, 9, 25, 11, 29, 58)})
         self.assertEqual({p["quote_id"] for p in self.store.price_snapshots}, {51, 52, 53})
+
+
+class ItemSearchTests(InvoiceServiceTestCase):
+    """بحث عن قطعة: candidates only; the piece is sold by its exact inventory id."""
+
+    def setUp(self):
+        super().setUp()
+        base = {"size": None, "stock_classification": "NEW_STOCK", "inventory_status": "IN_STOCK",
+                "category_code": "A", "category_name": None}
+        self.store.items.update({
+            "103": {**base, "inventory_item_id": "103", "karat_id": 1, "karat_value": 21,
+                    "weight_grams": D("3.500"), "item_type_name": "دبلة", "factory_name": "مصنع النور",
+                    "size": "18", "barcode_value": None},
+            "104": {**base, "inventory_item_id": "104", "karat_id": 1, "karat_value": 21,
+                    "weight_grams": D("3.520"), "item_type_name": "دبلة", "factory_name": "مصنع النور",
+                    "size": "17", "barcode_value": "04260925"},
+            "105": {**base, "inventory_item_id": "105", "karat_id": 1, "karat_value": 21, "inventory_status": "SOLD",
+                    "weight_grams": D("3.500"), "item_type_name": "دبلة", "factory_name": None,
+                    "barcode_value": None}})
+
+    def ids(self, result):
+        return [item["inventory_item_id"] for item in result["items"]]
+
+    def test_only_in_stock_candidates_closest_weight_first(self):
+        result = self.service.search_sellable_items(text="دبلة", karat_id=1, weight="3.5", tolerance="0.05")
+        self.assertEqual(self.ids(result), ["103", "104"])            # both similar pieces are shown
+        self.assertNotIn("105", self.ids(self.service.search_sellable_items(text="دبلة")))
+        first = result["items"][0]
+        self.assertEqual((first["barcode"], first["factory_name"], first["size"], first["weight_grams"]),
+                         (None, "مصنع النور", "18", "3.500"))
+        self.assertFalse(result["truncated"])
+
+    def test_filters_and_draft_exclusion(self):
+        self.assertEqual(self.ids(self.service.search_sellable_items(text="دبلة", exclude_ids=("103",))), ["104"])
+        self.assertEqual(self.ids(self.service.search_sellable_items(text="دبلة", karat_id=2)), [])
+        self.assertEqual(self.ids(self.service.search_sellable_items(text="دبلة", size="17")), ["104"])
+        self.assertEqual(self.ids(self.service.search_sellable_items(text="النور", weight="3.5", tolerance="0")),
+                         ["103"])
+        self.assertEqual(self.ids(self.service.search_sellable_items(text="0426")), ["104"])
+
+    def test_invalid_weight_and_permission(self):
+        for weight, tolerance in (("abc", "0.05"), ("-1", "0.05"), ("3.5", "6"), ("NaN", "0")):
+            with self.assertRaises(InvoiceError) as refused:
+                self.service.search_sellable_items(weight=weight, tolerance=tolerance)
+            self.assertEqual(refused.exception.code, "SEARCH_WEIGHT_INVALID")
+        self.session.logout()
+        with self.assertRaises(PermissionError):
+            self.service.search_sellable_items(text="دبلة")
+
+    def test_searched_piece_is_sold_by_its_exact_id_and_recorded(self):
+        before_movements = len(self.store.inventory_movements)
+        self.finalize(InvoiceDraft(5, None, (SaleLineInput("103", making_per_gram="100", identified_by="SEARCH"),),
+                                   (), (cash("22162"),)))
+        self.assertEqual(self.store.items["103"]["inventory_status"], "SOLD")
+        self.assertEqual(self.store.items["104"]["inventory_status"], "IN_STOCK")   # the similar piece is untouched
+        self.assertEqual(len(self.store.inventory_movements), before_movements + 1)
+        finalized = [e for e in self.store.events if e["event_type"] == "FINALIZED"][0]
+        self.assertEqual(finalized["details"]["search_identified_item_ids"], ["103"])
+
+    def test_scanned_pieces_record_no_search_detail_and_bad_method_is_refused(self):
+        self.finalize(InvoiceDraft(5, None, (sale(),), (), (cash("67011"),)))
+        finalized = [e for e in self.store.events if e["event_type"] == "FINALIZED"][0]
+        self.assertNotIn("search_identified_item_ids", finalized["details"])
+        self.assertRefused("IDENTIFICATION_INVALID",
+                           InvoiceDraft(5, None, (SaleLineInput("101", making_per_gram="1", identified_by="GUESS"),),
+                                        (), (cash("1"),)))
 
 
 class PreviewTests(InvoiceServiceTestCase):

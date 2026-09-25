@@ -11,6 +11,15 @@ class AuthenticationViewModel(QObject):
 
     def __init__(self, session, service=None, parent=None):
         super().__init__(parent)
+        # TEMPORARY DEVELOPMENT AUTO-LOGIN — DISABLE BEFORE PRODUCTION (config/dev_settings.py).
+        # Only with the real AuthenticationService (never an injected one), once at startup;
+        # after logout the normal Login window is shown.
+        if service is None:
+            from config.dev_settings import dev_auto_login_username
+            self._dev_auto_login = dev_auto_login_username()
+        else:
+            self._dev_auto_login = None
+        self._dev_login_pending = False
         self._session = session
         self._service = service or AuthenticationService()
         self._workers = set()
@@ -90,10 +99,17 @@ class AuthenticationViewModel(QObject):
         if request != self._request or generation != self._session.generation:
             return
         self._busy = False
+        dev_login, self._dev_login_pending = self._dev_login_pending, False
         if isinstance(result, dict) and "setup_required" in result and not error:
             self._stage = "FIRST_RUN_SETUP" if result["setup_required"] else "LOGIN"
             self._employees = result["employees"] if result["setup_required"] else []
             self._error = ""
+            username, self._dev_auto_login = self._dev_auto_login, None
+            if username and not result["setup_required"]:
+                self._stage = "CHECKING_SETUP"          # no Login window flash while signing in
+                self._dev_login_pending = True
+                self._start_worker(username, operation="dev_login")
+                return
             self.changed.emit()
             return
         if result is not None and not error:
@@ -104,6 +120,8 @@ class AuthenticationViewModel(QObject):
                 self.changed.emit()
                 self.authenticated.emit()
                 return
+        if dev_login:
+            self._stage = "LOGIN"                    # failed development auto-login: normal Login
         self._error = error or GENERIC_ERROR
         self.changed.emit()
 

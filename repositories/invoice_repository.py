@@ -179,6 +179,63 @@ class InvoiceRepository(BaseRepository):
         by_id = {int(row["inventory_item_id"]): _stringify_ids(row) for row in rows}
         return [by_id[item_id] for item_id in ids if item_id in by_id]
 
+    def search_sellable_items(self, *, text="", karat_id=None, weight_min=None, weight_max=None, size="",
+                              exclude_ids=(), weight_target=None, limit=31):
+        """IN_STOCK items matching practical filters (no locks). Never picks one:
+        the caller shows every candidate and the employee chooses."""
+        from utils.search_normalization import mysql_search_expression, normalize_search_text
+        text, size = (text or "").strip(), (size or "").strip()
+        # Same search-only Arabic folding as Customers V2 (أ/إ/آ → ا, ة → ه, ى → ي, marks);
+        # stored names are compared through the folding expression and never changed.
+        folded = normalize_search_text(text)
+
+        def like(value):
+            return "%" + value.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%"
+        type_sql, type_params = mysql_search_expression("it.name")
+        factory_sql, factory_params = mysql_search_expression("f.name")
+        category_sql, category_params = mysql_search_expression("cat.name")
+        excluded = sorted({_id(value) for value in exclude_ids})
+        not_in = f"AND ii.id NOT IN ({', '.join(['%s'] * len(excluded))})" if excluded else ""
+        order = "ABS(ii.weight_grams - %s), ii.id DESC" if weight_target is not None else "ii.id DESC"
+        params = [not text,
+                  bool(folded), *type_params, like(folded), bool(folded), *factory_params, like(folded),
+                  bool(folded), *category_params, like(folded), like(text), like(text),
+                  karat_id, karat_id, weight_min, weight_min, weight_max, weight_max, size, like(size),
+                  *excluded]
+        if weight_target is not None:
+            params.append(weight_target)
+        params.append(int(limit))
+        rows = self._fetch_all(
+            f"""
+            SELECT
+                ii.id AS inventory_item_id, ii.karat_id, k.karat_value, ii.weight_grams, ii.size,
+                it.name AS item_type_name, f.name AS factory_name,
+                cat.name AS category_name, cat.code AS category_code, ib.barcode_value
+            FROM inventory_items ii
+            JOIN item_types it ON it.id = ii.item_type_id
+            JOIN karats k ON k.id = ii.karat_id
+            LEFT JOIN factories f ON f.id = ii.factory_id
+            LEFT JOIN item_categories cat ON cat.id = ii.category_id
+            LEFT JOIN inventory_barcodes ib
+                ON ib.inventory_item_id = ii.id AND ib.barcode_status = 'ACTIVE'
+            WHERE ii.inventory_status = 'IN_STOCK'
+              AND (%s
+                   OR (%s AND {type_sql} LIKE %s ESCAPE '!')
+                   OR (%s AND {factory_sql} LIKE %s ESCAPE '!')
+                   OR (%s AND {category_sql} LIKE %s ESCAPE '!')
+                   OR cat.code LIKE %s ESCAPE '!' OR ib.barcode_value LIKE %s ESCAPE '!')
+              AND (%s IS NULL OR ii.karat_id = %s)
+              AND (%s IS NULL OR ii.weight_grams >= %s)
+              AND (%s IS NULL OR ii.weight_grams <= %s)
+              AND (%s = '' OR ii.size LIKE %s ESCAPE '!')
+              {not_in}
+            ORDER BY {order}
+            LIMIT %s
+            """,
+            tuple(params),
+        )
+        return [_stringify_ids(row) for row in rows]
+
     def find_item_id_by_barcode(self, barcode):
         """The item carrying this ACTIVE barcode, as a decimal string, or None."""
         row = self._fetch_one(

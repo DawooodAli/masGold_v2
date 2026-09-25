@@ -206,6 +206,14 @@ class InvoicePageTests(unittest.TestCase):
             QTest.keyClick(self.root, char)
         QTest.qWait(20)
 
+    def type_text(self, text):
+        """Real key events carrying Unicode text (QTest.keyClick only covers Latin-1, not Arabic)."""
+        from PySide6.QtGui import QKeyEvent
+        for char in text:
+            for kind in (QEvent.KeyPress, QEvent.KeyRelease):
+                QCoreApplication.sendEvent(self.root, QKeyEvent(kind, 0, Qt.NoModifier, char))
+        QTest.qWait(20)
+
     def choose(self, combo_name, target):
         """Open the combo by click, move the highlight to row `target` with the keyboard, confirm."""
         combo = self.item(combo_name)
@@ -455,7 +463,7 @@ class InvoicePageTests(unittest.TestCase):
     def test_reserved_function_keys_do_nothing_yet(self):
         self.select_salesperson()
         self.scan("01260925")
-        for key in (Qt.Key_F3, Qt.Key_F5, Qt.Key_F7):
+        for key in (Qt.Key_F5, Qt.Key_F7):                              # F3 is بحث عن قطعة (Stage 2)
             QTest.keyClick(self.root, key)
             QTest.qWait(30)
             self.assertTrue(self.item("invoiceBarcodeField").property("activeFocus"), f"{key} moved focus")
@@ -500,6 +508,110 @@ class InvoicePageTests(unittest.TestCase):
         self.wait_until(lambda: self.vm.oldGoldCount == 0)
         self.assertEqual(self.warnings, [])
 
+    # ------------------------------------------------------------ Stage 2: بحث عن قطعة
+
+    def add_search_items(self):
+        base = {"size": None, "stock_classification": "NEW_STOCK", "inventory_status": "IN_STOCK",
+                "category_code": "A", "category_name": None}
+        self.store.items.update({
+            "103": {**base, "inventory_item_id": "103", "karat_id": 1, "karat_value": 21,
+                    "weight_grams": D("3.500"), "item_type_name": "دبلة", "factory_name": "مصنع النور",
+                    "size": "18", "barcode_value": None},
+            "104": {**base, "inventory_item_id": "104", "karat_id": 1, "karat_value": 21,
+                    "weight_grams": D("3.520"), "item_type_name": "دبلة", "factory_name": "مصنع النور",
+                    "size": "17", "barcode_value": "04260925"},
+            "105": {**base, "inventory_item_id": "105", "karat_id": 1, "karat_value": 21,
+                    "inventory_status": "SOLD", "weight_grams": D("3.500"), "item_type_name": "دبلة",
+                    "factory_name": None, "barcode_value": None}})
+
+    def search_rows(self):
+        return [r["inventoryItemId"] for r in self.vm.searchResults]
+
+    def test_keyboard_search_sells_a_no_barcode_piece_by_its_exact_id_at_1080(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.add_search_items()
+        self.select_salesperson()
+        self.item("invoiceBarcodeField").forceActiveFocus()
+        QTest.keyClick(self.root, Qt.Key_F3)                          # open the side panel
+        panel = self.item("itemSearchPanel")
+        self.wait_until(lambda: panel.property("visible") and self.item("itemSearchText").property("activeFocus"))
+        self.type_text("دبلة")
+        self.assertEqual(self.text("itemSearchText"), "دبلة")
+        QTest.keyClick(self.root, Qt.Key_Return)
+        self.wait_until(lambda: self.search_rows() == ["104", "103"] and not self.vm.searchBusy)
+        self.assertNotIn("105", self.search_rows())                   # SOLD is never offered
+        self.assertFalse(self.item("itemSearchConfirm").property("enabled"))   # nothing chosen yet
+        self.assert_inside_window(panel)
+        self.assert_inside_window(self.item("itemSearchConfirm"))
+        self.snapshot("search-results")
+        QTest.keyClick(self.root, Qt.Key_Down)                        # into the results: first row
+        QTest.keyClick(self.root, Qt.Key_Down)                        # second row: the piece in hand
+        self.wait_until(lambda: self.item("itemSearchRow_1").property("chosen"))
+        self.assertIn("بدون باركود", self.vm.searchResults[1]["barcodeText"])
+        QTest.keyClick(self.root, Qt.Key_Return)                      # confirm
+        self.wait_until(lambda: self.vm.saleCount == 1 and not panel.property("visible"))
+        self.wait_until(lambda: self.item("invoiceBarcodeField").property("activeFocus"), "focus not back")
+        self.assertEqual(self.vm.saleLinesModel.rows()[0]["identifiedBy"], "SEARCH")
+        self.type_into("invoiceMakingField", "100")
+        self.pay_full()
+        self.finalize()
+        self.assertEqual(self.store.items["103"]["inventory_status"], "SOLD")
+        self.assertEqual(self.store.items["104"]["inventory_status"], "IN_STOCK")
+        finalized = [e for e in self.store.events if e["event_type"] == "FINALIZED"][0]
+        self.assertEqual(finalized["details"]["search_identified_item_ids"], ["103"])
+        self.assertEqual(self.warnings, [])
+
+    def test_single_candidate_is_never_auto_selected(self):
+        self.add_search_items()
+        self.select_salesperson()
+        self.click("openItemSearch")
+        self.wait_until(lambda: self.item("itemSearchPanel").property("visible"))
+        self.assertFalse(self.item("itemSearchFilterRow").property("visible"))   # filters stay folded
+        self.click("itemSearchFilters")
+        self.click("searchKarat_21")
+        self.type_into("itemSearchWeight", "3.5")
+        self.type_into("itemSearchTolerance", "0")
+        QTest.keyClick(self.root, Qt.Key_Return)
+        self.wait_until(lambda: self.search_rows() == ["103"] and not self.vm.searchBusy)
+        QTest.qWait(60)
+        confirm = self.item("itemSearchConfirm")
+        self.assertFalse(confirm.property("enabled"))                 # one match is still not a choice
+        self.assertEqual(self.item("itemSearchPanel").property("chosenIndex"), -1)
+        self.assertEqual(self.vm.saleCount, 0)
+        self.click("itemSearchRow_0")                                 # the employee picks it
+        self.assertTrue(confirm.property("enabled"))
+        self.click(confirm)
+        self.wait_until(lambda: self.vm.saleCount == 1)
+        self.assertEqual(self.vm._draft().sale_lines[0].inventory_item_id, "103")
+
+    def test_search_excludes_draft_pieces_and_esc_closes(self):
+        self.add_search_items()
+        self.select_salesperson()
+        self.scan("04260925")                                         # barcode path unchanged
+        self.assertEqual(self.vm.saleLinesModel.rows()[0]["identifiedBy"], "SCAN")
+        QTest.keyClick(self.root, Qt.Key_F3)
+        self.wait_until(lambda: self.item("itemSearchPanel").property("visible") and not self.vm.searchBusy)
+        self.wait_until(lambda: "104" not in self.search_rows() and "103" in self.search_rows())
+        self.click("itemSearchFilters")
+        self.click("searchKarat_18")
+        self.wait_until(lambda: self.search_rows() == ["101"] and not self.vm.searchBusy)
+        QTest.keyClick(self.root, Qt.Key_Escape)
+        self.wait_until(lambda: not self.item("itemSearchPanel").property("visible"))
+        self.wait_until(lambda: self.item("invoiceBarcodeField").property("activeFocus"))
+        self.assertEqual(self.vm.saleCount, 1)
+
+    def test_barcode_not_found_offers_search_inline(self):
+        self.add_search_items()
+        self.select_salesperson()
+        self.type_into("invoiceBarcodeField", "99999999")
+        QTest.keyClick(self.root, Qt.Key_Return)
+        self.wait_until(lambda: self.vm.barcodeNotFound)
+        self.assertIn("99999999", self.text("invoiceErrorText"))
+        self.click("barcodeNotFoundSearch")
+        self.wait_until(lambda: self.item("itemSearchPanel").property("visible"))
+        self.assertFalse(self.item("invoiceErrorBanner").property("visible"))
+
     def test_old_gold_add_needs_an_explicit_karat_at_1080(self):
         self.root.setWidth(1080)
         self.root.setHeight(680)
@@ -531,15 +643,15 @@ class InvoicePageTests(unittest.TestCase):
         self.root.setWidth(1080)
         self.root.setHeight(680)
         sell = self.item("priceSell_21")
-        self.assertEqual(sell.property("text"), "بيع 6,232.00")
+        self.assertEqual(sell.property("text"), "21: 6,232")
         with patch.dict(fixtures.PRICES, {1: (D("6250.0000"), D("6275.0000"))}):
             self.prices.token = "T2"
             gold = self.controller.gold_prices
             gold._data = {**gold._data, "price_token": "T2", "status": "FRESH"}
             gold.changed.emit()                                        # the top bar publishes a new set
-            self.wait_until(lambda: self.item("priceSell_21").property("text") == "بيع 6,275.00",
+            self.wait_until(lambda: self.item("priceSell_21").property("text") == "21: 6,275",
                             "Billing price bar did not follow the new set")
-        self.assertEqual(self.item("priceBuy_21").property("text"), "شراء 6,250.00")
+        self.assertEqual(self.item("priceBuy_21").property("text"), "21: 6,250")
         self.assertEqual(self.vm._board["price_token"], "T2")
         self.assertEqual(self.warnings, [])
 
@@ -579,8 +691,8 @@ class InvoicePageTests(unittest.TestCase):
             # Side by side: the sale panel on the physical right.
             self.assertGreater(sale_panel.mapToScene(QPointF(0, 0)).x(), old_panel.mapToScene(QPointF(0, 0)).x())
             self.assertGreaterEqual(self.item("saleList").property("height"), 80, f"sale table at {width}x{height}")
-            # The old-gold hint ("اختر العيار أولاً") has room for its full text.
-            self.assertGreaterEqual(self.item("oldGoldWeight").width(), 160, f"old-gold weight at {width}")
+            # The old-gold hint ("العيار أولاً") has room for its full text.
+            self.assertGreaterEqual(self.item("oldGoldWeight").width(), 80, f"old-gold weight at {width}")
             if target:
                 self.assertTrue(self.root.grabWindow().save(str(Path(target) / f"billing-{width}x{height}.png")))
         self.assertEqual(self.warnings, [])

@@ -115,7 +115,8 @@ class InvoiceViewModelTests(unittest.TestCase):
 
     def test_reference_data_and_price_rows(self):
         self.assertEqual(self.vm.salespeople, [{"employeeId": "5", "name": "علي"}])
-        self.assertEqual(self.vm.priceRows[1], {"karatId": 1, "karat": "21", "buy": "6,207.00", "sell": "6,232.00"})
+        self.assertEqual(self.vm.priceRows[1], {"karatId": 1, "karat": "21", "buy": "6,207.00", "sell": "6,232.00",
+                                                "buyShort": "6,207", "sellShort": "6,232"})
         self.assertEqual(self.vm.priceStatusText, "")
 
     def test_draft_mapping_sends_choices_only(self):
@@ -378,6 +379,74 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.assertTrue(self.vm.hasSuccess)
         self.vm.addBarcode("01260925")                           # the next invoice starts
         self.assertFalse(self.vm.hasSuccess)
+
+    # ------------------------------------------------------------ Stage 2: بحث عن قطعة
+
+    def search_service(self):
+        found = [{"inventory_item_id": "103", "barcode": None, "item_name": "دبلة", "karat_id": 1, "karat": 21,
+                  "weight_grams": "3.500", "factory_name": "مصنع النور", "size": "18", "category_name": None},
+                 {"inventory_item_id": "104", "barcode": "04260925", "item_name": "دبلة", "karat_id": 1,
+                  "karat": 21, "weight_grams": "3.520", "factory_name": None, "size": None, "category_name": None}]
+
+        def search(**kwargs):
+            self.service.calls.append(("search", kwargs))
+            return {"items": [r for r in found if r["inventory_item_id"] not in kwargs["exclude_ids"]],
+                    "truncated": False}
+        self.service.search_sellable_items = search
+
+    def test_search_shows_candidates_and_never_picks_one(self):
+        self.search_service()
+        self.vm.searchItems("دبلة", 1, "3.5", "0.05", "")
+        self.assertEqual(self.vm.saleCount, 0)                          # nothing added by searching
+        rows = self.vm.searchResults
+        self.assertEqual([r["title"].replace("‏", "") for r in rows],
+                         ["دبلة | عيار 21 | 3.500 جم | مصنع النور | مقاس 18", "دبلة | عيار 21 | 3.520 جم"])
+        self.assertEqual([r["barcodeText"] for r in rows], ["بدون باركود", "04260925"])
+        self.assertEqual([(r["itemName"], r["weightText"], r["karatText"], r["detailText"]) for r in rows],
+                         [("دبلة", "3.500 جم", "عيار 21", "مصنع النور • مقاس 18"), ("دبلة", "3.520 جم", "عيار 21", "")])
+        self.assertEqual(self.vm.searchMessage, "2 قطعة — اختر القطعة التي أمامك")
+        call = self.service.calls[-1][1]
+        self.assertEqual((call["karat_id"], call["weight"], call["tolerance"], call["exclude_ids"]),
+                         (1, "3.5", "0.05", ()))
+
+    def test_explicit_choice_adds_the_exact_piece_marked_search(self):
+        self.search_service()
+        self.vm.setSalesperson("5")
+        self.vm.searchItems("", -1, "", "0.05", "")
+        self.assertFalse(self.vm.addSearchedItem("999"))                # not a shown candidate
+        self.assertTrue(self.vm.addSearchedItem("103"))
+        self.assertEqual(self.vm.saleCount, 1)
+        line = self.vm._draft().sale_lines[0]
+        self.assertEqual((line.inventory_item_id, line.identified_by), ("103", "SEARCH"))
+        self.assertEqual(self.vm.saleLinesModel.rows()[0]["identifiedBy"], "SEARCH")
+        self.assertEqual([r["inventoryItemId"] for r in self.vm.searchResults], ["104"])
+        self.vm.searchItems("", -1, "", "0.05", "")                     # the added piece is excluded
+        self.assertEqual(self.service.calls[-1][1]["exclude_ids"], ("103",))
+        self.vm.addBarcode("01260925")
+        self.assertEqual([l.identified_by for l in self.vm._draft().sale_lines], ["SEARCH", "SCAN"])
+
+    def test_barcode_not_found_offers_search(self):
+        from services.invoice_service import InvoiceError
+
+        def missing(barcode, _expected_actor=None):
+            raise InvoiceError("BARCODE_NOT_FOUND", "لا توجد قطعة بالباركود 9.")
+        self.service.find_item_by_barcode = missing
+        self.vm.addBarcode("9")
+        self.assertTrue(self.vm.barcodeNotFound)
+        self.service.find_item_by_barcode = lambda b, _expected_actor=None: dict(ITEM)
+        self.vm.addBarcode("01260925")
+        self.assertFalse(self.vm.barcodeNotFound)
+
+    def test_missing_making_uses_salesman_wording(self):
+        from services.invoice_calculator import InvoiceCalculationError
+
+        def refuse(draft, _expected_actor=None):
+            raise InvoiceCalculationError("MAKING_REQUIRED", "حدد المصنعية إما للجرام أو إجمالياً (وليس الاثنين).")
+        self.service.preview = refuse
+        self.vm.setSalesperson("5")
+        self.vm.addBarcode("01260925")
+        self.preview_now()
+        self.assertEqual(self.vm.previewError, "أدخل المصنعية/جم (Ctrl+M).")
 
     def test_formatting_helpers(self):
         self.assertEqual(money("1234.5"), "1,234.50 ج")

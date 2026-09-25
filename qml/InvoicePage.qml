@@ -2,17 +2,19 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// Billing V2 (canonical invoices) — one-screen salesman page.
-// Sale and old-gold tables side by side, money strip always visible.
-// Every amount shown comes from invoiceVM, recalculated by InvoiceService;
-// this page only forwards employee input.
+// Billing V2 (canonical invoices) — point-of-sale page, converged on the masGold
+// prototype (mainWindow_4.ui): thin header strip, sale and old-gold entry rows
+// directly above their tables side by side, per-karat gram strips, and a fixed
+// money strip. Every amount shown comes from invoiceVM, recalculated by
+// InvoiceService; this page only forwards employee input.
 Item {
     id: invoicePage
     objectName: "invoicePage"
 
     property string pageTitle: ""
     property bool activated: false
-    readonly property bool keysActive: visible && !confirmDialog.opened
+    readonly property bool keysActive: visible && !confirmDialog.opened && !searchPanel.visible
+    readonly property bool compact: width < 900
 
     Theme { id: theme }
 
@@ -31,9 +33,50 @@ Item {
         }
     }
 
+    // ---------------- بحث عن قطعة (F3): a temporary overlay over the sales table
+    function openItemSearch() {
+        if (!visible || confirmDialog.opened)
+            return
+        searchPanel.visible = true
+        searchText.forceActiveFocus()
+        searchText.selectAll()
+        runItemSearch()
+    }
+    function closeItemSearch() {
+        searchPanel.visible = false
+        searchDebounce.stop()
+        invoiceVM.clearItemSearch()
+        focusBarcode()
+    }
+    function runItemSearch() {
+        searchDebounce.stop()
+        searchPanel.chosenIndex = -1
+        invoiceVM.searchItems(searchText.text, searchPanel.karatId, searchWeight.text, searchTolerance.text,
+                              searchSize.text)
+    }
+    // Explicit choice only: the employee picked this row and confirmed it.
+    function confirmSearchedItem() {
+        var rows = invoiceVM.searchResults
+        var row = searchPanel.chosenIndex
+        if (row < 0 || row >= rows.length)
+            return
+        if (invoiceVM.addSearchedItem(rows[row].inventoryItemId))
+            closeItemSearch()
+    }
+
     function focusBarcode() {
         barcodeField.forceActiveFocus()
         barcodeField.selectAll()
+    }
+    // Prototype flow: scan + Enter adds and refocuses; Enter on an empty field
+    // moves on to the money (the next step of the transaction).
+    function barcodeEnter() {
+        if (barcodeField.text.length === 0) {
+            if (invoiceVM.saleCount + invoiceVM.oldGoldCount > 0)
+                cashField.forceActiveFocus()
+            return
+        }
+        addBarcode()
     }
     function addBarcode() {
         invoiceVM.addBarcode(barcodeField.text)
@@ -76,6 +119,13 @@ Item {
         list.currentIndex = row
         list.forceActiveFocus()
     }
+    function startNewInvoice() {
+        invoiceVM.newInvoice()
+        customerPicker.clear()
+        barcodeField.text = ""
+        oldGoldWeight.text = ""
+        focusBarcode()
+    }
 
     Menu {
         id: rowMenu
@@ -88,14 +138,6 @@ Item {
             font.family: "Cairo"
             onTriggered: invoicePage.removeRow(rowMenu.list, rowMenu.row)
         }
-    }
-
-    function startNewInvoice() {
-        invoiceVM.newInvoice()
-        customerPicker.clear()
-        barcodeField.text = ""
-        oldGoldWeight.text = ""
-        focusBarcode()
     }
 
     Connections {
@@ -112,11 +154,18 @@ Item {
         }
     }
 
-    // ---------------------------------------------------- keyboard
+    // ---------------------------------------------------- keyboard (locked map)
+    // F3 بحث عن قطعة • F4 العميل • F5 إدخال يدوي (later) • F6 الكسر • F7 بيع من الكسر (later)
+    // F8 المبلغ بالكامل • F9 / Ctrl+S حفظ • F2 فاتورة جديدة • Ctrl+M المصنعية • Alt+1/2/3 العيار
     Shortcut { sequence: "F2"; enabled: invoicePage.keysActive; onActivated: invoicePage.startNewInvoice() }
+    Shortcut {
+        sequence: "F3"
+        enabled: invoicePage.visible && !confirmDialog.opened
+        onActivated: invoicePage.openItemSearch()
+    }
+    Shortcut { sequence: "Esc"; enabled: searchPanel.visible; onActivated: invoicePage.closeItemSearch() }
     Shortcut { sequence: "F4"; enabled: invoicePage.keysActive; onActivated: customerPicker.open() }
     Shortcut { sequence: "F6"; enabled: invoicePage.keysActive; onActivated: oldGoldWeight.forceActiveFocus() }
-    // F3 بحث عن قطعة, F5 إدخال يدوي and F7 بيع من الكسر are reserved for later stages.
     Shortcut { sequence: "Ctrl+M"; enabled: invoicePage.keysActive; onActivated: makingField.forceActiveFocus() }
     Shortcut { sequence: "F8"; enabled: invoicePage.keysActive; onActivated: invoiceVM.payFullAmount() }
     Shortcut { sequences: ["F9", "Ctrl+S"]; enabled: invoicePage.keysActive; onActivated: invoicePage.startFinalize() }
@@ -130,11 +179,20 @@ Item {
     }
 
     // ---------------------------------------------------- components
-    component Card: Rectangle {
+    // A prototype strip: flat, dark, with a thin coloured accent on the physical right.
+    component Strip: Rectangle {
+        id: strip
+        property color accent: theme.border
         color: theme.bgSecondary
-        radius: theme.radiusSmall
-        border.color: theme.border
-        border.width: 1
+        radius: 4
+        Rectangle {
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            width: 3
+            radius: 2
+            color: strip.accent
+        }
     }
 
     component FieldLabel: Label {
@@ -145,10 +203,13 @@ Item {
     }
 
     component AmountField: TextField {
-        Layout.preferredHeight: 36
+        Layout.preferredHeight: 32
+        topPadding: 4
+        bottomPadding: 4
         color: theme.textPrimary
         placeholderTextColor: theme.textDisabled
         font.family: "Cairo"
+        font.pixelSize: 13
         horizontalAlignment: TextInput.AlignRight
         inputMethodHints: Qt.ImhFormattedNumbersOnly
         selectByMouse: true
@@ -168,7 +229,7 @@ Item {
             elide: Text.ElideRight
         }
         background: Rectangle {
-            implicitHeight: 40
+            implicitHeight: 38
             radius: theme.radiusSmall
             color: !primary.enabled ? theme.bgTertiary : primary.down ? theme.goldDark : theme.gold
             border.color: primary.enabled ? theme.goldBright : theme.border
@@ -181,6 +242,8 @@ Item {
         font.family: "Cairo"
         font.pixelSize: 12
         focusPolicy: Qt.TabFocus
+        leftPadding: 10
+        rightPadding: 10
         contentItem: Label {
             text: small.text
             font: small.font
@@ -190,8 +253,8 @@ Item {
             elide: Text.ElideRight
         }
         background: Rectangle {
-            implicitHeight: 36
-            implicitWidth: 64
+            implicitHeight: 32
+            implicitWidth: 52
             radius: theme.radiusSmall
             color: small.down ? theme.panelHover : theme.bgTertiary
             border.color: small.enabled ? theme.goldDark : theme.border
@@ -204,7 +267,7 @@ Item {
         text: "حذف"
         font.family: "Cairo"
         font.pixelSize: 11
-        implicitHeight: 28
+        implicitHeight: 26
         focusPolicy: Qt.NoFocus
         contentItem: Label {
             text: removeButton.text
@@ -230,41 +293,40 @@ Item {
         font.pixelSize: 10
     }
 
-    component SummaryValue: ColumnLayout {
-        property alias title: titleLabel.text
-        property alias value: valueLabel.text
-        property alias valueColor: valueLabel.color
-        property alias valueObjectName: valueLabel.objectName
-        property alias valueSize: valueLabel.font.pixelSize
-        spacing: 0
-        Label {
-            id: titleLabel
-            Layout.alignment: Qt.AlignRight
-            color: theme.textMuted
-            font.family: "Cairo"
-            font.pixelSize: 10
+    component KaratChip: Button {
+        id: chip
+        property bool selected: false
+        property color selectedColor: theme.priceBuy
+        Layout.preferredWidth: 36
+        Layout.preferredHeight: 30
+        focusPolicy: Qt.NoFocus
+        font.family: "Cairo"
+        font.pixelSize: 12
+        font.bold: selected
+        contentItem: Label {
+            text: chip.text
+            font: chip.font
+            color: chip.selected ? theme.bgPrimary : theme.textSecondary
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
         }
-        Label {
-            id: valueLabel
-            Layout.alignment: Qt.AlignRight
-            color: theme.textPrimary
-            font.family: "Cairo"
-            font.pixelSize: 13
-            font.bold: true
-            text: ""
+        background: Rectangle {
+            radius: theme.radiusSmall
+            color: chip.selected ? chip.selectedColor : theme.bgTertiary
+            border.color: chip.selected ? chip.selectedColor : theme.border
         }
     }
 
     // The prototype's مباع / مشترى strip: grams per karat, dim when zero.
     component WeightStrip: RowLayout {
-        id: strip
+        id: weights
         property string title: ""
         property var totals: ({})
         property color accent: theme.textPrimary
         layoutDirection: Qt.RightToLeft
         spacing: 12
         Label {
-            text: strip.title
+            text: weights.title
             color: theme.textMuted
             font.family: "Cairo"
             font.pixelSize: 11
@@ -272,12 +334,12 @@ Item {
         Repeater {
             model: ["21", "18", "24"]
             Label {
-                objectName: strip.objectName + "_" + modelData
-                text: modelData + ": " + (strip.totals[modelData] || "—")
-                color: (strip.totals[modelData] || "—") === "—" ? theme.textDisabled : strip.accent
+                objectName: weights.objectName + "_" + modelData
+                text: modelData + ": " + (weights.totals[modelData] || "—")
+                color: (weights.totals[modelData] || "—") === "—" ? theme.textDisabled : weights.accent
                 font.family: "Cairo"
                 font.pixelSize: 12
-                font.bold: (strip.totals[modelData] || "—") !== "—"
+                font.bold: (weights.totals[modelData] || "—") !== "—"
             }
         }
         Item { Layout.fillWidth: true }
@@ -286,98 +348,31 @@ Item {
     // ---------------------------------------------------- page
     ColumnLayout {
         anchors.fill: parent
-        anchors.margins: 12
-        spacing: 8
+        anchors.margins: 8
+        spacing: 6
 
-        // ---------------- header: title + prices
-        RowLayout {
+        // ---------------- header strip: salesperson • customer • previous balance • prices
+        Strip {
+            objectName: "invoiceHeaderStrip"
             Layout.fillWidth: true
-            layoutDirection: Qt.RightToLeft
-            spacing: 10
-
-            Label {
-                text: invoicePage.pageTitle
-                color: theme.textPrimary
-                font.family: "Cairo"
-                font.pixelSize: 18
-                font.bold: true
-            }
-            Item { Layout.fillWidth: true }
-            Rectangle {
-                objectName: "invoicePriceBar"
-                Layout.preferredHeight: 32
-                Layout.preferredWidth: priceRow.implicitWidth + 20
-                Layout.maximumWidth: invoicePage.width - 180
-                clip: true
-                color: theme.bgSecondary
-                radius: theme.radiusSmall
-                border.color: invoiceVM.priceStale ? theme.priceWarning : theme.border
-                border.width: 1
-
-                RowLayout {
-                    id: priceRow
-                    anchors.centerIn: parent
-                    layoutDirection: Qt.RightToLeft
-                    spacing: 12
-                    Repeater {
-                        model: invoiceVM.priceRows
-                        delegate: RowLayout {
-                            layoutDirection: Qt.RightToLeft
-                            spacing: 4
-                            Label {
-                                text: "عيار " + modelData.karat
-                                color: theme.textSecondary
-                                font.family: "Cairo"
-                                font.pixelSize: 11
-                            }
-                            Label {
-                                objectName: "priceBuy_" + modelData.karat
-                                text: "شراء " + modelData.buy
-                                color: theme.priceBuy
-                                font.family: "Cairo"
-                                font.pixelSize: 11
-                            }
-                            Label {
-                                objectName: "priceSell_" + modelData.karat
-                                text: "بيع " + modelData.sell
-                                color: theme.priceSell
-                                font.family: "Cairo"
-                                font.pixelSize: 11
-                            }
-                        }
-                    }
-                    Label {
-                        objectName: "invoicePriceStatus"
-                        visible: text.length > 0
-                        text: invoiceVM.priceStatusText
-                        color: invoiceVM.priceStale || invoiceVM.priceRows.length === 0
-                               ? theme.priceWarning : theme.textMuted
-                        font.family: "Cairo"
-                        font.pixelSize: 11
-                    }
-                }
-            }
-        }
-
-        // ---------------- salesperson + customer
-        Card {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 52
+            Layout.preferredHeight: 44
+            accent: theme.blue
 
             RowLayout {
                 anchors.fill: parent
-                anchors.leftMargin: 10
-                anchors.rightMargin: 10
+                anchors.leftMargin: 8
+                anchors.rightMargin: 12
                 layoutDirection: Qt.RightToLeft
-                spacing: 8
+                spacing: 6
 
                 FieldLabel { text: "البائع" }
                 ComboBox {
                     id: salespersonCombo
                     objectName: "invoiceSalesperson"
-                    Layout.preferredWidth: 150
-                    Layout.preferredHeight: 38
+                    Layout.preferredWidth: invoicePage.compact ? 118 : 150
+                    Layout.preferredHeight: 34
                     font.family: "Cairo"
+                    font.pixelSize: 12
                     model: invoiceVM.salespeople
                     textRole: "name"
                     valueRole: "employeeId"
@@ -394,39 +389,45 @@ Item {
                     }
                 }
 
-                FieldLabel { text: "العميل (F4)" }
+                FieldLabel { text: "العميل F4" }
                 CustomerPicker {
                     id: customerPicker
                     objectName: "invoiceCustomerPicker"
                     Layout.fillWidth: true
-                    Layout.maximumWidth: 320
-                    Layout.minimumWidth: 180
+                    Layout.maximumWidth: 300
+                    Layout.minimumWidth: 160
+                    Layout.preferredHeight: 34
                     placeholderText: "بدون عميل (نقدي)"
                     onCustomerSelected: function(customerId) { invoiceVM.setCustomer(customerId) }
                     onSelectionCleared: invoiceVM.setCustomer("")
                     onSelectionInvalidated: function(customerId, reason) { invoiceVM.setCustomer("") }
                 }
 
-                Label {
-                    objectName: "customerBalance"
-                    visible: invoiceVM.customerId.length > 0 && text.length > 0
-                    text: invoiceVM.customerBalanceText
-                    color: theme.textSecondary
-                    font.family: "Cairo"
-                    font.pixelSize: 12
+                ColumnLayout {
+                    spacing: 0
+                    visible: invoiceVM.customerId.length > 0
+                    FieldLabel { text: "رصيد سابق" ; font.pixelSize: 10 }
+                    Label {
+                        objectName: "customerBalance"
+                        text: invoiceVM.customerBalanceText || "…"
+                        color: theme.textPrimary
+                        font.family: "Cairo"
+                        font.pixelSize: 12
+                        font.bold: true
+                    }
                 }
                 Rectangle {
                     objectName: "deadCashBanner"
                     visible: invoiceVM.deadCashWarning
-                    Layout.preferredHeight: 28
-                    Layout.preferredWidth: deadCashText.implicitWidth + 16
+                    Layout.preferredHeight: 24
+                    Layout.preferredWidth: deadCashText.implicitWidth + 12
                     color: theme.redBackground
-                    radius: theme.radiusSmall
+                    radius: 4
                     border.color: theme.red
                     Label {
                         id: deadCashText
                         anchors.centerIn: parent
-                        text: "تحذير: عليه ديون معدومة سابقة"
+                        text: "ديون معدومة سابقة"
                         color: theme.red
                         font.family: "Cairo"
                         font.pixelSize: 11
@@ -434,21 +435,74 @@ Item {
                     }
                 }
                 Item { Layout.fillWidth: true }
+
+                // Prices that apply to each side: sale at the shop's SELL price (gold),
+                // old gold at the shop's BUY price (teal).
+                GridLayout {
+                    objectName: "invoicePriceBar"
+                    columns: invoiceVM.priceRows.length + 1
+                    rowSpacing: 0
+                    columnSpacing: 10
+                    layoutDirection: Qt.RightToLeft
+                    Label {
+                        text: "بيع"
+                        color: theme.priceSell
+                        font.family: "Cairo"
+                        font.pixelSize: 10
+                    }
+                    Repeater {
+                        model: invoiceVM.priceRows
+                        Label {
+                            objectName: "priceSell_" + modelData.karat
+                            text: modelData.karat + ": " + modelData.sellShort
+                            color: theme.priceSell
+                            font.family: "Cairo"
+                            font.pixelSize: 11
+                            font.bold: modelData.karat === "21"
+                        }
+                    }
+                    Label {
+                        text: "شراء"
+                        color: theme.priceBuy
+                        font.family: "Cairo"
+                        font.pixelSize: 10
+                    }
+                    Repeater {
+                        model: invoiceVM.priceRows
+                        Label {
+                            objectName: "priceBuy_" + modelData.karat
+                            text: modelData.karat + ": " + modelData.buyShort
+                            color: theme.priceBuy
+                            font.family: "Cairo"
+                            font.pixelSize: 11
+                            font.bold: modelData.karat === "21"
+                        }
+                    }
+                }
+                Label {
+                    objectName: "invoicePriceStatus"
+                    visible: text.length > 0
+                    text: invoiceVM.priceStatusText
+                    color: theme.priceWarning
+                    font.family: "Cairo"
+                    font.pixelSize: 11
+                    font.bold: true
+                }
             }
         }
 
-        // ---------------- success banner (replaces the success dialog)
+        // ---------------- one-line messages (only when present)
         Rectangle {
             objectName: "invoiceSuccessBanner"
             Layout.fillWidth: true
-            Layout.preferredHeight: 34
+            Layout.preferredHeight: 28
             visible: invoiceVM.hasSuccess
             color: theme.bgSecondary
-            radius: theme.radiusSmall
+            radius: 4
             border.color: theme.green
             RowLayout {
                 anchors.fill: parent
-                anchors.leftMargin: 8
+                anchors.leftMargin: 6
                 anchors.rightMargin: 10
                 layoutDirection: Qt.RightToLeft
                 spacing: 12
@@ -480,14 +534,15 @@ Item {
         Rectangle {
             objectName: "invoiceErrorBanner"
             Layout.fillWidth: true
-            Layout.preferredHeight: 32
+            Layout.preferredHeight: 28
             visible: invoiceVM.errorMessage.length > 0
             color: theme.redBackground
-            radius: theme.radiusSmall
+            radius: 4
             border.color: theme.red
             RowLayout {
                 anchors.fill: parent
-                anchors.margins: 6
+                anchors.margins: 3
+                anchors.rightMargin: 10
                 layoutDirection: Qt.RightToLeft
                 Label {
                     objectName: "invoiceErrorText"
@@ -499,6 +554,13 @@ Item {
                     horizontalAlignment: Text.AlignRight
                     elide: Text.ElideLeft
                 }
+                SmallButton {
+                    objectName: "barcodeNotFoundSearch"
+                    visible: invoiceVM.barcodeNotFound
+                    Layout.preferredHeight: 22
+                    text: "بحث عن قطعة F3"
+                    onClicked: { invoiceVM.clearError(); invoicePage.openItemSearch() }
+                }
                 RemoveButton {
                     text: "إغلاق"
                     onClicked: invoiceVM.clearError()
@@ -506,183 +568,504 @@ Item {
             }
         }
 
-        // ---------------- sale + old gold, side by side
+        // ---------------- body: sales (right) and old gold (left), side by side
         RowLayout {
+            id: middleRow
             Layout.fillWidth: true
             Layout.fillHeight: true
             layoutDirection: Qt.RightToLeft
-            spacing: 8
+            spacing: 6
 
-            // ======== sale (right)
-            Card {
+            // ======== sales
+            Item {
+                id: salePane
                 objectName: "salePanel"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 Layout.preferredWidth: 3
-                border.color: theme.goldDark
 
                 ColumnLayout {
                     anchors.fill: parent
-                    anchors.margins: 8
-                    spacing: 6
+                    spacing: 4
 
-                    RowLayout {
+                    // Entry row: the barcode field is the page's home.
+                    // (F5 إدخال يدوي and F7 بيع من الكسر will sit beside بحث.)
+                    Strip {
+                        id: saleEntry
                         Layout.fillWidth: true
-                        layoutDirection: Qt.RightToLeft
-                        spacing: 6
-                        Label {
-                            text: "المبيعات"
-                            color: theme.priceSell
-                            font.family: "Cairo"
-                            font.pixelSize: 14
-                            font.bold: true
-                        }
-                        Label {
-                            text: invoiceVM.saleCount + " قطعة"
-                            color: theme.textMuted
-                            font.family: "Cairo"
-                            font.pixelSize: 11
-                        }
-                        Item { Layout.fillWidth: true }
-                        TextField {
-                            id: barcodeField
-                            objectName: "invoiceBarcodeField"
-                            Layout.fillWidth: true
-                            Layout.maximumWidth: 230
-                            Layout.minimumWidth: 120
-                            Layout.preferredHeight: 36
-                            placeholderText: "امسح الباركود ثم Enter"
-                            color: theme.textPrimary
-                            placeholderTextColor: theme.textDisabled
-                            font.family: "Cairo"
-                            horizontalAlignment: TextInput.AlignRight
-                            selectByMouse: true
-                            onAccepted: invoicePage.addBarcode()
-                        }
-                        SmallButton {
-                            objectName: "invoiceAddBarcode"
-                            text: "إضافة"
-                            enabled: barcodeField.text.length > 0
-                            onClicked: invoicePage.addBarcode()
+                        Layout.preferredHeight: 40
+                        accent: theme.priceSell
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 6
+                            anchors.rightMargin: 10
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 6
+                            Label {
+                                text: "بيع"
+                                color: theme.priceSell
+                                font.family: "Cairo"
+                                font.pixelSize: 13
+                                font.bold: true
+                            }
+                            TextField {
+                                id: barcodeField
+                                objectName: "invoiceBarcodeField"
+                                Layout.fillWidth: true
+                                Layout.maximumWidth: 260
+                                Layout.minimumWidth: 120
+                                Layout.preferredHeight: 32
+                                topPadding: 4
+                                bottomPadding: 4
+                                placeholderText: activeFocus || text.length > 0 ? "" : "الباركود ثم Enter"
+                                color: theme.textPrimary
+                                placeholderTextColor: theme.textDisabled
+                                font.family: "Cairo"
+                                font.pixelSize: 13
+                                horizontalAlignment: TextInput.AlignRight
+                                selectByMouse: true
+                                onAccepted: invoicePage.barcodeEnter()
+                                background: Rectangle {
+                                    radius: 4
+                                    color: theme.bgPrimary
+                                    border.color: barcodeField.activeFocus ? theme.gold : theme.border
+                                    border.width: barcodeField.activeFocus ? 2 : 1
+                                }
+                            }
+                            SmallButton {
+                                objectName: "invoiceAddBarcode"
+                                text: "إضافة"
+                                enabled: barcodeField.text.length > 0
+                                onClicked: invoicePage.addBarcode()
+                            }
+                            SmallButton {
+                                objectName: "openItemSearch"
+                                text: "بحث F3"
+                                onClicked: invoicePage.openItemSearch()
+                            }
+                            Item { Layout.fillWidth: true }
+                            Label {
+                                text: invoiceVM.saleCount > 0 ? invoiceVM.saleCount + " قطعة" : ""
+                                color: theme.textMuted
+                                font.family: "Cairo"
+                                font.pixelSize: 11
+                            }
                         }
                     }
 
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Layout.rightMargin: 6
-                        Layout.leftMargin: 44
-                        layoutDirection: Qt.RightToLeft
-                        spacing: 6
-                        HeadCell { text: "الصنف"; Layout.preferredWidth: 3 }
-                        HeadCell { text: "العيار" }
-                        HeadCell { text: "الوزن"; Layout.preferredWidth: 2 }
-                        HeadCell { text: "مصنعية/جم"; Layout.preferredWidth: 2 }
-                        HeadCell { text: "الإجمالي"; Layout.preferredWidth: 3 }
-                    }
-
-                    ListView {
-                        id: saleList
-                        objectName: "saleList"
+                    Rectangle {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        clip: true
-                        spacing: 3
-                        model: invoiceVM.saleLinesModel
-                        boundsBehavior: Flickable.StopAtBounds
-                        ScrollBar.vertical: ScrollBar {}
-                        onCountChanged: positionViewAtEnd()
-                        currentIndex: -1
-                        activeFocusOnTab: true
-                        highlightFollowsCurrentItem: false
-                        Keys.onDeletePressed: invoicePage.removeRow(saleList, currentIndex)
+                        color: theme.bgSecondary
+                        radius: 4
 
-                        delegate: Rectangle {
-                            objectName: "saleRow_" + index
-                            readonly property bool selected: ListView.isCurrentItem && saleList.activeFocus
-                            width: saleList.width
-                            height: 38
-                            color: selected ? theme.panelHover : theme.bgTertiary
-                            border.color: selected ? theme.goldDark : "transparent"
-                            radius: 5
+                        Rectangle {
+                            anchors.top: parent.top
+                            width: parent.width
+                            height: 2
+                            color: theme.priceSell
+                            opacity: 0.7
+                        }
 
-                            // Row selection (Delete removes it) and right-click → حذف.
-                            MouseArea {
-                                anchors.fill: parent
-                                acceptedButtons: Qt.LeftButton | Qt.RightButton
-                                onPressed: function(mouse) {
-                                    invoicePage.selectRow(saleList, index)
-                                    if (mouse.button === Qt.RightButton) {
-                                        rowMenu.list = saleList
-                                        rowMenu.row = index
-                                        rowMenu.popup()
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: 4
+                            anchors.topMargin: 6
+                            spacing: 2
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Layout.rightMargin: 6
+                                Layout.leftMargin: 40
+                                layoutDirection: Qt.RightToLeft
+                                spacing: 6
+                                HeadCell { text: "الصنف"; Layout.preferredWidth: 4 }
+                                HeadCell { text: "الباركود"; Layout.preferredWidth: 2 }
+                                HeadCell { text: "العيار" }
+                                HeadCell { text: "الوزن"; Layout.preferredWidth: 2 }
+                                HeadCell { text: "مصنعية/جم"; Layout.preferredWidth: 2 }
+                                HeadCell { text: "الإجمالي"; Layout.preferredWidth: 3 }
+                            }
+
+                            ListView {
+                                id: saleList
+                                objectName: "saleList"
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                clip: true
+                                spacing: 2
+                                model: invoiceVM.saleLinesModel
+                                boundsBehavior: Flickable.StopAtBounds
+                                ScrollBar.vertical: ScrollBar {}
+                                onCountChanged: positionViewAtEnd()
+                                currentIndex: -1
+                                activeFocusOnTab: true
+                                highlightFollowsCurrentItem: false
+                                Keys.onDeletePressed: invoicePage.removeRow(saleList, currentIndex)
+
+                                delegate: Rectangle {
+                                    objectName: "saleRow_" + index
+                                    readonly property bool selected: ListView.isCurrentItem && saleList.activeFocus
+                                    width: saleList.width
+                                    height: 32
+                                    color: selected ? theme.panelHover : (index % 2 ? theme.bgSecondary : theme.bgTertiary)
+                                    border.color: selected ? theme.goldDark : "transparent"
+                                    radius: 3
+
+                                    // Row selection (Delete removes it) and right-click → حذف.
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                        onPressed: function(mouse) {
+                                            invoicePage.selectRow(saleList, index)
+                                            if (mouse.button === Qt.RightButton) {
+                                                rowMenu.list = saleList
+                                                rowMenu.row = index
+                                                rowMenu.popup()
+                                            }
+                                        }
+                                    }
+
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.rightMargin: 6
+                                        anchors.leftMargin: 2
+                                        layoutDirection: Qt.RightToLeft
+                                        spacing: 6
+                                        Cell {
+                                            Layout.preferredWidth: 4
+                                            text: model.itemName + (model.factory ? " • " + model.factory : "")
+                                        }
+                                        Cell {
+                                            Layout.preferredWidth: 2
+                                            text: model.barcode || "—"
+                                            color: theme.textMuted
+                                            font.pixelSize: 11
+                                        }
+                                        Cell { text: model.karat }
+                                        Cell { Layout.preferredWidth: 2; text: model.weight; font.bold: true }
+                                        AmountField {
+                                            objectName: "saleMaking_" + index
+                                            Layout.fillWidth: true
+                                            Layout.preferredWidth: 2
+                                            Layout.preferredHeight: 26
+                                            topPadding: 2
+                                            bottomPadding: 2
+                                            font.pixelSize: 12
+                                            // Empty = the invoice making; typing overrides this line only.
+                                            placeholderText: text.length > 0 ? ""
+                                                             : (invoiceVM.invoiceMaking.length > 0 ? invoiceVM.invoiceMaking : "—")
+                                            text: model.makingValue
+                                            color: model.makingOverride ? theme.amber : theme.textPrimary
+                                            onTextEdited: invoiceVM.setSaleMaking(index, "PER_GRAM", text)
+                                            onAccepted: invoicePage.focusBarcode()
+                                            background: Rectangle {
+                                                radius: 3
+                                                color: "transparent"
+                                                border.color: parent.activeFocus ? theme.gold : theme.border
+                                            }
+                                        }
+                                        Cell {
+                                            objectName: "saleLineTotal_" + index
+                                            Layout.preferredWidth: 3
+                                            text: model.lineTotal
+                                            color: theme.priceSell
+                                            font.bold: true
+                                        }
+                                        RemoveButton {
+                                            objectName: "removeSale_" + index
+                                            Layout.preferredWidth: 34
+                                            onClicked: invoiceVM.removeSaleLine(index)
+                                        }
+                                    }
+                                }
+
+                                Label {
+                                    anchors.centerIn: parent
+                                    visible: saleList.count === 0
+                                    text: "امسح الباركود — أو F3 للبحث عن قطعة"
+                                    color: theme.textDisabled
+                                    font.family: "Cairo"
+                                    font.pixelSize: 12
+                                }
+                            }
+
+                            WeightStrip {
+                                objectName: "soldWeights"
+                                Layout.fillWidth: true
+                                Layout.rightMargin: 6
+                                title: "مباع (جم)"
+                                totals: invoiceVM.weightTotals.sold
+                                accent: theme.priceSell
+                            }
+                        }
+                    }
+                }
+
+                // ---- بحث عن قطعة: floating over the sales table only (layout underneath is unchanged)
+                Rectangle {
+                    id: searchPanel
+                    objectName: "itemSearchPanel"
+                    property int karatId: -1
+                    property int chosenIndex: -1
+                    property bool filtersOpen: false
+                    readonly property int activeFilters: (karatId > 0 ? 1 : 0) + (searchWeight.text.length > 0 ? 1 : 0)
+                                                         + (searchSize.text.length > 0 ? 1 : 0)
+                    visible: false
+                    z: 20
+                    anchors.top: parent.top
+                    anchors.topMargin: saleEntry.height + 4
+                    anchors.right: parent.right
+                    anchors.left: parent.left
+                    anchors.leftMargin: Math.max(0, parent.width - 560)
+                    height: Math.min(parent.height - saleEntry.height - 4, 360)
+                    color: theme.bgPrimary
+                    radius: 6
+                    border.color: theme.gold
+                    border.width: 1
+
+                    Connections {
+                        target: invoiceVM
+                        function onChanged() {
+                            if (searchPanel.chosenIndex >= invoiceVM.searchResults.length)
+                                searchPanel.chosenIndex = -1
+                        }
+                    }
+                    // Results follow typing; nothing is ever chosen automatically.
+                    Timer {
+                        id: searchDebounce
+                        interval: 250
+                        onTriggered: invoicePage.runItemSearch()
+                    }
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 8
+                        spacing: 4
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 6
+                            TextField {
+                                id: searchText
+                                objectName: "itemSearchText"
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 32
+                                topPadding: 4
+                                bottomPadding: 4
+                                placeholderText: text.length > 0 ? "" : "ابحث باسم الصنف / المصنع / الباركود"
+                                color: theme.textPrimary
+                                placeholderTextColor: theme.textDisabled
+                                font.family: "Cairo"
+                                font.pixelSize: 13
+                                horizontalAlignment: TextInput.AlignRight
+                                selectByMouse: true
+                                onTextEdited: searchDebounce.restart()
+                                onAccepted: searchPanel.chosenIndex >= 0 ? invoicePage.confirmSearchedItem()
+                                                                         : invoicePage.runItemSearch()
+                                Keys.onDownPressed: {
+                                    if (searchResultsList.count > 0) {
+                                        searchPanel.chosenIndex = 0
+                                        searchResultsList.forceActiveFocus()
                                     }
                                 }
                             }
+                            SmallButton {
+                                objectName: "itemSearchFilters"
+                                text: searchPanel.activeFilters > 0 ? "فلاتر (" + searchPanel.activeFilters + ")" : "فلاتر"
+                                onClicked: searchPanel.filtersOpen = !searchPanel.filtersOpen
+                            }
+                            RemoveButton {
+                                objectName: "itemSearchClose"
+                                text: "إغلاق Esc"
+                                onClicked: invoicePage.closeItemSearch()
+                            }
+                        }
 
-                            RowLayout {
-                                anchors.fill: parent
-                                anchors.rightMargin: 6
-                                anchors.leftMargin: 2
-                                layoutDirection: Qt.RightToLeft
-                                spacing: 6
-                                Cell {
-                                    Layout.preferredWidth: 3
-                                    text: model.itemName + (model.factory ? " • " + model.factory : "")
-                                          + "  " + model.barcode
+                        // Optional filters, shown on demand (or while one is in use).
+                        RowLayout {
+                            objectName: "itemSearchFilterRow"
+                            Layout.fillWidth: true
+                            visible: searchPanel.filtersOpen || searchPanel.activeFilters > 0
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 4
+                            Repeater {
+                                model: [{ "karatId": -1, "karat": "الكل" }].concat(invoiceVM.priceRows)
+                                delegate: KaratChip {
+                                    objectName: "searchKarat_" + modelData.karat
+                                    Layout.preferredWidth: modelData.karatId < 0 ? 40 : 34
+                                    text: modelData.karat
+                                    selectedColor: theme.gold
+                                    selected: searchPanel.karatId === modelData.karatId
+                                    onClicked: { searchPanel.karatId = modelData.karatId; invoicePage.runItemSearch() }
                                 }
-                                Cell { text: model.karat }
-                                Cell { Layout.preferredWidth: 2; text: model.weight }
-                                AmountField {
-                                    id: lineMaking
-                                    objectName: "saleMaking_" + index
-                                    Layout.fillWidth: true
-                                    Layout.preferredWidth: 2
-                                    Layout.preferredHeight: 32
-                                    font.pixelSize: 12
-                                    // Empty = the invoice making; typing overrides this line only.
-                                    placeholderText: invoiceVM.invoiceMaking.length > 0 ? invoiceVM.invoiceMaking : "—"
-                                    text: model.makingValue
-                                    color: model.makingOverride ? theme.amber : theme.textPrimary
-                                    onTextEdited: invoiceVM.setSaleMaking(index, "PER_GRAM", text)
-                                    onAccepted: invoicePage.focusBarcode()
+                            }
+                            FieldLabel { text: "الوزن"; Layout.leftMargin: 4 }
+                            AmountField {
+                                id: searchWeight
+                                objectName: "itemSearchWeight"
+                                Layout.preferredWidth: 64
+                                placeholderText: ""
+                                onTextEdited: searchDebounce.restart()
+                                onAccepted: invoicePage.runItemSearch()
+                            }
+                            FieldLabel { text: "±" }
+                            AmountField {
+                                id: searchTolerance
+                                objectName: "itemSearchTolerance"
+                                Layout.preferredWidth: 46
+                                placeholderText: ""
+                                text: "0.05"
+                                onTextEdited: searchDebounce.restart()
+                                onAccepted: invoicePage.runItemSearch()
+                            }
+                            FieldLabel { text: "مقاس" }
+                            AmountField {
+                                id: searchSize
+                                objectName: "itemSearchSize"
+                                Layout.preferredWidth: 44
+                                placeholderText: ""
+                                inputMethodHints: Qt.ImhNone
+                                onTextEdited: searchDebounce.restart()
+                                onAccepted: invoicePage.runItemSearch()
+                            }
+                            Item { Layout.fillWidth: true }
+                        }
+
+                        Label {
+                            objectName: "itemSearchMessage"
+                            Layout.fillWidth: true
+                            visible: text.length > 0
+                            text: invoiceVM.searchBusy ? "جارٍ البحث…" : invoiceVM.searchMessage
+                            color: theme.textMuted
+                            font.family: "Cairo"
+                            font.pixelSize: 11
+                            horizontalAlignment: Text.AlignRight
+                            elide: Text.ElideLeft
+                        }
+
+                        ListView {
+                            id: searchResultsList
+                            objectName: "itemSearchResults"
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            clip: true
+                            spacing: 2
+                            model: invoiceVM.searchResults
+                            boundsBehavior: Flickable.StopAtBounds
+                            ScrollBar.vertical: ScrollBar {}
+                            activeFocusOnTab: true
+                            // Nothing is chosen until the employee clicks a row or moves to it with the arrows.
+                            onCountChanged: searchPanel.chosenIndex = -1
+                            Keys.onDownPressed: {
+                                searchPanel.chosenIndex = Math.min(count - 1, searchPanel.chosenIndex + 1)
+                                positionViewAtIndex(searchPanel.chosenIndex, ListView.Contain)
+                            }
+                            Keys.onUpPressed: {
+                                if (searchPanel.chosenIndex <= 0) {
+                                    searchPanel.chosenIndex = -1
+                                    searchText.forceActiveFocus()
+                                    return
                                 }
-                                Cell {
-                                    objectName: "saleLineTotal_" + index
-                                    Layout.preferredWidth: 3
-                                    text: model.lineTotal
-                                    color: theme.priceSell
-                                    font.bold: true
+                                searchPanel.chosenIndex -= 1
+                                positionViewAtIndex(searchPanel.chosenIndex, ListView.Contain)
+                            }
+                            Keys.onReturnPressed: invoicePage.confirmSearchedItem()
+                            Keys.onEnterPressed: invoicePage.confirmSearchedItem()
+
+                            // Type • weight • karat stand out; factory/size next; barcode last and quiet.
+                            delegate: Rectangle {
+                                objectName: "itemSearchRow_" + index
+                                readonly property bool chosen: searchPanel.chosenIndex === index
+                                width: searchResultsList.width
+                                height: 36
+                                radius: 4
+                                color: chosen ? theme.panelHover : (index % 2 ? theme.bgSecondary : theme.bgTertiary)
+                                border.color: chosen ? theme.gold : "transparent"
+                                border.width: chosen ? 2 : 0
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    onClicked: {
+                                        searchPanel.chosenIndex = index
+                                        searchResultsList.forceActiveFocus()
+                                    }
+                                    onDoubleClicked: {
+                                        searchPanel.chosenIndex = index
+                                        invoicePage.confirmSearchedItem()
+                                    }
                                 }
-                                RemoveButton {
-                                    objectName: "removeSale_" + index
-                                    Layout.preferredWidth: 36
-                                    onClicked: invoiceVM.removeSaleLine(index)
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 8
+                                    anchors.rightMargin: 8
+                                    layoutDirection: Qt.RightToLeft
+                                    spacing: 8
+                                    Cell {
+                                        objectName: "itemSearchName_" + index
+                                        Layout.preferredWidth: 3
+                                        text: modelData.itemName
+                                        font.pixelSize: 13
+                                        font.bold: true
+                                    }
+                                    Cell {
+                                        Layout.preferredWidth: 2
+                                        text: modelData.weightText
+                                        font.pixelSize: 13
+                                        font.bold: true
+                                        color: theme.goldBright
+                                    }
+                                    Cell {
+                                        Layout.preferredWidth: 2
+                                        text: modelData.karatText
+                                    }
+                                    Cell {
+                                        Layout.preferredWidth: 3
+                                        text: modelData.detailText
+                                        color: theme.textSecondary
+                                        font.pixelSize: 11
+                                    }
+                                    Cell {
+                                        Layout.preferredWidth: 2
+                                        text: modelData.barcodeText
+                                        color: theme.textDisabled
+                                        font.pixelSize: 10
+                                    }
                                 }
                             }
                         }
 
-                        Label {
-                            anchors.centerIn: parent
-                            visible: saleList.count === 0
-                            text: "امسح باركود القطعة لإضافتها"
-                            color: theme.textDisabled
-                            font.family: "Cairo"
-                            font.pixelSize: 12
+                        RowLayout {
+                            Layout.fillWidth: true
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 8
+                            PrimaryButton {
+                                objectName: "itemSearchConfirm"
+                                Layout.preferredWidth: 150
+                                Layout.preferredHeight: 32
+                                text: "اختيار هذه القطعة"
+                                enabled: searchPanel.chosenIndex >= 0
+                                onClicked: invoicePage.confirmSearchedItem()
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: searchPanel.chosenIndex >= 0 ? "تأكد أنها القطعة التي أمامك"
+                                                                   : "اضغط على القطعة التي أمامك أو استخدم الأسهم"
+                                color: theme.textMuted
+                                font.family: "Cairo"
+                                font.pixelSize: 11
+                                horizontalAlignment: Text.AlignRight
+                                elide: Text.ElideLeft
+                            }
                         }
-                    }
-
-                    WeightStrip {
-                        objectName: "soldWeights"
-                        Layout.fillWidth: true
-                        title: "مباع (جم)"
-                        totals: invoiceVM.weightTotals.sold
-                        accent: theme.priceSell
                     }
                 }
             }
 
-            // ======== old gold bought from the customer (left)
-            Card {
+            // ======== old gold from the customer
+            Item {
                 objectName: "oldGoldPanel"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
@@ -690,167 +1073,166 @@ Item {
 
                 ColumnLayout {
                     anchors.fill: parent
-                    anchors.margins: 8
-                    spacing: 6
+                    spacing: 4
 
-                    RowLayout {
+                    Strip {
                         Layout.fillWidth: true
-                        layoutDirection: Qt.RightToLeft
-                        spacing: 6
-                        Label {
-                            text: "كسر من العميل (F6)"
-                            color: theme.priceBuy
-                            font.family: "Cairo"
-                            font.pixelSize: 14
-                            font.bold: true
-                        }
-                        Item { Layout.fillWidth: true }
-                    }
+                        Layout.preferredHeight: 40
+                        accent: theme.priceBuy
 
-                    RowLayout {
-                        Layout.fillWidth: true
-                        layoutDirection: Qt.RightToLeft
-                        spacing: 4
-                        FieldLabel { text: "العيار (Alt+1/2/3)" }
-                        // One click per karat; no karat is ever preselected.
-                        Repeater {
-                            model: invoiceVM.priceRows
-                            delegate: Button {
-                                id: chip
-                                objectName: "karatChip_" + modelData.karat
-                                readonly property bool selected: invoiceVM.oldGoldKaratId === modelData.karatId
-                                Layout.preferredWidth: 46
-                                Layout.preferredHeight: 34
-                                focusPolicy: Qt.NoFocus
-                                text: modelData.karat
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 6
+                            anchors.rightMargin: 10
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 4
+                            Label {
+                                text: "كسر F6"
+                                color: theme.priceBuy
                                 font.family: "Cairo"
-                                font.bold: selected
-                                onClicked: invoicePage.chooseKarat(modelData.karat)
-                                contentItem: Label {
-                                    text: chip.text
-                                    font: chip.font
-                                    color: chip.selected ? theme.bgPrimary : theme.textSecondary
-                                    horizontalAlignment: Text.AlignHCenter
-                                    verticalAlignment: Text.AlignVCenter
-                                }
-                                background: Rectangle {
-                                    radius: theme.radiusSmall
-                                    color: chip.selected ? theme.priceBuy : theme.bgTertiary
-                                    border.color: chip.selected ? theme.priceBuy : theme.border
+                                font.pixelSize: 13
+                                font.bold: true
+                                Layout.leftMargin: 4
+                            }
+                            // One click (or Alt+1/2/3) per karat; no karat is ever preselected.
+                            Repeater {
+                                model: invoiceVM.priceRows
+                                delegate: KaratChip {
+                                    objectName: "karatChip_" + modelData.karat
+                                    text: modelData.karat
+                                    selected: invoiceVM.oldGoldKaratId === modelData.karatId
+                                    onClicked: invoicePage.chooseKarat(modelData.karat)
                                 }
                             }
-                        }
-                        Item { Layout.fillWidth: true }
-                    }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        layoutDirection: Qt.RightToLeft
-                        spacing: 4
-                        AmountField {
-                            id: oldGoldWeight
-                            objectName: "oldGoldWeight"
-                            Layout.fillWidth: true
-                            Layout.minimumWidth: 60
-                            placeholderText: invoiceVM.oldGoldKaratId < 0 ? "اختر العيار أولاً" : "الوزن بالجرام ثم Enter"
-                            onAccepted: invoicePage.addOldGold()
-                        }
-                        SmallButton {
-                            objectName: "addOldGold"
-                            text: "إضافة"
-                            enabled: invoiceVM.oldGoldKaratId >= 0 && oldGoldWeight.text.length > 0
-                            onClicked: invoicePage.addOldGold()
+                            AmountField {
+                                id: oldGoldWeight
+                                objectName: "oldGoldWeight"
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 70
+                                placeholderText: text.length > 0 ? ""
+                                                 : (invoiceVM.oldGoldKaratId < 0 ? "العيار أولاً" : "الوزن ثم Enter")
+                                onAccepted: invoicePage.addOldGold()
+                            }
+                            SmallButton {
+                                objectName: "addOldGold"
+                                text: "إضافة"
+                                enabled: invoiceVM.oldGoldKaratId >= 0 && oldGoldWeight.text.length > 0
+                                onClicked: invoicePage.addOldGold()
+                            }
                         }
                     }
 
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Layout.rightMargin: 6
-                        Layout.leftMargin: 44
-                        layoutDirection: Qt.RightToLeft
-                        spacing: 6
-                        HeadCell { text: "العيار" }
-                        HeadCell { text: "الوزن"; Layout.preferredWidth: 2 }
-                        HeadCell { text: "القيمة"; Layout.preferredWidth: 3 }
-                    }
-
-                    ListView {
-                        id: oldGoldList
-                        objectName: "oldGoldList"
+                    Rectangle {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        clip: true
-                        spacing: 3
-                        model: invoiceVM.oldGoldLinesModel
-                        boundsBehavior: Flickable.StopAtBounds
-                        ScrollBar.vertical: ScrollBar {}
-                        onCountChanged: positionViewAtEnd()
-                        currentIndex: -1
-                        activeFocusOnTab: true
-                        highlightFollowsCurrentItem: false
-                        Keys.onDeletePressed: invoicePage.removeRow(oldGoldList, currentIndex)
+                        color: theme.bgSecondary
+                        radius: 4
 
-                        delegate: Rectangle {
-                            objectName: "oldGoldRow_" + index
-                            readonly property bool selected: ListView.isCurrentItem && oldGoldList.activeFocus
-                            width: oldGoldList.width
-                            height: 38
-                            color: selected ? theme.panelHover : theme.bgTertiary
-                            border.color: selected ? theme.goldDark : "transparent"
-                            radius: 5
+                        Rectangle {
+                            anchors.top: parent.top
+                            width: parent.width
+                            height: 2
+                            color: theme.priceBuy
+                            opacity: 0.7
+                        }
 
-                            // Row selection (Delete removes it) and right-click → حذف.
-                            MouseArea {
-                                anchors.fill: parent
-                                acceptedButtons: Qt.LeftButton | Qt.RightButton
-                                onPressed: function(mouse) {
-                                    invoicePage.selectRow(oldGoldList, index)
-                                    if (mouse.button === Qt.RightButton) {
-                                        rowMenu.list = oldGoldList
-                                        rowMenu.row = index
-                                        rowMenu.popup()
-                                    }
-                                }
-                            }
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: 4
+                            anchors.topMargin: 6
+                            spacing: 2
+
                             RowLayout {
-                                anchors.fill: parent
-                                anchors.rightMargin: 6
-                                anchors.leftMargin: 2
+                                Layout.fillWidth: true
+                                Layout.rightMargin: 6
+                                Layout.leftMargin: 40
                                 layoutDirection: Qt.RightToLeft
                                 spacing: 6
-                                Cell { text: model.karat }
-                                Cell { Layout.preferredWidth: 2; text: model.weight + " جم" }
-                                Cell {
-                                    objectName: "oldGoldLineTotal_" + index
-                                    Layout.preferredWidth: 3
-                                    text: model.lineTotal
-                                    color: theme.priceBuy
-                                    font.bold: true
+                                HeadCell { text: "العيار" }
+                                HeadCell { text: "الوزن"; Layout.preferredWidth: 2 }
+                                HeadCell { text: "القيمة"; Layout.preferredWidth: 3 }
+                            }
+
+                            ListView {
+                                id: oldGoldList
+                                objectName: "oldGoldList"
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                clip: true
+                                spacing: 2
+                                model: invoiceVM.oldGoldLinesModel
+                                boundsBehavior: Flickable.StopAtBounds
+                                ScrollBar.vertical: ScrollBar {}
+                                onCountChanged: positionViewAtEnd()
+                                currentIndex: -1
+                                activeFocusOnTab: true
+                                highlightFollowsCurrentItem: false
+                                Keys.onDeletePressed: invoicePage.removeRow(oldGoldList, currentIndex)
+
+                                delegate: Rectangle {
+                                    objectName: "oldGoldRow_" + index
+                                    readonly property bool selected: ListView.isCurrentItem && oldGoldList.activeFocus
+                                    width: oldGoldList.width
+                                    height: 32
+                                    color: selected ? theme.panelHover : (index % 2 ? theme.bgSecondary : theme.bgTertiary)
+                                    border.color: selected ? theme.goldDark : "transparent"
+                                    radius: 3
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                        onPressed: function(mouse) {
+                                            invoicePage.selectRow(oldGoldList, index)
+                                            if (mouse.button === Qt.RightButton) {
+                                                rowMenu.list = oldGoldList
+                                                rowMenu.row = index
+                                                rowMenu.popup()
+                                            }
+                                        }
+                                    }
+
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.rightMargin: 6
+                                        anchors.leftMargin: 2
+                                        layoutDirection: Qt.RightToLeft
+                                        spacing: 6
+                                        Cell { text: model.karat }
+                                        Cell { Layout.preferredWidth: 2; text: model.weight + " جم"; font.bold: true }
+                                        Cell {
+                                            objectName: "oldGoldLineTotal_" + index
+                                            Layout.preferredWidth: 3
+                                            text: model.lineTotal
+                                            color: theme.priceBuy
+                                            font.bold: true
+                                        }
+                                        RemoveButton {
+                                            objectName: "removeOldGold_" + index
+                                            Layout.preferredWidth: 34
+                                            onClicked: invoiceVM.removeOldGoldLine(index)
+                                        }
+                                    }
                                 }
-                                RemoveButton {
-                                    objectName: "removeOldGold_" + index
-                                    Layout.preferredWidth: 36
-                                    onClicked: invoiceVM.removeOldGoldLine(index)
+
+                                Label {
+                                    anchors.centerIn: parent
+                                    visible: oldGoldList.count === 0
+                                    text: "لا يوجد كسر"
+                                    color: theme.textDisabled
+                                    font.family: "Cairo"
+                                    font.pixelSize: 12
                                 }
                             }
-                        }
 
-                        Label {
-                            anchors.centerIn: parent
-                            visible: oldGoldList.count === 0
-                            text: "لا يوجد كسر"
-                            color: theme.textDisabled
-                            font.family: "Cairo"
-                            font.pixelSize: 12
+                            WeightStrip {
+                                objectName: "boughtWeights"
+                                Layout.fillWidth: true
+                                Layout.rightMargin: 6
+                                title: "مشترى (جم)"
+                                totals: invoiceVM.weightTotals.bought
+                                accent: theme.priceBuy
+                            }
                         }
-                    }
-
-                    WeightStrip {
-                        objectName: "boughtWeights"
-                        Layout.fillWidth: true
-                        title: "مشترى (جم)"
-                        totals: invoiceVM.weightTotals.bought
-                        accent: theme.priceBuy
                     }
                 }
             }
@@ -869,28 +1251,34 @@ Item {
             elide: Text.ElideLeft
         }
 
-        // ---------------- money strip (always visible)
-        Card {
+        // ---------------- money strip (fixed; the operational heart of the invoice)
+        // Top row: what the employee types, in typing order, then what remains.
+        // Bottom row: the values, the dominant final amount and the save action.
+        Strip {
             objectName: "invoiceSummaryBar"
             Layout.fillWidth: true
-            Layout.preferredHeight: 112
-            border.color: theme.goldDark
+            Layout.preferredHeight: moneyColumn.implicitHeight + 10
+            accent: theme.gold
 
             ColumnLayout {
+                id: moneyColumn
                 anchors.fill: parent
-                anchors.margins: 8
-                spacing: 6
+                anchors.leftMargin: 8
+                anchors.rightMargin: 12
+                anchors.topMargin: 5
+                anchors.bottomMargin: 5
+                spacing: 4
 
                 RowLayout {
                     Layout.fillWidth: true
                     layoutDirection: Qt.RightToLeft
-                    spacing: 8
+                    spacing: 6
 
-                    FieldLabel { text: "المصنعية/جم" }
+                    FieldLabel { text: "مصنعية/جم" }
                     AmountField {
                         id: makingField
                         objectName: "invoiceMakingField"
-                        Layout.preferredWidth: 84
+                        Layout.preferredWidth: invoicePage.compact ? 66 : 80
                         placeholderText: ""
                         text: invoiceVM.invoiceMaking
                         onTextEdited: invoiceVM.setInvoiceMaking(text)
@@ -900,58 +1288,29 @@ Item {
                     AmountField {
                         id: discountField
                         objectName: "oldGoldDiscountField"
-                        Layout.preferredWidth: 60
+                        Layout.preferredWidth: 48
                         placeholderText: ""
                         text: invoiceVM.oldGoldDiscountPercent
                         onTextEdited: invoiceVM.setOldGoldDiscountPercent(text)
                         onAccepted: cashField.forceActiveFocus()
                     }
-                    Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 30; color: theme.border }
-                    SummaryValue {
-                        title: "إجمالي البيع"
-                        value: invoiceVM.summary.saleTotal || "—"
-                        valueColor: theme.priceSell
-                        valueObjectName: "summarySale"
-                    }
-                    SummaryValue {
-                        title: "قيمة الكسر"
-                        value: invoiceVM.summary.oldGoldTotal || "—"
-                        valueColor: theme.priceBuy
-                        valueObjectName: "summaryOldGold"
-                    }
-                    Item { Layout.fillWidth: true }
-                    SummaryValue {
-                        objectName: "summaryDueBox"
-                        title: invoiceVM.summary.dueLabel
-                        value: invoiceVM.summary.dueAmount || "—"
-                        valueSize: 20
-                        valueColor: invoiceVM.summary.netDirection === "SHOP_PAYS_CUSTOMER" ? theme.priceBuy
-                                                                                            : theme.goldBright
-                        valueObjectName: "summaryDue"
-                    }
-                }
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    layoutDirection: Qt.RightToLeft
-                    spacing: 8
-
+                    Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 24; color: theme.border }
                     FieldLabel {
-                        text: invoiceVM.summary.netDirection === "SHOP_PAYS_CUSTOMER" ? "المدفوع للعميل نقداً"
-                                                                                     : "المستلم نقداً"
+                        text: invoiceVM.summary.netDirection === "SHOP_PAYS_CUSTOMER" ? "المدفوع نقداً" : "المستلم نقداً"
                     }
                     AmountField {
                         id: cashField
                         objectName: "cashAmountField"
-                        Layout.preferredWidth: 112
+                        Layout.preferredWidth: invoicePage.compact ? 96 : 116
                         placeholderText: ""
+                        font.bold: true
                         text: invoiceVM.cashAmount
                         onTextEdited: invoiceVM.setCashAmount(text)
                         onAccepted: invoicePage.startFinalize()
                     }
                     SmallButton {
                         objectName: "payFullButton"
-                        text: "المبلغ كاملاً F8"
+                        text: "كامل F8"
                         enabled: invoiceVM.previewReady && invoiceVM.summary.dueAmount.length > 0
                         onClicked: { invoiceVM.payFullAmount(); cashField.forceActiveFocus() }
                     }
@@ -959,43 +1318,88 @@ Item {
                     AmountField {
                         id: walletField
                         objectName: "walletAmountField"
-                        Layout.preferredWidth: 84
+                        Layout.preferredWidth: invoicePage.compact ? 66 : 84
                         placeholderText: ""
                         text: invoiceVM.walletAmount
                         onTextEdited: invoiceVM.setWalletAmount(text)
                         onAccepted: invoicePage.startFinalize()
                     }
-                    ColumnLayout {
+                    Item { Layout.fillWidth: true }
+                    Label {
+                        objectName: "summaryResidualLabel"
                         Layout.fillWidth: true
-                        spacing: 0
+                        Layout.maximumWidth: implicitWidth
+                        text: invoiceVM.summary.remainingLabel
+                        elide: Text.ElideLeft
+                        color: invoiceVM.summary.residualDirection === "NONE" ? theme.green
+                               : invoiceVM.summary.residualDirection === "" ? theme.textMuted : theme.amber
+                        font.family: "Cairo"
+                        font.pixelSize: 11
+                    }
+                    Label {
+                        objectName: "summaryResidual"
+                        visible: text.length > 0
+                        text: invoiceVM.summary.remainingAmount
+                        color: theme.amber
+                        font.family: "Cairo"
+                        font.pixelSize: 14
+                        font.bold: true
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    layoutDirection: Qt.RightToLeft
+                    spacing: 14
+
+                    FieldLabel { text: "البيع" }
+                    Label {
+                        objectName: "summarySale"
+                        text: invoiceVM.summary.saleTotal || "—"
+                        color: theme.priceSell
+                        font.family: "Cairo"
+                        font.pixelSize: 14
+                        font.bold: true
+                    }
+                    FieldLabel { text: "الكسر" }
+                    Label {
+                        objectName: "summaryOldGold"
+                        text: invoiceVM.summary.oldGoldTotal || "—"
+                        color: theme.priceBuy
+                        font.family: "Cairo"
+                        font.pixelSize: 14
+                        font.bold: true
+                    }
+                    Item { Layout.fillWidth: true }
+                    // The dominant final amount, right before the save action.
+                    RowLayout {
+                        objectName: "summaryDueBox"
+                        property string title: invoiceVM.summary.dueLabel
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
                         Label {
-                            objectName: "summaryResidualLabel"
-                            Layout.fillWidth: true
-                            text: invoiceVM.summary.remainingLabel
-                            color: invoiceVM.summary.residualDirection === "NONE" ? theme.green
-                                   : invoiceVM.summary.residualDirection === "" ? theme.textMuted : theme.amber
+                            text: parent.title
+                            color: theme.textSecondary
                             font.family: "Cairo"
-                            font.pixelSize: 11
-                            horizontalAlignment: Text.AlignRight
-                            elide: Text.ElideLeft
+                            font.pixelSize: 12
                         }
                         Label {
-                            objectName: "summaryResidual"
-                            Layout.fillWidth: true
-                            text: invoiceVM.summary.remainingAmount
-                            visible: text.length > 0
-                            color: theme.amber
+                            objectName: "summaryDue"
+                            text: invoiceVM.summary.dueAmount || "—"
+                            color: invoiceVM.summary.netDirection === "SHOP_PAYS_CUSTOMER" ? theme.priceBuy
+                                                                                          : theme.goldBright
                             font.family: "Cairo"
-                            font.pixelSize: 14
+                            font.pixelSize: invoicePage.compact ? 24 : 26
                             font.bold: true
-                            horizontalAlignment: Text.AlignRight
                         }
                     }
                     PrimaryButton {
                         objectName: "finalizeInvoice"
-                        Layout.preferredWidth: 150
-                        Layout.preferredHeight: 42
-                        text: invoiceVM.finalizing ? "جارٍ الحفظ…" : "حفظ الفاتورة F9"
+                        Layout.preferredWidth: invoicePage.compact ? 110 : 140
+                        Layout.preferredHeight: 40
+                        font.pixelSize: 14
+                        text: invoiceVM.finalizing ? "جارٍ الحفظ…" : "حفظ F9"
                         enabled: invoiceVM.canFinalize
                         onClicked: invoicePage.startFinalize()
                     }
@@ -1019,8 +1423,8 @@ Item {
         title: "حفظ الفاتورة"
         modal: true
         anchors.centerIn: parent
-        width: Math.min(460, invoicePage.width - 40)
-        padding: 16
+        width: Math.min(420, invoicePage.width - 40)
+        padding: 14
         font.family: "Cairo"
         onOpened: confirmButton.forceActiveFocus()
         onClosed: invoicePage.focusBarcode()
@@ -1029,12 +1433,12 @@ Item {
             text: confirmDialog.title
             color: theme.gold
             font.family: "Cairo"
-            font.pixelSize: 16
+            font.pixelSize: 15
             font.bold: true
             horizontalAlignment: Text.AlignRight
-            topPadding: 14
-            leftPadding: 16
-            rightPadding: 16
+            topPadding: 12
+            leftPadding: 14
+            rightPadding: 14
         }
         background: Rectangle {
             color: theme.bgSecondary
@@ -1042,9 +1446,9 @@ Item {
             radius: theme.radiusSmall
         }
         contentItem: ColumnLayout {
-            spacing: 6
+            spacing: 4
             Repeater {
-                model: [["إجمالي البيع", invoiceVM.summary.saleTotal], ["قيمة الكسر", invoiceVM.summary.oldGoldTotal],
+                model: [["البيع", invoiceVM.summary.saleTotal], ["الكسر", invoiceVM.summary.oldGoldTotal],
                         [invoiceVM.summary.dueLabel, invoiceVM.summary.dueAmount],
                         [invoiceVM.summary.paidLabel, invoiceVM.summary.paidAmount],
                         [invoiceVM.summary.remainingLabel, invoiceVM.summary.remainingAmount]]
@@ -1061,9 +1465,9 @@ Item {
                     Item { Layout.fillWidth: true }
                     Label {
                         text: modelData[1] || ""
-                        color: theme.textPrimary
+                        color: index === 2 ? theme.goldBright : theme.textPrimary
                         font.family: "Cairo"
-                        font.pixelSize: 14
+                        font.pixelSize: index === 2 ? 17 : 14
                         font.bold: true
                     }
                 }
@@ -1086,23 +1490,16 @@ Item {
                 font.family: "Cairo"
                 LayoutMirroring.enabled: true
             }
-            Label {
-                Layout.fillWidth: true
-                text: "لا يمكن تعديل الفاتورة بعد الحفظ."
-                color: theme.textMuted
-                font.family: "Cairo"
-                font.pixelSize: 11
-                horizontalAlignment: Text.AlignRight
-            }
         }
         footer: RowLayout {
             layoutDirection: Qt.RightToLeft
             spacing: 8
-            Item { Layout.preferredWidth: 8; Layout.preferredHeight: 56 }
+            Item { Layout.preferredWidth: 6; Layout.preferredHeight: 52 }
             PrimaryButton {
                 id: confirmButton
                 objectName: "confirmFinalize"
-                text: "حفظ الفاتورة"
+                text: "حفظ (Enter)"
+                Layout.preferredWidth: 120
                 enabled: confirmDialog.acknowledged
                 onClicked: confirmDialog.confirm()
                 Keys.onReturnPressed: confirmDialog.confirm()
@@ -1110,7 +1507,7 @@ Item {
             }
             Button {
                 objectName: "confirmBack"
-                text: "رجوع"
+                text: "رجوع Esc"
                 font.family: "Cairo"
                 flat: true
                 onClicked: confirmDialog.close()

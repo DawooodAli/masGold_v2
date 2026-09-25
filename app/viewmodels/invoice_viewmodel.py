@@ -31,6 +31,14 @@ def price(value):
     return "" if value in (None, "") else f"{Decimal(str(value)):,.2f}"
 
 
+def short_price(value):
+    """Compact price for the header strip: 6,218 (or 6,218.50 when not whole)."""
+    if value in (None, ""):
+        return ""
+    amount = Decimal(str(value))
+    return f"{amount:,.0f}" if amount == amount.to_integral_value() else f"{amount:,.2f}"
+
+
 def grams(value):
     return "" if value in (None, "") else f"{Decimal(str(value)):.3f} جم"
 
@@ -91,7 +99,7 @@ class LinesModel(QAbstractListModel):
 
 
 SALE_KEYS = ("barcode", "itemName", "karat", "weight", "makingMode", "makingValue", "goldPrice",
-             "makingTotal", "lineTotal", "factory", "makingOverride")
+             "makingTotal", "lineTotal", "factory", "makingOverride", "identifiedBy")
 OLD_GOLD_KEYS = ("karat", "weight", "discountType", "discountValue", "goldPrice", "grossTotal",
                  "discountAmount", "lineTotal")
 
@@ -131,6 +139,9 @@ class InvoiceViewModel(QObject):
         # Invoice-level entry: one making per gram and one old-gold discount % for the
         # whole invoice; a sale line may still override its own making.
         self._invoice_making, self._old_gold_discount = "", ""
+        # بحث عن قطعة: candidates are only shown; the employee must pick one explicitly.
+        self._search_results, self._search_error, self._search_truncated = [], "", False
+        self._search_ran, self._barcode_not_found = False, ""
         self._old_gold_karat_id = -1                  # explicit choice required for every line
         self._version, self._preview, self._preview_version = 0, {}, -1
         self._preview_error, self._error = "", ""
@@ -272,7 +283,7 @@ class InvoiceViewModel(QObject):
         barcode = (barcode or "").strip()
         if not barcode:
             return
-        self._error = ""
+        self._error, self._barcode_not_found = "", ""
         service = self._service_instance()
         self._start("barcode", lambda _expected_actor: service.find_item_by_barcode(
             barcode, _expected_actor=_expected_actor))
@@ -280,12 +291,60 @@ class InvoiceViewModel(QObject):
     def _on_barcode(self, result, error, code, kind):
         if error:
             self._error = error
+            # Offer بحث عن قطعة inline instead of a dead end.
+            self._barcode_not_found = "1" if code == "BARCODE_NOT_FOUND" else ""
             return
-        if any(line["inventory_item_id"] == result["inventory_item_id"] for line in self._sales):
+        self._add_sale_item(result, "SCAN")
+
+    def _add_sale_item(self, item, identified_by):
+        if any(line["inventory_item_id"] == item["inventory_item_id"] for line in self._sales):
             self._error = "القطعة مضافة بالفعل إلى الفاتورة."
-            return
-        self._sales.append({**result, "making_mode": "PER_GRAM", "making_value": "", "making_override": False})
+            self.changed.emit()
+            return False
+        self._sales.append({**item, "making_mode": "PER_GRAM", "making_value": "", "making_override": False,
+                            "identified_by": identified_by})
         self._touched()
+        return True
+
+    # ------------------------------------------------------------ بحث عن قطعة
+
+    @Slot(str, int, str, str, str)
+    def searchItems(self, text, karat_id, weight, tolerance, size):
+        """Find IN_STOCK candidates; pieces already on the invoice are excluded."""
+        service = self._service_instance()
+        exclude = tuple(line["inventory_item_id"] for line in self._sales)
+        self._search_error = ""
+        self._start("item_search", lambda _expected_actor: service.search_sellable_items(
+            text=(text or "").strip(), karat_id=karat_id if karat_id > 0 else None, weight=(weight or "").strip(),
+            tolerance=(tolerance or "").strip() or "0", size=(size or "").strip(), exclude_ids=exclude,
+            _expected_actor=_expected_actor))
+
+    def _on_item_search(self, result, error, code, kind):
+        self._search_ran = True
+        if error:
+            self._search_results, self._search_truncated, self._search_error = [], False, error
+            return
+        self._search_results, self._search_truncated = list(result["items"]), bool(result["truncated"])
+
+    @Slot(str, result=bool)
+    def addSearchedItem(self, inventory_item_id):
+        """The employee explicitly chose this physical piece (اختيار هذه القطعة)."""
+        item = next((r for r in self._search_results if r["inventory_item_id"] == inventory_item_id), None)
+        if item is None:
+            return False
+        self._error, self._barcode_not_found = "", ""
+        added = self._add_sale_item({key: item[key] for key in (
+            "inventory_item_id", "barcode", "item_name", "karat_id", "karat", "weight_grams", "factory_name", "size")},
+            "SEARCH")
+        if added:
+            self._search_results = [r for r in self._search_results if r["inventory_item_id"] != inventory_item_id]
+            self.changed.emit()
+        return added
+
+    @Slot()
+    def clearItemSearch(self):
+        self._search_results, self._search_error, self._search_truncated, self._search_ran = [], "", False, False
+        self.changed.emit()
 
     @Slot(int)
     def removeSaleLine(self, index):
@@ -384,7 +443,8 @@ class InvoiceViewModel(QObject):
                            else ("PER_GRAM", self._invoice_making))
             sales.append(SaleLineInput(line["inventory_item_id"],
                                        making_per_gram=(value or None) if mode == "PER_GRAM" else None,
-                                       making_total=(value or None) if mode == "TOTAL" else None))
+                                       making_total=(value or None) if mode == "TOTAL" else None,
+                                       identified_by=line.get("identified_by", "SCAN")))
         olds = []
         for line in self._olds:
             kind, value = line["discount_type"], line["discount_value"]
@@ -420,6 +480,9 @@ class InvoiceViewModel(QObject):
 
     def _on_preview(self, result, error, code, kind):
         if error:
+            if code == "MAKING_REQUIRED":
+                # The page sends one making value per line, so this means "not entered yet".
+                error = "أدخل المصنعية/جم (Ctrl+M)."
             self._preview, self._preview_version, self._preview_error = {}, -1, error
             return
         version, preview = result
@@ -516,7 +579,8 @@ class InvoiceViewModel(QObject):
     @Property("QVariantList", notify=changed)
     def priceRows(self):
         return [{"karatId": int(p["karat_id"]), "karat": str(p["karat"]), "buy": price(p["shop_buy"]),
-                 "sell": price(p["shop_sell"])} for p in self._board.get("prices", [])]
+                 "sell": price(p["shop_sell"]), "buyShort": short_price(p["shop_buy"]),
+                 "sellShort": short_price(p["shop_sell"])} for p in self._board.get("prices", [])]
 
     @Property(str, notify=changed)
     def priceStatusText(self):
@@ -555,6 +619,7 @@ class InvoiceViewModel(QObject):
                          "makingValue": line["making_value"] if line.get("making_override") else "",
                          "makingOverride": bool(line.get("making_override")),
                          "factory": line.get("factory_name") or "",
+                         "identifiedBy": line.get("identified_by", "SCAN"),
                          "goldPrice": price(calc.get("gold_price_per_gram")),
                          "makingTotal": money(calc.get("making_total")),
                          "lineTotal": money(calc.get("line_total"))})
@@ -591,6 +656,53 @@ class InvoiceViewModel(QObject):
     @Property(str, notify=changed)
     def walletAmount(self):
         return self._wallet
+
+    @staticmethod
+    def item_title(item):
+        """دبلة | عيار 21 | 3.500 جم | مصنع X | مقاس 18 — enough to tell similar pieces apart.
+
+        Parts are separated with right-to-left marks so numbers keep their place in Arabic text."""
+        parts = [item.get("item_name") or "قطعة", f"عيار {item.get('karat')}", grams(item.get("weight_grams"))]
+        factory = (item.get("factory_name") or "").strip()
+        if factory:
+            parts.append(factory if factory.startswith("مصنع") else f"مصنع {factory}")
+        if item.get("size"):
+            parts.append(f"مقاس {item['size']}")
+        if item.get("category_name"):
+            parts.append(item["category_name"])
+        return "‏ | ‏".join(parts)
+
+    @Property("QVariantList", notify=changed)
+    def searchResults(self):
+        # Separate fields so the row can stress type, weight and karat; barcode stays secondary.
+        return [{"inventoryItemId": r["inventory_item_id"], "title": self.item_title(r),
+                 "itemName": r.get("item_name") or "قطعة", "weightText": grams(r.get("weight_grams")),
+                 "karatText": f"عيار {r.get('karat')}",
+                 "detailText": " • ".join(v for v in (
+                     (r.get("factory_name") or "").strip(),
+                     f"مقاس {r['size']}" if r.get("size") else "",
+                     (r.get("category_name") or "").strip()) if v),
+                 "barcodeText": r["barcode"] if r.get("barcode") else "بدون باركود"}
+                for r in self._search_results]
+
+    @Property(bool, notify=changed)
+    def searchBusy(self):
+        return "item_search" in self._busy_ops
+
+    @Property(str, notify=changed)
+    def searchMessage(self):
+        if self._search_error:
+            return self._search_error
+        if not self._search_ran or "item_search" in self._busy_ops:
+            return ""
+        if not self._search_results:
+            return "لا توجد قطع متاحة بهذه البيانات."
+        count = f"{len(self._search_results)} قطعة — اختر القطعة التي أمامك"
+        return count + (" (تظهر أول النتائج فقط؛ ضيّق البحث)" if self._search_truncated else "")
+
+    @Property(bool, notify=changed)
+    def barcodeNotFound(self):
+        return bool(self._barcode_not_found)
 
     @Property(str, notify=changed)
     def invoiceMaking(self):

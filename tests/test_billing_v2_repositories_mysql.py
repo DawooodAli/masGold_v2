@@ -303,5 +303,48 @@ class OldGoldCountedMySqlTests(RehearsalTestCase):
         self.assertEqual(view[0]["balance_grams"], after[karat])
 
 
+class ItemSearchMySqlTests(RehearsalTestCase):
+    """بحث عن قطعة: real MySQL filters; rolled back after each test."""
+
+    def typed_item(self, name, weight, karat=21, size=None, barcode=None, status="IN_STOCK"):
+        type_id = self.sql("INSERT INTO item_types (code, name) VALUES (%s, %s)",
+                           (f"S{uuid.uuid4().hex[:10]}", f"{name} {uuid.uuid4().hex[:4]}"))   # names are unique
+        item_id = self.sql("INSERT INTO inventory_items (item_type_id, karat_id, weight_grams, size, "
+                           "acquisition_source) VALUES (%s, %s, %s, %s, 'MANUAL_ENTRY')",
+                           (type_id, self.karat_id(karat), weight, size))
+        if barcode:
+            self.sql("INSERT INTO inventory_barcodes (inventory_item_id, barcode_value) VALUES (%s, %s)",
+                     (item_id, barcode))
+        if status != "IN_STOCK":
+            self.sql("UPDATE inventory_items SET inventory_status = %s WHERE id = %s", (status, item_id))
+        return str(item_id)
+
+    def test_filters_only_in_stock_and_exclusions(self):
+        repo, tag = InvoiceRepository(self.connection), f"دبلة{self.suffix}"
+        plain = self.typed_item(tag, "3.500", size="18")                        # no barcode
+        close = self.typed_item(tag, "3.520", size="17", barcode=f"S-{self.suffix}")
+        other_karat = self.typed_item(tag, "3.500", karat=18)
+        sold = self.typed_item(tag, "3.500", status="SOLD")
+        ids = lambda rows: [row["inventory_item_id"] for row in rows]
+        everything = ids(repo.search_sellable_items(text=tag))
+        self.assertEqual(set(everything), {plain, close, other_karat})          # SOLD never listed
+        self.assertNotIn(sold, everything)
+        rows = repo.search_sellable_items(text=tag, karat_id=self.karat_id(21), weight_min=Decimal("3.45"),
+                                          weight_max=Decimal("3.55"), weight_target=Decimal("3.500"))
+        self.assertEqual(ids(rows), [plain, close])                             # both shown, closest first
+        self.assertIsNone(rows[0]["barcode_value"])
+        self.assertTrue(rows[0]["item_type_name"].startswith(tag))
+        self.assertEqual((rows[0]["size"], rows[0]["karat_value"]), ("18", 21))
+        self.assertEqual(ids(repo.search_sellable_items(text=tag, size="17")), [close])
+        self.assertEqual(ids(repo.search_sellable_items(text=f"S-{self.suffix}")), [close])   # partial barcode
+        self.assertEqual(set(ids(repo.search_sellable_items(text=tag, exclude_ids=[plain, close]))), {other_karat})
+        self.assertEqual(repo.search_sellable_items(text="%_no_such_%"), [])
+        # Search-only Arabic folding, as Customers V2: ة/ه and أ/ا match; stored text is unchanged.
+        folded = f"أسورة{self.suffix}"
+        bracelet = self.typed_item(folded, "7.000")
+        self.assertEqual(ids(repo.search_sellable_items(text=f"اسوره{self.suffix}")), [bracelet])
+        self.assertTrue(repo.search_sellable_items(text=f"اسوره{self.suffix}")[0]["item_type_name"].startswith(folded))
+
+
 if __name__ == "__main__":
     unittest.main()

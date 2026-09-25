@@ -1,5 +1,6 @@
 """Verify credentials off-thread; no credential-bearing exception reaches QML."""
 from dataclasses import dataclass, field
+import logging
 from threading import Lock
 from time import monotonic
 
@@ -9,6 +10,7 @@ from services.password_service import PasswordService
 GENERIC_ERROR = "تعذر تسجيل الدخول. تحقق من بيانات الدخول أو راجع المسؤول."
 CHANGE_REQUIRED = "يلزم تغيير كلمة المرور بواسطة المسؤول قبل الدخول؛ تغيير كلمة المرور غير متاح في هذا الإصدار."
 _VERIFIED = object()
+logger = logging.getLogger(__name__)
 
 
 class AuthenticationError(Exception):
@@ -110,6 +112,40 @@ class AuthenticationService:
             return result
         finally:
             password = None
+            self._lock.release()
+
+    def establish_development_session(self, username):
+        """TEMPORARY DEVELOPMENT AUTO-LOGIN — DISABLE BEFORE PRODUCTION.
+
+        Signs in an existing account without its password, only while
+        config.dev_settings allows it. Every account check of a normal login
+        still applies, and the login is recorded like a normal login.
+        """
+        from config.dev_settings import dev_auto_login_username
+        if not isinstance(username, str) or not username or dev_auto_login_username() != username:
+            raise AuthenticationError(GENERIC_ERROR)
+        if not self._lock.acquire(blocking=False):
+            raise AuthenticationError(GENERIC_ERROR)
+        try:
+            with self._transaction() as connection:
+                repository = self._repository(connection)
+                credentials = repository.find_credentials(username)
+                user = credentials and repository.get_identity(credentials["id"], lock=True)
+                if (not user or not user["is_active"]
+                        or (user["employee_id"] is not None and not user.get("employee_active"))):
+                    raise AuthenticationError(GENERIC_ERROR)
+                permissions = repository.effective_permissions(user["id"], lock=True)
+                if "APP_LOGIN" not in permissions:
+                    raise AuthenticationError(GENERIC_ERROR)
+                if user["must_change_password"]:
+                    raise AuthenticationError(CHANGE_REQUIRED)
+                repository.record_login(user["id"])
+                result = AuthenticationResult(int(user["id"]), user["employee_id"],
+                                              user["display_name"], permissions, _VERIFIED)
+            logger.warning("TEMPORARY DEVELOPMENT AUTO-LOGIN — DISABLE BEFORE PRODUCTION (user id %s signed in automatically).",
+                           result.user_id)
+            return result
+        finally:
             self._lock.release()
 
     def _authenticate(self, username, password):

@@ -18,7 +18,7 @@ snapshots stay UTC, as in the Gold Price Engine.
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import uuid
 
 from config.database_config import DatabaseConfig
@@ -48,11 +48,17 @@ class InvoiceError(ValueError):
         self.code = code
 
 
+IDENTIFICATION_METHODS = ("SCAN", "SEARCH")
+ITEM_SEARCH_LIMIT = 30
+
+
 @dataclass(frozen=True)
 class SaleLineInput:
     inventory_item_id: str
     making_per_gram: str | None = None
     making_total: str | None = None
+    # How the employee identified the piece: SCAN (barcode) or SEARCH (بحث عن قطعة).
+    identified_by: str = "SCAN"
 
 
 @dataclass(frozen=True)
@@ -196,6 +202,9 @@ class InvoiceService:
         return customer, balance, warning
 
     def _items(self, invoices, draft):
+        for line in draft.sale_lines:
+            if line.identified_by not in IDENTIFICATION_METHODS:
+                raise InvoiceError("IDENTIFICATION_INVALID", "طريقة تحديد القطعة غير صحيحة.")
         ids = [line.inventory_item_id for line in draft.sale_lines]
         items = invoices.lock_sale_items(ids) if ids else []
         found = {item["inventory_item_id"]: item for item in items}
@@ -290,6 +299,36 @@ class InvoiceService:
                 "item_name": item.get("item_type_name"), "karat_id": int(item["karat_id"]),
                 "karat": item.get("karat_value"), "weight_grams": _money(item["weight_grams"]),
                 "factory_name": item.get("factory_name"), "size": item.get("size")}
+
+    def search_sellable_items(self, *, text="", karat_id=None, weight=None, tolerance="0.05", size="",
+                              exclude_ids=(), _expected_actor=None):
+        """Candidates for بحث عن قطعة: IN_STOCK items only, read-only.
+
+        Returns every match (up to a limit) and never chooses one: the employee
+        must explicitly select the physical piece.
+        """
+        self._require_create(_expected_actor)
+        weight_min = weight_max = target = None
+        if weight not in (None, ""):
+            try:
+                target, spread = Decimal(str(weight).strip()), Decimal(str(tolerance or "0").strip())
+            except InvalidOperation:
+                raise InvoiceError("SEARCH_WEIGHT_INVALID", "اكتب الوزن بالأرقام.") from None
+            if not target.is_finite() or target <= 0 or not spread.is_finite() or not 0 <= spread <= 5:
+                raise InvoiceError("SEARCH_WEIGHT_INVALID", "اكتب وزناً صحيحاً وهامشاً من 0 إلى 5 جم.")
+            weight_min, weight_max = target - spread, target + spread
+        if karat_id is not None and (isinstance(karat_id, bool) or int(karat_id) <= 0):
+            karat_id = None
+        rows = self._read_only(lambda connection: self._invoices(connection).search_sellable_items(
+            text=text, karat_id=None if karat_id is None else int(karat_id), weight_min=weight_min,
+            weight_max=weight_max, size=size, exclude_ids=tuple(exclude_ids), weight_target=target,
+            limit=ITEM_SEARCH_LIMIT + 1))
+        items = [{"inventory_item_id": row["inventory_item_id"], "barcode": row.get("barcode_value"),
+                  "item_name": row.get("item_type_name"), "karat_id": int(row["karat_id"]),
+                  "karat": row.get("karat_value"), "weight_grams": _money(row["weight_grams"]),
+                  "factory_name": row.get("factory_name"), "size": row.get("size"),
+                  "category_name": row.get("category_name")} for row in rows[:ITEM_SEARCH_LIMIT]]
+        return {"items": items, "truncated": len(rows) > ITEM_SEARCH_LIMIT}
 
     def preview(self, draft: InvoiceDraft, *, _expected_actor=None):
         """Read-only recalculation for the screen; nothing is written."""
@@ -479,6 +518,10 @@ class InvoiceService:
                 "actor_employee_id": actor.employee_id,
                 "N": settlement.net_signed, "P": settlement.payment_signed, "R": residual,
             }
+            searched = [str(line.inventory_item_id) for line in draft.sale_lines if line.identified_by == "SEARCH"]
+            if searched:
+                # Pieces found with بحث عن قطعة instead of a barcode scan.
+                details["search_identified_item_ids"] = searched
             invoices.insert_event(invoice_id=invoice_id, event_type="CREATED", performed_by_user_id=actor.user_id)
             invoices.insert_event(invoice_id=invoice_id, event_type="FINALIZED",
                                   performed_by_user_id=actor.user_id, details=details)
