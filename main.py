@@ -35,6 +35,12 @@ def create_operational_viewmodels():
     }
 
 
+def create_invoice_viewmodel(session):
+    """Billing V2 view-model for one login; its draft is discarded on logout."""
+    from app.viewmodels.invoice_viewmodel import InvoiceViewModel
+    return InvoiceViewModel(session)
+
+
 class ApplicationController(QObject):
     stateChanged = Signal()
 
@@ -44,7 +50,7 @@ class ApplicationController(QObject):
 
     def __init__(self, app, *, authentication_service=None,
                  operational_factory=create_operational_viewmodels, qml_directory=None,
-                 gold_price_service=None):
+                 gold_price_service=None, invoice_factory=create_invoice_viewmodel):
         super().__init__(app)
         self.app = app
         self.qml_directory = qml_directory or Path(__file__).resolve().parent / "qml"
@@ -55,6 +61,7 @@ class ApplicationController(QObject):
         self.gold_prices = GoldPriceViewModel(self.session, gold_price_service, self)
         self.gold_settings = GoldPriceSettingsViewModel(self.session, self)
         self._operational_factory = operational_factory
+        self._invoice_factory = invoice_factory
         self.operational_engine = None
         self.operational_viewmodels = {}
         self.login_engine = self._engine()
@@ -71,6 +78,7 @@ class ApplicationController(QObject):
         app.aboutToQuit.connect(self.authentication.shutdown)
         app.aboutToQuit.connect(self.gold_prices.shutdown)
         app.aboutToQuit.connect(self.gold_settings.shutdown)
+        app.aboutToQuit.connect(self._shutdown_operational)
         QTimer.singleShot(0, self.authentication.checkStartup)
 
     def _engine(self):
@@ -88,6 +96,7 @@ class ApplicationController(QObject):
         self.operational_engine = engine
         try:
             self.operational_viewmodels = self._operational_factory()
+            self.operational_viewmodels.setdefault("invoiceVM", self._invoice_factory(self.session))
             engine.rootContext().setContextProperty("goldPriceVM", self.gold_prices)
             engine.rootContext().setContextProperty("goldSettingsVM", self.gold_settings)
             for name, viewmodel in self.operational_viewmodels.items():
@@ -101,9 +110,17 @@ class ApplicationController(QObject):
             self.authentication.show_application_error()
 
     @Slot()
+    def _shutdown_operational(self):
+        # Wait for background work before its view-model and engine are destroyed.
+        for viewmodel in self.operational_viewmodels.values():
+            if hasattr(viewmodel, "shutdown"):
+                viewmodel.shutdown()
+
+    @Slot()
     def _session_changed(self):
         if self.session.authenticated:
             return
+        self._shutdown_operational()
         if self.operational_engine is not None:
             for root in self.operational_engine.rootObjects():
                 root.hide()

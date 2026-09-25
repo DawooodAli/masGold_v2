@@ -136,6 +136,13 @@ class InvoiceRepository(BaseRepository):
 
         Returns rows in the requested order; missing ids are simply absent.
         """
+        return self._sale_items(item_ids, lock=True)
+
+    def read_sale_items(self, item_ids):
+        """Same rows as lock_sale_items() without locks (preview only)."""
+        return self._sale_items(item_ids, lock=False)
+
+    def _sale_items(self, item_ids, lock):
         ids = [_id(value) for value in item_ids]
         if len(set(ids)) != len(ids):
             raise ValueError("Duplicate inventory item.")
@@ -165,12 +172,21 @@ class InvoiceRepository(BaseRepository):
                 ON ib.inventory_item_id = ii.id AND ib.barcode_status = 'ACTIVE'
             WHERE ii.id IN ({placeholders})
             ORDER BY ii.id
-            FOR UPDATE OF ii
+            {"FOR UPDATE OF ii" if lock else ""}
             """,
             tuple(sorted(ids)),
         )
         by_id = {int(row["inventory_item_id"]): _stringify_ids(row) for row in rows}
         return [by_id[item_id] for item_id in ids if item_id in by_id]
+
+    def find_item_id_by_barcode(self, barcode):
+        """The item carrying this ACTIVE barcode, as a decimal string, or None."""
+        row = self._fetch_one(
+            "SELECT inventory_item_id FROM inventory_barcodes "
+            "WHERE barcode_value = %s AND barcode_status = 'ACTIVE'",
+            (str(barcode),),
+        )
+        return None if row is None else str(row["inventory_item_id"])
 
     def lock_invoice(self, invoice_id):
         return _stringify_ids(self._fetch_one(

@@ -2874,7 +2874,9 @@ ApplicationWindow {
                 }
 
 
-                BillingPage {
+                // Billing V2 (canonical invoices). The frozen V1 BillingPage
+                // component above is kept unchanged but no longer shown.
+                InvoicePage {
                     pageTitle: "🧾 الفواتير"
                 }
 
