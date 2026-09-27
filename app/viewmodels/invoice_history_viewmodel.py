@@ -1,70 +1,66 @@
-"""Invoice history and invoice detail (read-only). All text is formatted here;
-QML only displays it. Legacy invoices are labelled as partial historical data."""
-from datetime import datetime, timezone
-import json
+"""سجل الفواتير (read-only): search, filters, paging, invoice detail and reprint.
 
-from PySide6.QtCore import QObject, Property, Signal, Slot
+All text is formatted here (app.formatting: one money format, bidi-safe dates / signed values);
+QML only displays it. Nothing in this ViewModel can change an invoice."""
+from datetime import date, datetime
 
-from app.viewmodels.invoice_viewmodel import grams, money, price
+from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
+
+from app.formatting import datetime_text, grams, ltr, money
 from app.workers.invoice_worker import InvoiceWorker
 
-
-UNKNOWN = "غير معروف"
-TYPE_TEXT = {"SELL": "بيع", "BUY": "شراء كسر", "MIXED": "استبدال"}
-STATUS_TEXT = {"FINALIZED": "نهائية", "VOIDED": "ملغاة", "DRAFT": "مسودة"}
+UNAVAILABLE = "غير متاح"
+TYPE_TEXT = {"SELL": "بيع", "BUY": "شراء كسر", "MIXED": "بيع مع كسر"}
 SETTLEMENT_TEXT = {"SETTLED": "مسددة", "PARTIAL": "مسددة جزئياً", "UNSETTLED": "غير مسددة", "OVERPAID": "مدفوعة بزيادة"}
-NET_TEXT = {"CUSTOMER_PAYS_SHOP": "على العميل", "SHOP_PAYS_CUSTOMER": "للعميل", "SETTLED": "متعادلة"}
-EVENT_TEXT = {"CREATED": "إنشاء", "FINALIZED": "إتمام", "PRINTED": "طباعة", "REPRINTED": "إعادة طباعة",
-              "PAYMENT_ADDED": "إضافة دفعة", "PAYMENT_CORRECTED": "تصحيح دفعة", "COPIED_TO_NEW_BILL": "نسخ لفاتورة جديدة",
+STATUS_TEXT = {"FINALIZED": "نهائية", "VOIDED": "ملغاة"}
+DIRECTION_TEXT = {"CUSTOMER_PAYS_SHOP": "يدفع العميل", "SHOP_PAYS_CUSTOMER": "يدفع المحل", "SETTLED": "متعادلة"}
+KIND_TEXT = {"INVENTORY": "من المخزون", "MANUAL": "بيع يدوي (غير محدد في المخزون)", "OLD_GOLD_STOCK": "من رصيد الكسر"}
+IDENTIFIED_TEXT = {"SCAN": "بالباركود", "SEARCH": "بالبحث"}
+EVENT_TEXT = {"CREATED": "تم إنشاء الفاتورة", "FINALIZED": "تم حفظ الفاتورة نهائياً", "PRINTED": "طباعة",
+              "REPRINTED": "إعادة طباعة", "PAYMENT_ADDED": "إضافة دفعة", "PAYMENT_CORRECTED": "تصحيح دفعة",
               "VOIDED": "إلغاء", "MIGRATED": "ترحيل من النظام القديم"}
-DISCOUNT_TEXT = {"PERCENT": "نسبة", "AMOUNT": "مبلغ"}
-FILTER_STATUS = {"ALL": None, "FINALIZED": "FINALIZED", "VOIDED": "VOIDED"}
+METHOD_TEXT = {"PHYSICAL_CASH": "نقدي", "MOBILE_WALLET": "محفظة", "INSTAPAY": "InstaPay", "BANK_TRANSFER": "تحويل بنكي"}
+DISCOUNT_TEXT = {"PERCENT": "%", "AMOUNT": "ج"}
+MAKING_STATUS_TEXT = {"WITHIN_RANGE": "داخل النطاق", "OUT_OF_RANGE": "خارج النطاق", "NOT_CONFIGURED": "النطاق غير محدد"}
+TYPE_FILTERS = {"ALL": None, "SELL": "SELL", "BUY": "BUY", "MIXED": "MIXED"}
+STATUS_FILTERS = {"ALL": None, "SETTLED": "SETTLED", "PARTIAL": "PARTIAL", "UNSETTLED": "UNSETTLED"}
 
 
 def known_money(value):
-    return UNKNOWN if value is None else money(value)
-
-
-def local_time(value):
-    return "" if value is None else value.strftime("%Y-%m-%d %H:%M")
-
-
-def utc_time(value):
-    """Provider timestamps are stored in UTC; show them in local time with the UTC value."""
-    if value is None:
-        return ""
-    local = value.replace(tzinfo=timezone.utc).astimezone()
-    return f"{local:%Y-%m-%d %H:%M:%S} ({value:%H:%M:%S} UTC)"
-
-
-def net_text(direction, amount):
-    if direction == "SETTLED":
-        return "متعادلة"
-    return f"{NET_TEXT.get(direction, direction)} {known_money(amount)}"
+    return UNAVAILABLE if value is None else money(value)
 
 
 class InvoiceHistoryViewModel(QObject):
     changed = Signal()
 
-    def __init__(self, session, service=None, parent=None):
+    def __init__(self, session, service=None, parent=None, debounce_ms=300, clock=datetime.now):
         super().__init__(parent)
-        self._session, self._service = session, service
+        self._session, self._service, self._clock = session, service, clock
         self._workers, self._request, self._latest = set(), 0, {}
         self._busy, self._shutdown, self._activated = set(), False, False
-        self._filters = {"number": "", "customer_id": None, "date_from": None, "date_to": None, "status": None}
-        self._results, self._page, self._has_more = [], 1, False
+        self._text, self._date_from, self._date_to = "", None, None
+        self._type, self._status = "ALL", "ALL"
+        self._results, self._page, self._has_more, self._loaded = [], 1, False, False
         self._detail, self._error, self._detail_error = {}, "", ""
+        self._reprint = {}
+        # Typing in the search box: one query after a short pause, never one per keystroke.
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.setInterval(debounce_ms)
+        self._debounce.timeout.connect(lambda: self._run_search(1))
 
+    # ------------------------------------------------------------ plumbing
     def _service_instance(self):
         if self._service is None:
             from services.invoice_history_service import InvoiceHistoryService
             self._service = InvoiceHistoryService(self._session)
         return self._service
 
-    # ------------------------------------------------------------ workers
     def _start(self, operation, call):
+        if self._shutdown:
+            return
         actor = self._session.current_actor()
-        if self._shutdown or actor is None:
+        if actor is None:
             return
         self._request += 1
         self._latest[operation] = self._request
@@ -90,31 +86,59 @@ class InvoiceHistoryViewModel(QObject):
     @Slot()
     def shutdown(self):
         self._shutdown = True
+        self._debounce.stop()
         for worker in list(self._workers):
             worker.wait(5000)
 
-    # ------------------------------------------------------------ search
     @Slot()
     def activate(self):
+        """Opening the history tab loads the newest page once."""
         if not self._activated:
             self._activated = True
             self._run_search(1)
 
+    # ------------------------------------------------------------ search / filters / paging
     @Slot(str)
-    def setCustomer(self, customer_id):
-        self._filters["customer_id"] = customer_id or None
+    def setSearchText(self, text):
+        text = (text or "").strip()
+        if text != self._text:
+            self._text = text
+            self._debounce.start()
 
-    @Slot(str, str, str, str)
-    def search(self, number, date_from, date_to, status):
+    @Slot()
+    def searchNow(self):
+        self._debounce.stop()
+        self._run_search(1)
+
+    @Slot()
+    def setToday(self):
+        today = self._clock().date()
+        self._date_from = self._date_to = today
+        self._run_search(1)
+
+    @Slot(str, str)
+    def setDateRange(self, date_from, date_to):
         try:
-            parsed = [self._parse_date(date_from), self._parse_date(date_to)]
+            self._date_from, self._date_to = self._parse_date(date_from), self._parse_date(date_to)
         except ValueError as exc:
             self._error = str(exc)
             self.changed.emit()
             return
-        self._filters.update(number=(number or "").strip(), date_from=parsed[0], date_to=parsed[1],
-                             status=FILTER_STATUS.get(status))
-        self._error = ""
+        self._run_search(1)
+
+    @Slot(str)
+    def setTypeFilter(self, code):
+        self._type = code if code in TYPE_FILTERS else "ALL"
+        self._run_search(1)
+
+    @Slot(str)
+    def setStatusFilter(self, code):
+        self._status = code if code in STATUS_FILTERS else "ALL"
+        self._run_search(1)
+
+    @Slot()
+    def clearFilters(self):
+        self._text, self._date_from, self._date_to, self._type, self._status = "", None, None, "ALL", "ALL"
         self._run_search(1)
 
     @staticmethod
@@ -125,7 +149,7 @@ class InvoiceHistoryViewModel(QObject):
         try:
             return datetime.strptime(text, "%Y-%m-%d").date()
         except ValueError:
-            raise ValueError(f"اكتب التاريخ بالشكل 2026-09-25 (القيمة: {text}).") from None
+            raise ValueError(f"اكتب التاريخ بالشكل 2026-09-27 (القيمة: {text}).") from None
 
     @Slot()
     def nextPage(self):
@@ -138,7 +162,10 @@ class InvoiceHistoryViewModel(QObject):
             self._run_search(self._page - 1)
 
     def _run_search(self, page):
-        filters, service = dict(self._filters), self._service_instance()
+        service = self._service_instance()
+        filters = {"text": self._text, "date_from": self._date_from, "date_to": self._date_to,
+                   "invoice_type": TYPE_FILTERS[self._type], "settlement_status": STATUS_FILTERS[self._status]}
+        self._error = ""
         self._start("search", lambda _expected_actor: service.search(page=page, _expected_actor=_expected_actor,
                                                                      **filters))
 
@@ -147,41 +174,63 @@ class InvoiceHistoryViewModel(QObject):
             self._error = error
             return
         self._results = [self._row(item) for item in result["items"]]
-        self._page, self._has_more, self._error = result["page"], result["has_more"], ""
+        self._page, self._has_more, self._loaded = result["page"], result["has_more"], True
 
     @staticmethod
     def _row(item):
-        customer = " | ".join(v for v in (item.get("customer_code"), item.get("customer_name")) if v)
+        moved_label = "مدفوع" if item["net_direction"] == "SHOP_PAYS_CUSTOMER" else "مستلم"
+        when = item.get("finalized_at")
         return {"invoiceId": item["invoice_id"], "number": item["invoice_number"],
-                "date": local_time(item["invoice_date"]),
+                "date": ltr(when.strftime("%Y-%m-%d")) if when else "", "time": when.strftime("%H:%M") if when else "",
+                "customer": item.get("customer_name") or "بدون عميل", "salesperson": item.get("salesperson") or "—",
                 "typeText": TYPE_TEXT.get(item["invoice_type"], item["invoice_type"]),
-                "statusText": STATUS_TEXT.get(item["invoice_status"], item["invoice_status"]),
-                "customerText": customer or "بدون عميل", "salesperson": item.get("salesperson") or "—",
-                "netText": net_text(item["net_direction"], item["net_amount"]),
-                "isLegacy": item["is_legacy"], "legacyLabel": item["legacy_label"]}
+                "total": known_money(item.get("invoice_total")),
+                "moved": f"{moved_label} {money(item['money_moved'])}",
+                "statusText": SETTLEMENT_TEXT.get(item["settlement_status"], item["settlement_status"] or ""),
+                "isLegacy": bool(item.get("is_legacy"))}
 
     # ------------------------------------------------------------ detail
     @Slot(str)
     def openInvoice(self, invoice_id):
+        if not invoice_id:
+            return
         service = self._service_instance()
-        self._detail, self._detail_error = {}, ""
+        self._detail, self._detail_error, self._reprint = {}, "", {}
         self._start("detail", lambda _expected_actor: service.detail(invoice_id, _expected_actor=_expected_actor))
 
     @Slot()
     def closeDetail(self):
-        self._detail, self._detail_error = {}, ""
+        self._detail, self._detail_error, self._reprint = {}, "", {}
+        self._busy.discard("detail")
         self.changed.emit()
 
     def _on_detail(self, result, error):
         if error:
-            self._detail_error = error
+            self._detail_error = error or "تعذر تحميل الفاتورة."
             return
         self._detail = result
 
-    # ------------------------------------------------------------ properties
+    # ------------------------------------------------------------ reprint (read-only)
+    @Slot()
+    def reprint(self):
+        """The original invoice through the frozen print service; never saves anything."""
+        if not self._detail or not self._detail.get("can_reprint") or "reprint" in self._busy:
+            return
+        service, invoice_id = self._service_instance(), self._detail["invoice_id"]
+        self._reprint = {}
+        self._start("reprint", lambda _expected_actor: service.reprint(invoice_id, _expected_actor=_expected_actor))
+
+    def _on_reprint(self, result, error):
+        if error:
+            self._reprint = {"printed": False, "message": error}
+        else:
+            self._reprint = {"printed": bool(result.printed),
+                             "message": "تم إرسال الفاتورة إلى الطابعة." if result.printed else result.message}
+
+    # ------------------------------------------------------------ list properties
     @Property(bool, notify=changed)
     def busy(self):
-        return bool(self._busy)
+        return "search" in self._busy
 
     @Property(str, notify=changed)
     def errorMessage(self):
@@ -190,6 +239,38 @@ class InvoiceHistoryViewModel(QObject):
     @Property("QVariantList", notify=changed)
     def results(self):
         return self._results
+
+    @Property(str, notify=changed)
+    def searchText(self):
+        return self._text
+
+    @Property(str, notify=changed)
+    def typeFilter(self):
+        return self._type
+
+    @Property(str, notify=changed)
+    def statusFilter(self):
+        return self._status
+
+    @Property(str, notify=changed)
+    def dateFrom(self):
+        return "" if self._date_from is None else self._date_from.isoformat()
+
+    @Property(str, notify=changed)
+    def dateTo(self):
+        return "" if self._date_to is None else self._date_to.isoformat()
+
+    @Property(bool, notify=changed)
+    def filtered(self):
+        return bool(self._text or self._date_from or self._date_to or self._type != "ALL" or self._status != "ALL")
+
+    @Property(str, notify=changed)
+    def emptyText(self):
+        if self.busy and not self._loaded:
+            return "جاري التحميل..."
+        if self._results:
+            return ""
+        return "لا توجد نتائج مطابقة" if self.filtered else "لا توجد فواتير"
 
     @Property(int, notify=changed)
     def page(self):
@@ -205,11 +286,16 @@ class InvoiceHistoryViewModel(QObject):
 
     @Property(str, notify=changed)
     def pageText(self):
-        return f"صفحة {self._page}" + ("" if self._results else " — لا توجد فواتير مطابقة")
+        return f"صفحة {self._page}"
 
+    # ------------------------------------------------------------ detail properties
     @Property(bool, notify=changed)
     def detailOpen(self):
         return bool(self._detail) or "detail" in self._busy or bool(self._detail_error)
+
+    @Property(bool, notify=changed)
+    def detailBusy(self):
+        return "detail" in self._busy
 
     @Property(str, notify=changed)
     def detailError(self):
@@ -220,84 +306,102 @@ class InvoiceHistoryViewModel(QObject):
         d = self._detail
         if not d:
             return {}
-        s = d["settlement"]
+        e, customer = d["economics"], d["customer"]
+        outgoing = d["net_direction"] == "SHOP_PAYS_CUSTOMER"
+        account = d["account_signed"]
+        account_text = ("لا يوجد" if not account else
+                        f"{'على العميل' if account > 0 else 'للعميل'}: {money(abs(account))}")
+        incomplete = not d["is_legacy"] and (e["gold_value"] is None and d["sale_lines"])
         return {
-            "number": d["invoice_number"], "isLegacy": d["is_legacy"], "legacyLabel": d["legacy_label"],
-            "legacyNumber": d.get("legacy_bill_number") or "",
-            "completeness": d.get("legacy_completeness") or "",
+            "invoiceId": d["invoice_id"], "number": d["invoice_number"],
+            "finalizedAt": datetime_text(d["finalized_at"]),
             "typeText": TYPE_TEXT.get(d["invoice_type"], d["invoice_type"]),
             "statusText": STATUS_TEXT.get(d["invoice_status"], d["invoice_status"]),
-            "date": local_time(d["invoice_date"]), "finalizedAt": local_time(d.get("finalized_at")),
-            "salesperson": d.get("employee_name") or "—",
-            "createdBy": d.get("created_by_name") or "—", "finalizedBy": d.get("finalized_by_name") or "—",
-            "customerName": d.get("customer_name_snapshot") or "بدون عميل",
-            "customerCode": d.get("customer_code_snapshot") or "",
-            "customerMobile": d.get("mobile_snapshot") or "", "customerPlace": d.get("place_snapshot") or "",
-            "balanceBefore": known_money(d.get("balance_before")) if d.get("customer_id") else "",
-            "balanceAfter": known_money(d.get("balance_after")) if d.get("customer_id") else "",
-            "deadCashWarning": bool(d.get("dead_cash_warning_active")),
-            "saleTotal": known_money(d.get("sell_total")), "oldGoldTotal": known_money(d.get("buy_total")),
-            "netText": net_text(s["net_direction"], s["net_amount"]),
-            "receivedText": money(s["money_received"]), "paidText": money(s["money_paid"]),
-            "residualText": UNKNOWN + " (بيانات قديمة)" if s["residual_signed"] is None
-            else ("مسددة بالكامل" if s["residual_signed"] == 0 else
-                  f"{'متبقي على العميل' if s['residual_signed'] > 0 else 'متبقي للعميل'} {money(s['residual_amount'])}"),
-            "settlementText": SETTLEMENT_TEXT.get(d["settlement_status"], d["settlement_status"]),
+            "settlementText": SETTLEMENT_TEXT.get(d["settlement_status"], d["settlement_status"] or ""),
+            "salesperson": d.get("salesperson") or "—", "finalizedBy": d.get("finalized_by") or "—",
+            "isLegacy": d["is_legacy"], "legacyLabel": d["legacy_label"],
+            "incompleteText": "بيانات الفاتورة غير مكتملة (فاتورة قديمة)" if incomplete else "",
+            "customerName": customer.get("name") or "بدون عميل", "customerCode": customer.get("code") or "",
+            "customerMobile": customer.get("mobile") or "", "customerPlace": customer.get("place") or "",
+            "invoiceTotal": known_money(d["invoice_total"]),
+            "directionText": DIRECTION_TEXT.get(d["net_direction"], ""),
+            "movedLabel": "المدفوع للعميل" if outgoing else "المستلم من العميل",
+            "movedAmount": money(d["money_paid"] if outgoing else d["money_received"]),
+            "accountText": account_text,
+            "accountDirection": "" if not account else ("CUSTOMER_OWES" if account > 0 else "SHOP_OWES"),
+            "goldValue": known_money(e["gold_value"]),
+            "averageMaking": UNAVAILABLE if e["average_making"] is None else f"{e['average_making']:,.2f} ج/جم",
+            "makingTotal": "" if not d["can_see_manager_details"] else known_money(e["making_total"]),
+            "makingStatus": MAKING_STATUS_TEXT.get(e.get("making_status") or "", ""),
+            "oldGoldTotal": known_money(d.get("buy_total")) if d["old_gold_lines"] else "",
             "notes": d.get("notes") or "",
+            "canReprint": bool(d.get("can_reprint")),
+            "showManager": bool(d["can_see_manager_details"]),
         }
-
-    def _lines(self, key):
-        return self._detail.get(key, []) if self._detail else []
 
     @Property("QVariantList", notify=changed)
     def saleLines(self):
-        return [{"barcode": l.get("barcode_snapshot") or "", "itemName": l.get("item_name_snapshot") or "",
-                 "karat": str(l["karat_value"]), "weight": grams(l["weight_grams"]),
-                 "goldPrice": price(l["gold_price_per_gram"]) or UNKNOWN,
-                 "making": known_money(l.get("making_total")), "lineTotal": known_money(l.get("line_total"))}
-                for l in self._lines("sale_lines")]
+        rows = []
+        for i, line in enumerate(self._detail.get("sale_lines", []) if self._detail else []):
+            kind = KIND_TEXT[line["kind"]]
+            if line["kind"] == "INVENTORY" and line.get("identification_method") in IDENTIFIED_TEXT:
+                kind += " — " + IDENTIFIED_TEXT[line["identification_method"]]
+            rows.append({"serial": str(i + 1), "item": line.get("item_name") or line.get("category") or "—",
+                         "category": line.get("category") or "", "factory": line.get("factory") or "—",
+                         "karat": str(line["karat"]), "weight": grams(line["weight"]), "qty": str(line["quantity"]),
+                         "size": line.get("size") or "—", "notes": line.get("notes") or "",
+                         "barcode": line.get("barcode") or "", "kindText": kind,
+                         "manual": line["kind"] == "MANUAL", "fromOldGold": line["kind"] == "OLD_GOLD_STOCK"})
+        return rows
 
     @Property("QVariantList", notify=changed)
     def oldGoldLines(self):
-        return [{"karat": str(l["karat_value"]), "weight": grams(l["weight_grams"]),
-                 "goldPrice": price(l["gold_price_per_gram"]) or UNKNOWN,
-                 "gross": known_money(l.get("gross_total")),
-                 "discount": ("" if not l.get("discount_type") else
-                              f"{DISCOUNT_TEXT[l['discount_type']]} {l['discount_value']} = {money(l['discount_amount'])}"),
-                 "lineTotal": known_money(l.get("line_total"))}
-                for l in self._lines("old_gold_lines")]
-
-    @Property("QVariantList", notify=changed)
-    def otherLines(self):
-        return [{"itemName": l.get("item_name_snapshot") or "بند", "karat": str(l["karat_value"]),
-                 "weight": grams(l["weight_grams"]), "lineTotal": known_money(l.get("line_total"))}
-                for l in self._lines("other_lines")]
+        rows = []
+        for line in self._detail.get("old_gold_lines", []) if self._detail else []:
+            discount = ""
+            if line.get("discount_type") in DISCOUNT_TEXT and line.get("discount_value") is not None:
+                discount = ltr(f"{line['discount_value']:,.2f}{DISCOUNT_TEXT[line['discount_type']]}")
+            rows.append({"karat": str(line["karat"]), "weight": grams(line["weight"]),
+                         "price": UNAVAILABLE if line["gold_price"] is None else f"{line['gold_price']:,.2f}",
+                         "gross": known_money(line["gross"]), "discount": discount or "—",
+                         "value": known_money(line["line_total"])})
+        return rows
 
     @Property("QVariantList", notify=changed)
     def payments(self):
-        return [{"method": p["payment_method_name"], "directionText": "مستلم" if p["direction"] == "IN" else "مدفوع",
-                 "amount": money(p["amount"]), "time": local_time(p["occurred_at"]),
-                 "reference": p.get("payment_reference") or ""}
-                for p in self._lines("payments")]
-
-    @Property("QVariantList", notify=changed)
-    def prices(self):
-        return [{"karat": str(p["karat_value"]), "buy": price(p.get("shop_buy_price_per_gram")) or UNKNOWN,
-                 "sell": price(p.get("shop_sell_price_per_gram")) or UNKNOWN,
-                 "source": p.get("source_code_snapshot") or "", "providerTime": utc_time(p.get("provider_timestamp"))}
-                for p in self._lines("price_snapshots")]
-
-    @Property("QVariantList", notify=changed)
-    def events(self):
         rows = []
-        for e in self._lines("events"):
-            details = json.loads(e["details_json"]) if isinstance(e.get("details_json"), str) else (e.get("details_json") or {})
-            notes = []
-            if details.get("stale_acknowledged"):
-                notes.append("تم الإقرار بسعر قديم")
-            if details.get("dead_cash_confirmed"):
-                notes.append("تأكيد مديونية مع تحذير ديون معدومة")
-            rows.append({"eventText": EVENT_TEXT.get(e["event_type"], e["event_type"]),
-                         "time": local_time(e["occurred_at"]), "by": e.get("performed_by_name") or "—",
-                         "notes": "، ".join(notes) or (e.get("notes") or "")})
+        for p in self._detail.get("payments", []) if self._detail else []:
+            label = METHOD_TEXT.get(p["method_code"], p.get("method_name") or "")
+            if p.get("account_name"):
+                label += " — " + p["account_name"]
+            rows.append({"method": label, "directionText": "مستلم" if p["direction"] == "IN" else "مدفوع",
+                         "amount": money(p["amount"])})
         return rows
+
+    @Property("QVariantList", notify=changed)
+    def priceSnapshots(self):
+        return [{"karat": str(p["karat"]),
+                 "sell": UNAVAILABLE if p["sell"] is None else f"{p['sell']:,.2f}",
+                 "buy": UNAVAILABLE if p["buy"] is None else f"{p['buy']:,.2f}",
+                 "source": p.get("source") or ""}
+                for p in (self._detail.get("price_snapshots", []) if self._detail else [])]
+
+    @Property("QVariantList", notify=changed)
+    def timeline(self):
+        return [{"eventType": e.event_type, "text": EVENT_TEXT.get(e.event_type, e.event_type),
+                 "time": datetime_text(e.occurred_at), "actor": e.actor or "—",
+                 "amount": "" if e.amount is None else money(e.amount), "linked": e.linked_record_id or ""}
+                for e in (self._detail.get("timeline", []) if self._detail else [])]
+
+    # ------------------------------------------------------------ reprint properties
+    @Property(bool, notify=changed)
+    def reprintBusy(self):
+        return "reprint" in self._busy
+
+    @Property(str, notify=changed)
+    def reprintMessage(self):
+        return self._reprint.get("message", "")
+
+    @Property(bool, notify=changed)
+    def reprintFailed(self):
+        return bool(self._reprint) and not self._reprint.get("printed", True)

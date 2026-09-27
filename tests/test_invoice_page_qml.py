@@ -19,6 +19,7 @@ from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtTest import QTest
 
 from app.viewmodels.dashboard_viewmodel import DashboardViewModel
+from app.viewmodels.invoice_history_viewmodel import InvoiceHistoryViewModel
 from app.viewmodels.invoice_viewmodel import InvoiceViewModel
 from app.viewmodels.management_review_viewmodel import ManagementReviewViewModel
 from app.viewmodels.operational_balance_viewmodel import OperationalBalanceViewModel
@@ -186,6 +187,8 @@ class InvoicePageTests(unittest.TestCase):
 
         self.printer = UiPrinter()
         self.dashboard = UiDashboard()
+        from tests.test_invoice_history import StaticHistory
+        self.history = StaticHistory()          # سجل الفواتير over fixtures (never the database)
 
         def invoice_factory(session):
             service = InvoiceService(session, gold_prices=self.prices,
@@ -204,7 +207,8 @@ class InvoicePageTests(unittest.TestCase):
             review_factory=lambda session: ManagementReviewViewModel(session, service=Reviews(self.store),
                                                                      balance_service=Balances(self.store)),
             balance_factory=lambda session: OperationalBalanceViewModel(session, service=Balances(self.store)),
-            dashboard_factory=lambda session: DashboardViewModel(session, service=self.dashboard))
+            dashboard_factory=lambda session: DashboardViewModel(session, service=self.dashboard),
+            history_factory=lambda session: InvoiceHistoryViewModel(session, service=self.history, debounce_ms=20))
         self.wait_until(lambda: self.controller.state == "LOGIN")
         session = self.controller.session
         session._establish(AuthenticationResult(17, 7, "موظف", PERMISSIONS, _VERIFIED), int(session.generation))
@@ -244,6 +248,7 @@ class InvoicePageTests(unittest.TestCase):
         self.controller.operational_viewmodels["reviewsVM"].shutdown()
         self.controller.operational_viewmodels["balancesVM"].shutdown()
         self.controller.operational_viewmodels["dashboardVM"].shutdown()
+        self.controller.operational_viewmodels["invoiceHistoryVM"].shutdown()
         for engine in (self.controller.login_engine, self.controller.setup_engine, self.controller.operational_engine):
             for root in (engine.rootObjects() if engine is not None else []):
                 root.hide()

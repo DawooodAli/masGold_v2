@@ -2954,7 +2954,8 @@ ApplicationWindow {
 
                 // Billing V2 (canonical invoices). The frozen V1 BillingPage
                 // component above is kept unchanged but no longer shown.
-                InvoicePage {
+                // Billing: فاتورة جديدة + سجل الفواتير (read-only history) as two tabs of one workspace.
+                BillingWorkspace {
                     pageTitle: "🧾 الفواتير"
                 }
 

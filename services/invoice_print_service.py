@@ -103,7 +103,7 @@ class InvoicePrintService:
         actor = self._session.require_authenticated()
         if expected_actor is not None and not self._session.is_current(expected_actor):
             raise PermissionError("انتهت جلسة الدخول.")
-        if "INVOICE_FINALIZE" not in actor.permissions and "INVOICE_CREATE" not in actor.permissions:
+        if not {"INVOICE_FINALIZE", "INVOICE_CREATE", "INVOICE_REPRINT"} & set(actor.permissions):   # reprint: سجل الفواتير
             raise PermissionError("لا توجد صلاحية لطباعة الفاتورة.")
         return actor
 

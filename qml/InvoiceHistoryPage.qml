@@ -2,565 +2,474 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// Invoice history and invoice detail (read-only). All text is formatted by
-// invoiceHistoryVM; this page only forwards filters and selections.
+// سجل الفواتير (read-only). Every value comes formatted from invoiceHistoryVM; this page only
+// forwards search text, filters and selections. No invoice can be changed from here.
 Item {
     id: historyPage
     objectName: "invoiceHistoryPage"
 
     property string pageTitle: ""
-    property bool activated: false
+    readonly property var vm: typeof invoiceHistoryVM !== "undefined" ? invoiceHistoryVM : null
+    readonly property bool detailMode: !!vm && vm.detailOpen
+    // Below ~900 px of table the salesperson and time columns step aside (both stay in the detail).
+    readonly property bool narrow: width < 1000
 
     Theme { id: theme }
 
-    onVisibleChanged: {
-        if (visible && !activated) {
-            activated = true
-            invoiceHistoryVM.activate()
+    onVisibleChanged: if (visible && vm) vm.activate()
+
+    Shortcut {
+        sequence: "Esc"
+        enabled: historyPage.visible && historyPage.detailMode
+        onActivated: historyPage.vm.closeDetail()
+    }
+
+    Rectangle { anchors.fill: parent; color: theme.bgPrimary }
+
+    // ------------------------------------------------------------ building blocks
+    component Txt: Label {
+        property string value: ""
+        text: value
+        font.family: theme.fontFamily
+        font.pixelSize: theme.fontBody
+        color: theme.textSecondary
+        horizontalAlignment: Text.AlignRight
+        verticalAlignment: Text.AlignVCenter
+        elide: Text.ElideLeft
+        wrapMode: Text.NoWrap
+        textFormat: Text.PlainText
+    }
+
+    component Head: Txt {
+        color: theme.textMuted
+        font.pixelSize: theme.fontCaption
+        font.bold: true
+    }
+
+    component Section: Rectangle {
+        id: section
+        property string title: ""
+        property color accent: theme.gold
+        default property alias content: sectionBody.data
+        Layout.fillWidth: true
+        Layout.preferredHeight: sectionBody.implicitHeight + 42
+        color: theme.panel
+        radius: theme.radiusSmall
+        border.color: theme.border
+        Rectangle { anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom
+                    anchors.margins: 1; width: 3; radius: 2; color: section.accent }
+        Txt { id: sectionTitle; anchors.top: parent.top; anchors.right: parent.right; anchors.topMargin: 7
+              anchors.rightMargin: 14; value: section.title; color: section.accent; font.bold: true
+              font.pixelSize: theme.fontSection }
+        ColumnLayout {
+            id: sectionBody
+            anchors.top: sectionTitle.bottom; anchors.left: parent.left; anchors.right: parent.right
+            anchors.topMargin: 4; anchors.leftMargin: 12; anchors.rightMargin: 14
+            spacing: 3
         }
     }
 
-    function runSearch() {
-        invoiceHistoryVM.search(numberField.text, dateFromField.text, dateToField.text,
-                                ["ALL", "FINALIZED", "VOIDED"][statusCombo.currentIndex])
+    component Pair: RowLayout {
+        property string label: ""
+        property string value: ""
+        property color valueColor: theme.textPrimary
+        property bool strong: false
+        Layout.fillWidth: true
+        layoutDirection: Qt.RightToLeft
+        spacing: 8
+        Txt { value: parent.label; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+        Item { Layout.fillWidth: true }
+        Txt { value: parent.value; color: parent.valueColor; font.bold: parent.strong
+              font.pixelSize: parent.strong ? theme.fontBodyStrong : theme.fontBody }
     }
 
-    Rectangle {
-        anchors.fill: parent
-        color: theme.bgPrimary
+    component Btn: Button {
+        id: btn
+        property bool primary: false
+        implicitHeight: 30
+        contentItem: Label { text: btn.text; font.family: theme.fontFamily; font.pixelSize: theme.fontBody
+                             font.bold: btn.primary; color: btn.enabled ? theme.textPrimary : theme.textDisabled
+                             horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+        background: Rectangle { implicitWidth: 76; radius: theme.radiusSmall
+                                color: btn.primary ? (btn.hovered ? theme.goldDark : theme.bgTertiary)
+                                                   : (btn.hovered ? theme.panelHover : theme.bgTertiary)
+                                border.color: btn.primary ? theme.gold : (btn.activeFocus ? theme.gold : theme.border) }
     }
 
+    component Field: TextField {
+        implicitHeight: 30
+        font.family: theme.fontFamily
+        font.pixelSize: theme.fontBody
+        color: theme.textPrimary
+        placeholderTextColor: theme.textDisabled
+        horizontalAlignment: TextInput.AlignRight
+        selectByMouse: true
+        background: Rectangle { radius: 4; color: theme.bgPrimary
+                                border.color: parent.activeFocus ? theme.gold : theme.border }
+    }
+
+    component Choice: ComboBox {
+        implicitHeight: 30
+        font.family: theme.fontFamily
+        font.pixelSize: theme.fontBody
+        textRole: "text"
+        valueRole: "code"
+    }
+
+    // ============================================================ LIST
     ColumnLayout {
         anchors.fill: parent
-        anchors.margins: 18
-        spacing: 10
+        anchors.margins: 12
+        spacing: 8
+        visible: !historyPage.detailMode
 
-        Label {
+        // Search + filters: one compact row (wraps to two at 1080 px).
+        Flow {
             Layout.fillWidth: true
-            text: historyPage.pageTitle
-            color: theme.gold
-            font.family: "Cairo"
-            font.pixelSize: 20
-            font.bold: true
-            horizontalAlignment: Text.AlignRight
-        }
-
-        // ---------------------------------------------------------- filters
-        Card {
-            Layout.fillWidth: true
-            implicitHeight: filters.implicitHeight + 24
-
-            Flow {
-                id: filters
-                anchors.fill: parent
-                anchors.margins: 12
-                layoutDirection: Qt.RightToLeft
-                spacing: 10
-
-                FilterBox {
-                    label: "رقم الفاتورة"
-                    TextField {
-                        id: numberField
-                        objectName: "historyNumber"
-                        width: 130
-                        font.family: "Cairo"
-                        color: theme.textPrimary
-                        placeholderText: "رقم أو جزء منه"
-                        placeholderTextColor: theme.textDisabled
-                        horizontalAlignment: TextInput.AlignRight
-                        selectByMouse: true
-                        onAccepted: historyPage.runSearch()
-                    }
-                }
-                FilterBox {
-                    label: "العميل"
-                    CustomerPicker {
-                        id: customerPicker
-                        objectName: "historyCustomerPicker"
-                        width: 230
-                        allowInactive: true
-                        placeholderText: "كل العملاء"
-                        onCustomerSelected: function(customerId) { invoiceHistoryVM.setCustomer(customerId) }
-                        onSelectionCleared: invoiceHistoryVM.setCustomer("")
-                        onSelectionInvalidated: function(customerId, reason) { invoiceHistoryVM.setCustomer("") }
-                    }
-                }
-                FilterBox {
-                    label: "من تاريخ"
-                    DateField { id: dateFromField; objectName: "historyDateFrom" }
-                }
-                FilterBox {
-                    label: "إلى تاريخ"
-                    DateField { id: dateToField; objectName: "historyDateTo" }
-                }
-                FilterBox {
-                    label: "الحالة"
-                    ComboBox {
-                        id: statusCombo
-                        objectName: "historyStatus"
-                        width: 110
-                        font.family: "Cairo"
-                        model: ["الكل", "نهائية", "ملغاة"]
-                    }
-                }
-                FilterBox {
-                    label: " "
-                    PrimaryButton {
-                        objectName: "historySearch"
-                        width: 90
-                        text: "بحث"
-                        enabled: !invoiceHistoryVM.busy
-                        onClicked: historyPage.runSearch()
-                    }
-                }
+            layoutDirection: Qt.RightToLeft
+            spacing: 6
+            Field {
+                id: searchField
+                objectName: "historySearch"
+                width: 260
+                placeholderText: activeFocus || text.length ? "" : "رقم الفاتورة أو اسم / تليفون العميل"
+                onTextEdited: historyPage.vm.setSearchText(text)
+                onAccepted: historyPage.vm.searchNow()
             }
+            Btn { objectName: "historyToday"; text: "اليوم"; onClicked: historyPage.vm.setToday() }
+            Field { id: fromField; objectName: "historyDateFrom"; width: 104; placeholderText: activeFocus ? "" : "من 2026-09-01"
+                    text: historyPage.vm ? historyPage.vm.dateFrom : "" }
+            Field { id: toField; objectName: "historyDateTo"; width: 104; placeholderText: activeFocus ? "" : "إلى 2026-09-30"
+                    text: historyPage.vm ? historyPage.vm.dateTo : "" }
+            Btn { objectName: "historyApplyDates"; text: "تطبيق"; onClicked: historyPage.vm.setDateRange(fromField.text, toField.text) }
+            Choice {
+                objectName: "historyType"
+                width: 118
+                model: [{ code: "ALL", text: "كل العمليات" }, { code: "SELL", text: "بيع" },
+                        { code: "BUY", text: "شراء كسر" }, { code: "MIXED", text: "بيع مع كسر" }]
+                onActivated: historyPage.vm.setTypeFilter(currentValue)
+            }
+            Choice {
+                objectName: "historyStatus"
+                width: 124
+                model: [{ code: "ALL", text: "كل الحالات" }, { code: "SETTLED", text: "مسددة" },
+                        { code: "PARTIAL", text: "مسددة جزئياً" }, { code: "UNSETTLED", text: "غير مسددة" }]
+                onActivated: historyPage.vm.setStatusFilter(currentValue)
+            }
+            Btn { objectName: "historyClear"; text: "مسح"; onClicked: { searchField.text = ""; historyPage.vm.clearFilters() } }
         }
 
-        Label {
-            Layout.fillWidth: true
-            visible: invoiceHistoryVM.errorMessage !== ""
-            objectName: "historyError"
-            text: invoiceHistoryVM.errorMessage
-            color: theme.red
-            font.family: "Cairo"
-            wrapMode: Text.WordWrap
-            horizontalAlignment: Text.AlignRight
-        }
+        Txt { objectName: "historyError"; Layout.fillWidth: true; visible: value.length > 0
+              value: historyPage.vm ? historyPage.vm.errorMessage : ""; color: theme.red }
 
-        // ---------------------------------------------------------- results
-        Card {
+        // The table: fixed column widths so values line up; one row per invoice.
+        Rectangle {
             Layout.fillWidth: true
             Layout.fillHeight: true
+            color: theme.panel
+            radius: theme.radiusSmall
+            border.color: theme.border
 
             ColumnLayout {
                 anchors.fill: parent
-                anchors.margins: 10
-                spacing: 4
-
-                ResultRow {
-                    Layout.fillWidth: true
-                    header: true
-                    cells: ["رقم الفاتورة", "التاريخ", "النوع", "العميل", "البائع", "الصافي", "الحالة"]
-                }
-
-                ListView {
-                    id: resultsList
-                    objectName: "historyResults"
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    clip: true
-                    spacing: 2
-                    model: invoiceHistoryVM.results
-                    ScrollBar.vertical: ScrollBar {}
-
-                    delegate: ItemDelegate {
-                        id: rowDelegate
-                        objectName: "historyRow_" + modelData.number
-                        width: resultsList.width
-                        height: modelData.isLegacy ? 52 : 38
-                        padding: 0
-                        onClicked: invoiceHistoryVM.openInvoice(modelData.invoiceId)
-                        background: Rectangle {
-                            color: rowDelegate.hovered ? theme.panelHover : theme.bgTertiary
-                            radius: 4
-                        }
-                        contentItem: ColumnLayout {
-                            spacing: 0
-                            ResultRow {
-                                Layout.fillWidth: true
-                                cells: [modelData.number, modelData.date, modelData.typeText, modelData.customerText,
-                                        modelData.salesperson, modelData.netText, modelData.statusText]
-                            }
-                            Label {
-                                Layout.fillWidth: true
-                                Layout.rightMargin: 8
-                                visible: modelData.isLegacy
-                                text: modelData.legacyLabel
-                                color: theme.amber
-                                font.family: "Cairo"
-                                font.pixelSize: 11
-                                horizontalAlignment: Text.AlignRight
-                            }
-                        }
-                    }
-                }
+                anchors.margins: 6
+                spacing: 2
 
                 RowLayout {
                     Layout.fillWidth: true
                     layoutDirection: Qt.RightToLeft
-                    spacing: 8
+                    spacing: historyPage.narrow ? 6 : 10
+                    Head { value: "رقم الفاتورة"; Layout.preferredWidth: 86 }
+                    Head { value: "التاريخ"; Layout.preferredWidth: 84 }
+                    Head { value: "الوقت"; Layout.preferredWidth: 42; visible: !historyPage.narrow }
+                    Head { value: "العميل"; Layout.fillWidth: true; Layout.minimumWidth: 90 }
+                    Head { value: "البائع"; Layout.preferredWidth: 80; visible: !historyPage.narrow }
+                    Head { value: "نوع العملية"; Layout.preferredWidth: 78 }
+                    Head { value: "إجمالي الفاتورة"; Layout.preferredWidth: 116 }
+                    Head { value: "المدفوع فعلياً"; Layout.preferredWidth: 132 }
+                    Head { value: "الحالة"; Layout.preferredWidth: 80 }
+                }
 
-                    Label {
-                        objectName: "historyPageText"
-                        text: invoiceHistoryVM.busy ? "جارٍ التحميل…" : invoiceHistoryVM.pageText
+                ListView {
+                    id: list
+                    objectName: "historyList"
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    focus: true
+                    boundsBehavior: Flickable.StopAtBounds
+                    model: historyPage.vm ? historyPage.vm.results : []
+                    ScrollBar.vertical: ScrollBar {}
+                    Keys.onReturnPressed: if (currentIndex >= 0) historyPage.vm.openInvoice(model[currentIndex].invoiceId)
+                    Keys.onEnterPressed: if (currentIndex >= 0) historyPage.vm.openInvoice(model[currentIndex].invoiceId)
+                    delegate: Rectangle {
+                        id: row
+                        required property var modelData
+                        required property int index
+                        objectName: "historyRow_" + index
+                        width: list.width
+                        height: 30
+                        radius: 3
+                        color: ListView.isCurrentItem ? theme.bgTertiary : index % 2 ? "transparent" : theme.bgSecondary
+                        border.color: ListView.isCurrentItem ? theme.goldDark : "transparent"
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 6; anchors.rightMargin: 6
+                            layoutDirection: Qt.RightToLeft
+                            spacing: historyPage.narrow ? 6 : 10
+                            Txt { value: row.modelData.number; color: theme.gold; font.bold: true; Layout.preferredWidth: 86 }
+                            Txt { value: row.modelData.date; Layout.preferredWidth: 84 }
+                            Txt { value: row.modelData.time; color: theme.textMuted; Layout.preferredWidth: 42
+                                  visible: !historyPage.narrow }
+                            Txt { value: row.modelData.customer; color: theme.textPrimary; Layout.fillWidth: true
+                                  Layout.minimumWidth: 90 }
+                            Txt { value: row.modelData.salesperson; color: theme.textMuted; Layout.preferredWidth: 80
+                                  visible: !historyPage.narrow }
+                            Txt { value: row.modelData.typeText; Layout.preferredWidth: 78 }
+                            Txt { value: row.modelData.total; color: theme.textPrimary; font.bold: true
+                                  Layout.preferredWidth: 116; horizontalAlignment: Text.AlignRight }
+                            Txt { value: row.modelData.moved; Layout.preferredWidth: 132 }
+                            Txt { value: row.modelData.statusText
+                                  color: row.modelData.statusText === "مسددة" ? theme.green : theme.amber
+                                  Layout.preferredWidth: 80 }
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: { list.currentIndex = row.index; list.forceActiveFocus() }
+                            onDoubleClicked: historyPage.vm.openInvoice(row.modelData.invoiceId)
+                        }
+                    }
+                    Txt {
+                        objectName: "historyEmpty"
+                        anchors.centerIn: parent
+                        visible: value.length > 0
+                        value: historyPage.vm ? historyPage.vm.emptyText : ""
                         color: theme.textMuted
-                        font.family: "Cairo"
-                    }
-                    Item { Layout.fillWidth: true }
-                    Button {
-                        objectName: "historyPrevious"
-                        text: "السابق"
-                        font.family: "Cairo"
-                        enabled: invoiceHistoryVM.hasPrevious && !invoiceHistoryVM.busy
-                        onClicked: invoiceHistoryVM.previousPage()
-                    }
-                    Button {
-                        objectName: "historyNext"
-                        text: "التالي"
-                        font.family: "Cairo"
-                        enabled: invoiceHistoryVM.hasMore && !invoiceHistoryVM.busy
-                        onClicked: invoiceHistoryVM.nextPage()
+                        font.pixelSize: theme.fontBodyStrong
                     }
                 }
             }
         }
-    }
 
-    // -------------------------------------------------------------- detail
-    Connections {
-        target: invoiceHistoryVM
-        function onChanged() {
-            if (invoiceHistoryVM.detailOpen && !detailDialog.opened && !detailDialog.visible)
-                detailDialog.open()
-            else if (!invoiceHistoryVM.detailOpen && detailDialog.visible)
-                detailDialog.close()
-        }
-    }
-
-    Dialog {
-        id: detailDialog
-        objectName: "invoiceDetailDialog"
-        readonly property var d: invoiceHistoryVM.detail
-        modal: true
-        anchors.centerIn: parent
-        width: Math.min(historyPage.width - 24, 920)
-        height: historyPage.height - 24
-        padding: 16
-        closePolicy: Popup.CloseOnEscape
-        onClosed: if (invoiceHistoryVM.detailOpen) invoiceHistoryVM.closeDetail()
-        header: Label {
-            text: detailDialog.d.number ? "فاتورة رقم " + detailDialog.d.number : "تفاصيل الفاتورة"
-            color: theme.gold
-            font.family: "Cairo"
-            font.pixelSize: 16
-            font.bold: true
-            horizontalAlignment: Text.AlignRight
-            topPadding: 14
-            leftPadding: 16
-            rightPadding: 16
-        }
-        background: Rectangle {
-            color: theme.bgSecondary
-            border.color: theme.goldDark
-            radius: theme.radiusSmall
-        }
-        footer: RowLayout {
+        RowLayout {
+            Layout.fillWidth: true
             layoutDirection: Qt.RightToLeft
+            spacing: 8
+            Btn { objectName: "historyPrevious"; text: "السابق"; enabled: !!historyPage.vm && historyPage.vm.hasPrevious
+                  onClicked: historyPage.vm.previousPage() }
+            Txt { objectName: "historyPageText"; value: historyPage.vm ? historyPage.vm.pageText : ""; color: theme.textMuted }
+            Btn { objectName: "historyNext"; text: "التالي"; enabled: !!historyPage.vm && historyPage.vm.hasMore
+                  onClicked: historyPage.vm.nextPage() }
             Item { Layout.fillWidth: true }
-            Button {
-                objectName: "invoiceDetailClose"
-                Layout.margins: 12
-                text: "إغلاق"
-                font.family: "Cairo"
-                onClicked: invoiceHistoryVM.closeDetail()
-            }
+            Txt { value: historyPage.vm && historyPage.vm.busy ? "جاري التحميل..." : "انقر مرتين أو Enter لفتح الفاتورة"
+                  color: theme.textMuted; font.pixelSize: theme.fontCaption }
         }
+    }
+
+    // ============================================================ DETAIL
+    Item {
+        anchors.fill: parent
+        visible: historyPage.detailMode
+        readonly property var d: historyPage.vm ? historyPage.vm.detail : ({})
+
+        RowLayout {
+            id: detailBar
+            anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
+            anchors.margins: 12
+            layoutDirection: Qt.RightToLeft
+            spacing: 8
+            Btn { objectName: "historyBack"; text: "رجوع  ⁦Esc⁩"; onClicked: historyPage.vm.closeDetail() }
+            Txt { value: parent.parent.d.number ? "فاتورة " + parent.parent.d.number : ""; color: theme.gold
+                  font.bold: true; font.pixelSize: theme.fontPageTitle }
+            Txt { value: parent.parent.d.legacyLabel || ""; visible: value.length > 0; color: theme.amber }
+            Item { Layout.fillWidth: true }
+            Txt { objectName: "historyReprintMessage"; value: historyPage.vm ? historyPage.vm.reprintMessage : ""
+                  visible: value.length > 0; color: historyPage.vm && historyPage.vm.reprintFailed ? theme.red : theme.green }
+            // The one action in V1. Future lifecycle actions get their own area when they exist.
+            Btn { objectName: "historyReprint"; primary: true
+                  text: historyPage.vm && historyPage.vm.reprintBusy ? "جاري الطباعة..." : "🖨  إعادة طباعة"
+                  visible: !!parent.parent.d.canReprint
+                  enabled: !!historyPage.vm && !historyPage.vm.reprintBusy
+                  onClicked: historyPage.vm.reprint() }
+        }
+
+        Txt { objectName: "historyDetailState"; anchors.centerIn: parent
+              visible: !!historyPage.vm && (historyPage.vm.detailBusy || historyPage.vm.detailError.length > 0)
+              value: !historyPage.vm ? "" : historyPage.vm.detailBusy ? "جاري التحميل..."
+                     : (historyPage.vm.detailError ? "تعذر تحميل الفاتورة: " + historyPage.vm.detailError : "")
+              color: historyPage.vm && historyPage.vm.detailError ? theme.red : theme.textMuted
+              font.pixelSize: theme.fontBodyStrong }
 
         ScrollView {
             id: detailScroll
-            objectName: "invoiceDetailScroll"
-            anchors.fill: parent
+            objectName: "historyDetailScroll"
+            anchors.top: detailBar.bottom; anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+            anchors.margins: 12
             clip: true
             contentWidth: availableWidth
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+            visible: !!parent.d.number
+            readonly property var d: parent.d
+            readonly property int cardColumns: width >= 1100 ? 3 : width >= 700 ? 2 : 1
 
             ColumnLayout {
                 width: detailScroll.availableWidth
-                spacing: 10
+                spacing: 8
 
-                Label {
+                Txt { Layout.fillWidth: true; visible: value.length > 0; value: detailScroll.d.incompleteText || ""
+                      color: theme.amber }
+
+                GridLayout {
                     Layout.fillWidth: true
-                    visible: invoiceHistoryVM.busy && !detailDialog.d.number
-                    text: "جارٍ تحميل الفاتورة…"
-                    color: theme.textMuted
-                    font.family: "Cairo"
-                    horizontalAlignment: Text.AlignRight
-                }
-                Label {
-                    Layout.fillWidth: true
-                    objectName: "invoiceDetailError"
-                    visible: invoiceHistoryVM.detailError !== ""
-                    text: invoiceHistoryVM.detailError
-                    color: theme.red
-                    font.family: "Cairo"
-                    wrapMode: Text.WordWrap
-                    horizontalAlignment: Text.AlignRight
-                }
+                    columns: detailScroll.cardColumns
+                    layoutDirection: Qt.RightToLeft
+                    columnSpacing: 8; rowSpacing: 8
 
-                Rectangle {
-                    Layout.fillWidth: true
-                    objectName: "invoiceDetailLegacy"
-                    visible: detailDialog.d.isLegacy === true
-                    implicitHeight: legacyText.implicitHeight + 14
-                    color: "transparent"
-                    border.color: theme.amber
-                    radius: theme.radiusSmall
-                    Label {
-                        id: legacyText
-                        anchors.fill: parent
-                        anchors.margins: 7
-                        text: (detailDialog.d.legacyLabel || "")
-                              + (detailDialog.d.legacyNumber ? " • رقم النظام القديم " + detailDialog.d.legacyNumber : "")
-                              + " • للعرض فقط"
-                        color: theme.amber
-                        font.family: "Cairo"
-                        font.bold: true
-                        wrapMode: Text.WordWrap
-                        horizontalAlignment: Text.AlignRight
+                    Section {
+                        objectName: "historyHeaderSection"
+                        Layout.alignment: Qt.AlignTop
+                        title: "الفاتورة"
+                        Pair { label: "رقم الفاتورة"; value: detailScroll.d.number || ""; strong: true; valueColor: theme.gold }
+                        Pair { objectName: "historyFinalizedAt"; label: "تاريخ ووقت الحفظ"; value: detailScroll.d.finalizedAt || "" }
+                        Pair { label: "نوع العملية"; value: detailScroll.d.typeText || "" }
+                        Pair { label: "الحالة"; value: detailScroll.d.settlementText || "" }
+                        Pair { label: "البائع"; value: detailScroll.d.salesperson || "" }
+                        Pair { label: "حُفظت بواسطة"; value: detailScroll.d.finalizedBy || "" }
+                    }
+                    Section {
+                        objectName: "historyCustomerSection"
+                        Layout.alignment: Qt.AlignTop
+                        title: "العميل"
+                        accent: theme.accountReceivable
+                        Pair { objectName: "historyCustomerName"; label: "الاسم"; value: detailScroll.d.customerName || ""; strong: true }
+                        Pair { label: "التليفون"; value: detailScroll.d.customerMobile || "—" }
+                        Pair { label: "العنوان"; value: detailScroll.d.customerPlace || "—" }
+                        Pair { label: "كود العميل"; value: detailScroll.d.customerCode || "—" }
+                    }
+                    Section {
+                        objectName: "historyMoneySection"
+                        Layout.alignment: Qt.AlignTop
+                        title: "الملخص المالي"
+                        accent: theme.priceSell
+                        Pair { objectName: "historyInvoiceTotal"; label: "إجمالي الفاتورة"; value: detailScroll.d.invoiceTotal || ""
+                               strong: true; valueColor: theme.priceSell }
+                        Pair { objectName: "historyMoved"; label: detailScroll.d.movedLabel || ""; value: detailScroll.d.movedAmount || "" }
+                        Pair { objectName: "historyAccount"; label: "حساب العميل (هذه الفاتورة)"; value: detailScroll.d.accountText || ""
+                               valueColor: detailScroll.d.accountDirection === "CUSTOMER_OWES" ? theme.accountReceivable
+                                         : detailScroll.d.accountDirection === "SHOP_OWES" ? theme.accountPayable : theme.textSecondary }
+                        Pair { objectName: "historyGoldValue"; label: "قيمة الذهب المباع"; value: detailScroll.d.goldValue || "" }
+                        Pair { objectName: "historyAverageMaking"; label: "متوسط المصنعية"; value: detailScroll.d.averageMaking || "" }
+                        Pair { objectName: "historyMakingTotal"; label: "إجمالي المصنعية (للمدير)"; visible: !!detailScroll.d.showManager
+                               value: detailScroll.d.makingTotal || "" }
+                        Pair { label: "صافي الكسر"; visible: (detailScroll.d.oldGoldTotal || "").length > 0
+                               value: detailScroll.d.oldGoldTotal || "" }
                     }
                 }
 
                 Section {
-                    title: "بيانات الفاتورة"
-                    visible: !!detailDialog.d.number
-                    InfoGrid {
-                        items: [["رقم الفاتورة", detailDialog.d.number], ["التاريخ", detailDialog.d.date],
-                                ["النوع", detailDialog.d.typeText], ["الحالة", detailDialog.d.statusText],
-                                ["البائع", detailDialog.d.salesperson], ["التسوية", detailDialog.d.settlementText],
-                                ["أنشأها", detailDialog.d.createdBy], ["أتمها", detailDialog.d.finalizedBy],
-                                ["وقت الإتمام", detailDialog.d.finalizedAt], ["ملاحظات", detailDialog.d.notes]]
+                    objectName: "historyItemsSection"
+                    title: "الأصناف المباعة"
+                    RowLayout {
+                        Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 10
+                        Head { value: "م"; Layout.preferredWidth: 22 }
+                        Head { value: "الصنف"; Layout.fillWidth: true; Layout.minimumWidth: 90 }
+                        Head { value: "المصنع"; Layout.preferredWidth: 80 }
+                        Head { value: "العيار"; Layout.preferredWidth: 40 }
+                        Head { value: "الوزن"; Layout.preferredWidth: 80 }
+                        Head { value: "العدد"; Layout.preferredWidth: 36 }
+                        Head { value: "المقاس"; Layout.preferredWidth: 44 }
+                        Head { value: "النوع"; Layout.preferredWidth: 170 }
+                        Head { value: "ملاحظات"; Layout.preferredWidth: 120 }
                     }
-                }
-
-                Section {
-                    title: "العميل (وقت الفاتورة)"
-                    visible: !!detailDialog.d.number
-                    InfoGrid {
-                        items: [["العميل", detailDialog.d.customerName], ["الكود", detailDialog.d.customerCode],
-                                ["الموبايل", detailDialog.d.customerMobile], ["المكان", detailDialog.d.customerPlace],
-                                ["الرصيد قبل", detailDialog.d.balanceBefore], ["الرصيد بعد", detailDialog.d.balanceAfter]]
-                    }
-                }
-
-                Section {
-                    objectName: "invoiceDetailSaleLines"
-                    title: "أصناف البيع"
-                    visible: invoiceHistoryVM.saleLines.length > 0
-                    ResultRow { Layout.fillWidth: true; header: true
-                        cells: ["الباركود", "الصنف", "العيار", "الوزن", "سعر الجرام", "المصنعية", "الإجمالي"] }
                     Repeater {
-                        model: invoiceHistoryVM.saleLines
-                        ResultRow { Layout.fillWidth: true
-                            cells: [modelData.barcode, modelData.itemName, modelData.karat, modelData.weight,
-                                    modelData.goldPrice, modelData.making, modelData.lineTotal] }
-                    }
-                }
-
-                Section {
-                    objectName: "invoiceDetailOldGold"
-                    title: "كسر مشترى"
-                    visible: invoiceHistoryVM.oldGoldLines.length > 0
-                    ResultRow { Layout.fillWidth: true; header: true
-                        cells: ["العيار", "الوزن", "سعر الجرام", "القيمة", "الخصم", "الإجمالي"] }
-                    Repeater {
-                        model: invoiceHistoryVM.oldGoldLines
-                        ResultRow { Layout.fillWidth: true
-                            cells: [modelData.karat, modelData.weight, modelData.goldPrice, modelData.gross,
-                                    modelData.discount, modelData.lineTotal] }
-                    }
-                }
-
-                Section {
-                    title: "بنود أخرى"
-                    visible: invoiceHistoryVM.otherLines.length > 0
-                    Repeater {
-                        model: invoiceHistoryVM.otherLines
-                        ResultRow { Layout.fillWidth: true
-                            cells: [modelData.itemName, modelData.karat, modelData.weight, modelData.lineTotal] }
-                    }
-                }
-
-                Section {
-                    objectName: "invoiceDetailTotals"
-                    title: "الإجماليات والتسوية"
-                    visible: !!detailDialog.d.number
-                    InfoGrid {
-                        items: [["إجمالي البيع", detailDialog.d.saleTotal], ["إجمالي الكسر", detailDialog.d.oldGoldTotal],
-                                ["الصافي (N)", detailDialog.d.netText], ["المستلم", detailDialog.d.receivedText],
-                                ["المدفوع", detailDialog.d.paidText], ["المتبقي (R)", detailDialog.d.residualText]]
-                    }
-                }
-
-                Section {
-                    objectName: "invoiceDetailPayments"
-                    title: "المدفوعات"
-                    visible: !!detailDialog.d.number
-                    EmptyNote { visible: invoiceHistoryVM.payments.length === 0; text: "لا توجد مدفوعات نقدية." }
-                    Repeater {
-                        model: invoiceHistoryVM.payments
-                        ResultRow { Layout.fillWidth: true
-                            cells: [modelData.method, modelData.directionText, modelData.amount, modelData.time,
-                                    modelData.reference] }
-                    }
-                }
-
-                Section {
-                    objectName: "invoiceDetailPrices"
-                    title: "أسعار الذهب وقت الفاتورة"
-                    visible: !!detailDialog.d.number
-                    EmptyNote { visible: invoiceHistoryVM.prices.length === 0; text: "لا توجد أسعار محفوظة." }
-                    Repeater {
-                        model: invoiceHistoryVM.prices
-                        RowLayout {
-                            Layout.fillWidth: true
-                            layoutDirection: Qt.RightToLeft
-                            spacing: 14
-                            Label { text: "عيار " + modelData.karat; color: theme.textPrimary; font.family: "Cairo"; font.bold: true }
-                            Label { text: "شراء " + modelData.buy; color: theme.priceBuy; font.family: "Cairo" }
-                            Label { text: "بيع " + modelData.sell; color: theme.priceSell; font.family: "Cairo" }
-                            Label { text: modelData.source; color: theme.textMuted; font.family: "Cairo" }
-                            Label { Layout.fillWidth: true; text: modelData.providerTime; color: theme.textMuted
-                                    font.family: "Cairo"; font.pixelSize: 11; horizontalAlignment: Text.AlignRight
-                                    elide: Text.ElideLeft }
+                        model: historyPage.vm ? historyPage.vm.saleLines : []
+                        delegate: RowLayout {
+                            required property var modelData
+                            required property int index
+                            objectName: "historySaleLine_" + index
+                            Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 10
+                            Txt { value: modelData.serial; Layout.preferredWidth: 22 }
+                            Txt { value: modelData.item; color: theme.textPrimary; Layout.fillWidth: true; Layout.minimumWidth: 90 }
+                            Txt { value: modelData.factory; Layout.preferredWidth: 80 }
+                            Txt { value: modelData.karat; Layout.preferredWidth: 40 }
+                            Txt { value: modelData.weight; color: theme.textPrimary; Layout.preferredWidth: 80 }
+                            Txt { value: modelData.qty; Layout.preferredWidth: 36 }
+                            Txt { value: modelData.size; Layout.preferredWidth: 44 }
+                            Txt { value: modelData.kindText; Layout.preferredWidth: 170
+                                  color: modelData.manual ? theme.amber : modelData.fromOldGold ? theme.balanceKarat21 : theme.textMuted
+                                  font.pixelSize: theme.fontTableHeader }
+                            Txt { value: modelData.notes; color: theme.textMuted; Layout.preferredWidth: 120 }
                         }
                     }
+                    Txt { visible: !historyPage.vm || historyPage.vm.saleLines.length === 0; value: "لا توجد أصناف مباعة"
+                          color: theme.textMuted }
+                }
+
+                GridLayout {
+                    Layout.fillWidth: true
+                    columns: detailScroll.cardColumns
+                    layoutDirection: Qt.RightToLeft
+                    columnSpacing: 8; rowSpacing: 8
+
+                    Section {
+                        objectName: "historyPaymentsSection"
+                        Layout.alignment: Qt.AlignTop
+                        title: "الدفع الفعلي"
+                        accent: theme.priceBuy
+                        Repeater {
+                            model: historyPage.vm ? historyPage.vm.payments : []
+                            delegate: Pair { required property var modelData
+                                             label: modelData.method + " (" + modelData.directionText + ")"
+                                             value: modelData.amount }
+                        }
+                        Txt { visible: !historyPage.vm || historyPage.vm.payments.length === 0; value: "لا توجد مبالغ فعلية"
+                              color: theme.textMuted }
+                    }
+                    Section {
+                        objectName: "historyOldGoldSection"
+                        Layout.alignment: Qt.AlignTop
+                        title: "كسر من العميل (داخلي)"
+                        accent: theme.balanceKarat21
+                        visible: !!historyPage.vm && historyPage.vm.oldGoldLines.length > 0
+                        Repeater {
+                            model: historyPage.vm ? historyPage.vm.oldGoldLines : []
+                            delegate: Pair { required property var modelData
+                                             label: "كسر " + modelData.karat + " • " + modelData.weight + " • خصم " + modelData.discount
+                                             value: modelData.value }
+                        }
+                    }
+                    Section {
+                        objectName: "historyPricesSection"
+                        Layout.alignment: Qt.AlignTop
+                        title: "سعر الذهب وقت الفاتورة"
+                        accent: theme.priceSell
+                        Repeater {
+                            model: historyPage.vm ? historyPage.vm.priceSnapshots : []
+                            delegate: Pair { required property var modelData
+                                             label: "عيار " + modelData.karat
+                                             value: "بيع " + modelData.sell + "  •  شراء " + modelData.buy }
+                        }
+                        Txt { visible: !historyPage.vm || historyPage.vm.priceSnapshots.length === 0
+                              value: "غير متاح"; color: theme.textMuted }
+                    }
                 }
 
                 Section {
-                    objectName: "invoiceDetailEvents"
-                    title: "سجل الأحداث"
-                    visible: !!detailDialog.d.number
+                    objectName: "historyTimelineSection"
+                    title: "سجل العمليات"
+                    accent: theme.textMuted
                     Repeater {
-                        model: invoiceHistoryVM.events
-                        ResultRow { Layout.fillWidth: true
-                            cells: [modelData.eventText, modelData.time, modelData.by, modelData.notes] }
+                        model: historyPage.vm ? historyPage.vm.timeline : []
+                        delegate: Pair { required property var modelData
+                                         objectName: "historyEvent_" + modelData.eventType
+                                         label: modelData.text + "  •  " + modelData.actor
+                                         value: modelData.time }
                     }
                 }
-            }
-        }
-    }
 
-    // -------------------------------------------------------------- components
-    component Card: Rectangle {
-        color: theme.bgSecondary
-        radius: theme.radiusSmall
-        border.color: theme.border
-        border.width: 1
-    }
-
-    component FilterBox: Column {
-        id: filterBox
-        property string label: ""
-        spacing: 2
-        Label {
-            anchors.right: parent.right
-            text: filterBox.label
-            color: theme.textMuted
-            font.family: "Cairo"
-            font.pixelSize: 11
-        }
-    }
-
-    component DateField: TextField {
-        width: 118
-        font.family: "Cairo"
-        color: theme.textPrimary
-        placeholderText: "2026-09-25"
-        placeholderTextColor: theme.textDisabled
-        horizontalAlignment: TextInput.AlignRight
-        selectByMouse: true
-        onAccepted: historyPage.runSearch()
-    }
-
-    component PrimaryButton: Button {
-        id: primary
-        font.family: "Cairo"
-        font.bold: true
-        contentItem: Label {
-            text: primary.text
-            font: primary.font
-            color: primary.enabled ? theme.bgPrimary : theme.textDisabled
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-        }
-        background: Rectangle {
-            implicitHeight: 40
-            radius: theme.radiusSmall
-            color: !primary.enabled ? theme.bgTertiary : primary.down ? theme.goldDark : theme.gold
-            border.color: primary.enabled ? theme.goldBright : theme.border
-            border.width: 1
-        }
-    }
-
-    component ResultRow: RowLayout {
-        id: resultRow
-        property var cells: []
-        property bool header: false
-        layoutDirection: Qt.RightToLeft
-        spacing: 6
-        Repeater {
-            model: resultRow.cells
-            Label {
-                Layout.fillWidth: true
-                Layout.preferredWidth: 1
-                Layout.leftMargin: 4
-                Layout.rightMargin: 4
-                text: modelData === undefined || modelData === null ? "" : String(modelData)
-                color: resultRow.header ? theme.textMuted : theme.textPrimary
-                font.family: "Cairo"
-                font.pixelSize: resultRow.header ? 11 : 12
-                font.bold: resultRow.header
-                elide: Text.ElideLeft
-                horizontalAlignment: Text.AlignRight
-            }
-        }
-    }
-
-    component Section: ColumnLayout {
-        id: section
-        property string title: ""
-        Layout.fillWidth: true
-        spacing: 4
-        Label {
-            Layout.fillWidth: true
-            text: section.title
-            color: theme.gold
-            font.family: "Cairo"
-            font.bold: true
-            horizontalAlignment: Text.AlignRight
-        }
-    }
-
-    component EmptyNote: Label {
-        Layout.fillWidth: true
-        color: theme.textMuted
-        font.family: "Cairo"
-        horizontalAlignment: Text.AlignRight
-    }
-
-    component InfoGrid: GridLayout {
-        id: infoGrid
-        property var items: []
-        Layout.fillWidth: true
-        columns: width > 620 ? 3 : 2
-        layoutDirection: Qt.RightToLeft
-        columnSpacing: 16
-        rowSpacing: 4
-        Repeater {
-            model: infoGrid.items
-            RowLayout {
-                Layout.fillWidth: true
-                Layout.preferredWidth: 1
-                layoutDirection: Qt.RightToLeft
-                spacing: 6
-                Label { text: modelData[0]; color: theme.textMuted; font.family: "Cairo"; font.pixelSize: 11 }
-                Label {
-                    Layout.fillWidth: true
-                    text: modelData[1] === undefined || modelData[1] === "" ? "—" : modelData[1]
-                    color: theme.textPrimary
-                    font.family: "Cairo"
-                    elide: Text.ElideLeft
-                    horizontalAlignment: Text.AlignRight
-                }
+                Txt { Layout.fillWidth: true; visible: value.length > 0
+                      value: detailScroll.d.notes ? "ملاحظات: " + detailScroll.d.notes : ""; color: theme.textMuted }
+                Item { Layout.preferredHeight: 4 }
             }
         }
     }

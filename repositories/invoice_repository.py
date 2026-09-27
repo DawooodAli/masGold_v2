@@ -788,6 +788,62 @@ class InvoiceRepository(BaseRepository):
             """, (_id(invoice_id),))
         return [_stringify_ids(row) for row in rows]
 
+    def search_invoice_history(self, *, text="", date_from=None, date_to_exclusive=None, invoice_type=None,
+                               settlement_status=None, limit=51, offset=0):
+        """سجل الفواتير: ONE summary query per page, newest first (invoice_date is the finalize time of
+        a native invoice and is indexed). `text`: invoice-number or phone prefix, or customer name
+        (Arabic-folded, from the invoice's own snapshot). Real money is the stored payments only."""
+        from utils.search_normalization import mysql_search_expression, normalize_search_text
+        text = (text or "").strip()
+        folded = normalize_search_text(text)
+
+        def escaped(value, contains=False):
+            value = value.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+            return ("%" + value + "%") if contains else (value + "%")
+        name_sql, name_params = mysql_search_expression("s.customer_name_snapshot")
+        rows = self._fetch_all(
+            f"""
+            SELECT i.id AS invoice_id, i.invoice_number, i.invoice_type, i.invoice_status, i.record_origin,
+                   i.invoice_date, i.finalized_at, i.net_amount, i.net_direction, i.settlement_status,
+                   i.sell_total, i.buy_total, i.legacy_bill_number,
+                   s.customer_name_snapshot, s.mobile_snapshot, e.name AS employee_name,
+                   (SELECT COALESCE(SUM(CASE WHEN p.direction = 'IN' THEN p.amount ELSE 0 END), 0)
+                    FROM invoice_payments p WHERE p.invoice_id = i.id) AS money_received,
+                   (SELECT COALESCE(SUM(CASE WHEN p.direction = 'OUT' THEN p.amount ELSE 0 END), 0)
+                    FROM invoice_payments p WHERE p.invoice_id = i.id) AS money_paid
+            FROM invoices i
+            LEFT JOIN invoice_customer_snapshots s ON s.invoice_id = i.id
+            LEFT JOIN employees e ON e.id = i.employee_id
+            WHERE i.invoice_status <> 'DRAFT'
+              AND (%s OR i.invoice_number LIKE %s ESCAPE '!' OR i.legacy_bill_number LIKE %s ESCAPE '!'
+                   OR s.mobile_snapshot LIKE %s ESCAPE '!'
+                   OR (%s AND {name_sql} LIKE %s ESCAPE '!'))
+              AND (%s IS NULL OR i.invoice_date >= %s)
+              AND (%s IS NULL OR i.invoice_date < %s)
+              AND (%s IS NULL OR i.invoice_type = %s)
+              AND (%s IS NULL OR i.settlement_status = %s)
+            ORDER BY i.invoice_date DESC, i.id DESC
+            LIMIT %s OFFSET %s
+            """,
+            (not text, escaped(text), escaped(text), escaped(text),
+             bool(folded), *name_params, escaped(folded, contains=True),
+             date_from, date_from, date_to_exclusive, date_to_exclusive,
+             invoice_type, invoice_type, settlement_status, settlement_status, int(limit), int(offset)))
+        return [_stringify_ids(row) for row in rows]
+
+    def invoice_account_allocation(self, invoice_id, customer_id):
+        """The customer-ledger entry THIS invoice wrote (على العميل +, للعميل −), never the running balance."""
+        if customer_id in (None, ""):
+            return []
+        return [_stringify_ids(row) for row in self._fetch_all(
+            """
+            SELECT ct.id AS transaction_id, ct.amount_delta, ct.occurred_at, tt.code AS type_code
+            FROM customer_transactions ct
+            JOIN customer_transaction_types tt ON tt.id = ct.transaction_type_id
+            WHERE ct.customer_id = %s AND ct.reference_type = 'INVOICE' AND ct.reference_id = %s
+            ORDER BY ct.id
+            """, (_id(customer_id), _id(invoice_id)))]
+
     def search_invoices(self, *, number=None, customer_id=None, date_from=None, date_to_exclusive=None,
                         status=None, record_origin=None, limit=101, offset=0):
         """Newest first. `number` matches the invoice number or legacy bill number prefix."""
