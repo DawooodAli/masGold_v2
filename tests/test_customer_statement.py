@@ -395,7 +395,7 @@ class StatementViewModelTests(NoDatabaseTestCase):
 
     def test_profile_publishes_ledger_balances_and_recorded_history_wording(self):
         self.assertEqual(self.view_model.transactions[0]["id"], "6")
-        self.assertEqual(self.view_model.transactions[0]["running_balance_text"], "+45.00")
+        self.assertEqual(self.view_model.transactions[0]["running_balance_text"], "\u2066+45.00\u2069")  # kept LTR
         self.assertEqual(self.view_model.statementSummary["opening_balance_text"], "0.00")
         self.assertIn("أول حركة مسجلة", self.view_model.statementSummary["history_basis_text"])
         self.assertEqual(self.view_model.statementSummary["current_balance"], self.view_model.selectedCustomer["balance"])
@@ -474,7 +474,7 @@ class StatementViewModelTests(NoDatabaseTestCase):
             "transaction_type_code": "MANUAL_ADJUSTMENT", "expected_direction": "INCREASE",
         })
         self.assertEqual(row["id"], "18446744073709551615")
-        self.assertEqual(row["amount_text"], "-0.01")
+        self.assertEqual(row["amount_text"], "\u2066\u22120.01\u2069")        # real minus, kept LTR in Arabic
         self.assertEqual(row["direction_label"], "خفض الرصيد لصالح العميل")
         self.assertEqual(row["running_balance"], "-99999999999999.99")
         self.assertEqual(row["running_balance_meaning"], "للعميل عند المحل")

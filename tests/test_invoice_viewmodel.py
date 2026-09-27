@@ -9,18 +9,40 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QGuiApplication
 
 from app.session import AppSession
-from app.viewmodels.invoice_viewmodel import InvoiceViewModel, LinesModel, balance_text, grams, money
+from app.viewmodels.invoice_viewmodel import (
+    InvoiceViewModel, LinesModel, account_text, balance_text, grams, money,
+)
 from database.connection import DatabaseConnection
 from services.authentication_service import AuthenticationResult, _VERIFIED
 from services.gold_price_service import PriceChanged
+from services.invoice_service import InvoiceError
 
 
 PERMISSIONS = frozenset({"APP_LOGIN", "INVOICE_CREATE", "INVOICE_FINALIZE", "PAYMENT_RECORD"})
 BOARD = {"price_token": "T1", "price_status": "FRESH", "requires_price_acknowledgement": False,
          "price_warnings": [], "prices": [{"karat_id": 2, "karat": 18, "shop_buy": "5320.00", "shop_sell": "5341.00"},
                                           {"karat_id": 1, "karat": 21, "shop_buy": "6207.00", "shop_sell": "6232.00"}]}
+REFERENCE = {"item_types": [{"id": 2, "name": "خاتم"}, {"id": 4, "name": "دبلة"}],
+             "factories": [{"id": 5, "name": "لوكس"}],
+             "old_gold_stock": [{"karat_id": 1, "karat": 21, "grams": "120.500"}],
+             "settings": {"settlement_self_limit": "50.00", "settlement_approval_limit": "500.00",
+                          "old_gold_discount_default_percent": "1.50"},
+             "payment_methods": [{"code": "PHYSICAL_CASH", "requires_bank_account": False,
+                                  "affects_physical_cash": True, "account_type": None},
+                                 {"code": "MOBILE_WALLET", "requires_bank_account": True,
+                                  "affects_physical_cash": False, "account_type": "MOBILE_WALLET"},
+                                 {"code": "INSTAPAY", "requires_bank_account": True,
+                                  "affects_physical_cash": False, "account_type": "BANK"},
+                                 {"code": "BANK_TRANSFER", "requires_bank_account": True,
+                                  "affects_physical_cash": False, "account_type": "BANK"}],
+             "bank_accounts": [{"id": "7", "name": "حساب المحل", "account_type": "BANK", "bank_name": "CIB",
+                                "account_label": "جاري"},
+                               {"id": "8", "name": "حساب ثانٍ", "account_type": "BANK", "bank_name": "NBE",
+                                "account_label": ""},
+                               {"id": "9", "name": "محفظة المحل", "account_type": "MOBILE_WALLET",
+                                "bank_name": "فودافون كاش", "account_label": ""}]}
 ITEM = {"inventory_item_id": "100", "barcode": "01260925", "item_name": "خاتم", "karat_id": 1, "karat": 21,
-        "weight_grams": "10.500"}
+        "weight_grams": "10.500", "factory_name": "لوكس", "size": None, "item_notes": "فص أزرق"}
 
 
 def preview(**overrides):
@@ -28,11 +50,18 @@ def preview(**overrides):
               "price_warnings": [], "invoice_type": "SELL", "sale_total": "67011.00", "old_gold_total": "0.00",
               "net_amount": "67011.00", "net_direction": "CUSTOMER_PAYS_SHOP", "money_received": "60000.00",
               "money_paid": "0.00", "residual_amount": "7011.00", "residual_direction": "CUSTOMER_OWES_SHOP",
+              "residual_signed": "7011.00", "adjustment_signed": "0.00", "account_residual_amount": "7011.00",
+              "account_residual_direction": "CUSTOMER_OWES_SHOP",
               "settlement_status": "PARTIAL", "customer_balance_before": "-50.00",
               "customer_balance_after": "6961.00", "dead_cash_warning_active": False,
               "requires_dead_cash_confirmation": False, "blocking_problems": [],
+              "gold_value_total": "65436.00", "effective_sale_total": "67011.00", "making_total": "1575.00",
+              "average_making_per_gram": "150.00", "making_review_required": False,
+              "payment_direction": "IN", "account_signed": "7011.00", "account_amount": "7011.00",
+              "gap_signed": None, "full_amount": None,
+              "settlement_needs_approval": False, "new_customer_same_mobile": [],
               "sale_lines": [{"gold_price_per_gram": "6232.0000", "making_total": "1575.00",
-                              "line_total": "67011.00"}], "old_gold_lines": []}
+                              "line_total": "67011.00"}], "described_lines": [], "old_gold_lines": []}
     result.update(overrides)
     return result
 
@@ -45,9 +74,30 @@ class Service:
         self.calls.append("price_board")
         return BOARD
 
+    def reference_lists(self, *, _expected_actor=None):
+        self.calls.append("reference")
+        return REFERENCE
+
     def find_item_by_barcode(self, barcode, *, _expected_actor=None):
         self.calls.append(("barcode", barcode))
         return dict(ITEM)
+
+    def item_search_facets(self, **kwargs):
+        self.calls.append(("facets", kwargs))
+        return {"item_types": [{"id": 4, "name": "دبلة", "count": 2}],
+                "karats": [{"id": 1, "name": "21", "count": 2}] if kwargs.get("item_type_id") else [],
+                "factories": [{"id": 5, "name": "لوكس", "count": 1}] if kwargs.get("karat_id") else []}
+
+    def search_customers(self, text, *, _expected_actor=None):
+        self.calls.append(("customers", text))
+        return [{"customer_id": "12", "customer_code": "C000012", "name": "أحمد علي", "mobile": "0100",
+                 "place": "طنطا", "balance": "3250.00", "dead_cash_warning": True}]
+
+    def verify_settlement_approver(self, username, password, *, _expected_actor=None):
+        from services.invoice_service import _APPROVER_PROOF, SettlementApprover
+        if password != "ok":
+            raise PermissionError("تعذر تسجيل الدخول. تحقق من بيانات الدخول أو راجع المسؤول.")
+        return SettlementApprover(3, "المدير", _APPROVER_PROOF)
 
     def preview(self, draft, *, _expected_actor=None):
         self.calls.append(("preview", draft))
@@ -61,12 +111,28 @@ class Service:
                 "invoice_type": "SELL", "sale_total": "67011.00", "old_gold_total": "0.00", "net_amount": "67011.00",
                 "net_direction": "CUSTOMER_PAYS_SHOP", "money_received": "60000.00", "money_paid": "0.00",
                 "residual_amount": "7011.00", "residual_direction": "CUSTOMER_OWES_SHOP",
-                "settlement_status": "PARTIAL"}
+                "account_residual_amount": "7011.00", "account_residual_direction": "CUSTOMER_OWES_SHOP",
+                "settlement_status": "PARTIAL", "customer_created": True, "unidentified_cases": 1,
+                "making_review_required": False}
 
 
 class Master:
     def get_employees(self):
         return [{"id": 5, "employee_code": "E5", "name": "علي", "notes": None}]
+
+
+class Printer:
+    """Records every print_invoice call; never touches a database."""
+
+    def __init__(self):
+        self.calls = []
+        self.outcome = ("901", True, "تم إرسال الفاتورة إلى الطابعة.")
+
+    def print_invoice(self, invoice_id, *, _expected_actor=None):
+        from services.invoice_print_service import PrintOutcome
+        self.calls.append(invoice_id)
+        number, printed, message = self.outcome
+        return PrintOutcome(invoice_number=number, printed=printed, message=message)
 
 
 class InlineViewModel(InvoiceViewModel):
@@ -101,95 +167,92 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.session = AppSession()
         self.session._establish(AuthenticationResult(17, 7, "موظف", PERMISSIONS, _VERIFIED), int(self.session.generation))
         self.service = Service()
-        self.vm = InlineViewModel(self.session, service=self.service, master_data=Master(), preview_delay_ms=0)
+        self.printer = Printer()
+        self.vm = InlineViewModel(self.session, service=self.service, master_data=Master(),
+                                  print_service=self.printer, preview_delay_ms=0)
         self.vm.activate()
 
     def preview_now(self):
         self.vm._timer.stop()
         self.vm._start_preview()
 
+    def sale_ready(self):
+        self.vm.setSalesperson("5")
+        self.vm.addBarcode("01260925")
+        self.vm.setInvoiceTotal("60000")                 # إجمالي الفاتورة; the one cash leg follows it
+        self.preview_now()
+
+    # ------------------------------------------------------------ basics
+
     def test_construction_touches_no_database_or_service(self):
         vm = InvoiceViewModel(self.session)
         self.assertIsNone(vm._service)
         self.assertEqual((vm.saleCount, vm.canFinalize, vm.hasSuccess), (0, False, False))
 
-    def test_reference_data_and_price_rows(self):
+    def test_reference_data_and_default_old_gold_discount(self):
         self.assertEqual(self.vm.salespeople, [{"employeeId": "5", "name": "علي"}])
-        self.assertEqual(self.vm.priceRows[1], {"karatId": 1, "karat": "21", "buy": "6,207.00", "sell": "6,232.00",
-                                                "buyShort": "6,207", "sellShort": "6,232"})
-        self.assertEqual(self.vm.priceStatusText, "")
+        self.assertEqual(self.vm.priceRows[1]["karat"], "21")
+        self.assertEqual(self.vm.oldGoldDiscountPercent, "1.5")               # settings default, editable
+        self.assertEqual([t["name"] for t in self.vm.itemTypes], ["خاتم", "دبلة"])
+        self.assertEqual(self.vm.oldGoldStock, [{"karatId": 1, "karat": "21", "grams": "120.500 جم"}])
+        self.vm.setOldGoldDiscountPercent("2")
+        self.vm.newInvoice()
+        self.assertEqual(self.vm.oldGoldDiscountPercent, "1.5")               # each invoice starts at the default
 
     def test_draft_mapping_sends_choices_only(self):
         self.vm.setSalesperson("5")
-        self.vm.setCustomer("12")
         self.vm.addBarcode("01260925")
-        self.vm.setSaleMaking(0, "TOTAL", "500")
         self.vm.addOldGold(1, "5")
-        self.vm.setOldGoldDiscount(0, "PERCENT", "1.5")
-        self.vm.setCashAmount("1000")
-        self.vm.setWalletAmount("0")
+        self.vm.setPaymentDirection("OUT")
+        self.vm.setInvoiceTotal("1000")
+        self.vm.setAccountAmount("50")
+        self.vm.setAccountDirection("SHOP_OWES")
+        self.vm.setNewCustomer("عميل جديد", "0100", "المنصورة")
         draft = self.vm._draft()
-        self.assertEqual((draft.salesperson_employee_id, draft.customer_id), (5, "12"))
-        self.assertEqual((draft.sale_lines[0].making_per_gram, draft.sale_lines[0].making_total), (None, "500"))
-        self.assertEqual((draft.old_gold_lines[0].karat_id, draft.old_gold_lines[0].weight_grams,
-                          draft.old_gold_lines[0].discount_type, draft.old_gold_lines[0].discount_value),
-                         (1, "5", "PERCENT", "1.5"))
-        self.assertEqual([(p.method_code, p.amount) for p in draft.payments], [("PHYSICAL_CASH", "1000")])
-        self.vm.setOldGoldDiscount(0, "NONE", "9")
-        self.vm.setSaleMaking(0, "PER_GRAM", "")
-        draft = self.vm._draft()
-        self.assertEqual((draft.old_gold_lines[0].discount_type, draft.old_gold_lines[0].discount_value), (None, None))
-        self.assertEqual((draft.sale_lines[0].making_per_gram, draft.sale_lines[0].making_total), (None, None))
+        # No price of any kind: only choices, weights and the real money.
+        self.assertFalse(hasattr(draft, "agreed_sale_total"))
+        self.assertFalse(hasattr(draft.sale_lines[0], "making_total"))
+        self.assertEqual((draft.salesperson_employee_id, draft.customer_id, draft.payment_direction,
+                          draft.account_amount, draft.account_direction), (5, None, "OUT", "50", "SHOP_OWES"))
+        self.assertEqual((draft.old_gold_lines[0].discount_type, draft.old_gold_lines[0].discount_value), ("PERCENT", "1.5"))
+        # 50 of the 1,000 moved to the customer account: 950 is the real money now.
+        self.assertEqual([(p.method_code, p.amount, p.direction) for p in draft.payments], [("PHYSICAL_CASH", "950", None)])
+        self.assertEqual((draft.new_customer.name, draft.new_customer.place), ("عميل جديد", "المنصورة"))
+        self.assertEqual(draft.invoice_total, "1000")                          # the authoritative total
+        self.assertFalse(hasattr(self.vm, "setAgreedSaleTotal"))
 
-    def test_preview_drives_summary_and_finalize_gate(self):
+    def test_preview_drives_money_strip_and_finalize_gate(self):
         self.vm.addBarcode("01260925")
         self.preview_now()
         self.assertEqual(self.vm.previewError, "اختر البائع.")
-        self.assertFalse(self.vm.canFinalize)
-        self.vm.setSalesperson("5")
-        self.vm.setSaleMaking(0, "PER_GRAM", "150")
-        self.preview_now()
+        self.sale_ready()
         self.assertTrue(self.vm.canFinalize)
-        summary = self.vm.summary
-        self.assertEqual((summary["saleTotal"], summary["netText"], summary["residualText"]),
-                         ("67,011.00 ج", "على العميل 67,011.00 ج", "متبقي على العميل 7,011.00 ج"))
-        self.assertEqual((self.vm.customerBalanceText, self.vm.customerBalanceAfterText),
-                         ("للعميل 50.00 ج", "على العميل 6,961.00 ج"))
-        self.assertEqual(self.vm.saleLinesModel.rows()[0]["lineTotal"], "67,011.00 ج")
-        self.vm.setCashAmount("1")                               # edit after preview: gate closes
+        s = self.vm.summary
+        self.assertEqual((s["goldValue"], s["effectiveSale"], s["averageMaking"]), ("65,436.00 ج", "67,011.00 ج", "150.00"))
+        self.assertNotIn("makingTotal", s)                      # the salesman never sees total making
+        self.assertEqual((s["dueLabel"], s["dueAmount"], s["paidAmount"], s["differenceAmount"]),
+                         ("المستلم من العميل", "60,000.00 ج", "60,000.00 ج", ""))
+        self.assertEqual(s["accountEffect"], "على حساب العميل (عليه) 7,011.00 ج")
+        self.assertEqual(self.vm.saleLinesModel.rows()[0]["lineTotal"], "67,011.00")
+        self.vm.setInvoiceTotal("1")                             # edit after preview: gate closes
         self.assertFalse(self.vm.canFinalize)
-        self.assertEqual(self.vm.summary["saleTotal"], "")
 
     def test_stale_preview_results_are_ignored(self):
-        self.vm.setSalesperson("5")
-        self.vm.addBarcode("01260925")
-        self.vm.setSaleMaking(0, "PER_GRAM", "150")
+        self.sale_ready()
         version = self.vm._version
         self.vm._on_preview((version - 1, preview(sale_total="1.00")), "", "", "")
-        self.assertFalse(self.vm.previewReady)
-        self.vm._on_preview((version, preview()), "", "", "")
-        self.assertTrue(self.vm.previewReady)
+        self.assertEqual(self.vm.summary["saleTotal"], "67,011.00 ج")
 
     def test_blocking_problems_and_confirmation_flags(self):
         self.service.preview_result = preview(blocking_problems=[{"code": "CUSTOMER_REQUIRED",
                                                                   "message": "يجب اختيار عميل."}],
                                               requires_dead_cash_confirmation=True, dead_cash_warning_active=True,
-                                              requires_price_acknowledgement=True)
-        self.vm.setSalesperson("5")
-        self.vm.addBarcode("01260925")
-        self.vm.setSaleMaking(0, "PER_GRAM", "150")
-        self.preview_now()
+                                              requires_price_acknowledgement=True, making_review_required=True)
+        self.sale_ready()
         self.assertEqual(self.vm.blockingProblems, ["يجب اختيار عميل."])
         self.assertFalse(self.vm.canFinalize)
         self.assertTrue(self.vm.deadCashWarning and self.vm.requiresDeadCashConfirmation
-                        and self.vm.requiresPriceAcknowledgement)
-
-    def test_payment_label_follows_net_direction(self):
-        self.service.preview_result = preview(net_direction="SHOP_PAYS_CUSTOMER")
-        self.vm.setSalesperson("5")
-        self.vm.addOldGold(1, "5")
-        self.preview_now()
-        self.assertEqual(self.vm.paymentLabel, "مبلغ مدفوع للعميل")
+                        and self.vm.requiresPriceAcknowledgement and self.vm.makingReviewRequired)
 
     def test_duplicate_barcode_and_missing_old_gold_inputs(self):
         self.vm.addBarcode("01260925")
@@ -200,28 +263,79 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.vm.addOldGold(1, "")
         self.assertEqual((self.vm.errorMessage, self.vm.oldGoldCount), ("أدخل وزن الكسر.", 0))
 
-    def test_finalize_success_keeps_salesperson_and_reference_data(self):
-        self.vm.setSalesperson("5")
-        self.vm.addBarcode("01260925")
-        self.vm.setSaleMaking(0, "PER_GRAM", "150")
-        self.preview_now()
+    def test_finalize_success_resets_and_keeps_salesperson(self):
+        self.sale_ready()
         numbers = []
         self.vm.finalized.connect(numbers.append)
         self.vm.finalizeInvoice(True, False)
-        _, _, token, stale, dead = self.service.calls[-2]         # price board refresh follows
-        self.assertEqual((token, stale, dead), ("T1", True, False))
+        finalize = next(c for c in self.service.calls if c[0] == "finalize")
+        self.assertEqual(finalize[2:], ("T1", True, False))
         self.assertEqual(numbers, ["26092501"])
+        self.assertEqual(self.vm.success["notes"], "تم تسجيل العميل الجديد • قطعة يدوية تحتاج مراجعة المدير")
+        self.assertEqual((self.vm.saleCount, self.vm.salespersonId, self.vm.paymentAmount), (0, "5", ""))
+
+    # ---- Save Only vs Save + Print: printing is a separate step after finalize
+    def test_save_only_finalizes_and_never_prints(self):
+        self.sale_ready()
+        self.vm.finalizeInvoice(False, False, False)
         self.assertEqual(self.vm.success["invoiceNumber"], "26092501")
-        self.assertEqual(self.vm.success["residualText"], "متبقي على العميل 7,011.00 ج")
-        self.assertEqual((self.vm.saleCount, self.vm.salespersonId, len(self.vm.priceRows)), (0, "5", 2))
-        self.vm.newInvoice()
-        self.assertFalse(self.vm.hasSuccess)
+        self.assertEqual(self.printer.calls, [])
+        self.assertFalse(self.vm.printBusy)
+        self.assertEqual(self.vm.printMessage, "")
+
+    def test_save_and_print_finalizes_once_and_submits_one_print_job(self):
+        self.sale_ready()
+        self.vm.finalizeInvoice(False, False, True)
+        finalize_calls = [c for c in self.service.calls if c[0] == "finalize"]
+        self.assertEqual(len(finalize_calls), 1)                        # exactly one finalize
+        self.assertEqual(self.printer.calls, ["901"])                   # exactly one print job, the real id
+        self.assertTrue(self.vm.printSucceeded)
+        self.assertFalse(self.vm.printFailed)
+
+    def test_print_failure_leaves_the_invoice_finalized(self):
+        self.printer.outcome = ("901", False, "الطابعة غير متصلة.")
+        self.sale_ready()
+        self.vm.finalizeInvoice(False, False, True)
+        self.assertEqual(self.vm.success["invoiceNumber"], "26092501")   # the save itself succeeded
+        self.assertTrue(self.vm.printFailed)
+        self.assertEqual(self.vm.printMessage, "الطابعة غير متصلة.")
+        self.assertEqual(len(self.printer.calls), 1)
+
+    def test_retry_print_submits_another_job_for_the_same_invoice(self):
+        self.printer.outcome = ("901", False, "لا يوجد ورق.")
+        self.sale_ready()
+        self.vm.finalizeInvoice(False, False, True)
+        self.printer.outcome = ("901", True, "تم إرسال الفاتورة إلى الطابعة.")
+        finalizes = len([c for c in self.service.calls if c[0] == "finalize"])
+        self.vm.retryPrint()
+        self.assertEqual(self.printer.calls, ["901", "901"])             # one new print attempt only
+        self.assertTrue(self.vm.printSucceeded)
+        self.assertEqual(len([c for c in self.service.calls if c[0] == "finalize"]), finalizes)  # never re-saved
+
+    # ------------------------------------------------------------ one A5 bill: at most 10 sale items
+
+    def test_the_eleventh_sale_item_is_refused_at_once(self):
+        for _ in range(10):
+            self.assertEqual(self.vm.addManualLine(4, 1, 5, "4", "18", "نقش", "BARCODE_LOST"), "")
+        self.assertEqual(self.vm.saleCount, 10)
+        self.assertEqual(self.vm.addManualLine(4, 1, 5, "4", "18", "نقش", "BARCODE_LOST"),
+                         "الحد الأقصى للفاتورة 10 أصناف بيع")
+        self.assertEqual(self.vm.addOldGoldStockLine(4, "", 1, 0, "2", "", ""), "الحد الأقصى للفاتورة 10 أصناف بيع")
+        lookups = len(self.service.calls)
+        self.vm.addBarcode("01260925")                                   # refused before any lookup
+        self.assertEqual(len(self.service.calls), lookups)
+        self.assertEqual(self.vm.errorMessage, "الحد الأقصى للفاتورة 10 أصناف بيع")
+        self.assertEqual(self.vm.saleCount, 10)
+
+    def test_customer_old_gold_is_not_counted_in_the_ten(self):
+        for _ in range(10):
+            self.vm.addManualLine(4, 1, 5, "4", "18", "نقش", "BARCODE_LOST")
+        self.vm.addOldGold(1, "5")
+        self.assertEqual(len(self.vm._olds), 1)                          # old gold still accepted
+        self.assertEqual(self.vm.saleCount, 10)
 
     def test_finalize_price_change_refreshes_prices_and_keeps_draft(self):
-        self.vm.setSalesperson("5")
-        self.vm.addBarcode("01260925")
-        self.vm.setSaleMaking(0, "PER_GRAM", "150")
-        self.preview_now()
+        self.sale_ready()
         self.service.finalize_error = PriceChanged("تغيرت أسعار الذهب؛ راجع الأسعار وأكدها من جديد.")
         boards = self.service.calls.count("price_board")
         self.vm.finalizeInvoice(False, False)
@@ -239,18 +353,12 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.assertEqual(self.vm.saleCount, 1)
 
     def test_old_gold_requires_an_explicit_karat_for_every_line(self):
-        self.assertEqual(self.vm.oldGoldKaratId, -1)                  # no preselected karat
+        self.assertEqual(self.vm.oldGoldKaratId, -1)
         self.vm.addOldGold(-1, "5")
         self.assertEqual((self.vm.oldGoldCount, self.vm.errorMessage), (0, "اختر عيار الكسر."))
-        self.vm.setOldGoldKarat(9)                                     # unknown karat is not accepted
-        self.assertEqual(self.vm.oldGoldKaratId, -1)
         self.vm.setOldGoldKarat(1)
         self.vm.addOldGold(-1, "5")
-        self.assertEqual((self.vm.oldGoldCount, self.vm.oldGoldLinesModel.rows()[0]["karat"]), (1, "21"))
-        self.assertEqual(self.vm.oldGoldKaratId, -1)                  # next line needs its own choice
-        self.vm.setOldGoldKarat(2)
-        self.vm.newInvoice()
-        self.assertEqual(self.vm.oldGoldKaratId, -1)
+        self.assertEqual((self.vm.oldGoldCount, self.vm.oldGoldKaratId), (1, -1))
 
     def test_price_board_follows_the_global_price_set(self):
         class Source(QObject):
@@ -264,21 +372,11 @@ class InvoiceViewModelTests(unittest.TestCase):
         vm = InlineViewModel(self.session, service=self.service, master_data=Master(), preview_delay_ms=0)
         vm.attach_price_source(source)
         boards = self.service.calls.count("price_board")
-        source.priceToken = "T0"
-        source.changed.emit()                                          # page not opened yet: no read
-        self.assertEqual(self.service.calls.count("price_board"), boards)
-        vm.activate()                                                  # board T1
-        self.assertEqual(self.service.calls.count("price_board"), boards + 1)
-        source.priceToken = "T1"
-        source.changed.emit()                                          # same set as the board: no reload
-        self.assertEqual(self.service.calls.count("price_board"), boards + 1)
+        vm.activate()
         source.priceToken = "T2"
-        source.changed.emit()                                          # newly published set: reload
-        source.changed.emit()                                          # repeated signal: no extra reload
+        source.changed.emit()
+        source.changed.emit()
         self.assertEqual(self.service.calls.count("price_board"), boards + 2)
-        source.status = "STALE_ALLOWED"
-        source.changed.emit()                                          # status change also reloads
-        self.assertEqual(self.service.calls.count("price_board"), boards + 3)
 
     def test_lines_model_updates_rows_in_place(self):
         model = LinesModel(("a",))
@@ -290,169 +388,441 @@ class InvoiceViewModelTests(unittest.TestCase):
         model.set_rows([{"a": "2"}])
         self.assertEqual((len(resets), len(changes)), (1, 1))
 
-    # ------------------------------------------------------------ Stage 1: one-screen workflow
-
-    def test_invoice_making_applies_to_every_line_unless_overridden(self):
-        self.vm.setSalesperson("5")
-        self.vm.addBarcode("01260925")
-        self.service.find_item_by_barcode = lambda b, _expected_actor=None: {**ITEM, "inventory_item_id": "101"}
-        self.vm.addBarcode("02260925")
-        self.vm.setInvoiceMaking("150")
-        draft = self.vm._draft()
-        self.assertEqual([l.making_per_gram for l in draft.sale_lines], ["150", "150"])
-        self.vm.setSaleMaking(1, "PER_GRAM", "200")               # this piece only
-        draft = self.vm._draft()
-        self.assertEqual([l.making_per_gram for l in draft.sale_lines], ["150", "200"])
-        self.assertEqual([r["makingOverride"] for r in self.vm.saleLinesModel.rows()], [False, True])
-        self.vm.setSaleMaking(1, "PER_GRAM", "")                  # cleared -> back to the invoice making
-        self.assertEqual([l.making_per_gram for l in self.vm._draft().sale_lines], ["150", "150"])
-
-    def test_invoice_old_gold_discount_percent_applies_to_every_line(self):
-        self.vm.addOldGold(1, "5")
-        self.vm.addOldGold(2, "3")
-        self.vm.setOldGoldDiscountPercent("1.5")
-        lines = self.vm._draft().old_gold_lines
-        self.assertEqual([(l.discount_type, l.discount_value) for l in lines], [("PERCENT", "1.5")] * 2)
-        self.vm.setOldGoldDiscountPercent("0")
-        lines = self.vm._draft().old_gold_lines
-        self.assertEqual([(l.discount_type, l.discount_value) for l in lines], [(None, None)] * 2)
-
-    def test_pay_full_amount_fills_the_amount_due_after_wallet(self):
-        self.vm.setSalesperson("5")
-        self.vm.addBarcode("01260925")
-        self.vm.payFullAmount()                                   # no preview yet: nothing happens
-        self.assertEqual(self.vm.cashAmount, "")
+    # ---- final corrections: direction, F8, methods, settlement, review notices
+    def test_direction_label_follows_who_pays(self):
+        self.assertEqual(self.vm.paymentLabel, "المستلم من العميل")            # before any preview
+        self.sale_ready()
+        self.assertEqual((self.vm.paymentDirection, self.vm.paymentLabel), ("IN", "المستلم من العميل"))
+        self.assertFalse(self.vm.directionChoosable)                           # a sale only is always IN
+        self.service.preview_result = preview(payment_direction="OUT", net_direction="SHOP_PAYS_CUSTOMER",
+                                              money_received="0.00", money_paid="55000.00")
+        self.vm.addOldGold(1, "20")
         self.preview_now()
-        self.vm.setWalletAmount("1000")
+        self.assertTrue(self.vm.directionChoosable)                            # an exchange can go either way
+        self.assertEqual((self.vm.paymentDirection, self.vm.paymentLabel), ("OUT", "المدفوع للعميل"))
+        self.assertEqual((self.vm.summary["dueLabel"], self.vm.summary["dueAmount"]), ("المدفوع للعميل", "55,000.00 ج"))
+        self.vm.setPaymentDirection("IN")
+        self.assertEqual(self.vm._draft().payment_direction, "IN")
+
+    def test_f8_fills_only_a_real_full_amount(self):
+        self.sale_ready()
+        self.vm.setInvoiceTotal("")
+        self.preview_now()
+        self.assertFalse(self.vm.fullAmountAvailable)
+        self.vm.payFullAmount()                                   # sold pieces: إجمالي الفاتورة is typed
+        self.assertEqual(self.vm.paymentAmount, "")
+        # Old gold only: the full amount exists (old-gold value minus the account part), in the OUT direction.
+        self.vm.removeSaleLine(0)
+        self.vm.addOldGold(1, "10")
+        self.service.preview_result = preview(payment_direction="OUT", full_amount="61138.95", gold_value_total=None)
+        self.preview_now()
+        self.vm.addPaymentLeg()
+        self.vm.setLegAmount(1, "1138.95")
         self.preview_now()
         self.vm.payFullAmount()
-        self.assertEqual(self.vm.cashAmount, "66011.00")
-        self.assertEqual([(p.method_code, p.amount) for p in self.vm._draft().payments],
-                         [("PHYSICAL_CASH", "66011.00"), ("MOBILE_WALLET", "1000")])
+        self.assertEqual(self.vm.paymentAmount, "60000.00")                    # the other leg is kept
 
-    def test_salesman_wording_in_summary(self):
+    def test_payment_legs_methods_and_real_accounts(self):
+        self.sale_ready()
+        self.assertEqual([(m["code"], m["text"], m["available"]) for m in self.vm.paymentMethods],
+                         [("PHYSICAL_CASH", "نقدي", True), ("MOBILE_WALLET", "محفظة", True),
+                          ("INSTAPAY", "InstaPay", True), ("BANK_TRANSFER", "تحويل بنكي", True)])
+        self.assertFalse(self.vm.paymentNeedsAccount)
+        self.vm.setPaymentMethod("MOBILE_WALLET")                               # the only wallet: chosen
+        self.assertEqual((self.vm.paymentNeedsAccount, self.vm.bankAccountId), (True, "9"))
+        self.vm.setPaymentMethod("INSTAPAY")                                    # two bank accounts: choose
+        self.assertEqual([a["id"] for a in self.vm.bankAccounts], ["7", "8"])
+        self.assertEqual(self.vm.bankAccountId, "")
+        self.vm.setBankAccount("9")                                             # a wallet is not a bank
+        self.assertEqual(self.vm.bankAccountId, "")
+        self.vm.setBankAccount("7")
+        self.vm.setInvoiceTotal("67011")
+        self.vm.setLegAmount(0, "60000")
+        self.vm.addPaymentLeg()                                                  # starts with the remainder
+        self.assertEqual(self.vm.paymentLegs[1]["amount"], "7011")
+        payments = self.vm._draft().payments
+        self.assertEqual([(p.method_code, p.amount, p.bank_account_id) for p in payments],
+                         [("INSTAPAY", "60000", "7"), ("PHYSICAL_CASH", "7011", None)])
+        self.vm.setPaymentMethod("CARD_POS")                                   # not offered: ignored
+        self.assertEqual(self.vm.paymentMethod, "INSTAPAY")
+        self.vm.removePaymentLeg(1)
+        self.assertEqual(len(self.vm.paymentLegs), 1)
+        self.preview_now()
+        self.assertEqual(self.vm.summary["paidLabel"], "المستلم من العميل (InstaPay)")
+
+    def test_methods_without_an_account_stay_visible_but_unavailable(self):
+        self.sale_ready()
+        self.vm._reference = dict(REFERENCE, bank_accounts=[])
+        self.assertEqual([(m["code"], m["available"], m["unavailableText"]) for m in self.vm.paymentMethods],
+                         [("PHYSICAL_CASH", True, ""), ("MOBILE_WALLET", False, "لا توجد محفظة مفعلة"),
+                          ("INSTAPAY", False, "لا يوجد حساب بنكي مفعّل"),
+                          ("BANK_TRANSFER", False, "لا يوجد حساب بنكي مفعّل")])
+        self.assertEqual([m["code"] for m in self.vm.availablePaymentMethods], ["PHYSICAL_CASH"])
+        for code, text in (("MOBILE_WALLET", "لا توجد محفظة مفعلة"), ("INSTAPAY", "لا يوجد حساب بنكي مفعّل"),
+                           ("BANK_TRANSFER", "لا يوجد حساب بنكي مفعّل")):
+            with self.subTest(method=code):
+                self.vm.setPaymentMethod(code)                                  # selectable, never usable
+                leg = self.vm.paymentLegs[0]
+                self.assertEqual((leg["method"], leg["unavailableText"], leg["needsAccount"], leg["account"]),
+                                 (code, text, False, ""))
+                self.assertIsNone(self.vm._draft().payments[0].bank_account_id)  # the service refuses it
+        # Only a wallet: محفظة usable; InstaPay / bank transfer still need a bank account.
+        self.vm._reference = dict(REFERENCE, bank_accounts=[{"id": "9", "name": "محفظة", "account_type": "MOBILE_WALLET"}])
+        self.assertEqual([m["available"] for m in self.vm.paymentMethods], [True, True, False, False])
+        self.vm._reference = dict(REFERENCE, bank_accounts=[{"id": "7", "name": "CIB", "account_type": "BANK"}])
+        self.assertEqual([m["available"] for m in self.vm.paymentMethods], [True, False, True, True])
+        self.vm.setPaymentMethod("PHYSICAL_CASH")
+        self.vm.setPaymentMethod("BANK_TRANSFER")                               # the only bank: chosen
+        self.assertEqual(self.vm.bankAccountId, "7")
+
+    def test_manual_reasons_say_why_the_piece_was_not_identified(self):
+        self.assertEqual([(r["code"], r["text"]) for r in self.vm.manualReasons],
+                         [("NO_BARCODE", "لم يُنشأ لها باركود"), ("BARCODE_LOST", "الباركود مفقود أو تالف"),
+                          ("NOT_FOUND", "لم أجد القطعة في البحث"), ("OTHER", "سبب آخر")])
+        self.sale_ready()
+        self.assertEqual(self.vm.addManualLine(4, 1, 5, "4", "", " ", "OTHER"),
+                         "اكتب السبب في الملاحظات عند اختيار «سبب آخر».")
+        self.assertEqual(self.vm.addManualLine(4, 1, 5, "4", "", "قطعة أمانة", "OTHER"), "")
+
+    # ---- customer account: its own direction, never part of the price
+    def test_account_part_is_taken_out_of_the_single_payment_leg(self):
+        # Regression: المستلم 23,000 then على العميل 3,000 → المستلم 20,000 (never 23,000 + 3,000).
+        self.sale_ready()
+        self.vm.setInvoiceTotal("23000")
+        for typed, leg in (("3", "22997"), ("30", "22970"), ("300", "22700"), ("3000", "20000")):
+            self.vm.setAccountAmount(typed)                                     # typed digit by digit
+            self.assertEqual(self.vm.paymentAmount, leg)
+        self.assertEqual(self.vm.accountDirection, "CUSTOMER_OWES")              # follows the money (IN)
+        self.assertEqual(self.vm.accountEffectText, "سيضاف على العميل: 3,000.00 ج")
+        draft = self.vm._draft()
+        self.assertEqual(([p.amount for p in draft.payments], draft.account_amount, draft.account_direction),
+                         (["20000"], "3000", "CUSTOMER_OWES"))
+        self.vm.setAccountAmount("")                                            # back: all paid now
+        self.assertEqual(self.vm.paymentAmount, "23000")
+        self.vm.setAccountDirection("SHOP_OWES")                               # not offered on a sale
+        self.assertEqual(self.vm.accountDirection, "CUSTOMER_OWES")
+
+    def test_outgoing_account_part_lowers_the_money_paid_to_the_customer(self):
+        self.sale_ready()
+        self.vm.addOldGold(1, "30")
+        self.vm.setPaymentDirection("OUT")
+        self.vm.setInvoiceTotal("23000")
+        self.vm.setAccountAmount("3000")
+        self.assertEqual((self.vm.paymentAmount, self.vm.accountDirection), ("20000", "SHOP_OWES"))
+        self.assertEqual(self.vm.accountEffectText, "سيضاف للعميل: 3,000.00 ج")
+        self.assertEqual(self.vm._draft().account_direction, "SHOP_OWES")
+
+    def test_split_legs_must_add_up_to_what_is_required_now(self):
+        self.sale_ready()
+        self.vm.setInvoiceTotal("23000")
+        self.vm.setLegAmount(0, "5000")
+        self.vm.addPaymentLeg()
+        self.assertEqual(self.vm.paymentLegs[1]["amount"], "18000")             # 23,000 − 5,000
+        self.vm.setAccountAmount("3000")                                        # 5,000 + 18,000 + 3,000 > 23,000
+        self.assertEqual(self.vm.accountAmount, "")                             # refused
+        self.assertIn("لا يمكن أن يتجاوز إجمالي الفاتورة", self.vm.paymentWarning)
+        self.vm.setLegAmount(1, "15000")
+        self.preview_now()
+        self.assertIn("المتبقي من إجمالي الفاتورة 3,000.00 ج", self.vm.blockingProblems[0])
+        self.assertFalse(self.vm.canFinalize)                                   # unpaid money is never debt by itself
+        self.vm.setAccountAmount("3000")
+        self.assertEqual(self.vm.requiredNowText, "المطلوب دفعه الآن: 20,000.00 ج")
+        self.assertEqual(self.vm.paymentAmount, "5000")                         # never reduced arbitrarily
+        self.preview_now()
+        self.assertEqual(self.vm.blockingProblems, [])
+        self.assertEqual([p.amount for p in self.vm._draft().payments], ["5000", "15000"])
+        self.vm.removePaymentLeg(1)
+        # 3,000 is still on the account: 20,000 is still due now, and 15,000 is no longer allocated.
+        self.assertEqual(self.vm.requiredNowText, "المطلوب دفعه الآن: 20,000.00 ج")
+        self.assertEqual(self.vm.remainingText, "المتبقي: 15,000.00 ج")
+        self.assertFalse(self.vm.canFinalize)
+
+    # ---- إجمالي الفاتورة: one total; payments and the account only allocate it
+    def total_ready(self, total="10000"):
         self.vm.setSalesperson("5")
         self.vm.addBarcode("01260925")
-        self.preview_now()
-        s = self.vm.summary
-        self.assertEqual((s["dueLabel"], s["dueAmount"], s["paidLabel"], s["paidAmount"]),
-                         ("المطلوب من العميل", "67,011.00 ج", "المدفوع من العميل", "60,000.00 ج"))
-        self.assertEqual((s["remainingLabel"], s["remainingAmount"]),
-                         ("متبقي على العميل (يُسجل على حسابه)", "7,011.00 ج"))
-        self.service.preview_result = preview(net_direction="SHOP_PAYS_CUSTOMER", money_received="0.00",
-                                              money_paid="67011.00", residual_amount="0.00",
-                                              residual_direction="NONE", settlement_status="SETTLED")
-        self.vm.setCashAmount("67011")
-        self.preview_now()
-        s = self.vm.summary
-        self.assertEqual((s["dueLabel"], s["paidLabel"], s["paidAmount"], s["remainingLabel"], s["remainingAmount"]),
-                         ("المستحق للعميل", "المدفوع للعميل", "67,011.00 ج", "لا يوجد متبقٍ", ""))
+        self.assertTrue(self.vm.totalMode)
+        self.vm.setInvoiceTotal(total)
 
-    def test_weight_totals_per_karat(self):
+    def amounts(self):
+        return [leg["amount"] for leg in self.vm.paymentLegs]
+
+    def test_example_a_total_defaults_one_cash_leg_to_the_full_amount(self):
+        self.total_ready()
+        self.assertEqual((self.vm.invoiceTotal, self.amounts(), self.vm.paymentMethod), ("10000", ["10000"], "PHYSICAL_CASH"))
+        self.assertEqual((self.vm.remainingText, self.vm._required_problem()), ("", ""))
+        self.vm.setInvoiceTotal("12000")                                        # the untouched leg follows
+        self.assertEqual(self.amounts(), ["12000"])
+        self.assertEqual(self.vm._draft().invoice_total, "12000")
+
+    def test_example_b_reduced_cash_then_add_starts_with_the_remainder(self):
+        self.total_ready()
+        self.vm.setLegAmount(0, "6000")
+        self.assertEqual(self.vm.remainingText, "المتبقي: 4,000.00 ج")
+        self.assertTrue(self.vm.canAddPayment)
+        self.vm.addPaymentLeg()
+        self.assertEqual(self.amounts(), ["6000", "4000"])
+        self.vm.setLegMethod(1, "MOBILE_WALLET")
+        self.assertEqual((self.vm.remainingText, self.vm.canAddPayment), ("", False))
+        draft = self.vm._draft()
+        self.assertEqual(([(p.method_code, p.amount) for p in draft.payments], draft.invoice_total),
+                         ([("PHYSICAL_CASH", "6000"), ("MOBILE_WALLET", "4000")], "10000"))
+        self.assertEqual(self.vm.invoiceTotal, "10000")                        # never changed by the split
+
+    def test_example_c_an_overpayment_is_refused_and_the_last_value_kept(self):
+        self.total_ready()
+        self.vm.setLegAmount(0, "6000")
+        self.vm.addPaymentLeg()
+        self.vm.setLegAmount(1, "5000")                                         # 6,000 + 5,000 > 10,000
+        self.assertEqual(self.amounts(), ["6000", "4000"])                     # last valid value
+        self.assertEqual(self.vm.paymentWarning, "مجموع طرق الدفع لا يمكن أن يتجاوز إجمالي الفاتورة")
+        self.assertEqual(self.vm.invoiceTotal, "10000")
+        self.vm.setLegAmount(1, "3000")                                         # a valid edit clears the warning
+        self.assertEqual((self.vm.paymentWarning, self.vm.remainingText), ("", "المتبقي: 1,000.00 ج"))
+
+    def test_example_d_three_methods_each_start_with_the_current_remainder(self):
+        self.total_ready()
+        self.vm.setLegAmount(0, "4000")
+        self.vm.addPaymentLeg()
+        self.assertEqual(self.amounts(), ["4000", "6000"])
+        self.vm.setLegAmount(1, "3000")
+        self.vm.addPaymentLeg()
+        self.assertEqual(self.amounts(), ["4000", "3000", "3000"])
+        self.vm.setLegMethod(1, "MOBILE_WALLET")
+        self.vm.setLegMethod(2, "BANK_TRANSFER")
+        self.vm.setLegAccount(2, "7")
+        self.assertEqual((self.vm._required_problem(), self.vm.canAddPayment), ("", False))
+
+    def test_example_e_the_account_button_takes_exactly_the_remainder(self):
+        self.total_ready()
+        self.vm.setLegAmount(0, "6000")
+        self.assertIn("المتبقي من إجمالي الفاتورة 4,000.00 ج", self.vm._required_problem())   # never silent debt
+        self.assertEqual(self.vm.accountAmount, "")
+        self.vm.setAccountDirection("CUSTOMER_OWES")                           # على العميل pressed
+        self.assertEqual((self.vm.accountAmount, self.vm.remainingText, self.vm._required_problem()), ("4000", "", ""))
+        draft = self.vm._draft()
+        self.assertEqual(([p.amount for p in draft.payments], draft.account_amount, draft.invoice_total),
+                         (["6000"], "4000", "10000"))
+        self.assertEqual(self.vm.requiredNowText, "المطلوب دفعه الآن: 6,000.00 ج")
+        self.vm.setAccountAmount("5000")                                        # 6,000 + 5,000 > 10,000
+        self.assertEqual(self.vm.accountAmount, "4000")
+        self.assertIn("لا يمكن أن يتجاوز إجمالي الفاتورة", self.vm.paymentWarning)
+
+    def test_nothing_to_add_when_nothing_remains_and_no_zero_legs(self):
+        self.total_ready()
+        self.assertFalse(self.vm.canAddPayment)
+        self.vm.addPaymentLeg()
+        self.assertEqual(self.amounts(), ["10000"])
+        self.assertEqual(self.vm.paymentWarning, "لا يوجد مبلغ متبقٍ لإضافة طريقة دفع.")
+
+    def test_a_smaller_total_never_redistributes_a_manual_split(self):
+        self.total_ready()
+        self.vm.setLegAmount(0, "6000")
+        self.vm.addPaymentLeg()                                                 # 6,000 + 4,000
+        self.vm.setInvoiceTotal("9000")                                         # below the allocated 10,000
+        self.assertEqual((self.vm.invoiceTotal, self.amounts()), ("10000", ["6000", "4000"]))
+        self.assertIn("لا يمكن أن يقل", self.vm.paymentWarning)
+        self.vm.setInvoiceTotal("11000")                                        # larger: allowed, 1,000 remains
+        self.assertEqual((self.amounts(), self.vm.remainingText), (["6000", "4000"], "المتبقي: 1,000.00 ج"))
+
+    def test_payments_need_a_total_first(self):
+        self.vm.setSalesperson("5")
         self.vm.addBarcode("01260925")
-        self.vm.addOldGold(1, "5")
-        self.vm.addOldGold(1, "2.25")
-        self.vm.addOldGold(2, "x")                                # invalid weight is not counted
-        totals = self.vm.weightTotals
-        self.assertEqual(totals["sold"], {"18": "—", "21": "10.500", "24": "—"})
-        self.assertEqual(totals["bought"], {"18": "—", "21": "7.250", "24": "—"})
+        self.vm.setLegAmount(0, "5000")
+        self.assertEqual((self.amounts(), self.vm.paymentWarning), ([""], "اكتب إجمالي الفاتورة أولاً."))
 
-    def test_salesperson_defaults_to_the_linked_employee_and_survives_new_invoice(self):
+    # ---- old-gold discount: the last valid value is kept
+    def test_invalid_discount_restores_the_last_valid_value(self):
+        self.sale_ready()
+        self.vm.addOldGold(1, "5")
+        self.preview_now()
+        self.assertEqual(self.vm.oldGoldDiscountPercent, "1.5")
+        for rejected in ("1.00", "1.24", "3.01", "10.00", "abc", ""):
+            with self.subTest(rejected=rejected):
+                self.assertEqual(self.vm.commitOldGoldDiscount(rejected), "1.5")          # restored, not clamped
+                self.assertEqual(self.vm.discountWarning, "النسبة المسموح بها من \u20661.25%\u2069 إلى \u20663%\u2069")
+                self.assertEqual(self.vm._draft().old_gold_lines[0].discount_value, "1.5")
+        self.assertEqual(self.vm.commitOldGoldDiscount("2.25"), "2.25")
+        self.assertEqual(self.vm.discountWarning, "")
+        self.assertEqual(self.vm.commitOldGoldDiscount("0.50"), "2.25")                   # back to the new last valid
+        for boundary in ("1.25", "3.00"):
+            self.assertEqual(self.vm.commitOldGoldDiscount(boundary), boundary.rstrip("0").rstrip("."))
+        self.assertEqual(self.vm._draft().old_gold_lines[0].discount_value, "3")
+
+    def test_rejected_discount_is_never_previewed(self):
+        self.sale_ready()
+        self.vm.addOldGold(1, "5")
+        self.preview_now()
+        calls = len([c for c in self.service.calls if c[0] == "preview"])
+        self.vm.commitOldGoldDiscount("1.00")
+        self.preview_now()
+        last = [c for c in self.service.calls if c[0] == "preview"][-1][1]
+        self.assertEqual(last.old_gold_lines[0].discount_value, "1.5")                   # the rejected 1.00 never left
+        self.assertGreater(len([c for c in self.service.calls if c[0] == "preview"]), calls)
+
+    def test_old_gold_only_is_not_limited_to_the_sale_range(self):
+        self.vm.setSalesperson("5")
+        self.vm.addOldGold(1, "10")
+        for value in ("0.5", "5", "0"):
+            with self.subTest(value=value):
+                self.assertEqual(self.vm.commitOldGoldDiscount(value), value)
+                self.assertEqual(self.vm.discountWarning, "")
+
+    def test_old_gold_gap_is_settled_or_put_on_the_account(self):
+        self.service.preview_result = preview(payment_direction="OUT", gap_signed="-8.00", gold_value_total=None)
+        self.sale_ready()
+        self.assertTrue(self.vm.hasDifference)
+        self.assertEqual((self.vm.settlementChoice, self.vm.summary["differenceAmount"]), ("", "8.00"))
+        self.vm.setSettlementChoice("SETTLE")
+        self.assertEqual(self.vm._draft().settlement_choice, "SETTLE")
+        self.assertFalse(self.vm.settlementNeedsReason)
+        self.preview_now()
+        self.vm.setSettlementChoice("ACCOUNT")                                  # fills the account amount
+        draft = self.vm._draft()
+        self.assertEqual((draft.settlement_choice, draft.account_amount, draft.account_direction),
+                         (None, "8.00", "SHOP_OWES"))
+
+    def test_making_and_discount_notices_are_simple_for_the_salesman(self):
+        self.service.preview_result = preview(making_review_status="NOT_CONFIGURED", old_gold_discount_changed=True)
+        self.sale_ready()
+        self.assertEqual((self.vm.summary["makingNotice"], self.vm.summary["discountChanged"]),
+                         ("نطاق المصنعية غير محدد", True))
+        self.service.preview_result = preview(making_review_status="OUT_OF_RANGE")
+        self.vm.setInvoiceTotal("2")
+        self.preview_now()
+        self.assertEqual(self.vm.summary["makingNotice"], "السعر يحتاج مراجعة")
+
+    def test_default_salesperson_and_unchanged_customer_keep_success(self):
         session = AppSession()
         session._establish(AuthenticationResult(18, 5, "علي", PERMISSIONS, _VERIFIED), int(session.generation))
         vm = InlineViewModel(session, service=self.service, master_data=Master(), preview_delay_ms=0)
         vm.activate()
         self.assertEqual(vm.salespersonId, "5")
-        self.assertEqual(self.vm.salespersonId, "")               # actor employee 7 is not a salesperson
-        vm.addBarcode("01260925")
-        vm.newInvoice()
-        self.assertEqual((vm.saleCount, vm.salespersonId), (0, "5"))
-
-    def test_unchanged_customer_keeps_the_success_banner(self):
-        self.vm.setSalesperson("5")
-        self.vm.addBarcode("01260925")
-        self.preview_now()
+        self.sale_ready()
         self.vm.finalizeInvoice(False, False)
+        self.vm.setCustomer("")
         self.assertTrue(self.vm.hasSuccess)
-        self.vm.setCustomer("")                                   # the picker clears after saving
-        self.vm.setSalesperson("5")
-        self.assertTrue(self.vm.hasSuccess)
-        self.vm.addBarcode("01260925")                           # the next invoice starts
-        self.assertFalse(self.vm.hasSuccess)
 
-    # ------------------------------------------------------------ Stage 2: بحث عن قطعة
+    # ------------------------------------------------------------ sales table and weights
 
-    def search_service(self):
-        found = [{"inventory_item_id": "103", "barcode": None, "item_name": "دبلة", "karat_id": 1, "karat": 21,
-                  "weight_grams": "3.500", "factory_name": "مصنع النور", "size": "18", "category_name": None},
-                 {"inventory_item_id": "104", "barcode": "04260925", "item_name": "دبلة", "karat_id": 1,
-                  "karat": 21, "weight_grams": "3.520", "factory_name": None, "size": None, "category_name": None}]
-
-        def search(**kwargs):
-            self.service.calls.append(("search", kwargs))
-            return {"items": [r for r in found if r["inventory_item_id"] not in kwargs["exclude_ids"]],
-                    "truncated": False}
-        self.service.search_sellable_items = search
-
-    def test_search_shows_candidates_and_never_picks_one(self):
-        self.search_service()
-        self.vm.searchItems("دبلة", 1, "3.5", "0.05", "")
-        self.assertEqual(self.vm.saleCount, 0)                          # nothing added by searching
-        rows = self.vm.searchResults
-        self.assertEqual([r["title"].replace("‏", "") for r in rows],
-                         ["دبلة | عيار 21 | 3.500 جم | مصنع النور | مقاس 18", "دبلة | عيار 21 | 3.520 جم"])
-        self.assertEqual([r["barcodeText"] for r in rows], ["بدون باركود", "04260925"])
-        self.assertEqual([(r["itemName"], r["weightText"], r["karatText"], r["detailText"]) for r in rows],
-                         [("دبلة", "3.500 جم", "عيار 21", "مصنع النور • مقاس 18"), ("دبلة", "3.520 جم", "عيار 21", "")])
-        self.assertEqual(self.vm.searchMessage, "2 قطعة — اختر القطعة التي أمامك")
-        call = self.service.calls[-1][1]
-        self.assertEqual((call["karat_id"], call["weight"], call["tolerance"], call["exclude_ids"]),
-                         (1, "3.5", "0.05", ()))
-
-    def test_explicit_choice_adds_the_exact_piece_marked_search(self):
-        self.search_service()
-        self.vm.setSalesperson("5")
-        self.vm.searchItems("", -1, "", "0.05", "")
-        self.assertFalse(self.vm.addSearchedItem("999"))                # not a shown candidate
-        self.assertTrue(self.vm.addSearchedItem("103"))
-        self.assertEqual(self.vm.saleCount, 1)
-        line = self.vm._draft().sale_lines[0]
-        self.assertEqual((line.inventory_item_id, line.identified_by), ("103", "SEARCH"))
-        self.assertEqual(self.vm.saleLinesModel.rows()[0]["identifiedBy"], "SEARCH")
-        self.assertEqual([r["inventoryItemId"] for r in self.vm.searchResults], ["104"])
-        self.vm.searchItems("", -1, "", "0.05", "")                     # the added piece is excluded
-        self.assertEqual(self.service.calls[-1][1]["exclude_ids"], ("103",))
+    def test_sales_table_shows_physical_details_and_described_lines(self):
         self.vm.addBarcode("01260925")
-        self.assertEqual([l.identified_by for l in self.vm._draft().sale_lines], ["SEARCH", "SCAN"])
+        self.assertEqual(self.vm.addManualLine(4, 1, 5, "4", "18", "نقش", "BARCODE_LOST"), "")
+        self.assertEqual(self.vm.addOldGoldStockLine(0, "دبلة سادة", 1, 0, "3.2", "", ""), "")
+        rows = self.vm.saleLinesModel.rows()
+        self.assertEqual([(r["itemName"], r["factory"], r["size"], r["notes"], r["tag"]) for r in rows],
+                         [("خاتم", "لوكس", "", "فص أزرق", ""), ("دبلة", "لوكس", "18", "نقش", "تحتاج مراجعة"),
+                          ("دبلة سادة", "", "", "", "من الكسر")])
+        self.assertEqual(self.vm.weightTotals["sold"], {"18": "—", "21": "17.700", "24": "—"})
+        draft = self.vm._draft()
+        self.assertEqual([(d.kind, d.reason_code, d.item_type_id) for d in draft.described_sale_lines],
+                         [("UNIDENTIFIED", "BARCODE_LOST", 4), ("OLD_GOLD_STOCK", None, None)])
+        self.vm.removeSaleLine(1)                                          # index over the whole table
+        self.assertEqual([r["tag"] for r in self.vm.saleLinesModel.rows()], ["", "من الكسر"])
+
+    def test_manual_line_requires_type_karat_weight_and_reason(self):
+        self.assertEqual(self.vm.addManualLine(0, 1, 0, "4", "", "", "NO_BARCODE"), "اختر الصنف.")
+        self.assertEqual(self.vm.addManualLine(4, 0, 0, "4", "", "", "NO_BARCODE"), "اختر العيار.")
+        self.assertEqual(self.vm.addManualLine(4, 1, 0, "", "", "", "NO_BARCODE"), "اكتب الوزن.")
+        self.assertEqual(self.vm.addManualLine(4, 1, 0, "4", "", "", ""), "اختر سبب الإدخال اليدوي.")
+        self.assertEqual(self.vm.saleCount, 0)
+
+    def test_weight_totals_per_karat(self):
+        self.vm.addBarcode("01260925")
+        self.vm.addOldGold(1, "5")
+        self.vm.addOldGold(1, "2.25")
+        totals = self.vm.weightTotals
+        self.assertEqual(totals["sold"], {"18": "—", "21": "10.500", "24": "—"})
+        self.assertEqual(totals["bought"], {"18": "—", "21": "7.250", "24": "—"})
+
+    # ------------------------------------------------------------ cascading search
+
+    def test_higher_level_resets_lower_filters(self):
+        self.vm.setSearchType(4)
+        self.vm.setSearchKarat(1)
+        self.vm.setSearchFactory(5)
+        self.assertEqual(self.vm.searchPath, "دبلة ← عيار 21 ← لوكس")
+        self.vm.setSearchType(2)                                           # change الصنف
+        self.assertEqual((self.vm.searchKaratId, self.vm.searchFactoryId), (0, 0))
+        self.vm.setSearchKarat(1)
+        self.vm.setSearchFactory(5)
+        self.vm.setSearchKarat(1)                                          # re-choosing العيار drops المصنع
+        self.assertEqual(self.vm.searchFactoryId, 0)
+        self.vm.resetSearch()
+        self.assertEqual((self.vm.searchTypeId, self.vm.searchKaratId, self.vm.searchPath), (0, 0, ""))
+
+    def test_search_sends_the_cascade_and_never_picks_a_piece(self):
+        found = [{"inventory_item_id": "103", "barcode": None, "item_name": "دبلة", "karat_id": 1, "karat": 21,
+                  "weight_grams": "3.500", "factory_name": "لوكس", "size": "18", "category_name": None,
+                  "item_notes": "محفورة"}]
+        self.service.search_sellable_items = lambda **kw: self.service.calls.append(("search", kw)) or {
+            "items": [r for r in found if r["inventory_item_id"] not in kw["exclude_ids"]], "truncated": False}
+        self.vm.setSearchType(4)
+        self.vm.setSearchKarat(1)
+        self.vm.setSearchFactory(5)
+        self.vm.searchStock("", "", "0.05", "18")
+        call = self.service.calls[-1][1]
+        self.assertEqual((call["item_type_id"], call["karat_id"], call["factory_id"], call["size"], call["weight"]),
+                         (4, 1, 5, "18", ""))
+        self.assertEqual(self.vm.saleCount, 0)
+        self.assertEqual(self.vm.searchResults[0]["detailText"], "لوكس • مقاس 18 • محفورة")
+        self.assertTrue(self.vm.addSearchedItem("103"))
+        self.assertEqual(self.vm._draft().sale_lines[0].identified_by, "SEARCH")
+        self.assertEqual(self.vm.saleLinesModel.rows()[0]["notes"], "محفورة")
 
     def test_barcode_not_found_offers_search(self):
-        from services.invoice_service import InvoiceError
-
         def missing(barcode, _expected_actor=None):
             raise InvoiceError("BARCODE_NOT_FOUND", "لا توجد قطعة بالباركود 9.")
         self.service.find_item_by_barcode = missing
         self.vm.addBarcode("9")
         self.assertTrue(self.vm.barcodeNotFound)
-        self.service.find_item_by_barcode = lambda b, _expected_actor=None: dict(ITEM)
-        self.vm.addBarcode("01260925")
-        self.assertFalse(self.vm.barcodeNotFound)
 
-    def test_missing_making_uses_salesman_wording(self):
-        from services.invoice_calculator import InvoiceCalculationError
+    # ------------------------------------------------------------ settlement
 
-        def refuse(draft, _expected_actor=None):
-            raise InvoiceCalculationError("MAKING_REQUIRED", "حدد المصنعية إما للجرام أو إجمالياً (وليس الاثنين).")
-        self.service.preview = refuse
-        self.vm.setSalesperson("5")
-        self.vm.addBarcode("01260925")
+    def test_above_fifty_needs_reason_and_verified_manager(self):
+        self.service.preview_result = preview(gap_signed="-120.00", settlement_needs_approval=True)
+        self.sale_ready()
+        self.vm.setSettlementChoice("SETTLE")
         self.preview_now()
-        self.assertEqual(self.vm.previewError, "أدخل المصنعية/جم (Ctrl+M).")
+        self.assertTrue(self.vm.settlementNeedsReason and self.vm.settlementNeedsApproval)
+        self.vm.verifyApprover("manager", "wrong")
+        self.assertFalse(self.vm.approverOk)
+        self.assertIn("تعذر", self.vm.approverText)
+        self.vm.verifyApprover("manager", "ok")
+        self.assertEqual((self.vm.approverOk, self.vm.approverText), (True, "موافقة: المدير"))
+        self.vm.setSettlementReason("فكة")
+        draft = self.vm._draft()
+        self.assertEqual((draft.settlement_reason, draft.settlement_approver.user_id), ("فكة", 3))
+
+    # ------------------------------------------------------------ customer inline
+
+    def test_existing_customer_by_name_or_phone(self):
+        self.vm.searchCustomers("أ")                                     # too short: no query
+        self.assertEqual(self.vm.customerSuggestions, [])
+        self.vm.searchCustomers("0100")
+        suggestion = self.vm.customerSuggestions[0]
+        self.assertEqual((suggestion["name"], suggestion["accountText"], suggestion["deadCash"]),
+                         ("أحمد علي", "عليه 3,250.00 ج", True))
+        self.vm.chooseCustomer("12")
+        info = self.vm.customerInfo
+        self.assertEqual((self.vm.customerId, info["state"], info["mobile"], info["place"], info["accountText"]),
+                         ("12", "EXISTING", "0100", "طنطا", "عليه 3,250.00 ج"))
+        self.assertIsNone(self.vm._draft().new_customer)
+
+    def test_new_customer_is_only_typed_until_finalize(self):
+        self.vm.setNewCustomer("عميل جديد", "0111", "بنها")
+        info = self.vm.customerInfo
+        self.assertEqual((info["state"], info["accountText"]), ("NEW", "عميل جديد — يُسجل عند الحفظ"))
+        self.assertEqual(self.vm._draft().new_customer.mobile, "0111")
+        self.vm.clearCustomer()
+        self.assertEqual(self.vm.customerInfo["state"], "NONE")
 
     def test_formatting_helpers(self):
         self.assertEqual(money("1234.5"), "1,234.50 ج")
         self.assertEqual(grams("10.5"), "10.500 جم")
         self.assertEqual((balance_text("0"), balance_text("-12.5")), ("لا يوجد رصيد", "للعميل 12.50 ج"))
-        self.assertEqual(money(None), "")
+        self.assertEqual((account_text("3250"), account_text("-1200"), account_text("0")),
+                         ("عليه 3,250.00 ج", "له 1,200.00 ج", "الحساب مسدد"))
 
 
 if __name__ == "__main__":

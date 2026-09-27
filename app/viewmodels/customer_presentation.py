@@ -1,6 +1,8 @@
 """Shared customer display values. Never changes stored profile or ledger text."""
 
 from datetime import date, datetime
+
+from app.formatting import date_text, datetime_text, number
 from decimal import Decimal
 import logging
 
@@ -38,10 +40,10 @@ def qml_safe(value, key=None):
         return str(value)
     if isinstance(value, Decimal):
         return format(value, "f")
-    if isinstance(value, datetime):
-        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, datetime):                  # display text: kept LTR inside Arabic lines
+        return datetime_text(value, seconds=True)
     if isinstance(value, date):
-        return value.strftime("%Y-%m-%d")
+        return date_text(value)
     if isinstance(value, dict):
         return {k: qml_safe(v, k) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
@@ -52,8 +54,7 @@ def qml_safe(value, key=None):
 def money_text(value, signed=False):
     if value is None:
         return "غير متاح"
-    amount = value if isinstance(value, Decimal) else Decimal(str(value))
-    return format(amount, "+,.2f" if signed and amount != 0 else ",.2f")
+    return number(value, 2, signed)
 
 
 def balance_meaning(value):

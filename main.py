@@ -41,6 +41,58 @@ def create_invoice_viewmodel(session):
     return InvoiceViewModel(session)
 
 
+def create_printer_settings_viewmodel(session):
+    """Settings → الطباعة: this workstation's Bill and Label printers (local, not shop data)."""
+    from app.viewmodels.printer_settings_viewmodel import PrinterSettingsViewModel
+    return PrinterSettingsViewModel(session)
+
+
+def create_review_viewmodel(session):
+    """مراجعات المدير indicator and page for one login."""
+    from app.viewmodels.management_review_viewmodel import ManagementReviewViewModel
+    return ManagementReviewViewModel(session)
+
+
+def create_balance_viewmodel(session):
+    """MainWindow balance strip (cash, counted old gold 21/18/24) for one login."""
+    from app.viewmodels.operational_balance_viewmodel import OperationalBalanceViewModel
+    return OperationalBalanceViewModel(session)
+
+
+def create_dashboard_viewmodel(session):
+    """الرئيسية: today's activity (read-only) for one login."""
+    from app.viewmodels.dashboard_viewmodel import DashboardViewModel
+    return DashboardViewModel(session)
+
+
+def create_invoice_history_viewmodel(session):
+    """Read-only invoice history and detail for one login."""
+    from app.viewmodels.invoice_history_viewmodel import InvoiceHistoryViewModel
+    return InvoiceHistoryViewModel(session)
+
+
+def fit_to_work_area(window, platform=None):
+    """Open the main window inside the Windows WORK AREA (screen minus taskbar), never under it.
+
+    Main.qml asks for 1280 x 800 with a 1080 x 680 minimum. On a laptop at 125-150 % display
+    scaling, or with the taskbar visible, the usable height can be below 800 (or even 680)
+    logical pixels, so the bottom of Billing ended up under the taskbar. The minimum is clamped
+    to the available geometry and the window is maximized, which Windows sizes to the work area.
+    Offscreen/test platforms keep the size the tests set."""
+    screen = window.screen()
+    if screen is None:
+        return
+    area = screen.availableGeometry()
+    window.setMinimumWidth(min(window.minimumWidth(), area.width()))
+    window.setMinimumHeight(min(window.minimumHeight(), area.height()))
+    window.setWidth(min(window.width(), area.width()))
+    window.setHeight(min(window.height(), area.height()))
+    window.setX(area.x() + (area.width() - window.width()) // 2)
+    window.setY(area.y() + (area.height() - window.height()) // 2)
+    if (platform or QGuiApplication.platformName()) not in ("offscreen", "minimal"):
+        window.showMaximized()
+
+
 class ApplicationController(QObject):
     stateChanged = Signal()
 
@@ -50,7 +102,10 @@ class ApplicationController(QObject):
 
     def __init__(self, app, *, authentication_service=None,
                  operational_factory=create_operational_viewmodels, qml_directory=None,
-                 gold_price_service=None, invoice_factory=create_invoice_viewmodel):
+                 gold_price_service=None, invoice_factory=create_invoice_viewmodel,
+                 history_factory=create_invoice_history_viewmodel, review_factory=create_review_viewmodel,
+                 printer_settings_factory=create_printer_settings_viewmodel,
+                 balance_factory=create_balance_viewmodel, dashboard_factory=create_dashboard_viewmodel):
         super().__init__(app)
         self.app = app
         self.qml_directory = qml_directory or Path(__file__).resolve().parent / "qml"
@@ -62,6 +117,11 @@ class ApplicationController(QObject):
         self.gold_settings = GoldPriceSettingsViewModel(self.session, self)
         self._operational_factory = operational_factory
         self._invoice_factory = invoice_factory
+        self._history_factory = history_factory
+        self._review_factory = review_factory
+        self._printer_settings_factory = printer_settings_factory
+        self._balance_factory = balance_factory
+        self._dashboard_factory = dashboard_factory
         self.operational_engine = None
         self.operational_viewmodels = {}
         self.login_engine = self._engine()
@@ -97,7 +157,21 @@ class ApplicationController(QObject):
         try:
             self.operational_viewmodels = self._operational_factory()
             self.operational_viewmodels.setdefault("invoiceVM", self._invoice_factory(self.session))
+            self.operational_viewmodels.setdefault("invoiceHistoryVM", self._history_factory(self.session))
+            self.operational_viewmodels.setdefault("reviewsVM", self._review_factory(self.session))
+            self.operational_viewmodels.setdefault("printerSettingsVM", self._printer_settings_factory(self.session))
+            self.operational_viewmodels.setdefault("balancesVM", self._balance_factory(self.session))
+            self.operational_viewmodels.setdefault("dashboardVM", self._dashboard_factory(self.session))
             invoice_vm = self.operational_viewmodels["invoiceVM"]
+            balances = self.operational_viewmodels["balancesVM"]
+            if hasattr(invoice_vm, "finalized") and hasattr(balances, "refresh"):
+                invoice_vm.finalized.connect(balances.refresh)       # the ledgers just changed
+            dashboard = self.operational_viewmodels["dashboardVM"]
+            if hasattr(invoice_vm, "finalized") and hasattr(dashboard, "refresh"):
+                invoice_vm.finalized.connect(dashboard.refresh)      # today's figures just changed
+            reviews = self.operational_viewmodels["reviewsVM"]
+            if hasattr(invoice_vm, "finalized") and hasattr(reviews, "reloadAccounts"):
+                invoice_vm.finalized.connect(reviews.reloadAccounts)   # wallet / bank balances too
             if hasattr(invoice_vm, "attach_price_source"):
                 invoice_vm.attach_price_source(self.gold_prices)
             engine.rootContext().setContextProperty("goldPriceVM", self.gold_prices)
@@ -108,6 +182,14 @@ class ApplicationController(QObject):
             engine.load(QUrl.fromLocalFile(str(self.qml_directory / "Main.qml")))
             if not engine.rootObjects():
                 raise RuntimeError("Could not load Main.qml")
+            fit_to_work_area(engine.rootObjects()[0])
+            reviews = self.operational_viewmodels.get("reviewsVM")
+            if hasattr(reviews, "activate"):
+                reviews.activate()                  # مراجعات المدير • N stays current
+            if hasattr(balances, "activate"):
+                balances.activate()
+            if hasattr(dashboard, "activate"):
+                dashboard.activate()
         except Exception:
             self.authentication.logout()
             self.authentication.show_application_error()

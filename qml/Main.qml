@@ -585,6 +585,7 @@ ApplicationWindow {
             // =================================================
 
             Rectangle {
+                objectName: "topBar"
                 Layout.fillWidth: true
                 Layout.preferredHeight: 68
 
@@ -597,13 +598,114 @@ ApplicationWindow {
                 RowLayout {
                     anchors.fill: parent
 
-                    anchors.leftMargin: 20
-                    anchors.rightMargin: 20
+                    anchors.leftMargin: root.width < 1200 ? 10 : 16
+                    anchors.rightMargin: root.width < 1200 ? 10 : 16
 
-                    spacing: 12
+                    spacing: root.width < 1400 ? 6 : 10
 
+
+                    // Physical left: the user and logout. The header is compact below 1400 px (no page
+                    // title, tighter spacing / fonts, 300 px price card); below 1200 px "متصل" is the dot alone.
+                    Label {
+                        objectName: "topUserName"
+                        text: "\u200f" + appSession.displayName
+                        font.family: "Cairo"
+                        color: theme.textSecondary
+                        horizontalAlignment: Text.AlignLeft
+                        elide: Text.ElideLeft
+                        Layout.maximumWidth: 110
+                        Layout.minimumWidth: 36
+                    }
+                    Button {
+                        id: logoutButton
+                        objectName: "logoutButton"
+                        font.family: "Cairo"
+                        font.pixelSize: root.width < 1400 ? 12 : 13
+                        leftPadding: root.width < 1200 ? 6 : root.width < 1400 ? 8 : 12
+                        rightPadding: root.width < 1200 ? 6 : root.width < 1400 ? 8 : 12
+                        // Compact: the short word keeps the one-line balances and the price card whole.
+                        text: root.width < 1400 ? "خروج" : "تسجيل الخروج"
+                        contentItem: Label {
+                            text: "\u200f" + logoutButton.text
+                            font: logoutButton.font
+                            color: theme.textPrimary
+                            horizontalAlignment: Text.AlignRight
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        onClicked: authenticationVM.logout()
+                    }
+
+                    Item {
+                        Layout.fillWidth: true
+                    }
+
+                    // Centre: operational balances only — shop cash and COUNTED old gold 21 / 18 / 24.
+                    // Wallet / InstaPay / bank balances are in مراجعات المدير.
+                    Rectangle {
+                        objectName: "balanceStrip"
+                        // One line: الكاش | كسر 21 | كسر 18 | كسر 24 (tighter below 1400 px, never wrapped).
+                        Layout.preferredWidth: balanceRow.implicitWidth + (root.width < 1400 ? 12 : 20)
+                        Layout.minimumWidth: Layout.preferredWidth
+                        Layout.preferredHeight: 30
+                        radius: theme.radiusSmall
+                        color: theme.bgTertiary
+                        border.color: balancesVM.errorMessage.length > 0 ? theme.red : theme.border
+                        border.width: 1
+
+                        Row {
+                            id: balanceRow
+                            anchors.centerIn: parent
+                            layoutDirection: Qt.RightToLeft
+                            spacing: root.width < 1200 ? 3 : root.width < 1400 ? 4 : 8
+                            readonly property int fontSize: root.width < 1200 ? 10 : root.width < 1400 ? 11 : 12
+
+                            Label {
+                                objectName: "balanceCash"
+                                text: "الكاش: " + balancesVM.cashText
+                                color: theme.balanceCash
+                                opacity: balancesVM.cashZero ? 0.55 : 1
+                                font.family: "Cairo"
+                                font.pixelSize: balanceRow.fontSize
+                                font.bold: true                          // cash: the most prominent figure
+                            }
+                            Repeater {
+                                model: balancesVM.oldGold
+                                Row {
+                                    required property var modelData
+                                    layoutDirection: Qt.RightToLeft
+                                    spacing: balanceRow.spacing
+                                    Label {
+                                        text: "|"
+                                        color: theme.border
+                                        font.family: "Cairo"
+                                        font.pixelSize: balanceRow.fontSize
+                                    }
+                                    Label {
+                                        objectName: "balanceKarat_" + modelData.karat
+                                        text: "كسر " + modelData.karat + ": " + modelData.text
+                                        // 21 turquoise • 18 blue • 24 violet; a zero balance is muted, never hidden.
+                                        color: modelData.karat === "21" ? theme.balanceKarat21
+                                             : modelData.karat === "18" ? theme.balanceKarat18
+                                             : theme.balanceKarat24
+                                        opacity: modelData.zero ? 0.45 : 1
+                                        font.family: "Cairo"
+                                        font.pixelSize: balanceRow.fontSize
+                                    }
+                                }
+                            }
+                        }
+                        ToolTip.visible: balancesVM.errorMessage.length > 0 && stripHover.hovered
+                        ToolTip.text: "تعذر تحميل الأرصدة"
+                        HoverHandler { id: stripHover }
+                    }
+
+                    Item {
+                        Layout.fillWidth: true
+                    }
 
                     Label {
+                        // The sidebar already marks the page; below 1400 px the space goes to the balances.
+                        visible: root.width >= 1400 && text.length > 0
                         text:
                             pageStack.currentItem
                             ? pageStack.currentItem.pageTitle
@@ -623,41 +725,10 @@ ApplicationWindow {
                             Text.AlignRight
                     }
 
-
-                    Item {
-                        Layout.fillWidth: true
-                    }
-
-
-                    Label {
-                        text: "\u200f" + appSession.displayName
-                        font.family: "Cairo"
-                        color: theme.textSecondary
-                        horizontalAlignment: Text.AlignRight
-                        elide: Text.ElideLeft
-                        Layout.preferredWidth: 130
-                        Layout.maximumWidth: 130
-                        Layout.minimumWidth: 70
-                    }
-                    Button {
-                        objectName: "logoutButton"
-                        font.family: "Cairo"
-                        text: "تسجيل الخروج"
-                        contentItem: Label {
-                            text: "\u200f" + parent.text
-                            font.family: "Cairo"
-                            color: theme.textPrimary
-                            horizontalAlignment: Text.AlignRight
-                            verticalAlignment: Text.AlignVCenter
-                        }
-                        onClicked: authenticationVM.logout()
-                    }
-
-
                     Rectangle {
                         objectName: "goldPriceArea"
-                        Layout.preferredWidth: 340
-                        Layout.minimumWidth: 300
+                        Layout.preferredWidth: root.width < 1200 ? 270 : root.width < 1400 ? 300 : 340
+                        Layout.minimumWidth: Layout.preferredWidth
                         Layout.preferredHeight: 54
 
                         radius: theme.radiusSmall
@@ -682,12 +753,12 @@ ApplicationWindow {
                                 GoldPriceLabel {
                                     objectName: "goldTopBuy"
                                     value: "شراء " + goldPriceVM.headlineBuy; color: theme.priceBuy
-                                    font.bold: true; font.pixelSize: 12; wrapMode: Text.NoWrap
+                                    font.bold: true; font.pixelSize: root.width < 1200 ? 13 : 14; wrapMode: Text.NoWrap
                                 }
                                 GoldPriceLabel {
                                     objectName: "goldTopSell"
                                     value: "بيع " + goldPriceVM.headlineSell; color: theme.priceSell
-                                    font.bold: true; font.pixelSize: 12; wrapMode: Text.NoWrap
+                                    font.bold: true; font.pixelSize: root.width < 1200 ? 13 : 14; wrapMode: Text.NoWrap
                                 }
                                 Item { Layout.fillWidth: true }
                             }
@@ -711,6 +782,7 @@ ApplicationWindow {
 
 
                     Rectangle {
+                        objectName: "connectionDot"
                         width: 9
                         height: 9
 
@@ -724,6 +796,10 @@ ApplicationWindow {
 
 
                     Label {
+                        objectName: "connectionStatus"
+                        // Below 1200 px the green dot alone says "متصل"; an error is always spelled out.
+                        visible: root.width >= 1200 || masterDataVM.errorMessage.length > 0
+                        Layout.minimumWidth: implicitWidth
                         text:
                             masterDataVM.errorMessage.length > 0
                             ? "خطأ في الاتصال"
@@ -739,6 +815,7 @@ ApplicationWindow {
                     }
                 }
             }
+
             // ========================================================
             // INVENTORY PAGE
             // ========================================================
@@ -2868,9 +2945,10 @@ ApplicationWindow {
                     root.currentPage
 
 
-                PlaceholderPage {
+                // index 0: الرئيسية — today's activity (read-only).
+                DashboardPage {
                     pageTitle: "🏠 الرئيسية"
-                    description: "ملخص حركة المحل اليوم"
+                    onNavigateTo: function(page) { root.currentPage = page }
                 }
 
 
@@ -2918,6 +2996,11 @@ ApplicationWindow {
                 }
                 CategoriesPage {
                     pageTitle: "🏷️ الفئات"}
+
+                // index 10: one review area for every management review type
+                ManagementReviewPage {
+                    pageTitle: "مراجعات المدير"
+                }
 
             }
         }
@@ -3011,6 +3094,9 @@ ApplicationWindow {
 
 
                 NavButton {
+                    objectName: "cashNavButton"
+                    // Placeholder page kept for later; hidden until it has real content.
+                    visible: false
                     text: "💰  النقدية"
                     selected: root.currentPage === 4
 
@@ -3020,11 +3106,35 @@ ApplicationWindow {
 
 
                 NavButton {
+                    objectName: "reportsNavButton"
+                    // Placeholder page kept for later; hidden until it has real content.
+                    visible: false
                     text: "📊  التقارير"
                     selected: root.currentPage === 5
 
                     onClicked:
                         root.currentPage = 5
+                }
+
+
+                // مراجعات المدير • N — visible to everyone; amber while reviews are open.
+                NavButton {
+                    id: reviewsNav
+                    objectName: "reviewsNavButton"
+                    text: "🔔  مراجعات المدير" + (typeof reviewsVM !== "undefined" && reviewsVM.totalCount > 0
+                                                  ? "  •  " + reviewsVM.totalCount : "")
+                    selected: root.currentPage === 10
+                    onClicked: root.currentPage = 10
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.leftMargin: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 8
+                        height: 8
+                        radius: 4
+                        visible: typeof reviewsVM !== "undefined" && reviewsVM.totalCount > 0
+                        color: theme.amber
+                    }
                 }
 
 
@@ -4414,7 +4524,107 @@ ApplicationWindow {
         }
     }
 
+    // Settings → الطباعة: two independent printers of THIS workstation (local settings, not shop data).
+    // Billing's حفظ وطباعة without a Bill printer → Settings (الطباعة is the first settings section).
+    Connections {
+        target: typeof invoiceVM !== "undefined" ? invoiceVM : null
+        ignoreUnknownSignals: true
+        function onPrintingSettingsRequested() { root.currentPage = 6 }
+    }
+
+    component PrinterChoice: SettingsSectionCard {
+        id: printerChoice
+        property string kind: "bill"                 // bill | label
+        readonly property var vm: typeof printerSettingsVM !== "undefined" ? printerSettingsVM : null
+        readonly property var choice: vm ? (kind === "bill" ? vm.billPrinter : vm.labelPrinter) : ({})
+        color: theme.bgTertiary
+        accentColor: kind === "bill" ? theme.gold : theme.blue
+        sectionTitle: kind === "bill" ? "طابعة الفواتير" : "طابعة الباركود / الليبل"
+        content: [
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 10
+                GoldPriceLabel { value: "الطابعة"; color: theme.textSecondary }
+                ComboBox {
+                    id: printerCombo
+                    objectName: printerChoice.kind === "bill" ? "billPrinterCombo" : "labelPrinterCombo"
+                    Layout.preferredWidth: 300
+                    font.family: "Cairo"
+                    model: printerChoice.vm ? printerChoice.vm.printers : []
+                    currentIndex: model.indexOf ? model.indexOf(printerChoice.choice.name || "") : -1
+                    displayText: currentIndex >= 0 ? currentText
+                                 : (printerChoice.choice.name ? printerChoice.choice.name + " (غير متاحة)" : "اختر الطابعة")
+                    onActivated: function(index) {
+                        if (printerChoice.kind === "bill")
+                            printerChoice.vm.setBillPrinter(model[index])
+                        else
+                            printerChoice.vm.setLabelPrinter(model[index])
+                    }
+                }
+                GoldPriceLabel {
+                    objectName: printerChoice.kind === "bill" ? "billPrinterStatus" : "labelPrinterStatus"
+                    value: !printerChoice.choice.name ? "لم تُحدد" : printerChoice.choice.status || ""
+                    color: printerChoice.choice.available ? theme.green : theme.amber
+                    font.bold: true
+                }
+                Item { Layout.fillWidth: true }
+            },
+            GoldPriceLabel {
+                Layout.fillWidth: true
+                value: "الورق: " + (printerChoice.vm ? (printerChoice.kind === "bill" ? printerChoice.vm.billFormat
+                                                                                    : printerChoice.vm.labelFormat) : "")
+                color: theme.textMuted; font.pixelSize: 11
+            },
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                GoldPriceButton {
+                    objectName: printerChoice.kind === "bill" ? "testBillPrint" : "testLabelPrint"
+                    text: printerChoice.kind === "bill" ? (printerChoice.vm && printerChoice.vm.billTestBusy
+                                                           ? "جاري إرسال الطباعة..." : "طباعة فاتورة تجريبية")
+                                                        : "طباعة ليبل تجريبي"
+                    enabled: !!printerChoice.choice.available
+                             && !(printerChoice.kind === "bill" && printerChoice.vm && printerChoice.vm.billTestBusy)
+                    onClicked: printerChoice.kind === "bill" ? printerChoice.vm.testBillPrint()
+                                                             : printerChoice.vm.testLabelPrint()
+                }
+                Item { Layout.fillWidth: true }
+            }
+        ]
+    }
+
+    component PrintingSettings: SettingsSectionCard {
+        id: printing
+        objectName: "settingsPrinting"
+        sectionTitle: "الطباعة"
+        accentColor: theme.gold
+        readonly property var vm: typeof printerSettingsVM !== "undefined" ? printerSettingsVM : null
+        content: [
+            GoldPriceLabel {
+                Layout.fillWidth: true
+                value: "اختيار الطابعة خاص بهذا الجهاز؛ طابعة الفواتير مستقلة تماماً عن طابعة الباركود."
+                color: theme.textMuted; font.pixelSize: 11
+            },
+            PrinterChoice { kind: "bill"; Layout.fillWidth: true },
+            PrinterChoice { kind: "label"; Layout.fillWidth: true },
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                GoldPriceLabel {
+                    objectName: "printingMessage"
+                    Layout.fillWidth: true
+                    visible: value.length > 0
+                    value: printing.vm ? printing.vm.message : ""
+                    color: printing.vm && printing.vm.messageIsError ? theme.priceError : theme.green
+                }
+                GoldPriceButton {
+                    objectName: "refreshPrinters"
+                    text: "تحديث قائمة الطابعات"
+                    onClicked: printing.vm.refreshPrinters()
+                }
+            }
+        ]
+    }
+
     component GoldProviderSettings: SettingsSectionCard {
+        property alias resultCard: testResultCard
         id: providerPanel
         objectName: "goldProviderSettings"
         property var vm: typeof goldSettingsVM !== "undefined" ? goldSettingsVM : null
@@ -4558,12 +4768,30 @@ ApplicationWindow {
             target: typeof goldSettingsVM !== "undefined" ? goldSettingsVM : null
             function onTestCompleted() { settingsResultScroll.restart() }
         }
+        // Billing's "إعدادات الطباعة": الطباعة is the last section, so scroll to the end.
+        Connections {
+            target: typeof invoiceVM !== "undefined" ? invoiceVM : null
+            ignoreUnknownSignals: true
+            function onPrintingSettingsRequested() { printingScroll.restart() }
+        }
         Timer {
             id: settingsResultScroll
             interval: 50
             onTriggered: {
+                // Bring the whole Test Connection result card into view (it is no longer the last card).
                 var flick = settingsScroll.contentItem
-                flick.contentY = Math.max(0, flick.contentHeight - flick.height)
+                var card = goldProvider.resultCard
+                var bottom = card.mapToItem(flick.contentItem, 0, card.height).y
+                flick.contentY = Math.max(0, Math.min(flick.contentHeight - flick.height, bottom - flick.height + 12))
+            }
+        }
+        Timer {
+            id: printingScroll
+            interval: 60
+            onTriggered: {
+                var flick = settingsScroll.contentItem
+                var top = printingSettings.mapToItem(flick.contentItem, 0, 0).y
+                flick.contentY = Math.max(0, Math.min(flick.contentHeight - flick.height, top - 8))
             }
         }
         ScrollView {
@@ -4621,7 +4849,8 @@ ApplicationWindow {
                         GoldPriceButton { text: "تحديث"; onClicked: masterDataVM.refresh() }
                     }
                 }
-                GoldProviderSettings { Layout.fillWidth: true }
+                GoldProviderSettings { id: goldProvider; Layout.fillWidth: true }
+                PrintingSettings { id: printingSettings; Layout.fillWidth: true }
             }
         }
     }
@@ -4981,7 +5210,7 @@ ApplicationWindow {
 
                                 Label {
                                     visible:
-                                        modelData.notes
+                                        !!modelData.notes
                                         && modelData.notes.length > 0
 
                                     text:
@@ -5468,7 +5697,7 @@ ApplicationWindow {
 
                                 Label {
                                     visible:
-                                        modelData.notes
+                                        !!modelData.notes
                                         && modelData.notes.length > 0
 
                                     text:
