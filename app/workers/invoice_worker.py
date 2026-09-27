@@ -48,6 +48,9 @@ class InvoiceWorker(QThread):
     def _failure_message(self):
         if self._operation == "finalize":
             return "تعذر حفظ الفاتورة ولم يُحفظ أي جزء منها. راجع البيانات وأعد المحاولة."
+        if self._operation == "print":
+            # The invoice itself is already finalized; only the print step failed.
+            return "تم حفظ الفاتورة بنجاح، ولكن تعذرت الطباعة."
         return "تعذر تحميل بيانات الفاتورة. أعد المحاولة."
 
     def _report(self, exc):

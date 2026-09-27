@@ -114,6 +114,54 @@ class AuthenticationService:
             password = None
             self._lock.release()
 
+    def verify_credentials(self, username, password):
+        """Check another user's credentials without signing them in (e.g. a manager
+        approving a settlement at the counter). Same cooldown and generic errors as
+        a login; nothing is recorded as a login and the session is not touched."""
+        if not self._lock.acquire(blocking=False):
+            raise AuthenticationError(GENERIC_ERROR)
+        try:
+            if self._clock() < self._retry_at:
+                raise AuthenticationError(GENERIC_ERROR)
+            try:
+                result = self._check_credentials(username, password)
+            except AuthenticationError:
+                self._failures += 1
+                self._retry_at = self._clock() + min(30, 2 ** min(self._failures - 1, 5))
+                raise
+            except Exception:
+                self._retry_at = self._clock() + 2
+                raise AuthenticationError(GENERIC_ERROR) from None
+            self._failures = 0
+            self._retry_at = 0
+            return result
+        finally:
+            password = None
+            self._lock.release()
+
+    def _check_credentials(self, username, password):
+        if not isinstance(username, str) or not 0 < len(username) <= 100:
+            raise AuthenticationError(GENERIC_ERROR)
+        if not isinstance(password, str) or not 0 < len(password) <= 1024:
+            raise AuthenticationError(GENERIC_ERROR)
+        with self._transaction() as connection:
+            repository = self._repository(connection)
+            credentials = repository.find_credentials(username)
+            if credentials is None:
+                self._passwords.dummy_verify(password)
+                raise AuthenticationError(GENERIC_ERROR)
+            if not self._passwords.verify(credentials["password_hash"], password):
+                raise AuthenticationError(GENERIC_ERROR)
+            user = repository.get_identity(credentials["id"])
+            if (not user or not user["is_active"] or user["must_change_password"]
+                    or (user["employee_id"] is not None and not user.get("employee_active"))):
+                raise AuthenticationError(GENERIC_ERROR)
+            permissions = repository.effective_permissions(user["id"])
+            if "APP_LOGIN" not in permissions:
+                raise AuthenticationError(GENERIC_ERROR)
+            return AuthenticationResult(int(user["id"]), user["employee_id"], user["display_name"],
+                                        permissions, None)
+
     def establish_development_session(self, username):
         """TEMPORARY DEVELOPMENT AUTO-LOGIN — DISABLE BEFORE PRODUCTION.
 

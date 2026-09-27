@@ -174,6 +174,22 @@ class CustomerRepository(BaseRepository):
             search, limit=limit, offset=offset, only_legacy_placeholders=True,
         )
 
+    def find_active_by_mobile(self, mobile: str) -> list[dict]:
+        """Active customers whose mobile matches after search normalization (duplicate re-check)."""
+        normalized = normalize_mobile_search(mobile)
+        if not normalized:
+            return []
+        mobile_sql, mobile_params = mysql_search_expression("c.mobile", mobile=True)
+        return self._fetch_all(
+            self._CUSTOMER_SELECT
+            + f"""
+            WHERE c.is_active = TRUE AND c.record_origin <> 'LEGACY_PLACEHOLDER'
+              AND {mobile_sql} = %s
+            ORDER BY c.id
+            """,
+            (*mobile_params, normalized),
+        )
+
     def get_customer_by_id(self, customer_id: int) -> dict | None:
         return self._fetch_one(
             self._CUSTOMER_SELECT + " WHERE c.id = %s",

@@ -356,7 +356,11 @@ class GoldPricePanelTests(QtPriceTestCase):
             QTest.qWait(60)
             viewport = self.root.findChild(QObject, "settingsScroll")
             flick = viewport.property("contentItem")
-            flick.setProperty("contentY", max(0, flick.property("contentHeight") - viewport.height()))
+            # Scroll to the Test Connection result card (Settings → الطباعة now follows it).
+            card = self.root.findChild(QObject, "providerTestResult")
+            bottom = card.mapToItem(flick.property("contentItem"), QPointF(0, card.height())).y()
+            flick.setProperty("contentY", max(0, min(flick.property("contentHeight") - viewport.height(),
+                                                     bottom - viewport.height() + 12)))
             QTest.qWait(60)
             for name in ("providerTestPrices", "providerTestTimestamp", "providerTestSkew"):
                 self.assert_in_viewport(self.root.findChild(QObject, name), viewport)
@@ -421,7 +425,11 @@ class GoldPricePanelTests(QtPriceTestCase):
             QTest.qWait(60)
             viewport = self.root.findChild(QObject, "settingsScroll")
             flick = viewport.property("contentItem")
-            flick.setProperty("contentY", max(0, flick.property("contentHeight") - viewport.height()))
+            # Scroll to the Test Connection result card (Settings → الطباعة now follows it).
+            card = self.root.findChild(QObject, "providerTestResult")
+            bottom = card.mapToItem(flick.property("contentItem"), QPointF(0, card.height())).y()
+            flick.setProperty("contentY", max(0, min(flick.property("contentHeight") - viewport.height(),
+                                                     bottom - viewport.height() + 12)))
             QTest.qWait(60)
             for name in ("providerTestError", "providerTestPrices", "providerTestSkew", "providerTestCredential"):
                 self.assert_in_viewport(self.root.findChild(QObject, name), viewport)

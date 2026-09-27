@@ -3,13 +3,15 @@
 Settlement semantics (CLAUDE.md §8):
     N = sale_total - old_gold_purchase_total      (commercial net, signed)
     P = money_received - money_paid               (real money only, signed)
-    R = N - P                                     (residual on the customer account)
+    R = N - P                                     (residual)
+    A = explicitly accepted cash settlement       (same sign as R, |A| <= |R|)
+    R_account = R - A                             (the only part that reaches the customer account)
 
 Positive values mean the customer owes / pays the shop; negative values mean the
 shop owes / pays the customer. Scales match the canonical `invoices` family.
 """
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP
 
 
 MONEY = Decimal("0.01")
@@ -76,11 +78,32 @@ class Settlement:
     residual_amount: Decimal
     residual_direction: str
     settlement_status: str
+    adjustment_signed: Decimal = ZERO
+    account_residual_signed: Decimal = ZERO
+
+    @property
+    def account_residual_amount(self):
+        return abs(self.account_residual_signed)
+
+    @property
+    def account_residual_direction(self):
+        value = self.account_residual_signed
+        return "CUSTOMER_OWES_SHOP" if value > 0 else "SHOP_OWES_CUSTOMER" if value < 0 else "NONE"
 
     @property
     def requires_customer(self):
-        """A residual is carried on a customer account, so it needs a customer."""
-        return self.residual_signed != 0
+        """Only money deliberately left on the account needs a customer."""
+        return self.account_residual_signed != 0
+
+
+@dataclass(frozen=True)
+class AgreedSale:
+    gold_value_total: Decimal
+    agreed_total: Decimal
+    making_total: Decimal
+    weight_total: Decimal
+    average_making_per_gram: Decimal
+    allocations: tuple            # making per sale line, in line order
 
 
 def _decimal(value, scale, *, label, positive=False, allow_none=False):
@@ -157,6 +180,34 @@ class InvoiceCalculator:
         return OldGoldLine(weight, price, gross, discount_type, value, amount, gross - amount)
 
     @staticmethod
+    def agreed_sale(lines, agreed_total):
+        """Making derived from the price agreed with the customer.
+
+        lines: (weight, gold_price_per_gram) per sold line, in invoice order.
+        gold value = Σ weight × price; making = agreed − gold value, allocated
+        by weight (rounded down per line) with the remainder on the last line.
+        """
+        agreed = _money(_decimal(agreed_total, MONEY, label="إجمالي البيع المتفق عليه", positive=True))
+        if not lines:
+            raise InvoiceCalculationError("EMPTY_INVOICE", "لا توجد قطع مباعة.")
+        weights, gold = [], ZERO
+        for weight, price in lines:
+            weight = _decimal(weight, WEIGHT, label="الوزن", positive=True)
+            price = _decimal(price, PRICE, label="سعر الجرام", positive=True)
+            weights.append(weight)
+            gold += _money(weight * price)
+        gold = _money(gold)
+        making = agreed - gold
+        if making < 0:
+            raise InvoiceCalculationError(
+                "AGREED_BELOW_GOLD", f"الإجمالي المتفق عليه أقل من قيمة الذهب ({gold:,.2f} ج).")
+        total_weight = sum(weights, Decimal("0.000"))
+        allocations = [(making * w / total_weight).quantize(MONEY, rounding=ROUND_DOWN) for w in weights[:-1]]
+        allocations.append(making - sum(allocations, ZERO))
+        average = (making / total_weight).quantize(MAKING_PER_GRAM, rounding=ROUND_HALF_UP)
+        return AgreedSale(gold, agreed, making, total_weight, average, tuple(allocations))
+
+    @staticmethod
     def payment(direction, amount):
         if direction not in ("IN", "OUT"):
             raise InvoiceCalculationError("PAYMENT_DIRECTION", "اتجاه الدفع غير صحيح.")
@@ -164,7 +215,7 @@ class InvoiceCalculator:
                                                   positive=True)))
 
     @staticmethod
-    def settlement(sale_lines, old_gold_lines, payments=()):
+    def settlement(sale_lines, old_gold_lines, payments=(), adjustment=None):
         sale_lines, old_gold_lines = tuple(sale_lines), tuple(old_gold_lines)
         payments = tuple(payments)
         if any(not isinstance(line, SaleLine) for line in sale_lines) or any(
@@ -203,7 +254,12 @@ class InvoiceCalculator:
         residual = net - signed_payment
         residual_direction = ("CUSTOMER_OWES_SHOP" if residual > 0
                               else "SHOP_OWES_CUSTOMER" if residual < 0 else "NONE")
-        if residual == 0:
+        # A: the part of R closed as a practical cash settlement (explicit, same sign as R).
+        adjustment = ZERO if adjustment is None else _money(Decimal(str(adjustment)))
+        if adjustment and (residual == 0 or (adjustment > 0) != (residual > 0) or abs(adjustment) > abs(residual)):
+            raise InvoiceCalculationError("SETTLEMENT_INVALID", "فرق التسوية لا يطابق المتبقي على الفاتورة.")
+        account_residual = residual - adjustment
+        if account_residual == 0:
             status = "SETTLED"
         elif signed_payment == 0:
             status = "UNSETTLED"
@@ -215,4 +271,5 @@ class InvoiceCalculator:
             net_signed=net, net_amount=abs(net), net_direction=net_direction,
             money_received=received, money_paid=paid, payment_signed=signed_payment,
             residual_signed=residual, residual_amount=abs(residual),
-            residual_direction=residual_direction, settlement_status=status)
+            residual_direction=residual_direction, settlement_status=status,
+            adjustment_signed=adjustment, account_residual_signed=account_residual)

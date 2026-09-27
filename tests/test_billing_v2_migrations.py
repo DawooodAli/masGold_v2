@@ -9,10 +9,16 @@ from tests.billing_v2_schema_fixture import BillingSchemaDatabase
 CONSOLIDATION = "013_schema_consolidation.sql"
 BILLING = "014_billing_v2.sql"
 PROVENANCE = "015_legacy_provenance.sql"
-FORWARD = (CONSOLIDATION, BILLING, PROVENANCE)
+WORKFLOW = "016_billing_workflow.sql"
+ACCOUNTS = "017_payment_accounts.sql"
+OPENING = "018_opening_balances.sql"
+FORWARD = (CONSOLIDATION, BILLING, PROVENANCE, WORKFLOW, ACCOUNTS, OPENING)
 # 013 is baseline schema already used by the application: no rollback script.
 ROLLBACK = {BILLING: "014_billing_v2_rollback.sql",
-            PROVENANCE: "015_legacy_provenance_rollback.sql"}
+            PROVENANCE: "015_legacy_provenance_rollback.sql",
+            WORKFLOW: "016_billing_workflow_rollback.sql",
+            ACCOUNTS: "017_payment_accounts_rollback.sql",
+            OPENING: "018_opening_balances_rollback.sql"}
 CHANGE = re.compile(r"^(ALTER|CREATE|INSERT|DELETE|DROP|UPDATE|TRUNCATE|RENAME|REPLACE)\b", re.I)
 ACQUISITION_SOURCES = {"MARKET_PURCHASE", "OLD_GOLD_MANUFACTURE", "OLD_STOCK_CONVERSION",
                        "LEGACY_MIGRATION", "MANUAL_ENTRY"}
@@ -29,6 +35,9 @@ SET_NULL_FK_COLUMNS = {
     "dead_cash_recoveries": {"created_by_user_id"},
     "inventory_items": {"acquisition_quote_id", "category_id", "factory_id", "created_by_user_id",
                         "updated_by_user_id"},
+    "inventory_reconciliation_cases": {"observed_karat_id", "observed_item_type_id", "observed_category_id",
+                                       "observed_factory_id", "matched_inventory_item_id",
+                                       "created_by_user_id", "resolved_by_user_id"},
 }
 
 
@@ -156,6 +165,28 @@ class MigrationFileSafetyTests(unittest.TestCase):
         self.assertIn("MIGRATION_013_REFUSED_migration_012_not_applied", forward_text(CONSOLIDATION))
         self.assertIn("MIGRATION_014_REFUSED_migration_013_missing", forward_text(BILLING))
         self.assertIn("MIGRATION_015_REFUSED_migration_014_missing", forward_text(PROVENANCE))
+        self.assertIn("MIGRATION_017_REFUSED_migration_016_missing", forward_text(ACCOUNTS))
+        self.assertIn("MIGRATION_018_REFUSED_migration_017_missing", forward_text(OPENING))
+
+    def test_018_adds_only_the_opening_balance_codes(self):
+        text = forward_text(OPENING)
+        for table in ("cash_movement_types", "bank_movement_types"):
+            inserts = [s.sql for s in sql.statements(text) if s.sql.upper().startswith(f"INSERT INTO {table.upper()} ")]
+            self.assertEqual(len(inserts), 1)
+            self.assertEqual(re.findall(r"\(\s*'(\w+)'\s*,\s*'[^']*'\s*,\s*'(IN|OUT|EITHER)'", inserts[0]),
+                             [("OPENING_BALANCE", "IN")])
+        self.assertFalse([s for s in sql.statements(text) if re.match(r"^(ALTER|CREATE|DROP|UPDATE|DELETE)", s.sql)])
+
+    def test_017_changes_only_the_account_type_and_the_wallet_flag(self):
+        text = forward_text(ACCOUNTS)
+        self.assertEqual(sql.checks(text)["chk_bank_account_type"][1].split(),
+                         "account_type IN ('BANK', 'MOBILE_WALLET')".split())
+        updates = [s.sql for s in sql.statements(text) if s.sql.upper().startswith("UPDATE")]
+        self.assertEqual(len(updates), 1)
+        self.assertIn("WHERE code = 'MOBILE_WALLET'", " ".join(updates[0].split()))
+        rollback = rollback_text(ACCOUNTS)
+        for reason in ("wallet_accounts_exist", "wallet_payments_recorded"):
+            self.assertIn(f"ROLLBACK_017_REFUSED_{reason}", rollback)
 
 
 class MigrationContentTests(unittest.TestCase):
@@ -193,7 +224,12 @@ class MigrationContentTests(unittest.TestCase):
         allowed = {CONSOLIDATION: {"schema_migrations"},
                    BILLING: {"schema_migrations", "customer_transaction_types", "old_gold_movement_types",
                              "payment_methods", "invoice_number_sequences", "barcode_number_sequences"},
-                   PROVENANCE: {"schema_migrations", "customer_transaction_types", "old_gold_movement_types"}}
+                   PROVENANCE: {"schema_migrations", "customer_transaction_types", "old_gold_movement_types"},
+                   # Reference codes, permissions and the settings row only; no business data.
+                   WORKFLOW: {"schema_migrations", "old_gold_movement_types", "billing_settings",
+                              "permissions", "role_permissions"},
+                   ACCOUNTS: {"schema_migrations"},
+                   OPENING: {"schema_migrations", "cash_movement_types", "bank_movement_types"}}
         for name in FORWARD:
             for statement in sql.statements(forward_text(name)):
                 target = re.match(r"^INSERT INTO\s+(\w+)", statement.sql, re.I)
@@ -306,7 +342,9 @@ class RollbackTests(unittest.TestCase):
                     self.assertFalse(statement.guarded)
                     table = re.match(r"DELETE FROM (\w+)", statement.sql).group(1)
                     self.assertIn(table, {"customer_transaction_types", "old_gold_movement_types",
-                                          "payment_methods", "schema_migrations"})
+                                          "cash_movement_types", "bank_movement_types",
+                                          "payment_methods", "schema_migrations", "permissions",
+                                          "role_permissions"})
                     for code in re.findall(r"'(\w+)'", statement.sql):
                         self.assertIn(f"'{code}'", forward)
                         self.assertRegex(rollback, rf"'{code}'[^;]*\)\s*,\s*'SELECT 1 FROM ROLLBACK_\d+_REFUSED_new_codes_in_use'")

@@ -45,9 +45,31 @@ class PrototypeZplPrinter:
 
     def __init__(
         self,
-        printer_name=DEFAULT_BARCODE_PRINTER_NAME,
+        printer_name=None,
+        settings=None,
+        send_raw=None,
     ):
-        self.printer_name = printer_name
+        # The Label printer: an explicit name, else this workstation's Settings → الطباعة choice
+        # (read at print time), else the prototype's printer name. Never the Bill printer.
+        self._printer_override = printer_name
+        self._settings = settings
+        self._send_raw_override = send_raw
+
+    @property
+    def printer_name(self):
+        if self._printer_override is not None:
+            return self._printer_override
+        from config.printer_settings import PrinterSettings
+        return (self._settings or PrinterSettings()).label_printer() or DEFAULT_BARCODE_PRINTER_NAME
+
+    def test_label_zpl(self):
+        """Settings → طباعة ليبل تجريبي: one prototype-format label with sample values."""
+        return self.build_zpl_label({"barcode_value": "TEST0001", "weight_grams": "3.600", "size": "18",
+                                     "karat_value": "21", "factory_code": "TEST", "category_code": "T"})
+
+    def print_test_label(self):
+        """Sends one test label to the Label printer; writes nothing to the database."""
+        return self._send_raw([self.test_label_zpl()])
 
     @staticmethod
     def _safe_text(value):
@@ -203,6 +225,12 @@ class PrototypeZplPrinter:
                 )
             )
 
+        return self._send_raw(labels)
+
+    def _send_raw(self, labels):
+        """Raw ZPL to the Label printer (prototype mechanism: win32print RAW job)."""
+        if self._send_raw_override is not None:
+            return self._send_raw_override(self.printer_name, labels)
         try:
             import win32print
 
@@ -272,7 +300,7 @@ class BarcodePrintService:
 
     def __init__(
         self,
-        printer_name=DEFAULT_BARCODE_PRINTER_NAME,
+        printer_name=None,
     ):
         self._printer = (
             PrototypeZplPrinter(

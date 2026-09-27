@@ -162,7 +162,8 @@ class InvoiceRepository(BaseRepository):
                 it.name AS item_type_name,
                 f.name AS factory_name,
                 cat.code AS category_code,
-                ib.barcode_value
+                ib.barcode_value,
+                ii.item_type_id, ii.factory_id, ii.category_id, ii.notes AS item_notes
             FROM inventory_items ii
             JOIN item_types it ON it.id = ii.item_type_id
             JOIN karats k ON k.id = ii.karat_id
@@ -180,7 +181,7 @@ class InvoiceRepository(BaseRepository):
         return [by_id[item_id] for item_id in ids if item_id in by_id]
 
     def search_sellable_items(self, *, text="", karat_id=None, weight_min=None, weight_max=None, size="",
-                              exclude_ids=(), weight_target=None, limit=31):
+                              exclude_ids=(), weight_target=None, limit=31, item_type_id=None, factory_id=None):
         """IN_STOCK items matching practical filters (no locks). Never picks one:
         the caller shows every candidate and the employee chooses."""
         from utils.search_normalization import mysql_search_expression, normalize_search_text
@@ -200,7 +201,8 @@ class InvoiceRepository(BaseRepository):
         params = [not text,
                   bool(folded), *type_params, like(folded), bool(folded), *factory_params, like(folded),
                   bool(folded), *category_params, like(folded), like(text), like(text),
-                  karat_id, karat_id, weight_min, weight_min, weight_max, weight_max, size, like(size),
+                  karat_id, karat_id, item_type_id, item_type_id, factory_id, factory_id,
+                  weight_min, weight_min, weight_max, weight_max, size, like(size),
                   *excluded]
         if weight_target is not None:
             params.append(weight_target)
@@ -210,7 +212,8 @@ class InvoiceRepository(BaseRepository):
             SELECT
                 ii.id AS inventory_item_id, ii.karat_id, k.karat_value, ii.weight_grams, ii.size,
                 it.name AS item_type_name, f.name AS factory_name,
-                cat.name AS category_name, cat.code AS category_code, ib.barcode_value
+                cat.name AS category_name, cat.code AS category_code, ib.barcode_value,
+                ii.item_type_id, ii.factory_id, ii.category_id, ii.notes AS item_notes
             FROM inventory_items ii
             JOIN item_types it ON it.id = ii.item_type_id
             JOIN karats k ON k.id = ii.karat_id
@@ -225,6 +228,8 @@ class InvoiceRepository(BaseRepository):
                    OR (%s AND {category_sql} LIKE %s ESCAPE '!')
                    OR cat.code LIKE %s ESCAPE '!' OR ib.barcode_value LIKE %s ESCAPE '!')
               AND (%s IS NULL OR ii.karat_id = %s)
+              AND (%s IS NULL OR ii.item_type_id = %s)
+              AND (%s IS NULL OR ii.factory_id = %s)
               AND (%s IS NULL OR ii.weight_grams >= %s)
               AND (%s IS NULL OR ii.weight_grams <= %s)
               AND (%s = '' OR ii.size LIKE %s ESCAPE '!')
@@ -235,6 +240,104 @@ class InvoiceRepository(BaseRepository):
             tuple(params),
         )
         return [_stringify_ids(row) for row in rows]
+
+    def sellable_facets(self, *, item_type_id=None, karat_id=None, exclude_ids=()):
+        """What IN_STOCK stock actually offers at each step of الصنف → العيار → المصنع."""
+        excluded = sorted({_id(value) for value in exclude_ids})
+        not_in = f"AND ii.id NOT IN ({', '.join(['%s'] * len(excluded))})" if excluded else ""
+
+        def facet(select, join, where, params):
+            return self._fetch_all(
+                f"""
+                SELECT {select}, COUNT(*) AS item_count
+                FROM inventory_items ii {join}
+                WHERE ii.inventory_status = 'IN_STOCK' {where} {not_in}
+                GROUP BY 1, 2 ORDER BY 2
+                """, (*params, *excluded))
+        types = facet("it.id AS id, it.name AS name", "JOIN item_types it ON it.id = ii.item_type_id", "", ())
+        karats = facet("k.id AS id, k.karat_value AS name", "JOIN karats k ON k.id = ii.karat_id",
+                       "AND ii.item_type_id = %s", (item_type_id,)) if item_type_id else []
+        factories = facet("f.id AS id, f.name AS name", "JOIN factories f ON f.id = ii.factory_id",
+                          "AND ii.item_type_id = %s AND ii.karat_id = %s",
+                          (item_type_id, karat_id)) if item_type_id and karat_id else []
+        return {"item_types": types, "karats": karats, "factories": factories}
+
+    def reference_lists(self):
+        """Active item types and factories (for manual / old-gold-stock sales)."""
+        return {"item_types": self._fetch_all(
+                    "SELECT id, name, default_category_id FROM item_types WHERE is_active = TRUE ORDER BY name"),
+                "factories": self._fetch_all(
+                    "SELECT id, name FROM factories WHERE is_active = TRUE ORDER BY name")}
+
+    def get_item_type(self, item_type_id):
+        return self._fetch_one("SELECT id, name, default_category_id, is_active FROM item_types WHERE id = %s",
+                               (int(item_type_id),))
+
+    def get_factory(self, factory_id):
+        return self._fetch_one("SELECT id, name, is_active FROM factories WHERE id = %s", (int(factory_id),))
+
+    def category_ranges(self, category_ids):
+        ids = sorted({int(i) for i in category_ids if i is not None})
+        if not ids:
+            return {}
+        rows = self._fetch_all(
+            f"SELECT id, code, name, sale_making_min_per_gram, sale_making_max_per_gram "
+            f"FROM item_categories WHERE id IN ({', '.join(['%s'] * len(ids))})", tuple(ids))
+        return {int(row["id"]): row for row in rows}
+
+    def billing_settings(self):
+        return self._fetch_one(
+            "SELECT settlement_self_limit, settlement_approval_limit, old_gold_discount_default_percent "
+            "FROM billing_settings WHERE id = 1")
+
+    # ------------------------------------------------------------ old-gold stock (weight ledger)
+
+    def old_gold_balances(self):
+        """COUNTED grams per karat (legacy REFERENCE_ONLY history excluded)."""
+        return self._fetch_all(
+            """
+            SELECT k.id AS karat_id, k.karat_value, COALESCE(SUM(og.weight_delta_grams), 0) AS balance_grams
+            FROM karats k
+            LEFT JOIN old_gold_movements og
+                ON og.karat_id = k.id AND og.weight_delta_grams IS NOT NULL AND og.balance_effect = 'COUNTED'
+            WHERE k.is_active = TRUE
+            GROUP BY k.id, k.karat_value
+            ORDER BY k.karat_value
+            """)
+
+    def lock_old_gold_balance(self, karat_id):
+        """Locks this karat's COUNTED ledger rows (the same lock the karat-conversion
+        path takes) and returns the balance before this transaction's own movements."""
+        rows = self._fetch_all(
+            """
+            SELECT weight_delta_grams FROM old_gold_movements
+            WHERE karat_id = %s AND weight_delta_grams IS NOT NULL AND balance_effect = 'COUNTED'
+            FOR UPDATE
+            """, (int(karat_id),))
+        return sum((Decimal(str(row["weight_delta_grams"])) for row in rows), Decimal("0.000"))
+
+    def add_invoice_sale_out_movement(self, *, karat_id, weight_grams, gold_price_per_gram, cash_value,
+                                      price_quote_id, movement_group_id, invoice_id, invoice_number,
+                                      customer_id, created_by_user_id, employee_id, notes=None):
+        """Weight sold from the old-gold stock on an invoice: COUNTED INVOICE_SALE_OUT (negative)."""
+        movement_id, _ = self._execute(
+            """
+            INSERT INTO old_gold_movements (
+                movement_type_id, karat_id, weight_delta_grams, balance_effect,
+                gold_price_per_gram, cash_value, price_quote_id, movement_group_id,
+                reference_type, reference_id, reference_code, notes,
+                created_by_user_id, performed_by_user_id, received_by_employee_id,
+                movement_code, customer_id
+            )
+            VALUES (%s, %s, %s, 'COUNTED', %s, %s, %s, %s, 'INVOICE', %s, %s, %s, %s, %s, %s,
+                    'INVOICE_SALE_OUT', %s)
+            """,
+            (self.old_gold_movement_type_id("INVOICE_SALE_OUT"), int(karat_id), -Decimal(str(weight_grams)),
+             gold_price_per_gram, cash_value, _optional_id(price_quote_id), movement_group_id,
+             _id(invoice_id), invoice_number, notes, created_by_user_id, created_by_user_id,
+             employee_id, _optional_id(customer_id)),
+        )
+        return str(movement_id)
 
     def find_item_id_by_barcode(self, barcode):
         """The item carrying this ACTIVE barcode, as a decimal string, or None."""
@@ -281,6 +384,62 @@ class InvoiceRepository(BaseRepository):
             """,
             (code,),
         )
+
+    def active_bank_accounts(self):
+        """Configured bank / wallet accounts (017 account_type); never invented."""
+        return self._fetch_all(
+            "SELECT id, name, account_type, bank_name, account_label FROM bank_accounts "
+            "WHERE is_active = TRUE ORDER BY account_type, name")
+
+    def get_bank_account(self, bank_account_id, lock=False):
+        return self._fetch_one(
+            "SELECT id, name, account_type, is_active FROM bank_accounts WHERE id = %s"
+            + (" FOR SHARE" if lock else ""), (int(bank_account_id),))
+
+    def active_cash_accounts(self):
+        return self._fetch_all("SELECT id, code, name FROM cash_accounts WHERE is_active = TRUE ORDER BY id")
+
+    # ------------------------------------------------------------ real money ledgers (007)
+
+    def add_cash_movement(self, *, cash_account_id, invoice_payment_id, direction, amount, invoice_id,
+                          invoice_number, created_by_user_id, occurred_at):
+        """Physical cash of one invoice payment: +IN / −OUT on the shop's cash account."""
+        movement_id, _ = self._execute(
+            """
+            INSERT INTO cash_movements (
+                cash_account_id, movement_type_id, amount_delta, invoice_payment_id,
+                reference_type, reference_id, reference_code, description, occurred_at, created_by_user_id
+            )
+            SELECT %s, t.id, %s, %s, 'INVOICE', %s, %s, %s, %s, %s
+            FROM cash_movement_types t WHERE t.code = %s
+            """,
+            (int(cash_account_id), amount if direction == "IN" else -amount, _id(invoice_payment_id),
+             _id(invoice_id), invoice_number, f"فاتورة {invoice_number}", occurred_at, created_by_user_id,
+             f"INVOICE_PAYMENT_{direction}"),
+        )
+        if not movement_id:
+            raise RuntimeError("cash movement type INVOICE_PAYMENT_%s is missing" % direction)
+        return str(movement_id)
+
+    def add_bank_movement(self, *, bank_account_id, invoice_payment_id, direction, amount, invoice_id,
+                          invoice_number, created_by_user_id, occurred_at, payment_reference=None):
+        """Wallet / InstaPay / bank money of one invoice payment on its selected account."""
+        movement_id, _ = self._execute(
+            """
+            INSERT INTO bank_movements (
+                bank_account_id, movement_type_id, amount_delta, invoice_payment_id, payment_reference,
+                reference_type, reference_id, reference_code, description, occurred_at, created_by_user_id
+            )
+            SELECT %s, t.id, %s, %s, %s, 'INVOICE', %s, %s, %s, %s, %s
+            FROM bank_movement_types t WHERE t.code = %s
+            """,
+            (int(bank_account_id), amount if direction == "IN" else -amount, _id(invoice_payment_id),
+             payment_reference, _id(invoice_id), invoice_number, f"فاتورة {invoice_number}", occurred_at,
+             created_by_user_id, f"INVOICE_PAYMENT_{direction}"),
+        )
+        if not movement_id:
+            raise RuntimeError("bank movement type INVOICE_PAYMENT_%s is missing" % direction)
+        return str(movement_id)
 
     # ------------------------------------------------------------ inserts
 
@@ -344,26 +503,102 @@ class InvoiceRepository(BaseRepository):
         return count
 
     def insert_sale_line(self, *, invoice_id, line_number, item, gold_price_per_gram,
-                         making_per_gram, making_total, gross_total, line_total, notes=None):
+                         making_per_gram, making_total, gross_total, line_total, notes=None,
+                         identification_method=None):
         """item: a row from lock_sale_items(); snapshots are frozen from it."""
         line_id, _ = self._execute(
             """
             INSERT INTO invoice_lines (
-                invoice_id, record_origin, line_number, line_type, inventory_item_id,
+                invoice_id, record_origin, line_number, line_type, identification_method, inventory_item_id,
                 karat_id, weight_grams, quantity,
                 item_name_snapshot, factory_snapshot, category_snapshot, size_snapshot, barcode_snapshot,
                 gold_price_per_gram, making_per_gram, making_total, gross_total, line_total, notes
             )
-            VALUES (%s, 'NATIVE', %s, 'SELL_INVENTORY', %s, %s, %s, 1,
+            VALUES (%s, 'NATIVE', %s, 'SELL_INVENTORY', %s, %s, %s, %s, 1,
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (_id(invoice_id), int(line_number), _id(item["inventory_item_id"]),
+            (_id(invoice_id), int(line_number), identification_method, _id(item["inventory_item_id"]),
              int(item["karat_id"]), item["weight_grams"],
              item.get("item_type_name"), item.get("factory_name"), item.get("category_code"),
              item.get("size"), item.get("barcode_value"),
              gold_price_per_gram, making_per_gram, making_total, gross_total, line_total, notes),
         )
         return str(line_id)
+
+    def insert_described_sale_line(self, *, invoice_id, line_number, line_type, karat_id, weight_grams,
+                                   item_name, factory_name, size, gold_price_per_gram, making_total,
+                                   gross_total, line_total, old_gold_movement_id=None, notes=None):
+        """SELL_UNIDENTIFIED (F5) or SELL_OLD_GOLD (F7): never an inventory identity."""
+        if line_type not in ("SELL_UNIDENTIFIED", "SELL_OLD_GOLD"):
+            raise ValueError("Unsupported described sale line.")
+        method = "MANUAL" if line_type == "SELL_UNIDENTIFIED" else "OLD_GOLD_STOCK"
+        line_id, _ = self._execute(
+            """
+            INSERT INTO invoice_lines (
+                invoice_id, record_origin, line_number, line_type, identification_method,
+                inventory_item_id, old_gold_movement_id, karat_id, weight_grams, quantity,
+                item_name_snapshot, factory_snapshot, size_snapshot,
+                gold_price_per_gram, making_per_gram, making_total, gross_total, line_total, notes
+            )
+            VALUES (%s, 'NATIVE', %s, %s, %s, NULL, %s, %s, %s, 1, %s, %s, %s, %s, NULL, %s, %s, %s, %s)
+            """,
+            (_id(invoice_id), int(line_number), line_type, method, _optional_id(old_gold_movement_id),
+             int(karat_id), weight_grams, item_name, factory_name, size,
+             gold_price_per_gram, making_total, gross_total, line_total, notes),
+        )
+        return str(line_id)
+
+    # ------------------------------------------------------------ unidentified sales, settlement, reviews
+
+    def open_unidentified_sale_case(self, *, invoice_id, invoice_number, invoice_line_id, item_type_id,
+                                    karat_id, factory_id, category_id, weight_grams, size, reason_code,
+                                    reason, notes, created_by_user_id, salesperson_employee_id, sold_at):
+        case_id, _ = self._execute(
+            """
+            INSERT INTO inventory_reconciliation_cases (
+                case_type, case_status, observed_karat_id, observed_item_type_id, observed_category_id,
+                observed_factory_id, observed_weight_grams, observed_size, reference_number,
+                invoice_id, invoice_line_id, reason, reason_code, notes,
+                created_by_user_id, salesperson_employee_id, sold_at
+            )
+            VALUES ('UNIDENTIFIED_SALE', 'OPEN', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (int(karat_id), _optional_id(item_type_id), _optional_id(category_id), _optional_id(factory_id),
+             weight_grams, size, invoice_number, _id(invoice_id), _id(invoice_line_id), reason, reason_code,
+             notes, created_by_user_id, salesperson_employee_id, sold_at),
+        )
+        self._execute(
+            """
+            INSERT INTO inventory_reconciliation_case_events (case_id, event_type, to_status, notes,
+                                                              performed_by_user_id, occurred_at)
+            VALUES (%s, 'OPENED', 'OPEN', %s, %s, %s)
+            """, (int(case_id), f"بيع يدوي — فاتورة {invoice_number}", created_by_user_id, sold_at))
+        return str(case_id)
+
+    def insert_settlement_adjustment(self, *, invoice_id, residual_signed, amount_signed, reason,
+                                     accepted_by_user_id, approved_by_user_id=None, approved_at=None):
+        adjustment_id, _ = self._execute(
+            """
+            INSERT INTO invoice_settlement_adjustments (
+                invoice_id, residual_signed, amount_signed, reason, accepted_by_user_id,
+                approved_by_user_id, approved_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (_id(invoice_id), residual_signed, amount_signed, reason, accepted_by_user_id,
+             approved_by_user_id, approved_at),
+        )
+        return str(adjustment_id)
+
+    def insert_management_review(self, *, review_type, invoice_id, summary, details, created_by_user_id):
+        review_id, _ = self._execute(
+            """
+            INSERT INTO management_reviews (review_type, invoice_id, summary, details_json, created_by_user_id)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (review_type, _optional_id(invoice_id), summary, _json(details), created_by_user_id),
+        )
+        return str(review_id)
 
     def insert_old_gold_line(self, *, invoice_id, line_number, karat_id, weight_grams,
                              gold_price_per_gram, gross_total, discount_type, discount_value,
@@ -488,10 +723,13 @@ class InvoiceRepository(BaseRepository):
             i.legacy_completeness, i.created_by_user_id, i.finalized_by_user_id, i.finalized_at,
             i.voided_by_user_id, i.voided_at, i.void_reason,
             s.customer_code_snapshot, s.customer_name_snapshot, s.mobile_snapshot, s.place_snapshot,
-            s.balance_before, s.balance_after, s.dead_cash_warning_active
+            s.balance_before, s.balance_after, s.dead_cash_warning_active,
+            cu.display_name AS created_by_name, fu.display_name AS finalized_by_name
         FROM invoices i
         LEFT JOIN employees e ON e.id = i.employee_id
         LEFT JOIN invoice_customer_snapshots s ON s.invoice_id = i.id
+        LEFT JOIN users cu ON cu.id = i.created_by_user_id
+        LEFT JOIN users fu ON fu.id = i.finalized_by_user_id
     """
 
     def get_invoice(self, invoice_id):
@@ -502,12 +740,13 @@ class InvoiceRepository(BaseRepository):
             return None
         lines = self._fetch_all(
             """
-            SELECT id AS line_id, line_number, line_type, record_origin, inventory_item_id,
-                   old_gold_movement_id, karat_id, weight_grams, quantity,
+            SELECT l.id AS line_id, line_number, line_type, record_origin, inventory_item_id,
+                   old_gold_movement_id, l.karat_id, k.karat_value, weight_grams, quantity,
                    item_name_snapshot, factory_snapshot, category_snapshot, size_snapshot,
                    barcode_snapshot, gold_price_per_gram, making_per_gram, making_total,
                    gross_total, discount_type, discount_value, discount_amount, line_total, notes
-            FROM invoice_lines WHERE invoice_id = %s ORDER BY line_number
+            FROM invoice_lines l JOIN karats k ON k.id = l.karat_id
+            WHERE invoice_id = %s ORDER BY line_number
             """, (invoice_id,))
         payments = self._fetch_all(
             """
@@ -519,15 +758,17 @@ class InvoiceRepository(BaseRepository):
             """, (invoice_id,))
         prices = self._fetch_all(
             """
-            SELECT id AS snapshot_id, karat_id, shop_buy_price_per_gram, shop_sell_price_per_gram,
+            SELECT s.id AS snapshot_id, s.karat_id, k.karat_value, shop_buy_price_per_gram, shop_sell_price_per_gram,
                    quote_id, source_code_snapshot, source_name_snapshot, provider_timestamp, captured_at
-            FROM invoice_price_snapshots WHERE invoice_id = %s ORDER BY karat_id
+            FROM invoice_price_snapshots s JOIN karats k ON k.id = s.karat_id
+            WHERE invoice_id = %s ORDER BY k.karat_value
             """, (invoice_id,))
         events = self._fetch_all(
             """
-            SELECT id AS event_id, event_type, related_invoice_id, notes, details_json,
-                   occurred_at, performed_by_user_id
-            FROM invoice_events WHERE invoice_id = %s ORDER BY id
+            SELECT ev.id AS event_id, event_type, related_invoice_id, notes, details_json,
+                   occurred_at, performed_by_user_id, u.display_name AS performed_by_name
+            FROM invoice_events ev LEFT JOIN users u ON u.id = ev.performed_by_user_id
+            WHERE invoice_id = %s ORDER BY ev.id
             """, (invoice_id,))
         result = _stringify_ids(header)
         result["lines"] = [_stringify_ids(row) for row in lines]
@@ -535,6 +776,17 @@ class InvoiceRepository(BaseRepository):
         result["price_snapshots"] = [_stringify_ids(row) for row in prices]
         result["events"] = [_stringify_ids(row) for row in events]
         return result
+
+    def get_payment_accounts(self, invoice_id):
+        """The real bank/wallet account behind each payment leg (printing only; get_invoice is untouched)."""
+        rows = self._fetch_all(
+            """
+            SELECT p.id AS payment_id, p.bank_account_id, b.name AS bank_account_name,
+                   b.bank_name, b.account_type AS bank_account_type
+            FROM invoice_payments p LEFT JOIN bank_accounts b ON b.id = p.bank_account_id
+            WHERE p.invoice_id = %s ORDER BY p.id
+            """, (_id(invoice_id),))
+        return [_stringify_ids(row) for row in rows]
 
     def search_invoices(self, *, number=None, customer_id=None, date_from=None, date_to_exclusive=None,
                         status=None, record_origin=None, limit=101, offset=0):

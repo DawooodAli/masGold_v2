@@ -122,7 +122,8 @@ class SchemaModel:
         if view:
             self.views.add(view.group(1))
             return
-        if not re.match(r"(USE|INSERT|DELETE|SELECT|SET|DO)\b", sql, re.I):
+        # Reference-row data statements never change the schema.
+        if not re.match(r"(USE|INSERT|UPDATE|DELETE|SELECT|SET|DO)\b", sql, re.I):
             self.problems.append(f"{source}: unhandled statement {sql[:60]}")
 
 
