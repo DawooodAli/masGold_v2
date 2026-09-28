@@ -693,7 +693,8 @@ class InvoiceService:
                             "effect_on_net_signed": line.discount_amount - default.discount_amount})
         return changes
 
-    def _payment_accounts(self, invoices, payments, lock=False):
+    @staticmethod
+    def _payment_accounts(invoices, payments, lock=False):
         """Where each real payment is posted: the cash account or a real, typed bank/wallet account.
 
         Returns (methods by code, bank/wallet account row per payment index, cash account row, problems).

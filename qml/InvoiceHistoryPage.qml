@@ -283,6 +283,7 @@ Item {
 
     // ============================================================ DETAIL
     Item {
+        id: detailRoot
         anchors.fill: parent
         visible: historyPage.detailMode
         readonly property var d: historyPage.vm ? historyPage.vm.detail : ({})
@@ -300,7 +301,11 @@ Item {
             Item { Layout.fillWidth: true }
             Txt { objectName: "historyReprintMessage"; value: historyPage.vm ? historyPage.vm.reprintMessage : ""
                   visible: value.length > 0; color: historyPage.vm && historyPage.vm.reprintFailed ? theme.red : theme.green }
-            // The one action in V1. Future lifecycle actions get their own area when they exist.
+            // Lifecycle actions: استبدال (its own permission; the service re-checks every rule).
+            Btn { objectName: "historyExchange"
+                  text: "استبدال"
+                  visible: !!detailRoot.d.canExchange && typeof exchangeVM !== "undefined"
+                  onClicked: exchangeVM.open(detailRoot.d.invoiceId) }
             Btn { objectName: "historyReprint"; primary: true
                   text: historyPage.vm && historyPage.vm.reprintBusy ? "جاري الطباعة..." : "🖨  إعادة طباعة"
                   visible: !!parent.parent.d.canReprint
@@ -475,10 +480,21 @@ Item {
                     accent: theme.textMuted
                     Repeater {
                         model: historyPage.vm ? historyPage.vm.timeline : []
-                        delegate: Pair { required property var modelData
-                                         objectName: "historyEvent_" + modelData.eventType
-                                         label: modelData.text + "  •  " + modelData.actor
-                                         value: modelData.time }
+                        delegate: RowLayout {
+                            id: eventRow
+                            required property var modelData
+                            objectName: "historyEvent_" + modelData.eventType
+                            Layout.fillWidth: true
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 8
+                            Pair { label: eventRow.modelData.text + "  •  " + eventRow.modelData.actor
+                                          + (eventRow.modelData.amount ? "  •  " + eventRow.modelData.amount : "")
+                                   value: eventRow.modelData.time }
+                            // The exchange itself, read-only.
+                            Btn { objectName: "historyOpenExchange"; text: "عرض"; implicitHeight: 24
+                                  visible: eventRow.modelData.isExchange && typeof exchangeVM !== "undefined"
+                                  onClicked: exchangeVM.openDetail(eventRow.modelData.linked) }
+                        }
                     }
                 }
 

@@ -12,13 +12,15 @@ PROVENANCE = "015_legacy_provenance.sql"
 WORKFLOW = "016_billing_workflow.sql"
 ACCOUNTS = "017_payment_accounts.sql"
 OPENING = "018_opening_balances.sql"
-FORWARD = (CONSOLIDATION, BILLING, PROVENANCE, WORKFLOW, ACCOUNTS, OPENING)
+LIFECYCLE = "019_invoice_lifecycle_exchange.sql"
+FORWARD = (CONSOLIDATION, BILLING, PROVENANCE, WORKFLOW, ACCOUNTS, OPENING, LIFECYCLE)
 # 013 is baseline schema already used by the application: no rollback script.
 ROLLBACK = {BILLING: "014_billing_v2_rollback.sql",
             PROVENANCE: "015_legacy_provenance_rollback.sql",
             WORKFLOW: "016_billing_workflow_rollback.sql",
             ACCOUNTS: "017_payment_accounts_rollback.sql",
-            OPENING: "018_opening_balances_rollback.sql"}
+            OPENING: "018_opening_balances_rollback.sql",
+            LIFECYCLE: "019_invoice_lifecycle_exchange_rollback.sql"}
 CHANGE = re.compile(r"^(ALTER|CREATE|INSERT|DELETE|DROP|UPDATE|TRUNCATE|RENAME|REPLACE)\b", re.I)
 ACQUISITION_SOURCES = {"MARKET_PURCHASE", "OLD_GOLD_MANUFACTURE", "OLD_STOCK_CONVERSION",
                        "LEGACY_MIGRATION", "MANUAL_ENTRY"}
@@ -167,6 +169,24 @@ class MigrationFileSafetyTests(unittest.TestCase):
         self.assertIn("MIGRATION_015_REFUSED_migration_014_missing", forward_text(PROVENANCE))
         self.assertIn("MIGRATION_017_REFUSED_migration_016_missing", forward_text(ACCOUNTS))
         self.assertIn("MIGRATION_018_REFUSED_migration_017_missing", forward_text(OPENING))
+        self.assertIn("MIGRATION_019_REFUSED_migration_018_missing", forward_text(LIFECYCLE))
+
+    def test_019_adds_the_exchange_objects_only(self):
+        text = forward_text(LIFECYCLE)
+        checks = sql.checks(text)
+        for name in ("chk_inventory_status", "chk_inventory_move_from_status", "chk_inventory_move_to_status"):
+            self.assertIn("'RETURNED_PENDING'", checks[name][1])
+            self.assertIn("'IN_STOCK', 'SOLD', 'SCRAPPED', 'REMOVED'", checks[name][1])
+        self.assertIn("'EXCHANGED'", checks["chk_invoice_event_type"][1])
+        self.assertEqual(set(sql.create_table_columns(text)),
+                         {"invoice_lifecycle_transactions", "invoice_lifecycle_lines", "invoice_lifecycle_payments"})
+        # One original sale line can be consumed once, whatever the lifecycle type.
+        self.assertIn("UNIQUE KEY uq_lifecycle_source_line (source_invoice_line_id)", text)
+        self.assertIn("r.code IN ('OWNER')", text)
+        rollback = rollback_text(LIFECYCLE)
+        for reason in ("lifecycle_rows_exist", "returned_pending_in_use", "exchange_events_exist",
+                       "new_codes_in_use"):
+            self.assertIn(f"ROLLBACK_019_REFUSED_{reason}", rollback)
 
     def test_018_adds_only_the_opening_balance_codes(self):
         text = forward_text(OPENING)
@@ -229,7 +249,10 @@ class MigrationContentTests(unittest.TestCase):
                    WORKFLOW: {"schema_migrations", "old_gold_movement_types", "billing_settings",
                               "permissions", "role_permissions"},
                    ACCOUNTS: {"schema_migrations"},
-                   OPENING: {"schema_migrations", "cash_movement_types", "bank_movement_types"}}
+                   OPENING: {"schema_migrations", "cash_movement_types", "bank_movement_types"},
+                   LIFECYCLE: {"schema_migrations", "inventory_movement_types", "cash_movement_types",
+                               "bank_movement_types", "customer_transaction_types", "permissions",
+                               "role_permissions"}}
         for name in FORWARD:
             for statement in sql.statements(forward_text(name)):
                 target = re.match(r"^INSERT INTO\s+(\w+)", statement.sql, re.I)
@@ -342,6 +365,7 @@ class RollbackTests(unittest.TestCase):
                     self.assertFalse(statement.guarded)
                     table = re.match(r"DELETE FROM (\w+)", statement.sql).group(1)
                     self.assertIn(table, {"customer_transaction_types", "old_gold_movement_types",
+                                          "inventory_movement_types",
                                           "cash_movement_types", "bank_movement_types",
                                           "payment_methods", "schema_migrations", "permissions",
                                           "role_permissions"})

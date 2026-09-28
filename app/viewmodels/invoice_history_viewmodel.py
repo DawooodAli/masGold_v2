@@ -18,7 +18,7 @@ KIND_TEXT = {"INVENTORY": "من المخزون", "MANUAL": "بيع يدوي (غ�
 IDENTIFIED_TEXT = {"SCAN": "بالباركود", "SEARCH": "بالبحث"}
 EVENT_TEXT = {"CREATED": "تم إنشاء الفاتورة", "FINALIZED": "تم حفظ الفاتورة نهائياً", "PRINTED": "طباعة",
               "REPRINTED": "إعادة طباعة", "PAYMENT_ADDED": "إضافة دفعة", "PAYMENT_CORRECTED": "تصحيح دفعة",
-              "VOIDED": "إلغاء", "MIGRATED": "ترحيل من النظام القديم"}
+              "VOIDED": "إلغاء", "MIGRATED": "ترحيل من النظام القديم", "EXCHANGED": "تم إجراء استبدال"}
 METHOD_TEXT = {"PHYSICAL_CASH": "نقدي", "MOBILE_WALLET": "محفظة", "INSTAPAY": "InstaPay", "BANK_TRANSFER": "تحويل بنكي"}
 DISCOUNT_TEXT = {"PERCENT": "%", "AMOUNT": "ج"}
 MAKING_STATUS_TEXT = {"WITHIN_RANGE": "داخل النطاق", "OUT_OF_RANGE": "خارج النطاق", "NOT_CONFIGURED": "النطاق غير محدد"}
@@ -366,6 +366,7 @@ class InvoiceHistoryViewModel(QObject):
             "oldGoldTotal": known_money(d.get("buy_total")) if d["old_gold_lines"] else "",
             "notes": d.get("notes") or "",
             "canReprint": bool(d.get("can_reprint")),
+            "canExchange": bool(d.get("can_exchange")),
             "showManager": bool(d["can_see_manager_details"]),
         }
 
@@ -416,12 +417,30 @@ class InvoiceHistoryViewModel(QObject):
                  "source": p.get("source") or ""}
                 for p in (self._detail.get("price_snapshots", []) if self._detail else [])]
 
+    @staticmethod
+    def _event_amount(event):
+        if event.amount is None:
+            return ""
+        if event.event_type == "EXCHANGED":
+            # The exchange's signed difference: + على العميل, − للعميل, 0 لا يوجد فرق.
+            if event.amount == 0:
+                return "لا يوجد فرق"
+            return f"{'على العميل' if event.amount > 0 else 'للعميل'} {money(abs(event.amount))}"
+        return money(event.amount)
+
     @Property("QVariantList", notify=changed)
     def timeline(self):
         return [{"eventType": e.event_type, "text": EVENT_TEXT.get(e.event_type, e.event_type),
                  "time": datetime_text(e.occurred_at), "actor": e.actor or "—",
-                 "amount": "" if e.amount is None else money(e.amount), "linked": e.linked_record_id or ""}
+                 "amount": self._event_amount(e), "linked": e.linked_record_id or "",
+                 "isExchange": e.event_type == "EXCHANGED" and bool(e.linked_record_id)}
                 for e in (self._detail.get("timeline", []) if self._detail else [])]
+
+    @Slot(str)
+    def refreshInvoice(self, invoice_id):
+        """After an exchange: reload the open detail of that invoice (its timeline changed)."""
+        if self._detail and self._detail.get("invoice_id") == invoice_id:
+            self.openInvoice(invoice_id)
 
     # ------------------------------------------------------------ reprint properties
     @Property(bool, notify=changed)

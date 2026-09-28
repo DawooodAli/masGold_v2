@@ -9,6 +9,8 @@ Item {
 
     property string pageTitle: ""
     property int currentTab: 0
+    // استبدال (opened from an invoice in History) covers both tabs while it is open.
+    readonly property bool exchangeOpen: typeof exchangeVM !== "undefined" && !!exchangeVM && exchangeVM.isOpen
 
     Theme { id: theme }
 
@@ -17,9 +19,16 @@ Item {
         color: theme.bgPrimary
     }
 
+    ExchangeWorkspace {
+        anchors.fill: parent
+        visible: workspace.exchangeOpen
+        z: 1
+    }
+
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
+        visible: !workspace.exchangeOpen
 
         RowLayout {
             Layout.fillWidth: true

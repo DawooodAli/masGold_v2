@@ -25,6 +25,8 @@ SETTLEMENT_STATUSES = ("SETTLED", "PARTIAL", "UNSETTLED", "OVERPAID")
 SALE_LINE_TYPES = ("SELL_INVENTORY", "SELL_UNIDENTIFIED", "SELL_OLD_GOLD")
 LEGACY_LABEL = "فاتورة قديمة — بيانات تاريخية جزئية"
 VIEW_PERMISSION, REPRINT_PERMISSION, MANAGER_PERMISSION = "INVOICE_VIEW", "INVOICE_REPRINT", "MANAGEMENT_REVIEW"
+# Exchange V1: a separate permission; viewing history never grants it.
+EXCHANGE_PERMISSION, EXCHANGED_EVENT = "INVOICE_EXCHANGE", "EXCHANGED"
 ZERO = Decimal("0.00")
 
 
@@ -188,6 +190,10 @@ class InvoiceHistoryService:
             "timeline": self._timeline(invoice.get("events", [])),
             "notes": invoice.get("notes") or "",
             "can_reprint": REPRINT_PERMISSION in actor.permissions,
+            # The Exchange action; the service still checks the permission and every rule itself.
+            "can_exchange": (EXCHANGE_PERMISSION in actor.permissions and not legacy
+                             and invoice["invoice_status"] == "FINALIZED"
+                             and invoice["invoice_type"] in ("SELL", "MIXED")),
             "can_see_manager_details": manager,
         }
 
@@ -227,14 +233,23 @@ class InvoiceHistoryService:
                 "discount_amount": _decimal(line.get("discount_amount")),
                 "line_total": _decimal(line.get("line_total")), "notes": line.get("notes") or ""}
 
-    @staticmethod
-    def _timeline(events):
-        """The stored invoice_events, oldest first (deterministic: time, then id)."""
+    @classmethod
+    def _timeline(cls, events):
+        """The stored invoice_events, oldest first (deterministic: time, then id). An EXCHANGED event
+        carries the exchange's signed difference and links to its lifecycle transaction."""
         ordered = sorted(events, key=lambda e: (e["occurred_at"], int(e["event_id"])))
-        return [LifecycleEvent(event_id=str(e["event_id"]), event_type=e["event_type"], occurred_at=e["occurred_at"],
-                               actor=e.get("performed_by_name") or "",
-                               linked_record_id=None if e.get("related_invoice_id") is None
-                               else str(e["related_invoice_id"])) for e in ordered]
+        timeline = []
+        for e in ordered:
+            linked = None if e.get("related_invoice_id") is None else str(e["related_invoice_id"])
+            amount = None
+            if e["event_type"] == EXCHANGED_EVENT:
+                saved = cls._details(e)
+                amount = _decimal(saved.get("signed_amount"))
+                linked = None if saved.get("lifecycle_id") in (None, "") else str(saved["lifecycle_id"])
+            timeline.append(LifecycleEvent(event_id=str(e["event_id"]), event_type=e["event_type"],
+                                           occurred_at=e["occurred_at"], actor=e.get("performed_by_name") or "",
+                                           amount=amount, linked_record_id=linked))
+        return timeline
 
     # ------------------------------------------------------------ reprint (read-only)
     def reprint(self, invoice_id, *, _expected_actor=None):
