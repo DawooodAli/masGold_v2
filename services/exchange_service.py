@@ -49,6 +49,7 @@ from services.gold_price_service import GoldPriceService
 from services.invoice_service import (
     EGYPT_UTC_OFFSETS, IDENTIFICATION_METHODS, OUT_OF_RANGE, InvoiceService, invoice_transaction,
 )
+from services.invoice_service import REASONS as BILLING_REASONS      # the authoritative F5 reason list
 
 
 EXCHANGE_PERMISSION = "INVOICE_EXCHANGE"
@@ -88,13 +89,33 @@ class _Discard(Exception):
     """Carries a read result out of a transaction that is always rolled back."""
 
 
+MANUAL, OLD_GOLD_STOCK = "MANUAL", "OLD_GOLD_STOCK"      # F5 إدخال يدوي / F7 من الكسر (as in Billing)
+REPLACEMENT_SOURCES = IDENTIFICATION_METHODS + (MANUAL, OLD_GOLD_STOCK)
+
+
 @dataclass(frozen=True)
 class ReplacementInput:
-    """A stock piece given to the customer. making_per_gram (ج/جم of the piece's own weight) is
-    typed by the employee and used only when the customer receives more pure gold."""
-    inventory_item_id: str
+    """A piece given to the customer, added the same ways Billing adds a sold piece:
+    SCAN / SEARCH  an identified stock piece (inventory_item_id);
+    MANUAL (F5)    no inventory identity: item type, karat, weight, reason (Billing's REASONS);
+    OLD_GOLD_STOCK (F7) weight taken from the COUNTED old-gold stock of a karat.
+    making_per_gram (ج/جرام of the piece's own weight) is typed by the employee and used only when
+    the customer receives more pure gold."""
+    inventory_item_id: str | None = None
     making_per_gram: str | None = None
     identified_by: str = "SCAN"
+    karat_id: int | None = None                 # MANUAL / OLD_GOLD_STOCK only
+    weight_grams: str | None = None
+    item_type_id: int | None = None
+    factory_id: int | None = None
+    description: str | None = None
+    size: str | None = None
+    notes: str | None = None
+    reason_code: str | None = None              # MANUAL only (Billing F5 reasons)
+
+    @property
+    def described(self):
+        return self.identified_by in (MANUAL, OLD_GOLD_STOCK)
 
 
 @dataclass(frozen=True)
@@ -122,6 +143,17 @@ class _Piece:
     making_total: Decimal | None = None
     identified_by: str | None = None
     category_id: int | None = None
+    # MANUAL / OLD_GOLD_STOCK replacements (never an inventory id)
+    factory_name: str | None = None
+    size: str | None = None
+    notes: str | None = None
+    reason_code: str | None = None
+    item_type_id: int | None = None
+    factory_id: int | None = None
+
+    @property
+    def described(self):
+        return self.identified_by in (MANUAL, OLD_GOLD_STOCK)
 
 
 @dataclass(frozen=True)
@@ -234,7 +266,45 @@ def calculate(returned, replacements, *, price_set, within_window):
                    missing)
 
 
-MAKING_REQUIRED_TEXT = "اكتب مصنعية القطعة البديلة (ج/جم)."
+MAKING_REQUIRED_TEXT = "اكتب مصنعية القطعة البديلة (ج/جرام)."
+SEARCH_LIMIT = 30
+
+
+def exchange_summary(row):
+    """One stored exchange (InvoiceLifecycleRepository.get_transaction row), read-only, for History."""
+    signed = Decimal(str(row["signed_amount"]))
+    direction = CUSTOMER_OWES if signed > 0 else SHOP_OWES if signed < 0 else NO_DIFFERENCE
+
+    def piece(line):
+        return {"role": line["line_role"], "inventory_item_id": line["inventory_item_id"],
+                "item_name": line.get("item_name_snapshot"), "barcode": line.get("barcode_snapshot"),
+                "karat": line["karat_value"], "weight_grams": _money(line["weight_grams"]),
+                "pure_grams": _grams(line["pure_weight_grams"]),
+                "making_per_gram": _money(line.get("making_per_gram")),
+                # How a replacement was added: SCAN / SEARCH / MANUAL / OLD_GOLD_STOCK (None for returned pieces).
+                "source": line.get("identification_method")}
+    return {"lifecycle_id": row["lifecycle_id"], "code": exchange_code(row["lifecycle_id"]), "read_only": True,
+            "source_invoice_id": row["source_invoice_id"], "source_invoice_number": row["source_invoice_number"],
+            "occurred_at": row["occurred_at"].isoformat(sep=" "), "actor": row.get("performed_by_name") or "",
+            "returned": [piece(line) for line in row["lines"] if line["line_role"] == "RETURNED"],
+            "replacements": [piece(line) for line in row["lines"] if line["line_role"] == "REPLACEMENT"],
+            "returned_pure_grams": _grams(row["returned_pure_grams"]),
+            "replacement_pure_grams": _grams(row["replacement_pure_grams"]),
+            "pure_delta_grams": _grams(row["pure_delta_grams"]),
+            "valuation_basis": row["valuation_basis"], "valued_delta_grams": _grams(row["valued_delta_grams"]),
+            "price_basis": row.get("price_basis"), "price_karat": row.get("price_karat_value"),
+            "price_per_gram": _money(row.get("price_per_gram")),
+            "gold_amount": _money(row["gold_amount"]), "making_charge": _money(row["making_charge"]),
+            "making_refund": _money(row["making_refund"]),
+            "making_refund_applies": bool(row["making_refund_eligible"]),
+            "signed_amount": _money(signed), "amount": _money(abs(signed)), "direction": direction,
+            "direction_text": DIRECTION_TEXT[direction],
+            "money_received": _money(row["money_received"]), "money_paid": _money(row["money_paid"]),
+            "account_signed": _money(row["account_signed"]),
+            "payments": [{"method_code": p["payment_method_code"], "direction": p["direction"],
+                          "amount": _money(p["amount"]), "account_name": p.get("bank_account_name")}
+                         for p in row["payments"]],
+            "returned_pending_text": RETURNED_PENDING_TEXT, "notes": row.get("notes") or ""}
 
 
 def _making_problems(result):
@@ -317,7 +387,7 @@ class ExchangeService:
             return ALREADY_EXCHANGED_TEXT
         return None
 
-    def _pieces(self, draft, lines, items):
+    def _pieces(self, draft, lines, items, invoices=None, karats=None):
         """Validated returned / replacement pieces from DB rows (`items`: inventory rows by id)."""
         if not draft.returned_line_ids:
             raise ExchangeError("RETURNED_REQUIRED", "اختر القطعة المرتجعة من الفاتورة.")
@@ -352,9 +422,16 @@ class ExchangeService:
                 making_per_pure_gram=None if making is None else (making / pure).quantize(RATE, rounding=ROUND_HALF_UP),
                 making_total=making))
         returned_ids = {p.inventory_item_id for p in returned}
-        seen, replacements = set(), []
+        seen, replacements, described = set(), [], []
         for entry in draft.replacements:
-            item_id = str(entry.inventory_item_id).strip()
+            if entry.identified_by not in REPLACEMENT_SOURCES:
+                raise ExchangeError("IDENTIFICATION_INVALID", "طريقة تحديد القطعة غير صحيحة.")
+            if entry.described:
+                piece, resolved = self._described_piece(entry, invoices, karats)
+                replacements.append(piece)
+                described.append(resolved)
+                continue
+            item_id = str(entry.inventory_item_id or "").strip()
             if item_id in seen:
                 raise ExchangeError("DUPLICATE_REPLACEMENT", "لا يمكن إضافة نفس القطعة البديلة مرتين.")
             seen.add(item_id)
@@ -383,7 +460,66 @@ class ExchangeService:
                 weight=weight, pure=pure, item_name=item.get("item_type_name"), barcode=item.get("barcode_value"),
                 making_per_gram=per_gram, making_per_pure_gram=per_pure, making_total=total,
                 identified_by=entry.identified_by, category_id=item.get("category_id")))
-        return returned, replacements
+        return returned, replacements, described
+
+    @staticmethod
+    def _making(entry, weight, karat):
+        """(per gram, total, per pure gram) of a typed replacement making, or (None, None, None)."""
+        if entry.making_per_gram in (None, ""):
+            return None, None, None
+        per_gram = _decimal(entry.making_per_gram, "MAKING_INVALID", "اكتب المصنعية بالأرقام.")
+        if per_gram < 0 or per_gram > MAKING_PER_GRAM_MAX:
+            raise ExchangeError("MAKING_INVALID", "المصنعية يجب أن تكون صفراً أو أكثر.")
+        per_gram = per_gram.quantize(MONEY, rounding=ROUND_HALF_UP)
+        return (per_gram, (per_gram * weight).quantize(MONEY, rounding=ROUND_HALF_UP),
+                (per_gram * Decimal(24) / Decimal(int(karat))).quantize(RATE, rounding=ROUND_HALF_UP))
+
+    @staticmethod
+    def _described_piece(entry, invoices, karats):
+        """A MANUAL (F5) or OLD_GOLD_STOCK (F7) replacement, validated by Billing's own rules
+        (InvoiceService._described: item type, factory, text limits, F5 reasons incl. «سبب آخر» notes)."""
+        from types import SimpleNamespace
+        from services.invoice_service import OLD_GOLD_STOCK as BILLING_F7, UNIDENTIFIED, DescribedSaleInput
+        if isinstance(entry.karat_id, bool) or not str(entry.karat_id or "").isdigit():
+            raise ExchangeError("KARAT_REQUIRED", "اختر العيار.")
+        karat = (karats or {}).get(int(entry.karat_id))
+        if karat is None:
+            raise ExchangeError("PRICE_MISSING", "لا يوجد سعر معتمد لهذا العيار.")
+        weight = _decimal(entry.weight_grams, "WEIGHT_INVALID", "اكتب الوزن بالأرقام.")
+        if weight <= 0 or weight != weight.quantize(GRAM) or weight > Decimal("100000"):
+            raise ExchangeError("WEIGHT_INVALID", "اكتب وزناً صحيحاً (حتى 3 أرقام عشرية).")
+        weight = weight.quantize(GRAM)                       # 6 → 6.000, exactly as stored
+        billing_kind = UNIDENTIFIED if entry.identified_by == MANUAL else BILLING_F7
+        line = DescribedSaleInput(kind=billing_kind, karat_id=int(entry.karat_id), weight_grams=str(weight),
+                                  item_type_id=entry.item_type_id or None, factory_id=entry.factory_id or None,
+                                  description=entry.description, size=entry.size, notes=entry.notes,
+                                  reason_code=entry.reason_code if entry.identified_by == MANUAL else None)
+        try:
+            (resolved,) = InvoiceService._described(None, invoices, SimpleNamespace(described_sale_lines=(line,)))
+        except ValueError as error:                      # InvoiceError: the same wording as Billing
+            raise ExchangeError(getattr(error, "code", "LINE_INVALID"), str(error)) from None
+        per_gram, total, per_pure = ExchangeService._making(entry, weight, karat)
+        piece = _Piece(
+            inventory_item_id=None, karat_id=int(entry.karat_id), karat=int(karat), weight=weight,
+            pure=pure_weight(weight, karat), item_name=resolved["item_name"], barcode=None,
+            making_per_gram=per_gram, making_per_pure_gram=per_pure, making_total=total,
+            identified_by=entry.identified_by, category_id=resolved["category_id"],
+            factory_name=resolved["factory_name"], size=resolved["size"], notes=resolved["notes"],
+            reason_code=line.reason_code, item_type_id=resolved["item_type_id"], factory_id=resolved["factory_id"])
+        return piece, resolved
+
+    @staticmethod
+    def _old_gold_shortages(described, balances):
+        """F7 grams requested per karat vs the COUNTED stock BEFORE this exchange (Billing's own rule:
+        nothing returned in the same exchange can be reused — returned pieces are inventory, never old gold)."""
+        return InvoiceService._old_gold_shortages(described, balances)
+
+    @staticmethod
+    def _shortage_error(shortages, karats):
+        karat_id, available, grams = shortages[0]
+        return ExchangeError("OLD_GOLD_STOCK_INSUFFICIENT",
+                             f"رصيد الكسر عيار {(karats or {}).get(karat_id, karat_id)} غير كافٍ: "
+                             f"المتاح {available:,.3f} جرام والمطلوب {grams:,.3f} جرام.")
 
     def _settlement(self, draft, result, customer_id):
         """(money legs as (PaymentInput, direction, amount), received, paid, account_signed, problems)."""
@@ -509,8 +645,9 @@ class ExchangeService:
             invoices = self._invoices(connection)
             invoice = invoices.get_invoice(invoice_id)
             lines = self._lifecycle(connection).source_lines(invoice_id) if invoice else []
-            return invoice, lines, self._clock(connection), invoices.active_bank_accounts()
-        invoice, lines, now, accounts = self._read(read)
+            return (invoice, lines, self._clock(connection), invoices.active_bank_accounts(), invoices.reference_lists(),
+                    invoices.old_gold_balances())
+        invoice, lines, now, accounts, lists, balances = self._read(read)
         invoice = self._source(invoice)
         rows = []
         for line in lines:
@@ -532,6 +669,12 @@ class ExchangeService:
                 "has_customer": invoice.get("customer_id") not in (None, ""),
                 "refund_window_open": self._within_window(invoice, now),
                 "refund_window_hours": MAKING_REFUND_WINDOW_HOURS,
+                # Billing's own lists for F5 (manual) and F7 (from old gold) replacements.
+                "item_types": [{"id": int(r["id"]), "name": r["name"]} for r in lists["item_types"]],
+                "factories": [{"id": int(r["id"]), "name": r["name"]} for r in lists["factories"]],
+                "old_gold_stock": [{"karat_id": int(r["karat_id"]), "karat": int(r["karat_value"]),
+                                    "grams": _money(Decimal(str(r["balance_grams"])))} for r in balances],
+                "reasons": [{"code": code, "text": text} for code, text in BILLING_REASONS.items()],
                 "bank_accounts": [{"id": str(r["id"]), "name": r["name"],
                                    "account_type": r.get("account_type") or "BANK"} for r in accounts],
                 "lines": rows}
@@ -567,37 +710,33 @@ class ExchangeService:
         row = self._read(lambda connection: self._lifecycle(connection).get_transaction(lifecycle_id))
         if row is None:
             raise ExchangeError("EXCHANGE_NOT_FOUND", "عملية الاستبدال غير موجودة.")
-        signed = Decimal(str(row["signed_amount"]))
-        direction = CUSTOMER_OWES if signed > 0 else SHOP_OWES if signed < 0 else NO_DIFFERENCE
+        return exchange_summary(row)
 
-        def piece(line):
-            return {"role": line["line_role"], "inventory_item_id": line["inventory_item_id"],
-                    "item_name": line.get("item_name_snapshot"), "barcode": line.get("barcode_snapshot"),
-                    "karat": line["karat_value"], "weight_grams": _money(line["weight_grams"]),
-                    "pure_grams": _grams(line["pure_weight_grams"]),
-                    "making_per_gram": _money(line.get("making_per_gram"))}
-        return {"lifecycle_id": row["lifecycle_id"], "code": exchange_code(row["lifecycle_id"]), "read_only": True,
-                "source_invoice_id": row["source_invoice_id"], "source_invoice_number": row["source_invoice_number"],
-                "occurred_at": row["occurred_at"].isoformat(sep=" "), "actor": row.get("performed_by_name") or "",
-                "returned": [piece(line) for line in row["lines"] if line["line_role"] == "RETURNED"],
-                "replacements": [piece(line) for line in row["lines"] if line["line_role"] == "REPLACEMENT"],
-                "returned_pure_grams": _grams(row["returned_pure_grams"]),
-                "replacement_pure_grams": _grams(row["replacement_pure_grams"]),
-                "pure_delta_grams": _grams(row["pure_delta_grams"]),
-                "valuation_basis": row["valuation_basis"], "valued_delta_grams": _grams(row["valued_delta_grams"]),
-                "price_basis": row.get("price_basis"), "price_karat": row.get("price_karat_value"),
-                "price_per_gram": _money(row.get("price_per_gram")),
-                "gold_amount": _money(row["gold_amount"]), "making_charge": _money(row["making_charge"]),
-                "making_refund": _money(row["making_refund"]),
-                "making_refund_applies": bool(row["making_refund_eligible"]),
-                "signed_amount": _money(signed), "amount": _money(abs(signed)), "direction": direction,
-                "direction_text": DIRECTION_TEXT[direction],
-                "money_received": _money(row["money_received"]), "money_paid": _money(row["money_paid"]),
-                "account_signed": _money(row["account_signed"]),
-                "payments": [{"method_code": p["payment_method_code"], "direction": p["direction"],
-                              "amount": _money(p["amount"]), "account_name": p.get("bank_account_name")}
-                             for p in row["payments"]],
-                "returned_pending_text": RETURNED_PENDING_TEXT, "notes": row.get("notes") or ""}
+    def search_replacements(self, *, text="", karat_id=None, weight=None, tolerance="0.05", exclude_ids=(),
+                            _expected_actor=None):
+        """Candidates for a replacement piece: IN_STOCK only (Billing's own search query), read-only.
+        Never chooses: the employee selects the physical piece."""
+        self._actor(_expected_actor)
+        weight_min = weight_max = target = None
+        if weight not in (None, ""):
+            try:
+                target, spread = Decimal(str(weight).strip()), Decimal(str(tolerance or "0").strip())
+            except InvalidOperation:
+                raise ExchangeError("SEARCH_WEIGHT_INVALID", "اكتب الوزن بالأرقام.") from None
+            if not target.is_finite() or target <= 0 or not spread.is_finite() or not 0 <= spread <= 5:
+                raise ExchangeError("SEARCH_WEIGHT_INVALID", "اكتب وزناً صحيحاً وهامشاً من 0 إلى 5 جرام.")
+            weight_min, weight_max = target - spread, target + spread
+        rows = self._read(lambda connection: self._invoices(connection).search_sellable_items(
+            text=(text or "").strip(), karat_id=int(karat_id) if karat_id else None, weight_min=weight_min,
+            weight_max=weight_max, exclude_ids=tuple(exclude_ids), weight_target=target,
+            limit=SEARCH_LIMIT + 1))
+        items = [{"inventory_item_id": row["inventory_item_id"], "barcode": row.get("barcode_value"),
+                  "item_name": row.get("item_type_name"), "karat": row.get("karat_value"),
+                  "weight_grams": _money(Decimal(str(row["weight_grams"]))),
+                  "pure_grams": _grams(pure_weight(Decimal(str(row["weight_grams"])), row["karat_value"])),
+                  "factory_name": row.get("factory_name"), "size": row.get("size")}
+                 for row in rows[:SEARCH_LIMIT]]
+        return {"items": items, "truncated": len(rows) > SEARCH_LIMIT}
 
     # ------------------------------------------------------------ preview
 
@@ -613,12 +752,18 @@ class ExchangeService:
             lines = lifecycle.source_lines(draft.source_invoice_id)
             ids = self._item_ids(draft, lines)
             items = {row["inventory_item_id"]: row for row in (invoices.read_sale_items(ids) if ids else [])}
-            returned, replacements = self._pieces(draft, lines, items)
+            karats = {int(p.karat_id): int(p.karat) for p in price_set.prices.values()}
+            returned, replacements, described = self._pieces(draft, lines, items, invoices, karats)
             result = calculate(returned, replacements, price_set=price_set,
                                within_window=self._within_window(invoice, now))
             ranges = invoices.category_ranges([p.category_id for p in replacements])
             legs, received, paid, account, problems = self._settlement(draft, result, invoice.get("customer_id"))
             problems = _making_problems(result) + problems
+            if any(p.identified_by == OLD_GOLD_STOCK for p in replacements):
+                balances = {int(r["karat_id"]): Decimal(str(r["balance_grams"])) for r in invoices.old_gold_balances()}
+                shortages = self._old_gold_shortages(described, balances)
+                if shortages:
+                    problems.insert(0, self._shortage_error(shortages, karats))
             problems += InvoiceService._payment_accounts(
                 invoices, [(payment, None) for payment, _, _ in legs])[3]
             return invoice, now, price_set, result, ranges, (received, paid, account), problems
@@ -663,7 +808,14 @@ class ExchangeService:
             lines = lifecycle.source_lines(draft.source_invoice_id)
             ids = self._item_ids(draft, lines)
             items = {row["inventory_item_id"]: row for row in (invoices.lock_sale_items(ids) if ids else [])}
-            returned, replacements = self._pieces(draft, lines, items)
+            karats = {int(p.karat_id): int(p.karat) for p in price_set.prices.values()}
+            returned, replacements, described = self._pieces(draft, lines, items, invoices, karats)
+            # F7: lock each karat's COUNTED old-gold ledger and read the balance BEFORE this exchange writes.
+            balances = {karat_id: invoices.lock_old_gold_balance(karat_id)
+                        for karat_id in sorted({p.karat_id for p in replacements if p.identified_by == OLD_GOLD_STOCK})}
+            shortages = self._old_gold_shortages(described, balances)
+            if shortages:
+                raise self._shortage_error(shortages, karats)
             result = calculate(returned, replacements, price_set=price_set,
                                within_window=self._within_window(invoice, now))
             legs, received, paid, account, problems = self._settlement(draft, result, invoice.get("customer_id"))
@@ -693,7 +845,9 @@ class ExchangeService:
                            for p in sorted(price_set.prices.values(), key=lambda p: p.karat)],
             }
             details = {"returned_item_ids": [p.inventory_item_id for p in returned],
-                       "replacement_item_ids": [p.inventory_item_id for p in replacements],
+                       "replacement_item_ids": [p.inventory_item_id for p in replacements if not p.described],
+                       # How each replacement was added (audit / History / review): SCAN, SEARCH, MANUAL, OLD_GOLD_STOCK.
+                       "replacement_sources": [p.identified_by for p in replacements],
                        "refund_window_hours": MAKING_REFUND_WINDOW_HOURS, "refund_window_open": result.window_open,
                        "payments": [{"method": p.method_code, "direction": d, "amount": a} for p, d, a in legs]}
             if review:
@@ -705,11 +859,31 @@ class ExchangeService:
                 money_paid=paid, account_signed=account, price_snapshot=snapshot, details=details, notes=notes,
                 performed_by_user_id=actor.user_id, performed_by_employee_id=actor.employee_id, occurred_at=now)
             code = exchange_code(lifecycle_id)
-            number = 0
+            number, case_ids = 0, []
             for role, pieces in (("RETURNED", returned), ("REPLACEMENT", replacements)):
                 for piece in pieces:
                     number += 1
-                    lifecycle.insert_line(lifecycle_id=lifecycle_id, line_role=role, line_number=number, line=piece)
+                    movement_id = None
+                    if piece.identified_by == OLD_GOLD_STOCK:
+                        # F7: the exact weight leaves the COUNTED old-gold stock (its own exchange movement).
+                        quote = price_set.prices.get(piece.karat_id)
+                        movement_id = lifecycle.add_old_gold_replacement_out(
+                            karat_id=piece.karat_id, weight_grams=piece.weight, lifecycle_id=lifecycle_id,
+                            gold_price_per_gram=None if quote is None else quote.shop_sell_price_per_gram,
+                            price_quote_id=None if quote is None else quote.quote_id,
+                            customer_id=invoice.get("customer_id"), created_by_user_id=actor.user_id,
+                            employee_id=actor.employee_id, notes=piece.item_name)
+                    line_id = lifecycle.insert_line(lifecycle_id=lifecycle_id, line_role=role, line_number=number,
+                                                    line=piece, old_gold_movement_id=movement_id)
+                    if piece.identified_by == MANUAL:
+                        # F5 parity: the same UNIDENTIFIED_SALE reconciliation case (manager review) as Billing.
+                        from services.invoice_service import REASONS
+                        case_ids.append(lifecycle.open_unidentified_replacement_case(
+                            lifecycle_line_id=line_id, exchange_code=code, item_type_id=piece.item_type_id,
+                            karat_id=piece.karat_id, factory_id=piece.factory_id, category_id=piece.category_id,
+                            weight_grams=piece.weight, size=piece.size, reason_code=piece.reason_code,
+                            reason=REASONS[piece.reason_code], notes=piece.notes, created_by_user_id=actor.user_id,
+                            salesperson_employee_id=actor.employee_id, sold_at=now))
             for piece in returned:
                 lifecycle.mark_item_returned_pending(inventory_item_id=piece.inventory_item_id,
                                                      updated_by_user_id=actor.user_id)
@@ -718,6 +892,8 @@ class ExchangeService:
                     to_status="RETURNED_PENDING", lifecycle_id=lifecycle_id, performed_by_user_id=actor.user_id,
                     performed_by_employee_id=actor.employee_id)
             for piece in replacements:
+                if piece.described:
+                    continue                  # no inventory piece: F5 has its case, F7 its old-gold movement
                 invoices.mark_item_sold(inventory_item_id=piece.inventory_item_id, updated_by_user_id=actor.user_id)
                 lifecycle.add_inventory_movement(
                     item=items[piece.inventory_item_id], movement_code="EXCHANGE_REPLACEMENT_OUT",
@@ -753,6 +929,7 @@ class ExchangeService:
                     details={"lifecycle_id": lifecycle_id, "exchange_code": code, "lines": review},
                     created_by_user_id=actor.user_id)
             event = {"lifecycle_id": lifecycle_id, "exchange_code": code, "signed_amount": result.signed_amount,
+                     "unidentified_case_ids": case_ids,
                      "pure_delta_grams": result.pure_delta, "valued_delta_grams": result.valued_delta,
                      "valuation_basis": result.valuation_basis, "direction": result.direction}
             invoices.insert_event(invoice_id=invoice["invoice_id"], event_type="EXCHANGED",
@@ -762,7 +939,8 @@ class ExchangeService:
                 raise PermissionError("انتهت جلسة الدخول.")
         return {"lifecycle_id": lifecycle_id, "code": code, "occurred_at": now.isoformat(sep=" "),
                 "signed_amount": _money(result.signed_amount), "direction": result.direction,
-                "direction_text": DIRECTION_TEXT[result.direction], "making_review_required": bool(review)}
+                "direction_text": DIRECTION_TEXT[result.direction], "making_review_required": bool(review),
+                "unidentified_cases": len(case_ids)}
 
     @staticmethod
     def _audit(connection, actor, lifecycle_id, code, details, now):

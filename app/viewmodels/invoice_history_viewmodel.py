@@ -3,14 +3,18 @@
 All text is formatted here (app.formatting: one money format, bidi-safe dates / signed values);
 QML only displays it. Nothing in this ViewModel can change an invoice."""
 from datetime import date, datetime
+from decimal import Decimal
 
 from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
 
-from app.formatting import datetime_text, grams, ltr, money
+from app.formatting import datetime_text, grams, ltr, money, number
 from app.workers.invoice_worker import InvoiceWorker
 
 UNAVAILABLE = "غير متاح"
+RECEIVED_TEXT, PAID_TEXT, NO_MONEY_TEXT = "المستلم من العميل", "المدفوع للعميل", "لا يوجد دفع فعلي"
 TYPE_TEXT = {"SELL": "بيع", "BUY": "شراء كسر", "MIXED": "بيع مع كسر"}
+SOURCE_TEXT = {"SCAN": "بالباركود", "SEARCH": "بالبحث", "MANUAL": "إدخال يدوي", "OLD_GOLD_STOCK": "من الكسر"}
+KIND_TYPE_TEXT = {"SALE": "بيع", "OLD_GOLD_PURCHASE": "شراء كسر", "MIXED": "بيع مع كسر"}
 SETTLEMENT_TEXT = {"SETTLED": "مسددة", "PARTIAL": "مسددة جزئياً", "UNSETTLED": "غير مسددة", "OVERPAID": "مدفوعة بزيادة"}
 STATUS_TEXT = {"FINALIZED": "نهائية", "VOIDED": "ملغاة"}
 DIRECTION_TEXT = {"CUSTOMER_PAYS_SHOP": "يدفع العميل", "SHOP_PAYS_CUSTOMER": "يدفع المحل", "SETTLED": "متعادلة"}
@@ -39,6 +43,7 @@ class InvoiceHistoryViewModel(QObject):
         self._workers, self._request, self._latest = set(), 0, {}
         self._busy, self._shutdown, self._activated = set(), False, False
         self._text, self._date_from, self._date_to = "", None, None
+        self._explicit_range = False
         self._type, self._status = "ALL", "ALL"
         self._results, self._page, self._has_more, self._loaded = [], 1, False, False
         self._detail, self._error, self._detail_error = {}, "", ""
@@ -92,9 +97,12 @@ class InvoiceHistoryViewModel(QObject):
 
     @Slot()
     def activate(self):
-        """Opening the history tab loads the newest page once."""
+        """Opening the history tab loads TODAY's invoices only (one bounded, date-restricted query)."""
         if not self._activated:
             self._activated = True
+            today = self._clock().date()
+            self._date_from = self._date_to = today
+            self._explicit_range = False
             self._run_search(1)
 
     # ------------------------------------------------------------ search / filters / paging
@@ -144,12 +152,14 @@ class InvoiceHistoryViewModel(QObject):
     def setToday(self):
         today = self._clock().date()
         self._date_from = self._date_to = today
+        self._explicit_range = False                     # back to the default browsing scope
         self._run_search(1)
 
     @Slot(str, str)
     def setDateRange(self, date_from, date_to):
         try:
             self._date_from, self._date_to = self._parse_date(date_from), self._parse_date(date_to)
+            self._explicit_range = True                  # the user chose this range: always respected
         except ValueError as exc:
             self._error = str(exc)
             self.changed.emit()
@@ -168,8 +178,32 @@ class InvoiceHistoryViewModel(QObject):
 
     @Slot()
     def clearFilters(self):
-        self._text, self._date_from, self._date_to, self._type, self._status = "", None, None, "ALL", "ALL"
+        """Back to the default view: today, every type and status (never "all history")."""
+        today = self._clock().date()
+        self._text, self._date_from, self._date_to, self._type, self._status = "", today, today, "ALL", "ALL"
+        self._explicit_range = False
         self._run_search(1)
+
+    @Property(bool, notify=changed)
+    def todayActive(self):
+        """اليوم is the active range (the default on open and after مسح)."""
+        today = self._clock().date()
+        return self._date_from == today and self._date_to == today
+
+    @Property(str, notify=changed)
+    def rangeText(self):
+        """What the list shows, for the user (e.g. فواتير اليوم / من … إلى …)."""
+        if self.searchesAllHistory:
+            return "بحث العميل في كل الفواتير"
+        if self.todayActive:
+            return "فواتير اليوم"
+        if self._date_from and self._date_to:
+            return f"من {ltr(self._date_from.isoformat())} إلى {ltr(self._date_to.isoformat())}"
+        if self._date_from:
+            return f"من {ltr(self._date_from.isoformat())}"
+        if self._date_to:
+            return f"حتى {ltr(self._date_to.isoformat())}"
+        return "كل الفترات"
 
     @staticmethod
     def _parse_date(text):
@@ -191,9 +225,28 @@ class InvoiceHistoryViewModel(QObject):
         if self._page > 1:
             self._run_search(self._page - 1)
 
+    @staticmethod
+    def _is_customer_search(text):
+        """A customer name or phone (letters, or digits starting with 0 like 010…) — not a partial invoice
+        number (digits not starting with 0, e.g. 2609…), which keeps its usual in-range behaviour."""
+        text = (text or "").strip()
+        return bool(text) and not (text.isascii() and text.isdigit() and not text.startswith("0"))
+
+    def _search_dates(self):
+        """Default اليوم is only the opening scope: a customer name / phone searches all history (still one
+        bounded page per query). An explicit From / To range is the user's intent and is always respected."""
+        if not self._explicit_range and self._is_customer_search(self._text):
+            return None, None
+        return self._date_from, self._date_to
+
+    @Property(bool, notify=changed)
+    def searchesAllHistory(self):
+        return self._search_dates() == (None, None)
+
     def _run_search(self, page):
         service = self._service_instance()
-        filters = {"text": self._text, "date_from": self._date_from, "date_to": self._date_to,
+        date_from, date_to = self._search_dates()
+        filters = {"text": self._text, "date_from": date_from, "date_to": date_to,
                    "invoice_type": TYPE_FILTERS[self._type], "settlement_status": STATUS_FILTERS[self._status]}
         self._error = ""
         self._start("search", lambda _expected_actor: service.search(page=page, _expected_actor=_expected_actor,
@@ -213,7 +266,8 @@ class InvoiceHistoryViewModel(QObject):
         return {"invoiceId": item["invoice_id"], "number": item["invoice_number"],
                 "date": ltr(when.strftime("%Y-%m-%d")) if when else "", "time": when.strftime("%H:%M") if when else "",
                 "customer": item.get("customer_name") or "بدون عميل", "salesperson": item.get("salesperson") or "—",
-                "typeText": TYPE_TEXT.get(item["invoice_type"], item["invoice_type"]),
+                "typeText": KIND_TYPE_TEXT.get(item.get("transaction_kind"),
+                                               TYPE_TEXT.get(item["invoice_type"], item["invoice_type"])),
                 "total": known_money(item.get("invoice_total")),
                 "moved": f"{moved_label} {money(item['money_moved'])}",
                 "statusText": SETTLEMENT_TEXT.get(item["settlement_status"], item["settlement_status"] or ""),
@@ -292,7 +346,9 @@ class InvoiceHistoryViewModel(QObject):
 
     @Property(bool, notify=changed)
     def filtered(self):
-        return bool(self._text or self._date_from or self._date_to or self._type != "ALL" or self._status != "ALL")
+        """Anything beyond the default view (today, every type and status)."""
+        dates = (self._date_from or self._date_to) and not self.todayActive
+        return bool(self._text or dates or self._type != "ALL" or self._status != "ALL")
 
     @Property(str, notify=changed)
     def emptyText(self):
@@ -300,7 +356,9 @@ class InvoiceHistoryViewModel(QObject):
             return "جاري التحميل..."
         if self._results:
             return ""
-        return "لا توجد نتائج مطابقة" if self.filtered else "لا توجد فواتير"
+        if self.filtered:
+            return "لا توجد نتائج مطابقة"
+        return "لا توجد فواتير اليوم" if self.todayActive else "لا توجد فواتير"
 
     @Property(int, notify=changed)
     def page(self):
@@ -337,7 +395,7 @@ class InvoiceHistoryViewModel(QObject):
         if not d:
             return {}
         e, customer = d["economics"], d["customer"]
-        outgoing = d["net_direction"] == "SHOP_PAYS_CUSTOMER"
+        moved_label, moved_amount = self.money_direction(d)
         account = d["account_signed"]
         account_text = ("لا يوجد" if not account else
                         f"{'على العميل' if account > 0 else 'للعميل'}: {money(abs(account))}")
@@ -345,7 +403,9 @@ class InvoiceHistoryViewModel(QObject):
         return {
             "invoiceId": d["invoice_id"], "number": d["invoice_number"],
             "finalizedAt": datetime_text(d["finalized_at"]),
-            "typeText": TYPE_TEXT.get(d["invoice_type"], d["invoice_type"]),
+            # From the invoice CONTENT (sold lines / customer old gold), never from the money direction.
+            "typeText": KIND_TYPE_TEXT[self._kind(d)],
+            "transactionKind": self._kind(d),
             "statusText": STATUS_TEXT.get(d["invoice_status"], d["invoice_status"]),
             "settlementText": SETTLEMENT_TEXT.get(d["settlement_status"], d["settlement_status"] or ""),
             "salesperson": d.get("salesperson") or "—", "finalizedBy": d.get("finalized_by") or "—",
@@ -355,12 +415,17 @@ class InvoiceHistoryViewModel(QObject):
             "customerMobile": customer.get("mobile") or "", "customerPlace": customer.get("place") or "",
             "invoiceTotal": known_money(d["invoice_total"]),
             "directionText": DIRECTION_TEXT.get(d["net_direction"], ""),
-            "movedLabel": "المدفوع للعميل" if outgoing else "المستلم من العميل",
-            "movedAmount": money(d["money_paid"] if outgoing else d["money_received"]),
+            # Direction-aware title of the real money (also the payments card title); never "الدفع الفعلي".
+            "movedLabel": moved_label,
+            "movedAmount": moved_amount,
+            # Compact secondary line under the money figure (the amount is never repeated).
+            "paymentMethods": " • ".join(self._method_label(p) for p in d["payments"]),
+            # Pure شراء كسر: the customer sold gold to the shop; nothing was sold from the shop.
+            "isOldGoldOnly": self._kind(d) == "OLD_GOLD_PURCHASE",
             "accountText": account_text,
             "accountDirection": "" if not account else ("CUSTOMER_OWES" if account > 0 else "SHOP_OWES"),
             "goldValue": known_money(e["gold_value"]),
-            "averageMaking": UNAVAILABLE if e["average_making"] is None else f"{e['average_making']:,.2f} ج/جم",
+            "averageMaking": UNAVAILABLE if e["average_making"] is None else money(e["average_making"]),
             "makingTotal": "" if not d["can_see_manager_details"] else known_money(e["making_total"]),
             "makingStatus": MAKING_STATUS_TEXT.get(e.get("making_status") or "", ""),
             "oldGoldTotal": known_money(d.get("buy_total")) if d["old_gold_lines"] else "",
@@ -385,6 +450,94 @@ class InvoiceHistoryViewModel(QObject):
                          "manual": line["kind"] == "MANUAL", "fromOldGold": line["kind"] == "OLD_GOLD_STOCK"})
         return rows
 
+    @staticmethod
+    def _kind(d):
+        """SALE / OLD_GOLD_PURCHASE / MIXED from the saved lines (services.invoice_history_service.transaction_kind)."""
+        if d.get("transaction_kind"):
+            return d["transaction_kind"]
+        from services.invoice_history_service import transaction_kind
+        return transaction_kind(d.get("sale_lines"), d.get("old_gold_lines"))
+
+    @staticmethod
+    def money_direction(d):
+        """(title, amount) of the real money, from the SAVED payments' own direction (IN: received from the
+        customer, OUT: paid to the customer); the finalized net direction only when no payment was saved.
+        One invoice has one money direction (Billing never mixes IN and OUT legs)."""
+        received, paid = d["money_received"], d["money_paid"]
+        if received > 0 and not paid:
+            return RECEIVED_TEXT, money(received)
+        if paid > 0 and not received:
+            return PAID_TEXT, money(paid)
+        if received > 0 and paid > 0:                     # legacy data only: show the net, by its sign
+            net = received - paid
+            return (RECEIVED_TEXT if net >= 0 else PAID_TEXT), money(abs(net))
+        return NO_MONEY_TEXT, ""
+
+    @staticmethod
+    def _weights(lines):
+        """Presentation totals of the saved line weights: pieces, grams, and grams per karat."""
+        by_karat = {}
+        for line in lines:
+            by_karat[line["karat"]] = by_karat.get(line["karat"], Decimal("0.000")) + line["weight"]
+        total = sum(by_karat.values(), Decimal("0.000"))
+        return {"count": str(len(lines)), "total": grams(total),
+                "karats": [{"karat": str(k), "weight": grams(v)} for k, v in sorted(by_karat.items(), reverse=True)]}
+
+    @Property("QVariantMap", notify=changed)
+    def soldSummary(self):
+        """Shop-sold pieces only (sold stock, manual and from old-gold stock); never the customer's old gold."""
+        return self._weights(self._detail.get("sale_lines", [])) if self._detail else {}
+
+    @Property("QVariantMap", notify=changed)
+    def oldGoldSummary(self):
+        """The customer's old gold (كسر) bought by the shop: its own totals."""
+        lines = self._detail.get("old_gold_lines", []) if self._detail else []
+        if not lines:
+            return {}
+        summary = self._weights(lines)
+        values = [line["line_total"] for line in lines]
+        summary["value"] = UNAVAILABLE if any(v is None for v in values) else money(sum(values, Decimal("0.00")))
+        return summary
+
+    @Property("QVariantList", notify=changed)
+    def exchanges(self):
+        """This invoice's exchanges, inline (exchange-specific facts only; the invoice is not repeated)."""
+        rows = []
+        for x in self._detail.get("exchanges", []) if self._detail else []:
+            def pieces(items):
+                return [{"item": p.get("item_name") or "—", "karat": str(p["karat"]), "weight": grams(p["weight_grams"]),
+                         "source": SOURCE_TEXT.get(p.get("source") or "", "")} for p in items]
+            same = x["valuation_basis"] == "SAME_KARAT"
+            making = ""
+            if x["making_refund_applies"]:
+                making = f"استرداد مصنعية {money(x['making_refund'])}"
+            elif Decimal(x["making_charge"]) > 0:
+                making = f"مصنعية الذهب الزائد {money(x['making_charge'])}"
+            legs = [f"{METHOD_TEXT.get(p['method_code'], p['method_code'])}"
+                    + (f" — {p['account_name']}" if p.get("account_name") else "")
+                    + f": {money(p['amount'])}" for p in x["payments"]]
+            # Real money title from the exchange's SAVED money (received / paid); the account part stays apart.
+            moved_title, _ = self.money_direction({"money_received": Decimal(x["money_received"]),
+                                                   "money_paid": Decimal(x["money_paid"])})
+            account = Decimal(x["account_signed"])
+            account_text = ("" if not account else
+                            f"حساب العميل: {'على العميل' if account > 0 else 'للعميل'} {money(abs(account))}")
+            delta = Decimal(x["valued_delta_grams"])
+            rows.append({
+                "code": x["code"], "time": datetime_text(datetime.fromisoformat(x["occurred_at"])),
+                "actor": x["actor"] or "—", "returned": pieces(x["returned"]), "replacements": pieces(x["replacements"]),
+                "deltaText": ("فرق الوزن " if same else "فرق الذهب الصافي ")
+                             + number(delta, max(3, len(x['valued_delta_grams'].split('.')[-1])), True),
+                "priceText": "" if not x["price_basis"] else
+                f"{'سعر بيع المحل' if x['price_basis'] == 'SHOP_SELL' else 'سعر شراء المحل'} عيار {x['price_karat']}"
+                f" {money(x['price_per_gram'])}",
+                "goldText": "" if delta == 0 else f"قيمة فرق الذهب {money(x['gold_amount'])}",
+                "makingText": making, "direction": x["direction"], "directionText": x["direction_text"],
+                "amount": "" if x["direction"] == "NONE" else money(x["amount"]),
+                "moneyTitle": moved_title, "money": " • ".join(legs), "accountText": account_text,
+                "pendingText": x["returned_pending_text"]})
+        return rows
+
     @Property("QVariantList", notify=changed)
     def oldGoldLines(self):
         rows = []
@@ -402,20 +555,26 @@ class InvoiceHistoryViewModel(QObject):
     def payments(self):
         rows = []
         for p in self._detail.get("payments", []) if self._detail else []:
-            label = METHOD_TEXT.get(p["method_code"], p.get("method_name") or "")
-            if p.get("account_name"):
-                label += " — " + p["account_name"]
-            rows.append({"method": label, "directionText": "مستلم" if p["direction"] == "IN" else "مدفوع",
-                         "amount": money(p["amount"])})
+            rows.append({"method": self._method_label(p), "direction": p["direction"], "amount": money(p["amount"])})
         return rows
+
+    @staticmethod
+    def _method_label(p):
+        label = METHOD_TEXT.get(p["method_code"], p.get("method_name") or "")
+        return label + (" — " + p["account_name"] if p.get("account_name") else "")
 
     @Property("QVariantList", notify=changed)
     def priceSnapshots(self):
+        """The historical quotes of the karats USED on this invoice only (its sold pieces and its customer
+        old gold), not every karat that happened to be snapshotted."""
+        if not self._detail:
+            return []
+        used = {int(line["karat"]) for line in self._detail.get("sale_lines", []) + self._detail.get("old_gold_lines", [])}
         return [{"karat": str(p["karat"]),
-                 "sell": UNAVAILABLE if p["sell"] is None else f"{p['sell']:,.2f}",
-                 "buy": UNAVAILABLE if p["buy"] is None else f"{p['buy']:,.2f}",
+                 "sell": UNAVAILABLE if p["sell"] is None else f"{p['sell']:,.2f} ج",
+                 "buy": UNAVAILABLE if p["buy"] is None else f"{p['buy']:,.2f} ج",
                  "source": p.get("source") or ""}
-                for p in (self._detail.get("price_snapshots", []) if self._detail else [])]
+                for p in self._detail.get("price_snapshots", []) if int(p["karat"]) in used]
 
     @staticmethod
     def _event_amount(event):
@@ -433,7 +592,9 @@ class InvoiceHistoryViewModel(QObject):
         return [{"eventType": e.event_type, "text": EVENT_TEXT.get(e.event_type, e.event_type),
                  "time": datetime_text(e.occurred_at), "actor": e.actor or "—",
                  "amount": self._event_amount(e), "linked": e.linked_record_id or "",
-                 "isExchange": e.event_type == "EXCHANGED" and bool(e.linked_record_id)}
+                 "isExchange": e.event_type == "EXCHANGED" and bool(e.linked_record_id),
+                 "code": f"EX{int(e.linked_record_id):06d}" if e.event_type == "EXCHANGED"
+                 and str(e.linked_record_id or "").isdigit() else ""}
                 for e in (self._detail.get("timeline", []) if self._detail else [])]
 
     @Slot(str)

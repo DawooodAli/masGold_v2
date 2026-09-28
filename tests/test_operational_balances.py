@@ -85,7 +85,7 @@ class OperationalBalanceTests(unittest.TestCase):
         vm = OperationalBalanceViewModel(self.session(), service=service)
         vm._strip = service.strip()
         self.assertEqual((vm.cashText, [r["text"] for r in vm.oldGold]),
-                         ("125,300.00 ج", ["114.720 جم", "32.500 جم", "8.100 جم"]))
+                         ("125,300.00 ج", ["114.720", "32.500", "8.100"]))
         vm._strip = {"cash_balance": "-61138.95", "old_gold": []}
         self.assertEqual(vm.cashText, "⁦−61,138.95⁩ ج")
         self.assertEqual({"cashText", "oldGold"} & set(dir(vm)), {"cashText", "oldGold"})

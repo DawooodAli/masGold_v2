@@ -826,7 +826,7 @@ ApplicationWindow {
         }
 
         function weight(value) {
-            return Number(value || 0).toFixed(3) + " جم"
+            return Number(value || 0).toFixed(3)
         }
 
         function syncPrices() {
@@ -966,7 +966,7 @@ ApplicationWindow {
 
                             Label {
                                 Layout.fillWidth: true
-                                text: "سعر بيع 21 / جم *"
+                                text: "سعر بيع 21 / جرام *"
                                 color: theme.green
                                 font.family: "Cairo"
                                 horizontalAlignment: Text.AlignRight
@@ -992,7 +992,7 @@ ApplicationWindow {
 
                             Label {
                                 Layout.fillWidth: true
-                                text: "سعر شراء 21 / جم *"
+                                text: "سعر شراء 21 / جرام *"
                                 color: theme.amber
                                 font.family: "Cairo"
                                 horizontalAlignment: Text.AlignRight
@@ -1179,7 +1179,7 @@ ApplicationWindow {
                                         Label {
                                             Layout.fillWidth: true
                                             text:
-                                                "ذهب/جم: "
+                                                "ذهب/جرام: "
                                                 + billingPage.money(modelData.gold_price_per_gram)
                                                 + "   •   الإجمالي: "
                                                 + billingPage.money(modelData.line_total)
@@ -1196,7 +1196,7 @@ ApplicationWindow {
 
                                         Label {
                                             Layout.fillWidth: true
-                                            text: "مصنعية / جم"
+                                            text: "مصنعية / جرام"
                                             color: theme.textMuted
                                             font.family: "Cairo"
                                             font.pixelSize: 9
@@ -1404,7 +1404,7 @@ ApplicationWindow {
                                         Label {
                                             Layout.fillWidth: true
                                             text:
-                                                "شراء/جم: "
+                                                "شراء/جرام: "
                                                 + billingPage.money(modelData.buy_price_per_gram)
                                                 + "   •   القيمة: "
                                                 + billingPage.money(modelData.line_total)
@@ -1847,7 +1847,7 @@ ApplicationWindow {
 
                     var number = Number(value || 0)
 
-                    return number.toFixed(3) + " جم"
+                    return number.toFixed(3)
                 }
 
 
@@ -6330,7 +6330,7 @@ ApplicationWindow {
 
                                     ? "⚠ موافقة المدير أقل من: "
                                       + modelData.manager_approval_below_per_gram
-                                      + " ج/جم"
+                                      + " ج/جرام"
 
                                     : "لا يوجد حد موافقة مدير"
 
@@ -9699,7 +9699,6 @@ ApplicationWindow {
                                         + newInventoryItemDialog
                                           .selectedOldGoldBalance()
                                           .toFixed(3)
-                                        + " جم"
                                       )
                                     : "اختر العيار أولاً لعرض رصيد الكسر."
 
@@ -9826,7 +9825,7 @@ ApplicationWindow {
                                                     newInventoryItemDialog
                                                     .consumedOldGoldNumber()
                                                 ).toFixed(3)
-                                                + " جم"
+                                                + " جرام"
 
                                             color:
                                                 Math.abs(
@@ -10157,7 +10156,7 @@ ApplicationWindow {
             var numberValue = Number(value)
             return isNaN(numberValue)
                 ? "—"
-                : numberValue.toFixed(3) + " جم"
+                : numberValue.toFixed(3)
         }
 
         function stockClassText(value) {
@@ -11145,7 +11144,7 @@ ApplicationWindow {
                                             leftItem.weight_grams
                                             || 0
                                         ).toFixed(3)
-                                        + " جم"
+                                        + " جرام"
 
                                     color:
                                         theme.textSecondary
@@ -11254,7 +11253,7 @@ ApplicationWindow {
                                             rightItem.weight_grams
                                             || 0
                                         ).toFixed(3)
-                                        + " جم"
+                                        + " جرام"
 
                                     color:
                                         theme.textSecondary

@@ -812,7 +812,7 @@ class InvoiceService:
             except InvalidOperation:
                 raise InvoiceError("SEARCH_WEIGHT_INVALID", "اكتب الوزن بالأرقام.") from None
             if not target.is_finite() or target <= 0 or not spread.is_finite() or not 0 <= spread <= 5:
-                raise InvoiceError("SEARCH_WEIGHT_INVALID", "اكتب وزناً صحيحاً وهامشاً من 0 إلى 5 جم.")
+                raise InvoiceError("SEARCH_WEIGHT_INVALID", "اكتب وزناً صحيحاً وهامشاً من 0 إلى 5 جرام.")
             weight_min, weight_max = target - spread, target + spread
         if karat_id is not None and (isinstance(karat_id, bool) or int(karat_id) <= 0):
             karat_id = None
@@ -914,7 +914,7 @@ class InvoiceService:
             karat = next((p.karat for p in price_set.prices.values() if p.karat_id == karat_id), karat_id)
             problems.append(InvoiceError(
                 "OLD_GOLD_STOCK_INSUFFICIENT",
-                f"رصيد الكسر عيار {karat} غير كافٍ: المتاح {available:,.3f} جم والمطلوب {grams:,.3f} جم."))
+                f"رصيد الكسر عيار {karat} غير كافٍ: المتاح {available:,.3f} جرام والمطلوب {grams:,.3f} جرام."))
         categories = [i.get("category_id") for i in items] + [d["category_id"] for d in described]
         # Making review only on a valid derived price (re-run on every financial change).
         groups = self._making_groups(sales, categories, category_ranges) if calculated.agreed else []
@@ -1067,8 +1067,8 @@ class InvoiceService:
                 karat_id, available, grams = shortages[0]
                 karat = next((p.karat for p in price_set.prices.values() if p.karat_id == karat_id), karat_id)
                 raise InvoiceError("OLD_GOLD_STOCK_INSUFFICIENT",
-                                   f"رصيد الكسر عيار {karat} غير كافٍ: المتاح {available:,.3f} جم "
-                                   f"والمطلوب {grams:,.3f} جم.")
+                                   f"رصيد الكسر عيار {karat} غير كافٍ: المتاح {available:,.3f} جرام "
+                                   f"والمطلوب {grams:,.3f} جرام.")
             calculated = self._calculate(draft, items, price_set, described=described, limits=limits)
             sales, olds, payments = calculated.sales, calculated.olds, calculated.payments
             settlement, agreed = calculated.settlement, calculated.agreed

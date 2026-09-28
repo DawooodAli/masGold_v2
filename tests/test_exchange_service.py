@@ -81,6 +81,12 @@ class Store:
         self.lifecycle, self.lifecycle_lines, self.lifecycle_payments = [], [], []
         self.cash_movements, self.bank_movements, self.inventory_movements = [], [], []
         self.ledger, self.events, self.reviews, self.audit = [], [], [], []
+        # Billing reference data and the COUNTED old-gold ledger (grams per karat id), cases (F5 review).
+        self.item_types = {2: {"id": 2, "name": "خاتم", "default_category_id": 1, "is_active": 1},
+                           4: {"id": 4, "name": "دبلة", "default_category_id": None, "is_active": 1}}
+        self.factories = {5: {"id": 5, "name": "لوكس", "is_active": 1}}
+        self.old_gold = {1: D("20.000"), 2: D("0.000"), 3: D("0.000")}
+        self.old_gold_movements, self.cases = [], []
 
     def tables(self):
         return copy.deepcopy(vars(self))
@@ -133,6 +139,14 @@ class InvoiceRepo:
 
     lock_sale_items = read_sale_items
 
+    def search_sellable_items(self, *, text="", karat_id=None, weight_min=None, weight_max=None, exclude_ids=(),
+                              limit=31, **kwargs):
+        rows = [dict(i) for i in self.store.items.values() if i["inventory_status"] == "IN_STOCK"
+                and (karat_id is None or i["karat_id"] == karat_id)
+                and (weight_min is None or weight_min <= i["weight_grams"] <= weight_max)
+                and i["inventory_item_id"] not in exclude_ids]
+        return rows[:limit]
+
     def find_item_id_by_barcode(self, barcode):
         return next((k for k, v in self.store.items.items() if v["barcode_value"] == barcode), None)
 
@@ -168,6 +182,21 @@ class InvoiceRepo:
     def insert_management_review(self, **kwargs):
         self.store.reviews.append(kwargs)
 
+    def get_item_type(self, item_type_id):
+        return self.store.item_types.get(int(item_type_id))
+
+    def get_factory(self, factory_id):
+        return self.store.factories.get(int(factory_id))
+
+    def reference_lists(self):
+        return {"item_types": list(self.store.item_types.values()), "factories": list(self.store.factories.values())}
+
+    def old_gold_balances(self):
+        return [{"karat_id": k, "karat_value": KARATS[k], "balance_grams": v} for k, v in self.store.old_gold.items()]
+
+    def lock_old_gold_balance(self, karat_id):
+        return self.store.old_gold[int(karat_id)]
+
     def insert_event(self, **kwargs):
         self.store.events.append(kwargs)
 
@@ -198,16 +227,40 @@ class LifecycleRepo:
         self.store.lifecycle.append(dict(kwargs, lifecycle_id=lifecycle_id, calculation=dataclasses.asdict(c)))
         return lifecycle_id
 
-    def insert_line(self, *, lifecycle_id, line_role, line_number, line):
+    def insert_line(self, *, lifecycle_id, line_role, line_number, line, old_gold_movement_id=None):
         if line.source_line_id and any(l["source_invoice_line_id"] == line.source_line_id
                                        for l in self.store.lifecycle_lines):
             raise RuntimeError("Duplicate entry for key uq_lifecycle_source_line")
         assert (line_role == "RETURNED") == (line.source_line_id is not None)
         assert line.pure == pure_weight(line.weight, line.karat)
+        # The 020 source-identity CHECK, enforced here as MySQL would.
+        source = line.identified_by
+        if line_role == "REPLACEMENT":
+            assert source in ("SCAN", "SEARCH", "MANUAL", "OLD_GOLD_STOCK")
+            if source in ("SCAN", "SEARCH"):
+                assert line.inventory_item_id and old_gold_movement_id is None
+            elif source == "MANUAL":
+                assert line.inventory_item_id is None and old_gold_movement_id is None and line.reason_code
+            else:
+                assert line.inventory_item_id is None and old_gold_movement_id is not None
         self.store.lifecycle_lines.append({"lifecycle_id": lifecycle_id, "role": line_role, "number": line_number,
                                            "source_invoice_line_id": line.source_line_id,
                                            "inventory_item_id": line.inventory_item_id, "pure": line.pure,
-                                           "making_per_gram": line.making_per_gram})
+                                           "making_per_gram": line.making_per_gram, "source": source,
+                                           "old_gold_movement_id": old_gold_movement_id,
+                                           "reason_code": line.reason_code, "item_name": line.item_name,
+                                           "weight": line.weight})
+        return str(len(self.store.lifecycle_lines))
+
+    def add_old_gold_replacement_out(self, *, karat_id, weight_grams, lifecycle_id, **kwargs):
+        self.store.old_gold[int(karat_id)] -= weight_grams
+        self.store.old_gold_movements.append({"code": "EXCHANGE_REPLACEMENT_OUT", "karat_id": karat_id,
+                                              "delta": -weight_grams, "reference": ("INVOICE_LIFECYCLE", lifecycle_id)})
+        return str(len(self.store.old_gold_movements))
+
+    def open_unidentified_replacement_case(self, **kwargs):
+        self.store.cases.append(kwargs)
+        return str(len(self.store.cases))
 
     def insert_payment(self, **kwargs):
         assert kwargs["amount"] > 0 and kwargs["direction"] in ("IN", "OUT")
@@ -649,6 +702,540 @@ class RollbackTests(ExchangeTestCase):
         before = self.store.tables()
         self.service.preview(draft(replacements=(("301", "200"),), payments=(cash("12864.00"),)))
         self.assertEqual(self.store.tables(), before)
+
+
+class ReplacementSearchTests(ExchangeTestCase):
+    def test_search_offers_in_stock_pieces_only(self):
+        found = self.service.search_replacements(karat_id=1, weight="12", tolerance="0")["items"]
+        self.assertEqual([i["inventory_item_id"] for i in found], ["301"])
+        ids = [i["inventory_item_id"] for i in self.service.search_replacements()["items"]]
+        self.assertNotIn("304", ids)                                   # SOLD
+        self.assertNotIn("200", ids)                                   # the sold original piece
+        excluded = self.service.search_replacements(karat_id=1, exclude_ids=("300",))["items"]
+        self.assertNotIn("300", [i["inventory_item_id"] for i in excluded])
+
+    def test_search_needs_the_exchange_permission_and_a_valid_weight(self):
+        with self.assertRaises(ExchangeError):
+            self.service.search_replacements(weight="abc")
+        self.session._establish(AuthenticationResult(18, None, "مشاهد", frozenset({"APP_LOGIN", "INVOICE_VIEW"}),
+                                                     _VERIFIED), int(self.session.generation))
+        with self.assertRaises(PermissionError):
+            self.service.search_replacements()
+
+    def test_a_searched_piece_is_recorded_as_search(self):
+        d = ExchangeDraft("500", ("1",), (ReplacementInput("300", None, "SEARCH"),), (), None)
+        self.finalize(d)
+        self.assertEqual(self.store.lifecycle_lines[-1]["inventory_item_id"], "300")
+
+
+def manual(weight="12.000", making="0", reason="NO_BARCODE", notes=None, item_type=2, karat=1):
+    return ReplacementInput(None, making, "MANUAL", karat_id=karat, weight_grams=weight, item_type_id=item_type,
+                            reason_code=reason, notes=notes)
+
+
+def from_old_gold(weight="12.000", making="0", karat=1, description="دبلة سادة"):
+    return ReplacementInput(None, making, "OLD_GOLD_STOCK", karat_id=karat, weight_grams=weight,
+                            description=description)
+
+
+class ReplacementSourceTests(ExchangeTestCase):
+    """Exchange replacements are added the same four ways Billing adds a sold piece."""
+
+    def run_exchange(self, replacement, payments=None):
+        d = ExchangeDraft("500", ("1",), (replacement,), payments or (), None)
+        preview = self.service.preview(d)
+        if payments is None and preview["direction"] != "NONE":
+            d = ExchangeDraft("500", ("1",), (replacement,), (cash(preview["amount"]),), None)
+        return preview, self.finalize(d)
+
+    def test_barcode_and_search_replacements_are_identified_stock(self):
+        for source in ("SCAN", "SEARCH"):
+            with self.subTest(source=source):
+                self.setUp()
+                self.run_exchange(ReplacementInput("300", None, source))
+                line = self.store.lifecycle_lines[-1]
+                self.assertEqual((line["source"], line["inventory_item_id"]), (source, "300"))
+                self.assertEqual(self.store.items["300"]["inventory_status"], "SOLD")
+
+    def test_f5_manual_replacement_has_no_inventory_identity_and_opens_billing_review(self):
+        from services.invoice_service import REASONS
+        preview, result = self.run_exchange(manual())
+        self.assertEqual((preview["valuation_basis"], preview["valued_delta_grams"]), ("SAME_KARAT", "2.000"))
+        line = self.store.lifecycle_lines[-1]
+        self.assertEqual((line["source"], line["inventory_item_id"], line["old_gold_movement_id"]),
+                         ("MANUAL", None, None))                          # never a fake inventory id
+        self.assertEqual(line["item_name"], "خاتم")                         # Billing's own item naming
+        # The same review as Billing F5: an UNIDENTIFIED_SALE reconciliation case with Billing's reason.
+        (case,) = self.store.cases
+        self.assertEqual((case["reason_code"], case["reason"], case["item_type_id"], case["category_id"]),
+                         ("NO_BARCODE", REASONS["NO_BARCODE"], 2, 1))
+        self.assertEqual(case["lifecycle_line_id"], "2")
+        self.assertEqual(result["unidentified_cases"], 1)
+        self.assertEqual([m for m in self.store.inventory_movements if m[1] == "EXCHANGE_REPLACEMENT_OUT"], [])
+
+    def test_f5_reasons_follow_billing_rules(self):
+        from services.invoice_service import REASONS
+        self.assertRefused("REASON_REQUIRED", ExchangeDraft("500", ("1",), (manual(reason=None),)))
+        self.assertRefused("REASON_NOTES_REQUIRED", ExchangeDraft("500", ("1",), (manual(reason="OTHER"),)))
+        self.assertRefused("ITEM_TYPE_REQUIRED", ExchangeDraft("500", ("1",), (manual(item_type=None),)))
+        context = self.service.context("500")
+        self.assertEqual([r["code"] for r in context["reasons"]], list(REASONS))       # the authoritative list
+        self.run_exchange(manual(reason="OTHER", notes="القطعة بدون ملصق"))
+        self.assertEqual(self.store.cases[-1]["notes"], "القطعة بدون ملصق")
+
+    def test_manual_making_outside_range_raises_the_same_making_review_as_billing(self):
+        # Category 1 (from item type 2) allows 150–250 ج/جرام; 300 → MAKING_PRICE review, never blocked.
+        preview, _ = self.run_exchange(manual(making="300"))
+        self.assertTrue(preview["making_review_required"])
+        (review,) = self.store.reviews
+        self.assertEqual((review["review_type"], review["invoice_id"]), ("MAKING_PRICE", "500"))
+
+    def test_f7_replacement_takes_exact_weight_from_the_old_gold_stock(self):
+        self.run_exchange(from_old_gold("12.000"))
+        self.assertEqual(self.store.old_gold[1], D("8.000"))               # 20.000 − 12.000 exactly
+        (movement,) = self.store.old_gold_movements
+        self.assertEqual((movement["code"], movement["delta"]), ("EXCHANGE_REPLACEMENT_OUT", D("-12.000")))
+        line = self.store.lifecycle_lines[-1]
+        self.assertEqual((line["source"], line["inventory_item_id"], line["old_gold_movement_id"]),
+                         ("OLD_GOLD_STOCK", None, "1"))
+        self.assertEqual(self.store.cases, [])                                 # F7 is not an unidentified piece
+        self.assertEqual(self.store.lifecycle[0]["details"]["replacement_sources"], ["OLD_GOLD_STOCK"])
+
+    def test_f7_cannot_exceed_the_stock_before_the_exchange(self):
+        d = ExchangeDraft("500", ("1",), (from_old_gold("25.000"),))
+        problems = [p["code"] for p in self.service.preview(d)["blocking_problems"]]
+        self.assertEqual(problems[0], "OLD_GOLD_STOCK_INSUFFICIENT")
+        self.assertRefused("OLD_GOLD_STOCK_INSUFFICIENT", d)
+        # The returned piece becomes RETURNED_PENDING inventory — never old-gold stock for the same exchange.
+        self.run_exchange(from_old_gold("20.000"))
+        self.assertEqual((self.store.old_gold[1], self.store.items["200"]["inventory_status"]),
+                         (D("0.000"), "RETURNED_PENDING"))
+
+    def test_f7_needs_a_description_like_billing(self):
+        self.assertRefused("DESCRIPTION_REQUIRED", ExchangeDraft("500", ("1",), (from_old_gold(description=""),)))
+
+    def test_duplicates_apply_to_identified_pieces_only(self):
+        self.assertRefused("DUPLICATE_REPLACEMENT", ExchangeDraft("500", ("1",), (
+            ReplacementInput("300"), ReplacementInput("300", None, "SEARCH"))))
+        # Two manual pieces with the same description are two pieces (no identity to compare).
+        d = ExchangeDraft("500", ("1",), (manual("5.000"), manual("5.000")))
+        preview = self.service.preview(d)
+        self.assertEqual(preview["replacement_pure_grams"], "8.750")
+        self.finalize(ExchangeDraft("500", ("1",), (manual("5.000"), manual("5.000"))))
+        self.assertEqual(len(self.store.cases), 2)
+
+    def test_every_source_feeds_the_same_calculation(self):
+        results = []
+        for replacement in (ReplacementInput("301", "0"), manual("12.000"), from_old_gold("12.000")):
+            d = ExchangeDraft("500", ("1",), (replacement,))
+            p = self.service.preview(d)
+            results.append((p["valued_delta_grams"], p["gold_amount"], p["price_per_gram"]))
+        self.assertEqual(len(set(results)), 1)                                  # identical result for 12 g 21K
+
+
+class SettlementBarTests(ExchangeTestCase):
+    """The settlement shown with the result (ViewModel display over the service preview)."""
+
+    def model(self, replacement, amount="", account="", method="PHYSICAL_CASH"):
+        from app.viewmodels.exchange_viewmodel import ExchangeViewModel
+        vm = ExchangeViewModel(self.session, self.service)
+        vm._context = self.service.context("500")
+        vm._selected = ["1"]
+        vm._replacements = [dict(replacement, key="r1")]
+        vm._method, vm._amount, vm._account = method, amount, account
+        vm._preview = self.service.preview(vm._draft())
+        return vm
+
+    def identified(self, item_id, weight, pure, making="0"):
+        return {"inventory_item_id": item_id, "identified_by": "SCAN", "making": making, "item_name": "خاتم",
+                "karat": 21, "weight_grams": weight, "pure_grams": pure}
+
+    def test_customer_owes_exposes_money_in(self):
+        s = self.model(self.identified("301", "12.000", "10.500")).settlement
+        self.assertEqual((s["direction"], s["resultLabel"], s["due"], s["needsMoney"], s["moneyLabel"]),
+                         ("CUSTOMER_OWES", "على العميل", "12,464.00 ج", True, "يستلم المحل"))
+        self.assertEqual((s["accountLabel"], s["remainingText"], s["complete"]),
+                         ("على حساب العميل", "المتبقي 12,464.00 ج", False))
+
+    def test_shop_owes_exposes_money_out(self):
+        s = self.model(self.identified("302", "8.000", "7.000")).settlement
+        self.assertEqual((s["resultLabel"], s["due"], s["moneyLabel"], s["accountLabel"]),
+                         ("للعميل", "12,714.00 ج", "يدفع المحل للعميل", "للعميل على حسابه"))
+
+    def test_zero_shows_no_payment(self):
+        vm = self.model(self.identified("300", "10.000", "8.750"))
+        self.assertEqual(vm.settlement, {"direction": "NONE", "resultLabel": "لا يوجد فرق مالي", "due": "",
+                                         "needsMoney": False, "remainingText": "", "complete": True})
+        self.assertTrue(vm.canFinalize)
+
+    def test_account_selector_follows_the_method(self):
+        vm = self.model(self.identified("301", "12.000", "10.500"))
+        self.assertFalse(vm.methodNeedsAccount)
+        vm._method = "INSTAPAY"
+        self.assertTrue(vm.methodNeedsAccount)
+        self.assertEqual([a["name"] for a in vm.bankAccounts], ["حساب المحل"])   # only eligible (BANK) accounts
+
+    def test_customer_account_is_explicit_and_must_complete_exactly(self):
+        part = self.model(self.identified("301", "12.000", "10.500"), amount="10000")
+        self.assertEqual((part.settlement["remainingText"], part.canFinalize), ("المتبقي 2,464.00 ج", False))
+        full = self.model(self.identified("301", "12.000", "10.500"), amount="10000", account="2464")
+        self.assertEqual((full.settlement["remainingText"], full.canFinalize), ("التسوية مكتملة", True))
+        over = self.model(self.identified("301", "12.000", "10.500"), amount="12465")
+        self.assertEqual((over.settlement["complete"], over.canFinalize), (False, False))
+
+    def test_f5_and_f7_use_the_same_settlement(self):
+        bars = []
+        for row in ({"inventory_item_id": None, "identified_by": "MANUAL", "making": "0", "item_name": "خاتم", "karat": 21,
+                     "karat_id": 1, "weight_grams": "12.000", "item_type_id": 2, "reason_code": "NO_BARCODE"},
+                    {"inventory_item_id": None, "identified_by": "OLD_GOLD_STOCK", "making": "0", "item_name": "دبلة",
+                     "karat": 21, "karat_id": 1, "weight_grams": "12.000", "description": "دبلة"},
+                    self.identified("301", "12.000", "10.500")):
+            s = self.model(row).settlement
+            bars.append((s["resultLabel"], s["due"], s["moneyLabel"]))
+        self.assertEqual(len(set(bars)), 1)
+
+    def test_settlement_bar_is_fixed_above_save_not_in_the_scroll(self):
+        from pathlib import Path
+        qml = (Path(__file__).resolve().parents[1] / "qml" / "ExchangeWorkspace.qml").read_text(encoding="utf-8")
+        scroll = qml[qml.index('objectName: "exchangeEditScroll"'):qml.index('objectName: "exchangeSettlementBar"')]
+        bar = qml[qml.index('objectName: "exchangeSettlementBar"'):]
+        for name in ("exchangeMethod", "exchangeBankAccount", "exchangeAmount", "exchangeAccountAmount", "exchangeSave"):
+            self.assertNotIn(f'"{name}"', scroll)                         # never below the fold
+            self.assertIn(f'"{name}"', bar)
+        self.assertLess(bar.index('"exchangeMoneySection"'), bar.index('"exchangeSave"'))    # settle, then save
+        self.assertIn("anchors.bottom: actionBar.top", qml)                                   # scroll ends above it
+
+
+class HistoryPresentationTests(unittest.TestCase):
+    """Presentation only: shop-sold weights and the customer's old gold stay separate."""
+
+    def vm(self, detail):
+        from app.viewmodels.invoice_history_viewmodel import InvoiceHistoryViewModel
+        model = InvoiceHistoryViewModel(AppSession())
+        model._detail = detail
+        return model
+
+    def test_sold_and_old_gold_totals_are_separate(self):
+        model = self.vm({"sale_lines": [{"karat": 21, "weight": D("3.500")}, {"karat": 18, "weight": D("2.250")},
+                                        {"karat": 21, "weight": D("1.000")}],
+                         "old_gold_lines": [{"karat": 21, "weight": D("5.000"), "line_total": D("30000.00")}]})
+        sold = model.soldSummary
+        self.assertEqual((sold["count"], sold["total"]), ("3", "6.750"))
+        self.assertEqual(sold["karats"], [{"karat": "21", "weight": "4.500"}, {"karat": "18", "weight": "2.250"}])
+        old = model.oldGoldSummary
+        self.assertEqual((old["count"], old["total"], old["value"]), ("1", "5.000", "30,000.00 ج"))
+        self.assertEqual(self.vm({"sale_lines": [], "old_gold_lines": []}).oldGoldSummary, {})
+
+    def test_exchange_is_shown_inline_with_its_own_facts_only(self):
+        from services.exchange_service import exchange_summary
+        row = {"lifecycle_id": "2", "source_invoice_id": "23", "source_invoice_number": "26092802",
+               "occurred_at": datetime(2026, 9, 28, 17, 4), "performed_by_name": "admin",
+               "lines": [{"line_role": "RETURNED", "inventory_item_id": "25", "item_name_snapshot": "خاتم",
+                          "barcode_snapshot": None, "karat_value": 21, "weight_grams": D("3.500"),
+                          "pure_weight_grams": D("3.062500"), "making_per_gram": None},
+                         {"line_role": "REPLACEMENT", "inventory_item_id": "26", "item_name_snapshot": "خاتم",
+                          "barcode_snapshot": None, "karat_value": 21, "weight_grams": D("4.000"),
+                          "pure_weight_grams": D("3.500000"), "making_per_gram": D("250.00")}],
+               "payments": [{"payment_method_code": "PHYSICAL_CASH", "direction": "IN", "amount": D("3242.00"),
+                             "bank_account_name": None}],
+               "returned_pure_grams": D("3.062500"), "replacement_pure_grams": D("3.500000"),
+               "pure_delta_grams": D("0.437500"), "valuation_basis": "SAME_KARAT", "valued_delta_grams": D("0.500000"),
+               "price_basis": "SHOP_SELL", "price_karat_value": 21, "price_per_gram": D("6234.0000"),
+               "gold_amount": D("3117.00"), "making_charge": D("125.00"), "making_refund": D("0.00"),
+               "making_refund_eligible": 0, "signed_amount": D("3242.00"), "money_received": D("3242.00"),
+               "money_paid": D("0.00"), "account_signed": D("0.00"), "notes": None}
+        (x,) = self.vm({"exchanges": [exchange_summary(row)]}).exchanges
+        self.assertEqual((x["code"], x["directionText"], x["amount"]), ("EX000002", "على العميل", "3,242.00 ج"))
+        self.assertEqual(x["deltaText"], "فرق الوزن ⁦+0.500⁩")
+        self.assertEqual([p["weight"] for p in x["returned"] + x["replacements"]], ["3.500", "4.000"])
+        self.assertIn("مصنعية الذهب الزائد 125.00 ج", x["makingText"])
+        self.assertEqual((x["moneyTitle"], x["money"], x["accountText"]), ("المستلم من العميل", "نقدي: 3,242.00 ج", ""))
+
+    # ---- directional money wording (never the ambiguous «الدفع الفعلي»)
+    def direction(self, received, paid):
+        from app.viewmodels.invoice_history_viewmodel import InvoiceHistoryViewModel
+        return InvoiceHistoryViewModel.money_direction({"money_received": D(received), "money_paid": D(paid)})
+
+    def test_sale_shows_received_from_customer(self):
+        self.assertEqual(self.direction("22519.00", "0.00"), ("المستلم من العميل", "22,519.00 ج"))
+
+    def test_old_gold_purchase_shows_paid_to_customer(self):
+        self.assertEqual(self.direction("0.00", "20800.00"), ("المدفوع للعميل", "20,800.00 ج"))
+
+    def test_mixed_invoice_follows_the_saved_money_direction(self):
+        # Sale + customer old gold: the saved legs decide, not the presence of old gold.
+        self.assertEqual(self.direction("5000.00", "0.00")[0], "المستلم من العميل")
+        self.assertEqual(self.direction("0.00", "3000.00")[0], "المدفوع للعميل")
+
+    def test_no_money_is_never_shown_as_a_direction(self):
+        self.assertEqual(self.direction("0.00", "0.00"), ("لا يوجد دفع فعلي", ""))
+
+    def exchange_row(self, signed, received, paid, account="0.00", payments=()):
+        from services.exchange_service import exchange_summary
+        return exchange_summary({
+            "lifecycle_id": "9", "source_invoice_id": "1", "source_invoice_number": "26092801",
+            "occurred_at": datetime(2026, 9, 28, 12, 0), "performed_by_name": "admin", "lines": [],
+            "payments": [{"payment_method_code": "PHYSICAL_CASH", "direction": d, "amount": D(a),
+                          "bank_account_name": None} for d, a in payments],
+            "returned_pure_grams": D("3.5"), "replacement_pure_grams": D("3.5"), "pure_delta_grams": D("0"),
+            "valuation_basis": "SAME_KARAT", "valued_delta_grams": D("0.000000"), "price_basis": None,
+            "price_karat_value": None, "price_per_gram": None, "gold_amount": D("0.00"), "making_charge": D("0.00"),
+            "making_refund": D("0.00"), "making_refund_eligible": 0, "signed_amount": D(signed),
+            "money_received": D(received), "money_paid": D(paid), "account_signed": D(account), "notes": None})
+
+    def test_exchange_money_titles(self):
+        owes = self.vm({"exchanges": [self.exchange_row("100.00", "100.00", "0.00", payments=[("IN", "100.00")])]})
+        self.assertEqual(owes.exchanges[0]["moneyTitle"], "المستلم من العميل")
+        credit = self.vm({"exchanges": [self.exchange_row("-80.00", "0.00", "80.00", payments=[("OUT", "80.00")])]})
+        self.assertEqual((credit.exchanges[0]["moneyTitle"], credit.exchanges[0]["money"]),
+                         ("المدفوع للعميل", "نقدي: 80.00 ج"))
+        zero = self.vm({"exchanges": [self.exchange_row("0.00", "0.00", "0.00")]}).exchanges[0]
+        self.assertEqual((zero["moneyTitle"], zero["money"], zero["amount"]), ("لا يوجد دفع فعلي", "", ""))
+        # All on the customer account: no real money, and the account stays a separate line.
+        on_account = self.vm({"exchanges": [self.exchange_row("-80.00", "0.00", "0.00", account="-80.00")]}).exchanges[0]
+        self.assertEqual((on_account["moneyTitle"], on_account["accountText"]),
+                         ("لا يوجد دفع فعلي", "حساب العميل: للعميل 80.00 ج"))
+
+    def test_history_page_uses_only_directional_wording_and_the_old_gold_rules(self):
+        from pathlib import Path
+        qml = (Path(__file__).resolve().parents[1] / "qml" / "InvoiceHistoryPage.qml").read_text(encoding="utf-8")
+        self.assertNotIn("الدفع الفعلي", qml)
+        self.assertIn('objectName: "historyCustomerBand"', qml)
+        for rule in ('visible: !detailScroll.d.isOldGoldOnly',                     # gold & making card
+                     'visible: !!historyPage.vm && historyPage.vm.saleLines.length > 0',    # empty sold section
+                     'visible: !!detailRoot.oldGold.count'):                                # empty old-gold section
+            self.assertIn(rule, qml)
+        self.assertNotIn("لا توجد أصناف مباعة", qml)
+
+    def test_history_page_follows_the_owner_order_and_drops_duplicates(self):
+        from pathlib import Path
+        qml = (Path(__file__).resolve().parents[1] / "qml" / "InvoiceHistoryPage.qml").read_text(encoding="utf-8")
+        detail = qml[qml.index("// ============================================================ DETAIL"):]
+        order = [detail.index(f'objectName: "{name}"') for name in (
+            "historyTopRow", "historyCustomerSection", "historyMoneySection", "historyPricesSection",
+            "historyItemsRow", "historyItemsSection", "historyOldGoldSection", "historyExchangesSection",
+            "historyHeaderSection")]
+        self.assertEqual(order, sorted(order))                              # the exact owner order
+        for gone in ("سجل العمليات", "historyTimelineSection", "historyPaymentsSection", "إجمالي المصنعية"):
+            self.assertNotIn(gone, detail)
+        strip = detail[detail.index('objectName: "historySummaryStrip"'):]
+        for field in ('"historyInvoiceTotal"', "detailScroll.d.movedLabel", '"historyAccount"', '"historyFinalizedAt"',
+                      '"historyOperation"'):
+            self.assertIn(field, strip)
+        # The historical price is readable at the page's value level (never a caption, never dashboard size).
+        prices = detail[detail.index('objectName: "historyPricesSection"'):detail.index('objectName: "historyItemsRow"')]
+        self.assertIn("theme.fontSection", prices)
+        self.assertNotIn("fontCaption", prices)
+        self.assertNotIn("fontNumber", prices)
+
+    def test_sold_items_and_old_gold_share_one_row_only_when_both_exist(self):
+        from pathlib import Path
+        qml = (Path(__file__).resolve().parents[1] / "qml" / "InvoiceHistoryPage.qml").read_text(encoding="utf-8")
+        row = qml[qml.index('objectName: "historyItemsRow"'):qml.index('objectName: "historyExchangesSection"')]
+        # Both sections are children of the same two-column row; the row pairs them only for MIXED content.
+        self.assertIn('objectName: "historyItemsSection"', row)
+        self.assertIn('objectName: "historyOldGoldSection"', row)
+        self.assertLess(row.index('"historyItemsSection"'), row.index('"historyOldGoldSection"'))   # sold on the right
+        self.assertIn("columns: detailRoot.itemsPaired ? 2 : 1", row)
+        paired = qml[qml.index("readonly property bool itemsPaired"):]
+        paired = paired[:paired.index("\n\n")]
+        self.assertIn("saleLines.length > 0", paired)
+        self.assertIn("oldGold.count", paired)
+        self.assertNotIn("invoice_type", paired)
+        self.assertEqual(row.count("Layout.preferredWidth: 1; Layout.fillHeight: true"), 2)          # equal weight
+
+    def test_sold_table_keeps_factory_size_and_notes_in_every_mode(self):
+        from pathlib import Path
+        qml = (Path(__file__).resolve().parents[1] / "qml" / "InvoiceHistoryPage.qml").read_text(encoding="utf-8")
+        sold = qml[qml.index('objectName: "historyItemsSection"'):qml.index('objectName: "historySoldTotals"')]
+        header = sold[sold.index('objectName: "historySoldHeader"'):sold.index("Repeater {")]
+        for column in ("المصنع", "المقاس", "ملاحظات", "الصنف", "العيار", "الوزن", "النوع", "الباركود"):
+            line = next(l for l in header.splitlines() if f'"{column}"' in l)
+            self.assertNotIn("visible", line, column)                  # never conditionally hidden
+        self.assertNotIn("visible: detailRoot.wide", sold)
+        self.assertNotIn("!detailRoot.itemsPaired", sold)
+        import re
+        for cell in ('"historySoldFactory_"', '"historySoldSize_"', '"historySoldNotes_"'):
+            block = sold[sold.index(cell):]
+            # No own `visible:` condition (the tooltip's `ToolTip.visible` is fine).
+            self.assertIsNone(re.search(r"(?<!ToolTip\.)\bvisible:", block[:block.index("}")]), cell)
+        self.assertIn('soldRow.modelData.factory || "—"', sold)                 # neutral placeholder
+        self.assertIn('soldRow.modelData.size || "—"', sold)
+        self.assertEqual(sold.count("ToolTip.text: value"), 4)                  # factory, type, barcode, notes
+
+    def test_paired_tables_pad_the_shorter_one_with_visual_rows_only(self):
+        from pathlib import Path
+        qml = (Path(__file__).resolve().parents[1] / "qml" / "InvoiceHistoryPage.qml").read_text(encoding="utf-8")
+        # target_rows = max(sold, old gold); the shorter paired table gets (target - its rows) empty Items.
+        self.assertIn("Math.max(historyPage.vm.saleLines.length, historyPage.vm.oldGoldLines.length)", qml)
+        for filler, lines in (("historySoldFillers", "saleLines"), ("historyOldGoldFillers", "oldGoldLines")):
+            block = qml[qml.index(f'objectName: "{filler}"'):]
+            block = block[:block.index("}\n                    }") if "}\n                    }" in block else 400]
+            self.assertIn("detailRoot.itemsPaired && historyPage.vm", block)        # paired mode only
+            self.assertIn(f"detailRoot.targetRows - historyPage.vm.{lines}.length", block)
+            self.assertIn("delegate: Item {", block)                               # visual only, no data
+        # Both tables use one fixed row height, so padded bodies end on the same line.
+        self.assertEqual(qml.count("Layout.preferredHeight: detailRoot.rowHeight"), 4)
+        # The totals come from the saved lines only: fillers never enter counts or weights.
+        model = self.vm({"sale_lines": [{"karat": 21, "weight": D("3.500")}] * 3,
+                         "old_gold_lines": [{"karat": 21, "weight": D("3.500"), "line_total": D("20915.98")}]})
+        self.assertEqual((model.soldSummary["count"], model.soldSummary["total"]), ("3", "10.500"))
+        self.assertEqual((model.oldGoldSummary["count"], model.oldGoldSummary["total"]), ("1", "3.500"))
+
+    def test_weights_show_no_unit_but_money_keeps_its_currency(self):
+        from app.formatting import grams, money
+        self.assertEqual(grams(D("3.500")), "3.500")
+        self.assertEqual(grams(D("7")), "7.000")
+        self.assertEqual(money(D("24000")), "24,000.00 ج")                     # currency stays
+        model = self.vm({"sale_lines": [{"karat": 21, "weight": D("4.500")}, {"karat": 18, "weight": D("2.250")}],
+                         "old_gold_lines": []})
+        self.assertEqual(model.soldSummary["karats"], [{"karat": "21", "weight": "4.500"},
+                                                       {"karat": "18", "weight": "2.250"}])
+        from pathlib import Path
+        root = Path(__file__).resolve().parents[1] / "qml"
+        history = (root / "InvoiceHistoryPage.qml").read_text(encoding="utf-8")
+        billing = (root / "InvoicePage.qml").read_text(encoding="utf-8")
+        self.assertNotIn(" جم", history)
+        self.assertNotIn("/جم", history)
+        self.assertIn('HeadCell { text: "الوزن"', billing)
+        self.assertNotIn('model.weight + " جم"', billing)
+
+    def test_weight_unit_is_written_jaram_never_jm(self):
+        """Weight unit = جرام (only where a unit is needed); currency = ج; labelled weights stay unitless."""
+        import re
+        from pathlib import Path
+        from app.formatting import grams, money
+        from services.exchange_service import MAKING_REQUIRED_TEXT
+        root = Path(__file__).resolve().parents[1]
+        standalone = re.compile(r"(?<![ء-ي])جم(?![ء-ي])")
+        for folder in ("app", "services", "repositories", "qml"):
+            for path in (root / folder).rglob("*"):
+                if path.suffix in (".py", ".qml"):
+                    self.assertIsNone(standalone.search(path.read_text(encoding="utf-8")), str(path))
+        self.assertIn("ج/جرام", MAKING_REQUIRED_TEXT)                              # rate wording
+        qml = (root / "qml" / "ExchangeWorkspace.qml").read_text(encoding="utf-8")
+        self.assertIn('"مصنعية ج/جرام"', qml)
+        main = (root / "qml" / "Main.qml").read_text(encoding="utf-8")
+        for label in ("سعر بيع 21 / جرام", "سعر شراء 21 / جرام", '"ذهب/جرام: "', '"شراء/جرام: "', '" ج/جرام"'):
+            self.assertIn(label, main)
+        self.assertEqual(grams(D("3.500")), "3.500")                                # labelled: still unitless
+        self.assertEqual(money(D("24000")), "24,000.00 ج")                          # currency unchanged
+
+    def test_top_row_cards_share_one_height_and_prices_are_readable(self):
+        from pathlib import Path
+        qml = (Path(__file__).resolve().parents[1] / "qml" / "InvoiceHistoryPage.qml").read_text(encoding="utf-8")
+        top = qml[qml.index('objectName: "historyTopRow"'):qml.index('objectName: "historyItemsRow"')]
+        self.assertEqual(top.count("Layout.fillHeight: true"), 3)
+        self.assertNotIn("Qt.AlignTop", top)
+        prices = top[top.index('"historyPricesSection"'):]
+        self.assertEqual(prices.count("font.pixelSize: theme.fontSection"), 3)  # karat + sell + buy
+        self.assertNotIn("fontCaption", prices)
+        self.assertNotIn("fontNumber", prices)                                   # not dashboard-size
+
+    def test_historical_prices_show_only_the_used_karats(self):
+        snapshots = [{"karat": k, "sell": D(s), "buy": D(b), "source": "GOLDTIMO"}
+                     for k, s, b in ((18, "5344", "5322"), (21, "6234", "6209"), (24, "7125", "7096"))]
+        only21 = self.vm({"sale_lines": [{"karat": 21, "weight": D("3.500")}], "old_gold_lines": [],
+                          "price_snapshots": snapshots})
+        self.assertEqual([(p["karat"], p["sell"], p["buy"]) for p in only21.priceSnapshots],
+                         [("21", "6,234.00 ج", "6,209.00 ج")])
+        # Sold 21K + customer old gold 18K: exactly those two karats.
+        mixed = self.vm({"sale_lines": [{"karat": 21, "weight": D("1")}],
+                         "old_gold_lines": [{"karat": 18, "weight": D("2"), "line_total": D("1")}],
+                         "price_snapshots": snapshots})
+        self.assertEqual([p["karat"] for p in mixed.priceSnapshots], ["18", "21"])
+
+    # ---- invoice kind from CONTENT, independent of the money direction
+    def invoice_detail(self, *, sold, old_gold, received="0.00", paid="0.00", stored_type="MIXED"):
+        from services.invoice_history_service import transaction_kind
+        sale_lines = [{"karat": 21, "weight": D("3.500"), "kind": "INVENTORY", "inventory_item_id": str(40 + i)}
+                      for i in range(sold)]
+        old_lines = [{"karat": 21, "weight": D("15.000"), "line_total": D("91811.85")} for _ in range(old_gold)]
+        return {"economics": {"gold_value": None, "average_making": None, "making_total": None, "making_status": None},
+                "customer": {}, "net_direction": "SHOP_PAYS_CUSTOMER" if D(paid) else "CUSTOMER_PAYS_SHOP",
+                "account_signed": D("0.00"), "is_legacy": False, "sale_lines": sale_lines, "old_gold_lines": old_lines,
+                "transaction_kind": transaction_kind(sale_lines, old_lines),
+                "invoice_id": "30", "invoice_number": "26092808", "finalized_at": datetime(2026, 9, 28, 18, 0),
+                # The stored type is deliberately NOT trusted for the presentation.
+                "invoice_type": stored_type, "invoice_status": "FINALIZED", "settlement_status": "SETTLED",
+                "legacy_label": "", "invoice_total": D("22000.00"), "money_received": D(received),
+                "money_paid": D(paid), "payments": [], "can_see_manager_details": False, "buy_total": D("91811.85")}
+
+    def shown(self, **kwargs):
+        model = self.vm({})
+        model._detail = self.invoice_detail(**kwargs)
+        return model.detail
+
+    def test_kind_sold_only_is_sale(self):
+        d = self.shown(sold=1, old_gold=0, received="22000.00", stored_type="SELL")
+        self.assertEqual((d["transactionKind"], d["typeText"], d["isOldGoldOnly"]), ("SALE", "بيع", False))
+
+    def test_kind_old_gold_only_is_old_gold_purchase(self):
+        d = self.shown(sold=0, old_gold=1, paid="20800.00", stored_type="BUY")
+        self.assertEqual((d["transactionKind"], d["typeText"], d["isOldGoldOnly"]),
+                         ("OLD_GOLD_PURCHASE", "شراء كسر", True))
+
+    def test_kind_sold_and_old_gold_is_mixed_whatever_the_money_direction(self):
+        for received, paid in (("24000.00", "0.00"), ("0.00", "22000.00")):
+            with self.subTest(received=received, paid=paid):
+                d = self.shown(sold=2, old_gold=1, received=received, paid=paid)
+                self.assertEqual((d["transactionKind"], d["typeText"], d["isOldGoldOnly"]),
+                                 ("MIXED", "بيع مع كسر", False))
+                self.assertEqual(d["movedLabel"], "المستلم من العميل" if D(received) else "المدفوع للعميل")
+
+    def test_regression_mixed_content_with_a_buy_stored_type_is_still_mixed(self):
+        # The failing shape: sold piece + customer old gold, money OUT, stored type BUY.
+        d = self.shown(sold=1, old_gold=1, paid="22000.00", stored_type="BUY")
+        self.assertEqual((d["typeText"], d["settlementText"], d["isOldGoldOnly"], d["movedLabel"]),
+                         ("بيع مع كسر", "مسددة", False, "المدفوع للعميل"))
+
+    def test_mixed_page_shows_both_item_sections_and_pure_old_gold_hides_the_sold_one(self):
+        from pathlib import Path
+        qml = (Path(__file__).resolve().parents[1] / "qml" / "InvoiceHistoryPage.qml").read_text(encoding="utf-8")
+        # The sold section depends on the sold lines only; the old-gold section on the old-gold lines only;
+        # the gold / making card is hidden ONLY for a pure old-gold purchase.
+        self.assertIn('visible: !!historyPage.vm && historyPage.vm.saleLines.length > 0', qml)
+        self.assertIn('visible: !!detailRoot.oldGold.count', qml)
+        self.assertIn('visible: !detailScroll.d.isOldGoldOnly', qml)
+        self.assertNotIn("invoice_type", qml)
+        mixed = self.vm({})
+        mixed._detail = self.invoice_detail(sold=1, old_gold=1, paid="22000.00", stored_type="BUY")
+        self.assertEqual((len(mixed._detail["sale_lines"]), mixed.oldGoldSummary["count"], mixed.soldSummary["count"]), (1, "1", "1"))
+        pure = self.vm({})
+        pure._detail = self.invoice_detail(sold=0, old_gold=1, paid="20800.00", stored_type="BUY")
+        self.assertEqual((pure.soldSummary["count"], pure.detail["isOldGoldOnly"]), ("0", True))
+
+    def test_final_strip_money_fields_stay_separate(self):
+        from app.viewmodels.invoice_history_viewmodel import InvoiceHistoryViewModel
+        model = self.vm({})
+        model._detail = {
+            "economics": {"gold_value": None, "average_making": None, "making_total": None, "making_status": None},
+            "customer": {}, "net_direction": "SHOP_PAYS_CUSTOMER", "account_signed": D("-80.00"),
+            "is_legacy": False, "sale_lines": [], "old_gold_lines": [{"karat": 21, "weight": D("3.5"), "line_total": D("1")}],
+            "invoice_id": "7", "invoice_number": "26092807", "finalized_at": datetime(2026, 9, 28, 17, 54),
+            "invoice_type": "BUY", "invoice_status": "FINALIZED", "settlement_status": "SETTLED",
+            "legacy_label": "", "invoice_total": D("20880.00"), "money_received": D("0.00"),
+            "money_paid": D("20800.00"), "payments": [{"method_code": "PHYSICAL_CASH", "direction": "OUT",
+                                                       "amount": D("20800.00")}],
+            "can_see_manager_details": False, "buy_total": D("20880.00")}
+        d = model.detail
+        self.assertIsInstance(model, InvoiceHistoryViewModel)
+        self.assertEqual((d["movedLabel"], d["movedAmount"], d["paymentMethods"]),
+                         ("المدفوع للعميل", "20,800.00 ج", "نقدي"))
+        self.assertEqual(d["accountText"], "للعميل: 80.00 ج")                     # never merged into the money
+        self.assertEqual((d["typeText"], d["settlementText"]), ("شراء كسر", "مسددة"))
+        self.assertTrue(d["isOldGoldOnly"])
+        self.assertEqual(d["finalizedAt"], "⁦2026-09-28 17:54⁩")
+
+
+class HistoryExchangeActionTests(unittest.TestCase):
+    def test_exchange_action_hides_when_every_stock_piece_was_exchanged(self):
+        lines = [{"kind": "INVENTORY", "inventory_item_id": "25"}, {"kind": "MANUAL", "inventory_item_id": None}]
+        taken = [{"returned": [{"inventory_item_id": "25"}]}]
+        self.assertTrue(InvoiceHistoryService._has_unexchanged_piece(lines, []))
+        self.assertFalse(InvoiceHistoryService._has_unexchanged_piece(lines, taken))
+        self.assertTrue(InvoiceHistoryService._has_unexchanged_piece(
+            lines + [{"kind": "INVENTORY", "inventory_item_id": "26"}], taken))
 
 
 class HistoryTimelineTests(unittest.TestCase):

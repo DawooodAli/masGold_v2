@@ -16,7 +16,11 @@ Item {
 
     Theme { id: theme }
 
-    onVisibleChanged: if (visible && vm) { vm.activate(); focusSearch() }
+    onVisibleChanged: if (visible && vm) { vm.activate(); syncDates(); focusSearch() }
+    // Also when the page is visible from the start (activate() runs once; later calls do nothing).
+    Component.onCompleted: if (visible && vm) { vm.activate(); syncDates() }
+    // The date pickers hold a draft until تطبيق; after any range change they show the applied range.
+    function syncDates() { if (vm) { fromField.value = vm.dateFrom; toField.value = vm.dateTo } }
     // Scanner-friendly: the search box has focus when History opens and after closing an invoice.
     function focusSearch() { if (!detailMode) Qt.callLater(function() { searchField.forceActiveFocus() }) }
     onDetailModeChanged: focusSearch()
@@ -151,12 +155,14 @@ Item {
                 onTextEdited: historyPage.vm.setSearchText(text)
                 onAccepted: historyPage.vm.submitSearch(text)
             }
-            Btn { objectName: "historyToday"; text: "اليوم"; onClicked: historyPage.vm.setToday() }
-            Field { id: fromField; objectName: "historyDateFrom"; width: 104; placeholderText: activeFocus ? "" : "من 2026-09-01"
-                    text: historyPage.vm ? historyPage.vm.dateFrom : "" }
-            Field { id: toField; objectName: "historyDateTo"; width: 104; placeholderText: activeFocus ? "" : "إلى 2026-09-30"
-                    text: historyPage.vm ? historyPage.vm.dateTo : "" }
-            Btn { objectName: "historyApplyDates"; text: "تطبيق"; onClicked: historyPage.vm.setDateRange(fromField.text, toField.text) }
+            // اليوم: the default view (active on open); gold while today is the range.
+            Btn { objectName: "historyToday"; text: "اليوم"; primary: !!historyPage.vm && historyPage.vm.todayActive
+                  onClicked: { historyPage.vm.setToday(); historyPage.syncDates() } }
+            DateField { id: fromField; objectName: "historyDateFrom"; placeholder: "من"; width: 138 }
+            DateField { id: toField; objectName: "historyDateTo"; placeholder: "إلى"; width: 138 }
+            // One query with the chosen range (custom range: اليوم is no longer active).
+            Btn { objectName: "historyApplyDates"; text: "تطبيق"
+                  onClicked: { historyPage.vm.setDateRange(fromField.value, toField.value); historyPage.syncDates() } }
             Choice {
                 objectName: "historyType"
                 width: 118
@@ -171,7 +177,10 @@ Item {
                         { code: "PARTIAL", text: "مسددة جزئياً" }, { code: "UNSETTLED", text: "غير مسددة" }]
                 onActivated: historyPage.vm.setStatusFilter(currentValue)
             }
-            Btn { objectName: "historyClear"; text: "مسح"; onClicked: { searchField.text = ""; historyPage.vm.clearFilters() } }
+            Btn { objectName: "historyClear"; text: "مسح"
+                  onClicked: { searchField.text = ""; historyPage.vm.clearFilters(); historyPage.syncDates() } }
+            Txt { objectName: "historyRangeText"; height: 30; value: historyPage.vm ? historyPage.vm.rangeText : ""
+                  color: historyPage.vm && historyPage.vm.todayActive ? theme.gold : theme.textSecondary; font.bold: true }
         }
 
         Txt { objectName: "historyError"; Layout.fillWidth: true; visible: value.length > 0
@@ -282,11 +291,30 @@ Item {
     }
 
     // ============================================================ DETAIL
+    // One operational page: the key figures first, then what was sold (weights), the customer's old
+    // gold (its own section), this invoice's exchanges inline, and the money / prices / timeline.
     Item {
         id: detailRoot
         anchors.fill: parent
         visible: historyPage.detailMode
         readonly property var d: historyPage.vm ? historyPage.vm.detail : ({})
+        readonly property var sold: historyPage.vm ? historyPage.vm.soldSummary : ({})
+        readonly property var oldGold: historyPage.vm ? historyPage.vm.oldGoldSummary : ({})
+        readonly property bool wide: width >= 1100
+        // Sold pieces beside customer old gold (only when both exist and two columns stay readable).
+        // Compact sold-table widths: half width beside the old gold, or a narrow window.
+        readonly property bool tableCompact: itemsPaired || width < 1100
+        // One row height for both tables; the shorter paired table is padded up to the longer one.
+        readonly property int rowHeight: 30
+        readonly property int targetRows: historyPage.vm
+                                          ? Math.max(historyPage.vm.saleLines.length, historyPage.vm.oldGoldLines.length) : 0
+        readonly property bool itemsPaired: !!historyPage.vm && historyPage.vm.saleLines.length > 0
+                                            && !!oldGold.count && width >= 1000
+
+        function directionColor(direction) {
+            return direction === "CUSTOMER_OWES" ? theme.accountReceivable
+                 : direction === "SHOP_OWES" ? theme.accountPayable : theme.textSecondary
+        }
 
         RowLayout {
             id: detailBar
@@ -295,9 +323,9 @@ Item {
             layoutDirection: Qt.RightToLeft
             spacing: 8
             Btn { objectName: "historyBack"; text: "رجوع  ⁦Esc⁩"; onClicked: historyPage.vm.closeDetail() }
-            Txt { value: parent.parent.d.number ? "فاتورة " + parent.parent.d.number : ""; color: theme.gold
+            Txt { value: detailRoot.d.number ? "فاتورة " + detailRoot.d.number : ""; color: theme.gold
                   font.bold: true; font.pixelSize: theme.fontPageTitle }
-            Txt { value: parent.parent.d.legacyLabel || ""; visible: value.length > 0; color: theme.amber }
+            Txt { value: detailRoot.d.legacyLabel || ""; visible: value.length > 0; color: theme.amber }
             Item { Layout.fillWidth: true }
             Txt { objectName: "historyReprintMessage"; value: historyPage.vm ? historyPage.vm.reprintMessage : ""
                   visible: value.length > 0; color: historyPage.vm && historyPage.vm.reprintFailed ? theme.red : theme.green }
@@ -307,8 +335,8 @@ Item {
                   visible: !!detailRoot.d.canExchange && typeof exchangeVM !== "undefined"
                   onClicked: exchangeVM.open(detailRoot.d.invoiceId) }
             Btn { objectName: "historyReprint"; primary: true
-                  text: historyPage.vm && historyPage.vm.reprintBusy ? "جاري الطباعة..." : "🖨  إعادة طباعة"
-                  visible: !!parent.parent.d.canReprint
+                  text: historyPage.vm && historyPage.vm.reprintBusy ? "جاري الطباعة..." : "إعادة طباعة"
+                  visible: !!detailRoot.d.canReprint
                   enabled: !!historyPage.vm && !historyPage.vm.reprintBusy
                   onClicked: historyPage.vm.reprint() }
         }
@@ -328,9 +356,8 @@ Item {
             clip: true
             contentWidth: availableWidth
             ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
-            visible: !!parent.d.number
-            readonly property var d: parent.d
-            readonly property int cardColumns: width >= 1100 ? 3 : width >= 700 ? 2 : 1
+            visible: !!detailRoot.d.number
+            readonly property var d: detailRoot.d
 
             ColumnLayout {
                 width: detailScroll.availableWidth
@@ -339,162 +366,320 @@ Item {
                 Txt { Layout.fillWidth: true; visible: value.length > 0; value: detailScroll.d.incompleteText || ""
                       color: theme.amber }
 
+                // ============ 1. العميل | الذهب والمصنعية | سعر الذهب وقت الفاتورة (compact, one row)
                 GridLayout {
+                    objectName: "historyTopRow"
                     Layout.fillWidth: true
-                    columns: detailScroll.cardColumns
+                    // Pure شراء كسر has no gold / making card: two cards share the width.
+                    columns: detailRoot.width >= 1000 ? (detailScroll.d.isOldGoldOnly ? 2 : 3)
+                             : (detailRoot.width >= 700 ? 2 : 1)
                     layoutDirection: Qt.RightToLeft
                     columnSpacing: 8; rowSpacing: 8
 
                     Section {
-                        objectName: "historyHeaderSection"
-                        Layout.alignment: Qt.AlignTop
-                        title: "الفاتورة"
-                        Pair { label: "رقم الفاتورة"; value: detailScroll.d.number || ""; strong: true; valueColor: theme.gold }
-                        Pair { objectName: "historyFinalizedAt"; label: "تاريخ ووقت الحفظ"; value: detailScroll.d.finalizedAt || "" }
-                        Pair { label: "نوع العملية"; value: detailScroll.d.typeText || "" }
-                        Pair { label: "الحالة"; value: detailScroll.d.settlementText || "" }
-                        Pair { label: "البائع"; value: detailScroll.d.salesperson || "" }
-                        Pair { label: "حُفظت بواسطة"; value: detailScroll.d.finalizedBy || "" }
-                    }
-                    Section {
                         objectName: "historyCustomerSection"
-                        Layout.alignment: Qt.AlignTop
+                        Layout.fillHeight: true             // same top / bottom line as its neighbours
+                        Layout.preferredWidth: 3
                         title: "العميل"
                         accent: theme.accountReceivable
-                        Pair { objectName: "historyCustomerName"; label: "الاسم"; value: detailScroll.d.customerName || ""; strong: true }
-                        Pair { label: "التليفون"; value: detailScroll.d.customerMobile || "—" }
-                        Pair { label: "العنوان"; value: detailScroll.d.customerPlace || "—" }
-                        Pair { label: "كود العميل"; value: detailScroll.d.customerCode || "—" }
+                        Flow {
+                            objectName: "historyCustomerBand"
+                            Layout.fillWidth: true
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 18
+                            Figure { objectName: "historyCustomerName"; label: "الاسم"; value: detailScroll.d.customerName || "" }
+                            Figure { label: "التليفون"; value: detailScroll.d.customerMobile || "—" }
+                            Figure { label: "العنوان"; value: detailScroll.d.customerPlace || "—" }
+                            Figure { label: "البائع"; value: detailScroll.d.salesperson || "—" }
+                            Figure { label: "حُفظت بواسطة"; value: detailScroll.d.finalizedBy || "—" }
+                        }
                     }
                     Section {
                         objectName: "historyMoneySection"
-                        Layout.alignment: Qt.AlignTop
-                        title: "الملخص المالي"
+                        Layout.fillHeight: true             // same top / bottom line as its neighbours
+                        Layout.preferredWidth: 2
+                        // Nothing was sold from the shop: no gold value / making to show (no empty card).
+                        visible: !detailScroll.d.isOldGoldOnly
+                        title: "الذهب والمصنعية"
                         accent: theme.priceSell
-                        Pair { objectName: "historyInvoiceTotal"; label: "إجمالي الفاتورة"; value: detailScroll.d.invoiceTotal || ""
-                               strong: true; valueColor: theme.priceSell }
-                        Pair { objectName: "historyMoved"; label: detailScroll.d.movedLabel || ""; value: detailScroll.d.movedAmount || "" }
-                        Pair { objectName: "historyAccount"; label: "حساب العميل (هذه الفاتورة)"; value: detailScroll.d.accountText || ""
-                               valueColor: detailScroll.d.accountDirection === "CUSTOMER_OWES" ? theme.accountReceivable
-                                         : detailScroll.d.accountDirection === "SHOP_OWES" ? theme.accountPayable : theme.textSecondary }
-                        Pair { objectName: "historyGoldValue"; label: "قيمة الذهب المباع"; value: detailScroll.d.goldValue || "" }
-                        Pair { objectName: "historyAverageMaking"; label: "متوسط المصنعية"; value: detailScroll.d.averageMaking || "" }
-                        Pair { objectName: "historyMakingTotal"; label: "إجمالي المصنعية (للمدير)"; visible: !!detailScroll.d.showManager
-                               value: detailScroll.d.makingTotal || "" }
-                        Pair { label: "صافي الكسر"; visible: (detailScroll.d.oldGoldTotal || "").length > 0
-                               value: detailScroll.d.oldGoldTotal || "" }
-                    }
-                }
-
-                Section {
-                    objectName: "historyItemsSection"
-                    title: "الأصناف المباعة"
-                    RowLayout {
-                        Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 10
-                        Head { value: "م"; Layout.preferredWidth: 22 }
-                        Head { value: "الصنف"; Layout.fillWidth: true; Layout.minimumWidth: 90 }
-                        Head { value: "المصنع"; Layout.preferredWidth: 80 }
-                        Head { value: "العيار"; Layout.preferredWidth: 40 }
-                        Head { value: "الوزن"; Layout.preferredWidth: 80 }
-                        Head { value: "العدد"; Layout.preferredWidth: 36 }
-                        Head { value: "المقاس"; Layout.preferredWidth: 44 }
-                        Head { value: "النوع"; Layout.preferredWidth: 170 }
-                        Head { value: "ملاحظات"; Layout.preferredWidth: 120 }
-                    }
-                    Repeater {
-                        model: historyPage.vm ? historyPage.vm.saleLines : []
-                        delegate: RowLayout {
-                            required property var modelData
-                            required property int index
-                            objectName: "historySaleLine_" + index
-                            Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 10
-                            Txt { value: modelData.serial; Layout.preferredWidth: 22 }
-                            Txt { value: modelData.item; color: theme.textPrimary; Layout.fillWidth: true; Layout.minimumWidth: 90 }
-                            Txt { value: modelData.factory; Layout.preferredWidth: 80 }
-                            Txt { value: modelData.karat; Layout.preferredWidth: 40 }
-                            Txt { value: modelData.weight; color: theme.textPrimary; Layout.preferredWidth: 80 }
-                            Txt { value: modelData.qty; Layout.preferredWidth: 36 }
-                            Txt { value: modelData.size; Layout.preferredWidth: 44 }
-                            Txt { value: modelData.kindText; Layout.preferredWidth: 170
-                                  color: modelData.manual ? theme.amber : modelData.fromOldGold ? theme.balanceKarat21 : theme.textMuted
-                                  font.pixelSize: theme.fontTableHeader }
-                            Txt { value: modelData.notes; color: theme.textMuted; Layout.preferredWidth: 120 }
-                        }
-                    }
-                    Txt { visible: !historyPage.vm || historyPage.vm.saleLines.length === 0; value: "لا توجد أصناف مباعة"
-                          color: theme.textMuted }
-                }
-
-                GridLayout {
-                    Layout.fillWidth: true
-                    columns: detailScroll.cardColumns
-                    layoutDirection: Qt.RightToLeft
-                    columnSpacing: 8; rowSpacing: 8
-
-                    Section {
-                        objectName: "historyPaymentsSection"
-                        Layout.alignment: Qt.AlignTop
-                        title: "الدفع الفعلي"
-                        accent: theme.priceBuy
-                        Repeater {
-                            model: historyPage.vm ? historyPage.vm.payments : []
-                            delegate: Pair { required property var modelData
-                                             label: modelData.method + " (" + modelData.directionText + ")"
-                                             value: modelData.amount }
-                        }
-                        Txt { visible: !historyPage.vm || historyPage.vm.payments.length === 0; value: "لا توجد مبالغ فعلية"
-                              color: theme.textMuted }
-                    }
-                    Section {
-                        objectName: "historyOldGoldSection"
-                        Layout.alignment: Qt.AlignTop
-                        title: "كسر من العميل (داخلي)"
-                        accent: theme.balanceKarat21
-                        visible: !!historyPage.vm && historyPage.vm.oldGoldLines.length > 0
-                        Repeater {
-                            model: historyPage.vm ? historyPage.vm.oldGoldLines : []
-                            delegate: Pair { required property var modelData
-                                             label: "كسر " + modelData.karat + " • " + modelData.weight + " • خصم " + modelData.discount
-                                             value: modelData.value }
+                        Flow {
+                            Layout.fillWidth: true
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 18
+                            Figure { objectName: "historyGoldValue"; label: "قيمة الذهب المباع"; value: detailScroll.d.goldValue || "" }
+                            Figure { objectName: "historyAverageMaking"; label: "متوسط المصنعية"; value: detailScroll.d.averageMaking || "" }
                         }
                     }
                     Section {
                         objectName: "historyPricesSection"
-                        Layout.alignment: Qt.AlignTop
+                        Layout.fillHeight: true             // same top / bottom line as its neighbours
+                        Layout.preferredWidth: 2
+                        visible: !!historyPage.vm && historyPage.vm.priceSnapshots.length > 0
                         title: "سعر الذهب وقت الفاتورة"
                         accent: theme.priceSell
+                        // Only the karats used on this invoice, at the page's normal value size.
                         Repeater {
                             model: historyPage.vm ? historyPage.vm.priceSnapshots : []
-                            delegate: Pair { required property var modelData
-                                             label: "عيار " + modelData.karat
-                                             value: "بيع " + modelData.sell + "  •  شراء " + modelData.buy }
+                            delegate: RowLayout {
+                                required property var modelData
+                                objectName: "historyPrice_" + modelData.karat
+                                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 10
+                                Txt { value: "عيار " + modelData.karat; color: theme.textPrimary; font.bold: true
+                                      font.pixelSize: theme.fontSection }
+                                Item { Layout.fillWidth: true }
+                                Txt { objectName: "historyPriceSell_" + modelData.karat; value: "بيع " + modelData.sell
+                                      color: theme.priceSell; font.bold: true; font.pixelSize: theme.fontSection }
+                                Txt { objectName: "historyPriceBuy_" + modelData.karat; value: "شراء " + modelData.buy
+                                      color: theme.priceBuy; font.bold: true; font.pixelSize: theme.fontSection }
+                            }
                         }
-                        Txt { visible: !historyPage.vm || historyPage.vm.priceSnapshots.length === 0
-                              value: "غير متاح"; color: theme.textMuted }
                     }
                 }
 
+                // ============ 2. what changed hands: shop-sold pieces (right) | the customer's old gold (left).
+                // Both present (MIXED, from the lines): one row of two equal cards; one present: full width.
+                GridLayout {
+                    objectName: "historyItemsRow"
+                    Layout.fillWidth: true
+                    columns: detailRoot.itemsPaired ? 2 : 1
+                    layoutDirection: Qt.RightToLeft
+                    columnSpacing: 8; rowSpacing: 8
+                // ============ 2. shop-sold pieces (weights first)
                 Section {
-                    objectName: "historyTimelineSection"
-                    title: "سجل العمليات"
-                    accent: theme.textMuted
+                    objectName: "historyItemsSection"
+                    Layout.preferredWidth: 1; Layout.fillHeight: true      // equal halves when paired
+                    // Nothing sold from the shop (e.g. شراء كسر): no empty block at all.
+                    visible: !!historyPage.vm && historyPage.vm.saleLines.length > 0
+                    title: "الأصناف المباعة من المحل"
+                    accent: theme.priceSell
+                    // ONE table definition for full width and for the half-width (paired / narrow) mode: every column
+                    // stays visible; width pressure is absorbed by compact widths and elide + tooltip, never by
+                    // dropping المصنع / المقاس / ملاحظات.
+                    RowLayout {
+                        objectName: "historySoldHeader"
+                        Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: detailRoot.tableCompact ? 6 : 10
+                        Head { value: "م"; Layout.preferredWidth: detailRoot.tableCompact ? 14 : 20 }
+                        Head { value: "الصنف"; Layout.fillWidth: true; Layout.minimumWidth: detailRoot.tableCompact ? 50 : 90 }
+                        Head { value: "العيار"; Layout.preferredWidth: detailRoot.tableCompact ? 30 : 44 }
+                        Head { value: "الوزن"; Layout.preferredWidth: detailRoot.tableCompact ? 66 : 86 }
+                        Head { value: "المصنع"; Layout.preferredWidth: detailRoot.tableCompact ? 54 : 80 }
+                        Head { value: "المقاس"; Layout.preferredWidth: detailRoot.tableCompact ? 36 : 50 }
+                        Head { value: "النوع"; Layout.preferredWidth: detailRoot.tableCompact ? 70 : 150 }
+                        Head { value: "الباركود"; Layout.preferredWidth: detailRoot.tableCompact ? 50 : 80 }
+                        Head { value: "ملاحظات"; Layout.preferredWidth: detailRoot.tableCompact ? 60 : 110 }
+                    }
                     Repeater {
-                        model: historyPage.vm ? historyPage.vm.timeline : []
-                        delegate: RowLayout {
-                            id: eventRow
+                        model: historyPage.vm ? historyPage.vm.saleLines : []
+                        delegate: Rectangle {
+                            id: soldRow
                             required property var modelData
-                            objectName: "historyEvent_" + modelData.eventType
+                            required property int index
+                            objectName: "historySaleLine_" + index
                             Layout.fillWidth: true
-                            layoutDirection: Qt.RightToLeft
-                            spacing: 8
-                            Pair { label: eventRow.modelData.text + "  •  " + eventRow.modelData.actor
-                                          + (eventRow.modelData.amount ? "  •  " + eventRow.modelData.amount : "")
-                                   value: eventRow.modelData.time }
-                            // The exchange itself, read-only.
-                            Btn { objectName: "historyOpenExchange"; text: "عرض"; implicitHeight: 24
-                                  visible: eventRow.modelData.isExchange && typeof exchangeVM !== "undefined"
-                                  onClicked: exchangeVM.openDetail(eventRow.modelData.linked) }
+                            Layout.preferredHeight: detailRoot.rowHeight
+                            radius: 3
+                            color: index % 2 ? "transparent" : theme.bgSecondary
+                            RowLayout {
+                                anchors.fill: parent
+                                layoutDirection: Qt.RightToLeft; spacing: detailRoot.tableCompact ? 6 : 10
+                                Txt { value: soldRow.modelData.serial; color: theme.textMuted
+                                      Layout.preferredWidth: detailRoot.tableCompact ? 14 : 20 }
+                                Txt { value: soldRow.modelData.item; color: theme.textPrimary; font.bold: true
+                                      font.pixelSize: theme.fontBodyStrong; Layout.fillWidth: true
+                                      Layout.minimumWidth: detailRoot.tableCompact ? 50 : 90 }
+                                Txt { value: soldRow.modelData.karat; Layout.preferredWidth: detailRoot.tableCompact ? 30 : 44 }
+                                Txt { value: soldRow.modelData.weight; color: theme.textPrimary; font.bold: true
+                                      font.pixelSize: theme.fontBodyStrong; Layout.preferredWidth: detailRoot.tableCompact ? 66 : 86 }
+                                Txt { objectName: "historySoldFactory_" + soldRow.index; value: soldRow.modelData.factory || "—"
+                                      Layout.preferredWidth: detailRoot.tableCompact ? 54 : 80
+                                      ToolTip.visible: factoryHover.hovered && truncated; ToolTip.text: value
+                                      HoverHandler { id: factoryHover } }
+                                Txt { objectName: "historySoldSize_" + soldRow.index; value: soldRow.modelData.size || "—"
+                                      Layout.preferredWidth: detailRoot.tableCompact ? 36 : 50 }
+                                Txt { value: soldRow.modelData.kindText; Layout.preferredWidth: detailRoot.tableCompact ? 70 : 150
+                                      color: soldRow.modelData.manual ? theme.amber
+                                           : soldRow.modelData.fromOldGold ? theme.balanceKarat21 : theme.textMuted
+                                      font.pixelSize: theme.fontTableHeader
+                                      ToolTip.visible: kindHover.hovered && truncated; ToolTip.text: value
+                                      HoverHandler { id: kindHover } }
+                                // Barcode: aggressive elide, the full value in the tooltip.
+                                Txt { value: soldRow.modelData.barcode || "—"; color: theme.textMuted
+                                      font.pixelSize: theme.fontTableHeader; Layout.preferredWidth: detailRoot.tableCompact ? 50 : 80
+                                      ToolTip.visible: barcodeHover.hovered && truncated; ToolTip.text: value
+                                      HoverHandler { id: barcodeHover } }
+                                // Notes: one line (never a giant row), elided, full text in the tooltip.
+                                Txt { objectName: "historySoldNotes_" + soldRow.index; value: soldRow.modelData.notes || "—"
+                                      color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                                      Layout.preferredWidth: detailRoot.tableCompact ? 60 : 110
+                                      ToolTip.visible: notesHover.hovered && truncated; ToolTip.text: value
+                                      HoverHandler { id: notesHover } }
+                            }
                         }
+                    }
+                    // Visual-only filler rows (paired mode): never data, never counted, never saved.
+                    Repeater {
+                        objectName: "historySoldFillers"
+                        model: detailRoot.itemsPaired && historyPage.vm
+                               ? Math.max(0, detailRoot.targetRows - historyPage.vm.saleLines.length) : 0
+                        delegate: Item { required property int index
+                                         objectName: "historySoldFiller_" + index
+                                         Layout.fillWidth: true; Layout.preferredHeight: detailRoot.rowHeight }
+                    }
+                    WeightTotals { objectName: "historySoldTotals"; visible: (detailRoot.sold.count || "0") !== "0"
+                                   summary: detailRoot.sold; noun: "قطعة"; accent: theme.priceSell }
+                }
+
+                // ============ 3. the customer's old gold: never mixed with sold pieces
+                Section {
+                    objectName: "historyOldGoldSection"
+                    Layout.preferredWidth: 1; Layout.fillHeight: true
+                    visible: !!detailRoot.oldGold.count
+                    title: "كسر مشترى من العميل"
+                    accent: theme.balanceKarat21
+                    RowLayout {
+                        Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 10
+                        Head { value: "العيار"; Layout.preferredWidth: 44 }
+                        Head { value: "الوزن"; Layout.preferredWidth: 86 }
+                        Head { value: "السعر"; Layout.preferredWidth: 90 }
+                        Head { value: "الخصم"; Layout.preferredWidth: 70 }
+                        Item { Layout.fillWidth: true }
+                        Head { value: "القيمة"; Layout.preferredWidth: 110 }
+                    }
+                    Repeater {
+                        model: historyPage.vm ? historyPage.vm.oldGoldLines : []
+                        // Same fixed row height as the sold table, so paired tables line up row for row.
+                        delegate: Rectangle {
+                            id: oldRow
+                            required property var modelData
+                            required property int index
+                            objectName: "historyOldGoldLine_" + index
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: detailRoot.rowHeight
+                            radius: 3
+                            color: index % 2 ? "transparent" : theme.bgSecondary
+                            RowLayout {
+                                anchors.fill: parent
+                                layoutDirection: Qt.RightToLeft; spacing: 10
+                                Txt { value: oldRow.modelData.karat; Layout.preferredWidth: 44 }
+                                Txt { value: oldRow.modelData.weight; color: theme.textPrimary; font.bold: true
+                                      font.pixelSize: theme.fontBodyStrong; Layout.preferredWidth: 86 }
+                                Txt { value: oldRow.modelData.price; Layout.preferredWidth: 90 }
+                                Txt { value: oldRow.modelData.discount; Layout.preferredWidth: 70 }
+                                Item { Layout.fillWidth: true }
+                                Txt { value: oldRow.modelData.value; color: theme.textPrimary; Layout.preferredWidth: 110 }
+                            }
+                        }
+                    }
+                    // Visual-only filler rows (paired mode): the totals strips of both cards sit on one line.
+                    Repeater {
+                        objectName: "historyOldGoldFillers"
+                        model: detailRoot.itemsPaired && historyPage.vm
+                               ? Math.max(0, detailRoot.targetRows - historyPage.vm.oldGoldLines.length) : 0
+                        delegate: Item { required property int index
+                                         objectName: "historyOldGoldFiller_" + index
+                                         Layout.fillWidth: true; Layout.preferredHeight: detailRoot.rowHeight }
+                    }
+                    WeightTotals { objectName: "historyOldGoldTotals"; summary: detailRoot.oldGold; noun: "بند"; accent: theme.balanceKarat21
+                                   extra: detailRoot.oldGold.value ? "القيمة " + detailRoot.oldGold.value : "" }
+                }
+                }
+
+                // ============ 4. exchanges of this invoice (inline, compact; only exchange facts)
+                Section {
+                    objectName: "historyExchangesSection"
+                    visible: !!historyPage.vm && historyPage.vm.exchanges.length > 0
+                    title: "الاستبدالات"
+                    accent: theme.accountPayable
+                    Repeater {
+                        model: historyPage.vm ? historyPage.vm.exchanges : []
+                        delegate: ColumnLayout {
+                            id: exchangeBlock
+                            required property var modelData
+                            required property int index
+                            objectName: "historyExchange_" + index
+                            Layout.fillWidth: true
+                            spacing: 1
+                            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: theme.border
+                                        visible: exchangeBlock.index > 0 }
+                            RowLayout {
+                                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 10
+                                Txt { value: exchangeBlock.modelData.code; color: theme.gold; font.bold: true
+                                      font.pixelSize: theme.fontBodyStrong }
+                                Txt { value: exchangeBlock.modelData.time + "  •  " + exchangeBlock.modelData.actor
+                                      color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+                                Item { Layout.fillWidth: true }
+                                Txt { value: exchangeBlock.modelData.directionText; font.bold: true
+                                      color: detailRoot.directionColor(exchangeBlock.modelData.direction) }
+                                Txt { value: exchangeBlock.modelData.amount; font.bold: true; font.pixelSize: theme.fontSection
+                                      color: detailRoot.directionColor(exchangeBlock.modelData.direction) }
+                            }
+                            // مرتجع → بديل on one line (weights stay coloured and bold).
+                            Flow {
+                                Layout.fillWidth: true
+                                layoutDirection: Qt.RightToLeft
+                                spacing: 14
+                                Repeater {
+                                    model: exchangeBlock.modelData.returned
+                                    delegate: Txt { required property var modelData
+                                                    value: "مرتجع: " + modelData.item + " عيار " + modelData.karat + " — " + modelData.weight
+                                                    color: theme.accountPayable; font.bold: true }
+                                }
+                                Txt { value: "مقابل"; color: theme.textMuted }      // Cairo has no arrow glyph
+                                Repeater {
+                                    model: exchangeBlock.modelData.replacements
+                                    delegate: Txt { required property var modelData
+                                                    value: "بديل: " + modelData.item + " عيار " + modelData.karat + " — " + modelData.weight
+                                                          + (modelData.source ? " (" + modelData.source + ")" : "")
+                                                    color: theme.priceSell; font.bold: true }
+                                }
+                            }
+                            Txt { Layout.fillWidth: true; color: theme.textSecondary; font.pixelSize: theme.fontTableHeader
+                                  value: [exchangeBlock.modelData.deltaText, exchangeBlock.modelData.priceText,
+                                          exchangeBlock.modelData.goldText, exchangeBlock.modelData.makingText]
+                                         .filter(function(t) { return t.length > 0 }).join("  •  ") }
+                            // Real money (its direction first), the customer account apart, the pending note.
+                            Flow {
+                                Layout.fillWidth: true
+                                layoutDirection: Qt.RightToLeft
+                                spacing: 14
+                                Txt { objectName: "historyExchangeMoney_" + exchangeBlock.index
+                                      value: exchangeBlock.modelData.moneyTitle
+                                             + (exchangeBlock.modelData.money ? ": " + exchangeBlock.modelData.money : "")
+                                      color: theme.textSecondary; font.pixelSize: theme.fontTableHeader }
+                                Txt { visible: value.length > 0; value: exchangeBlock.modelData.accountText
+                                      color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+                                Txt { value: exchangeBlock.modelData.pendingText; color: theme.amber
+                                      font.pixelSize: theme.fontTableHeader }
+                            }
+                        }
+                    }
+                }
+
+                // ============ 5. ONE final financial / transaction strip (the last element)
+                Rectangle {
+                    objectName: "historyHeaderSection"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: figures.implicitHeight + 20
+                    color: theme.panel
+                    radius: theme.radiusSmall
+                    border.color: theme.goldDark
+                    Flow {
+                        id: figures
+                        objectName: "historySummaryStrip"
+                        anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                        anchors.leftMargin: 14; anchors.rightMargin: 14
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 28
+                        Figure { objectName: "historyInvoiceTotal"; label: "إجمالي الفاتورة"; value: detailScroll.d.invoiceTotal || ""
+                                 valueColor: theme.priceSell; big: true }
+                        // Direction from the saved payments (المستلم من العميل / المدفوع للعميل / لا يوجد دفع فعلي).
+                        Figure { objectName: "historyMoved"; label: detailScroll.d.movedLabel || ""
+                                 value: detailScroll.d.movedAmount || "—"; note: detailScroll.d.paymentMethods || "" }
+                        Figure { objectName: "historyAccount"; label: "حساب العميل (هذه الفاتورة)"; value: detailScroll.d.accountText || ""
+                                 valueColor: detailRoot.directionColor(detailScroll.d.accountDirection) }
+                        Figure { objectName: "historyFinalizedAt"; label: "تاريخ ووقت الحفظ"; value: detailScroll.d.finalizedAt || "" }
+                        Figure { objectName: "historyOperation"; label: "العملية"
+                                 value: (detailScroll.d.typeText || "") + " • " + (detailScroll.d.settlementText || "") }
                     }
                 }
 
@@ -502,6 +687,48 @@ Item {
                       value: detailScroll.d.notes ? "ملاحظات: " + detailScroll.d.notes : ""; color: theme.textMuted }
                 Item { Layout.preferredHeight: 4 }
             }
+        }
+    }
+
+    // One key figure: small muted label above a strong value.
+    component Figure: ColumnLayout {
+        property string label: ""
+        property string value: ""
+        property color valueColor: theme.textPrimary
+        property bool big: false
+        property string note: ""            // optional small secondary line (e.g. the payment method)
+        spacing: 0
+        Txt { Layout.alignment: Qt.AlignRight; value: parent.label; color: theme.textMuted; font.pixelSize: theme.fontCaption }
+        Txt { Layout.alignment: Qt.AlignRight; value: parent.value; color: parent.valueColor; font.bold: true
+              font.pixelSize: parent.big ? theme.fontNumber : theme.fontBodyStrong }
+        Txt { Layout.alignment: Qt.AlignRight; visible: value.length > 0; value: parent.note; color: theme.textMuted
+              font.pixelSize: theme.fontCaption }
+    }
+
+    // Count, total grams and grams per karat under a table.
+    component WeightTotals: Rectangle {
+        id: totalsRoot
+        property var summary: ({})
+        property string noun: ""
+        property color accent: theme.gold
+        property string extra: ""
+        Layout.fillWidth: true
+        Layout.preferredHeight: 28
+        radius: 4
+        color: theme.bgTertiary
+        RowLayout {
+            anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10
+            layoutDirection: Qt.RightToLeft; spacing: 14
+            Txt { value: (totalsRoot.summary.count || "0") + " " + totalsRoot.noun; color: theme.textMuted }
+            Txt { value: "الإجمالي " + (totalsRoot.summary.total || ""); color: totalsRoot.accent; font.bold: true
+                  font.pixelSize: theme.fontBodyStrong }
+            Repeater {
+                model: totalsRoot.summary.karats || []
+                delegate: Txt { required property var modelData
+                                value: "عيار " + modelData.karat + ": " + modelData.weight; color: theme.textSecondary }
+            }
+            Item { Layout.fillWidth: true }
+            Txt { value: totalsRoot.extra; visible: value.length > 0; color: theme.textPrimary }
         }
     }
 }

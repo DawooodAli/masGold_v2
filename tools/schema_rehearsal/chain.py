@@ -11,7 +11,7 @@ from tools.schema_rehearsal.guards import RehearsalRefused, prepare_sql
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_DIR = REPO_ROOT / "database" / "schema"
 MANIFEST = SCHEMA_DIR / "SHA256SUMS"
-FIRST, LAST = 1, 19
+FIRST, LAST = 1, 20
 
 
 @dataclass(frozen=True)
@@ -73,7 +73,7 @@ def verify_committed(paths, runner=subprocess.run):
 
 
 def load_chain(schema_dir=SCHEMA_DIR, manifest=MANIFEST, runner=subprocess.run, require_committed=True):
-    """Verified, prepared chain files 001-019, in order."""
+    """Verified, prepared chain files 001-020, in order."""
     names = chain_names(schema_dir)
     entries = read_manifest(manifest)
     if set(entries) != set(names):

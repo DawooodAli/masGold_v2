@@ -54,7 +54,7 @@ def review_details(code, details):
                 f"الأثر على الصافي: {_signed_effect(details.get('effect_on_net_signed'))}"
                 + (f" • البائع {details['salesperson_name']}" if details.get("salesperson_name") else ""))
     if code == "MAKING_PRICE":
-        groups = " • ".join(f"فئة {g.get('category_code') or 'بدون فئة'}: {_num(g.get('average_making_per_gram'))}/جم "
+        groups = " • ".join(f"فئة {g.get('category_code') or 'بدون فئة'}: {_num(g.get('average_making_per_gram'))}/جرام "
                             f"({MAKING_STATUS_TEXT.get(g.get('status'), g.get('status') or '')})"
                             for g in details.get("groups") or [])
         head = (f"سعر البيع الفعلي {_num(details.get('effective_sale_total'))} ج"
@@ -237,7 +237,7 @@ class ManagementReviewViewModel(QObject):
             weight = r.get("observed_weight_grams")
             details = " • ".join(v for v in (
                 r.get("item_type_name") or "", f"عيار {r['karat_value']}" if r.get("karat_value") else "",
-                f"{Decimal(str(weight)):.3f} جم" if weight is not None else "", r.get("factory_name") or "",
+                f"{Decimal(str(weight)):.3f} جرام" if weight is not None else "", r.get("factory_name") or "",
                 f"مقاس {r['observed_size']}" if r.get("observed_size") else "") if v)
             rows.append({"title": f"فاتورة {r.get('invoice_number') or ''}", "time": _time(r.get("sold_at")),
                          "details": details, "reason": REASON_TEXT.get(r.get("reason_code"), r.get("reason") or ""),

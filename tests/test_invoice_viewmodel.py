@@ -194,7 +194,7 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.assertEqual(self.vm.priceRows[1]["karat"], "21")
         self.assertEqual(self.vm.oldGoldDiscountPercent, "1.5")               # settings default, editable
         self.assertEqual([t["name"] for t in self.vm.itemTypes], ["خاتم", "دبلة"])
-        self.assertEqual(self.vm.oldGoldStock, [{"karatId": 1, "karat": "21", "grams": "120.500 جم"}])
+        self.assertEqual(self.vm.oldGoldStock, [{"karatId": 1, "karat": "21", "grams": "120.500"}])
         self.vm.setOldGoldDiscountPercent("2")
         self.vm.newInvoice()
         self.assertEqual(self.vm.oldGoldDiscountPercent, "1.5")               # each invoice starts at the default
@@ -819,7 +819,7 @@ class InvoiceViewModelTests(unittest.TestCase):
 
     def test_formatting_helpers(self):
         self.assertEqual(money("1234.5"), "1,234.50 ج")
-        self.assertEqual(grams("10.5"), "10.500 جم")
+        self.assertEqual(grams("10.5"), "10.500")
         self.assertEqual((balance_text("0"), balance_text("-12.5")), ("لا يوجد رصيد", "للعميل 12.50 ج"))
         self.assertEqual((account_text("3250"), account_text("-1200"), account_text("0")),
                          ("عليه 3,250.00 ج", "له 1,200.00 ج", "الحساب مسدد"))

@@ -23,6 +23,16 @@ _BIGINT_FIELDS = frozenset({
 })
 
 
+# History list: the invoice kind from its saved lines (the same rule as the detail page).
+HISTORY_KIND_FOR_TYPE = {"SELL": "SALE", "BUY": "OLD_GOLD_PURCHASE", "MIXED": "MIXED"}
+_HISTORY_SOLD = ("EXISTS (SELECT 1 FROM invoice_lines hl WHERE hl.invoice_id = i.id "
+                 "AND hl.line_type IN ('SELL_INVENTORY', 'SELL_UNIDENTIFIED', 'SELL_OLD_GOLD'))")
+_HISTORY_OLD = ("EXISTS (SELECT 1 FROM invoice_lines ho WHERE ho.invoice_id = i.id "
+                "AND ho.line_type = 'BUY_OLD_GOLD')")
+_HISTORY_KIND_SQL = (f"(CASE WHEN {_HISTORY_SOLD} AND {_HISTORY_OLD} THEN 'MIXED' "
+                     f"WHEN {_HISTORY_OLD} THEN 'OLD_GOLD_PURCHASE' ELSE 'SALE' END)")
+
+
 class InvoiceNumberExhausted(RuntimeError):
     """All 99 invoice numbers of a business day are used."""
 
@@ -801,11 +811,15 @@ class InvoiceRepository(BaseRepository):
             value = value.replace("!", "!!").replace("%", "!%").replace("_", "!_")
             return ("%" + value + "%") if contains else (value + "%")
         name_sql, name_params = mysql_search_expression("s.customer_name_snapshot")
+        # The invoice KIND from its saved lines (never the stored invoice_type), in the same one query:
+        # two EXISTS probes on invoice_lines(invoice_id) per row of the bounded page — no N+1.
+        kind_sql = _HISTORY_KIND_SQL
+        kind = HISTORY_KIND_FOR_TYPE.get(invoice_type) if invoice_type else None
         rows = self._fetch_all(
             f"""
             SELECT i.id AS invoice_id, i.invoice_number, i.invoice_type, i.invoice_status, i.record_origin,
                    i.invoice_date, i.finalized_at, i.net_amount, i.net_direction, i.settlement_status,
-                   i.sell_total, i.buy_total, i.legacy_bill_number,
+                   i.sell_total, i.buy_total, i.legacy_bill_number, {kind_sql} AS transaction_kind,
                    s.customer_name_snapshot, s.mobile_snapshot, e.name AS employee_name,
                    (SELECT COALESCE(SUM(CASE WHEN p.direction = 'IN' THEN p.amount ELSE 0 END), 0)
                     FROM invoice_payments p WHERE p.invoice_id = i.id) AS money_received,
@@ -820,7 +834,7 @@ class InvoiceRepository(BaseRepository):
                    OR (%s AND {name_sql} LIKE %s ESCAPE '!'))
               AND (%s IS NULL OR i.invoice_date >= %s)
               AND (%s IS NULL OR i.invoice_date < %s)
-              AND (%s IS NULL OR i.invoice_type = %s)
+              AND (%s IS NULL OR {kind_sql} = %s)
               AND (%s IS NULL OR i.settlement_status = %s)
             ORDER BY i.invoice_date DESC, i.id DESC
             LIMIT %s OFFSET %s
@@ -828,7 +842,7 @@ class InvoiceRepository(BaseRepository):
             (not text, escaped(text), escaped(text), escaped(text),
              bool(folded), *name_params, escaped(folded, contains=True),
              date_from, date_from, date_to_exclusive, date_to_exclusive,
-             invoice_type, invoice_type, settlement_status, settlement_status, int(limit), int(offset)))
+             kind, kind, settlement_status, settlement_status, int(limit), int(offset)))
         return [_stringify_ids(row) for row in rows]
 
     def get_invoice_id_by_number(self, invoice_number):

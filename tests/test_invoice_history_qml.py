@@ -51,8 +51,14 @@ class InvoiceHistoryPageTests(page_harness.InvoicePageTests):
             QTest.qWait(150)
             self.assertEqual(vm.detail["invoiceTotal"], "90,000.00 ج")
             for name in ("historyHeaderSection", "historyCustomerSection", "historyMoneySection",
-                         "historyItemsSection", "historyPaymentsSection", "historyTimelineSection"):
+                         "historyItemsSection", "historyPricesSection"):
                 self.assertTrue(self.item(name).property("visible"), f"{name} at {width}x{height}")
+            # Owner layout: no separate payment card and no visible operations log.
+            for name in ("historyPaymentsSection", "historyTimelineSection"):
+                self.assertIsNone(self.visual_item(name), f"{name} still rendered at {width}x{height}")
+            # The final strip is the last element, below the sold items.
+            strip, items = self.item("historyHeaderSection"), self.item("historyItemsSection")
+            self.assertGreater(strip.mapToScene(QPointF(0, 0)).y(), items.mapToScene(QPointF(0, 0)).y())
             reprint = self.item("historyReprint")
             self.assert_inside_window(reprint)                                  # never clipped
             self.shot(f"detail-{width}x{height}")

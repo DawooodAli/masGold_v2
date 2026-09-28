@@ -44,8 +44,9 @@ def money(value, signed=False):
 
 
 def grams(value, signed=False):
-    """'3.600 جم'."""
-    return f"{number(value, 3, signed)} جم"
+    """'3.600' — a gold weight; the label / column (الوزن, الإجمالي, عيار 21) already says it is grams,
+    so the unit is not repeated on screen."""
+    return number(value, 3, signed)
 
 
 def percent(value, places=2):

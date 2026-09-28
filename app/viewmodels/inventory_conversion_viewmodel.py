@@ -228,11 +228,11 @@ class InventoryConversionViewModel(QObject):
                     "قطعة من البضاعة القديمة إلى قطعة جديدة "
                     f"#{result['result_inventory_item_id']}. "
                     "وزن المصدر: "
-                    f"{float(result['source_total_weight_grams']):.3f} جم، "
+                    f"{float(result['source_total_weight_grams']):.3f} جرام، "
                     "وزن الناتج: "
-                    f"{float(result['result_weight_grams']):.3f} جم، "
+                    f"{float(result['result_weight_grams']):.3f} جرام، "
                     "الفرق: "
-                    f"{float(result['weight_difference_grams']):+.3f} جم."
+                    f"{float(result['weight_difference_grams']):+.3f} جرام."
                 ),
                 True,
             )

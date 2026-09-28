@@ -456,7 +456,7 @@ Item {
                 Label {
                     objectName: weights.objectName + "_" + modelData
                     anchors.centerIn: parent
-                    text: weights.title + " " + modelData + "K: " + parent.value + (parent.value === "—" ? "" : " جم")
+                    text: weights.title + " " + modelData + "K: " + parent.value
                     color: parent.value === "—" ? theme.textDisabled : weights.accent
                     font.family: "Cairo"
                     font.pixelSize: 12
@@ -878,7 +878,7 @@ Item {
                                 HeadCell { text: "الصنف"; Layout.preferredWidth: 5 }
                                 HeadCell { text: "الباركود"; Layout.preferredWidth: 3 }
                                 HeadCell { text: "عيار"; Layout.preferredWidth: 1 }
-                                HeadCell { text: "الوزن جم"; Layout.preferredWidth: 2 }
+                                HeadCell { text: "الوزن"; Layout.preferredWidth: 2 }
                                 HeadCell { text: "المصنع"; Layout.preferredWidth: 2 }
                                 HeadCell { text: "المقاس"; Layout.preferredWidth: 2 }
                                 HeadCell { text: "ملاحظات"; Layout.preferredWidth: 3 }
@@ -1690,7 +1690,7 @@ Item {
                                         layoutDirection: Qt.RightToLeft
                                         spacing: 6
                                         Cell { text: model.karat }
-                                        Cell { Layout.preferredWidth: 2; text: model.weight + " جم"; font.bold: true }
+                                        Cell { Layout.preferredWidth: 2; text: model.weight; font.bold: true }
                                         Cell {
                                             objectName: "oldGoldLineTotal_" + index
                                             Layout.preferredWidth: 3
@@ -1796,7 +1796,7 @@ Item {
                                     anchors.centerIn: parent
                                     layoutDirection: Qt.RightToLeft
                                     spacing: 6
-                                    FieldLabel { text: invoicePage.compact ? "م. المصنعية/جم" : "متوسط المصنعية / جم"; color: theme.textSecondary }
+                                    FieldLabel { text: invoicePage.compact ? "م. المصنعية" : "متوسط المصنعية"; color: theme.textSecondary }
                                     Value {
                                         objectName: "summaryAverageMaking"
                                         text: invoiceVM.summary.averageMaking || "—"
@@ -2438,7 +2438,7 @@ Item {
             Repeater {
                 model: [["سعر البيع الفعلي", invoiceVM.saleCount > 0 ? invoiceVM.summary.saleTotal : ""],
                         ["صافي الكسر", invoiceVM.oldGoldCount > 0 ? invoiceVM.summary.oldGoldTotal : ""],
-                        ["متوسط المصنعية / جم", invoiceVM.summary.averageMaking],
+                        ["متوسط المصنعية", invoiceVM.summary.averageMaking],
                         [invoiceVM.summary.paidLabel, invoiceVM.summary.paidAmount],
                         [invoiceVM.settlementChoice === "SETTLE" ? "فرق تقريب مُسوّى"
                                                                  : invoiceVM.summary.remainingLabel,

@@ -1,4 +1,4 @@
-"""Schema rehearsal: prove the numbered chain 001-019 on a disposable MySQL database.
+"""Schema rehearsal: prove the numbered chain 001-020 on a disposable MySQL database.
 
     python -m tools.schema_rehearsal verify
     python -m tools.schema_rehearsal run --target masgold_rehearsal --create
@@ -31,7 +31,7 @@ def parser():
     commands = root.add_subparsers(dest="command", required=True)
     commands.add_parser("verify", help="check files, manifest and git state; no database access")
     commands.add_parser("write-manifest", help="rewrite database/schema/SHA256SUMS from the chain files")
-    run = commands.add_parser("run", help="build 001-019 into the rehearsal database")
+    run = commands.add_parser("run", help="build 001-020 into the rehearsal database")
     run.add_argument("--target", required=True, help="must be masgold_rehearsal")
     run.add_argument("--user", default="masgold_build")
     run.add_argument("--host", default="localhost", help="matches the masgold_build@localhost account")

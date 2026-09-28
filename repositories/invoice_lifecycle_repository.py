@@ -90,7 +90,7 @@ class InvoiceLifecycleRepository(BaseRepository):
             """
             SELECT id AS line_id, line_role, line_number, source_invoice_line_id, inventory_item_id,
                    karat_id, karat_value, weight_grams, pure_weight_grams, making_per_gram,
-                   making_per_pure_gram, making_total, item_name_snapshot, barcode_snapshot
+                   making_per_pure_gram, making_total, item_name_snapshot, barcode_snapshot, identification_method
             FROM invoice_lifecycle_lines WHERE lifecycle_transaction_id = %s ORDER BY line_number
             """, (_id(lifecycle_id),))
         payments = self._fetch_all(
@@ -136,7 +136,9 @@ class InvoiceLifecycleRepository(BaseRepository):
         )
         return str(lifecycle_id)
 
-    def insert_line(self, *, lifecycle_id, line_role, line_number, line):
+    def insert_line(self, *, lifecycle_id, line_role, line_number, line, old_gold_movement_id=None):
+        if getattr(line, "described", False):
+            return self._insert_described_line(lifecycle_id, line_role, line_number, line, old_gold_movement_id)
         line_id, _ = self._execute(
             """
             INSERT INTO invoice_lifecycle_lines (
@@ -153,6 +155,76 @@ class InvoiceLifecycleRepository(BaseRepository):
              line.barcode, line.identified_by),
         )
         return str(line_id)
+
+    def _insert_described_line(self, lifecycle_id, line_role, line_number, line, old_gold_movement_id):
+        """MANUAL (F5) / OLD_GOLD_STOCK (F7) replacement (migration 020): no inventory id, its own snapshots."""
+        line_id, _ = self._execute(
+            """
+            INSERT INTO invoice_lifecycle_lines (
+                lifecycle_transaction_id, line_role, line_number, source_invoice_line_id, inventory_item_id,
+                old_gold_movement_id, karat_id, karat_value, weight_grams, pure_weight_grams, making_per_gram,
+                making_per_pure_gram, making_total, item_name_snapshot, barcode_snapshot, factory_snapshot,
+                size_snapshot, identification_method, reason_code, notes
+            )
+            VALUES (%s, %s, %s, NULL, NULL, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL, %s, %s, %s, %s, %s)
+            """,
+            (_id(lifecycle_id), line_role, line_number, _optional_id(old_gold_movement_id), int(line.karat_id),
+             int(line.karat), line.weight, line.pure, line.making_per_gram, line.making_per_pure_gram,
+             line.making_total, line.item_name, line.factory_name, line.size, line.identified_by, line.reason_code,
+             line.notes),
+        )
+        return str(line_id)
+
+    def add_old_gold_replacement_out(self, *, karat_id, weight_grams, lifecycle_id, gold_price_per_gram,
+                                     price_quote_id, customer_id, created_by_user_id, employee_id, notes=None):
+        """F7 replacement: COUNTED EXCHANGE_REPLACEMENT_OUT (negative weight) on the old-gold ledger."""
+        code = exchange_code(lifecycle_id)
+        movement_id, _ = self._execute(
+            """
+            INSERT INTO old_gold_movements (
+                movement_type_id, karat_id, weight_delta_grams, balance_effect,
+                gold_price_per_gram, cash_value, price_quote_id,
+                reference_type, reference_id, reference_code, notes,
+                created_by_user_id, performed_by_user_id, received_by_employee_id,
+                movement_code, customer_id
+            )
+            SELECT t.id, %s, %s, 'COUNTED', %s, NULL, %s, %s, %s, %s, %s, %s, %s, %s,
+                   'EXCHANGE_REPLACEMENT_OUT', %s
+            FROM old_gold_movement_types t WHERE t.code = 'EXCHANGE_REPLACEMENT_OUT' AND t.is_active = TRUE
+            """,
+            (int(karat_id), -abs(weight_grams), gold_price_per_gram, _optional_id(price_quote_id), REFERENCE_TYPE,
+             _id(lifecycle_id), code, notes, created_by_user_id, created_by_user_id, employee_id,
+             _optional_id(customer_id)),
+        )
+        if not movement_id:
+            raise RuntimeError("old-gold movement type EXCHANGE_REPLACEMENT_OUT is missing")
+        return str(movement_id)
+
+    def open_unidentified_replacement_case(self, *, lifecycle_line_id, exchange_code, item_type_id, karat_id,
+                                           factory_id, category_id, weight_grams, size, reason_code, reason, notes,
+                                           created_by_user_id, salesperson_employee_id, sold_at):
+        """F5 parity: Billing's UNIDENTIFIED_SALE reconciliation case, linked to the exchange line (020)."""
+        case_id, _ = self._execute(
+            """
+            INSERT INTO inventory_reconciliation_cases (
+                case_type, case_status, observed_karat_id, observed_item_type_id, observed_category_id,
+                observed_factory_id, observed_weight_grams, observed_size, reference_number,
+                lifecycle_line_id, reason, reason_code, notes,
+                created_by_user_id, salesperson_employee_id, sold_at
+            )
+            VALUES ('UNIDENTIFIED_SALE', 'OPEN', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (int(karat_id), _optional_id(item_type_id), _optional_id(category_id), _optional_id(factory_id),
+             weight_grams, size, exchange_code, _id(lifecycle_line_id), reason, reason_code, notes,
+             created_by_user_id, salesperson_employee_id, sold_at),
+        )
+        self._execute(
+            """
+            INSERT INTO inventory_reconciliation_case_events (case_id, event_type, to_status, notes,
+                                                              performed_by_user_id, occurred_at)
+            VALUES (%s, 'OPENED', 'OPEN', %s, %s, %s)
+            """, (int(case_id), f"بديل يدوي — استبدال {exchange_code}", created_by_user_id, sold_at))
+        return str(case_id)
 
     def insert_payment(self, *, lifecycle_id, payment_method_id, bank_account_id, direction, amount,
                        payment_reference, cash_movement_id, bank_movement_id, occurred_at, created_by_user_id):

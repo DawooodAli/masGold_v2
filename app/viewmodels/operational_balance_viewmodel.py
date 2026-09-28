@@ -74,7 +74,7 @@ class OperationalBalanceViewModel(QObject):
     @Property("QVariantList", notify=changed)
     def oldGold(self):
         # zero: shown muted (never hidden) so non-zero balances stand out at a glance.
-        return [{"karat": str(r["karat"]), "text": f"{Decimal(r['grams']):,.3f} جم",
+        return [{"karat": str(r["karat"]), "text": f"{Decimal(r['grams']):,.3f}",
                  "zero": Decimal(r["grams"]) == 0}
                 for r in self._strip.get("old_gold", [])]
 

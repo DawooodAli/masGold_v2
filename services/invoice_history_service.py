@@ -51,10 +51,22 @@ def _decimal(value):
     return None if value in (None, "") else Decimal(str(value))
 
 
+def transaction_kind(sale_lines, old_gold_lines):
+    """What the invoice IS, from its saved lines: SALE (shop-sold lines only), OLD_GOLD_PURCHASE (customer
+    old gold only) or MIXED (both). Independent of the settlement direction (a MIXED invoice may pay the
+    customer) and of the stored invoice_type."""
+    if sale_lines and old_gold_lines:
+        return "MIXED"
+    if old_gold_lines:
+        return "OLD_GOLD_PURCHASE"
+    return "SALE"
+
+
 class InvoiceHistoryService:
     def __init__(self, session, *, transaction_factory=invoice_transaction, invoice_repository=InvoiceRepository,
-                 page_size=PAGE_SIZE, print_service=None):
+                 page_size=PAGE_SIZE, print_service=None, lifecycle_repository=None):
         self._session = session
+        self._lifecycle = lifecycle_repository
         self._transaction = transaction_factory
         self._invoices = invoice_repository
         self._page_size = page_size
@@ -108,6 +120,9 @@ class InvoiceHistoryService:
             "invoice_id": row["invoice_id"], "invoice_number": row["invoice_number"],
             "finalized_at": row.get("finalized_at") or row["invoice_date"],
             "invoice_type": row["invoice_type"], "invoice_status": row["invoice_status"],
+            # From the saved lines (computed in the list query), consistent with the detail page.
+            "transaction_kind": row.get("transaction_kind")
+                                or {"SELL": "SALE", "BUY": "OLD_GOLD_PURCHASE"}.get(row["invoice_type"], "MIXED"),
             "settlement_status": row["settlement_status"], "is_legacy": legacy,
             "customer_name": row.get("customer_name_snapshot"), "salesperson": row.get("employee_name"),
             "invoice_total": row["net_amount"], "net_direction": row["net_direction"],
@@ -135,6 +150,7 @@ class InvoiceHistoryService:
                 return None
             invoice["payment_accounts"] = invoices.get_payment_accounts(invoice_id)
             invoice["account_entries"] = invoices.invoice_account_allocation(invoice_id, invoice.get("customer_id"))
+            invoice["exchanges"] = self._exchanges(invoices, invoice_id, invoice.get("events", []))
             return invoice
         invoice = self._read(read)
         if invoice is None:
@@ -156,6 +172,7 @@ class InvoiceHistoryService:
             _decimal(saved.get("L")) if saved.get("L") not in (None, "") else ZERO)
 
         sale_lines = [self._sale_line(line) for line in invoice["lines"] if line["line_type"] in SALE_LINE_TYPES]
+        old_gold_lines = [self._old_gold_line(line) for line in invoice["lines"] if line["line_type"] == "BUY_OLD_GOLD"]
         economics = {
             # The values saved when the invoice was finalized; None = not stored (older / legacy invoice).
             "gold_value": _decimal(saved.get("gold_value_total")),
@@ -177,8 +194,9 @@ class InvoiceHistoryService:
             "invoice_total": invoice["net_amount"], "net_direction": invoice["net_direction"],
             "sell_total": invoice.get("sell_total"), "buy_total": invoice.get("buy_total"),
             "sale_lines": sale_lines,
-            "old_gold_lines": [self._old_gold_line(line) for line in invoice["lines"]
-                               if line["line_type"] == "BUY_OLD_GOLD"],
+            "old_gold_lines": old_gold_lines,
+            # What the invoice IS comes from its saved lines, never from the money direction.
+            "transaction_kind": transaction_kind(sale_lines, old_gold_lines),
             "payments": payments, "money_received": received, "money_paid": paid,
             "account_signed": account,                    # + على العميل, − للعميل (this invoice only)
             "economics": economics,
@@ -188,14 +206,35 @@ class InvoiceHistoryService:
                                  "provider_timestamp": p.get("provider_timestamp")}
                                 for p in invoice.get("price_snapshots", [])],
             "timeline": self._timeline(invoice.get("events", [])),
+            # Exchanges of this invoice, shown inside the same detail (no second, repeating page).
+            "exchanges": invoice.get("exchanges", []),
             "notes": invoice.get("notes") or "",
             "can_reprint": REPRINT_PERMISSION in actor.permissions,
             # The Exchange action; the service still checks the permission and every rule itself.
             "can_exchange": (EXCHANGE_PERMISSION in actor.permissions and not legacy
                              and invoice["invoice_status"] == "FINALIZED"
-                             and invoice["invoice_type"] in ("SELL", "MIXED")),
+                             and invoice["invoice_type"] in ("SELL", "MIXED")
+                             and self._has_unexchanged_piece(sale_lines, invoice.get("exchanges", []))),
             "can_see_manager_details": manager,
         }
+
+
+    @staticmethod
+    def _has_unexchanged_piece(sale_lines, exchanges):
+        """A stock piece of this invoice that no exchange has taken back yet (display only)."""
+        returned = {p["inventory_item_id"] for x in exchanges for p in x["returned"]}
+        return any(line["kind"] == "INVENTORY" and line.get("inventory_item_id") not in (None, "")
+                   and str(line["inventory_item_id"]) not in returned for line in sale_lines)
+
+    def _exchanges(self, invoices, invoice_id, events):
+        """Only read when the invoice was exchanged (an EXCHANGED event exists): one lifecycle read each."""
+        if not any(e["event_type"] == EXCHANGED_EVENT for e in events):
+            return []
+        from repositories.invoice_lifecycle_repository import InvoiceLifecycleRepository
+        from services.exchange_service import exchange_summary
+        lifecycle = (self._lifecycle or InvoiceLifecycleRepository)(invoices.connection)
+        return [exchange_summary(lifecycle.get_transaction(row["lifecycle_id"]))
+                for row in lifecycle.for_invoice(invoice_id)]
 
     @staticmethod
     def _details(event):

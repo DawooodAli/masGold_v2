@@ -159,7 +159,7 @@ class OldGoldStockSaleTests(InvoiceServiceTestCase):
         draft = InvoiceDraft(5, "12", (), (), (cash("700000"),), described_sale_lines=(from_stock(weight_grams="100.500"),))
         preview = self.service.preview(draft)
         problem = [p for p in preview["blocking_problems"] if p["code"] == "OLD_GOLD_STOCK_INSUFFICIENT"][0]
-        self.assertIn("المتاح 100.000 جم", problem["message"])
+        self.assertIn("المتاح 100.000 جرام", problem["message"])
         self.assertRefused("OLD_GOLD_STOCK_INSUFFICIENT", draft)
 
     def test_old_gold_bought_on_the_same_invoice_does_not_count(self):

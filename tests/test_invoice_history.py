@@ -367,7 +367,7 @@ class HistoryViewModelTests(unittest.TestCase):
         self.service.real = make(rows=[])[0]
         self.vm.activate()
         self.wait(lambda: self.service.calls and not self.vm.busy)
-        self.assertEqual(self.vm.emptyText, "لا توجد فواتير")
+        self.assertEqual(self.vm.emptyText, "لا توجد فواتير اليوم")            # the default view is today
         self.vm.setTypeFilter("BUY")
         self.wait(lambda: not self.vm.busy and self.vm.filtered)
         self.assertEqual(self.vm.emptyText, "لا توجد نتائج مطابقة")
@@ -379,12 +379,12 @@ class HistoryViewModelTests(unittest.TestCase):
         self.assertEqual((d["number"], d["finalizedAt"], d["invoiceTotal"], d["movedLabel"], d["movedAmount"],
                           d["accountText"], d["goldValue"], d["averageMaking"], d["makingTotal"]),
                          ("26092701", "⁦2026-09-27 21:51⁩", "90,000.00 ج", "المستلم من العميل",
-                          "89,000.00 ج", "على العميل: 1,000.00 ج", "83,722.62 ج", "467.41 ج/جم", "6,277.38 ج"))
+                          "89,000.00 ج", "على العميل: 1,000.00 ج", "83,722.62 ج", "467.41 ج", "6,277.38 ج"))
         self.assertEqual([l["kindText"] for l in self.vm.saleLines],
                          ["من المخزون — بالباركود", "بيع يدوي (غير محدد في المخزون)", "من رصيد الكسر"])
         self.assertEqual([p["method"] for p in self.vm.payments], ["نقدي", "محفظة — محفظة المحل"])
         self.assertEqual([e["text"] for e in self.vm.timeline], ["تم إنشاء الفاتورة", "تم حفظ الفاتورة نهائياً"])
-        self.assertEqual(self.vm.priceSnapshots[0]["sell"], "6,234.00")
+        self.assertEqual(self.vm.priceSnapshots[0]["sell"], "6,234.00 ج")
         self.vm.closeDetail()
         self.assertFalse(self.vm.detailOpen)
 
@@ -399,6 +399,189 @@ class HistoryViewModelTests(unittest.TestCase):
         self.wait(lambda: self.vm.reprintFailed)
         self.assertEqual(self.vm.reprintMessage, "الطابعة غير متصلة.")
         self.assertEqual([c for c in self.service.calls if c[0] == "reprint"], [("reprint", "21"), ("reprint", "21")])
+
+
+class HistoryDefaultAndFilterTests(HistoryViewModelTests):
+    """History opens on TODAY only; every filter is one bounded query; exact lookup ignores the range."""
+
+    def searches(self):
+        return [c[1] for c in self.service.calls if c[0] == "search"]
+
+    def test_opening_queries_today_only(self):
+        self.vm.activate()
+        self.wait(lambda: self.searches())
+        first = self.searches()[0]
+        self.assertEqual((first["date_from"], first["date_to"], first["page"]), (date(2026, 9, 27), date(2026, 9, 27), 1))
+        self.assertTrue(self.vm.todayActive)
+        self.assertEqual(self.vm.rangeText, "فواتير اليوم")
+        self.assertFalse(self.vm.filtered)                               # the default view is not "filtered"
+
+    def test_custom_range_then_today(self):
+        self.vm.activate()
+        self.vm.setDateRange("2026-09-01", "2026-09-20")
+        self.wait(lambda: any(s["date_from"] == date(2026, 9, 1) for s in self.searches()))
+        self.assertFalse(self.vm.todayActive)
+        self.assertIn("2026-09-01", self.vm.rangeText)
+        self.vm.setToday()
+        self.wait(lambda: self.vm.todayActive)
+        self.assertEqual((self.vm.dateFrom, self.vm.dateTo), ("2026-09-27", "2026-09-27"))
+
+    def test_clear_goes_back_to_today_never_all_history(self):
+        self.vm.setDateRange("2026-01-01", "")
+        self.vm.clearFilters()
+        # Searches run on worker threads: their calls may be recorded in either order.
+        self.wait(lambda: any(s["date_from"] == date(2026, 9, 27) for s in self.searches()))
+        reset = next(s for s in self.searches() if s["date_from"] == date(2026, 9, 27))
+        self.assertEqual((reset["date_to"], reset["invoice_type"], reset["settlement_status"], reset["text"]),
+                         (date(2026, 9, 27), None, None, ""))
+        self.assertTrue(self.vm.todayActive)
+        self.assertTrue(all(s["date_from"] is not None for s in self.searches()))    # never an unbounded query
+
+    def test_every_filter_change_restarts_at_page_1(self):
+        self.vm.activate()
+        for change in (lambda: self.vm.setTypeFilter("MIXED"), lambda: self.vm.setStatusFilter("SETTLED"),
+                       lambda: self.vm.setDateRange("2026-09-01", "2026-09-27"), lambda: self.vm.searchNow()):
+            change()
+        self.wait(lambda: len(self.searches()) >= 5)
+        self.assertEqual({s["page"] for s in self.searches()}, {1})
+
+    def test_exact_invoice_number_opens_outside_the_active_range(self):
+        self.vm.setDateRange("2026-01-01", "2026-01-02")                # a range that excludes the invoice
+        self.vm.submitSearch("26092701")
+        self.wait(lambda: self.vm.detail and self.vm.detail.get("number") == "26092701")
+        exact = [c for c in self.service.calls if c[0] == "exact"]
+        self.assertEqual(exact, [("exact", "26092701")])                  # a direct lookup, no date filter
+
+
+class HistoryCustomerSearchScopeTests(HistoryViewModelTests):
+    """Default اليوم is only the opening scope; an explicit From / To range is always respected."""
+
+    def last_search(self, predicate):
+        self.wait(lambda: any(predicate(c[1]) for c in self.service.calls if c[0] == "search"))
+        return next(c[1] for c in reversed(self.service.calls) if c[0] == "search" and predicate(c[1]))
+
+    def test_default_today_name_searches_all_history(self):
+        self.vm.activate()
+        self.vm.setSearchText("على عبدالرحمن")
+        call = self.last_search(lambda c: c["text"] == "على عبدالرحمن")
+        self.assertEqual((call["date_from"], call["date_to"], call["page"]), (None, None, 1))
+        self.assertTrue(self.vm.searchesAllHistory)
+        self.assertEqual(self.vm.rangeText, "بحث العميل في كل الفواتير")
+
+    def test_default_today_phone_searches_all_history(self):
+        self.vm.activate()
+        self.vm.setSearchText("01026018015")
+        call = self.last_search(lambda c: c["text"] == "01026018015")
+        self.assertEqual((call["date_from"], call["date_to"]), (None, None))
+
+    def test_explicit_range_name_respects_the_range(self):
+        self.vm.setDateRange("2026-09-01", "2026-09-20")
+        self.vm.setSearchText("على عبدالرحمن")
+        call = self.last_search(lambda c: c["text"] == "على عبدالرحمن")
+        self.assertEqual((call["date_from"], call["date_to"]), (date(2026, 9, 1), date(2026, 9, 20)))
+        self.assertFalse(self.vm.searchesAllHistory)
+
+    def test_explicit_range_phone_respects_the_range(self):
+        self.vm.setDateRange("2026-09-01", "2026-09-20")
+        self.vm.setSearchText("0102")
+        call = self.last_search(lambda c: c["text"] == "0102")
+        self.assertEqual((call["date_from"], call["date_to"]), (date(2026, 9, 1), date(2026, 9, 20)))
+
+    def test_partial_invoice_number_keeps_the_current_range(self):
+        self.vm.activate()
+        self.vm.setSearchText("2609")
+        call = self.last_search(lambda c: c["text"] == "2609")
+        self.assertEqual((call["date_from"], call["date_to"]), (date(2026, 9, 27), date(2026, 9, 27)))
+
+    def test_exact_invoice_lookup_stays_range_independent(self):
+        self.vm.setDateRange("2026-01-01", "2026-01-02")
+        self.vm.submitSearch("26092701")
+        self.wait(lambda: self.vm.detail and self.vm.detail.get("number") == "26092701")
+        self.assertIn(("exact", "26092701"), self.service.calls)
+
+    def test_back_to_today_ends_the_explicit_range(self):
+        self.vm.setDateRange("2026-09-01", "2026-09-20")
+        self.vm.setToday()
+        self.vm.setSearchText("محمد")
+        call = self.last_search(lambda c: c["text"] == "محمد")
+        self.assertEqual((call["date_from"], call["date_to"]), (None, None))
+
+    def test_history_wide_search_stays_one_bounded_page(self):
+        service = InvoiceHistoryService(AppSession(), page_size=50)
+        # The service always asks for page_size + 1 rows, whatever the date scope.
+        captured = {}
+
+        class Repo:
+            def __init__(self, connection):
+                pass
+
+            def search_invoice_history(self, **kwargs):
+                captured.update(kwargs)
+                return []
+
+        session = AppSession()
+        session._establish(AuthenticationResult(1, 5, "مدير", MANAGER, _VERIFIED), int(session.generation))
+
+        @contextmanager
+        def transaction():
+            yield object()
+        service = InvoiceHistoryService(session, transaction_factory=transaction, invoice_repository=Repo)
+        service.search(text="على", date_from=None, date_to=None)
+        self.assertEqual((captured["limit"], captured["offset"], captured["date_from"]), (51, 0, None))
+
+
+class HistoryListQueryTests(unittest.TestCase):
+    """The real list SQL, run against a capturing connection: one bounded query, content-based kind."""
+
+    class Cursor:
+        def __init__(self, log):
+            self.log, self.rows = log, []
+
+        def execute(self, sql, params=()):
+            self.log.append((" ".join(sql.split()), params))
+
+        def fetchall(self):
+            return self.rows
+
+        def fetchone(self):
+            return None
+
+        def close(self):
+            pass
+
+    class Connection:
+        def __init__(self):
+            self.log = []
+
+        def cursor(self, dictionary=False):
+            return HistoryListQueryTests.Cursor(self.log)
+
+    def test_list_is_one_bounded_date_restricted_query_with_content_kind(self):
+        from repositories.invoice_repository import InvoiceRepository
+        connection = self.Connection()
+        InvoiceRepository(connection).search_invoice_history(
+            date_from=date(2026, 9, 27), date_to_exclusive=date(2026, 9, 28), invoice_type="MIXED", limit=51)
+        self.assertEqual(len(connection.log), 1)                          # one query per page, no N+1
+        sql, params = connection.log[0]
+        self.assertIn("i.invoice_date >= %s", sql)                       # the date bound is in SQL
+        self.assertIn("i.invoice_date < %s", sql)
+        self.assertIn("LIMIT %s OFFSET %s", sql)
+        self.assertEqual(params[-2:], (51, 0))
+        self.assertIn(date(2026, 9, 27), params)
+        # The type filter uses the saved lines (EXISTS on invoice_lines), never i.invoice_type = ...
+        self.assertIn("line_type = 'BUY_OLD_GOLD'", sql)
+        self.assertNotIn("i.invoice_type = %s", sql)
+        self.assertIn("MIXED", params)
+
+    def test_exact_lookup_is_a_direct_equality_query(self):
+        from repositories.invoice_repository import InvoiceRepository
+        connection = self.Connection()
+        InvoiceRepository(connection).get_invoice_id_by_number("26092701")
+        (sql, params), = connection.log
+        self.assertIn("WHERE invoice_number = %s", sql)
+        self.assertNotIn("LIKE", sql)
+        self.assertNotIn("invoice_date", sql)                             # independent of any date range
+        self.assertEqual(params, ("26092701",))
 
 
 @unittest.skipUnless(os.getenv("MASGOLD_LIVE_READONLY_TESTS") == "1", "live read-only check (set MASGOLD_LIVE_READONLY_TESTS=1)")
@@ -426,8 +609,14 @@ class LiveRepositoryReadOnlyTests(unittest.TestCase):
                     page1 = repo.search_invoice_history(limit=2, offset=0)
                     page2 = repo.search_invoice_history(limit=2, offset=2)
                     self.assertFalse({r["invoice_id"] for r in page1} & {r["invoice_id"] for r in page2})
-                    self.assertEqual({r["invoice_type"] for r in repo.search_invoice_history(invoice_type="SELL")}
-                                     - {"SELL"}, set())
+                    # The type filter is content-based (the saved lines), like the detail page.
+                    for stored, kind in (("SELL", "SALE"), ("BUY", "OLD_GOLD_PURCHASE"), ("MIXED", "MIXED")):
+                        self.assertEqual({r["transaction_kind"] for r in repo.search_invoice_history(invoice_type=stored)}
+                                         - {kind}, set())
+                    today = repo.search_invoice_history(date_from=rows[0]["invoice_date"].replace(hour=0, minute=0,
+                                                                                                    second=0),
+                                                        limit=51)
+                    self.assertTrue(all(r["invoice_date"] >= today[-1]["invoice_date"] for r in today))
             finally:
                 connection.rollback()
 

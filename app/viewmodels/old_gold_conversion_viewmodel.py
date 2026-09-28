@@ -206,12 +206,12 @@ class OldGoldConversionViewModel(QObject):
                     "تم إنشاء القطعة الجديدة "
                     f"#{result['result_inventory_item_id']} "
                     "وخصم "
-                    f"{float(result['consumed_weight_grams']):.3f} جم "
+                    f"{float(result['consumed_weight_grams']):.3f} جرام "
                     "من رصيد الكسر. "
                     "الرصيد المتبقي: "
-                    f"{float(result['remaining_balance_grams']):.3f} جم. "
+                    f"{float(result['remaining_balance_grams']):.3f} جرام. "
                     "فرق الوزن: "
-                    f"{float(result['weight_difference_grams']):+.3f} جم."
+                    f"{float(result['weight_difference_grams']):+.3f} جرام."
                 ),
                 True,
             )

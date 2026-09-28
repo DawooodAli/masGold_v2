@@ -13,14 +13,16 @@ WORKFLOW = "016_billing_workflow.sql"
 ACCOUNTS = "017_payment_accounts.sql"
 OPENING = "018_opening_balances.sql"
 LIFECYCLE = "019_invoice_lifecycle_exchange.sql"
-FORWARD = (CONSOLIDATION, BILLING, PROVENANCE, WORKFLOW, ACCOUNTS, OPENING, LIFECYCLE)
+SOURCES = "020_exchange_replacement_sources.sql"
+FORWARD = (CONSOLIDATION, BILLING, PROVENANCE, WORKFLOW, ACCOUNTS, OPENING, LIFECYCLE, SOURCES)
 # 013 is baseline schema already used by the application: no rollback script.
 ROLLBACK = {BILLING: "014_billing_v2_rollback.sql",
             PROVENANCE: "015_legacy_provenance_rollback.sql",
             WORKFLOW: "016_billing_workflow_rollback.sql",
             ACCOUNTS: "017_payment_accounts_rollback.sql",
             OPENING: "018_opening_balances_rollback.sql",
-            LIFECYCLE: "019_invoice_lifecycle_exchange_rollback.sql"}
+            LIFECYCLE: "019_invoice_lifecycle_exchange_rollback.sql",
+            SOURCES: "020_exchange_replacement_sources_rollback.sql"}
 CHANGE = re.compile(r"^(ALTER|CREATE|INSERT|DELETE|DROP|UPDATE|TRUNCATE|RENAME|REPLACE)\b", re.I)
 ACQUISITION_SOURCES = {"MARKET_PURCHASE", "OLD_GOLD_MANUFACTURE", "OLD_STOCK_CONVERSION",
                        "LEGACY_MIGRATION", "MANUAL_ENTRY"}
@@ -170,6 +172,22 @@ class MigrationFileSafetyTests(unittest.TestCase):
         self.assertIn("MIGRATION_017_REFUSED_migration_016_missing", forward_text(ACCOUNTS))
         self.assertIn("MIGRATION_018_REFUSED_migration_017_missing", forward_text(OPENING))
         self.assertIn("MIGRATION_019_REFUSED_migration_018_missing", forward_text(LIFECYCLE))
+        self.assertIn("MIGRATION_020_REFUSED_migration_019_missing", forward_text(SOURCES))
+
+    def test_020_adds_only_the_replacement_source_objects(self):
+        text = forward_text(SOURCES)
+        checks = sql.checks(text)
+        self.assertIn("'MANUAL', 'OLD_GOLD_STOCK'", checks["chk_lifecycle_line_identification"][1])
+        identity = checks["chk_lifecycle_line_source_identity"][1]
+        for rule in ("identification_method = 'MANUAL'", "inventory_item_id IS NULL",
+                     "identification_method = 'OLD_GOLD_STOCK'", "old_gold_movement_id IS NOT NULL"):
+            self.assertIn(rule, identity)
+        self.assertFalse(sql.create_table_columns(text))                     # no new table
+        self.assertIn("'EXCHANGE_REPLACEMENT_OUT'", text)
+        rollback = rollback_text(SOURCES)
+        for reason in ("new_replacement_sources_used", "exchange_cases_exist", "new_codes_in_use"):
+            self.assertIn(f"ROLLBACK_020_REFUSED_{reason}", rollback)
+        self.assertIn("MODIFY COLUMN inventory_item_id BIGINT UNSIGNED NOT NULL", rollback)
 
     def test_019_adds_the_exchange_objects_only(self):
         text = forward_text(LIFECYCLE)
@@ -252,7 +270,8 @@ class MigrationContentTests(unittest.TestCase):
                    OPENING: {"schema_migrations", "cash_movement_types", "bank_movement_types"},
                    LIFECYCLE: {"schema_migrations", "inventory_movement_types", "cash_movement_types",
                                "bank_movement_types", "customer_transaction_types", "permissions",
-                               "role_permissions"}}
+                               "role_permissions"},
+                   SOURCES: {"schema_migrations", "old_gold_movement_types"}}
         for name in FORWARD:
             for statement in sql.statements(forward_text(name)):
                 target = re.match(r"^INSERT INTO\s+(\w+)", statement.sql, re.I)

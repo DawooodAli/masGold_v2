@@ -169,9 +169,9 @@ class DashboardViewModelTests(unittest.TestCase):
         vm = self.vm(busy_state())
         self.assertEqual((vm.invoiceCount, vm.invoiceBreakdown), (3, "بيع 2 • شراء كسر 2"))
         self.assertEqual((vm.sellTotalText, vm.buyTotalText), ("48,250.50 ج", "31,035.00 ج"))
-        self.assertEqual(vm.soldByKarat[0], {"karat": "21", "grams": "7.100 جم", "pieces": "3 قطعة",
-                                             "fromOldGold": "منها من الكسر 2.000 جم"})
-        self.assertEqual(vm.oldGold[0]["balance"], "128.520 جم")
+        self.assertEqual(vm.soldByKarat[0], {"karat": "21", "grams": "7.100", "pieces": "3 قطعة",
+                                             "fromOldGold": "منها من الكسر 2.000"})
+        self.assertEqual(vm.oldGold[0]["balance"], "128.520")
         self.assertEqual((vm.oldGold[0]["inText"], vm.oldGold[0]["outText"]), ("⁦+5.000⁩", "⁦−2.000⁩"))
         self.assertEqual(vm.recentInvoices[0], {"number": "26092618", "time": "13:05", "customer": "سليا محمد",
                                                 "salesperson": "علي", "amount": "23,000.00 ج",

@@ -63,7 +63,7 @@ def short_price(value):
 
 
 def grams(value):
-    return "" if value in (None, "") else f"{Decimal(str(value)):.3f} جم"
+    return "" if value in (None, "") else f"{Decimal(str(value)):.3f}"
 
 
 def balance_text(value):
@@ -1571,7 +1571,7 @@ class InvoiceViewModel(QObject):
 
     @staticmethod
     def item_title(item):
-        """دبلة | عيار 21 | 3.500 جم | مصنع X | مقاس 18 — enough to tell similar pieces apart.
+        """دبلة | عيار 21 | 3.500 جرام | مصنع X | مقاس 18 — enough to tell similar pieces apart.
 
         Parts are separated with right-to-left marks so numbers keep their place in Arabic text."""
         parts = [item.get("item_name") or "قطعة", f"عيار {item.get('karat')}", grams(item.get("weight_grams"))]

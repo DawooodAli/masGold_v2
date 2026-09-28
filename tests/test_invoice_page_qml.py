@@ -601,7 +601,7 @@ class InvoicePageTests(unittest.TestCase):
         self.wait_until(lambda: self.item("stockSalePanel").property("visible"))
         self.type_into("stockDescription", "دبلة سادة")
         self.click("stockKarat_21")
-        self.wait_until(lambda: self.text("stockAvailable") == "المتاح: 100.000 جم")
+        self.wait_until(lambda: self.text("stockAvailable") == "المتاح: 100.000")
         self.type_into("stockWeight", "3.2")
         self.snapshot("from-stock")
         QTest.keyClick(self.root, Qt.Key_Return)
@@ -625,7 +625,7 @@ class InvoicePageTests(unittest.TestCase):
         self.wait_until(lambda: self.vm.saleCount == 1)
         self.receive("1000000")
         self.settle()
-        self.wait_until(lambda: "المتاح 100.000 جم" in self.text("invoiceProblems"))
+        self.wait_until(lambda: "المتاح 100.000 جرام" in self.text("invoiceProblems"))
         self.assertFalse(self.item("finalizeInvoice").property("enabled"))
 
     # ------------------------------------------------------------ 9, 15: weights and old-gold discount
@@ -636,8 +636,8 @@ class InvoicePageTests(unittest.TestCase):
         self.add_old_gold("21", "5")
         self.add_old_gold("18", "2.5")
         self.assertEqual((self.text("soldWeights_21"), self.text("soldWeights_18"), self.text("soldWeights_24")),
-                         ("مباع 21K: 10.500 جم", "مباع 18K: 3.333 جم", "مباع 24K: —"))
-        self.assertEqual(self.text("boughtWeights_21"), "مشترى 21K: 5.000 جم")
+                         ("مباع 21K: 10.500", "مباع 18K: 3.333", "مباع 24K: —"))
+        self.assertEqual(self.text("boughtWeights_21"), "مشترى 21K: 5.000")
         self.assertEqual(self.text("oldGoldDiscountField"), "1.5")
         self.click("removeOldGold_1")
         self.wait_until(lambda: self.text("boughtWeights_18") == "مشترى 18K: —")
@@ -1335,7 +1335,7 @@ class InvoicePageTests(unittest.TestCase):
         self.wait_until(lambda: balances.ready)
         self.assertEqual([self.text(n) for n in ("balanceCash", "balanceKarat_21", "balanceKarat_18",
                                                  "balanceKarat_24")],
-                         ["0.00 ج", "100.000 جم", "0.000 جم", "0.000 جم"])
+                         ["0.00 ج", "100.000", "0.000", "0.000"])
         self.assertEqual([(self.item(b).property("caption"), self.item(b).property("karat"))
                           for b in ("balanceBoxCash", "balanceBox_21", "balanceBox_18", "balanceBox_24")],
                          [("النقدية", ""), ("كسر", "21"), ("كسر", "18"), ("كسر", "24")])
@@ -1351,7 +1351,7 @@ class InvoicePageTests(unittest.TestCase):
         self.finalize()
         self.wait_until(lambda: self.text("balanceCash") == "⁦−61,138.95⁩ ج", "cash not refreshed")
         self.assertGreater(reviews._latest.get("accounts", 0), reloads)          # wallet / bank balances too
-        self.assertEqual(self.text("balanceKarat_21"), "110.000 جم")
+        self.assertEqual(self.text("balanceKarat_21"), "110.000")
         self.snapshot("balance-strip")
 
     def test_cancel_and_failure_write_nothing(self):
