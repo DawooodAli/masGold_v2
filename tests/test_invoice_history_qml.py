@@ -82,6 +82,37 @@ class InvoiceHistoryPageTests(page_harness.InvoicePageTests):
         self.wait_until(lambda: self.item("invoiceBarcodeField").property("visible"))
 
 
+    # ------------------------------------------------------------ printed invoice barcode → exact invoice
+    def scan_into_search(self, number, layout):
+        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QGuiApplication, QKeyEvent
+        from tests.test_barcode_input import strokes_for
+        field = self.item("historySearch")
+        self.wait_until(lambda: field.property("activeFocus"), "search box not focused")
+        field.setProperty("text", "")
+        for code, shift, text in strokes_for(number, layout):
+            for kind in (QEvent.KeyPress, QEvent.KeyRelease):
+                QGuiApplication.sendEvent(self.root, QKeyEvent(kind, 0, Qt.NoModifier, code, 0, 0, text))
+        for kind in (QEvent.KeyPress, QEvent.KeyRelease):
+            QGuiApplication.sendEvent(self.root, QKeyEvent(kind, Qt.Key_Return, Qt.NoModifier, 0x1C, 0, 0, "\r"))
+
+    def test_history_scan_or_typed_invoice_number_opens_it(self):
+        vm = self.open_history()
+        sales_before = self.vm.saleCount
+        for layout in ("en", "ar"):                                    # the same printed barcode, both layouts
+            self.scan_into_search("26092701", layout)
+            self.wait_until(lambda: vm.detail and vm.detail.get("number") == "26092701", f"{layout} scan did not open")
+            QTest.keyClick(self.root, Qt.Key_Escape)
+            self.wait_until(lambda: not vm.detailOpen)
+        self.wait_until(lambda: self.item("historySearch").property("activeFocus"), "focus not back on search")
+        self.type_into("historySearch", "26092701")                     # typed by hand + Enter
+        QTest.keyClick(self.root, Qt.Key_Return)
+        self.wait_until(lambda: vm.detail and vm.detail.get("number") == "26092701", "typed number did not open")
+        self.assertEqual(self.vm.saleCount, sales_before)               # never an inventory / Billing lookup
+        self.assertFalse([c for c in self.history.calls if c[0] not in ("search", "exact", "detail")])
+        self.assertEqual(self.warnings, [])
+
+
 def load_tests(loader, tests, pattern):
     suite = unittest.TestSuite()
     suite.addTests(InvoiceHistoryPageTests(n) for n in loader.getTestCaseNames(InvoiceHistoryPageTests)

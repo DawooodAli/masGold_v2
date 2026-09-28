@@ -174,6 +174,10 @@ class ApplicationController(QObject):
                 invoice_vm.finalized.connect(reviews.reloadAccounts)   # wallet / bank balances too
             if hasattr(invoice_vm, "attach_price_source"):
                 invoice_vm.attach_price_source(self.gold_prices)
+            # Barcode fields map physical scan codes (independent of the Windows keyboard layout).
+            from app.barcode_input import BarcodeInput
+            self.barcode_input = BarcodeInput(engine)
+            engine.rootContext().setContextProperty("barcodeInput", self.barcode_input)
             engine.rootContext().setContextProperty("goldPriceVM", self.gold_prices)
             engine.rootContext().setContextProperty("goldSettingsVM", self.gold_settings)
             for name, viewmodel in self.operational_viewmodels.items():

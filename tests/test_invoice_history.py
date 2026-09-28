@@ -110,6 +110,10 @@ class FakeRepo:
     def invoice_account_allocation(self, invoice_id, customer_id):
         return self.state["ledger"].get(str(invoice_id), [])
 
+    def get_invoice_id_by_number(self, invoice_number):
+        self.state["calls"].append(("exact", invoice_number))
+        return next((k for k, v in self.state["invoices"].items() if v["invoice_number"] == invoice_number), None)
+
 
 class FakePrint:
     def __init__(self, printed=True):
@@ -281,7 +285,7 @@ class HistoryReprintAndImmutabilityTests(unittest.TestCase):
     def test_history_has_no_mutation_path(self):
         public = {name for name, _ in inspect.getmembers(InvoiceHistoryService, inspect.isfunction)
                   if not name.startswith("_")}
-        self.assertEqual(public, {"search", "detail", "reprint"})
+        self.assertEqual(public, {"search", "detail", "reprint", "find_by_number"})     # all read-only
         self.assertFalse([name for name in dir(FakeRepo) if name.startswith(("update", "insert", "delete", "set"))])
 
 
@@ -303,6 +307,10 @@ class StaticHistory:
     def reprint(self, invoice_id, **kwargs):
         self.calls.append(("reprint", invoice_id))
         return self.real.reprint(invoice_id)
+
+    def find_by_number(self, number, **kwargs):
+        self.calls.append(("exact", number))
+        return self.real.find_by_number(number)
 
 
 class HistoryViewModelTests(unittest.TestCase):
@@ -422,6 +430,64 @@ class LiveRepositoryReadOnlyTests(unittest.TestCase):
                                      - {"SELL"}, set())
             finally:
                 connection.rollback()
+
+
+
+class HistoryExactLookupTests(unittest.TestCase):
+    """The printed invoice barcode (Code128 of the invoice number) opens that exact invoice."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        cls.app = QGuiApplication.instance() or QGuiApplication([])
+
+    def setUp(self):
+        session = AppSession()
+        session._establish(AuthenticationResult(1, 5, "موظف", EMPLOYEE, _VERIFIED), int(session.generation))
+        self.service = StaticHistory()
+        self.vm = InvoiceHistoryViewModel(session, service=self.service, debounce_ms=10)
+        self.addCleanup(self.vm.shutdown)
+
+    def wait(self, predicate):
+        for _ in range(300):
+            if predicate():
+                return
+            QTest.qWait(10)
+        self.fail("timed out")
+
+    def test_service_exact_lookup_needs_history_permission(self):
+        service, state, _ = make()
+        self.assertEqual(service.find_by_number("26092701"), "21")
+        self.assertIsNone(service.find_by_number("26092799"))
+        self.assertEqual([c for c in state["calls"] if c[0] == "search"], [])      # no LIKE search ran
+        with self.assertRaises(PermissionError):
+            make(permissions=frozenset({"APP_LOGIN"}))[0].find_by_number("26092701")
+
+    def test_exact_number_opens_the_invoice_directly(self):
+        self.vm.submitSearch("26092701")
+        self.wait(lambda: self.vm.detail)
+        self.assertEqual(self.vm.detail["number"], "26092701")
+        self.assertEqual([c[0] for c in self.service.calls], ["exact", "detail"])   # no list search at all
+
+    def test_arabic_indic_digits_are_the_same_invoice(self):
+        self.vm.submitSearch("٢٦٠٩٢٧٠١")
+        self.wait(lambda: self.vm.detail)
+        self.assertEqual(self.vm.detail["number"], "26092701")
+
+    def test_partial_number_name_and_phone_stay_a_list_search(self):
+        for text in ("260927", "على عبدالرحمن", "01026018015"):
+            self.service.calls.clear()
+            self.vm.submitSearch(text)
+            self.wait(lambda: any(c[0] == "search" for c in self.service.calls))
+            QTest.qWait(30)
+            self.assertFalse(self.vm.detailOpen, text)                                # never auto-opened
+            self.assertEqual(self.vm.errorMessage, "", text)
+
+    def test_unknown_invoice_number_says_so_and_keeps_the_value(self):
+        self.vm.submitSearch("26092799")
+        self.wait(lambda: self.vm.errorMessage)
+        self.assertEqual((self.vm.errorMessage, self.vm.searchText, self.vm.detailOpen),
+                         ("لم يتم العثور على الفاتورة", "26092799", False))
 
 
 if __name__ == "__main__":

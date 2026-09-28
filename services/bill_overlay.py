@@ -538,14 +538,14 @@ def _compose_variant_c(overlay, c, t=None):
 
     cells, row1, row2 = PROTO_HEADER_CELLS, PROTO_HEADER_ROW1, PROTO_HEADER_ROW2
     spans("header", C_NAME_CELL[0], row1[0], C_NAME_CELL[1], row1[1],
-          [("الاسم  ", t.label, True, C_LABEL_GRAY), (overlay.customer_name, t.name, True, 0)], min_pt=t.name_min)
+          [("الاسم :- ", t.label, True, C_LABEL_GRAY), (overlay.customer_name, t.name, True, 0)], min_pt=t.name_min)
     spans("header", C_NAME_CELL[0], row2[0], C_NAME_CELL[1], row2[1],
-          [("العنوان  ", t.label, True, C_LABEL_GRAY), (overlay.place or "—", t.address, False, 0)],
+          [("العنوان :- ", t.label, True, C_LABEL_GRAY), (overlay.place or "—", t.address, False, 0)],
           min_pt=t.label)
     spans("header", cells["left"][0], row1[0], cells["left"][1], row1[1],
-          [("التاريخ  ", t.label, True, C_LABEL_GRAY), (_ltr(overlay.date_text), t.date_time, True, 0)])
+          [("التاريخ :- ", t.label, True, C_LABEL_GRAY), (_ltr(overlay.date_text), t.date_time, True, 0)])
     spans("header", cells["left"][0], row2[0], cells["left"][1], row2[1],
-          [("الوقت  ", t.label, True, C_LABEL_GRAY), (_ltr(overlay.time_text), t.date_time, True, 0)])
+          [("الوقت :- ", t.label, True, C_LABEL_GRAY), (_ltr(overlay.time_text), t.date_time, True, 0)])
     text("header", cells["middle"][0], row2[0], cells["middle"][1], row2[1], overlay.invoice_number, t.number, True)
     modules = code128_modules(overlay.invoice_number)
     bar_x = (cells["middle"][0] + cells["middle"][1]) / 2 - sum(modules) * PROTO_BAR_MODULE_MM / 2

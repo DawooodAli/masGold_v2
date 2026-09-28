@@ -149,6 +149,16 @@ class GoldPriceViewModel(QObject):
         return self._headline_value("shop_sell_price_per_gram")
 
     @Property(str, notify=changed)
+    def simpleStatus(self):
+        """The employee-facing status: mode and freshness only (no provider / source names).
+        compactStatus keeps the technical detail for Settings."""
+        if self.status == "FRESH":
+            return self.modeText + " • محدث"
+        if self.status == "STALE_ALLOWED":
+            return self.modeText + " • قديم"
+        return self.statusText if self.status != "UNAVAILABLE" else "السعر غير متاح"
+
+    @Property(str, notify=changed)
     def compactStatus(self):
         source = "GoldTimo" if self._data.get("source") == "GOLDTIMO" else self.source
         prefix = self.modeText if self.mode == "MANUAL" else self.modeText + " • " + source

@@ -831,6 +831,12 @@ class InvoiceRepository(BaseRepository):
              invoice_type, invoice_type, settlement_status, settlement_status, int(limit), int(offset)))
         return [_stringify_ids(row) for row in rows]
 
+    def get_invoice_id_by_number(self, invoice_number):
+        """Exact match on the unique invoice number (the printed invoice barcode): no LIKE scan."""
+        row = self._fetch_one("SELECT id FROM invoices WHERE invoice_number = %s AND invoice_status <> 'DRAFT'",
+                              (invoice_number,))
+        return None if row is None else str(row["id"])
+
     def invoice_account_allocation(self, invoice_id, customer_id):
         """The customer-ledger entry THIS invoice wrote (على العميل +, للعميل −), never the running balance."""
         if customer_id in (None, ""):

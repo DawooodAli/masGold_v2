@@ -639,64 +639,45 @@ ApplicationWindow {
                         Layout.fillWidth: true
                     }
 
-                    // Centre: operational balances only — shop cash and COUNTED old gold 21 / 18 / 24.
-                    // Wallet / InstaPay / bank balances are in مراجعات المدير.
-                    Rectangle {
+                    // Centre: operational balances only — shop cash and COUNTED old gold 21 / 18 / 24, each in
+                    // its own compact box (the karat is the box's headline). Wallet / InstaPay / bank balances
+                    // are in مراجعات المدير. Below 1400 / 1200 px the boxes tighten; no value is ever hidden.
+                    RowLayout {
+                        id: balanceStrip
                         objectName: "balanceStrip"
-                        // One line: الكاش | كسر 21 | كسر 18 | كسر 24 (tighter below 1400 px, never wrapped).
-                        Layout.preferredWidth: balanceRow.implicitWidth + (root.width < 1400 ? 12 : 20)
-                        Layout.minimumWidth: Layout.preferredWidth
-                        Layout.preferredHeight: 30
-                        radius: theme.radiusSmall
-                        color: theme.bgTertiary
-                        border.color: balancesVM.errorMessage.length > 0 ? theme.red : theme.border
-                        border.width: 1
-
-                        Row {
-                            id: balanceRow
-                            anchors.centerIn: parent
-                            layoutDirection: Qt.RightToLeft
-                            spacing: root.width < 1200 ? 3 : root.width < 1400 ? 4 : 8
-                            readonly property int fontSize: root.width < 1200 ? 10 : root.width < 1400 ? 11 : 12
-
-                            Label {
-                                objectName: "balanceCash"
-                                text: "الكاش: " + balancesVM.cashText
-                                color: theme.balanceCash
-                                opacity: balancesVM.cashZero ? 0.55 : 1
-                                font.family: "Cairo"
-                                font.pixelSize: balanceRow.fontSize
-                                font.bold: true                          // cash: the most prominent figure
-                            }
-                            Repeater {
-                                model: balancesVM.oldGold
-                                Row {
-                                    required property var modelData
-                                    layoutDirection: Qt.RightToLeft
-                                    spacing: balanceRow.spacing
-                                    Label {
-                                        text: "|"
-                                        color: theme.border
-                                        font.family: "Cairo"
-                                        font.pixelSize: balanceRow.fontSize
-                                    }
-                                    Label {
-                                        objectName: "balanceKarat_" + modelData.karat
-                                        text: "كسر " + modelData.karat + ": " + modelData.text
-                                        // 21 turquoise • 18 blue • 24 violet; a zero balance is muted, never hidden.
-                                        color: modelData.karat === "21" ? theme.balanceKarat21
-                                             : modelData.karat === "18" ? theme.balanceKarat18
-                                             : theme.balanceKarat24
-                                        opacity: modelData.zero ? 0.45 : 1
-                                        font.family: "Cairo"
-                                        font.pixelSize: balanceRow.fontSize
-                                    }
-                                }
-                            }
-                        }
-                        ToolTip.visible: balancesVM.errorMessage.length > 0 && stripHover.hovered
+                        layoutDirection: Qt.RightToLeft
+                        spacing: root.width < 1200 ? 4 : 6
+                        readonly property int labelSize: root.width < 1200 ? 10 : 11
+                        readonly property int karatSize: root.width < 1200 ? 15 : root.width < 1400 ? 16 : 18
+                        readonly property int valueSize: root.width < 1200 ? 12 : root.width < 1400 ? 13 : 14
+                        readonly property bool failed: balancesVM.errorMessage.length > 0
+                        ToolTip.visible: failed && stripHover.hovered
                         ToolTip.text: "تعذر تحميل الأرصدة"
                         HoverHandler { id: stripHover }
+
+                        BalanceBox {
+                            objectName: "balanceBoxCash"
+                            accent: theme.balanceCash
+                            caption: "النقدية"
+                            valueName: "balanceCash"
+                            value: balancesVM.cashText
+                            zero: balancesVM.cashZero
+                        }
+                        Repeater {
+                            model: balancesVM.oldGold
+                            BalanceBox {
+                                required property var modelData
+                                objectName: "balanceBox_" + modelData.karat
+                                // 21 turquoise • 18 blue • 24 violet; a zero balance is muted, never hidden.
+                                accent: modelData.karat === "21" ? theme.balanceKarat21
+                                      : modelData.karat === "18" ? theme.balanceKarat18 : theme.balanceKarat24
+                                caption: "كسر"
+                                karat: modelData.karat
+                                valueName: "balanceKarat_" + modelData.karat
+                                value: modelData.text
+                                zero: modelData.zero
+                            }
+                        }
                     }
 
                     Item {
@@ -727,7 +708,7 @@ ApplicationWindow {
 
                     Rectangle {
                         objectName: "goldPriceArea"
-                        Layout.preferredWidth: root.width < 1200 ? 270 : root.width < 1400 ? 300 : 340
+                        Layout.preferredWidth: root.width < 1200 ? 250 : root.width < 1400 ? 290 : 340
                         Layout.minimumWidth: Layout.preferredWidth
                         Layout.preferredHeight: 54
 
@@ -749,26 +730,30 @@ ApplicationWindow {
                                 property string text: goldPriceVM.headline
                                 layoutDirection: Qt.RightToLeft
                                 spacing: 10
-                                GoldPriceLabel { value: "عيار 21"; color: theme.gold; font.bold: true; font.pixelSize: 11; wrapMode: Text.NoWrap }
+                                // Label small, price strong: عيار 21 • شراء 6,209 • بيع 6,234 (no provider name).
+                                GoldPriceLabel { value: "عيار 21"; color: theme.gold; font.bold: true
+                                                 font.pixelSize: root.width < 1200 ? 12 : 13; wrapMode: Text.NoWrap }
+                                GoldPriceLabel { value: "شراء"; color: theme.priceBuy; font.pixelSize: 11; wrapMode: Text.NoWrap }
                                 GoldPriceLabel {
                                     objectName: "goldTopBuy"
-                                    value: "شراء " + goldPriceVM.headlineBuy; color: theme.priceBuy
-                                    font.bold: true; font.pixelSize: root.width < 1200 ? 13 : 14; wrapMode: Text.NoWrap
+                                    value: goldPriceVM.headlineBuy; color: theme.priceBuy
+                                    font.bold: true; font.pixelSize: root.width < 1200 ? 15 : 17; wrapMode: Text.NoWrap
                                 }
+                                GoldPriceLabel { value: "بيع"; color: theme.priceSell; font.pixelSize: 11; wrapMode: Text.NoWrap }
                                 GoldPriceLabel {
                                     objectName: "goldTopSell"
-                                    value: "بيع " + goldPriceVM.headlineSell; color: theme.priceSell
-                                    font.bold: true; font.pixelSize: root.width < 1200 ? 13 : 14; wrapMode: Text.NoWrap
+                                    value: goldPriceVM.headlineSell; color: theme.priceSell
+                                    font.bold: true; font.pixelSize: root.width < 1200 ? 15 : 17; wrapMode: Text.NoWrap
                                 }
                                 Item { Layout.fillWidth: true }
                             }
                             GoldPriceLabel {
                                 objectName: "goldTopStatus"
                                 Layout.fillWidth: true
-                                value: goldPriceVM.compactStatus
+                                value: goldPriceVM.simpleStatus
                                 color: goldPriceVM.status === "ERROR" ? theme.priceError
                                        : goldPriceVM.status === "STALE_ALLOWED" ? theme.priceWarning : theme.textMuted
-                                font.pixelSize: 10
+                                font.pixelSize: 11
                                 elide: Text.ElideLeft
                                 wrapMode: Text.NoWrap
                             }
@@ -2085,8 +2070,9 @@ ApplicationWindow {
                             spacing: 8
 
 
-                            TextField {
+                            BarcodeField {
                                 id: inventorySearchField
+                                mixed: true            // names in Arabic, or a scanned barcode
 
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 44
@@ -2807,8 +2793,17 @@ ApplicationWindow {
                                     // =================================
 
                                     Rectangle {
+                                        objectName: "inventoryBarcodeBox"
                                         Layout.preferredWidth: 155
+                                        Layout.maximumWidth: 155
                                         Layout.preferredHeight: 46
+                                        // A long barcode never spills over its neighbours or the checkbox:
+                                        // the text fits (down to 9 px), then elides in the middle; the full
+                                        // value stays stored and is shown on hover.
+                                        clip: true
+                                        ToolTip.visible: Boolean(modelData.barcode_value) && barcodeHover.hovered
+                                        ToolTip.text: modelData.barcode_value || ""
+                                        HoverHandler { id: barcodeHover }
 
                                         radius: 6
 
@@ -2827,6 +2822,7 @@ ApplicationWindow {
 
                                         Column {
                                             anchors.centerIn: parent
+                                            width: parent.width - 12
 
                                             spacing: 1
 
@@ -2861,6 +2857,10 @@ ApplicationWindow {
                                                 anchors.horizontalCenter:
                                                     parent.horizontalCenter
 
+                                                objectName: "inventoryBarcodeText"
+                                                width: parent.width
+                                                horizontalAlignment: Text.AlignHCenter
+
                                                 text:
                                                     modelData.barcode_value
                                                     || ""
@@ -2869,7 +2869,10 @@ ApplicationWindow {
                                                     theme.textPrimary
 
                                                 font.family: "Cairo"
-                                                font.pixelSize: 11
+                                                font.pixelSize: 12
+                                                fontSizeMode: Text.HorizontalFit
+                                                minimumPixelSize: 9
+                                                elide: Text.ElideMiddle
                                             }
                                         }
                                     }
@@ -3189,6 +3192,64 @@ ApplicationWindow {
     // ========================================================
     // NAV BUTTON
     // ========================================================
+
+    // One header balance: accent bar, small caption (+ big karat), then the value.
+    component BalanceBox: Rectangle {
+        id: box
+        property color accent: theme.gold
+        property string caption: ""
+        property string karat: ""
+        property string valueName: ""
+        property string value: ""
+        property bool zero: false
+        Layout.preferredHeight: 46
+        Layout.preferredWidth: boxColumn.implicitWidth + (root.width < 1200 ? 14 : 20)
+        Layout.minimumWidth: Layout.preferredWidth
+        radius: theme.radiusSmall
+        color: theme.bgTertiary
+        border.color: balanceStrip.failed ? theme.red : theme.border
+        border.width: 1
+        Rectangle { anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom
+                    anchors.margins: 1; width: 3; radius: 2; color: box.accent; opacity: box.zero ? 0.5 : 1 }
+        Column {
+            id: boxColumn
+            anchors.centerIn: parent
+            anchors.horizontalCenterOffset: -1
+            spacing: -3
+            Row {
+                anchors.horizontalCenter: parent.horizontalCenter
+                layoutDirection: Qt.RightToLeft
+                spacing: 4
+                Label {
+                    anchors.baseline: karatLabel.visible ? karatLabel.baseline : undefined
+                    text: box.caption
+                    color: theme.textMuted
+                    font.family: "Cairo"
+                    font.pixelSize: balanceStrip.labelSize
+                }
+                Label {
+                    id: karatLabel
+                    visible: box.karat.length > 0
+                    text: box.karat
+                    color: box.accent
+                    opacity: box.zero ? 0.6 : 1
+                    font.family: "Cairo"
+                    font.pixelSize: balanceStrip.karatSize
+                    font.bold: true
+                }
+            }
+            Label {
+                objectName: box.valueName
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: box.value
+                color: box.karat.length ? theme.textPrimary : box.accent        // cash: the gold figure
+                opacity: box.zero ? 0.45 : 1
+                font.family: "Cairo"
+                font.pixelSize: balanceStrip.valueSize
+                font.bold: true
+            }
+        }
+    }
 
     component NavButton: Button {
 
@@ -9557,8 +9618,9 @@ ApplicationWindow {
                             }
 
 
-                            TextField {
+                            BarcodeField {
                                 id: barcodeField
+                                objectName: "inventoryBarcodeField"
 
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 44
@@ -9977,6 +10039,15 @@ ApplicationWindow {
                             var saved = false
 
 
+                            // A barcode is stored exactly; anything outside the barcode set is refused
+                            // (never silently "corrected" into another piece's barcode).
+                            if (barcodeField.text.length > 0
+                                    && barcodeInput.problem(barcodeField.text).length > 0) {
+                                inventoryEntryError.text = barcodeInput.problem(barcodeField.text)
+                                return
+                            }
+                            if (barcodeField.text.length > 0)
+                                barcodeField.text = barcodeInput.canonical(barcodeField.text)
                             if (
                                 stockClassificationCombo
                                 .currentIndex === 0

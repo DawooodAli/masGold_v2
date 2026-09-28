@@ -941,5 +941,30 @@ class MakingFromInvoiceTotalOnlyTests(InvoiceServiceTestCase):
         self.assertEqual([m["amount_delta"] for m in self.store.cash_movements], [D("84000.00")])   # real money only
 
 
+
+class DuplicateSaleItemTests(InvoiceServiceTestCase):
+    """One physical piece is sold once per invoice, whatever path added it (service-side guard)."""
+    # Item 100: 21K 10.500 g × 6232 = 65,436.00 gold value.
+
+    def test_the_same_inventory_item_twice_is_refused_and_nothing_is_written(self):
+        draft = InvoiceDraft(5, "12", (sale("100"), sale("100")), (), (cash("140000"),), invoice_total="140000")
+        self.assertRefused("DUPLICATE_SALE_ITEM", draft)                          # no invoice, stock, money, ledger
+        self.assertEqual((self.store.invoices, self.store.payments, self.store.ledger), ([], [], []))
+        self.assertEqual(self.store.items["100"]["inventory_status"], "IN_STOCK")
+        with self.assertRaises(InvoiceError) as context:
+            self.service.preview(draft)
+        self.assertEqual((context.exception.code, str(context.exception)),
+                         ("DUPLICATE_SALE_ITEM", "لا يمكن بيع نفس القطعة مرتين في الفاتورة نفسها"))
+
+    def test_two_different_pieces_with_identical_attributes_both_sell(self):
+        self.store.items["145"] = {**self.store.items["100"], "inventory_item_id": "145", "barcode_value": "ABC1"}
+        self.store.items["146"] = {**self.store.items["100"], "inventory_item_id": "146", "barcode_value": "ABC2"}
+        result = self.finalize(InvoiceDraft(5, "12", (sale("145"), sale("146")), (), (cash("140000"),),
+                                            invoice_total="140000"))
+        self.assertEqual(result["effective_sale_total"], "140000.00")
+        self.assertEqual((self.store.items["145"]["inventory_status"], self.store.items["146"]["inventory_status"]),
+                         ("SOLD", "SOLD"))
+
+
 if __name__ == "__main__":
     unittest.main()

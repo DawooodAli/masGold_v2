@@ -298,14 +298,14 @@ Item {
     component FieldLabel: Label {
         color: theme.textMuted
         font.family: "Cairo"
-        font.pixelSize: 11
+        font.pixelSize: 12
         horizontalAlignment: Text.AlignRight
     }
 
     component Value: Label {
         color: theme.textPrimary
         font.family: "Cairo"
-        font.pixelSize: 13
+        font.pixelSize: 14
         font.bold: true
     }
 
@@ -404,14 +404,16 @@ Item {
         Layout.preferredWidth: 1
         color: theme.textPrimary
         font.family: "Cairo"
-        font.pixelSize: 12
+        font.pixelSize: 13
         horizontalAlignment: Text.AlignRight
+        verticalAlignment: Text.AlignVCenter
         elide: Text.ElideLeft
     }
 
     component HeadCell: Cell {
-        color: theme.textMuted
-        font.pixelSize: 10
+        color: theme.textSecondary
+        font.pixelSize: 12
+        font.bold: true
     }
 
     component KaratChip: SmallButton {
@@ -797,7 +799,7 @@ Item {
                                 font.pixelSize: 13
                                 font.bold: true
                             }
-                            TextField {
+                            BarcodeField {
                                 id: barcodeField
                                 objectName: "invoiceBarcodeField"
                                 Layout.fillWidth: true
@@ -938,7 +940,7 @@ Item {
                                                 text: model.itemName
                                                 color: theme.textPrimary
                                                 font.family: "Cairo"
-                                                font.pixelSize: 12
+                                                font.pixelSize: 13
                                                 font.bold: true
                                                 horizontalAlignment: Text.AlignRight
                                                 elide: Text.ElideLeft
@@ -957,7 +959,7 @@ Item {
                                                     text: model.tag
                                                     color: model.kind === "UNIDENTIFIED" ? theme.amber : theme.priceBuy
                                                     font.family: "Cairo"
-                                                    font.pixelSize: 9
+                                                    font.pixelSize: 10
                                                 }
                                             }
                                         }
@@ -965,7 +967,7 @@ Item {
                                             Layout.preferredWidth: 3
                                             text: model.barcode || "—"
                                             color: theme.textMuted
-                                            font.pixelSize: 10
+                                            font.pixelSize: 11
                                             elide: Text.ElideRight
                                         }
                                         Cell { Layout.preferredWidth: 1; text: model.karat }
@@ -982,7 +984,7 @@ Item {
                                             Layout.preferredWidth: 3
                                             text: model.notes
                                             color: theme.textSecondary
-                                            font.pixelSize: 11
+                                            font.pixelSize: 12
                                             ToolTip.visible: notesHover.hovered && truncated
                                             ToolTip.text: model.notes
                                             HoverHandler { id: notesHover }
@@ -1056,6 +1058,28 @@ Item {
                                 objectName: "itemSearchText"
                                 Layout.fillWidth: true
                                 placeholderText: text.length > 0 ? "" : "ابحث باسم الصنف / المصنع / الباركود (اختياري)"
+                                // Names in Arabic, or a scanned barcode: only a scanner burst (Enter-terminated)
+                                // is rebuilt from its physical scan codes (see BarcodeField / app/barcode_input.py).
+                                property var strokes: []
+                                Keys.onPressed: function(event) {
+                                    if (typeof barcodeInput === "undefined"
+                                            || (event.modifiers & (Qt.ControlModifier | Qt.AltModifier)))
+                                        return
+                                    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                                        const scanned = barcodeInput.fromBurst(strokes)
+                                        if (scanned.length > 0) {
+                                            text = scanned
+                                            searchPanel.chosenIndex = -1      // search the real barcode, not the Arabic text
+                                        }
+                                        strokes = []
+                                        return
+                                    }
+                                    if (!event.text || event.text.length === 0) { strokes = []; return }
+                                    const now = Date.now()
+                                    const last = strokes.length ? strokes[strokes.length - 1].t : now
+                                    strokes = (now - last > 100 ? [] : strokes).concat([{ t: now, code: event.nativeScanCode,
+                                        shift: (event.modifiers & Qt.ShiftModifier) !== 0 }])
+                                }
                                 onTextEdited: searchDebounce.restart()
                                 onAccepted: searchPanel.chosenIndex >= 0 ? invoicePage.confirmSearchedItem()
                                                                          : invoicePage.runItemSearch()
@@ -1256,8 +1280,8 @@ Item {
                                     Cell { Layout.preferredWidth: 3; text: modelData.itemName; font.pixelSize: 13; font.bold: true }
                                     Cell { Layout.preferredWidth: 2; text: modelData.weightText; font.pixelSize: 13; font.bold: true; color: theme.goldBright }
                                     Cell { Layout.preferredWidth: 2; text: modelData.karatText }
-                                    Cell { Layout.preferredWidth: 4; text: modelData.detailText; color: theme.textSecondary; font.pixelSize: 11 }
-                                    Cell { Layout.preferredWidth: 2; text: modelData.barcodeText; color: theme.textDisabled; font.pixelSize: 10 }
+                                    Cell { Layout.preferredWidth: 4; text: modelData.detailText; color: theme.textSecondary; font.pixelSize: 12 }
+                                    Cell { Layout.preferredWidth: 2; text: modelData.barcodeText; color: theme.textMuted; font.pixelSize: 11 }
                                 }
                             }
                         }
@@ -1752,6 +1776,7 @@ Item {
 
                         RowLayout {
                             objectName: "salePricingBlock"
+                            Layout.fillWidth: true
                             visible: invoiceVM.saleCount > 0
                             layoutDirection: Qt.RightToLeft
                             spacing: 6
@@ -1783,6 +1808,15 @@ Item {
                             Label {
                                 objectName: "makingReviewFlag"
                                 visible: text.length > 0
+                                // The one flexible item of this row: it gives way (elides) before anything
+                                // else, so the larger labels never push the Save panel off screen.
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                Layout.preferredWidth: implicitWidth
+                                elide: Text.ElideLeft
+                                ToolTip.visible: truncated && makingFlagHover.hovered
+                                ToolTip.text: text
+                                HoverHandler { id: makingFlagHover }
                                 text: invoiceVM.summary.makingNotice
                                 color: invoiceVM.summary.makingStatus === "OUT_OF_RANGE" ? theme.amber : theme.textMuted
                                 font.family: "Cairo"

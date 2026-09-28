@@ -110,6 +110,36 @@ class InvoiceHistoryViewModel(QObject):
         self._debounce.stop()
         self._run_search(1)
 
+    @Slot(str)
+    def submitSearch(self, text):
+        """Enter in the History search box (typed or scanned). An exact invoice number — e.g. the
+        printed invoice barcode — opens that invoice directly; anything else (partial number, name,
+        phone) stays an ordinary search. Only an exact number ever auto-opens."""
+        from app.barcode_input import canonical_barcode
+        self._debounce.stop()
+        self._text = (text or "").strip()
+        number, _ = canonical_barcode(self._text)          # same normalization as every barcode field
+        if not number:
+            self._run_search(1)
+            return
+        self._text = number
+        service = self._service_instance()
+        self._error = ""
+        self._start("exact", lambda _expected_actor: (number, service.find_by_number(
+            number, _expected_actor=_expected_actor)))
+
+    def _on_exact(self, result, error):
+        if error:
+            self._error = error
+            return
+        number, invoice_id = result
+        if invoice_id:
+            self.openInvoice(invoice_id)
+            return
+        self._run_search(1)                                 # not an exact number: the normal search
+        if number.isdigit() and len(number) == 8:            # an invoice number's length (phones are 11)
+            self._error = "لم يتم العثور على الفاتورة"
+
     @Slot()
     def setToday(self):
         today = self._clock().date()

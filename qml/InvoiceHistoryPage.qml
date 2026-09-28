@@ -16,7 +16,10 @@ Item {
 
     Theme { id: theme }
 
-    onVisibleChanged: if (visible && vm) vm.activate()
+    onVisibleChanged: if (visible && vm) { vm.activate(); focusSearch() }
+    // Scanner-friendly: the search box has focus when History opens and after closing an invoice.
+    function focusSearch() { if (!detailMode) Qt.callLater(function() { searchField.forceActiveFocus() }) }
+    onDetailModeChanged: focusSearch()
 
     Shortcut {
         sequence: "Esc"
@@ -128,13 +131,25 @@ Item {
             Layout.fillWidth: true
             layoutDirection: Qt.RightToLeft
             spacing: 6
-            Field {
+            // Typed or scanned (the printed invoice barcode). Names stay Arabic; a scanner burst is
+            // rebuilt from its physical keys (BarcodeField, mixed). Enter: exact number opens it.
+            BarcodeField {
                 id: searchField
                 objectName: "historySearch"
+                mixed: true
                 width: 260
+                implicitHeight: 30
+                font.family: theme.fontFamily
+                font.pixelSize: theme.fontBody
+                color: theme.textPrimary
+                placeholderTextColor: theme.textDisabled
+                horizontalAlignment: TextInput.AlignRight
+                selectByMouse: true
+                background: Rectangle { radius: 4; color: theme.bgPrimary
+                                        border.color: searchField.activeFocus ? theme.gold : theme.border }
                 placeholderText: activeFocus || text.length ? "" : "رقم الفاتورة أو اسم / تليفون العميل"
                 onTextEdited: historyPage.vm.setSearchText(text)
-                onAccepted: historyPage.vm.searchNow()
+                onAccepted: historyPage.vm.submitSearch(text)
             }
             Btn { objectName: "historyToday"; text: "اليوم"; onClicked: historyPage.vm.setToday() }
             Field { id: fromField; objectName: "historyDateFrom"; width: 104; placeholderText: activeFocus ? "" : "من 2026-09-01"

@@ -241,7 +241,7 @@ Item {
                                         text: modelData.label
                                         color: theme.textMuted
                                         font.family: theme.fontFamily
-                                        font.pixelSize: theme.fontTableHeader
+                                        font.pixelSize: theme.fontBody
                                     }
                                 }
                             }
@@ -249,10 +249,10 @@ Item {
                     }
                     Txt { objectName: "dashboardPriceStatus"; Layout.fillWidth: true
                           value: !dashboard.price ? "السعر غير متاح"
-                                 : dashboard.price.compactStatus || dashboard.price.statusText || "السعر غير متاح"
+                                 : dashboard.price.simpleStatus || "السعر غير متاح"
                           color: !dashboard.price || dashboard.price.status === "ERROR" ? theme.priceError
                                  : dashboard.price.status === "STALE_ALLOWED" ? theme.priceWarning : theme.textMuted
-                          font.pixelSize: theme.fontCaption }
+                          font.pixelSize: theme.fontTableHeader }
                 }
 
                 // --- الكسر (every logged-in user, same ledger as the top strip + today's flow)

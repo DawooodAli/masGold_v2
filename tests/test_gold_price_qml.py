@@ -321,7 +321,8 @@ class GoldPricePanelTests(QtPriceTestCase):
         self.controller.gold_prices._data["status"] = "STALE_ALLOWED"
         self.controller.gold_prices.changed.emit()
         status = self.root.findChild(QObject, "goldTopStatus")
-        self.assertIn("السعر قديم", status.property("value"))
+        self.assertEqual(status.property("value"), "تلقائي • قديم")              # simple: mode + freshness
+        self.assertNotIn("GoldTimo", status.property("value"))                   # no provider on the card
         self.assertNotEqual(status.property("color"), original_sell)
         self.assertEqual(self.warnings, [])
 

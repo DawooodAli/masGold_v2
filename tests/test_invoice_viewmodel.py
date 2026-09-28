@@ -257,7 +257,7 @@ class InvoiceViewModelTests(unittest.TestCase):
     def test_duplicate_barcode_and_missing_old_gold_inputs(self):
         self.vm.addBarcode("01260925")
         self.vm.addBarcode("01260925")
-        self.assertEqual((self.vm.saleCount, self.vm.errorMessage), (1, "القطعة مضافة بالفعل إلى الفاتورة."))
+        self.assertEqual((self.vm.saleCount, self.vm.errorMessage), (1, "هذه القطعة مضافة بالفعل إلى الفاتورة"))
         self.vm.addOldGold(9, "5")
         self.assertEqual(self.vm.errorMessage, "اختر عيار الكسر.")
         self.vm.addOldGold(1, "")

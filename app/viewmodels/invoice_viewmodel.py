@@ -436,7 +436,12 @@ class InvoiceViewModel(QObject):
     # ---- sale lines
     @Slot(str)
     def addBarcode(self, barcode):
-        barcode = (barcode or "").strip()
+        from app.barcode_input import canonical_barcode
+        barcode, problem = canonical_barcode(barcode)            # never a guessed barcode
+        if problem:
+            self._error, self._barcode_not_found = problem, ""
+            self.changed.emit()
+            return
         if not barcode:
             return
         self._barcode_not_found = ""
@@ -468,7 +473,7 @@ class InvoiceViewModel(QObject):
         if self._sale_limit_reached():
             return False
         if any(line["inventory_item_id"] == item["inventory_item_id"] for line in self._sales):
-            self._error = "القطعة مضافة بالفعل إلى الفاتورة."
+            self._error = "هذه القطعة مضافة بالفعل إلى الفاتورة"          # one physical piece, once
             self.changed.emit()
             return False
         self._sales.append({**item, "identified_by": identified_by})

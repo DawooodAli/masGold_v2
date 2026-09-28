@@ -673,5 +673,40 @@ class FinalWeightTests(unittest.TestCase):
         self.assertGreater(total[1], max(words.size_pt, methods.size_pt))   # the total stays the strongest
 
 
+
+class HeaderSeparatorTests(unittest.TestCase):
+    """Owner: every printed header label is followed by " :- " (الاسم :- …), nothing else changes."""
+
+    def ops(self, **overrides):
+        return compose(bill_overlay.build_overlay(invoice_row(**overrides)), BillCalibration(),
+                       bill_overlay.STYLE_VARIANT_C)
+
+    def test_the_four_header_labels_use_the_separator(self):
+        header = {o.spans[0][0]: "".join(p[0] for p in o.spans) for o in self.ops() if o.spans and o.region == "header"}
+        self.assertEqual(set(header), {"الاسم :- ", "العنوان :- ", "التاريخ :- ", "الوقت :- "})
+        self.assertEqual(header["الاسم :- "], "الاسم :- سليا محمد")
+        self.assertEqual(header["العنوان :- "], "العنوان :- القناطر")
+        # Date / time stay one left-to-right unit after the separator (no bidi reordering).
+        self.assertEqual(header["التاريخ :- "], "التاريخ :- ⁦26-09-2026⁩")
+        self.assertEqual(header["الوقت :- "], "الوقت :- ⁦22:47⁩")
+
+    def test_no_separator_anywhere_else(self):
+        others = [o.text for o in self.ops() if o.kind == "text" and o.region != "header"]
+        self.assertFalse([t for t in others if ":-" in t])
+        number = next(o for o in self.ops() if o.region == "header" and o.text == "26092699")
+        self.assertFalse(number.spans)
+
+    def test_label_weight_size_and_geometry_are_unchanged(self):
+        t = bill_overlay.C_TYPOGRAPHY
+        ops = self.ops(lines=[sale_line(i) for i in range(10)], customer_name_snapshot="عبد الرحمن محمد عبد العزيز الشرقاوي")
+        for o in ops:
+            if o.spans and o.region == "header":
+                self.assertTrue(o.spans[0][2])                                   # still bold
+                self.assertAlmostEqual(o.spans[0][1], BillCalibration().pt(t.label))
+        name = next(o for o in ops if o.spans and o.spans[0][0].startswith("الاسم"))
+        self.assertGreater(name.min_pt, 0)                                      # long names still step down / elide
+        self.assertAlmostEqual(max(o.y + o.h for o in ops), 116.45, places=1)   # same 10-row bottom
+
+
 if __name__ == "__main__":
     unittest.main()

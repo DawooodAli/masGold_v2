@@ -254,7 +254,7 @@ class DashboardPageTests(page_harness.InvoicePageTests):
             self.root.setWidth(width)
             self.root.setHeight(height)
             QTest.qWait(250)
-            self.assertEqual(self.item("balanceCash").property("text"), "الكاش: 1,234,567.89 ج")
+            self.assertEqual(self.item("balanceCash").property("text"), "1,234,567.89 ج")
             boxes = []
             for name in ("balanceCash", "balanceKarat_21", "balanceKarat_18", "balanceKarat_24",
                          "goldPriceArea", "connectionDot", "logoutButton"):
@@ -294,7 +294,7 @@ class DashboardPageTests(page_harness.InvoicePageTests):
                 self.assert_inside_window(label)
                 self.assertLessEqual(label.property("contentWidth"), label.property("width") + 1)
             self.assertLess(self.item("dashboardPriceStatus").property("font").pixelSize(), 12)  # status stays small
-            self.assertIn("بيع 6,232", self.item("goldTopSell").property("text"))
+            self.assertIn("6,232", self.item("goldTopSell").property("text"))           # label is separate
             if target:
                 Path(target).mkdir(parents=True, exist_ok=True)
                 self.root.grabWindow().save(str(Path(target) / f"dashboard-prices-{width}x{height}.png"))

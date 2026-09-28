@@ -507,7 +507,7 @@ class InvoicePageTests(unittest.TestCase):
         self.assertEqual(self.store.ledger, [])
         self.assertEqual([m["amount_delta"] for m in self.store.cash_movements], [D("67011.00")])
         balances = self.controller.operational_viewmodels["balancesVM"]
-        self.wait_until(lambda: self.text("balanceCash") == "الكاش: 67,011.00 ج", "cash strip not refreshed")
+        self.wait_until(lambda: self.text("balanceCash") == "67,011.00 ج", "cash strip not refreshed")
         self.assertEqual(self.warnings, [])
 
     # ------------------------------------------------------------ 2-5: cascading search
@@ -943,7 +943,7 @@ class InvoicePageTests(unittest.TestCase):
         balances._strip = {"cash_balance": "1250300.50", "old_gold": [
             {"karat": 21, "grams": "1234.567"}, {"karat": 18, "grams": "456.789"}, {"karat": 24, "grams": "78.901"}]}
         balances.changed.emit()
-        self.assertEqual(self.text("balanceCash"), "الكاش: 1,250,300.50 ج")
+        self.assertEqual(self.text("balanceCash"), "1,250,300.50 ج")
         self.header_layout_checks("-large")
 
     def header_layout_checks(self, suffix):
@@ -966,18 +966,18 @@ class InvoicePageTests(unittest.TestCase):
                 self.assertLess(x["balanceStrip"], x["goldPriceArea"])
                 strip, card = self.item("balanceStrip"), self.item("goldPriceArea")
                 self.assertLessEqual(x["balanceStrip"] + strip.width(), x["goldPriceArea"])   # never under the card
-                self.assertGreaterEqual(card.width(), 270)
+                self.assertGreaterEqual(card.width(), 250)
                 for label in card.findChildren(QObject):                          # price card text never clipped
                     if label.property("contentWidth") is not None and label.property("visible"):
                         self.assertLessEqual(label.property("contentWidth"), label.property("width") + 1,
                                              f"price card text clipped: {label.property('text')}")
-                # ONE line: الكاش | كسر 21 | كسر 18 | كسر 24 share a row, right to left, in a short strip.
-                names = ("balanceCash", "balanceKarat_21", "balanceKarat_18", "balanceKarat_24")
+                # ONE row of boxes: النقدية | 21 | 18 | 24, right to left, inside the top bar.
+                names = ("balanceBoxCash", "balanceBox_21", "balanceBox_18", "balanceBox_24")
                 centres = [self.item(n).mapToScene(QPointF(0, self.item(n).height() / 2)) for n in names]
                 self.assertLess(max(c.y() for c in centres) - min(c.y() for c in centres), 1.5, "strip wrapped")
                 xs = [c.x() for c in centres]
                 self.assertEqual(xs, sorted(xs, reverse=True))
-                self.assertLessEqual(strip.height(), 34)
+                self.assertLessEqual(strip.height(), 48)
                 # Nothing is pushed past the top bar (under the sidebar): the price card and status stay whole.
                 bar = self.item("topBar")
                 bar_right = bar.mapToScene(QPointF(bar.width(), 0)).x()
@@ -1158,7 +1158,8 @@ class InvoicePageTests(unittest.TestCase):
         balances = self.controller.operational_viewmodels["balancesVM"]
         self.wait_until(lambda: balances.ready)
         names = ("balanceCash", "balanceKarat_21", "balanceKarat_18", "balanceKarat_24")
-        colours = [self.item(n).property("color").name() for n in names]
+        boxes = ("balanceBoxCash", "balanceBox_21", "balanceBox_18", "balanceBox_24")
+        colours = [self.item(n).property("accent").name() for n in boxes]
         self.assertEqual(len(set(colours)), 4)                                   # one stable colour each
         # Fixture: cash 0, 21K 100.000, 18K 0.000, 24K 0.000 → zero figures muted, never hidden.
         self.assertEqual([self.item(n).property("opacity") < 1 for n in names], [True, False, True, True])
@@ -1334,7 +1335,10 @@ class InvoicePageTests(unittest.TestCase):
         self.wait_until(lambda: balances.ready)
         self.assertEqual([self.text(n) for n in ("balanceCash", "balanceKarat_21", "balanceKarat_18",
                                                  "balanceKarat_24")],
-                         ["الكاش: 0.00 ج", "كسر 21: 100.000 جم", "كسر 18: 0.000 جم", "كسر 24: 0.000 جم"])
+                         ["0.00 ج", "100.000 جم", "0.000 جم", "0.000 جم"])
+        self.assertEqual([(self.item(b).property("caption"), self.item(b).property("karat"))
+                          for b in ("balanceBoxCash", "balanceBox_21", "balanceBox_18", "balanceBox_24")],
+                         [("النقدية", ""), ("كسر", "21"), ("كسر", "18"), ("كسر", "24")])
         strip = self.item("balanceStrip")
         texts = [child.property("text") or "" for child in strip.findChildren(QObject)]
         self.assertFalse([t for t in texts if "محفظة" in t or "InstaPay" in t or "بنك" in t])
@@ -1345,9 +1349,9 @@ class InvoicePageTests(unittest.TestCase):
         reviews = self.controller.operational_viewmodels["reviewsVM"]
         reloads = reviews._latest.get("accounts", 0)
         self.finalize()
-        self.wait_until(lambda: self.text("balanceCash") == "الكاش: ⁦−61,138.95⁩ ج", "cash not refreshed")
+        self.wait_until(lambda: self.text("balanceCash") == "⁦−61,138.95⁩ ج", "cash not refreshed")
         self.assertGreater(reviews._latest.get("accounts", 0), reloads)          # wallet / bank balances too
-        self.assertEqual(self.text("balanceKarat_21"), "كسر 21: 110.000 جم")
+        self.assertEqual(self.text("balanceKarat_21"), "110.000 جم")
         self.snapshot("balance-strip")
 
     def test_cancel_and_failure_write_nothing(self):

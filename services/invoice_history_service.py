@@ -113,6 +113,16 @@ class InvoiceHistoryService:
             "money_moved": paid if row["net_direction"] == "SHOP_PAYS_CUSTOMER" else received,
         }
 
+    # ------------------------------------------------------------ exact invoice-number lookup
+    def find_by_number(self, invoice_number, *, _expected_actor=None):
+        """The printed invoice barcode is Code128 of the invoice number: resolve it exactly (never an
+        inventory lookup, never a partial match). Returns the invoice id or None."""
+        self._actor(_expected_actor)
+        number = (invoice_number or "").strip()
+        if not number:
+            return None
+        return self._read(lambda invoices: invoices.get_invoice_id_by_number(number))
+
     # ------------------------------------------------------------ detail (loaded only when opened)
     def detail(self, invoice_id, *, _expected_actor=None):
         actor = self._actor(_expected_actor)

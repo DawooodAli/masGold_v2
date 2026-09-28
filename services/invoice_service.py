@@ -77,6 +77,7 @@ class _DiscardPreview(Exception):
 # and sales from the old-gold stock count; old gold bought from the customer does not.
 MAX_SALE_ITEMS = 10
 MAX_SALE_ITEMS_TEXT = "الحد الأقصى للفاتورة 10 أصناف بيع"
+DUPLICATE_SALE_ITEM_TEXT = "لا يمكن بيع نفس القطعة مرتين في الفاتورة نفسها"
 
 
 class InvoiceError(ValueError):
@@ -327,7 +328,18 @@ class InvoiceService:
         warning = dead_cash.get_active_warning(int(customer["customer_id"])) is not None
         return customer, balance, warning
 
+    @staticmethod
+    def _require_unique_items(draft):
+        """One physical piece can be sold once per invoice: the same inventory item (whatever path
+        added it — barcode or search) may not appear twice. Same attributes on different pieces are
+        fine; F5 / F7 lines have no piece identity and are not checked here."""
+        ids = [int(line.inventory_item_id) for line in draft.sale_lines
+               if line.inventory_item_id not in (None, "")]
+        if len(ids) != len(set(ids)):
+            raise InvoiceError("DUPLICATE_SALE_ITEM", DUPLICATE_SALE_ITEM_TEXT)
+
     def _items(self, invoices, draft):
+        self._require_unique_items(draft)
         for line in draft.sale_lines:
             if line.identified_by not in IDENTIFICATION_METHODS:
                 raise InvoiceError("IDENTIFICATION_INVALID", "طريقة تحديد القطعة غير صحيحة.")
@@ -879,6 +891,7 @@ class InvoiceService:
                 customer, balance, warning = self._customer(invoices, customers, dead_cash,
                                                             draft.customer_id, lock=False)
                 ids = [line.inventory_item_id for line in draft.sale_lines]
+                self._require_unique_items(draft)
                 items = self._preview_items(invoices, ids)
                 described = self._described(invoices, draft)
                 calculated = self._calculate(draft, items, price_set, described=described, limits=limits)
