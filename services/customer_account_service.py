@@ -23,6 +23,20 @@ class CustomerAccountService:
         self.repository, self.invoices, self.customers = repository, invoices, customers
         self.authorization = authorization or AuthorizationService(session)
 
+    def customer_invoices(self, customer_id, start='', end='', invoice_type='', search='', page=1,
+                          *, _expected_actor=None):
+        """All this customer's finalized invoice history, independent of ledger allocation."""
+        from services.invoice_history_service import InvoiceHistoryService
+        customer_id = str(CustomerService._customer_id(customer_id))
+        if len(search)>150:
+            raise ValueError('نص البحث طويل.')
+        return InvoiceHistoryService(self.session, transaction_factory=self.transaction,
+            invoice_repository=self.invoices).search(customer_id=customer_id, text=search.strip(),
+                date_from=CustomerService._statement_date(start,'تاريخ البداية'),
+                date_to=CustomerService._statement_date(end,'تاريخ النهاية'),
+                invoice_type=invoice_type or None, page=CustomerService._page_number(page),
+                _expected_actor=_expected_actor)
+
     def statement(self, customer_id, start='', end='', source='', search='', page=1, *, _expected_actor=None):
         actor = self.session.require_authenticated()
         if _expected_actor is not None and not self.session.is_current(_expected_actor):

@@ -84,6 +84,7 @@ def review_details(code, details):
 
 class ManagementReviewViewModel(QObject):
     changed = Signal()
+    inspectionResolved = Signal()
 
     def __init__(self, session, service=None, parent=None, refresh_ms=60000, balance_service=None):
         super().__init__(parent)
@@ -365,6 +366,7 @@ class ManagementReviewViewModel(QObject):
             self._inspection_error = ""
             self._inspection_message = RESOLVED_TEXT[result["resolution"]].format(
                 barcode=result.get("stored_barcode") or "—")
+            self.inspectionResolved.emit()
         self.openReviews()
 
     @Property(str, notify=changed)

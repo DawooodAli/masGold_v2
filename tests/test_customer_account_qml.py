@@ -9,6 +9,83 @@ from tests import test_invoice_page_qml as harness
 
 
 class CustomerAccountPageTests(harness.InvoicePageTests):
+    def test_customer_invoices_and_event_refresh_preserve_customer_tab_and_filters(self):
+        import threading
+        vm=self.controller.operational_viewmodels['customerAccountVM']
+        customer_vm=self.controller.operational_viewmodels['customerVM']
+        state={'balance':D('200'),'statement_calls':0,'invoice_calls':[], 'block':False}
+        entered=threading.Event();release=threading.Event()
+        self.addCleanup(release.set)
+        def customer():
+            return {'customer_id':'12','name':'عميل','mobile':'01000000000','balance':state['balance'],
+                    'balance_status':'CUSTOMER_OWES_SHOP','is_active':True}
+        def profile(cid):
+            return {'customer':dict(customer(),customer_id=str(cid)),'active_flags':[],
+                'transactions_page':{'items':[],'page':1,'has_more':False},
+                'dead_cash_page':{'items':[],'page':1,'has_more':False},
+                'statement_summary':{},'statement_loaded_at':datetime(2026,9,30),'ledger_token':None}
+        customers=Mock(get_customer_types=Mock(return_value=[]),get_customer_transaction_types=Mock(return_value=[]),
+            search_customers=Mock(side_effect=lambda **kw:{'items':[customer()],'page':1,'has_more':False}),
+            get_customer_profile=Mock(side_effect=profile))
+        customer_vm._service=customers
+        class Service:
+            def statement(self,*args,**kw):
+                state['statement_calls']+=1
+                snapshot=customer()
+                if state['block']:
+                    state['block']=False;entered.set();release.wait(3)
+                return {'customer':snapshot,'rows':[],'has_more':False,'page':1,'accounts':[],'can_settle':True}
+            def customer_invoices(self,*args,**kw):
+                state['invoice_calls'].append(args)
+                return {'items':[dict(invoice_id=str(i),invoice_number='2609300'+str(i-20),
+                    finalized_at=datetime(2026,9,30,12),transaction_kind='SALE',invoice_total=D('100'),
+                    invoice_status='FINALIZED',settlement_status='SETTLED' if i==21 else 'PARTIAL')
+                    for i in (21,22)],'page':args[-1],'has_more':args[-1]==1}
+        vm.service=Service()
+        self.root.setProperty('currentPage',3)
+        self.assertGreater(customers.search_customers.call_count,0)
+        self.assertTrue(customer_vm.selectCustomer('12'));vm.open('12')
+        self.wait_until(lambda:not vm.busy)
+        self.click('customerInvoicesTab');self.wait_until(lambda:not vm.busy and len(vm.invoiceRows)==2)
+        self.assertEqual(vm.rows,[])  # Invoice list never manufactures ledger rows.
+        self.assertEqual(len(self.root.findChildren(QObject,'invoiceHistoryPage')),1)
+        vm.filter('2026-09-01','2026-09-30','SELL','2609')
+        self.wait_until(lambda:not vm.busy);vm.page(1);self.wait_until(lambda:not vm.busy)
+        filters=dict(vm.filters)
+        for size in ((1440,900),(1280,800),(1080,680)):
+            self.root.setWidth(size[0]);self.root.setHeight(size[1]);QTest.qWait(120)
+            for iid in ('21','22'):
+                button=self.visual_item('customerInvoice_'+iid)
+                self.assert_inside_window(button)
+                self.click(button)
+                history=self.controller.operational_viewmodels['invoiceHistoryVM']
+                self.wait_until(lambda:('detail',iid) in self.history.calls and not history.detailBusy)
+                history.closeDetail()
+                count=len(state['invoice_calls']);loads=customers.search_customers.call_count
+                self.root.setProperty('currentPage',3)
+                self.wait_until(lambda:len(state['invoice_calls'])>count and not vm.busy)
+                self.assertGreater(customers.search_customers.call_count,loads)
+                self.assertEqual(customer_vm.selectedCustomerId,'12')
+                self.assertEqual((vm.activeTab,vm.pageNumber,vm.filters),(1,2,filters))
+                QTest.qWait(60)
+        for key in ('invoiceVM','exchangeVM','returnVM','correctionVM'):
+            state['balance']+=D('1')
+            count=state['statement_calls']
+            self.controller.operational_viewmodels[key].finalized.emit('21')
+            self.wait_until(lambda:state['statement_calls']>count and not vm.busy)
+            self.assertIn(str(int(state['balance'])),vm.balance)
+            self.assertEqual(D(customer_vm.selectedCustomer['balance']),state['balance'])
+            self.assertEqual(customer_vm.selectedCustomerId,'12')
+        # A finalized event while a read is active must queue a fresh read.
+        state['block']=True;vm.refresh();self.wait_until(entered.is_set)
+        state['balance']=D('987');vm.refresh();release.set()
+        self.wait_until(lambda:not vm.busy and '987' in vm.balance)
+        self.assertEqual((vm.activeTab,vm.pageNumber,vm.filters),(1,2,filters))
+        count=state['statement_calls']
+        self.controller.operational_viewmodels['reviewsVM'].inspectionResolved.emit()
+        self.wait_until(lambda:state['statement_calls']>count and not vm.busy)
+        self.assertEqual(self.warnings,[])
+
     # Reuse harness lifecycle without inheriting its unrelated test cases.
     def test_invoice_references_open_existing_detail_at_all_sizes(self):
         vm=self.controller.operational_viewmodels['customerAccountVM']
@@ -53,6 +130,7 @@ class CustomerAccountPageTests(harness.InvoicePageTests):
                 history.closeDetail()
                 self.root.setProperty('currentPage',3)
                 QTest.qWait(80)
+                self.wait_until(lambda:not vm.busy)
             self.assert_inside_window(self.item('customerAccountSettle'))
             self.click('customerAccountSettle');QTest.qWait(100)
             self.assert_inside_window(self.item('customerAccountFinalize'))
@@ -60,6 +138,7 @@ class CustomerAccountPageTests(harness.InvoicePageTests):
             QTest.qWait(300)
         self.assertEqual(self.warnings,[])
         # IDs crossing into QML stay strings even beyond JavaScript's exact integer range.
+        self.wait_until(lambda:not vm.busy)
         huge='9007199254740993'
         vm._data['rows'][0]['invoice_id']=huge
         vm.changed.emit();QTest.qWait(80)

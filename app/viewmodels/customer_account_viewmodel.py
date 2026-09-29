@@ -34,6 +34,9 @@ class CustomerAccountViewModel(QObject):
         self._customer_id=''; self._data={}; self._error=''; self._message=''
         self._start_date=''; self._end_date=''; self._source=''; self._search=''; self._page=1
         self._legs=[]; self._seq=0; self._notes=''; self._request_key=str(uuid4())
+        self._tab=0; self._invoice_data={}
+        self._invoice_filters=('', '', '', ''); self._invoice_page=1
+        self._refresh_pending=False; self._pending_customer=None
 
     def _run(self, operation, call):
         from app.workers.invoice_worker import InvoiceWorker
@@ -52,23 +55,37 @@ class CustomerAccountViewModel(QObject):
         if self._shutdown or actor is None or str(actor.generation)!=generation or request!=self._generation:
             return
         self._busy=False
+        if self._pending_customer is not None:
+            customer_id=self._pending_customer
+            self._pending_customer=None; self._refresh_pending=False
+            self.open(customer_id)
+            return
         self._error = ('تعذر تنفيذ عملية الحساب؛ حدّث البيانات وأعد المحاولة.' if error and kind not in ('ValueError','PermissionError')
                        and not code else error)
         if not error:
             if operation=='statement':
                 self._data=result
+            elif operation=='customer_invoices':
+                self._data=result['account']; self._invoice_data=result['invoices']
             else:
                 self._message='تمت تسوية الحساب '+result['code']
                 self._legs=[]; self._request_key=str(uuid4()); self.legsChanged.emit()
                 self.finalized.emit(self._customer_id)
                 self.refresh()
         self.changed.emit()
+        if self._refresh_pending:
+            self._refresh_pending=False
+            self.refresh()
 
     @Slot(str)
     def open(self, customer_id):
         if self._busy:
+            self._pending_customer=str(customer_id)
             return
+        if self._customer_id==str(customer_id):
+            self._open=True; self.refresh(); return
         self._customer_id=str(customer_id); self._open=True; self._data={}; self._page=1
+        self._invoice_data={}; self._invoice_filters=('', '', '', ''); self._invoice_page=1
         self._error=''; self._message=''; self._legs=[]; self._notes=''
         self._start_date=self._end_date=self._source=self._search=''
         self._request_key=str(uuid4()); self.legsChanged.emit(); self.refresh()
@@ -81,18 +98,45 @@ class CustomerAccountViewModel(QObject):
     @Slot()
     def refresh(self):
         if self._customer_id and self._open:
-            self._run('statement',lambda _expected_actor:self.service.statement(
-                self._customer_id,self._start_date,self._end_date,self._source,self._search,self._page,
-                _expected_actor=_expected_actor))
+            if self._busy:
+                self._refresh_pending=True
+                return
+            cid=self._customer_id
+            args=(cid,self._start_date,self._end_date,self._source,self._search,self._page)
+            invoice_args=(cid,*self._invoice_filters,self._invoice_page)
+            invoices=self._tab==1
+            def read(_expected_actor):
+                account=self.service.statement(*args,_expected_actor=_expected_actor)
+                if not invoices:return account
+                return {'account':account,'invoices':self.service.customer_invoices(
+                    *invoice_args,_expected_actor=_expected_actor)}
+            self._run('customer_invoices' if invoices else 'statement',read)
+
+    @Slot(str)
+    def followSelection(self, customer_id):
+        if customer_id and self._open and customer_id!=self._customer_id:
+            self.open(customer_id)
+
+    @Slot(int)
+    def setTab(self, tab):
+        if self._busy or tab not in (0,1) or tab==self._tab:return
+        self._tab=tab; self.refresh()
 
     @Slot(str,str,str,str)
     def filter(self,start,end,source,search):
         if self._busy:return
+        if self._tab==1:
+            self._invoice_filters=(start,end,source,search)
+            self._invoice_page=1; self.refresh(); return
         self._start_date,self._end_date,self._source,self._search=start,end,source,search
         self._page=1; self.refresh()
 
     @Slot(int)
     def page(self, step):
+        if self._tab==1:
+            if not self._busy and self._invoice_page+step>0:
+                self._invoice_page+=step; self.refresh()
+            return
         if not self._busy and self._page+step>0:
             self._page+=step; self.refresh()
 
@@ -125,7 +169,8 @@ class CustomerAccountViewModel(QObject):
 
     @Slot(str)
     def openInvoice(self, invoice_id):
-        if any(str(r.get('invoice_id') or '')==invoice_id for r in self._data.get('rows',[])) and invoice_id:
+        rows=self._invoice_data.get('items',[]) if self._tab==1 else self._data.get('rows',[])
+        if any(str(r.get('invoice_id') or '')==invoice_id for r in rows) and invoice_id:
             self.invoiceRequested.emit(invoice_id)
 
     @Slot(str)
@@ -140,6 +185,8 @@ class CustomerAccountViewModel(QObject):
 
     @Property(bool,notify=changed)
     def isOpen(self):return self._open
+    @Property(str,notify=changed)
+    def customerId(self):return self._customer_id
     @Property(bool,notify=changed)
     def busy(self):return self._busy
     @Property(bool,notify=changed)
@@ -159,11 +206,29 @@ class CustomerAccountViewModel(QObject):
     @Property(str,notify=changed)
     def lastMovement(self):return str(self._data.get('customer',{}).get('last_transaction_at') or '—')
     @Property(int,notify=changed)
-    def pageNumber(self):return self._page
+    def pageNumber(self):return self._invoice_page if self._tab==1 else self._page
     @Property(bool,notify=changed)
-    def hasMore(self):return bool(self._data.get('has_more'))
+    def hasMore(self):return bool((self._invoice_data if self._tab==1 else self._data).get('has_more'))
+    @Property(int,notify=changed)
+    def activeTab(self):return self._tab
+    @Property('QVariantMap',notify=changed)
+    def filters(self):
+        values=self._invoice_filters if self._tab else (self._start_date,self._end_date,self._source,self._search)
+        return dict(zip(('start','end','source','search'),values))
     @Property('QVariantList',notify=changed)
-    def sources(self):return [{'code':'','text':'كل المصادر'}]+[{'code':k,'text':v} for k,v in LABELS.items()]
+    def sources(self):
+        if self._tab==1:
+            from app.viewmodels.invoice_history_viewmodel import TYPE_TEXT
+            return [{'code':'','text':'كل العمليات'}]+[{'code':k,'text':v} for k,v in TYPE_TEXT.items()]
+        return [{'code':'','text':'كل المصادر'}]+[{'code':k,'text':v} for k,v in LABELS.items()]
+    @Property('QVariantList',notify=changed)
+    def invoiceRows(self):
+        from app.viewmodels.invoice_history_viewmodel import KIND_TYPE_TEXT,STATUS_TEXT,SETTLEMENT_TEXT
+        return [{'invoiceId':str(r['invoice_id']),'number':r['invoice_number'],
+                 'date':str(r['finalized_at']), 'kind':KIND_TYPE_TEXT.get(r['transaction_kind'],''),
+                 'total':money(r['invoice_total']),
+                 'status':STATUS_TEXT.get(r['invoice_status'],'')+' · '+SETTLEMENT_TEXT.get(r['settlement_status'],'')}
+                for r in self._invoice_data.get('items',[])]
     @Property('QVariantList',notify=changed)
     def methods(self):return METHODS
     @Property('QVariantList',notify=changed)

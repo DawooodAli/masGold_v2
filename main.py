@@ -233,10 +233,16 @@ class ApplicationController(QObject):
                 if hasattr(source, "finalized"):
                     source.finalized.connect(account.refresh)
             customers = self.operational_viewmodels.get("customerVM")
+            if hasattr(customers, "selectionChanged"):
+                customers.selectionChanged.connect(lambda: account.followSelection(customers.selectedCustomerId))
             if hasattr(customers, "refresh"):
                 for source in (invoice_vm, exchange, returned, corrected):
                     if hasattr(source, "finalized"):
                         source.finalized.connect(customers.refresh)
+            if hasattr(reviews, "inspectionResolved"):
+                reviews.inspectionResolved.connect(account.refresh)
+                if hasattr(customers, "refresh"):
+                    reviews.inspectionResolved.connect(customers.refresh)
             if hasattr(corrected, "finalized"):
                 # Money, customer ledger, stock and old gold may all have changed.
                 for target in (balances, reviews):

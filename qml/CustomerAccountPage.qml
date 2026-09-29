@@ -10,8 +10,20 @@ Rectangle {
     signal correctionRequested(string settlementId)
     color: theme.bgPrimary
     Theme { id: theme }
+    property string appliedFilters: ""
+    function syncFilters() {
+        if (!page.vm) return
+        var f=page.vm.filters
+        var key=page.vm.customerId+":"+page.vm.activeTab+JSON.stringify(f)
+        if (key===appliedFilters) return
+        appliedFilters=key
+        search.text=f.search; start.text=f.start; end.text=f.end
+        source.currentIndex=source.indexOfValue(f.source)
+    }
+    Component.onCompleted: Qt.callLater(syncFilters)
     Connections {
         target: page.vm
+        function onChanged() { Qt.callLater(page.syncFilters) }
         function onInvoiceRequested(invoiceId) { page.invoiceRequested(invoiceId) }
         function onCorrectionRequested(settlementId) { page.correctionRequested(settlementId) }
     }
@@ -27,8 +39,9 @@ Rectangle {
     }
     component Btn: Button {
         font.family: "Cairo"
-        contentItem: Txt { text: parent.text; verticalAlignment: Text.AlignVCenter }
-        background: Rectangle { color: theme.bgTertiary; radius: 5; border.color: theme.goldDark }
+        contentItem: Txt { text: parent.text; verticalAlignment: Text.AlignVCenter
+            font.bold: parent.checked; color: parent.checked ? theme.gold : theme.textPrimary }
+        background: Rectangle { color: theme.bgTertiary; radius: 5; border.color: parent.checked ? theme.gold : theme.goldDark }
     }
     component Combo: ComboBox {
         font.family: "Cairo"
@@ -52,6 +65,16 @@ Rectangle {
         Txt { text: page.vm ? page.vm.message : ""; visible: text.length>0; color: theme.gold }
         RowLayout {
             Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+            Btn { objectName: "customerAccountStatementTab"; text: "كشف الحساب"; checkable: true
+                checked: page.vm && page.vm.activeTab===0; enabled: page.vm && !page.vm.busy
+                onClicked: page.vm.setTab(0) }
+            Btn { objectName: "customerInvoicesTab"; text: "فواتير العميل"; checkable: true
+                checked: page.vm && page.vm.activeTab===1; enabled: page.vm && !page.vm.busy
+                onClicked: page.vm.setTab(1) }
+            Item { Layout.fillWidth: true }
+        }
+        RowLayout {
+            Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
             Field { id: search; Layout.fillWidth: true; placeholderText: "بحث بالمرجع / الفاتورة" }
             Combo { id: source; Layout.preferredWidth: 155; model: page.vm ? page.vm.sources : []; textRole: "text"; valueRole: "code" }
             Field { id: start; Layout.preferredWidth: 110; placeholderText: "من YYYY-MM-DD" }
@@ -62,6 +85,7 @@ Rectangle {
         ListView {
             id: statement
             objectName: "customerAccountStatement"
+            visible: page.vm && page.vm.activeTab===0
             Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 110
             clip: true; spacing: 5; model: page.vm ? page.vm.rows : []
             ScrollBar.vertical: ScrollBar {}
@@ -93,6 +117,37 @@ Rectangle {
                     Txt { text: modelData.notes; visible: text.length>0 }
                 }
             }
+        }
+        ListView {
+            id: invoiceList; objectName: "customerInvoicesList"
+            visible: page.vm && page.vm.activeTab===1
+            Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 110
+            clip: true; spacing: 5; model: page.vm ? page.vm.invoiceRows : []
+            ScrollBar.vertical: ScrollBar {}
+            delegate: Rectangle {
+                required property var modelData
+                width: invoiceList.width; height: invoiceFacts.implicitHeight+16
+                color: theme.bgSecondary; radius: 6; border.color: theme.border
+                ColumnLayout {
+                    id: invoiceFacts; anchors.left: parent.left; anchors.right: parent.right
+                    anchors.margins: 8; y: 8
+                    RowLayout {
+                        Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                        Btn { objectName: "customerInvoice_"+modelData.invoiceId
+                            text: "فاتورة "+modelData.number
+                            onClicked: page.vm.openInvoice(modelData.invoiceId) }
+                        Txt { text: modelData.date }
+                        Txt { text: modelData.kind }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                        Txt { text: "إجمالي الفاتورة: "+modelData.total; color: theme.gold }
+                        Txt { text: modelData.status }
+                    }
+                }
+            }
+            Txt { anchors.centerIn: parent; visible: invoiceList.count===0 && page.vm && !page.vm.busy
+                text: "لا توجد فواتير مطابقة للفلاتر." }
         }
         RowLayout {
             Layout.fillWidth: true; layoutDirection: Qt.RightToLeft

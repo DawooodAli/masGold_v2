@@ -3488,9 +3488,10 @@ ApplicationWindow {
         readonly property var filterTypes: [{"id": 0, "label": "كل أنواع العملاء"}].concat(customerVM.customerTypes)
 
         function initialize() {
-            if (visible && !initialized) {
+            if (visible) {
                 initialized = true
                 customerVM.refresh()
+                customerAccountVM.refresh()
             }
         }
 

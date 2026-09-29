@@ -93,9 +93,13 @@ class InvoiceHistoryService:
 
     # ------------------------------------------------------------ search (one summary query per page)
     def search(self, *, text="", date_from=None, date_to=None, invoice_type=None, settlement_status=None, page=1,
-               _expected_actor=None):
+               customer_id=None, _expected_actor=None):
         """One page, newest first. date_to is inclusive; returns {items, page, has_more}."""
         self._actor(_expected_actor)
+        customer_filter = {}
+        if customer_id is not None:
+            from services.customer_service import CustomerService
+            customer_filter['customer_id'] = str(CustomerService._customer_id(customer_id))
         for value in (date_from, date_to):
             if value is not None and not isinstance(value, date):
                 raise ValueError("تاريخ البحث غير صحيح.")
@@ -110,7 +114,7 @@ class InvoiceHistoryService:
             text=text, date_from=date_from,
             date_to_exclusive=None if date_to is None else date_to + timedelta(days=1),
             invoice_type=invoice_type, settlement_status=settlement_status,
-            limit=self._page_size + 1, offset=(page - 1) * self._page_size))
+            limit=self._page_size + 1, offset=(page - 1) * self._page_size, **customer_filter))
         return {"items": [self._summary(row) for row in rows[:self._page_size]], "page": page,
                 "has_more": len(rows) > self._page_size}
 

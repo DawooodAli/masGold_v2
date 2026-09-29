@@ -799,7 +799,7 @@ class InvoiceRepository(BaseRepository):
         return [_stringify_ids(row) for row in rows]
 
     def search_invoice_history(self, *, text="", date_from=None, date_to_exclusive=None, invoice_type=None,
-                               settlement_status=None, limit=51, offset=0):
+                               settlement_status=None, customer_id=None, limit=51, offset=0):
         """سجل الفواتير: ONE summary query per page, newest first (invoice_date is the finalize time of
         a native invoice and is indexed). `text`: invoice-number or phone prefix, or customer name
         (Arabic-folded, from the invoice's own snapshot). Real money is the stored payments only."""
@@ -829,6 +829,7 @@ class InvoiceRepository(BaseRepository):
             LEFT JOIN invoice_customer_snapshots s ON s.invoice_id = i.id
             LEFT JOIN employees e ON e.id = i.employee_id
             WHERE i.invoice_status <> 'DRAFT'
+              AND (%s IS NULL OR i.customer_id = %s)
               AND (%s OR i.invoice_number LIKE %s ESCAPE '!' OR i.legacy_bill_number LIKE %s ESCAPE '!'
                    OR s.mobile_snapshot LIKE %s ESCAPE '!'
                    OR (%s AND {name_sql} LIKE %s ESCAPE '!'))
@@ -839,7 +840,8 @@ class InvoiceRepository(BaseRepository):
             ORDER BY i.invoice_date DESC, i.id DESC
             LIMIT %s OFFSET %s
             """,
-            (not text, escaped(text), escaped(text), escaped(text),
+            (_optional_id(customer_id), _optional_id(customer_id),
+             not text, escaped(text), escaped(text), escaped(text),
              bool(folded), *name_params, escaped(folded, contains=True),
              date_from, date_from, date_to_exclusive, date_to_exclusive,
              kind, kind, settlement_status, settlement_status, int(limit), int(offset)))
