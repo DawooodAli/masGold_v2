@@ -23,7 +23,8 @@ IDENTIFIED_TEXT = {"SCAN": "بالباركود", "SEARCH": "بالبحث"}
 EVENT_TEXT = {"CREATED": "تم إنشاء الفاتورة", "FINALIZED": "تم حفظ الفاتورة نهائياً", "PRINTED": "طباعة",
               "REPRINTED": "إعادة طباعة", "PAYMENT_ADDED": "إضافة دفعة", "PAYMENT_CORRECTED": "تصحيح دفعة",
               "VOIDED": "إلغاء", "MIGRATED": "ترحيل من النظام القديم", "EXCHANGED": "تم إجراء استبدال",
-              "RETURNED": "تم إجراء مرتجع"}
+              "RETURNED": "تم إجراء مرتجع", "REVERSED": "تم عكس عملية",
+              "SETTLEMENT_CORRECTED": "تم تصحيح التسوية"}
 METHOD_TEXT = {"PHYSICAL_CASH": "نقدي", "MOBILE_WALLET": "محفظة", "INSTAPAY": "InstaPay", "BANK_TRANSFER": "تحويل بنكي"}
 DISCOUNT_TEXT = {"PERCENT": "%", "AMOUNT": "ج"}
 MAKING_STATUS_TEXT = {"WITHIN_RANGE": "داخل النطاق", "OUT_OF_RANGE": "خارج النطاق", "NOT_CONFIGURED": "النطاق غير محدد"}
@@ -434,6 +435,8 @@ class InvoiceHistoryViewModel(QObject):
             "canReprint": bool(d.get("can_reprint")),
             "canExchange": bool(d.get("can_exchange")),
             "canReturn": bool(d.get("can_return")),
+            "canCorrect": bool(d.get("can_correct")),
+            "reversedText": f"تم عكس الفاتورة — {d['reversed_by']}" if d.get("reversed_by") else "",
             "showManager": bool(d["can_see_manager_details"]),
         }
 
@@ -576,6 +579,36 @@ class InvoiceHistoryViewModel(QObject):
                          "notes": r.get("notes") or ""})
         return rows
 
+    @Property("QVariantList", notify=changed)
+    def corrections(self):
+        """Corrections beneath the original (never rewriting it): RV reversals and FC settlement corrections."""
+        rows = []
+        for c in self._detail.get("corrections", []) if self._detail else []:
+            source = {"INVOICE": "الفاتورة", "EXCHANGE": "الاستبدال", "RETURN": "المرتجع"}[c["source_type"]]
+            if c["correction_type"] == "FULL_REVERSAL":
+                title = f"تم عكس العملية — {c['code']}"
+                detail = f"{source} {c['source_reference']}"
+            else:
+                title = f"تصحيح تسوية {c['code']}"
+                before = " + ".join(self._route(l) for l in (c["before"].get("legs") or [])) or "—"
+                after = " + ".join(self._route(l) for l in (c["after"].get("legs") or [])) or "—"
+                account_before, account_after = c["before"].get("account"), c["after"].get("account")
+                if account_before not in (None, "0.00") or account_after not in (None, "0.00"):
+                    before += f" + حساب العميل {money(account_before or '0')}"
+                    after += f" + حساب العميل {money(account_after or '0')}"
+                detail = f"{source} {c['source_reference']}: {after} بدلاً من {before}"      # Cairo has no arrow glyph
+            posted = " • ".join(f"{'النقدية' if p['ledger'] == 'CASH' else p['account_name'] or 'حساب العميل'} "
+                                f"{number(p['amount'], 2, signed=True)}" for p in c["posted"])
+            rows.append({"code": c["code"], "title": title, "detail": detail, "posted": posted,
+                         "reason": f"السبب: {c['reason']}", "by": f"بواسطة: {c['actor'] or '—'}",
+                         "time": datetime_text(c["occurred_at"]),
+                         "isReversal": c["correction_type"] == "FULL_REVERSAL"})
+        return rows
+
+    @staticmethod
+    def _route(leg):
+        return f"{METHOD_TEXT.get(leg.get('method_code'), leg.get('method_code'))} {money(leg.get('amount') or '0')}"
+
     @staticmethod
     def _disposition_text(d):
         if not d:
@@ -669,7 +702,9 @@ class InvoiceHistoryViewModel(QObject):
                  "amount": self._event_amount(e), "linked": e.linked_record_id or "",
                  "isExchange": e.event_type == "EXCHANGED" and bool(e.linked_record_id),
                  "code": (f"EX{int(e.linked_record_id):06d}" if e.event_type == "EXCHANGED"
-                          else f"RT{int(e.linked_record_id):06d}" if e.event_type == "RETURNED" else "")
+                          else f"RT{int(e.linked_record_id):06d}" if e.event_type == "RETURNED"
+                          else f"RV{int(e.linked_record_id):06d}" if e.event_type == "REVERSED"
+                          else f"FC{int(e.linked_record_id):06d}" if e.event_type == "SETTLEMENT_CORRECTED" else "")
                  if str(e.linked_record_id or "").isdigit() else ""}
                 for e in (self._detail.get("timeline", []) if self._detail else [])]
 

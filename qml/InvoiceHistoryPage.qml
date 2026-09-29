@@ -326,6 +326,8 @@ Item {
             Txt { value: detailRoot.d.number ? "فاتورة " + detailRoot.d.number : ""; color: theme.gold
                   font.bold: true; font.pixelSize: theme.fontPageTitle }
             Txt { value: detailRoot.d.legacyLabel || ""; visible: value.length > 0; color: theme.amber }
+            Txt { objectName: "historyReversed"; value: detailRoot.d.reversedText || ""; visible: value.length > 0
+                  color: theme.red; font.bold: true }
             Item { Layout.fillWidth: true }
             Txt { objectName: "historyReprintMessage"; value: historyPage.vm ? historyPage.vm.reprintMessage : ""
                   visible: value.length > 0; color: historyPage.vm && historyPage.vm.reprintFailed ? theme.red : theme.green }
@@ -339,6 +341,11 @@ Item {
                   text: "مرتجع"
                   visible: !!detailRoot.d.canReturn && typeof returnVM !== "undefined"
                   onClicked: returnVM.open(detailRoot.d.invoiceId) }
+            // تصحيح / عكس: managers only (TRANSACTION_CORRECT, re-checked by the service).
+            Btn { objectName: "historyCorrect"
+                  text: "تصحيح / عكس"
+                  visible: !!detailRoot.d.canCorrect && typeof correctionVM !== "undefined"
+                  onClicked: correctionVM.open(detailRoot.d.invoiceId) }
             Btn { objectName: "historyReprint"; primary: true
                   text: historyPage.vm && historyPage.vm.reprintBusy ? "جاري الطباعة..." : "إعادة طباعة"
                   visible: !!detailRoot.d.canReprint
@@ -657,6 +664,39 @@ Item {
                                       value: exchangeBlock.modelData.pendingText; color: theme.amber
                                       font.pixelSize: theme.fontTableHeader }
                             }
+                        }
+                    }
+                }
+
+                // ============ 4c. Corrections (RV reversal / FC settlement correction), beneath the original
+                Section {
+                    objectName: "historyCorrectionsSection"
+                    visible: !!historyPage.vm && historyPage.vm.corrections.length > 0
+                    title: detailRoot.d.reversedText || "التصحيحات"
+                    accent: theme.red
+                    Repeater {
+                        model: historyPage.vm ? historyPage.vm.corrections : []
+                        delegate: ColumnLayout {
+                            id: correctionBlock
+                            required property var modelData
+                            required property int index
+                            objectName: "historyCorrection_" + index
+                            Layout.fillWidth: true
+                            spacing: 1
+                            RowLayout {
+                                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 10
+                                Txt { value: correctionBlock.modelData.title; font.bold: true
+                                      color: correctionBlock.modelData.isReversal ? theme.red : theme.amber }
+                                Txt { value: correctionBlock.modelData.time + "  •  " + correctionBlock.modelData.by
+                                      color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+                                Item { Layout.fillWidth: true }
+                            }
+                            Txt { Layout.fillWidth: true; value: correctionBlock.modelData.detail; color: theme.textSecondary
+                                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { Layout.fillWidth: true; visible: value.length > 0; value: correctionBlock.modelData.posted
+                                  color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+                            Txt { Layout.fillWidth: true; value: correctionBlock.modelData.reason; color: theme.textPrimary
+                                  font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                         }
                     }
                 }

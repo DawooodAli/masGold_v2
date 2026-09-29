@@ -13,6 +13,8 @@ Item {
     readonly property bool exchangeOpen: typeof exchangeVM !== "undefined" && !!exchangeVM && exchangeVM.isOpen
     // مرتجع (opened from an invoice in History) covers both tabs the same way.
     readonly property bool returnOpen: typeof returnVM !== "undefined" && !!returnVM && returnVM.isOpen
+    // تصحيح / عكس (managers, from an invoice in History) the same way.
+    readonly property bool correctionOpen: typeof correctionVM !== "undefined" && !!correctionVM && correctionVM.isOpen
 
     Theme { id: theme }
 
@@ -33,10 +35,16 @@ Item {
         z: 1
     }
 
+    CorrectionWorkspace {
+        anchors.fill: parent
+        visible: workspace.correctionOpen && !workspace.exchangeOpen && !workspace.returnOpen
+        z: 1
+    }
+
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
-        visible: !workspace.exchangeOpen && !workspace.returnOpen
+        visible: !workspace.exchangeOpen && !workspace.returnOpen && !workspace.correctionOpen
 
         RowLayout {
             Layout.fillWidth: true

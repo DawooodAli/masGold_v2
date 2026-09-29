@@ -48,10 +48,11 @@ class InvoiceLifecycleRepository(BaseRepository):
                    c.lifecycle_transaction_id AS consumed_by,
                    -- Return V1 (022): a piece a finalized Return took is no longer exchangeable either.
                    (SELECT MIN(rl.return_id) FROM invoice_return_lines rl
-                     WHERE rl.source_invoice_line_id = l.id) AS returned_by
+                     WHERE rl.source_invoice_line_id = l.id AND rl.reversed_by_correction_id IS NULL) AS returned_by
             FROM invoice_lines l
             JOIN karats k ON k.id = l.karat_id
-            LEFT JOIN invoice_lifecycle_lines c ON c.source_invoice_line_id = l.id
+            -- Only active consumption: a reversed Exchange / Return line gives the sale line back (023).
+            LEFT JOIN invoice_lifecycle_lines c ON c.source_invoice_line_id = l.id AND c.reversed_by_correction_id IS NULL
             WHERE l.invoice_id = %s
             ORDER BY l.line_number
             """, (_id(invoice_id),))

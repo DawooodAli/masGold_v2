@@ -410,6 +410,10 @@ class ExchangeService:
             raise ExchangeError("INVOICE_NOT_SALE", "لا يمكن الاستبدال: الفاتورة لا تحتوي على بيع.")
         if invoice.get("finalized_at") is None:
             raise ExchangeError("INVOICE_NOT_FINALIZED", "لا يمكن الاستبدال: وقت اعتماد الفاتورة غير معروف.")
+        from services.correction_rules import reversal_of
+        reversed_by = reversal_of(invoice)
+        if reversed_by:
+            raise ExchangeError("INVOICE_REVERSED", f"تم عكس هذه الفاتورة ({reversed_by})؛ لا يمكن الاستبدال.")
         return invoice
 
     @staticmethod

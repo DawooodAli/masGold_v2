@@ -44,14 +44,15 @@ class SchemaChainTests(unittest.TestCase):
     def setUpClass(cls):
         cls.model = schema_model.build()
 
-    def test_chain_is_contiguous_001_to_022(self):
+    def test_chain_is_contiguous_001_to_023(self):
         files = schema_model.chain_files()
-        self.assertEqual([int(name[:3]) for name in files], list(range(1, 23)))
+        self.assertEqual([int(name[:3]) for name in files], list(range(1, 24)))
         self.assertEqual(files[12:], ["013_schema_consolidation.sql", "014_billing_v2.sql",
                                       "015_legacy_provenance.sql", "016_billing_workflow.sql",
                                       "017_payment_accounts.sql", "018_opening_balances.sql",
                                       "019_invoice_lifecycle_exchange.sql", "020_exchange_replacement_sources.sql",
-                                      "021_returned_item_inspection.sql", "022_invoice_returns.sql"])
+                                      "021_returned_item_inspection.sql", "022_invoice_returns.sql",
+                                      "023_transaction_corrections.sql"])
 
     def test_prototype_files_are_kept_but_not_part_of_the_chain(self):
         prototypes = sorted(p.name for p in PROTOTYPE_DIR.glob("20260921_*.sql"))

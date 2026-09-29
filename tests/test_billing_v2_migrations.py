@@ -16,8 +16,9 @@ LIFECYCLE = "019_invoice_lifecycle_exchange.sql"
 SOURCES = "020_exchange_replacement_sources.sql"
 INSPECTION = "021_returned_item_inspection.sql"
 RETURNS = "022_invoice_returns.sql"
+CORRECTIONS = "023_transaction_corrections.sql"
 FORWARD = (CONSOLIDATION, BILLING, PROVENANCE, WORKFLOW, ACCOUNTS, OPENING, LIFECYCLE, SOURCES, INSPECTION,
-           RETURNS)
+           RETURNS, CORRECTIONS)
 # 013 is baseline schema already used by the application: no rollback script.
 ROLLBACK = {BILLING: "014_billing_v2_rollback.sql",
             PROVENANCE: "015_legacy_provenance_rollback.sql",
@@ -27,7 +28,8 @@ ROLLBACK = {BILLING: "014_billing_v2_rollback.sql",
             LIFECYCLE: "019_invoice_lifecycle_exchange_rollback.sql",
             SOURCES: "020_exchange_replacement_sources_rollback.sql",
             INSPECTION: "021_returned_item_inspection_rollback.sql",
-            RETURNS: "022_invoice_returns_rollback.sql"}
+            RETURNS: "022_invoice_returns_rollback.sql",
+            CORRECTIONS: "023_transaction_corrections_rollback.sql"}
 CHANGE = re.compile(r"^(ALTER|CREATE|INSERT|DELETE|DROP|UPDATE|TRUNCATE|RENAME|REPLACE)\b", re.I)
 ACQUISITION_SOURCES = {"MARKET_PURCHASE", "OLD_GOLD_MANUFACTURE", "OLD_STOCK_CONVERSION",
                        "LEGACY_MIGRATION", "MANUAL_ENTRY"}
@@ -287,6 +289,71 @@ class MigrationFileSafetyTests(unittest.TestCase):
         for reason in ("return_rows_exist", "return_reviews_exist", "return_events_exist", "new_codes_in_use"):
             self.assertIn(f"ROLLBACK_022_REFUSED_{reason}", rollback)
 
+    def test_023_adds_only_the_correction_objects(self):
+        text = forward_text(CORRECTIONS)
+        self.assertIn("MIGRATION_023_REFUSED_migration_022_missing", text)
+        self.assertEqual(set(sql.create_table_columns(text)), {"transaction_corrections", "transaction_correction_legs"})
+        # One full reversal per source; a settlement chain per source.
+        self.assertIn("UNIQUE KEY uq_correction_one_reversal (reversal_key)", text)
+        self.assertIn("UNIQUE KEY uq_correction_settlement_chain (settlement_key)", text)
+        checks = sql.checks(text)
+        self.assertIn("CHAR_LENGTH(TRIM(reason)) > 0", checks["chk_correction_reason"][1])
+        self.assertIn("'SETTLEMENT_CORRECTED'", checks["chk_invoice_event_type"][1])
+        self.assertIn("(review_status = 'DISMISSED' AND resolution_code IS NULL)))",
+                      checks["chk_management_review_inspection"][1])
+        grants = [s.sql for s in sql.statements(text) if s.sql.startswith("INSERT INTO role_permissions")]
+        self.assertEqual(len(grants), 1)
+        self.assertIn("p.code IN ('TRANSACTION_CORRECT')", grants[0])
+        self.assertIn("r.code IN ('OWNER', 'MANAGER')", grants[0])            # never SALESPERSON / CASHIER
+        self.assertEqual(MigrationContentTests().old_gold_codes(text), {
+            "REVERSAL_OLD_GOLD_SALE_IN": "IN", "REVERSAL_OLD_GOLD_PURCHASE_OUT": "OUT",
+            "REVERSAL_RETURN_OLD_GOLD_OUT": "OUT", "REVERSAL_EXCHANGE_OLD_GOLD_IN": "IN"})
+        rollback = rollback_text(CORRECTIONS)
+        for reason in ("corrections_exist", "reversed_lines_exist", "correction_events_exist", "new_codes_in_use"):
+            self.assertIn(f"ROLLBACK_023_REFUSED_{reason}", rollback)
+        # Regression: the replace-guard must tell 022's review CHECK from 023's. In 022 the first DISMISSED
+        # comes after RETURN_APPROVAL; in 023 the inspection branch has DISMISSED first.
+        old = sql.checks(forward_text(RETURNS))["chk_management_review_inspection"][1]
+        new = checks["chk_management_review_inspection"][1]
+        self.assertGreater(old.find("DISMISSED"), old.find("RETURN_APPROVAL"))
+        self.assertLess(new.find("DISMISSED"), new.find("RETURN_APPROVAL"))
+        self.assertIn("LOCATE('DISMISSED', cc.CHECK_CLAUSE) > LOCATE('RETURN_APPROVAL', cc.CHECK_CLAUSE)", text)
+        # The one-use keys of 019 / 022 are restored by the rollback.
+        self.assertIn("ADD UNIQUE KEY uq_lifecycle_source_line (source_invoice_line_id)", rollback)
+        self.assertIn("ADD UNIQUE KEY uq_return_identified_source_line (identified_source_line_id)", rollback)
+
+    def test_023_correction_checks_execute(self):
+        """transaction_corrections CHECKs on real rows: reason never blank, shape per type."""
+        import sqlite3
+        checks = sql.checks(forward_text(CORRECTIONS))
+        db = sqlite3.connect(":memory:")
+        self.addCleanup(db.close)
+        db.create_function("CHAR_LENGTH", 1, lambda v: None if v is None else len(v), deterministic=True)
+        names = ("chk_correction_type", "chk_correction_status", "chk_correction_source", "chk_correction_reason",
+                 "chk_correction_shape")
+        db.execute("CREATE TABLE transaction_corrections (correction_type TEXT, correction_status TEXT, "
+                   "source_type TEXT, reason TEXT, chain_sequence INT, previous_correction_id INT, after_json TEXT, "
+                   "money_direction TEXT, settled_total NUMERIC, "
+                   + ", ".join(f"CONSTRAINT {n} CHECK ({checks[n][1]})" for n in names) + ")")
+
+        def ok(kind, reason, seq=None, previous=None, after=None, direction=None, total=None, source="INVOICE"):
+            try:
+                with db:
+                    db.execute("INSERT INTO transaction_corrections VALUES (?, 'FINALIZED', ?, ?, ?, ?, ?, ?, ?)",
+                               (kind, source, reason, seq, previous, after, direction, total))
+                return True
+            except sqlite3.IntegrityError:
+                return False
+        self.assertTrue(ok("FULL_REVERSAL", "تم تسجيل الفاتورة بالخطأ"))
+        self.assertFalse(ok("FULL_REVERSAL", ""))
+        self.assertFalse(ok("FULL_REVERSAL", "   "))
+        self.assertFalse(ok("FULL_REVERSAL", "x", seq=1))
+        self.assertTrue(ok("SETTLEMENT_CORRECTION", "حساب خاطئ", seq=1, after="{}", direction="IN", total=10))
+        self.assertTrue(ok("SETTLEMENT_CORRECTION", "حساب خاطئ", seq=2, previous=1, after="{}", direction="IN", total=10))
+        self.assertFalse(ok("SETTLEMENT_CORRECTION", "حساب خاطئ", seq=2, after="{}", direction="IN", total=10))
+        self.assertFalse(ok("SETTLEMENT_CORRECTION", "حساب خاطئ", seq=1, direction="IN", total=10))
+        self.assertFalse(ok("FULL_REVERSAL", "x", source="CORRECTION"))            # never a reversal of a reversal
+
     def test_022_return_header_checks_execute(self):
         """The invoice_returns CHECKs evaluated on real rows (regression: `a = NOT b` is a MySQL syntax error)."""
         import sqlite3
@@ -459,7 +526,10 @@ class MigrationContentTests(unittest.TestCase):
                    INSPECTION: {"schema_migrations", "inventory_movement_types", "old_gold_movement_types"},
                    RETURNS: {"schema_migrations", "inventory_movement_types", "old_gold_movement_types",
                              "cash_movement_types", "bank_movement_types", "customer_transaction_types",
-                             "permissions", "role_permissions"}}
+                             "permissions", "role_permissions"},
+                   CORRECTIONS: {"schema_migrations", "inventory_movement_types", "old_gold_movement_types",
+                                 "cash_movement_types", "bank_movement_types", "customer_transaction_types",
+                                 "permissions", "role_permissions"}}
         for name in FORWARD:
             for statement in sql.statements(forward_text(name)):
                 target = re.match(r"^INSERT INTO\s+(\w+)", statement.sql, re.I)

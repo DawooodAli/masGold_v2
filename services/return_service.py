@@ -391,6 +391,10 @@ class ReturnService:
             raise ReturnError("INVOICE_NOT_FINALIZED", "لا يمكن المرتجع: الفاتورة ليست نهائية.")
         if invoice["invoice_type"] not in ("SELL", "MIXED"):
             raise ReturnError("INVOICE_NOT_SALE", "لا يمكن المرتجع: الفاتورة لا تحتوي على بيع.")
+        from services.correction_rules import reversal_of
+        reversed_by = reversal_of(invoice)
+        if reversed_by:
+            raise ReturnError("INVOICE_REVERSED", f"تم عكس هذه الفاتورة ({reversed_by})؛ لا يمكن المرتجع.")
         return invoice
 
     @staticmethod

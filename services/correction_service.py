@@ -1,0 +1,655 @@
+"""Reversal / Correction V1 (023): corrections of finalized transactions, never edits of them.
+
+A finalized Invoice, Exchange or Return stays exactly as finalized. A manager (TRANSACTION_CORRECT,
+re-checked inside the transaction) records one new FINALIZED correction with a mandatory reason:
+
+FULL_REVERSAL (RV)  — the source should not have happened. Every posted effect is negated from the
+  STORED rows (never a current price, making or weight):
+    money       the signed cash / bank movements of the source (+ its settlement corrections),
+                negated per real account (a negative balance is allowed);
+    customer    the customer-ledger rows of the source, negated per customer;
+    Invoice     sold pieces SOLD → IN_STOCK (same item, same barcode); F7 grams back IN; the
+                customer's old gold bought on the invoice OUT again (only while the counted stock
+                still holds it); open F5 cases CANCELLED;
+    Exchange    returned pieces RETURNED_PENDING → SOLD (open inspection DISMISSED); identified
+                replacements SOLD → IN_STOCK; F7 replacement grams back IN; F5 case CANCELLED;
+    Return      pieces RETURNED_PENDING → SOLD (open inspection DISMISSED); F7 grams OUT again.
+  The reversed lifecycle lines are linked to the reversal, so the sale line is eligible again.
+  One reversal per source (UNIQUE key). Anything downstream blocks it (newest first, no cascade).
+
+SETTLEMENT_CORRECTION (FC) — the transaction is right, the money route was wrong. The new
+  allocation (real legs in the source's own direction + customer-account part) must equal the
+  current settled total; only the per-account / customer differences are posted. A chain per
+  source (sequence 1..n, UNIQUE); each correction acts on the current effective settlement.
+
+Lock order: actor → original invoice row (serializes every lifecycle of the invoice) → items →
+reviews / cases → old-gold ledger → bank accounts.
+"""
+from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
+import json
+
+from repositories.correction_repository import CorrectionRepository
+from repositories.customer_repository import CustomerRepository
+from repositories.invoice_lifecycle_repository import exchange_code
+from repositories.invoice_repository import InvoiceRepository
+from repositories.invoice_return_repository import return_code
+from services.authorization_service import AuthorizationService
+from services.correction_rules import correction_code, reversal_of
+from services.invoice_service import InvoiceService, PaymentInput, invoice_transaction
+
+
+CORRECT_PERMISSION = "TRANSACTION_CORRECT"
+FULL_REVERSAL, SETTLEMENT = "FULL_REVERSAL", "SETTLEMENT_CORRECTION"
+SOURCES = ("INVOICE", "EXCHANGE", "RETURN")
+MONEY = Decimal("0.01")
+ZERO, ZERO_GRAMS = Decimal("0.00"), Decimal("0.000")
+METHOD_TEXT = {"PHYSICAL_CASH": "نقدي", "MOBILE_WALLET": "محفظة", "INSTAPAY": "InstaPay", "BANK_TRANSFER": "تحويل بنكي"}
+SOURCE_TEXT = {"INVOICE": "الفاتورة", "EXCHANGE": "الاستبدال", "RETURN": "المرتجع"}
+
+
+class CorrectionError(ValueError):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
+class _Discard(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class SettlementLeg:
+    method_code: str
+    amount: str
+    bank_account_id: str | None = None
+
+
+@dataclass
+class _Plan:
+    source_type: str
+    source_id: str
+    reference: str
+    invoice: dict
+    customer_id: str | None
+    money: dict = field(default_factory=dict)            # (ledger, account id) → signed delta
+    account: dict = field(default_factory=dict)          # customer id → signed delta
+    inventory: list = field(default_factory=list)        # (item id, from, to, movement code)
+    old_gold: list = field(default_factory=list)         # (karat id, karat, signed grams, movement code)
+    reviews: list = field(default_factory=list)          # open inspection review ids to dismiss
+    cases: list = field(default_factory=list)            # open reconciliation case ids to cancel
+    lines: tuple = ()                                    # (table, [line ids]) linked to the reversal
+    blockers: list = field(default_factory=list)         # (code, Arabic reason)
+
+
+def _reason(text):
+    reason = (text or "").strip()
+    if not reason:
+        raise CorrectionError("REASON_REQUIRED", "اكتب سبب التصحيح.")
+    if len(reason) > 1000:
+        raise CorrectionError("REASON_TOO_LONG", "السبب طويل جداً.")
+    return reason
+
+
+def _money_value(text, code="AMOUNT_INVALID", message="المبلغ غير صحيح."):
+    try:
+        value = Decimal(str(text).strip())
+    except (InvalidOperation, ValueError):
+        raise CorrectionError(code, message) from None
+    if not value.is_finite() or value < 0 or value != value.quantize(MONEY):
+        raise CorrectionError(code, message)
+    return value
+
+
+class CorrectionService:
+    def __init__(self, session, *, authorization=None, transaction_factory=invoice_transaction,
+                 invoice_repository=InvoiceRepository, correction_repository=CorrectionRepository,
+                 customer_repository=CustomerRepository):
+        self._session = session
+        self._authorization = authorization or AuthorizationService(session)
+        self._transaction = transaction_factory
+        self._invoices = invoice_repository
+        self._corrections = correction_repository
+        self._customers = customer_repository
+
+    # ------------------------------------------------------------ plumbing
+    def _actor(self, expected_actor):
+        actor = self._session.require_authenticated()
+        if expected_actor is not None and not self._session.is_current(expected_actor):
+            raise PermissionError("انتهت جلسة الدخول.")
+        if CORRECT_PERMISSION not in actor.permissions:
+            raise PermissionError("تصحيح العمليات النهائية للمدير فقط.")
+        return actor
+
+    def can_correct(self):
+        actor = self._session.current_actor()
+        return bool(actor and CORRECT_PERMISSION in actor.permissions)
+
+    def _read(self, work):
+        try:
+            with self._transaction() as connection:
+                raise _Discard(work(connection))
+        except _Discard as done:
+            return done.args[0]
+
+    @staticmethod
+    def _source_type(value):
+        if value not in SOURCES:
+            raise CorrectionError("SOURCE_INVALID", "نوع العملية غير صحيح.")
+        return value
+
+    # ------------------------------------------------------------ the source and what it posted
+    def _load(self, connection, source_type, source_id, lock):
+        """(invoice row, source row or None, reference) — the invoice row is locked first when writing."""
+        invoices, corrections = self._invoices(connection), self._corrections(connection)
+        if not str(source_id or "").isdigit():
+            raise CorrectionError("SOURCE_NOT_FOUND", "العملية غير موجودة.")
+        if source_type == "INVOICE":
+            invoice_id, source, reference = str(source_id), None, None
+        elif source_type == "EXCHANGE":
+            source = corrections.exchange_source(source_id)
+            if source is None:
+                raise CorrectionError("SOURCE_NOT_FOUND", "الاستبدال غير موجود.")
+            invoice_id, reference = source["source_invoice_id"], exchange_code(source_id)
+        else:
+            source = corrections.return_source(source_id)
+            if source is None:
+                raise CorrectionError("SOURCE_NOT_FOUND", "المرتجع غير موجود.")
+            if source["return_status"] != "FINALIZED":
+                raise CorrectionError("SOURCE_NOT_FINALIZED",
+                                      "المرتجع لم يُنفذ بعد؛ يُلغى من شاشة المرتجع ولا يحتاج تصحيحاً.")
+            invoice_id, reference = source["source_invoice_id"], return_code(source_id)
+        if lock and invoices.lock_invoice(invoice_id) is None:
+            raise CorrectionError("SOURCE_NOT_FOUND", "الفاتورة غير موجودة.")
+        invoice = invoices.get_invoice(invoice_id)
+        if invoice is None:
+            raise CorrectionError("SOURCE_NOT_FOUND", "الفاتورة غير موجودة.")
+        if invoice["record_origin"] != "NATIVE" or invoice["invoice_status"] != "FINALIZED":
+            raise CorrectionError("SOURCE_NOT_CORRECTABLE", "التصحيح متاح لفواتير النظام الجديدة النهائية فقط.")
+        if lock and source_type != "INVOICE":                   # re-read the source under the invoice lock
+            source = corrections.exchange_source(source_id) if source_type == "EXCHANGE" else corrections.return_source(source_id)
+        return invoice, source, reference or invoice["invoice_number"]
+
+    def _history(self, corrections, source_type, source_id):
+        rows = corrections.corrections_for_source(source_type, source_id)
+        reversal = next((r for r in rows if r["correction_type"] == FULL_REVERSAL), None)
+        chain = [r for r in rows if r["correction_type"] == SETTLEMENT]
+        return reversal, chain
+
+    # ------------------------------------------------------------ FULL REVERSAL: the plan
+    def _plan(self, connection, source_type, source_id, lock):
+        corrections, invoices = self._corrections(connection), self._invoices(connection)
+        invoice, source, reference = self._load(connection, source_type, source_id, lock)
+        reversal, chain = self._history(corrections, source_type, source_id)
+        plan = _Plan(source_type, str(source_id), reference, invoice,
+                     (source or invoice).get("customer_id"))
+        if reversal is not None:
+            plan.blockers.append(("ALREADY_REVERSED",
+                                  f"تم عكس هذه العملية من قبل ({correction_code(FULL_REVERSAL, reversal['correction_id'])})."))
+            return plan
+        if source_type != "INVOICE" and reversal_of(invoice):
+            plan.blockers.append(("ALREADY_REVERSED", f"تم عكس الفاتورة الأصلية ({reversal_of(invoice)})."))
+            return plan
+        # Money and customer account: the exact opposite of what was posted (source + its settlement chain).
+        chain_ids = [c["correction_id"] for c in chain]
+        for key, total in corrections.money_by_account(source_type, source_id, chain_ids).items():
+            if Decimal(str(total)) != 0:
+                plan.money[key] = -Decimal(str(total))
+        for customer, total in corrections.account_by_customer(source_type, source_id, chain_ids).items():
+            if Decimal(str(total)) != 0:
+                plan.account[customer] = -Decimal(str(total))
+        getattr(self, f"_plan_{source_type.lower()}")(connection, plan, source, lock)
+        # Counted old-gold stock must stay physically coherent: removals only while the grams are there.
+        removals = {}
+        for karat_id, karat, grams, _ in plan.old_gold:
+            if grams < 0:
+                removals[karat_id] = (karat, removals.get(karat_id, (karat, ZERO_GRAMS))[1] - grams)
+        for karat_id, (karat, grams) in sorted(removals.items()):
+            available = corrections.lock_old_gold_balance(karat_id)
+            if grams > available:
+                plan.blockers.append(("OLD_GOLD_DEPENDENCY_EXISTS",
+                                      f"لا يمكن عكس حركة الكسر لأن الوزن تم استهلاكه لاحقاً: عيار {karat} المتاح "
+                                      f"{available:,.3f} والمطلوب {grams:,.3f} جرام."))
+        return plan
+
+    def _plan_invoice(self, connection, plan, _source, lock):
+        corrections = self._corrections(connection)
+        invoice = plan.invoice
+        exchanges, returns = corrections.lifecycle_of_invoice(invoice["invoice_id"])
+        for x in exchanges:
+            if int(x["active_lines"]):
+                plan.blockers.append(("DOWNSTREAM_DEPENDENCY_EXISTS",
+                                      f"لا يمكن عكس الفاتورة لأن القطعة دخلت الاستبدال {exchange_code(x['lifecycle_id'])}"
+                                      " — اعكس الاستبدال أولاً."))
+        for r in returns:
+            if int(r["active_lines"]):
+                plan.blockers.append(("DOWNSTREAM_DEPENDENCY_EXISTS",
+                                      f"لا يمكن عكس الفاتورة لأن لها مرتجعاً {return_code(r['return_id'])}"
+                                      " — اعكس المرتجع أولاً."))
+        items = corrections.lock_items([l["inventory_item_id"] for l in invoice["lines"]
+                                        if l["line_type"] == "SELL_INVENTORY" and l.get("inventory_item_id")])
+        for line in invoice["lines"]:
+            weight = Decimal(str(line["weight_grams"]))
+            if line["line_type"] == "SELL_INVENTORY" and line.get("inventory_item_id"):
+                item = items.get(str(line["inventory_item_id"]))
+                if item is None or item["inventory_status"] != "SOLD":
+                    plan.blockers.append(("DOWNSTREAM_DEPENDENCY_EXISTS",
+                                          f"لا يمكن عكس الفاتورة: حالة القطعة {line.get('barcode_snapshot') or ''} "
+                                          "تغيرت بعد البيع."))
+                else:
+                    plan.inventory.append((str(line["inventory_item_id"]), "SOLD", "IN_STOCK", "REVERSAL_SALE_RESTOCK"))
+            elif line["line_type"] == "SELL_OLD_GOLD":
+                plan.old_gold.append((int(line["karat_id"]), line["karat_value"], weight, "REVERSAL_OLD_GOLD_SALE_IN"))
+            elif line["line_type"] == "BUY_OLD_GOLD":
+                plan.old_gold.append((int(line["karat_id"]), line["karat_value"], -weight, "REVERSAL_OLD_GOLD_PURCHASE_OUT"))
+            elif line["line_type"] == "SELL_UNIDENTIFIED":
+                case = corrections.case_for(invoice_line_id=line["line_id"])
+                if case is not None and case["case_status"] == "OPEN":
+                    plan.cases.append(case["case_id"])
+                elif case is not None and case["case_status"] != "CANCELLED":
+                    plan.blockers.append(("DOWNSTREAM_DEPENDENCY_EXISTS",
+                                          "لا يمكن عكس الفاتورة: حالة البيع اليدوي حُسمت في مراجعة المخزون."))
+
+    def _plan_exchange(self, connection, plan, source, lock):
+        corrections = self._corrections(connection)
+        ids = [l["inventory_item_id"] for l in source["lines"] if l.get("inventory_item_id")]
+        items = corrections.lock_items(ids)
+        for line in source["lines"]:
+            weight = Decimal(str(line["weight_grams"]))
+            item = items.get(str(line.get("inventory_item_id")))
+            if line["line_role"] == "RETURNED":
+                review = corrections.inspection_for(lifecycle_line_id=line["line_id"])
+                if item is None or item["inventory_status"] != "RETURNED_PENDING" or (review and review["review_status"] != "OPEN"):
+                    plan.blockers.append(("RETURNED_ITEM_ALREADY_DISPOSED",
+                                          "لا يمكن عكس الاستبدال لأن المدير حسم القطعة المرتجعة"
+                                          + (f" ({review['resolution_code']})" if review and review.get("resolution_code") else "")
+                                          + " — راجع فحص القطع المرتجعة."))
+                    continue
+                plan.inventory.append((str(line["inventory_item_id"]), "RETURNED_PENDING", "SOLD",
+                                       "REVERSAL_EXCHANGE_RETURN_TO_SOLD"))
+                if review:
+                    plan.reviews.append(review["review_id"])
+            elif line.get("identification_method") in ("SCAN", "SEARCH"):
+                if item is None or item["inventory_status"] != "SOLD":
+                    plan.blockers.append(("DOWNSTREAM_DEPENDENCY_EXISTS",
+                                          "لا يمكن عكس الاستبدال: حالة القطعة البديلة تغيرت بعده."))
+                else:
+                    plan.inventory.append((str(line["inventory_item_id"]), "SOLD", "IN_STOCK",
+                                           "REVERSAL_EXCHANGE_REPLACEMENT_RESTOCK"))
+            elif line.get("identification_method") == "OLD_GOLD_STOCK":
+                plan.old_gold.append((int(line["karat_id"]), line["karat_value"], weight, "REVERSAL_EXCHANGE_OLD_GOLD_IN"))
+            elif line.get("identification_method") == "MANUAL":
+                case = corrections.case_for(lifecycle_line_id=line["line_id"])
+                if case is not None and case["case_status"] == "OPEN":
+                    plan.cases.append(case["case_id"])
+                elif case is not None and case["case_status"] != "CANCELLED":
+                    plan.blockers.append(("DOWNSTREAM_DEPENDENCY_EXISTS",
+                                          "لا يمكن عكس الاستبدال: حالة البديل اليدوي حُسمت في مراجعة المخزون."))
+        plan.lines = ("invoice_lifecycle_lines", [l["line_id"] for l in source["lines"]])
+
+    def _plan_return(self, connection, plan, source, lock):
+        corrections = self._corrections(connection)
+        items = corrections.lock_items([l["inventory_item_id"] for l in source["lines"] if l.get("inventory_item_id")])
+        for line in source["lines"]:
+            weight = Decimal(str(line["weight_grams"]))
+            if line["line_type"] == "SELL_INVENTORY":
+                item = items.get(str(line["inventory_item_id"]))
+                review = corrections.inspection_for(return_line_id=line["line_id"])
+                if item is None or item["inventory_status"] != "RETURNED_PENDING" or (review and review["review_status"] != "OPEN"):
+                    target = {"RETURN_TO_STOCK": "المخزون", "CONVERT_TO_OLD_GOLD": "الكسر"}.get(
+                        (review or {}).get("resolution_code"), "حالة أخرى")
+                    plan.blockers.append(("RETURN_ITEM_ALREADY_DISPOSED",
+                                          f"لا يمكن عكس المرتجع لأن المدير حسم القطعة إلى {target}."))
+                    continue
+                plan.inventory.append((str(line["inventory_item_id"]), "RETURNED_PENDING", "SOLD", "REVERSAL_RETURN_TO_SOLD"))
+                if review:
+                    plan.reviews.append(review["review_id"])
+            else:
+                plan.old_gold.append((int(line["karat_id"]), line["karat_value"], -weight, "REVERSAL_RETURN_OLD_GOLD_OUT"))
+        plan.lines = ("invoice_return_lines", [l["line_id"] for l in source["lines"]])
+
+    @staticmethod
+    def _plan_view(plan, accounts):
+        names = {("BANK", int(a["id"])): a["name"] for a in accounts}
+
+        def ledger_name(key):
+            return "النقدية" if key[0] == "CASH" else names.get(key, f"حساب {key[1]}")
+        return {
+            "source_type": plan.source_type, "source_id": plan.source_id, "reference": plan.reference,
+            "source_text": SOURCE_TEXT[plan.source_type],
+            "invoice_id": plan.invoice["invoice_id"], "invoice_number": plan.invoice["invoice_number"],
+            "customer_name": plan.invoice.get("customer_name_snapshot"),
+            "original_date": (plan.invoice.get("finalized_at") or plan.invoice.get("invoice_date")).isoformat(sep=" "),
+            "original_total": str(plan.invoice.get("net_amount")),
+            "money": [{"account": ledger_name(k), "ledger": k[0], "delta": str(v)} for k, v in sorted(plan.money.items())],
+            "account": [{"customer_id": k, "delta": str(v)} for k, v in plan.account.items()],
+            "inventory": [{"inventory_item_id": i, "from": f, "to": t} for i, f, t, _ in plan.inventory],
+            "old_gold": [{"karat": k, "grams": str(g)} for _, k, g, _ in plan.old_gold],
+            "reviews": len(plan.reviews), "cases": len(plan.cases),
+            "blockers": [{"code": c, "message": m} for c, m in plan.blockers],
+            "can_reverse": not plan.blockers,
+        }
+
+    # ------------------------------------------------------------ public: read side
+    def preview_reversal(self, source_type, source_id, *, _expected_actor=None):
+        """Exactly what a full reversal would do (or what blocks it). Read-only."""
+        self._actor(_expected_actor)
+        source_type = self._source_type(source_type)
+
+        def read(connection):
+            plan = self._plan(connection, source_type, source_id, lock=False)
+            return self._plan_view(plan, self._invoices(connection).active_bank_accounts())
+        return self._read(read)
+
+    def targets(self, invoice_id, *, _expected_actor=None):
+        """The invoice and its Exchanges / finalized Returns that a manager may correct, with their state."""
+        self._actor(_expected_actor)
+
+        def read(connection):
+            corrections, invoices = self._corrections(connection), self._invoices(connection)
+            invoice = invoices.get_invoice(invoice_id)
+            if invoice is None:
+                raise CorrectionError("SOURCE_NOT_FOUND", "الفاتورة غير موجودة.")
+            exchanges, returns = corrections.lifecycle_of_invoice(invoice_id)
+            rows = [("INVOICE", invoice["invoice_id"], invoice["invoice_number"])]
+            rows += [("EXCHANGE", x["lifecycle_id"], exchange_code(x["lifecycle_id"])) for x in exchanges]
+            rows += [("RETURN", r["return_id"], return_code(r["return_id"])) for r in returns]
+            out = []
+            for source_type, source_id, reference in rows:
+                reversal, chain = self._history(corrections, source_type, source_id)
+                out.append({"source_type": source_type, "source_id": str(source_id), "reference": reference,
+                            "source_text": SOURCE_TEXT[source_type],
+                            "reversed_by": None if reversal is None else correction_code(FULL_REVERSAL, reversal["correction_id"]),
+                            "settlement_corrections": len(chain)})
+            return {"invoice_id": invoice["invoice_id"], "invoice_number": invoice["invoice_number"],
+                    "customer_name": invoice.get("customer_name_snapshot"), "targets": out,
+                    "bank_accounts": [{"id": a["id"], "name": a["name"], "account_type": a.get("account_type") or "BANK"}
+                                      for a in invoices.active_bank_accounts()]}
+        return self._read(read)
+
+    # ------------------------------------------------------------ public: FULL REVERSAL
+    def reverse(self, source_type, source_id, reason, *, _expected_actor=None):
+        session_actor = self._actor(_expected_actor)
+        source_type, reason = self._source_type(source_type), _reason(reason)
+        with self._transaction() as connection:
+            actor = self._authorization.require_permission(connection, session_actor, CORRECT_PERMISSION)
+            corrections, invoices = self._corrections(connection), self._invoices(connection)
+            customers = self._customers(connection)
+            plan = self._plan(connection, source_type, source_id, lock=True)
+            if plan.blockers:
+                code, message = plan.blockers[0]
+                raise CorrectionError(code, message)
+            now = corrections.db_now()
+            effects = self._plan_view(plan, invoices.active_bank_accounts())
+            correction_id = corrections.insert_correction(
+                correction_type=FULL_REVERSAL, source_type=source_type, source_id=source_id,
+                source_reference=plan.reference, invoice_id=plan.invoice["invoice_id"], chain_sequence=None,
+                previous_correction_id=None, money_direction=None, settled_total=None, reason=reason, before=None,
+                after=None, effects=effects, performed_by_user_id=actor.user_id,
+                performed_by_employee_id=actor.employee_id, occurred_at=now)
+            code = correction_code(FULL_REVERSAL, correction_id)
+            text = f"عكس {code} — {SOURCE_TEXT[source_type]} {plan.reference}"
+            self._post_money(corrections, correction_id, code, plan.money, "REVERSAL_PAYMENT", text, now, actor)
+            for customer_id, delta in plan.account.items():
+                transaction_id = customers.add_transaction(
+                    customer_id=int(customer_id), type_code="REVERSAL_ACCOUNT", amount_delta=delta,
+                    created_by_user_id=actor.user_id, reference_type="TRANSACTION_CORRECTION", reference_id=correction_id,
+                    reference_code=code, description=text)
+                corrections.insert_leg(correction_id=correction_id, leg_role="POSTED", leg_kind="ACCOUNT", amount=delta,
+                                       customer_transaction_id=transaction_id)
+            items = corrections.lock_items([i for i, _, _, _ in plan.inventory])
+            for item_id, from_status, to_status, movement_code in plan.inventory:
+                corrections.set_item_status(inventory_item_id=item_id, from_status=from_status, to_status=to_status,
+                                            updated_by_user_id=actor.user_id)
+                corrections.add_inventory_movement(item=items[item_id], movement_code=movement_code,
+                                                   from_status=from_status, to_status=to_status,
+                                                   correction_id=correction_id, code=code, reason=f"{text} — {reason}",
+                                                   performed_by_user_id=actor.user_id,
+                                                   performed_by_employee_id=actor.employee_id)
+            for karat_id, _, grams, movement_code in plan.old_gold:
+                corrections.add_old_gold(karat_id=karat_id, weight_delta=grams, movement_code=movement_code,
+                                         correction_id=correction_id, code=code, notes=text,
+                                         created_by_user_id=actor.user_id, employee_id=actor.employee_id,
+                                         customer_id=plan.customer_id)
+            for review_id in plan.reviews:
+                corrections.dismiss_review(review_id=review_id, user_id=actor.user_id, at=now,
+                                           notes=f"{text} — {reason}")
+            for case_id in plan.cases:
+                corrections.cancel_case(case_id=case_id, user_id=actor.user_id, at=now, notes=f"{text} — {reason}")
+            if plan.lines:
+                corrections.mark_lines_reversed(table=plan.lines[0], line_ids=plan.lines[1], correction_id=correction_id)
+            event = {"correction_code": code, "correction_id": correction_id, "correction_type": FULL_REVERSAL,
+                     "source_type": source_type, "source_id": str(source_id), "source_reference": plan.reference,
+                     "reason": reason}
+            invoices.insert_event(invoice_id=plan.invoice["invoice_id"], event_type="REVERSED",
+                                  performed_by_user_id=actor.user_id, details=event)
+            self._audit(connection, actor, "TRANSACTION_REVERSED", correction_id, code, {**event, "effects": effects}, now)
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        return {"correction_id": correction_id, "code": code, "source_reference": plan.reference, "effects": effects}
+
+    @staticmethod
+    def _post_money(corrections, correction_id, code, deltas, type_code, text, now, actor):
+        for (ledger, account_id), delta in sorted(deltas.items()):
+            if delta == 0:
+                continue
+            movement_id = corrections.add_money(ledger=ledger, account_id=account_id, delta=delta, type_code=type_code,
+                                                correction_id=correction_id, code=code, description=text,
+                                                occurred_at=now, created_by_user_id=actor.user_id)
+            corrections.insert_leg(correction_id=correction_id, leg_role="POSTED", leg_kind="MONEY", amount=delta,
+                                   cash_movement_id=movement_id if ledger == "CASH" else None,
+                                   bank_movement_id=movement_id if ledger == "BANK" else None)
+
+    # ------------------------------------------------------------ SETTLEMENT CORRECTION
+    def _settlement_state(self, connection, source_type, source_id, lock):
+        """The current EFFECTIVE settlement of a source: direction, legs, account part, total, chain."""
+        corrections = self._corrections(connection)
+        invoice, source, reference = self._load(connection, source_type, source_id, lock)
+        reversal, chain = self._history(corrections, source_type, source_id)
+        if reversal is not None or (source_type != "INVOICE" and reversal_of(invoice)):
+            raise CorrectionError("ALREADY_REVERSED", "تم عكس هذه العملية؛ لا يمكن تصحيح تسويتها.")
+        if source_type == "INVOICE":
+            original = corrections.invoice_payment_legs(invoice["invoice_id"])
+            direction = original[0]["direction"] if original else \
+                ("OUT" if invoice["net_direction"] == "SHOP_PAYS_CUSTOMER" else "IN")
+        elif source_type == "EXCHANGE":
+            original = source["payments"]
+            signed = Decimal(str(source["signed_amount"]))
+            if signed == 0:
+                raise CorrectionError("NO_SETTLEMENT", "لا يوجد فرق مالي في هذا الاستبدال؛ لا توجد تسوية لتصحيحها.")
+            direction = "IN" if signed > 0 else "OUT"
+        else:
+            original, direction = source["payments"], "OUT"
+        if any(p["direction"] != direction for p in original):
+            raise CorrectionError("MIXED_DIRECTION", "تسوية هذه العملية بها اتجاهان؛ لا يدعمها هذا الإصدار.")
+        customer_id = (source or invoice).get("customer_id")
+        chain_ids = [c["correction_id"] for c in chain]
+        account_signed = sum((Decimal(str(v)) for v in
+                              corrections.account_by_customer(source_type, source_id, chain_ids).values()), ZERO)
+        if chain:
+            legs = corrections.effective_legs(chain[-1]["correction_id"])
+            money_legs = [{"method_code": l["payment_method_code"], "bank_account_id": l.get("bank_account_id"),
+                           "amount": Decimal(str(l["amount"]))} for l in legs if l["leg_kind"] == "MONEY"]
+        else:
+            money_legs = [{"method_code": p["method_code"], "bank_account_id": p.get("bank_account_id"),
+                           "amount": Decimal(str(p["amount"]))} for p in original]
+        sign = 1 if direction == "IN" else -1
+        account = abs(account_signed)
+        if account_signed * sign < 0:
+            raise CorrectionError("MIXED_DIRECTION", "حساب العميل في هذه العملية عكس اتجاهها؛ لا يدعمه هذا الإصدار.")
+        total = sum((l["amount"] for l in money_legs), ZERO) + account
+        if total <= 0:
+            raise CorrectionError("NO_SETTLEMENT", "لا توجد تسوية مالية لتصحيحها.")
+        return {"invoice": invoice, "reference": reference, "direction": direction, "sign": sign,
+                "customer_id": customer_id, "legs": money_legs, "account": account, "account_signed": account_signed,
+                "total": total, "chain": chain, "chain_ids": chain_ids}
+
+    @staticmethod
+    def _normalized(legs, account):
+        grouped = {}
+        for leg in legs:
+            key = (leg["method_code"], str(leg.get("bank_account_id") or ""))
+            grouped[key] = grouped.get(key, ZERO) + Decimal(str(leg["amount"]))
+        return sorted((k, v) for k, v in grouped.items() if v), Decimal(str(account))
+
+    def current_settlement(self, source_type, source_id, *, _expected_actor=None):
+        self._actor(_expected_actor)
+        source_type = self._source_type(source_type)
+
+        def read(connection):
+            state = self._settlement_state(connection, source_type, source_id, lock=False)
+            return self._settlement_view(state, self._invoices(connection).active_bank_accounts())
+        return self._read(read)
+
+    @staticmethod
+    def _settlement_view(state, accounts):
+        names = {str(a["id"]): a["name"] for a in accounts}
+        return {"reference": state["reference"], "direction": state["direction"],
+                "direction_text": "المستلم من العميل" if state["direction"] == "IN" else "المدفوع للعميل",
+                "total": str(state["total"]), "account": str(state["account"]),
+                "has_customer": state["customer_id"] not in (None, ""), "next_sequence": len(state["chain"]) + 1,
+                "legs": [{"method_code": l["method_code"], "method_text": METHOD_TEXT.get(l["method_code"], l["method_code"]),
+                          "bank_account_id": str(l["bank_account_id"]) if l.get("bank_account_id") else "",
+                          "account_name": names.get(str(l.get("bank_account_id")), ""), "amount": str(l["amount"])}
+                         for l in state["legs"]]}
+
+    def _proposal(self, invoices, state, legs, account_amount, lock):
+        """Validated new allocation: [(PaymentInput, amount)], account, per-account money map, problems."""
+        problems, parsed = [], []
+        for leg in legs:
+            try:
+                amount = _money_value(leg.amount, "PAYMENT_INVALID", "اكتب المبلغ بالأرقام.")
+            except CorrectionError as error:
+                problems.append(error)
+                continue
+            if amount == 0:
+                problems.append(CorrectionError("PAYMENT_INVALID", "المبلغ يجب أن يكون أكبر من صفر."))
+                continue
+            parsed.append((PaymentInput(leg.method_code, str(amount), state["direction"], None,
+                                        leg.bank_account_id or None), amount))
+        account = ZERO
+        if account_amount not in (None, ""):
+            try:
+                account = _money_value(account_amount, "ACCOUNT_INVALID", "مبلغ حساب العميل غير صحيح.")
+            except CorrectionError as error:
+                problems.append(error)
+        if account and state["customer_id"] in (None, ""):
+            problems.append(CorrectionError("ACCOUNT_NEEDS_CUSTOMER", "العملية بدون عميل مسجل؛ لا يمكن استخدام حسابه."))
+        methods, accounts, cash, account_problems = InvoiceService._payment_accounts(
+            invoices, [(p, None) for p, _ in parsed], lock=lock)
+        problems += [CorrectionError(getattr(p, "code", "PAYMENT_INVALID"), str(p)) for p in account_problems]
+        new_total = sum((a for _, a in parsed), ZERO) + account
+        if not problems and new_total != state["total"]:
+            problems.append(CorrectionError("TOTAL_MISMATCH",
+                                            f"التسوية الجديدة {new_total:,.2f} ج لا تساوي إجمالي العملية "
+                                            f"{state['total']:,.2f} ج."))
+        new_money = {}
+        if not problems:
+            for index, (payment, amount) in enumerate(parsed):
+                key = ("BANK", int(accounts[index]["id"])) if index in accounts else ("CASH", int(cash["id"]))
+                new_money[key] = new_money.get(key, ZERO) + amount * state["sign"]
+            new_legs = [{"method_code": p.method_code, "bank_account_id": p.bank_account_id, "amount": a}
+                        for p, a in parsed]
+            if self._normalized(new_legs, account) == self._normalized(state["legs"], state["account"]):
+                problems.append(CorrectionError("NO_EFFECT_CORRECTION", "التسوية الجديدة مطابقة للحالية؛ لا يوجد تصحيح."))
+        return parsed, account, new_money, problems
+
+    def preview_settlement(self, source_type, source_id, legs, account_amount=None, *, _expected_actor=None):
+        self._actor(_expected_actor)
+        source_type = self._source_type(source_type)
+
+        def read(connection):
+            invoices, corrections = self._invoices(connection), self._corrections(connection)
+            state = self._settlement_state(connection, source_type, source_id, lock=False)
+            _, account, new_money, problems = self._proposal(invoices, state, legs, account_amount, lock=False)
+            current = corrections.money_by_account(source_type, source_id, state["chain_ids"])
+            return state, account, new_money, current, problems, invoices.active_bank_accounts()
+        state, account, new_money, current, problems, accounts = self._read(read)
+        view = self._settlement_view(state, accounts)
+        names = {("BANK", int(a["id"])): a["name"] for a in accounts}
+        deltas = []
+        if not problems:
+            for key in sorted(set(current) | set(new_money)):
+                delta = new_money.get(key, ZERO) - Decimal(str(current.get(key, ZERO)))
+                if delta:
+                    deltas.append({"account": "النقدية" if key[0] == "CASH" else names.get(key, str(key[1])),
+                                   "delta": str(delta)})
+        account_delta = state["sign"] * account - state["account_signed"]
+        return {**view, "new_account": str(account), "money_deltas": deltas, "account_delta": str(account_delta),
+                "problems": [{"code": p.code, "message": str(p)} for p in problems]}
+
+    def correct_settlement(self, source_type, source_id, legs, account_amount, reason, *, expected_sequence=None,
+                           _expected_actor=None):
+        session_actor = self._actor(_expected_actor)
+        source_type, reason = self._source_type(source_type), _reason(reason)
+        with self._transaction() as connection:
+            actor = self._authorization.require_permission(connection, session_actor, CORRECT_PERMISSION)
+            corrections, invoices, customers = (self._corrections(connection), self._invoices(connection),
+                                                self._customers(connection))
+            state = self._settlement_state(connection, source_type, source_id, lock=True)
+            sequence = len(state["chain"]) + 1
+            if expected_sequence is not None and int(expected_sequence) != sequence:
+                raise CorrectionError("STALE_CORRECTION", "تم تصحيح هذه التسوية للتو من جهاز آخر؛ أعد التحميل.")
+            parsed, account, new_money, problems = self._proposal(invoices, state, legs, account_amount, lock=True)
+            if account:
+                customer = invoices.lock_customer(state["customer_id"])
+                if customer is None or not customer["is_active"] or customer["record_origin"] == "LEGACY_PLACEHOLDER":
+                    problems.append(CorrectionError("CUSTOMER_INACTIVE", "حساب العميل غير متاح."))
+            if problems:
+                raise problems[0]
+            current = corrections.money_by_account(source_type, source_id, state["chain_ids"])
+            deltas = {key: new_money.get(key, ZERO) - Decimal(str(current.get(key, ZERO)))
+                      for key in set(current) | set(new_money)}
+            account_delta = state["sign"] * account - state["account_signed"]
+            now = corrections.db_now()
+            before = {"legs": [dict(l, amount=str(l["amount"])) for l in state["legs"]], "account": str(state["account"])}
+            after = {"legs": [{"method_code": p.method_code, "bank_account_id": p.bank_account_id, "amount": str(a)}
+                              for p, a in parsed], "account": str(account)}
+            correction_id = corrections.insert_correction(
+                correction_type=SETTLEMENT, source_type=source_type, source_id=source_id,
+                source_reference=state["reference"], invoice_id=state["invoice"]["invoice_id"], chain_sequence=sequence,
+                previous_correction_id=state["chain"][-1]["correction_id"] if state["chain"] else None,
+                money_direction=state["direction"], settled_total=state["total"], reason=reason, before=before,
+                after=after, effects={"money": {f"{k[0]}:{k[1]}": str(v) for k, v in deltas.items() if v},
+                                      "account": str(account_delta)},
+                performed_by_user_id=actor.user_id, performed_by_employee_id=actor.employee_id, occurred_at=now)
+            code = correction_code(SETTLEMENT, correction_id)
+            text = f"تصحيح تسوية {code} — {SOURCE_TEXT[source_type]} {state['reference']}"
+            for payment, amount in parsed:
+                corrections.insert_leg(correction_id=correction_id, leg_role="EFFECTIVE", leg_kind="MONEY", amount=amount,
+                                       payment_method_code=payment.method_code,
+                                       bank_account_id=None if payment.bank_account_id in (None, "") else int(payment.bank_account_id))
+            if account:
+                corrections.insert_leg(correction_id=correction_id, leg_role="EFFECTIVE", leg_kind="ACCOUNT", amount=account)
+            self._post_money(corrections, correction_id, code, deltas, "SETTLEMENT_CORRECTION", text, now, actor)
+            if account_delta:
+                transaction_id = customers.add_transaction(
+                    customer_id=int(state["customer_id"]), type_code="SETTLEMENT_CORRECTION", amount_delta=account_delta,
+                    created_by_user_id=actor.user_id, reference_type="TRANSACTION_CORRECTION", reference_id=correction_id,
+                    reference_code=code, description=text)
+                corrections.insert_leg(correction_id=correction_id, leg_role="POSTED", leg_kind="ACCOUNT",
+                                       amount=account_delta, customer_transaction_id=transaction_id)
+            event = {"correction_code": code, "correction_id": correction_id, "correction_type": SETTLEMENT,
+                     "source_type": source_type, "source_id": str(source_id), "source_reference": state["reference"],
+                     "chain_sequence": sequence, "reason": reason, "before": before, "after": after}
+            invoices.insert_event(invoice_id=state["invoice"]["invoice_id"], event_type="SETTLEMENT_CORRECTED",
+                                  performed_by_user_id=actor.user_id, details=event)
+            self._audit(connection, actor, "SETTLEMENT_CORRECTED", correction_id, code,
+                        {**event, "money_deltas": {f"{k[0]}:{k[1]}": v for k, v in deltas.items() if v},
+                         "account_delta": account_delta}, now)
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        return {"correction_id": correction_id, "code": code, "sequence": sequence, "source_reference": state["reference"]}
+
+    @staticmethod
+    def _audit(connection, actor, event_type, correction_id, code, details, now):
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                "INSERT INTO audit_log (user_id, event_type, entity_type, entity_id, entity_reference, "
+                "description, metadata_json, occurred_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (actor.user_id, event_type, "TRANSACTION_CORRECTION", int(correction_id), code,
+                 f"{code} — {details.get('source_reference')} — {details.get('reason')}",
+                 json.dumps(details, ensure_ascii=False, default=str), now))
+        finally:
+            cursor.close()

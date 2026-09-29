@@ -55,13 +55,13 @@ class InvoiceReturnRepository(BaseRepository):
                    ii.inventory_status AS item_status,
                    x.lifecycle_transaction_id AS consumed_by_exchange,
                    (SELECT COALESCE(SUM(rl.weight_grams), 0) FROM invoice_return_lines rl
-                     WHERE rl.source_invoice_line_id = l.id) AS returned_grams,
+                     WHERE rl.source_invoice_line_id = l.id AND rl.reversed_by_correction_id IS NULL) AS returned_grams,
                    (SELECT b.barcode_value FROM inventory_barcodes b WHERE b.inventory_item_id = l.inventory_item_id
                      ORDER BY b.barcode_status = 'ACTIVE' DESC, b.id DESC LIMIT 1) AS stored_barcode
             FROM invoice_lines l
             JOIN karats k ON k.id = l.karat_id
             LEFT JOIN inventory_items ii ON ii.id = l.inventory_item_id
-            LEFT JOIN invoice_lifecycle_lines x ON x.source_invoice_line_id = l.id
+            LEFT JOIN invoice_lifecycle_lines x ON x.source_invoice_line_id = l.id AND x.reversed_by_correction_id IS NULL
             WHERE l.invoice_id = %s
             ORDER BY l.line_number
             """, (_id(invoice_id),))

@@ -28,6 +28,7 @@ VIEW_PERMISSION, REPRINT_PERMISSION, MANAGER_PERMISSION = "INVOICE_VIEW", "INVOI
 # Exchange V1: a separate permission; viewing history never grants it.
 EXCHANGE_PERMISSION, EXCHANGED_EVENT = "INVOICE_EXCHANGE", "EXCHANGED"
 RETURN_PERMISSION, RETURNED_EVENT = "INVOICE_RETURN", "RETURNED"
+CORRECT_PERMISSION, CORRECTION_EVENTS = "TRANSACTION_CORRECT", ("REVERSED", "SETTLEMENT_CORRECTED")
 ZERO = Decimal("0.00")
 
 
@@ -139,6 +140,12 @@ class InvoiceHistoryService:
         number = (invoice_number or "").strip()
         if not number:
             return None
+        import re
+        correction = re.fullmatch(r"(?i)(RV|FC)([0-9]{6})", number)
+        if correction:                                     # an exact correction reference opens its invoice
+            from repositories.correction_repository import CorrectionRepository
+            return self._read(lambda invoices: CorrectionRepository(invoices.connection).invoice_id_for_code(
+                int(correction.group(2))) if int(correction.group(2)) else None)
         return self._read(lambda invoices: invoices.get_invoice_id_by_number(number))
 
     # ------------------------------------------------------------ detail (loaded only when opened)
@@ -153,6 +160,7 @@ class InvoiceHistoryService:
             invoice["account_entries"] = invoices.invoice_account_allocation(invoice_id, invoice.get("customer_id"))
             invoice["exchanges"] = self._exchanges(invoices, invoice_id, invoice.get("events", []))
             invoice["returns"] = self._returns(invoices, invoice_id, invoice.get("events", []))
+            invoice["corrections"] = self._corrections(invoices, invoice_id, invoice.get("events", []))
             return invoice
         invoice = self._read(read)
         if invoice is None:
@@ -213,17 +221,47 @@ class InvoiceHistoryService:
             "notes": invoice.get("notes") or "",
             "can_reprint": REPRINT_PERMISSION in actor.permissions,
             # The Exchange action; the service still checks the permission and every rule itself.
-            "can_exchange": (EXCHANGE_PERMISSION in actor.permissions and not legacy
+            "can_exchange": (EXCHANGE_PERMISSION in actor.permissions and not legacy and not self._reversed_by(invoice)
                              and invoice["invoice_status"] == "FINALIZED"
                              and invoice["invoice_type"] in ("SELL", "MIXED")
                              and self._has_unexchanged_piece(sale_lines, invoice.get("exchanges", []))),
             # Returns of this invoice (finalized ones; the invoice itself stays exactly as finalized).
             "returns": invoice.get("returns", []),
-            "can_return": (RETURN_PERMISSION in actor.permissions and not legacy
+            "can_return": (RETURN_PERMISSION in actor.permissions and not legacy and not self._reversed_by(invoice)
                            and invoice["invoice_status"] == "FINALIZED"
                            and invoice["invoice_type"] in ("SELL", "MIXED") and bool(sale_lines)),
             "can_see_manager_details": manager,
+            # Reversal / Correction V1: the invoice above stays as finalized; corrections are listed apart.
+            "corrections": invoice.get("corrections", []),
+            "reversed_by": self._reversed_by(invoice),
+            "can_correct": CORRECT_PERMISSION in actor.permissions and not legacy
+                           and invoice["invoice_status"] == "FINALIZED",
         }
+
+    @staticmethod
+    def _reversed_by(invoice):
+        from services.correction_rules import reversal_of
+        return reversal_of(invoice)
+
+    def _corrections(self, invoices, invoice_id, events):
+        """Only read when a correction exists (a REVERSED / SETTLEMENT_CORRECTED event)."""
+        if not any(e["event_type"] in CORRECTION_EVENTS for e in events):
+            return []
+        from repositories.correction_repository import CorrectionRepository
+        from services.correction_rules import correction_code
+        rows = []
+        for c in CorrectionRepository(invoices.connection).corrections_for_invoice(invoice_id):
+            rows.append({"code": correction_code(c["correction_type"], c["correction_id"]),
+                         "correction_type": c["correction_type"], "source_type": c["source_type"],
+                         "source_reference": c["source_reference"], "reason": c["reason"],
+                         "occurred_at": c["occurred_at"], "actor": c.get("performed_by_name") or "",
+                         "chain_sequence": c.get("chain_sequence"), "direction": c.get("money_direction"),
+                         "before": c.get("before_json") or {}, "after": c.get("after_json") or {},
+                         "effects": c.get("effects_json") or {},
+                         "posted": [{"kind": p["leg_kind"], "amount": _decimal(p["amount"]),
+                                     "ledger": "BANK" if p.get("bank_movement_id") else "CASH" if p.get("cash_movement_id")
+                                     else "ACCOUNT", "account_name": p.get("bank_account_name")} for p in c["posted"]]})
+        return rows
 
 
     @staticmethod
@@ -301,6 +339,9 @@ class InvoiceHistoryService:
                 saved = cls._details(e)
                 amount = _decimal(saved.get("signed_amount"))
                 linked = None if saved.get("lifecycle_id") in (None, "") else str(saved["lifecycle_id"])
+            elif e["event_type"] in CORRECTION_EVENTS:
+                saved = cls._details(e)
+                linked = None if saved.get("correction_id") in (None, "") else str(saved["correction_id"])
             elif e["event_type"] == RETURNED_EVENT:
                 saved = cls._details(e)                   # money the shop paid back: negative for the shop
                 amount = None if saved.get("total_amount") in (None, "") else -_decimal(saved["total_amount"])
