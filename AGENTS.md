@@ -12,13 +12,12 @@ Technology:
 
 Architecture:
 
-QML
-→ ViewModels
-→ Services
-→ Repositories
-→ MySQL
+`QML → ViewModel → Service → Repository → MySQL`
 
-QML must never contain SQL or database business logic.
+QML and ViewModels must never contain SQL. Services own authoritative business
+calculations and lifecycle validation; repositories own persistence. Use Decimal
+for money/weight and decimal strings for BIGINT IDs crossing into QML. Protected
+writes obtain their actor from AppSession, never arbitrary QML-supplied identity.
 
 ---
 
@@ -40,20 +39,16 @@ Do not invent missing schema.
 
 ---
 
-## 3. Current development priority
+## 3. Current implemented baseline
 
-CURRENT PRIORITY:
+Gold Price Engine, Billing V2, Invoice History, Exchange V1, Returned Item Inspection,
+Return V1 and Reversal / Correction V1 are implemented and committed. Authentication,
+Customers, Inventory and Old Gold foundations are implemented. Controlled Gold Price
+AUTO activation is accepted; do not change AUTO/MANUAL without explicit approval.
 
-CANONICAL BILLING V2 (on the `invoices` family)
-
-Customers, Gold Price Engine V1 and the controlled Gold Price AUTO
-activation are complete.
-
-The old `billing_*` family stays frozen as read-only history.
-
-Cash comes later.
-
-Do not extend Cash/Bank unless explicitly requested.
+The canonical invoice family is `invoices`; `billing_*` is frozen read-only history.
+Payment-account posting and invoice printing are implemented. Do not extend Cash/Bank
+or other modules beyond the requested task. See the lifecycle baseline below.
 
 ---
 
@@ -202,6 +197,8 @@ inventory_status:
 
 - IN_STOCK
 - SOLD
+- RETURNED_PENDING
+- CONVERTED_TO_OLD_GOLD
 - SCRAPPED
 - REMOVED
 
@@ -320,7 +317,7 @@ Examples:
 
 ## 13. Customer transaction types
 
-Existing transaction codes:
+Core customer transaction codes (not an exhaustive list of lifecycle/correction codes):
 
 SALE_BALANCE_DUE
 Purchase meaning:
@@ -381,7 +378,8 @@ Current customer types:
 REGULAR
 VIP
 
-Customer module should eventually support:
+Customers V2 supports search, customer codes, editing, activation, profiles and
+ledger-derived statements. Preserve these customer data/display requirements:
 
 - search
 - customer ID/code
@@ -445,47 +443,16 @@ Read-only display is safe.
 
 ---
 
-## 17. Billing — Canonical Billing V2 (ACTIVE PRIORITY)
+## 17. Billing — Canonical Billing V2 (implemented)
 
-Canonical Billing V2 is the active priority.
+Billing V2 supports sale-only, customer old-gold purchase-only and mixed invoices.
+Finalization is atomic. The invoice total is authoritative; allocation across actual
+payments and customer account does not change that total or derived making.
 
-It is built on the canonical `invoices` family (see §18).
-The old Billing V1 persistence (`billing_*` tables) is frozen:
-do not extend it.
-
-Cash/Bank remains out of scope until Billing V2 is complete.
-
-Billing V2 must support in ONE invoice/window:
-
-1. customer buys new gold only
-2. customer sells old gold only
-3. customer sells old gold and buys new gold in the same transaction
-
-Old gold bought from a customer enters:
-
-old_gold_movements
-
-using:
-
-CUSTOMER_BUY_IN
-
-Do not create inventory items for purchased old gold.
-
-Exchange settlement concept:
-
-new-gold sale total
-− old-gold purchase total
-= net settlement
-
-Net may mean:
-
-customer owes shop
-
-or
-
-shop owes customer
-
-Billing finalization must be atomic.
+Customer old gold enters `old_gold_movements` using `CUSTOMER_BUY_IN`; never create
+inventory items for that bulk purchase. Commercial net is sale total minus old-gold
+purchase total. Distinguish this mixed invoice from the implemented linked after-sale
+Exchange lifecycle described below.
 
 ---
 
@@ -511,7 +478,7 @@ invoice_events
 
 Do not create a third invoice architecture.
 
-Before implementing Billing V2:
+Before changing Billing V2:
 inspect the actual current schema (columns, keys, constraints,
 movement/transaction codes) and the existing Billing code.
 Do not assume undocumented details; ask when something is unclear.
@@ -520,7 +487,8 @@ Do not assume undocumented details; ask when something is unclear.
 
 ## 19. Gold prices
 
-Gold prices must eventually support frozen invoice snapshots.
+Gold prices support frozen invoice snapshots. Preserve each karat's original provider
+timestamp; set-level provenance uses the newest provider timestamp.
 
 Do not assume current market price when reviewing historical invoices.
 
@@ -537,29 +505,15 @@ Do not change price architecture unless explicitly requested.
 
 ## 20. Payments / Cash
 
-Invoice and payment are separate concepts.
+Invoice totals and actual payments are separate. Implemented payment methods include
+physical cash, mobile wallet, InstaPay and bank transfer, with split payments and
+explicit customer-account allocation. Customer credit/unpaid balance and exchange
+offset must never become fake payment rows.
 
-Do not treat invoice total as cash automatically.
-
-Future payment methods may include:
-
-- cash
-- bank
-- card
-- InstaPay
-- mixed
-- remaining customer balance
-
-Existing database objects include:
-
-payment_methods
-invoice_payments
-cash_accounts
-cash_movements
-bank_accounts
-bank_movements
-
-Cash implementation is not current priority.
+Existing objects include `payment_methods`, `invoice_payments`, `cash_accounts`,
+`cash_movements`, `bank_accounts` and `bank_movements`. Real payments post atomically
+to their ledgers. Preserve the implemented settlement workflows; no unrelated
+Cash/Bank expansion without an explicit task.
 
 ---
 
@@ -635,3 +589,157 @@ At the start of every new task:
 If something is ambiguous:
 
 STOP and ask/inspect rather than inventing business behavior.
+
+---
+
+## Implemented lifecycle baseline
+
+Completed: Gold Price Engine, Canonical Billing V2, Invoice History, Exchange V1
+(including replacement paths and settlement), Returned Item Inspection, Return V1,
+and Reversal / Correction V1. Preserve these implementations; new work requires a
+specific task, not completion of the obsolete Billing roadmap.
+
+### Billing V2 and Invoice History
+
+- Canonical persistence is the `invoices` family; `billing_*` remains frozen history.
+- Billing supports sale, customer old-gold purchase, and mixed invoices. Finalization
+  atomically posts snapshots, inventory/old-gold effects, real payments, customer
+  ledger entries and audit events.
+- Counted old-gold movements affect available grams; reference-only legacy movements
+  do not. Keep customer purchases, F7 sales, Returns, Exchanges and reversals distinct.
+- The entered invoice total is authoritative; payment splits do not change it or
+  its derived making. Real payments and explicit customer-account allocation must
+  satisfy the service's settlement rules. Account allocation is not a cash payment.
+- Physical cash posts to `cash_movements`; mobile wallet, InstaPay and bank transfer
+  post to `bank_movements` on the selected account. Preserve the implemented paths.
+- Invoice History provides read-only search, detail, lifecycle timeline and reprint.
+  It uses stored header totals, snapshots and finalized-event values, never today's
+  prices or reconstructed making. Unknown legacy values remain unknown.
+- Calibrated A5 invoice printing is implemented; preserve its physical layout.
+
+### Exchange V1
+
+- An Exchange is a linked after-sale lifecycle transaction, not a new sale or an
+  edit of the original invoice. Source pieces must be identified `SELL_INVENTORY`
+  lines. F5/F7 source sale lines and customer old-gold purchases are not exchangeable.
+- Replacement paths: Scan barcode; F3 inventory search; F5 manual unidentified
+  replacement with reconciliation case; F7 replacement from counted old-gold grams.
+- Same-karat differences use actual grams and that karat's quote; mixed karats use
+  pure-24K grams and the actual 24K quote. Positive gold difference uses SHOP_SELL;
+  negative uses SHOP_BUY. Preserve the service's making and refund rules.
+- Settlement uses direction-aware real payment legs plus optional explicit
+  customer-account allocation, totaling the difference exactly. Zero difference
+  creates neither money nor customer-account entries.
+- Identified returned pieces move `SOLD → RETURNED_PENDING`; identified replacements
+  move `IN_STOCK → SOLD`. F7 replacements consume counted old-gold grams.
+- Exchange and Return prevent simultaneous reuse of the same sold piece/grams.
+  Transaction locks, service validation and database constraints protect active
+  lifecycle use; a valid reversal releases the reversed lifecycle use.
+
+### Returned Item Inspection
+
+- Exchange and Return share `RETURNED_ITEM_INSPECTION` management reviews.
+- The stored barcode is displayed; no physical scan is required. A damaged/missing
+  physical label does not remove the stored identity.
+- A manager with `MANAGEMENT_REVIEW` chooses `RETURN_TO_STOCK`:
+  `RETURNED_PENDING → IN_STOCK`, using the same item and same stored barcode;
+  or `CONVERT_TO_OLD_GOLD`: `RETURNED_PENDING → CONVERTED_TO_OLD_GOLD` plus counted
+  old-gold IN of the exact karat/weight. The converted item is no longer sellable;
+  its barcode remains historical.
+- Resolution is atomic and cannot be applied twice.
+
+### Return V1
+
+- A Return has its own RT reference and immutable finalized history linked to the
+  original invoice. Multiple Returns are allowed while eligible items/grams remain.
+- Value is returned grams × current SHOP_BUY of the same karat, snapshotted per line.
+- At <=72h after original finalization, refund historical making attributable to
+  the returned grams. Missing historical making is refused, never invented.
+- At >72h, no making refund; manager approval of the exact selection is required.
+- The end-of-day-15 deadline is enforced by `services/return_service.py` → `eligibility()`:
+  `now < midnight(invoice local date + 15 days)`. Approval never extends it.
+- Multi-payment OUT legs plus explicit customer-account allocation must equal the
+  Return total. Payment accounts may become negative. Reason/notes are optional.
+- Identified pieces return whole: `SOLD → RETURNED_PENDING`, then inspection.
+- F7 `SELL_OLD_GOLD` supports partial-weight Return; exact grams restore counted
+  old gold directly. F5 unidentified sales and customer old-gold purchases are refused.
+- Finalized Returns cannot be casually canceled; use Reversal / Correction.
+
+### Reversal / Correction V1
+
+- `TRANSACTION_CORRECT` is assigned to MANAGER/OWNER only; authorization is rechecked
+  in the transaction using AppSession. A reason is mandatory.
+- Full Reversal (`RVxxxxxx`) reverses exact stored posted effects of an Invoice,
+  Exchange or Return, including its effective settlement; never use current prices.
+- Original finalized records remain immutable. Corrections are new linked records
+  with ledger movements and audit history, not destructive rewrites.
+- Downstream dependencies block reversal (including disposed returned pieces);
+  resolve eligible dependencies newest first, with no automatic cascade.
+- Settlement Correction (`FCxxxxxx`) changes only financial allocation, posting
+  differences by account/customer. It does not change items, grams, gold, making
+  or the authoritative total. Corrections chain from the latest effective settlement.
+- After full reversal, another reversal and further settlement correction are blocked.
+
+### Implementation map
+
+- `services/invoice_service.py` → `InvoiceService` → `preview()` / `finalize()`;
+  `repositories/invoice_repository.py` → `InvoiceRepository`.
+- `services/invoice_history_service.py` → `InvoiceHistoryService` → `search()` /
+  `detail()` / `reprint()`.
+- `services/exchange_service.py` → `ExchangeService` → replacement lookup/search,
+  `preview()` / `finalize()`; `app/viewmodels/exchange_viewmodel.py` →
+  `ExchangeViewModel`; `qml/ExchangeWorkspace.qml` → Scan/F3/F5/F7 workspace.
+- `services/management_review_service.py` → `ManagementReviewService` → returned-item
+  `return_to_stock()` / `convert_to_old_gold()`; `qml/ManagementReviewPage.qml` → stored barcode and inspection actions.
+- `services/return_service.py` → `eligibility()` / `ReturnService` → approval and
+  `finalize()`; `repositories/invoice_return_repository.py` → `InvoiceReturnRepository`.
+- `services/correction_service.py` → `CorrectionService` → `reverse()` /
+  `correct_settlement()`; `services/correction_rules.py`
+  → RV/FC references; `repositories/correction_repository.py` → `CorrectionRepository`.
+
+## Repository, schema and execution discipline
+
+Baseline for this documentation sync: branch `feature/billing-v2`, implementation
+HEAD `932ae47bd4e151b4662e16a16735e97b381d88ce` (`test(invoice): fix standalone mock import`).
+Before substantial work, check branch, HEAD and `git status`; stop and report unexpected
+files or commits. Inspect actual files and recent history rather than assuming this
+baseline remains the latest forever. Read both `AGENTS.md` and `CLAUDE.md`.
+
+- Schema chain: migrations `001–023` in `database/schema`; next migration is `024`
+  unless later repository state proves otherwise. Already-applied migrations are
+  immutable, including 019–023. Future schema work needs the next forward migration,
+  guarded rollback, `SHA256SUMS`, chain tooling and appropriate migration/rehearsal tests.
+- Normal DEV database: `masgold_v2`. Never mutate `golddb`. Rehearsal/prod databases
+  (`masgold_rehearsal`, `masgold_prod`) require an explicit task request. Before an
+  approved real migration or destructive-capable validation, verify the database
+  using both configuration and the live session. Never apply migrations without approval.
+- `Note for password.txt` is local-only: leave it untouched, untracked and excluded.
+  Do not open, print, stage, commit it or remove its exclusion. Never expose secrets.
+- No commit or push without explicit approval. Keep changes within the requested scope.
+- Preserve finalized invoice, Exchange, Return and correction history. Use explicit
+  correction transactions; do not silently rewrite/delete historical records.
+
+### Official test baseline
+
+At the implementation baseline above: **985 total = 954 passed + 31 skipped**,
+**0 failed, 0 errors** (`Ran 985 tests`, `OK (skipped=31)`). This is the supplied
+confirmed baseline, not a fresh execution during this documentation sync.
+Standalone `tests/test_invoice_service.py`: 44 tests pass.
+
+Intended suite command (use project `.venv` Python):
+
+```powershell
+.\.venv\Scripts\python.exe -B -m unittest discover -s tests -v
+```
+
+Run focused checks and relevant regression for implementation changes. Documentation-only
+changes require diff/consistency checks; no full suite is required.
+
+### VS Code Codex sandbox
+
+Python `tempfile` / directories created with mode `0o700` can become inaccessible
+inside this Windows VS Code Codex sandbox. This is an environment issue, not a
+project bug. Do not modify project code/tests to work around it. When it blocks a
+legitimate test/tool, use the narrow required command outside the sandbox through
+the approval mechanism. No Administrator elevation, ACL changes, Defender changes
+or broad access. Distinguish environment failures from application failures.

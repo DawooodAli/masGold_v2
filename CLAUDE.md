@@ -30,7 +30,7 @@ Architecture is locked:
 
 Rules:
 
-- QML must never contain SQL.
+- QML and ViewModels must never contain SQL.
 - QML must not contain core business/accounting logic.
 - Repositories perform persistence.
 - Services enforce business rules and transactions.
@@ -62,7 +62,7 @@ Do not make broad refactors while implementing a narrow feature.
 
 Do not commit unless explicitly instructed.
 
-Do not push.
+Do not push without explicit approval.
 
 Do not run destructive SQL.
 
@@ -130,7 +130,7 @@ Use `Decimal` for:
 - gold prices
 - making charges
 - calculated totals
-- weights where precision matters
+- weights
 
 Never use float for authoritative financial calculations.
 
@@ -273,9 +273,9 @@ Do not resurrect the obsolete `oldstock_to_newstock` approach.
 
 # 8. Billing — current architectural lock
 
-Billing V1 exists but persistence is temporary/frozen.
+Billing V2 is implemented. Billing V1 persistence is frozen read-only history.
 
-Temporary family:
+Historical family:
 
 - `billing_invoices`
 - `billing_sale_lines`
@@ -292,21 +292,25 @@ Canonical family:
 - `invoice_documents`
 - `invoice_events`
 
-Locked future decision:
+Current architectural lock:
 
 **The `invoices` family is canonical.**
 
 Do not create a third Billing architecture.
 
-Old `billing_*` history must remain historical/read-only after cutover.
+Old `billing_*` history remains historical/read-only.
 
-Canonical Billing V2 is now the active implementation target (see §16).
+Canonical Billing V2 is implemented (see §16 and the lifecycle baseline below).
 
-Billing scenarios eventually required:
+Implemented invoice scenarios:
 
 1. sale only
 2. old-gold purchase only
-3. exchange in one invoice
+3. mixed sale and old-gold purchase in one invoice (distinct from after-sale Exchange)
+
+The entered invoice total is authoritative; payment allocation does not change it
+or derived making. Preserve service-side validation of real payments plus explicit
+customer-account allocation.
 
 Commercial net:
 
@@ -537,7 +541,7 @@ Apply consistently to:
 - top-bar Gold Price card
 - Gold Price dialog
 - Settings Test Connection result
-- future Billing price display
+- Billing price display
 
 Do not heavily fill entire cells with color.
 
@@ -560,43 +564,32 @@ Implemented and verified in the real app at 1440×900, 1280×800 and 1080×680:
 Test Connection remains fetch-only. It must not write quotes, write activations
 or change AUTO/MANUAL mode.
 
-Known carry-overs (outside Gold Price V1):
+Billing price snapshots are implemented. `GoldPriceService._billing_set()` uses the
+newest provider timestamp for set provenance and preserves each karat's timestamp.
 
-- `GoldPriceService._billing_set()` provenance uses the first row's provider
-  timestamp; revisit with Billing V2 (set-level timestamp = newest).
+Previously reported Authentication issue (reproduce before any separate fix):
+
 - `FirstRunOwnerSetup.qml` / `Login.qml` null `stage`/`busy` warnings on
   shutdown → separate Authentication cleanup task.
 
 ---
 
-# 16. CURRENT NEXT TASK — Canonical Billing V2
+# 16. Current implemented lifecycle modules
 
-Gold Price Engine V1 is complete. The active priority is **Canonical Billing V2**
-on the `invoices` family (see §8).
+Canonical Billing V2, Invoice History and calibrated A5 printing are implemented.
+Exchange V1 includes Scan/F3/F5/F7 replacements and settlement. Returned Item
+Inspection, Return V1 and Reversal / Correction V1 are implemented and committed.
+The detailed lifecycle baseline and implementation map below describe their scope.
 
-Before implementing:
-
-1. Inspect the actual `invoices` family schema and the frozen `billing_*` family.
-2. Inspect the existing Billing V1 code (`services/billing_service.py`,
-   `repositories/billing_repository.py`, `app/viewmodels/billing_viewmodel.py`,
-   Billing screens in `qml/Main.qml`).
-3. Propose the Billing V2 plan (scenarios, settlement N/P/R, price snapshots via
-   `GoldPriceService.get_billing_price_set()` / `lock_and_validate_for_finalization()`,
-   atomic finalization) and wait for approval.
-
-Rules:
-
-- Do not create a third Billing architecture.
-- Keep old `billing_*` history read-only.
-- Do not modify Cash/Bank unless explicitly requested.
-- Do not change Gold Price AUTO/MANUAL state.
-- Do not commit unless explicitly asked.
+Preserve the `invoices` architecture and frozen `billing_*` history. Do not treat
+completed modules as future implementation tasks or extend Cash/Bank without a
+specific request. Do not change Gold Price AUTO/MANUAL state without approval.
 
 ---
 
 # 17. Validation expectations
 
-Run relevant:
+For implementation changes, run relevant:
 
 - Gold Price tests
 - full test suite
@@ -638,56 +631,181 @@ Do not report a feature as complete merely because unit tests pass if the user-v
 
 ---
 
-# 19. First Claude Code prompt
+# 19. Start-of-task verification
 
-After placing this file at the repository root as `CLAUDE.md`, start Claude Code and give it:
-
-```text
-Read CLAUDE.md and AGENTS.md completely.
-
-Inspect the current masGold_v2 workspace.
-
-Do not modify files yet.
-Do not write to the database.
-Do not run migrations.
-
-Confirm:
-
-- current Git branch/status
-- Authentication V1 + first-run admin
-- Customers V2
-- Gold Price Engine V1 complete, AUTO active and accepted
-- Canonical Billing V2 is the current task (§16)
-- both Billing families (`invoices` canonical, `billing_*` frozen history)
-
-Then report:
-
-1. current branch/status
-2. relevant Billing files and schema objects
-3. whether CLAUDE.md and AGENTS.md were both found/read
-4. any conflict or ambiguity
-
-Do not implement yet.
-```
+Read both instruction files, inspect actual files and recent Git history, and verify
+branch, HEAD and working tree against the task baseline. Report unexpected changes
+before proceeding. For substantial changes, explain the existing implementation and
+proposed file/class/method changes first. Preserve validated architecture when old
+roadmap text is stale; report ambiguities rather than inventing business behavior.
 
 ---
 
-# 20. Current project priority
+# 20. Completed roadmap
 
-```text
-Authentication ✅
-Customers ✅
-Inventory ✅
-Old Gold ✅
-Gold Price MANUAL ✅
-GoldTimo connectivity ✅
-Gold Price coherent-set + UI polish ✅
-Controlled AUTO activation ✅
-Canonical Billing V2 ← CURRENT
-        ↓
-Payments / Cash / Bank
-        ↓
-Invoice archive / printing
-        ↓
-Reversal / settlement enhancements
+- Authentication, Customers, Inventory and Old Gold foundations: completed.
+- Gold Price Engine, GoldTimo connectivity/coherence, UI and controlled AUTO: completed.
+- Canonical Billing V2 and payment-account settlement workflows: completed.
+- Invoice History, archive/reprint and calibrated A5 printing: completed.
+- Exchange V1, Scan/F3/F5/F7 replacement flows and settlement: completed.
+- Returned Item Inspection: completed.
+- Return V1: completed.
+- Reversal / Correction V1: completed.
+
+The old sequential Billing → payments → archive → reversal roadmap is superseded
+by these implementations. No new future module is selected by this document;
+continue only with the owner's specified task.
+
+---
+
+## Implemented lifecycle baseline
+
+Completed: Gold Price Engine, Canonical Billing V2, Invoice History, Exchange V1
+(including replacement paths and settlement), Returned Item Inspection, Return V1,
+and Reversal / Correction V1. Preserve these implementations; new work requires a
+specific task, not completion of the obsolete Billing roadmap.
+
+### Billing V2 and Invoice History
+
+- Canonical persistence is the `invoices` family; `billing_*` remains frozen history.
+- Billing supports sale, customer old-gold purchase, and mixed invoices. Finalization
+  atomically posts snapshots, inventory/old-gold effects, real payments, customer
+  ledger entries and audit events.
+- Counted old-gold movements affect available grams; reference-only legacy movements
+  do not. Keep customer purchases, F7 sales, Returns, Exchanges and reversals distinct.
+- The entered invoice total is authoritative; payment splits do not change it or
+  its derived making. Real payments and explicit customer-account allocation must
+  satisfy the service's settlement rules. Account allocation is not a cash payment.
+- Physical cash posts to `cash_movements`; mobile wallet, InstaPay and bank transfer
+  post to `bank_movements` on the selected account. Preserve the implemented paths.
+- Invoice History provides read-only search, detail, lifecycle timeline and reprint.
+  It uses stored header totals, snapshots and finalized-event values, never today's
+  prices or reconstructed making. Unknown legacy values remain unknown.
+- Calibrated A5 invoice printing is implemented; preserve its physical layout.
+
+### Exchange V1
+
+- An Exchange is a linked after-sale lifecycle transaction, not a new sale or an
+  edit of the original invoice. Source pieces must be identified `SELL_INVENTORY`
+  lines. F5/F7 source sale lines and customer old-gold purchases are not exchangeable.
+- Replacement paths: Scan barcode; F3 inventory search; F5 manual unidentified
+  replacement with reconciliation case; F7 replacement from counted old-gold grams.
+- Same-karat differences use actual grams and that karat's quote; mixed karats use
+  pure-24K grams and the actual 24K quote. Positive gold difference uses SHOP_SELL;
+  negative uses SHOP_BUY. Preserve the service's making and refund rules.
+- Settlement uses direction-aware real payment legs plus optional explicit
+  customer-account allocation, totaling the difference exactly. Zero difference
+  creates neither money nor customer-account entries.
+- Identified returned pieces move `SOLD → RETURNED_PENDING`; identified replacements
+  move `IN_STOCK → SOLD`. F7 replacements consume counted old-gold grams.
+- Exchange and Return prevent simultaneous reuse of the same sold piece/grams.
+  Transaction locks, service validation and database constraints protect active
+  lifecycle use; a valid reversal releases the reversed lifecycle use.
+
+### Returned Item Inspection
+
+- Exchange and Return share `RETURNED_ITEM_INSPECTION` management reviews.
+- The stored barcode is displayed; no physical scan is required. A damaged/missing
+  physical label does not remove the stored identity.
+- A manager with `MANAGEMENT_REVIEW` chooses `RETURN_TO_STOCK`:
+  `RETURNED_PENDING → IN_STOCK`, using the same item and same stored barcode;
+  or `CONVERT_TO_OLD_GOLD`: `RETURNED_PENDING → CONVERTED_TO_OLD_GOLD` plus counted
+  old-gold IN of the exact karat/weight. The converted item is no longer sellable;
+  its barcode remains historical.
+- Resolution is atomic and cannot be applied twice.
+
+### Return V1
+
+- A Return has its own RT reference and immutable finalized history linked to the
+  original invoice. Multiple Returns are allowed while eligible items/grams remain.
+- Value is returned grams × current SHOP_BUY of the same karat, snapshotted per line.
+- At <=72h after original finalization, refund historical making attributable to
+  the returned grams. Missing historical making is refused, never invented.
+- At >72h, no making refund; manager approval of the exact selection is required.
+- The end-of-day-15 deadline is enforced by `services/return_service.py` → `eligibility()`:
+  `now < midnight(invoice local date + 15 days)`. Approval never extends it.
+- Multi-payment OUT legs plus explicit customer-account allocation must equal the
+  Return total. Payment accounts may become negative. Reason/notes are optional.
+- Identified pieces return whole: `SOLD → RETURNED_PENDING`, then inspection.
+- F7 `SELL_OLD_GOLD` supports partial-weight Return; exact grams restore counted
+  old gold directly. F5 unidentified sales and customer old-gold purchases are refused.
+- Finalized Returns cannot be casually canceled; use Reversal / Correction.
+
+### Reversal / Correction V1
+
+- `TRANSACTION_CORRECT` is assigned to MANAGER/OWNER only; authorization is rechecked
+  in the transaction using AppSession. A reason is mandatory.
+- Full Reversal (`RVxxxxxx`) reverses exact stored posted effects of an Invoice,
+  Exchange or Return, including its effective settlement; never use current prices.
+- Original finalized records remain immutable. Corrections are new linked records
+  with ledger movements and audit history, not destructive rewrites.
+- Downstream dependencies block reversal (including disposed returned pieces);
+  resolve eligible dependencies newest first, with no automatic cascade.
+- Settlement Correction (`FCxxxxxx`) changes only financial allocation, posting
+  differences by account/customer. It does not change items, grams, gold, making
+  or the authoritative total. Corrections chain from the latest effective settlement.
+- After full reversal, another reversal and further settlement correction are blocked.
+
+### Implementation map
+
+- `services/invoice_service.py` → `InvoiceService` → `preview()` / `finalize()`;
+  `repositories/invoice_repository.py` → `InvoiceRepository`.
+- `services/invoice_history_service.py` → `InvoiceHistoryService` → `search()` /
+  `detail()` / `reprint()`.
+- `services/exchange_service.py` → `ExchangeService` → replacement lookup/search,
+  `preview()` / `finalize()`; `app/viewmodels/exchange_viewmodel.py` →
+  `ExchangeViewModel`; `qml/ExchangeWorkspace.qml` → Scan/F3/F5/F7 workspace.
+- `services/management_review_service.py` → `ManagementReviewService` → returned-item
+  `return_to_stock()` / `convert_to_old_gold()`; `qml/ManagementReviewPage.qml` → stored barcode and inspection actions.
+- `services/return_service.py` → `eligibility()` / `ReturnService` → approval and
+  `finalize()`; `repositories/invoice_return_repository.py` → `InvoiceReturnRepository`.
+- `services/correction_service.py` → `CorrectionService` → `reverse()` /
+  `correct_settlement()`; `services/correction_rules.py`
+  → RV/FC references; `repositories/correction_repository.py` → `CorrectionRepository`.
+
+## Repository, schema and execution discipline
+
+Baseline for this documentation sync: branch `feature/billing-v2`, implementation
+HEAD `932ae47bd4e151b4662e16a16735e97b381d88ce` (`test(invoice): fix standalone mock import`).
+Before substantial work, check branch, HEAD and `git status`; stop and report unexpected
+files or commits. Inspect actual files and recent history rather than assuming this
+baseline remains the latest forever. Read both `AGENTS.md` and `CLAUDE.md`.
+
+- Schema chain: migrations `001–023` in `database/schema`; next migration is `024`
+  unless later repository state proves otherwise. Already-applied migrations are
+  immutable, including 019–023. Future schema work needs the next forward migration,
+  guarded rollback, `SHA256SUMS`, chain tooling and appropriate migration/rehearsal tests.
+- Normal DEV database: `masgold_v2`. Never mutate `golddb`. Rehearsal/prod databases
+  (`masgold_rehearsal`, `masgold_prod`) require an explicit task request. Before an
+  approved real migration or destructive-capable validation, verify the database
+  using both configuration and the live session. Never apply migrations without approval.
+- `Note for password.txt` is local-only: leave it untouched, untracked and excluded.
+  Do not open, print, stage, commit it or remove its exclusion. Never expose secrets.
+- No commit or push without explicit approval. Keep changes within the requested scope.
+- Preserve finalized invoice, Exchange, Return and correction history. Use explicit
+  correction transactions; do not silently rewrite/delete historical records.
+
+### Official test baseline
+
+At the implementation baseline above: **985 total = 954 passed + 31 skipped**,
+**0 failed, 0 errors** (`Ran 985 tests`, `OK (skipped=31)`). This is the supplied
+confirmed baseline, not a fresh execution during this documentation sync.
+Standalone `tests/test_invoice_service.py`: 44 tests pass.
+
+Intended suite command (use project `.venv` Python):
+
+```powershell
+.\.venv\Scripts\python.exe -B -m unittest discover -s tests -v
 ```
+
+Run focused checks and relevant regression for implementation changes. Documentation-only
+changes require diff/consistency checks; no full suite is required.
+
+### VS Code Codex sandbox
+
+Python `tempfile` / directories created with mode `0o700` can become inaccessible
+inside this Windows VS Code Codex sandbox. This is an environment issue, not a
+project bug. Do not modify project code/tests to work around it. When it blocks a
+legitimate test/tool, use the narrow required command outside the sandbox through
+the approval mechanism. No Administrator elevation, ACL changes, Defender changes
+or broad access. Distinguish environment failures from application failures.
