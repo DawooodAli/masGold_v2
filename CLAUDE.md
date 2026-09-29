@@ -651,6 +651,8 @@ roadmap text is stale; report ambiguities rather than inventing business behavio
 - Returned Item Inspection: completed.
 - Return V1: completed.
 - Reversal / Correction V1: completed.
+- Customer Account V2 (CS settlements, migration 024): completed.
+- Customer Invoices tab and automatic Customers refresh: completed.
 
 The old sequential Billing → payments → archive → reversal roadmap is superseded
 by these implementations. No new future module is selected by this document;
@@ -662,7 +664,7 @@ continue only with the owner's specified task.
 
 Completed: Gold Price Engine, Canonical Billing V2, Invoice History, Exchange V1
 (including replacement paths and settlement), Returned Item Inspection, Return V1,
-and Reversal / Correction V1. Preserve these implementations; new work requires a
+Reversal / Correction V1, Customer Account V2 and Customer Invoices. Preserve these implementations; new work requires a
 specific task, not completion of the obsolete Billing roadmap.
 
 ### Billing V2 and Invoice History
@@ -746,6 +748,32 @@ specific task, not completion of the obsolete Billing roadmap.
   or the authoritative total. Corrections chain from the latest effective settlement.
 - After full reversal, another reversal and further settlement correction are blocked.
 
+### Customer Account V2 (migration 024)
+
+- Canonical customer balance source: `customer_transactions` / `vw_customer_balances`.
+  Positive → `على العميل`; negative → `للعميل`; zero → `الحساب متوازن`.
+- Customer Account Settlement (`CSxxxxxx`, source `CUSTOMER_ACCOUNT_SETTLEMENT`, no
+  invoice) records real money against an existing customer balance. Partial and split
+  multi-leg settlements are supported; oversettlement is refused; financial accounts
+  may become negative; concurrent settlements are protected by transaction locks.
+- CS is correctable through Settlement Correction (FC) and Full Reversal (RV).
+- Permission `CUSTOMER_ACCOUNT_SETTLE`: OWNER, MANAGER, CASHIER (not SALESPERSON),
+  rechecked service-side from AppSession.
+- Statement shows running balance from the complete ledger with source/reference mapping.
+
+### Customer Invoices and refresh
+
+- The Customers area separates `كشف الحساب` (actual customer-ledger movements only) from
+  `فواتير العميل` (ALL finalized invoices for the canonical `customer_id`, including
+  fully paid invoices with no customer-account effect).
+- Server-side 50+1 pagination, newest first, invoice-number search, inclusive date
+  filters and transaction-type classification. The clickable invoice number opens the
+  existing Invoice History detail (exact string IDs; no duplicate detail page).
+- Customers/account/invoices refresh automatically on page entry/return, customer
+  selection, and finalized Invoice, Exchange, Return, CS, RV/FC and relevant manager
+  dispositions. No timer polling. Refresh preserves selection, tab, filters and page
+  where practical; manual refresh remains a fallback.
+
 ### Implementation map
 
 - `services/invoice_service.py` → `InvoiceService` → `preview()` / `finalize()`;
@@ -762,18 +790,22 @@ specific task, not completion of the obsolete Billing roadmap.
 - `services/correction_service.py` → `CorrectionService` → `reverse()` /
   `correct_settlement()`; `services/correction_rules.py`
   → RV/FC references; `repositories/correction_repository.py` → `CorrectionRepository`.
+- `services/customer_account_service.py` → `CustomerAccountService` → `statement()` /
+  `customer_invoices()` / `finalize()`; `repositories/customer_account_repository.py`
+  → `CustomerAccountRepository`; `app/viewmodels/customer_account_viewmodel.py` →
+  `CustomerAccountViewModel`.
 
 ## Repository, schema and execution discipline
 
 Baseline for this documentation sync: branch `feature/billing-v2`, implementation
-HEAD `932ae47bd4e151b4662e16a16735e97b381d88ce` (`test(invoice): fix standalone mock import`).
+HEAD `e798badc56d0d82874e756efe72c4ce28fc24e67` (`feat(customers): add invoice history and automatic refresh`).
 Before substantial work, check branch, HEAD and `git status`; stop and report unexpected
 files or commits. Inspect actual files and recent history rather than assuming this
 baseline remains the latest forever. Read both `AGENTS.md` and `CLAUDE.md`.
 
-- Schema chain: migrations `001–023` in `database/schema`; next migration is `024`
+- Schema chain: migrations `001–024` in `database/schema`; next migration is `025`
   unless later repository state proves otherwise. Already-applied migrations are
-  immutable, including 019–023. Future schema work needs the next forward migration,
+  immutable, including 019–024. Future schema work needs the next forward migration,
   guarded rollback, `SHA256SUMS`, chain tooling and appropriate migration/rehearsal tests.
 - Normal DEV database: `masgold_v2`. Never mutate `golddb`. Rehearsal/prod databases
   (`masgold_rehearsal`, `masgold_prod`) require an explicit task request. Before an
@@ -787,8 +819,8 @@ baseline remains the latest forever. Read both `AGENTS.md` and `CLAUDE.md`.
 
 ### Official test baseline
 
-At the implementation baseline above: **985 total = 954 passed + 31 skipped**,
-**0 failed, 0 errors** (`Ran 985 tests`, `OK (skipped=31)`). This is the supplied
+At the implementation baseline above: **1015 total = 975 passed + 40 skipped**,
+**0 failures, 0 errors, 0 runtime QML warnings**. This is the supplied
 confirmed baseline, not a fresh execution during this documentation sync.
 Standalone `tests/test_invoice_service.py`: 44 tests pass.
 
