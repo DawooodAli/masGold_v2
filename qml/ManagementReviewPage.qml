@@ -169,6 +169,194 @@ Item {
         }
     }
 
+    component ActionButton: Button {
+        id: actionButton
+        property color accent: theme.gold
+        font.family: "Cairo"
+        font.pixelSize: 12
+        font.bold: true
+        Layout.preferredHeight: 28
+        topInset: 0
+        bottomInset: 0
+        leftPadding: 12
+        rightPadding: 12
+        contentItem: Label {
+            text: actionButton.text
+            font: actionButton.font
+            color: actionButton.enabled ? actionButton.accent : theme.textDisabled
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+        }
+        background: Rectangle {
+            radius: theme.radiusSmall
+            color: actionButton.down ? theme.panelHover : "transparent"
+            border.color: actionButton.enabled ? actionButton.accent : theme.border
+        }
+    }
+
+    // One returned piece waiting for the manager: exchange, invoice, customer, piece facts,
+    // the STORED barcode (authoritative, selectable, never elided) and the two outcomes.
+    component InspectionCard: Rectangle {
+        id: card
+        property var review: ({})
+        property int rowIndex: 0
+        Layout.fillWidth: true
+        implicitHeight: cardColumn.implicitHeight + 12
+        color: theme.bgSecondary
+        radius: 4
+        Rectangle { anchors.right: parent.right; width: 3; height: parent.height; color: theme.amber; radius: 2 }
+        ColumnLayout {
+            id: cardColumn
+            anchors.fill: parent
+            anchors.leftMargin: 10
+            anchors.rightMargin: 12
+            anchors.topMargin: 6
+            anchors.bottomMargin: 6
+            spacing: 2
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 10
+                Label { text: "استبدال " + (card.review.exchange || ""); color: theme.gold; font.family: "Cairo"
+                        font.pixelSize: 13; font.bold: true }
+                Label { text: "فاتورة " + (card.review.invoice || ""); color: theme.textPrimary; font.family: "Cairo"
+                        font.pixelSize: 12 }
+                Label { text: card.review.customer || ""; color: theme.textSecondary; font.family: "Cairo"
+                        font.pixelSize: 12 }
+                Item { Layout.fillWidth: true }
+                Label { text: card.review.time || ""; color: theme.textMuted; font.family: "Cairo"; font.pixelSize: 11 }
+            }
+            Label {
+                objectName: "inspectionDetails_" + card.rowIndex
+                Layout.fillWidth: true
+                text: [card.review.item, card.review.category, card.review.karat ? "عيار " + card.review.karat : "",
+                       "الوزن " + card.review.weight, card.review.factory,
+                       card.review.size ? "مقاس " + card.review.size : "", card.review.notes]
+                      .filter(function(t) { return t && t.length > 0 }).join("  •  ")
+                color: theme.textSecondary
+                font.family: "Cairo"
+                font.pixelSize: 12
+                horizontalAlignment: Text.AlignRight
+                wrapMode: Text.WordWrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 10
+                Label { text: "الباركود المسجل:"; color: theme.textSecondary; font.family: "Cairo"; font.pixelSize: 12 }
+                // Selectable, full value (never elided); a tooltip repeats it on hover.
+                TextEdit {
+                    id: barcodeValue
+                    objectName: "inspectionBarcode_" + card.rowIndex
+                    text: card.review.barcode || "غير مسجل"
+                    readOnly: true
+                    selectByMouse: true
+                    color: theme.goldBright
+                    selectionColor: theme.gold
+                    font.family: "Cairo"
+                    font.pixelSize: 13
+                    font.bold: true
+                    HoverHandler { id: barcodeHover }
+                    ToolTip.visible: barcodeHover.hovered && text.length > 0
+                    ToolTip.text: text
+                }
+                Label { text: "الحالة: " + (card.review.statusText || ""); color: theme.amber; font.family: "Cairo"
+                        font.pixelSize: 12 }
+                Item { Layout.fillWidth: true }
+                ActionButton {
+                    objectName: "inspectionRestock_" + card.rowIndex
+                    visible: reviewsVM.canResolveInspections
+                    enabled: !reviewsVM.inspectionBusy
+                    text: "إرجاع للمخزون"
+                    accent: theme.priceBuy
+                    onClicked: confirmDialog.ask(card.review, "RETURN_TO_STOCK")
+                }
+                ActionButton {
+                    objectName: "inspectionScrap_" + card.rowIndex
+                    visible: reviewsVM.canResolveInspections
+                    enabled: !reviewsVM.inspectionBusy
+                    text: "تحويل إلى الكسر"
+                    accent: theme.amber
+                    onClicked: confirmDialog.ask(card.review, "CONVERT_TO_OLD_GOLD")
+                }
+            }
+        }
+    }
+
+    // The manager confirms each outcome (the service refuses a second decision anyway).
+    Popup {
+        id: confirmDialog
+        objectName: "inspectionConfirm"
+        property var review: ({})
+        property string outcome: ""
+        function ask(review, outcome) { confirmDialog.review = review; confirmDialog.outcome = outcome; open() }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(520, reviewPage.width - 32)
+        modal: true
+        focus: true
+        padding: 16
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.amber }
+        contentItem: ColumnLayout {
+            spacing: 10
+            Label {
+                Layout.fillWidth: true
+                text: confirmDialog.outcome === "RETURN_TO_STOCK" ? "إرجاع القطعة للمخزون" : "تحويل القطعة إلى الكسر"
+                color: theme.gold
+                font.family: "Cairo"
+                font.pixelSize: 15
+                font.bold: true
+                horizontalAlignment: Text.AlignRight
+            }
+            Label {
+                objectName: "inspectionConfirmText"
+                Layout.fillWidth: true
+                text: confirmDialog.outcome === "RETURN_TO_STOCK"
+                      ? "ستعود القطعة للمخزون بنفس الباركود المسجل: " + (confirmDialog.review.barcode || "غير مسجل")
+                      : "سيتم تحويل القطعة نهائياً إلى رصيد الكسر، ولن تعود قابلة للبيع بالباركود المسجل. هل تريد المتابعة؟"
+                color: theme.textPrimary
+                font.family: "Cairo"
+                font.pixelSize: 13
+                horizontalAlignment: Text.AlignRight
+                wrapMode: Text.WordWrap
+            }
+            Label {
+                objectName: "inspectionConfirmFacts"
+                Layout.fillWidth: true
+                text: "الباركود المسجل: " + (confirmDialog.review.barcode || "غير مسجل")
+                      + "  •  عيار " + (confirmDialog.review.karat || "") + "  •  الوزن " + (confirmDialog.review.weight || "") + " جرام"
+                color: confirmDialog.outcome === "RETURN_TO_STOCK" ? theme.priceBuy : theme.amber
+                font.family: "Cairo"
+                font.pixelSize: 12
+                font.bold: true
+                horizontalAlignment: Text.AlignRight
+                wrapMode: Text.WordWrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                ActionButton {
+                    objectName: "inspectionConfirmYes"
+                    text: "متابعة"
+                    accent: confirmDialog.outcome === "RETURN_TO_STOCK" ? theme.priceBuy : theme.amber
+                    onClicked: {
+                        if (confirmDialog.outcome === "RETURN_TO_STOCK") reviewsVM.returnToStock(confirmDialog.review.reviewId)
+                        else reviewsVM.convertToOldGold(confirmDialog.review.reviewId)
+                        confirmDialog.close()
+                    }
+                }
+                ActionButton {
+                    objectName: "inspectionConfirmNo"
+                    text: "إلغاء"
+                    accent: theme.textSecondary
+                    onClicked: confirmDialog.close()
+                }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
     component Row2: Rectangle {
         id: row
         property string title: ""
@@ -371,6 +559,32 @@ Item {
                         font.pixelSize: 12
                         horizontalAlignment: Text.AlignRight
                         wrapMode: Text.WordWrap
+                    }
+                }
+                // فحص القطع المرتجعة: one card per returned piece; the manager decides (no scan needed:
+                // the piece is identified by its exchange line and inventory item, shown by its stored barcode).
+                Section {
+                    objectName: "reviewInspectionSection"
+                    title: "فحص قطع مرتجعة"
+                    count: reviewsVM.inspections.length
+                    Label {
+                        objectName: "inspectionMessage"
+                        Layout.fillWidth: true
+                        visible: text.length > 0
+                        text: reviewsVM.inspectionMessage
+                        color: reviewsVM.inspectionMessageIsError ? theme.red : theme.green
+                        font.family: "Cairo"
+                        font.pixelSize: 12
+                        horizontalAlignment: Text.AlignRight
+                        wrapMode: Text.WordWrap
+                    }
+                    Repeater {
+                        model: reviewsVM.inspections
+                        InspectionCard {
+                            objectName: "inspection_" + index
+                            review: modelData
+                            rowIndex: index
+                        }
                     }
                 }
                 Section {

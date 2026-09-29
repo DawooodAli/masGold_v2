@@ -87,6 +87,7 @@ class Store:
         self.factories = {5: {"id": 5, "name": "لوكس", "is_active": 1}}
         self.old_gold = {1: D("20.000"), 2: D("0.000"), 3: D("0.000")}
         self.old_gold_movements, self.cases = [], []
+        self.inspections = []                  # RETURNED_ITEM_INSPECTION management reviews (021)
 
     def tables(self):
         return copy.deepcopy(vars(self))
@@ -261,6 +262,20 @@ class LifecycleRepo:
     def open_unidentified_replacement_case(self, **kwargs):
         self.store.cases.append(kwargs)
         return str(len(self.store.cases))
+
+    def open_returned_item_inspection(self, *, lifecycle_line_id, invoice_id, summary, details, created_by_user_id):
+        self._maybe_fail("open_returned_item_inspection")
+        # UNIQUE uq_management_review_lifecycle_line, as MySQL would.
+        if any(r["lifecycle_line_id"] == str(lifecycle_line_id) for r in self.store.inspections):
+            raise RuntimeError("Duplicate entry for key uq_management_review_lifecycle_line")
+        line = self.store.lifecycle_lines[int(lifecycle_line_id) - 1]
+        assert line["role"] == "RETURNED"
+        review_id = str(900 + len(self.store.inspections) + 1)
+        self.store.inspections.append({"review_id": review_id, "lifecycle_line_id": str(lifecycle_line_id),
+                                       "invoice_id": invoice_id, "summary": summary, "details": details,
+                                       "status": "OPEN", "resolution": None, "resolved_by": None,
+                                       "resolved_at": None, "created_by": created_by_user_id})
+        return review_id
 
     def insert_payment(self, **kwargs):
         assert kwargs["amount"] > 0 and kwargs["direction"] in ("IN", "OUT")

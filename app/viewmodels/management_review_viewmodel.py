@@ -8,7 +8,12 @@ from app.workers.invoice_worker import InvoiceWorker
 
 
 TYPE_TEXT = {"INVENTORY_MATCH": "مراجعة مخزون", "MAKING_PRICE": "مراجعة تسعير / مصنعية",
-             "CASH_SETTLEMENT": "مراجعة تسوية نقدية", "OLD_GOLD_DISCOUNT": "تعديل نسبة خصم الكسر"}
+             "CASH_SETTLEMENT": "مراجعة تسوية نقدية", "OLD_GOLD_DISCOUNT": "تعديل نسبة خصم الكسر",
+             "RETURNED_ITEM_INSPECTION": "فحص قطع مرتجعة"}
+STATUS_TEXT = {"RETURNED_PENDING": "بانتظار الفحص", "IN_STOCK": "في المخزون", "SOLD": "مباعة",
+               "CONVERTED_TO_OLD_GOLD": "محولة إلى الكسر"}
+RESOLVED_TEXT = {"RETURN_TO_STOCK": "أعيدت القطعة إلى المخزون بنفس الباركود المسجل: {barcode}",
+                 "CONVERT_TO_OLD_GOLD": "تم تحويل القطعة إلى رصيد الكسر (الباركود المسجل {barcode} لم يعد قابلاً للبيع)."}
 ACCOUNT_TYPE_TEXT = {"CASH": "نقدية", "BANK": "بنك / InstaPay", "MOBILE_WALLET": "محفظة"}
 MAKING_STATUS_TEXT = {"WITHIN_RANGE": "داخل النطاق", "OUT_OF_RANGE": "خارج النطاق",
                       "NOT_CONFIGURED": "غير محدد النطاق"}
@@ -79,6 +84,7 @@ class ManagementReviewViewModel(QObject):
         self._counts = {key: 0 for key in TYPE_TEXT}
         self._reviews, self._error, self._accounts = {}, "", []
         self._balance_service = balance_service
+        self._resolving, self._inspection_message, self._inspection_error = "", "", ""
         self._timer = QTimer(self)
         self._timer.setInterval(refresh_ms)
         self._timer.timeout.connect(self.refresh)
@@ -250,6 +256,71 @@ class ManagementReviewViewModel(QObject):
                  "by": r.get("created_by_name") or "", "invoice": r.get("invoice_number") or "",
                  "details": review_details(code, r.get("details_json"))}
                 for r in self._reviews.get(code, [])]
+
+    # ---- returned-item inspection (manager decision; the service re-checks everything)
+    @Property("QVariantList", notify=changed)
+    def inspections(self):
+        rows = []
+        for r in self._reviews.get("RETURNED_ITEM_INSPECTION", []):
+            weight = r.get("item_weight_grams") if r.get("item_weight_grams") is not None else r.get("weight_grams")
+            barcode = r.get("stored_barcode") or ""
+            rows.append({
+                "reviewId": str(r["review_id"]), "exchange": r.get("exchange_code") or "",
+                "invoice": r.get("invoice_number") or "", "customer": r.get("customer_name_snapshot") or "بدون عميل",
+                "time": _time(r.get("exchanged_at") or r.get("created_at")),
+                "item": r.get("item_type_name") or r.get("item_name_snapshot") or "—",
+                "category": r.get("category_name") or "",
+                "karat": str(r.get("karat_value") or ""), "weight": f"{Decimal(str(weight)):.3f}" if weight is not None else "—",
+                "factory": r.get("factory_name") or "", "size": r.get("size") or "", "notes": r.get("item_notes") or "",
+                "barcode": barcode, "barcodeText": f"الباركود المسجل: {barcode or 'غير مسجل'}",
+                "status": r.get("inventory_status") or "",
+                "statusText": STATUS_TEXT.get(r.get("inventory_status"), r.get("inventory_status") or ""),
+                "busy": self._resolving == str(r["review_id"])})
+        return rows
+
+    @Property(bool, notify=changed)
+    def canResolveInspections(self):
+        actor = self._session.current_actor()
+        return bool(actor and "MANAGEMENT_REVIEW" in actor.permissions)
+
+    def _resolve(self, review_id, outcome):
+        if getattr(self, "_resolving", ""):
+            return
+        service = self._service_instance()
+        call = service.return_to_stock if outcome == "RETURN_TO_STOCK" else service.convert_to_old_gold
+        self._resolving, self._inspection_message, self._inspection_error = str(review_id), "", ""
+        self._start("resolve", lambda _expected_actor: call(str(review_id), _expected_actor=_expected_actor))
+        self.changed.emit()
+
+    @Slot(str)
+    def returnToStock(self, review_id):
+        self._resolve(review_id, "RETURN_TO_STOCK")
+
+    @Slot(str)
+    def convertToOldGold(self, review_id):
+        self._resolve(review_id, "CONVERT_TO_OLD_GOLD")
+
+    def _on_resolve(self, result, error):
+        self._resolving = ""
+        if error:
+            self._inspection_message, self._inspection_error = "", error
+        else:
+            self._inspection_error = ""
+            self._inspection_message = RESOLVED_TEXT[result["resolution"]].format(
+                barcode=result.get("stored_barcode") or "—")
+        self.openReviews()
+
+    @Property(str, notify=changed)
+    def inspectionMessage(self):
+        return self._inspection_error or self._inspection_message
+
+    @Property(bool, notify=changed)
+    def inspectionMessageIsError(self):
+        return bool(self._inspection_error)
+
+    @Property(bool, notify=changed)
+    def inspectionBusy(self):
+        return bool(self._resolving)
 
     @Property("QVariantList", notify=changed)
     def makingReviews(self):

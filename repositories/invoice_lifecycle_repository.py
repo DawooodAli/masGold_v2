@@ -88,10 +88,18 @@ class InvoiceLifecycleRepository(BaseRepository):
             return None
         lines = self._fetch_all(
             """
-            SELECT id AS line_id, line_role, line_number, source_invoice_line_id, inventory_item_id,
-                   karat_id, karat_value, weight_grams, pure_weight_grams, making_per_gram,
-                   making_per_pure_gram, making_total, item_name_snapshot, barcode_snapshot, identification_method
-            FROM invoice_lifecycle_lines WHERE lifecycle_transaction_id = %s ORDER BY line_number
+            SELECT l.id AS line_id, l.line_role, l.line_number, l.source_invoice_line_id, l.inventory_item_id,
+                   l.karat_id, l.karat_value, l.weight_grams, l.pure_weight_grams, l.making_per_gram,
+                   l.making_per_pure_gram, l.making_total, l.item_name_snapshot, l.barcode_snapshot,
+                   l.identification_method,
+                   r.review_status AS inspection_status, r.resolution_code AS inspection_resolution,
+                   r.resolved_at AS inspection_resolved_at, ru.display_name AS inspection_resolved_by,
+                   (SELECT b.barcode_value FROM inventory_barcodes b WHERE b.inventory_item_id = l.inventory_item_id
+                     ORDER BY b.barcode_status = 'ACTIVE' DESC, b.id DESC LIMIT 1) AS stored_barcode
+            FROM invoice_lifecycle_lines l
+            LEFT JOIN management_reviews r ON r.lifecycle_line_id = l.id
+            LEFT JOIN users ru ON ru.id = r.resolved_by_user_id
+            WHERE l.lifecycle_transaction_id = %s ORDER BY l.line_number
             """, (_id(lifecycle_id),))
         payments = self._fetch_all(
             """
@@ -225,6 +233,18 @@ class InvoiceLifecycleRepository(BaseRepository):
             VALUES (%s, 'OPENED', 'OPEN', %s, %s, %s)
             """, (int(case_id), f"بديل يدوي — استبدال {exchange_code}", created_by_user_id, sold_at))
         return str(case_id)
+
+    def open_returned_item_inspection(self, *, lifecycle_line_id, invoice_id, summary, details, created_by_user_id):
+        """One RETURNED_ITEM_INSPECTION manager review per returned line (021; UNIQUE lifecycle_line_id)."""
+        review_id, _ = self._execute(
+            """
+            INSERT INTO management_reviews (review_type, review_status, invoice_id, lifecycle_line_id, summary,
+                                            details_json, created_by_user_id)
+            VALUES ('RETURNED_ITEM_INSPECTION', 'OPEN', %s, %s, %s, %s, %s)
+            """,
+            (_optional_id(invoice_id), _id(lifecycle_line_id), summary, _json(details), created_by_user_id),
+        )
+        return str(review_id)
 
     def insert_payment(self, *, lifecycle_id, payment_method_id, bank_account_id, direction, amount,
                        payment_reference, cash_movement_id, bank_movement_id, occurred_at, created_by_user_id):

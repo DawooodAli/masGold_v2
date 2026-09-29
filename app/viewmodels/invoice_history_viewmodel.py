@@ -535,8 +535,28 @@ class InvoiceHistoryViewModel(QObject):
                 "makingText": making, "direction": x["direction"], "directionText": x["direction_text"],
                 "amount": "" if x["direction"] == "NONE" else money(x["amount"]),
                 "moneyTitle": moved_title, "money": " • ".join(legs), "accountText": account_text,
-                "pendingText": x["returned_pending_text"]})
+                "pendingText": self._dispositions(x)})
         return rows
+
+    @staticmethod
+    def _dispositions(exchange):
+        """What happened to each returned piece: waiting for the manager / back in stock / to old gold."""
+        texts = []
+        for piece in exchange["returned"]:
+            d = piece.get("disposition")
+            if not d:
+                continue
+            text = d["text"]
+            if d.get("code") == "PENDING" and d.get("barcode"):
+                text += f" — الباركود المسجل: {d['barcode']}"
+            elif d.get("code") != "PENDING":
+                if d.get("code") == "RETURN_TO_STOCK" and d.get("barcode"):
+                    text += f" ({d['barcode']})"
+                who = " • ".join(v for v in (d.get("by") or "",
+                                              datetime_text(datetime.fromisoformat(d["at"])) if d.get("at") else "") if v)
+                text += f" — {who}" if who else ""
+            texts.append(text)
+        return "  •  ".join(texts) if texts else exchange["returned_pending_text"]
 
     @Property("QVariantList", notify=changed)
     def oldGoldLines(self):

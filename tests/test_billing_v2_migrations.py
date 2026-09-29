@@ -14,7 +14,8 @@ ACCOUNTS = "017_payment_accounts.sql"
 OPENING = "018_opening_balances.sql"
 LIFECYCLE = "019_invoice_lifecycle_exchange.sql"
 SOURCES = "020_exchange_replacement_sources.sql"
-FORWARD = (CONSOLIDATION, BILLING, PROVENANCE, WORKFLOW, ACCOUNTS, OPENING, LIFECYCLE, SOURCES)
+INSPECTION = "021_returned_item_inspection.sql"
+FORWARD = (CONSOLIDATION, BILLING, PROVENANCE, WORKFLOW, ACCOUNTS, OPENING, LIFECYCLE, SOURCES, INSPECTION)
 # 013 is baseline schema already used by the application: no rollback script.
 ROLLBACK = {BILLING: "014_billing_v2_rollback.sql",
             PROVENANCE: "015_legacy_provenance_rollback.sql",
@@ -22,7 +23,8 @@ ROLLBACK = {BILLING: "014_billing_v2_rollback.sql",
             ACCOUNTS: "017_payment_accounts_rollback.sql",
             OPENING: "018_opening_balances_rollback.sql",
             LIFECYCLE: "019_invoice_lifecycle_exchange_rollback.sql",
-            SOURCES: "020_exchange_replacement_sources_rollback.sql"}
+            SOURCES: "020_exchange_replacement_sources_rollback.sql",
+            INSPECTION: "021_returned_item_inspection_rollback.sql"}
 CHANGE = re.compile(r"^(ALTER|CREATE|INSERT|DELETE|DROP|UPDATE|TRUNCATE|RENAME|REPLACE)\b", re.I)
 ACQUISITION_SOURCES = {"MARKET_PURCHASE", "OLD_GOLD_MANUFACTURE", "OLD_STOCK_CONVERSION",
                        "LEGACY_MIGRATION", "MANUAL_ENTRY"}
@@ -173,6 +175,35 @@ class MigrationFileSafetyTests(unittest.TestCase):
         self.assertIn("MIGRATION_018_REFUSED_migration_017_missing", forward_text(OPENING))
         self.assertIn("MIGRATION_019_REFUSED_migration_018_missing", forward_text(LIFECYCLE))
         self.assertIn("MIGRATION_020_REFUSED_migration_019_missing", forward_text(SOURCES))
+        self.assertIn("MIGRATION_021_REFUSED_migration_020_missing", forward_text(INSPECTION))
+
+    def test_021_adds_only_the_inspection_objects(self):
+        text = forward_text(INSPECTION)
+        checks = sql.checks(text)
+        for name in ("chk_inventory_status", "chk_inventory_move_from_status", "chk_inventory_move_to_status"):
+            self.assertIn("'RETURNED_PENDING', 'CONVERTED_TO_OLD_GOLD'", " ".join(checks[name][1].split()))
+        self.assertIn("'RETURNED_ITEM_INSPECTION'", checks["chk_management_review_type"][1])
+        inspection = checks["chk_management_review_inspection"][1]
+        for rule in ("lifecycle_line_id IS NOT NULL", "'RETURN_TO_STOCK', 'CONVERT_TO_OLD_GOLD'",
+                     "review_status = 'OPEN' AND resolution_code IS NULL"):
+            self.assertIn(rule, inspection)
+        # Regression: every status must fit its column (003 made them VARCHAR(20); the new one has 21 chars).
+        widths = {m.group(1): int(m.group(2)) for s in sql.statements(text)
+                  for m in re.finditer(r"MODIFY COLUMN (\w+) VARCHAR\((\d+)\)", s.sql)}
+        self.assertEqual(set(widths), {"inventory_status", "from_inventory_status", "to_inventory_status"})
+        for name, column in (("chk_inventory_status", "inventory_status"),
+                             ("chk_inventory_move_from_status", "from_inventory_status"),
+                             ("chk_inventory_move_to_status", "to_inventory_status")):
+            for value in re.findall(r"'(\w+)'", checks[name][1]):
+                self.assertLessEqual(len(value), widths[column], value)
+        self.assertIn("MODIFY COLUMN inventory_status VARCHAR(20) NOT NULL DEFAULT 'IN_STOCK'",
+                      rollback_text(INSPECTION))
+        self.assertIn("UNIQUE KEY uq_management_review_lifecycle_line (lifecycle_line_id)", text)
+        self.assertFalse(sql.create_table_columns(text))                     # no new table
+        self.assertEqual(MigrationContentTests().old_gold_codes(text), {"RETURNED_ITEM_TO_OLD_GOLD": "IN"})
+        rollback = rollback_text(INSPECTION)
+        for reason in ("inspection_reviews_exist", "converted_items_exist", "new_codes_in_use"):
+            self.assertIn(f"ROLLBACK_021_REFUSED_{reason}", rollback)
 
     def test_020_adds_only_the_replacement_source_objects(self):
         text = forward_text(SOURCES)
@@ -188,6 +219,51 @@ class MigrationFileSafetyTests(unittest.TestCase):
         for reason in ("new_replacement_sources_used", "exchange_cases_exist", "new_codes_in_use"):
             self.assertIn(f"ROLLBACK_020_REFUSED_{reason}", rollback)
         self.assertIn("MODIFY COLUMN inventory_item_id BIGINT UNSIGNED NOT NULL", rollback)
+
+    def test_021_inspection_check_is_scoped_to_its_own_review_type(self):
+        """The exact 021 CHECK (plus 016's status / resolution CHECKs) evaluated on real rows."""
+        import sqlite3
+        checks = {**sql.checks(forward_text(WORKFLOW)), **sql.checks(forward_text(INSPECTION))}
+        db = sqlite3.connect(":memory:")
+        self.addCleanup(db.close)
+        db.execute("CREATE TABLE management_reviews (id INTEGER PRIMARY KEY, review_type TEXT, review_status TEXT, "
+                   "lifecycle_line_id INTEGER, resolved_at TEXT, resolution_code TEXT, "
+                   + ", ".join(f"CONSTRAINT {n} CHECK ({checks[n][1]})" for n in (
+                       "chk_management_review_type", "chk_management_review_status",
+                       "chk_management_review_resolution", "chk_management_review_inspection")) + ")")
+
+        def ok(review_type, status, line=None, resolved=None, code=None):
+            try:
+                with db:
+                    db.execute("INSERT INTO management_reviews (review_type, review_status, lifecycle_line_id, "
+                               "resolved_at, resolution_code) VALUES (?, ?, ?, ?, ?)",
+                               (review_type, status, line, resolved, code))
+                return True
+            except sqlite3.IntegrityError:
+                return False
+        at = "2026-09-29 10:00:00"
+        # Pre-021 review types keep their 016 lifecycle: open, resolved or dismissed, never a disposition code.
+        for review_type in ("MAKING_PRICE", "CASH_SETTLEMENT", "OLD_GOLD_DISCOUNT"):
+            with self.subTest(review_type=review_type):
+                self.assertTrue(ok(review_type, "OPEN"))
+                self.assertTrue(ok(review_type, "RESOLVED", resolved=at))
+                self.assertTrue(ok(review_type, "DISMISSED", resolved=at))
+                self.assertFalse(ok(review_type, "RESOLVED", resolved=at, code="RETURN_TO_STOCK"))
+                self.assertFalse(ok(review_type, "OPEN", line=1))
+        inspection = "RETURNED_ITEM_INSPECTION"
+        self.assertTrue(ok(inspection, "OPEN", line=1))
+        self.assertTrue(ok(inspection, "RESOLVED", line=2, resolved=at, code="RETURN_TO_STOCK"))
+        self.assertTrue(ok(inspection, "RESOLVED", line=3, resolved=at, code="CONVERT_TO_OLD_GOLD"))
+        self.assertFalse(ok(inspection, "RESOLVED", line=4, resolved=at))                    # NULL code
+        self.assertFalse(ok(inspection, "RESOLVED", line=4, resolved=at, code="OTHER"))      # unrelated code
+        self.assertFalse(ok(inspection, "OPEN", line=4, code="RETURN_TO_STOCK"))
+        self.assertFalse(ok(inspection, "DISMISSED", line=4, resolved=at))
+        self.assertFalse(ok(inspection, "OPEN"))                                             # no line
+
+    def test_021_leaves_reconciliation_cases_untouched(self):
+        """UNIDENTIFIED_SALE lives in inventory_reconciliation_cases: 021 never alters that table."""
+        self.assertNotIn("inventory_reconciliation_cases", forward_text(INSPECTION))
+        self.assertNotIn("inventory_reconciliation_cases", rollback_text(INSPECTION))
 
     def test_019_adds_the_exchange_objects_only(self):
         text = forward_text(LIFECYCLE)
@@ -271,7 +347,8 @@ class MigrationContentTests(unittest.TestCase):
                    LIFECYCLE: {"schema_migrations", "inventory_movement_types", "cash_movement_types",
                                "bank_movement_types", "customer_transaction_types", "permissions",
                                "role_permissions"},
-                   SOURCES: {"schema_migrations", "old_gold_movement_types"}}
+                   SOURCES: {"schema_migrations", "old_gold_movement_types"},
+                   INSPECTION: {"schema_migrations", "inventory_movement_types", "old_gold_movement_types"}}
         for name in FORWARD:
             for statement in sql.statements(forward_text(name)):
                 target = re.match(r"^INSERT INTO\s+(\w+)", statement.sql, re.I)

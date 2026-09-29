@@ -282,7 +282,8 @@ def exchange_summary(row):
                 "pure_grams": _grams(line["pure_weight_grams"]),
                 "making_per_gram": _money(line.get("making_per_gram")),
                 # How a replacement was added: SCAN / SEARCH / MANUAL / OLD_GOLD_STOCK (None for returned pieces).
-                "source": line.get("identification_method")}
+                "source": line.get("identification_method"),
+                "disposition": returned_disposition(line) if line["line_role"] == "RETURNED" else None}
     return {"lifecycle_id": row["lifecycle_id"], "code": exchange_code(row["lifecycle_id"]), "read_only": True,
             "source_invoice_id": row["source_invoice_id"], "source_invoice_number": row["source_invoice_number"],
             "occurred_at": row["occurred_at"].isoformat(sep=" "), "actor": row.get("performed_by_name") or "",
@@ -305,6 +306,38 @@ def exchange_summary(row):
                           "amount": _money(p["amount"]), "account_name": p.get("bank_account_name")}
                          for p in row["payments"]],
             "returned_pending_text": RETURNED_PENDING_TEXT, "notes": row.get("notes") or ""}
+
+
+INSPECTION_PENDING_TEXT = "القطعة المرتجعة بانتظار مراجعة المدير"
+RESTOCKED_TEXT = "أعيدت القطعة إلى المخزون بنفس الباركود"
+CONVERTED_TEXT = "تم تحويل القطعة المرتجعة إلى الكسر"
+
+
+def inspection_review(*, lifecycle_line_id, lifecycle_id, invoice_id, source_invoice_line_id, inventory_item_id,
+                      barcode, item_name, karat, weight):
+    """The RETURNED_ITEM_INSPECTION review of one returned piece (exchange finalize and the backfill)."""
+    code = exchange_code(lifecycle_id)
+    return {"lifecycle_line_id": lifecycle_line_id, "invoice_id": invoice_id,
+            "summary": f"فحص قطعة مرتجعة — استبدال {code}" + (f" — الباركود المسجل {barcode}" if barcode else ""),
+            "details": {"lifecycle_id": str(lifecycle_id), "exchange_code": code,
+                        "lifecycle_line_id": str(lifecycle_line_id),
+                        "source_invoice_line_id": None if source_invoice_line_id is None else str(source_invoice_line_id),
+                        "inventory_item_id": str(inventory_item_id), "stored_barcode": barcode,
+                        "item_name": item_name, "karat": karat, "weight_grams": _money(weight)}}
+
+
+def returned_disposition(line):
+    """What happened to one returned piece after the exchange (History), from its inspection review."""
+    barcode = line.get("stored_barcode") or line.get("barcode_snapshot")
+    status, resolution = line.get("inspection_status"), line.get("inspection_resolution")
+    if status is None:
+        return {"code": "PENDING", "text": RETURNED_PENDING_TEXT, "barcode": barcode, "by": "", "at": None}
+    if status == "OPEN":
+        return {"code": "PENDING", "text": INSPECTION_PENDING_TEXT, "barcode": barcode, "by": "", "at": None}
+    at = line.get("inspection_resolved_at")
+    return {"code": resolution, "text": RESTOCKED_TEXT if resolution == "RETURN_TO_STOCK" else CONVERTED_TEXT,
+            "barcode": barcode, "by": line.get("inspection_resolved_by") or "",
+            "at": None if at is None else at.isoformat(sep=" ")}
 
 
 def _making_problems(result):
@@ -859,7 +892,7 @@ class ExchangeService:
                 money_paid=paid, account_signed=account, price_snapshot=snapshot, details=details, notes=notes,
                 performed_by_user_id=actor.user_id, performed_by_employee_id=actor.employee_id, occurred_at=now)
             code = exchange_code(lifecycle_id)
-            number, case_ids = 0, []
+            number, case_ids, returned_line_ids = 0, [], {}
             for role, pieces in (("RETURNED", returned), ("REPLACEMENT", replacements)):
                 for piece in pieces:
                     number += 1
@@ -875,6 +908,8 @@ class ExchangeService:
                             employee_id=actor.employee_id, notes=piece.item_name)
                     line_id = lifecycle.insert_line(lifecycle_id=lifecycle_id, line_role=role, line_number=number,
                                                     line=piece, old_gold_movement_id=movement_id)
+                    if role == "RETURNED":
+                        returned_line_ids[piece.inventory_item_id] = line_id
                     if piece.identified_by == MANUAL:
                         # F5 parity: the same UNIDENTIFIED_SALE reconciliation case (manager review) as Billing.
                         from services.invoice_service import REASONS
@@ -884,6 +919,7 @@ class ExchangeService:
                             weight_grams=piece.weight, size=piece.size, reason_code=piece.reason_code,
                             reason=REASONS[piece.reason_code], notes=piece.notes, created_by_user_id=actor.user_id,
                             salesperson_employee_id=actor.employee_id, sold_at=now))
+            review_ids = []
             for piece in returned:
                 lifecycle.mark_item_returned_pending(inventory_item_id=piece.inventory_item_id,
                                                      updated_by_user_id=actor.user_id)
@@ -891,6 +927,15 @@ class ExchangeService:
                     item=items[piece.inventory_item_id], movement_code="EXCHANGE_RETURN_IN", from_status="SOLD",
                     to_status="RETURNED_PENDING", lifecycle_id=lifecycle_id, performed_by_user_id=actor.user_id,
                     performed_by_employee_id=actor.employee_id)
+                # Exactly one manager inspection per returned piece (UNIQUE on the lifecycle line).
+                review_ids.append(lifecycle.open_returned_item_inspection(
+                    **inspection_review(lifecycle_line_id=returned_line_ids[piece.inventory_item_id],
+                                        lifecycle_id=lifecycle_id, invoice_id=invoice["invoice_id"],
+                                        source_invoice_line_id=piece.source_line_id,
+                                        inventory_item_id=piece.inventory_item_id,
+                                        barcode=items[piece.inventory_item_id].get("barcode_value") or piece.barcode,
+                                        item_name=piece.item_name, karat=piece.karat, weight=piece.weight),
+                    created_by_user_id=actor.user_id))
             for piece in replacements:
                 if piece.described:
                     continue                  # no inventory piece: F5 has its case, F7 its old-gold movement
@@ -929,7 +974,7 @@ class ExchangeService:
                     details={"lifecycle_id": lifecycle_id, "exchange_code": code, "lines": review},
                     created_by_user_id=actor.user_id)
             event = {"lifecycle_id": lifecycle_id, "exchange_code": code, "signed_amount": result.signed_amount,
-                     "unidentified_case_ids": case_ids,
+                     "unidentified_case_ids": case_ids, "inspection_review_ids": review_ids,
                      "pure_delta_grams": result.pure_delta, "valued_delta_grams": result.valued_delta,
                      "valuation_basis": result.valuation_basis, "direction": result.direction}
             invoices.insert_event(invoice_id=invoice["invoice_id"], event_type="EXCHANGED",

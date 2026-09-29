@@ -648,7 +648,8 @@ Item {
                                       color: theme.textSecondary; font.pixelSize: theme.fontTableHeader }
                                 Txt { visible: value.length > 0; value: exchangeBlock.modelData.accountText
                                       color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
-                                Txt { value: exchangeBlock.modelData.pendingText; color: theme.amber
+                                Txt { objectName: "historyExchangeDisposition_" + exchangeBlock.index
+                                      value: exchangeBlock.modelData.pendingText; color: theme.amber
                                       font.pixelSize: theme.fontTableHeader }
                             }
                         }
