@@ -12,7 +12,7 @@ from repositories.invoice_lifecycle_repository import exchange_code
 
 
 REVIEW_TYPES = ("INVENTORY_MATCH", "MAKING_PRICE", "CASH_SETTLEMENT", "OLD_GOLD_DISCOUNT",
-                "RETURNED_ITEM_INSPECTION")
+                "RETURNED_ITEM_INSPECTION", "RETURN_APPROVAL")
 INSPECTION = "RETURNED_ITEM_INSPECTION"
 REFERENCE_TYPE = "MANAGEMENT_REVIEW"
 
@@ -50,29 +50,44 @@ class ManagementReviewRepository(BaseRepository):
                 (SELECT COUNT(*) FROM management_reviews
                   WHERE review_type = 'OLD_GOLD_DISCOUNT' AND review_status = 'OPEN') AS old_gold_discount,
                 (SELECT COUNT(*) FROM management_reviews
-                  WHERE review_type = 'RETURNED_ITEM_INSPECTION' AND review_status = 'OPEN') AS inspection
+                  WHERE review_type = 'RETURNED_ITEM_INSPECTION' AND review_status = 'OPEN') AS inspection,
+                (SELECT COUNT(*) FROM management_reviews
+                  WHERE review_type = 'RETURN_APPROVAL' AND review_status = 'OPEN') AS return_approval
             """)
         return {"INVENTORY_MATCH": int(row["inventory_match"]), "MAKING_PRICE": int(row["making_price"]),
                 "CASH_SETTLEMENT": int(row["cash_settlement"]),
                 "OLD_GOLD_DISCOUNT": int(row["old_gold_discount"]),
-                INSPECTION: int(row["inspection"])}
+                INSPECTION: int(row["inspection"]), "RETURN_APPROVAL": int(row["return_approval"])}
+
+    def open_return_approvals(self):
+        from repositories.invoice_return_repository import InvoiceReturnRepository
+        return InvoiceReturnRepository(self.connection).open_approvals()
 
     # ------------------------------------------------------------ returned-item inspection (021)
 
+    # An inspection comes from an Exchange line (021) or a Return line (022): the same review, one source.
     _INSPECTION_SELECT = f"""
         SELECT r.id AS review_id, r.review_status, r.resolution_code, r.resolved_at, r.created_at,
                r.invoice_id, i.invoice_number, r.lifecycle_line_id, l.lifecycle_transaction_id AS lifecycle_id,
-               t.occurred_at AS exchanged_at, l.source_invoice_line_id, l.inventory_item_id,
-               l.barcode_snapshot, l.item_name_snapshot, l.karat_id, l.karat_value, l.weight_grams,
+               r.return_line_id, rl.return_id,
+               COALESCE(t.occurred_at, rt.finalized_at) AS exchanged_at,
+               COALESCE(l.source_invoice_line_id, rl.source_invoice_line_id) AS source_invoice_line_id,
+               ii.id AS inventory_item_id,
+               COALESCE(l.barcode_snapshot, rl.barcode_snapshot) AS barcode_snapshot,
+               COALESCE(l.item_name_snapshot, rl.item_name_snapshot) AS item_name_snapshot,
+               COALESCE(l.karat_id, rl.karat_id) AS karat_id, COALESCE(l.karat_value, rl.karat_value) AS karat_value,
+               COALESCE(l.weight_grams, rl.weight_grams) AS weight_grams,
                ii.inventory_status, ii.weight_grams AS item_weight_grams, ii.size, ii.notes AS item_notes,
                ii.stock_classification, it.name AS item_type_name, f.name AS factory_name,
                cat.name AS category_name, s.customer_name_snapshot,
                cu.display_name AS created_by_name, ru.display_name AS resolved_by_name,
                {_STORED_BARCODE} AS stored_barcode
         FROM management_reviews r
-        JOIN invoice_lifecycle_lines l ON l.id = r.lifecycle_line_id
-        JOIN invoice_lifecycle_transactions t ON t.id = l.lifecycle_transaction_id
-        JOIN inventory_items ii ON ii.id = l.inventory_item_id
+        LEFT JOIN invoice_lifecycle_lines l ON l.id = r.lifecycle_line_id
+        LEFT JOIN invoice_lifecycle_transactions t ON t.id = l.lifecycle_transaction_id
+        LEFT JOIN invoice_return_lines rl ON rl.id = r.return_line_id
+        LEFT JOIN invoice_returns rt ON rt.id = rl.return_id
+        JOIN inventory_items ii ON ii.id = COALESCE(l.inventory_item_id, rl.inventory_item_id)
         LEFT JOIN invoices i ON i.id = r.invoice_id
         LEFT JOIN item_types it ON it.id = ii.item_type_id
         LEFT JOIN factories f ON f.id = ii.factory_id
@@ -86,7 +101,14 @@ class ManagementReviewRepository(BaseRepository):
     def _inspection(self, row):
         row = _stringify(row)
         if row is not None:
-            row["exchange_code"] = exchange_code(row["lifecycle_id"])
+            from repositories.invoice_return_repository import return_code
+            if row.get("lifecycle_id"):
+                row["source"], row["source_code"] = "EXCHANGE", exchange_code(row["lifecycle_id"])
+                row["source_label"] = f"استبدال {row['source_code']}"
+            else:
+                row["source"], row["source_code"] = "RETURN", return_code(row["return_id"])
+                row["source_label"] = f"مرتجع {row['source_code']}"
+            row["exchange_code"] = row["source_code"]           # the reference code (kept name)
             # Authoritative stored barcode; the exchange line's snapshot only if the piece has no barcode row.
             row["stored_barcode"] = row.get("stored_barcode") or row.get("barcode_snapshot")
         return row
@@ -96,11 +118,12 @@ class ManagementReviewRepository(BaseRepository):
             self._INSPECTION_SELECT + " AND r.review_status = 'OPEN' ORDER BY r.id DESC LIMIT %s", (int(limit),))]
 
     def lock_inspection(self, review_id):
-        """The review and its lifecycle line, locked (FOR UPDATE), then read in full."""
+        """The review and its source line (Exchange or Return), locked (FOR UPDATE), then read in full."""
         locked = self._fetch_one(
             """
             SELECT r.id FROM management_reviews r
-            JOIN invoice_lifecycle_lines l ON l.id = r.lifecycle_line_id
+            LEFT JOIN invoice_lifecycle_lines l ON l.id = r.lifecycle_line_id
+            LEFT JOIN invoice_return_lines rl ON rl.id = r.return_line_id
             WHERE r.id = %s AND r.review_type = 'RETURNED_ITEM_INSPECTION'
             FOR UPDATE
             """, (int(review_id),))

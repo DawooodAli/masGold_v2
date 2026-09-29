@@ -85,8 +85,23 @@ class ManagementReviewService:
                     "MAKING_PRICE": repository.open_reviews("MAKING_PRICE"),
                     "CASH_SETTLEMENT": repository.open_reviews("CASH_SETTLEMENT"),
                     "OLD_GOLD_DISCOUNT": repository.open_reviews("OLD_GOLD_DISCOUNT"),
-                    INSPECTION: repository.open_inspections()}
+                    INSPECTION: repository.open_inspections(),
+                    "RETURN_APPROVAL": repository.open_return_approvals()}
         return self._read(read)
+
+    # ------------------------------------------------------------ Return approval (after 72 hours)
+    def _return_service(self):
+        if getattr(self, "_returns_service", None) is None:
+            from services.return_service import ReturnService
+            self._returns_service = ReturnService(self._session, authorization=self._authorization,
+                                                  transaction_factory=self._transaction)
+        return self._returns_service
+
+    def approve_return(self, review_id, *, _expected_actor=None):
+        return self._return_service().decide_approval(review_id, True, _expected_actor=_expected_actor)
+
+    def reject_return(self, review_id, *, _expected_actor=None):
+        return self._return_service().decide_approval(review_id, False, _expected_actor=_expected_actor)
 
     # ------------------------------------------------------------ returned-item inspection
 
@@ -120,11 +135,12 @@ class ManagementReviewService:
             if item is None or item["inventory_status"] != "RETURNED_PENDING":
                 raise InspectionError("ITEM_NOT_PENDING", "القطعة ليست بانتظار الفحص.")
             now, code = repository.db_now(), review["exchange_code"]
+            source = review.get("source_label") or f"استبدال {code}"          # استبدال EX… / مرتجع RT…
             repository.set_item_status(inventory_item_id=item["inventory_item_id"], from_status="RETURNED_PENDING",
                                        to_status=to_status, updated_by_user_id=actor.user_id)
             movement_id = repository.add_inventory_movement(
                 item=item, movement_code=movement_code, from_status="RETURNED_PENDING", to_status=to_status,
-                review_id=review["review_id"], reference_code=code, reason=f"{reason} — استبدال {code}",
+                review_id=review["review_id"], reference_code=code, reason=f"{reason} — {source}",
                 performed_by_user_id=actor.user_id, performed_by_employee_id=actor.employee_id)
             old_gold_id = None
             if outcome == CONVERT_TO_OLD_GOLD:
@@ -140,6 +156,7 @@ class ManagementReviewService:
                 raise InspectionError("REVIEW_ALREADY_RESOLVED", "تم اتخاذ قرار في هذه القطعة من قبل.")
             details = {"review_id": review["review_id"], "resolution": outcome,
                        "lifecycle_line_id": review["lifecycle_line_id"], "exchange_code": code,
+                       "return_line_id": review.get("return_line_id"), "source_label": source,
                        "invoice_id": review["invoice_id"], "inventory_item_id": item["inventory_item_id"],
                        "stored_barcode": review["stored_barcode"], "karat": review["karat_value"],
                        "weight_grams": str(item["weight_grams"]), "inventory_movement_id": movement_id,
@@ -180,7 +197,8 @@ class ManagementReviewService:
                 "INSERT INTO audit_log (user_id, event_type, entity_type, entity_id, entity_reference, "
                 "description, metadata_json, occurred_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                 (actor.user_id, f"RETURNED_ITEM_{outcome}", "MANAGEMENT_REVIEW", int(review_id), code,
-                 _OUTCOMES[outcome][2] + f" — استبدال {code}", json.dumps(details, ensure_ascii=False, default=str),
+                 _OUTCOMES[outcome][2] + " — " + (details.get("source_label") or f"استبدال {code}"),
+                 json.dumps(details, ensure_ascii=False, default=str),
                  now))
         finally:
             cursor.close()

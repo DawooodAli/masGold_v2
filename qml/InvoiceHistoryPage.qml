@@ -334,6 +334,11 @@ Item {
                   text: "استبدال"
                   visible: !!detailRoot.d.canExchange && typeof exchangeVM !== "undefined"
                   onClicked: exchangeVM.open(detailRoot.d.invoiceId) }
+            // مرتجع: its own permission; the service re-checks every rule (windows, weights, approval).
+            Btn { objectName: "historyReturn"
+                  text: "مرتجع"
+                  visible: !!detailRoot.d.canReturn && typeof returnVM !== "undefined"
+                  onClicked: returnVM.open(detailRoot.d.invoiceId) }
             Btn { objectName: "historyReprint"; primary: true
                   text: historyPage.vm && historyPage.vm.reprintBusy ? "جاري الطباعة..." : "إعادة طباعة"
                   visible: !!detailRoot.d.canReprint
@@ -651,6 +656,64 @@ Item {
                                 Txt { objectName: "historyExchangeDisposition_" + exchangeBlock.index
                                       value: exchangeBlock.modelData.pendingText; color: theme.amber
                                       font.pixelSize: theme.fontTableHeader }
+                            }
+                        }
+                    }
+                }
+
+                // ============ 4b. Returns of this invoice (the invoice above stays exactly as finalized)
+                Section {
+                    objectName: "historyReturnsSection"
+                    visible: !!historyPage.vm && historyPage.vm.returns.length > 0
+                    title: "المرتجعات"
+                    accent: theme.accountPayable
+                    Repeater {
+                        model: historyPage.vm ? historyPage.vm.returns : []
+                        delegate: ColumnLayout {
+                            id: returnBlock
+                            required property var modelData
+                            required property int index
+                            objectName: "historyReturn_" + index
+                            Layout.fillWidth: true
+                            spacing: 1
+                            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: theme.border
+                                        visible: returnBlock.index > 0 }
+                            RowLayout {
+                                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 10
+                                Txt { value: returnBlock.modelData.code; color: theme.gold; font.bold: true
+                                      font.pixelSize: theme.fontBodyStrong }
+                                Txt { objectName: "historyReturnHeadline_" + returnBlock.index
+                                      value: returnBlock.modelData.headline; color: theme.textPrimary; font.bold: true }
+                                Txt { value: returnBlock.modelData.time + "  •  " + returnBlock.modelData.actor
+                                      color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+                                Item { Layout.fillWidth: true }
+                                Txt { value: "للعميل"; font.bold: true; color: theme.accountPayable }
+                                Txt { objectName: "historyReturnTotal_" + returnBlock.index
+                                      value: returnBlock.modelData.total; font.bold: true; font.pixelSize: theme.fontSection
+                                      color: theme.accountPayable }
+                            }
+                            Repeater {
+                                model: returnBlock.modelData.pieces
+                                delegate: Txt { required property var modelData
+                                                Layout.fillWidth: true
+                                                value: "مرتجع: " + modelData.item + " عيار " + modelData.karat + " — " + modelData.weight
+                                                       + (modelData.partial ? " من " + modelData.sold : "")
+                                                       + "  •  " + modelData.price + "  •  ذهب " + modelData.gold
+                                                       + "  •  مصنعية " + modelData.making
+                                                color: theme.accountPayable }
+                            }
+                            Flow {
+                                Layout.fillWidth: true
+                                layoutDirection: Qt.RightToLeft
+                                spacing: 14
+                                Txt { objectName: "historyReturnMoney_" + returnBlock.index; visible: value.length > 0
+                                      value: returnBlock.modelData.money; color: theme.textSecondary
+                                      font.pixelSize: theme.fontTableHeader }
+                                Txt { visible: value.length > 0; value: returnBlock.modelData.accountText
+                                      color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+                                Txt { objectName: "historyReturnDisposition_" + returnBlock.index
+                                      visible: value.length > 0; value: returnBlock.modelData.dispositionText
+                                      color: theme.amber; font.pixelSize: theme.fontTableHeader }
                             }
                         }
                     }

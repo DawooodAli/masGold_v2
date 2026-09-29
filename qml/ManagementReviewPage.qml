@@ -217,7 +217,7 @@ Item {
                 Layout.fillWidth: true
                 layoutDirection: Qt.RightToLeft
                 spacing: 10
-                Label { text: "استبدال " + (card.review.exchange || ""); color: theme.gold; font.family: "Cairo"
+                Label { text: card.review.sourceTitle || ""; color: theme.gold; font.family: "Cairo"
                         font.pixelSize: 13; font.bold: true }
                 Label { text: "فاتورة " + (card.review.invoice || ""); color: theme.textPrimary; font.family: "Cairo"
                         font.pixelSize: 12 }
@@ -559,6 +559,87 @@ Item {
                         font.pixelSize: 12
                         horizontalAlignment: Text.AlignRight
                         wrapMode: Text.WordWrap
+                    }
+                }
+                // موافقة مرتجع: a Return after 72 hours (still within day 15). The approval binds to the
+                // exact selected goods / grams; no reason is required. It never extends the deadline.
+                Section {
+                    objectName: "reviewReturnApprovalSection"
+                    title: "موافقة مرتجع بعد 72 ساعة"
+                    count: reviewsVM.returnApprovals.length
+                    Repeater {
+                        model: reviewsVM.returnApprovals
+                        Rectangle {
+                            id: approvalCard
+                            required property var modelData
+                            required property int index
+                            objectName: "returnApproval_" + index
+                            Layout.fillWidth: true
+                            implicitHeight: approvalColumn.implicitHeight + 12
+                            color: theme.bgSecondary
+                            radius: 4
+                            Rectangle { anchors.right: parent.right; width: 3; height: parent.height; color: theme.amber; radius: 2 }
+                            ColumnLayout {
+                                id: approvalColumn
+                                anchors.fill: parent
+                                anchors.leftMargin: 10
+                                anchors.rightMargin: 12
+                                anchors.topMargin: 6
+                                anchors.bottomMargin: 6
+                                spacing: 2
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    layoutDirection: Qt.RightToLeft
+                                    spacing: 10
+                                    Label { text: "مرتجع " + approvalCard.modelData.code; color: theme.gold; font.family: "Cairo"
+                                            font.pixelSize: 13; font.bold: true }
+                                    Label { text: "فاتورة " + approvalCard.modelData.invoice + "  (" + approvalCard.modelData.invoiceDate + ")"
+                                            color: theme.textPrimary; font.family: "Cairo"; font.pixelSize: 12 }
+                                    Label { text: approvalCard.modelData.customer; color: theme.textSecondary; font.family: "Cairo"
+                                            font.pixelSize: 12 }
+                                    Item { Layout.fillWidth: true }
+                                    Label { text: approvalCard.modelData.age + "  •  " + approvalCard.modelData.deadline
+                                            color: theme.amber; font.family: "Cairo"; font.pixelSize: 11 }
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: approvalCard.modelData.lines
+                                    color: theme.textSecondary
+                                    font.family: "Cairo"
+                                    font.pixelSize: 12
+                                    horizontalAlignment: Text.AlignRight
+                                    wrapMode: Text.WordWrap
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    layoutDirection: Qt.RightToLeft
+                                    spacing: 10
+                                    Label { text: approvalCard.modelData.estimate; color: theme.priceBuy; font.family: "Cairo"
+                                            font.pixelSize: 12; font.bold: true }
+                                    Label { text: approvalCard.modelData.making; color: theme.textMuted; font.family: "Cairo"
+                                            font.pixelSize: 12 }
+                                    Label { visible: text.length > 0; text: approvalCard.modelData.notes ? "ملاحظة: " + approvalCard.modelData.notes : ""
+                                            color: theme.textMuted; font.family: "Cairo"; font.pixelSize: 11 }
+                                    Item { Layout.fillWidth: true }
+                                    ActionButton {
+                                        objectName: "returnApprove_" + approvalCard.index
+                                        visible: reviewsVM.canResolveInspections
+                                        enabled: !reviewsVM.inspectionBusy
+                                        text: "موافقة"
+                                        accent: theme.priceBuy
+                                        onClicked: reviewsVM.approveReturn(approvalCard.modelData.reviewId)
+                                    }
+                                    ActionButton {
+                                        objectName: "returnReject_" + approvalCard.index
+                                        visible: reviewsVM.canResolveInspections
+                                        enabled: !reviewsVM.inspectionBusy
+                                        text: "رفض"
+                                        accent: theme.red
+                                        onClicked: reviewsVM.rejectReturn(approvalCard.modelData.reviewId)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 // فحص القطع المرتجعة: one card per returned piece; the manager decides (no scan needed:

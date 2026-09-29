@@ -27,6 +27,7 @@ LEGACY_LABEL = "فاتورة قديمة — بيانات تاريخية جزئي
 VIEW_PERMISSION, REPRINT_PERMISSION, MANAGER_PERMISSION = "INVOICE_VIEW", "INVOICE_REPRINT", "MANAGEMENT_REVIEW"
 # Exchange V1: a separate permission; viewing history never grants it.
 EXCHANGE_PERMISSION, EXCHANGED_EVENT = "INVOICE_EXCHANGE", "EXCHANGED"
+RETURN_PERMISSION, RETURNED_EVENT = "INVOICE_RETURN", "RETURNED"
 ZERO = Decimal("0.00")
 
 
@@ -151,6 +152,7 @@ class InvoiceHistoryService:
             invoice["payment_accounts"] = invoices.get_payment_accounts(invoice_id)
             invoice["account_entries"] = invoices.invoice_account_allocation(invoice_id, invoice.get("customer_id"))
             invoice["exchanges"] = self._exchanges(invoices, invoice_id, invoice.get("events", []))
+            invoice["returns"] = self._returns(invoices, invoice_id, invoice.get("events", []))
             return invoice
         invoice = self._read(read)
         if invoice is None:
@@ -215,6 +217,11 @@ class InvoiceHistoryService:
                              and invoice["invoice_status"] == "FINALIZED"
                              and invoice["invoice_type"] in ("SELL", "MIXED")
                              and self._has_unexchanged_piece(sale_lines, invoice.get("exchanges", []))),
+            # Returns of this invoice (finalized ones; the invoice itself stays exactly as finalized).
+            "returns": invoice.get("returns", []),
+            "can_return": (RETURN_PERMISSION in actor.permissions and not legacy
+                           and invoice["invoice_status"] == "FINALIZED"
+                           and invoice["invoice_type"] in ("SELL", "MIXED") and bool(sale_lines)),
             "can_see_manager_details": manager,
         }
 
@@ -235,6 +242,15 @@ class InvoiceHistoryService:
         lifecycle = (self._lifecycle or InvoiceLifecycleRepository)(invoices.connection)
         return [exchange_summary(lifecycle.get_transaction(row["lifecycle_id"]))
                 for row in lifecycle.for_invoice(invoice_id)]
+
+    def _returns(self, invoices, invoice_id, events):
+        """Only read when the invoice has a finalized Return (a RETURNED event): one query set each."""
+        if not any(e["event_type"] == RETURNED_EVENT for e in events):
+            return []
+        from repositories.invoice_return_repository import InvoiceReturnRepository
+        from services.return_service import return_summary
+        return [return_summary(row) for row in InvoiceReturnRepository(invoices.connection).for_invoice(invoice_id)
+                if row["return_status"] == "FINALIZED"]
 
     @staticmethod
     def _details(event):
@@ -285,6 +301,10 @@ class InvoiceHistoryService:
                 saved = cls._details(e)
                 amount = _decimal(saved.get("signed_amount"))
                 linked = None if saved.get("lifecycle_id") in (None, "") else str(saved["lifecycle_id"])
+            elif e["event_type"] == RETURNED_EVENT:
+                saved = cls._details(e)                   # money the shop paid back: negative for the shop
+                amount = None if saved.get("total_amount") in (None, "") else -_decimal(saved["total_amount"])
+                linked = None if saved.get("return_id") in (None, "") else str(saved["return_id"])
             timeline.append(LifecycleEvent(event_id=str(e["event_id"]), event_type=e["event_type"],
                                            occurred_at=e["occurred_at"], actor=e.get("performed_by_name") or "",
                                            amount=amount, linked_record_id=linked))

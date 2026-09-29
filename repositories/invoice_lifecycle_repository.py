@@ -45,14 +45,18 @@ class InvoiceLifecycleRepository(BaseRepository):
             SELECT l.id AS line_id, l.line_number, l.line_type, l.inventory_item_id, l.karat_id,
                    k.karat_value, l.weight_grams, l.item_name_snapshot, l.barcode_snapshot,
                    l.making_per_gram, l.making_total, l.gross_total, l.line_total,
-                   c.lifecycle_transaction_id AS consumed_by
+                   c.lifecycle_transaction_id AS consumed_by,
+                   -- Return V1 (022): a piece a finalized Return took is no longer exchangeable either.
+                   (SELECT MIN(rl.return_id) FROM invoice_return_lines rl
+                     WHERE rl.source_invoice_line_id = l.id) AS returned_by
             FROM invoice_lines l
             JOIN karats k ON k.id = l.karat_id
             LEFT JOIN invoice_lifecycle_lines c ON c.source_invoice_line_id = l.id
             WHERE l.invoice_id = %s
             ORDER BY l.line_number
             """, (_id(invoice_id),))
-        return [dict(_ids(row), consumed_by=None if row["consumed_by"] is None else str(row["consumed_by"]))
+        return [dict(_ids(row), consumed_by=None if row["consumed_by"] is None else str(row["consumed_by"]),
+                     returned_by=None if row.get("returned_by") is None else str(row["returned_by"]))
                 for row in rows]
 
     def for_invoice(self, invoice_id):

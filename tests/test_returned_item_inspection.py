@@ -61,6 +61,9 @@ class ReviewRepo:
     def open_inventory_cases(self):
         return []
 
+    def open_return_approvals(self):
+        return []
+
     def open_inspections(self):
         return [self._row(r) for r in self.store.inspections if r["status"] == "OPEN"]
 

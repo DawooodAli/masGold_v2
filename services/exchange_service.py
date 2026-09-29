@@ -75,6 +75,7 @@ LINE_REFUSALS = {
     "OTHER": "هذا البند لا يُستبدل.",
 }
 ALREADY_EXCHANGED_TEXT = "تم استبدال هذه القطعة من قبل."
+ALREADY_RETURNED_TEXT = "تم رد هذه القطعة (مرتجع)."
 
 
 class ExchangeError(ValueError):
@@ -418,6 +419,8 @@ class ExchangeService:
             return LINE_REFUSALS.get(line["line_type"], LINE_REFUSALS["OTHER"])
         if line.get("consumed_by"):
             return ALREADY_EXCHANGED_TEXT
+        if line.get("returned_by"):
+            return ALREADY_RETURNED_TEXT                   # Return V1: one after-sale use per piece
         return None
 
     def _pieces(self, draft, lines, items, invoices=None, karats=None):
@@ -439,7 +442,8 @@ class ExchangeService:
                 raise ExchangeError("LINE_NOT_IN_INVOICE", "البند المختار ليس من هذه الفاتورة.")
             reason = self._line_status(line)
             if reason:
-                raise ExchangeError("ALREADY_EXCHANGED" if reason == ALREADY_EXCHANGED_TEXT else "LINE_NOT_EXCHANGEABLE",
+                raise ExchangeError({ALREADY_EXCHANGED_TEXT: "ALREADY_EXCHANGED",
+                                     ALREADY_RETURNED_TEXT: "ALREADY_RETURNED"}.get(reason, "LINE_NOT_EXCHANGEABLE"),
                                     reason)
             item = items.get(str(line["inventory_item_id"]))
             if item is None or item["inventory_status"] != "SOLD":

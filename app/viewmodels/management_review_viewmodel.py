@@ -9,7 +9,7 @@ from app.workers.invoice_worker import InvoiceWorker
 
 TYPE_TEXT = {"INVENTORY_MATCH": "مراجعة مخزون", "MAKING_PRICE": "مراجعة تسعير / مصنعية",
              "CASH_SETTLEMENT": "مراجعة تسوية نقدية", "OLD_GOLD_DISCOUNT": "تعديل نسبة خصم الكسر",
-             "RETURNED_ITEM_INSPECTION": "فحص قطع مرتجعة"}
+             "RETURNED_ITEM_INSPECTION": "فحص قطع مرتجعة", "RETURN_APPROVAL": "موافقة مرتجع"}
 STATUS_TEXT = {"RETURNED_PENDING": "بانتظار الفحص", "IN_STOCK": "في المخزون", "SOLD": "مباعة",
                "CONVERTED_TO_OLD_GOLD": "محولة إلى الكسر"}
 RESOLVED_TEXT = {"RETURN_TO_STOCK": "أعيدت القطعة إلى المخزون بنفس الباركود المسجل: {barcode}",
@@ -29,6 +29,15 @@ def _num(value, places=2):
     if value in (None, ""):
         return "—"
     return f"{Decimal(str(value)):,.{places}f}"
+
+
+def _age_text(days):
+    """«بعد 4 أيام من الفاتورة» (Arabic count agreement for the Return's age)."""
+    if days is None:
+        return ""
+    days = int(days)
+    word = "يوم" if days in (0, 1) else "يومين" if days == 2 else "أيام" if 3 <= days <= 10 else "يوماً"
+    return f"بعد {days} {word} من الفاتورة" if days != 2 else "بعد يومين من الفاتورة"
 
 
 def _signed_money(value):
@@ -266,6 +275,8 @@ class ManagementReviewViewModel(QObject):
             barcode = r.get("stored_barcode") or ""
             rows.append({
                 "reviewId": str(r["review_id"]), "exchange": r.get("exchange_code") or "",
+                # «استبدال EX000014» or «مرتجع RT000001»: the real source of the returned piece.
+                "sourceTitle": r.get("source_label") or ("استبدال " + (r.get("exchange_code") or "")),
                 "invoice": r.get("invoice_number") or "", "customer": r.get("customer_name_snapshot") or "بدون عميل",
                 "time": _time(r.get("exchanged_at") or r.get("created_at")),
                 "item": r.get("item_type_name") or r.get("item_name_snapshot") or "—",
@@ -277,6 +288,52 @@ class ManagementReviewViewModel(QObject):
                 "statusText": STATUS_TEXT.get(r.get("inventory_status"), r.get("inventory_status") or ""),
                 "busy": self._resolving == str(r["review_id"])})
         return rows
+
+    # ---- مرتجع بعد 72 ساعة: موافقة / رفض of the exact selected goods (no reason required)
+    @Property("QVariantList", notify=changed)
+    def returnApprovals(self):
+        rows = []
+        for r in self._reviews.get("RETURN_APPROVAL", []):
+            d = r.get("details_json") or {}
+            lines = " • ".join(f"{l.get('item_name') or 'من الكسر'} عيار {l.get('karat')} — "
+                               f"{Decimal(str(l.get('weight_grams'))):.3f} جرام" for l in d.get("lines", []))
+            rows.append({"reviewId": str(r["review_id"]), "code": d.get("return_code") or "",
+                         "invoice": r.get("invoice_number") or "", "customer": r.get("customer_name_snapshot") or "بدون عميل",
+                         "invoiceDate": _time(r.get("source_finalized_at")),
+                         "age": _age_text(d.get("age_days")),
+                         "deadline": "آخر موعد: " + ltr(str(d.get("deadline_at") or "").replace("T", " ")[:16]),
+                         "lines": lines, "estimate": f"القيمة التقديرية {_num(r.get('gold_amount'))} ج",
+                         "making": "رد المصنعية: 0 ج", "notes": d.get("notes") or "",
+                         "by": r.get("created_by_name") or "", "time": _time(r.get("created_at")),
+                         "busy": self._resolving == str(r["review_id"])})
+        return rows
+
+    def _decide(self, review_id, approve):
+        if getattr(self, "_resolving", ""):
+            return
+        service = self._service_instance()
+        call = service.approve_return if approve else service.reject_return
+        self._resolving, self._inspection_message, self._inspection_error = str(review_id), "", ""
+        self._start("decide", lambda _expected_actor: call(str(review_id), _expected_actor=_expected_actor))
+        self.changed.emit()
+
+    @Slot(str)
+    def approveReturn(self, review_id):
+        self._decide(review_id, True)
+
+    @Slot(str)
+    def rejectReturn(self, review_id):
+        self._decide(review_id, False)
+
+    def _on_decide(self, result, error):
+        self._resolving = ""
+        if error:
+            self._inspection_message, self._inspection_error = "", error
+        else:
+            self._inspection_error = ""
+            self._inspection_message = (f"تمت الموافقة على المرتجع {result['code']}." if result["status"] == "APPROVED"
+                                        else f"تم رفض المرتجع {result['code']}.")
+        self.openReviews()
 
     @Property(bool, notify=changed)
     def canResolveInspections(self):

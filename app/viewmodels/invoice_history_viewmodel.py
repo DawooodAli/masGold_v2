@@ -22,7 +22,8 @@ KIND_TEXT = {"INVENTORY": "من المخزون", "MANUAL": "بيع يدوي (غ�
 IDENTIFIED_TEXT = {"SCAN": "بالباركود", "SEARCH": "بالبحث"}
 EVENT_TEXT = {"CREATED": "تم إنشاء الفاتورة", "FINALIZED": "تم حفظ الفاتورة نهائياً", "PRINTED": "طباعة",
               "REPRINTED": "إعادة طباعة", "PAYMENT_ADDED": "إضافة دفعة", "PAYMENT_CORRECTED": "تصحيح دفعة",
-              "VOIDED": "إلغاء", "MIGRATED": "ترحيل من النظام القديم", "EXCHANGED": "تم إجراء استبدال"}
+              "VOIDED": "إلغاء", "MIGRATED": "ترحيل من النظام القديم", "EXCHANGED": "تم إجراء استبدال",
+              "RETURNED": "تم إجراء مرتجع"}
 METHOD_TEXT = {"PHYSICAL_CASH": "نقدي", "MOBILE_WALLET": "محفظة", "INSTAPAY": "InstaPay", "BANK_TRANSFER": "تحويل بنكي"}
 DISCOUNT_TEXT = {"PERCENT": "%", "AMOUNT": "ج"}
 MAKING_STATUS_TEXT = {"WITHIN_RANGE": "داخل النطاق", "OUT_OF_RANGE": "خارج النطاق", "NOT_CONFIGURED": "النطاق غير محدد"}
@@ -432,6 +433,7 @@ class InvoiceHistoryViewModel(QObject):
             "notes": d.get("notes") or "",
             "canReprint": bool(d.get("can_reprint")),
             "canExchange": bool(d.get("can_exchange")),
+            "canReturn": bool(d.get("can_return")),
             "showManager": bool(d["can_see_manager_details"]),
         }
 
@@ -538,6 +540,57 @@ class InvoiceHistoryViewModel(QObject):
                 "pendingText": self._dispositions(x)})
         return rows
 
+    @Property("QVariantList", notify=changed)
+    def returns(self):
+        """This invoice's finalized Returns, inline beneath it (the invoice itself is never recomputed)."""
+        rows = []
+        for r in self._detail.get("returns", []) if self._detail else []:
+            if r["making_window_open"]:
+                headline = "مرتجع — تم رد الذهب والمصنعية"
+            else:
+                headline = "مرتجع — تم رد قيمة الذهب فقط"
+                if r.get("approval_status") == "APPROVED":
+                    days = r.get("age_days")
+                    headline = (f"مرتجع بعد {days} {'أيام' if days and 3 <= days <= 10 else 'يوماً'}"
+                                f" — تمت موافقة المدير" + (f" ({r['approval_by']})" if r.get("approval_by") else ""))
+            pieces, dispositions = [], []
+            for p in r["lines"]:
+                pieces.append({"item": p.get("item_name") or ("من الكسر" if p["line_type"] == "SELL_OLD_GOLD" else "—"),
+                               "karat": str(p["karat"]), "weight": grams(p["weight_grams"]),
+                               "partial": p["line_type"] == "SELL_OLD_GOLD" and p["weight_grams"] != p["source_weight_grams"],
+                               "sold": grams(p["source_weight_grams"]),
+                               "price": f"سعر شراء المحل عيار {p['karat']} {money(p['shop_buy_price_per_gram'])}",
+                               "gold": money(p["gold_amount"]), "making": money(p["making_refund"])})
+                dispositions.append(self._disposition_text(p["disposition"]))
+            legs = [f"{METHOD_TEXT.get(p['method_code'], p['method_code'])}"
+                    + (f" — {p['account_name']}" if p.get("account_name") else "") + f": {money(p['amount'])}"
+                    for p in r["payments"]]
+            account = Decimal(r["account_amount"])
+            rows.append({"code": r["code"], "time": datetime_text(datetime.fromisoformat(r["occurred_at"])),
+                         "actor": r["actor"] or "—", "status": r["status_text"], "headline": headline,
+                         "pieces": pieces, "gold": money(r["gold_amount"]), "making": money(r["making_refund"]),
+                         "total": money(r["total_amount"]),
+                         "money": (PAID_TEXT + ": " + " • ".join(legs)) if legs else "",
+                         "accountText": f"للعميل على حسابه {money(account)}" if account else "",
+                         "dispositionText": "  •  ".join(t for t in dispositions if t),
+                         "notes": r.get("notes") or ""})
+        return rows
+
+    @staticmethod
+    def _disposition_text(d):
+        if not d:
+            return ""
+        text = d["text"]
+        if d.get("code") == "PENDING" and d.get("barcode"):
+            text += f" — الباركود المسجل: {d['barcode']}"
+        elif d.get("code") not in ("PENDING", "OLD_GOLD"):
+            if d.get("code") == "RETURN_TO_STOCK" and d.get("barcode"):
+                text += f" ({d['barcode']})"
+            who = " • ".join(v for v in (d.get("by") or "",
+                                          datetime_text(datetime.fromisoformat(d["at"])) if d.get("at") else "") if v)
+            text += f" — {who}" if who else ""
+        return text
+
     @staticmethod
     def _dispositions(exchange):
         """What happened to each returned piece: waiting for the manager / back in stock / to old gold."""
@@ -605,6 +658,8 @@ class InvoiceHistoryViewModel(QObject):
             if event.amount == 0:
                 return "لا يوجد فرق"
             return f"{'على العميل' if event.amount > 0 else 'للعميل'} {money(abs(event.amount))}"
+        if event.event_type == "RETURNED":
+            return f"للعميل {money(abs(event.amount))}"
         return money(event.amount)
 
     @Property("QVariantList", notify=changed)
@@ -613,8 +668,9 @@ class InvoiceHistoryViewModel(QObject):
                  "time": datetime_text(e.occurred_at), "actor": e.actor or "—",
                  "amount": self._event_amount(e), "linked": e.linked_record_id or "",
                  "isExchange": e.event_type == "EXCHANGED" and bool(e.linked_record_id),
-                 "code": f"EX{int(e.linked_record_id):06d}" if e.event_type == "EXCHANGED"
-                 and str(e.linked_record_id or "").isdigit() else ""}
+                 "code": (f"EX{int(e.linked_record_id):06d}" if e.event_type == "EXCHANGED"
+                          else f"RT{int(e.linked_record_id):06d}" if e.event_type == "RETURNED" else "")
+                 if str(e.linked_record_id or "").isdigit() else ""}
                 for e in (self._detail.get("timeline", []) if self._detail else [])]
 
     @Slot(str)

@@ -77,6 +77,12 @@ def create_exchange_viewmodel(session):
     return ExchangeViewModel(session)
 
 
+def create_return_viewmodel(session):
+    """مرتجع (Return V1) workspace, opened from an invoice in History."""
+    from app.viewmodels.return_viewmodel import ReturnViewModel
+    return ReturnViewModel(session)
+
+
 def fit_to_work_area(window, platform=None):
     """Open the main window inside the Windows WORK AREA (screen minus taskbar), never under it.
 
@@ -112,7 +118,7 @@ class ApplicationController(QObject):
                  history_factory=create_invoice_history_viewmodel, review_factory=create_review_viewmodel,
                  printer_settings_factory=create_printer_settings_viewmodel,
                  balance_factory=create_balance_viewmodel, dashboard_factory=create_dashboard_viewmodel,
-                 exchange_factory=create_exchange_viewmodel):
+                 exchange_factory=create_exchange_viewmodel, return_factory=create_return_viewmodel):
         super().__init__(app)
         self.app = app
         self.qml_directory = qml_directory or Path(__file__).resolve().parent / "qml"
@@ -130,6 +136,7 @@ class ApplicationController(QObject):
         self._balance_factory = balance_factory
         self._dashboard_factory = dashboard_factory
         self._exchange_factory = exchange_factory
+        self._return_factory = return_factory
         self.operational_engine = None
         self.operational_viewmodels = {}
         self.login_engine = self._engine()
@@ -191,6 +198,19 @@ class ApplicationController(QObject):
                 history = self.operational_viewmodels.get("invoiceHistoryVM")
                 if hasattr(history, "refreshInvoice"):
                     exchange.finalized.connect(history.refreshInvoice)
+            self.operational_viewmodels.setdefault("returnVM", self._return_factory(self.session))
+            returned = self.operational_viewmodels["returnVM"]
+            if hasattr(returned, "finalized"):
+                # Real money, stock and old gold changed; a Return is never a sale (no dashboard refresh).
+                if hasattr(balances, "refresh"):
+                    returned.finalized.connect(balances.refresh)
+                if hasattr(reviews, "reloadAccounts"):
+                    returned.finalized.connect(reviews.reloadAccounts)
+                if hasattr(reviews, "refresh"):
+                    returned.finalized.connect(reviews.refresh)         # a new inspection review
+                history = self.operational_viewmodels.get("invoiceHistoryVM")
+                if hasattr(history, "refreshInvoice"):
+                    returned.finalized.connect(history.refreshInvoice)
             if hasattr(invoice_vm, "attach_price_source"):
                 invoice_vm.attach_price_source(self.gold_prices)
             # Barcode fields map physical scan codes (independent of the Windows keyboard layout).

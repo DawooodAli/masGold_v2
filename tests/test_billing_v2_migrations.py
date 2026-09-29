@@ -15,7 +15,9 @@ OPENING = "018_opening_balances.sql"
 LIFECYCLE = "019_invoice_lifecycle_exchange.sql"
 SOURCES = "020_exchange_replacement_sources.sql"
 INSPECTION = "021_returned_item_inspection.sql"
-FORWARD = (CONSOLIDATION, BILLING, PROVENANCE, WORKFLOW, ACCOUNTS, OPENING, LIFECYCLE, SOURCES, INSPECTION)
+RETURNS = "022_invoice_returns.sql"
+FORWARD = (CONSOLIDATION, BILLING, PROVENANCE, WORKFLOW, ACCOUNTS, OPENING, LIFECYCLE, SOURCES, INSPECTION,
+           RETURNS)
 # 013 is baseline schema already used by the application: no rollback script.
 ROLLBACK = {BILLING: "014_billing_v2_rollback.sql",
             PROVENANCE: "015_legacy_provenance_rollback.sql",
@@ -24,7 +26,8 @@ ROLLBACK = {BILLING: "014_billing_v2_rollback.sql",
             OPENING: "018_opening_balances_rollback.sql",
             LIFECYCLE: "019_invoice_lifecycle_exchange_rollback.sql",
             SOURCES: "020_exchange_replacement_sources_rollback.sql",
-            INSPECTION: "021_returned_item_inspection_rollback.sql"}
+            INSPECTION: "021_returned_item_inspection_rollback.sql",
+            RETURNS: "022_invoice_returns_rollback.sql"}
 CHANGE = re.compile(r"^(ALTER|CREATE|INSERT|DELETE|DROP|UPDATE|TRUNCATE|RENAME|REPLACE)\b", re.I)
 ACQUISITION_SOURCES = {"MARKET_PURCHASE", "OLD_GOLD_MANUFACTURE", "OLD_STOCK_CONVERSION",
                        "LEGACY_MIGRATION", "MANUAL_ENTRY"}
@@ -260,6 +263,111 @@ class MigrationFileSafetyTests(unittest.TestCase):
         self.assertFalse(ok(inspection, "DISMISSED", line=4, resolved=at))
         self.assertFalse(ok(inspection, "OPEN"))                                             # no line
 
+    def test_022_adds_the_return_objects_only(self):
+        text = forward_text(RETURNS)
+        self.assertIn("MIGRATION_022_REFUSED_migration_021_missing", text)
+        self.assertEqual(set(sql.create_table_columns(text)),
+                         {"invoice_returns", "invoice_return_lines", "invoice_return_payments"})
+        checks = sql.checks(text)
+        self.assertIn("'RETURN_APPROVAL'", checks["chk_management_review_type"][1])
+        self.assertIn("'RETURNED'", checks["chk_invoice_event_type"][1])
+        # An identified piece is returned whole and once; F7 weight may be returned in parts.
+        self.assertIn("UNIQUE KEY uq_return_identified_source_line (identified_source_line_id)", text)
+        self.assertIn("weight_grams = source_weight_grams", checks["chk_return_line_source"][1])
+        self.assertIn("direction = 'OUT'", checks["chk_return_payment_direction"][1])
+        self.assertEqual(MigrationContentTests().old_gold_codes(text), {"RETURN_OLD_GOLD_IN": "IN"})
+        # The operational roles execute a Return; 022 never grants the approval permission to anyone.
+        grants = [s.sql for s in sql.statements(text) if s.sql.startswith("INSERT INTO role_permissions")]
+        self.assertEqual(len(grants), 1)
+        self.assertIn("p.code IN ('INVOICE_RETURN')", grants[0])
+        self.assertIn("r.code IN ('OWNER', 'MANAGER', 'SALESPERSON', 'CASHIER')", grants[0])
+        self.assertNotIn("MANAGEMENT_REVIEW", " ".join(grants))
+        self.assertIn("r.code NOT IN ('OWNER', 'MANAGER', 'SALESPERSON', 'CASHIER')", rollback_text(RETURNS))
+        rollback = rollback_text(RETURNS)
+        for reason in ("return_rows_exist", "return_reviews_exist", "return_events_exist", "new_codes_in_use"):
+            self.assertIn(f"ROLLBACK_022_REFUSED_{reason}", rollback)
+
+    def test_022_return_header_checks_execute(self):
+        """The invoice_returns CHECKs evaluated on real rows (regression: `a = NOT b` is a MySQL syntax error)."""
+        import sqlite3
+        checks = sql.checks(forward_text(RETURNS))
+        db = sqlite3.connect(":memory:")
+        self.addCleanup(db.close)
+        names = ("chk_return_status", "chk_return_finalized", "chk_return_canceled", "chk_return_window",
+                 "chk_return_amounts")
+        db.execute("CREATE TABLE invoice_returns (return_status TEXT, making_window_open INT, requires_approval INT, "
+                   "gold_amount NUMERIC, making_refund NUMERIC, total_amount NUMERIC, money_paid NUMERIC, "
+                   "account_amount NUMERIC, finalized_at TEXT, finalized_by_user_id INT, price_snapshot_json TEXT, "
+                   "canceled_at TEXT, canceled_by_user_id INT, "
+                   + ", ".join(f"CONSTRAINT {n} CHECK ({checks[n][1]})" for n in names) + ")")
+
+        def ok(status, window, gold, making, paid=0, account=0):
+            final = status == "FINALIZED"
+            try:
+                with db:
+                    db.execute("INSERT INTO invoice_returns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                               (status, window, 1 - window, gold, making, gold + making, paid, account,
+                                "t" if final else None, 1 if final else None, "{}" if final else None,
+                                "t" if status == "CANCELED" else None, 1 if status == "CANCELED" else None))
+                return True
+            except sqlite3.IntegrityError:
+                return False
+        self.assertTrue(ok("FINALIZED", 1, 100, 10, paid=60, account=50))            # inside 72 h, settled
+        self.assertFalse(ok("FINALIZED", 1, 100, 10, paid=60, account=40))           # under-settled
+        self.assertTrue(ok("FINALIZED", 0, 100, 0, paid=100))                        # after 72 h: gold only
+        self.assertFalse(ok("FINALIZED", 0, 100, 10, paid=110))                      # no making after 72 h
+        self.assertTrue(ok("PENDING_APPROVAL", 0, 100, 0))
+        self.assertFalse(ok("PENDING_APPROVAL", 1, 100, 0))                          # approval only after 72 h
+        self.assertFalse(ok("DRAFT", 1, 100, 10, paid=10))                           # no money before finalize
+        self.assertTrue(ok("CANCELED", 1, 100, 10))
+
+    def test_022_review_check_keeps_every_earlier_rule(self):
+        """The extended CHECK evaluated on real rows: 016/021 behaviour intact, RETURN_APPROVAL scoped."""
+        import sqlite3
+        checks = {**sql.checks(forward_text(WORKFLOW)), **sql.checks(forward_text(RETURNS))}
+        db = sqlite3.connect(":memory:")
+        self.addCleanup(db.close)
+        db.execute("CREATE TABLE management_reviews (id INTEGER PRIMARY KEY, review_type TEXT, review_status TEXT, "
+                   "lifecycle_line_id INTEGER, return_id INTEGER, return_line_id INTEGER, resolved_at TEXT, "
+                   "resolution_code TEXT, "
+                   + ", ".join(f"CONSTRAINT {n} CHECK ({checks[n][1]})" for n in (
+                       "chk_management_review_type", "chk_management_review_status",
+                       "chk_management_review_resolution", "chk_management_review_inspection")) + ")")
+
+        def ok(review_type, status, line=None, ret=None, ret_line=None, code=None):
+            try:
+                with db:
+                    db.execute("INSERT INTO management_reviews (review_type, review_status, lifecycle_line_id, "
+                               "return_id, return_line_id, resolved_at, resolution_code) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                               (review_type, status, line, ret, ret_line,
+                                None if status == "OPEN" else "2026-09-29 10:00:00", code))
+                return True
+            except sqlite3.IntegrityError:
+                return False
+        for review_type in ("MAKING_PRICE", "CASH_SETTLEMENT", "OLD_GOLD_DISCOUNT"):
+            with self.subTest(review_type=review_type):
+                self.assertTrue(ok(review_type, "OPEN"))
+                self.assertTrue(ok(review_type, "RESOLVED"))
+                self.assertTrue(ok(review_type, "DISMISSED"))
+                self.assertFalse(ok(review_type, "RESOLVED", code="APPROVED"))
+                self.assertFalse(ok(review_type, "OPEN", ret=1))
+        inspection, approval = "RETURNED_ITEM_INSPECTION", "RETURN_APPROVAL"
+        self.assertTrue(ok(inspection, "OPEN", line=1))                                   # from an Exchange
+        self.assertTrue(ok(inspection, "OPEN", ret_line=1))                               # from a Return
+        self.assertTrue(ok(inspection, "RESOLVED", ret_line=2, code="CONVERT_TO_OLD_GOLD"))
+        self.assertFalse(ok(inspection, "OPEN", line=3, ret_line=3))                      # never both
+        self.assertFalse(ok(inspection, "OPEN"))
+        self.assertFalse(ok(inspection, "RESOLVED", ret_line=4))                          # NULL code
+        self.assertFalse(ok(inspection, "RESOLVED", ret_line=4, code="APPROVED"))
+        self.assertTrue(ok(approval, "OPEN", ret=1))
+        self.assertTrue(ok(approval, "RESOLVED", ret=1, code="APPROVED"))
+        self.assertTrue(ok(approval, "RESOLVED", ret=1, code="REJECTED"))
+        self.assertTrue(ok(approval, "DISMISSED", ret=1))                                 # Return canceled
+        self.assertFalse(ok(approval, "RESOLVED", ret=1))                                 # NULL code
+        self.assertFalse(ok(approval, "RESOLVED", ret=1, code="RETURN_TO_STOCK"))
+        self.assertFalse(ok(approval, "OPEN"))                                            # no Return
+        self.assertFalse(ok(approval, "OPEN", ret=1, ret_line=1))
+
     def test_021_leaves_reconciliation_cases_untouched(self):
         """UNIDENTIFIED_SALE lives in inventory_reconciliation_cases: 021 never alters that table."""
         self.assertNotIn("inventory_reconciliation_cases", forward_text(INSPECTION))
@@ -348,7 +456,10 @@ class MigrationContentTests(unittest.TestCase):
                                "bank_movement_types", "customer_transaction_types", "permissions",
                                "role_permissions"},
                    SOURCES: {"schema_migrations", "old_gold_movement_types"},
-                   INSPECTION: {"schema_migrations", "inventory_movement_types", "old_gold_movement_types"}}
+                   INSPECTION: {"schema_migrations", "inventory_movement_types", "old_gold_movement_types"},
+                   RETURNS: {"schema_migrations", "inventory_movement_types", "old_gold_movement_types",
+                             "cash_movement_types", "bank_movement_types", "customer_transaction_types",
+                             "permissions", "role_permissions"}}
         for name in FORWARD:
             for statement in sql.statements(forward_text(name)):
                 target = re.match(r"^INSERT INTO\s+(\w+)", statement.sql, re.I)

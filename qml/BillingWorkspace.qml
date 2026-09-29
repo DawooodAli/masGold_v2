@@ -11,6 +11,8 @@ Item {
     property int currentTab: 0
     // استبدال (opened from an invoice in History) covers both tabs while it is open.
     readonly property bool exchangeOpen: typeof exchangeVM !== "undefined" && !!exchangeVM && exchangeVM.isOpen
+    // مرتجع (opened from an invoice in History) covers both tabs the same way.
+    readonly property bool returnOpen: typeof returnVM !== "undefined" && !!returnVM && returnVM.isOpen
 
     Theme { id: theme }
 
@@ -25,10 +27,16 @@ Item {
         z: 1
     }
 
+    ReturnWorkspace {
+        anchors.fill: parent
+        visible: workspace.returnOpen && !workspace.exchangeOpen
+        z: 1
+    }
+
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
-        visible: !workspace.exchangeOpen
+        visible: !workspace.exchangeOpen && !workspace.returnOpen
 
         RowLayout {
             Layout.fillWidth: true
