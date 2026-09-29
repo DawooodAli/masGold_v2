@@ -106,6 +106,17 @@ class CorrectionViewModel(QObject):
         if result["targets"]:
             self.selectTarget(0)
 
+    @Slot(str)
+    def openCustomerSettlement(self, settlement_id):
+        if not settlement_id or self.saving:
+            return
+        self._timer.stop()
+        self._reset()
+        self._open = True
+        service = self._service_instance()
+        self._start("targets", lambda _expected_actor: service.settlement_target(
+            settlement_id, _expected_actor=_expected_actor))
+
     @Slot()
     def close(self):
         if "execute" in self._busy:

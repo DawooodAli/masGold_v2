@@ -106,7 +106,7 @@ Item {
         Btn { objectName: "correctionBack"; text: "رجوع  ⁦Esc⁩"; enabled: !!correctionPage.vm && !correctionPage.vm.saving
               onClicked: correctionPage.vm.close() }
         Txt { objectName: "correctionTitle"; color: theme.red; font.bold: true; font.pixelSize: theme.fontPageTitle
-              value: correctionPage.h.number ? "تصحيح / عكس — فاتورة " + correctionPage.h.number : "تصحيح / عكس" }
+              value: correctionPage.h.number ? "تصحيح / عكس — " + (correctionPage.h.invoiceId ? "فاتورة " : "تسوية حساب ") + correctionPage.h.number : "تصحيح / عكس" }
         Txt { visible: !!correctionPage.h.number; value: correctionPage.h.customer ? "العميل: " + correctionPage.h.customer : ""
               color: theme.textSecondary; font.pixelSize: theme.fontBodyStrong }
         Item { Layout.fillWidth: true }

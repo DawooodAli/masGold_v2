@@ -220,7 +220,23 @@ class ApplicationController(QObject):
                 if hasattr(history, "refreshInvoice"):
                     returned.finalized.connect(history.refreshInvoice)
             self.operational_viewmodels.setdefault("correctionVM", self._correction_factory(self.session))
+            from app.viewmodels.customer_account_viewmodel import CustomerAccountViewModel
+            account = CustomerAccountViewModel(self.session)
+            self.operational_viewmodels["customerAccountVM"] = account
+            for target in (balances, reviews, self.operational_viewmodels.get("customerVM")):
+                if hasattr(target, "refresh"):
+                    account.finalized.connect(target.refresh)
             corrected = self.operational_viewmodels["correctionVM"]
+            if hasattr(corrected, "finalized"):
+                corrected.finalized.connect(account.refresh)
+            for source in (invoice_vm, exchange, returned):
+                if hasattr(source, "finalized"):
+                    source.finalized.connect(account.refresh)
+            customers = self.operational_viewmodels.get("customerVM")
+            if hasattr(customers, "refresh"):
+                for source in (invoice_vm, exchange, returned, corrected):
+                    if hasattr(source, "finalized"):
+                        source.finalized.connect(customers.refresh)
             if hasattr(corrected, "finalized"):
                 # Money, customer ledger, stock and old gold may all have changed.
                 for target in (balances, reviews):

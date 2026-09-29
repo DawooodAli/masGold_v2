@@ -13,7 +13,7 @@ from repositories.invoice_repository import _id, _json, _optional_id
 
 
 REFERENCE_TYPE = "TRANSACTION_CORRECTION"
-SOURCE_REFERENCE = {"INVOICE": "INVOICE", "EXCHANGE": "INVOICE_LIFECYCLE", "RETURN": "INVOICE_RETURN"}
+SOURCE_REFERENCE = {"INVOICE": "INVOICE", "EXCHANGE": "INVOICE_LIFECYCLE", "RETURN": "INVOICE_RETURN", "CUSTOMER_ACCOUNT_SETTLEMENT": "CUSTOMER_ACCOUNT_SETTLEMENT"}
 _IDS = frozenset({"correction_id", "source_id", "invoice_id", "previous_correction_id", "line_id", "inventory_item_id",
                   "old_gold_movement_id", "lifecycle_id", "return_id", "customer_id", "review_id", "case_id",
                   "reversed_by_correction_id", "source_invoice_line_id", "source_invoice_id"})
@@ -228,7 +228,7 @@ class CorrectionRepository(BaseRepository):
             )
             VALUES (%s, 'FINALIZED', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (correction_type, source_type, _id(source_id), source_reference, _id(invoice_id), chain_sequence,
+            (correction_type, source_type, _id(source_id), source_reference, _optional_id(invoice_id), chain_sequence,
              _optional_id(previous_correction_id), money_direction, settled_total, reason, _json(before), _json(after),
              _json(effects), performed_by_user_id, performed_by_employee_id, occurred_at))
         return str(correction_id)
