@@ -12,6 +12,7 @@ from decimal import Decimal
 from pathlib import Path
 from types import MappingProxyType
 import unittest
+import unittest.mock
 
 from app.session import AppSession
 from services.authentication_service import AuthenticationResult, _VERIFIED
