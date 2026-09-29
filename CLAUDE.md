@@ -200,10 +200,18 @@ Features include:
 - reusable CustomerPicker
 - independent picker state per instance
 - customer profile
-- read-only account statement
+- account statement (`كشف الحساب`): read-only historical ledger view
 - running balance
 - warnings
 - Dead Cash history
+- customer invoices (`فواتير العميل`): separate from the statement
+- Customer Account V2 settlements (see "Customer Account V2" below)
+
+The statement/history itself is read-only. Customer Account V2 adds explicit
+finalized Customer Account Settlements (`CSxxxxxx`): they may be partial, split
+across multiple real payment methods, and oversettlement is refused. Finalized CS
+records are immutable; mistakes are corrected with FC/RV, never by editing or
+deleting the original CS.
 
 Customer code:
 
@@ -797,11 +805,11 @@ specific task, not completion of the obsolete Billing roadmap.
 
 ## Repository, schema and execution discipline
 
-Baseline for this documentation sync: branch `feature/billing-v2`, implementation
-HEAD `e798badc56d0d82874e756efe72c4ce28fc24e67` (`feat(customers): add invoice history and automatic refresh`).
-Before substantial work, check branch, HEAD and `git status`; stop and report unexpected
-files or commits. Inspect actual files and recent history rather than assuming this
-baseline remains the latest forever. Read both `AGENTS.md` and `CLAUDE.md`.
+At the beginning of each task, verify the actual branch, HEAD and working-tree state
+using Git (`git branch --show-current`, `git log --oneline -10`, `git status`); stop and
+report unexpected files or commits. Do not treat any commit hash in this document as the
+current HEAD. Historical reference: the baseline below was recorded at commit `e798bad`
+(`feat(customers): add invoice history and automatic refresh`) on `feature/billing-v2`. Read both `AGENTS.md` and `CLAUDE.md`.
 
 - Schema chain: migrations `001–024` in `database/schema`; next migration is `025`
   unless later repository state proves otherwise. Already-applied migrations are
@@ -819,7 +827,7 @@ baseline remains the latest forever. Read both `AGENTS.md` and `CLAUDE.md`.
 
 ### Official test baseline
 
-At the implementation baseline above: **1015 total = 975 passed + 40 skipped**,
+Accepted baseline (recorded at the historical commit above): **1015 total = 975 passed + 40 skipped**,
 **0 failures, 0 errors, 0 runtime QML warnings**. This is the supplied
 confirmed baseline, not a fresh execution during this documentation sync.
 Standalone `tests/test_invoice_service.py`: 44 tests pass.
