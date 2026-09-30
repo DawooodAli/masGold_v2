@@ -35,7 +35,7 @@ class CustomerAccountMysqlTests(unittest.TestCase):
         c=DatabaseConnection(config).connect()
         try:
             q=c.cursor();q.execute('SELECT DATABASE()');assert q.fetchone()[0]=='masgold_v2'
-            q.execute('SELECT MAX(version) FROM schema_migrations');assert q.fetchone()[0]==24
+            q.execute('SELECT MAX(version) FROM schema_migrations');assert q.fetchone()[0]==27
             q.close();c.commit();c.start_transaction()
             yield c;c.commit()
         except BaseException:c.rollback();raise
@@ -53,9 +53,18 @@ class CustomerAccountMysqlTests(unittest.TestCase):
                 auth.effective_permissions(uid),_VERIFIED),0)
             repo=CustomerRepository(c)
             self.cid=str(repo.create_customer(TAG+' '+uuid4().hex[:8],None,None,None,TAG,uid))
-            # Dedicated bank starts at zero, so an OUT scenario proves negative-balance support.
-            q=c.cursor();q.execute('INSERT INTO bank_accounts(code,name,account_type,notes) VALUES (%s,%s,%s,%s)',
-                ('CADEV_'+uuid4().hex[:12],TAG,'BANK',TAG));self.bank=str(q.lastrowid);q.close()
+            # One reusable tagged fixture bank (created on the first run only; never one per test).
+            q=c.cursor(dictionary=True)
+            q.execute('SELECT id,name,notes FROM bank_accounts WHERE code=%s FOR UPDATE',('CADEV_BANK_FIXTURE',))
+            row=q.fetchone()
+            if row is None:
+                q.execute('INSERT INTO bank_accounts(code,name,account_type,notes) VALUES (%s,%s,%s,%s)',
+                    ('CADEV_BANK_FIXTURE',TAG,'BANK',TAG));self.bank=str(q.lastrowid)
+            else:
+                assert (row['name'],row['notes'])==(TAG,TAG),'fixture code reused by real data'
+                self.bank=str(row['id'])
+                q.execute('UPDATE bank_accounts SET is_active=TRUE WHERE id=%s AND is_active=FALSE',(row['id'],))
+            q.close()
         self.account=CustomerAccountService(self.session,transaction_factory=self.transaction)
         self.correction=CorrectionService(self.session,transaction_factory=self.transaction)
 
@@ -88,10 +97,13 @@ class CustomerAccountMysqlTests(unittest.TestCase):
         self.assertIn(TAG,target['customer_name'])
 
     def test_b_out_negative_account_and_reversal(self):
+        def bank():
+            with self.transaction() as c:
+                q=c.cursor();q.execute('SELECT COALESCE(SUM(amount_delta),0) FROM bank_movements WHERE bank_account_id=%s',
+                    (self.bank,));value=q.fetchone()[0];q.close();return value
+        before=bank()
         self.seed('-10000');cs=self.settle('4000');self.assertEqual(self.balance(),D('-6000'))
-        with self.transaction() as c:
-            q=c.cursor();q.execute('SELECT SUM(amount_delta) FROM bank_movements WHERE bank_account_id=%s',(self.bank,))
-            self.assertEqual(q.fetchone()[0],D('-4000'));q.close()
+        self.assertEqual(bank(),before-D('4000'))       # the reused fixture bank moved exactly; may go negative
         self.correction.reverse(CS,cs['id'],TAG)
         self.assertEqual(self.balance(),D('-10000'))
 

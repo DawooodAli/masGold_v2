@@ -252,6 +252,17 @@ class ApplicationController(QObject):
                 history = self.operational_viewmodels.get("invoiceHistoryVM")
                 if hasattr(history, "refreshInvoice"):
                     corrected.finalized.connect(history.refreshInvoice)
+            from app.viewmodels.financial_accounts_viewmodel import FinancialAccountsViewModel
+            accounts = self.operational_viewmodels.setdefault("financialAccountsVM",
+                                                              FinancialAccountsViewModel(self.session))
+            # Every finalize that moves real money refreshes الحسابات المالية (off-page: marked stale).
+            for source in (invoice_vm, exchange, returned, account, corrected):
+                if hasattr(source, "finalized") and hasattr(accounts, "refresh"):
+                    source.finalized.connect(accounts.refresh)
+            if hasattr(accounts, "finalized"):
+                for target, slot in ((balances, "refresh"), (reviews, "reloadAccounts")):
+                    if hasattr(target, slot):
+                        accounts.finalized.connect(getattr(target, slot))
             if hasattr(invoice_vm, "attach_price_source"):
                 invoice_vm.attach_price_source(self.gold_prices)
             # Barcode fields map physical scan codes (independent of the Windows keyboard layout).

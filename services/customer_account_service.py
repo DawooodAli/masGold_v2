@@ -49,7 +49,8 @@ class CustomerAccountService:
         last = CustomerService._statement_date(end,'تاريخ النهاية')
         if first and last and first>last:
             raise ValueError('تاريخ البداية بعد النهاية.')
-        if source not in ('','INVOICE','EXCHANGE','RETURN','FULL_REVERSAL','SETTLEMENT_CORRECTION',SOURCE,'UNKNOWN'):
+        if source not in ('','INVOICE','EXCHANGE','RETURN','FULL_REVERSAL','SETTLEMENT_CORRECTION',SOURCE,
+                          'CUSTOMER_DEPOSIT','CUSTOMER_DEPOSIT_REFUND','UNKNOWN'):
             raise ValueError('نوع المصدر غير صحيح.')
         if len(search)>150:
             raise ValueError('نص البحث طويل.')

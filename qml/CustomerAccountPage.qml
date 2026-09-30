@@ -8,6 +8,7 @@ Rectangle {
     property var vm: typeof customerAccountVM !== "undefined" ? customerAccountVM : null
     signal invoiceRequested(string invoiceId)
     signal correctionRequested(string settlementId)
+    signal depositCorrectionRequested(string depositId)
     color: theme.bgPrimary
     Theme { id: theme }
     property string appliedFilters: ""
@@ -26,6 +27,8 @@ Rectangle {
         function onChanged() { Qt.callLater(page.syncFilters) }
         function onInvoiceRequested(invoiceId) { page.invoiceRequested(invoiceId) }
         function onCorrectionRequested(settlementId) { page.correctionRequested(settlementId) }
+        function onDepositCorrectionRequested(depositId) { page.depositCorrectionRequested(depositId) }
+        function onFinalized(customerId) { depositDialog.close() }
     }
     component Txt: Label {
         color: theme.textPrimary; font.family: "Cairo"; font.pixelSize: 13
@@ -105,6 +108,9 @@ Rectangle {
                         Btn { text: "تصحيح / عكس "+modelData.settlementId
                             visible: page.vm && page.vm.canCorrect && modelData.settlementId.length>0
                             onClicked: page.vm.openCorrection(modelData.settlementId) }
+                        Btn { objectName: "accountDepositReverse_"+modelData.key; text: "عكس "+modelData.reference
+                            visible: page.vm && page.vm.canCorrect && modelData.depositId.length>0
+                            onClicked: page.vm.openDepositCorrection(modelData.depositId) }
                     }
                     RowLayout {
                         Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
@@ -156,6 +162,45 @@ Rectangle {
             Btn { text: "التالي"; enabled: page.vm && !page.vm.busy && page.vm.hasMore; onClicked: page.vm.page(1) }
             Btn { objectName: "customerAccountSettle"; text: "تسوية الحساب"; enabled: page.vm && !page.vm.busy && page.vm.canSettle
                 onClicked: { paymentDialog.open(); if (!page.vm.legs.length) page.vm.addLeg() } }
+            Btn { objectName: "customerDeposit"; text: "عربون"; visible: page.vm && page.vm.canDeposit
+                enabled: page.vm && !page.vm.busy; onClicked: depositDialog.begin("IN") }
+            Btn { objectName: "customerDepositRefund"; text: "استرداد عربون"; visible: page.vm && page.vm.canDeposit
+                enabled: page.vm && !page.vm.busy; onClicked: depositDialog.begin("OUT") }
+        }
+    }
+    // عربون / استرداد عربون — cash only (الخزنة), amount and an optional note; confirmation before posting.
+    Dialog {
+        id: depositDialog; objectName: "customerDepositDialog"
+        property string direction: "IN"
+        property bool confirming: false
+        function begin(d) { direction = d; confirming = false; depositAmount.text = ""; depositNote.text = ""
+            page.vm.beginDeposit(); open() }
+        anchors.centerIn: parent; width: Math.min(page.width-24,460)
+        modal: true; title: direction === "IN" ? "عربون" : "استرداد عربون"; font.family: "Cairo"
+        closePolicy: page.vm && page.vm.busy ? Popup.NoAutoClose : Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgPrimary; radius: 8; border.color: theme.goldDark }
+        contentItem: ColumnLayout {
+            Txt { text: page.vm ? page.vm.balance : ""; color: theme.gold; font.bold: true }
+            Field { id: depositAmount; objectName: "customerDepositAmount"; Layout.fillWidth: true
+                placeholderText: "المبلغ"; enabled: !depositDialog.confirming }
+            Field { id: depositNote; objectName: "customerDepositNote"; Layout.fillWidth: true
+                placeholderText: "ملاحظة اختيارية"; enabled: !depositDialog.confirming }
+            Txt { objectName: "customerDepositConfirmText"; visible: depositDialog.confirming; color: theme.amber
+                text: (depositDialog.direction === "IN" ? "سيتم استلام عربون " : "سيتم رد ") + depositAmount.text
+                      + " ج نقداً " + (depositDialog.direction === "IN" ? "من العميل." : "للعميل من العربون.") }
+            Txt { text: page.vm ? page.vm.message : ""; visible: text.length>0; color: theme.red }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                Btn { objectName: "customerDepositNext"; text: "متابعة"; visible: !depositDialog.confirming
+                    enabled: depositAmount.text.trim().length>0; onClicked: depositDialog.confirming = true }
+                Btn { objectName: "customerDepositConfirm"; text: "تأكيد"; visible: depositDialog.confirming
+                    enabled: page.vm && !page.vm.busy
+                    onClicked: page.vm.depositAction(depositDialog.direction, depositAmount.text, depositNote.text) }
+                Btn { text: "تعديل"; visible: depositDialog.confirming; enabled: page.vm && !page.vm.busy
+                    onClicked: depositDialog.confirming = false }
+                Item { Layout.fillWidth: true }
+                Btn { text: "إغلاق"; enabled: page.vm && !page.vm.busy; onClicked: depositDialog.close() }
+            }
         }
     }
     Dialog {

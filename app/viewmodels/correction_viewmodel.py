@@ -117,6 +117,30 @@ class CorrectionViewModel(QObject):
         self._start("targets", lambda _expected_actor: service.settlement_target(
             settlement_id, _expected_actor=_expected_actor))
 
+    @Slot(str)
+    def openFinancialOperation(self, operation_id):
+        """A manual FO / TR operation from الحسابات المالية: full reversal only."""
+        if not operation_id or self.saving:
+            return
+        self._timer.stop()
+        self._reset()
+        self._open = True
+        service = self._service_instance()
+        self._start("targets", lambda _expected_actor: service.financial_operation_target(
+            operation_id, _expected_actor=_expected_actor))
+
+    @Slot(str)
+    def openCustomerDeposit(self, deposit_id):
+        """An عربون / استرداد عربون from the customer statement: full reversal only."""
+        if not deposit_id or self.saving:
+            return
+        self._timer.stop()
+        self._reset()
+        self._open = True
+        service = self._service_instance()
+        self._start("targets", lambda _expected_actor: service.deposit_target(
+            deposit_id, _expected_actor=_expected_actor))
+
     @Slot()
     def close(self):
         if "execute" in self._busy:
@@ -140,6 +164,8 @@ class CorrectionViewModel(QObject):
     def setMode(self, mode):
         """«عكس العملية بالكامل» (REVERSAL) or «تصحيح طريقة التسوية» (SETTLEMENT): an explicit choice."""
         if mode not in (REVERSAL, SETTLEMENT) or not self._target or self._result:
+            return
+        if mode == SETTLEMENT and not self._target.get("settlement_allowed", True):
             return
         self._mode, self._error, self._confirming = mode, "", False
         service, t = self._service_instance(), self._target
@@ -321,6 +347,10 @@ class CorrectionViewModel(QObject):
                            f"صُححت تسويتها {t['settlement_corrections']} مرة" if t["settlement_corrections"] else ""),
                  "selected": bool(self._target) and t["reference"] == self._target["reference"]}
                 for i, t in enumerate(self._targets.get("targets", []))]
+
+    @Property(bool, notify=changed)
+    def settlementAllowed(self):
+        return bool(self._target) and self._target.get("settlement_allowed", True)
 
     @Property(str, notify=changed)
     def mode(self):

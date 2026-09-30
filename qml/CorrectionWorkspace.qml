@@ -141,6 +141,7 @@ Item {
               selected: !!correctionPage.vm && correctionPage.vm.mode === "REVERSAL"; enabled: correctionPage.editable
               onClicked: correctionPage.vm.setMode("REVERSAL") }
         Btn { objectName: "correctionModeSettlement"; text: "تصحيح طريقة التسوية"; accent: theme.amber
+              visible: !correctionPage.vm || correctionPage.vm.settlementAllowed
               selected: !!correctionPage.vm && correctionPage.vm.mode === "SETTLEMENT"; enabled: correctionPage.editable
               onClicked: correctionPage.vm.setMode("SETTLEMENT") }
         Item { Layout.fillWidth: true }

@@ -2974,9 +2974,18 @@ ApplicationWindow {
                 }
 
 
-                PlaceholderPage {
-                    pageTitle: "💰 النقدية"
-                    description: "النقدية الفعلية والبنوك والحركات"
+                // index 4: الخزنة — daily cash in / out and operational cash movements.
+                FinancialAccountsPage {
+                    pageTitle: "💰 الخزنة"
+                    onInvoiceRequested: function(invoiceId) {
+                        root.currentPage = 1
+                        billingWorkspace.currentTab = 1
+                        invoiceHistoryVM.openInvoice(invoiceId)
+                    }
+                    onCorrectionRequested: function(operationId) {
+                        root.currentPage = 1
+                        correctionVM.openFinancialOperation(operationId)
+                    }
                 }
 
 
@@ -3100,9 +3109,9 @@ ApplicationWindow {
 
                 NavButton {
                     objectName: "cashNavButton"
-                    // Placeholder page kept for later; hidden until it has real content.
-                    visible: false
-                    text: "💰  النقدية"
+                    // الخزنة: shown to users who may see the cash ledger (the service re-checks).
+                    visible: typeof financialAccountsVM !== "undefined" && financialAccountsVM.canView
+                    text: "💰  الخزنة"
                     selected: root.currentPage === 4
 
                     onClicked:
@@ -3475,6 +3484,10 @@ ApplicationWindow {
             onCorrectionRequested: function(settlementId) {
                 root.currentPage = 1
                 correctionVM.openCustomerSettlement(settlementId)
+            }
+            onDepositCorrectionRequested: function(depositId) {
+                root.currentPage = 1
+                correctionVM.openCustomerDeposit(depositId)
             }
         }
 

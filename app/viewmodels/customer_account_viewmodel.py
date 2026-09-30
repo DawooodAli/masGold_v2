@@ -10,7 +10,8 @@ from services.invoice_service import PaymentInput
 
 LABELS = {'INVOICE':'فاتورة','EXCHANGE':'استبدال','RETURN':'مرتجع',
           'FULL_REVERSAL':'عكس','SETTLEMENT_CORRECTION':'تصحيح تسوية',
-          'CUSTOMER_ACCOUNT_SETTLEMENT':'تسوية حساب','UNKNOWN':'حركة قديمة / غير محددة'}
+          'CUSTOMER_ACCOUNT_SETTLEMENT':'تسوية حساب','CUSTOMER_DEPOSIT':'عربون',
+          'CUSTOMER_DEPOSIT_REFUND':'استرداد عربون','UNKNOWN':'حركة قديمة / غير محددة'}
 
 
 def balance_text(value):
@@ -24,6 +25,7 @@ class CustomerAccountViewModel(QObject):
     finalized = Signal(str)
     invoiceRequested = Signal(str)
     correctionRequested = Signal(str)
+    depositCorrectionRequested = Signal(str)
 
     def __init__(self, session, service=None, parent=None):
         super().__init__(parent)
@@ -37,6 +39,7 @@ class CustomerAccountViewModel(QObject):
         self._tab=0; self._invoice_data={}
         self._invoice_filters=('', '', '', ''); self._invoice_page=1
         self._refresh_pending=False; self._pending_customer=None
+        self._deposit_key=str(uuid4()); self._deposits=None
 
     def _run(self, operation, call):
         from app.workers.invoice_worker import InvoiceWorker
@@ -67,6 +70,11 @@ class CustomerAccountViewModel(QObject):
                 self._data=result
             elif operation=='customer_invoices':
                 self._data=result['account']; self._invoice_data=result['invoices']
+            elif operation=='deposit':
+                self._message=('تم تسجيل العربون ' if result['direction']=='IN' else 'تم تسجيل استرداد العربون ')+result['code']
+                self._deposit_key=str(uuid4())
+                self.finalized.emit(self._customer_id)
+                self.refresh()
             else:
                 self._message='تمت تسوية الحساب '+result['code']
                 self._legs=[]; self._request_key=str(uuid4()); self.legsChanged.emit()
@@ -173,6 +181,27 @@ class CustomerAccountViewModel(QObject):
         if any(str(r.get('invoice_id') or '')==invoice_id for r in rows) and invoice_id:
             self.invoiceRequested.emit(invoice_id)
 
+    @Slot()
+    def beginDeposit(self):
+        """Opening the عربون / استرداد عربون form starts a fresh request (kept across retries)."""
+        if not self._busy:
+            self._deposit_key=str(uuid4()); self._error=''; self._message=''; self.changed.emit()
+
+    @Slot(str,str,str)
+    def depositAction(self,direction,amount,note):
+        if not self.canDeposit or self._busy or direction not in ('IN','OUT'):return
+        if self._deposits is None:
+            from services.customer_deposit_service import CustomerDepositService
+            self._deposits=CustomerDepositService(self.session)
+        service,cid,key=self._deposits,self._customer_id,self._deposit_key
+        call=service.deposit if direction=='IN' else service.refund
+        self._run('deposit',lambda _expected_actor:call(cid,amount,note,key,_expected_actor=_expected_actor))
+
+    @Slot(str)
+    def openDepositCorrection(self, deposit_id):
+        if self.canCorrect and deposit_id and any(str(r.get('deposit_id') or '')==deposit_id for r in self._data.get('rows',[])):
+            self.depositCorrectionRequested.emit(deposit_id)
+
     @Slot(str)
     def openCorrection(self, settlement_id):
         if self.canCorrect and settlement_id and any(str(r.get('settlement_id') or '')==settlement_id for r in self._data.get('rows',[])):
@@ -191,6 +220,10 @@ class CustomerAccountViewModel(QObject):
     def busy(self):return self._busy
     @Property(bool,notify=changed)
     def canSettle(self):return bool(self._data.get('can_settle'))
+    @Property(bool,notify=changed)
+    def canDeposit(self):
+        a=self.session.current_actor()
+        return bool(self._data.get('customer')) and bool(a and PERMISSION in a.permissions)
     @Property(bool,notify=changed)
     def canCorrect(self):
         a=self.session.current_actor()
@@ -241,6 +274,7 @@ class CustomerAccountViewModel(QObject):
                  'source':LABELS[r['source_type']],'reference':r.get('source_reference') or '—',
                  'invoiceId':str(r.get('invoice_id') or ''),'invoiceNumber':str(r.get('invoice_number') or ''),
                  'settlementId':str(r.get('settlement_id') or ''),
+                 'depositId':str(r.get('deposit_id') or ''),
                  'description':(('استلام من العميل — ' if r['amount_delta']<0 else 'دفع للعميل — ')
                     if r['source_type']=='CUSTOMER_ACCOUNT_SETTLEMENT' else '')+(r.get('description') or ''),
                  'actor':r.get('actor_name') or '—',

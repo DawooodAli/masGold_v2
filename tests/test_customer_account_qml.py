@@ -150,6 +150,49 @@ class CustomerAccountPageTests(harness.InvoicePageTests):
         self.assertEqual(vm.message,'راجع التاريخ.')
 
 
+    def test_deposit_and_refund_rows_and_real_click_deposit(self):
+        vm=self.controller.operational_viewmodels['customerAccountVM']
+        self.controller.operational_viewmodels['customerVM']._service=Mock(
+            get_customer_types=Mock(return_value=[]),get_customer_transaction_types=Mock(return_value=[]),
+            search_customers=Mock(return_value={'items':[],'page':1,'has_more':False}))
+        rows=[dict(id=1,row_kind='LEDGER',occurred_at=datetime(2026,9,30,12),source_type='CUSTOMER_DEPOSIT',
+                   source_reference='DP000001',invoice_id=None,invoice_number=None,settlement_id=None,deposit_id='1',
+                   description='عربون DP000001',actor_name='كاشير',amount_delta=D('-5000'),running_balance=D('-5000')),
+              dict(id=2,row_kind='LEDGER',occurred_at=datetime(2026,9,30,13),source_type='CUSTOMER_DEPOSIT_REFUND',
+                   source_reference='DR000002',invoice_id=None,invoice_number=None,settlement_id=None,deposit_id='2',
+                   description='استرداد عربون DR000002',actor_name='كاشير',amount_delta=D('2000'),running_balance=D('-3000'))]
+        class Service:
+            def statement(self,*args,**kw):
+                return {'customer':{'name':'عميل','mobile':'01000000000','balance':D('-3000')},
+                        'rows':copy.deepcopy(rows),'has_more':False,'page':1,'accounts':[],'can_settle':True}
+        vm.service=Service()
+        import dataclasses
+        session=vm.session
+        with session._lock:                     # this employee holds the customer-money right (CASHIER)
+            session._actor=dataclasses.replace(session._actor,
+                permissions=session._actor.permissions|{'CUSTOMER_ACCOUNT_SETTLE'})
+        calls=[]
+        vm._deposits=Mock(deposit=Mock(side_effect=lambda *a,**k:calls.append(a) or
+            {'id':'3','code':'DP000003','direction':'IN','amount':'1500.00','balance_after':'-4500.00','duplicate':False}))
+        self.root.setProperty('currentPage',3)
+        vm.open('12')
+        self.wait_until(lambda:len(vm.rows)==2 and not vm.busy)
+        self.assertEqual([(r['source'],r['reference']) for r in vm.rows],[('عربون','DP000001'),('استرداد عربون','DR000002')])
+        self.assertEqual([r['balance'] for r in vm.rows],['للعميل: 5,000.00 ج','للعميل: 3,000.00 ج'])
+        self.root.setWidth(1080);self.root.setHeight(680);QTest.qWait(120)
+        self.click('customerDeposit')
+        self.wait_until(lambda:self.item('customerDepositDialog').property('opened'))
+        self.type_into('customerDepositAmount','1500')
+        self.click('customerDepositNext')
+        button=self.item('customerDepositConfirm')
+        self.assert_inside_window(button)
+        self.click(button)
+        self.wait_until(lambda:len(calls)==1 and not vm.busy)
+        self.assertEqual(calls[0][:2],('12','1500'))
+        self.assertIn('DP000003',vm.message)
+        self.assertEqual(self.warnings,[])
+
+
 # unittest otherwise inherits every Billing harness test, inflating the suite count.
 for _name in dir(harness.InvoicePageTests):
     if _name.startswith('test_'):

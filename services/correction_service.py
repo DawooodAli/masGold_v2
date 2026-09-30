@@ -42,7 +42,10 @@ from services.invoice_service import InvoiceService, PaymentInput, invoice_trans
 CORRECT_PERMISSION = "TRANSACTION_CORRECT"
 FULL_REVERSAL, SETTLEMENT = "FULL_REVERSAL", "SETTLEMENT_CORRECTION"
 CS = "CUSTOMER_ACCOUNT_SETTLEMENT"
-SOURCES = ("INVOICE", "EXCHANGE", "RETURN", CS)
+FO = "FINANCIAL_OPERATION"            # manual deposit / withdrawal / transfer (025): full reversal only
+CD = "CUSTOMER_DEPOSIT"               # عربون / استرداد عربون (027): full reversal only
+SOURCES = ("INVOICE", "EXCHANGE", "RETURN", CS, FO, CD)
+STANDALONE = (CS, FO, CD)              # sources without an invoice (never a fabricated one)
 MONEY = Decimal("0.01")
 ZERO, ZERO_GRAMS = Decimal("0.00"), Decimal("0.000")
 METHOD_TEXT = {"PHYSICAL_CASH": "نقدي", "MOBILE_WALLET": "محفظة", "INSTAPAY": "InstaPay", "BANK_TRANSFER": "تحويل بنكي"}
@@ -50,6 +53,8 @@ SOURCE_TEXT = {"INVOICE": "الفاتورة", "EXCHANGE": "الاستبدال", 
 
 
 SOURCE_TEXT[CS] = "\u062a\u0633\u0648\u064a\u0629 \u062d\u0633\u0627\u0628"
+SOURCE_TEXT[FO] = "العملية المالية"
+SOURCE_TEXT[CD] = "العربون"
 
 
 class CorrectionError(ValueError):
@@ -162,6 +167,36 @@ class CorrectionService:
                        "customer_id": source["customer_id"], "finalized_at": source["occurred_at"],
                        "net_amount": source["amount"]}
             return context, source, settlement_code(source_id)
+        if source_type == CD:
+            from repositories.customer_account_repository import CustomerAccountRepository
+            from repositories.customer_deposit_repository import CustomerDepositRepository, deposit_code
+            from repositories.financial_account_repository import FinancialAccountRepository
+            source = CustomerDepositRepository(connection).source(source_id, lock=lock)
+            if source is None:
+                raise CorrectionError("SOURCE_NOT_FOUND", "العربون غير موجود.")
+            if lock:                                            # the deposit's own lock order: customer → safe
+                CustomerAccountRepository(connection).lock_balance(source["customer_id"])
+                FinancialAccountRepository(connection).account("CASH", source["cash_account_id"], lock=True)
+            reference = deposit_code(source["direction"], source_id)
+            context = {"invoice_id": None, "invoice_number": reference,
+                       "customer_name_snapshot": source.get("customer_name"), "customer_id": source["customer_id"],
+                       "finalized_at": source["occurred_at"], "net_amount": source["amount"]}
+            return context, source, reference
+        if source_type == FO:
+            from repositories.financial_account_repository import FinancialAccountRepository, operation_code
+            repo = FinancialAccountRepository(connection)
+            source = repo.operation(source_id, lock=lock)
+            if source is None:
+                raise CorrectionError("SOURCE_NOT_FOUND", "العملية المالية غير موجودة.")
+            if lock:                                            # same account lock order as the operation itself
+                sides = {("CASH", source[f"{end}_cash_account_id"]) for end in ("from", "to")} | \
+                        {("BANK", source[f"{end}_bank_account_id"]) for end in ("from", "to")}
+                for ledger, account_id in sorted((l, int(a)) for l, a in sides if a is not None):
+                    repo.account(ledger, account_id, lock=True)
+            reference = operation_code(source["operation_type"], source_id)
+            context = {"invoice_id": None, "invoice_number": reference, "customer_name_snapshot": None,
+                       "customer_id": None, "finalized_at": source["occurred_at"], "net_amount": source["amount"]}
+            return context, source, reference
         if source_type == "INVOICE":
             invoice_id, source, reference = str(source_id), None, None
         elif source_type == "EXCHANGE":
@@ -205,7 +240,7 @@ class CorrectionService:
             plan.blockers.append(("ALREADY_REVERSED",
                                   f"تم عكس هذه العملية من قبل ({correction_code(FULL_REVERSAL, reversal['correction_id'])})."))
             return plan
-        if source_type not in ("INVOICE", CS) and reversal_of(invoice):
+        if source_type not in ("INVOICE",) + STANDALONE and reversal_of(invoice):
             plan.blockers.append(("ALREADY_REVERSED", f"تم عكس الفاتورة الأصلية ({reversal_of(invoice)})."))
             return plan
         # Money and customer account: the exact opposite of what was posted (source + its settlement chain).
@@ -216,8 +251,15 @@ class CorrectionService:
         for customer, total in corrections.account_by_customer(source_type, source_id, chain_ids).items():
             if Decimal(str(total)) != 0:
                 plan.account[customer] = -Decimal(str(total))
-        if source_type != CS:
+        if source_type not in STANDALONE:
             getattr(self, f"_plan_{source_type.lower()}")(connection, plan, source, lock)
+        if source_type == CD and source["direction"] == "IN":
+            # Reversing a deposit must not leave refunds larger than the remaining deposits.
+            from repositories.customer_deposit_repository import CustomerDepositRepository
+            outstanding = Decimal(str(CustomerDepositRepository(connection).outstanding(source["customer_id"])))
+            if outstanding - Decimal(str(source["amount"])) < 0:
+                plan.blockers.append(("DEPOSIT_ALREADY_REFUNDED",
+                                      "لا يمكن عكس العربون لأنه تم استرداده — اعكس الاسترداد أولاً."))
         # Counted old-gold stock must stay physically coherent: removals only while the grams are there.
         removals = {}
         for karat_id, karat, grams, _ in plan.old_gold:
@@ -399,6 +441,38 @@ class CorrectionService:
                     "bank_accounts": self._invoices(connection).active_bank_accounts()}
         return self._read(read)
 
+    def financial_operation_target(self, operation_id, *, _expected_actor=None):
+        """A manual FO / TR operation as the single target: full reversal only (no settlement correction)."""
+        self._actor(_expected_actor)
+
+        def read(connection):
+            _, _source, reference = self._load(connection, FO, operation_id, False)
+            reversal, _ = self._history(self._corrections(connection), FO, operation_id)
+            return {"invoice_id": "", "invoice_number": reference, "customer_name": None,
+                    "targets": [{"source_type": FO, "source_id": str(operation_id), "reference": reference,
+                                 "source_text": SOURCE_TEXT[FO], "settlement_allowed": False,
+                                 "reversed_by": None if reversal is None else correction_code(
+                                     FULL_REVERSAL, reversal["correction_id"]),
+                                 "settlement_corrections": 0}],
+                    "bank_accounts": self._invoices(connection).active_bank_accounts()}
+        return self._read(read)
+
+    def deposit_target(self, deposit_id, *, _expected_actor=None):
+        """An عربون / استرداد عربون as the single target: full reversal only (no settlement correction)."""
+        self._actor(_expected_actor)
+
+        def read(connection):
+            context, _source, reference = self._load(connection, CD, deposit_id, False)
+            reversal, _ = self._history(self._corrections(connection), CD, deposit_id)
+            return {"invoice_id": "", "invoice_number": reference, "customer_name": context.get("customer_name_snapshot"),
+                    "targets": [{"source_type": CD, "source_id": str(deposit_id), "reference": reference,
+                                 "source_text": SOURCE_TEXT[CD], "settlement_allowed": False,
+                                 "reversed_by": None if reversal is None else correction_code(
+                                     FULL_REVERSAL, reversal["correction_id"]),
+                                 "settlement_corrections": 0}],
+                    "bank_accounts": self._invoices(connection).active_bank_accounts()}
+        return self._read(read)
+
     # ------------------------------------------------------------ public: FULL REVERSAL
     def reverse(self, source_type, source_id, reason, *, _expected_actor=None):
         session_actor = self._actor(_expected_actor)
@@ -453,7 +527,7 @@ class CorrectionService:
             event = {"correction_code": code, "correction_id": correction_id, "correction_type": FULL_REVERSAL,
                      "source_type": source_type, "source_id": str(source_id), "source_reference": plan.reference,
                      "reason": reason}
-            if source_type != CS:
+            if source_type not in STANDALONE:
                 invoices.insert_event(invoice_id=plan.invoice["invoice_id"], event_type="REVERSED",
                                       performed_by_user_id=actor.user_id, details=event)
             self._audit(connection, actor, "TRANSACTION_REVERSED", correction_id, code, {**event, "effects": effects}, now)
@@ -477,6 +551,9 @@ class CorrectionService:
     def _settlement_state(self, connection, source_type, source_id, lock):
         """The current EFFECTIVE settlement of a source: direction, legs, account part, total, chain."""
         corrections = self._corrections(connection)
+        if source_type in (FO, CD):
+            raise CorrectionError("SETTLEMENT_NOT_SUPPORTED",
+                                  "هذه العملية تُصحح بالعكس الكامل ثم إعادة إدخالها صحيحة.")
         invoice, source, reference = self._load(connection, source_type, source_id, lock)
         reversal, chain = self._history(corrections, source_type, source_id)
         if reversal is not None or (source_type not in ("INVOICE", CS) and reversal_of(invoice)):
