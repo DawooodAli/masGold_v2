@@ -127,6 +127,44 @@ class AuthorizationLockTests(unittest.TestCase):
         with self.transaction() as c:                                                        # rolled back: still granted
             self.authorization.require_permission_read(c, self.actor, "CUSTOMERS_VIEW")
 
+    # ------------------------------------------------------------ customer mutations (CUSTOMERS_MANAGE)
+    def test_customer_mutation_uses_the_strict_write_path_on_real_mysql(self):
+        """Deactivate then reactivate the tagged DEV fixture customer (its state is restored)."""
+        from services.customer_service import CustomerService
+        with self.transaction() as c:
+            q = c.cursor(dictionary=True)
+            q.execute("SELECT id, is_active FROM customers WHERE name=%s ORDER BY id LIMIT 1",
+                      ("FINANCIAL ACCOUNTS V1 DEV TEST DATA DEPOSIT FIXTURE",))
+            row = q.fetchone()
+            q.close()
+        if row is None:
+            self.skipTest("the tagged DEV fixture customer does not exist yet")
+        service, cid = CustomerService(self.session), str(row["id"])
+
+        def state():
+            with self.transaction() as c:
+                q = c.cursor(dictionary=True)
+                q.execute("SELECT is_active, updated_by_user_id FROM customers WHERE id=%s", (cid,))
+                found = q.fetchone()
+                q.close()
+                return bool(found["is_active"]), found["updated_by_user_id"]
+        self.assertTrue(state()[0])
+        service.deactivate_customer(cid)
+        self.assertEqual(state(), (False, self.uid))                      # attributed to the verified actor
+        # While another connection holds the strict authorization lock, the mutation waits (writes serialize).
+        holder = self.connect()
+        try:
+            self.authorization.require_permission_for_write(holder, self.actor, "CUSTOMERS_MANAGE")
+            worker = threading.Thread(target=lambda: service.reactivate_customer(cid))
+            worker.start()
+            time.sleep(1.0)
+            self.assertEqual(state()[0], False)                           # still waiting on the write lock
+        finally:
+            holder.rollback()
+            holder.close()
+        worker.join(20)
+        self.assertEqual(state(), (True, self.uid))                       # restored
+
     # ------------------------------------------------------------ real screens overlapping for one user
     def test_a_slow_cash_read_does_not_queue_other_screens(self):
         from repositories.customer_repository import CustomerRepository

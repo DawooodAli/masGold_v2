@@ -252,7 +252,7 @@ class CustomerServiceSearchAndSaveTests(NoDatabaseTestCase):
         self.assertIn("INSERT INTO customers", insert_query)
         self.assertEqual(insert_params, (
             self.raw_values["name"], self.raw_values["mobile"], self.raw_values["place"],
-            None, self.raw_values["notes"], None,
+            None, self.raw_values["notes"], 1,          # created by the verified actor
         ))
         self.assertEqual(calls[1].args[1], ("C000143", 143))
 
@@ -265,13 +265,13 @@ class CustomerServiceSearchAndSaveTests(NoDatabaseTestCase):
         self.assertNotIn("customer_code", query)
         self.assertEqual(params, (
             self.raw_values["name"], self.raw_values["mobile"], self.raw_values["place"],
-            None, self.raw_values["notes"], None, 143,
+            None, self.raw_values["notes"], 1, 143,     # updated by the verified actor
         ))
 
     def test_optional_empty_whitespace_and_null_are_not_normalized_on_save(self):
         values = dict(name="عميل", mobile="", place=" \t ", customer_type_id=None, notes=None)
         self.service.create_customer(**values)
-        self.assertEqual(self.cursor.execute.call_args_list[0].args[1], ("عميل", "", " \t ", None, None, None))
+        self.assertEqual(self.cursor.execute.call_args_list[0].args[1], ("عميل", "", " \t ", None, None, 1))   # 1 = verified actor
 
     def test_normalized_equivalent_spelling_is_still_a_real_edit(self):
         original = dict(self.raw_values, name="أحمد", is_active=True)

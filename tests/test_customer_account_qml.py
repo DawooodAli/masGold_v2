@@ -185,6 +185,8 @@ class CustomerAccountPageTests(harness.InvoicePageTests):
         self.type_into('customerDepositAmount','1500')
         self.click('customerDepositNext')
         button=self.item('customerDepositConfirm')
+        self.wait_until(lambda:button.property('visible') and button.property('enabled'),'confirm shown')
+        QTest.qWait(120)                      # let the button row finish its re-layout before the real click
         self.assert_inside_window(button)
         self.click(button)
         self.wait_until(lambda:len(calls)==1 and not vm.busy)

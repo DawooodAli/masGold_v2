@@ -16,6 +16,7 @@ class CustomerService:
     """
     PAGE_SIZE = 100
     VIEW_PERMISSION = "CUSTOMERS_VIEW"
+    MANAGE_PERMISSION = "CUSTOMERS_MANAGE"      # create / edit / deactivate / reactivate a customer
 
     def __init__(self, session=None, *, authorization=None):
         self._session = session
@@ -30,6 +31,21 @@ class CustomerService:
             from services.authorization_service import AuthorizationService
             self._authorization = AuthorizationService(self._session)
         self._authorization.require_permission_read(connection, actor, self.VIEW_PERMISSION)
+
+    def _authorize_write(self, connection):
+        """The strict write-time check, first thing inside the mutation's own transaction: the user, the
+        employee and the grants are locked, so a permission revoked in the database refuses the write even
+        while the session still lists it. Returns the verified actor (the write's attribution)."""
+        if self._session is None:
+            raise PermissionError("يلزم تسجيل الدخول لتعديل بيانات العملاء.")
+        actor = self._session.require_authenticated()
+        if self._authorization is None:
+            from services.authorization_service import AuthorizationService
+            self._authorization = AuthorizationService(self._session)
+        verified = self._authorization.require_permission_for_write(connection, actor, self.MANAGE_PERMISSION)
+        if not self._session.is_current(actor):
+            raise PermissionError("انتهت جلسة الدخول.")
+        return verified
 
     _MAX_CUSTOMER_ID = 18446744073709551615
     _EDIT_FIELDS = (
@@ -376,10 +392,11 @@ class CustomerService:
         user_id = self._optional_id(user_id, "رقم المستخدم", 4294967295)
         try:
             with DatabaseTransaction() as transaction:
+                actor = self._authorize_write(transaction.connection)
                 repository = CustomerRepository(transaction.connection)
                 self._validate_customer_type(repository, values["customer_type_id"])
                 return repository.create_customer(
-                    **values, created_by_user_id=user_id,
+                    **values, created_by_user_id=actor.user_id,      # the verified actor, never the caller's value
                 )
         except IntegrityError as exc:
             self._translate_integrity_error(exc)
@@ -407,6 +424,7 @@ class CustomerService:
             raise ValueError("أعد فتح نافذة تعديل العميل لتحميل بياناته الحالية.")
         try:
             with DatabaseTransaction() as transaction:
+                actor = self._authorize_write(transaction.connection)
                 repository = CustomerRepository(transaction.connection)
                 existing = repository.get_customer_for_update(customer_id)
                 if existing is None:
@@ -424,7 +442,7 @@ class CustomerService:
                 if all(existing[field] == values[field] for field in self._EDIT_FIELDS):
                     return
                 repository.update_customer(
-                    customer_id=customer_id, **values, updated_by_user_id=user_id,
+                    customer_id=customer_id, **values, updated_by_user_id=actor.user_id,
                 )
         except IntegrityError as exc:
             self._translate_integrity_error(exc)
@@ -435,6 +453,7 @@ class CustomerService:
         customer_id = self._customer_id(customer_id)
         user_id = self._optional_id(user_id, "رقم المستخدم", 4294967295)
         with DatabaseTransaction() as transaction:
+            actor = self._authorize_write(transaction.connection)
             repository = CustomerRepository(transaction.connection)
             existing = repository.get_customer_for_update(customer_id)
             if existing is None:
@@ -444,7 +463,7 @@ class CustomerService:
             # A nonzero balance and active flags never block this profile-only
             # change. The caller displays warnings before requesting it.
             repository.set_customer_active(
-                customer_id, is_active, updated_by_user_id=user_id,
+                customer_id, is_active, updated_by_user_id=actor.user_id,
             )
 
     def deactivate_customer(self, customer_id: int, user_id: int | None = None) -> None:

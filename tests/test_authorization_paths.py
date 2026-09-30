@@ -134,7 +134,8 @@ class CallSiteAuditTests(unittest.TestCase):
                          ("services/customer_deposit_service.py", "_finalize"),
                          ("services/financial_account_service.py", "_finalize"),
                          ("services/management_review_service.py", "_resolve"),
-                         ("services/operational_balance_service.py", "_write")):
+                         ("services/operational_balance_service.py", "_write"),
+                         ("services/customer_service.py", "_authorize_write")):       # CUSTOMERS_MANAGE
             self.assertIn(expected, writes, expected)
 
 
