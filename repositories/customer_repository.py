@@ -387,6 +387,21 @@ class CustomerRepository(BaseRepository):
             (customer_id,),
         )
 
+    def dead_cash_summary(self, customer_id: int) -> dict:
+        """Active (not reversed) write-offs: count, total and last date; plus reversed count."""
+        return self._fetch_one(
+            """
+            SELECT
+                COALESCE(SUM(is_reversed = FALSE), 0) AS active_count,
+                CAST(COALESCE(SUM(CASE WHEN is_reversed = FALSE THEN amount END), 0) AS DECIMAL(16,2)) AS active_total,
+                MAX(CASE WHEN is_reversed = FALSE THEN occurred_at END) AS last_writeoff_at,
+                COALESCE(SUM(is_reversed = TRUE), 0) AS reversed_count
+            FROM dead_cash_writeoffs
+            WHERE customer_id = %s
+            """,
+            (customer_id,),
+        )
+
     def get_dead_cash_history(
         self,
         customer_id: int,

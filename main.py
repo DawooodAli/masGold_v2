@@ -226,6 +226,9 @@ class ApplicationController(QObject):
             from app.viewmodels.customer_account_viewmodel import CustomerAccountViewModel
             account = CustomerAccountViewModel(self.session)
             self.operational_viewmodels["customerAccountVM"] = account
+            if hasattr(customer_page, "deadCashFinalized"):
+                # A write-off / reversal changed the customer ledger (never a money ledger).
+                customer_page.deadCashFinalized.connect(account.refresh)
             for target in (balances, reviews, self.operational_viewmodels.get("customerVM")):
                 if hasattr(target, "refresh"):
                     account.finalized.connect(target.refresh)

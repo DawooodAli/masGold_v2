@@ -3678,6 +3678,7 @@ ApplicationWindow {
 
             ScrollView {
                 id: customerBodyScroll
+                objectName: "customerBodyScroll"
                 implicitHeight: 0
                 Layout.fillWidth: true
                 Layout.fillHeight: true
@@ -3907,6 +3908,51 @@ ApplicationWindow {
                                     color: customersPage.customer.balance_nonzero ? theme.gold : theme.green
                                     font.bold: true
                                 }
+                                CustomerCard {
+                                    objectName: "deadCashWarningBanner"
+                                    Layout.fillWidth: true
+                                    visible: !!customersPage.customer.has_dead_cash_history || !!customersPage.customer.has_active_dead_cash_warning
+                                    implicitHeight: deadCashBannerColumn.implicitHeight + 16
+                                    color: theme.bgPrimary
+                                    border.color: customersPage.customer.dead_cash_attention ? theme.amber : theme.border
+                                    ColumnLayout {
+                                        id: deadCashBannerColumn
+                                        anchors.fill: parent
+                                        anchors.margins: 8
+                                        spacing: 2
+                                        CustomerLabel {
+                                            objectName: "deadCashWarningText"
+                                            Layout.fillWidth: true
+                                            value: String(customersPage.customer.dead_cash_message || "")
+                                            color: customersPage.customer.dead_cash_attention ? theme.amber : theme.textMuted
+                                            font.bold: true
+                                        }
+                                        CustomerLabel {
+                                            objectName: "deadCashSummaryText"
+                                            Layout.fillWidth: true
+                                            visible: (customerVM.deadCashSummary.count || 0) > 0
+                                            value: (customerVM.deadCashSummary.countText || "") + "  |  " + (customerVM.deadCashSummary.totalText || "")
+                                                   + "  |  " + (customerVM.deadCashSummary.lastText || "")
+                                            color: theme.textSecondary
+                                            font.pixelSize: 11
+                                        }
+                                        CustomerLabel {
+                                            Layout.fillWidth: true
+                                            visible: !!customerVM.deadCashSummary.reversedText
+                                            value: customerVM.deadCashSummary.reversedText || ""
+                                            color: theme.textMuted
+                                            font.pixelSize: 10
+                                        }
+                                    }
+                                }
+                                CustomerButton {
+                                    objectName: "writeOffButton"
+                                    Layout.fillWidth: true
+                                    visible: customerVM.canWriteOff
+                                    enabled: !customerVM.busy
+                                    text: "⛔ تحويل إلى رصيد مشطوب"
+                                    onClicked: if (customerVM.openWriteOff()) writeOffDialog.begin()
+                                }
                                 CustomerDetail {
                                     Layout.fillWidth: true
                                     caption: "ملاحظات"
@@ -3924,12 +3970,6 @@ ApplicationWindow {
                                     captionWidth: 135
                                     value: String(customersPage.customer.active_warning_count || 0)
                                 }
-                                CustomerLabel {
-                                    Layout.fillWidth: true
-                                    visible: !!customersPage.customer.has_dead_cash_history || !!customersPage.customer.has_active_dead_cash_warning
-                                    value: String(customersPage.customer.dead_cash_message || "")
-                                    color: customersPage.customer.dead_cash_attention ? theme.amber : theme.textMuted
-                                }
                                 RowLayout {
                                     Layout.fillWidth: true
                                     layoutDirection: Qt.RightToLeft
@@ -3946,7 +3986,9 @@ ApplicationWindow {
                                         onClicked: customersPage.historyTab = 1
                                     }
                                     CustomerButton {
+                                        objectName: "deadCashHistoryTab"
                                         Layout.fillWidth: true
+                                        visible: customerVM.canViewDeadCash        // detail needs DEAD_CASH_VIEW
                                         text: "الرصيد المشطوب"
                                         checked: customersPage.historyTab === 2
                                         onClicked: customersPage.historyTab = 2
@@ -3996,7 +4038,9 @@ ApplicationWindow {
                                             }
                                             CustomerLabel {
                                                 Layout.fillWidth: true
-                                                value: "رقم السجل: " + modelData.id + "  |  " + (modelData.occurred_at || modelData.created_at || "—")
+                                                value: customersPage.historyTab === 2
+                                                       ? (modelData.reference || "") + "  |  " + (modelData.date_text || "—")
+                                                       : "رقم السجل: " + modelData.id + "  |  " + (modelData.occurred_at || modelData.created_at || "—")
                                                 color: theme.textMuted
                                                 font.pixelSize: 10
                                             }
@@ -4027,13 +4071,7 @@ ApplicationWindow {
                                                 color: theme.textSecondary
                                                 font.pixelSize: 10
                                             }
-                                            CustomerLabel {
-                                                Layout.fillWidth: true
-                                                visible: customersPage.historyTab === 1 && !!modelData.related_dead_cash_id
-                                                value: "سجل الشطب المرتبط: " + (modelData.related_dead_cash_id || "—")
-                                                color: theme.textMuted
-                                                font.pixelSize: 10
-                                            }
+
                                             CustomerLabel {
                                                 Layout.fillWidth: true
                                                 value: String(modelData.reason || modelData.description || modelData.notes || "—")
@@ -4049,9 +4087,16 @@ ApplicationWindow {
                                             CustomerLabel {
                                                 Layout.fillWidth: true
                                                 visible: customersPage.historyTab === 2 && !!modelData.is_reversed
-                                                value: "تم التراجع: " + (modelData.reversed_at || "—") + " | " + (modelData.reversal_reason || "—")
+                                                value: "عُكس الشطب: " + (modelData.reversed_at || "—") + " | " + (modelData.reversal_reason || "—")
                                                 color: theme.textMuted
                                                 font.pixelSize: 10
+                                            }
+                                            CustomerButton {
+                                                objectName: "reverseDeadCash_" + (modelData.reference || "")
+                                                visible: customersPage.historyTab === 2 && !modelData.is_reversed && customerVM.canReverseDeadCash
+                                                enabled: !customerVM.busy
+                                                text: "عكس الشطب"
+                                                onClicked: reverseDeadCashDialog.begin(modelData.id, modelData.reference, modelData.amount_text)
                                             }
                                         }
                                     }
@@ -4378,6 +4423,210 @@ ApplicationWindow {
                         if (saved)
                             customerStatusDialog.close()
                     }
+                }
+            }
+        }
+
+        // تحويل إلى رصيد مشطوب: amount (default = full balance, editable) → review → password → تأكيد.
+        Dialog {
+            id: writeOffDialog
+            objectName: "writeOffDialog"
+            parent: Overlay.overlay
+            anchors.centerIn: parent
+            width: Math.min(600, root.width - 60)
+            modal: true
+            closePolicy: customerVM.busy ? Popup.NoAutoClose : Popup.CloseOnEscape
+            property int step: 0                 // 0 = amount + reason, 1 = review + password
+            readonly property var preview: customerVM.writeOffPreview(writeOffAmountRow.text)
+            function begin() {
+                step = 0
+                writeOffAmountRow.text = customerVM.writeOff.defaultAmount || ""
+                writeOffReasonRow.text = ""
+                writeOffPassword.text = ""
+                open()
+            }
+            onClosed: { writeOffPassword.text = ""; customerVM.closeWriteOff() }
+            background: CustomerCard { border.color: theme.amber }
+            header: CustomerLabel {
+                value: "⛔ تحويل إلى رصيد مشطوب"
+                padding: 16
+                color: theme.amber
+                font.pixelSize: 18
+                font.bold: true
+            }
+            contentItem: ColumnLayout {
+                spacing: 10
+                CustomerDetail { Layout.fillWidth: true; caption: "العميل"; value: customerVM.writeOff.name || "" }
+                CustomerDetail {
+                    objectName: "writeOffBalance"
+                    Layout.fillWidth: true; caption: "على العميل"; value: customerVM.writeOff.balanceText || ""
+                }
+                CustomerFormRow {
+                    id: writeOffAmountRow
+                    objectName: "writeOffAmount"
+                    visible: writeOffDialog.step === 0
+                    Layout.fillWidth: true
+                    caption: "مبلغ الشطب *"
+                }
+                CustomerDetail {
+                    objectName: "writeOffAfter"
+                    Layout.fillWidth: true; caption: "المتبقي بعد الشطب"
+                    value: writeOffDialog.preview.valid ? writeOffDialog.preview.afterText : "—"
+                }
+                CustomerFormRow {
+                    id: writeOffReasonRow
+                    objectName: "writeOffReason"
+                    visible: writeOffDialog.step === 0
+                    Layout.fillWidth: true
+                    caption: "سبب شطب الرصيد *"
+                    maximumLength: 1000
+                }
+                CustomerLabel {
+                    Layout.fillWidth: true
+                    visible: writeOffDialog.step === 0
+                    value: "هذه العملية لا تحذف الفواتير أو التاريخ. سيتم تخفيض الرصيد النشط للعميل وتسجيل المبلغ في سجل الرصيد المشطوب."
+                    color: theme.textSecondary
+                    font.pixelSize: 11
+                }
+                CustomerLabel {
+                    objectName: "writeOffConfirmText"
+                    Layout.fillWidth: true
+                    visible: writeOffDialog.step === 1
+                    value: writeOffDialog.preview.confirmText || ""
+                    color: theme.amber
+                    font.bold: true
+                }
+                RowLayout {
+                    visible: writeOffDialog.step === 1
+                    Layout.fillWidth: true
+                    spacing: 12
+                    CustomerField {
+                        id: writeOffPassword
+                        objectName: "writeOffPassword"
+                        Layout.fillWidth: true
+                        echoMode: TextInput.Password
+                        placeholderText: "كلمة مرورك الحالية"
+                    }
+                    CustomerLabel { Layout.preferredWidth: 100; value: "كلمة المرور *"; color: theme.textSecondary }
+                }
+                CustomerLabel {
+                    Layout.fillWidth: true
+                    visible: writeOffDialog.step === 0 && writeOffAmountRow.text.length > 0 && !writeOffDialog.preview.valid
+                    value: writeOffDialog.preview.message || ""
+                    color: theme.red
+                }
+                CustomerMessageBox {
+                    visible: !customerVM.actionSuccess && customerVM.actionMessage.length > 0
+                    message: customerVM.actionMessage
+                    success: false
+                }
+            }
+            footer: RowLayout {
+                spacing: 10
+                CustomerButton {
+                    Layout.leftMargin: 16
+                    Layout.bottomMargin: 12
+                    text: writeOffDialog.step === 1 ? "رجوع" : "إلغاء"
+                    enabled: !customerVM.busy
+                    onClicked: writeOffDialog.step === 1 ? writeOffDialog.step = 0 : writeOffDialog.close()
+                }
+                Item { Layout.fillWidth: true }
+                CustomerButton {
+                    objectName: "writeOffNext"
+                    visible: writeOffDialog.step === 0
+                    Layout.rightMargin: 16
+                    Layout.bottomMargin: 12
+                    text: "متابعة"
+                    enabled: writeOffDialog.preview.valid && writeOffReasonRow.text.trim().length > 0
+                    onClicked: writeOffDialog.step = 1
+                }
+                CustomerButton {
+                    objectName: "writeOffConfirm"
+                    visible: writeOffDialog.step === 1
+                    Layout.rightMargin: 16
+                    Layout.bottomMargin: 12
+                    text: customerVM.busy ? "جارٍ التنفيذ…" : "تأكيد الشطب"
+                    enabled: !customerVM.busy && writeOffPassword.text.length > 0
+                    onClicked: if (customerVM.submitWriteOff(writeOffAmountRow.text, writeOffReasonRow.text, writeOffPassword.text))
+                                   writeOffDialog.close()
+                                else writeOffPassword.text = ""
+                }
+            }
+        }
+
+        // عكس الشطب: a mistake is reversed in full (reason + password); the write-off stays as معكوس.
+        Dialog {
+            id: reverseDeadCashDialog
+            objectName: "reverseDeadCashDialog"
+            parent: Overlay.overlay
+            anchors.centerIn: parent
+            width: Math.min(560, root.width - 60)
+            modal: true
+            closePolicy: customerVM.busy ? Popup.NoAutoClose : Popup.CloseOnEscape
+            property string deadCashId: ""
+            property string reference: ""
+            property string amountText: ""
+            function begin(id, reference, amountText) {
+                deadCashId = id; reverseDeadCashDialog.reference = reference
+                reverseDeadCashDialog.amountText = amountText
+                reverseReasonRow.text = ""; reversePassword.text = ""
+                open()
+            }
+            onClosed: reversePassword.text = ""
+            background: CustomerCard { border.color: theme.goldDark }
+            header: CustomerLabel {
+                value: "عكس الشطب " + reverseDeadCashDialog.reference
+                padding: 16
+                color: theme.gold
+                font.pixelSize: 18
+                font.bold: true
+            }
+            contentItem: ColumnLayout {
+                spacing: 10
+                CustomerLabel {
+                    Layout.fillWidth: true
+                    value: "سيعود مبلغ " + reverseDeadCashDialog.amountText + " ج إلى رصيد العميل. يبقى سجل الشطب محفوظاً بحالة «معكوس»."
+                    color: theme.amber
+                }
+                CustomerFormRow { id: reverseReasonRow; objectName: "reverseDeadCashReason"; Layout.fillWidth: true; caption: "سبب العكس *"; maximumLength: 1000 }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+                    CustomerField {
+                        id: reversePassword
+                        objectName: "reverseDeadCashPassword"
+                        Layout.fillWidth: true
+                        echoMode: TextInput.Password
+                        placeholderText: "كلمة مرورك الحالية"
+                    }
+                    CustomerLabel { Layout.preferredWidth: 100; value: "كلمة المرور *"; color: theme.textSecondary }
+                }
+                CustomerMessageBox {
+                    visible: !customerVM.actionSuccess && customerVM.actionMessage.length > 0
+                    message: customerVM.actionMessage
+                    success: false
+                }
+            }
+            footer: RowLayout {
+                spacing: 10
+                CustomerButton {
+                    Layout.leftMargin: 16
+                    Layout.bottomMargin: 12
+                    text: "إلغاء"
+                    enabled: !customerVM.busy
+                    onClicked: reverseDeadCashDialog.close()
+                }
+                Item { Layout.fillWidth: true }
+                CustomerButton {
+                    objectName: "reverseDeadCashConfirm"
+                    Layout.rightMargin: 16
+                    Layout.bottomMargin: 12
+                    text: "تأكيد العكس"
+                    enabled: !customerVM.busy && reverseReasonRow.text.trim().length > 0 && reversePassword.text.length > 0
+                    onClicked: if (customerVM.reverseDeadCash(reverseDeadCashDialog.deadCashId, reverseReasonRow.text,
+                                                              reversePassword.text))
+                                   reverseDeadCashDialog.close()
+                               else reversePassword.text = ""
                 }
             }
         }

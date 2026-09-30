@@ -44,6 +44,8 @@ class CustomerAccountRepository(CorrectionRepository):
                    WHEN c.id IS NOT NULL THEN c.correction_type
                    WHEN cs.id IS NOT NULL THEN 'CUSTOMER_ACCOUNT_SETTLEMENT'
                    WHEN cd.id IS NOT NULL THEN IF(cd.direction='IN','CUSTOMER_DEPOSIT','CUSTOMER_DEPOSIT_REFUND')
+                   WHEN dw.id IS NOT NULL THEN 'DEAD_CASH_WRITE_OFF'
+                   WHEN dr.id IS NOT NULL THEN 'DEAD_CASH_REVERSAL'
                    ELSE 'UNKNOWN' END AS source_type,
               COALESCE(i.id,x.source_invoice_id,r.source_invoice_id,c.invoice_id) AS invoice_id,
               COALESCE(i.invoice_number,origin.invoice_number) AS invoice_number,
@@ -52,12 +54,14 @@ class CustomerAccountRepository(CorrectionRepository):
                      WHEN r.id IS NOT NULL THEN CONCAT('RT',LPAD(r.id,GREATEST(6,CHAR_LENGTH(r.id)),'0'))
                      WHEN c.id IS NOT NULL THEN CONCAT(IF(c.correction_type='FULL_REVERSAL','RV','FC'),LPAD(c.id,GREATEST(6,CHAR_LENGTH(c.id)),'0'))
                      WHEN cs.id IS NOT NULL THEN CONCAT('CS',LPAD(cs.id,GREATEST(6,CHAR_LENGTH(cs.id)),'0'))
-                     WHEN cd.id IS NOT NULL THEN CONCAT(IF(cd.direction='IN','DP','DR'),LPAD(cd.id,GREATEST(6,CHAR_LENGTH(cd.id)),'0')) END,
+                     WHEN cd.id IS NOT NULL THEN CONCAT(IF(cd.direction='IN','DP','DR'),LPAD(cd.id,GREATEST(6,CHAR_LENGTH(cd.id)),'0'))
+                     WHEN dw.id IS NOT NULL THEN CONCAT('DC',LPAD(dw.id,GREATEST(6,CHAR_LENGTH(dw.id)),'0'))
+                     WHEN dr.id IS NOT NULL THEN CONCAT('DCR',LPAD(dr.id,GREATEST(6,CHAR_LENGTH(dr.id)),'0')) END,
                 o.reference_code) AS source_reference,
               CASE WHEN cs.id IS NOT NULL THEN cs.id
                    WHEN c.source_type='CUSTOMER_ACCOUNT_SETTLEMENT' THEN c.source_id END AS settlement_id,
               c.source_reference AS corrected_source, pd.payment_details, COALESCE(cs.notes, cd.notes) AS settlement_notes,
-              cd.id AS deposit_id
+              cd.id AS deposit_id, COALESCE(dw.id, dr.id) AS dead_cash_id, COALESCE(dw.reason, dr.reversal_reason) AS dead_cash_reason
             FROM ordered o
             LEFT JOIN users u ON u.id=o.actor_id
             LEFT JOIN invoices i ON o.reference_type='INVOICE' AND i.id=o.reference_id
@@ -66,6 +70,8 @@ class CustomerAccountRepository(CorrectionRepository):
             LEFT JOIN transaction_corrections c ON o.reference_type='TRANSACTION_CORRECTION' AND c.id=o.reference_id
             LEFT JOIN customer_account_settlements cs ON o.reference_type='CUSTOMER_ACCOUNT_SETTLEMENT' AND cs.id=o.reference_id
             LEFT JOIN customer_deposits cd ON o.reference_type='CUSTOMER_DEPOSIT' AND cd.id=o.reference_id
+            LEFT JOIN dead_cash_writeoffs dw ON o.row_kind='LEDGER' AND dw.writeoff_transaction_id=o.id
+            LEFT JOIN dead_cash_writeoffs dr ON o.row_kind='LEDGER' AND dr.reversal_transaction_id=o.id
             LEFT JOIN payment_details pd ON pd.settlement_id=cs.id
             LEFT JOIN invoices origin ON origin.id=COALESCE(x.source_invoice_id,r.source_invoice_id,c.invoice_id)
           )

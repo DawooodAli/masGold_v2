@@ -17,6 +17,9 @@ class CustomerService:
     PAGE_SIZE = 100
     VIEW_PERMISSION = "CUSTOMERS_VIEW"
     MANAGE_PERMISSION = "CUSTOMERS_MANAGE"      # create / edit / deactivate / reactivate a customer
+    DEAD_CASH_VIEW = "DEAD_CASH_VIEW"           # Dead Cash DETAIL: history, amounts, reasons, DC references
+    DEAD_CASH_TYPES = {"DEAD_CASH_WRITE_OFF": "شطب رصيد", "DEAD_CASH_REVERSAL": "عكس شطب رصيد"}
+    WARNING_TEXT = "سبق شطب رصيد لهذا العميل"
 
     def __init__(self, session=None, *, authorization=None):
         self._session = session
@@ -31,6 +34,44 @@ class CustomerService:
             from services.authorization_service import AuthorizationService
             self._authorization = AuthorizationService(self._session)
         self._authorization.require_permission_read(connection, actor, self.VIEW_PERMISSION)
+
+    def _dead_cash_visible(self, connection) -> bool:
+        """Whether the database (non-locking) currently grants DEAD_CASH_VIEW. Called after the page check,
+        inside the same read, so a refusal here only means the Dead Cash detail right is missing."""
+        try:
+            self._authorization.require_permission_read(connection, self._session.require_authenticated(),
+                                                        self.DEAD_CASH_VIEW)
+            return True
+        except PermissionError:
+            return False
+
+    @classmethod
+    def _warning_only(cls, flags):
+        """Active flags without Dead Cash detail: the caution stays, the linked write-off and its reason go."""
+        out = []
+        for flag in flags:
+            flag = dict(flag)
+            flag.pop("related_dead_cash_id", None)
+            if flag.get("flag_type") == "DEAD_CASH_WARNING":
+                flag["reason"] = cls.WARNING_TEXT
+            out.append(flag)
+        return out
+
+    @classmethod
+    def _ledger_without_dead_cash_detail(cls, rows):
+        """Ledger rows keep their amount and running balance (the balance must reconcile); a write-off /
+        reversal row loses its reason, reference and link — they are Dead Cash detail."""
+        out = []
+        for row in rows:
+            row = dict(row)
+            label = cls.DEAD_CASH_TYPES.get(row.get("transaction_type_code"))
+            if label:
+                row.update(notes=None, reference_code=None, reference_id=None, description=label)
+            out.append(row)
+        return out
+
+    def _restricted_dead_cash_page(self):
+        return {"items": [], "page": 1, "page_size": self.PAGE_SIZE, "has_more": False, "restricted": True}
 
     def _authorize_write(self, connection):
         """The strict write-time check, first thing inside the mutation's own transaction: the user, the
@@ -324,13 +365,19 @@ class CustomerService:
             # Refresh the associated panels before publishing a new customer
             # summary. Under the configured REPEATABLE READ isolation these
             # reads share the transaction snapshot with the final statement.
-            result["active_flags"] = repository.get_active_customer_flags(customer_id)
-            result["dead_cash_page"] = self._paged(
-                repository.get_dead_cash_history(
-                    customer_id, limit=self.PAGE_SIZE + 1, offset=0,
-                ),
-                1,
-            )
+            flags = repository.get_active_customer_flags(customer_id)
+            if self._dead_cash_visible(transaction.connection):
+                result["active_flags"] = flags
+                result["dead_cash_page"] = self._paged(
+                    repository.get_dead_cash_history(
+                        customer_id, limit=self.PAGE_SIZE + 1, offset=0,
+                    ),
+                    1,
+                )
+            else:                                    # never queried, not merely hidden in QML
+                result["items"] = self._ledger_without_dead_cash_detail(result["items"])
+                result["active_flags"] = self._warning_only(flags)
+                result["dead_cash_page"] = self._restricted_dead_cash_page()
             return result
 
     def get_customer_profile(self, customer_id: int) -> dict:
@@ -342,7 +389,7 @@ class CustomerService:
                 repository.get_customer_statement(customer_id, limit=self.PAGE_SIZE + 1),
                 1, None, None, None,
             )
-            return {
+            profile = {
                 "customer": statement["customer"],
                 "active_flags": repository.get_active_customer_flags(customer_id),
                 "transactions_page": {
@@ -351,13 +398,17 @@ class CustomerService:
                 "statement_summary": statement["summary"],
                 "ledger_token": statement["ledger_token"],
                 "statement_loaded_at": statement["loaded_at"],
-                "dead_cash_page": self._paged(
-                    repository.get_dead_cash_history(
-                        customer_id, limit=self.PAGE_SIZE + 1, offset=0,
-                    ),
-                    1,
-                ),
             }
+            if self._dead_cash_visible(transaction.connection):
+                profile.update(dead_cash_restricted=False, dead_cash_page=self._paged(
+                    repository.get_dead_cash_history(customer_id, limit=self.PAGE_SIZE + 1, offset=0), 1),
+                    dead_cash_summary=repository.dead_cash_summary(customer_id))
+            else:                                    # warning only: no history / amounts / reasons queried
+                profile["transactions_page"]["items"] = self._ledger_without_dead_cash_detail(
+                    profile["transactions_page"]["items"])
+                profile.update(dead_cash_restricted=True, active_flags=self._warning_only(profile["active_flags"]),
+                               dead_cash_page=self._restricted_dead_cash_page(), dead_cash_summary=None)
+            return profile
 
     def get_customer_transactions(self, customer_id: int, page: int = 1) -> dict:
         statement = self.get_customer_statement(customer_id, page=page)
@@ -368,6 +419,8 @@ class CustomerService:
         page = self._page_number(page)
         with DatabaseTransaction() as transaction:
             self._authorize_page_read(transaction.connection)
+            self._authorization.require_permission_read(          # Dead Cash detail: its own right
+                transaction.connection, self._session.require_authenticated(), self.DEAD_CASH_VIEW)
             repository = CustomerRepository(transaction.connection)
             self._require_customer(repository, customer_id)
             rows = repository.get_dead_cash_history(

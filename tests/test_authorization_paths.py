@@ -104,7 +104,10 @@ class CallSiteAuditTests(unittest.TestCase):
                   ("services/management_review_service.py", "open_reviews"),       # either review permission
                   ("services/management_review_service.py", "counts"),             # APP_LOGIN; count only for reviewers
                   ("services/customer_service.py", "_authorize_page_read"),        # CUSTOMERS_VIEW (Customers page)
-                  ("services/invoice_service.py", "search_customers")}             # invoice permissions (Billing picker)
+                  ("services/invoice_service.py", "search_customers"),             # invoice permissions (Billing picker)
+                  ("services/dead_cash_service.py", "context"),                    # DEAD_CASH_MANAGE (dialog balance)
+                  ("services/customer_service.py", "_dead_cash_visible"),          # DEAD_CASH_VIEW (detail gate)
+                  ("services/customer_service.py", "get_dead_cash_history")}       # DEAD_CASH_VIEW (history)
 
     def sites(self, method):
         found = set()
@@ -135,7 +138,9 @@ class CallSiteAuditTests(unittest.TestCase):
                          ("services/financial_account_service.py", "_finalize"),
                          ("services/management_review_service.py", "_resolve"),
                          ("services/operational_balance_service.py", "_write"),
-                         ("services/customer_service.py", "_authorize_write")):       # CUSTOMERS_MANAGE
+                         ("services/customer_service.py", "_authorize_write"),        # CUSTOMERS_MANAGE
+                         ("services/dead_cash_service.py", "write_off"),              # DEAD_CASH_MANAGE
+                         ("services/dead_cash_service.py", "reverse")):               # DEAD_CASH_REVERSE
             self.assertIn(expected, writes, expected)
 
 

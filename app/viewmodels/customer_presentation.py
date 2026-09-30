@@ -21,8 +21,8 @@ TRANSACTION_LABELS = {
     "SHOP_PAYMENT": "سداد للعميل",
     "CUSTOMER_ADVANCE": "دفعة مقدمة من العميل",
     "ADVANCE_APPLIED": "استخدام رصيد العميل",
-    "DEAD_CASH_WRITE_OFF": "شطب دين معدوم",
-    "DEAD_CASH_REVERSAL": "عكس شطب دين معدوم",
+    "DEAD_CASH_WRITE_OFF": "شطب رصيد",
+    "DEAD_CASH_REVERSAL": "عكس شطب رصيد",
     "MANUAL_ADJUSTMENT": "تسوية يدوية",
     "LEGACY_ADJUSTMENT": "تسوية تاريخية مرحّلة",
 }
@@ -80,11 +80,12 @@ def customer_row(raw):
     row["has_dead_cash_history"] = bool(raw.get("has_dead_cash_history"))
     row["has_active_dead_cash_warning"] = bool(raw.get("has_active_dead_cash_warning"))
     row["has_unreversed_dead_cash"] = int(raw.get("unreversed_dead_cash_count") or 0) > 0
+    row.pop("unreversed_dead_cash_count", None)          # a count is Dead Cash detail; the flag is enough
     row["dead_cash_attention"] = row["has_active_dead_cash_warning"] or row["has_unreversed_dead_cash"]
     if row["dead_cash_attention"]:
-        row["dead_cash_message"] = "تنبيه: يوجد تحذير ديون معدومة نشط أو شطب غير معكوس. راجع سجل الرصيد المشطوب."
+        row["dead_cash_message"] = "⚠️ سبق شطب رصيد لهذا العميل"
     elif row["has_dead_cash_history"]:
-        row["dead_cash_message"] = "يوجد سجل شطب سابق تم عكسه؛ لا يوجد تحذير ديون معدومة نشط."
+        row["dead_cash_message"] = "سبق شطب رصيد لهذا العميل ثم عُكس الشطب؛ لا يوجد تحذير نشط."
     else:
         row["dead_cash_message"] = ""
     return row

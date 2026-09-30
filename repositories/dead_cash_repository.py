@@ -39,21 +39,34 @@ class DeadCashRepository(BaseRepository):
 
     def insert_writeoff(self, *, customer_id, amount, balance_before, balance_after,
                         writeoff_transaction_id, reason, created_by_user_id, notes=None,
-                        writeoff_direction="CUSTOMER_OWES_SHOP"):
+                        writeoff_direction="CUSTOMER_OWES_SHOP", request_key=None, request_hash=None):
         if writeoff_direction not in WRITEOFF_DIRECTIONS:
             raise ValueError("Unknown write-off direction.")
         writeoff_id, _ = self._execute(
             """
             INSERT INTO dead_cash_writeoffs (
-                customer_id, writeoff_direction, amount, balance_before, balance_after,
+                customer_id, request_key, request_hash, writeoff_direction, amount, balance_before, balance_after,
                 writeoff_transaction_id, reason, notes, created_by_user_id
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (int(customer_id), writeoff_direction, amount, balance_before, balance_after,
-             int(writeoff_transaction_id), reason, notes, created_by_user_id),
+            (int(customer_id), request_key, request_hash, writeoff_direction, amount, balance_before,
+             balance_after, int(writeoff_transaction_id), reason, notes, created_by_user_id),
         )
         return str(writeoff_id)
+
+    def by_request(self, request_key):
+        """The write-off already posted for this request key (028), locked; None if new."""
+        return _row(self._fetch_one(
+            "SELECT id AS writeoff_id, customer_id, request_hash, amount, balance_before, balance_after, "
+            "created_by_user_id FROM dead_cash_writeoffs WHERE request_key = %s FOR UPDATE", (request_key,)),
+            "writeoff_id", "customer_id")
+
+    def get_writeoff(self, writeoff_id):
+        """Unlocked read (to learn the customer before taking the locks in the canonical order)."""
+        return _row(self._fetch_one(
+            "SELECT id AS writeoff_id, customer_id, amount, is_reversed FROM dead_cash_writeoffs WHERE id = %s",
+            (int(writeoff_id),)), "writeoff_id", "customer_id")
 
     def lock_writeoff(self, writeoff_id):
         return _row(self._fetch_one(

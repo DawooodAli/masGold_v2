@@ -39,7 +39,7 @@ class FakeAuthorization:
         return self._verified("READ", actor, tuple(codes), any_of=True)
 
 
-def customers_page_service(permissions=frozenset({"APP_LOGIN", "CUSTOMERS_VIEW", "CUSTOMERS_MANAGE"})):
+def customers_page_service(permissions=frozenset({"APP_LOGIN", "CUSTOMERS_VIEW", "CUSTOMERS_MANAGE", "DEAD_CASH_VIEW"})):
     """CustomerService for a logged-in user (the Customers page context) with revocable grants."""
     from app.session import AppSession
     from services.authentication_service import AuthenticationResult, _VERIFIED

@@ -593,14 +593,15 @@ Item {
                     visible: invoiceVM.customerInfo.deadCash === true
                     Layout.preferredHeight: 22
                     Layout.preferredWidth: deadCashText.implicitWidth + 10
-                    color: theme.redBackground
+                    // A caution, never a sales block (red stays reserved for errors).
+                    color: "transparent"
                     radius: 4
-                    border.color: theme.red
+                    border.color: theme.amber
                     Label {
                         id: deadCashText
                         anchors.centerIn: parent
-                        text: "ديون معدومة سابقة"
-                        color: theme.red
+                        text: "⚠️ تنبيه: سبق شطب رصيد لهذا العميل."
+                        color: theme.amber
                         font.family: "Cairo"
                         font.pixelSize: 10
                         font.bold: true
@@ -2350,9 +2351,9 @@ Item {
                     }
                     Label {
                         Layout.fillWidth: true
-                        text: [modelData.mobile, modelData.place, modelData.code, modelData.deadCash ? "ديون معدومة سابقة" : ""]
+                        text: [modelData.mobile, modelData.place, modelData.code, modelData.deadCash ? "⚠️ سبق شطب رصيد" : ""]
                               .filter(function(v) { return v.length > 0 }).join(" • ")
-                        color: modelData.deadCash ? theme.red : theme.textMuted
+                        color: modelData.deadCash ? theme.amber : theme.textMuted
                         font.family: "Cairo"
                         font.pixelSize: 10
                         horizontalAlignment: Text.AlignRight

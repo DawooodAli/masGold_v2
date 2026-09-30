@@ -22,6 +22,8 @@ class CustomerViewModel(QObject):
     statementFiltersChanged = Signal()
     statementChanged = Signal()
     statementErrorChanged = Signal()
+    deadCashChanged = Signal()                 # the write-off dialog state / summary changed
+    deadCashFinalized = Signal(str)            # customer id: a write-off / reversal was posted
 
     PAGE_SIZE = 100
     EDITABLE_FIELDS = (
@@ -40,6 +42,9 @@ class CustomerViewModel(QObject):
         super().__init__(parent)
         self._default_service = service is None
         self._service = service if service is not None else CustomerService()
+        self._session, self._dead_cash_service = None, None
+        self._dead_cash_summary, self._writeoff, self._writeoff_key = {}, {}, ""
+        self._dead_cash_restricted = True
         self._customers = []
         self._customer_types = []
         self._page = 1
@@ -235,7 +240,7 @@ class CustomerViewModel(QObject):
         row["id"] = str(raw["flag_id"])
         row["severity_label"] = cls.SEVERITY_LABELS.get(raw.get("severity"), "تنبيه")
         row["type_label"] = (
-            "تحذير ديون معدومة"
+            "تحذير: سبق شطب رصيد لهذا العميل"
             if raw.get("flag_type") == "DEAD_CASH_WARNING" else "تنبيه للعميل"
         )
         return row
@@ -248,7 +253,9 @@ class CustomerViewModel(QObject):
         row["balance_before_text"] = cls._money_text(raw.get("balance_before"), signed=True)
         row["balance_after_text"] = cls._money_text(raw.get("balance_after"), signed=True)
         row["is_reversed"] = bool(raw.get("is_reversed"))
-        row["status_label"] = "تم عكس الشطب" if row["is_reversed"] else "رصيد مشطوب"
+        row["status_label"] = "معكوس" if row["is_reversed"] else "نشط"
+        row["reference"] = "DC%06d" % int(raw["dead_cash_id"])          # business reference, not the row id
+        row["date_text"] = row.get("occurred_at") or "—"
         return row
 
     def _set_busy(self, busy):
@@ -265,8 +272,15 @@ class CustomerViewModel(QObject):
 
     def attach_session(self, session):
         """The logged-in session for the Customers page service (its reads need CUSTOMERS_VIEW)."""
+        self._session = session
         if self._default_service:
             self._service = CustomerService(session)
+
+    def _dead_cash(self):
+        if self._dead_cash_service is None and self._session is not None:
+            from services.dead_cash_service import DeadCashService
+            self._dead_cash_service = DeadCashService(self._session)
+        return self._dead_cash_service
 
     def _publish_errors(self):
         self._error_message = "\n".join(self._read_errors.values())
@@ -362,11 +376,13 @@ class CustomerViewModel(QObject):
         self._transactions = []
         self._active_flags = []
         self._dead_cash_history = []
+        self._dead_cash_summary = {}
         self._transactions_page = 1
         self._dead_cash_page = 1
         self._has_more_transactions = False
         self._has_more_dead_cash = False
         self._profile_errors.clear()
+        self.deadCashChanged.emit()
         self.selectionChanged.emit()
         self.historyChanged.emit()
         self._publish_errors()
@@ -388,6 +404,9 @@ class CustomerViewModel(QObject):
             self._active_flags = flags
             self._transactions = transactions
             self._dead_cash_history = dead_cash
+            self._dead_cash_summary = dict(result.get("dead_cash_summary") or {})
+            self._dead_cash_restricted = bool(result.get("dead_cash_restricted", False))
+            self.deadCashChanged.emit()
             self._transactions_page = transaction_page["page"]
             self._dead_cash_page = dead_cash_page["page"]
             self._has_more_transactions = transaction_page["has_more"]
@@ -688,3 +707,134 @@ class CustomerViewModel(QObject):
     @Slot()
     def clearActionMessage(self):
         self._set_action("", False)
+
+    # ------------------------------------------------------------ Dead Cash (رصيد مشطوب)
+    @Property("QVariantMap", notify=deadCashChanged)
+    def deadCashSummary(self):
+        """Profile warning summary: count / total of active write-offs and the last write-off date."""
+        s = self._dead_cash_summary
+        if not s:
+            return {}
+        from decimal import Decimal
+        count, reversed_count = int(s.get("active_count") or 0), int(s.get("reversed_count") or 0)
+        return {"count": count, "reversedCount": reversed_count,
+                "countText": f"عدد مرات الشطب: {count}",
+                "totalText": "إجمالي الرصيد المشطوب: " + presentation.money_text(Decimal(str(s.get("active_total") or 0))) + " ج",
+                "lastText": "آخر تاريخ شطب: " + (self._qml_safe(s.get("last_writeoff_at")) or "—"),
+                "reversedText": f"عمليات شطب معكوسة: {reversed_count}" if reversed_count else ""}
+
+    @Property(bool, notify=deadCashChanged)
+    def canViewDeadCash(self):
+        """The service returned Dead Cash detail (DEAD_CASH_VIEW in the database) for this profile."""
+        return bool(self._selected_customer_id) and not self._dead_cash_restricted
+
+    @Property(bool, notify=deadCashChanged)
+    def canWriteOff(self):
+        service = self._dead_cash()
+        balance = self._selected_customer.get("balance")
+        from decimal import Decimal
+        return bool(service and service.can_write_off() and self._selected_customer_id and balance is not None
+                    and Decimal(str(balance)) > 0)
+
+    @Property(bool, notify=deadCashChanged)
+    def canReverseDeadCash(self):
+        service = self._dead_cash()
+        return bool(service and service.can_reverse())
+
+    @Property("QVariantMap", notify=deadCashChanged)
+    def writeOff(self):
+        """The open write-off dialog: authoritative balance at opening (formatted) and its raw value."""
+        w = self._writeoff
+        if not w:
+            return {}
+        from decimal import Decimal
+        return {"name": w["name"], "balance": w["balance"], "defaultAmount": w["balance"],
+                "balanceText": presentation.money_text(Decimal(w["balance"])) + " ج"}
+
+    @Slot(result=bool)
+    def openWriteOff(self):
+        """Load the authoritative balance the dialog works from (a fresh request key per opening)."""
+        from uuid import uuid4
+        service = self._dead_cash()
+        if service is None or not self._selected_customer_id:
+            return False
+        try:
+            context = service.context(self._selected_customer_id)
+        except Exception as exc:
+            self._set_action(self._error_text(exc, "تعذر فتح نافذة الشطب."), False)
+            return False
+        if not context["eligible"]:
+            self._set_action("لا يوجد رصيد على العميل لشطبه.", False)
+            return False
+        self._writeoff, self._writeoff_key = context, str(uuid4())
+        self.deadCashChanged.emit()
+        return True
+
+    @Slot(str, result="QVariantMap")
+    def writeOffPreview(self, amount):
+        """The expected balance after the write-off and the review sentence (formatted here, not in QML)."""
+        from decimal import Decimal, InvalidOperation
+        w = self._writeoff
+        if not w:
+            return {"valid": False}
+        try:
+            value = Decimal(str(amount).strip())
+        except (InvalidOperation, ValueError):
+            return {"valid": False, "message": "اكتب المبلغ بالأرقام."}
+        balance = Decimal(w["balance"])
+        if not value.is_finite() or value <= 0 or value != value.quantize(Decimal("0.01")):
+            return {"valid": False, "message": "مبلغ الشطب يجب أن يكون أكبر من صفر بخانتين عشريتين على الأكثر."}
+        if value > balance:
+            return {"valid": False, "message": "مبلغ الشطب أكبر من الرصيد المستحق على العميل."}
+        after = balance - value
+        money = lambda v: presentation.money_text(v) + " ج"
+        return {"valid": True, "afterText": money(after), "amountText": money(value),
+                "confirmText": f"سيتم شطب {money(value)} من رصيد {w['name']}. "
+                               f"سيصبح الرصيد المتبقي على العميل {money(after)}."}
+
+    @Slot()
+    def closeWriteOff(self):
+        self._writeoff, self._writeoff_key = {}, ""
+        self.deadCashChanged.emit()
+
+    def _after_dead_cash(self, customer_id, message):
+        self._set_action(message, True)
+        self._load_customers(self._page)
+        self._load_profile(str(customer_id))
+        self.deadCashFinalized.emit(str(customer_id))
+
+    @Slot(str, str, str, result=bool)
+    def submitWriteOff(self, amount, reason, password):
+        w, service = self._writeoff, self._dead_cash()
+        if not w or service is None or self._busy:
+            return False
+        self._set_busy(True)
+        try:
+            result = service.write_off(w["customer_id"], amount, reason, password, w["balance"], self._writeoff_key)
+        except Exception as exc:
+            self._set_action(self._error_text(exc, "تعذر شطب الرصيد."), False)
+            return False
+        finally:
+            password = None
+            self._set_busy(False)
+        customer_id = w["customer_id"]
+        self.closeWriteOff()
+        self._after_dead_cash(customer_id, f"تم شطب {presentation.money_text(result['amount'])} ج ({result['code']}).")
+        return True
+
+    @Slot(str, str, str, result=bool)
+    def reverseDeadCash(self, dead_cash_id, reason, password):
+        service = self._dead_cash()
+        if service is None or self._busy or not any(r["id"] == dead_cash_id for r in self._dead_cash_history):
+            return False
+        self._set_busy(True)
+        try:
+            result = service.reverse(dead_cash_id, reason, password)
+        except Exception as exc:
+            self._set_action(self._error_text(exc, "تعذر عكس الشطب."), False)
+            return False
+        finally:
+            password = None
+            self._set_busy(False)
+        self._after_dead_cash(self._selected_customer_id, f"تم عكس الشطب {result['code']}.")
+        return True

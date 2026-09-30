@@ -71,6 +71,36 @@ class AuthenticationTests(unittest.TestCase):
         self.password = 'incorrect'
         self.assert_denied()
 
+    def test_verify_user_password_reauthenticates_the_logged_in_user(self):
+        """Sensitive actions (Dead Cash) re-check the actor's CURRENT password against its Argon2 hash."""
+        user_id = self.user['id']
+        self.assertTrue(self.service.verify_user_password(user_id, self.password))
+        self.repo.record_login.assert_not_called()                         # not a login
+        for bad in ('incorrect', '', None):
+            self.now += 100                                                 # past any cooldown
+            with self.assertRaises(AuthenticationError) as denied:
+                self.service.verify_user_password(user_id, bad)
+            self.assertEqual(str(denied.exception), GENERIC_ERROR)
+        self.now += 100
+        with self.assertRaises(AuthenticationError):                        # an unknown user
+            self.repo.get_identity.side_effect = lambda *a, **kw: None
+            self.service.verify_user_password(user_id, self.password)
+        self.repo.get_identity.side_effect = lambda *a, **kw: dict(self.user)
+        self.now += 100
+        with self.assertRaises(AuthenticationError):
+            self.service.verify_user_password(True, self.password)          # a bool is not a user id
+        self.now += 100
+        self.assertTrue(self.service.verify_user_password(user_id, self.password))
+
+    def test_verify_user_password_failures_trigger_the_login_cooldown(self):
+        user_id = self.user['id']
+        with self.assertRaises(AuthenticationError):
+            self.service.verify_user_password(user_id, 'incorrect')
+        with self.assertRaises(AuthenticationError):                        # even the right password waits
+            self.service.verify_user_password(user_id, self.password)
+        self.now += 100
+        self.assertTrue(self.service.verify_user_password(user_id, self.password))
+
     def test_unknown_user(self):
         self.repo.find_credentials.return_value = None
         self.assert_denied()

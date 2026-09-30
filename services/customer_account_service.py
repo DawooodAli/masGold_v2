@@ -50,7 +50,8 @@ class CustomerAccountService:
         if first and last and first>last:
             raise ValueError('تاريخ البداية بعد النهاية.')
         if source not in ('','INVOICE','EXCHANGE','RETURN','FULL_REVERSAL','SETTLEMENT_CORRECTION',SOURCE,
-                          'CUSTOMER_DEPOSIT','CUSTOMER_DEPOSIT_REFUND','UNKNOWN'):
+                          'CUSTOMER_DEPOSIT','CUSTOMER_DEPOSIT_REFUND','DEAD_CASH_WRITE_OFF',
+                          'DEAD_CASH_REVERSAL','UNKNOWN'):
             raise ValueError('نوع المصدر غير صحيح.')
         if len(search)>150:
             raise ValueError('نص البحث طويل.')
@@ -64,6 +65,14 @@ class CustomerAccountService:
                 datetime.combine(last+timedelta(days=1),time.min) if last else None,
                 source,search.strip(),(page-1)*50)
             accounts = self.invoices(connection).active_bank_accounts()
+            try:                                     # Dead Cash detail needs DEAD_CASH_VIEW (non-locking)
+                self.authorization.require_permission_read(connection, actor, 'DEAD_CASH_VIEW')
+            except PermissionError:
+                rows = [dict(r, source_reference=None, dead_cash_reason=None, dead_cash_id=None, notes=None,
+                             description={'DEAD_CASH_WRITE_OFF':'شطب رصيد','DEAD_CASH_REVERSAL':'عكس شطب رصيد'}
+                             [r['source_type']])
+                        if r.get('source_type') in ('DEAD_CASH_WRITE_OFF','DEAD_CASH_REVERSAL') else r
+                        for r in rows]
         return {'customer':customer,'rows':rows[:50],'has_more':len(rows)>50,'page':page,
                 'accounts':accounts,'can_settle':PERMISSION in actor.permissions and bool(customer['balance'])}
 

@@ -11,7 +11,8 @@ from services.invoice_service import PaymentInput
 LABELS = {'INVOICE':'فاتورة','EXCHANGE':'استبدال','RETURN':'مرتجع',
           'FULL_REVERSAL':'عكس','SETTLEMENT_CORRECTION':'تصحيح تسوية',
           'CUSTOMER_ACCOUNT_SETTLEMENT':'تسوية حساب','CUSTOMER_DEPOSIT':'عربون',
-          'CUSTOMER_DEPOSIT_REFUND':'استرداد عربون','UNKNOWN':'حركة قديمة / غير محددة'}
+          'CUSTOMER_DEPOSIT_REFUND':'استرداد عربون','DEAD_CASH_WRITE_OFF':'شطب رصيد',
+          'DEAD_CASH_REVERSAL':'عكس شطب رصيد','UNKNOWN':'حركة قديمة / غير محددة'}
 
 
 def balance_text(value):
@@ -278,7 +279,7 @@ class CustomerAccountViewModel(QObject):
                  'description':(('استلام من العميل — ' if r['amount_delta']<0 else 'دفع للعميل — ')
                     if r['source_type']=='CUSTOMER_ACCOUNT_SETTLEMENT' else '')+(r.get('description') or ''),
                  'actor':r.get('actor_name') or '—',
-                 'notes':r.get('settlement_notes') or r.get('notes') or '',
+                 'notes':r.get('settlement_notes') or r.get('dead_cash_reason') or r.get('notes') or '',
                  'payments':self._payment_text(r.get('payment_details')),
                  'amount': ('دون أثر على الرصيد' if not r['amount_delta'] else
                     ('على العميل: ' if r['amount_delta']>0 else 'للعميل: ')+money(abs(r['amount_delta']))),

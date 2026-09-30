@@ -139,6 +139,40 @@ class AuthenticationService:
             password = None
             self._lock.release()
 
+    def verify_user_password(self, user_id, password):
+        """Re-authentication of the LOGGED-IN user before a sensitive action (e.g. a Dead Cash write-off):
+        checks this user's current password against its stored Argon2 hash without signing in again.
+        Same cooldown and generic error as a login; the password is never stored or logged."""
+        if not self._lock.acquire(blocking=False):
+            raise AuthenticationError(GENERIC_ERROR)
+        try:
+            if self._clock() < self._retry_at:
+                raise AuthenticationError(GENERIC_ERROR)
+            try:
+                if not isinstance(password, str) or not 0 < len(password) <= 1024 or isinstance(user_id, bool) \
+                        or not isinstance(user_id, int) or user_id <= 0:
+                    raise AuthenticationError(GENERIC_ERROR)
+                with self._transaction() as connection:
+                    user = self._repository(connection).get_identity(user_id)
+                if not user or not user.get("password_hash"):
+                    self._passwords.dummy_verify(password)
+                    raise AuthenticationError(GENERIC_ERROR)
+                if not self._passwords.verify(user["password_hash"], password):
+                    raise AuthenticationError(GENERIC_ERROR)
+            except AuthenticationError:
+                self._failures += 1
+                self._retry_at = self._clock() + min(30, 2 ** min(self._failures - 1, 5))
+                raise
+            except Exception:
+                self._retry_at = self._clock() + 2
+                raise AuthenticationError(GENERIC_ERROR) from None
+            self._failures = 0
+            self._retry_at = 0
+            return True
+        finally:
+            password = None
+            self._lock.release()
+
     def _check_credentials(self, username, password):
         if not isinstance(username, str) or not 0 < len(username) <= 100:
             raise AuthenticationError(GENERIC_ERROR)
