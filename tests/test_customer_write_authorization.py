@@ -154,5 +154,91 @@ class BillingIsolationTests(InvoiceServiceTestCase):
                 self.assertEqual(name, "search_customers")
 
 
+class BillingInlineCustomerExceptionTests(InvoiceServiceTestCase):
+    """The approved operational exception: invoice finalization may register a brand-new customer under
+    INVOICE_FINALIZE (no CUSTOMERS_MANAGE), atomically with the invoice, and nothing more."""
+    permissions = frozenset({"APP_LOGIN", "INVOICE_CREATE", "INVOICE_FINALIZE", "PAYMENT_RECORD"})
+
+    def draft(self, **kwargs):
+        from services.invoice_service import InvoiceDraft
+        from tests.test_invoice_service import cash
+        from tests.test_invoice_workflow_service import scanned
+        return InvoiceDraft(5, kwargs.pop("customer", None), (scanned(),), (), (cash("67011"),),
+                            account_amount="7011", account_direction="CUSTOMER_OWES", **kwargs)
+
+    def new(self, name="عميل جديد", mobile="0100 123 4567", place="المنصورة"):
+        from services.invoice_service import NewCustomerInput
+        return NewCustomerInput(name, mobile, place)
+
+    def test_finalize_without_customers_manage_creates_the_customer_with_the_invoice(self):
+        self.assertNotIn("CUSTOMERS_MANAGE", self.permissions)
+        self.assertNotIn("CUSTOMERS_VIEW", self.permissions)
+        result = self.finalize(self.draft(new_customer=self.new()))
+        self.assertTrue(result["customer_created"])
+        customer_id = self.store.new_customers[0]
+        created = self.store.customers[customer_id]
+        self.assertEqual(self.store.invoices[0]["customer_id"], customer_id)       # one transaction, linked
+        self.assertEqual(created["created_by"], 17)                                # the verified logged-in actor
+        self.assertIn("INVOICE_FINALIZE", self.authorization.checked)              # the strict write check
+        self.assertNotIn("CUSTOMERS_MANAGE", self.authorization.checked)
+        # Only the fields Billing legitimately collects: name, mobile, place (no type, no notes).
+        self.assertEqual((created["name"], created["mobile"], created["place"]),
+                         ("عميل جديد", "0100 123 4567", "المنصورة"))
+
+    def test_the_same_user_cannot_use_the_customers_service(self):
+        service = customers_page_service(self.permissions)
+        transaction = MagicMock()
+        transaction.__enter__.return_value = transaction
+        transaction.__exit__.return_value = False
+        snapshot = {"name": "عميل", "mobile": None, "place": None, "customer_type_id": None, "notes": None,
+                    "is_active": 1}
+        mutations = (lambda: service.create_customer(name="تجاوز"),
+                     lambda: service.update_customer("12", name="تعديل", mobile=None, place=None,
+                                                     customer_type_id=None, notes=None, original_values=snapshot),
+                     lambda: service.deactivate_customer("12"), lambda: service.reactivate_customer("12"),
+                     lambda: service.search_customers())                           # nor the Customers page itself
+        with patch("services.customer_service.DatabaseTransaction", return_value=transaction):
+            for mutation in mutations:
+                with self.assertRaises(PermissionError):
+                    mutation()
+        self.assertFalse(transaction.connection.cursor.return_value.execute.called)
+
+    def test_a_failed_invoice_leaves_no_orphan_customer(self):
+        from tests.test_invoice_service import InvoiceRepo
+        import copy
+        self.addCleanup(setattr, InvoiceRepo, "fail_on", None)
+        InvoiceRepo.fail_on = "insert_sale_line"
+        before = copy.deepcopy(self.store.tables())
+        with self.assertRaises(RuntimeError):
+            self.finalize(self.draft(new_customer=self.new()))
+        self.assertNothingWritten(before)
+        self.assertEqual(self.store.new_customers, [])
+
+    def test_revoked_invoice_finalize_creates_neither_customer_nor_invoice(self):
+        import copy
+        before = copy.deepcopy(self.store.tables())
+        self.authorization.permissions = frozenset({"APP_LOGIN", "INVOICE_CREATE", "PAYMENT_RECORD",
+                                                    "CUSTOMERS_MANAGE"})           # finalize revoked in the database
+        with self.assertRaises(PermissionError):
+            self.finalize(self.draft(new_customer=self.new()))
+        self.assertNothingWritten(before)
+        self.assertEqual((self.store.new_customers, self.store.invoices), ([], []))
+
+    def test_an_existing_customer_is_linked_and_never_edited(self):
+        import copy
+        self.store.customers["12"]["mobile"] = "01001234567"
+        existing = copy.deepcopy(self.store.customers["12"])
+        result = self.finalize(self.draft(new_customer=self.new("اسم آخر", "٠١٠٠-١٢٣-٤٥٦٧", "مكان آخر")))
+        self.assertFalse(result["customer_created"])
+        self.assertEqual(self.store.invoices[0]["customer_id"], "12")
+        self.assertEqual(self.store.customers["12"], existing)                     # name / place / mobile untouched
+        self.assertEqual(self.store.new_customers, [])
+        # Selecting an existing customer by id does not edit it either.
+        self.setUp()
+        untouched = copy.deepcopy(self.store.customers["12"])
+        self.finalize(self.draft(customer="12"))
+        self.assertEqual(self.store.customers["12"], untouched)
+
+
 if __name__ == "__main__":
     unittest.main()
