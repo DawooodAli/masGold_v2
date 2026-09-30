@@ -58,7 +58,7 @@ class CustomerDepositService:
             pass
         try:
             with self._transaction() as connection:
-                self._authorization.require_permission(connection, actor, PERMISSION)
+                self._authorization.require_permission_read(connection, actor, PERMISSION)
                 raise _Done(self._available(connection, cid, lock=False)[0])
         except _Done as done:
             return str(done.args[0])

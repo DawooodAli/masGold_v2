@@ -114,10 +114,9 @@ class FinancialAccountService:
     def _read(self, actor, work):
         """A read transaction that is always rolled back. The view permission is re-checked inside it and
         the visible ledgers come from the database-verified permissions (never from the UI)."""
-        permission = next(p for p in VIEW_PERMISSIONS if p in actor.permissions)
         try:
             with self._transaction() as connection:
-                verified = self._authorization.require_permission(connection, actor, permission)
+                verified = self._authorization.require_any_permission_read(connection, actor, VIEW_PERMISSIONS)
                 ledgers = visible_ledgers(verified.permissions)
                 if not ledgers:
                     raise PermissionError("ليس لديك صلاحية عرض الحسابات المالية.")

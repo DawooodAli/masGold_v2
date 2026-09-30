@@ -135,8 +135,10 @@ def make(permissions=EMPLOYEE, rows=None, page_size=50, printed=True):
     def transaction():
         yield state
     printer = FakePrint(printed)
+    from tests.auth_fakes import FakeAuthorization
     service = InvoiceHistoryService(session, transaction_factory=transaction, invoice_repository=FakeRepo,
-                                    page_size=page_size, print_service=printer)
+                                    page_size=page_size, print_service=printer,
+                                    authorization=FakeAuthorization(session))
     return service, state, printer
 
 
@@ -525,7 +527,9 @@ class HistoryCustomerSearchScopeTests(HistoryViewModelTests):
         @contextmanager
         def transaction():
             yield object()
-        service = InvoiceHistoryService(session, transaction_factory=transaction, invoice_repository=Repo)
+        from tests.auth_fakes import FakeAuthorization
+        service = InvoiceHistoryService(session, transaction_factory=transaction, invoice_repository=Repo,
+                                        authorization=FakeAuthorization(session))
         service.search(text="على", date_from=None, date_to=None)
         self.assertEqual((captured["limit"], captured["offset"], captured["date_from"]), (51, 0, None))
 

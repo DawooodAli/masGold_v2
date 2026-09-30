@@ -327,9 +327,25 @@ class Authorization:
         self.session, self.permissions = session, permissions
 
     def require_permission(self, connection, actor, code, **kwargs):
+        self.checked = getattr(self, "checked", []) + [("WRITE", code)]
         if not self.session.is_current(actor) or code not in self.permissions:
             raise PermissionError("لا توجد صلاحية")
         return dataclasses.replace(actor)
+
+    require_permission_for_write = require_permission
+
+    def require_permission_read(self, connection, actor, code):
+        """The non-locking read path: same refusal rules, against the (revocable) database grants."""
+        self.checked = getattr(self, "checked", []) + [("READ", code)]
+        if not self.session.is_current(actor) or code not in self.permissions:
+            raise PermissionError("لا توجد صلاحية")
+        return dataclasses.replace(actor, permissions=frozenset(self.permissions))
+
+    def require_any_permission_read(self, connection, actor, codes):
+        self.checked = getattr(self, "checked", []) + [("READ", tuple(codes))]
+        if not self.session.is_current(actor) or not set(codes) & set(self.permissions):
+            raise PermissionError("لا توجد صلاحية")
+        return dataclasses.replace(actor, permissions=frozenset(self.permissions))
 
 
 MANAGER = frozenset({"APP_LOGIN", "MANAGEMENT_REVIEW", "TRANSACTION_CORRECT"})

@@ -26,7 +26,8 @@ Control {
     font.family: "Cairo"
 
     Theme { id: pickerTheme }
-    CustomerPickerViewModel { id: pickerVM }
+    // The picker belongs to the Customers page: its service re-checks CUSTOMERS_VIEW with this session.
+    CustomerPickerViewModel { id: pickerVM; session: typeof appSession !== "undefined" ? appSession : null }
 
     onAllowInactiveChanged: {
         if (componentReady)

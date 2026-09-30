@@ -7,7 +7,30 @@ from repositories.customer_repository import CustomerRepository
 
 
 class CustomerService:
+    """The Customers management page: browsing, searching, profiles, statements and Dead Cash history.
+
+    Every read here is the CUSTOMERS PAGE context and requires CUSTOMERS_VIEW, re-checked against the
+    database (non-locking) inside the read's own transaction. Choosing a customer while creating an invoice
+    is a different context: it goes through InvoiceService.search_customers under the invoice permissions
+    and returns only the fields Billing needs — never through this service.
+    """
     PAGE_SIZE = 100
+    VIEW_PERMISSION = "CUSTOMERS_VIEW"
+
+    def __init__(self, session=None, *, authorization=None):
+        self._session = session
+        self._authorization = authorization
+
+    def _authorize_page_read(self, connection) -> None:
+        """One authoritative, non-locking check per bounded read of the Customers page."""
+        if self._session is None:
+            raise PermissionError("يلزم تسجيل الدخول لعرض العملاء.")
+        actor = self._session.require_authenticated()
+        if self._authorization is None:
+            from services.authorization_service import AuthorizationService
+            self._authorization = AuthorizationService(self._session)
+        self._authorization.require_permission_read(connection, actor, self.VIEW_PERMISSION)
+
     _MAX_CUSTOMER_ID = 18446744073709551615
     _EDIT_FIELDS = (
         "name", "mobile", "place", "customer_type_id", "notes",
@@ -144,6 +167,7 @@ class CustomerService:
         active = None if status == "ALL" else status == "ACTIVE"
         balance = None if balance_status == "ALL" else balance_status
         with DatabaseTransaction() as transaction:
+            self._authorize_page_read(transaction.connection)
             repository = CustomerRepository(transaction.connection)
             rows = repository.search_customers(
                 search=search.strip(),
@@ -158,6 +182,7 @@ class CustomerService:
     def get_customer_details(self, customer_id: int) -> dict:
         customer_id = self._customer_id(customer_id)
         with DatabaseTransaction() as transaction:
+            self._authorize_page_read(transaction.connection)
             return self._require_customer(
                 CustomerRepository(transaction.connection), customer_id,
             )
@@ -257,6 +282,7 @@ class CustomerService:
             raise ValueError("أعد تحميل كشف الحساب قبل الانتقال بين الصفحات.")
 
         with DatabaseTransaction() as transaction:
+            self._authorize_page_read(transaction.connection)
             repository = CustomerRepository(transaction.connection)
             if transaction_type_code is not None:
                 types = repository.get_customer_transaction_types()
@@ -294,6 +320,7 @@ class CustomerService:
     def get_customer_profile(self, customer_id: int) -> dict:
         customer_id = self._customer_id(customer_id)
         with DatabaseTransaction() as transaction:
+            self._authorize_page_read(transaction.connection)
             repository = CustomerRepository(transaction.connection)
             statement = self._statement_result(
                 repository.get_customer_statement(customer_id, limit=self.PAGE_SIZE + 1),
@@ -324,6 +351,7 @@ class CustomerService:
         customer_id = self._customer_id(customer_id)
         page = self._page_number(page)
         with DatabaseTransaction() as transaction:
+            self._authorize_page_read(transaction.connection)
             repository = CustomerRepository(transaction.connection)
             self._require_customer(repository, customer_id)
             rows = repository.get_dead_cash_history(

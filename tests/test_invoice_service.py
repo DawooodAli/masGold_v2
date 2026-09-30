@@ -405,6 +405,13 @@ class Authorization:
             raise PermissionError("لا توجد صلاحية")
         return dataclasses.replace(actor)
 
+    def require_any_permission_read(self, connection, actor, codes):
+        """The non-locking read path (not recorded in `checked`, which lists the write checks)."""
+        self.read_checks = getattr(self, "read_checks", []) + [tuple(codes)]
+        if not self.session.is_current(actor) or not set(codes) & set(self.permissions):
+            raise PermissionError("لا توجد صلاحية")
+        return dataclasses.replace(actor)
+
 
 def sale(item="100"):
     """A scanned stock piece; its price comes from the real money (no making is typed)."""

@@ -71,9 +71,19 @@ class ManagementReviewService:
         return any(code in actor.permissions for code in REVIEW_PERMISSIONS)
 
     def counts(self, *, _expected_actor=None):
-        """Visible to every logged-in user (the sidebar indicator)."""
-        self._actor(_expected_actor)
-        return self._read(lambda repository: repository.open_counts())
+        """The sidebar indicator: the pending review workload, for reviewers only.
+
+        A user with neither review permission (per the database, non-locking) gets an empty result —
+        nothing is queried and no count is exposed; the sidebar entry simply shows no number."""
+        actor = self._actor(_expected_actor)
+        try:
+            with self._transaction() as connection:
+                verified = self._authorization.require_permission_read(connection, actor, "APP_LOGIN")
+                if not set(REVIEW_PERMISSIONS) & set(verified.permissions):
+                    raise _Discard({})
+                raise _Discard(self._repository(connection).open_counts())
+        except _Discard as done:
+            return done.args[0]
 
     def open_reviews(self, *, _expected_actor=None):
         actor = self._actor(_expected_actor)
@@ -87,7 +97,13 @@ class ManagementReviewService:
                     "OLD_GOLD_DISCOUNT": repository.open_reviews("OLD_GOLD_DISCOUNT"),
                     INSPECTION: repository.open_inspections(),
                     "RETURN_APPROVAL": repository.open_return_approvals()}
-        return self._read(read)
+        try:
+            with self._transaction() as connection:
+                # Either review permission opens the list: re-checked against the database, without a lock.
+                self._authorization.require_any_permission_read(connection, actor, REVIEW_PERMISSIONS)
+                raise _Discard(read(self._repository(connection)))
+        except _Discard as done:
+            return done.args[0]
 
     # ------------------------------------------------------------ Return approval (after 72 hours)
     def _return_service(self):

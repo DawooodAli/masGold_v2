@@ -29,7 +29,9 @@ class _Discard(Exception):
 
 class DashboardService:
     def __init__(self, session, *, transaction_factory=invoice_transaction, repository=DashboardRepository,
-                 balance_repository=FinancialBalanceRepository):
+                 balance_repository=FinancialBalanceRepository, authorization=None):
+        from services.authorization_service import AuthorizationService
+        self._authorization = authorization or AuthorizationService(session)
         self._session = session
         self._transaction = transaction_factory
         self._repository = repository
@@ -47,20 +49,23 @@ class DashboardService:
 
     def today(self, *, _expected_actor=None):
         actor = self._actor(_expected_actor)
-        sales = self.can_see_sales(actor)
 
         def read(connection):
+            # الرئيسية is open to every logged-in user; the sales figures follow the CURRENT database
+            # grants (non-locking read), never the permissions cached at login.
+            verified = self._authorization.require_permission_read(connection, actor, "APP_LOGIN")
+            sales = self.can_see_sales(verified)
             dashboard, balances = self._repository(connection), self._balances(connection)
             result = {"old_gold_balance": balances.old_gold_counted(), "old_gold_flow": dashboard.today_old_gold_flow()}
             if sales:
                 result.update(invoices=dashboard.today_invoices(), sold=dashboard.today_sold_by_karat(),
                               recent=dashboard.recent_invoices(5))
-            return result
+            return sales, result
         try:
             with self._transaction() as connection:
                 raise _Discard(read(connection))
         except _Discard as done:
-            raw = done.args[0]
+            sales, raw = done.args[0]
 
         balance = {int(r["karat_value"]): Decimal(str(r["balance_grams"])) for r in raw["old_gold_balance"]}
         flow = {int(r["karat_value"]): r for r in raw["old_gold_flow"]}

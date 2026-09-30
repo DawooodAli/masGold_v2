@@ -19,6 +19,8 @@ class CustomerPickerViewModel(QObject):
 
     def __init__(self, parent=None, service=None):
         super().__init__(parent)
+        self._default_service = service is None
+        self._session = None
         self._service = service if service is not None else CustomerService()
         self._results = []
         self._search_text = ""
@@ -31,6 +33,19 @@ class CustomerPickerViewModel(QObject):
         self._error_message = ""
         self._has_searched = False
         # QML can create/configure a closed picker without touching MySQL.
+
+    def _get_session(self):
+        return self._session
+
+    def _set_session(self, session):
+        """Only the real AppSession object is accepted; it carries no settable identity."""
+        from app.session import AppSession
+        if isinstance(session, AppSession) and session is not self._session:
+            self._session = session
+            if self._default_service:
+                self._service = CustomerService(session)
+
+    session = Property(QObject, _get_session, _set_session)
 
     @Property("QVariantList", notify=resultsChanged)
     def results(self):

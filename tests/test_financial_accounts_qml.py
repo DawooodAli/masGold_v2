@@ -277,7 +277,7 @@ class CashScreenTests(harness.InvoicePageTests):
         self.wait_until(lambda: not self.fin.busy and len(self.fin.outRows) == 5)
         QTest.qWait(80)
         self.click(self.visible_item("cashOutRow_1"))
-        self.wait_until(lambda: self.item("cashDetailDialog").property("visible"))
+        self.wait_until(lambda: self.item("cashDetailDialog").property("opened"), "detail dialog fully opened")
         reverse = self.item("cashDetailReverse")
         self.assert_inside_window(reverse)
         self.click(reverse)

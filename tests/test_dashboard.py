@@ -85,8 +85,9 @@ def make_service(state, permissions=BILLING):
     @contextmanager
     def transaction():
         yield state
+    from tests.auth_fakes import FakeAuthorization
     return DashboardService(session, transaction_factory=transaction, repository=FakeDashboardRepo,
-                            balance_repository=FakeBalanceRepo), session
+                            balance_repository=FakeBalanceRepo, authorization=FakeAuthorization(session)), session
 
 
 class DashboardServiceTests(unittest.TestCase):

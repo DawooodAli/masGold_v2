@@ -66,7 +66,7 @@ class CustomerInvoicesDevTests(harness.InvoicePageTests):
         session=self.controller.session
         session._establish(login,int(session.generation))
         models=self.controller.operational_viewmodels
-        customers=models['customerVM'];customers._service=CustomerService()
+        customers=models['customerVM'];customers._service=CustomerService(session)
         vm=models['customerAccountVM'];vm.service=CustomerAccountService(session)
         history=models['invoiceHistoryVM'];history._service=InvoiceHistoryService(session)
         self.root.setProperty('currentPage',3)

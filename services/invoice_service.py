@@ -861,13 +861,20 @@ class InvoiceService:
                 "settings": {key: _money(value) for key, value in limits.items()}}
 
     def search_customers(self, text, *, _expected_actor=None):
-        """Inline customer suggestions by name or phone (Customers V2 normalized search)."""
-        self._require_create(_expected_actor)
+        """Billing customer picker: inline suggestions by name or phone (Customers V2 normalized search).
+
+        An operational part of invoice creation, authorized by the invoice permissions (never by
+        CUSTOMERS_VIEW) and re-checked against the database without a lock. Returns only what Billing
+        needs to choose a customer — at most 8 active customers, no statement / history / profile."""
+        actor = self._require_create(_expected_actor)
         text = (text or "").strip()
         if not text:
             return []
-        rows = self._read_only(lambda connection: self._customers(connection).search_customers(
-            search=text, is_active=True, limit=8))
+
+        def read(connection):
+            self._authorization.require_any_permission_read(connection, actor, ("INVOICE_CREATE", "INVOICE_FINALIZE"))
+            return self._customers(connection).search_customers(search=text, is_active=True, limit=8)
+        rows = self._read_only(read)
         return [{"customer_id": str(r["customer_id"]), "customer_code": r["customer_code"], "name": r["name"],
                  "mobile": r["mobile"], "place": r["place"], "balance": _money(r.get("balance")),
                  "dead_cash_warning": bool(r.get("has_active_dead_cash_warning"))} for r in rows]

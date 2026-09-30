@@ -31,7 +31,7 @@ class CustomerAccountService:
         if len(search)>150:
             raise ValueError('نص البحث طويل.')
         return InvoiceHistoryService(self.session, transaction_factory=self.transaction,
-            invoice_repository=self.invoices).search(customer_id=customer_id, text=search.strip(),
+            invoice_repository=self.invoices, authorization=self.authorization).search(customer_id=customer_id, text=search.strip(),
                 date_from=CustomerService._statement_date(start,'تاريخ البداية'),
                 date_to=CustomerService._statement_date(end,'تاريخ النهاية'),
                 invoice_type=invoice_type or None, page=CustomerService._page_number(page),
@@ -55,8 +55,7 @@ class CustomerAccountService:
         if len(search)>150:
             raise ValueError('نص البحث طويل.')
         with self.transaction() as connection:
-            self.authorization.require_permission(connection,actor,
-                'CUSTOMERS_VIEW' if 'CUSTOMERS_VIEW' in actor.permissions else PERMISSION)
+            self.authorization.require_any_permission_read(connection,actor,('CUSTOMERS_VIEW',PERMISSION))
             customer = self.customers(connection).get_customer_by_id(cid)
             if not customer:
                 raise ValueError('العميل غير موجود.')

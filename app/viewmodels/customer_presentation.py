@@ -125,7 +125,7 @@ def statement_summary(raw):
 
 
 def error_text(exc, fallback):
-    if isinstance(exc, ValueError) and any("\u0600" <= char <= "\u06ff" for char in str(exc)):
-        return str(exc)
+    if isinstance(exc, (ValueError, PermissionError)) and any("\u0600" <= char <= "\u06ff" for char in str(exc)):
+        return str(exc)                     # a business refusal (validation / permission), not a failure
     logger.error("Customer operation failed", exc_info=True)
     return fallback

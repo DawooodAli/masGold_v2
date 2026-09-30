@@ -185,6 +185,9 @@ class ApplicationController(QObject):
             self.operational_viewmodels.setdefault("printerSettingsVM", self._printer_settings_factory(self.session))
             self.operational_viewmodels.setdefault("balancesVM", self._balance_factory(self.session))
             self.operational_viewmodels.setdefault("dashboardVM", self._dashboard_factory(self.session))
+            customer_page = self.operational_viewmodels.get("customerVM")
+            if hasattr(customer_page, "attach_session"):
+                customer_page.attach_session(self.session)       # Customers page reads need CUSTOMERS_VIEW
             invoice_vm = self.operational_viewmodels["invoiceVM"]
             balances = self.operational_viewmodels["balancesVM"]
             if hasattr(invoice_vm, "finalized") and hasattr(balances, "refresh"):

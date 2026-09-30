@@ -38,6 +38,7 @@ class CustomerViewModel(QObject):
 
     def __init__(self, parent=None, service=None):
         super().__init__(parent)
+        self._default_service = service is None
         self._service = service if service is not None else CustomerService()
         self._customers = []
         self._customer_types = []
@@ -261,6 +262,11 @@ class CustomerViewModel(QObject):
         self.actionChanged.emit()
 
     _error_text = staticmethod(presentation.error_text)
+
+    def attach_session(self, session):
+        """The logged-in session for the Customers page service (its reads need CUSTOMERS_VIEW)."""
+        if self._default_service:
+            self._service = CustomerService(session)
 
     def _publish_errors(self):
         self._error_message = "\n".join(self._read_errors.values())

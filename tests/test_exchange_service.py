@@ -345,6 +345,16 @@ class Authorization:
             raise PermissionError("لا توجد صلاحية")
         return dataclasses.replace(actor)
 
+    def require_any_permission_read(self, connection, actor, codes):
+        if not self.session.is_current(actor) or not set(codes) & set(self.permissions):
+            raise PermissionError("لا توجد صلاحية")
+        return dataclasses.replace(actor, permissions=frozenset(self.permissions))
+
+    def require_permission_read(self, connection, actor, code):
+        if not self.session.is_current(actor) or code not in self.permissions:
+            raise PermissionError("لا توجد صلاحية")
+        return dataclasses.replace(actor, permissions=frozenset(self.permissions))
+
 
 def draft(returned=("1",), replacements=(("300", None),), payments=(), account=None, invoice="500"):
     return ExchangeDraft(invoice, tuple(returned),

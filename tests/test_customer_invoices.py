@@ -28,7 +28,7 @@ class CustomerInvoicesTests(unittest.TestCase):
         paid.update(settlement_status='SETTLED',money_received=paid['net_amount'])
         service,state,_=history.make(rows=[paid,allocated])
         account=CustomerAccountService(service._session,transaction_factory=service._transaction,
-                                       invoices=history.FakeRepo)
+                                       invoices=history.FakeRepo,authorization=service._authorization)
         result=account.customer_invoices('12',start='2026-09-01',end='2026-09-30',search='2609')
         self.assertEqual([r['invoice_id'] for r in result['items']],['21','22'])
         self.assertEqual(result['items'][0]['settlement_status'],'SETTLED')
@@ -41,7 +41,7 @@ class CustomerInvoicesTests(unittest.TestCase):
     def test_customer_scope_cannot_fall_back_to_all_history(self):
         service,state,_=history.make()
         account=CustomerAccountService(service._session,transaction_factory=service._transaction,
-                                       invoices=history.FakeRepo)
+                                       invoices=history.FakeRepo,authorization=service._authorization)
         for cid in ('',None,'name',0):
             with self.subTest(cid=cid),self.assertRaises(ValueError):account.customer_invoices(cid)
         self.assertEqual(state['calls'],[])
@@ -50,11 +50,11 @@ class CustomerInvoicesTests(unittest.TestCase):
         rows=[history.summary_row(str(i),datetime(2026,9,30),invoice_id=str(i)) for i in range(52)]
         service,state,_=history.make(rows=rows)
         account=CustomerAccountService(service._session,transaction_factory=service._transaction,
-                                       invoices=history.FakeRepo)
+                                       invoices=history.FakeRepo,authorization=service._authorization)
         first=account.customer_invoices('12');second=account.customer_invoices('12',page=2)
         self.assertEqual((len(first['items']),first['has_more']),(50,True))
         self.assertEqual((len(second['items']),second['has_more']),(2,False))
         self.assertEqual(state['calls'][-1][1]['customer_id'],'12')
         service,_,_=history.make(permissions=frozenset({'APP_LOGIN','CUSTOMERS_VIEW'}))
-        account=CustomerAccountService(service._session,transaction_factory=service._transaction,invoices=history.FakeRepo)
+        account=CustomerAccountService(service._session,transaction_factory=service._transaction,invoices=history.FakeRepo,authorization=service._authorization)
         with self.assertRaises(PermissionError):account.customer_invoices('12')

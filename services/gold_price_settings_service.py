@@ -36,7 +36,8 @@ class GoldPriceSettingsService:
 
     def load(self, actor):
         with self.transaction() as connection:
-            self._authorize(connection, actor)
+            # Read-only: current database permission, no row lock (save keeps the strict write check).
+            self.authorization.require_permission_read(connection, actor, "SETTINGS_MANAGE")
             repo = self.repository(connection)
             settings = repo.get_settings()
             options = repo.get_provider_options()

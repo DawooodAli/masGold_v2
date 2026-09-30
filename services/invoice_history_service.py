@@ -66,7 +66,9 @@ def transaction_kind(sale_lines, old_gold_lines):
 
 class InvoiceHistoryService:
     def __init__(self, session, *, transaction_factory=invoice_transaction, invoice_repository=InvoiceRepository,
-                 page_size=PAGE_SIZE, print_service=None, lifecycle_repository=None):
+                 page_size=PAGE_SIZE, print_service=None, lifecycle_repository=None, authorization=None):
+        from services.authorization_service import AuthorizationService
+        self._authorization = authorization or AuthorizationService(session)
         self._session = session
         self._lifecycle = lifecycle_repository
         self._transaction = transaction_factory
@@ -84,18 +86,23 @@ class InvoiceHistoryService:
                                   else "لا توجد صلاحية لعرض سجل الفواتير.")
         return actor
 
-    def _read(self, work):
+    def _read_verified(self, actor, work, permission=VIEW_PERMISSION):
+        """One read transaction: the permission is re-checked against the database first (non-locking)."""
         try:
             with self._transaction() as connection:
-                raise _Discard(work(self._invoices(connection)))
+                verified = self._authorization.require_permission_read(connection, actor, permission)
+                raise _Discard((verified, work(self._invoices(connection))))
         except _Discard as done:
             return done.args[0]
+
+    def _read(self, actor, work, permission=VIEW_PERMISSION):
+        return self._read_verified(actor, work, permission)[1]
 
     # ------------------------------------------------------------ search (one summary query per page)
     def search(self, *, text="", date_from=None, date_to=None, invoice_type=None, settlement_status=None, page=1,
                customer_id=None, _expected_actor=None):
         """One page, newest first. date_to is inclusive; returns {items, page, has_more}."""
-        self._actor(_expected_actor)
+        actor = self._actor(_expected_actor)
         customer_filter = {}
         if customer_id is not None:
             from services.customer_service import CustomerService
@@ -110,7 +117,7 @@ class InvoiceHistoryService:
         if settlement_status not in (None,) + SETTLEMENT_STATUSES:
             raise ValueError("حالة الفاتورة غير صحيحة.")
         page = max(1, int(page))
-        rows = self._read(lambda invoices: invoices.search_invoice_history(
+        rows = self._read(actor, lambda invoices: invoices.search_invoice_history(
             text=text, date_from=date_from,
             date_to_exclusive=None if date_to is None else date_to + timedelta(days=1),
             invoice_type=invoice_type, settlement_status=settlement_status,
@@ -140,7 +147,7 @@ class InvoiceHistoryService:
     def find_by_number(self, invoice_number, *, _expected_actor=None):
         """The printed invoice barcode is Code128 of the invoice number: resolve it exactly (never an
         inventory lookup, never a partial match). Returns the invoice id or None."""
-        self._actor(_expected_actor)
+        actor = self._actor(_expected_actor)
         number = (invoice_number or "").strip()
         if not number:
             return None
@@ -148,9 +155,9 @@ class InvoiceHistoryService:
         correction = re.fullmatch(r"(?i)(RV|FC)([0-9]{6})", number)
         if correction:                                     # an exact correction reference opens its invoice
             from repositories.correction_repository import CorrectionRepository
-            return self._read(lambda invoices: CorrectionRepository(invoices.connection).invoice_id_for_code(
+            return self._read(actor, lambda invoices: CorrectionRepository(invoices.connection).invoice_id_for_code(
                 int(correction.group(2))) if int(correction.group(2)) else None)
-        return self._read(lambda invoices: invoices.get_invoice_id_by_number(number))
+        return self._read(actor, lambda invoices: invoices.get_invoice_id_by_number(number))
 
     # ------------------------------------------------------------ detail (loaded only when opened)
     def detail(self, invoice_id, *, _expected_actor=None):
@@ -166,7 +173,7 @@ class InvoiceHistoryService:
             invoice["returns"] = self._returns(invoices, invoice_id, invoice.get("events", []))
             invoice["corrections"] = self._corrections(invoices, invoice_id, invoice.get("events", []))
             return invoice
-        invoice = self._read(read)
+        actor, invoice = self._read_verified(actor, read)        # manager-only details follow database grants
         if invoice is None:
             raise ValueError("الفاتورة غير موجودة.")
         manager = MANAGER_PERMISSION in actor.permissions
@@ -359,7 +366,8 @@ class InvoiceHistoryService:
     def reprint(self, invoice_id, *, _expected_actor=None):
         """The ORIGINAL finalized invoice through the frozen print service: no number, no payment,
         no ledger, no inventory, no timestamp change — a printer failure changes nothing either."""
-        self._actor(_expected_actor, REPRINT_PERMISSION)
+        actor = self._actor(_expected_actor, REPRINT_PERMISSION)
+        self._read(actor, lambda invoices: None, REPRINT_PERMISSION)     # current database grant, no lock
         service = self._print_service
         if service is None:
             from services.invoice_print_service import InvoicePrintService

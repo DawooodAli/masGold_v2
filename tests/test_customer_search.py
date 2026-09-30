@@ -204,7 +204,8 @@ class CustomerServiceSearchAndSaveTests(NoDatabaseTestCase):
         self.transactions = self.enterContext(patch(
             "services.customer_service.DatabaseTransaction", return_value=transaction,
         ))
-        self.service = CustomerService()
+        from tests.auth_fakes import customers_page_service
+        self.service = customers_page_service()
         self.raw_values = {
             "name": "  أَحـمد  مُحَمَّد  ",
             "mobile": "  +٢٠ (٠١٠) ۱۲۳-۴۵۶  ",

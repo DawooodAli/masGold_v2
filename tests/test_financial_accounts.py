@@ -349,7 +349,7 @@ class PermissionTests(FinancialTestCase):
         self.assertEqual({a["key"][:4] for a in service.accounts()["accounts"]}, {"CASH", "BANK"})
         # MANAGEMENT_REVIEW revoked in the database while the session still holds it: cash only.
         service._authorization = type(service._authorization)(service._session, frozenset({"APP_LOGIN", "CASH_VIEW"}))
-        service._authorization.require_permission = lambda c, actor, code, **k: fixture.dataclasses.replace(
+        service._authorization.require_permission_read = lambda c, actor, code, **k: fixture.dataclasses.replace(
             actor, permissions=frozenset({"APP_LOGIN", "CASH_VIEW"}))
         self.assertEqual({a["key"][:4] for a in service.accounts()["accounts"]}, {"CASH"})
 
