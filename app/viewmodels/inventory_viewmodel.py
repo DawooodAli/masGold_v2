@@ -300,7 +300,6 @@ class InventoryViewModel(QObject):
         int,
         int,
         int,
-        int,
         str,
         str,
         str,
@@ -310,7 +309,6 @@ class InventoryViewModel(QObject):
     )
     def createInventoryItem(
             self,
-            employee_id,
             item_type_id,
             karat_id,
             category_id,
@@ -325,8 +323,8 @@ class InventoryViewModel(QObject):
         try:
 
             inventory_item_id = (
+                # Manual entry has no responsible employee (owner decision).
                 self._service.create_inventory_item(
-                    employee_id=employee_id,
                     item_type_id=item_type_id,
                     karat_id=karat_id,
                     category_id=category_id,

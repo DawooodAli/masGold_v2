@@ -1,10 +1,14 @@
 from database.transaction import DatabaseTransaction
-from repositories.inventory_repository import InventoryRepository
+from repositories.inventory_repository import InventoryRepository, STOCK_CLASSES
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from mysql.connector import IntegrityError
 
 class InventoryService:
+
+    def __init__(self, transaction_factory=DatabaseTransaction, repository=InventoryRepository):
+        self._transaction = transaction_factory
+        self._repository = repository
     @staticmethod
     def _clean_optional_text(
             value,
@@ -119,9 +123,9 @@ class InventoryService:
         )
 
 
-        with DatabaseTransaction() as transaction:
+        with self._transaction() as transaction:
 
-            repository = InventoryRepository(
+            repository = self._repository(
                 transaction.connection
             )
 
@@ -133,9 +137,9 @@ class InventoryService:
 
     def get_stock_summary(self) -> dict:
 
-        with DatabaseTransaction() as transaction:
+        with self._transaction() as transaction:
 
-            repository = InventoryRepository(
+            repository = self._repository(
                 transaction.connection
             )
 
@@ -143,22 +147,23 @@ class InventoryService:
 
     def create_inventory_item(
             self,
-            employee_id,
-            item_type_id,
-            karat_id,
-            category_id,
-            factory_id,
-            weight_grams,
-            size,
-            stock_classification,
-            barcode,
-            notes,
+            employee_id=None,
+            item_type_id=None,
+            karat_id=None,
+            category_id=None,
+            factory_id=None,
+            weight_grams=None,
+            size=None,
+            stock_classification=None,
+            barcode=None,
+            notes=None,
             user_id: int | None = None,
     ) -> int:
 
-        employee_id = self._required_id(
-            employee_id,
-            "Employee is required.",
+        # Manual entry has no "responsible employee" (owner decision). The nullable historical
+        # column stays; an id is only stored when a caller explicitly passes one.
+        employee_id = self._optional_id(
+            employee_id
         )
 
         item_type_id = self._required_id(
@@ -215,9 +220,9 @@ class InventoryService:
 
         try:
 
-            with DatabaseTransaction() as transaction:
+            with self._transaction() as transaction:
 
-                repository = InventoryRepository(
+                repository = self._repository(
                     transaction.connection
                 )
 
@@ -225,14 +230,12 @@ class InventoryService:
                 # Employee
                 # ----------------------------------------------
 
-                employee = (
+                if employee_id is not None and (
                     repository
                     .get_active_employee_by_id(
                         employee_id
                     )
-                )
-
-                if employee is None:
+                ) is None:
                     raise ValueError(
                         "Employee is not active or does not exist."
                     )
@@ -412,3 +415,62 @@ class InventoryService:
                 ) from exc
 
             raise
+
+    # ========================================================
+    # STOCK BALANCE — بيان المخزون (read only)
+    # ========================================================
+
+    @staticmethod
+    def _stock_class(value) -> str | None:
+        value = str(value or "").strip().upper()
+        if value in ("", "ALL"):
+            return None
+        if value not in STOCK_CLASSES:
+            raise ValueError("Invalid stock classification.")
+        return value
+
+    def get_stock_balance(self, stock_classification=None) -> dict:
+        """Current stock by karat → item type, with per-karat and overall totals (exact Decimal).
+        MySQL does the COUNT/SUM per group; only the few group rows are totalled here."""
+        stock_class = self._stock_class(stock_classification)
+        with self._transaction() as transaction:
+            rows = self._repository(transaction.connection).get_stock_balance(stock_class)
+        karats, total_count, total_weight = [], 0, Decimal("0.000")
+        for row in rows:
+            if not karats or karats[-1]["karat_id"] != row["karat_id"]:
+                karats.append({"karat_id": row["karat_id"], "karat_value": row["karat_value"],
+                               "karat_name": row["karat_name"], "item_types": [],
+                               "piece_count": 0, "weight_grams": Decimal("0.000")})
+            count = int(row["piece_count"])
+            weight = Decimal(row["weight_grams"]).quantize(Decimal("0.001"))
+            if count <= 0:
+                continue                                     # never a zero row
+            section = karats[-1]
+            section["item_types"].append({"item_type_id": row["item_type_id"],
+                                          "item_type_name": row["item_type_name"],
+                                          "piece_count": count, "weight_grams": weight})
+            section["piece_count"] += count
+            section["weight_grams"] += weight
+            total_count += count
+            total_weight += weight
+        return {"stock_classification": stock_class, "karats": [k for k in karats if k["piece_count"]],
+                "piece_count": total_count, "weight_grams": total_weight}
+
+    # ========================================================
+    # BARCODE STOCKTAKE — الجرد بالباركود (read only)
+    # ========================================================
+
+    def get_stocktake_source(self, item_type_id=None, karat_id=None) -> list[dict]:
+        """The expected pieces of one counting scope — the same current-stock predicate as the
+        balance. Loaded once per session; scans are resolved against this set in memory."""
+        item_type_id = self._optional_id(item_type_id)
+        karat_id = self._optional_id(karat_id)
+        with self._transaction() as transaction:
+            rows = self._repository(transaction.connection).get_stocktake_source(item_type_id, karat_id)
+        for row in rows:
+            row["weight_grams"] = Decimal(row["weight_grams"]).quantize(Decimal("0.001"))
+        return rows
+
+    def get_stocktake_filters(self) -> dict:
+        with self._transaction() as transaction:
+            return self._repository(transaction.connection).get_stocktake_filters()

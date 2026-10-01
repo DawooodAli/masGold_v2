@@ -1927,6 +1927,22 @@ ApplicationWindow {
 
 
                         Button {
+                            objectName: "openStockBalanceButton"
+                            text: "📊  بيان المخزون"
+                            font.family: "Cairo"
+                            onClicked: root.currentPage = 11
+                        }
+
+
+                        Button {
+                            objectName: "openStocktakeButton"
+                            text: "🔎  الجرد بالباركود"
+                            font.family: "Cairo"
+                            onClicked: root.currentPage = 12
+                        }
+
+
+                        Button {
                             text: "↻  تحديث"
 
                             font.family: "Cairo"
@@ -2385,7 +2401,8 @@ ApplicationWindow {
 
 
                                 Button {
-                                    text: "🖨  معاينة وطباعة"
+                                    objectName: "barcodeReviewPrintButton"
+                                    text: "🖨  مراجعة وطباعة"
 
                                     font.family: "Cairo"
                                     font.bold: true
@@ -2967,6 +2984,8 @@ ApplicationWindow {
 
 
                 InventoryPage {
+                    id: inventoryPage
+                    objectName: "inventoryPage"
                     pageTitle: "📦 المخزون"
                 }
 
@@ -3022,6 +3041,16 @@ ApplicationWindow {
                 // index 10: one review area for every management review type
                 ManagementReviewPage {
                     pageTitle: "مراجعات المدير"
+                }
+
+                // index 11: بيان المخزون — current stock by karat → item type (read only)
+                StockBalancePage {
+                    onBackRequested: root.currentPage = 2
+                }
+
+                // index 12: الجرد بالباركود — transient barcode counting session (read only)
+                StocktakePage {
+                    onBackRequested: root.currentPage = 2
                 }
 
             }
@@ -3099,7 +3128,7 @@ ApplicationWindow {
 
                 NavButton {
                     text: "📦  المخزون"
-                    selected: root.currentPage === 2
+                    selected: root.currentPage === 2 || root.currentPage === 11 || root.currentPage === 12
 
                     onClicked:
                         root.currentPage = 2
@@ -9356,6 +9385,7 @@ ApplicationWindow {
 
     Dialog {
         id: newInventoryItemDialog
+        objectName: "newInventoryItemDialog"
 
         modal: true
         dim: true
@@ -9627,10 +9657,13 @@ ApplicationWindow {
                     // EMPLOYEE
                     // ------------------------------------------------
 
+                    // Manual entry has no responsible employee (owner decision). The old-gold
+                    // conversion still records who received the old gold in its ledger.
                     Label {
+                        visible: stockClassificationCombo.currentIndex === 1
                         Layout.fillWidth: true
 
-                        text: "الموظف المسؤول *"
+                        text: "الموظف المستلم للكسر *"
 
                         color: theme.textSecondary
 
@@ -9644,6 +9677,8 @@ ApplicationWindow {
 
                     ComboBox {
                         id: employeeCombo
+                        objectName: "inventoryEmployeeCombo"
+                        visible: stockClassificationCombo.currentIndex === 1
 
                         Layout.fillWidth: true
                         Layout.preferredHeight: 44
@@ -9666,12 +9701,13 @@ ApplicationWindow {
 
                     Label {
                         visible:
-                            masterDataVM.employees.length === 0
+                            stockClassificationCombo.currentIndex === 1
+                            && masterDataVM.employees.length === 0
 
                         Layout.fillWidth: true
 
                         text:
-                            "⚠ لا يوجد موظفون نشطون. يجب إضافة موظف قبل إدخال المخزون."
+                            "⚠ لا يوجد موظفون نشطون. التحويل من الكسر يتطلب موظفاً."
 
                         color: theme.amber
 
@@ -10039,7 +10075,7 @@ ApplicationWindow {
                             Label {
                                 Layout.fillWidth: true
 
-                                text: "مصدر القطعة *"
+                                text: "طريقة الإدخال *"
 
                                 color: theme.textSecondary
 
@@ -10058,7 +10094,7 @@ ApplicationWindow {
                                 Layout.preferredHeight: 44
 
                                 model: [
-                                    "إدخال بضاعة جديدة",
+                                    "إدخال يدوي — بضاعة جديدة",
                                     "محولة من الكسر"
                                 ]
 
@@ -10469,10 +10505,12 @@ ApplicationWindow {
 
 
                     Button {
+                        objectName: "saveInventoryItemButton"
                         text: "💾  حفظ القطعة"
 
                         enabled:
-                            masterDataVM.employees.length > 0
+                            stockClassificationCombo.currentIndex === 0
+                            || masterDataVM.employees.length > 0
 
                         font.family: "Cairo"
                         font.bold: true
@@ -10535,7 +10573,6 @@ ApplicationWindow {
                             ) {
                                 saved =
                                     inventoryVM.createInventoryItem(
-                                        employeeId,
                                         itemTypeId,
                                         karatId,
                                         categoryId,
@@ -10597,6 +10634,7 @@ ApplicationWindow {
 
     Dialog {
         id: inventoryItemDetailsDialog
+        objectName: "inventoryItemDetailsDialog"
 
         modal: true
         dim: true
@@ -10969,7 +11007,7 @@ ApplicationWindow {
 
                             Label {
                                 Layout.fillWidth: true
-                                text: "مصدر الإدخال"
+                                text: "طريقة الإدخال"
                                 color: theme.textMuted
                                 horizontalAlignment: Text.AlignRight
                             }
@@ -11005,16 +11043,17 @@ ApplicationWindow {
 
                             Label {
                                 Layout.fillWidth: true
-                                text: "رقم الموظف"
+                                text: "نوع البضاعة"
                                 color: theme.textMuted
                                 horizontalAlignment: Text.AlignRight
                             }
                             Label {
+                                objectName: "inventoryDetailsStockClass"
                                 Layout.fillWidth: true
                                 text:
-                                    inventoryItemDetailsDialog.valueOrDash(
+                                    inventoryItemDetailsDialog.stockClassText(
                                         root.selectedInventoryItem
-                                        .entered_by_employee_id
+                                        .stock_classification
                                     )
                                 color: theme.textPrimary
                                 horizontalAlignment: Text.AlignRight
@@ -11108,6 +11147,7 @@ ApplicationWindow {
 
     Dialog {
         id: barcodePrintQueueDialog
+        objectName: "barcodePrintQueueDialog"
 
         modal: true
         dim: true
@@ -11892,6 +11932,7 @@ ApplicationWindow {
 
 
                     Button {
+                        objectName: "printBarcodeNowButton"
                         text:
                             barcodeVM.busy
                             ? "جاري الطباعة..."

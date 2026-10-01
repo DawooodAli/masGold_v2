@@ -1,6 +1,14 @@
 from repositories.base_repository import BaseRepository
 
 
+# The ONE definition of "currently physical shop stock" (alias ii = inventory_items). Every stock
+# list, summary, the Stock Balance (بيان المخزون) and the Barcode Stocktake (الجرد بالباركود) use it.
+# SOLD, RETURNED_PENDING (awaiting inspection), CONVERTED_TO_OLD_GOLD, SCRAPPED and REMOVED are not
+# current stock; a returned piece counts again only after inspection puts it back IN_STOCK.
+CURRENT_STOCK = "ii.inventory_status = 'IN_STOCK'"
+STOCK_CLASSES = ("NEW_STOCK", "OLD_STOCK")
+
+
 class InventoryRepository(BaseRepository):
 
     def get_stock_items(
@@ -65,7 +73,7 @@ class InventoryRepository(BaseRepository):
                 AND ib.barcode_status = 'ACTIVE'
 
             WHERE
-                ii.inventory_status = 'IN_STOCK'
+                {current}
 
                 AND (
                     %s = ''
@@ -99,7 +107,7 @@ class InventoryRepository(BaseRepository):
                 ii.id DESC
 
             LIMIT %s
-            """,
+            """.format(current=CURRENT_STOCK),
             (
                 search,
                 like,
@@ -130,6 +138,17 @@ class InventoryRepository(BaseRepository):
                     ),
                     0
                 ) AS new_stock_items,
+
+                COALESCE(
+                    SUM(
+                        CASE
+                            WHEN ii.stock_classification = 'OLD_STOCK'
+                            THEN 1
+                            ELSE 0
+                        END
+                    ),
+                    0
+                ) AS old_stock_items,
 
                 COALESCE(
                     SUM(
@@ -186,11 +205,90 @@ class InventoryRepository(BaseRepository):
                 AND ib.barcode_status = 'ACTIVE'
 
             WHERE
-                ii.inventory_status = 'IN_STOCK'
-            """
+                {current}
+            """.format(current=CURRENT_STOCK)
         )
 
         return row or {}
+
+    # ========================================================
+    # STOCK BALANCE — بيان المخزون (read only)
+    # ========================================================
+
+    def get_stock_balance(self, stock_classification: str | None = None) -> list[dict]:
+        """Current stock aggregated in MySQL: one row per (karat, item type) that has pieces.
+        COUNT / SUM run on DECIMAL(12,3) weights; nothing is loaded per piece."""
+        params = []
+        where = CURRENT_STOCK
+        if stock_classification is not None:
+            where += " AND ii.stock_classification = %s"
+            params.append(stock_classification)
+        return self._fetch_all(
+            f"""
+            SELECT
+                k.id AS karat_id,
+                k.karat_value,
+                k.name AS karat_name,
+                k.sort_order AS karat_sort_order,
+                it.id AS item_type_id,
+                it.name AS item_type_name,
+                COUNT(*) AS piece_count,
+                SUM(ii.weight_grams) AS weight_grams
+            FROM inventory_items ii
+            INNER JOIN karats k ON k.id = ii.karat_id
+            INNER JOIN item_types it ON it.id = ii.item_type_id
+            WHERE {where}
+            GROUP BY k.id, k.karat_value, k.name, k.sort_order, it.id, it.name
+            ORDER BY k.sort_order, k.karat_value DESC, it.name
+            """,
+            tuple(params),
+        )
+
+    # ========================================================
+    # BARCODE STOCKTAKE — الجرد بالباركود (read only source set)
+    # ========================================================
+
+    def get_stocktake_source(self, item_type_id: int | None = None, karat_id: int | None = None) -> list[dict]:
+        """The pieces expected on the shelf for one counting scope (same predicate as the balance)."""
+        params = []
+        where = CURRENT_STOCK
+        if item_type_id is not None:
+            where += " AND ii.item_type_id = %s"
+            params.append(item_type_id)
+        if karat_id is not None:
+            where += " AND ii.karat_id = %s"
+            params.append(karat_id)
+        return self._fetch_all(
+            f"""
+            SELECT
+                ii.id AS inventory_item_id,
+                ib.barcode_value,
+                it.name AS item_type_name,
+                ii.karat_id,
+                k.karat_value,
+                k.sort_order AS karat_sort_order,
+                ii.weight_grams,
+                ii.size
+            FROM inventory_items ii
+            INNER JOIN item_types it ON it.id = ii.item_type_id
+            INNER JOIN karats k ON k.id = ii.karat_id
+            LEFT JOIN inventory_barcodes ib
+                ON ib.inventory_item_id = ii.id
+                AND ib.barcode_status = 'ACTIVE'
+            WHERE {where}
+            ORDER BY k.sort_order, it.name, ib.barcode_value, ii.id
+            """,
+            tuple(params),
+        )
+
+    def get_stocktake_filters(self) -> dict:
+        """Item types and karats offered as stocktake filters (canonical reference data)."""
+        return {
+            "item_types": self._fetch_all(
+                "SELECT id, name FROM item_types WHERE is_active = TRUE ORDER BY sort_order, name"),
+            "karats": self._fetch_all(
+                "SELECT id, karat_value, name FROM karats WHERE is_active = TRUE ORDER BY sort_order, karat_value"),
+        }
 
     def get_active_employee_by_id(
             self,
@@ -315,7 +413,7 @@ class InventoryRepository(BaseRepository):
             stock_classification: str,
             acquisition_source: str,
             notes: str | None,
-            entered_by_employee_id: int,
+            entered_by_employee_id: int | None,
             created_by_user_id: int | None = None,
     ) -> int:
 
@@ -421,7 +519,7 @@ class InventoryRepository(BaseRepository):
             movement_type_id: int,
             stock_classification: str,
             weight_grams,
-            performed_by_employee_id: int,
+            performed_by_employee_id: int | None,
             performed_by_user_id: int | None = None,
     ) -> int:
 

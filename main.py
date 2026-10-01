@@ -21,6 +21,8 @@ def create_operational_viewmodels():
     from app.viewmodels.billing_viewmodel import BillingViewModel
     from app.viewmodels.customer_viewmodel import CustomerViewModel
     from app.viewmodels.customer_picker_viewmodel import CustomerPickerViewModel
+    from app.viewmodels.stock_balance_viewmodel import StockBalanceViewModel
+    from app.viewmodels.stocktake_viewmodel import StocktakeViewModel
 
     if qmlTypeId("MasGold.Customers", 1, 0, "CustomerPickerViewModel") < 0:
         qmlRegisterType(CustomerPickerViewModel, "MasGold.Customers", 1, 0,
@@ -32,6 +34,8 @@ def create_operational_viewmodels():
         "oldGoldConversionVM": OldGoldConversionViewModel(),
         "billingVM": BillingViewModel(),
         "customerVM": CustomerViewModel(),
+        "stockBalanceVM": StockBalanceViewModel(),       # بيان المخزون (loads when opened)
+        "stocktakeVM": StocktakeViewModel(),             # الجرد بالباركود (transient session)
     }
 
 
