@@ -60,6 +60,8 @@ ApplicationWindow {
     palette.highlightedText:
         theme.bgPrimary
     property int currentPage: 0
+    // Master Data messages belong to one page: leaving it clears them (no timer polling).
+    onCurrentPageChanged: masterDataVM.clearAction()
 
     // UI rule: Arabic text uses Cairo and is right-aligned/RTL in controls.
     // Do not enable global LayoutMirroring because the physical sidebar must stay on the right.
@@ -3001,14 +3003,20 @@ ApplicationWindow {
 
 
                 FactoriesPage {
+                    id: factoriesPage
+                    objectName: "factoriesPage"
                     pageTitle: "🏭 المصانع"
                 }
 
 
                 ItemTypesPage {
+                    id: itemTypesPage
+                    objectName: "itemTypesPage"
                     pageTitle: "💍 الأصناف"
                 }
                 CategoriesPage {
+                    id: categoriesPage
+                    objectName: "categoriesPage"
                     pageTitle: "🏷️ الفئات"}
 
                 // index 10: one review area for every management review type
@@ -5218,7 +5226,7 @@ ApplicationWindow {
             }
 
 
-            ActionMessageBox {}
+            ActionMessageBox { scope: "factories"; objectName: "factoriesMessage" }
 
 
             Rectangle {
@@ -5443,6 +5451,21 @@ ApplicationWindow {
 
                                     reactivateFactoryDialog.open()
                                 }
+                            }
+
+                            Button {
+                                objectName: "deleteDisabledFactory"
+                                id: deleteDisabledFactory
+                                visible: factoriesPage.showDisabled
+                                flat: true
+                                text: "🗑  حذف نهائي"
+                                font.family: "Cairo"
+                                font.pixelSize: 11
+                                contentItem: Label {
+                                    text: deleteDisabledFactory.text; color: theme.red; font: deleteDisabledFactory.font
+                                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                                }
+                                onClicked: deleteMasterDialog.ask("factory", Number(modelData.id), modelData.name || "")
                             }
 
 
@@ -5672,7 +5695,7 @@ ApplicationWindow {
             }
 
 
-            ActionMessageBox {}
+            ActionMessageBox { scope: "itemTypes"; objectName: "itemTypesMessage" }
 
 
             Rectangle {
@@ -5935,6 +5958,21 @@ ApplicationWindow {
                                 }
                             }
 
+                            Button {
+                                objectName: "deleteDisabledItemType"
+                                id: deleteDisabledItemType
+                                visible: itemTypesPage.showDisabled
+                                flat: true
+                                text: "🗑  حذف نهائي"
+                                font.family: "Cairo"
+                                font.pixelSize: 11
+                                contentItem: Label {
+                                    text: deleteDisabledItemType.text; color: theme.red; font: deleteDisabledItemType.font
+                                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                                }
+                                onClicked: deleteMasterDialog.ask("itemType", Number(modelData.id), modelData.name || "")
+                            }
+
 
                             Label {
                                 visible:
@@ -6174,20 +6212,21 @@ ApplicationWindow {
                 }
 
 
-                Label {
-                    text:
-                        "الفئات الأساسية ثابتة ولا يتم إنشاء فئات جديدة"
-
-                    color: theme.textDisabled
+                Button {
+                    objectName: "newCategoryButton"
+                    text: "＋  فئة جديدة"
 
                     font.family: "Cairo"
-                    font.pixelSize: 10
+                    font.bold: true
+
+                    onClicked:
+                        editCategoryDialog.openNew()
                 }
             }
         }
 
 
-        ActionMessageBox {}
+        ActionMessageBox { scope: "categories"; objectName: "categoriesMessage" }
 
 
         // ------------------------------------------------
@@ -6496,6 +6535,21 @@ ApplicationWindow {
                             }
                         }
 
+                            Button {
+                                objectName: "deleteDisabledCategory"
+                                id: deleteDisabledCategory
+                                visible: categoriesPage.showDisabled
+                                flat: true
+                                text: "🗑  حذف نهائي"
+                                font.family: "Cairo"
+                                font.pixelSize: 11
+                                contentItem: Label {
+                                    text: deleteDisabledCategory.text; color: theme.red; font: deleteDisabledCategory.font
+                                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                                }
+                                onClicked: deleteMasterDialog.ask("category", Number(modelData.id), modelData.code || "")
+                            }
+
 
                         Label {
                             visible:
@@ -6545,7 +6599,9 @@ ApplicationWindow {
 
     property int categoryId: 0
     property string categoryCode: ""
+    property bool creating: false          // + فئة جديدة uses the same rule form
 
+    objectName: "editCategoryDialog"
     modal: true
     dim: true
 
@@ -6553,7 +6609,8 @@ ApplicationWindow {
         color: "#80000000"
     }
 
-    width: 620
+    width: Math.min(620, root.width - 40)
+    height: Math.min(implicitHeight, root.height - 24)
     padding: 0
 
 
@@ -6581,7 +6638,27 @@ ApplicationWindow {
     }
 
 
+    function openNew() {
+        creating = true
+        categoryId = 0
+        categoryCode = ""
+        newCategoryCode.text = ""
+        newCategoryName.text = ""
+        categoryPurchaseMin.text = ""
+        categoryPurchaseMax.text = ""
+        categorySaleMin.text = ""
+        categorySaleMax.text = ""
+        categoryManagerThreshold.text = ""
+        categoryNotes.text = ""
+        editCategoryError.text = ""
+        open()
+        newCategoryCode.forceActiveFocus()
+    }
+
+
     function openCategory(categoryData) {
+
+        creating = false
 
         categoryId =
             Number(categoryData.id)
@@ -6664,8 +6741,10 @@ ApplicationWindow {
 
                 Label {
                     text:
-                        "🏷️  تعديل الفئة "
-                        + editCategoryDialog.categoryCode
+                        editCategoryDialog.creating
+                        ? "🏷️  فئة جديدة"
+                        : "🏷️  تعديل الفئة "
+                          + editCategoryDialog.categoryCode
 
                     color: theme.gold
 
@@ -6692,13 +6771,68 @@ ApplicationWindow {
         }
 
 
-        ColumnLayout {
+        ScrollView {
+            id: categoryFormScroll
             Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.preferredHeight: categoryFormFields.implicitHeight
+            contentWidth: availableWidth
+            clip: true
 
-            Layout.leftMargin: 22
-            Layout.rightMargin: 22
+        ColumnLayout {
+            id: categoryFormFields
+            x: 22
+            width: categoryFormScroll.availableWidth - 44
 
             spacing: 8
+
+
+            // + فئة جديدة: code (unique, like A/B/C) and an optional display name
+            RowLayout {
+                visible: editCategoryDialog.creating
+                Layout.fillWidth: true
+                spacing: 10
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        Layout.fillWidth: true
+                        text: "كود الفئة *"
+                        color: theme.textSecondary
+                        font.family: "Cairo"
+                        horizontalAlignment: Text.AlignRight
+                    }
+                    TextField {
+                        id: newCategoryCode
+                        objectName: "newCategoryCode"
+                        Layout.fillWidth: true
+                        placeholderText: "مثال: E"
+                        maximumLength: 20
+                        font.family: "Cairo"
+                        horizontalAlignment: TextInput.AlignRight
+                    }
+                }
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        Layout.fillWidth: true
+                        text: "اسم الفئة"
+                        color: theme.textSecondary
+                        font.family: "Cairo"
+                        horizontalAlignment: Text.AlignRight
+                    }
+                    TextField {
+                        id: newCategoryName
+                        objectName: "newCategoryName"
+                        Layout.fillWidth: true
+                        placeholderText: "اختياري — الكود افتراضياً"
+                        maximumLength: 100
+                        font.family: "Cairo"
+                        horizontalAlignment: TextInput.AlignRight
+                    }
+                }
+            }
 
 
             // Purchase title
@@ -7008,6 +7142,7 @@ ApplicationWindow {
                     Text.AlignRight
             }
         }
+        }
 
 
         RowLayout {
@@ -7021,6 +7156,7 @@ ApplicationWindow {
 
 
             Button {
+                visible: !editCategoryDialog.creating
                 text: "⛔  تعطيل الفئة"
 
                 font.family: "Cairo"
@@ -7035,6 +7171,22 @@ ApplicationWindow {
 
                     disableCategoryDialog.open()
                 }
+            }
+
+            Button {
+                objectName: "deleteCategoryButton"
+                id: deleteCategoryButton
+                visible: !editCategoryDialog.creating
+                flat: true
+                text: "🗑  حذف نهائي"
+                font.family: "Cairo"
+                font.pixelSize: 11
+                contentItem: Label {
+                    text: deleteCategoryButton.text; color: theme.red; font: deleteCategoryButton.font
+                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                }
+                onClicked: deleteMasterDialog.ask("category", editCategoryDialog.categoryId,
+                                                  editCategoryDialog.categoryCode)
             }
 
 
@@ -7054,7 +7206,8 @@ ApplicationWindow {
 
 
             Button {
-                text: "💾  حفظ القواعد"
+                objectName: "saveCategoryButton"
+                text: editCategoryDialog.creating ? "💾  حفظ الفئة" : "💾  حفظ القواعد"
 
                 font.family: "Cairo"
                 font.bold: true
@@ -7063,6 +7216,24 @@ ApplicationWindow {
                 onClicked: {
 
                     editCategoryError.text = ""
+
+                    if (editCategoryDialog.creating) {
+                        if (newCategoryCode.text.trim().length === 0) {
+                            editCategoryError.text = "كود الفئة مطلوب."
+                            return
+                        }
+                        if (masterDataVM.createCategory(
+                                newCategoryCode.text, newCategoryName.text,
+                                categoryPurchaseMin.text, categoryPurchaseMax.text,
+                                categorySaleMin.text, categorySaleMax.text,
+                                categoryManagerThreshold.text, categoryNotes.text)) {
+                            editCategoryDialog.close()
+                            categoriesPage.showDisabled = false
+                        } else {
+                            editCategoryError.text = masterDataVM.actionMessage
+                        }
+                        return
+                    }
 
                     var saved =
                         masterDataVM.updateCategoryRules(
@@ -7215,6 +7386,7 @@ ApplicationWindow {
 
     Dialog {
         id: reactivateCategoryDialog
+        objectName: "reactivateCategoryDialog"
 
         property int categoryId: 0
         property string categoryCode: ""
@@ -7307,6 +7479,137 @@ ApplicationWindow {
         }
     }
     // ========================================================
+    // PERMANENT DELETE — shared confirmation
+    // ========================================================
+
+    Dialog {
+        id: deleteMasterDialog
+        objectName: "deleteMasterDialog"
+
+        property string kind: ""          // factory / itemType / category
+        property int entityId: 0
+        property string entityLabel: ""
+
+        function ask(kindName, id, label) {
+            kind = kindName
+            entityId = Number(id)
+            entityLabel = label || ""
+            deleteMasterError.text = ""
+            open()
+        }
+
+        modal: true
+        dim: true
+        Overlay.modal: Rectangle { color: "#80000000" }
+        width: Math.min(460, root.width - 40)
+        x: Math.round((root.width - width) / 2)
+        y: Math.round((root.height - height) / 2)
+        closePolicy: Popup.CloseOnEscape
+
+        background: Rectangle {
+            color: theme.bgSecondary
+            radius: 10
+            border.color: theme.red
+            border.width: 1
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 12
+
+            Label {
+                Layout.fillWidth: true
+                text: "🗑  حذف نهائي"
+                color: theme.red
+                font.family: "Cairo"
+                font.pixelSize: 17
+                font.bold: true
+                horizontalAlignment: Text.AlignRight
+            }
+
+            Label {
+                Layout.fillWidth: true
+                text: "«" + deleteMasterDialog.entityLabel + "»"
+                color: theme.textPrimary
+                font.family: "Cairo"
+                font.bold: true
+                horizontalAlignment: Text.AlignRight
+                elide: Text.ElideLeft
+            }
+
+            Label {
+                objectName: "deleteMasterQuestion"
+                Layout.fillWidth: true
+                text: deleteMasterDialog.kind === "factory"
+                      ? "سيتم حذف المصنع نهائيًا ولا يمكن التراجع عن ذلك. هل أنت متأكد؟"
+                      : deleteMasterDialog.kind === "itemType"
+                        ? "سيتم حذف الصنف نهائيًا ولا يمكن التراجع عن ذلك. هل أنت متأكد؟"
+                        : "سيتم حذف الفئة نهائيًا ولا يمكن التراجع عن ذلك. هل أنت متأكد؟"
+                color: theme.textSecondary
+                font.family: "Cairo"
+                wrapMode: Text.WordWrap
+                horizontalAlignment: Text.AlignRight
+            }
+
+            Label {
+                id: deleteMasterError
+                objectName: "deleteMasterError"
+                visible: text.length > 0
+                Layout.fillWidth: true
+                color: theme.red
+                font.family: "Cairo"
+                wrapMode: Text.WordWrap
+                horizontalAlignment: Text.AlignRight
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 10
+
+                Button {
+                    objectName: "deleteMasterCancel"
+                    text: "إلغاء"
+                    font.family: "Cairo"
+                    onClicked: deleteMasterDialog.close()
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Button {
+                    objectName: "deleteMasterConfirm"
+                    id: deleteMasterConfirm
+                    text: "حذف نهائي"
+                    font.family: "Cairo"
+                    font.bold: true
+                    background: Rectangle {
+                        radius: 6
+                        color: deleteMasterConfirm.down ? Qt.darker(theme.red, 1.3) : theme.red
+                    }
+                    contentItem: Label {
+                        text: deleteMasterConfirm.text; color: "white"; font: deleteMasterConfirm.font
+                        horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                    }
+                    onClicked: {
+                        var kind = deleteMasterDialog.kind
+                        var ok = kind === "factory" ? masterDataVM.deleteFactory(deleteMasterDialog.entityId)
+                               : kind === "itemType" ? masterDataVM.deleteItemType(deleteMasterDialog.entityId)
+                               : masterDataVM.deleteCategory(deleteMasterDialog.entityId)
+                        if (ok) {
+                            deleteMasterDialog.close()
+                            if (kind === "factory") editFactoryDialog.close()
+                            else if (kind === "itemType") editItemTypeDialog.close()
+                            else editCategoryDialog.close()
+                        } else {
+                            deleteMasterError.text = masterDataVM.actionMessage
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+
+    // ========================================================
     // SUMMARY BOX
     // ========================================================
 
@@ -7371,9 +7674,32 @@ ApplicationWindow {
     // ========================================================
 
     component ActionMessageBox: Rectangle {
+        id: actionMessageBox
+
+        // The Master Data page that owns this box: a message from another page never shows here.
+        property string scope: ""
 
         visible:
             masterDataVM.actionMessage.length > 0
+            && masterDataVM.actionScope === scope
+
+        // A success note fades after a few seconds; an error stays while the user is on the page.
+        Timer {
+            id: actionMessageTimer
+            interval: 6000
+            onTriggered: if (masterDataVM.actionSuccess && masterDataVM.actionScope === actionMessageBox.scope)
+                             masterDataVM.clearAction()
+        }
+        Connections {
+            target: masterDataVM
+            function onActionChanged() {
+                if (masterDataVM.actionSuccess && masterDataVM.actionScope === actionMessageBox.scope
+                        && masterDataVM.actionMessage.length > 0)
+                    actionMessageTimer.restart()
+                else
+                    actionMessageTimer.stop()
+            }
+        }
 
         Layout.fillWidth: true
         Layout.preferredHeight: 46
@@ -7799,6 +8125,7 @@ ApplicationWindow {
 
     Dialog {
         id: editFactoryDialog
+        objectName: "editFactoryDialog"
 
         property int factoryId: 0
 
@@ -7914,6 +8241,21 @@ ApplicationWindow {
                     }
                 }
 
+                Button {
+                    objectName: "deleteFactoryButton"
+                    id: deleteFactoryButton
+                    flat: true
+                    text: "🗑  حذف نهائي"
+                    font.family: "Cairo"
+                    font.pixelSize: 11
+                    contentItem: Label {
+                        text: deleteFactoryButton.text; color: theme.red; font: deleteFactoryButton.font
+                        horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                    }
+                    onClicked: deleteMasterDialog.ask("factory", editFactoryDialog.factoryId,
+                                                      editFactoryNameField.text)
+                }
+
 
                 Item {
                     Layout.fillWidth: true
@@ -8020,6 +8362,7 @@ ApplicationWindow {
 
     Dialog {
         id: reactivateFactoryDialog
+        objectName: "reactivateFactoryDialog"
 
         property int factoryId: 0
         property string factoryName: ""
@@ -8413,6 +8756,7 @@ ApplicationWindow {
 
     Dialog {
         id: editItemTypeDialog
+        objectName: "editItemTypeDialog"
 
         property int itemTypeId: 0
 
@@ -8688,6 +9032,21 @@ ApplicationWindow {
                     }
                 }
 
+                Button {
+                    objectName: "deleteItemTypeButton"
+                    id: deleteItemTypeButton
+                    flat: true
+                    text: "🗑  حذف نهائي"
+                    font.family: "Cairo"
+                    font.pixelSize: 11
+                    contentItem: Label {
+                        text: deleteItemTypeButton.text; color: theme.red; font: deleteItemTypeButton.font
+                        horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                    }
+                    onClicked: deleteMasterDialog.ask("itemType", editItemTypeDialog.itemTypeId,
+                                                      editItemTypeNameField.text)
+                }
+
 
                 Item {
                     Layout.fillWidth: true
@@ -8897,6 +9256,7 @@ ApplicationWindow {
 
     Dialog {
         id: reactivateItemTypeDialog
+        objectName: "reactivateItemTypeDialog"
 
         property int itemTypeId: 0
         property string itemTypeName: ""

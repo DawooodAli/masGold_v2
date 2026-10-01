@@ -44,16 +44,16 @@ class SchemaChainTests(unittest.TestCase):
     def setUpClass(cls):
         cls.model = schema_model.build()
 
-    def test_chain_is_contiguous_001_to_028(self):
+    def test_chain_is_contiguous_001_to_029(self):
         files = schema_model.chain_files()
-        self.assertEqual([int(name[:3]) for name in files], list(range(1, 29)))
+        self.assertEqual([int(name[:3]) for name in files], list(range(1, 30)))
         self.assertEqual(files[12:], ["013_schema_consolidation.sql", "014_billing_v2.sql",
                                       "015_legacy_provenance.sql", "016_billing_workflow.sql",
                                       "017_payment_accounts.sql", "018_opening_balances.sql",
                                       "019_invoice_lifecycle_exchange.sql", "020_exchange_replacement_sources.sql",
                                       "021_returned_item_inspection.sql", "022_invoice_returns.sql",
                                       "023_transaction_corrections.sql", "024_customer_account.sql",
-                                      "025_financial_operations.sql", "026_cash_movement_categories.sql", "027_customer_deposits.sql", "028_dead_cash_v1.sql"])
+                                      "025_financial_operations.sql", "026_cash_movement_categories.sql", "027_customer_deposits.sql", "028_dead_cash_v1.sql", "029_master_data_integrity.sql"])
 
     def test_prototype_files_are_kept_but_not_part_of_the_chain(self):
         prototypes = sorted(p.name for p in PROTOTYPE_DIR.glob("20260921_*.sql"))
@@ -103,10 +103,14 @@ class SchemaChainTests(unittest.TestCase):
         self.assertLessEqual(PROTOTYPE_TABLES, set(self.model.tables))
         for table in PROTOTYPE_TABLES:
             self.assertEqual(self.model.tables[table]["source"], "013_schema_consolidation.sql")
-        columns = self.model.tables["old_gold_movements"]["columns"]
+        # Reproduced as the prototype defined them (through 028) ...
+        columns = schema_model.build(schema_model.chain_files()[:28]).tables["old_gold_movements"]["columns"]
         for column, column_type in PROTOTYPE_OLD_GOLD_COLUMNS.items():
             with self.subTest(column=column):
                 self.assertEqual(columns[column], {"type": column_type, "nullable": True})
+        # ... then 029 narrows factory_id to factories.id so it can carry a RESTRICT foreign key.
+        self.assertEqual(self.model.tables["old_gold_movements"]["columns"]["factory_id"],
+                         {"type": "smallint unsigned", "nullable": True})
         self.assertEqual(self.model.tables["old_gold_conversion_batches"]["columns"]["karat_id"]["type"],
                          "tinyint unsigned")
 

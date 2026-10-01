@@ -165,7 +165,9 @@ class MasterDataRepository(BaseRepository):
                 purchase_making_max_per_gram,
                 sale_making_min_per_gram,
                 sale_making_max_per_gram,
-                manager_approval_below_per_gram
+                manager_approval_below_per_gram,
+                notes,
+                is_active
             FROM item_categories
             WHERE id = %s
             """,
@@ -348,6 +350,139 @@ class MasterDataRepository(BaseRepository):
                 raise ValueError(
                     f"Item type ID {item_type_id} does not exist."
                 )
+
+        finally:
+            cursor.close()
+
+    # =========================================================
+    # PERMANENT DELETE (unused master data only)
+    # =========================================================
+
+    # Every table that makes a master record "used by stock". Checked with locking reads so a
+    # concurrent insert either commits first (and is seen) or waits for this delete to finish.
+    # inventory_items.factory_id / category_id are ON DELETE SET NULL in the schema, so this check —
+    # not the foreign key — is what keeps historical stock references intact.
+    STOCK_REFERENCES = {
+        "factories": (
+            ("inventory_items", "factory_id"),
+            ("inventory_reconciliation_cases", "observed_factory_id"),
+            ("old_gold_movements", "factory_id"),
+            ("analytics_segments", "factory_id"),
+        ),
+        "item_types": (
+            ("inventory_items", "item_type_id"),
+            ("inventory_reconciliation_cases", "observed_item_type_id"),
+            ("analytics_segments", "item_type_id"),
+        ),
+        "item_categories": (
+            ("inventory_items", "category_id"),
+            ("inventory_reconciliation_cases", "observed_category_id"),
+            ("analytics_segments", "category_id"),
+        ),
+    }
+
+    def lock_master_row(self, table: str, row_id: int) -> dict | None:
+        if table not in self.STOCK_REFERENCES:
+            raise ValueError(f"Unknown master table {table}.")
+        return self._fetch_one(
+            f"SELECT id FROM {table} WHERE id = %s FOR UPDATE",
+            (row_id,),
+        )
+
+    def stock_references(self, table: str, row_id: int) -> list[str]:
+        """Referencing tables that hold at least one row for this master record (locking reads)."""
+        found = []
+        for child, column in self.STOCK_REFERENCES[table]:
+            if self._fetch_one(
+                f"SELECT 1 AS used FROM {child} WHERE {column} = %s LIMIT 1 FOR SHARE",
+                (row_id,),
+            ):
+                found.append(child)
+        return found
+
+    def item_types_defaulting_to(self, category_id: int) -> int:
+        row = self._fetch_one(
+            "SELECT COUNT(*) AS n FROM item_types WHERE default_category_id = %s FOR SHARE",
+            (category_id,),
+        )
+        return int(row["n"])
+
+    def delete_master_row(self, table: str, row_id: int) -> None:
+        if table not in self.STOCK_REFERENCES:
+            raise ValueError(f"Unknown master table {table}.")
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(f"DELETE FROM {table} WHERE id = %s", (row_id,))
+            if cursor.rowcount != 1:
+                raise ValueError("Master record does not exist.")
+        finally:
+            cursor.close()
+
+    # =========================================================
+    # CATEGORIES
+    # =========================================================
+
+    def create_category(
+        self,
+        code: str,
+        name: str,
+        purchase_min,
+        purchase_max,
+        sale_min,
+        sale_max,
+        manager_approval_below,
+        notes: str | None = None,
+    ) -> int:
+
+        cursor = self.connection.cursor()
+
+        try:
+            cursor.execute(
+                """
+                INSERT INTO item_categories (
+                    code,
+                    name,
+                    purchase_making_min_per_gram,
+                    purchase_making_max_per_gram,
+                    sale_making_min_per_gram,
+                    sale_making_max_per_gram,
+                    manager_approval_below_per_gram,
+                    sort_order,
+                    notes
+                )
+                SELECT %s, %s, %s, %s, %s, %s, %s, COALESCE(MAX(sort_order), 0) + 1, %s
+                FROM item_categories
+                """,
+                (
+                    code,
+                    name,
+                    purchase_min,
+                    purchase_max,
+                    sale_min,
+                    sale_max,
+                    manager_approval_below,
+                    notes,
+                ),
+            )
+
+            return cursor.lastrowid
+
+        finally:
+            cursor.close()
+
+    def set_category_active(
+        self,
+        category_id: int,
+        is_active: bool,
+    ) -> None:
+
+        cursor = self.connection.cursor()
+
+        try:
+            cursor.execute(
+                "UPDATE item_categories SET is_active = %s WHERE id = %s",
+                (is_active, category_id),
+            )
 
         finally:
             cursor.close()

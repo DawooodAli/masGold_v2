@@ -5,8 +5,8 @@ from PySide6.QtCore import (
     Slot,
 )
 
-from services.master_data_service import MasterDataService
-from decimal import Decimal
+from services.master_data_service import MasterDataInUse, MasterDataService
+from decimal import Decimal, InvalidOperation
 
 class MasterDataViewModel(QObject):
 
@@ -18,6 +18,7 @@ class MasterDataViewModel(QObject):
         super().__init__(parent)
 
         self._service = MasterDataService()
+        self._default_service = True
 
         self._categories = []
         self._all_categories = []
@@ -33,6 +34,7 @@ class MasterDataViewModel(QObject):
         self._item_types = []
         self._action_message = ""
         self._action_success = True
+        self._action_scope = ""          # which Master Data page owns the message
 
         self.refresh()
 
@@ -218,6 +220,34 @@ class MasterDataViewModel(QObject):
     def actionSuccess(self):
         return self._action_success
 
+    def attach_session(self, session):
+        """The logged-in session: every Master Data mutation is re-authorized (MASTER_DATA_MANAGE)."""
+        if self._default_service:
+            self._service = MasterDataService(session)
+        self.dataChanged.emit()
+
+    @Property(bool, notify=dataChanged)
+    def canManage(self):
+        """UI hint only; the service re-checks the database on every mutation."""
+        can = getattr(self._service, "can_manage", None)
+        return bool(can()) if callable(can) else False
+
+    @Property(str, notify=actionChanged)
+    def actionScope(self):
+        """factories / itemTypes / categories: only that page shows the message."""
+        return self._action_scope
+
+    @Slot()
+    def clearAction(self):
+        """Navigation (or the success timeout) clears the page message."""
+        if self._action_message or self._action_scope:
+            self._action_message, self._action_success, self._action_scope = "", True, ""
+            self.actionChanged.emit()
+
+    def _set_action(self, scope, success, message):
+        self._action_scope, self._action_success, self._action_message = scope, success, message
+        self.actionChanged.emit()
+
     # =========================================================
     # HELPERS
     # =========================================================
@@ -247,6 +277,9 @@ class MasterDataViewModel(QObject):
 
     @staticmethod
     def _translate_factory_error(exc):
+
+        if isinstance(exc, PermissionError):
+            return "ليس لديك صلاحية تعديل البيانات الأساسية (المصانع والأصناف والفئات)."
 
         message = str(exc)
 
@@ -375,6 +408,8 @@ class MasterDataViewModel(QObject):
         notes,
     ):
 
+        self._action_scope = "factories"
+
         try:
 
             factory_id = (
@@ -430,6 +465,8 @@ class MasterDataViewModel(QObject):
         notes,
     ):
 
+        self._action_scope = "factories"
+
         try:
 
             self._service.update_factory(
@@ -477,6 +514,8 @@ class MasterDataViewModel(QObject):
         self,
         factory_id,
     ):
+
+        self._action_scope = "factories"
 
         factory = self._factory_by_id(
             factory_id
@@ -548,6 +587,8 @@ class MasterDataViewModel(QObject):
         self,
         factory_id,
     ):
+
+        self._action_scope = "factories"
 
         factory = self._factory_by_id(
             factory_id
@@ -632,6 +673,9 @@ class MasterDataViewModel(QObject):
     @staticmethod
     def _translate_item_type_error(exc):
 
+        if isinstance(exc, PermissionError):
+            return "ليس لديك صلاحية تعديل البيانات الأساسية (المصانع والأصناف والفئات)."
+
         message = str(exc)
 
         if "Item type name is required" in message:
@@ -668,6 +712,8 @@ class MasterDataViewModel(QObject):
             default_category_id,
             notes,
     ):
+
+        self._action_scope = "itemTypes"
 
         try:
 
@@ -729,6 +775,8 @@ class MasterDataViewModel(QObject):
             notes,
     ):
 
+        self._action_scope = "itemTypes"
+
         try:
 
             category_id = (
@@ -778,6 +826,8 @@ class MasterDataViewModel(QObject):
             self,
             item_type_id,
     ):
+
+        self._action_scope = "itemTypes"
 
         item_type = self._item_type_by_id(
             item_type_id
@@ -845,6 +895,8 @@ class MasterDataViewModel(QObject):
             self,
             item_type_id,
     ):
+
+        self._action_scope = "itemTypes"
 
         item_type = self._item_type_by_id(
             item_type_id
@@ -919,6 +971,7 @@ class MasterDataViewModel(QObject):
 
     @staticmethod
     def _optional_float(value):
+        """Optional amount parsed as Decimal (the historical name is kept for callers)."""
 
         if value is None:
             return None
@@ -936,15 +989,23 @@ class MasterDataViewModel(QObject):
             text = text.replace(",", "")
 
         try:
-            return float(text)
+            amount = Decimal(text)
 
-        except ValueError as exc:
+        except InvalidOperation as exc:
             raise ValueError(
                 "Invalid numeric value."
             ) from exc
 
+        if not amount.is_finite():
+            raise ValueError("Invalid numeric value.")
+
+        return amount
+
     @staticmethod
     def _translate_category_error(exc):
+
+        if isinstance(exc, PermissionError):
+            return "ليس لديك صلاحية تعديل البيانات الأساسية (المصانع والأصناف والفئات)."
 
         message = str(exc)
 
@@ -975,6 +1036,22 @@ class MasterDataViewModel(QObject):
 
             "Invalid numeric value.":
                 "أحد القيم الرقمية غير صحيح.",
+
+            "Category code is required.":
+                "كود الفئة مطلوب.",
+
+            "Category code is invalid.":
+                "كود الفئة غير صالح (بدون مسافات، 20 حرفاً كحد أقصى).",
+
+            "Category name is too long.":
+                "اسم الفئة طويل جداً.",
+
+            "Category code already exists.":
+                "كود الفئة مستخدم بالفعل.",
+
+            "Category is the default category of an item type.":
+                "لا يمكن حذف الفئة نهائيًا لأنها الفئة الافتراضية لأحد الأصناف. "
+                "غيّر الفئة الافتراضية للصنف أولاً أو عطّل الفئة.",
         }
 
         return translations.get(
@@ -1002,6 +1079,8 @@ class MasterDataViewModel(QObject):
             manager_approval_below,
             notes,
     ):
+
+        self._action_scope = "categories"
 
         try:
 
@@ -1057,153 +1136,97 @@ class MasterDataViewModel(QObject):
             self.actionChanged.emit()
 
             return False
-@Slot(int, result=bool)
-def disableCategory(
-    self,
-    category_id,
-):
 
-    category = self._category_by_id(
-        category_id
-    )
+    # =========================================================
+    # CATEGORIES — create / disable / reactivate
+    # =========================================================
 
-    if category is None:
-
-        self._action_success = False
-        self._action_message = (
-            "تعذر العثور على الفئة."
-        )
-
-        self.actionChanged.emit()
-
-        return False
-
-    try:
-
-        self._service.update_category_rules(
-            category_id=category_id,
-
-            purchase_min=category.get(
-                "purchase_making_min_per_gram"
-            ),
-
-            purchase_max=category.get(
-                "purchase_making_max_per_gram"
-            ),
-
-            sale_min=category.get(
-                "sale_making_min_per_gram"
-            ),
-
-            sale_max=category.get(
-                "sale_making_max_per_gram"
-            ),
-
-            manager_approval_below=category.get(
-                "manager_approval_below_per_gram"
-            ),
-
-            notes=category.get("notes"),
-
-            is_active=False,
-        )
-
-        self._action_success = True
-
-        self._action_message = (
-            "تم تعطيل الفئة: "
-            + str(category.get("code") or "")
-        )
-
+    @Slot(str, str, str, str, str, str, str, str, result=bool)
+    def createCategory(self, code, name, purchase_min, purchase_max, sale_min, sale_max,
+                       manager_approval_below, notes):
+        try:
+            category_id = self._service.create_category(
+                code=code, name=name,
+                purchase_min=self._optional_float(purchase_min),
+                purchase_max=self._optional_float(purchase_max),
+                sale_min=self._optional_float(sale_min),
+                sale_max=self._optional_float(sale_max),
+                manager_approval_below=self._optional_float(manager_approval_below),
+                notes=notes,
+            )
+        except Exception as exc:
+            self._set_action("categories", False, self._translate_category_error(exc))
+            return False
         self.refresh()
-        self.actionChanged.emit()
-
+        self._set_action("categories", True,
+                         "تم إضافة الفئة بنجاح: " + str(code or "").strip().upper()
+                         + f" — رقم {category_id}")
         return True
 
-    except Exception as exc:
-
-        self._action_success = False
-
-        self._action_message = (
-            self._translate_category_error(exc)
-        )
-
-        self.actionChanged.emit()
-
-        return False
-
-
-@Slot(int, result=bool)
-def reactivateCategory(
-    self,
-    category_id,
-):
-
-    category = self._category_by_id(
-        category_id
-    )
-
-    if category is None:
-
-        self._action_success = False
-        self._action_message = (
-            "تعذر العثور على الفئة."
-        )
-
-        self.actionChanged.emit()
-
-        return False
-
-    try:
-
-        self._service.update_category_rules(
-            category_id=category_id,
-
-            purchase_min=category.get(
-                "purchase_making_min_per_gram"
-            ),
-
-            purchase_max=category.get(
-                "purchase_making_max_per_gram"
-            ),
-
-            sale_min=category.get(
-                "sale_making_min_per_gram"
-            ),
-
-            sale_max=category.get(
-                "sale_making_max_per_gram"
-            ),
-
-            manager_approval_below=category.get(
-                "manager_approval_below_per_gram"
-            ),
-
-            notes=category.get("notes"),
-
-            is_active=True,
-        )
-
-        self._action_success = True
-
-        self._action_message = (
-            "تم إعادة تفعيل الفئة: "
-            + str(category.get("code") or "")
-        )
-
+    def _set_category_active(self, category_id, active):
+        category = self._category_by_id(category_id)
+        if category is None:
+            self._set_action("categories", False, "تعذر العثور على الفئة.")
+            return False
+        try:
+            self._service.set_category_active(int(category_id), active)
+        except Exception as exc:
+            self._set_action("categories", False, self._translate_category_error(exc))
+            return False
         self.refresh()
-        self.actionChanged.emit()
-
+        self._set_action("categories", True,
+                         ("تم إعادة تفعيل الفئة: " if active else "تم تعطيل الفئة: ")
+                         + str(category.get("code") or ""))
         return True
 
-    except Exception as exc:
+    @Slot(int, result=bool)
+    def disableCategory(self, category_id):
+        return self._set_category_active(category_id, False)
 
-        self._action_success = False
+    @Slot(int, result=bool)
+    def reactivateCategory(self, category_id):
+        return self._set_category_active(category_id, True)
 
-        self._action_message = (
-            self._translate_category_error(exc)
-        )
+    # =========================================================
+    # PERMANENT DELETE — the service decides (never QML)
+    # =========================================================
 
-        self.actionChanged.emit()
+    IN_USE = {
+        "factories": "لا يمكن حذف المصنع نهائيًا لأنه مرتبط ببيانات في المخزون. يمكنك تعطيله فقط.",
+        "itemTypes": "لا يمكن حذف الصنف نهائيًا لأنه مرتبط ببيانات في المخزون. يمكنك تعطيله فقط.",
+        "categories": "لا يمكن حذف الفئة نهائيًا لأنها مرتبطة ببيانات في المخزون. يمكنك تعطيلها فقط.",
+    }
+    DELETED = {"factories": "تم حذف المصنع نهائيًا: ", "itemTypes": "تم حذف الصنف نهائيًا: ",
+               "categories": "تم حذف الفئة نهائيًا: "}
 
-        return False
+    def _delete(self, scope, record, delete, translate):
+        if record is None:
+            self._set_action(scope, False, "تعذر العثور على السجل.")
+            return False
+        try:
+            delete(int(record["id"]))
+        except MasterDataInUse:
+            self._set_action(scope, False, self.IN_USE[scope])
+            return False
+        except Exception as exc:
+            self._set_action(scope, False, translate(exc))
+            return False
+        self.refresh()
+        label = record.get("name") if scope != "categories" else record.get("code")
+        self._set_action(scope, True, self.DELETED[scope] + str(label or ""))
+        return True
+
+    @Slot(int, result=bool)
+    def deleteFactory(self, factory_id):
+        return self._delete("factories", self._factory_by_id(factory_id),
+                            self._service.delete_factory, self._translate_factory_error)
+
+    @Slot(int, result=bool)
+    def deleteItemType(self, item_type_id):
+        return self._delete("itemTypes", self._item_type_by_id(item_type_id),
+                            self._service.delete_item_type, self._translate_item_type_error)
+
+    @Slot(int, result=bool)
+    def deleteCategory(self, category_id):
+        return self._delete("categories", self._category_by_id(category_id),
+                            self._service.delete_category, self._translate_category_error)

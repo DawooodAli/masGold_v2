@@ -140,7 +140,8 @@ class CallSiteAuditTests(unittest.TestCase):
                          ("services/operational_balance_service.py", "_write"),
                          ("services/customer_service.py", "_authorize_write"),        # CUSTOMERS_MANAGE
                          ("services/dead_cash_service.py", "write_off"),              # DEAD_CASH_MANAGE
-                         ("services/dead_cash_service.py", "reverse")):               # DEAD_CASH_REVERSE
+                         ("services/dead_cash_service.py", "reverse"),                # DEAD_CASH_REVERSE
+                         ("services/master_data_service.py", "_authorize_write")):    # MASTER_DATA_MANAGE
             self.assertIn(expected, writes, expected)
 
 

@@ -188,6 +188,9 @@ class ApplicationController(QObject):
             customer_page = self.operational_viewmodels.get("customerVM")
             if hasattr(customer_page, "attach_session"):
                 customer_page.attach_session(self.session)       # Customers page reads need CUSTOMERS_VIEW
+            master_data = self.operational_viewmodels.get("masterDataVM")
+            if hasattr(master_data, "attach_session"):
+                master_data.attach_session(self.session)         # mutations need MASTER_DATA_MANAGE
             invoice_vm = self.operational_viewmodels["invoiceVM"]
             balances = self.operational_viewmodels["balancesVM"]
             if hasattr(invoice_vm, "finalized") and hasattr(balances, "refresh"):
