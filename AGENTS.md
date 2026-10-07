@@ -444,9 +444,8 @@ Reversal:
 - records reversal metadata
 - does not delete the original write-off
 
-Do not implement Dead Cash actions until explicitly requested.
-
-Read-only display is safe.
+Dead Cash write-off and reversal are implemented; preserve them and change them only on a
+specific task.
 
 ---
 
@@ -739,12 +738,12 @@ specific task, not completion of the obsolete Billing roadmap.
 At the beginning of each task, verify the actual branch, HEAD and working-tree state
 using Git (`git branch --show-current`, `git log --oneline -10`, `git status`); stop and
 report unexpected files or commits. Do not treat any commit hash in this document as the
-current HEAD. Historical reference: the baseline below was recorded at commit `e798bad`
-(`feat(customers): add invoice history and automatic refresh`) on `feature/billing-v2`. Read both `AGENTS.md` and `CLAUDE.md`.
+current HEAD. Read both `AGENTS.md` and `CLAUDE.md`.
 
-- Schema chain: migrations `001–024` in `database/schema`; next migration is `025`
+- Schema chain: migrations `001–033` in `database/schema`; next migration is `034`
   unless later repository state proves otherwise. Already-applied migrations are
-  immutable, including 019–024. Future schema work needs the next forward migration,
+  immutable, including 019–033. `database/migrations/*.sql` are historical prototypes
+  (see its README) and are never applied. Future schema work needs the next forward migration,
   guarded rollback, `SHA256SUMS`, chain tooling and appropriate migration/rehearsal tests.
 - Normal DEV database: `masgold_v2`. Never mutate `golddb`. Rehearsal/prod databases
   (`masgold_rehearsal`, `masgold_prod`) require an explicit task request. Before an
@@ -756,12 +755,33 @@ current HEAD. Historical reference: the baseline below was recorded at commit `e
 - Preserve finalized invoice, Exchange, Return and correction history. Use explicit
   correction transactions; do not silently rewrite/delete historical records.
 
+### Current rules added by the post-review packs (authoritative)
+
+- **Old-gold discount:** 1.25%–5.00%, default 1.50%, for Mixed AND old-gold-only invoices.
+- **EGP-5:** the customer-facing amount is rounded once, on the final amount; exact economics stay
+  exact. For old-gold-only: real money + account allocation = the final rounded amount.
+- **Old-gold-only invoices:** the customer is optional when the account allocation is 0 and
+  required whenever any account allocation exists. They are save-only (`حفظ فقط`), non-printable and
+  have no reprint in History; SALE and MIXED invoices still print on the frozen A5 layout.
+  Classification comes from the saved lines (BUY_OLD_GOLD, no sale line), never a new DB flag.
+- **Users / Roles / Permissions admin:** `USERS_MANAGE`, service-side, actor from AppSession.
+- **Inventory entry and old-gold conversion:** backend-authorized (`INVENTORY_MANAGE` /
+  `OLD_GOLD_MANAGE`); the actor is the session user, never QML-supplied. UI gating is a convenience.
+- **Financial accounts:** each cash/bank account has a movement ledger/history with its source
+  context; accounts may go negative.
+- **Dev auto-login:** off by default. The only switch is `MASGOLD_DEV_AUTO_LOGIN=1`; it never
+  activates in a frozen build, a production/release `MASGOLD_ENV`, or `masgold_prod`.
+- **Re-authentication cooldown:** Dead Cash and settlement-approver password checks use one
+  persistent `AuthenticationService` per owning service, so the failure cooldown persists.
+- **Frozen Billing V1:** `billingVM` is not registered; the V1 source files remain as history only.
+- **Line endings:** do not mass-convert files and never normalize migrations (checksums). No
+  `.gitattributes` is added; with `core.autocrlf=true` a policy file would cause churn. Deferred.
+
 ### Official test baseline
 
-Accepted baseline (recorded at the historical commit above): **1015 total = 975 passed + 40 skipped**,
-**0 failures, 0 errors, 0 runtime QML warnings**. This is the supplied
-confirmed baseline, not a fresh execution during this documentation sync.
-Standalone `tests/test_invoice_service.py`: 44 tests pass.
+Accepted baseline after the Final Stabilization Pack: **1546 total = 1473 passed + 73 skipped**,
+**0 failures, 0 errors**. Skipped tests are the opt-in MySQL/integration tests, which
+stay opt-in and are never run against persistent DEV data casually.
 
 Intended suite command (use project `.venv` Python):
 

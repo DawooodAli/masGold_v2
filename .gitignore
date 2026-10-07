@@ -19,3 +19,6 @@ Thumbs.db
 
 # Generated review screenshots/JSON (UI checks, diagnostics)
 reports/
+
+# Local-only credential note (never versioned, never opened by tooling)
+Note for password.txt

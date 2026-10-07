@@ -3,3 +3,4 @@ python-dotenv
 PySide6
 argon2-cffi>=25.1,<26
 keyring>=25.7,<26
+pywin32; sys_platform == "win32"

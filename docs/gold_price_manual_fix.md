@@ -80,7 +80,8 @@ added and the navigation sidebar remains physically on the right.
   properties/outer component context. No remaining property or layout diagnostic
   in the updated dialog. The complete file still reports 1,063 warnings;
   the checked-in HEAD baseline already reports 992. This is not a claim of a
-  warning-free full application. Summary: `reports/gold_price_dialog_review/lint-summary.json`.
+  warning-free full application. (The lint summary was a local review artifact under the git-ignored
+  `reports/` folder; it is not versioned.)
 - Real MySQL rollback-only verification passed before and after the fix:
   three quotes, three activations, three matching active pointers, MANUAL mode,
   authenticated actor, employee metadata, reason and the returned snapshot.
@@ -99,13 +100,10 @@ Commands:
 
 The offscreen renderer did not enumerate Cairo. Visual test processes explicitly
 load a system Arial fallback for Arabic glyphs and realistic text geometry;
-the shipped application font declarations remain Cairo. Review screenshots:
+the shipped application font declarations remain Cairo. Review screenshots were produced locally under the
+git-ignored `reports/gold_price_dialog_review/` folder (not versioned): preview at 1440x900, 1280x800 and
+1080x680, the active preview and the confirmation at 1080x680.
 
-- `reports/gold_price_dialog_review/preview-1440x900.png`
-- `reports/gold_price_dialog_review/preview-1280x800.png`
-- `reports/gold_price_dialog_review/preview-1080x680.png`
-- `reports/gold_price_dialog_review/active-preview-1080x680.png`
-- `reports/gold_price_dialog_review/confirmation-1080x680.png`
 
 ## Manual acceptance
 
