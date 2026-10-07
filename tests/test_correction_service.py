@@ -249,7 +249,24 @@ class Repo:
         return None if c is None else {"case_id": c["case_id"], "case_status": c["status"]}
 
     def lock_old_gold_balance(self, karat_id):
-        return self.store.old_gold_balance(karat_id)
+        return self.store.old_gold_balance(karat_id) - sum(
+            (h["weight"] for h in getattr(self.store, "holds", []) if h["karat_id"] == int(karat_id)
+             and h["status"] == "HELD"), D("0.000"))
+
+    def hold_for(self, *, lifecycle_line_id=None, return_line_id=None):
+        key, value = ("line", lifecycle_line_id) if lifecycle_line_id else ("return_line", return_line_id)
+        hold = next((h for h in getattr(self.store, "holds", []) if h.get(key) == value), None)
+        return None if hold is None else {"hold_id": hold["hold_id"], "karat_id": hold["karat_id"],
+                                          "weight_grams": hold["weight"], "hold_status": hold["status"],
+                                          "inventory_item_id": hold["item"]}
+
+    def reverse_hold(self, *, hold_id, out_movement_id, user_id, at):
+        hold = next(h for h in self.store.holds if h["hold_id"] == hold_id)
+        if hold["status"] != "HELD":
+            return False
+        assert out_movement_id is not None
+        hold.update(status="REVERSED", out=out_movement_id)
+        return True
 
     def db_now(self):
         return self.store.now
@@ -293,6 +310,7 @@ class Repo:
         self._maybe_fail("old_gold")
         self.store.old_gold.append((karat_id, weight_delta, movement_code))
         assert self.store.old_gold_balance(karat_id) >= 0                         # stock never negative
+        return str(len(self.store.old_gold))
 
     def dismiss_review(self, *, review_id, **kw):
         self._maybe_fail("review")

@@ -100,7 +100,9 @@ class CashViewTests(FinancialTestCase):
         self.assertEqual((view["in"]["total"], view["out"]["total"]), ("32000.00", "36600.00"))
         self.assertEqual(view["in"]["rows"][0]["invoice_id"], "21")
         for row in view["in"]["rows"] + view["out"]["rows"]:
-            self.assertEqual(set(row), {"id", "label", "amount", "invoice_id", "operation_id"})   # no raw codes
+            # Stored identification only (reference, invoice, corrected transaction, customer) — never a raw code.
+            self.assertEqual(set(row), {"id", "label", "amount", "invoice_id", "operation_id", "reference",
+                                        "invoice_number", "corrected_reference", "customer", "customer_id", "kind"})
         self.assertEqual(D(view["account"]["balance"]), self.cash())                             # authoritative
         self.assertEqual(view["account"]["key"], "CASH:1")
         self.assertNotIn("accounts", view)                                                      # no bank cards

@@ -24,6 +24,16 @@ SOURCE_TEXT = {"SCAN": "بالباركود", "SEARCH": "بالبحث", "MANUAL":
 ACCOUNT_TYPE = {"INSTAPAY": "BANK", "BANK_TRANSFER": "BANK", "MOBILE_WALLET": "MOBILE_WALLET"}
 
 
+
+def _scrap_breakdown(row):
+    """Physical / held / available of one karat, only while something is HELD (032); else ""."""
+    from services.old_gold_availability import breakdown_text
+    held = Decimal(str(row.get("held") or 0))
+    if held <= 0:
+        return ""
+    return breakdown_text(row.get("physical") or 0, held, row.get("grams") or 0)
+
+
 class ExchangeViewModel(QObject):
     changed = Signal()
     # Only when a replacement is added / removed: typing a making value must not rebuild the rows
@@ -45,6 +55,7 @@ class ExchangeViewModel(QObject):
     def _reset(self):
         self._mode, self._context, self._selected, self._replacements = "", {}, [], []
         self._method, self._amount, self._bank, self._account = "PHYSICAL_CASH", "", "", ""
+        self._economics = 0                # bumped by every economic change; stale previews are dropped
         self._notes, self._preview, self._result = "", {}, {}
         self._error, self._scan_error, self._ack = "", "", False
         self._search_open, self._search_results, self._search_message = False, [], ""
@@ -135,7 +146,7 @@ class ExchangeViewModel(QObject):
             self._selected.remove(line_id)
         else:
             self._selected.append(line_id)
-        self._changed_input()
+        self._economics_changed()
 
     @Slot(str)
     def addReplacementBarcode(self, text):
@@ -167,7 +178,7 @@ class ExchangeViewModel(QObject):
         row["key"] = f"r{self._row_seq}"                   # a manual / F7 row has no inventory id
         self._replacements.append(row)
         self.replacementsChanged.emit()
-        self._changed_input()
+        self._economics_changed()
 
     # ------------------------------------------------------------ F5 إدخال يدوي / F7 من الكسر (as in Billing)
     @Slot(str)
@@ -271,14 +282,14 @@ class ExchangeViewModel(QObject):
             return
         self._replacements = [r for r in self._replacements if r["key"] != key]
         self.replacementsChanged.emit()
-        self._changed_input()
+        self._economics_changed()
 
     @Slot(str, str)
     def setMaking(self, key, text):
         for row in self._replacements:
             if row["key"] == key and row["making"] != (text or "").strip():
                 row["making"] = (text or "").strip()
-                self._changed_input()
+                self._economics_changed()
                 return
 
     @Slot(str)
@@ -318,12 +329,22 @@ class ExchangeViewModel(QObject):
         self._ack = bool(value)
         self.changed.emit()
 
+    def _economics_changed(self):
+        """The ONE recalculation path for anything that changes what the exchange is worth (returned
+        selection, replacement added / removed, replacement making). The old result and the money entered
+        against it are discarded at once — a previous total can never survive or be settled."""
+        self._economics += 1
+        self._preview = {}
+        self._amount, self._account = "", ""
+        self._changed_input()
+
     def _changed_input(self):
         self._error = ""
         self.changed.emit()
         if self._selected and self._replacements:
             self._preview_timer.start()
         else:
+            self._preview_timer.stop()
             self._preview = {}
 
     # ------------------------------------------------------------ preview / finalize
@@ -350,14 +371,18 @@ class ExchangeViewModel(QObject):
     def _run_preview(self):
         if not (self._context and self._selected and self._replacements):
             return
-        service, draft = self._service_instance(), self._draft()
-        self._start("preview", lambda _expected_actor: service.preview(draft, _expected_actor=_expected_actor))
+        service, draft, version = self._service_instance(), self._draft(), self._economics
+        self._start("preview", lambda _expected_actor: (version, service.preview(
+            draft, _expected_actor=_expected_actor)))
 
     def _on_preview(self, result, error):
         if error:
             self._preview, self._error = {}, error
             return
-        self._preview, self._error = result, ""
+        version, preview = result
+        if version != self._economics or not (self._selected and self._replacements):
+            return                       # computed for a previous draft: never shown, never settled
+        self._preview, self._error = preview, ""
 
     @Slot()
     def finalize(self):
@@ -430,6 +455,7 @@ class ExchangeViewModel(QObject):
             return {}
         return {"invoiceId": c["invoice_id"], "number": c["invoice_number"],
                 "finalizedAt": ltr(c["finalized_at"][:16]), "customerName": c["customer_name"] or "بدون عميل",
+                "customerId": str(c.get("customer_id") or ""),
                 "hasCustomer": c["has_customer"],
                 "windowText": (f"داخل مدة استرداد المصنعية ({c['refund_window_hours']} ساعة)"
                                if c["refund_window_open"] else "انتهت مدة استرداد المصنعية")}
@@ -437,6 +463,7 @@ class ExchangeViewModel(QObject):
     @Property("QVariantList", notify=changed)
     def lines(self):
         return [{"lineId": l["line_id"], "item": l.get("item_name") or "—", "barcode": l.get("barcode") or "",
+                 "identity": self._identity(l.get("barcode"), l.get("inventory_item_id")),
                  "karat": str(l["karat"]), "weight": grams(l["weight_grams"]), "pure": exact_grams(l["pure_grams"]),
                  "exchangeable": l["exchangeable"], "reason": l["reason"],
                  "selected": l["line_id"] in self._selected}
@@ -445,6 +472,8 @@ class ExchangeViewModel(QObject):
     @Property("QVariantList", notify=replacementsChanged)
     def replacements(self):
         return [{"itemId": r["key"], "item": r.get("item_name") or "—", "barcode": r.get("barcode") or "",
+                 "identity": self._identity(r.get("barcode"), r.get("inventory_item_id"),
+                                            r.get("identified_by") in ("MANUAL", "OLD_GOLD_STOCK")),
                  "karat": str(r["karat"]), "weight": grams(r["weight_grams"]),
                  "pure": exact_grams(r["pure_grams"]) if r.get("pure_grams") else "",
                  "making": r["making"], "sourceText": SOURCE_TEXT.get(r.get("identified_by"), ""),
@@ -452,6 +481,13 @@ class ExchangeViewModel(QObject):
                 for r in self._replacements]
 
     # ---- F5 / F7 panels (Billing's own lists from the service context)
+    @staticmethod
+    def _identity(barcode, item_id, described=False):
+        """What tells two identical-looking pieces apart: the barcode (or بدون باركود) and the piece #."""
+        if described:
+            return "بدون هوية مخزون"
+        return f"{barcode or 'بدون باركود'}" + (f"  •  #{item_id}" if item_id not in (None, "") else "")
+
     @Property(str, notify=changed)
     def panel(self):
         return self._panel
@@ -471,7 +507,8 @@ class ExchangeViewModel(QObject):
     @Property("QVariantList", notify=changed)
     def karats(self):
         """Active karats with the COUNTED old-gold stock (F7 shows what is available before the exchange)."""
-        return [{"id": k["karat_id"], "name": f"عيار {k['karat']}", "stock": f"المتاح {grams(k['grams'])}"}
+        return [{"id": k["karat_id"], "name": f"عيار {k['karat']}", "stock": f"المتاح {grams(k['grams'])}",
+                 "breakdown": _scrap_breakdown(k)}
                 for k in sorted(self._context.get("old_gold_stock", []), key=lambda k: -k["karat"])]
 
     @Property("QVariantList", notify=changed)
@@ -502,27 +539,41 @@ class ExchangeViewModel(QObject):
 
     @Property("QVariantMap", notify=changed)
     def summary(self):
+        """The calculation, every step visible: gold, then making (returned refund / replacement /
+        difference), then raw, rounding and the final amount. Nothing final while anything is missing."""
+        if self._selected and not self._replacements and not self._result:
+            return {"shown": True, "complete": False, "statusText": "الاستبدال غير مكتمل"}
         p = self._preview
         if not p:
             return {}
         same_karat = p["valuation_basis"] == "SAME_KARAT"
-        making_label, making_value = "", ""
-        if p["making_required"]:
-            making_label = "مصنعية الذهب الزائد"
-            making_value = "اكتب المصنعية" if p["making_missing"] else money(p["making_charge"])
-        elif p["making_refund_applies"]:
-            making_label, making_value = p["making_refund_text"], money(p["making_refund"])
         price = ""
         if p["price_basis"]:
             price = f"{p['price_basis_text']} عيار {p['price_karat']}: {money(p['price_per_gram'])}"
+        gold_signed = Decimal(p["gold_signed"])
+        complete = bool(p.get("complete"))
+
+        def signed_text(value):
+            value = Decimal(value)
+            return money(abs(value)) + (" على العميل" if value > 0 else " للعميل" if value < 0 else "")
         return {
+            "shown": True, "complete": complete,
+            "statusText": "" if complete else "الحساب غير مكتمل",
             "returnedPure": exact_grams(p["returned_pure_grams"]), "replacementPure": exact_grams(p["replacement_pure_grams"]),
             "deltaLabel": "فرق الوزن (نفس العيار)" if same_karat else "فرق الذهب الصافي (عيار 24)",
             "delta": exact_grams(p["valued_delta_grams"], signed=True), "priceText": price or "لا يلزم سعر (لا فرق في الذهب)",
-            "goldAmount": money(p["gold_amount"]), "makingLabel": making_label, "makingValue": making_value,
-            "makingMissing": p["making_missing"], "makingRequired": p["making_required"],
+            "goldAmount": signed_text(gold_signed) if gold_signed else money("0"),
+            "makingRefund": money(p["making_refund"]) if p["making_refund_applies"] else (
+                "لا يوجد" if not p["making_refund_expired"] else "انتهت المدة"),
+            "makingReplacement": "غير محددة" if p["making_missing"] else money(p["making_charge"]),
+            "makingDifference": "غير مكتمل" if p["making_missing"] else signed_text(p["making_difference"]),
+            "makingMissing": p["making_missing"], "makingRequired": True,
+            "rawAmount": "" if not complete else signed_text(p["raw_amount"]),
+            "rounding": "" if not complete else (money(p["rounding_adjustment"]) if Decimal(p["rounding_adjustment"])
+                                                  else "لا يوجد"),
             "expiredText": p["making_refund_expired_text"],
-            "finalAmount": money(p["amount"]), "direction": p["direction"], "directionText": p["direction_text"],
+            "finalAmount": money(p["amount"]) if complete else "",
+            "direction": p["direction"] if complete else "", "directionText": p["direction_text"],
             "moneyDirectionText": ("يستلم المحل" if p["money_direction"] == "IN"
                                    else "يدفع المحل" if p["money_direction"] == "OUT" else ""),
             "pendingText": p["returned_pending_text"],
@@ -536,8 +587,8 @@ class ExchangeViewModel(QObject):
         """The settlement bar: the service's result (who owes whom, how much) and what the employee has
         entered so far. Display only — the service checks money + account == the result exactly."""
         p = self._preview
-        if not p:
-            return {}
+        if not p or not p.get("complete"):
+            return {}                        # incomplete: there is no amount to settle
         direction = p["direction"]
         if direction == "NONE":
             return {"direction": "NONE", "resultLabel": "لا يوجد فرق مالي", "due": "", "needsMoney": False,
@@ -568,7 +619,8 @@ class ExchangeViewModel(QObject):
     @Property(bool, notify=changed)
     def canFinalize(self):
         p = self._preview
-        return bool(p and not p["blocking_problems"] and not self._busy and not self._result
+        return bool(p and p.get("complete") and not p["blocking_problems"] and not self._busy and not self._result
+                    and bool(self._replacements)
                     and not self._preview_timer.isActive()
                     and (self._ack or not p.get("requires_price_acknowledgement")))
 

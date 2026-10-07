@@ -118,9 +118,12 @@ class FakeRepo:
 class FakePrint:
     def __init__(self, printed=True):
         self.calls, self.printed = [], printed
+        self.gate = None                       # a threading.Event: the job stays "in flight" until it is set
 
     def print_invoice(self, invoice_id, *, _expected_actor=None):
         self.calls.append(invoice_id)
+        if self.gate is not None:
+            self.gate.wait(10)
         return type("Outcome", (), {"printed": self.printed,
                                     "message": "ok" if self.printed else "الطابعة غير متصلة."})()
 
@@ -387,20 +390,84 @@ class HistoryViewModelTests(unittest.TestCase):
         self.assertEqual([p["method"] for p in self.vm.payments], ["نقدي", "محفظة — محفظة المحل"])
         self.assertEqual([e["text"] for e in self.vm.timeline], ["تم إنشاء الفاتورة", "تم حفظ الفاتورة نهائياً"])
         self.assertEqual(self.vm.priceSnapshots[0]["sell"], "6,234.00 ج")
+        # The price card carries the invoice's OWN finalization time (never now, never a later price time).
+        self.assertEqual(self.vm.priceSnapshotTime, "⁦2026-09-27 21:51⁩")
+        self.assertEqual(self.vm.priceSnapshotTime, d["finalizedAt"])
         self.vm.closeDetail()
         self.assertFalse(self.vm.detailOpen)
+        self.assertEqual(self.vm.priceSnapshotTime, "")
 
     def test_reprint_reports_success_and_failure_and_is_read_only(self):
         self.vm.openInvoice("21")
         self.wait(lambda: self.vm.detail)
         self.vm.reprint()
-        self.wait(lambda: self.vm.reprintMessage)
-        self.assertEqual((self.vm.reprintMessage, self.vm.reprintFailed), ("تم إرسال الفاتورة إلى الطابعة.", False))
+        self.wait(lambda: self.vm.reprintMessage and not self.vm.reprintBusy)
+        self.assertEqual((self.vm.reprintMessage, self.vm.reprintFailed), ("تم إرسال الفاتورة للطابعة.", False))
         self.service.real._print_service.printed = False
         self.vm.reprint()
         self.wait(lambda: self.vm.reprintFailed)
-        self.assertEqual(self.vm.reprintMessage, "الطابعة غير متصلة.")
+        self.assertEqual(self.vm.reprintMessage, "تعذر إرسال الفاتورة للطابعة. الطابعة غير متصلة.")
         self.assertEqual([c for c in self.service.calls if c[0] == "reprint"], [("reprint", "21"), ("reprint", "21")])
+
+
+class HistoryReprintInFlightTests(HistoryViewModelTests):
+    """UX-PRINT-01: one accepted reprint is one print job; the busy state follows the real call."""
+
+    def setUp(self):
+        super().setUp()
+        import threading
+        self.gate = self.service.printer.gate = threading.Event()
+        self.addCleanup(self.gate.set)                  # never leave a worker waiting
+        self.vm.openInvoice("21")
+        self.wait(lambda: self.vm.detail)
+
+    def reprint_calls(self):
+        return [c for c in self.service.calls if c[0] == "reprint"]
+
+    def test_busy_from_the_first_click_and_repeated_activation_is_ignored(self):
+        self.vm.reprint()
+        self.assertTrue(self.vm.reprintBusy)                         # immediately, before the job finishes
+        self.assertEqual(self.vm.reprintMessage, "جاري إرسال أمر الطباعة...")
+        self.assertFalse(self.vm.reprintFailed)
+        for _ in range(5):                                           # double click, Enter, Space, key repeat
+            self.vm.reprint()
+        self.wait(lambda: self.service.printer.calls)
+        QTest.qWait(80)
+        self.assertEqual(self.service.printer.calls, ["21"])          # ONE print job
+        self.assertEqual(len(self.reprint_calls()), 1)
+        self.gate.set()
+        self.wait(lambda: not self.vm.reprintBusy)
+        self.assertEqual((self.vm.reprintMessage, self.vm.reprintFailed), ("تم إرسال الفاتورة للطابعة.", False))
+        self.assertEqual(self.service.printer.calls, ["21"])          # still one after completion
+
+    def test_failure_clears_the_busy_state_and_allows_a_second_attempt(self):
+        self.service.printer.printed = False
+        self.vm.reprint()
+        self.assertTrue(self.vm.reprintBusy)
+        self.vm.reprint()
+        self.gate.set()
+        self.wait(lambda: not self.vm.reprintBusy)
+        self.assertTrue(self.vm.reprintFailed)
+        self.assertEqual(self.vm.reprintMessage, "تعذر إرسال الفاتورة للطابعة. الطابعة غير متصلة.")
+        self.assertEqual(self.service.printer.calls, ["21"])
+        self.service.printer.printed = True                          # the printer is back: not permanently locked
+        self.vm.reprint()
+        self.wait(lambda: len(self.service.printer.calls) == 2 and not self.vm.reprintBusy)
+        self.assertEqual((self.vm.reprintMessage, self.vm.reprintFailed), ("تم إرسال الفاتورة للطابعة.", False))
+
+    def test_a_reprint_writes_nothing_however_often_it_is_triggered(self):
+        self.vm.reprint()
+        self.vm.reprint()
+        self.gate.set()
+        self.wait(lambda: not self.vm.reprintBusy)
+        self.assertFalse([c for c in self.service.calls if c[0] not in ("detail", "search", "reprint", "exact")])
+        self.assertEqual(len(self.reprint_calls()), 1)
+
+
+# The in-flight class runs only its own tests: the inherited ones must not run against a gated printer.
+for _name in dir(HistoryViewModelTests):
+    if _name.startswith("test_"):
+        setattr(HistoryReprintInFlightTests, _name, None)
 
 
 class HistoryDefaultAndFilterTests(HistoryViewModelTests):
@@ -453,6 +520,51 @@ class HistoryDefaultAndFilterTests(HistoryViewModelTests):
         self.wait(lambda: self.vm.detail and self.vm.detail.get("number") == "26092701")
         exact = [c for c in self.service.calls if c[0] == "exact"]
         self.assertEqual(exact, [("exact", "26092701")])                  # a direct lookup, no date filter
+
+
+class HistoryNumberLookupTests(HistoryViewModelTests):
+    """رقم الفاتورة: a dedicated exact lookup that never touches the range, the list, the filters or the search box."""
+
+    def test_exact_number_opens_the_detail_and_changes_nothing_else(self):
+        self.vm.setDateRange("2026-01-01", "2026-01-02")                # a range that excludes the invoice
+        self.wait(lambda: any(c[0] == "search" for c in self.service.calls))
+        before = (self.vm.dateFrom, self.vm.dateTo, self.vm.searchText, self.vm.typeFilter, self.vm.statusFilter)
+        searches = len([c for c in self.service.calls if c[0] == "search"])
+        self.vm.openByNumber("26092701")
+        self.wait(lambda: self.vm.detail and self.vm.detail.get("number") == "26092701")
+        self.assertEqual([c for c in self.service.calls if c[0] == "exact"], [("exact", "26092701")])
+        self.assertEqual((self.vm.dateFrom, self.vm.dateTo, self.vm.searchText, self.vm.typeFilter,
+                          self.vm.statusFilter), before)              # the filters are never mutated
+        self.assertEqual(len([c for c in self.service.calls if c[0] == "search"]), searches)   # not a search
+        self.assertEqual(self.vm.lookupMessage, "")
+
+    def test_arabic_and_persian_digits_are_normalized(self):
+        for typed in ("٢٦٠٩٢٧٠١", "۲۶۰۹۲۷۰۱", " 2609 2701 "):
+            with self.subTest(typed):
+                self.service.calls.clear()
+                self.vm.closeDetail()
+                self.vm.openByNumber(typed)
+                self.wait(lambda: self.vm.detail and self.vm.detail.get("number") == "26092701")
+                self.assertEqual([c for c in self.service.calls if c[0] == "exact"], [("exact", "26092701")])
+
+    def test_missing_number_is_a_clear_non_destructive_message(self):
+        self.vm.activate()
+        self.wait(lambda: self.vm.results)
+        rows = list(self.vm.results)
+        self.vm.openByNumber("99999999")
+        self.wait(lambda: self.vm.lookupMessage)
+        self.assertEqual(self.vm.lookupMessage, "لم يتم العثور على فاتورة برقم 99999999.")
+        self.assertFalse(self.vm.detailOpen)
+        self.assertEqual(list(self.vm.results), rows)                      # the list is untouched
+        self.vm.clearLookupMessage()
+        self.assertEqual(self.vm.lookupMessage, "")
+
+    def test_empty_or_non_numeric_input_never_calls_the_service(self):
+        for typed, message in (("", "اكتب رقم الفاتورة."), ("أحمد", "رقم الفاتورة أرقام فقط."),
+                               ("26 ; DROP", "رقم الفاتورة أرقام فقط.")):
+            self.service.calls.clear()
+            self.vm.openByNumber(typed)
+            self.assertEqual((self.vm.lookupMessage, [c for c in self.service.calls if c[0] == "exact"]), (message, []))
 
 
 class HistoryCustomerSearchScopeTests(HistoryViewModelTests):

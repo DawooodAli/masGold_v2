@@ -60,7 +60,7 @@ PROTO_MONEY_WORDS_W = 96.52
 PROTO_MONEY_PAD_X = 2.82                                  # 8 pt
 PROTO_MONEY_H_ONE_LINE = 11.29                            # 11 pt + 10 pt padding top/bottom
 PROTO_MONEY_LINE_H = 4.66                                 # 11 pt * 1.2 leading
-PROTO_MONEY_PAD_Y_TWO_LINES = 1.41                        # V2 adaptation: a second line fits in ~the same box
+PROTO_MONEY_PAD_Y_TWO_LINES = 1.15                        # V2 adaptation: a second line fits in ~the same box with modest vertical padding
 
 # ---------------------------------------------------------------- physical mapping (Sumatra "shrink")
 BROTHER_HW_MARGIN_MM = 4.233                              # 12 pt, as the HL-L2360D driver reports
@@ -129,7 +129,8 @@ class BillOverlay:
     rows: tuple
     total_label: str               # "إجمالي الفاتورة : 23,000 جنيه"
     total_words: str               # the commercial total in Arabic words
-    payment_label: str = ""        # "المستلم من العميل : 20,000 جنيه" — money that physically moved
+    payment_label: str = ""        # money that physically moved; decides the 2-line box. The incoming
+                                   # "المستلم من العميل" wording is NOT printed (owner, 2026-10-05)
     payment_methods: str = ""      # "نقدي : 5,000 • InstaPay - البنك الأهلي : 15,000"
     extra: dict = field(default_factory=dict)
 
@@ -216,7 +217,7 @@ def build_overlay(invoice):
         if payment["direction"] == main:
             moved += amount
         else:
-            label = f"{label} ({'المستلم من العميل' if outgoing else 'المدفوع للعميل'})"
+            label = f"{label} ({'مستلم' if outgoing else 'مدفوع'})"      # never the printed phrase المستلم من العميل
         methods.append(f"{label} : {_ltr(amount_text(amount))}")
         structured.append((short_method_label(payment, account, bool(payment["direction"] != main), outgoing),
                            amount_text(amount)))
@@ -236,7 +237,7 @@ def build_overlay(invoice):
         # The same facts, unformatted, for the Variant C layout (never account data).
         extra={"settled": invoice["net_direction"] == "SETTLED" or total == 0,
                "total": amount_text(total), "moved": amount_text(moved),
-               "payment_title": "المدفوع للعميل" if outgoing else "المستلم من العميل",
+               "payment_title": "المدفوع للعميل" if outgoing else "المستلم من العميل", "outgoing": outgoing,
                "methods": tuple(structured), "second_line": bool(payment_label)})
 
 
@@ -378,7 +379,9 @@ class Op:
 
 
 def money_box_height(overlay):
-    if overlay.payment_label or overlay.payment_methods:
+    # Two lines only when the second line is actually drawn (a BUY invoice); a SALE prints no settlement
+    # line, so its box is the one-line box and hugs the total (owner, 2026-10-05).
+    if (overlay.payment_label or overlay.payment_methods) and overlay.extra.get("outgoing"):
         return 2 * PROTO_MONEY_LINE_H + 2 * PROTO_MONEY_PAD_Y_TWO_LINES
     return PROTO_MONEY_H_ONE_LINE
 
@@ -450,7 +453,7 @@ def compose(overlay, calibration=None, style=STYLE_PROTOTYPE, typography=None):
     ops.append(Op("box", c.x(left), c.y(box_top), c.length(PROTO_TABLE_W), c.length(box_h), region="money",
                   width_pt=c.pt(GRID_PT), gray=GRID_GRAY))
     split = left + PROTO_MONEY_WORDS_W
-    two_lines = bool(overlay.payment_label or overlay.payment_methods)
+    two_lines = bool(overlay.payment_label or overlay.payment_methods) and bool(overlay.extra.get("outgoing"))
     pad_y = PROTO_MONEY_PAD_Y_TWO_LINES if two_lines else (PROTO_MONEY_H_ONE_LINE - PROTO_MONEY_LINE_H) / 2
     # Line 1 is the prototype's row: [amount in words | total label].
     y0 = box_top + pad_y
@@ -460,7 +463,8 @@ def compose(overlay, calibration=None, style=STYLE_PROTOTYPE, typography=None):
     text("money", left + PROTO_MONEY_PAD_X, y0, split - PROTO_MONEY_PAD_X, y1, overlay.total_words, MONEY_PT,
          align="right")
     # Line 2 (V2 only, when money moved differently from the total): the actual payment and its
-    # methods across the full box width — "المستلم من العميل" does not fit the 58 mm label cell.
+    # methods across the full box width. A SALE invoice prints NO settlement detail at all (owner,
+    # 2026-10-05): the second line stays empty; only a BUY invoice (المدفوع للعميل) prints it.
     if two_lines:
         detail = " — ".join(part for part in (overlay.payment_label, overlay.payment_methods) if part)
         text("money", left + PROTO_MONEY_PAD_X, y1, right - PROTO_MONEY_PAD_X, y1 + PROTO_MONEY_LINE_H, detail,
@@ -475,6 +479,12 @@ def compose(overlay, calibration=None, style=STYLE_PROTOTYPE, typography=None):
 # headings dominant over English, a subtle 0.8 pt grey grid, the total amount the strongest money text.
 C_GRID_PT, C_GRID_GRAY = 0.8, 100
 C_LABEL_GRAY = 70
+# "Label : Value" as THREE independent runs laid out right-to-left: the Arabic word, a standalone colon
+# run, then the value (dates / times / amounts as left-to-right isolates). No colon is embedded in an
+# Arabic string, so bidi reordering can never move it. (Owner physical review 2026-10-02.)
+LABEL_NAME, LABEL_PLACE, LABEL_DATE, LABEL_TIME = "الاسم", "العنوان", "التاريخ", "الوقت"
+LABEL_TOTAL = "إجمالي الفاتورة"
+COLON = " : "                        # non-breaking spaces: the gap is measured, never trimmed
 
 
 @dataclass(frozen=True)
@@ -538,14 +548,14 @@ def _compose_variant_c(overlay, c, t=None):
 
     cells, row1, row2 = PROTO_HEADER_CELLS, PROTO_HEADER_ROW1, PROTO_HEADER_ROW2
     spans("header", C_NAME_CELL[0], row1[0], C_NAME_CELL[1], row1[1],
-          [("الاسم :- ", t.label, True, C_LABEL_GRAY), (overlay.customer_name, t.name, True, 0)], min_pt=t.name_min)
+          [(LABEL_NAME, t.label, True, C_LABEL_GRAY), (COLON, t.label, True, C_LABEL_GRAY), (overlay.customer_name, t.name, True, 0)], min_pt=t.name_min)
     spans("header", C_NAME_CELL[0], row2[0], C_NAME_CELL[1], row2[1],
-          [("العنوان :- ", t.label, True, C_LABEL_GRAY), (overlay.place or "—", t.address, False, 0)],
+          [(LABEL_PLACE, t.label, True, C_LABEL_GRAY), (COLON, t.label, True, C_LABEL_GRAY), (overlay.place or "—", t.address, False, 0)],
           min_pt=t.label)
     spans("header", cells["left"][0], row1[0], cells["left"][1], row1[1],
-          [("التاريخ :- ", t.label, True, C_LABEL_GRAY), (_ltr(overlay.date_text), t.date_time, True, 0)])
+          [(LABEL_DATE, t.label, True, C_LABEL_GRAY), (COLON, t.label, True, C_LABEL_GRAY), (_ltr(overlay.date_text), t.date_time, True, 0)])
     spans("header", cells["left"][0], row2[0], cells["left"][1], row2[1],
-          [("الوقت :- ", t.label, True, C_LABEL_GRAY), (_ltr(overlay.time_text), t.date_time, True, 0)])
+          [(LABEL_TIME, t.label, True, C_LABEL_GRAY), (COLON, t.label, True, C_LABEL_GRAY), (_ltr(overlay.time_text), t.date_time, True, 0)])
     text("header", cells["middle"][0], row2[0], cells["middle"][1], row2[1], overlay.invoice_number, t.number, True)
     modules = code128_modules(overlay.invoice_number)
     bar_x = (cells["middle"][0] + cells["middle"][1]) / 2 - sum(modules) * PROTO_BAR_MODULE_MM / 2
@@ -575,7 +585,7 @@ def _compose_variant_c(overlay, c, t=None):
             text("table", x0, y0, x1, y0 + row_h, _ltr(value) if key == "weight" else value, t.body,
                  min_pt=t.notes_min if key == "notes" else 0.0)
 
-    second = bool(extra.get("second_line"))
+    second = bool(extra.get("second_line")) and bool(extra.get("outgoing"))     # a SALE: one-line box
     line_h = t.money_line_h
     box_top = bottom + PROTO_MONEY_GAP
     pad_y = PROTO_MONEY_PAD_Y_TWO_LINES
@@ -589,17 +599,20 @@ def _compose_variant_c(overlay, c, t=None):
         text("money", split + pad, y0, right - pad, y1, overlay.total_label, t.total_label, True, align="right")
     else:
         spans("money", split + pad, y0, right - pad, y1,
-              [("إجمالي الفاتورة  ", t.total_label, False, 40),
+              [(LABEL_TOTAL, t.total_label, False, 40), (COLON, t.total_label, False, 40),
                (_ltr(extra.get("total", "")) + " ج", t.total, False, 0)], align="right", min_pt=t.paid)
     text("money", left + pad, y0, split - pad, y1, overlay.total_words, t.words, True, gray=45, align="right",
          min_pt=t.methods_min)
     if second:
-        spans("money", split + pad, y1, right - pad, y1 + line_h,
-              [(extra.get("payment_title", "") + "  ", t.paid_label, False, 70),
-               (_ltr(extra.get("moved", "")) + " ج", t.paid, False, 30)], align="right", min_pt=t.paid_label)
-        methods = "  •  ".join(f"{label} {_ltr(amount)}" for label, amount in extra.get("methods", ()))
-        text("money", left + pad, y1, split - pad, y1 + line_h, methods, t.methods, True, gray=75, align="right",
-             min_pt=t.methods_min)
+        # Only a BUY invoice (المدفوع للعميل) has a second line. A SALE prints no settlement detail (no
+        # المستلم من العميل, method, amount or customer account) and uses the one-line box above.
+        if extra.get("outgoing"):
+            spans("money", split + pad, y1, right - pad, y1 + line_h,
+                  [(extra.get("payment_title", "") + "  ", t.paid_label, False, 70),
+                   (_ltr(extra.get("moved", "")) + " ج", t.paid, False, 30)], align="right", min_pt=t.paid_label)
+            methods = "  •  ".join(f"{label} {_ltr(amount)}" for label, amount in extra.get("methods", ()))
+            text("money", left + pad, y1, split - pad, y1 + line_h, methods, t.methods, True, gray=75,
+                 align="right", min_pt=t.methods_min)
     return ops
 
 

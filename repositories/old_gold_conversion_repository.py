@@ -1,3 +1,6 @@
+from decimal import Decimal
+
+
 class OldGoldConversionRepository:
     """
     SQL layer for the old-gold gram ledger and converting grams
@@ -194,10 +197,13 @@ class OldGoldConversionRepository:
                     k.id AS karat_id,
                     k.karat_value,
                     k.name AS karat_name,
+                    -- AVAILABLE (032): the weight HELD for a manager decision is not consumable.
                     COALESCE(
                         SUM(og.weight_delta_grams),
                         0
-                    ) AS balance_grams
+                    ) - (SELECT COALESCE(SUM(h.weight_grams), 0) FROM old_gold_holds h WHERE h.karat_id = k.id AND h.hold_status = 'HELD') AS balance_grams,
+                    COALESCE(SUM(og.weight_delta_grams), 0) AS physical_grams,
+                    (SELECT COALESCE(SUM(h.weight_grams), 0) FROM old_gold_holds h WHERE h.karat_id = k.id AND h.hold_status = 'HELD') AS held_grams
 
                 FROM karats k
 
@@ -227,10 +233,26 @@ class OldGoldConversionRepository:
         finally:
             cursor.close()
 
+    def held_old_gold(self, karat_id):
+        """Grams HELD for a manager decision (032); a plain read after lock_old_gold_balance."""
+        cursor = self.connection.cursor(dictionary=True)
+        try:
+            cursor.execute(
+                "SELECT COALESCE(SUM(weight_grams), 0) AS held FROM old_gold_holds "
+                "WHERE karat_id = %s AND hold_status = 'HELD'",
+                (int(karat_id),),
+            )
+            row = cursor.fetchone()
+            return Decimal(str(row["held"])) if row else Decimal("0.000")
+        finally:
+            cursor.close()
+
     def lock_old_gold_balance(self, karat_id):
         """
         Lock the current ledger rows for this karat while calculating
-        available grams, preventing simultaneous overspending.
+        available grams, preventing simultaneous overspending. The
+        Exchange-returned weight still HELD for a manager decision (032)
+        is locked too and returned as one negative row: not consumable.
         """
 
         cursor = self.connection.cursor(dictionary=True)
@@ -250,8 +272,16 @@ class OldGoldConversionRepository:
                 """,
                 (int(karat_id),),
             )
-
-            return cursor.fetchall()
+            rows = cursor.fetchall()
+            cursor.execute(
+                "SELECT weight_grams FROM old_gold_holds "
+                "WHERE karat_id = %s AND hold_status = 'HELD' FOR UPDATE",
+                (int(karat_id),),
+            )
+            held = sum(Decimal(str(row["weight_grams"])) for row in cursor.fetchall())
+            if held:
+                rows = list(rows) + [{"id": None, "weight_delta_grams": -held}]
+            return rows
 
         finally:
             cursor.close()
@@ -270,7 +300,8 @@ class OldGoldConversionRepository:
         weight_grams,
         size,
         notes,
-        employee_id,
+        employee_id=None,
+        user_id=None,
     ):
         cursor = self.connection.cursor()
 
@@ -305,9 +336,9 @@ class OldGoldConversionRepository:
                     'OLD_GOLD_MANUFACTURE',
                     NOW(),
                     %s,
-                    NULL,
                     %s,
-                    NULL
+                    %s,
+                    %s
                 )
                 """,
                 (
@@ -318,7 +349,9 @@ class OldGoldConversionRepository:
                     weight_grams,
                     size,
                     notes,
-                    int(employee_id),
+                    user_id,
+                    int(employee_id) if employee_id else None,
+                    user_id,
                 ),
             )
 
@@ -368,8 +401,9 @@ class OldGoldConversionRepository:
         inventory_item_id,
         movement_type_id,
         to_weight_grams,
-        employee_id,
         reason,
+        employee_id=None,
+        user_id=None,
     ):
         cursor = self.connection.cursor()
 
@@ -401,7 +435,7 @@ class OldGoldConversionRepository:
                     %s,
                     %s,
                     NOW(),
-                    NULL,
+                    %s,
                     %s
                 )
                 """,
@@ -410,7 +444,8 @@ class OldGoldConversionRepository:
                     int(movement_type_id),
                     to_weight_grams,
                     str(reason),
-                    int(employee_id),
+                    user_id,
+                    int(employee_id) if employee_id else None,
                 ),
             )
 
@@ -427,9 +462,10 @@ class OldGoldConversionRepository:
         karat_id,
         consumed_weight_grams,
         result_inventory_item_id,
-        employee_id,
         conversion_code,
         notes,
+        employee_id=None,
+        user_id=None,
     ):
         movement_type_id = (
             self.get_old_gold_movement_type_id(
@@ -465,7 +501,7 @@ class OldGoldConversionRepository:
                     %s,
                     %s,
                     %s,
-                    NULL,
+                    %s,
                     %s,
                     NOW()
                 )
@@ -477,7 +513,8 @@ class OldGoldConversionRepository:
                     int(result_inventory_item_id),
                     int(result_inventory_item_id),
                     str(conversion_code),
-                    int(employee_id),
+                    int(employee_id) if employee_id else None,
+                    user_id,
                     notes,
                 ),
             )
@@ -498,8 +535,9 @@ class OldGoldConversionRepository:
         consumed_weight_grams,
         result_weight_grams,
         weight_difference_grams,
-        employee_id,
         notes,
+        employee_id=None,
+        user_id=None,
     ):
         cursor = self.connection.cursor()
 
@@ -527,7 +565,7 @@ class OldGoldConversionRepository:
                     %s,
                     %s,
                     %s,
-                    NULL,
+                    %s,
                     %s
                 )
                 """,
@@ -539,7 +577,8 @@ class OldGoldConversionRepository:
                     consumed_weight_grams,
                     result_weight_grams,
                     weight_difference_grams,
-                    int(employee_id),
+                    int(employee_id) if employee_id else None,
+                    user_id,
                     notes,
                 ),
             )

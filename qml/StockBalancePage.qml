@@ -87,7 +87,7 @@ Item {
                 }
                 Txt {
                     objectName: "stockBalanceTotalWeight"
-                    text: "إجمالي الوزن: " + (page.vm ? page.vm.totalWeightText : "0.000") + " جرام"
+                    text: "إجمالي الوزن المكافئ عيار 21: " + (page.vm ? page.vm.totalEquivalentText : "0.000") + " جرام"
                     color: theme.gold; font.bold: true
                 }
             }

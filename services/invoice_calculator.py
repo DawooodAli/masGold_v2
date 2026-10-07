@@ -12,6 +12,7 @@ shop owes / pays the customer. Scales match the canonical `invoices` family.
 """
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP
+from services.number_text import normalize_digits
 
 
 MONEY = Decimal("0.01")
@@ -113,7 +114,7 @@ def _decimal(value, scale, *, label, positive=False, allow_none=False):
     if value is None or isinstance(value, (bool, float)):
         raise InvoiceCalculationError("INVALID_NUMBER", f"قيمة {label} غير صحيحة.")
     try:
-        result = value if isinstance(value, Decimal) else Decimal(str(value).strip())
+        result = value if isinstance(value, Decimal) else Decimal(normalize_digits(str(value)).strip())
     except (InvalidOperation, ValueError):
         raise InvoiceCalculationError("INVALID_NUMBER", f"قيمة {label} غير صحيحة.") from None
     if not result.is_finite():
@@ -215,7 +216,9 @@ class InvoiceCalculator:
                                                   positive=True)))
 
     @staticmethod
-    def settlement(sale_lines, old_gold_lines, payments=(), adjustment=None):
+    def settlement(sale_lines, old_gold_lines, payments=(), adjustment=None, rounding_allowance=ZERO):
+        """rounding_allowance: money may exceed the net by at most this amount — only the automatic
+        EGP-5 rounding of an old-gold-only settlement (< 5 ج); every other overpayment is refused."""
         sale_lines, old_gold_lines = tuple(sale_lines), tuple(old_gold_lines)
         payments = tuple(payments)
         if any(not isinstance(line, SaleLine) for line in sale_lines) or any(
@@ -247,7 +250,7 @@ class InvoiceCalculator:
             raise InvoiceCalculationError(
                 "PAYMENT_DIRECTION", "اتجاه الدفع يخالف اتجاه صافي الفاتورة.")
         signed_payment = received - paid
-        if abs(signed_payment) > abs(net):
+        if abs(signed_payment) > abs(net) + Decimal(str(rounding_allowance or 0)):
             # Overpayment is not stored on an invoice; existing credit is shown only.
             raise InvoiceCalculationError("OVERPAYMENT", "المبلغ المدفوع أكبر من صافي الفاتورة.")
 

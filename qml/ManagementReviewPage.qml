@@ -10,10 +10,22 @@ Item {
     objectName: "managementReviewPage"
 
     property string pageTitle: ""
+    // The source of a review / a ledger movement is opened through the application's existing pages.
+    signal invoiceRequested(string invoiceId)
+    signal customerRequested(string customerId)
 
     Theme { id: theme }
 
     onVisibleChanged: if (visible && reviewsVM.canOpen) reviewsVM.openReviews()
+
+    Connections {
+        target: reviewsVM
+        function onInvoiceRequested(invoiceId) { reviewPage.invoiceRequested(invoiceId) }
+    }
+    Connections {
+        target: reviewsVM.history
+        function onCustomerRequested(customerId) { reviewPage.customerRequested(customerId) }
+    }
 
     Rectangle {
         anchors.fill: parent
@@ -37,6 +49,21 @@ Item {
         }
     }
 
+    // A click on the card background opens the review's SOURCE (immutable invoice id). It is the first
+    // child, i.e. BELOW the card's content: buttons and the barcode box keep their own clicks and a click
+    // on a button never navigates.
+    component SourceArea: MouseArea {
+        property string invoiceId: ""
+        anchors.fill: parent
+        hoverEnabled: true
+        enabled: invoiceId.length > 0
+        cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+        ToolTip.visible: enabled && containsMouse
+        ToolTip.delay: 600
+        ToolTip.text: "فتح الفاتورة"
+        onClicked: reviewsVM.openSource(invoiceId)
+    }
+
     property string newAccountType: ""
 
     // One real account: balance, money in / out, latest movements, and (manager only)
@@ -47,9 +74,18 @@ Item {
         property int rowIndex: 0
         Layout.fillWidth: true
         implicitHeight: accountColumn.implicitHeight + 10
-        color: theme.bgSecondary
+        color: accountHover.hovered ? theme.panelHover : theme.bgSecondary
         radius: 4
+        HoverHandler { id: accountHover }
         Rectangle { anchors.right: parent.right; width: 3; height: parent.height; color: theme.priceBuy; radius: 2 }
+        // The whole card opens the account's movement history (activation / opening-balance controls keep their clicks).
+        MouseArea {
+            objectName: "accountOpenHistory_" + accountRow.rowIndex
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: reviewsVM.history.open(accountRow.account.accountKey, accountRow.account.name)
+        }
         ColumnLayout {
             id: accountColumn
             anchors.fill: parent
@@ -121,6 +157,12 @@ Item {
                         border.color: theme.border
                     }
                     onClicked: reviewsVM.setAccountActive(accountRow.account.accountId, !accountRow.account.active)
+                }
+                Label {
+                    text: "عرض الحركات ◂"
+                    color: theme.gold
+                    font.family: "Cairo"
+                    font.pixelSize: 11
                 }
                 Label {
                     objectName: "accountBalance_" + accountRow.rowIndex
@@ -202,9 +244,10 @@ Item {
         property int rowIndex: 0
         Layout.fillWidth: true
         implicitHeight: cardColumn.implicitHeight + 12
-        color: theme.bgSecondary
+        color: cardSource.containsMouse ? theme.panelHover : theme.bgSecondary
         radius: 4
         Rectangle { anchors.right: parent.right; width: 3; height: parent.height; color: theme.amber; radius: 2 }
+        SourceArea { id: cardSource; objectName: "inspectionSource_" + card.rowIndex; invoiceId: card.review.invoiceId || "" }
         ColumnLayout {
             id: cardColumn
             anchors.fill: parent
@@ -283,6 +326,221 @@ Item {
         }
     }
 
+    // قطعة استبدال داخل الكسر (032): the returned piece already IS in Scrap (its weight held for this
+    // decision). Shows where it is now, the piece / exchange / Scrap facts, the authoritative history
+    // and the two decisions. Every value comes from reviewsVM (service rows); nothing is computed here.
+    component Fact: ColumnLayout {
+        property string label: ""
+        property string value: ""
+        property color valueColor: theme.textPrimary
+        spacing: 0
+        Layout.fillWidth: true
+        Label { Layout.fillWidth: true; text: parent.label; color: theme.textMuted; font.family: "Cairo"
+                font.pixelSize: 11; horizontalAlignment: Text.AlignRight }
+        Label { Layout.fillWidth: true; text: parent.value || "—"; color: parent.valueColor; font.family: "Cairo"
+                font.pixelSize: 12; font.bold: true; horizontalAlignment: Text.AlignRight; wrapMode: Text.WordWrap }
+    }
+
+    component FactGroup: Rectangle {
+        id: group
+        property string title: ""
+        default property alias facts: groupColumn.data
+        Layout.fillWidth: true
+        Layout.alignment: Qt.AlignTop
+        implicitHeight: groupColumn.implicitHeight + 12
+        color: theme.bgTertiary
+        radius: 4
+        border.color: theme.border
+        ColumnLayout {
+            id: groupColumn
+            anchors.fill: parent
+            anchors.margins: 6
+            spacing: 3
+            Label { Layout.fillWidth: true; text: group.title; color: theme.gold; font.family: "Cairo"
+                    font.pixelSize: 12; font.bold: true; horizontalAlignment: Text.AlignRight }
+        }
+    }
+
+    component ScrapPieceCard: Rectangle {
+        id: scrapCard
+        property var review: ({})
+        property int rowIndex: 0
+        property bool expanded: false
+        Layout.fillWidth: true
+        implicitHeight: scrapColumn.implicitHeight + 12
+        color: scrapSource.containsMouse ? theme.panelHover : theme.bgSecondary
+        radius: 4
+        border.color: theme.border
+        Rectangle { anchors.right: parent.right; width: 3; height: parent.height; color: theme.amber; radius: 2 }
+        SourceArea { id: scrapSource; objectName: "scrapSource_" + scrapCard.rowIndex; invoiceId: scrapCard.review.invoiceId || "" }
+        ColumnLayout {
+            id: scrapColumn
+            anchors.fill: parent
+            anchors.leftMargin: 10
+            anchors.rightMargin: 12
+            anchors.topMargin: 6
+            anchors.bottomMargin: 6
+            spacing: 4
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 10
+                Label { objectName: "scrapExchange_" + scrapCard.rowIndex; text: scrapCard.review.exchange || ""
+                        color: theme.gold; font.family: "Cairo"; font.pixelSize: 13; font.bold: true }
+                Label { text: "فاتورة " + (scrapCard.review.invoice || ""); color: theme.textPrimary
+                        font.family: "Cairo"; font.pixelSize: 12 }
+                Label { text: scrapCard.review.customer || ""; color: theme.textSecondary; font.family: "Cairo"
+                        font.pixelSize: 12; elide: Text.ElideLeft; Layout.maximumWidth: 200 }
+                Item { Layout.fillWidth: true }
+                Label { text: scrapCard.review.time || ""; color: theme.textMuted; font.family: "Cairo"; font.pixelSize: 11 }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 10
+                Label { text: [scrapCard.review.item, scrapCard.review.karat ? "عيار " + scrapCard.review.karat : "",
+                               scrapCard.review.weight + " جرام"].filter(function(t) { return t && t.length > 0 }).join("  •  ")
+                        color: theme.textPrimary; font.family: "Cairo"; font.pixelSize: 12; font.bold: true }
+                Label { text: "الباركود:"; color: theme.textSecondary; font.family: "Cairo"; font.pixelSize: 12 }
+                TextEdit {
+                    objectName: "scrapBarcode_" + scrapCard.rowIndex
+                    text: scrapCard.review.barcode || "بدون باركود"
+                    readOnly: true
+                    selectByMouse: true
+                    color: theme.goldBright
+                    selectionColor: theme.gold
+                    font.family: "Cairo"
+                    font.pixelSize: 13
+                    font.bold: true
+                }
+                Label { objectName: "scrapItemId_" + scrapCard.rowIndex; text: "رقم القطعة #" + (scrapCard.review.itemId || "")
+                        color: theme.textSecondary; font.family: "Cairo"; font.pixelSize: 12 }
+                Item { Layout.fillWidth: true }
+                // The SAME stored barcode, reprinted through the barcode printer (never a new one).
+                ActionButton {
+                    objectName: "scrapReprint_" + scrapCard.rowIndex
+                    visible: !!scrapCard.review.barcode
+                    text: "إعادة طباعة الباركود"
+                    accent: theme.goldBright
+                    onClicked: reviewsVM.reprintBarcode(scrapCard.review.itemId)
+                }
+            }
+            // Where the piece physically is now: never «nowhere».
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Rectangle { Layout.preferredWidth: 8; Layout.preferredHeight: 8; radius: 4; color: theme.priceBuy }
+                Label { objectName: "scrapDestination_" + scrapCard.rowIndex
+                        text: "الموقع الحالي: " + (scrapCard.review.scrapDestination || "")
+                        color: theme.priceBuy; font.family: "Cairo"; font.pixelSize: 12; font.bold: true }
+                Label { objectName: "scrapState_" + scrapCard.rowIndex
+                        text: "محوّلة إلى الكسر — " + (scrapCard.review.scrapState || "")
+                        color: theme.amber; font.family: "Cairo"; font.pixelSize: 12 }
+                Item { Layout.fillWidth: true }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Button {
+                    id: restockButton
+                    objectName: "scrapRestock_" + scrapCard.rowIndex
+                    visible: reviewsVM.canResolveInspections
+                    enabled: !reviewsVM.inspectionBusy
+                    text: "إرجاع من الكسر إلى المخزون"
+                    font.family: "Cairo"
+                    font.pixelSize: 12
+                    font.bold: true
+                    Layout.preferredHeight: 30
+                    topInset: 0
+                    bottomInset: 0
+                    leftPadding: 14
+                    rightPadding: 14
+                    contentItem: Label { text: restockButton.text; font: restockButton.font
+                                         color: restockButton.enabled ? theme.bgPrimary : theme.textDisabled
+                                         horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    background: Rectangle { radius: theme.radiusSmall
+                                            color: restockButton.enabled ? (restockButton.down ? Qt.darker(theme.priceBuy, 1.2) : theme.priceBuy)
+                                                                         : theme.bgTertiary }
+                    onClicked: confirmDialog.ask(scrapCard.review, "RETURN_TO_STOCK")
+                }
+                ActionButton {
+                    objectName: "scrapCommit_" + scrapCard.rowIndex
+                    visible: reviewsVM.canResolveInspections
+                    enabled: !reviewsVM.inspectionBusy
+                    text: "تثبيت في الكسر"
+                    accent: theme.amber
+                    onClicked: confirmDialog.ask(scrapCard.review, "CONVERT_TO_OLD_GOLD")
+                }
+                Item { Layout.fillWidth: true }
+                ActionButton {
+                    objectName: "scrapToggle_" + scrapCard.rowIndex
+                    text: scrapCard.expanded ? "إخفاء التفاصيل" : "التفاصيل وسجل الحركة"
+                    accent: theme.textSecondary
+                    onClicked: scrapCard.expanded = !scrapCard.expanded
+                }
+            }
+            GridLayout {
+                objectName: "scrapDetails_" + scrapCard.rowIndex
+                visible: scrapCard.expanded
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                columns: scrapCard.width >= 700 ? 3 : 1
+                columnSpacing: 8
+                rowSpacing: 8
+                FactGroup {
+                    title: "بيانات القطعة"
+                    Fact { label: "الصنف"; value: scrapCard.review.item || "" }
+                    Fact { label: "العيار"; value: scrapCard.review.karat || "" }
+                    Fact { label: "الوزن"; value: (scrapCard.review.weight || "") + " جرام" }
+                    Fact { label: "الباركود"; value: scrapCard.review.barcode || "بدون باركود"; valueColor: theme.goldBright }
+                    Fact { label: "رقم القطعة"; value: "#" + (scrapCard.review.itemId || "") }
+                }
+                FactGroup {
+                    title: scrapCard.review.isReturn ? "بيانات المرتجع" : "بيانات الاستبدال"
+                    Fact { label: scrapCard.review.isReturn ? "المرتجع" : "الاستبدال"; value: scrapCard.review.exchange || ""
+                           valueColor: theme.gold }
+                    Fact { label: "الفاتورة الأصلية"; value: scrapCard.review.invoice || "" }
+                    Fact { label: "العميل"; value: scrapCard.review.customer || "" }
+                    Fact { label: scrapCard.review.isReturn ? "وقت المرتجع" : "وقت الاستبدال"; value: scrapCard.review.time || "" }
+                    Fact { label: "سطر الفاتورة الأصلي"; value: scrapCard.review.sourceLine ? "#" + scrapCard.review.sourceLine : "" }
+                }
+                FactGroup {
+                    title: "الكسر الحالي"
+                    Fact { label: "المكان"; value: scrapCard.review.scrapDestination || ""; valueColor: theme.priceBuy }
+                    Fact { label: "رصيد العيار (فعلي / متاح)"
+                           value: (scrapCard.review.karatPhysical || "") + " / " + (scrapCard.review.karatAvailable || "") + " جرام" }
+                    Fact { label: "تاريخ الدخول للكسر"; value: scrapCard.review.scrapEnteredAt || "" }
+                    Fact { label: "الحالة"; value: scrapCard.review.scrapState || ""; valueColor: theme.amber }
+                }
+            }
+            ColumnLayout {
+                objectName: "scrapTimeline_" + scrapCard.rowIndex
+                visible: scrapCard.expanded
+                Layout.fillWidth: true
+                spacing: 2
+                Label { Layout.fillWidth: true; text: "سجل الحركة"; color: theme.gold; font.family: "Cairo"
+                        font.pixelSize: 12; font.bold: true; horizontalAlignment: Text.AlignRight }
+                Repeater {
+                    model: scrapCard.review.timeline || []
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        Rectangle { Layout.preferredWidth: 6; Layout.preferredHeight: 6; radius: 3; color: theme.gold }
+                        Label { objectName: "scrapEvent_" + scrapCard.rowIndex + "_" + index; text: modelData.title
+                                color: theme.textPrimary; font.family: "Cairo"; font.pixelSize: 12; font.bold: true }
+                        Label { text: modelData.detail; color: theme.textSecondary; font.family: "Cairo"; font.pixelSize: 11
+                                Layout.fillWidth: true; horizontalAlignment: Text.AlignRight; elide: Text.ElideLeft }
+                        Label { text: [modelData.by, modelData.at].filter(function(t) { return t && t.length > 0 }).join("  •  ")
+                                color: theme.textMuted; font.family: "Cairo"; font.pixelSize: 11 }
+                    }
+                }
+            }
+        }
+    }
+
     // The manager confirms each outcome (the service refuses a second decision anyway).
     Popup {
         id: confirmDialog
@@ -301,7 +559,9 @@ Item {
             spacing: 10
             Label {
                 Layout.fillWidth: true
-                text: confirmDialog.outcome === "RETURN_TO_STOCK" ? "إرجاع القطعة للمخزون" : "تحويل القطعة إلى الكسر"
+                text: confirmDialog.review.inScrap
+                      ? (confirmDialog.outcome === "RETURN_TO_STOCK" ? "إرجاع من الكسر إلى المخزون" : "تثبيت في الكسر")
+                      : (confirmDialog.outcome === "RETURN_TO_STOCK" ? "إرجاع القطعة للمخزون" : "تحويل القطعة إلى الكسر")
                 color: theme.gold
                 font.family: "Cairo"
                 font.pixelSize: 15
@@ -311,9 +571,13 @@ Item {
             Label {
                 objectName: "inspectionConfirmText"
                 Layout.fillWidth: true
-                text: confirmDialog.outcome === "RETURN_TO_STOCK"
-                      ? "ستعود القطعة للمخزون بنفس الباركود المسجل: " + (confirmDialog.review.barcode || "غير مسجل")
-                      : "سيتم تحويل القطعة نهائياً إلى رصيد الكسر، ولن تعود قابلة للبيع بالباركود المسجل. هل تريد المتابعة؟"
+                text: confirmDialog.review.inScrap
+                      ? (confirmDialog.outcome === "RETURN_TO_STOCK"
+                         ? "سيتم إخراج وزن القطعة من الكسر وإعادة نفس القطعة إلى المخزون بنفس الباركود. هل تريد المتابعة؟"
+                         : "سيتم تثبيت القطعة داخل رصيد الكسر وإتاحتها ككسر عادي. لن تعود قطعة مخزون إلا من خلال مسار مستقل معتمد. هل تريد المتابعة؟")
+                      : (confirmDialog.outcome === "RETURN_TO_STOCK"
+                         ? "ستعود القطعة للمخزون بنفس الباركود المسجل: " + (confirmDialog.review.barcode || "غير مسجل")
+                         : "سيتم تحويل القطعة نهائياً إلى رصيد الكسر، ولن تعود قابلة للبيع بالباركود المسجل. هل تريد المتابعة؟")
                 color: theme.textPrimary
                 font.family: "Cairo"
                 font.pixelSize: 13
@@ -324,7 +588,9 @@ Item {
                 objectName: "inspectionConfirmFacts"
                 Layout.fillWidth: true
                 text: "الباركود المسجل: " + (confirmDialog.review.barcode || "غير مسجل")
+                      + (confirmDialog.review.inScrap ? "  •  " + (confirmDialog.review.item || "") : "")
                       + "  •  عيار " + (confirmDialog.review.karat || "") + "  •  الوزن " + (confirmDialog.review.weight || "") + " جرام"
+                      + (confirmDialog.review.inScrap ? "  •  " + (confirmDialog.review.exchange || "") : "")
                 color: confirmDialog.outcome === "RETURN_TO_STOCK" ? theme.priceBuy : theme.amber
                 font.family: "Cairo"
                 font.pixelSize: 12
@@ -363,11 +629,13 @@ Item {
         property string line1: ""
         property string line2: ""
         property string side: ""
+        property string invoiceId: ""
         Layout.fillWidth: true
         implicitHeight: 52
-        color: theme.bgSecondary
+        color: rowSource.containsMouse ? theme.panelHover : theme.bgSecondary
         radius: 4
         Rectangle { anchors.right: parent.right; width: 3; height: parent.height; color: theme.amber; radius: 2 }
+        SourceArea { id: rowSource; objectName: "reviewSource_" + row.invoiceId; invoiceId: row.invoiceId }
         ColumnLayout {
             anchors.fill: parent
             anchors.leftMargin: 10
@@ -418,21 +686,83 @@ Item {
                 font.bold: true
             }
             Item { Layout.fillWidth: true }
+        }
+
+        // Summary / navigation cards: one per real review category (+ the financial accounts). A click
+        // FILTERS the page to that category (click again for everything). Navigation only: pricing and
+        // making reviews stay informational records — nothing here approves or rejects.
+        Flow {
+            objectName: "reviewCards"
+            Layout.fillWidth: true
+            Layout.preferredWidth: 1            // a Flow's implicit width is its unwrapped row: let it wrap instead
+            visible: reviewsVM.canOpen && !reviewsVM.history.isOpen
+            layoutDirection: Qt.RightToLeft
+            spacing: 8
             Repeater {
-                model: reviewsVM.categories
+                model: reviewsVM.dashboardCards
                 Rectangle {
-                    Layout.preferredHeight: 28
-                    Layout.preferredWidth: chipText.implicitWidth + 16
-                    radius: 4
-                    color: "transparent"
-                    border.color: modelData.count > 0 ? theme.amber : theme.border
-                    Label {
-                        id: chipText
-                        anchors.centerIn: parent
-                        text: modelData.title + " • " + modelData.count
-                        color: modelData.count > 0 ? theme.amber : theme.textMuted
-                        font.family: "Cairo"
-                        font.pixelSize: 11
+                    id: summaryCard
+                    required property var modelData
+                    required property int index
+                    objectName: "reviewCard_" + modelData.code
+                    width: 150
+                    height: 62
+                    radius: theme.radiusSmall
+                    color: cardArea.containsMouse ? theme.panelHover : theme.bgSecondary
+                    border.width: modelData.selected ? 2 : 1
+                    border.color: modelData.selected ? theme.goldBright : modelData.pending ? theme.goldDark : theme.border
+                    Rectangle {
+                        anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom
+                        anchors.margins: 1; width: 3; radius: 2
+                        color: modelData.pending ? theme.gold : modelData.code === "ACCOUNTS" ? theme.priceBuy : theme.green
+                    }
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.rightMargin: 12
+                        anchors.leftMargin: 8
+                        anchors.topMargin: 5
+                        anchors.bottomMargin: 5
+                        spacing: 0
+                        Label {
+                            Layout.fillWidth: true
+                            text: summaryCard.modelData.title
+                            color: theme.textSecondary
+                            font.family: "Cairo"
+                            font.pixelSize: 12
+                            horizontalAlignment: Text.AlignRight
+                            elide: Text.ElideLeft
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 6
+                            Label {
+                                objectName: "reviewCardCount_" + summaryCard.modelData.code
+                                text: summaryCard.modelData.count
+                                color: summaryCard.modelData.pending ? theme.goldBright : theme.textPrimary
+                                font.family: "Cairo"
+                                font.pixelSize: 22
+                                font.bold: true
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: summaryCard.modelData.code === "ACCOUNTS" ? "حساب"
+                                      : summaryCard.modelData.pending ? "بانتظار المراجعة" : "✓ لا يوجد"
+                                color: summaryCard.modelData.pending ? theme.gold
+                                       : summaryCard.modelData.code === "ACCOUNTS" ? theme.textMuted : theme.green
+                                font.family: "Cairo"
+                                font.pixelSize: 11
+                                horizontalAlignment: Text.AlignRight
+                                elide: Text.ElideLeft
+                            }
+                        }
+                    }
+                    MouseArea {
+                        id: cardArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: reviewsVM.selectCategory(summaryCard.modelData.code)
                     }
                 }
             }
@@ -450,10 +780,18 @@ Item {
             wrapMode: Text.WordWrap
         }
 
-        ScrollView {
+        AccountHistoryPanel {
+            history: reviewsVM.history
             Layout.fillWidth: true
             Layout.fillHeight: true
-            visible: reviewsVM.canOpen
+            visible: reviewsVM.canOpen && reviewsVM.history.isOpen
+        }
+
+        ScrollView {
+            objectName: "reviewScroll"
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: reviewsVM.canOpen && !reviewsVM.history.isOpen
             clip: true
             contentWidth: availableWidth
 
@@ -464,6 +802,7 @@ Item {
                 // Wallet / InstaPay / bank balances live here, never in the MainWindow strip.
                 Section {
                     objectName: "financialAccountsSection"
+                    visible: (reviewsVM.selectedCategory === "" || reviewsVM.selectedCategory === "ACCOUNTS")
                     title: "الحسابات المالية"
                     count: reviewsVM.financialAccounts.length
                     Repeater {
@@ -565,6 +904,7 @@ Item {
                 // exact selected goods / grams; no reason is required. It never extends the deadline.
                 Section {
                     objectName: "reviewReturnApprovalSection"
+                    visible: (reviewsVM.selectedCategory === "" || reviewsVM.selectedCategory === "RETURN_APPROVAL")
                     title: "موافقة مرتجع بعد 72 ساعة"
                     count: reviewsVM.returnApprovals.length
                     Repeater {
@@ -576,9 +916,11 @@ Item {
                             objectName: "returnApproval_" + index
                             Layout.fillWidth: true
                             implicitHeight: approvalColumn.implicitHeight + 12
-                            color: theme.bgSecondary
+                            color: approvalSource.containsMouse ? theme.panelHover : theme.bgSecondary
                             radius: 4
                             Rectangle { anchors.right: parent.right; width: 3; height: parent.height; color: theme.amber; radius: 2 }
+                            SourceArea { id: approvalSource; objectName: "approvalSource_" + approvalCard.index
+                                         invoiceId: approvalCard.modelData.invoiceId || "" }
                             ColumnLayout {
                                 id: approvalColumn
                                 anchors.fill: parent
@@ -642,10 +984,27 @@ Item {
                         }
                     }
                 }
+                // قطع الاستبدال داخل الكسر (032): the returned piece is already in Scrap; the manager returns it
+                // to stock or commits it there.
+                Section {
+                    objectName: "reviewScrapSection"
+                    title: "قطع مرتجعة (استبدال / مرتجع) — محوّلة إلى الكسر"
+                    count: reviewsVM.scrapPieces.length
+                    visible: count > 0 && (reviewsVM.selectedCategory === "" || reviewsVM.selectedCategory === "RETURNED_ITEM_INSPECTION")
+                    Repeater {
+                        model: reviewsVM.scrapPieces
+                        ScrapPieceCard {
+                            objectName: "scrapPiece_" + index
+                            review: modelData
+                            rowIndex: index
+                        }
+                    }
+                }
                 // فحص القطع المرتجعة: one card per returned piece; the manager decides (no scan needed:
                 // the piece is identified by its exchange line and inventory item, shown by its stored barcode).
                 Section {
                     objectName: "reviewInspectionSection"
+                    visible: (reviewsVM.selectedCategory === "" || reviewsVM.selectedCategory === "RETURNED_ITEM_INSPECTION")
                     title: "فحص قطع مرتجعة"
                     count: reviewsVM.inspections.length
                     Label {
@@ -670,11 +1029,13 @@ Item {
                 }
                 Section {
                     objectName: "reviewInventorySection"
+                    visible: (reviewsVM.selectedCategory === "" || reviewsVM.selectedCategory === "INVENTORY_MATCH")
                     title: "مراجعة مخزون — مبيعات يدوية"
                     count: reviewsVM.inventoryCases.length
                     Repeater {
                         model: reviewsVM.inventoryCases
                         Row2 {
+                            invoiceId: modelData.invoiceId
                             title: modelData.title + " — " + modelData.reason
                             side: modelData.time + " • " + modelData.salesperson
                             line1: modelData.details
@@ -684,29 +1045,32 @@ Item {
                 }
                 Section {
                     objectName: "reviewMakingSection"
+                    visible: (reviewsVM.selectedCategory === "" || reviewsVM.selectedCategory === "MAKING_PRICE")
                     title: "مراجعة تسعير / مصنعية"
                     count: reviewsVM.makingReviews.length
                     Repeater {
                         model: reviewsVM.makingReviews
-                        Row2 { title: modelData.title; side: modelData.time + " • " + modelData.by; line1: modelData.details }
+                        Row2 { invoiceId: modelData.invoiceId; title: modelData.title; side: modelData.time + " • " + modelData.by; line1: modelData.details }
                     }
                 }
                 Section {
                     objectName: "reviewSettlementSection"
+                    visible: (reviewsVM.selectedCategory === "" || reviewsVM.selectedCategory === "CASH_SETTLEMENT")
                     title: "مراجعة تسوية نقدية"
                     count: reviewsVM.settlementReviews.length
                     Repeater {
                         model: reviewsVM.settlementReviews
-                        Row2 { title: modelData.title; side: modelData.time + " • " + modelData.by; line1: modelData.details }
+                        Row2 { invoiceId: modelData.invoiceId; title: modelData.title; side: modelData.time + " • " + modelData.by; line1: modelData.details }
                     }
                 }
                 Section {
                     objectName: "reviewDiscountSection"
+                    visible: (reviewsVM.selectedCategory === "" || reviewsVM.selectedCategory === "OLD_GOLD_DISCOUNT")
                     title: "تعديل نسبة خصم الكسر"
                     count: reviewsVM.discountReviews.length
                     Repeater {
                         model: reviewsVM.discountReviews
-                        Row2 { title: modelData.title; side: modelData.time + " • " + modelData.by; line1: modelData.details }
+                        Row2 { invoiceId: modelData.invoiceId; title: modelData.title; side: modelData.time + " • " + modelData.by; line1: modelData.details }
                     }
                 }
             }

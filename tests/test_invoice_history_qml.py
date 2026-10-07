@@ -69,10 +69,83 @@ class InvoiceHistoryPageTests(page_harness.InvoicePageTests):
                           self.visual_item("historyRow_0").mapToScene(QPointF(40, 12)).toPoint())
         self.wait_until(lambda: vm.detail)
         self.click("historyReprint")
-        self.wait_until(lambda: vm.reprintMessage, "no reprint result")
+        self.wait_until(lambda: vm.reprintMessage and not vm.reprintBusy, "no reprint result")
         self.assertEqual([c for c in self.history.calls if c[0] == "reprint"], [("reprint", "21")])
         self.assertEqual(self.history.printer.calls, ["21"])
         self.assertEqual(self.store.invoices, [])                               # nothing saved anywhere
+        self.assertEqual(self.warnings, [])
+
+    def test_reprint_shows_busy_ignores_repeats_and_recovers_at_every_size(self):
+        import threading
+        vm = self.open_history()
+        gate = self.history.printer.gate = threading.Event()
+        self.addCleanup(gate.set)
+        QTest.mouseDClick(self.root, Qt.LeftButton, Qt.NoModifier,
+                          self.visual_item("historyRow_0").mapToScene(QPointF(40, 12)).toPoint())
+        self.wait_until(lambda: vm.detail)
+        calls_before = len(self.history.printer.calls)
+        for width, height in ((1440, 900), (1280, 800), (1080, 680)):
+            with self.subTest(size=(width, height)):
+                self.root.setWidth(width)
+                self.root.setHeight(height)
+                QTest.qWait(200)
+                button = self.item("historyReprint")
+                self.assertEqual(button.property("text"), "إعادة طباعة")
+                self.assertTrue(button.property("enabled"))
+                gate.clear()
+                self.click(button)
+                self.assertTrue(vm.reprintBusy)
+                QTest.qWait(60)
+                # busy: button disabled with the in-progress label, spinner + message visible and inside the window
+                self.assertFalse(button.property("enabled"))
+                self.assertEqual(button.property("text"), "جاري الطباعة...")
+                spinner, message = self.item("historyReprintSpinner"), self.item("historyReprintMessage")
+                self.assertTrue(spinner.property("visible"))
+                self.assertTrue(message.property("visible"))
+                self.assertEqual(message.property("text"), "جاري إرسال أمر الطباعة...")
+                for item in (button, spinner, message):
+                    self.assert_inside_window(item)
+                # a second real click and an Enter/Space press on the focused button do nothing
+                point = button.mapToScene(QPointF(button.width() / 2, button.height() / 2)).toPoint()
+                QTest.mouseClick(self.root, Qt.LeftButton, Qt.NoModifier, point)
+                QTest.keyClick(self.root, Qt.Key_Space)
+                QTest.keyClick(self.root, Qt.Key_Return)
+                vm.reprint()                                           # even a duplicate slot emission
+                QTest.qWait(80)
+                self.assertEqual(len(self.history.printer.calls), calls_before + 1)
+                gate.set()
+                self.wait_until(lambda: not vm.reprintBusy, "reprint never finished")
+                QTest.qWait(60)
+                calls_before += 1
+                self.assertEqual(message.property("text"), "تم إرسال الفاتورة للطابعة.")
+                self.assertTrue(button.property("enabled"))
+                self.assertEqual(button.property("text"), "إعادة طباعة")
+                self.assertFalse(spinner.property("visible"))
+                self.assert_inside_window(message)
+        self.assertEqual(self.store.invoices, [])
+        self.assertEqual(self.warnings, [])
+
+    def test_reprint_failure_shows_arabic_message_and_unlocks(self):
+        import threading
+        vm = self.open_history()
+        gate = self.history.printer.gate = threading.Event()
+        gate.set()
+        self.addCleanup(gate.set)
+        self.history.printer.printed = False
+        QTest.mouseDClick(self.root, Qt.LeftButton, Qt.NoModifier,
+                          self.visual_item("historyRow_0").mapToScene(QPointF(40, 12)).toPoint())
+        self.wait_until(lambda: vm.detail)
+        self.click("historyReprint")
+        self.wait_until(lambda: vm.reprintFailed and not vm.reprintBusy, "no failure shown")
+        QTest.qWait(60)
+        self.assertEqual(self.item("historyReprintMessage").property("text"),
+                         "تعذر إرسال الفاتورة للطابعة. الطابعة غير متصلة.")
+        button = self.item("historyReprint")
+        self.assertTrue(button.property("enabled"))
+        self.history.printer.printed = True
+        self.click(button)                                              # a second attempt is allowed
+        self.wait_until(lambda: len(self.history.printer.calls) == 2 and not vm.reprintBusy)
+        self.assertFalse(vm.reprintFailed)
         self.assertEqual(self.warnings, [])
 
     def test_history_keyboard_enter_opens_the_selected_invoice(self):
@@ -116,6 +189,42 @@ class InvoiceHistoryPageTests(page_harness.InvoicePageTests):
         self.wait_until(lambda: vm.detail and vm.detail.get("number") == "26092701", "typed number did not open")
         self.assertEqual(self.vm.saleCount, sales_before)               # never an inventory / Billing lookup
         self.assertFalse([c for c in self.history.calls if c[0] not in ("search", "exact", "detail")])
+        self.assertEqual(self.warnings, [])
+
+    def test_history_exact_invoice_number_field_opens_the_invoice_whatever_the_range(self):
+        vm = self.open_history()
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        QTest.qWait(200)
+        for name in ("historyNumberField", "historyNumberOpen"):
+            self.assert_inside_window(self.item(name))                         # visible at the smallest size
+        vm.setDateRange("2026-01-01", "2026-01-02")                           # a range that excludes the invoice
+        QTest.qWait(150)
+        searches = len([c for c in self.history.calls if c[0] == "search"])
+        before = (vm.dateFrom, vm.dateTo, vm.searchText)
+        # Real typing + Enter: opens the existing detail directly.
+        self.click("historyNumberField")
+        self.type_text("26092701")
+        QTest.keyClick(self.root, Qt.Key_Return)
+        self.wait_until(lambda: vm.detail and vm.detail.get("number") == "26092701", "exact number did not open")
+        self.assertEqual((vm.dateFrom, vm.dateTo, vm.searchText), before)      # the range was never touched
+        self.assertEqual(len([c for c in self.history.calls if c[0] == "search"]), searches)
+        QTest.qWait(200)
+        # The historical price card shows the invoice's own time.
+        stamp = self.item("historyPricesTimestamp")
+        self.assertEqual(stamp.property("text"), vm.priceSnapshotTime)
+        self.assertIn("2026-09-27", stamp.property("text"))
+        QTest.keyClick(self.root, Qt.Key_Escape)
+        self.wait_until(lambda: not vm.detailOpen)
+        # A missing number is a clear message and changes nothing.
+        field = self.item("historyNumberField")
+        field.setProperty("text", "")
+        self.click(field)
+        self.type_text("99999999")
+        self.click("historyNumberOpen")
+        self.wait_until(lambda: vm.lookupMessage, "no message")
+        self.assertEqual(self.item("historyNumberMessage").property("text"), "لم يتم العثور على فاتورة برقم 99999999.")
+        self.assertFalse(vm.detailOpen)
         self.assertEqual(self.warnings, [])
 
 

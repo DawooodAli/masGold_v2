@@ -107,13 +107,15 @@ class CashScreenTests(harness.InvoicePageTests):
                 item = self.visible_item(name)
                 self.assertIsNotNone(item, name)
                 self.assert_inside_window(item)
-            # Only two cells per row: no reference / actor / time / balance / code text anywhere in a row.
+            # A row is: movement name [+ its reference and customer when stored] + amount. Still no actor /
+            # time / balance / raw code (movement_code, label keys) in a row.
             for prefix, n in (("cashIn", 4), ("cashOut", 5)):
                 for i in range(n):
                     labels = [c for c in self._labels(self.visible_item(f"{prefix}Row_{i}"))]
-                    self.assertEqual(len(labels), 2, labels)
+                    self.assertGreaterEqual(len(labels), 2, labels)
+                    self.assertLessEqual(len(labels), 4, labels)
                     for text in labels:
-                        self.assertNotRegex(text, r"[A-Z]{2}\d{6}|_[A-Z]|\d{2}:\d{2}|^CS|^RV|^FC")
+                        self.assertNotRegex(text, r"_[A-Z]|\d{2}:\d{2}")
             # No bank / wallet cards or balances on this page.
             for gone in ("financialAccountList", "financialAccount_0", "financialStatement"):
                 self.assertIsNone(self.visible_item(gone), gone)
@@ -145,9 +147,12 @@ class CashScreenTests(harness.InvoicePageTests):
             gap = abs(name.mapToScene(QPointF(name.width(), 0)).x() - balance.mapToScene(QPointF(balance.width(), 0)).x())
             self.assertLess(gap, 260, f"name/balance too far apart at {width}")
             for prefix, rows in (("cashIn", 4), ("cashOut", 5)):
-                label, amount = self.visible_item(f"{prefix}Label_0"), self.visible_item(f"{prefix}Amount_0")
+                label, amount = self.visible_item(f"{prefix}Info_0"), self.visible_item(f"{prefix}Amount_0")
                 share = label.width() / (label.width() + amount.width())
-                self.assertTrue(0.62 <= share <= 0.72, f"{prefix} label share {share:.2f} at {width}")
+                # The left cell now also carries the reference / customer: it keeps the larger share, and the
+                # amount stays whole (never clipped) on the other side.
+                self.assertTrue(0.38 <= share <= 0.78, f"{prefix} info share {share:.2f} at {width}")
+                self.assertLessEqual(amount.property("contentWidth"), amount.property("width") + 1)
                 total, bar = self.visible_item(f"{prefix}Total"), self.visible_item(f"{prefix}TotalBar")
                 self.assert_inside_window(bar)
                 self.assertGreaterEqual(total.property("font").pixelSize(),

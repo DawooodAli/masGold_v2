@@ -26,6 +26,7 @@ from datetime import datetime
 from decimal import Decimal
 import os
 import tempfile
+import threading
 
 from services import bill_overlay
 from services.bill_overlay import MAX_SALE_ITEMS_TEXT, PAPER_HEIGHT_MM, PAPER_WIDTH_MM, LayoutError
@@ -33,6 +34,18 @@ from services.invoice_service import invoice_transaction
 from repositories.invoice_repository import InvoiceRepository
 
 PAGE_TOLERANCE_MM = 1.0
+
+# One wording for every print / reprint screen (the ViewModels show these, QML never invents them).
+PRINT_BUSY_TEXT = "جاري إرسال أمر الطباعة..."
+PRINT_SENT_TEXT = "تم إرسال الفاتورة للطابعة."
+PRINT_FAILED_TEXT = "تعذر إرسال الفاتورة للطابعة."
+PRINT_IN_PROGRESS_TEXT = "جاري إرسال هذه الفاتورة للطابعة بالفعل."
+
+# Invoices whose print job is being handed to the print system right now, for the whole process:
+# Billing's retry and Invoice History's reprint share it, so one accepted request is one job even
+# if a second request arrives (double click, key repeat, a second screen).
+_IN_FLIGHT: set[str] = set()
+_IN_FLIGHT_LOCK = threading.Lock()
 
 
 class PrintError(ValueError):
@@ -51,6 +64,16 @@ class PrintOutcome:
 
 class _Discard(Exception):
     pass
+
+
+NOT_PRINTABLE_TEXT = "شراء الكسر فقط حفظ فقط ولا يُطبع."
+
+
+def is_old_gold_purchase_only(lines):
+    """From the SAVED lines (never from the screen): customer old gold and no shop-sold line. This transaction
+    is save-only by the owner's rule — it has no customer invoice to print or reprint."""
+    kinds = {line.get("line_type") for line in lines or []}
+    return "BUY_OLD_GOLD" in kinds and not kinds - {"BUY_OLD_GOLD"}
 
 
 def configure_bill_printer(printer, name):
@@ -164,10 +187,23 @@ class InvoicePrintService:
     def print_invoice(self, invoice_id, *, _expected_actor=None):
         """Save MUST already have happened: this only reads and prints."""
         self._actor(_expected_actor)
-        invoice = self._invoice_data(invoice_id)
-        printed, message, pdf_path = self._print_ops(invoice)
-        return PrintOutcome(invoice_number=invoice["invoice_number"], printed=printed, message=message,
-                            pdf_path=pdf_path)
+        key = str(invoice_id)
+        with _IN_FLIGHT_LOCK:
+            if key in _IN_FLIGHT:                    # the same invoice is already being sent: no second job
+                return PrintOutcome(invoice_number="", printed=False, message=PRINT_IN_PROGRESS_TEXT)
+            _IN_FLIGHT.add(key)
+        try:
+            invoice = self._invoice_data(invoice_id)
+            if is_old_gold_purchase_only(invoice.get("lines")):
+                # Nothing is composed, sent or generated for a save-only transaction.
+                return PrintOutcome(invoice_number=invoice["invoice_number"], printed=False,
+                                    message=NOT_PRINTABLE_TEXT)
+            printed, message, pdf_path = self._print_ops(invoice)
+            return PrintOutcome(invoice_number=invoice["invoice_number"], printed=printed, message=message,
+                                pdf_path=pdf_path)
+        finally:
+            with _IN_FLIGHT_LOCK:
+                _IN_FLIGHT.discard(key)
 
     def _print_ops(self, invoice):
         ops, problem = self.compose(invoice)
@@ -218,7 +254,7 @@ class InvoicePrintService:
             bill_overlay.paint(painter, ops, printer.resolution() / 25.4)
         finally:
             painter.end()
-        return True, "تم إرسال الفاتورة إلى الطابعة.", None
+        return True, PRINT_SENT_TEXT, None
 
     # ------------------------------------------------------------ test / calibration page (no database)
 

@@ -60,8 +60,9 @@ class UiPrinter:
     """InvoicePrintService stand-in: records each print job (never a real printer)."""
 
     def __init__(self):
-        self.calls, self.outcome = [], (True, "تم إرسال الفاتورة إلى الطابعة.")
+        self.calls, self.outcome = [], (True, "تم إرسال الفاتورة للطابعة.")
         self.ready = (True, "")                              # the Bill printer check before حفظ وطباعة
+        self.gate = None                                     # a threading.Event keeps the job in flight
 
     def bill_printer_ready(self):
         return self.ready
@@ -69,6 +70,8 @@ class UiPrinter:
     def print_invoice(self, invoice_id, *, _expected_actor=None):
         from services.invoice_print_service import PrintOutcome
         self.calls.append(invoice_id)
+        if self.gate is not None:
+            self.gate.wait(10)
         printed, message = self.outcome
         return PrintOutcome(invoice_number="", printed=printed, message=message)
 
@@ -223,6 +226,14 @@ class InvoicePageTests(unittest.TestCase):
         self.root.setProperty("currentPage", 1)
         self.wait_until(lambda: len(self.vm.priceRows) == 3 and len(self.vm.salespeople) == 1
                         and len(self.vm.itemTypes) == 3 and not self.vm.busy)
+
+    def grant(self, *codes, revoke=()):
+        """Change the signed-in actor's permission set (UI gating reads it) and notify the gated view models."""
+        actor = self.controller.session.current_actor()
+        object.__setattr__(actor, "permissions", frozenset((set(actor.permissions) | set(codes)) - set(revoke)))
+        vms = self.controller.operational_viewmodels
+        vms["inventoryVM"].dataChanged.emit()
+        vms["oldGoldConversionVM"].busyChanged.emit()
 
     def stock(self):
         """In-stock pieces with the physical details the counter needs."""
@@ -486,28 +497,28 @@ class InvoicePageTests(unittest.TestCase):
         self.assertIsNone(self.visual_item("agreedTotalField"))
         QTest.keyClick(self.root, Qt.Key_Return)                      # empty barcode → إجمالي الفاتورة
         self.wait_until(lambda: self.item("invoiceTotalField").property("activeFocus"))
-        self.type_text("67011")
+        self.type_text("67010")
         self.settle()
         self.assertEqual((self.text("summaryGoldValue"), self.text("summaryEffectiveSale"),
-                          self.text("summaryAverageMaking")), ("65,436.00 ج", "67,011.00 ج", "150.00"))
+                          self.text("summaryAverageMaking")), ("65,436.00 ج", "67,010.00 ج", "149.90"))
         self.assertIsNone(self.visual_item("summaryMaking"))                  # no total making for the salesman
         self.assertEqual((self.text("paymentDirectionLabel"), self.text("summaryDueLabel"), self.text("summaryDue")),
-                         ("المستلم من العميل", "المستلم من العميل", "67,011.00 ج"))
+                         ("المستلم من العميل", "المستلم من العميل", "67,010.00 ج"))
         # A different amount is a different price: the average follows at once.
-        self.receive("67111")
+        self.receive("67115")
         self.settle()
-        self.wait_until(lambda: self.text("summaryAverageMaking") == "159.52")
-        self.receive("67011")
+        self.wait_until(lambda: self.text("summaryAverageMaking") == "159.90")
+        self.receive("67010")
         self.settle()
         self.finalize()
         self.assertEqual(self.store.items["100"]["inventory_status"], "SOLD")
         line = self.store.lines[0][1]
         self.assertEqual((line["making_total"], line["making_per_gram"], line["identification_method"]),
-                         (D("1575.00"), None, "SCAN"))
+                         (D("1574.00"), None, "SCAN"))
         self.assertEqual(self.store.ledger, [])
-        self.assertEqual([m["amount_delta"] for m in self.store.cash_movements], [D("67011.00")])
+        self.assertEqual([m["amount_delta"] for m in self.store.cash_movements], [D("67010.00")])
         balances = self.controller.operational_viewmodels["balancesVM"]
-        self.wait_until(lambda: self.text("balanceCash") == "67,011.00 ج", "cash strip not refreshed")
+        self.wait_until(lambda: self.text("balanceCash") == "67,010.00 ج", "cash strip not refreshed")
         self.assertEqual(self.warnings, [])
 
     # ------------------------------------------------------------ 2-5: cascading search
@@ -636,8 +647,8 @@ class InvoicePageTests(unittest.TestCase):
         self.add_old_gold("21", "5")
         self.add_old_gold("18", "2.5")
         self.assertEqual((self.text("soldWeights_21"), self.text("soldWeights_18"), self.text("soldWeights_24")),
-                         ("مباع 21K: 10.500", "مباع 18K: 3.333", "مباع 24K: —"))
-        self.assertEqual(self.text("boughtWeights_21"), "مشترى 21K: 5.000")
+                         ("مباع 21K: 10.500 جرام", "مباع 18K: 3.333 جرام", "مباع 24K: —"))
+        self.assertEqual(self.text("boughtWeights_21"), "مشترى 21K: 5.000 جرام")
         self.assertEqual(self.text("oldGoldDiscountField"), "1.5")
         self.click("removeOldGold_1")
         self.wait_until(lambda: self.text("boughtWeights_18") == "مشترى 18K: —")
@@ -672,9 +683,9 @@ class InvoicePageTests(unittest.TestCase):
         self.wait_until(lambda: self.vm.customerInfo["state"] == "NEW")
         self.assertEqual(self.text("customerAccount"), "عميل جديد — يُسجل عند الحفظ")
         self.scan("01260925")
-        self.receive("67011")
-        self.click("accountCustomerOwes")
-        self.type_into("accountAmountField", "7011")
+        self.receive("67010")
+        self.type_into("legAmount_0", "60000")                              # 7,010 → على العميل automatically
+        self.wait_until(lambda: self.text("accountAmountField") == "7010")
         self.settle()
         self.assertEqual(self.store.new_customers, [])                      # nothing created while typing
         self.finalize()
@@ -682,7 +693,7 @@ class InvoicePageTests(unittest.TestCase):
         self.assertEqual((self.store.customers[created]["name"], self.store.customers[created]["place"]),
                          ("عميل جديد", "بنها"))
         self.assertEqual(self.store.invoices[0]["customer_id"], created)
-        self.assertEqual(self.store.ledger[0]["amount_delta"], D("7011.00"))
+        self.assertEqual(self.store.ledger[0]["amount_delta"], D("7010.00"))
 
     # ------------------------------------------------------------ 14: making review
 
@@ -712,7 +723,8 @@ class InvoicePageTests(unittest.TestCase):
     def test_small_difference_is_settled_explicitly_without_ledger(self):
         self.old_gold_payout("61130")
         self.wait_until(lambda: self.item("settlementDifference").property("visible"))
-        self.assertEqual(self.text("settlementDifference"), "8.95")
+        # Shown against the FINAL amount (61,140 − 61,130); the explicit settlement keeps the exact 8.95.
+        self.assertEqual(self.text("settlementDifference"), "10.00")
         self.assertFalse(self.item("finalizeInvoice").property("enabled"))   # never automatic
         self.click("settleDifference")
         self.settle()
@@ -729,7 +741,7 @@ class InvoicePageTests(unittest.TestCase):
         self.old_gold_payout("61130")
         self.click("differenceToAccount")                              # fills the account amount
         self.settle()
-        self.wait_until(lambda: self.text("accountAmountField") == "8.95")
+        self.wait_until(lambda: self.text("accountAmountField") == "10.00")   # 61,140 final − 61,130 paid
         self.assertIn("اسم العميل مطلوب لإتمام الفاتورة", self.text("invoiceProblems"))
         self.type_into("customerNameField", "عميل")
         popup = self.item("customerSuggestions")
@@ -738,7 +750,7 @@ class InvoicePageTests(unittest.TestCase):
         self.settle()
         self.finalize()
         self.assertEqual((self.store.ledger[0]["type_code"], self.store.ledger[0]["amount_delta"]),
-                         ("BUY_BALANCE_DUE", D("-8.95")))
+                         ("BUY_BALANCE_DUE", D("-10.00")))
         self.assertEqual(self.store.adjustments, [])
 
     def test_above_fifty_needs_reason_and_manager_approval(self):
@@ -796,14 +808,14 @@ class InvoicePageTests(unittest.TestCase):
         self.add_old_gold("21", "5")                   # O 30,569.47 < gold → IN
         self.settle()
         self.wait_until(lambda: self.item("directionIn").property("checkedLook"))
-        self.receive("36441.53")
+        self.receive("36440")
         self.settle()
-        self.wait_until(lambda: self.text("summaryEffectiveSale") == "67,011.00 ج")
+        self.wait_until(lambda: self.text("summaryEffectiveSale") == "67,009.47 ج")
         self.assertEqual((self.text("summaryDueLabel"), self.text("summaryAverageMaking")),
-                         ("المستلم من العميل", "150.00"))
+                         ("المستلم من العميل", "149.85"))
         self.snapshot("customer-pays")
         self.finalize()
-        self.assertEqual([m["amount_delta"] for m in self.store.cash_movements], [D("36441.53")])
+        self.assertEqual([m["amount_delta"] for m in self.store.cash_movements], [D("36440.00")])
 
     def test_f8_fills_the_full_amount_for_old_gold_only(self):
         self.select_salesperson()
@@ -811,12 +823,12 @@ class InvoicePageTests(unittest.TestCase):
         self.settle()
         self.wait_until(lambda: self.item("payFullButton").property("visible"))
         QTest.keyClick(self.root, Qt.Key_F8)
-        self.wait_until(lambda: self.text("legAmount_0") == "61138.95", "F8 did not fill")
+        self.wait_until(lambda: self.text("legAmount_0") == "61140.00", "F8 did not fill")
         self.settle()
         self.assertEqual((self.text("paymentDirectionLabel"), self.text("summaryDue")),
-                         ("المدفوع للعميل", "61,138.95 ج"))
+                         ("المدفوع للعميل", "61,140.00 ج"))
         self.finalize()
-        self.assertEqual([m["amount_delta"] for m in self.store.cash_movements], [D("-61138.95")])
+        self.assertEqual([m["amount_delta"] for m in self.store.cash_movements], [D("-61140.00")])
 
     def test_split_payment_and_account_amount_make_the_price(self):
         # Commercial 67,011 = 40,000 cash + 27,011 InstaPay. Moving 7,011 to على العميل leaves
@@ -828,49 +840,48 @@ class InvoicePageTests(unittest.TestCase):
         self.wait_until(lambda: popup.property("opened"))
         self.click("customerSuggestion_0")
         self.scan("01260925")
-        self.total("67011")                                                    # إجمالي الفاتورة
-        self.wait_until(lambda: self.text("legAmount_0") == "67011")           # one cash leg follows it
+        self.total("67010")                                                    # إجمالي الفاتورة
+        self.wait_until(lambda: self.text("legAmount_0") == "67010")           # one cash leg follows it
         self.type_into("legAmount_0", "40000")
-        self.wait_until(lambda: self.text("remainingNow") == "المتبقي: 27,011.00 ج")
+        self.wait_until(lambda: self.text("accountAmountField") == "27010")    # unpaid → على العميل at once
         self.click("addPaymentLeg")
         self.wait_until(lambda: self.visual_item("legMethod_1") is not None)
-        self.assertEqual(self.text("legAmount_1"), "27011")                    # starts with exactly the remainder
+        self.assertEqual(self.text("legAmount_1"), "27010")                    # starts with exactly the remainder
+        self.assertEqual(self.text("accountAmountField"), "")
         self.choose("legMethod_1", 2)                                          # InstaPay
         self.wait_until(lambda: self.item("legAccount_1").property("visible"))
         self.choose("legAccount_1", 0)
         self.settle()
-        self.wait_until(lambda: self.text("summaryEffectiveSale") == "67,011.00 ج")
-        self.type_into("accountAmountField", "7011")                           # 40,000 + 27,011 + 7,011 > 67,011
+        self.wait_until(lambda: self.text("summaryEffectiveSale") == "67,010.00 ج")
+        self.type_into("legAmount_1", "30000")                                 # 40,000 + 30,000 > 67,010
         self.wait_until(lambda: "لا يمكن أن يتجاوز" in self.text("paymentWarning"), "over-allocation accepted")
-        self.assertEqual(D(self.vm.accountAmount or "0"), D("0"))             # refused: nothing on the account
-        self.assertFalse(self.item("finalizeInvoice").property("enabled") and self.vm.accountAmount)
-        self.type_into("legAmount_0", "32989")                                 # 60,000 − 27,011
-        self.type_into("accountAmountField", "7011")
+        self.assertEqual(self.vm.paymentLegs[1]["amount"], "27010")            # refused: last valid value
+        self.type_into("legAmount_1", "20010")                                 # 7,000 left → على العميل
+        self.wait_until(lambda: self.text("accountAmountField") == "7000")
         self.settle()
-        self.wait_until(lambda: self.text("requiredNow") == "المطلوب دفعه الآن: 60,000.00 ج")
         self.assertEqual(self.text("invoiceProblems"), "")
         self.assertTrue(self.item("finalizeInvoice").property("enabled"))
-        self.assertEqual(self.text("summaryEffectiveSale"), "67,011.00 ج")     # commercial amount unchanged
+        self.assertEqual(self.text("summaryEffectiveSale"), "67,010.00 ج")     # commercial amount unchanged
         self.finalize()
-        self.assertEqual([m["amount_delta"] for m in self.store.cash_movements], [D("32989.00")])
+        self.assertEqual([m["amount_delta"] for m in self.store.cash_movements], [D("40000.00")])
         self.assertEqual([(m["bank_account_id"], m["amount_delta"]) for m in self.store.bank_movements],
-                         [(7, D("27011.00"))])
-        self.assertEqual(self.store.ledger[0]["amount_delta"], D("7011.00"))  # a balance, never a movement
-        self.assertEqual(self.store.invoices[0]["sell_total"], D("67011.00"))
+                         [(7, D("20010.00"))])
+        self.assertEqual(self.store.ledger[0]["amount_delta"], D("7000.00"))  # a balance, never a movement
+        self.assertEqual(self.store.invoices[0]["sell_total"], D("67010.00"))
 
-    def test_exchange_discount_outside_1_25_to_3_blocks_save(self):
+    def test_exchange_discount_outside_1_25_to_5_blocks_save(self):
         self.select_salesperson()
         self.scan("01260925")
         self.add_old_gold("21", "5")
-        self.receive("36441.53")
+        self.receive("36440")
         self.settle()
         self.assertFalse(self.item("discountChangedFlag").property("visible"))
         average, old_net = self.text("summaryAverageMaking"), self.text("summaryOldGold")
-        # 4% is rejected on commit: the field returns to the last valid 1.5 and nothing is recalculated.
-        self.type_into("oldGoldDiscountField", "4")
+        # 5.5% is rejected on commit: the field returns to the last valid 1.5 and nothing is recalculated.
+        self.type_into("oldGoldDiscountField", "5.5")
         QTest.keyClick(self.root, Qt.Key_Return)
         self.wait_until(lambda: self.text("oldGoldDiscountField") == "1.5", "rejected value stayed in the field")
-        self.assertEqual(self.text("discountWarning"), "النسبة المسموح بها من \u20661.25%\u2069 إلى \u20663%\u2069")
+        self.assertEqual(self.text("discountWarning"), "النسبة المسموح بها من \u20661.25%\u2069 إلى \u20665%\u2069")
         self.settle()
         self.assertEqual((self.text("summaryAverageMaking"), self.text("summaryOldGold")), (average, old_net))
         self.assertEqual(self.vm._draft().old_gold_lines[0].discount_value, "1.5")
@@ -997,7 +1008,7 @@ class InvoicePageTests(unittest.TestCase):
         combo = self.item("legMethod_0")
         self.assertEqual(combo.property("count"), 4)
         self.assertEqual([m["text"] for m in self.vm.paymentMethods], ["نقدي", "محفظة", "InstaPay", "تحويل بنكي"])
-        self.receive("67011")
+        self.receive("67010")
         for index, text in ((1, "لا توجد محفظة مفعلة"), (2, "لا يوجد حساب بنكي مفعّل"), (3, "لا يوجد حساب بنكي مفعّل")):
             with self.subTest(method=index):
                 self.choose("legMethod_0", index)
@@ -1017,7 +1028,7 @@ class InvoicePageTests(unittest.TestCase):
         self.wait_until(lambda: not self.item("legUnavailable_0").property("visible"))
         self.settle()
         self.finalize()
-        self.assertEqual([m["amount_delta"] for m in self.store.cash_movements], [D("67011.00")])
+        self.assertEqual([m["amount_delta"] for m in self.store.cash_movements], [D("67010.00")])
 
     def test_real_accounts_enable_wallet_instapay_and_bank_transfer(self):
         # Fixture: one bank account (7) and one wallet (9): each is preselected for its methods.
@@ -1036,16 +1047,16 @@ class InvoicePageTests(unittest.TestCase):
         # Item 100: 10.5 g × 6232 = 65,436 gold value.
         self.select_salesperson()
         self.scan("01260925")
-        self.receive("68436")
+        self.receive("68435")
         self.settle()
         making = self.text("summaryAverageMaking")
         owes, owed, effect = self.item("accountCustomerOwes"), self.item("accountShopOwes"), self.item("accountEffect")
         self.assertTrue(owes.property("enabled"))
         self.assertFalse(owed.property("enabled"))                              # not offered on this direction
-        self.type_into("accountAmountField", "3000")
+        self.type_into("legAmount_0", "65435")                                  # 3,000 unpaid → على العميل
         self.settle()
         self.wait_until(lambda: self.text("accountEffect") == "سيضاف على العميل: 3,000.00 ج")
-        self.assertEqual(self.text("legAmount_0"), "65436")                     # deferred out of the same amount
+        self.assertTrue(self.item("accountAmountField").property("readOnly"))   # automatic, never typed
         receivable = owes.property("background").property("color")
         self.assertEqual(effect.property("color"), receivable)                 # the same semantic family
         self.assertLess(receivable.hueF() - 0.5, 0.1)                           # cool (blue / cyan)
@@ -1089,7 +1100,7 @@ class InvoicePageTests(unittest.TestCase):
     def open_confirmation(self):
         self.select_salesperson()
         self.scan("01260925")
-        self.receive("67011")
+        self.receive("67010")
         self.settle()
         self.name_customer()
         self.wait_until(lambda: self.vm.canFinalize)
@@ -1129,8 +1140,31 @@ class InvoicePageTests(unittest.TestCase):
         self.assertEqual(len(self.store.payments), 1)                            # one payment
         self.assertEqual(len(self.store.cash_movements), 1)                      # one movement
         self.assertEqual(self.printer.calls, ["901"])                            # the committed invoice id
-        self.assertEqual(self.text("printStatusText"), "تم إرسال الفاتورة إلى الطابعة.")
+        self.assertEqual(self.text("printStatusText"), "تم إرسال الفاتورة للطابعة.")
         self.snapshot("saved-and-printed")
+
+    def test_save_and_print_shows_busy_and_ignores_repeated_retry(self):
+        import threading
+        self.printer.gate = gate = threading.Event()
+        self.addCleanup(gate.set)
+        self.open_confirmation()
+        self.click("confirmSaveAndPrint")
+        self.wait_until(lambda: self.vm.hasSuccess and self.vm.printBusy, "print never started")
+        self.wait_until(lambda: self.item("printStatusBanner").property("visible"))
+        self.assertEqual(self.vm.printStatusText, "جاري إرسال أمر الطباعة...")
+        self.assertTrue(self.item("printBusyIndicator").property("visible"))
+        self.assertEqual(self.text("printStatusText"), "جاري إرسال أمر الطباعة...")
+        self.assert_inside_window(self.item("printStatusBanner"))
+        for _ in range(4):                                       # repeated retry signals while the job is in flight
+            self.vm.retryPrint()
+        QTest.qWait(80)
+        self.assertEqual(self.printer.calls, ["901"])            # ONE job
+        gate.set()
+        self.wait_until(lambda: self.vm.printSucceeded and not self.vm.printBusy)
+        self.assertEqual(self.text("printStatusText"), "تم إرسال الفاتورة للطابعة.")
+        self.assertFalse(self.item("printBusyIndicator").property("visible"))
+        self.assertEqual(self.printer.calls, ["901"])
+        self.assertEqual((len(self.store.invoices), len(self.store.payments)), (1, 1))
 
     def test_printer_failure_keeps_the_invoice_and_offers_retry(self):
         self.printer.outcome = (False, "الطابعة 'Brother HL-L2360D series' غير متاحة أو غير متصلة.")
@@ -1140,11 +1174,12 @@ class InvoicePageTests(unittest.TestCase):
         self.wait_until(lambda: not self.item("confirmFinalizeDialog").property("visible"))
         self.assertEqual(len(self.store.invoices), 1)                            # still finalized
         self.assertEqual(self.store.items["100"]["inventory_status"], "SOLD")
-        self.assertEqual([m["amount_delta"] for m in self.store.cash_movements], [D("67011.00")])
+        self.assertEqual([m["amount_delta"] for m in self.store.cash_movements], [D("67010.00")])
         self.assertIn("غير متاحة", self.text("printStatusText"))
+        self.assertTrue(self.text("printStatusText").startswith("تعذر إرسال الفاتورة للطابعة."))
         self.assertTrue(self.item("printRetry").property("visible"))
         self.snapshot("print-failed")
-        self.printer.outcome = (True, "تم إرسال الفاتورة إلى الطابعة.")
+        self.printer.outcome = (True, "تم إرسال الفاتورة للطابعة.")
         retry, banner = self.item("printRetry"), self.item("printStatusBanner")
         self.assertLessEqual(retry.height(), banner.height())                  # never spills over the banner
         self.click("printRetry")
@@ -1180,7 +1215,7 @@ class InvoicePageTests(unittest.TestCase):
         self.settle()
         self.wait_until(lambda: self.text("summaryInvoiceTotal") == "23,000.00 ج")
         average = self.text("summaryAverageMaking")
-        self.type_into("accountAmountField", "3000")
+        self.type_into("legAmount_0", "20000")                                 # 3,000 → على العميل automatically
         self.settle()
         self.wait_until(lambda: self.text("summaryDue") == "20,000.00 ج")
         self.assertEqual((self.text("summaryInvoiceTotal"), self.text("summaryDueLabel"), self.text("summaryDue")),
@@ -1216,7 +1251,7 @@ class InvoicePageTests(unittest.TestCase):
     def test_save_without_a_customer_name_is_refused_and_focuses_the_name(self):
         self.select_salesperson()
         self.scan("01260925")
-        self.receive("67011")
+        self.receive("67010")
         self.settle()
         self.wait_until(lambda: "اسم العميل مطلوب لإتمام الفاتورة" in self.text("invoiceProblems"))
         self.assertFalse(self.item("finalizeInvoice").property("enabled"))
@@ -1316,7 +1351,7 @@ class InvoicePageTests(unittest.TestCase):
         self.scan("01260925")
         self.choose("legMethod_0", 2)                                          # InstaPay
         self.wait_until(lambda: self.item("legAccount_0").property("visible"))
-        self.receive("67011")
+        self.receive("67010")
         self.settle()
         self.wait_until(lambda: "اختر الحساب" in self.text("invoiceProblems"))
         self.assertFalse(self.item("finalizeInvoice").property("enabled"))
@@ -1326,7 +1361,7 @@ class InvoicePageTests(unittest.TestCase):
         payment = self.store.payments[0]
         self.assertEqual((payment["payment_method_id"], payment["bank_account_id"]), (3, 7))
         self.assertEqual([(m["bank_account_id"], m["amount_delta"]) for m in self.store.bank_movements],
-                         [(7, D("67011.00"))])
+                         [(7, D("67010.00"))])
         self.assertEqual(self.store.cash_movements, [])
 
     def test_balance_strip_shows_only_cash_and_counted_old_gold(self):
@@ -1349,7 +1384,7 @@ class InvoicePageTests(unittest.TestCase):
         reviews = self.controller.operational_viewmodels["reviewsVM"]
         reloads = reviews._latest.get("accounts", 0)
         self.finalize()
-        self.wait_until(lambda: self.text("balanceCash") == "⁦−61,138.95⁩ ج", "cash not refreshed")
+        self.wait_until(lambda: self.text("balanceCash") == "⁦−61,140.00⁩ ج", "cash not refreshed")
         self.assertGreater(reviews._latest.get("accounts", 0), reloads)          # wallet / bank balances too
         self.assertEqual(self.text("balanceKarat_21"), "110.000")
         self.snapshot("balance-strip")
@@ -1358,7 +1393,7 @@ class InvoicePageTests(unittest.TestCase):
         self.select_salesperson()
         self.type_into("customerNameField", "عميل جديد")
         self.scan("01260925")
-        self.receive("67011")
+        self.receive("67010")
         self.settle()
         self.click("finalizeInvoice")
         dialog = self.item("confirmFinalizeDialog")
@@ -1395,7 +1430,7 @@ class InvoicePageTests(unittest.TestCase):
         self.wait_until(lambda: self.vm.oldGoldCount == 1)
         QTest.keyClick(self.root, Qt.Key_M, Qt.ControlModifier)                # straight to إجمالي الفاتورة
         self.wait_until(lambda: self.item("invoiceTotalField").property("activeFocus"))
-        for key in "36441.53":
+        for key in "36440":
             QTest.keyClick(self.root, key)
         QTest.keyClick(self.root, Qt.Key_F4)                                   # the customer name, by keyboard
         for key in "زبون":
@@ -1475,7 +1510,7 @@ class InvoicePageTests(unittest.TestCase):
         making = self.text("summaryAverageMaking")
         self.snapshot("total-20000-full-cash")
         self.type_into("legAmount_0", "12000")
-        self.wait_until(lambda: self.text("remainingNow") == "المتبقي: 8,000.00 ج")
+        self.wait_until(lambda: self.text("accountAmountField") == "8000")     # على العميل, automatically
         self.click("addPaymentLeg")
         self.wait_until(lambda: self.visual_item("legAmount_1") is not None)
         self.assertEqual(self.text("legAmount_1"), "8000")
@@ -1499,11 +1534,7 @@ class InvoicePageTests(unittest.TestCase):
         self.choose("legAccount_2", 0)
         self.settle()
         self.snapshot("total-20000-three-methods")
-        self.type_into("legAmount_2", "1000")                   # 2,000 now unallocated
-        self.wait_until(lambda: self.text("remainingNow") == "المتبقي: 2,000.00 ج")
-        self.settle()
-        self.assertFalse(self.item("finalizeInvoice").property("enabled"))      # never silent debt
-        self.click("accountCustomerOwes")                       # على العميل: takes the remainder
+        self.type_into("legAmount_2", "1000")                   # 2,000 unpaid → على العميل automatically
         self.wait_until(lambda: self.text("accountAmountField") == "2000")
         self.settle()
         self.assertEqual(self.text("summaryAverageMaking"), making)
@@ -1536,24 +1567,20 @@ class InvoicePageTests(unittest.TestCase):
         vm.setInvoiceTotal("85000")
         expected = ("83,722.62 ج", "85,000.00 ج", "95.11")
         self.assertEqual(shown(), expected)                                    # A: cash 85,000
-        vm.setLegAmount(0, "84000")
-        self.assertEqual(shown(), expected)                                    # 1,000 unallocated
-        vm.setAccountDirection("CUSTOMER_OWES")                                # B: + 1,000 on the account
+        vm.setLegAmount(0, "84000")                                            # B: 1,000 → على العميل
         self.assertEqual((vm.accountAmount, shown()), ("1000", expected))
         vm.setLegAmount(0, "80000")
         vm.addPaymentLeg()
-        vm.setLegMethod(1, "MOBILE_WALLET")                                    # C: 80,000 + 4,000 + 1,000
-        self.assertEqual(shown(), expected)
+        vm.setLegMethod(1, "MOBILE_WALLET")                                    # C: 80,000 + 5,000 (remainder)
+        self.assertEqual((vm.accountAmount, shown()), ("", expected))
         vm.setLegAmount(0, "40000")
         vm.setLegAmount(1, "20000")
         vm.addPaymentLeg()
         vm.setLegMethod(2, "INSTAPAY")
-        vm.setLegAccount(2, "7")                                               # D: 40,000 + 20,000 + 24,000 + 1,000
+        vm.setLegAccount(2, "7")
+        vm.setLegAmount(2, "24000")                                            # D: 40,000 + 20,000 + 24,000 + 1,000
         self.assertEqual([leg["amount"] for leg in vm.paymentLegs], ["40000", "20000", "24000"])
-        self.assertEqual(shown(), expected)
-        vm.setAccountAmount("")
-        self.assertEqual(shown(), expected)                                    # the account never moves it
-        vm.setAccountAmount("1000")
+        self.assertEqual((vm.accountAmount, shown()), ("1000", expected))     # the account never moves it
         vm.setInvoiceTotal("90000")                                            # only the total changes it
         self.assertEqual(shown(), ("83,722.62 ج", "90,000.00 ج", "467.41"))
 

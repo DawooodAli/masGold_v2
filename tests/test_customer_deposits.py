@@ -164,6 +164,47 @@ class DepositTests(unittest.TestCase):
         self.assertEqual(self.store.cash(), D("5000.00"))                      # الخزنة +5,000
         self.assertEqual(self.store.ledger[0][2:], ("CUSTOMER_DEPOSIT", "1"))
 
+    def test_refund_status_separates_capacity_from_current_balance_without_writes(self):
+        self.deposit('2000')
+        before=copy.deepcopy(vars(self.store))
+        self.assertEqual(self.service.refund_status('12'),{'available':'2000.00','balance':'-2000.00'})
+        self.assertEqual(vars(self.store),before)
+        self.store.ledger.append(('12',D('3000'),'INVOICE','999'))
+        before=copy.deepcopy(vars(self.store))
+        self.assertEqual(self.service.refund_status('12'),{'available':'0.00','balance':'1000.00'})
+        self.assertEqual(vars(self.store),before)
+
+    def test_refund_viewmodel_blocks_zero_and_excess_without_submit(self):
+        from unittest.mock import Mock
+        from app.viewmodels.customer_account_viewmodel import CustomerAccountViewModel
+        vm=CustomerAccountViewModel(self.service._session,Mock())
+        vm._customer_id='12'; vm._data={'customer':{'balance':D('0')}}
+        vm._deposits=Mock(refund_status=self.service.refund_status,refund=Mock())
+        def run(operation,call):
+            result=call(_expected_actor=self.service._session.current_actor())
+            if operation=='refund_status':vm._refund_status=result
+        vm._run=run
+        for balance in (D('0'),D('1000')):
+            self.store.ledger=[('12',balance,'INVOICE','999')]
+            vm.beginRefund(); vm.setRefundAmount('10')
+            self.assertFalse(vm.canRefund)
+            self.assertEqual(vm.refundAvailability,'لا يوجد رصيد عربون متاح للاسترداد حاليًا.')
+            vm.depositAction('OUT','10','')
+            vm._deposits.refund.assert_not_called()
+        self.assertEqual(vm.refundBalance,'رصيد العميل الحالي: عليه 1,000.00 ج')
+        self.store.ledger=[]; self.deposit('2000')
+        vm.beginRefund(); vm.setRefundAmount('2001')
+        self.assertFalse(vm.canRefund)
+        self.assertEqual(vm.refundAmountMessage,'المتاح للاسترداد من العربون 2,000.00 ج فقط.')
+        vm.depositAction('OUT','2001',''); vm._deposits.refund.assert_not_called()
+        self.assertEqual(vm.refundAvailability,'المتاح للاسترداد من العربون: 2,000.00 ج')
+        self.assertEqual(vm.refundBalance,'رصيد العميل الحالي: له 2,000.00 ج')
+        for amount in ('0','-1','NaN','Infinity','garbage'):
+            vm.setRefundAmount(amount); self.assertFalse(vm.canRefund)
+            vm.depositAction('OUT',amount,''); vm._deposits.refund.assert_not_called()
+        vm.setRefundAmount('٢٠٠٠'); self.assertTrue(vm.canRefund)
+        vm.depositAction('OUT','٢٠٠٠',''); vm._deposits.refund.assert_called_once()
+
     def test_deposit_when_customer_already_owes_moves_the_one_balance(self):
         self.store.ledger.append(("12", D("3000.00"), "INVOICE", "500"))
         self.deposit("5000")
@@ -268,6 +309,30 @@ class DepositReversalTests(fixture.CorrectionTestCase):
         self.assertRefused("ALREADY_REVERSED", lambda: self.service.reverse(CD, "1", "مرة ثانية"))
         self.assertRefused("SETTLEMENT_NOT_SUPPORTED", lambda: self.service.current_settlement(CD, "2"))
         self.assertEqual(self.service.deposit_target("1")["targets"][0]["settlement_allowed"], False)
+
+    def test_reversal_names_use_stored_direction_for_targets_and_preview(self):
+        from app.viewmodels.correction_viewmodel import CorrectionViewModel
+        for source_id,label,plain in [('1','العربون','عربون'),('2','استرداد العربون','استرداد عربون')]:
+            target=self.service.deposit_target(source_id)
+            self.assertEqual(target['targets'][0]['source_text'],label)
+            preview=self.service.preview_reversal(CD,source_id)
+            self.assertEqual(preview['source_text'],label)
+            vm=CorrectionViewModel(self.service._session,self.service)
+            vm._targets=target; vm.selectTarget(0); vm._reversal=preview
+            self.assertEqual(vm.header['title'],f"عكس {plain} {target['invoice_number']}")
+            self.assertEqual(vm.reversal['title'],f"{label} {target['invoice_number']}")
+
+    def test_supported_source_label_mapping_preserves_customer_settlement(self):
+        from services.correction_service import correction_source_text, CS, FO, SOURCES
+        expected={'INVOICE':'الفاتورة','EXCHANGE':'الاستبدال','RETURN':'المرتجع',
+                  CS:'تسوية حساب',FO:'العملية المالية',CD:'العربون'}
+        self.assertEqual({s:correction_source_text(s) for s in SOURCES},expected)
+        from app.viewmodels.correction_viewmodel import CorrectionViewModel
+        vm=CorrectionViewModel(self.service._session,self.service)
+        vm._targets={'invoice_id':'','invoice_number':'CS000001','targets':[
+            {'source_type':CS,'reference':'CS000001'}]}
+        vm.selectTarget(0)
+        self.assertEqual(vm.header['title'],'تصحيح / عكس — تسوية حساب CS000001')
 
 
 class DepositLabelTests(unittest.TestCase):

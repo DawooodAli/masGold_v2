@@ -195,6 +195,103 @@ class CustomerAccountPageTests(harness.InvoicePageTests):
         self.assertEqual(self.warnings,[])
 
 
+    def test_refund_capacity_balance_and_submission_at_all_sizes(self):
+        import dataclasses
+        vm=self.controller.operational_viewmodels['customerAccountVM']
+        self.controller.operational_viewmodels['customerVM']._service=Mock(
+            get_customer_types=Mock(return_value=[]),get_customer_transaction_types=Mock(return_value=[]),
+            search_customers=Mock(return_value={'items':[],'page':1,'has_more':False}))
+        with vm.session._lock:
+            vm.session._actor=dataclasses.replace(vm.session._actor,
+                permissions=vm.session._actor.permissions|{'CUSTOMER_ACCOUNT_SETTLE'})
+        state={'available':'2000.00','balance':'-2000.00'}
+        vm.service=Mock(statement=Mock(side_effect=lambda *a,**k:{
+            'customer':{'name':'عميل','balance':D(state['balance'])},'rows':[],
+            'has_more':False,'page':1,'accounts':[],'can_settle':True}))
+        vm._deposits=Mock(refund_status=Mock(side_effect=lambda *a,**k:dict(state)),
+            refund=Mock(return_value={'direction':'OUT','code':'DR000006'}))
+        self.root.setProperty('currentPage',3); vm.open('12')
+        self.wait_until(lambda:not vm.busy and vm.canDeposit)
+        for size in ((1440,900),(1280,800),(1080,680)):
+            self.root.setWidth(size[0]); self.root.setHeight(size[1]); QTest.qWait(120)
+            for available,balance in [('2000.00','-2000.00'),('0.00','1000.00'),('0.00','0.00')]:
+                state.update(available=available,balance=balance)
+                self.click('customerDepositRefund')
+                self.wait_until(lambda:self.item('customerDepositDialog').property('opened') and not vm.busy,
+                    f'refund dialog {size} capacity={available} balance={balance}; {self.warnings}')
+                capacity=self.item('customerRefundAvailability'); customer=self.item('customerRefundBalance')
+                for item in (capacity,customer,self.item('customerDepositAmount'),self.item('customerDepositNext')):
+                    self.assert_inside_window(item)
+                self.assertEqual(capacity.property('text'),vm.refundAvailability)
+                self.assertEqual(customer.property('text'),vm.refundBalance)
+                self.assertEqual(capacity.property('font').family(),'Cairo')
+                from PySide6.QtQml import QQmlExpression, QQmlEngine
+                aligned=QQmlExpression(QQmlEngine.contextForObject(capacity),capacity,'horizontalAlignment === Text.AlignRight')
+                self.assertTrue(aligned.evaluate()[0])
+                self.assertLessEqual(capacity.property('contentWidth'),capacity.width()+1)
+                self.assertLessEqual(capacity.property('contentHeight'),capacity.height()+1)
+                self.assertEqual(self.item('customerDepositDialog').property('width'),460)
+                next_button=self.item('customerDepositNext')
+                if available=='0.00':
+                    self.assertIn('لا يوجد رصيد عربون',capacity.property('text'))
+                    self.assertFalse(self.item('customerDepositAmount').property('enabled'))
+                    self.item('customerDepositAmount').setProperty('text','10')
+                    self.assertFalse(next_button.property('enabled'))
+                    vm.depositAction('OUT','10','')
+                    self.assertFalse(self.item('customerDepositConfirm').property('enabled'))
+                    vm._deposits.refund.assert_not_called()
+                    if balance=='1000.00':self.assertIn('عليه 1,000.00',customer.property('text'))
+                else:
+                    self.type_into('customerDepositAmount','2001')
+                    self.assertFalse(next_button.property('enabled'))
+                    self.assertIn('2,000.00 ج فقط',self.item('customerRefundAmountMessage').property('text'))
+                    vm.depositAction('OUT','2001',''); vm._deposits.refund.assert_not_called()
+                    self.item('customerDepositAmount').setProperty('text','2000')
+                    self.assertTrue(next_button.property('enabled'))
+                    self.click(next_button); QTest.qWait(120)
+                    self.assertTrue(self.item('customerDepositConfirm').property('enabled'))
+                    self.assert_inside_window(self.item('customerDepositConfirm'))
+                self.item('customerDepositDialog').setProperty('visible',False); QTest.qWait(350)
+        state.update(available='2000.00',balance='-2000.00')
+        self.click('customerDepositRefund')
+        self.wait_until(lambda:self.item('customerDepositDialog').property('opened') and not vm.busy)
+        self.type_into('customerDepositAmount','2000'); self.click('customerDepositNext'); QTest.qWait(120)
+        self.click('customerDepositConfirm'); self.wait_until(lambda:vm._deposits.refund.call_count==1 and not vm.busy)
+        self.assertEqual(vm._deposits.refund.call_args[0][:2],('12','2000'))
+        self.assertEqual(self.warnings,[])
+
+    def test_correction_operation_titles_at_all_sizes(self):
+        from services.correction_service import correction_source_text
+        vm=self.controller.operational_viewmodels['correctionVM']
+        for size in ((1440,900),(1280,800),(1080,680)):
+            self.root.setWidth(size[0]);self.root.setHeight(size[1]);QTest.qWait(100)
+            for source,direction,reference,plain in [
+                ('CUSTOMER_DEPOSIT','IN','DP000007','عربون'),
+                ('CUSTOMER_DEPOSIT','OUT','DR000006','استرداد عربون'),
+                ('CUSTOMER_ACCOUNT_SETTLEMENT','IN','CS000001','تسوية حساب')]:
+                label=correction_source_text(source,direction)
+                target={'source_type':source,'source_id':'7','reference':reference,'source_text':label,
+                        'direction':direction,'settlement_allowed':source!='CUSTOMER_DEPOSIT',
+                        'reversed_by':None,'settlement_corrections':0}
+                vm._targets={'invoice_id':'','invoice_number':reference,'customer_name':'عميل',
+                             'targets':[target],'bank_accounts':[]}
+                vm._open=True; vm.selectTarget(0)
+                vm._mode='REVERSAL'
+                vm._reversal={'source_type':source,'reference':reference,'source_text':label,
+                    'original_date':'2026-10-05 12:00','original_total':'2000.00',
+                    'money':[],'account':[],'inventory':[],'old_gold':[],
+                    'reviews':0,'cases':0,'blockers':[],'can_reverse':True}
+                vm.changed.emit(); QTest.qWait(100)
+                title=self.item('correctionTitle')
+                prefix='عكس' if source=='CUSTOMER_DEPOSIT' else 'تصحيح / عكس —'
+                self.assertEqual(title.property('text'),f'{prefix} {plain} {reference}')
+                self.assertEqual(vm.reversal['title'],f'{label} {reference}')
+                self.assert_inside_window(title)
+                self.assertLessEqual(title.property('contentWidth'),title.width()+1)
+                self.assertEqual(self.warnings,[])
+                vm.close(); QTest.qWait(50)
+
+
 # unittest otherwise inherits every Billing harness test, inflating the suite count.
 for _name in dir(harness.InvoicePageTests):
     if _name.startswith('test_'):

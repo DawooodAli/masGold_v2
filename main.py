@@ -18,7 +18,6 @@ def create_operational_viewmodels():
     from app.viewmodels.inventory_viewmodel import InventoryViewModel
     from app.viewmodels.barcode_viewmodel import BarcodeViewModel
     from app.viewmodels.old_gold_conversion_viewmodel import OldGoldConversionViewModel
-    from app.viewmodels.billing_viewmodel import BillingViewModel
     from app.viewmodels.customer_viewmodel import CustomerViewModel
     from app.viewmodels.customer_picker_viewmodel import CustomerPickerViewModel
     from app.viewmodels.stock_balance_viewmodel import StockBalanceViewModel
@@ -32,7 +31,8 @@ def create_operational_viewmodels():
         "inventoryVM": InventoryViewModel(),
         "barcodeVM": BarcodeViewModel(),
         "oldGoldConversionVM": OldGoldConversionViewModel(),
-        "billingVM": BillingViewModel(),
+        # The frozen Billing V1 view model (float money, no session authorization, writes billing_* history
+        # tables) is deliberately NOT registered: Billing V2 (invoiceVM) is the only invoice path.
         "customerVM": CustomerViewModel(),
         "stockBalanceVM": StockBalanceViewModel(),       # بيان المخزون (loads when opened)
         "stocktakeVM": StocktakeViewModel(),             # الجرد بالباركود (transient session)
@@ -132,6 +132,10 @@ class ApplicationController(QObject):
                  correction_factory=create_correction_viewmodel):
         super().__init__(app)
         self.app = app
+        # English digits everywhere: typed Arabic-Indic / Persian digits become 0-9 before any field.
+        from app.digit_filter import DigitKeyFilter
+        self._digit_filter = DigitKeyFilter(self)
+        app.installEventFilter(self._digit_filter)
         self.qml_directory = qml_directory or Path(__file__).resolve().parent / "qml"
         self.session = AppSession(self)
         self.authentication = AuthenticationViewModel(self.session, authentication_service, self)
@@ -195,7 +199,16 @@ class ApplicationController(QObject):
             master_data = self.operational_viewmodels.get("masterDataVM")
             if hasattr(master_data, "attach_session"):
                 master_data.attach_session(self.session)         # mutations need MASTER_DATA_MANAGE
+            conversion = self.operational_viewmodels.get("oldGoldConversionVM")
+            if hasattr(conversion, "attach_session"):
+                conversion.attach_session(self.session)          # OLD_GOLD_MANAGE + the session actor
+            inventory = self.operational_viewmodels.get("inventoryVM")
+            if hasattr(inventory, "attach_session"):
+                inventory.attach_session(self.session)           # INVENTORY_MANAGE + the session actor
             invoice_vm = self.operational_viewmodels["invoiceVM"]
+            history = self.operational_viewmodels.get("invoiceHistoryVM")
+            if hasattr(invoice_vm, "finalized") and hasattr(history, "refreshInvoice"):
+                invoice_vm.finalized.connect(history.refreshInvoice)
             balances = self.operational_viewmodels["balancesVM"]
             if hasattr(invoice_vm, "finalized") and hasattr(balances, "refresh"):
                 invoice_vm.finalized.connect(balances.refresh)       # the ledgers just changed
@@ -233,6 +246,8 @@ class ApplicationController(QObject):
             from app.viewmodels.customer_account_viewmodel import CustomerAccountViewModel
             account = CustomerAccountViewModel(self.session)
             self.operational_viewmodels["customerAccountVM"] = account
+            if hasattr(history, "refresh"):
+                account.finalized.connect(history.refresh)  # the open detail's later customer-account activity
             if hasattr(customer_page, "deadCashFinalized"):
                 # A write-off / reversal changed the customer ledger (never a money ledger).
                 customer_page.deadCashFinalized.connect(account.refresh)
@@ -253,9 +268,30 @@ class ApplicationController(QObject):
                     if hasattr(source, "finalized"):
                         source.finalized.connect(customers.refresh)
             if hasattr(reviews, "inspectionResolved"):
+                if hasattr(history, "refresh"):
+                    reviews.inspectionResolved.connect(history.refresh)
                 reviews.inspectionResolved.connect(account.refresh)
                 if hasattr(customers, "refresh"):
                     reviews.inspectionResolved.connect(customers.refresh)
+            # Scrap changed (032): an Exchange put a piece into Scrap (held), or a manager returned it from
+            # Scrap to stock / committed it. Every loaded Scrap or stock view reloads from the database at
+            # once — the top-bar physical balance, the F7 / conversion available grams and the stock lists.
+            scrap_views = [(balances, "refresh"), (invoice_vm, "refreshReference"),
+                           (self.operational_viewmodels.get("oldGoldConversionVM"), "refreshBalances"),
+                           (self.operational_viewmodels.get("inventoryVM"), "refresh")]
+            stock_balance = self.operational_viewmodels.get("stockBalanceVM")
+            # A Return (033) also puts its identified pieces into Scrap (held).
+            finalized_signals = [getattr(exchange, "finalized", None), getattr(returned, "finalized", None)]
+            for source in (getattr(reviews, "inspectionResolved", None), *finalized_signals):
+                if source is None:
+                    continue
+                for target, slot in scrap_views:
+                    if target is not None and hasattr(target, slot) and not (
+                            source in finalized_signals and target is balances):
+                        source.connect(getattr(target, slot))         # finalize → balances is wired above
+                if hasattr(stock_balance, "refresh"):
+                    # بيان المخزون loads when opened; once loaded it follows every change.
+                    source.connect(lambda *_: stock_balance.loaded and stock_balance.refresh())
             if hasattr(corrected, "finalized"):
                 # Money, customer ledger, stock and old gold may all have changed.
                 for target in (balances, reviews):
@@ -276,6 +312,9 @@ class ApplicationController(QObject):
                 for target, slot in ((balances, "refresh"), (reviews, "reloadAccounts")):
                     if hasattr(target, slot):
                         accounts.finalized.connect(getattr(target, slot))
+            # Settings → المستخدمون والصلاحيات (USERS_MANAGE, re-checked by the service on every call).
+            from app.viewmodels.user_admin_viewmodel import UserAdminViewModel
+            self.operational_viewmodels.setdefault("userAdminVM", UserAdminViewModel(self.session))
             if hasattr(invoice_vm, "attach_price_source"):
                 invoice_vm.attach_price_source(self.gold_prices)
             # Barcode fields map physical scan codes (independent of the Windows keyboard layout).

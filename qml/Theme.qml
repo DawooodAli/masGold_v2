@@ -43,6 +43,14 @@ QtObject {
 
     readonly property color redBackground: "#2D1A1D"
 
+    // Semantic status colours (use these instead of picking amber / red per screen):
+    //   statusWarning = a real warning, error or condition that needs the employee's attention (RED)
+    //   statusSuccess = valid / completed (GREEN)
+    //   statusInfo    = an important highlight that is NOT a warning (GOLD)
+    readonly property color statusWarning: red
+    readonly property color statusSuccess: green
+    readonly property color statusInfo: gold
+
     readonly property int radiusSmall: 7
     readonly property int radiusMedium: 10
 

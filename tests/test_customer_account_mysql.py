@@ -35,7 +35,7 @@ class CustomerAccountMysqlTests(unittest.TestCase):
         c=DatabaseConnection(config).connect()
         try:
             q=c.cursor();q.execute('SELECT DATABASE()');assert q.fetchone()[0]=='masgold_v2'
-            q.execute('SELECT MAX(version) FROM schema_migrations');assert q.fetchone()[0]==29
+            q.execute('SELECT MAX(version) FROM schema_migrations');assert q.fetchone()[0]==33
             q.close();c.commit();c.start_transaction()
             yield c;c.commit()
         except BaseException:c.rollback();raise
@@ -202,8 +202,8 @@ class CustomerAccountMysqlTests(unittest.TestCase):
             q.execute('SELECT id FROM employees WHERE is_active=1 ORDER BY id LIMIT 1');employee=q.fetchone()[0]
             q.execute('SELECT id FROM item_types WHERE is_active=1 ORDER BY id LIMIT 1');item_type=q.fetchone()[0]
             q.execute('SELECT id FROM karats WHERE karat_value=21 AND is_active=1');karat=q.fetchone()[0];q.close()
-        items=[str(InventoryService().create_inventory_item(employee,item_type,karat,None,None,weight,None,
-            'NEW_STOCK',None,TAG,self.session.current_actor().user_id)) for weight in ('1.000','1.000','1.200')]
+        items=[str(InventoryService(session=self.session).create_inventory_item(employee,item_type,karat,None,None,weight,None,
+            'NEW_STOCK',None,TAG)) for weight in ('1.000','1.000','1.200')]
         billing=InvoiceService(self.session,transaction_factory=self.transaction)
         draft=InvoiceDraft(employee,customer_id=self.cid,sale_lines=tuple(SaleLineInput(i) for i in items[:2]),
             invoice_total='20000',account_amount='20000',account_direction='CUSTOMER_OWES',notes=TAG)

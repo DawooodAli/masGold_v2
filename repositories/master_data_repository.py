@@ -400,6 +400,17 @@ class MasterDataRepository(BaseRepository):
                 found.append(child)
         return found
 
+    def used_master_ids(self, table: str) -> set[int]:
+        """Ids of this master table that any stock / history row references (plain reads, display only).
+        The delete itself never trusts this: _delete_unused repeats the check under locks."""
+        if table not in self.STOCK_REFERENCES:
+            raise ValueError(f"Unknown master table {table}.")
+        used = set()
+        for child, column in self.STOCK_REFERENCES[table]:
+            for row in self._fetch_all(f"SELECT DISTINCT {column} AS used_id FROM {child} WHERE {column} IS NOT NULL"):
+                used.add(int(row["used_id"]))
+        return used
+
     def item_types_defaulting_to(self, category_id: int) -> int:
         row = self._fetch_one(
             "SELECT COUNT(*) AS n FROM item_types WHERE default_category_id = %s FOR SHARE",

@@ -10,6 +10,9 @@ from repositories.barcode_repository import BarcodeRepository
 DEFAULT_BARCODE_PRINTER_NAME = "ZDesigner GK420t"
 
 
+NO_BARCODE_REFUSAL = "لا يمكن طباعة لاصقة لقطعة بدون باركود؛ استبعد القطع بدون باركود من التحديد."
+
+
 class BarcodePrinterError(RuntimeError):
     """
     Raised when barcode assignment/history may already be committed
@@ -361,6 +364,14 @@ class BarcodePrintService:
             "BP-%Y%m%d-%H%M%S-%f"
         )
 
+    @staticmethod
+    def _refuse_without_barcode(items):
+        """A piece marked بدون باركود (no active barcode) can never enter the print queue or consume a label."""
+        missing = [str(item.get("inventory_item_id")) for item in items if not item.get("barcode_value")]
+        if missing:
+            raise ValueError(
+                NO_BARCODE_REFUSAL + " (القطع: " + "، ".join(missing) + ")")
+
     def get_queue(self, item_ids):
         item_ids = self._clean_ids(
             item_ids
@@ -388,6 +399,8 @@ class BarcodePrintService:
                 "One or more selected items are no longer "
                 "available in inventory."
             )
+
+        self._refuse_without_barcode(items)
 
         existing_count = sum(
             1
@@ -445,50 +458,11 @@ class BarcodePrintService:
                     "available in inventory."
                 )
 
-            missing_items = [
-                item
-                for item in items
-                if not item.get(
-                    "barcode_value"
-                )
-            ]
+            # بدون باركود is never printable: a label is printed only for a piece that already has its stored
+            # barcode (always the SAME one). Printing never allocates, assigns or changes a barcode.
+            self._refuse_without_barcode(items)
 
             assigned_count = 0
-
-            if missing_items:
-                today = date.today()
-
-                for item in missing_items:
-                    # barcode_number_sequences, never a reused historical value.
-                    barcode_value = (
-                        repository
-                        .allocate_barcode_value(
-                            today
-                        )
-                    )
-
-                    item_id = int(
-                        item[
-                            "inventory_item_id"
-                        ]
-                    )
-
-                    repository.assign_barcode(
-                        inventory_item_id=item_id,
-                        barcode_value=barcode_value,
-                        assigned_by_user_id=None,
-                        reason="BULK_BARCODE_PRINT",
-                    )
-
-                    item["barcode_value"] = (
-                        barcode_value
-                    )
-
-                    newly_assigned_item_ids.add(
-                        item_id
-                    )
-
-                    assigned_count += 1
 
         return (
             items,
@@ -660,6 +634,27 @@ class BarcodePrintService:
             "batch_code": batch_code,
             "print_job_id": print_job_id,
         }
+
+    def reprint_item_barcode(self, item_id):
+        """إعادة طباعة الباركود of ONE identified piece with its SAME stored barcode, whatever its status (e.g. a
+        returned piece held in Scrap). Never allocates, assigns or changes a barcode: a piece without one is
+        refused. Logged as an ordinary print job and sent to the same printer."""
+        with DatabaseTransaction() as transaction:
+            item = BarcodeRepository(transaction.connection).get_item_for_label_reprint(item_id)
+        if item is None:
+            raise ValueError("Inventory item does not exist.")
+        if not item.get("barcode_value"):
+            raise ValueError("This item has no stored barcode.")
+        print_job_id, batch_code, _ = self._create_print_job(items=[item], newly_assigned_item_ids=set(),
+                                                             reprint_of_job_id=None)
+        try:
+            label_count = self._printer.print_items([item])
+        except Exception as exc:
+            self._append_print_event(print_job_id=print_job_id, event_type="FAILED", message=str(exc))
+            raise BarcodePrinterError(str(exc), assigned_count=0, batch_code=batch_code) from exc
+        self._append_print_event(print_job_id=print_job_id, event_type="PRINTED", message=None)
+        return {"inventory_item_id": str(item["inventory_item_id"]), "barcode_value": item["barcode_value"],
+                "label_count": label_count, "batch_code": batch_code, "print_job_id": print_job_id}
 
     # =========================================================
     # PRINT HISTORY

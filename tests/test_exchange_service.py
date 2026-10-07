@@ -88,6 +88,11 @@ class Store:
         self.old_gold = {1: D("20.000"), 2: D("0.000"), 3: D("0.000")}
         self.old_gold_movements, self.cases = [], []
         self.inspections = []                  # RETURNED_ITEM_INSPECTION management reviews (021)
+        self.holds = []                        # old_gold_holds (032): Exchange pieces held in Scrap
+
+    def held(self, karat_id):
+        return sum((h["weight"] for h in self.holds if h["karat_id"] == int(karat_id) and h["status"] == "HELD"),
+                   D("0.000"))
 
     def tables(self):
         return copy.deepcopy(vars(self))
@@ -193,10 +198,15 @@ class InvoiceRepo:
         return {"item_types": list(self.store.item_types.values()), "factories": list(self.store.factories.values())}
 
     def old_gold_balances(self):
-        return [{"karat_id": k, "karat_value": KARATS[k], "balance_grams": v} for k, v in self.store.old_gold.items()]
+        """AVAILABLE grams (032): physical minus the weight HELD for a manager decision."""
+        return [{"karat_id": k, "karat_value": KARATS[k], "balance_grams": v - self.store.held(k),
+                 "physical_grams": v, "held_grams": self.store.held(k)} for k, v in self.store.old_gold.items()]
 
     def lock_old_gold_balance(self, karat_id):
-        return self.store.old_gold[int(karat_id)]
+        return self.store.old_gold[int(karat_id)] - self.store.held(karat_id)
+
+    def held_old_gold(self, karat_id):
+        return self.store.held(karat_id)
 
     def insert_event(self, **kwargs):
         self.store.events.append(kwargs)
@@ -220,11 +230,15 @@ class LifecycleRepo:
     def insert_transaction(self, **kwargs):
         lifecycle_id = str(len(self.store.lifecycle) + 1)
         c = kwargs["calculation"]
-        # The 019 CHECKs, enforced here as MySQL would.
+        # The 019 / 031 CHECKs, enforced here as MySQL would.
         assert c.pure_delta == c.replacement_pure - c.returned_pure
         assert kwargs["money_received"] - kwargs["money_paid"] + kwargs["account_signed"] == c.signed_amount
-        assert c.making_charge == 0 or c.pure_delta > 0
-        assert c.making_refund == 0 or (c.pure_delta < 0 and c.refund_eligible)
+        assert min(c.gold_amount, c.making_charge, c.making_refund) >= 0
+        assert c.making_refund == 0 or c.refund_eligible
+        assert -5 < c.rounding_adjustment < 5
+        gold = c.gold_amount if c.valued_delta > 0 else -c.gold_amount if c.valued_delta < 0 else 0
+        assert c.signed_amount == gold + c.making_charge - c.making_refund + c.rounding_adjustment
+        assert c.rounding_adjustment == 0 or c.signed_amount % 5 == 0
         self.store.lifecycle.append(dict(kwargs, lifecycle_id=lifecycle_id, calculation=dataclasses.asdict(c)))
         return lifecycle_id
 
@@ -294,6 +308,35 @@ class LifecycleRepo:
                                           "delta": amount if direction == "IN" else -amount})
         return str(len(self.store.bank_movements))
 
+    def mark_item_returned_to_scrap(self, *, inventory_item_id, updated_by_user_id):
+        row = self.store.items[str(inventory_item_id)]
+        assert row["inventory_status"] == "SOLD"
+        row["inventory_status"] = "CONVERTED_TO_OLD_GOLD"
+
+    def add_returned_scrap_in(self, *, karat_id, weight_grams, inventory_item_id, lifecycle_id, invoice_id, **kwargs):
+        self._maybe_fail("add_returned_scrap_in")
+        assert weight_grams > 0
+        self.store.old_gold[int(karat_id)] += weight_grams
+        self.store.old_gold_movements.append({"code": "EXCHANGE_RETURN_SCRAP_IN", "karat_id": karat_id,
+                                              "delta": weight_grams, "item": inventory_item_id,
+                                              "invoice": invoice_id,
+                                              "reference": ("INVOICE_LIFECYCLE", lifecycle_id)})
+        return str(len(self.store.old_gold_movements))
+
+    def insert_scrap_hold(self, *, review_id, lifecycle_line_id, inventory_item_id, karat_id, weight_grams,
+                          in_movement_id, created_by_user_id):
+        self._maybe_fail("insert_scrap_hold")
+        # 032 UNIQUE keys, as MySQL would.
+        for key, value in (("review", review_id), ("line", lifecycle_line_id), ("in", in_movement_id)):
+            if any(h[key] == str(value) for h in self.store.holds):
+                raise RuntimeError(f"Duplicate entry for old_gold_holds.{key}")
+        assert weight_grams > 0
+        self.store.holds.append({"hold_id": str(len(self.store.holds) + 1), "review": str(review_id),
+                                 "line": str(lifecycle_line_id), "item": str(inventory_item_id),
+                                 "karat_id": int(karat_id), "weight": weight_grams, "in": str(in_movement_id),
+                                 "status": "HELD", "out": None, "resolved_by": None, "resolved_at": None})
+        return str(len(self.store.holds))
+
     def mark_item_returned_pending(self, *, inventory_item_id, updated_by_user_id):
         row = self.store.items[str(inventory_item_id)]
         assert row["inventory_status"] == "SOLD"
@@ -356,7 +399,7 @@ class Authorization:
         return dataclasses.replace(actor, permissions=frozenset(self.permissions))
 
 
-def draft(returned=("1",), replacements=(("300", None),), payments=(), account=None, invoice="500"):
+def draft(returned=("1",), replacements=(("300", "150"),), payments=(), account=None, invoice="500"):
     return ExchangeDraft(invoice, tuple(returned),
                          tuple(ReplacementInput(i, m) for i, m in replacements), tuple(payments), account)
 
@@ -420,54 +463,63 @@ class CaseTests(ExchangeTestCase):
         service = self.make_service(Prices(prices={1: (D("9000"), D("9100")), 2: PRICES[2], 3: PRICES[3]}))
         self.assertEqual(service.preview(draft())["signed_amount"], "0.00")
 
-    def test_c_more_gold_customer_pays_shop_sell_plus_making_on_delta(self):
+    def test_c_more_gold_customer_pays_gold_plus_independent_making(self):
         d = draft(replacements=(("301", "200"),))
         preview = self.service.preview(d)
-        # Same karat (21K): +2.000 g × the actual 21K SHOP_SELL 6232 = 12,464.00.
-        # making 200 × 12 = 2,400 / 10.500 pure = 228.5714 per pure gram × 1.750 pure = 400.00.
+        # Same karat (21K): +2.000 g × the actual 21K SHOP_SELL 6232 = 12,464.00 (gold);
+        # making: replacement 200 × 12.000 = 2,400 − original making of the returned line 1,500 = +900;
+        # raw 13,364.00 → nearest EGP 5 = 13,365.00 (rounding +1.00). (Old rule: making on the delta = 12,864.)
         self.assertEqual((preview["valuation_basis"], preview["valued_delta_grams"], preview["pure_delta_grams"],
                           preview["price_basis"], preview["price_karat"], preview["price_per_gram"],
-                          preview["gold_amount"], preview["making_rate_per_pure_gram"], preview["making_charge"],
+                          preview["gold_amount"], preview["making_charge"], preview["making_refund"],
+                          preview["making_difference"], preview["raw_amount"], preview["rounding_adjustment"],
                           preview["signed_amount"], preview["direction_text"]),
-                         ("SAME_KARAT", "2.000", "1.750", "SHOP_SELL", 21, "6232.0000", "12464.00", "228.5714",
-                          "400.00", "12864.00", "على العميل"))
-        self.assertFalse(preview["making_refund_applies"])
-        d = draft(replacements=(("301", "200"),), payments=(cash("12864.00"),))
-        self.assertEqual(self.finalize(d)["signed_amount"], "12864.00")
-        self.assertEqual(self.store.cash_movements[0]["delta"], D("12864.00"))
+                         ("SAME_KARAT", "2.000", "1.750", "SHOP_SELL", 21, "6232.0000", "12464.00", "2400.00",
+                          "1500.00", "900.00", "13364.00", "1.00", "13365.00", "على العميل"))
+        self.assertTrue(preview["making_refund_applies"])
+        d = draft(replacements=(("301", "200"),), payments=(cash("13365.00"),))
+        self.assertEqual(self.finalize(d)["signed_amount"], "13365.00")
+        self.assertEqual(self.store.cash_movements[0]["delta"], D("13365.00"))
         self.assertEqual(self.store.cash_movements[0]["type"], "EXCHANGE_PAYMENT_IN")
+        stored = self.store.lifecycle[0]["calculation"]
+        self.assertEqual((stored["making_charge"], stored["making_refund"], stored["rounding_adjustment"]),
+                         (D("2400.00"), D("1500.00"), D("1.00")))
 
-    def test_d_less_gold_within_window_credits_shop_buy_and_refunds_making(self):
-        d = draft(replacements=(("302", None),))
+    def test_d_less_gold_within_window_credits_shop_buy_and_refunds_original_making(self):
+        d = draft(replacements=(("302", "150"),))
         preview = self.service.preview(d)
-        # Same karat: −2.000 g × the actual 21K SHOP_BUY 6207 = 12,414.00;
-        # refund 1500 / 8.750 pure = 171.4286 × 1.750 pure = 300.00.
+        # Same karat: −2.000 g × the actual 21K SHOP_BUY 6207 = −12,414.00 (gold);
+        # making: replacement 150 × 8 = 1,200 − original 1,500 = −300; raw −12,714.00 → −12,715.00.
         self.assertEqual((preview["price_karat"], preview["price_per_gram"]), (21, "6207.0000"))
         self.assertEqual((preview["price_basis"], preview["gold_amount"], preview["making_refund"],
-                          preview["signed_amount"], preview["direction_text"], preview["making_refund_text"]),
-                         ("SHOP_BUY", "12414.00", "300.00", "-12714.00", "للعميل", REFUND_TEXT))
-        self.assertEqual(preview["making_charge"], "0.00")
-        self.finalize(draft(replacements=(("302", None),), payments=(cash("12714.00"),)))
-        self.assertEqual(self.store.cash_movements[0]["delta"], D("-12714.00"))
+                          preview["making_charge"], preview["raw_amount"], preview["signed_amount"],
+                          preview["direction_text"], preview["making_refund_text"]),
+                         ("SHOP_BUY", "12414.00", "1500.00", "1200.00", "-12714.00", "-12715.00", "للعميل",
+                          REFUND_TEXT))
+        self.finalize(draft(replacements=(("302", "150"),), payments=(cash("12715.00"),)))
+        self.assertEqual(self.store.cash_movements[0]["delta"], D("-12715.00"))
         self.assertEqual(self.store.lifecycle_payments[0]["direction"], "OUT")
 
     def test_e_less_gold_after_window_has_no_refund(self):
         self.store.invoices["500"]["finalized_at"] = NOW - timedelta(hours=MAKING_REFUND_WINDOW_HOURS, seconds=1)
-        preview = self.service.preview(draft(replacements=(("302", None),)))
-        self.assertEqual((preview["making_refund"], preview["signed_amount"]), ("0.00", "-12414.00"))
+        preview = self.service.preview(draft(replacements=(("302", "150"),)))
+        # −12,414 + 1,200 (replacement making) − 0 (no refund after the window) = −11,214 → −11,215.
+        self.assertEqual((preview["making_refund"], preview["signed_amount"]), ("0.00", "-11215.00"))
         self.assertTrue(preview["making_refund_expired"])
         self.assertEqual(preview["making_refund_expired_text"], REFUND_EXPIRED_TEXT)
 
     def test_e_window_boundary_is_inclusive(self):
         self.store.invoices["500"]["finalized_at"] = NOW - timedelta(hours=MAKING_REFUND_WINDOW_HOURS)
-        self.assertEqual(self.service.preview(draft(replacements=(("302", None),)))["making_refund"], "300.00")
+        self.assertEqual(self.service.preview(draft(replacements=(("302", "150"),)))["making_refund"], "1500.00")
 
     def test_f_different_karats_compare_on_pure_gold(self):
-        # 18K 4.000 g = 3.000 pure ↔ 24K 3.000 g = 3.000 pure: no difference.
+        # 18K 4.000 g = 3.000 pure ↔ 24K 3.000 g = 3.000 pure: no gold difference; making is separate:
+        # replacement 0 − original 400 = −400 للعميل.
         self.store.items["313"] = item("313", 3, "3.000")
-        preview = self.service.preview(draft(returned=("2",), replacements=(("313", None),)))
-        self.assertEqual((preview["returned_pure_grams"], preview["replacement_pure_grams"],
-                          preview["signed_amount"]), ("3.000", "3.000", "0.00"))
+        preview = self.service.preview(draft(returned=("2",), replacements=(("313", "0"),)))
+        self.assertEqual((preview["returned_pure_grams"], preview["replacement_pure_grams"], preview["gold_amount"],
+                          preview["making_difference"], preview["signed_amount"]),
+                         ("3.000", "3.000", "0.00", "-400.00", "-400.00"))
 
     def test_f_pure_weights_are_exact(self):
         # 18K 4.000 = 3.000 pure; 21K 3.500 = 3.0625 pure (never rounded to 3.063): +0.0625 × 24K 7600 = 475.00.
@@ -479,17 +531,17 @@ class CaseTests(ExchangeTestCase):
         self.assertEqual(self.service.preview(draft(returned=("2",), replacements=(("306", "0"),)))
                          ["pure_delta_grams"], "0.000375")
 
-    def test_g_many_to_many_uses_pure_weighted_making(self):
+    def test_g_many_to_many_sums_each_side_making(self):
         d = draft(returned=("1", "2"), replacements=(("301", "200"), ("305", "100")))
         preview = self.service.preview(d)
         # Mixed karats: returned 8.750 + 3.000; given 10.500 + 5.000 → +3.750 pure g × actual 24K SELL 7600
-        # = 28,500.00; making (2,400 + 500) / 15.500 = 187.0968 × 3.750 = 701.61.
+        # = 28,500.00; making: (200×12 + 100×5) 2,900 − original (1,500 + 400) 1,900 = +1,000 → 29,500.
         self.assertEqual((preview["valuation_basis"], preview["pure_delta_grams"], preview["price_karat"],
-                          preview["gold_amount"], preview["making_rate_per_pure_gram"],
-                          preview["making_charge"], preview["signed_amount"]),
-                         ("PURE_24K", "3.750", 24, "28500.00", "187.0968", "701.61", "29201.61"))
+                          preview["gold_amount"], preview["making_charge"], preview["making_refund"],
+                          preview["signed_amount"]),
+                         ("PURE_24K", "3.750", 24, "28500.00", "2900.00", "1900.00", "29500.00"))
         self.finalize(draft(returned=("1", "2"), replacements=(("301", "200"), ("305", "100")),
-                            payments=(cash("29201.61"),)))
+                            payments=(cash("29500.00"),)))
         roles = [(l["role"], l["number"]) for l in self.store.lifecycle_lines]
         self.assertEqual(roles, [("RETURNED", 1), ("RETURNED", 2), ("REPLACEMENT", 3), ("REPLACEMENT", 4)])
 
@@ -525,9 +577,9 @@ class CaseTests(ExchangeTestCase):
         self.store.items["307"] = item("307", 1, "4.000")
         preview = self.service.preview(draft(returned=("6",), replacements=(("307", None),)))
         self.assertEqual(preview["making_refund"], "0.00")
-        # Only the (unentered) money is missing; the historical making is not needed any more.
-        self.assertEqual([p["code"] for p in preview["blocking_problems"]], ["AMOUNT_MISMATCH"])
-
+        # The historical making is not needed any more; the replacement's own making still is.
+        self.assertEqual([p["code"] for p in preview["blocking_problems"]], ["REPLACEMENT_MAKING_REQUIRED"])
+        self.assertIsNone(preview["signed_amount"])
 
 class PricingRuleTests(ExchangeTestCase):
     """Each karat's own actual quote; mixed karats: pure delta at the actual 24K quote."""
@@ -538,36 +590,37 @@ class PricingRuleTests(ExchangeTestCase):
                 p["valued_delta_grams"], p["gold_amount"], p["signed_amount"])
 
     def test_1_same_karat_18k_uses_the_actual_18k_quote(self):
-        # 18K 4.000 → 5.000: +1.000 g × 5100 = 5,100.00 (+ making 100×5 = 500 / 3.750 pure × 0.750 = 100.00).
+        # 18K 4.000 → 5.000: +1.000 g × 5100 = 5,100.00; making 100×5 = 500 − original 400 = +100 → 5,200.
         self.assertEqual(self.price(draft(returned=("2",), replacements=(("309", "100"),))),
                          ("SAME_KARAT", "SHOP_SELL", 18, "5100.0000", "1.000", "5100.00", "5200.00"))
-        # 18K 4.000 → 3.000: −1.000 g × 5000 = 5,000.00 (+ refund 400 / 3.000 pure × 0.750 = 100.00).
-        self.assertEqual(self.price(draft(returned=("2",), replacements=(("310", None),))),
+        # 18K 4.000 → 3.000: −1.000 g × 5000 = −5,000.00; making 100×3 = 300 − 400 = −100 → −5,100.
+        self.assertEqual(self.price(draft(returned=("2",), replacements=(("310", "100"),))),
                          ("SAME_KARAT", "SHOP_BUY", 18, "5000.0000", "-1.000", "5000.00", "-5100.00"))
 
     def test_2_same_karat_21k_uses_the_actual_21k_quote(self):
+        # +2 g × 6232 = 12,464; making 0 − original 1,500 → 10,964 → 10,965.
         self.assertEqual(self.price(draft(replacements=(("301", "0"),))),
-                         ("SAME_KARAT", "SHOP_SELL", 21, "6232.0000", "2.000", "12464.00", "12464.00"))
+                         ("SAME_KARAT", "SHOP_SELL", 21, "6232.0000", "2.000", "12464.00", "10965.00"))
         self.assertEqual(self.price(draft(replacements=(("302", None),)))[:6],
                          ("SAME_KARAT", "SHOP_BUY", 21, "6207.0000", "-2.000", "12414.00"))
 
     def test_3_same_karat_24k_uses_the_actual_24k_quote(self):
+        # +1 g × 7600 = 7,600; making 0 − original 500 = −500 → 7,100.
         self.assertEqual(self.price(draft(returned=("8",), replacements=(("311", "0"),))),
-                         ("SAME_KARAT", "SHOP_SELL", 24, "7600.0000", "1.000", "7600.00", "7600.00"))
-        # −1.000 g × 7500 = 7,500.00 + refund 500 / 5.000 × 1.000 = 100.00.
-        self.assertEqual(self.price(draft(returned=("8",), replacements=(("312", None),))),
-                         ("SAME_KARAT", "SHOP_BUY", 24, "7500.0000", "-1.000", "7500.00", "-7600.00"))
+                         ("SAME_KARAT", "SHOP_SELL", 24, "7600.0000", "1.000", "7600.00", "7100.00"))
+        # −1 g × 7500 = −7,500; making 125×4 = 500 − 500 = 0 → −7,500.
+        self.assertEqual(self.price(draft(returned=("8",), replacements=(("312", "125"),))),
+                         ("SAME_KARAT", "SHOP_BUY", 24, "7500.0000", "-1.000", "7500.00", "-7500.00"))
 
     def test_4_different_karats_positive_delta_uses_actual_24k_shop_sell(self):
-        # 18K 4.000 (3.000 pure) → 24K 5.000 (5.000 pure): +2.000 × 7600 = 15,200.00.
+        # 18K 4.000 (3.000 pure) → 24K 5.000 (5.000 pure): +2.000 × 7600 = 15,200; making 0 − 400 → 14,800.
         self.assertEqual(self.price(draft(returned=("2",), replacements=(("305", "0"),))),
-                         ("PURE_24K", "SHOP_SELL", 24, "7600.0000", "2.000", "15200.00", "15200.00"))
+                         ("PURE_24K", "SHOP_SELL", 24, "7600.0000", "2.000", "15200.00", "14800.00"))
 
     def test_5_different_karats_negative_delta_uses_actual_24k_shop_buy(self):
-        # 21K 10.000 (8.750 pure) → 18K 4.000 (3.000 pure): −5.750 × 7500 = 43,125.00;
-        # refund 1500 / 8.750 = 171.4286 × 5.750 = 985.71.
-        self.assertEqual(self.price(draft(replacements=(("303", None),))),
-                         ("PURE_24K", "SHOP_BUY", 24, "7500.0000", "-5.750", "43125.00", "-44110.71"))
+        # 21K 10.000 (8.750 pure) → 18K 4.000 (3.000 pure): −5.750 × 7500 = −43,125; making 0 − 1,500 → −44,625.
+        self.assertEqual(self.price(draft(replacements=(("303", "0"),))),
+                         ("PURE_24K", "SHOP_BUY", 24, "7500.0000", "-5.750", "43125.00", "-44625.00"))
 
     def test_6_no_karat_is_derived_from_another(self):
         # A 21K-derived 24K price would be 6207 × 24/21 = 7093.71 (→ 40,788.86 here); the real quote is used.
@@ -584,27 +637,28 @@ class PricingRuleTests(ExchangeTestCase):
 
 
 class InventoryAndAccountingTests(ExchangeTestCase):
-    def test_inventory_moves_returned_to_pending_and_replacement_out(self):
+    def test_inventory_moves_returned_into_scrap_and_replacement_out(self):
+        # 032: the returned piece leaves sellable stock and enters Scrap at once (held for the manager).
         self.finalize(draft())
-        self.assertEqual(self.store.items["200"]["inventory_status"], "RETURNED_PENDING")
+        self.assertEqual(self.store.items["200"]["inventory_status"], "CONVERTED_TO_OLD_GOLD")
         self.assertEqual(self.store.items["300"]["inventory_status"], "SOLD")
         self.assertEqual(self.store.inventory_movements,
-                         [("200", "EXCHANGE_RETURN_IN", "SOLD", "RETURNED_PENDING"),
+                         [("200", "EXCHANGE_RETURN_IN", "SOLD", "CONVERTED_TO_OLD_GOLD"),
                           ("300", "EXCHANGE_REPLACEMENT_OUT", "IN_STOCK", "SOLD")])
 
     def test_original_invoice_is_not_changed_and_gets_one_event(self):
         before = copy.deepcopy((self.store.invoices, self.store.lines))
-        result = self.finalize(draft(replacements=(("301", "200"),), payments=(cash("12864.00"),)))
+        result = self.finalize(draft(replacements=(("301", "200"),), payments=(cash("13365.00"),)))
         self.assertEqual((self.store.invoices, self.store.lines), before)
         self.assertEqual(len(self.store.invoices), 2)                       # no new invoice: never a sale
         (event,) = self.store.events
         self.assertEqual((event["invoice_id"], event["event_type"]), ("500", "EXCHANGED"))
-        self.assertEqual(event["details"]["signed_amount"], D("12864.00"))
+        self.assertEqual(event["details"]["signed_amount"], D("13365.00"))
         self.assertEqual(event["details"]["lifecycle_id"], result["lifecycle_id"])
         self.assertEqual(self.store.audit[0][1], "INVOICE_EXCHANGED")
 
     def test_price_snapshot_is_stored(self):
-        self.finalize(draft(replacements=(("301", "200"),), payments=(cash("12864.00"),)))
+        self.finalize(draft(replacements=(("301", "200"),), payments=(cash("13365.00"),)))
         snapshot = self.store.lifecycle[0]["price_snapshot"]
         self.assertEqual((snapshot["price_token"], snapshot["source_code"], snapshot["valuation_basis"],
                           snapshot["price_karat"], snapshot["price_basis"], snapshot["price_per_gram"]),
@@ -612,14 +666,14 @@ class InventoryAndAccountingTests(ExchangeTestCase):
         self.assertEqual([p["karat"] for p in snapshot["prices"]], [18, 21, 24])
 
     def test_customer_account_only_when_chosen(self):
-        d = draft(replacements=(("301", "200"),), payments=(cash("10000.00"),), account="2864.00")
+        d = draft(replacements=(("301", "200"),), payments=(cash("10000.00"),), account="3365.00")
         self.finalize(d)
-        self.assertEqual(self.store.ledger, [(12, "EXCHANGE_BALANCE_DUE", D("2864.00"), "INVOICE_LIFECYCLE")])
-        self.assertEqual(self.store.lifecycle[0]["account_signed"], D("2864.00"))
+        self.assertEqual(self.store.ledger, [(12, "EXCHANGE_BALANCE_DUE", D("3365.00"), "INVOICE_LIFECYCLE")])
+        self.assertEqual(self.store.lifecycle[0]["account_signed"], D("3365.00"))
 
     def test_shop_owes_can_go_to_the_customer_account(self):
-        self.finalize(draft(replacements=(("302", None),), account="12714.00"))
-        self.assertEqual(self.store.ledger, [(12, "EXCHANGE_CREDIT", D("-12714.00"), "INVOICE_LIFECYCLE")])
+        self.finalize(draft(replacements=(("302", "150"),), account="12715.00"))
+        self.assertEqual(self.store.ledger, [(12, "EXCHANGE_CREDIT", D("-12715.00"), "INVOICE_LIFECYCLE")])
         self.assertEqual(self.store.cash_movements, [])
 
     def test_account_needs_a_customer(self):
@@ -628,10 +682,10 @@ class InventoryAndAccountingTests(ExchangeTestCase):
                            draft(returned=("7",), replacements=(("308", "0"),), account="12464.00", invoice="501"))
 
     def test_bank_leg_posts_to_bank_ledger(self):
-        d = draft(replacements=(("301", "200"),), payments=(cash("12864.00", method="INSTAPAY", account="7"),))
+        d = draft(replacements=(("301", "200"),), payments=(cash("13365.00", method="INSTAPAY", account="7"),))
         self.finalize(d)
         self.assertEqual((self.store.bank_movements[0]["account"], self.store.bank_movements[0]["delta"]),
-                         (7, D("12864.00")))
+                         (7, D("13365.00")))
         self.assertEqual(self.store.cash_movements, [])
 
     def test_amount_must_match_exactly(self):
@@ -644,16 +698,19 @@ class InventoryAndAccountingTests(ExchangeTestCase):
 
     def test_wrong_direction_is_refused(self):
         self.assertRefused("PAYMENT_DIRECTION",
-                           draft(replacements=(("301", "200"),), payments=(cash("12864.00", direction="OUT"),)))
+                           draft(replacements=(("301", "200"),), payments=(cash("13365.00", direction="OUT"),)))
 
-    def test_replacement_making_required_only_for_more_gold(self):
-        preview = self.service.preview(draft(replacements=(("301", None),)))
-        self.assertTrue(preview["making_missing"])
-        self.assertEqual(preview["blocking_problems"][0]["code"], "REPLACEMENT_MAKING_REQUIRED")
-        self.assertEqual(preview["gold_amount"], "12464.00")                # the gold part is still shown
+    def test_replacement_making_is_required_in_every_direction(self):
+        # Owner rule 2026-10-03: never invented — more, less or equal gold, the replacement's making is typed.
+        for replacement in ("301", "302", "300"):
+            with self.subTest(replacement):
+                preview = self.service.preview(draft(replacements=((replacement, None),)))
+                self.assertTrue(preview["making_missing"])
+                self.assertEqual(preview["blocking_problems"][0]["code"], "REPLACEMENT_MAKING_REQUIRED")
+                self.assertEqual((preview["signed_amount"], preview["direction_text"]), (None, "الحساب غير مكتمل"))
+        self.assertEqual(self.service.preview(draft(replacements=(("301", None),)))["gold_amount"], "12464.00")
         self.assertRefused("REPLACEMENT_MAKING_REQUIRED", draft(replacements=(("301", None),),
-                                                                payments=(cash("12464.00"),)))
-        self.assertFalse(self.service.preview(draft(replacements=(("302", None),)))["making_required"])
+                                                                payments=(cash("12465.00"),)))
 
     def test_making_out_of_range_opens_a_review_but_does_not_block(self):
         d = draft(replacements=(("301", "300"),))
@@ -715,17 +772,17 @@ class RollbackTests(ExchangeTestCase):
                 LifecycleRepo.fail_on = step
                 before = self.store.tables()
                 with self.assertRaises(RuntimeError):
-                    self.finalize(draft(replacements=(("301", "200"),), payments=(cash("12864.00"),)))
+                    self.finalize(draft(replacements=(("301", "200"),), payments=(cash("13365.00"),)))
                 self.assertEqual(self.store.tables(), before)
                 self.assertEqual(self.store.items["200"]["inventory_status"], "SOLD")
                 self.assertEqual(self.store.items["301"]["inventory_status"], "IN_STOCK")
         LifecycleRepo.fail_on = None
-        self.finalize(draft(replacements=(("301", "200"),), payments=(cash("12864.00"),)))
+        self.finalize(draft(replacements=(("301", "200"),), payments=(cash("13365.00"),)))
         self.assertEqual(len(self.store.lifecycle), 1)
 
     def test_preview_writes_nothing(self):
         before = self.store.tables()
-        self.service.preview(draft(replacements=(("301", "200"),), payments=(cash("12864.00"),)))
+        self.service.preview(draft(replacements=(("301", "200"),), payments=(cash("13365.00"),)))
         self.assertEqual(self.store.tables(), before)
 
 
@@ -748,7 +805,7 @@ class ReplacementSearchTests(ExchangeTestCase):
             self.service.search_replacements()
 
     def test_a_searched_piece_is_recorded_as_search(self):
-        d = ExchangeDraft("500", ("1",), (ReplacementInput("300", None, "SEARCH"),), (), None)
+        d = ExchangeDraft("500", ("1",), (ReplacementInput("300", "150", "SEARCH"),), (), None)
         self.finalize(d)
         self.assertEqual(self.store.lifecycle_lines[-1]["inventory_item_id"], "300")
 
@@ -777,7 +834,7 @@ class ReplacementSourceTests(ExchangeTestCase):
         for source in ("SCAN", "SEARCH"):
             with self.subTest(source=source):
                 self.setUp()
-                self.run_exchange(ReplacementInput("300", None, source))
+                self.run_exchange(ReplacementInput("300", "150", source))
                 line = self.store.lifecycle_lines[-1]
                 self.assertEqual((line["source"], line["inventory_item_id"]), (source, "300"))
                 self.assertEqual(self.store.items["300"]["inventory_status"], "SOLD")
@@ -817,9 +874,12 @@ class ReplacementSourceTests(ExchangeTestCase):
 
     def test_f7_replacement_takes_exact_weight_from_the_old_gold_stock(self):
         self.run_exchange(from_old_gold("12.000"))
-        self.assertEqual(self.store.old_gold[1], D("8.000"))               # 20.000 − 12.000 exactly
-        (movement,) = self.store.old_gold_movements
-        self.assertEqual((movement["code"], movement["delta"]), ("EXCHANGE_REPLACEMENT_OUT", D("-12.000")))
+        # 20.000 − 12.000 F7 exactly, + the returned 21K 10.000 g piece now in Scrap (HELD, not available).
+        self.assertEqual(self.store.old_gold[1], D("18.000"))
+        self.assertEqual(self.store.old_gold[1] - self.store.held(1), D("8.000"))         # available
+        replacement_out, returned_in = self.store.old_gold_movements
+        self.assertEqual((replacement_out["code"], replacement_out["delta"]), ("EXCHANGE_REPLACEMENT_OUT", D("-12.000")))
+        self.assertEqual((returned_in["code"], returned_in["delta"]), ("EXCHANGE_RETURN_SCRAP_IN", D("10.000")))
         line = self.store.lifecycle_lines[-1]
         self.assertEqual((line["source"], line["inventory_item_id"], line["old_gold_movement_id"]),
                          ("OLD_GOLD_STOCK", None, "1"))
@@ -831,10 +891,10 @@ class ReplacementSourceTests(ExchangeTestCase):
         problems = [p["code"] for p in self.service.preview(d)["blocking_problems"]]
         self.assertEqual(problems[0], "OLD_GOLD_STOCK_INSUFFICIENT")
         self.assertRefused("OLD_GOLD_STOCK_INSUFFICIENT", d)
-        # The returned piece becomes RETURNED_PENDING inventory — never old-gold stock for the same exchange.
+        # The returned piece enters Scrap HELD — never consumable, not even by the same exchange's F7.
         self.run_exchange(from_old_gold("20.000"))
-        self.assertEqual((self.store.old_gold[1], self.store.items["200"]["inventory_status"]),
-                         (D("0.000"), "RETURNED_PENDING"))
+        self.assertEqual((self.store.old_gold[1], self.store.held(1), self.store.items["200"]["inventory_status"]),
+                         (D("10.000"), D("10.000"), "CONVERTED_TO_OLD_GOLD"))
 
     def test_f7_needs_a_description_like_billing(self):
         self.assertRefused("DESCRIPTION_REQUIRED", ExchangeDraft("500", ("1",), (from_old_gold(description=""),)))
@@ -846,7 +906,8 @@ class ReplacementSourceTests(ExchangeTestCase):
         d = ExchangeDraft("500", ("1",), (manual("5.000"), manual("5.000")))
         preview = self.service.preview(d)
         self.assertEqual(preview["replacement_pure_grams"], "8.750")
-        self.finalize(ExchangeDraft("500", ("1",), (manual("5.000"), manual("5.000"))))
+        # Same gold (10 g 21K); making 0 − the original 1,500 → 1,500 للعميل.
+        self.finalize(ExchangeDraft("500", ("1",), (manual("5.000"), manual("5.000")), (cash("1500.00"),)))
         self.assertEqual(len(self.store.cases), 2)
 
     def test_every_source_feeds_the_same_calculation(self):
@@ -872,23 +933,24 @@ class SettlementBarTests(ExchangeTestCase):
         return vm
 
     def identified(self, item_id, weight, pure, making="0"):
+        # Making 0 on the replacement: the original 1,500 of line 1 is refunded inside the window.
         return {"inventory_item_id": item_id, "identified_by": "SCAN", "making": making, "item_name": "خاتم",
                 "karat": 21, "weight_grams": weight, "pure_grams": pure}
 
     def test_customer_owes_exposes_money_in(self):
         s = self.model(self.identified("301", "12.000", "10.500")).settlement
         self.assertEqual((s["direction"], s["resultLabel"], s["due"], s["needsMoney"], s["moneyLabel"]),
-                         ("CUSTOMER_OWES", "على العميل", "12,464.00 ج", True, "يستلم المحل"))
+                         ("CUSTOMER_OWES", "على العميل", "10,965.00 ج", True, "يستلم المحل"))
         self.assertEqual((s["accountLabel"], s["remainingText"], s["complete"]),
-                         ("على حساب العميل", "المتبقي 12,464.00 ج", False))
+                         ("على حساب العميل", "المتبقي 10,965.00 ج", False))
 
     def test_shop_owes_exposes_money_out(self):
         s = self.model(self.identified("302", "8.000", "7.000")).settlement
         self.assertEqual((s["resultLabel"], s["due"], s["moneyLabel"], s["accountLabel"]),
-                         ("للعميل", "12,714.00 ج", "يدفع المحل للعميل", "للعميل على حسابه"))
+                         ("للعميل", "13,915.00 ج", "يدفع المحل للعميل", "للعميل على حسابه"))
 
     def test_zero_shows_no_payment(self):
-        vm = self.model(self.identified("300", "10.000", "8.750"))
+        vm = self.model(self.identified("300", "10.000", "8.750", making="150"))
         self.assertEqual(vm.settlement, {"direction": "NONE", "resultLabel": "لا يوجد فرق مالي", "due": "",
                                          "needsMoney": False, "remainingText": "", "complete": True})
         self.assertTrue(vm.canFinalize)
@@ -902,8 +964,8 @@ class SettlementBarTests(ExchangeTestCase):
 
     def test_customer_account_is_explicit_and_must_complete_exactly(self):
         part = self.model(self.identified("301", "12.000", "10.500"), amount="10000")
-        self.assertEqual((part.settlement["remainingText"], part.canFinalize), ("المتبقي 2,464.00 ج", False))
-        full = self.model(self.identified("301", "12.000", "10.500"), amount="10000", account="2464")
+        self.assertEqual((part.settlement["remainingText"], part.canFinalize), ("المتبقي 965.00 ج", False))
+        full = self.model(self.identified("301", "12.000", "10.500"), amount="10000", account="965")
         self.assertEqual((full.settlement["remainingText"], full.canFinalize), ("التسوية مكتملة", True))
         over = self.model(self.identified("301", "12.000", "10.500"), amount="12465")
         self.assertEqual((over.settlement["complete"], over.canFinalize), (False, False))

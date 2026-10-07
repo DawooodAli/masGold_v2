@@ -18,19 +18,25 @@ an actual authoritative quote, never derived from another karat:
       delta = replacement_pure − returned_pure, valued at the actual 24K
       SHOP_SELL (delta > 0) or SHOP_BUY (delta < 0).
   delta = 0  → no gold difference, whatever the price did since the sale.
-Making, always on a pure-gold basis (M × 24/K per pure gram, weighted by pure
-weight), applied to the pure equivalent of the valued delta:
-  delta > 0  → replacement making (typed) on the extra gold;
-  delta < 0  → the original invoice's historical making, only within
-               MAKING_REFUND_WINDOW_HOURS of the original finalize time;
-               missing historical making inside the window is refused.
+Making is INDEPENDENT of the gold difference (owner review 2026-10-03; migration 031):
+  returned making refund = the returned pieces' ORIGINAL invoice making (immutable line data),
+               only within MAKING_REFUND_WINDOW_HOURS of the original finalize time; missing
+               historical making inside the window is refused;
+  replacement making = Σ replacement weight × its typed making per gram (required for every
+               replacement — never invented; until typed the exchange is incomplete);
+  making difference = replacement making − returned making refund.
+raw = (±gold) + making difference; the final amount S is raw rounded to the nearest EGP 5 with
+Billing's round_to_egp5 (the rounding is stored).
 
 Signed result S: > 0 على العميل, < 0 للعميل, 0 لا يوجد فرق. S is settled by
 real money legs (direction-aware, posted to cash / bank in the same
 transaction) plus an optional explicit customer-account part; nothing else.
 Zero needs no payment and writes none.
 
-Returned piece: SOLD → RETURNED_PENDING (EXCHANGE_RETURN_IN), never IN_STOCK.
+Returned piece (032): SOLD → CONVERTED_TO_OLD_GOLD (EXCHANGE_RETURN_IN) and, in the same
+transaction, its exact karat and physical weight enter the COUNTED Scrap ledger
+(EXCHANGE_RETURN_SCRAP_IN), HELD (old_gold_holds) until the manager returns the same piece to
+stock or commits it to Scrap. Never sellable meanwhile; never outside both stock and Scrap.
 Replacement: IN_STOCK → SOLD (EXCHANGE_REPLACEMENT_OUT).
 Finalize is one transaction; lock order: actor → prices → original invoice →
 inventory items (ascending id) → customer → bank accounts.
@@ -38,6 +44,7 @@ inventory items (ascending id) → customer → bank accounts.
 from dataclasses import dataclass, field
 from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from services.number_text import normalize_digits
 import json
 import re
 
@@ -50,6 +57,8 @@ from services.invoice_service import (
     EGYPT_UTC_OFFSETS, IDENTIFICATION_METHODS, OUT_OF_RANGE, InvoiceService, invoice_transaction,
 )
 from services.invoice_service import REASONS as BILLING_REASONS      # the authoritative F5 reason list
+from services.invoice_service import round_to_egp5                    # the ONE EGP-5 rounding rule
+from services.old_gold_availability import held_grams, shortage_message
 
 
 EXCHANGE_PERMISSION = "INVOICE_EXCHANGE"
@@ -63,7 +72,8 @@ ZERO = Decimal("0.00")
 
 CUSTOMER_OWES, SHOP_OWES, NO_DIFFERENCE = "CUSTOMER_OWES", "SHOP_OWES", "NONE"
 DIRECTION_TEXT = {CUSTOMER_OWES: "على العميل", SHOP_OWES: "للعميل", NO_DIFFERENCE: "لا يوجد فرق"}
-RETURNED_PENDING_TEXT = "القطعة المرتجعة بانتظار الفحص"
+SCRAP_STATUS = "CONVERTED_TO_OLD_GOLD"          # the returned piece's status while it is in Scrap
+RETURNED_PENDING_TEXT = "القطعة المرتجعة تدخل الكسر وتنتظر قرار المدير"
 REFUND_TEXT = "استرداد مصنعية من الفاتورة الأصلية"
 REFUND_EXPIRED_TEXT = "انتهت مدة استرداد المصنعية"
 HISTORICAL_MAKING_MISSING_TEXT = "تعذر حساب مصنعية الفاتورة الأصلية بدقة"
@@ -100,8 +110,7 @@ class ReplacementInput:
     SCAN / SEARCH  an identified stock piece (inventory_item_id);
     MANUAL (F5)    no inventory identity: item type, karat, weight, reason (Billing's REASONS);
     OLD_GOLD_STOCK (F7) weight taken from the COUNTED old-gold stock of a karat.
-    making_per_gram (ج/جرام of the piece's own weight) is typed by the employee and used only when
-    the customer receives more pure gold."""
+    making_per_gram (ج/جرام of the piece's own weight) is typed by the employee for every replacement."""
     inventory_item_id: str | None = None
     making_per_gram: str | None = None
     identified_by: str = "SCAN"
@@ -175,8 +184,18 @@ class _Result:
     making_refund: Decimal
     refund_eligible: bool
     window_open: bool
-    signed_amount: Decimal
-    making_missing: bool = False           # delta > 0 and a replacement's making is not typed yet
+    signed_amount: Decimal                 # the FINAL rounded amount (meaningless while incomplete)
+    making_missing: bool = False           # a replacement's making is not typed yet → incomplete
+    raw_amount: Decimal = ZERO             # (±gold) + making_charge − making_refund, exact
+    rounding_adjustment: Decimal = ZERO    # signed_amount − raw_amount (|x| < 5)
+
+    @property
+    def making_difference(self):
+        return self.making_charge - self.making_refund
+
+    @property
+    def complete(self):
+        return not self.making_missing
 
     @property
     def direction(self):
@@ -213,7 +232,7 @@ def _is_blank_or_zero(text):
 
 def _decimal(text, code, message):
     try:
-        value = Decimal(str(text).strip())
+        value = Decimal(normalize_digits(str(text)).strip())
     except (InvalidOperation, ValueError):
         raise ExchangeError(code, message) from None
     if not value.is_finite():
@@ -222,8 +241,12 @@ def _decimal(text, code, message):
 
 
 def calculate(returned, replacements, *, price_set, within_window):
-    """The deterministic exchange result. `returned` pieces carry their original line's
-    historical making_total (None when not stored); `replacements` carry the typed making."""
+    """The deterministic exchange result. Gold and making are independent components:
+    gold   = the delta valued at the actual quote (SHOP_SELL when the customer receives more gold,
+             SHOP_BUY when less), as before;
+    making = replacement making (Σ weight × typed making/gram) − the returned pieces' ORIGINAL invoice
+             making (refunded only inside the window). Never derived from the gold delta.
+    final  = raw rounded to the nearest EGP 5 (Billing's rule)."""
     returned_pure = sum((p.pure for p in returned), Decimal("0.000"))
     replacement_pure = sum((p.pure for p in replacements), Decimal("0.000"))
     pure_delta = replacement_pure - returned_pure
@@ -232,13 +255,10 @@ def calculate(returned, replacements, *, price_set, within_window):
         valuation, (karat,) = SAME_KARAT, karats
         delta = (sum((p.weight for p in replacements), Decimal("0.000"))
                  - sum((p.weight for p in returned), Decimal("0.000")))
-        # The making below works on pure grams: the pure equivalent of the actual-weight delta.
-        pure_of_delta = delta * Decimal(karat) / Decimal(PURE_KARAT)
     else:
-        valuation, karat, delta, pure_of_delta = PURE_24K, PURE_KARAT, pure_delta, pure_delta
-    basis = price = price_karat = rate = None
-    gold = charge = refund = ZERO
-    eligible = missing = False
+        valuation, karat, delta = PURE_24K, PURE_KARAT, pure_delta
+    basis = price = price_karat = None
+    gold = ZERO
     if delta != 0:
         # The actual authoritative quote of that karat; never derived from another karat.
         quote = next((p for p in price_set.prices.values() if int(p.karat) == karat), None)
@@ -248,23 +268,31 @@ def calculate(returned, replacements, *, price_set, within_window):
         price = Decimal(quote.shop_sell_price_per_gram if delta > 0 else quote.shop_buy_price_per_gram)
         price_karat = karat
         gold = (abs(delta) * price).quantize(MONEY, rounding=ROUND_HALF_UP)
-    if delta > 0:
-        missing = any(p.making_per_gram is None for p in replacements)
-        if not missing:
-            total = sum((p.making_total for p in replacements), ZERO)
-            rate = (total / replacement_pure).quantize(RATE, rounding=ROUND_HALF_UP)
-            charge = (pure_of_delta * rate).quantize(MONEY, rounding=ROUND_HALF_UP)
-    elif delta < 0 and within_window:
+    # Returned making: the original invoice's own making of these pieces (never recomputed).
+    refund, eligible = ZERO, False
+    if within_window:
         if any(p.making_total is None for p in returned):
             raise ExchangeError("HISTORICAL_MAKING_MISSING", HISTORICAL_MAKING_MISSING_TEXT)
-        total = sum((p.making_total for p in returned), ZERO)
-        rate = (total / returned_pure).quantize(RATE, rounding=ROUND_HALF_UP)
-        refund = (abs(pure_of_delta) * rate).quantize(MONEY, rounding=ROUND_HALF_UP)
-        eligible = True
-    signed = gold + charge if delta > 0 else -(gold + refund) if delta < 0 else ZERO
+        refund = sum((p.making_total for p in returned), ZERO).quantize(MONEY, rounding=ROUND_HALF_UP)
+        eligible = refund > 0
+    # Replacement making: typed per piece, on the piece's own physical weight.
+    missing = any(p.making_per_gram is None for p in replacements)
+    charge = ZERO if missing else sum((p.making_total for p in replacements), ZERO).quantize(
+        MONEY, rounding=ROUND_HALF_UP)
+    rate = None
+    if not missing and replacements:
+        weight = sum((p.weight for p in replacements), Decimal("0.000"))
+        rate = (charge / weight).quantize(RATE, rounding=ROUND_HALF_UP) if weight > 0 else None
+    gold_signed = gold if delta > 0 else -gold if delta < 0 else ZERO
+    raw = gold_signed + charge - refund
+    if missing:
+        final = rounding = ZERO                           # incomplete: no final amount exists
+    else:
+        final = round_to_egp5(abs(raw)) * (1 if raw >= 0 else -1)
+        rounding = final - raw
     return _Result(tuple(returned), tuple(replacements), returned_pure, replacement_pure, pure_delta, valuation,
-                   delta, basis, price_karat, price, gold, rate, charge, refund, eligible, within_window, signed,
-                   missing)
+                   delta, basis, price_karat, price, gold, rate, charge, refund, eligible, within_window, final,
+                   missing, raw, rounding)
 
 
 MAKING_REQUIRED_TEXT = "اكتب مصنعية القطعة البديلة (ج/جرام)."
@@ -312,6 +340,11 @@ def exchange_summary(row):
 INSPECTION_PENDING_TEXT = "القطعة المرتجعة بانتظار مراجعة المدير"
 RESTOCKED_TEXT = "أعيدت القطعة إلى المخزون بنفس الباركود"
 CONVERTED_TEXT = "تم تحويل القطعة المرتجعة إلى الكسر"
+# An Exchange piece held in Scrap (032): where it is and what the manager decided.
+SCRAP_HELD_TEXT = "محوّلة إلى الكسر — معلّقة لقرار المدير"
+SCRAP_RESTOCKED_TEXT = "تمت إعادة القطعة من الكسر إلى المخزون بنفس الباركود"
+SCRAP_COMMITTED_TEXT = "تم تثبيت القطعة داخل الكسر"
+SCRAP_REVERSED_TEXT = "عُكس الاستبدال وخرجت القطعة من الكسر"
 
 
 def inspection_review(*, lifecycle_line_id, lifecycle_id, invoice_id, source_invoice_line_id, inventory_item_id,
@@ -319,7 +352,7 @@ def inspection_review(*, lifecycle_line_id, lifecycle_id, invoice_id, source_inv
     """The RETURNED_ITEM_INSPECTION review of one returned piece (exchange finalize and the backfill)."""
     code = exchange_code(lifecycle_id)
     return {"lifecycle_line_id": lifecycle_line_id, "invoice_id": invoice_id,
-            "summary": f"فحص قطعة مرتجعة — استبدال {code}" + (f" — الباركود المسجل {barcode}" if barcode else ""),
+            "summary": f"قطعة مرتجعة من الاستبدال {code} — محوّلة إلى الكسر" + (f" — الباركود المسجل {barcode}" if barcode else ""),
             "details": {"lifecycle_id": str(lifecycle_id), "exchange_code": code,
                         "lifecycle_line_id": str(lifecycle_line_id),
                         "source_invoice_line_id": None if source_invoice_line_id is None else str(source_invoice_line_id),
@@ -331,6 +364,13 @@ def returned_disposition(line):
     """What happened to one returned piece after the exchange (History), from its inspection review."""
     barcode = line.get("stored_barcode") or line.get("barcode_snapshot")
     status, resolution = line.get("inspection_status"), line.get("inspection_resolution")
+    hold = line.get("hold_status")
+    if hold:                                            # 032: the piece entered Scrap at the exchange
+        at = line.get("inspection_resolved_at")
+        text = {"HELD": SCRAP_HELD_TEXT, "RETURNED_TO_STOCK": SCRAP_RESTOCKED_TEXT,
+                "COMMITTED": SCRAP_COMMITTED_TEXT, "REVERSED": SCRAP_REVERSED_TEXT}[hold]
+        return {"code": "PENDING" if hold == "HELD" else resolution or hold, "text": text, "barcode": barcode,
+                "by": line.get("inspection_resolved_by") or "", "at": None if at is None else at.isoformat(sep=" ")}
     if status is None:
         return {"code": "PENDING", "text": RETURNED_PENDING_TEXT, "barcode": barcode, "by": "", "at": None}
     if status == "OPEN":
@@ -342,6 +382,7 @@ def returned_disposition(line):
 
 
 def _making_problems(result):
+    """The exchange is incomplete until every replacement's making is typed: nothing can be saved."""
     return [ExchangeError("REPLACEMENT_MAKING_REQUIRED", MAKING_REQUIRED_TEXT)] if result.making_missing else []
 
 
@@ -556,15 +597,17 @@ class ExchangeService:
         return InvoiceService._old_gold_shortages(described, balances)
 
     @staticmethod
-    def _shortage_error(shortages, karats):
+    def _shortage_error(shortages, karats, held=None):
         karat_id, available, grams = shortages[0]
         return ExchangeError("OLD_GOLD_STOCK_INSUFFICIENT",
-                             f"رصيد الكسر عيار {(karats or {}).get(karat_id, karat_id)} غير كافٍ: "
-                             f"المتاح {available:,.3f} جرام والمطلوب {grams:,.3f} جرام.")
+                             shortage_message((karats or {}).get(karat_id, karat_id), grams, available,
+                                              (held or {}).get(karat_id)))
 
     def _settlement(self, draft, result, customer_id):
         """(money legs as (PaymentInput, direction, amount), received, paid, account_signed, problems)."""
         problems, legs = [], []
+        if result.making_missing:
+            return [], ZERO, ZERO, ZERO, []         # incomplete: nothing to settle (blocked by making)
         signed = result.signed_amount
         direction = "IN" if signed > 0 else "OUT"
         account = ZERO
@@ -608,8 +651,6 @@ class ExchangeService:
     @staticmethod
     def _making_review(result, ranges):
         """Replacement making outside its category range → one management review (never blocks)."""
-        if result.valued_delta <= 0:
-            return []
         out = []
         for piece in result.replacements:
             row = ranges.get(piece.category_id) if piece.category_id is not None else None
@@ -651,23 +692,31 @@ class ExchangeService:
             "price_karat": result.price_karat,
             "price_per_gram": _money(result.price_per_gram),
             "gold_amount": _money(result.gold_amount),
-            "making_rate_per_pure_gram": _money(result.making_rate),
-            "making_charge": _money(result.making_charge),
-            "making_required": result.valued_delta > 0,
+            "gold_signed": _money(result.gold_amount if result.valued_delta > 0
+                                  else -result.gold_amount if result.valued_delta < 0 else ZERO),
+            "making_rate_per_gram": _money(result.making_rate),
+            "making_charge": None if result.making_missing else _money(result.making_charge),
+            "making_required": True,
             "making_missing": result.making_missing,
             "making_refund": _money(result.making_refund),
             "making_refund_applies": result.refund_eligible,
             "making_refund_text": REFUND_TEXT if result.refund_eligible else "",
+            "making_difference": None if result.making_missing else _money(result.making_difference),
             # Shown only when a refund would have applied but the window has passed.
-            "making_refund_expired": result.valued_delta < 0 and not within,
-            "making_refund_expired_text": REFUND_EXPIRED_TEXT if result.valued_delta < 0 and not within else "",
+            "making_refund_expired": not within,
+            "making_refund_expired_text": "" if within else REFUND_EXPIRED_TEXT,
+            "complete": result.complete,
+            "raw_amount": None if result.making_missing else _money(result.raw_amount),
+            "rounding_adjustment": None if result.making_missing else _money(result.rounding_adjustment),
             "refund_window_hours": MAKING_REFUND_WINDOW_HOURS,
             "refund_window_ends_at": (invoice["finalized_at"] + timedelta(hours=MAKING_REFUND_WINDOW_HOURS)).isoformat(sep=" "),
-            "signed_amount": _money(result.signed_amount),
-            "amount": _money(abs(result.signed_amount)),
-            "direction": result.direction,
-            "direction_text": DIRECTION_TEXT[result.direction],
-            "money_direction": "IN" if result.signed_amount > 0 else "OUT" if result.signed_amount < 0 else None,
+            # No final amount exists while the exchange is incomplete (never an invented number).
+            "signed_amount": None if result.making_missing else _money(result.signed_amount),
+            "amount": None if result.making_missing else _money(abs(result.signed_amount)),
+            "direction": None if result.making_missing else result.direction,
+            "direction_text": "الحساب غير مكتمل" if result.making_missing else DIRECTION_TEXT[result.direction],
+            "money_direction": None if result.making_missing else (
+                "IN" if result.signed_amount > 0 else "OUT" if result.signed_amount < 0 else None),
             "returned_pending_text": RETURNED_PENDING_TEXT,
             "price_token": price_set.price_token, "price_status": price_set.status,
             "requires_price_acknowledgement": price_set.requires_acknowledgement,
@@ -714,7 +763,10 @@ class ExchangeService:
                 "item_types": [{"id": int(r["id"]), "name": r["name"]} for r in lists["item_types"]],
                 "factories": [{"id": int(r["id"]), "name": r["name"]} for r in lists["factories"]],
                 "old_gold_stock": [{"karat_id": int(r["karat_id"]), "karat": int(r["karat_value"]),
-                                    "grams": _money(Decimal(str(r["balance_grams"])))} for r in balances],
+                                    "grams": _money(Decimal(str(r["balance_grams"]))),
+                                    # 032: physical / held explain an available lower than the top bar.
+                                    "physical": str(r.get("physical_grams", r["balance_grams"])),
+                                    "held": str(r.get("held_grams") or 0)} for r in balances],
                 "reasons": [{"code": code, "text": text} for code, text in BILLING_REASONS.items()],
                 "bank_accounts": [{"id": str(r["id"]), "name": r["name"],
                                    "account_type": r.get("account_type") or "BANK"} for r in accounts],
@@ -801,10 +853,12 @@ class ExchangeService:
             legs, received, paid, account, problems = self._settlement(draft, result, invoice.get("customer_id"))
             problems = _making_problems(result) + problems
             if any(p.identified_by == OLD_GOLD_STOCK for p in replacements):
-                balances = {int(r["karat_id"]): Decimal(str(r["balance_grams"])) for r in invoices.old_gold_balances()}
+                stock_rows = invoices.old_gold_balances()
+                balances = {int(r["karat_id"]): Decimal(str(r["balance_grams"])) for r in stock_rows}
+                held = {int(r["karat_id"]): Decimal(str(r.get("held_grams") or 0)) for r in stock_rows}
                 shortages = self._old_gold_shortages(described, balances)
                 if shortages:
-                    problems.insert(0, self._shortage_error(shortages, karats))
+                    problems.insert(0, self._shortage_error(shortages, karats, held))
             problems += InvoiceService._payment_accounts(
                 invoices, [(payment, None) for payment, _, _ in legs])[3]
             return invoice, now, price_set, result, ranges, (received, paid, account), problems
@@ -856,7 +910,8 @@ class ExchangeService:
                         for karat_id in sorted({p.karat_id for p in replacements if p.identified_by == OLD_GOLD_STOCK})}
             shortages = self._old_gold_shortages(described, balances)
             if shortages:
-                raise self._shortage_error(shortages, karats)
+                raise self._shortage_error(shortages, karats,
+                                           {k: held_grams(invoices, k) for k, _, _ in shortages})
             result = calculate(returned, replacements, price_set=price_set,
                                within_window=self._within_window(invoice, now))
             legs, received, paid, account, problems = self._settlement(draft, result, invoice.get("customer_id"))
@@ -927,22 +982,40 @@ class ExchangeService:
                             weight_grams=piece.weight, size=piece.size, reason_code=piece.reason_code,
                             reason=REASONS[piece.reason_code], notes=piece.notes, created_by_user_id=actor.user_id,
                             salesperson_employee_id=actor.employee_id, sold_at=now))
-            review_ids = []
+            review_ids, hold_ids = [], []
+            for karat_id in sorted({p.karat_id for p in returned} - set(balances)):
+                invoices.lock_old_gold_balance(karat_id)        # the Scrap ledger + holds this piece enters
             for piece in returned:
-                lifecycle.mark_item_returned_pending(inventory_item_id=piece.inventory_item_id,
-                                                     updated_by_user_id=actor.user_id)
+                item = items[piece.inventory_item_id]
+                weight = Decimal(str(item["weight_grams"]))     # the piece's actual physical weight
+                barcode = item.get("barcode_value") or piece.barcode
+                # The piece leaves sellable stock and enters Scrap at once: never in neither, never in both.
+                lifecycle.mark_item_returned_to_scrap(inventory_item_id=piece.inventory_item_id,
+                                                      updated_by_user_id=actor.user_id)
                 lifecycle.add_inventory_movement(
-                    item=items[piece.inventory_item_id], movement_code="EXCHANGE_RETURN_IN", from_status="SOLD",
-                    to_status="RETURNED_PENDING", lifecycle_id=lifecycle_id, performed_by_user_id=actor.user_id,
+                    item=item, movement_code="EXCHANGE_RETURN_IN", from_status="SOLD",
+                    to_status=SCRAP_STATUS, lifecycle_id=lifecycle_id, performed_by_user_id=actor.user_id,
                     performed_by_employee_id=actor.employee_id)
-                # Exactly one manager inspection per returned piece (UNIQUE on the lifecycle line).
-                review_ids.append(lifecycle.open_returned_item_inspection(
-                    **inspection_review(lifecycle_line_id=returned_line_ids[piece.inventory_item_id],
+                in_movement_id = lifecycle.add_returned_scrap_in(
+                    karat_id=piece.karat_id, weight_grams=weight, inventory_item_id=piece.inventory_item_id,
+                    lifecycle_id=lifecycle_id, invoice_id=invoice["invoice_id"],
+                    customer_id=invoice.get("customer_id"), created_by_user_id=actor.user_id,
+                    employee_id=actor.employee_id,
+                    notes=f"قطعة مرتجعة من الاستبدال {code} — الباركود {barcode or '—'}")
+                # Exactly one manager review per returned piece (UNIQUE on the lifecycle line).
+                line_id = returned_line_ids[piece.inventory_item_id]
+                review_id = lifecycle.open_returned_item_inspection(
+                    **inspection_review(lifecycle_line_id=line_id,
                                         lifecycle_id=lifecycle_id, invoice_id=invoice["invoice_id"],
                                         source_invoice_line_id=piece.source_line_id,
-                                        inventory_item_id=piece.inventory_item_id,
-                                        barcode=items[piece.inventory_item_id].get("barcode_value") or piece.barcode,
-                                        item_name=piece.item_name, karat=piece.karat, weight=piece.weight),
+                                        inventory_item_id=piece.inventory_item_id, barcode=barcode,
+                                        item_name=piece.item_name, karat=piece.karat, weight=weight),
+                    created_by_user_id=actor.user_id)
+                review_ids.append(review_id)
+                # The credited weight is HELD (not consumable) until the manager decides.
+                hold_ids.append(lifecycle.insert_scrap_hold(
+                    review_id=review_id, lifecycle_line_id=line_id, inventory_item_id=piece.inventory_item_id,
+                    karat_id=piece.karat_id, weight_grams=weight, in_movement_id=in_movement_id,
                     created_by_user_id=actor.user_id))
             for piece in replacements:
                 if piece.described:
@@ -983,6 +1056,7 @@ class ExchangeService:
                     created_by_user_id=actor.user_id)
             event = {"lifecycle_id": lifecycle_id, "exchange_code": code, "signed_amount": result.signed_amount,
                      "unidentified_case_ids": case_ids, "inspection_review_ids": review_ids,
+                     "scrap_hold_ids": hold_ids,
                      "pure_delta_grams": result.pure_delta, "valued_delta_grams": result.valued_delta,
                      "valuation_basis": result.valuation_basis, "direction": result.direction}
             invoices.insert_event(invoice_id=invoice["invoice_id"], event_type="EXCHANGED",

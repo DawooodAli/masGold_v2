@@ -15,10 +15,20 @@ class InventoryRepository(BaseRepository):
         self,
         search: str = "",
         limit: int = 500,
+        karat_id: int | None = None,
+        item_type_id: int | None = None,
     ) -> list[dict]:
 
         search = (search or "").strip()
         like = f"%{search}%"
+        # Karat / item-type filters combine with the search (and with each other).
+        extra, extra_params = "", []
+        if karat_id is not None:
+            extra += " AND ii.karat_id = %s"
+            extra_params.append(karat_id)
+        if item_type_id is not None:
+            extra += " AND ii.item_type_id = %s"
+            extra_params.append(item_type_id)
 
         return self._fetch_all(
             """
@@ -73,7 +83,7 @@ class InventoryRepository(BaseRepository):
                 AND ib.barcode_status = 'ACTIVE'
 
             WHERE
-                {current}
+                {current}{extra}
 
                 AND (
                     %s = ''
@@ -107,8 +117,9 @@ class InventoryRepository(BaseRepository):
                 ii.id DESC
 
             LIMIT %s
-            """.format(current=CURRENT_STOCK),
+            """.format(current=CURRENT_STOCK, extra=extra),
             (
+                *extra_params,
                 search,
                 like,
                 like,
@@ -289,6 +300,69 @@ class InventoryRepository(BaseRepository):
             "karats": self._fetch_all(
                 "SELECT id, karat_value, name FROM karats WHERE is_active = TRUE ORDER BY sort_order, karat_value"),
         }
+
+    def get_stock_weight_by_karat(self) -> list[dict]:
+        """Current stock grams per karat (MySQL SUM on DECIMAL); the 21K equivalent is derived from it."""
+        return self._fetch_all(
+            f"""
+            SELECT k.karat_value, SUM(ii.weight_grams) AS weight_grams
+            FROM inventory_items ii
+            INNER JOIN karats k ON k.id = ii.karat_id
+            WHERE {CURRENT_STOCK}
+            GROUP BY k.karat_value
+            """
+        )
+
+    # ========================================================
+    # EXACT IDENTITY — any status (traceability, never "current stock")
+    # ========================================================
+
+    def find_piece_identity(self, text: str) -> dict | None:
+        """One piece by its EXACT barcode (any barcode status) or its item number (#7 / 7), whatever its
+        inventory status. Read only: it is never listed, counted, sold or re-barcoded from here."""
+        text = (text or "").strip()
+        if not text:
+            return None
+        number = text[1:] if text.startswith("#") else text
+        item_id = int(number) if number.isdigit() and len(number) <= 18 else None
+        piece = self._fetch_one(
+            """
+            SELECT ii.id AS inventory_item_id, ii.inventory_status, ii.weight_grams, ii.size,
+                   ii.stock_classification, ii.karat_id, ii.item_type_id,
+                   it.name AS item_type_name, k.karat_value, f.code AS factory_code, f.name AS factory_name,
+                   c.code AS category_code,
+                   (SELECT b.barcode_value FROM inventory_barcodes b WHERE b.inventory_item_id = ii.id
+                     ORDER BY (b.barcode_status = 'ACTIVE') DESC, b.id DESC LIMIT 1) AS barcode_value
+            FROM inventory_items ii
+            INNER JOIN item_types it ON it.id = ii.item_type_id
+            INNER JOIN karats k ON k.id = ii.karat_id
+            LEFT JOIN factories f ON f.id = ii.factory_id
+            LEFT JOIN item_categories c ON c.id = ii.category_id
+            WHERE ii.id = (SELECT b.inventory_item_id FROM inventory_barcodes b WHERE b.barcode_value = %s
+                           ORDER BY b.id DESC LIMIT 1)
+               OR ii.id = %s
+            ORDER BY (ii.id = %s) ASC
+            LIMIT 1
+            """,
+            (text, item_id if item_id is not None else -1, item_id if item_id is not None else -1),
+        )
+        if piece is None:
+            return None
+        sale = self._fetch_one(
+            """
+            SELECT i.id AS invoice_id, i.invoice_number, COALESCE(i.finalized_at, i.invoice_date) AS invoice_date,
+                   s.customer_name_snapshot AS customer_name
+            FROM invoice_lines l
+            INNER JOIN invoices i ON i.id = l.invoice_id
+            LEFT JOIN invoice_customer_snapshots s ON s.invoice_id = i.id
+            WHERE l.inventory_item_id = %s AND l.line_type = 'SELL_INVENTORY'
+            ORDER BY i.id DESC
+            LIMIT 1
+            """,
+            (piece["inventory_item_id"],),
+        )
+        piece["sale"] = sale
+        return piece
 
     def get_active_employee_by_id(
             self,

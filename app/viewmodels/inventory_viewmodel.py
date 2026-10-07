@@ -10,6 +10,9 @@ from PySide6.QtCore import (
 from services.inventory_service import InventoryService
 from datetime import date, datetime
 
+STATUS_TEXT = {"IN_STOCK": "بالمخزون", "SOLD": "مباعة", "RETURNED_PENDING": "مرتجعة — قيد الفحص",
+               "CONVERTED_TO_OLD_GOLD": "محولة إلى كسر", "SCRAPPED": "مستبعدة", "REMOVED": "مستبعدة"}
+
 class InventoryViewModel(QObject):
 
     dataChanged = Signal()
@@ -20,16 +23,33 @@ class InventoryViewModel(QObject):
         super().__init__()
 
         self._service = InventoryService()
+        self._session = None
 
         self._items = []
         self._summary = {}
 
         self._search_text = ""
+        self._karat_filter, self._item_type_filter = 0, 0
+        self._history_piece = {}
         self._error_message = ""
         self._action_message = ""
         self._action_success = False
         self.refresh()
 
+
+    def attach_session(self, session):
+        """The logged-in session: stock entry is attributed to its actor and re-authorized (INVENTORY_MANAGE)
+        by the service on every write. An injected / stub service is left untouched."""
+        self._session = session
+        if isinstance(self._service, InventoryService):
+            self._service = InventoryService(session=session)
+        self.dataChanged.emit()
+
+    @Property(bool, notify=dataChanged)
+    def canManage(self):
+        """UI hint only (the add-stock controls); the service re-checks the database on every write."""
+        actor = self._session.current_actor() if self._session is not None else None
+        return bool(actor and InventoryService.MANAGE_PERMISSION in actor.permissions)
 
     # ========================================================
     # QML SAFE VALUES
@@ -236,6 +256,60 @@ class InventoryViewModel(QObject):
     def errorMessage(self):
         return self._error_message
 
+    @Property(str, notify=dataChanged)
+    def totalWeight21Text(self):
+        """إجمالي الوزن المكافئ عيار 21 (exact Decimal from the service; never a float sum)."""
+        value = self._summary.get("equivalent_21_weight_grams")
+        return format(Decimal(str(value or 0)).quantize(Decimal("0.001")), ",.3f")
+
+    @Property(int, notify=dataChanged)
+    def karatFilterId(self):
+        return self._karat_filter
+
+    @Property(int, notify=dataChanged)
+    def itemTypeFilterId(self):
+        return self._item_type_filter
+
+    @Slot(int, int)
+    def setFilters(self, karat_id, item_type_id):
+        self._karat_filter, self._item_type_filter = max(int(karat_id), 0), max(int(item_type_id), 0)
+        self.refresh()
+
+    @Property("QVariantMap", notify=dataChanged)
+    def historyPiece(self):
+        return self._history_piece
+
+    @Property(bool, notify=dataChanged)
+    def hasHistoryPiece(self):
+        return bool(self._history_piece)
+
+    def _find_history_piece(self):
+        """An exact barcode / item number that is no longer current stock (e.g. SOLD): shown read only
+        for traceability — never listed, counted, sold again or re-barcoded."""
+        self._history_piece = {}
+        if not self._search_text or self._items:
+            return
+        piece = self._service.find_piece(self._search_text) if hasattr(self._service, "find_piece") else None
+        if not piece or piece.get("inventory_status") == "IN_STOCK":
+            return
+        if self._karat_filter and int(piece.get("karat_id") or 0) != self._karat_filter:
+            return
+        if self._item_type_filter and int(piece.get("item_type_id") or 0) != self._item_type_filter:
+            return
+        sale = piece.get("sale") or {}
+        weight = Decimal(str(piece.get("weight_grams") or 0)).quantize(Decimal("0.001"))
+        self._history_piece = {
+            "itemNumber": f"#{piece['inventory_item_id']}", "barcode": piece.get("barcode_value") or "—",
+            "itemType": piece.get("item_type_name") or "—", "karat": str(piece.get("karat_value") or ""),
+            "weight": f"{weight:,.3f}", "factory": piece.get("factory_code") or piece.get("factory_name") or "—",
+            "category": piece.get("category_code") or "—",
+            "status": STATUS_TEXT.get(piece.get("inventory_status"), piece.get("inventory_status") or ""),
+            "invoiceId": str(sale["invoice_id"]) if sale.get("invoice_id") is not None else "",
+            "invoiceNumber": sale.get("invoice_number") or "",
+            "invoiceDate": self._qml_safe(sale.get("invoice_date")) or "",
+            "customer": sale.get("customer_name") or "—",
+        }
+
 
     # ========================================================
     # ACTIONS
@@ -267,9 +341,12 @@ class InventoryViewModel(QObject):
             self._items = self._qml_safe(
                 self._service.get_stock_items(
                     search=self._search_text,
+                    karat_id=self._karat_filter or None,
+                    item_type_id=self._item_type_filter or None,
                 )
                 or []
             )
+            self._find_history_piece()
 
             self._summary = self._qml_safe(
                 self._service.get_stock_summary()
@@ -337,8 +414,8 @@ class InventoryViewModel(QObject):
                     barcode=barcode,
                     notes=notes,
 
-                    # Login/session comes later.
-                    user_id=None,
+                    # No actor argument: the service attributes the write to the authenticated session user
+                    # and enforces INVENTORY_MANAGE itself (the screen never supplies an identity).
                 )
             )
 

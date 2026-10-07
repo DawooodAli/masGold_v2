@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from PySide6.QtCore import (
     QObject,
@@ -23,6 +23,7 @@ class OldGoldConversionViewModel(QObject):
         super().__init__(parent)
 
         self._service = OldGoldConversionService()
+        self._session = None
 
         self._balances = []
         self._action_message = ""
@@ -155,12 +156,41 @@ class OldGoldConversionViewModel(QObject):
 
         return 0.0
 
+    @Slot(int, result=str)
+    def scrapBreakdownForKarat(self, karat_id):
+        """Physical / held / available of one karat while something is HELD for a manager decision (032)."""
+        from services.old_gold_availability import breakdown_text
+        for row in self._balances:
+            try:
+                if int(row.get("karat_id")) != int(karat_id):
+                    continue
+                held = Decimal(str(row.get("held_grams") or 0))
+            except (TypeError, ValueError, InvalidOperation):
+                continue
+            if held <= 0:
+                return ""
+            return breakdown_text(row.get("physical_grams") or 0, held, row.get("balance_grams") or 0)
+        return ""
+
     @Slot()
     def clearActionMessage(self):
         self._set_action("", True)
 
+    def attach_session(self, session):
+        """The logged-in session: the service attributes the conversion to its authenticated actor and
+        re-authorizes it (OLD_GOLD_MANAGE) on every write. An injected / stub service is left untouched."""
+        self._session = session
+        if isinstance(self._service, OldGoldConversionService):
+            self._service = OldGoldConversionService(session=session)
+        self.busyChanged.emit()
+
+    @Property(bool, notify=busyChanged)
+    def canManage(self):
+        """UI hint only (the «محولة من الكسر» option); the service re-checks the database on every write."""
+        actor = self._session.current_actor() if self._session is not None else None
+        return bool(actor and OldGoldConversionService.MANAGE_PERMISSION in actor.permissions)
+
     @Slot(
-        int,
         int,
         int,
         int,
@@ -174,7 +204,6 @@ class OldGoldConversionViewModel(QObject):
     )
     def convertToNewStock(
         self,
-        employee_id,
         item_type_id,
         karat_id,
         category_id,
@@ -189,7 +218,6 @@ class OldGoldConversionViewModel(QObject):
 
         try:
             result = self._service.convert_to_new_stock(
-                employee_id=employee_id,
                 item_type_id=item_type_id,
                 karat_id=karat_id,
                 category_id=category_id,

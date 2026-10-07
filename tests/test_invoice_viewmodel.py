@@ -126,7 +126,7 @@ class Printer:
 
     def __init__(self):
         self.calls = []
-        self.outcome = ("901", True, "تم إرسال الفاتورة إلى الطابعة.")
+        self.outcome = ("901", True, "تم إرسال الفاتورة للطابعة.")
 
     def print_invoice(self, invoice_id, *, _expected_actor=None):
         from services.invoice_print_service import PrintOutcome
@@ -194,7 +194,7 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.assertEqual(self.vm.priceRows[1]["karat"], "21")
         self.assertEqual(self.vm.oldGoldDiscountPercent, "1.5")               # settings default, editable
         self.assertEqual([t["name"] for t in self.vm.itemTypes], ["خاتم", "دبلة"])
-        self.assertEqual(self.vm.oldGoldStock, [{"karatId": 1, "karat": "21", "grams": "120.500"}])
+        self.assertEqual(self.vm.oldGoldStock, [{"karatId": 1, "karat": "21", "grams": "120.500", "breakdown": ""}])  # nothing held
         self.vm.setOldGoldDiscountPercent("2")
         self.vm.newInvoice()
         self.assertEqual(self.vm.oldGoldDiscountPercent, "1.5")               # each invoice starts at the default
@@ -292,6 +292,33 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.assertTrue(self.vm.printSucceeded)
         self.assertFalse(self.vm.printFailed)
 
+    # ---- كسر فقط = حفظ فقط: old gold only has no print step; SALE and MIXED keep theirs
+    def old_gold_only_ready(self):
+        self.service.preview_result = preview(payment_direction="OUT", gold_value_total=None, gap_signed=None,
+                                              invoice_type="BUY", sale_total="0.00", old_gold_total="61138.95")
+        self.vm.setSalesperson("5")
+        self.vm.addOldGold(1, "10")
+        self.vm.setLegAmount(0, "61140")
+        self.preview_now()
+
+    def test_old_gold_only_is_not_printable_and_a_print_request_is_dropped(self):
+        self.old_gold_only_ready()
+        self.assertFalse(self.vm.printable)
+        self.assertTrue(self.vm.canFinalize)
+        self.vm.finalizeInvoice(False, False, True)                    # even an explicit print request
+        self.assertEqual(len([c for c in self.service.calls if c[0] == "finalize"]), 1)    # saved normally
+        self.assertEqual(self.printer.calls, [])                       # the print service is never called
+        self.assertFalse(self.vm.printBusy or self.vm.printFailed or self.vm.printSucceeded)
+
+    def test_sale_and_mixed_are_printable_and_still_print(self):
+        self.sale_ready()
+        self.assertTrue(self.vm.printable)
+        self.vm.addOldGold(1, "5")                                    # mixed
+        self.assertTrue(self.vm.printable)
+        self.preview_now()
+        self.vm.finalizeInvoice(False, False, True)
+        self.assertEqual(self.printer.calls, ["901"])
+
     def test_print_failure_leaves_the_invoice_finalized(self):
         self.printer.outcome = ("901", False, "الطابعة غير متصلة.")
         self.sale_ready()
@@ -299,13 +326,14 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.assertEqual(self.vm.success["invoiceNumber"], "26092501")   # the save itself succeeded
         self.assertTrue(self.vm.printFailed)
         self.assertEqual(self.vm.printMessage, "الطابعة غير متصلة.")
+        self.assertEqual(self.vm.printStatusText, "تعذر إرسال الفاتورة للطابعة. الطابعة غير متصلة.")
         self.assertEqual(len(self.printer.calls), 1)
 
     def test_retry_print_submits_another_job_for_the_same_invoice(self):
         self.printer.outcome = ("901", False, "لا يوجد ورق.")
         self.sale_ready()
         self.vm.finalizeInvoice(False, False, True)
-        self.printer.outcome = ("901", True, "تم إرسال الفاتورة إلى الطابعة.")
+        self.printer.outcome = ("901", True, "تم إرسال الفاتورة للطابعة.")
         finalizes = len([c for c in self.service.calls if c[0] == "finalize"])
         self.vm.retryPrint()
         self.assertEqual(self.printer.calls, ["901", "901"])             # one new print attempt only
@@ -486,19 +514,21 @@ class InvoiceViewModelTests(unittest.TestCase):
 
     # ---- customer account: its own direction, never part of the price
     def test_account_part_is_taken_out_of_the_single_payment_leg(self):
-        # Regression: المستلم 23,000 then على العميل 3,000 → المستلم 20,000 (never 23,000 + 3,000).
+        # Owner 2026-10-02: the unpaid remainder becomes على العميل automatically while typing the cash.
         self.sale_ready()
         self.vm.setInvoiceTotal("23000")
-        for typed, leg in (("3", "22997"), ("30", "22970"), ("300", "22700"), ("3000", "20000")):
-            self.vm.setAccountAmount(typed)                                     # typed digit by digit
-            self.assertEqual(self.vm.paymentAmount, leg)
+        for typed, account in (("2", "22998"), ("20", "22980"), ("200", "22800"), ("20000", "3000")):
+            self.vm.setLegAmount(0, typed)                                      # typed digit by digit
+            self.assertEqual(self.vm.accountAmount, account)
         self.assertEqual(self.vm.accountDirection, "CUSTOMER_OWES")              # follows the money (IN)
         self.assertEqual(self.vm.accountEffectText, "سيضاف على العميل: 3,000.00 ج")
         draft = self.vm._draft()
         self.assertEqual(([p.amount for p in draft.payments], draft.account_amount, draft.account_direction),
                          (["20000"], "3000", "CUSTOMER_OWES"))
-        self.vm.setAccountAmount("")                                            # back: all paid now
-        self.assertEqual(self.vm.paymentAmount, "23000")
+        self.vm.setAccountAmount("5000")                                        # automatic: never typed
+        self.assertEqual(self.vm.accountAmount, "3000")
+        self.vm.setLegAmount(0, "23000")                                        # back: all paid now
+        self.assertEqual(self.vm.accountAmount, "")
         self.vm.setAccountDirection("SHOP_OWES")                               # not offered on a sale
         self.assertEqual(self.vm.accountDirection, "CUSTOMER_OWES")
 
@@ -516,26 +546,18 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.sale_ready()
         self.vm.setInvoiceTotal("23000")
         self.vm.setLegAmount(0, "5000")
+        self.assertEqual(self.vm.accountAmount, "18000")                         # remainder → على العميل
         self.vm.addPaymentLeg()
-        self.assertEqual(self.vm.paymentLegs[1]["amount"], "18000")             # 23,000 − 5,000
-        self.vm.setAccountAmount("3000")                                        # 5,000 + 18,000 + 3,000 > 23,000
-        self.assertEqual(self.vm.accountAmount, "")                             # refused
+        self.assertEqual((self.vm.paymentLegs[1]["amount"], self.vm.accountAmount), ("18000", ""))
+        self.vm.setLegAmount(1, "19000")                                        # 5,000 + 19,000 > 23,000
+        self.assertEqual(self.vm.paymentLegs[1]["amount"], "18000")             # refused, last value kept
         self.assertIn("لا يمكن أن يتجاوز إجمالي الفاتورة", self.vm.paymentWarning)
         self.vm.setLegAmount(1, "15000")
-        self.preview_now()
-        self.assertIn("المتبقي من إجمالي الفاتورة 3,000.00 ج", self.vm.blockingProblems[0])
-        self.assertFalse(self.vm.canFinalize)                                   # unpaid money is never debt by itself
-        self.vm.setAccountAmount("3000")
-        self.assertEqual(self.vm.requiredNowText, "المطلوب دفعه الآن: 20,000.00 ج")
+        self.assertEqual((self.vm.accountAmount, self.vm._required_problem()), ("3000", ""))
         self.assertEqual(self.vm.paymentAmount, "5000")                         # never reduced arbitrarily
-        self.preview_now()
-        self.assertEqual(self.vm.blockingProblems, [])
         self.assertEqual([p.amount for p in self.vm._draft().payments], ["5000", "15000"])
         self.vm.removePaymentLeg(1)
-        # 3,000 is still on the account: 20,000 is still due now, and 15,000 is no longer allocated.
-        self.assertEqual(self.vm.requiredNowText, "المطلوب دفعه الآن: 20,000.00 ج")
-        self.assertEqual(self.vm.remainingText, "المتبقي: 15,000.00 ج")
-        self.assertFalse(self.vm.canFinalize)
+        self.assertEqual(self.vm.accountAmount, "18000")                         # its money goes back on the account
 
     # ---- إجمالي الفاتورة: one total; payments and the account only allocate it
     def total_ready(self, total="10000"):
@@ -558,10 +580,10 @@ class InvoiceViewModelTests(unittest.TestCase):
     def test_example_b_reduced_cash_then_add_starts_with_the_remainder(self):
         self.total_ready()
         self.vm.setLegAmount(0, "6000")
-        self.assertEqual(self.vm.remainingText, "المتبقي: 4,000.00 ج")
+        self.assertEqual((self.vm.remainingText, self.vm.accountAmount), ("", "4000"))   # على العميل, automatic
         self.assertTrue(self.vm.canAddPayment)
         self.vm.addPaymentLeg()
-        self.assertEqual(self.amounts(), ["6000", "4000"])
+        self.assertEqual((self.amounts(), self.vm.accountAmount), (["6000", "4000"], ""))
         self.vm.setLegMethod(1, "MOBILE_WALLET")
         self.assertEqual((self.vm.remainingText, self.vm.canAddPayment), ("", False))
         draft = self.vm._draft()
@@ -578,7 +600,7 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.assertEqual(self.vm.paymentWarning, "مجموع طرق الدفع لا يمكن أن يتجاوز إجمالي الفاتورة")
         self.assertEqual(self.vm.invoiceTotal, "10000")
         self.vm.setLegAmount(1, "3000")                                         # a valid edit clears the warning
-        self.assertEqual((self.vm.paymentWarning, self.vm.remainingText), ("", "المتبقي: 1,000.00 ج"))
+        self.assertEqual((self.vm.paymentWarning, self.vm.accountAmount), ("", "1000"))
 
     def test_example_d_three_methods_each_start_with_the_current_remainder(self):
         self.total_ready()
@@ -593,20 +615,17 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.vm.setLegAccount(2, "7")
         self.assertEqual((self.vm._required_problem(), self.vm.canAddPayment), ("", False))
 
-    def test_example_e_the_account_button_takes_exactly_the_remainder(self):
+    def test_example_e_the_remainder_is_on_the_customer_account_automatically(self):
         self.total_ready()
         self.vm.setLegAmount(0, "6000")
-        self.assertIn("المتبقي من إجمالي الفاتورة 4,000.00 ج", self.vm._required_problem())   # never silent debt
-        self.assertEqual(self.vm.accountAmount, "")
-        self.vm.setAccountDirection("CUSTOMER_OWES")                           # على العميل pressed
-        self.assertEqual((self.vm.accountAmount, self.vm.remainingText, self.vm._required_problem()), ("4000", "", ""))
+        self.assertEqual((self.vm.accountAmount, self.vm._required_problem()), ("4000", ""))
+        self.assertTrue(self.vm.accountAutomatic)
         draft = self.vm._draft()
         self.assertEqual(([p.amount for p in draft.payments], draft.account_amount, draft.invoice_total),
                          (["6000"], "4000", "10000"))
-        self.assertEqual(self.vm.requiredNowText, "المطلوب دفعه الآن: 6,000.00 ج")
-        self.vm.setAccountAmount("5000")                                        # 6,000 + 5,000 > 10,000
+        self.vm.setAccountAmount("5000")                                        # never typed by hand
+        self.vm.setAccountDirection("CUSTOMER_OWES")
         self.assertEqual(self.vm.accountAmount, "4000")
-        self.assertIn("لا يمكن أن يتجاوز إجمالي الفاتورة", self.vm.paymentWarning)
 
     def test_nothing_to_add_when_nothing_remains_and_no_zero_legs(self):
         self.total_ready()
@@ -619,11 +638,12 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.total_ready()
         self.vm.setLegAmount(0, "6000")
         self.vm.addPaymentLeg()                                                 # 6,000 + 4,000
-        self.vm.setInvoiceTotal("9000")                                         # below the allocated 10,000
-        self.assertEqual((self.vm.invoiceTotal, self.amounts()), ("10000", ["6000", "4000"]))
-        self.assertIn("لا يمكن أن يقل", self.vm.paymentWarning)
-        self.vm.setInvoiceTotal("11000")                                        # larger: allowed, 1,000 remains
-        self.assertEqual((self.amounts(), self.vm.remainingText), (["6000", "4000"], "المتبقي: 1,000.00 ج"))
+        self.vm.setInvoiceTotal("9000")                                         # below the real payments
+        self.assertEqual((self.vm.invoiceTotal, self.amounts()), ("9000", ["6000", "4000"]))   # never redistributed
+        self.assertIn("أقل من المبالغ المدفوعة", self.vm.paymentWarning)
+        self.assertIn("يتجاوز إجمالي الفاتورة", self.vm._required_problem())   # Save stays blocked
+        self.vm.setInvoiceTotal("11000")                                        # larger: 1,000 على العميل
+        self.assertEqual((self.amounts(), self.vm.accountAmount), (["6000", "4000"], "1000"))
 
     def test_payments_need_a_total_first(self):
         self.vm.setSalesperson("5")
@@ -637,17 +657,17 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.vm.addOldGold(1, "5")
         self.preview_now()
         self.assertEqual(self.vm.oldGoldDiscountPercent, "1.5")
-        for rejected in ("1.00", "1.24", "3.01", "10.00", "abc", ""):
+        for rejected in ("1.00", "1.24", "5.01", "10.00", "abc", ""):
             with self.subTest(rejected=rejected):
                 self.assertEqual(self.vm.commitOldGoldDiscount(rejected), "1.5")          # restored, not clamped
-                self.assertEqual(self.vm.discountWarning, "النسبة المسموح بها من \u20661.25%\u2069 إلى \u20663%\u2069")
+                self.assertEqual(self.vm.discountWarning, "النسبة المسموح بها من \u20661.25%\u2069 إلى \u20665%\u2069")
                 self.assertEqual(self.vm._draft().old_gold_lines[0].discount_value, "1.5")
         self.assertEqual(self.vm.commitOldGoldDiscount("2.25"), "2.25")
         self.assertEqual(self.vm.discountWarning, "")
         self.assertEqual(self.vm.commitOldGoldDiscount("0.50"), "2.25")                   # back to the new last valid
-        for boundary in ("1.25", "3.00"):
+        for boundary in ("1.25", "2.00", "5.00"):
             self.assertEqual(self.vm.commitOldGoldDiscount(boundary), boundary.rstrip("0").rstrip("."))
-        self.assertEqual(self.vm._draft().old_gold_lines[0].discount_value, "3")
+        self.assertEqual(self.vm._draft().old_gold_lines[0].discount_value, "5")
 
     def test_rejected_discount_is_never_previewed(self):
         self.sale_ready()
@@ -660,13 +680,17 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.assertEqual(last.old_gold_lines[0].discount_value, "1.5")                   # the rejected 1.00 never left
         self.assertGreater(len([c for c in self.service.calls if c[0] == "preview"]), calls)
 
-    def test_old_gold_only_is_not_limited_to_the_sale_range(self):
+    def test_old_gold_only_uses_the_same_discount_range(self):
         self.vm.setSalesperson("5")
         self.vm.addOldGold(1, "10")
-        for value in ("0.5", "5", "0"):
-            with self.subTest(value=value):
+        for value in ("1.25", "1.5", "2", "5"):
+            with self.subTest(accepted=value):
                 self.assertEqual(self.vm.commitOldGoldDiscount(value), value)
                 self.assertEqual(self.vm.discountWarning, "")
+        for value in ("1.24", "5.01", "0.5", "0"):
+            with self.subTest(rejected=value):
+                self.assertEqual(self.vm.commitOldGoldDiscount(value), "5")        # the last valid value stays
+                self.assertNotEqual(self.vm.discountWarning, "")
 
     def test_old_gold_gap_is_settled_or_put_on_the_account(self):
         self.service.preview_result = preview(payment_direction="OUT", gap_signed="-8.00", gold_value_total=None)
@@ -681,6 +705,73 @@ class InvoiceViewModelTests(unittest.TestCase):
         draft = self.vm._draft()
         self.assertEqual((draft.settlement_choice, draft.account_amount, draft.account_direction),
                          (None, "8.00", "SHOP_OWES"))
+
+    def test_account_button_uses_the_rounded_final_amount_not_the_exact_gap(self):
+        # exact 9,005.22 → final 9,005; cash 9,000: the account part is 5.00, never the exact 5.22.
+        self.service.preview_result = preview(payment_direction="OUT", gap_signed="-5.22", difference_signed="-5.00",
+                                              final_settlement_amount="9005.00", gold_value_total=None)
+        self.sale_ready()
+        self.assertTrue(self.vm.hasDifference)
+        self.assertEqual((self.vm.summary["differenceAmount"], self.vm.summary["settleAmount"]), ("5.00", "5.22"))
+        self.vm.setSettlementChoice("ACCOUNT")
+        self.assertEqual(self.vm._draft().account_amount, "5.00")
+        # Rounding already automatic (money + account == final): nothing left to resolve on screen.
+        self.service.preview_result = preview(payment_direction="OUT", gap_signed="-0.22", difference_signed="0.00",
+                                              final_settlement_amount="9005.00", gold_value_total=None)
+        self.vm.setLegAmount(0, "9000")
+        self.preview_now()
+        self.assertFalse(self.vm.hasDifference)
+
+    # ---- the customer binding follows the visible text
+    def test_erasing_or_editing_the_chosen_customer_text_drops_the_customer_id(self):
+        self.vm.searchCustomers("أحمد")
+        self.vm.chooseCustomer("12")
+        self.assertEqual((self.vm.customerId, self.vm.customerInfo["state"]), ("12", "EXISTING"))
+        self.vm.setNewCustomer("أحمد علي", "0100", "طنطا")               # the same text: still bound
+        self.assertEqual(self.vm.customerId, "12")
+        self.vm.setNewCustomer("", "", "")                                # the employee erased the fields
+        self.assertEqual((self.vm.customerId, self.vm.customerInfo["state"]), ("", "NONE"))
+        self.assertIsNone(self.vm._draft().customer_id)
+        self.vm.chooseCustomer("12")                                      # (the suggestion list was cleared)
+        self.vm.searchCustomers("أحمد")
+        self.vm.chooseCustomer("12")
+        self.vm.setNewCustomer("أحمد عل", "0100", "طنطا")                 # edited: no longer that customer
+        self.assertEqual(self.vm.customerId, "")
+        draft = self.vm._draft()
+        self.assertEqual((draft.customer_id, draft.new_customer.name), (None, "أحمد عل"))
+
+    def test_save_closes_after_the_customer_text_is_erased(self):
+        self.service.preview_result = preview(blocking_problems=[
+            {"code": "CUSTOMER_NAME_REQUIRED", "message": "اسم العميل مطلوب لإتمام الفاتورة"}])
+        self.vm.searchCustomers("أحمد")
+        self.vm.chooseCustomer("12")
+        self.sale_ready()
+        self.vm.setNewCustomer("", "", "")
+        self.preview_now()
+        self.assertFalse(self.vm.canFinalize)
+        self.assertTrue(self.vm.customerMissing)
+        self.assertIsNone([c for c in self.service.calls if c[0] == "preview"][-1][1].customer_id)
+
+    # ---- Mixed: the typed total ends on a multiple of EGP 5 (one shared rounding rule, applied once)
+    def test_mixed_total_is_rounded_once_to_the_nearest_five_on_commit(self):
+        self.vm.setSalesperson("5")
+        self.vm.addBarcode("01260925")
+        self.vm.addOldGold(1, "5")
+        for typed, final in (("9340.36", "9340"), ("9342.60", "9345"), ("9340", "9340")):
+            with self.subTest(typed):
+                self.vm.setInvoiceTotal(typed)
+                self.vm.commitInvoiceTotal()
+                self.assertEqual(self.vm.invoiceTotal, final)
+                self.assertEqual(bool(self.vm.totalRoundedNote), typed != final)
+        self.vm.setInvoiceTotal("9341")
+        self.assertEqual(self.vm.totalRoundedNote, "")                   # typing again clears the notice
+
+    def test_sale_only_total_is_not_silently_rounded(self):
+        self.vm.setSalesperson("5")
+        self.vm.addBarcode("01260925")
+        self.vm.setInvoiceTotal("67011")
+        self.vm.commitInvoiceTotal()
+        self.assertEqual((self.vm.invoiceTotal, self.vm.totalRoundedNote), ("67011", ""))   # the service refuses it
 
     def test_making_and_discount_notices_are_simple_for_the_salesman(self):
         self.service.preview_result = preview(making_review_status="NOT_CONFIGURED", old_gold_discount_changed=True)

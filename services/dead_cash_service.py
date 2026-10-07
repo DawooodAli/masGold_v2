@@ -86,9 +86,12 @@ class DeadCashService:
     def _confirm_password(self, actor, password):
         """Re-authenticate the logged-in actor BEFORE any lock is taken (Argon2 is deliberately slow)."""
         from services.authentication_service import AuthenticationError, AuthenticationService
-        authentication = self._authentication or AuthenticationService()
+        if self._authentication is None:
+            # ONE instance for the life of this service: its in-memory failed-attempt cooldown must span
+            # attempts (a new AuthenticationService per call would reset it every time).
+            self._authentication = AuthenticationService()
         try:
-            authentication.verify_user_password(int(actor.user_id), password)
+            self._authentication.verify_user_password(int(actor.user_id), password)
         except AuthenticationError:
             raise DeadCashError("PASSWORD_INVALID", "كلمة المرور غير صحيحة أو انتظر قليلاً ثم أعد المحاولة.") from None
 

@@ -29,6 +29,7 @@ class StockBalanceViewModel(QObject):
         self._karats = []
         self._count = 0
         self._weight = Decimal("0.000")
+        self._equivalent = Decimal("0.000")
         self._loaded = False
         self._error = ""
 
@@ -48,6 +49,11 @@ class StockBalanceViewModel(QObject):
     def totalWeightText(self):
         return weight_text(self._weight)
 
+    @Property(str, notify=changed)
+    def totalEquivalentText(self):
+        """إجمالي الوزن المكافئ عيار 21 — the operational total (per-karat panels stay physical)."""
+        return weight_text(self._equivalent)
+
     @Property(bool, notify=changed)
     def loaded(self):
         return self._loaded
@@ -66,11 +72,13 @@ class StockBalanceViewModel(QObject):
             balance = self._service.get_stock_balance(self._filter)
         except Exception as exc:                                     # shown on the page, never raised
             self._karats, self._count, self._weight = [], 0, Decimal("0.000")
+            self._equivalent = Decimal("0.000")
             self._error = "تعذر تحميل بيان المخزون: " + str(exc)
         else:
             self._error = ""
             self._count = int(balance["piece_count"])
             self._weight = Decimal(balance["weight_grams"])
+            self._equivalent = Decimal(balance.get("equivalent_21_weight_grams") or 0)
             self._karats = [{
                 "karat_id": str(section["karat_id"]),
                 "title": karat_title(section),

@@ -123,6 +123,8 @@ class MasterDataPageTests(harness.InvoicePageTests):
         self.open_master_data()
         self.md_store.inventory_items.append({"id": 1, "inventory_status": "SOLD", "factory_id": 1,
                                               "item_type_id": 1, "category_id": 1})
+        self.md.refresh()                                           # the lists carry ever_used from the last load
+        blocked = "لا يمكن الحذف النهائي لأن السجل استُخدم سابقًا."
         for width, height in harness.SIZES:
             with self.subTest(size=(width, height)):
                 self.root.setWidth(width)
@@ -130,28 +132,34 @@ class MasterDataPageTests(harness.InvoicePageTests):
                 self.page(FACTORIES)
                 page = self.item("factoriesPage")
                 self.click(self.button("⛔  المعطلة", page))
-                # used (SOLD stock): refused inside the dialog, nothing removed
-                self.click(self.visible_item("deleteDisabledFactory"))
+                # used (SOLD stock): no delete button at all, the reason is shown, reactivation stays available
+                self.assertIsNone(self.visible_item("deleteDisabledFactory"))
+                reason = self.visible_item("deleteBlockedFactory")
+                self.assertIsNotNone(reason)
+                self.assertEqual(reason.property("text"), blocked)
+                self.assert_inside_window(reason)
+                self.assertIsNotNone(self.button("↻  إعادة تفعيل", page))
+                self.assert_inside_window(self.button("↻  إعادة تفعيل", page))
+                # the service still refuses regardless of what the page shows
+                self.assertFalse(self.md.deleteFactory(1))
+                self.assertEqual(self.md.actionMessage,
+                                 "لا يمكن حذف المصنع نهائيًا لأنه مرتبط ببيانات في المخزون. يمكنك تعطيله فقط.")
+                self.assertIn(1, self.md_store.factories)
+                # unused: the button shows in the danger zone and deletes after the confirmation
+                self.assertTrue(self.md.createFactory("DELETE TEST FACTORY", "", ""))
+                new = max(self.md_store.factories)
+                self.assertTrue(self.md.disableFactory(new))
+                self.click(self.button("⛔  المعطلة", page))
+                rows = [r for r in self._all("deleteDisabledFactory")]
+                self.assertEqual(len(rows), 1)
+                self.assert_inside_window(rows[-1])
+                self.click(rows[-1])
                 dialog = self.item("deleteMasterDialog")
                 self.wait_until(lambda: dialog.property("opened"), "delete dialog")
                 self.assertEqual(self.item("deleteMasterQuestion").property("text"),
                                  "سيتم حذف المصنع نهائيًا ولا يمكن التراجع عن ذلك. هل أنت متأكد؟")
                 for name in ("deleteMasterConfirm", "deleteMasterCancel", "deleteMasterQuestion"):
                     self.assert_inside_window(self.item(name))
-                self.click("deleteMasterConfirm")
-                self.assertEqual(self.item("deleteMasterError").property("text"),
-                                 "لا يمكن حذف المصنع نهائيًا لأنه مرتبط ببيانات في المخزون. يمكنك تعطيله فقط.")
-                self.assertIn(1, self.md_store.factories)
-                self.click("deleteMasterCancel")
-                self.wait_until(lambda: not dialog.property("visible"), "closed")
-                # unused: deleted after the confirmation
-                self.assertTrue(self.md.createFactory("DELETE TEST FACTORY", "", ""))
-                new = max(self.md_store.factories)
-                self.assertTrue(self.md.disableFactory(new))
-                self.click(self.button("⛔  المعطلة", page))
-                rows = [r for r in self._all("deleteDisabledFactory")]
-                self.click(rows[-1])
-                self.wait_until(lambda: dialog.property("opened"), "delete dialog 2")
                 self.click("deleteMasterConfirm")
                 self.wait_until(lambda: not dialog.property("visible"), "deleted")
                 self.assertNotIn(new, self.md_store.factories)
@@ -224,10 +232,17 @@ class MasterDataPageTests(harness.InvoicePageTests):
         edit.setProperty("itemTypeId", new_type)
         edit.open()
         self.wait_until(lambda: edit.property("opened"), "edit type")
-        self.click(self.visible_item("deleteItemTypeButton"))
+        self.assertNotIn("حذف نهائي", self._texts_any(edit))      # an ACTIVE record has no permanent delete
+        self.assertIsNone(self.visible_item("deleteItemTypeButton"))
+        edit.close()
+        self.wait_until(lambda: not edit.property("visible"), "edit closed")
+        self.assertTrue(self.md.disableItemType(new_type))
+        self.page(ITEM_TYPES)
+        self.click(self.button("⛔  المعطلة", self.item("itemTypesPage")))
+        self.click(self.visible_item("deleteDisabledItemType"))
         self.wait_until(lambda: dialog.property("opened"), "delete type")
         self.click("deleteMasterConfirm")
-        self.wait_until(lambda: not dialog.property("visible") and not edit.property("visible"), "type deleted")
+        self.wait_until(lambda: not dialog.property("visible"), "type deleted")
         self.assertNotIn(new_type, self.md_store.item_types)
         self.page(CATEGORIES)
         category = self.item("editCategoryDialog")
@@ -241,6 +256,110 @@ class MasterDataPageTests(harness.InvoicePageTests):
         self.click("deleteMasterConfirm")
         self.wait_until(lambda: not category.property("visible"), "category deleted")
         self.assertNotIn(6, self.md_store.categories)
+        self.assertEqual(self.warnings, [])
+
+    # ---------------------------------------------------------------- UX-MASTER-DELETE-01 / FORM-02
+    def _edit_dialog(self, page_index, dialog_name, opener, row):
+        self.page(page_index)
+        dialog = self.item(dialog_name)
+        dialog.open()                                   # as a row click would (fields stay empty)
+        self.wait_until(lambda: dialog.property("opened"), dialog_name)
+        return dialog
+
+    def test_active_edit_dialogs_have_no_permanent_delete(self):
+        self.open_master_data()
+        self.md_store.factories[1]["is_active"] = 1
+        self.md.refresh()
+        cases = ((FACTORIES, "editFactoryDialog", "openFactory", self.md_store.factories[1], "⛔  تعطيل المصنع"),
+                 (ITEM_TYPES, "editItemTypeDialog", "openItemType", self.md_store.item_types[1], "⛔  تعطيل الصنف"))
+        for width, height in harness.SIZES:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            for index, name, opener, row, disable_text in cases:
+                with self.subTest(dialog=name, size=(width, height)):
+                    dialog = self._edit_dialog(index, name, opener, row)
+                    self.assertIsNotNone(self.popup_button(dialog, disable_text))
+                    self.assertIsNotNone(self.popup_button(dialog, "إلغاء"))
+                    self.assertIsNotNone(self.popup_button(dialog, "💾"))
+                    self.assertNotIn("حذف نهائي", self._texts_any(dialog))
+                    self.assertIsNone(self.visible_item("deleteFactoryButton"))
+                    self.assertIsNone(self.visible_item("deleteItemTypeButton"))
+                    for button in (disable_text, "إلغاء", "💾"):          # every action stays reachable
+                        self.assert_inside_window(self.popup_button(dialog, button))
+                    dialog.close()
+                    self.wait_until(lambda: not dialog.property("visible"), "closed")
+        self.assertEqual(self.warnings, [])
+
+    def test_disabled_item_type_used_shows_reason_and_never_used_shows_delete(self):
+        self.open_master_data()
+        self.md.createItemType("NEVER USED TYPE", "", 0, "")
+        fresh = max(self.md_store.item_types)
+        self.md_store.inventory_items.append({"id": 1, "inventory_status": "SOLD", "factory_id": None,
+                                              "item_type_id": 1, "category_id": None})
+        self.assertTrue(self.md.disableItemType(1))                 # historically used
+        self.assertTrue(self.md.disableItemType(fresh))             # never used
+        for width, height in harness.SIZES:
+            with self.subTest(size=(width, height)):
+                self.root.setWidth(width)
+                self.root.setHeight(height)
+                self.page(ITEM_TYPES)
+                page = self.item("itemTypesPage")
+                self.click(self.button("⛔  المعطلة", page))
+                reasons = self._all("deleteBlockedItemType")
+                buttons = self._all("deleteDisabledItemType")
+                self.assertEqual((len(reasons), len(buttons)), (1, 1))
+                self.assertEqual(reasons[0].property("text"), "لا يمكن الحذف النهائي لأن السجل استُخدم سابقًا.")
+                for item in reasons + buttons:
+                    self.assert_inside_window(item)
+                self.assertEqual(len(self._all_buttons("↻  إعادة تفعيل", page)), 2)   # reactivation stays
+                self.click(buttons[0])
+                dialog = self.item("deleteMasterDialog")
+                self.wait_until(lambda: dialog.property("opened"), "confirmation")
+                self.assertIn("الصنف", self.item("deleteMasterQuestion").property("text"))
+                self.click("deleteMasterCancel")
+                self.wait_until(lambda: not dialog.property("visible"), "cancelled")
+                self.assertIn(fresh, self.md_store.item_types)         # cancel deleted nothing
+        self.assertFalse(self.md.deleteItemType(1))                    # service refusal is independent of the UI
+        self.assertEqual(self.warnings, [])
+
+    def _all_buttons(self, text, parent):
+        found = []
+        if parent.property("visible") is False:
+            return found
+        if parent.inherits("QQuickAbstractButton") and str(parent.property("text")).startswith(text):
+            found.append(parent)
+        for child in self._children(parent):
+            found += self._all_buttons(text, child)
+        return found
+
+    def test_master_data_dialogs_keep_right_breathing_room(self):
+        """Factory and Item Type dialogs share one shell: a clear margin on both sides, fields aligned."""
+        from PySide6.QtCore import QPointF
+        self.open_master_data()
+        self.md_store.factories[1]["is_active"] = 1
+        self.md.refresh()
+        for width, height in harness.SIZES:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            for index, name, opener, row, field in (
+                    (FACTORIES, "editFactoryDialog", "openFactory", self.md_store.factories[1], "editFactoryNameField"),
+                    (ITEM_TYPES, "editItemTypeDialog", "openItemType", self.md_store.item_types[1],
+                     "editItemTypeNameField")):
+                with self.subTest(dialog=name, size=(width, height)):
+                    dialog = self._edit_dialog(index, name, opener, row)
+                    content = dialog.property("contentItem")
+                    box = content.mapToScene(QPointF(0, 0))
+                    name_field = self.item(field)
+                    point = name_field.mapToScene(QPointF(0, 0))
+                    left = point.x() - box.x()
+                    right = (box.x() + content.width()) - (point.x() + name_field.width())
+                    self.assertGreaterEqual(right, 28, f"{name}: right margin")
+                    self.assertGreaterEqual(left, 28, f"{name}: left margin")
+                    self.assertAlmostEqual(left, right, delta=1)
+                    self.assertLessEqual(content.height(), height)       # the dialog fits, nothing clipped
+                    self.assertGreaterEqual(box.y(), 0)
+                    dialog.close()
+                    self.wait_until(lambda: not dialog.property("visible"), "closed")
         self.assertEqual(self.warnings, [])
 
 

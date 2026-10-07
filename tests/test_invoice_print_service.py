@@ -14,6 +14,7 @@ from decimal import Decimal
 import os
 import re
 import unittest
+from unittest.mock import patch
 
 from app.session import AppSession
 from services import bill_overlay
@@ -109,10 +110,12 @@ class OverlayContentTests(unittest.TestCase):
         self.assertIn("إجمالي الفاتورة : ⁦25,000⁩ جنيه", page)
         self.assertIn("خمسة و عشرون ألف جنيها", page)          # num2words(25000, 'ar') + ' جنيها'
 
-    def test_actual_money_received_and_its_method_are_printed(self):
+    def test_a_sale_prints_the_total_but_no_settlement_detail(self):
         page = joined(ops_for(invoice_row()))
-        self.assertIn("المستلم من العميل : ⁦21,800⁩ جنيه", page)
-        self.assertIn("نقدي : ⁦21,800⁩", page)
+        self.assertNotIn("المستلم من العميل", page)                     # owner, 2026-10-05
+        self.assertNotIn("نقدي", page)
+        self.assertNotIn("21,800", page)
+        self.assertIn("إجمالي الفاتورة : ⁦25,000⁩ جنيه", page)
 
     def test_customer_account_is_never_printed_incoming(self):
         page = joined(ops_for(invoice_row()))
@@ -146,7 +149,32 @@ class OverlayContentTests(unittest.TestCase):
         self.assertAlmostEqual(box.h, BillCalibration().length(bill_overlay.PROTO_MONEY_H_ONE_LINE))
         self.assertNotIn("المستلم من العميل", joined(ops))
 
-    def test_split_payment_prints_each_method_with_its_real_account(self):
+    def test_buy_invoice_total_box_has_smaller_vertical_padding_without_changing_the_layout(self):
+        row = invoice_row(net_direction="SHOP_PAYS_CUSTOMER", balance_after=-DEFERRED, payments=[
+            {"payment_id": "1", "payment_method_code": "PHYSICAL_CASH", "payment_method_name": "نقدي",
+             "direction": "OUT", "amount": D("6800.00")},
+            {"payment_id": "2", "payment_method_code": "INSTAPAY", "payment_method_name": "InstaPay",
+             "direction": "OUT", "amount": D("15000.00")},
+        ], payment_accounts=[{"payment_id": "2", "bank_account_name": "البنك الأهلي المصري - فرع القناطر"}])
+        ops = ops_for(row)
+        box = next(op for op in ops if op.kind == "box")
+        old_h = BillCalibration().length(2 * bill_overlay.C_TYPOGRAPHY.money_line_h + 2 * 1.41)
+        self.assertLess(box.h, old_h)
+        self.assertAlmostEqual(box.w, BillCalibration().length(bill_overlay.PROTO_TABLE_W))
+        self.assertAlmostEqual(box.x, BillCalibration().x(bill_overlay.PROTO_TABLE_X))
+        self.assertAlmostEqual(BillCalibration().scale, (148.0 - 2 * 4.233) / 148.0, places=4)
+        self.assertAlmostEqual(BillCalibration().offset_y_mm, -6.0)
+        self.assertAlmostEqual(BillCalibration().offset_x_mm, 0.0)
+        table_lines = [op for op in ops if op.region == "table" and op.kind == "line"]
+        self.assertTrue(table_lines)
+        self.assertGreater(box.y, max(op.y + op.h for op in table_lines))
+        money_text = [op for op in ops if op.region == "money" and op.kind == "text"]
+        self.assertTrue(money_text)
+        self.assertTrue(all(box.x <= op.x <= box.x + box.w for op in money_text))
+        self.assertTrue(all(box.y <= op.y <= box.y + box.h for op in money_text))
+        self.assertEqual(len([op for op in ops if op.kind == "box"]), 1)
+
+    def test_split_sale_payment_prints_no_method_and_no_amount(self):
         row = invoice_row(payments=[
             {"payment_id": "1", "payment_method_code": "PHYSICAL_CASH", "payment_method_name": "نقدي",
              "direction": "IN", "amount": D("6800.00")},
@@ -154,8 +182,9 @@ class OverlayContentTests(unittest.TestCase):
              "direction": "IN", "amount": D("15000.00")}],
             payment_accounts=[{"payment_id": "2", "bank_account_id": "7", "bank_account_name": "البنك الأهلي"}])
         page = joined(ops_for(row))
-        self.assertIn("المستلم من العميل : ⁦21,800⁩ جنيه", page)
-        self.assertIn("نقدي : ⁦6,800⁩ • InstaPay - البنك الأهلي : ⁦15,000⁩", page)
+        self.assertNotIn("المستلم من العميل", page)
+        for detail in ("نقدي", "InstaPay", "البنك الأهلي", "6,800", "15,000", "21,800"):
+            self.assertNotIn(detail, page)
 
     def test_header_uses_the_finalized_snapshot_and_finalize_time(self):
         page = joined(ops_for(invoice_row()))
@@ -451,6 +480,81 @@ class PrintServiceTests(unittest.TestCase):
 
 
 
+class InFlightGuardTests(unittest.TestCase):
+    """One accepted request is one job: a second request for the same invoice while the first is being
+    handed to the print system is refused without printing, from any screen or thread."""
+
+    def test_concurrent_requests_for_one_invoice_submit_one_job(self):
+        import threading
+        started, release, jobs = threading.Event(), threading.Event(), []
+
+        def slow(ops):
+            jobs.append(ops)
+            started.set()
+            release.wait(10)
+            return True, "ok", None
+        first, _ = make_service(print_document=slow)
+        second, _ = make_service(print_document=slow)               # another screen's own service instance
+        result = {}
+        worker = threading.Thread(target=lambda: result.update(first=first.print_invoice("42")))
+        worker.start()
+        self.assertTrue(started.wait(10))
+        duplicate = second.print_invoice("42")                       # while the first is in flight
+        self.assertFalse(duplicate.printed)
+        self.assertEqual(duplicate.message, "جاري إرسال هذه الفاتورة للطابعة بالفعل.")
+        self.assertEqual(len(jobs), 1)
+        release.set()
+        worker.join(10)
+        self.assertTrue(result["first"].printed)
+        self.assertEqual(len(jobs), 1)
+
+    def test_the_guard_is_released_after_success_failure_and_exception(self):
+        jobs = []
+        outcomes = iter([(True, "ok", None), (False, "الطابعة غير متصلة", None), RuntimeError("boom"),
+                         (True, "ok", None)])
+
+        def printer(ops):
+            jobs.append(ops)
+            outcome = next(outcomes)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        service, _ = make_service(print_document=printer)
+        self.assertTrue(service.print_invoice("42").printed)
+        self.assertFalse(service.print_invoice("42").printed)
+        self.assertFalse(service.print_invoice("42").printed)       # an unexpected printer error never locks it
+        self.assertTrue(service.print_invoice("42").printed)        # a later, separate request is a new job
+        self.assertEqual(len(jobs), 4)
+
+    def test_different_invoices_do_not_block_each_other(self):
+        import threading
+        started, release, seen = threading.Event(), threading.Event(), []
+        invoices = {"42": invoice_row(), "43": invoice_row()}
+
+        def printer(ops):
+            seen.append(1)
+            started.set()
+            release.wait(10)
+            return True, "ok", None
+        service, _ = make_service(invoices=invoices, print_document=printer)
+        worker = threading.Thread(target=lambda: service.print_invoice("42"))
+        worker.start()
+        self.assertTrue(started.wait(10))
+        other = make_service(invoices=invoices, print_document=lambda ops: (True, "ok", None))[0].print_invoice("43")
+        self.assertTrue(other.printed)
+        release.set()
+        worker.join(10)
+
+    def test_printing_writes_no_job_or_event_row(self):
+        import copy
+        service, state = make_service(print_document=lambda ops: (True, "ok", None))
+        before = copy.deepcopy(state["invoices"])
+        service.print_invoice("42")
+        service.print_invoice("42")
+        self.assertEqual(state["invoices"], before)
+        self.assertEqual(set(state), {"invoices", "reads"})        # no print_jobs / invoice_events appeared
+
+
 class MeasuredStationeryTests(unittest.TestCase):
     """The owner's ruler on the real stock: 210 x 145 mm, gold lines at 25.2 and 125.0 mm."""
 
@@ -480,6 +584,117 @@ class MeasuredStationeryTests(unittest.TestCase):
             ops = compose(bill_overlay.build_overlay(invoice_row(lines=[sale_line(i) for i in range(10)])),
                           BillCalibration(), style)
             self.assertTrue(validate(ops, BillCalibration(), printable))
+
+
+def cash_row(total, cash, **overrides):
+    return invoice_row(net_amount=total, sell_total=total, lines=[sale_line(line_total=total)],
+                       payments=[{"payment_id": "1", "payment_method_code": "PHYSICAL_CASH",
+                                  "payment_method_name": "نقدي", "direction": "IN", "amount": cash}],
+                       balance_after=total - cash, **overrides)
+
+
+class ReceivedFromCustomerNotPrintedTests(unittest.TestCase):
+    """BUG-PRINT-02: the physical invoice never prints "المستلم من العميل : amount"; the total stays."""
+
+    CASES = {"fully paid in cash": cash_row(D("70000.00"), D("70000.00")),
+             "partly on the customer account": cash_row(D("32000.00"), D("29000.00")),
+             "split cash + InstaPay": invoice_row(
+                 payments=[{"payment_id": "1", "payment_method_code": "PHYSICAL_CASH", "payment_method_name": "نقدي",
+                            "direction": "IN", "amount": D("6800.00")},
+                           {"payment_id": "2", "payment_method_code": "INSTAPAY", "payment_method_name": "InstaPay",
+                            "direction": "IN", "amount": D("15000.00")}],
+                 payment_accounts=[{"payment_id": "2", "bank_account_name": "البنك الأهلي"}])}
+
+    def pages(self, invoice):
+        overlay = bill_overlay.build_overlay(invoice)
+        for style in bill_overlay.BILL_STYLES:                                   # the default AND the prototype
+            yield style, joined(compose(overlay, BillCalibration(), style))
+
+    def test_the_line_and_its_amount_are_absent_and_the_total_remains(self):
+        for label, invoice in self.CASES.items():
+            total = f"{invoice['net_amount']:,.0f}"
+            for style, page in self.pages(invoice):
+                with self.subTest(case=label, style=style):
+                    self.assertNotIn("المستلم من العميل", page)
+                    self.assertIn("إجمالي الفاتورة", page)
+                    self.assertIn(total, page)
+
+    def test_no_sale_prints_any_method_amount_or_account_detail(self):
+        details = {"fully paid in cash": ("نقدي", "70,000 ج\n", "نقدي 70,000", "نقدي : 70,000"),
+                   "partly on the customer account": ("نقدي", "29,000", "نقدي 29,000", "على العميل", "3,000",
+                                                       "على العميل 3,000", "رصيد"),
+                   "split cash + InstaPay": ("نقدي", "InstaPay", "البنك الأهلي", "6,800", "15,000", "21,800")}
+        for label, invoice in self.CASES.items():
+            for style, page in self.pages(invoice):
+                for detail in details[label]:
+                    with self.subTest(case=label, style=style, detail=detail):
+                        self.assertNotIn(detail, page)
+
+    def test_the_total_and_the_amount_in_words_are_still_printed(self):
+        for label, invoice in self.CASES.items():
+            words = bill_overlay.money_in_words(D(str(invoice["net_amount"])))
+            for style, page in self.pages(invoice):
+                with self.subTest(case=label, style=style):
+                    self.assertIn("إجمالي الفاتورة", page)
+                    self.assertIn(words, page)
+
+    def test_the_sale_total_box_hugs_its_text_and_nothing_else_moves(self):
+        """Owner-approved micro-fix: only the bottom total box's HEIGHT shrinks (14.3 -> 11.29 proto mm)."""
+        cal, c = BillCalibration(), bill_overlay.C_TYPOGRAPHY
+        for label in ("partly on the customer account", "split cash + InstaPay", "fully paid in cash"):
+            invoice = self.CASES[label]
+            ops = compose(bill_overlay.build_overlay(invoice), cal, bill_overlay.STYLE_VARIANT_C)
+            box = next(op for op in ops if op.kind == "box")
+            old_height = cal.length(2 * c.money_line_h + 2 * bill_overlay.PROTO_MONEY_PAD_Y_TWO_LINES)     # 14.3
+            with self.subTest(case=label):
+                self.assertAlmostEqual(box.h, cal.length(bill_overlay.PROTO_MONEY_H_ONE_LINE))             # 11.29
+                self.assertLess(box.h, old_height)
+                self.assertAlmostEqual(old_height - box.h, cal.length(14.3 - 11.29))
+                # same left edge and width as the item table; same top relationship to it
+                table = [op for op in ops if op.region == "table" and op.kind == "line"]
+                table_left = min(op.x for op in table)
+                table_bottom = max(op.y + op.h for op in table)
+                self.assertAlmostEqual(box.x, table_left)
+                self.assertAlmostEqual(box.w, cal.length(bill_overlay.PROTO_TABLE_W))
+                self.assertAlmostEqual(box.y, table_bottom + cal.length(bill_overlay.PROTO_MONEY_GAP), places=6)
+                # the total and the words stay inside the box, vertically centred, nothing touches the border
+                texts_in_box = [op for op in ops if op.region == "money" and op.kind == "text"]
+                self.assertEqual(len(texts_in_box), 2)                         # no settlement line, no second row
+                for op in texts_in_box:
+                    self.assertGreater(op.y, box.y + cal.length(1.0))
+                    self.assertLess(op.y + op.h, box.y + box.h - cal.length(1.0))
+                    self.assertGreaterEqual(op.x, box.x)
+                    self.assertLessEqual(op.x + op.w, box.x + box.w)
+                top_gap = texts_in_box[0].y - box.y
+                bottom_gap = (box.y + box.h) - (texts_in_box[0].y + texts_in_box[0].h)
+                self.assertAlmostEqual(top_gap, bottom_gap, places=6)
+                self.assertEqual(len([op for op in ops if op.kind == "box"]), 1)
+
+    def test_the_table_scale_and_calibration_are_unchanged(self):
+        cal = BillCalibration()
+        self.assertEqual((cal.offset_x_mm, cal.offset_y_mm), (0.0, -6.0))
+        self.assertAlmostEqual(cal.scale, 0.9428, places=3)
+        self.assertEqual((bill_overlay.PROTO_TABLE_TOP, bill_overlay.PROTO_TABLE_HEADER_H,
+                          bill_overlay.PROTO_TABLE_ROW_H, bill_overlay.PROTO_TABLE_X, bill_overlay.PROTO_MONEY_GAP),
+                         (30.42, 14.11, 6.35, 27.53, 2.54))
+        self.assertEqual(bill_overlay.MAX_SALE_ITEMS, 10)
+        self.assertEqual((bill_overlay.PAPER_WIDTH_MM, bill_overlay.PAPER_HEIGHT_MM), (210.0, 148.0))
+        # a BUY invoice keeps its two-line box
+        row = invoice_row(net_direction="SHOP_PAYS_CUSTOMER", balance_after=-DEFERRED,
+                          payments=[{"payment_id": "1", "payment_method_code": "PHYSICAL_CASH",
+                                     "payment_method_name": "نقدي", "direction": "OUT", "amount": RECEIVED}])
+        box = next(op for op in compose(bill_overlay.build_overlay(row), cal, bill_overlay.STYLE_VARIANT_C)
+                   if op.kind == "box")
+        self.assertAlmostEqual(box.h, cal.length(14.3))
+
+    def test_a_shop_paid_buy_invoice_still_prints_its_paid_to_customer_line(self):
+        row = invoice_row(net_direction="SHOP_PAYS_CUSTOMER", balance_after=-DEFERRED,
+                          payments=[{"payment_id": "1", "payment_method_code": "PHYSICAL_CASH",
+                                     "payment_method_name": "نقدي", "direction": "OUT", "amount": RECEIVED}])
+        for style, page in self.pages(row):
+            with self.subTest(style=style):
+                self.assertIn("المدفوع للعميل", page)
+                self.assertNotIn("المستلم من العميل", page)
 
 
 class VariantCTests(unittest.TestCase):
@@ -512,7 +727,7 @@ class VariantCTests(unittest.TestCase):
     def test_total_amount_is_the_strongest_money_element(self):
         ops = self.c_ops(invoice_row())
         total = next(o for o in ops if o.spans and o.spans[0][0].startswith("إجمالي الفاتورة"))
-        label, amount = total.spans
+        label, colon, amount = total.spans                                  # word, standalone colon, amount
         self.assertFalse(amount[2] or label[2])                           # owner: both regular; size carries it
         self.assertGreater(amount[1], label[1])
         others = [o for o in ops if o.region == "money" and o is not total]
@@ -520,16 +735,18 @@ class VariantCTests(unittest.TestCase):
         self.assertIn("\u206625,000\u2069 ج", amount[0])
 
     def test_payment_is_secondary_and_methods_tertiary(self):
-        ops = self.c_ops(invoice_row(payments=[
+        """BUY invoices keep their payment line and methods; a SALE prints neither (BUG-PRINT-03)."""
+        ops = self.c_ops(invoice_row(net_direction="SHOP_PAYS_CUSTOMER", balance_after=-DEFERRED, payments=[
             {"payment_id": "1", "payment_method_code": "PHYSICAL_CASH", "payment_method_name": "نقدي",
-             "direction": "IN", "amount": D("6800.00")},
+             "direction": "OUT", "amount": D("6800.00")},
             {"payment_id": "2", "payment_method_code": "INSTAPAY", "payment_method_name": "InstaPay",
-             "direction": "IN", "amount": D("15000.00")},
+             "direction": "OUT", "amount": D("15000.00")},
             {"payment_id": "3", "payment_method_code": "MOBILE_WALLET", "payment_method_name": "محفظة",
-             "direction": "IN", "amount": D("0.00")}],
+             "direction": "OUT", "amount": D("0.00")}],
             payment_accounts=[{"payment_id": "2", "bank_account_id": "7", "bank_account_name": "البنك الأهلي"}]))
         page = joined(ops)
-        self.assertIn("المستلم من العميل", page)
+        self.assertIn("المدفوع للعميل", page)                              # a BUY invoice keeps its payment line
+        self.assertNotIn("المستلم من العميل", page)
         self.assertIn("InstaPay - الأهلي \u206615,000\u2069", page)
         self.assertNotIn("محفظة", page)                                   # a zero-value method is not printed
         methods = next(o for o in ops if "InstaPay" in o.text)
@@ -638,11 +855,11 @@ class EnlargedTypographyTests(unittest.TestCase):
     def test_payment_line_keeps_the_amount_and_shortens_the_bank(self):
         self.assertEqual(bill_overlay.short_account_name("البنك الأهلي المصري - فرع القناطر"), "الأهلي المصري")
         self.assertEqual(bill_overlay.short_account_name("CIB"), "CIB")
-        row = invoice_row(payments=[
+        row = invoice_row(net_direction="SHOP_PAYS_CUSTOMER", balance_after=-DEFERRED, payments=[
             {"payment_id": "1", "payment_method_code": "PHYSICAL_CASH", "payment_method_name": "نقدي",
-             "direction": "IN", "amount": D("6800.00")},
+             "direction": "OUT", "amount": D("6800.00")},
             {"payment_id": "2", "payment_method_code": "INSTAPAY", "payment_method_name": "InstaPay",
-             "direction": "IN", "amount": D("15000.00")}],
+             "direction": "OUT", "amount": D("15000.00")}],
             payment_accounts=[{"payment_id": "2", "bank_account_name": "البنك الأهلي المصري - فرع القناطر"}])
         page = joined(self.ops(row))
         self.assertIn("InstaPay - الأهلي المصري ⁦15,000⁩", page)
@@ -655,11 +872,11 @@ class FinalWeightTests(unittest.TestCase):
 
     def test_header_labels_words_and_methods_are_bold_without_growing(self):
         t = bill_overlay.C_TYPOGRAPHY
-        ops = compose(bill_overlay.build_overlay(invoice_row(payments=[
+        ops = compose(bill_overlay.build_overlay(invoice_row(net_direction="SHOP_PAYS_CUSTOMER", balance_after=-DEFERRED, payments=[
             {"payment_id": "1", "payment_method_code": "PHYSICAL_CASH", "payment_method_name": "نقدي",
-             "direction": "IN", "amount": D("6800.00")},
+             "direction": "OUT", "amount": D("6800.00")},
             {"payment_id": "2", "payment_method_code": "INSTAPAY", "payment_method_name": "InstaPay",
-             "direction": "IN", "amount": D("15000.00")}])), BillCalibration(), bill_overlay.STYLE_VARIANT_C)
+             "direction": "OUT", "amount": D("15000.00")}])), BillCalibration(), bill_overlay.STYLE_VARIANT_C)
         pt = BillCalibration().pt
         for label in ("الاسم", "العنوان", "التاريخ", "الوقت"):
             span = next(o.spans[0] for o in ops if o.spans and o.spans[0][0].startswith(label))
@@ -669,32 +886,78 @@ class FinalWeightTests(unittest.TestCase):
         methods = next(o for o in ops if "InstaPay" in o.text and not o.spans)
         self.assertTrue(words.bold and methods.bold)
         self.assertEqual((words.size_pt, methods.size_pt), (pt(t.words), pt(t.methods)))
-        total = next(o for o in ops if o.spans and o.spans[0][0].startswith("إجمالي الفاتورة")).spans[1]
+        total = next(o for o in ops if o.spans and o.spans[0][0].startswith("إجمالي الفاتورة")).spans[2]
         self.assertGreater(total[1], max(words.size_pt, methods.size_pt))   # the total stays the strongest
 
 
 
 class HeaderSeparatorTests(unittest.TestCase):
-    """Owner: every printed header label is followed by " :- " (الاسم :- …), nothing else changes."""
+    """Owner (2026-10-02): "Label : Value" is drawn as three independent runs — Arabic word, a standalone
+    colon run, the value — so bidi can never move the colon. Only the runs changed (no geometry)."""
+    COLON = " : "
 
     def ops(self, **overrides):
         return compose(bill_overlay.build_overlay(invoice_row(**overrides)), BillCalibration(),
                        bill_overlay.STYLE_VARIANT_C)
 
-    def test_the_four_header_labels_use_the_separator(self):
-        header = {o.spans[0][0]: "".join(p[0] for p in o.spans) for o in self.ops() if o.spans and o.region == "header"}
-        self.assertEqual(set(header), {"الاسم :- ", "العنوان :- ", "التاريخ :- ", "الوقت :- "})
-        self.assertEqual(header["الاسم :- "], "الاسم :- سليا محمد")
-        self.assertEqual(header["العنوان :- "], "العنوان :- القناطر")
-        # Date / time stay one left-to-right unit after the separator (no bidi reordering).
-        self.assertEqual(header["التاريخ :- "], "التاريخ :- ⁦26-09-2026⁩")
-        self.assertEqual(header["الوقت :- "], "الوقت :- ⁦22:47⁩")
+    def header(self, **overrides):
+        return {o.spans[0][0]: [p[0] for p in o.spans] for o in self.ops(**overrides) if o.spans and o.region == "header"}
 
-    def test_no_separator_anywhere_else(self):
-        others = [o.text for o in self.ops() if o.kind == "text" and o.region != "header"]
-        self.assertFalse([t for t in others if ":-" in t])
+    def test_the_four_header_fields_are_label_colon_value_runs(self):
+        header = self.header()
+        self.assertEqual(header["الاسم"], ["الاسم", self.COLON, "سليا محمد"])
+        self.assertEqual(header["العنوان"], ["العنوان", self.COLON, "القناطر"])
+        self.assertEqual(header["التاريخ"], ["التاريخ", self.COLON, "⁦26-09-2026⁩"])     # one LTR unit
+        self.assertEqual(header["الوقت"], ["الوقت", self.COLON, "⁦22:47⁩"])
+        for runs in header.values():
+            self.assertNotIn(":", runs[0])                         # never a colon inside the Arabic run
+
+    def test_long_and_empty_customer_fields(self):
+        long_name = "عبد الرحمن محمد عبد العزيز الشرقاوي"
+        header = self.header(customer_name_snapshot=long_name, place_snapshot="")
+        self.assertEqual(header["الاسم"][2], long_name)
+        self.assertEqual(header["العنوان"][2], "—")
+
+    def test_no_leader_or_old_separator_anywhere(self):
+        for o in self.ops():
+            text = "".join(p[0] for p in o.spans) if o.spans else (o.text or "")
+            self.assertNotIn(":-", text)
+            self.assertNotIn("..", text)
+            self.assertNotIn("…", text)
         number = next(o for o in self.ops() if o.region == "header" and o.text == "26092699")
         self.assertFalse(number.spans)
+
+    def test_total_line_is_label_colon_amount_runs(self):
+        for amount, printed in (("950", "950"), ("23175", "23,175"), ("1234567", "1,234,567"),
+                                ("23175.50", "23,175.50")):
+            with self.subTest(amount):
+                ops = self.ops(net_amount=Decimal(amount))
+                total = next(o for o in ops if o.spans and o.spans[0][0] == "إجمالي الفاتورة")
+                self.assertEqual([p[0] for p in total.spans], ["إجمالي الفاتورة", self.COLON, "⁦" + printed + "⁩ ج"])
+                self.assertEqual(total.align, "right")
+
+    def test_runs_paint_right_to_left_in_order(self):
+        """Offscreen paint: the label is rightmost, the colon next, the value leftmost; nothing overlaps."""
+        from PySide6.QtGui import QGuiApplication, QImage, QPainter
+        QGuiApplication.instance() or QGuiApplication([])
+        bill_overlay.ensure_fonts()
+        ops = [o for o in self.ops(customer_name_snapshot="عبد الرحمن محمد عبد العزيز الشرقاوي")
+               if o.spans and o.spans[0][0] in ("الاسم", "إجمالي الفاتورة")]
+        image = QImage(2480, 1748, QImage.Format_RGB32)
+        painter = QPainter(image)
+        drawn, original = [], QPainter.drawText
+
+        def record(self_, rect, text, *rest):
+            drawn.append((text, rect.left(), rect.right()))
+            return original(self_, rect, text, *rest)
+        with patch.object(QPainter, "drawText", record):
+            bill_overlay.paint(painter, ops, 2480 / 210.0)
+        painter.end()
+        for start in (0, 3):
+            (label, l0, r0), (colon, l1, r1), (value, l2, r2) = drawn[start:start + 3]
+            self.assertEqual(colon, self.COLON)
+            self.assertGreaterEqual(l0 + 0.01, r1)                  # colon wholly left of the label
+            self.assertGreaterEqual(l1 + 0.01, r2)                  # value wholly left of the colon
 
     def test_label_weight_size_and_geometry_are_unchanged(self):
         t = bill_overlay.C_TYPOGRAPHY
@@ -705,7 +968,11 @@ class HeaderSeparatorTests(unittest.TestCase):
                 self.assertAlmostEqual(o.spans[0][1], BillCalibration().pt(t.label))
         name = next(o for o in ops if o.spans and o.spans[0][0].startswith("الاسم"))
         self.assertGreater(name.min_pt, 0)                                      # long names still step down / elide
-        self.assertAlmostEqual(max(o.y + o.h for o in ops), 116.45, places=1)   # same 10-row bottom
+        bottom = max(o.y + o.h for o in ops)
+        self.assertLess(bottom, 116.45)                                         # still inside the same sheet
+        # The bottom total box of a SALE now hugs its text (one-line box, 11.29 proto mm instead of 14.3):
+        # 10 rows end at 113.12 mm physical, about 2.8 mm higher than before. Owner-approved, 2026-10-05.
+        self.assertAlmostEqual(bottom, 113.12, delta=0.05)
 
 
 if __name__ == "__main__":

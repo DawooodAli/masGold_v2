@@ -60,6 +60,36 @@ ApplicationWindow {
     palette.highlightedText:
         theme.bgPrimary
     property int currentPage: 0
+    function openCustomerDetails(customerId) {
+        if (!customerVM.openCustomerDetails(customerId)) {
+            customerNavigationDialog.message = customerVM.actionMessage || "تعذر فتح بيانات العميل."
+            customerNavigationDialog.open()
+            return false
+        }
+        customerAccountVM.close()
+        customersWorkspace.showProfile = true
+        customersWorkspace.skipEntryRefresh = currentPage !== 3
+        currentPage = 3
+        Qt.callLater(function() { customersWorkspace.revealDetails() })
+        return true
+    }
+    Dialog {
+        id: customerNavigationDialog
+        objectName: "customerNavigationDialog"
+        property string message: ""
+        anchors.centerIn: parent
+        width: Math.min(root.width - 24, 420)
+        modal: true
+        title: "بيانات العميل"
+        font.family: "Cairo"
+        background: Rectangle { color: theme.bgPrimary; radius: 8; border.color: theme.goldDark }
+        contentItem: ColumnLayout {
+            CustomerLabel { objectName: "customerNavigationMessage"; Layout.fillWidth: true
+                value: customerNavigationDialog.message; color: theme.red }
+            CustomerButton { Layout.alignment: Qt.AlignRight; text: "إغلاق"
+                onClicked: customerNavigationDialog.close() }
+        }
+    }
     // Master Data messages belong to one page: leaving it clears them (no timer polling).
     onCurrentPageChanged: masterDataVM.clearAction()
 
@@ -813,6 +843,8 @@ ApplicationWindow {
     // Inspired by the prototype's two-sided bill, rebuilt for v2 ledger rules.
     // ========================================================
 
+    // FROZEN Billing V1, DEAD CODE: never instantiated, and its `billingVM` is no longer registered (see
+    // main.py) — instantiating this component would fail on the missing context property by design.
     component BillingPage: Item {
         id: billingPage
 
@@ -1755,6 +1787,19 @@ ApplicationWindow {
                         return
                     }
 
+                    if (selected) {
+                        var source = inventoryVM.items
+
+                        for (var i = 0; i < source.length; i++) {
+                            if (
+                                itemId(source[i].inventory_item_id) === idValue
+                                && !hasBarcode(source[i])
+                            ) {
+                                return
+                            }
+                        }
+                    }
+
                     var copy =
                         selectedItemIds.slice()
 
@@ -1784,6 +1829,22 @@ ApplicationWindow {
                 }
 
 
+                // A piece without a stored barcode (بدون باركود) is never printable: it has no checkbox,
+                // Select All skips it and it can never enter Review & Print (the service refuses it too).
+                function hasBarcode(item) {
+                    return Boolean(item && item.barcode_value)
+                }
+
+
+                function statusText(value) {
+                    if (value === "IN_STOCK")
+                        return "في المخزون"
+                    if (value === "RETURNED_PENDING")
+                        return "بانتظار الفحص"
+                    return value || "—"
+                }
+
+
                 function selectAllVisible() {
                     var ids = []
                     var items = filteredItems()
@@ -1793,29 +1854,9 @@ ApplicationWindow {
                         index < items.length;
                         index++
                     ) {
-                        ids.push(
-                            itemId(
-                                items[index]
-                                .inventory_item_id
-                            )
-                        )
-                    }
+                        if (!hasBarcode(items[index]))
+                            continue
 
-                    selectedItemIds = ids
-                }
-
-
-                function selectWithoutBarcode() {
-                    barcodeFilterMode = 1
-
-                    var ids = []
-                    var items = filteredItems()
-
-                    for (
-                        var index = 0;
-                        index < items.length;
-                        index++
-                    ) {
                         ids.push(
                             itemId(
                                 items[index]
@@ -1916,7 +1957,11 @@ ApplicationWindow {
 
 
                         Button {
+                            objectName: "newInventoryItemButton"
                             text: "＋  إدخال قطعة جديدة"
+
+                            // Convenience only: the services re-check INVENTORY_MANAGE / OLD_GOLD_MANAGE.
+                            visible: inventoryVM.canManage || oldGoldConversionVM.canManage
 
                             font.family: "Cairo"
                             font.bold: true
@@ -2034,7 +2079,7 @@ ApplicationWindow {
 
                             Label {
                                 text:
-                                    "إجمالي وزن المخزون"
+                                    "إجمالي الوزن المكافئ عيار 21"
 
                                 color: theme.textMuted
 
@@ -2048,10 +2093,8 @@ ApplicationWindow {
 
 
                             Label {
-                                text:
-                                    inventoryPage.weightText(
-                                        inventoryVM.totalWeight
-                                    )
+                                objectName: "inventoryTotalWeight21"
+                                text: inventoryVM.totalWeight21Text + " جرام"
 
                                 color: theme.gold
 
@@ -2145,7 +2188,7 @@ ApplicationWindow {
 
                     Rectangle {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 118
+                        Layout.preferredHeight: 158
 
                         color: theme.bgSecondary
 
@@ -2168,6 +2211,64 @@ ApplicationWindow {
                             anchors.bottomMargin: 9
 
                             spacing: 7
+
+
+                            // -----------------------------------------
+                            // KARAT + ITEM TYPE (server-side, combine with the search)
+                            // -----------------------------------------
+
+                            RowLayout {
+                                objectName: "inventoryKaratTypeFilters"
+                                Layout.fillWidth: true
+                                layoutDirection: Qt.RightToLeft
+                                spacing: 8
+
+                                Label {
+                                    text: "العيار"
+                                    color: theme.textSecondary
+                                    font.family: "Cairo"
+                                    font.pixelSize: 11
+                                }
+
+                                ComboBox {
+                                    id: inventoryKaratFilter
+                                    objectName: "inventoryKaratFilter"
+                                    Layout.preferredWidth: 92
+                                    Layout.preferredHeight: 34
+                                    font.family: "Cairo"
+                                    textRole: "name"
+                                    model: [{ "id": 0, "name": "الكل" }].concat(
+                                        masterDataVM.karats.map(function(k) {
+                                            return { "id": k.id, "name": String(k.karat_value) } }))
+                                    onActivated: inventoryVM.setFilters(
+                                        Number(model[currentIndex].id),
+                                        Number(inventoryItemTypeFilter.model[inventoryItemTypeFilter.currentIndex].id))
+                                }
+
+                                Label {
+                                    text: "الصنف"
+                                    color: theme.textSecondary
+                                    font.family: "Cairo"
+                                    font.pixelSize: 11
+                                }
+
+                                ComboBox {
+                                    id: inventoryItemTypeFilter
+                                    objectName: "inventoryItemTypeFilter"
+                                    Layout.preferredWidth: 120
+                                    Layout.preferredHeight: 34
+                                    font.family: "Cairo"
+                                    textRole: "name"
+                                    model: [{ "id": 0, "name": "الكل" }].concat(
+                                        masterDataVM.itemTypes.map(function(t) {
+                                            return { "id": t.id, "name": t.name } }))
+                                    onActivated: inventoryVM.setFilters(
+                                        Number(inventoryKaratFilter.model[inventoryKaratFilter.currentIndex].id),
+                                        Number(model[currentIndex].id))
+                                }
+
+                                Item { Layout.fillWidth: true }
+                            }
 
 
                             // -----------------------------------------
@@ -2350,19 +2451,6 @@ ApplicationWindow {
 
 
                                 Button {
-                                    text: "تحديد بدون باركود"
-
-                                    font.family: "Cairo"
-
-                                    enabled:
-                                        inventoryPage.filteredItems().length > 0
-
-                                    onClicked:
-                                        inventoryPage.selectWithoutBarcode()
-                                }
-
-
-                                Button {
                                     text: "إلغاء التحديد"
 
                                     font.family: "Cairo"
@@ -2478,10 +2566,85 @@ ApplicationWindow {
                         // EMPTY STATE
                         // ---------------------------------------------
 
+                        // An exact barcode / item number that is no longer current stock (e.g. SOLD):
+                        // read-only traceability, never part of the current-stock list or totals.
+                        Rectangle {
+                            objectName: "inventoryHistoryCard"
+                            visible: inventoryVM.hasHistoryPiece
+                            z: 2                                   // above the (empty) stock list
+                            anchors.centerIn: parent
+                            width: Math.min(parent.width - 24, 560)
+                            height: historyColumn.implicitHeight + 24
+                            radius: theme.radiusSmall
+                            color: theme.bgTertiary
+                            border.color: theme.amber
+                            border.width: 1
+
+                            ColumnLayout {
+                                id: historyColumn
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.top: parent.top
+                                anchors.margins: 12
+                                spacing: 4
+
+                                Label {
+                                    objectName: "inventoryHistoryTitle"
+                                    Layout.fillWidth: true
+                                    text: "القطعة " + (inventoryVM.historyPiece.itemNumber || "")
+                                          + " — " + (inventoryVM.historyPiece.status || "")
+                                          + " (ليست ضمن المخزون الحالي)"
+                                    color: theme.amber
+                                    font.family: "Cairo"
+                                    font.bold: true
+                                    horizontalAlignment: Text.AlignRight
+                                }
+                                Label {
+                                    objectName: "inventoryHistoryDetails"
+                                    Layout.fillWidth: true
+                                    text: "الباركود: " + (inventoryVM.historyPiece.barcode || "—")
+                                          + "  •  " + (inventoryVM.historyPiece.itemType || "")
+                                          + "  •  عيار " + (inventoryVM.historyPiece.karat || "")
+                                          + "  •  " + (inventoryVM.historyPiece.weight || "") + " جرام"
+                                          + "  •  المصنع: " + (inventoryVM.historyPiece.factory || "—")
+                                          + "  •  الفئة: " + (inventoryVM.historyPiece.category || "—")
+                                    color: theme.textPrimary
+                                    font.family: "Cairo"
+                                    wrapMode: Text.WordWrap
+                                    horizontalAlignment: Text.AlignRight
+                                }
+                                Label {
+                                    objectName: "inventoryHistorySale"
+                                    Layout.fillWidth: true
+                                    visible: (inventoryVM.historyPiece.invoiceNumber || "").length > 0
+                                    text: "الفاتورة: " + (inventoryVM.historyPiece.invoiceNumber || "")
+                                          + "  •  " + (inventoryVM.historyPiece.invoiceDate || "")
+                                          + "  •  العميل: " + (inventoryVM.historyPiece.customer || "—")
+                                    color: theme.textSecondary
+                                    font.family: "Cairo"
+                                    wrapMode: Text.WordWrap
+                                    horizontalAlignment: Text.AlignRight
+                                }
+                                Button {
+                                    objectName: "inventoryHistoryOpenInvoice"
+                                    Layout.alignment: Qt.AlignRight
+                                    visible: (inventoryVM.historyPiece.invoiceId || "").length > 0
+                                    text: "فتح الفاتورة"
+                                    font.family: "Cairo"
+                                    onClicked: {
+                                        root.currentPage = 1
+                                        billingWorkspace.currentTab = 1
+                                        invoiceHistoryVM.openInvoice(inventoryVM.historyPiece.invoiceId)
+                                    }
+                                }
+                            }
+                        }
+
                         ColumnLayout {
                             visible:
                                 inventoryPage.filteredItems().length === 0
                                 && inventoryVM.errorMessage.length === 0
+                                && !inventoryVM.hasHistoryPiece
 
                             anchors.centerIn: parent
 
@@ -2504,6 +2667,8 @@ ApplicationWindow {
                                         inventorySearchField.text.length > 0
                                         || inventoryPage.entryDateFilter.length > 0
                                         || inventoryPage.barcodeFilterMode !== 0
+                                        || inventoryVM.karatFilterId > 0
+                                        || inventoryVM.itemTypeFilterId > 0
                                     )
                                     ? "لا توجد قطع مطابقة للفلاتر الحالية"
                                     : "المخزون فارغ حالياً"
@@ -2560,10 +2725,14 @@ ApplicationWindow {
 
                                 required property var modelData
 
+                                readonly property bool printable:
+                                    inventoryPage.hasBarcode(modelData)
+
                                 width:
                                     inventoryList.width
 
-                                height: 116
+                                // One compact line (factory / category elide, the barcode box fits any value).
+                                height: 42
 
                                 color:
                                     inventoryMouse.containsMouse
@@ -2591,182 +2760,99 @@ ApplicationWindow {
                                 RowLayout {
                                     anchors.fill: parent
 
-                                    anchors.leftMargin: 16
-                                    anchors.rightMargin: 58
+                                    anchors.leftMargin: 12
+                                    anchors.rightMargin: 46
 
-                                    spacing: 14
+                                    layoutDirection: Qt.RightToLeft
 
-
-                                    // =================================
-                                    // ITEM ID
-                                    // =================================
-
-                                    Rectangle {
-                                        Layout.preferredWidth: 64
-                                        Layout.preferredHeight: 64
-
-                                        radius: 8
-
-                                        color:
-                                            theme.bgSecondary
-
-                                        border.color:
-                                            theme.goldDark
-
-                                        border.width: 1
+                                    spacing: 10
 
 
-                                        Column {
-                                            anchors.centerIn: parent
+                                    Label {
+                                        objectName: "inventoryItemNumber"
+                                        Layout.preferredWidth: 52
 
-                                            spacing: 1
+                                        text: "#" + modelData.inventory_item_id
 
+                                        color: theme.gold
 
-                                            Label {
-                                                anchors.horizontalCenter:
-                                                    parent.horizontalCenter
+                                        font.family: "Cairo"
+                                        font.pixelSize: 13
+                                        font.bold: true
 
-                                                text: "#"
-
-                                                color:
-                                                    theme.textDisabled
-
-                                                font.family: "Cairo"
-                                                font.pixelSize: 10
-                                            }
-
-
-                                            Label {
-                                                anchors.horizontalCenter:
-                                                    parent.horizontalCenter
-
-                                                text:
-                                                    modelData.inventory_item_id
-
-                                                color:
-                                                    theme.gold
-
-                                                font.family: "Cairo"
-                                                font.pixelSize: 16
-                                                font.bold: true
-                                            }
-                                        }
+                                        horizontalAlignment: Text.AlignRight
                                     }
 
 
-                                    // =================================
-                                    // MAIN INFO
-                                    // =================================
+                                    Label {
+                                        Layout.preferredWidth: 104
 
-                                    ColumnLayout {
+                                        text:
+                                            modelData.item_type_name
+                                            || "صنف غير محدد"
+
+                                        color: theme.textPrimary
+
+                                        font.family: "Cairo"
+                                        font.pixelSize: 13
+                                        font.bold: true
+
+                                        elide: Text.ElideLeft
+                                        horizontalAlignment: Text.AlignRight
+                                    }
+
+
+                                    Label {
+                                        objectName: "inventoryKaratWeight"
+                                        Layout.preferredWidth: 138
+
+                                        text:
+                                            "عيار "
+                                            + (modelData.karat_value || "—")
+                                            + "  •  "
+                                            + inventoryPage.weightText(
+                                                modelData.weight_grams
+                                            )
+                                            + " جرام"
+
+                                        color: theme.textSecondary
+
+                                        font.family: "Cairo"
+                                        font.pixelSize: 12
+
+                                        elide: Text.ElideLeft
+                                        horizontalAlignment: Text.AlignRight
+                                    }
+
+
+                                    Label {
                                         Layout.fillWidth: true
 
-                                        spacing: 2
-
-
-                                        Label {
-                                            Layout.fillWidth: true
-
-                                            text:
-                                                modelData.item_type_name
-                                                || "صنف غير محدد"
-
-                                            color:
-                                                theme.textPrimary
-
-                                            font.family: "Cairo"
-                                            font.pixelSize: 14
-                                            font.bold: true
-
-                                            horizontalAlignment:
-                                                Text.AlignRight
-                                        }
-
-
-                                        Label {
-                                            Layout.fillWidth: true
-
-                                            text:
-                                                "عيار "
-                                                + (
-                                                    modelData.karat_value
-                                                    || "—"
-                                                )
-                                                + "   •   "
-                                                + inventoryPage.weightText(
-                                                    modelData.weight_grams
-                                                )
-
-                                            color:
-                                                theme.textSecondary
-
-                                            font.family: "Cairo"
-                                            font.pixelSize: 11
-
-                                            horizontalAlignment:
-                                                Text.AlignRight
-                                        }
-
-
-                                        Label {
-                                            Layout.fillWidth: true
-
-                                            text:
-                                                "المصنع: "
-                                                + (
-                                                    modelData.factory_name
-                                                    || "—"
-                                                )
-                                                + "   •   الفئة: "
-                                                + (
-                                                    modelData.category_code
-                                                    || "—"
-                                                )
-
-                                            color:
-                                                theme.textMuted
-
-                                            font.family: "Cairo"
-                                            font.pixelSize: 11
-
-                                            horizontalAlignment:
-                                                Text.AlignRight
-                                        }
-
-
-                                        Label {
-                                            visible:
+                                        text:
+                                            (modelData.factory_name || "—")
+                                            + "  •  "
+                                            + (modelData.category_code || "—")
+                                            + (
                                                 modelData.size !== null
                                                 && modelData.size !== undefined
-                                                && String(
-                                                    modelData.size
-                                                ).length > 0
+                                                && String(modelData.size).length > 0
+                                                ? "  •  مقاس " + modelData.size
+                                                : ""
+                                            )
 
-                                            Layout.fillWidth: true
+                                        color: theme.textMuted
 
-                                            text:
-                                                "المقاس: "
-                                                + modelData.size
+                                        font.family: "Cairo"
+                                        font.pixelSize: 11
 
-                                            color:
-                                                theme.textDisabled
-
-                                            font.family: "Cairo"
-                                            font.pixelSize: 10
-
-                                            horizontalAlignment:
-                                                Text.AlignRight
-                                        }
+                                        elide: Text.ElideLeft
+                                        horizontalAlignment: Text.AlignRight
                                     }
 
 
-                                    // =================================
-                                    // STOCK CLASS
-                                    // =================================
-
                                     Rectangle {
-                                        Layout.preferredWidth: 110
-                                        Layout.preferredHeight: 32
+                                        Layout.preferredWidth: 84
+                                        Layout.preferredHeight: 24
 
                                         radius: 6
 
@@ -2807,15 +2893,12 @@ ApplicationWindow {
                                     }
 
 
-                                    // =================================
-                                    // BARCODE STATE
-                                    // =================================
-
                                     Rectangle {
                                         objectName: "inventoryBarcodeBox"
-                                        Layout.preferredWidth: 155
-                                        Layout.maximumWidth: 155
-                                        Layout.preferredHeight: 46
+                                        Layout.preferredWidth: 150
+                                        Layout.maximumWidth: 150
+                                        Layout.preferredHeight: 26
+
                                         // A long barcode never spills over its neighbours or the checkbox:
                                         // the text fits (down to 9 px), then elides in the middle; the full
                                         // value stays stored and is shown on hover.
@@ -2839,61 +2922,66 @@ ApplicationWindow {
                                         border.width: 1
 
 
-                                        Column {
+                                        Label {
+                                            visible: !modelData.barcode_value
+
+                                            anchors.centerIn: parent
+
+                                            text: "⚠ بدون باركود"
+
+                                            color: theme.amber
+
+                                            font.family: "Cairo"
+                                            font.pixelSize: 11
+                                            font.bold: true
+                                        }
+
+
+                                        Label {
+                                            visible:
+                                                Boolean(
+                                                    modelData.barcode_value
+                                                )
+
+                                            objectName: "inventoryBarcodeText"
                                             anchors.centerIn: parent
                                             width: parent.width - 12
+                                            horizontalAlignment: Text.AlignHCenter
 
-                                            spacing: 1
+                                            text:
+                                                modelData.barcode_value
+                                                || ""
 
+                                            color:
+                                                theme.textPrimary
 
-                                            Label {
-                                                anchors.horizontalCenter:
-                                                    parent.horizontalCenter
-
-                                                text:
-                                                    modelData.barcode_value
-                                                    ? "الباركود"
-                                                    : "⚠ بدون باركود"
-
-                                                color:
-                                                    modelData.barcode_value
-                                                    ? theme.textMuted
-                                                    : theme.amber
-
-                                                font.family: "Cairo"
-                                                font.pixelSize: 9
-                                                font.bold:
-                                                    !modelData.barcode_value
-                                            }
-
-
-                                            Label {
-                                                visible:
-                                                    Boolean(
-                                                        modelData.barcode_value
-                                                    )
-
-                                                anchors.horizontalCenter:
-                                                    parent.horizontalCenter
-
-                                                objectName: "inventoryBarcodeText"
-                                                width: parent.width
-                                                horizontalAlignment: Text.AlignHCenter
-
-                                                text:
-                                                    modelData.barcode_value
-                                                    || ""
-
-                                                color:
-                                                    theme.textPrimary
-
-                                                font.family: "Cairo"
-                                                font.pixelSize: 12
-                                                fontSizeMode: Text.HorizontalFit
-                                                minimumPixelSize: 9
-                                                elide: Text.ElideMiddle
-                                            }
+                                            font.family: "Cairo"
+                                            font.pixelSize: 12
+                                            fontSizeMode: Text.HorizontalFit
+                                            minimumPixelSize: 9
+                                            elide: Text.ElideMiddle
                                         }
+                                    }
+
+
+                                    Label {
+                                        objectName: "inventoryStatusText"
+                                        Layout.preferredWidth: 78
+
+                                        text:
+                                            inventoryPage.statusText(
+                                                modelData.inventory_status
+                                            )
+
+                                        color:
+                                            modelData.inventory_status === "IN_STOCK"
+                                            ? theme.green
+                                            : theme.amber
+
+                                        font.family: "Cairo"
+                                        font.pixelSize: 11
+
+                                        horizontalAlignment: Text.AlignRight
                                     }
                                 }
 
@@ -2917,6 +3005,11 @@ ApplicationWindow {
 
                                 CheckBox {
                                     id: inventorySelectBox
+                                    objectName: "inventorySelectBox"
+
+                                    // بدون باركود: no checkbox at all (nothing to print, no label consumed).
+                                    visible: inventoryRow.printable
+                                    enabled: inventoryRow.printable
 
                                     z: 5
 
@@ -2980,6 +3073,7 @@ ApplicationWindow {
                 BillingWorkspace {
                     id: billingWorkspace
                     pageTitle: "🧾 الفواتير"
+                    onCustomerRequested: function(customerId) { root.openCustomerDetails(customerId) }
                 }
 
 
@@ -2991,6 +3085,7 @@ ApplicationWindow {
 
 
                 CustomersPage {
+                    id: customersWorkspace
                     pageTitle: "👥 العملاء"
                 }
 
@@ -3007,6 +3102,7 @@ ApplicationWindow {
                         root.currentPage = 1
                         correctionVM.openFinancialOperation(operationId)
                     }
+                    onCustomerRequested: function(customerId) { root.openCustomerDetails(customerId) }
                 }
 
 
@@ -3041,6 +3137,12 @@ ApplicationWindow {
                 // index 10: one review area for every management review type
                 ManagementReviewPage {
                     pageTitle: "مراجعات المدير"
+                    onInvoiceRequested: function(invoiceId) {
+                        root.currentPage = 1
+                        billingWorkspace.currentTab = 1
+                        invoiceHistoryVM.openInvoice(invoiceId)
+                    }
+                    onCustomerRequested: function(customerId) { root.openCustomerDetails(customerId) }
                 }
 
                 // index 11: بيان المخزون — current stock by karat → item type (read only)
@@ -3051,6 +3153,13 @@ ApplicationWindow {
                 // index 12: الجرد بالباركود — transient barcode counting session (read only)
                 StocktakePage {
                     onBackRequested: root.currentPage = 2
+                }
+
+                // index 13: Settings → المستخدمون والصلاحيات (USERS_MANAGE, owner only)
+                UsersAdminPage {
+                    objectName: "usersAdminPage"
+                    pageTitle: "المستخدمون والصلاحيات"
+                    onBackRequested: root.currentPage = 6
                 }
 
             }
@@ -3212,6 +3321,7 @@ ApplicationWindow {
                         || root.currentPage === 7
                         || root.currentPage === 8
                         || root.currentPage === 9
+                        || root.currentPage === 13
                     onClicked:
                         root.currentPage = 6
                 }
@@ -3512,7 +3622,7 @@ ApplicationWindow {
         CustomerAccountPage {
             anchors.fill: parent
             z: 10
-            visible: typeof customerAccountVM !== "undefined" && customerAccountVM.isOpen
+            visible: typeof customerAccountVM !== "undefined" && customerAccountVM.isOpen && !customersPage.showProfile
             onInvoiceRequested: function(invoiceId) {
                 root.currentPage = 1
                 billingWorkspace.currentTab = 1
@@ -3526,6 +3636,32 @@ ApplicationWindow {
                 root.currentPage = 1
                 correctionVM.openCustomerDeposit(depositId)
             }
+            // The ONE write-off flow (customerVM.openWriteOff / writeOffDialog) acts on customerVM's selection,
+            // so it is pinned to the account's immutable customer id first; any mismatch refuses to open it.
+            // عكس الشطب from the write-off row itself: the ONE existing reversal dialog (reason + password).
+            onDeadCashReversalRequested: function(customerId, deadCashId, reference, amountText) {
+                if (!customerId || customerAccountVM.customerId !== customerId)
+                    return
+                if (customerVM.selectedCustomerId !== customerId && !customerVM.selectCustomer(customerId))
+                    return
+                if (customerVM.selectedCustomerId !== customerId || !customerVM.canReverseDeadCash)
+                    return
+                reverseDeadCashDialog.begin(deadCashId, reference, amountText)
+            }
+            onDeadCashRequested: function(customerId) {
+                if (!customerId || customerAccountVM.customerId !== customerId)
+                    return
+                if (customerVM.selectedCustomerId !== customerId && !customerVM.selectCustomer(customerId))
+                    return
+                if (customerVM.selectedCustomerId !== customerId || customerAccountVM.customerId !== customerId)
+                    return
+                if (!customerVM.canWriteOff)
+                    return
+                if (customerVM.openWriteOff() && customerVM.selectedCustomerId === customerId)
+                    writeOffDialog.begin()
+                else
+                    customerVM.closeWriteOff()
+            }
         }
 
         id: customersPage
@@ -3533,6 +3669,12 @@ ApplicationWindow {
         property string pageTitle: ""
         property bool initialized: false
         property int historyTab: 0
+        property bool skipEntryRefresh: false
+        property bool showProfile: false
+        function revealDetails() {
+            historyTab = 0
+            customerBodyScroll.contentItem.contentY = Math.max(0, customerProfileCard.y)
+        }
         readonly property var customer: customerVM.selectedCustomer || ({})
         readonly property var statement: customerVM.statementSummary || ({})
         readonly property var filterTypes: [{"id": 0, "label": "كل أنواع العملاء"}].concat(customerVM.customerTypes)
@@ -3540,6 +3682,7 @@ ApplicationWindow {
         function initialize() {
             if (visible) {
                 initialized = true
+                if (skipEntryRefresh) { skipEntryRefresh = false; customerVM.refreshList(); return }
                 customerVM.refresh()
                 customerAccountVM.refresh()
             }
@@ -3590,7 +3733,7 @@ ApplicationWindow {
                 CustomerButton {
                     text: "\u0643\u0634\u0641 \u062d\u0633\u0627\u0628 / \u062a\u0633\u0648\u064a\u0629"
                     enabled: !!customerVM.selectedCustomerId
-                    onClicked: customerAccountVM.open(customerVM.selectedCustomerId)
+                    onClicked: { customersPage.showProfile = false; customerAccountVM.open(customerVM.selectedCustomerId) }
                 }
                 CustomerButton {
                     objectName: "addCustomerButton"
@@ -3759,62 +3902,74 @@ ApplicationWindow {
                                 delegate: CustomerCard {
                                     required property var modelData
                                     width: customerList.width - 12
-                                    height: customerRow.implicitHeight + 20
+                                    // Compact: two lines (identity / contact + balance) instead of eight.
+                                    height: customerRow.implicitHeight + 12
                                     color: customerVM.selectedCustomerId === modelData.id ? theme.bgTertiary : theme.bgPrimary
                                     border.color: customerVM.selectedCustomerId === modelData.id ? theme.gold : theme.border
                                     ColumnLayout {
                                         id: customerRow
                                         anchors.fill: parent
-                                        anchors.margins: 10
-                                        spacing: 3
+                                        anchors.topMargin: 6
+                                        anchors.bottomMargin: 6
+                                        anchors.leftMargin: 10
+                                        anchors.rightMargin: 10
+                                        spacing: 1
                                         RowLayout {
                                             Layout.fillWidth: true
+                                            layoutDirection: Qt.RightToLeft
+                                            spacing: 8
+                                            CustomerLabel {
+                                                objectName: "customerRowName"
+                                                Layout.fillWidth: true
+                                                value: String(modelData.name || "")
+                                                font.bold: true
+                                                font.pixelSize: 13
+                                                wrapMode: Text.NoWrap
+                                                elide: Text.ElideLeft
+                                            }
+                                            CustomerLabel {
+                                                value: "#" + modelData.id + "  ·  " + (modelData.customer_code || "—")
+                                                color: theme.gold
+                                                font.pixelSize: 11
+                                                wrapMode: Text.NoWrap
+                                            }
                                             CustomerLabel {
                                                 value: String(modelData.status_label || "")
                                                 color: modelData.is_active ? theme.green : theme.textMuted
                                                 font.pixelSize: 10
+                                                wrapMode: Text.NoWrap
+                                            }
+                                        }
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            layoutDirection: Qt.RightToLeft
+                                            spacing: 8
+                                            CustomerLabel {
+                                                objectName: "customerRowContact"
+                                                Layout.fillWidth: true
+                                                value: [modelData.mobile, modelData.type_label, modelData.place]
+                                                       .filter(function(v) { return v && String(v).length > 0 }).join("  ·  ") || "—"
+                                                color: theme.textSecondary
+                                                font.pixelSize: 11
+                                                wrapMode: Text.NoWrap
+                                                elide: Text.ElideLeft
                                             }
                                             CustomerLabel {
-                                                Layout.fillWidth: true
-                                                value: String(modelData.name || "")
-                                                font.bold: true
+                                                value: "آخر حركة: " + (modelData.last_transaction_text || "—")
+                                                color: theme.textMuted
+                                                font.pixelSize: 10
+                                                wrapMode: Text.NoWrap
+                                                elide: Text.ElideLeft
+                                                Layout.maximumWidth: 150
                                             }
-                                        }
-                                        CustomerLabel {
-                                            Layout.fillWidth: true
-                                            value: "رقم العميل: " + modelData.id
-                                            color: theme.gold
-                                            font.pixelSize: 13
-                                            font.bold: true
-                                        }
-                                        CustomerLabel {
-                                            Layout.fillWidth: true
-                                            value: "الكود: " + (modelData.customer_code || "—")
-                                            color: theme.textMuted
-                                            font.pixelSize: 10
-                                        }
-                                        CustomerLabel {
-                                            Layout.fillWidth: true
-                                            value: "الهاتف: " + (modelData.mobile || "—") + "  |  " + (modelData.type_label || "—")
-                                            color: theme.textSecondary
-                                            font.pixelSize: 10
-                                        }
-                                        CustomerLabel {
-                                            Layout.fillWidth: true
-                                            value: "المكان: " + (modelData.place || "—")
-                                            color: theme.textSecondary
-                                            font.pixelSize: 10
-                                        }
-                                        CustomerLabel {
-                                            Layout.fillWidth: true
-                                            value: String(modelData.balance_text || "") + " — " + (modelData.balance_meaning || "")
-                                            color: modelData.balance_nonzero ? theme.gold : theme.green
-                                        }
-                                        CustomerLabel {
-                                            Layout.fillWidth: true
-                                            value: "آخر حركة: " + (modelData.last_transaction_text || "—")
-                                            color: theme.textMuted
-                                            font.pixelSize: 10
+                                            CustomerLabel {
+                                                objectName: "customerRowBalance"
+                                                value: String(modelData.balance_text || "") + " — " + (modelData.balance_meaning || "")
+                                                color: modelData.balance_nonzero ? theme.gold : theme.green
+                                                font.pixelSize: 12
+                                                font.bold: true
+                                                wrapMode: Text.NoWrap
+                                            }
                                         }
                                     }
                                     MouseArea {
@@ -3858,6 +4013,7 @@ ApplicationWindow {
                     }
 
                     CustomerCard {
+                        id: customerProfileCard
                         objectName: "customerProfileCard"
                         Layout.fillWidth: true
                         Layout.alignment: Qt.AlignTop
@@ -3871,6 +4027,7 @@ ApplicationWindow {
                             anchors.margins: 12
                             spacing: 8
                             CustomerLabel {
+                                objectName: "customerProfileName"
                                 Layout.fillWidth: true
                                 value: customerVM.hasSelection ? String(customersPage.customer.name || "") : "ملف العميل"
                                 color: theme.gold
@@ -4983,6 +5140,7 @@ ApplicationWindow {
     component SettingsPage: Item {
         property string pageTitle: ""
         Rectangle { anchors.fill: parent; color: theme.bgPrimary }
+        onVisibleChanged: if (visible && typeof userAdminVM !== "undefined" && userAdminVM.canManage) userAdminVM.refresh()
         // The Test Connection result card is the last item on this page:
         // once the layout settles, scroll to the end so the whole card shows.
         Connections {
@@ -5047,6 +5205,15 @@ ApplicationWindow {
                         subtitle: masterDataVM.disabledFactoryCount > 0 ? masterDataVM.disabledFactoryCount + " مصنع معطل" : "إدارة المصانع"
                         accentColor: theme.blue; clickable: true; Layout.preferredHeight: 92
                         onClicked: { masterDataVM.refresh(); root.currentPage = 7 }
+                    }
+                    // Owner only (USERS_MANAGE, re-checked by the service on every call).
+                    SettingsCard {
+                        objectName: "settingsUsers"
+                        visible: typeof userAdminVM !== "undefined" && userAdminVM.canManage
+                        title: "المستخدمون والصلاحيات"; value: userAdminVM.users.length.toString()
+                        subtitle: "المستخدمون وأدوارهم وصلاحيات كل دور"
+                        accentColor: theme.accountReceivable; clickable: true; Layout.preferredHeight: 92
+                        onClicked: { userAdminVM.refresh(); root.currentPage = 13 }
                     }
                     SettingsCard {
                         objectName: "settingsItemTypes"
@@ -5482,19 +5649,19 @@ ApplicationWindow {
                                 }
                             }
 
-                            Button {
-                                objectName: "deleteDisabledFactory"
-                                id: deleteDisabledFactory
+                            Rectangle {
+                                Layout.preferredWidth: 1
+                                Layout.preferredHeight: 46
+                                color: theme.border
                                 visible: factoriesPage.showDisabled
-                                flat: true
-                                text: "🗑  حذف نهائي"
-                                font.family: "Cairo"
-                                font.pixelSize: 11
-                                contentItem: Label {
-                                    text: deleteDisabledFactory.text; color: theme.red; font: deleteDisabledFactory.font
-                                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
-                                }
-                                onClicked: deleteMasterDialog.ask("factory", Number(modelData.id), modelData.name || "")
+                            }
+
+                            DisabledDeleteZone {
+                                visible: factoriesPage.showDisabled
+                                everUsed: modelData.ever_used !== false
+                                buttonName: "deleteDisabledFactory"
+                                blockedName: "deleteBlockedFactory"
+                                onDeleteRequested: deleteMasterDialog.ask("factory", Number(modelData.id), modelData.name || "")
                             }
 
 
@@ -5987,19 +6154,19 @@ ApplicationWindow {
                                 }
                             }
 
-                            Button {
-                                objectName: "deleteDisabledItemType"
-                                id: deleteDisabledItemType
+                            Rectangle {
+                                Layout.preferredWidth: 1
+                                Layout.preferredHeight: 46
+                                color: theme.border
                                 visible: itemTypesPage.showDisabled
-                                flat: true
-                                text: "🗑  حذف نهائي"
-                                font.family: "Cairo"
-                                font.pixelSize: 11
-                                contentItem: Label {
-                                    text: deleteDisabledItemType.text; color: theme.red; font: deleteDisabledItemType.font
-                                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
-                                }
-                                onClicked: deleteMasterDialog.ask("itemType", Number(modelData.id), modelData.name || "")
+                            }
+
+                            DisabledDeleteZone {
+                                visible: itemTypesPage.showDisabled
+                                everUsed: modelData.ever_used !== false
+                                buttonName: "deleteDisabledItemType"
+                                blockedName: "deleteBlockedItemType"
+                                onDeleteRequested: deleteMasterDialog.ask("itemType", Number(modelData.id), modelData.name || "")
                             }
 
 
@@ -7769,6 +7936,71 @@ ApplicationWindow {
     }
 
 
+    // The permanent-delete area of a DISABLED Master Data row: a separate danger zone, never beside the
+    // ordinary actions. A record that was ever used shows the reason instead of a button (the service
+    // refuses the delete regardless of this display).
+    component DisabledDeleteZone: Rectangle {
+        id: deleteZone
+
+        property bool everUsed: true
+        property string buttonName: ""
+        property string blockedName: ""
+
+        signal deleteRequested()
+
+        Layout.preferredWidth: 250
+        Layout.preferredHeight: 62
+        radius: theme.radiusSmall
+        color: "transparent"
+        border.color: deleteZone.everUsed ? theme.border : theme.red
+        border.width: 1
+
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 6
+            spacing: 2
+
+            Label {
+                Layout.fillWidth: true
+                text: "منطقة الإجراءات الحساسة"
+                color: deleteZone.everUsed ? theme.textDisabled : theme.red
+                font.family: "Cairo"
+                font.pixelSize: 10
+                horizontalAlignment: Text.AlignRight
+            }
+
+            Label {
+                objectName: deleteZone.blockedName
+                visible: deleteZone.everUsed
+                Layout.fillWidth: true
+                text: "لا يمكن الحذف النهائي لأن السجل استُخدم سابقًا."
+                color: theme.textMuted
+                font.family: "Cairo"
+                font.pixelSize: 10
+                wrapMode: Text.WordWrap
+                horizontalAlignment: Text.AlignRight
+            }
+
+            Button {
+                id: deleteZoneButton
+                objectName: deleteZone.buttonName
+                visible: !deleteZone.everUsed
+                Layout.fillWidth: true
+                Layout.preferredHeight: 28
+                flat: true
+                text: "🗑  حذف نهائي"
+                font.family: "Cairo"
+                font.pixelSize: 11
+                contentItem: Label {
+                    text: deleteZoneButton.text; color: theme.red; font: deleteZoneButton.font
+                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                }
+                onClicked: deleteZone.deleteRequested()
+            }
+        }
+    }
+
+
     // ========================================================
     // SETTINGS CARD
     // ========================================================
@@ -7952,8 +8184,8 @@ ApplicationWindow {
             ColumnLayout {
                 Layout.fillWidth: true
 
-                Layout.leftMargin: 22
-                Layout.rightMargin: 22
+                Layout.leftMargin: 30
+                Layout.rightMargin: 30
 
                 spacing: 8
 
@@ -8081,8 +8313,8 @@ ApplicationWindow {
             RowLayout {
                 Layout.fillWidth: true
 
-                Layout.leftMargin: 22
-                Layout.rightMargin: 22
+                Layout.leftMargin: 30
+                Layout.rightMargin: 30
                 Layout.bottomMargin: 20
 
                 spacing: 10
@@ -8162,7 +8394,23 @@ ApplicationWindow {
         dim: true
         Overlay.modal: Rectangle {
         color: "#80000000"}
+
         width: 500
+
+        x:
+            Math.round(
+                (root.width - width) / 2
+            )
+
+        y:
+            Math.round(
+                (root.height - height) / 2
+            )
+
+        padding: 0
+
+        closePolicy:
+            Popup.CloseOnEscape
 
 
         function openFactory(factoryData) {
@@ -8185,78 +8433,198 @@ ApplicationWindow {
         }
 
 
-        ColumnLayout {
-            spacing: 10
+        background: Rectangle {
+            color: theme.bgSecondary
+
+            radius: 10
+
+            border.color: theme.border
+            border.width: 1
+        }
 
 
-            Label {
-                text: "✏️ تعديل المصنع"
+        contentItem: ColumnLayout {
+            spacing: 14
 
+
+            Rectangle {
                 Layout.fillWidth: true
+                Layout.preferredHeight: 62
 
-                color: theme.gold
+                color: theme.bgTertiary
 
-                font.family: "Cairo"
-                font.bold: true
+                radius: 10
 
-                horizontalAlignment:
-                    Text.AlignRight
+
+                Label {
+                    anchors.centerIn: parent
+
+                    text: "✏️  تعديل المصنع"
+
+                    color: theme.gold
+
+                    font.family: "Cairo"
+                    font.pixelSize: 17
+                    font.bold: true
+                }
             }
 
 
-            TextField {
-                id: editFactoryNameField
-
+            ColumnLayout {
                 Layout.fillWidth: true
 
-                placeholderText: "اسم المصنع"
+                Layout.leftMargin: 30
+                Layout.rightMargin: 30
 
-                horizontalAlignment:
-                    TextInput.AlignRight
-            }
-
-
-            TextField {
-                id: editFactoryCodeField
-
-                Layout.fillWidth: true
-
-                placeholderText: "الكود"
-
-                horizontalAlignment:
-                    TextInput.AlignRight
-            }
+                spacing: 8
 
 
-            TextArea {
-                id: editFactoryNotesField
+                Label {
+                    text:
+                        "رقم المصنع: #"
+                        + editFactoryDialog.factoryId
 
-                Layout.fillWidth: true
-                Layout.preferredHeight: 90
+                    Layout.fillWidth: true
 
-                horizontalAlignment:
-                    TextEdit.AlignRight
-            }
+                    color: theme.textDisabled
+
+                    font.family: "Cairo"
+                    font.pixelSize: 10
+
+                    horizontalAlignment:
+                        Text.AlignRight
+                }
 
 
-            Label {
-                id: editFactoryError
+                Label {
+                    text: "اسم المصنع *"
 
-                visible: text.length > 0
+                    Layout.fillWidth: true
 
-                Layout.fillWidth: true
+                    color: theme.textSecondary
 
-                color: theme.red
+                    font.family: "Cairo"
+                    font.pixelSize: 12
 
-                horizontalAlignment:
-                    Text.AlignRight
+                    horizontalAlignment:
+                        Text.AlignRight
+                }
+
+
+                TextField {
+                    id: editFactoryNameField
+                    objectName: "editFactoryNameField"
+
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 44
+
+                    color: theme.textPrimary
+
+                    font.family: "Cairo"
+                    font.pixelSize: 13
+
+                    horizontalAlignment:
+                        TextInput.AlignRight
+                }
+
+
+                Label {
+                    text: "الكود"
+
+                    Layout.fillWidth: true
+
+                    color: theme.textSecondary
+
+                    font.family: "Cairo"
+                    font.pixelSize: 12
+
+                    horizontalAlignment:
+                        Text.AlignRight
+                }
+
+
+                TextField {
+                    id: editFactoryCodeField
+
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 44
+
+                    color: theme.textPrimary
+
+                    font.family: "Cairo"
+                    font.pixelSize: 13
+
+                    horizontalAlignment:
+                        TextInput.AlignRight
+                }
+
+
+                Label {
+                    text: "ملاحظات"
+
+                    Layout.fillWidth: true
+
+                    color: theme.textSecondary
+
+                    font.family: "Cairo"
+                    font.pixelSize: 12
+
+                    horizontalAlignment:
+                        Text.AlignRight
+                }
+
+
+                TextArea {
+                    id: editFactoryNotesField
+
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 90
+
+                    color: theme.textPrimary
+
+                    font.family: "Cairo"
+
+                    horizontalAlignment:
+                        TextEdit.AlignRight
+
+                    wrapMode: TextEdit.Wrap
+                }
+
+
+                Label {
+                    id: editFactoryError
+
+                    visible: text.length > 0
+
+                    Layout.fillWidth: true
+
+                    color: theme.red
+
+                    font.family: "Cairo"
+
+                    horizontalAlignment:
+                        Text.AlignRight
+
+                    wrapMode: Text.WordWrap
+                }
             }
 
 
             RowLayout {
+                Layout.fillWidth: true
+
+                Layout.leftMargin: 30
+                Layout.rightMargin: 30
+                Layout.bottomMargin: 20
+
+                spacing: 10
+
 
                 Button {
-                    text: "⛔ تعطيل"
+                    objectName: "disableFactoryButton"
+                    text: "⛔  تعطيل المصنع"
+
+                    font.family: "Cairo"
 
                     onClicked: {
 
@@ -8270,21 +8638,6 @@ ApplicationWindow {
                     }
                 }
 
-                Button {
-                    objectName: "deleteFactoryButton"
-                    id: deleteFactoryButton
-                    flat: true
-                    text: "🗑  حذف نهائي"
-                    font.family: "Cairo"
-                    font.pixelSize: 11
-                    contentItem: Label {
-                        text: deleteFactoryButton.text; color: theme.red; font: deleteFactoryButton.font
-                        horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
-                    }
-                    onClicked: deleteMasterDialog.ask("factory", editFactoryDialog.factoryId,
-                                                      editFactoryNameField.text)
-                }
-
 
                 Item {
                     Layout.fillWidth: true
@@ -8292,9 +8645,38 @@ ApplicationWindow {
 
 
                 Button {
-                    text: "حفظ"
+                    text: "إلغاء"
+
+                    font.family: "Cairo"
+
+                    onClicked:
+                        editFactoryDialog.close()
+                }
+
+
+                Button {
+                    objectName: "saveFactoryEditButton"
+                    text: "💾  حفظ التعديلات"
+
+                    font.family: "Cairo"
+                    font.bold: true
 
                     onClicked: {
+
+                        editFactoryError.text = ""
+
+                        if (
+                            editFactoryNameField.text
+                            .trim()
+                            .length === 0
+                        ) {
+
+                            editFactoryError.text =
+                                "اسم المصنع مطلوب."
+
+                            return
+                        }
+
 
                         var saved =
                             masterDataVM.updateFactory(
@@ -8517,8 +8899,8 @@ ApplicationWindow {
             ColumnLayout {
                 Layout.fillWidth: true
 
-                Layout.leftMargin: 22
-                Layout.rightMargin: 22
+                Layout.leftMargin: 30
+                Layout.rightMargin: 30
 
                 spacing: 8
 
@@ -8684,8 +9066,8 @@ ApplicationWindow {
             RowLayout {
                 Layout.fillWidth: true
 
-                Layout.leftMargin: 22
-                Layout.rightMargin: 22
+                Layout.leftMargin: 30
+                Layout.rightMargin: 30
                 Layout.bottomMargin: 20
 
                 spacing: 10
@@ -8877,8 +9259,8 @@ ApplicationWindow {
             ColumnLayout {
                 Layout.fillWidth: true
 
-                Layout.leftMargin: 22
-                Layout.rightMargin: 22
+                Layout.leftMargin: 30
+                Layout.rightMargin: 30
 
                 spacing: 8
 
@@ -8916,6 +9298,7 @@ ApplicationWindow {
 
                 TextField {
                     id: editItemTypeNameField
+                    objectName: "editItemTypeNameField"
 
                     Layout.fillWidth: true
                     Layout.preferredHeight: 44
@@ -9036,8 +9419,8 @@ ApplicationWindow {
             RowLayout {
                 Layout.fillWidth: true
 
-                Layout.leftMargin: 22
-                Layout.rightMargin: 22
+                Layout.leftMargin: 30
+                Layout.rightMargin: 30
                 Layout.bottomMargin: 20
 
                 spacing: 10
@@ -9061,20 +9444,6 @@ ApplicationWindow {
                     }
                 }
 
-                Button {
-                    objectName: "deleteItemTypeButton"
-                    id: deleteItemTypeButton
-                    flat: true
-                    text: "🗑  حذف نهائي"
-                    font.family: "Cairo"
-                    font.pixelSize: 11
-                    contentItem: Label {
-                        text: deleteItemTypeButton.text; color: theme.red; font: deleteItemTypeButton.font
-                        horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
-                    }
-                    onClicked: deleteMasterDialog.ask("itemType", editItemTypeDialog.itemTypeId,
-                                                      editItemTypeNameField.text)
-                }
 
 
                 Item {
@@ -9523,7 +9892,6 @@ ApplicationWindow {
 
         function resetForm() {
 
-            employeeCombo.currentIndex = -1
             itemTypeCombo.currentIndex = -1
             karatCombo.currentIndex = -1
             categoryCombo.currentIndex = -1
@@ -9538,9 +9906,28 @@ ApplicationWindow {
 
             notesField.text = ""
             inventoryEntryError.text = ""
+            inventoryEntrySuccess.text = ""
 
             inventoryVM.clearActionMessage()
             oldGoldConversionVM.clearActionMessage()
+        }
+
+
+        // UX-INV-ADD-01: a batch of pieces is entered in one go. After a successful save only the
+        // piece-specific fields are cleared (weight, size, barcode, notes, the Scrap weight used); the batch
+        // choices (item type, karat, category, factory, entry method) stay, and the weight field takes focus.
+        function prepareNextPiece(message) {
+
+            weightField.text = ""
+            sizeField.text = ""
+            barcodeField.text = ""
+            oldGoldConsumedWeightField.text = ""
+            notesField.text = ""
+
+            inventoryEntryError.text = ""
+            inventoryEntrySuccess.text = message || "تم حفظ القطعة."
+
+            weightField.forceActiveFocus()
         }
 
 
@@ -9657,69 +10044,8 @@ ApplicationWindow {
                     // EMPLOYEE
                     // ------------------------------------------------
 
-                    // Manual entry has no responsible employee (owner decision). The old-gold
-                    // conversion still records who received the old gold in its ledger.
-                    Label {
-                        visible: stockClassificationCombo.currentIndex === 1
-                        Layout.fillWidth: true
-
-                        text: "الموظف المستلم للكسر *"
-
-                        color: theme.textSecondary
-
-                        font.family: "Cairo"
-                        font.pixelSize: 12
-
-                        horizontalAlignment:
-                            Text.AlignRight
-                    }
-
-
-                    ComboBox {
-                        id: employeeCombo
-                        objectName: "inventoryEmployeeCombo"
-                        visible: stockClassificationCombo.currentIndex === 1
-
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 44
-
-                        model:
-                            masterDataVM.employees
-
-                        textRole: "name"
-                        valueRole: "id"
-
-                        currentIndex: -1
-
-                        displayText:
-                            currentIndex >= 0
-                            ? currentText
-                            : "اختر الموظف"
-
-                    }
-
-
-                    Label {
-                        visible:
-                            stockClassificationCombo.currentIndex === 1
-                            && masterDataVM.employees.length === 0
-
-                        Layout.fillWidth: true
-
-                        text:
-                            "⚠ لا يوجد موظفون نشطون. التحويل من الكسر يتطلب موظفاً."
-
-                        color: theme.amber
-
-                        font.family: "Cairo"
-                        font.pixelSize: 11
-
-                        horizontalAlignment:
-                            Text.AlignRight
-
-                        wrapMode:
-                            Text.WordWrap
-                    }
+                    // No responsible / receiving employee: manual entry and the old-gold conversion
+                    // record the authenticated actor (owner decisions 2026-10-01 / 2026-10-02).
 
 
                     // ------------------------------------------------
@@ -9753,6 +10079,7 @@ ApplicationWindow {
 
                             ComboBox {
                                 id: itemTypeCombo
+                                objectName: "inventoryItemTypeCombo"
 
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 44
@@ -9800,6 +10127,7 @@ ApplicationWindow {
 
                             ComboBox {
                                 id: karatCombo
+                                objectName: "inventoryKaratCombo"
 
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 44
@@ -9856,6 +10184,7 @@ ApplicationWindow {
 
                             TextField {
                                 id: weightField
+                                objectName: "inventoryWeightField"
 
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 44
@@ -9902,6 +10231,7 @@ ApplicationWindow {
 
                             TextField {
                                 id: sizeField
+                                objectName: "inventorySizeField"
 
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 44
@@ -9958,6 +10288,7 @@ ApplicationWindow {
 
                                 ComboBox {
                                     id: categoryCombo
+                                    objectName: "inventoryCategoryCombo"
 
                                     Layout.fillWidth: true
                                     Layout.preferredHeight: 44
@@ -10024,6 +10355,7 @@ ApplicationWindow {
 
                                 ComboBox {
                                     id: factoryCombo
+                                    objectName: "inventoryFactoryCombo"
 
                                     Layout.fillWidth: true
                                     Layout.preferredHeight: 44
@@ -10089,6 +10421,7 @@ ApplicationWindow {
 
                             ComboBox {
                                 id: stockClassificationCombo
+                                objectName: "inventoryEntryMethodCombo"
 
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 44
@@ -10235,6 +10568,28 @@ ApplicationWindow {
                             }
 
 
+                            // Weight held for a manager decision is physically in Scrap but not usable (032).
+                            Label {
+                                objectName: "conversionHeldBreakdown"
+                                Layout.fillWidth: true
+                                visible: text.length > 0
+
+                                text:
+                                    karatCombo.currentIndex >= 0
+                                    ? oldGoldConversionVM.scrapBreakdownForKarat(
+                                          Number(karatCombo.currentValue))
+                                    : ""
+
+                                color: theme.amber
+                                font.family: "Cairo"
+                                font.pixelSize: 12
+                                wrapMode: Text.WordWrap
+
+                                horizontalAlignment:
+                                    Text.AlignRight
+                            }
+
+
                             RowLayout {
                                 Layout.fillWidth: true
 
@@ -10269,6 +10624,7 @@ ApplicationWindow {
                                     TextField {
                                         id:
                                             oldGoldConsumedWeightField
+                                        objectName: "inventoryScrapWeightField"
 
                                         Layout.fillWidth: true
                                         Layout.preferredHeight: 44
@@ -10415,6 +10771,7 @@ ApplicationWindow {
 
                     TextArea {
                         id: notesField
+                        objectName: "inventoryNotesField"
 
                         Layout.fillWidth: true
                         Layout.preferredHeight: 76
@@ -10436,8 +10793,33 @@ ApplicationWindow {
                     }
 
 
+                    // The last saved piece (the dialog stays open for the next one).
+                    Label {
+                        id: inventoryEntrySuccess
+                        objectName: "inventoryEntrySuccess"
+
+                        visible:
+                            text.length > 0
+
+                        Layout.fillWidth: true
+
+                        color: theme.green
+
+                        font.family: "Cairo"
+                        font.pixelSize: 12
+                        font.bold: true
+
+                        horizontalAlignment:
+                            Text.AlignRight
+
+                        wrapMode:
+                            Text.WordWrap
+                    }
+
+
                     Label {
                         id: inventoryEntryError
+                        objectName: "inventoryEntryError"
 
                         visible:
                             text.length > 0
@@ -10496,6 +10878,21 @@ ApplicationWindow {
                     }
 
 
+                    Label {
+                        objectName: "inventoryEntryNoRight"
+
+                        visible: !saveInventoryItem.enabled
+
+                        text: "لا تملك صلاحية هذا النوع من الإدخال."
+
+                        color: theme.statusWarning
+
+                        font.family: "Cairo"
+                        font.pixelSize: 11
+                        font.bold: true
+                    }
+
+
                     Button {
                         text: "إلغاء"
 
@@ -10505,12 +10902,15 @@ ApplicationWindow {
 
 
                     Button {
+                        id: saveInventoryItem
                         objectName: "saveInventoryItemButton"
                         text: "💾  حفظ القطعة"
 
-                        enabled:
-                            stockClassificationCombo.currentIndex === 0
-                            || masterDataVM.employees.length > 0
+                        // Manual entry needs INVENTORY_MANAGE, a piece converted from Scrap OLD_GOLD_MANAGE
+                        // (a hint: the services refuse the write without the right, whatever this screen shows).
+                        enabled: stockClassificationCombo.currentIndex === 0
+                                 ? inventoryVM.canManage
+                                 : oldGoldConversionVM.canManage
 
                         font.family: "Cairo"
                         font.bold: true
@@ -10518,14 +10918,8 @@ ApplicationWindow {
                         onClicked: {
 
                             inventoryEntryError.text = ""
+                            inventoryEntrySuccess.text = ""
 
-
-                            var employeeId =
-                                employeeCombo.currentIndex >= 0
-                                ? Number(
-                                    employeeCombo.currentValue
-                                  )
-                                : 0
 
                             var itemTypeId =
                                 itemTypeCombo.currentIndex >= 0
@@ -10593,7 +10987,6 @@ ApplicationWindow {
                                 saved =
                                     oldGoldConversionVM
                                     .convertToNewStock(
-                                        employeeId,
                                         itemTypeId,
                                         karatId,
                                         categoryId,
@@ -10618,7 +11011,12 @@ ApplicationWindow {
                                 inventoryVM.refresh()
                                 oldGoldConversionVM.refreshBalances()
 
-                                newInventoryItemDialog.close()
+                                // Stay open for the next piece (closed only by ✕ / إلغاء).
+                                newInventoryItemDialog.prepareNextPiece(
+                                    stockClassificationCombo.currentIndex === 0
+                                    ? inventoryVM.actionMessage
+                                    : oldGoldConversionVM.actionMessage
+                                )
                             }
                         }
                     }

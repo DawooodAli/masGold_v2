@@ -1,4 +1,5 @@
 from decimal import Decimal, InvalidOperation
+from services.number_text import normalize_digits
 
 from mysql.connector import IntegrityError
 
@@ -347,7 +348,7 @@ class MasterDataService:
         if value is None or (isinstance(value, str) and not value.strip()):
             return None
         try:
-            amount = Decimal(str(value).strip())
+            amount = Decimal(normalize_digits(str(value)).strip())
         except InvalidOperation:
             raise ValueError("Invalid numeric value.") from None
         if not amount.is_finite():
@@ -481,13 +482,15 @@ class MasterDataService:
             return repository.get_active_factories()
 
     def get_all_factories(self) -> list[dict]:
+        """Every row with `ever_used` (display hint for the permanent-delete area; the delete re-checks)."""
 
         with self._transaction() as transaction:
             repository = self._repository(
                 transaction.connection
             )
 
-            return repository.get_all_factories()
+            used = repository.used_master_ids("factories")
+            return [dict(row, ever_used=int(row["id"]) in used) for row in repository.get_all_factories()]
 
     def get_employees(self) -> list[dict]:
 
@@ -507,10 +510,12 @@ class MasterDataService:
             return repository.get_active_item_types()
 
     def get_all_item_types(self) -> list[dict]:
+        """Every row with `ever_used` (display hint for the permanent-delete area; the delete re-checks)."""
 
         with self._transaction() as transaction:
             repository = self._repository(
                 transaction.connection
             )
 
-            return repository.get_all_item_types()
+            used = repository.used_master_ids("item_types")
+            return [dict(row, ever_used=int(row["id"]) in used) for row in repository.get_all_item_types()]

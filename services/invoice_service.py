@@ -26,7 +26,7 @@ decides it:
     on the selected, typed account;
   * old gold only: nothing can absorb a rounding gap, so it is settled
     explicitly (limits, approval) or put on the account;
-  * with any new-gold sale line the old-gold discount must be 1.25–3.00%;
+  * every invoice that buys old gold (mixed or old gold only) keeps the discount at 1.25–5.00%;
   * F5 unidentified sales open a reconciliation case; F7 sales from old-gold
     stock deduct COUNTED grams; reviews never change price, balance or invoice.
 
@@ -38,7 +38,7 @@ snapshots stay UTC, as in the Gold Price Engine.
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 import uuid
 
 from config.database_config import DatabaseConfig
@@ -49,6 +49,7 @@ from repositories.authentication_repository import AuthenticationRepository
 from repositories.invoice_repository import InvoiceRepository
 from services.authorization_service import AuthorizationService
 from services.gold_price_service import GoldPriceService
+from services.old_gold_availability import held_grams, shortage_message
 from services.invoice_calculator import ZERO, InvoiceCalculationError, InvoiceCalculator as Calc
 
 
@@ -61,9 +62,24 @@ ACCOUNT_TYPE_FOR_METHOD = {"MOBILE_WALLET": "MOBILE_WALLET", "INSTAPAY": "BANK",
 # Shown while a supported method has no active account of its type (the method stays visible).
 NO_ACCOUNT_TEXT = {"MOBILE_WALLET": "لا توجد محفظة مفعلة", "BANK": "لا يوجد حساب بنكي مفعّل"}
 WITHIN_RANGE, OUT_OF_RANGE, NOT_CONFIGURED = "WITHIN_RANGE", "OUT_OF_RANGE", "NOT_CONFIGURED"
-# Old-gold discount allowed on any invoice that also sells new gold (hard rule).
-SALE_DISCOUNT_MIN, SALE_DISCOUNT_MAX = Decimal("1.25"), Decimal("3.00")
+# Old-gold discount allowed on every invoice that buys old gold — mixed AND old gold only (hard rule,
+# owner decision 2026-10-06: 1.25–5.00%, default 1.50%).
+SALE_DISCOUNT_MIN, SALE_DISCOUNT_MAX = Decimal("1.25"), Decimal("5.00")
 CUSTOMER_OWES, SHOP_OWES = "CUSTOMER_OWES", "SHOP_OWES"
+# Customer-facing money ends on a multiple of EGP 5 (owner rule). Internal values stay exact; only the
+# FINAL settlement amount is rounded, to the nearest 5 (half up), and the difference is recorded.
+EGP_STEP = Decimal("5")
+NOT_MULTIPLE_OF_5_TEXT = "المبلغ النهائي يجب أن يكون من مضاعفات 5 جنيه."
+
+
+def round_to_egp5(amount):
+    """60,272.15 -> 60,270.00; 60,272.50 -> 60,275.00 (exact Decimal, never float)."""
+    amount = Decimal(str(amount))
+    return ((amount / EGP_STEP).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * EGP_STEP).quantize(Decimal("0.01"))
+
+
+def is_egp5(amount):
+    return Decimal(str(amount)) % EGP_STEP == 0
 ACCOUNT_DIRECTIONS = (CUSTOMER_OWES, SHOP_OWES)
 # Egypt standard time and summer time.
 EGYPT_UTC_OFFSETS = (timedelta(hours=2), timedelta(hours=3))
@@ -179,6 +195,9 @@ class InvoiceDraft:
     settlement_choice: str | None = None          # SETTLE: old-gold-only rounding gap
     settlement_reason: str | None = None
     settlement_approver: SettlementApprover | None = None
+    # The making approval is ALWAYS an explicit act: a manager's counter credentials, or the logged-in
+    # holder of the approval right explicitly confirming «هل تعتمد البيع؟». The right alone never approves.
+    making_confirmed: bool = False
     new_customer: NewCustomerInput | None = None
     # إجمالي الفاتورة: the employee's authoritative commercial total (positive, in the invoice's
     # direction). With sold pieces it IS the price (making = it − gold value); the real payment legs
@@ -234,6 +253,10 @@ class _Calculated:
     adjustment: Decimal            # A (old gold only)
     gap: Decimal | None            # old gold only: R − L; None when something is sold
     problems: list
+    rounding: bool = False         # old gold only: the gap is the automatic EGP-5 rounding
+    final_amount: Decimal | None = None       # old gold only: exact value rounded ONCE to EGP 5
+    exact_amount: Decimal | None = None       # old gold only: the exact old-gold value
+    difference: Decimal = ZERO                # old gold only: what is left to resolve against the final amount
 
 
 class InvoiceService:
@@ -480,6 +503,8 @@ class InvoiceService:
                 except InvoiceCalculationError:
                     raise InvoiceError("INVOICE_TOTAL_INVALID", "إجمالي الفاتورة غير صحيح.") from None
             if total is not None:
+                if not is_egp5(total):
+                    problems.append(InvoiceError("TOTAL_NOT_MULTIPLE_OF_5", NOT_MULTIPLE_OF_5_TEXT))
                 # The authoritative total: payment splits never change the price or the making.
                 total_signed = total if direction == "IN" else -total
                 if (allocated and (allocated > 0) != (total_signed > 0)) or abs(allocated) > total:
@@ -511,35 +536,79 @@ class InvoiceService:
                 settlement = Calc.settlement(sales, olds)        # display only; a problem already blocks
         else:
             effective = making = None
+            # The customer-facing amount is the exact old-gold value rounded ONCE to the nearest EGP 5.
+            # Money + customer account must add up to THAT amount; the exact value stays alongside and the
+            # sub-5 rounding remainder never becomes a customer balance.
+            exact = Calc.settlement(sales, olds).net_amount
+            final_amount = round_to_egp5(exact)
+            paid = abs(paid_in - paid_out)
+            account_abs = abs(account_signed)
+            # Rounding UP to the nearest EGP 5 pays a little more than the exact old-gold value:
+            # allowed only when the money (+ account) is exactly that rounded final amount.
+            allowance = ZERO
+            if paid + account_abs == final_amount > exact:
+                allowance = final_amount - exact
             try:
-                settlement = Calc.settlement(sales, olds, money)
+                settlement = Calc.settlement(sales, olds, money, rounding_allowance=allowance)
             except InvoiceCalculationError as error:
                 problems.append(InvoiceError(error.code, str(error)))
                 settlement = Calc.settlement(sales, olds)
             residual = settlement.residual_signed
-            if account_signed and (residual == 0 or (account_signed > 0) != (residual > 0)
-                                   or abs(account_signed) > abs(residual)):
+            same_side = residual != 0 and (account_signed > 0) == (residual > 0)
+            # Rounded UP and part of the final amount on the account (9,004.78 → 9,005 = 9,000 + 5.00):
+            # nothing is left to settle and no adjustment row exists (the audit table only holds
+            # same-sign, smaller-than-the-residual amounts); the rounding is kept in the event details.
+            rounded_up_account = bool(account_signed and same_side and account_abs > abs(residual)
+                                      and final_amount > exact and paid + account_abs == final_amount)
+            rounding = False
+            if account_signed and not rounded_up_account and (not same_side or account_abs > abs(residual)):
                 # Old gold only: the account part is the unpaid old-gold value owed TO the customer.
                 problems.append(InvoiceError("ACCOUNT_AMOUNT_INVALID",
                                              "في شراء الكسر فقط: المبلغ للعميل ولا يزيد عن المتبقي له."))
                 gap = ZERO
+            elif rounded_up_account:
+                if paid and not is_egp5(paid):
+                    problems.append(InvoiceError("PAYMENT_NOT_MULTIPLE_OF_5", NOT_MULTIPLE_OF_5_TEXT))
+                gap, rounding = ZERO, True
             else:
                 # Old gold only: no sale can absorb a gap, so R − L is settled explicitly (limits apply).
                 gap = residual - account_signed
-                if gap and draft.settlement_choice == SETTLE and abs(gap) <= limits["settlement_approval_limit"]:
+                if paid and not is_egp5(paid):
+                    problems.append(InvoiceError("PAYMENT_NOT_MULTIPLE_OF_5", NOT_MULTIPLE_OF_5_TEXT))
+                # The exact value rounded to the nearest 5: when the money (+ account) is exactly that
+                # amount, the small difference is the automatic rounding (recorded, never a balance).
+                final = round_to_egp5(settlement.net_amount)
+                rounding = bool(gap and abs(gap) < EGP_STEP and final > 0
+                                and paid + account_abs == final)
+                if account_signed and not gap and exact != final_amount:
+                    # Money + account cover the EXACT value (e.g. 9,000 + 5.22): the fraction would leak
+                    # into the customer account. The account must carry the rounded final amount (5.00).
+                    problems.append(InvoiceError(
+                        "ACCOUNT_AMOUNT_NOT_ROUNDED",
+                        "المبلغ المتبقي للعميل يُحسب على المبلغ النهائي بعد التقريب لأقرب 5 جنيه "
+                        f"({final_amount:,.2f} ج) وليس على القيمة الفعلية."))
+                if gap and (rounding or draft.settlement_choice == SETTLE)                         and abs(gap) <= limits["settlement_approval_limit"]:
                     adjustment = gap
-                    settlement = Calc.settlement(sales, olds, money, adjustment=adjustment)
+                    settlement = Calc.settlement(sales, olds, money, adjustment=adjustment, rounding_allowance=allowance)
+            # What is still unresolved relative to the FINAL amount (what the screen shows and the
+            # account button uses): final − money − account, shop-owes sign like the gap.
+            to_resolve = max(final_amount - paid - account_abs, ZERO) if gap else ZERO
+            difference = -to_resolve if to_resolve else ZERO
         return _Calculated(sales=sales, olds=olds, payments=payments, settlement=settlement, agreed=agreed,
                            direction=direction, gold_value=gold_value, old_total=old_total,
                            effective_sale=effective, making_total=making, account_signed=account_signed,
-                           adjustment=adjustment, gap=None if has_sales else gap, problems=problems)
+                           adjustment=adjustment, gap=None if has_sales else gap, problems=problems,
+                           rounding=bool(not has_sales and rounding),
+                           final_amount=None if has_sales else final_amount,
+                           exact_amount=None if has_sales else exact,
+                           difference=ZERO if has_sales else difference)
 
     def _rules(self, calculated, customer, warning, dead_cash_confirmed, draft, limits, approval_ok=False):
         """Rules shared by preview (reported) and finalize (enforced)."""
         # A discount outside the allowed range is the first thing to fix (it changes O).
         problems = self._discount_problems(calculated, draft) + list(calculated.problems)
         gap = calculated.gap or ZERO                     # old gold only: R − L still to decide
-        if gap and draft.settlement_choice != SETTLE:
+        if gap and draft.settlement_choice != SETTLE and not calculated.rounding:
             problems.append(InvoiceError("SETTLEMENT_CHOICE_REQUIRED",
                                          "يوجد فرق على الفاتورة: سوِّه أو أضفه إلى حساب العميل."))
         if gap and draft.settlement_choice == SETTLE:
@@ -556,8 +625,15 @@ class InvoiceService:
                 if not approval_ok:
                     problems.append(InvoiceError("SETTLEMENT_APPROVAL_REQUIRED",
                                                  "تسوية فرق أكبر من 50 ج تحتاج موافقة المدير."))
-        # Every invoice names its customer (an existing one or a new name): no anonymous invoice.
-        if customer is None or not str((customer or {}).get("name") or "x").strip():
+        # A customer (an existing one or a new name) is required whenever the invoice sells, or puts any amount
+        # on the customer account. Old gold only, completely settled with real money (account part = 0), needs
+        # none: the EGP-5 rounding or a small settled difference is an adjustment, never a customer balance.
+        old_gold_only = calculated.gap is not None
+        identity_required = not (old_gold_only and calculated.account_signed == 0)
+        if customer is None:
+            if identity_required:
+                problems.insert(0, InvoiceError("CUSTOMER_NAME_REQUIRED", "اسم العميل مطلوب لإتمام الفاتورة"))
+        elif not str(customer.get("name") or "x").strip():
             problems.insert(0, InvoiceError("CUSTOMER_NAME_REQUIRED", "اسم العميل مطلوب لإتمام الفاتورة"))
         if warning and calculated.account_signed > 0 and not dead_cash_confirmed:
             problems.append(InvoiceError("DEAD_CASH_CONFIRMATION_REQUIRED",
@@ -566,16 +642,11 @@ class InvoiceService:
 
     @staticmethod
     def _discount_problems(calculated, draft):
-        """With any new-gold sale line the old-gold discount is a PERCENT within 1.25–3.00.
-
-        Old gold only (the customer only sells to the shop) keeps the free discount."""
-        if calculated.gap is not None:                 # no sale line: old gold only
-            return []
+        """Every old-gold line (mixed invoice or old gold only) is a PERCENT within 1.25–5.00."""
         for line in calculated.olds:
             if line.discount_type != "PERCENT" or not SALE_DISCOUNT_MIN <= line.discount_value <= SALE_DISCOUNT_MAX:
                 return [InvoiceError("OLD_GOLD_DISCOUNT_RANGE",
-                                     f"خصم الكسر في فاتورة بها بيع يجب أن يكون بين {SALE_DISCOUNT_MIN}% و "
-                                     f"{SALE_DISCOUNT_MAX}%.")]
+                                     f"خصم الكسر يجب أن يكون بين {SALE_DISCOUNT_MIN}% و {SALE_DISCOUNT_MAX}%.")]
         return []
 
     @staticmethod
@@ -600,6 +671,18 @@ class InvoiceService:
         """The actor holds the approval permission, or a verified manager approved it."""
         if "INVOICE_SETTLEMENT_APPROVE" in actor.permissions:
             return actor.user_id
+        return self._counter_approver(connection, draft)
+
+    def _making_approver(self, connection, actor, draft):
+        """Who EXPLICITLY approved a making below the category threshold (None: nobody yet).
+        The logged-in holder of the right must confirm (draft.making_confirmed); otherwise only a
+        manager verified at the counter counts. Holding the permission is never an approval."""
+        if draft.making_confirmed and "INVOICE_SETTLEMENT_APPROVE" in actor.permissions:
+            return actor.user_id
+        return self._counter_approver(connection, draft)
+
+    def _counter_approver(self, connection, draft):
+        """A manager who typed their own credentials at the counter (re-checked in the transaction)."""
         approver = draft.settlement_approver
         if approver is None or not isinstance(approver, SettlementApprover) or approver._proof is not _APPROVER_PROOF:
             return None
@@ -622,8 +705,10 @@ class InvoiceService:
         INVOICE_SETTLEMENT_APPROVE. The result is an opaque grant for one finalize."""
         self._require_create(_expected_actor)
         from services.authentication_service import AuthenticationService
-        authentication = self._authentication or AuthenticationService()
-        result = authentication.verify_credentials(username, password)
+        if self._authentication is None:
+            # ONE instance for the life of this service: the manager-password cooldown must span attempts.
+            self._authentication = AuthenticationService()
+        result = self._authentication.verify_credentials(username, password)
         if "INVOICE_SETTLEMENT_APPROVE" not in result.permissions:
             raise PermissionError("هذا المستخدم لا يملك صلاحية الموافقة على التسوية.")
         return SettlementApprover(int(result.user_id), result.display_name, _APPROVER_PROOF)
@@ -646,7 +731,11 @@ class InvoiceService:
             row = category_ranges.get(category_id) if category_id is not None else None
             low = None if row is None else row.get("sale_making_min_per_gram")
             high = None if row is None else row.get("sale_making_max_per_gram")
+            approval_below = None if row is None else row.get("manager_approval_below_per_gram")
             average = (making / weight).quantize(Decimal("0.01")) if weight > 0 else Decimal("0.00")
+            # Strictly BELOW the category threshold needs a manager (250 passes, 249.99 does not).
+            needs_approval = (approval_below is not None and weight > 0
+                              and average < Decimal(str(approval_below)))
             if low is None and high is None:
                 status = NOT_CONFIGURED
             elif (low is not None and average < Decimal(str(low))) or (
@@ -657,8 +746,19 @@ class InvoiceService:
             result.append({"category_id": category_id, "category_code": None if row is None else row.get("code"),
                            "status": status, "average_making_per_gram": str(average), "weight_grams": str(weight),
                            "sale_making_min_per_gram": None if low is None else str(low),
-                           "sale_making_max_per_gram": None if high is None else str(high)})
+                           "sale_making_max_per_gram": None if high is None else str(high),
+                           "manager_approval_below_per_gram": None if approval_below is None else str(approval_below),
+                           "needs_approval": needs_approval})
         return result
+
+    @staticmethod
+    def _making_approval_problem(groups):
+        group = groups[0]
+        label = f" للفئة {group['category_code']}" if group.get("category_code") else ""
+        return InvoiceError(
+            "MAKING_APPROVAL_REQUIRED",
+            f"متوسط المصنعية {Decimal(group['average_making_per_gram']):,.2f} ج/جرام أقل من حد موافقة المدير "
+            f"({Decimal(group['manager_approval_below_per_gram']):,.2f} ج/جرام){label}: يلزم موافقة المدير.")
 
     @classmethod
     def _making_review(cls, sales, categories, category_ranges):
@@ -857,7 +957,10 @@ class InvoiceService:
                 "item_types": [{"id": int(r["id"]), "name": r["name"]} for r in lists["item_types"]],
                 "factories": [{"id": int(r["id"]), "name": r["name"]} for r in lists["factories"]],
                 "old_gold_stock": [{"karat_id": int(r["karat_id"]), "karat": int(r["karat_value"]),
-                                    "grams": _money(Decimal(str(r["balance_grams"])))} for r in balances],
+                                    "grams": _money(Decimal(str(r["balance_grams"]))),
+                                    # 032: physical / held explain an available that is lower than the top bar.
+                                    "physical": str(r.get("physical_grams", r["balance_grams"])),
+                                    "held": str(r.get("held_grams") or 0)} for r in balances],
                 "settings": {key: _money(value) for key, value in limits.items()}}
 
     def search_customers(self, text, *, _expected_actor=None):
@@ -904,11 +1007,14 @@ class InvoiceService:
                 described = self._described(invoices, draft)
                 calculated = self._calculate(draft, items, price_set, described=described, limits=limits)
                 payment_problems = self._payment_accounts(invoices, calculated.payments)[3]
-                balances = {int(r["karat_id"]): Decimal(str(r["balance_grams"]))
-                            for r in invoices.old_gold_balances()} if described else {}
+                stock_rows = invoices.old_gold_balances() if described else []
+                balances = {int(r["karat_id"]): Decimal(str(r["balance_grams"])) for r in stock_rows}
+                held = {int(r["karat_id"]): Decimal(str(r.get("held_grams") or 0)) for r in stock_rows}
                 category_ranges = invoices.category_ranges(
                     [i.get("category_id") for i in items] + [d["category_id"] for d in described])
-                approval = self._approval_ok(None, self._session.require_authenticated(), draft)
+                actor_now = self._session.require_authenticated()
+                approval = self._approval_ok(None, actor_now, draft)
+                making_approver = self._making_approver(None, actor_now, draft)
                 # Leave through the transaction's own rollback path: preview never commits.
                 raise _DiscardPreview()
         except _DiscardPreview:
@@ -919,13 +1025,15 @@ class InvoiceService:
         problems += payment_problems
         for karat_id, available, grams in self._old_gold_shortages(described, balances):
             karat = next((p.karat for p in price_set.prices.values() if p.karat_id == karat_id), karat_id)
-            problems.append(InvoiceError(
-                "OLD_GOLD_STOCK_INSUFFICIENT",
-                f"رصيد الكسر عيار {karat} غير كافٍ: المتاح {available:,.3f} جرام والمطلوب {grams:,.3f} جرام."))
+            problems.append(InvoiceError("OLD_GOLD_STOCK_INSUFFICIENT",
+                                         shortage_message(karat, grams, available, held.get(karat_id))))
         categories = [i.get("category_id") for i in items] + [d["category_id"] for d in described]
         # Making review only on a valid derived price (re-run on every financial change).
         groups = self._making_groups(sales, categories, category_ranges) if calculated.agreed else []
-        review = [g for g in groups if g["status"] == OUT_OF_RANGE]
+        review = [g for g in groups if g["status"] == OUT_OF_RANGE or g["needs_approval"]]
+        making_approval = [g for g in groups if g["needs_approval"]]
+        if making_approval and making_approver is None:
+            problems.append(self._making_approval_problem(making_approval))
         discount_changes = self._discount_changes(olds, draft.old_gold_lines,
                                                   limits["old_gold_discount_default_percent"])
         gap = calculated.gap or ZERO
@@ -954,12 +1062,22 @@ class InvoiceService:
                                 for d, line in zip(described, sales[len(items):])],
             **self._commercial_view(calculated),
             "making_review_required": bool(review),
+            "making_needs_approval": bool(making_approval and making_approver is None),
+            # The logged-in user may approve, but must confirm explicitly (never implied by the right).
+            "making_can_confirm": bool(making_approval and "INVOICE_SETTLEMENT_APPROVE" in actor_now.permissions),
+            "making_approval_category": (making_approval[0].get("category_code") or "") if making_approval else "",
+            "settlement_rounding": calculated.rounding,
+            "rounding_difference": (_money(abs(calculated.final_amount - calculated.exact_amount))
+                                    if calculated.rounding and calculated.final_amount is not None else None),
+            # Old gold only: the customer-facing amount (exact value rounded once) and what is still
+            # unresolved against it; the exact gap stays in gap_signed (limits / approval use it).
+            "final_settlement_amount": _money(calculated.final_amount),
+            "difference_signed": _money(calculated.difference) if calculated.final_amount is not None else None,
             "making_review_status": self._making_status(groups),
             "making_groups": groups,
             "old_gold_discount_changed": bool(discount_changes),
             "old_gold_discount_default_percent": _money(limits["old_gold_discount_default_percent"]),
-            "old_gold_discount_range": ([_money(SALE_DISCOUNT_MIN), _money(SALE_DISCOUNT_MAX)]
-                                        if calculated.gap is None else None),
+            "old_gold_discount_range": [_money(SALE_DISCOUNT_MIN), _money(SALE_DISCOUNT_MAX)],
             "settlement_limits": {key: _money(value) for key, value in limits.items()},
             "settlement_needs_approval": bool(gap and abs(gap) > limits["settlement_self_limit"]
                                               and approval is None),
@@ -996,10 +1114,12 @@ class InvoiceService:
         average = None
         if has_sales and calculated.making_total is not None and weight > 0 and calculated.effective_sale > 0:
             average = (calculated.making_total / weight).quantize(Decimal("0.01"))
-        # F8: the full amount exists only when nothing is sold (the old-gold value minus the account part).
-        full = None
+        # F8: the full amount exists only when nothing is sold (the old-gold value minus the account part),
+        # rounded to the nearest EGP 5 — the customer-facing money; the exact value stays alongside.
+        full = raw = None
         if not has_sales and settlement.old_gold_total:
-            full = settlement.old_gold_total - abs(calculated.account_signed)
+            raw = settlement.old_gold_total - abs(calculated.account_signed)
+            full = round_to_egp5(raw)
         return {
             "payment_direction": calculated.direction,
             "gold_value_total": _money(calculated.gold_value) if has_sales else None,
@@ -1012,6 +1132,7 @@ class InvoiceService:
             "gap_signed": _money(calculated.gap),
             "settlement_adjustment_signed": _money(calculated.adjustment),
             "full_amount": _money(full),
+            "full_amount_exact": _money(raw),
             "invoice_type": settlement.invoice_type,
             "sale_total": _money(settlement.sale_total),
             "old_gold_total": _money(settlement.old_gold_total),
@@ -1074,8 +1195,7 @@ class InvoiceService:
                 karat_id, available, grams = shortages[0]
                 karat = next((p.karat for p in price_set.prices.values() if p.karat_id == karat_id), karat_id)
                 raise InvoiceError("OLD_GOLD_STOCK_INSUFFICIENT",
-                                   f"رصيد الكسر عيار {karat} غير كافٍ: المتاح {available:,.3f} جرام "
-                                   f"والمطلوب {grams:,.3f} جرام.")
+                                   shortage_message(karat, grams, available, held_grams(invoices, karat_id)))
             calculated = self._calculate(draft, items, price_set, described=described, limits=limits)
             sales, olds, payments = calculated.sales, calculated.olds, calculated.payments
             settlement, agreed = calculated.settlement, calculated.agreed
@@ -1084,12 +1204,17 @@ class InvoiceService:
                                    limits=limits, approval_ok=approver_id is not None)
             methods, accounts, cash_account, payment_problems = self._payment_accounts(invoices, payments, lock=True)
             problems += payment_problems
-            if problems:
-                raise problems[0]
             categories = [i.get("category_id") for i in items] + [d["category_id"] for d in described]
             groups = (self._making_groups(sales, categories, invoices.category_ranges(categories))
                       if agreed is not None else [])
-            review = [g for g in groups if g["status"] == OUT_OF_RANGE]
+            review = [g for g in groups if g["status"] == OUT_OF_RANGE or g["needs_approval"]]
+            making_approval = [g for g in groups if g["needs_approval"]]
+            making_approver = self._making_approver(connection, actor, draft) if making_approval else None
+            if making_approval and making_approver is None:
+                # Enforced here, whatever the screen did: nothing is written without the approval.
+                problems.append(self._making_approval_problem(making_approval))
+            if problems:
+                raise problems[0]
             discount_changes = self._discount_changes(olds, draft.old_gold_lines,
                                                       limits["old_gold_discount_default_percent"])
 
@@ -1201,9 +1326,12 @@ class InvoiceService:
             if adjustment != 0:
                 # Old gold only: the explicit rounding settlement; never a balance, never a payment row.
                 needs_approval = abs(adjustment) > limits["settlement_self_limit"]
+                reason = (draft.settlement_reason or "").strip() or None
+                if calculated.rounding and reason is None:
+                    reason = "تقريب المبلغ النهائي لأقرب 5 جنيه"
                 invoices.insert_settlement_adjustment(
                     invoice_id=invoice_id, residual_signed=residual, amount_signed=adjustment,
-                    reason=(draft.settlement_reason or "").strip() or None, accepted_by_user_id=actor.user_id,
+                    reason=reason, accepted_by_user_id=actor.user_id,
                     approved_by_user_id=approver_id if needs_approval else None,
                     approved_at=now if needs_approval else None)
                 if needs_approval:
@@ -1224,8 +1352,13 @@ class InvoiceService:
             if review:
                 invoices.insert_management_review(
                     review_type="MAKING_PRICE", invoice_id=invoice_id,
-                    summary=f"مصنعية خارج النطاق — فاتورة {number}",
+                    summary=(f"مصنعية أقل من حد موافقة المدير — فاتورة {number}" if making_approval
+                             else f"مصنعية خارج النطاق — فاتورة {number}"),
                     details={"groups": groups, "salesperson_employee_id": int(salesperson["id"]),
+                             "making_approved_by_user_id": making_approver,
+                             "making_approval_kind": None if not making_approval else (
+                                 "CONFIRMED_BY_ACTOR" if draft.making_confirmed and making_approver == actor.user_id
+                                 else "COUNTER_MANAGER"),
                              "salesperson_name": salesperson["name"],
                              "effective_sale_total": calculated.effective_sale,
                              "average_making_per_gram": None if agreed is None else agreed.average_making_per_gram},
@@ -1253,6 +1386,9 @@ class InvoiceService:
                 "direction": calculated.direction, "O": calculated.old_total,
                 "P": settlement.payment_signed, "L": calculated.account_signed, "A": adjustment,
                 "N": settlement.net_signed, "R_account": account,
+                **({"final_settlement_amount": calculated.final_amount,
+                    "rounding_difference_signed": calculated.final_amount - calculated.exact_amount}
+                   if calculated.final_amount is not None else {}),
                 "payments": [{"method": p.method_code, "amount": m.amount, "direction": m.direction,
                               "bank_account_id": None if accounts.get(i) is None else int(accounts[i]["id"])}
                              for i, (p, m) in enumerate(payments)],

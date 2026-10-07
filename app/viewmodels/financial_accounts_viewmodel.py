@@ -6,6 +6,7 @@ mapping); this ViewModel only formats. Bank / wallet balances are never shown he
 key until it succeeds, so a double click / retry can never post twice.
 """
 from decimal import Decimal, InvalidOperation
+from services.number_text import normalize_digits
 from uuid import uuid4
 
 from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
@@ -15,9 +16,31 @@ MESSAGE_MS = 2500                       # a success message is shown briefly, th
 from app.formatting import date_text, ltr, money
 
 
+def reference_text(row):
+    """«فاتورة 26100601» / «RT000001 — فاتورة 26100601» / «فاتورة 26100601 — FC000001»: the identifying part of a
+    ledger movement, composed from the stored references only (no guessing; empty when nothing is stored)."""
+    reference, invoice = row.get("reference") or "", row.get("invoice_number") or ""
+    kind = row.get("kind") or ""
+    if kind in ("SALE", "OLD_GOLD_PURCHASE"):
+        return f"فاتورة {ltr(invoice or reference)}" if (invoice or reference) else ""
+    if kind in ("CORRECTION", "REVERSAL"):
+        target = row.get("corrected_reference") or invoice
+        head = (f"فاتورة {ltr(target)}" if target and target == invoice else ltr(target)) if target else ""
+        return " — ".join(part for part in (head, ltr(reference) if reference else "") if part)
+    if kind in ("EXCHANGE", "RETURN"):
+        return " — ".join(part for part in (ltr(reference) if reference else "",
+                                            f"فاتورة {ltr(invoice)}" if invoice and invoice != reference else "") if part)
+    return ltr(reference) if reference else ""
+
+
+def movement_line(label, row, amount):
+    """The accountant's one-line reading: «بيع — فاتورة 26100601 — عميل — 2,000.00 ج»."""
+    return " — ".join(part for part in (label, reference_text(row), row.get("customer") or "", amount) if part)
+
+
 def _decimal(text):
     try:
-        value = Decimal(str(text).strip())
+        value = Decimal(normalize_digits(str(text)).strip())
         return value if value.is_finite() else None
     except (InvalidOperation, ValueError):
         return None
@@ -28,6 +51,7 @@ class FinancialAccountsViewModel(QObject):
     finalized = Signal(str)                 # the operation code (money ledgers changed)
     invoiceRequested = Signal(str)          # exact invoice id → existing Invoice History detail
     correctionRequested = Signal(str)       # FO / TR operation id → existing correction workspace
+    customerRequested = Signal(str)         # immutable customer id → the existing customer details
 
     def __init__(self, session, service=None, parent=None, message_ms=MESSAGE_MS):
         super().__init__(parent)
@@ -200,6 +224,11 @@ class FinancialAccountsViewModel(QObject):
     def _on_detail(self, result, error):
         self._detail, self._error = ({}, error) if error else (result, self._error)
 
+    @Slot(str)
+    def openCustomer(self, customer_id):
+        if str(customer_id or "").isdigit():
+            self.customerRequested.emit(str(customer_id))
+
     @Slot()
     def closeOperation(self):
         self._detail = {}
@@ -271,7 +300,12 @@ class FinancialAccountsViewModel(QObject):
     def _side(self, name):
         side = self._view.get(name, {})
         return [{"key": r["id"], "label": r["label"], "amount": money(r["amount"]),
-                 "linked": bool(r.get("invoice_id") or r.get("operation_id"))} for r in side.get("rows", [])]
+                 "linked": bool(r.get("invoice_id") or r.get("operation_id")),
+                 # What identifies the movement (reference, invoice, customer): the row stays one clean line.
+                 "reference": reference_text(r), "customer": r.get("customer") or "",
+                 "customerId": r.get("customer_id") or "",
+                 "line": movement_line(r["label"], r, money(r["amount"]))}
+                for r in side.get("rows", [])]
 
     @Property("QVariantList", notify=changed)
     def inRows(self):

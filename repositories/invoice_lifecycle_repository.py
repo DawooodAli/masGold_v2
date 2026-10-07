@@ -99,10 +99,12 @@ class InvoiceLifecycleRepository(BaseRepository):
                    l.identification_method,
                    r.review_status AS inspection_status, r.resolution_code AS inspection_resolution,
                    r.resolved_at AS inspection_resolved_at, ru.display_name AS inspection_resolved_by,
+                   h.hold_status,
                    (SELECT b.barcode_value FROM inventory_barcodes b WHERE b.inventory_item_id = l.inventory_item_id
                      ORDER BY b.barcode_status = 'ACTIVE' DESC, b.id DESC LIMIT 1) AS stored_barcode
             FROM invoice_lifecycle_lines l
             LEFT JOIN management_reviews r ON r.lifecycle_line_id = l.id
+            LEFT JOIN old_gold_holds h ON h.lifecycle_line_id = l.id
             LEFT JOIN users ru ON ru.id = r.resolved_by_user_id
             WHERE l.lifecycle_transaction_id = %s ORDER BY l.line_number
             """, (_id(lifecycle_id),))
@@ -133,18 +135,18 @@ class InvoiceLifecycleRepository(BaseRepository):
                 returned_pure_grams, replacement_pure_grams, pure_delta_grams, valuation_basis,
                 valued_delta_grams, price_basis, price_karat_value, price_per_gram, gold_amount,
                 making_rate_per_gram, making_charge, making_refund,
-                making_refund_eligible, signed_amount, money_received, money_paid, account_signed,
-                price_snapshot_json, details_json, notes, performed_by_user_id, performed_by_employee_id,
-                occurred_at
+                making_refund_eligible, rounding_adjustment, signed_amount, money_received, money_paid,
+                account_signed, price_snapshot_json, details_json, notes, performed_by_user_id,
+                performed_by_employee_id, occurred_at
             )
             VALUES ('EXCHANGE', 'FINALIZED', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (_id(source_invoice_id), source_finalized_at, _optional_id(customer_id),
              c.returned_pure, c.replacement_pure, c.pure_delta, c.valuation_basis, c.valued_delta,
              c.price_basis, c.price_karat, c.price_per_gram,
              c.gold_amount, c.making_rate, c.making_charge, c.making_refund, c.refund_eligible,
-             c.signed_amount, money_received, money_paid, account_signed, _json(price_snapshot),
+             c.rounding_adjustment, c.signed_amount, money_received, money_paid, account_signed, _json(price_snapshot),
              _json(details), notes, performed_by_user_id, performed_by_employee_id, occurred_at),
         )
         return str(lifecycle_id)
@@ -212,6 +214,44 @@ class InvoiceLifecycleRepository(BaseRepository):
         if not movement_id:
             raise RuntimeError("old-gold movement type EXCHANGE_REPLACEMENT_OUT is missing")
         return str(movement_id)
+
+    def add_returned_scrap_in(self, *, karat_id, weight_grams, inventory_item_id, lifecycle_id, invoice_id,
+                              customer_id, created_by_user_id, employee_id, notes=None):
+        """The returned identified piece enters Scrap: COUNTED EXCHANGE_RETURN_SCRAP_IN (its exact karat and
+        physical weight), linked to the piece, the exchange and the original invoice (held until decided)."""
+        code = exchange_code(lifecycle_id)
+        movement_id, _ = self._execute(
+            """
+            INSERT INTO old_gold_movements (
+                movement_type_id, karat_id, weight_delta_grams, balance_effect, related_inventory_item_id,
+                reference_type, reference_id, reference_code, notes, invoice_id,
+                created_by_user_id, performed_by_user_id, received_by_employee_id,
+                movement_code, customer_id
+            )
+            SELECT t.id, %s, %s, 'COUNTED', %s, %s, %s, %s, %s, %s, %s, %s, %s, 'EXCHANGE_RETURN_SCRAP_IN', %s
+            FROM old_gold_movement_types t WHERE t.code = 'EXCHANGE_RETURN_SCRAP_IN' AND t.is_active = TRUE
+            """,
+            (int(karat_id), abs(weight_grams), _id(inventory_item_id), REFERENCE_TYPE, _id(lifecycle_id), code,
+             notes, _optional_id(invoice_id), created_by_user_id, created_by_user_id, employee_id,
+             _optional_id(customer_id)),
+        )
+        if not movement_id:
+            raise RuntimeError("old-gold movement type EXCHANGE_RETURN_SCRAP_IN is missing")
+        return str(movement_id)
+
+    def insert_scrap_hold(self, *, review_id, lifecycle_line_id, inventory_item_id, karat_id, weight_grams,
+                          in_movement_id, created_by_user_id):
+        """One HELD Scrap hold per returned piece (032: UNIQUE review / lifecycle line / IN movement)."""
+        hold_id, _ = self._execute(
+            """
+            INSERT INTO old_gold_holds (review_id, lifecycle_line_id, inventory_item_id, karat_id, weight_grams,
+                                        in_movement_id, hold_status, created_by_user_id)
+            VALUES (%s, %s, %s, %s, %s, %s, 'HELD', %s)
+            """,
+            (_id(review_id), _id(lifecycle_line_id), _id(inventory_item_id), int(karat_id), abs(weight_grams),
+             _id(in_movement_id), created_by_user_id),
+        )
+        return str(hold_id)
 
     def open_unidentified_replacement_case(self, *, lifecycle_line_id, exchange_code, item_type_id, karat_id,
                                            factory_id, category_id, weight_grams, size, reason_code, reason, notes,
@@ -296,6 +336,19 @@ class InvoiceLifecycleRepository(BaseRepository):
         return self._ledger_movement("bank_movements", "bank_account_id", bank_account_id, **kwargs)
 
     # ------------------------------------------------------------ inventory
+
+    def mark_item_returned_to_scrap(self, *, inventory_item_id, updated_by_user_id):
+        """SOLD → CONVERTED_TO_OLD_GOLD: out of sellable stock, inside Scrap (held for the manager)."""
+        _, rowcount = self._execute(
+            """
+            UPDATE inventory_items
+            SET inventory_status = 'CONVERTED_TO_OLD_GOLD', updated_by_user_id = %s
+            WHERE id = %s AND inventory_status = 'SOLD'
+            """,
+            (updated_by_user_id, _id(inventory_item_id)),
+        )
+        if rowcount != 1:
+            raise RuntimeError(f"Inventory item {inventory_item_id} is no longer sold.")
 
     def mark_item_returned_pending(self, *, inventory_item_id, updated_by_user_id):
         """SOLD → RETURNED_PENDING (waiting for inspection; never sellable)."""

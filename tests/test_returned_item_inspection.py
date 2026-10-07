@@ -50,7 +50,20 @@ class ReviewRepo:
                 "weight_grams": line["weight"], "item_weight_grams": item["weight_grams"],
                 "inventory_status": item["inventory_status"], "customer_name_snapshot": "عميل",
                 # The piece keeps its stored barcode for good (never re-assigned, never new).
-                "stored_barcode": item["barcode_value"], "size": None, "item_notes": None}
+                "stored_barcode": item["barcode_value"], "size": None, "item_notes": None,
+                **self._hold_fields(review)}
+
+    def _hold_fields(self, review):
+        hold = next((h for h in self.store.holds if h["line"] == review["lifecycle_line_id"]), None)
+        if hold is None:
+            return {}
+        return {"hold_id": hold["hold_id"], "hold_status": hold["status"], "hold_weight_grams": hold["weight"],
+                "scrap_entered_at": ex.NOW, "in_movement_id": hold["in"], "out_movement_id": hold["out"],
+                "exchanged_by_name": "موظف", "karat_physical_grams": self.store.old_gold[hold["karat_id"]],
+                "karat_available_grams": self.store.old_gold[hold["karat_id"]] - self.store.held(hold["karat_id"]),
+                "karat_held_grams": self.store.held(hold["karat_id"]),
+                "resolved_by_name": "مدير" if review["resolved_by"] else None,
+                "resolved_at": review["resolved_at"]}
 
     def open_counts(self):
         return {"RETURNED_ITEM_INSPECTION": sum(r["status"] == "OPEN" for r in self.store.inspections)}
@@ -78,6 +91,38 @@ class ReviewRepo:
 
     def lock_old_gold_balance(self, karat_id):
         self._maybe_fail("lock_old_gold_balance")
+        return self.store.old_gold[int(karat_id)]                           # PHYSICAL grams
+
+    def lock_hold(self, review_id):
+        self._maybe_fail("lock_hold")
+        hold = next((h for h in self.store.holds if h["review"] == str(review_id)), None)
+        return None if hold is None else {"hold_id": hold["hold_id"], "review_id": hold["review"],
+                                          "lifecycle_line_id": hold["line"], "inventory_item_id": hold["item"],
+                                          "karat_id": hold["karat_id"], "weight_grams": hold["weight"],
+                                          "in_movement_id": hold["in"], "hold_status": hold["status"],
+                                          "out_movement_id": hold["out"]}
+
+    def add_old_gold_out_to_stock(self, *, karat_id, weight_grams, inventory_item_id, review_id,
+                                  movement_code="EXCHANGE_RETURN_TO_STOCK_OUT", **kwargs):
+        self._maybe_fail("add_old_gold_out_to_stock")
+        assert movement_code == "EXCHANGE_RETURN_TO_STOCK_OUT"            # an Exchange piece
+        assert weight_grams > 0
+        self.store.old_gold[int(karat_id)] -= weight_grams
+        assert self.store.old_gold[int(karat_id)] >= 0
+        self.store.old_gold_movements.append({"code": "EXCHANGE_RETURN_TO_STOCK_OUT", "karat_id": karat_id,
+                                              "delta": -weight_grams, "item": inventory_item_id,
+                                              "reference": ("MANAGEMENT_REVIEW", review_id)})
+        return str(len(self.store.old_gold_movements))
+
+    def close_hold(self, *, hold_id, hold_status, out_movement_id, resolved_by_user_id, resolved_at):
+        self._maybe_fail("close_hold")
+        hold = next(h for h in self.store.holds if h["hold_id"] == str(hold_id))
+        if hold["status"] != "HELD":
+            return False
+        # 032 chk_old_gold_hold_out: an OUT movement exactly for RETURNED_TO_STOCK / REVERSED.
+        assert (hold_status in ("RETURNED_TO_STOCK", "REVERSED")) == (out_movement_id is not None)
+        hold.update(status=hold_status, out=out_movement_id, resolved_by=resolved_by_user_id, resolved_at=resolved_at)
+        return True
 
     def db_now(self):
         return ex.NOW
@@ -156,13 +201,26 @@ class InspectionTestCase(ex.ExchangeTestCase):
         self.finalize(ex.draft())
         return self.store.inspections[0]["review_id"]
 
+    def legacy_exchange(self, review_index=0):
+        """An Exchange piece from BEFORE 032: RETURNED_PENDING, never credited to Scrap, no hold. Such pieces
+        still exist and keep the 021 path (the decision itself moves the piece / credits Scrap)."""
+        review_id = self.exchange() if review_index == 0 else self.store.inspections[review_index]["review_id"]
+        review = next(r for r in self.store.inspections if r["review_id"] == review_id)
+        hold = next(h for h in self.store.holds if h["line"] == review["lifecycle_line_id"])
+        self.store.holds.remove(hold)
+        self.store.old_gold[hold["karat_id"]] -= hold["weight"]
+        self.store.old_gold_movements = [m for m in self.store.old_gold_movements
+                                         if not (m["code"] == "EXCHANGE_RETURN_SCRAP_IN" and m["item"] == hold["item"])]
+        self.store.items[hold["item"]]["inventory_status"] = "RETURNED_PENDING"
+        return review_id
+
     def item(self, item_id="200"):
         return self.store.items[item_id]
 
 
 class CreationTests(InspectionTestCase):
     def test_a_every_returned_piece_gets_exactly_one_linked_review(self):
-        self.finalize(ex.draft(returned=("1", "2"), replacements=(("300", None), ("303", None))))
+        self.finalize(ex.draft(returned=("1", "2"), replacements=(("300", "150"), ("303", "150")), payments=(ex.cash("200.00"),)))
         self.assertEqual(len(self.store.inspections), 2)
         for review, (line_id, item_id, barcode) in zip(self.store.inspections, (("1", "200", "B200"),
                                                                                ("2", "201", "B201"))):
@@ -174,8 +232,10 @@ class CreationTests(InspectionTestCase):
                               d["source_invoice_line_id"], d["inventory_item_id"], d["stored_barcode"]),
                              ("500", "OPEN", "1", "EX000001", line_id, item_id, barcode))
             self.assertIn(f"الباركود المسجل {barcode}", review["summary"])
-        # The replacement is never reviewed; the returned piece waits as RETURNED_PENDING.
-        self.assertEqual(self.item("200")["inventory_status"], "RETURNED_PENDING")
+        # The replacement is never reviewed; each returned piece is in Scrap with exactly one hold (032).
+        self.assertEqual(self.item("200")["inventory_status"], "CONVERTED_TO_OLD_GOLD")
+        self.assertEqual([(h["review"], h["line"], h["item"], h["status"]) for h in self.store.holds],
+                         [("901", "1", "200", "HELD"), ("902", "2", "201", "HELD")])
         self.assertEqual(self.store.events[0]["details"]["inspection_review_ids"], ["901", "902"])
 
     def test_a_review_creation_failure_rolls_the_whole_exchange_back(self):
@@ -196,7 +256,7 @@ class CreationTests(InspectionTestCase):
 
 class ReturnToStockTests(InspectionTestCase):
     def test_c_same_item_same_barcode_back_in_stock(self):
-        review_id = self.exchange()
+        review_id = self.legacy_exchange()            # a piece from before 032
         items_before, barcodes = len(self.store.items), {k: v["barcode_value"] for k, v in self.store.items.items()}
         old_gold = dict(self.store.old_gold)
         result = self.reviews.return_to_stock(review_id)
@@ -226,7 +286,7 @@ class ReturnToStockTests(InspectionTestCase):
 
 class ConvertToOldGoldTests(InspectionTestCase):
     def test_e_exact_karat_and_weight_enter_the_counted_old_gold(self):
-        review_id = self.exchange()
+        review_id = self.legacy_exchange()            # a piece from before 032
         before = self.store.old_gold[1]
         result = self.reviews.convert_to_old_gold(review_id)
         self.assertEqual(result["inventory_status"], "CONVERTED_TO_OLD_GOLD")
@@ -286,14 +346,14 @@ class SafetyTests(InspectionTestCase):
             ReviewRepo.resolve_inspection = original
 
     def test_i_item_no_longer_pending_is_refused(self):
-        review_id = self.exchange()
+        review_id = self.legacy_exchange()            # a piece from before 032
         self.item()["inventory_status"] = "IN_STOCK"
         with self.assertRaises(InspectionError) as refused:
             self.reviews.convert_to_old_gold(review_id)
         self.assertEqual(refused.exception.code, "ITEM_NOT_PENDING")
 
     def test_j_failure_rolls_everything_back(self):
-        review_id = self.exchange()
+        review_id = self.legacy_exchange()            # a piece from before 032
         ReviewRepo.fail_on = "add_old_gold_in"
         before = self.store.tables()
         with self.assertRaises(RuntimeError):
@@ -352,8 +412,9 @@ class HistoryTests(unittest.TestCase):
 class BackfillTests(InspectionTestCase):
     def test_m_backfill_is_idempotent_and_never_duplicates(self):
         self.exchange()
-        self.finalize(ex.draft(returned=("2",), replacements=(("303", None),)))
-        self.store.inspections = [self.store.inspections[0]]      # the second piece predates 021
+        self.finalize(ex.draft(returned=("2",), replacements=(("303", "150"),), payments=(ex.cash("200.00"),)))
+        self.legacy_exchange(review_index=1)                       # the second piece predates 032 ...
+        self.store.inspections = [self.store.inspections[0]]      # ... and 021
         created = self.reviews.backfill_returned_inspections()
         self.assertEqual(len(created), 1)
         self.assertEqual([r["lifecycle_line_id"] for r in self.store.inspections], ["1", "3"])

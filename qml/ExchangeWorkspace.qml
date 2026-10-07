@@ -6,6 +6,7 @@ import QtQuick.Layouts
 // ExchangeService and formatted by exchangeVM; this page only forwards selections and typing.
 // A finished exchange is shown inside the invoice's History detail (no second, repeating page).
 Item {
+    signal customerRequested(string customerId)
     id: exchangePage
     objectName: "exchangeWorkspace"
 
@@ -128,6 +129,19 @@ Item {
                                 border.color: parent.activeFocus ? theme.gold : theme.border }
     }
 
+    // UX-EXCH-09: settlement money keeps its large, bold figures; the FIELD grows to fit them (never the
+    // font shrinking). Sized from the widest value it accepts, 9,999,999.99, plus its padding.
+    component MoneyField: Field {
+        id: moneyField
+        font.pixelSize: theme.fontSection + 4
+        font.bold: true
+        implicitHeight: 40
+        leftPadding: 12
+        rightPadding: 12
+        width: Math.ceil(moneyWidest.advanceWidth) + leftPadding + rightPadding + 8
+        TextMetrics { id: moneyWidest; font: moneyField.font; text: "9,999,999.99" }
+    }
+
     component Choice: ComboBox {
         implicitHeight: 30
         font.family: theme.fontFamily
@@ -147,12 +161,12 @@ Item {
             anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10
             layoutDirection: Qt.RightToLeft; spacing: 14
             Txt { value: (totalsRoot.summary.count || "0") + " قطعة"; color: theme.textMuted }
-            Txt { value: "الإجمالي " + (totalsRoot.summary.total || ""); color: totalsRoot.accent; font.bold: true
+            Txt { value: "الإجمالي " + (totalsRoot.summary.total ? totalsRoot.summary.total + " جرام" : ""); color: totalsRoot.accent; font.bold: true
                   font.pixelSize: theme.fontBodyStrong }
             Repeater {
                 model: totalsRoot.summary.karats || []
                 delegate: Txt { required property var modelData
-                                value: "عيار " + modelData.karat + ": " + modelData.weight; color: theme.textSecondary }
+                                value: "عيار " + modelData.karat + ": " + modelData.weight + " جرام"; color: theme.textSecondary }
             }
             Item { Layout.fillWidth: true }
         }
@@ -169,8 +183,10 @@ Item {
               onClicked: exchangePage.vm.close() }
         Txt { objectName: "exchangeTitle"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontPageTitle
               value: exchangePage.h.number ? "استبدال — فاتورة " + exchangePage.h.number : "استبدال" }
-        Txt { visible: !!exchangePage.h.number; color: theme.textSecondary; font.pixelSize: theme.fontBodyStrong
-              value: exchangePage.h.customerName ? "العميل: " + exchangePage.h.customerName : "" }
+        CustomerNameLink { objectName: "exchangeCustomerName"; visible: !!exchangePage.h.number
+              text: exchangePage.h.customerName ? "العميل: " + exchangePage.h.customerName : ""
+              customerId: exchangePage.h.customerId || ""
+              onCustomerRequested: function(customerId) { exchangePage.customerRequested(customerId) } }
         Item { Layout.fillWidth: true }
         Txt { visible: !!exchangePage.h.windowText; value: exchangePage.h.windowText || ""
               color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
@@ -246,6 +262,10 @@ Item {
                                     Txt { value: lineRow.modelData.item; color: lineRow.modelData.exchangeable
                                               ? theme.textPrimary : theme.textMuted
                                           font.bold: true; font.pixelSize: theme.fontBodyStrong; Layout.fillWidth: true }
+                                    // The piece's identity: two identical-looking pieces are never confused.
+                                    Txt { objectName: "exchangeReturnedIdentity_" + lineRow.index
+                                          value: lineRow.modelData.identity; color: theme.textMuted
+                                          font.pixelSize: theme.fontTableHeader }
                                     Txt { value: lineRow.modelData.karat; Layout.preferredWidth: 34 }
                                     Txt { value: lineRow.modelData.weight; color: theme.textPrimary; font.bold: true
                                           Layout.preferredWidth: 78 }
@@ -253,7 +273,7 @@ Item {
                                           font.pixelSize: theme.fontTableHeader; Layout.preferredWidth: 78 }
                                 }
                                 Txt { Layout.fillWidth: true; visible: value.length > 0; value: lineRow.modelData.reason
-                                      color: theme.amber; font.pixelSize: theme.fontCaption; elide: Text.ElideRight }
+                                      color: theme.statusWarning; font.pixelSize: theme.fontCaption; elide: Text.ElideRight }
                             }
                             MouseArea {
                                 anchors.fill: parent
@@ -263,7 +283,7 @@ Item {
                             }
                         }
                     }
-                    Txt { value: "القطعة المرتجعة تُسجل «بانتظار الفحص» ولا تعود للبيع مباشرة."
+                    Txt { value: "القطعة المرتجعة تدخل الكسر بوزنها الفعلي وتنتظر قرار المدير، ولا تعود للبيع مباشرة."
                           color: theme.textMuted; font.pixelSize: theme.fontCaption; Layout.fillWidth: true
                           elide: Text.ElideRight }
                 }
@@ -373,6 +393,12 @@ Item {
                                       } }
                                 Btn { objectName: "exchangeDescribedClose"; text: "إغلاق"; onClicked: exchangePage.vm.closePanel() }
                             }
+                            // F7: weight held for a manager decision is physically in Scrap but not usable (032).
+                            Txt { objectName: "exchangeStockHeldBreakdown"; Layout.fillWidth: true
+                                  visible: !describedPanel.manualMode && value.length > 0
+                                  value: dKarat.currentIndex >= 0 && dKarat.model.length > dKarat.currentIndex
+                                         ? (dKarat.model[dKarat.currentIndex].breakdown || "") : ""
+                                  color: theme.amber; wrapMode: Text.WordWrap }
                         }
                     }
                     Txt { objectName: "exchangeScanError"; Layout.fillWidth: true; visible: value.length > 0
@@ -455,7 +481,7 @@ Item {
                         Head { value: "الباركود"; Layout.preferredWidth: 76; visible: exchangePage.width >= 1200 }
                         Head { value: "عيار"; Layout.preferredWidth: 34 }
                         Head { value: "الوزن"; Layout.preferredWidth: 78 }
-                        Head { value: "مصنعية ج/جرام"; Layout.preferredWidth: 92; visible: !!exchangePage.s.makingRequired }
+                        Head { value: "مصنعية ج/جرام"; Layout.preferredWidth: 92 }
                         Item { Layout.preferredWidth: 52 }
                     }
                     Repeater {
@@ -479,16 +505,15 @@ Item {
                                       visible: repRow.modelData.manual || repRow.modelData.fromOldGold
                                       color: repRow.modelData.manual ? theme.amber : theme.balanceKarat21
                                       font.pixelSize: theme.fontCaption }
-                                Txt { value: repRow.modelData.barcode || "—"; color: theme.textMuted
-                                      font.pixelSize: theme.fontTableHeader; Layout.preferredWidth: 76
-                                      visible: exchangePage.width >= 1200 }
+                                Txt { objectName: "exchangeReplacementIdentity_" + repRow.index
+                                      value: repRow.modelData.identity; color: theme.textMuted
+                                      font.pixelSize: theme.fontTableHeader }
                                 Txt { value: repRow.modelData.karat; Layout.preferredWidth: 34 }
                                 Txt { value: repRow.modelData.weight; color: theme.textPrimary; font.bold: true
                                       Layout.preferredWidth: 78 }
-                                // Making is typed only when the customer receives more gold.
+                                // Every replacement has its own making (owner rule): always typed here.
                                 Field { objectName: "exchangeMaking_" + repRow.index
                                         Layout.preferredWidth: 92
-                                        visible: !!exchangePage.s.makingRequired
                                         enabled: exchangePage.editable
                                         text: repRow.modelData.making
                                         placeholderText: activeFocus || text.length ? "" : "مصنعية"
@@ -511,7 +536,7 @@ Item {
             // -------------------------------------------- the calculation (from the service)
             Section {
                 objectName: "exchangeSummarySection"
-                visible: !!exchangePage.s.finalAmount
+                visible: !!exchangePage.s.shown
                 title: "حساب الاستبدال"
                 accent: theme.gold
                 GridLayout {
@@ -524,16 +549,29 @@ Item {
                     Pair { objectName: "exchangeDelta"; label: exchangePage.s.deltaLabel || ""; value: exchangePage.s.delta || ""
                            strong: true }
                     Pair { objectName: "exchangePrice"; label: "السعر المستخدم"; value: exchangePage.s.priceText || "" }
-                    Pair { objectName: "exchangeGoldAmount"; label: "قيمة فرق الذهب"; value: exchangePage.s.goldAmount || "" }
-                    Pair { objectName: "exchangeMaking"; visible: (exchangePage.s.makingLabel || "").length > 0
-                           label: exchangePage.s.makingLabel || ""; value: exchangePage.s.makingValue || ""
+                    Pair { objectName: "exchangeGoldAmount"; label: "فرق الذهب"; value: exchangePage.s.goldAmount || ""
+                           strong: true }
+                    Pair { objectName: "exchangeMakingRefund"; label: "مصنعية المرتجع المستردة"
+                           value: exchangePage.s.makingRefund || "" }
+                    Pair { objectName: "exchangeMakingReplacement"; label: "مصنعية البديل"
+                           value: exchangePage.s.makingReplacement || ""
                            valueColor: exchangePage.s.makingMissing ? theme.amber : theme.textPrimary }
+                    Pair { objectName: "exchangeMakingDifference"; label: "فرق المصنعية"
+                           value: exchangePage.s.makingDifference || ""; strong: true
+                           valueColor: exchangePage.s.makingMissing ? theme.amber : theme.textPrimary }
+                    Pair { objectName: "exchangeRawAmount"; visible: !!exchangePage.s.complete
+                           label: "الإجمالي قبل التقريب"; value: exchangePage.s.rawAmount || "" }
+                    Pair { objectName: "exchangeRounding"; visible: !!exchangePage.s.complete
+                           label: "التقريب"; value: exchangePage.s.rounding || "" }
                 }
+                Txt { objectName: "exchangeIncomplete"; Layout.fillWidth: true; visible: value.length > 0
+                      value: exchangePage.s.statusText || ""; color: theme.statusWarning; font.bold: true }
                 Txt { objectName: "exchangeRefundExpired"; Layout.fillWidth: true; visible: value.length > 0
                       value: exchangePage.s.expiredText || ""; color: theme.textMuted }
                 Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: theme.border }
                 RowLayout {
                     Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 10
+                    visible: !!exchangePage.s.complete
                     Txt { value: "المبلغ النهائي"; color: theme.textMuted; font.pixelSize: theme.fontBodyStrong }
                     Txt { objectName: "exchangeDirection"; value: exchangePage.s.directionText || ""; font.bold: true
                           font.pixelSize: theme.fontBodyStrong; color: exchangePage.directionColor(exchangePage.s.direction) }
@@ -601,7 +639,8 @@ Item {
                 visible: !!exchangePage.st.needsMoney
                 layoutDirection: Qt.RightToLeft
                 spacing: 6
-                Txt { height: 30; value: exchangePage.st.moneyLabel || ""; color: theme.textSecondary; font.bold: true }
+                Txt { height: 40; verticalAlignment: Text.AlignVCenter
+                      value: exchangePage.st.moneyLabel || ""; color: theme.textSecondary; font.bold: true }
                 Choice {
                     objectName: "exchangeMethod"
                     width: 120
@@ -623,7 +662,7 @@ Item {
                     textRole: "name"; valueRole: "id"
                     onActivated: exchangePage.vm.setBankAccount(currentValue)
                 }
-                Field { objectName: "exchangeAmount"; width: 120
+                MoneyField { objectName: "exchangeAmount"
                         enabled: exchangePage.editable
                         text: exchangePage.vm ? exchangePage.vm.amount : ""
                         placeholderText: activeFocus || text.length ? "" : "المبلغ الفعلي"
@@ -633,9 +672,10 @@ Item {
                       enabled: exchangePage.editable
                       onClicked: exchangePage.vm.payFullAmount() }
                 // Explicit customer-account part (never silent debt / credit); only with a registered customer.
-                Txt { height: 30; visible: !!exchangePage.h.hasCustomer; value: exchangePage.st.accountLabel || ""
+                Txt { height: 40; verticalAlignment: Text.AlignVCenter
+                      visible: !!exchangePage.h.hasCustomer; value: exchangePage.st.accountLabel || ""
                       color: theme.textMuted }
-                Field { objectName: "exchangeAccountAmount"; width: 110
+                MoneyField { objectName: "exchangeAccountAmount"
                         visible: !!exchangePage.h.hasCustomer
                         enabled: exchangePage.editable
                         text: exchangePage.vm ? exchangePage.vm.accountAmount : ""

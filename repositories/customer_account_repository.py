@@ -61,7 +61,8 @@ class CustomerAccountRepository(CorrectionRepository):
               CASE WHEN cs.id IS NOT NULL THEN cs.id
                    WHEN c.source_type='CUSTOMER_ACCOUNT_SETTLEMENT' THEN c.source_id END AS settlement_id,
               c.source_reference AS corrected_source, pd.payment_details, COALESCE(cs.notes, cd.notes) AS settlement_notes,
-              cd.id AS deposit_id, COALESCE(dw.id, dr.id) AS dead_cash_id, COALESCE(dw.reason, dr.reversal_reason) AS dead_cash_reason
+              cd.id AS deposit_id, COALESCE(dw.id, dr.id) AS dead_cash_id, COALESCE(dw.reason, dr.reversal_reason) AS dead_cash_reason,
+              IF(dw.id IS NOT NULL, dw.reversal_transaction_id IS NOT NULL, NULL) AS dead_cash_reversed
             FROM ordered o
             LEFT JOIN users u ON u.id=o.actor_id
             LEFT JOIN invoices i ON o.reference_type='INVOICE' AND i.id=o.reference_id

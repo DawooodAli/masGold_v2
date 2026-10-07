@@ -62,7 +62,8 @@ class DerivedSaleTests(InvoiceServiceTestCase):
 
 
 class MandatoryCustomerTests(InvoiceServiceTestCase):
-    """No anonymous invoice: every save (Save Only and Save + Print are the same finalize) needs a name."""
+    """No anonymous SALE: every save that sells or uses the customer account needs a name. Old gold only, fully paid
+    in real money, needs none (OldGoldOnlyCustomerOptionalTests)."""
 
     def cases(self, customer=None, new_customer=None):
         kw = {"new_customer": new_customer} if new_customer else {}
@@ -79,6 +80,8 @@ class MandatoryCustomerTests(InvoiceServiceTestCase):
         for label, new_customer in (("no customer", None), ("empty new name", NewCustomerInput("")),
                                     ("whitespace new name", NewCustomerInput("   ", "0100"))):
             for name, draft in self.cases(new_customer=new_customer).items():
+                if name == "old gold only" and new_customer is None:
+                    continue            # fully paid in real money: the customer is optional (see the dedicated tests)
                 with self.subTest(customer=label, invoice=name):
                     self.assertRefused("CUSTOMER_NAME_REQUIRED", draft)          # nothing written
                     with self.assertRaises(InvoiceError) as refused:
@@ -173,36 +176,39 @@ class SettlementTests(InvoiceServiceTestCase):
     permissions = frozenset({"APP_LOGIN", "INVOICE_CREATE", "INVOICE_FINALIZE", "PAYMENT_RECORD"})
 
     def draft(self, paid, **kwargs):
-        # Old gold only (the customer only sells): 199,759.88 owed; any discount is allowed here.
-        weight = "32.183"    # 32.183 × 6207 = 199,759.88 → use a discount-free exact line
-        return InvoiceDraft(5, kwargs.pop("customer", "12"), (), (old(1, weight),), (cash(paid),), **kwargs)
+        # Old gold only (the customer only sells): 22.107 g × 6207 = 137,218.15 − 1.50% (2,058.27)
+        # = 135,159.88 owed. The 1.25–5.00% discount rule applies here too.
+        return InvoiceDraft(5, kwargs.pop("customer", "12"), (), (disc("1.50", "22.107"),), (cash(paid),), **kwargs)
 
     def test_small_difference_is_settled_explicitly_without_customer_or_ledger(self):
-        net = self.service.preview(self.draft("199750", settlement_choice="SETTLE"))
+        net = self.service.preview(self.draft("135150", settlement_choice="SETTLE"))
         self.assertEqual((net["gap_signed"], net["account_residual_amount"]), ("-9.88", "0.00"))
         self.assertEqual(net["blocking_problems"], [])
-        result = self.finalize(self.draft("199750", settlement_choice="SETTLE"))
+        result = self.finalize(self.draft("135150", settlement_choice="SETTLE"))
         self.assertEqual(result["settlement_status"], "SETTLED")
         self.assertEqual(self.store.ledger, [])                           # no BUY_BALANCE_DUE, no pending cash
         adjustment = self.store.adjustments[0]
         self.assertEqual((adjustment["residual_signed"], adjustment["amount_signed"], adjustment["approved_by_user_id"]),
                          (D("-9.88"), D("-9.88"), None))
-        self.assertEqual(self.store.payments[0]["amount"], D("199750.00"))  # the real money only
+        self.assertEqual(self.store.payments[0]["amount"], D("135150.00"))  # the real money only
         # No sold pieces: A stays an invoice-level adjustment. Within 50 ج: no settlement review
-        # (the discount-free old-gold line is reviewed on its own, see FinalCorrectionTests).
-        self.assertEqual([r["review_type"] for r in self.store.reviews], ["OLD_GOLD_DISCOUNT"])
+        # (the default 1.50% discount is not a changed discount, so no discount review either).
+        self.assertEqual([r["review_type"] for r in self.store.reviews], [])
 
     def test_never_automatic_and_account_choice_needs_a_customer(self):
-        self.assertRefused("SETTLEMENT_CHOICE_REQUIRED", self.draft("199750"))
-        self.assertRefused("CUSTOMER_NAME_REQUIRED", self.draft("199750", customer=None, account_amount="9.88",
+        self.assertRefused("SETTLEMENT_CHOICE_REQUIRED", self.draft("135150"))
+        self.assertRefused("CUSTOMER_NAME_REQUIRED", self.draft("135150", customer=None, account_amount="9.88",
                                                                 account_direction="SHOP_OWES"))
-        self.finalize(self.draft("199750", account_amount="9.88", account_direction="SHOP_OWES", customer="12"))
+        # The account follows the FINAL (EGP-5 rounded) amount: 135,160 − 135,150 = 10.00, never the exact 9.88.
+        self.assertRefused("ACCOUNT_AMOUNT_NOT_ROUNDED", self.draft(
+            "135150", account_amount="9.88", account_direction="SHOP_OWES", customer="12"))
+        self.finalize(self.draft("135150", account_amount="10", account_direction="SHOP_OWES", customer="12"))
         self.assertEqual((self.store.ledger[0]["type_code"], self.store.ledger[0]["amount_delta"]),
-                         ("BUY_BALANCE_DUE", D("-9.88")))
-        self.assertEqual(self.store.adjustments, [])
+                         ("BUY_BALANCE_DUE", D("-10.00")))
+        self.assertEqual(self.store.adjustments, [])               # rounded UP: no same-sign audit row exists
 
     def test_above_fifty_needs_reason_and_manager_approval(self):
-        draft = self.draft("199700", settlement_choice="SETTLE")               # 59.88
+        draft = self.draft("135100", settlement_choice="SETTLE")               # 59.88
         preview = self.service.preview(draft)
         self.assertEqual({p["code"] for p in preview["blocking_problems"]},
                          {"SETTLEMENT_REASON_REQUIRED", "SETTLEMENT_APPROVAL_REQUIRED"})
@@ -230,7 +236,7 @@ class SettlementTests(InvoiceServiceTestCase):
         with self.assertRaises(AuthenticationError):
             self.service.verify_settlement_approver("manager", "wrong")
         grant = self.service.verify_settlement_approver("manager", "manager-pass")
-        self.finalize(self.draft("199700", settlement_choice="SETTLE", settlement_reason="كسر فكة",
+        self.finalize(self.draft("135100", settlement_choice="SETTLE", settlement_reason="كسر فكة",
                                  settlement_approver=grant))
         adjustment = self.store.adjustments[0]
         self.assertEqual((adjustment["approved_by_user_id"], adjustment["reason"], adjustment["amount_signed"]),
@@ -238,7 +244,7 @@ class SettlementTests(InvoiceServiceTestCase):
         self.assertEqual(self.store.reviews[0]["review_type"], "CASH_SETTLEMENT")
         forged = SettlementApprover(3, "المدير")                             # not produced by verification
         self.assertRefused("SETTLEMENT_APPROVAL_REQUIRED",
-                           self.draft("199700", settlement_choice="SETTLE", settlement_reason="x", settlement_approver=forged))
+                           self.draft("135100", settlement_choice="SETTLE", settlement_reason="x", settlement_approver=forged))
 
     def test_owner_with_permission_approves_directly_and_over_500_is_refused(self):
         self.session.logout()
@@ -246,9 +252,9 @@ class SettlementTests(InvoiceServiceTestCase):
         owner = frozenset(self.permissions | {"INVOICE_SETTLEMENT_APPROVE"})
         self.session._establish(AuthenticationResult(1, None, "المالك", owner, _VERIFIED), int(self.session.generation))
         self.authorization.permissions = owner
-        self.finalize(self.draft("199700", settlement_choice="SETTLE", settlement_reason="فكة"))
+        self.finalize(self.draft("135100", settlement_choice="SETTLE", settlement_reason="فكة"))
         self.assertEqual(self.store.adjustments[0]["approved_by_user_id"], 1)
-        self.assertRefused("SETTLEMENT_OVER_LIMIT", self.draft("199000", settlement_choice="SETTLE", settlement_reason="x"))
+        self.assertRefused("SETTLEMENT_OVER_LIMIT", self.draft("134500", settlement_choice="SETTLE", settlement_reason="x"))
 
 
 class NewCustomerTests(InvoiceServiceTestCase):
@@ -519,13 +525,13 @@ class CommercialModelTests(InvoiceServiceTestCase):
                                        account_direction="CUSTOMER_OWES"))
         self.assertNothingWritten(before)
 
-    # ---- 9–13: old-gold discount with a new-gold sale is 1.25–3.00%
-    def test_exchange_discount_must_be_between_1_25_and_3(self):
-        for percent in ("1.25", "3.00", "1.50"):
+    # ---- 9–13: old-gold discount is 1.25–5.00% (mixed AND old gold only)
+    def test_exchange_discount_must_be_between_1_25_and_5(self):
+        for percent in ("1.25", "1.50", "2.00", "5.00"):
             with self.subTest(percent=percent):
                 preview = self.service.preview(InvoiceDraft(5, "12", (scanned(),), (disc(percent),), (pay("55000"),)))
                 self.assertNotIn("OLD_GOLD_DISCOUNT_RANGE", [p["code"] for p in preview["blocking_problems"]])
-        for line in (disc("1.24"), disc("3.01"), disc("0"), old(1, "20"),
+        for line in (disc("1.24"), disc("5.01"), disc("0"), old(1, "20"),
                      old(1, "20", discount_type="AMOUNT", discount_value="1862.10")):
             with self.subTest(line=line):
                 draft = InvoiceDraft(5, "12", (scanned(),), (line,), (pay("55000"),))
@@ -533,12 +539,20 @@ class CommercialModelTests(InvoiceServiceTestCase):
                               [p["code"] for p in self.service.preview(draft)["blocking_problems"]])
                 self.assertRefused("OLD_GOLD_DISCOUNT_RANGE", draft)
 
-    def test_old_gold_only_keeps_a_free_discount(self):
-        for line in (old(1, "10"), disc("5", "10"), disc("0.5", "10")):
-            with self.subTest(line=line):
-                preview = self.service.preview(InvoiceDraft(5, "12", (), (line,), ()))
+    def test_old_gold_only_uses_the_same_discount_range(self):
+        # Owner decision 2026-10-06: the same 1.25–5.00% range, no exemption for old gold only.
+        for percent in ("1.25", "1.50", "2.00", "5.00"):
+            with self.subTest(percent=percent):
+                preview = self.service.preview(InvoiceDraft(5, "12", (), (disc(percent, "10"),), ()))
                 self.assertNotIn("OLD_GOLD_DISCOUNT_RANGE", [p["code"] for p in preview["blocking_problems"]])
-                self.assertIsNone(preview["old_gold_discount_range"])
+                self.assertEqual(preview["old_gold_discount_range"], ["1.25", "5.00"])
+        for line in (disc("1.24", "10"), disc("5.01", "10"), disc("0.5", "10"), old(1, "10"),
+                     old(1, "10", discount_type="AMOUNT", discount_value="500")):
+            with self.subTest(line=line):
+                draft = InvoiceDraft(5, "12", (), (line,), ())
+                self.assertIn("OLD_GOLD_DISCOUNT_RANGE",
+                              [p["code"] for p in self.service.preview(draft)["blocking_problems"]])
+                self.assertRefused("OLD_GOLD_DISCOUNT_RANGE", draft)
 
     def test_changed_discount_is_reviewed_and_the_same_price_keeps_the_same_average(self):
         # For the same final sale price the discount only moves the money, never the making.

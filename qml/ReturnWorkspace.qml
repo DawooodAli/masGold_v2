@@ -6,6 +6,7 @@ import QtQuick.Layouts
 // ReturnService and formatted by returnVM; this page only forwards selections and typing.
 // A finished Return is shown inside the invoice's History detail.
 Item {
+    signal customerRequested(string customerId)
     id: returnPage
     objectName: "returnWorkspace"
 
@@ -16,6 +17,11 @@ Item {
     readonly property bool editable: !!vm && !vm.done && !h.expired
 
     Theme { id: theme }
+
+    // The returned-grams column fits 999.999 in the large weight font (measured, never a guessed width).
+    TextMetrics { id: weightColumnText; font.family: theme.fontFamily; font.pixelSize: theme.fontSection + 2
+                  font.bold: true; text: "999.999" }
+    readonly property int weightColumn: Math.max(110, Math.ceil(weightColumnText.advanceWidth) + 36)
 
     Shortcut {
         sequence: "Esc"
@@ -105,6 +111,29 @@ Item {
                                 border.color: parent.activeFocus ? theme.gold : theme.border }
     }
 
+    // UX-RETURN-02: numbers keep their large bold figures; the FIELD grows to fit them (never the font shrinking).
+    // Money fits 9,999,999.99; weight fits 999.999.
+    component MoneyField: Field {
+        id: moneyField
+        font.pixelSize: theme.fontSection + 4
+        font.bold: true
+        implicitHeight: 40
+        leftPadding: 12
+        rightPadding: 12
+        Layout.preferredWidth: Math.ceil(moneyWidest.advanceWidth) + leftPadding + rightPadding + 8
+        TextMetrics { id: moneyWidest; font: moneyField.font; text: "9,999,999.99" }
+    }
+    component WeightField: Field {
+        id: weightField
+        font.pixelSize: theme.fontSection + 2
+        font.bold: true
+        implicitHeight: 36
+        leftPadding: 10
+        rightPadding: 10
+        TextMetrics { id: weightWidest; font: weightField.font; text: "999.999" }
+        readonly property int fitWidth: Math.ceil(weightWidest.advanceWidth) + leftPadding + rightPadding + 8
+    }
+
     component Choice: ComboBox {
         implicitHeight: 30
         font.family: theme.fontFamily
@@ -122,8 +151,10 @@ Item {
               onClicked: returnPage.vm.close() }
         Txt { objectName: "returnTitle"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontPageTitle
               value: returnPage.h.number ? "مرتجع — فاتورة " + returnPage.h.number : "مرتجع" }
-        Txt { visible: !!returnPage.h.number; color: theme.textSecondary; font.pixelSize: theme.fontBodyStrong
-              value: returnPage.h.customerName ? "العميل: " + returnPage.h.customerName : "" }
+        CustomerNameLink { objectName: "returnCustomerName"; visible: !!returnPage.h.number
+              text: returnPage.h.customerName ? "العميل: " + returnPage.h.customerName : ""
+              customerId: returnPage.h.customerId || ""
+              onCustomerRequested: function(customerId) { returnPage.customerRequested(customerId) } }
         Txt { visible: !!returnPage.h.returnCode; value: returnPage.h.returnCode || ""; color: theme.goldBright
               font.bold: true }
         Item { Layout.fillWidth: true }
@@ -193,9 +224,9 @@ Item {
                     Head { value: "المباع"; Layout.preferredWidth: 70 }
                     Head { value: "مستخدم"; Layout.preferredWidth: 70 }
                     Head { value: "المتاح"; Layout.preferredWidth: 70 }
-                    Head { value: "المرتجع"; Layout.preferredWidth: 90 }
-                    Head { value: "شراء المحل"; Layout.preferredWidth: 90 }
-                    Head { value: "المصنعية"; Layout.preferredWidth: 110 }
+                    Head { value: "المرتجع"; Layout.preferredWidth: returnPage.weightColumn }
+                    Head { value: "القيمة"; Layout.preferredWidth: 100 }
+                    Head { value: "طريقة الحساب"; Layout.preferredWidth: 110 }
                 }
                 Repeater {
                     model: returnPage.vm ? returnPage.vm.lines : []
@@ -238,8 +269,8 @@ Item {
                                       Layout.preferredWidth: 70 }
                                 // F7 grams: typed (partial allowed); an identified piece is always whole.
                                 Item {
-                                    Layout.preferredWidth: 90; Layout.preferredHeight: 30
-                                    Field {
+                                    Layout.preferredWidth: returnPage.weightColumn; Layout.preferredHeight: 36
+                                    WeightField {
                                         objectName: "returnWeight_" + lineRow.index
                                         anchors.fill: parent
                                         visible: lineRow.modelData.partial && lineRow.modelData.selected
@@ -252,10 +283,18 @@ Item {
                                           value: lineRow.modelData.selected ? lineRow.modelData.weight : ""
                                           color: theme.accountPayable; font.bold: true }
                                 }
-                                Txt { value: lineRow.modelData.shopBuy; color: theme.priceBuy; Layout.preferredWidth: 90 }
+                                Txt { value: lineRow.modelData.valueText; color: theme.priceBuy; Layout.preferredWidth: 100 }
                                 Txt { value: lineRow.modelData.makingText; color: theme.textMuted
                                       font.pixelSize: theme.fontCaption; Layout.preferredWidth: 110 }
                             }
+                            // Physical identity: stored barcode (or «بدون باركود»), #item, item type.
+                            Txt { objectName: "returnIdentity_" + lineRow.index; Layout.fillWidth: true
+                                  visible: value.length > 0; value: lineRow.modelData.identity
+                                  color: theme.goldBright; font.pixelSize: theme.fontBody }
+                            // A replacement received in an Exchange: the piece the customer holds now.
+                            Txt { objectName: "returnCurrentPiece_" + lineRow.index; Layout.fillWidth: true
+                                  visible: value.length > 0; value: lineRow.modelData.exchangeText
+                                  color: theme.priceBuy; font.bold: true; font.pixelSize: theme.fontBody }
                             Txt { Layout.fillWidth: true; visible: value.length > 0; value: lineRow.modelData.reason
                                   color: theme.amber; font.pixelSize: theme.fontCaption; elide: Text.ElideRight }
                         }
@@ -266,27 +305,28 @@ Item {
             Section {
                 objectName: "returnCalculationSection"
                 visible: !!returnPage.s.total
-                title: "حساب المرتجع (سعر شراء المحل الحالي)"
+                title: returnPage.s.modeText || "حساب المرتجع"
                 accent: theme.priceBuy
                 Repeater {
                     model: returnPage.s.lines || []
                     delegate: RowLayout {
                         required property var modelData
                         Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 10
-                        Txt { value: modelData.item; color: theme.textPrimary; Layout.fillWidth: true }
+                        Txt { value: modelData.item + (modelData.identity ? "  —  " + modelData.identity : "")
+                              color: theme.textPrimary; Layout.fillWidth: true; elide: Text.ElideLeft }
                         Txt { value: "عيار " + modelData.karat; Layout.preferredWidth: 60 }
                         Txt { value: modelData.weight + " جرام"; Layout.preferredWidth: 90 }
-                        Txt { value: "× " + modelData.price; color: theme.priceBuy; Layout.preferredWidth: 110 }
-                        Txt { value: modelData.gold; color: theme.textPrimary; Layout.preferredWidth: 110 }
-                        Txt { value: "مصنعية " + modelData.making; color: theme.textMuted; Layout.preferredWidth: 120 }
+                        Txt { visible: !returnPage.s.historical; value: "× " + modelData.price; color: theme.priceBuy
+                              Layout.preferredWidth: 110 }
+                        Txt { value: modelData.value; color: theme.textPrimary; Layout.preferredWidth: 110 }
                     }
                 }
-                Pair { label: "قيمة الذهب"; value: returnPage.s.gold || "" }
-                Pair { label: returnPage.s.makingText || "رد المصنعية"; value: returnPage.s.making || "" }
+                Pair { objectName: "returnBasis"; label: "قيمة الاسترداد قبل التقريب"; value: returnPage.s.basis || "" }
+                Pair { objectName: "returnRounding"; label: "التقريب (أقرب 5 جنيه)"; value: returnPage.s.rounding || "" }
                 Pair { objectName: "returnTotal"; label: "إجمالي المرتجع"; value: returnPage.s.total || ""; strong: true
                        valueColor: theme.accountPayable }
                 Txt { Layout.fillWidth: true; visible: value.length > 0; value: returnPage.s.priceWarning || ""
-                      color: theme.amber; font.pixelSize: theme.fontCaption }
+                      color: theme.statusWarning; font.pixelSize: theme.fontCaption }
             }
 
             RowLayout {
@@ -366,7 +406,7 @@ Item {
                         currentIndex: Math.max(0, model.findIndex(function(a) { return a.id === legRow.modelData.bank }))
                         onActivated: returnPage.vm.setLegAccount(legRow.modelData.key, currentValue)
                     }
-                    Field { objectName: "returnLegAmount_" + legRow.index; Layout.preferredWidth: 120
+                    MoneyField { objectName: "returnLegAmount_" + legRow.index
                             enabled: returnPage.editable
                             text: legRow.modelData.amount
                             placeholderText: activeFocus || text.length ? "" : "المبلغ"
@@ -385,7 +425,7 @@ Item {
                 Btn { objectName: "returnPayRemaining"; text: "المتبقي"; enabled: returnPage.editable
                       onClicked: returnPage.vm.payRemaining() }
                 Txt { visible: !!returnPage.h.hasCustomer; value: "للعميل على حسابه"; color: theme.textMuted }
-                Field { objectName: "returnAccountAmount"; Layout.preferredWidth: 110
+                MoneyField { objectName: "returnAccountAmount"
                         visible: !!returnPage.h.hasCustomer
                         enabled: returnPage.editable
                         text: returnPage.vm ? returnPage.vm.accountAmount : ""

@@ -172,6 +172,7 @@ class InvoiceHistoryService:
             invoice["exchanges"] = self._exchanges(invoices, invoice_id, invoice.get("events", []))
             invoice["returns"] = self._returns(invoices, invoice_id, invoice.get("events", []))
             invoice["corrections"] = self._corrections(invoices, invoice_id, invoice.get("events", []))
+            invoice["post_invoice"] = self._post_invoice(invoices, invoice)
             return invoice
         actor, invoice = self._read_verified(actor, read)        # manager-only details follow database grants
         if invoice is None:
@@ -193,6 +194,7 @@ class InvoiceHistoryService:
             _decimal(saved.get("L")) if saved.get("L") not in (None, "") else ZERO)
 
         sale_lines = [self._sale_line(line) for line in invoice["lines"] if line["line_type"] in SALE_LINE_TYPES]
+        self._return_tracking(sale_lines, invoice)
         old_gold_lines = [self._old_gold_line(line) for line in invoice["lines"] if line["line_type"] == "BUY_OLD_GOLD"]
         economics = {
             # The values saved when the invoice was finalized; None = not stored (older / legacy invoice).
@@ -230,7 +232,9 @@ class InvoiceHistoryService:
             # Exchanges of this invoice, shown inside the same detail (no second, repeating page).
             "exchanges": invoice.get("exchanges", []),
             "notes": invoice.get("notes") or "",
-            "can_reprint": REPRINT_PERMISSION in actor.permissions,
+            # A purchase of customer old gold only is save-only: it is never offered for (re)printing.
+            "can_reprint": (REPRINT_PERMISSION in actor.permissions
+                            and transaction_kind(sale_lines, old_gold_lines) != "OLD_GOLD_PURCHASE"),
             # The Exchange action; the service still checks the permission and every rule itself.
             "can_exchange": (EXCHANGE_PERMISSION in actor.permissions and not legacy and not self._reversed_by(invoice)
                              and invoice["invoice_status"] == "FINALIZED"
@@ -247,7 +251,33 @@ class InvoiceHistoryService:
             "reversed_by": self._reversed_by(invoice),
             "can_correct": CORRECT_PERMISSION in actor.permissions and not legacy
                            and invoice["invoice_status"] == "FINALIZED",
+            # REQ-BILL-12: what happened AFTER the invoice; the snapshot above is never rewritten.
+            "post_invoice": invoice.get("post_invoice"),
         }
+
+    @staticmethod
+    def _post_invoice(invoices, invoice):
+        """The original deferred part (L), the customer's LATER ledger movements (e.g. CS settlements) and
+        the current balance. CS settlements belong to the customer's overall balance, not to this invoice:
+        nothing here attributes them to the invoice (no allocation is invented)."""
+        entries = invoice.get("account_entries") or []
+        customer_id = invoice.get("customer_id")
+        if not entries or customer_id in (None, "") or not hasattr(invoices, "customer_movements_after"):
+            return None
+        original = sum((_decimal(e["amount_delta"]) for e in entries), ZERO)
+        if original == 0:
+            return None
+        last = max(int(e["transaction_id"]) for e in entries)
+        movements = invoices.customer_movements_after(customer_id, last)
+        balance = _decimal(invoices.customer_balance(customer_id))
+        return {"original_account": original, "current_balance": balance,
+                "movements": [{"transaction_id": m["transaction_id"], "occurred_at": m.get("occurred_at"),
+                               "amount": _decimal(m["amount_delta"]), "type_code": m.get("type_code"),
+                               "type_name": m.get("type_name"), "reference": m.get("reference_code") or "",
+                               "actor": m.get("actor") or "",
+                               "legs": [{"method_code": leg.split(":")[0], "amount": _decimal(leg.split(":")[1])}
+                                        for leg in (m.get("settlement_legs") or "").split("|") if ":" in leg]}
+                              for m in movements]}
 
     @staticmethod
     def _reversed_by(invoice):
@@ -298,8 +328,69 @@ class InvoiceHistoryService:
             return []
         from repositories.invoice_return_repository import InvoiceReturnRepository
         from services.return_service import return_summary
-        return [return_summary(row) for row in InvoiceReturnRepository(invoices.connection).for_invoice(invoice_id)
-                if row["return_status"] == "FINALIZED"]
+        from services.correction_rules import reversal_of
+        rows = []
+        for row in InvoiceReturnRepository(invoices.connection).for_invoice(invoice_id):
+            if row["return_status"] != "FINALIZED":
+                continue
+            summary = return_summary(row)
+            summary["reversed_by"] = reversal_of({"events": events}, "RETURN", row["return_id"])
+            summary["tracking_lines"] = row["lines"]
+            rows.append(summary)
+        return rows
+
+    @staticmethod
+    def _return_tracking(sale_lines, invoice):
+        """Read-side cumulative facts; original snapshots and all posting rules stay unchanged.
+
+        Refund allocation is for display only: distribute the stored final total by stored
+        line bases in line order. Historical remainder uses historical bases, not rounded money.
+        CURRENT_BUY consumption follows the existing proportional historical-basis convention.
+        """
+        from services.correction_rules import reversal_of
+        from services.return_valuation import allocate_by_weight, share
+        tracked = {}
+        for r in invoice.get("returns", []):
+            if (r.get("reversed_by") or reversal_of(invoice, "RETURN", r["return_id"])
+                    or r.get("status") != "FINALIZED"):
+                continue
+            lines = r.get("tracking_lines", [])
+            bases = [(str(l["line_id"]), _decimal(l.get("historical_line_value"))
+                      if l.get("valuation_mode") == "HISTORICAL" else
+                      _decimal(l["gold_amount"]) + _decimal(l["making_refund"])) for l in lines]
+            refunds = (allocate_by_weight(_decimal(r["total_amount"]), bases)
+                       if bases and all(b is not None and b >= 0 for _, b in bases)
+                       and sum((b for _, b in bases), ZERO) > 0 else {})
+            for l in lines:
+                if l.get("reversed_by_correction_id") or not l.get("source_invoice_line_id"):
+                    continue
+                tracked.setdefault(str(l["source_invoice_line_id"]), []).append(
+                    (l, refunds.get(str(l["line_id"]))))
+        exchanged = {str(p["inventory_item_id"]) for x in invoice.get("exchanges", [])
+                     if not reversal_of(invoice, "EXCHANGE", x["lifecycle_id"])
+                     for p in x["returned"]}
+        invoice_reversed = bool(reversal_of(invoice))
+        for line in sale_lines:
+            if line["kind"] not in ("INVENTORY", "OLD_GOLD_STOCK"):
+                continue
+            entries = tracked.get(str(line["line_id"]), [])
+            returned = sum((_decimal(l["weight_grams"]) for l, _ in entries), ZERO)
+            refunds = [amount for _, amount in entries]
+            refund = None if any(v is None for v in refunds) else sum(refunds, ZERO)
+            is_exchanged = str(line.get("inventory_item_id")) in exchanged
+            remaining = ZERO if is_exchanged or invoice_reversed else max(ZERO, line["weight"] - returned)
+            bases = []
+            for l, _ in entries:
+                historical = _decimal(l.get("historical_line_value"))
+                bases.append(historical if historical is not None else
+                             share(line["line_total"], l["weight_grams"], line["weight"])
+                             if line["line_total"] is not None else None)
+            remaining_value = (ZERO if remaining == 0 else None if line["line_total"] is None
+                               or any(v is None for v in bases) else
+                               max(ZERO, line["line_total"] - sum(bases, ZERO)))
+            line["return_tracking"] = {"returned_weight": returned, "refund": refund,
+                                       "remaining_weight": remaining, "remaining_value": remaining_value,
+                                       "exchanged": is_exchanged, "invoice_reversed": invoice_reversed}
 
     @staticmethod
     def _details(event):

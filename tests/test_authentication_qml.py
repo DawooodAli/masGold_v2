@@ -149,8 +149,8 @@ class AuthenticationQmlTests(unittest.TestCase):
         self.assertTrue(self.controller.session.authenticated)
         self.assertEqual(self.controller.session.userId, '9007199254740993')
         self.assertEqual(self.factory_calls, 1)
-        old_vm = self.controller.operational_viewmodels['billingVM']
-        old_vm._sale_lines = [{'private_draft': True}]
+        old_vm = self.controller.operational_viewmodels['invoiceVM']
+        old_vm._sales = [{'private_draft': True}]
         operational = self.controller.operational_engine.rootObjects()[0]
         for width, height in ((1280, 800), (1080, 680)):
             operational.setProperty('width', width)
@@ -165,7 +165,7 @@ class AuthenticationQmlTests(unittest.TestCase):
         self.submit()
         self.wait_until(lambda: self.controller.operational_engine is not None)
         self.assertEqual(self.factory_calls, 2)
-        self.assertEqual(self.controller.operational_viewmodels['billingVM']._sale_lines, [])
+        self.assertEqual(self.controller.operational_viewmodels['invoiceVM']._sales, [])
         self.assertEqual(self.warnings, [])
 
     def test_worker_does_not_block_gui_and_logout_rejects_late_result(self):

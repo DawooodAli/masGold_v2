@@ -5,6 +5,7 @@ The manager picks the transaction (the invoice, one of its Exchanges or Returns)
 (preview_reversal / current_settlement / preview_settlement) and is formatted here; nothing is
 calculated in QML. The reason is mandatory and a confirmation always precedes execution."""
 from decimal import Decimal, InvalidOperation
+from services.number_text import normalize_digits
 
 from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
 
@@ -19,7 +20,7 @@ REVERSAL, SETTLEMENT = "REVERSAL", "SETTLEMENT"
 
 def _decimal(text):
     try:
-        return Decimal(str(text).strip()) if str(text or "").strip() else Decimal("0.00")
+        return Decimal(normalize_digits(str(text)).strip()) if str(text or "").strip() else Decimal("0.00")
     except (InvalidOperation, ValueError):
         return Decimal("0.00")
 
@@ -45,6 +46,7 @@ class CorrectionViewModel(QObject):
         self._mode, self._reversal, self._settlement, self._settle_preview = "", {}, {}, {}
         self._legs, self._seq, self._account, self._reason = [], 0, "", ""
         self._error, self._result, self._confirming = "", {}, False
+        self._notice, self._reload = "", None
         self.legsChanged.emit()
 
     # ------------------------------------------------------------ plumbing
@@ -96,7 +98,8 @@ class CorrectionViewModel(QObject):
         self._reset()
         self._open = True
         service = self._service_instance()
-        self._start("targets", lambda _expected_actor: service.targets(invoice_id, _expected_actor=_expected_actor))
+        self._reload = lambda _expected_actor: service.targets(invoice_id, _expected_actor=_expected_actor)
+        self._start("targets", self._reload)
 
     def _on_targets(self, result, error):
         if error:
@@ -114,8 +117,9 @@ class CorrectionViewModel(QObject):
         self._reset()
         self._open = True
         service = self._service_instance()
-        self._start("targets", lambda _expected_actor: service.settlement_target(
-            settlement_id, _expected_actor=_expected_actor))
+        self._reload = lambda _expected_actor: service.settlement_target(
+            settlement_id, _expected_actor=_expected_actor)
+        self._start("targets", self._reload)
 
     @Slot(str)
     def openFinancialOperation(self, operation_id):
@@ -126,8 +130,9 @@ class CorrectionViewModel(QObject):
         self._reset()
         self._open = True
         service = self._service_instance()
-        self._start("targets", lambda _expected_actor: service.financial_operation_target(
-            operation_id, _expected_actor=_expected_actor))
+        self._reload = lambda _expected_actor: service.financial_operation_target(
+            operation_id, _expected_actor=_expected_actor)
+        self._start("targets", self._reload)
 
     @Slot(str)
     def openCustomerDeposit(self, deposit_id):
@@ -138,8 +143,9 @@ class CorrectionViewModel(QObject):
         self._reset()
         self._open = True
         service = self._service_instance()
-        self._start("targets", lambda _expected_actor: service.deposit_target(
-            deposit_id, _expected_actor=_expected_actor))
+        self._reload = lambda _expected_actor: service.deposit_target(
+            deposit_id, _expected_actor=_expected_actor)
+        self._start("targets", self._reload)
 
     @Slot()
     def close(self):
@@ -248,7 +254,7 @@ class CorrectionViewModel(QObject):
         self.changed.emit()
 
     def _changed(self):
-        self._error, self._confirming = "", False
+        self._error, self._confirming, self._notice = "", False, ""
         self.changed.emit()
         if self._mode == SETTLEMENT:
             self._timer.start()
@@ -300,8 +306,34 @@ class CorrectionViewModel(QObject):
         if error:
             self._error = error
             return
-        self._result = result
         self.finalized.emit(self._targets["invoice_id"])
+        if self._mode == SETTLEMENT and self._reload is not None:
+            # A settlement correction is one immutable record among possibly several (FC000001, FC000002 …):
+            # the screen reloads the NEWLY current settlement and drops the old draft, so the next
+            # correction can follow without leaving the page.
+            self._notice = f"تم تصحيح التسوية {result['code']} للعملية {result['source_reference']}."
+            self._start("retargets", self._reload)
+            return
+        self._result = result
+
+    def _on_retargets(self, result, error):
+        """The correction is already saved; refresh the current state from the backend."""
+        if error:
+            self._error = error
+            return
+        reference = (self._target or {}).get("reference")
+        self._targets = result
+        fresh = next((t for t in result["targets"] if t["reference"] == reference), None)
+        self._target = fresh or (result["targets"][0] if result["targets"] else None)
+        self._legs, self._account, self._reason, self._confirming = [], "", "", False
+        self._settlement, self._settle_preview, self._reversal = {}, {}, {}
+        self.legsChanged.emit()
+        if self._target is not None and self._target.get("settlement_allowed", True):
+            notice, self._notice = self._notice, ""
+            self.setMode(SETTLEMENT)         # loads the current effective settlement (no stale legs / deltas)
+            self._notice = notice
+        else:
+            self._mode = ""
 
     # ------------------------------------------------------------ properties
     @Property(bool, notify=changed)
@@ -325,6 +357,15 @@ class CorrectionViewModel(QObject):
         return bool(self._result)
 
     @Property(str, notify=changed)
+    def notice(self):
+        """The last settlement correction (kept visible while the screen is already ready for the next one)."""
+        return self._notice
+
+    @Property(str, notify=changed)
+    def reason(self):
+        return self._reason
+
+    @Property(str, notify=changed)
     def doneMessage(self):
         r = self._result
         if not r:
@@ -338,7 +379,15 @@ class CorrectionViewModel(QObject):
         t = self._targets
         if not t:
             return {}
-        return {"invoiceId": t["invoice_id"], "number": t["invoice_number"], "customer": t.get("customer_name") or "بدون عميل"}
+        from services.correction_service import correction_source_text
+        source = self._target or next(iter(t.get("targets", [])), {})
+        label = correction_source_text(source.get("source_type"), source.get("direction"), definite=False)
+        reference = source.get("reference", t["invoice_number"])
+        prefix = "عكس" if not source.get("settlement_allowed", True) else "تصحيح / عكس —"
+        return {"invoiceId": t["invoice_id"], "number": t["invoice_number"],
+                "title": f"{prefix} {label} {reference}",
+                "customerId": str(t.get("customer_id") or ""),
+                "customer": t.get("customer_name") or "بدون عميل"}
 
     @Property("QVariantList", notify=changed)
     def targets(self):
@@ -369,6 +418,7 @@ class CorrectionViewModel(QObject):
         extra = ([f"إغلاق {p['reviews']} فحص قطعة مرتجعة مفتوح"] if p["reviews"] else []) + \
                 ([f"إلغاء {p['cases']} حالة بيع يدوي مفتوحة"] if p["cases"] else [])
         return {"title": f"{p['source_text']} {p['reference']}", "customer": p.get("customer_name") or "بدون عميل",
+                "customerId": str(p.get("customer_id") or ""),
                 "date": p["original_date"][:16], "total": money(p["original_total"]),
                 "money": money_lines or ["لا توجد حركة مالية"], "account": account_lines, "stock": stock, "gold": gold,
                 "extra": extra, "blockers": [b["message"] for b in p["blockers"]], "canReverse": p["can_reverse"]}

@@ -31,13 +31,17 @@ class InventoryList:
 
 
 class Printing:
-    """BarcodePrintService stand-in: allocates once per piece without a barcode; can fail."""
+    """BarcodePrintService stand-in with the real rule: a piece without a stored barcode (بدون باركود) is
+    refused; a label is printed only with the SAME stored barcode (nothing is ever allocated); can fail."""
 
     def __init__(self, items):
-        self.items, self.fail, self.allocated = items, False, 0
+        self.items, self.fail, self.allocated, self.queued, self.printed = items, False, 0, [], []
 
     def get_queue(self, ids):
+        self.queued.append(list(ids))
         rows = [dict(i) for i in self.items if i["inventory_item_id"] in ids]
+        if any(not r.get("barcode_value") for r in rows):
+            raise ValueError("لا يمكن طباعة لاصقة لقطعة بدون باركود")
         have = sum(1 for r in rows if r.get("barcode_value"))
         return {"items": rows, "item_count": len(rows), "existing_barcode_count": have,
                 "missing_barcode_count": len(rows) - have, "label_count": (len(rows) + 1) // 2,
@@ -45,11 +49,9 @@ class Printing:
 
     def print_items(self, ids):
         new = 0
-        for item in self.items:
-            if item["inventory_item_id"] in ids and not item.get("barcode_value"):
-                self.allocated += 1
-                new += 1
-                item["barcode_value"] = f"{self.allocated:02d}261001"
+        self.printed.append(list(ids))
+        if any(not item.get("barcode_value") for item in self.items if item["inventory_item_id"] in ids):
+            raise ValueError("لا يمكن طباعة لاصقة لقطعة بدون باركود")
         if self.fail:
             raise BarcodePrinterError("printer offline", assigned_count=new, batch_code="B1")
         return {"item_count": len(ids), "new_barcode_count": new, "label_count": 1, "batch_code": "B1",
@@ -57,6 +59,10 @@ class Printing:
 
 
 class InventoryStockPageTests(harness.InvoicePageTests):
+    def setUp(self):
+        super().setUp()
+        self.grant("INVENTORY_MANAGE", "OLD_GOLD_MANAGE")        # the add-stock controls are permission-gated
+
     def children(self, item):
         from PySide6.QtQuick import QQuickItem
         return [c for c in item.childItems() if isinstance(c, QQuickItem)]
@@ -100,6 +106,65 @@ class InventoryStockPageTests(harness.InvoicePageTests):
         self.press(Qt.Key_Return, "\r")
 
     # ------------------------------------------------------------ inventory entry / details
+    def test_review_fixes_card_filters_history_and_digits(self):
+        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QKeyEvent
+        calls = []
+
+        class Service:
+            def get_stock_items(self, **kwargs):
+                calls.append(kwargs)
+                return []
+
+            def get_stock_summary(self):
+                return {"total_items": 0, "equivalent_21_weight_grams": D("20.286")}
+
+            def find_piece(self, text):
+                return {"inventory_item_id": "7", "inventory_status": "SOLD", "weight_grams": D("3.600"),
+                        "karat_id": 1, "item_type_id": 1, "item_type_name": "خاتم", "karat_value": 21,
+                        "factory_code": "NR", "category_code": "A", "barcode_value": "01261001",
+                        "sale": {"invoice_id": "15", "invoice_number": "26100203",
+                                 "invoice_date": "2026-10-01 19:51:00", "customer_name": "علي"}}
+        inventory = self.controller.operational_viewmodels["inventoryVM"]
+        inventory._service = Service()
+        inventory.refresh()
+        self.page(INVENTORY)
+        self.assertEqual(self.item("inventoryTotalWeight21").property("text"), "20.286 جرام")
+        self.assertIn("إجمالي الوزن المكافئ عيار 21", self.labels(self.item("inventoryPage")))
+        # SOLD barcode: a read-only card with its invoice, never part of the current list
+        inventory.search("01261001")
+        self.wait_until(lambda: inventory.hasHistoryPiece, "history card")
+        card = self.visible_item("inventoryHistoryCard")
+        self.assertIsNotNone(card)
+        self.assertIn("مباعة", self.item("inventoryHistoryTitle").property("text"))
+        self.assertIn("26100203", self.item("inventoryHistorySale").property("text"))
+        opened = []
+        history = self.controller.operational_viewmodels["invoiceHistoryVM"]
+        history.openInvoice = lambda invoice_id: opened.append(invoice_id)
+        self.click("inventoryHistoryOpenInvoice")
+        self.assertEqual((self.root.property("currentPage"), opened), (1, ["15"]))
+        # filters reach the service and combine with the search
+        self.page(INVENTORY)
+        inventory.setFilters(1, 2)
+        self.assertEqual(calls[-1], {"search": "01261001", "karat_id": 1, "item_type_id": 2})
+        for width, height in harness.SIZES:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(80)
+            for name in ("inventoryKaratFilter", "inventoryItemTypeFilter"):
+                self.assert_inside_window(self.item(name))
+        # English digits: typed Arabic-Indic digits arrive as 0-9 in any field
+        inventory.setFilters(0, 0)
+        self.click(self.item("openStocktakeButton"))
+        stocktake = self.item("stocktakeScanField")
+        self.wait_until(lambda: stocktake.property("activeFocus"))
+        for char in "٠١٢٦١٠٠١":
+            for kind in (QEvent.KeyPress, QEvent.KeyRelease):
+                QCoreApplication.sendEvent(self.root, QKeyEvent(kind, 0, Qt.NoModifier, char))
+        QTest.qWait(30)
+        self.assertEqual(stocktake.property("text"), "01261001")
+        self.assertEqual(self.warnings, [])
+
     def test_inventory_header_actions_fit(self):
         self.page(INVENTORY)
         for width, height in harness.SIZES:
@@ -169,30 +234,42 @@ class InventoryStockPageTests(harness.InvoicePageTests):
         self.page(INVENTORY)
         return self.item("inventoryPage"), barcode, items, inventory
 
-    def test_successful_print_stores_barcode_and_clears_selection(self):
+    def all_visual(self, name, parent=None, found=None):
+        found = [] if found is None else found
+        parent = parent or self.root.contentItem()
+        if parent.objectName() == name:
+            found.append(parent)
+        for child in self.children(parent):
+            self.all_visual(name, child, found)
+        return found
+
+    def selection(self, page):
+        selected = page.property("selectedItemIds")
+        selected = selected.toVariant() if hasattr(selected, "toVariant") else selected
+        return [int(x) for x in selected]
+
+    def test_successful_print_keeps_the_same_barcode_and_clears_selection(self):
         page, barcode, items, inventory = self.print_setup()
-        self.assertEqual(inventory.withoutBarcodeCount, 1)
-        page.setProperty("selectedItemIds", [8])
+        page.setProperty("selectedItemIds", [7])
         QTest.qWait(50)
         review = self.item("barcodeReviewPrintButton")
         self.assertEqual(review.property("text"), "🖨  مراجعة وطباعة")
         self.click(review)
         dialog = self.item("barcodePrintQueueDialog")
         self.wait_until(lambda: dialog.property("opened"), "print queue")
-        self.assertEqual(barcode.missingBarcodeCount, 1)                     # detected as needing a barcode
+        self.assertEqual((barcode.missingBarcodeCount, barcode.existingBarcodeCount), (0, 1))
         self.click("printBarcodeNowButton")
         self.wait_until(lambda: not dialog.property("visible"), "queue closed")
-        self.assertEqual(page.property("selectedItemIds").toVariant() if hasattr(page.property("selectedItemIds"),
-                         "toVariant") else page.property("selectedItemIds"), [])
-        self.assertEqual((items[1]["barcode_value"], barcode._service.allocated), ("01261001", 1))
-        self.assertEqual(inventory.withoutBarcodeCount, 0)                   # counter refreshed
-        self.assertEqual(items[0]["barcode_value"], "01261001")             # existing barcode untouched
+        self.assertEqual(self.selection(page), [])
+        self.assertEqual((items[0]["barcode_value"], barcode._service.allocated), ("01261001", 0))   # SAME barcode
+        self.assertIsNone(items[1]["barcode_value"])                         # بدون باركود stays as it is
+        self.assertEqual(inventory.withoutBarcodeCount, 1)
         self.assertEqual(self.warnings, [])
 
-    def test_failed_print_keeps_selection_and_retry_allocates_nothing_new(self):
+    def test_failed_print_keeps_selection_and_retry_reuses_the_same_barcode(self):
         page, barcode, items, inventory = self.print_setup()
         barcode._service.fail = True
-        page.setProperty("selectedItemIds", [8])
+        page.setProperty("selectedItemIds", [7])
         QTest.qWait(50)
         self.click("barcodeReviewPrintButton")
         dialog = self.item("barcodePrintQueueDialog")
@@ -200,15 +277,56 @@ class InventoryStockPageTests(harness.InvoicePageTests):
         self.click("printBarcodeNowButton")
         QTest.qWait(80)
         self.assertTrue(dialog.property("visible"))                          # stays open with the error
-        selected = page.property("selectedItemIds")
-        selected = selected.toVariant() if hasattr(selected, "toVariant") else selected
-        self.assertEqual([int(x) for x in selected], [8])
+        self.assertEqual(self.selection(page), [7])
         self.assertFalse(barcode.actionSuccess)
-        self.assertEqual(items[1]["barcode_value"], "01261001")             # persisted before the failure
         barcode._service.fail = False
         self.click("printBarcodeNowButton")                                  # retry
         self.wait_until(lambda: not dialog.property("visible"), "queue closed")
-        self.assertEqual((barcode._service.allocated, items[1]["barcode_value"]), (1, "01261001"))
+        self.assertEqual((barcode._service.allocated, items[0]["barcode_value"]), (0, "01261001"))
+        self.assertEqual(self.warnings, [])
+
+    def test_a_piece_without_barcode_cannot_be_selected_or_printed(self):
+        page, barcode, items, inventory = self.print_setup()
+        QTest.qWait(150)
+        # No checkbox at all for the barcode-less piece (#8); the barcoded one (#7) keeps its checkbox.
+        boxes = [b for b in self.all_visual("inventorySelectBox") if b.property("visible")]
+        self.assertEqual(len(boxes), 1)
+        # Select All skips it.
+        page.setProperty("barcodeFilterMode", 0)
+        page.selectAllVisible()
+        self.assertEqual(self.selection(page), [7])
+        # Even a programmatic selection of it is refused.
+        page.setSelected(8, True)
+        self.assertEqual(self.selection(page), [7])
+        page.clearSelection()
+        page.setSelected(8, True)
+        self.assertEqual(self.selection(page), [])
+        self.assertFalse(self.item("barcodeReviewPrintButton").property("enabled"))   # nothing selected: no print
+        # The old «تحديد بدون باركود» shortcut no longer exists.
+        self.assertNotIn("تحديد بدون باركود", self.labels(self.item("inventoryPage")))
+        self.assertEqual(barcode._service.queued, [])                         # nothing reached Review & Print
+        # The service layer refuses it too (a label is never consumed).
+        with self.assertRaises(ValueError):
+            barcode._service.get_queue([8])
+        self.assertEqual(self.warnings, [])
+
+    def test_inventory_rows_are_compact_one_line_rows(self):
+        page, barcode, items, inventory = self.print_setup()
+        QTest.qWait(150)
+        for width, height in harness.SIZES:
+            with self.subTest(size=(width, height)):
+                self.root.setWidth(width)
+                self.root.setHeight(height)
+                QTest.qWait(120)
+                numbers = [n for n in self.all_visual("inventoryItemNumber") if n.property("visible")]
+                self.assertEqual(len(numbers), 2)
+                row = numbers[0].parentItem().parentItem()
+                self.assertLessEqual(row.height(), 46)                       # was 116
+                for text in self.all_visual("inventoryKaratWeight"):
+                    self.assertIn(" جرام", text.property("text"))              # the unit sits beside the weight
+                    self.assertLessEqual(text.property("contentWidth"), text.width() + 1)
+                self.assertEqual(sorted(t.property("text") for t in self.all_visual("inventoryStatusText")
+                                        if t.property("visible")), ["—", "—"])      # stand-in rows carry no status
         self.assertEqual(self.warnings, [])
 
     # ------------------------------------------------------------ بيان المخزون
@@ -226,7 +344,7 @@ class InventoryStockPageTests(harness.InvoicePageTests):
                 self.root.setHeight(height)
                 QTest.qWait(120)
                 self.assertEqual(self.item("stockBalanceTotalCount").property("text"), "إجمالي القطع: 7")
-                self.assertEqual(self.item("stockBalanceTotalWeight").property("text"), "إجمالي الوزن: 1,290.901 جرام")
+                self.assertEqual(self.item("stockBalanceTotalWeight").property("text"), "إجمالي الوزن المكافئ عيار 21: 1,294.558 جرام")
                 for code in ("ALL", "NEW_STOCK", "OLD_STOCK"):
                     self.assert_inside_window(self.item("stockBalanceFilter_" + code))
                 self.assert_inside_window(self.item("stockBalanceBack"))

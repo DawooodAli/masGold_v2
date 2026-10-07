@@ -6,6 +6,7 @@ or deletes an original row; the only updates are the status of a physical piece,
 reconciliation case being closed, and the link of a reversed lifecycle line to its reversal.
 Every method runs on the caller's connection and transaction; nothing here commits.
 """
+from decimal import Decimal
 import json
 
 from repositories.base_repository import BaseRepository
@@ -200,6 +201,21 @@ class CorrectionRepository(BaseRepository):
             f"SELECT id AS review_id, review_status, resolution_code FROM management_reviews "
             f"WHERE review_type = 'RETURNED_ITEM_INSPECTION' AND {column} = %s FOR UPDATE", (_id(value),)))
 
+    def hold_for(self, *, lifecycle_line_id=None, return_line_id=None):
+        """The Scrap hold of a returned Exchange (032) or Return (033) piece, locked; None for an older piece."""
+        column, value = (("lifecycle_line_id", lifecycle_line_id) if lifecycle_line_id
+                         else ("return_line_id", return_line_id))
+        return _ids(self._fetch_one(
+            f"SELECT id AS hold_id, karat_id, weight_grams, hold_status, inventory_item_id FROM old_gold_holds "
+            f"WHERE {column} = %s FOR UPDATE", (_id(value),)))
+
+    def reverse_hold(self, *, hold_id, out_movement_id, user_id, at):
+        _, rowcount = self._execute(
+            "UPDATE old_gold_holds SET hold_status = 'REVERSED', out_movement_id = %s, resolved_by_user_id = %s, "
+            "resolved_at = %s WHERE id = %s AND hold_status = 'HELD'",
+            (_id(out_movement_id), user_id, at, _id(hold_id)))
+        return rowcount == 1
+
     def case_for(self, *, invoice_line_id=None, lifecycle_line_id=None):
         column, value = ("invoice_line_id", invoice_line_id) if invoice_line_id else ("lifecycle_line_id", lifecycle_line_id)
         return _ids(self._fetch_one(
@@ -207,11 +223,16 @@ class CorrectionRepository(BaseRepository):
             f"WHERE case_type = 'UNIDENTIFIED_SALE' AND {column} = %s FOR UPDATE", (_id(value),)))
 
     def lock_old_gold_balance(self, karat_id):
-        rows = self._fetch_all(
-            "SELECT weight_delta_grams FROM old_gold_movements WHERE karat_id = %s AND weight_delta_grams IS NOT NULL "
-            "AND balance_effect = 'COUNTED' FOR UPDATE", (int(karat_id),))
-        from decimal import Decimal
-        return sum((Decimal(str(r["weight_delta_grams"])) for r in rows), Decimal("0.000"))
+        """AVAILABLE grams (032: COUNTED minus HELD Exchange holds), both locked."""
+        from repositories.invoice_repository import lock_available_old_gold
+        return lock_available_old_gold(self, karat_id)
+
+    def held_old_gold(self, karat_id):
+        """Grams HELD for a manager decision (032); a plain read — callers lock the holds first."""
+        row = self._fetch_one(
+            "SELECT COALESCE(SUM(weight_grams), 0) AS held FROM old_gold_holds "
+            "WHERE karat_id = %s AND hold_status = 'HELD'", (int(karat_id),))
+        return Decimal(str(row["held"])) if row else Decimal("0.000")
 
     def db_now(self):
         return self._fetch_one("SELECT NOW() AS now")["now"].replace(microsecond=0)
@@ -295,19 +316,20 @@ class CorrectionRepository(BaseRepository):
         return str(movement_id)
 
     def add_old_gold(self, *, karat_id, weight_delta, movement_code, correction_id, code, notes, created_by_user_id,
-                     employee_id, customer_id=None):
+                     employee_id, customer_id=None, inventory_item_id=None):
         movement_id, _ = self._execute(
             """
             INSERT INTO old_gold_movements (
                 movement_type_id, karat_id, weight_delta_grams, balance_effect, reference_type, reference_id,
                 reference_code, notes, created_by_user_id, performed_by_user_id, received_by_employee_id,
-                movement_code, customer_id
+                movement_code, customer_id, related_inventory_item_id
             )
-            SELECT t.id, %s, %s, 'COUNTED', %s, %s, %s, %s, %s, %s, %s, %s, %s
+            SELECT t.id, %s, %s, 'COUNTED', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
             FROM old_gold_movement_types t WHERE t.code = %s AND t.is_active = TRUE
             """,
             (int(karat_id), weight_delta, REFERENCE_TYPE, _id(correction_id), code, notes, created_by_user_id,
-             created_by_user_id, employee_id, movement_code, _optional_id(customer_id), movement_code))
+             created_by_user_id, employee_id, movement_code, _optional_id(customer_id),
+             _optional_id(inventory_item_id), movement_code))
         if not movement_id:
             raise RuntimeError(f"old-gold movement type {movement_code} is missing")
         return str(movement_id)

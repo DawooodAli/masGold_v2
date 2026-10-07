@@ -9,6 +9,7 @@ Item {
     objectName: "invoiceHistoryPage"
 
     property string pageTitle: ""
+    signal customerRequested(string customerId)
     readonly property var vm: typeof invoiceHistoryVM !== "undefined" ? invoiceHistoryVM : null
     readonly property bool detailMode: !!vm && vm.detailOpen
     // Below ~900 px of table the salesperson and time columns step aside (both stay in the detail).
@@ -17,7 +18,7 @@ Item {
     Theme { id: theme }
 
     onVisibleChanged: if (visible && vm) { vm.activate(); syncDates(); focusSearch() }
-    // Also when the page is visible from the start (activate() runs once; later calls do nothing).
+    // Entry always reads fresh data while preserving the applied filters.
     Component.onCompleted: if (visible && vm) { vm.activate(); syncDates() }
     // The date pickers hold a draft until تطبيق; after any range change they show the applied range.
     function syncDates() { if (vm) { fromField.value = vm.dateFrom; toField.value = vm.dateTo } }
@@ -183,6 +184,38 @@ Item {
                   color: historyPage.vm && historyPage.vm.todayActive ? theme.gold : theme.textSecondary; font.bold: true }
         }
 
+        // رقم الفاتورة: an exact lookup that opens the invoice directly, whatever the date range is.
+        RowLayout {
+            Layout.fillWidth: true
+            layoutDirection: Qt.RightToLeft
+            spacing: 6
+            Txt { value: "رقم الفاتورة"; color: theme.textSecondary; Layout.alignment: Qt.AlignVCenter }
+            Field {
+                id: numberField
+                objectName: "historyNumberField"
+                Layout.preferredWidth: 170
+                placeholderText: activeFocus || text.length ? "" : "مثال: 26100601"
+                onTextEdited: if (historyPage.vm) historyPage.vm.clearLookupMessage()
+                onAccepted: historyPage.vm.openByNumber(text)
+            }
+            Btn {
+                objectName: "historyNumberOpen"
+                text: "بحث / فتح"
+                primary: true
+                enabled: !!historyPage.vm && !historyPage.vm.lookupBusy
+                onClicked: historyPage.vm.openByNumber(numberField.text)
+            }
+            Txt {
+                objectName: "historyNumberMessage"
+                Layout.fillWidth: true
+                visible: value.length > 0
+                value: historyPage.vm ? historyPage.vm.lookupMessage : ""
+                color: theme.red
+                font.bold: true
+            }
+            Item { Layout.fillWidth: true; visible: !historyPage.vm || historyPage.vm.lookupMessage.length === 0 }
+        }
+
         Txt { objectName: "historyError"; Layout.fillWidth: true; visible: value.length > 0
               value: historyPage.vm ? historyPage.vm.errorMessage : ""; color: theme.red }
 
@@ -329,8 +362,13 @@ Item {
             Txt { objectName: "historyReversed"; value: detailRoot.d.reversedText || ""; visible: value.length > 0
                   color: theme.red; font.bold: true }
             Item { Layout.fillWidth: true }
+            BusyIndicator { objectName: "historyReprintSpinner"
+                  visible: !!historyPage.vm && historyPage.vm.reprintBusy; running: visible
+                  Layout.preferredWidth: 22; Layout.preferredHeight: 22 }
             Txt { objectName: "historyReprintMessage"; value: historyPage.vm ? historyPage.vm.reprintMessage : ""
-                  visible: value.length > 0; color: historyPage.vm && historyPage.vm.reprintFailed ? theme.red : theme.green }
+                  visible: value.length > 0
+                  color: !historyPage.vm ? theme.green : historyPage.vm.reprintBusy ? theme.gold
+                         : historyPage.vm.reprintFailed ? theme.red : theme.green }
             // Lifecycle actions: استبدال (its own permission; the service re-checks every rule).
             Btn { objectName: "historyExchange"
                   text: "استبدال"
@@ -399,7 +437,15 @@ Item {
                             Layout.fillWidth: true
                             layoutDirection: Qt.RightToLeft
                             spacing: 18
-                            Figure { objectName: "historyCustomerName"; label: "الاسم"; value: detailScroll.d.customerName || "" }
+                            ColumnLayout {
+                                width: Math.min(implicitWidth, parent.width)
+                                spacing: 0
+                                Txt { Layout.alignment: Qt.AlignRight; value: "الاسم"; color: theme.textMuted; font.pixelSize: theme.fontCaption }
+                                CustomerNameLink { objectName: "historyCustomerName"; Layout.fillWidth: true
+                                    text: detailScroll.d.customerName || ""; font.bold: true
+                                    customerId: detailScroll.d.customerId || ""
+                                    onCustomerRequested: function(customerId) { historyPage.customerRequested(customerId) } }
+                            }
                             Figure { label: "التليفون"; value: detailScroll.d.customerMobile || "—" }
                             Figure { label: "العنوان"; value: detailScroll.d.customerPlace || "—" }
                             Figure { label: "البائع"; value: detailScroll.d.salesperson || "—" }
@@ -429,6 +475,15 @@ Item {
                         visible: !!historyPage.vm && historyPage.vm.priceSnapshots.length > 0
                         title: "سعر الذهب وقت الفاتورة"
                         accent: theme.priceSell
+                        // The invoice's own date / time first (the moment these prices were in force).
+                        Txt {
+                            objectName: "historyPricesTimestamp"
+                            Layout.fillWidth: true
+                            visible: value.length > 0
+                            value: historyPage.vm ? historyPage.vm.priceSnapshotTime : ""
+                            color: theme.textSecondary
+                            font.bold: true
+                        }
                         // Only the karats used on this invoice, at the page's normal value size.
                         Repeater {
                             model: historyPage.vm ? historyPage.vm.priceSnapshots : []
@@ -596,6 +651,29 @@ Item {
                 }
                 }
 
+                Section {
+                    objectName: "historyReturnTrackingSection"
+                    title: "الأصلي / المرتجع / المتبقي"
+                    visible: !!historyPage.vm && historyPage.vm.returnTracking.length > 0
+                    Repeater {
+                        model: historyPage.vm ? historyPage.vm.returnTracking : []
+                        delegate: ColumnLayout {
+                            required property var modelData
+                            required property int index
+                            Layout.fillWidth: true
+                            spacing: 3
+                            Txt { Layout.fillWidth: true; value: modelData.item + (modelData.barcode ? " — " + modelData.barcode : "")
+                                  font.bold: true; color: theme.gold }
+                            Txt { objectName: "historyTrackingOriginal_" + index; Layout.fillWidth: true
+                                  value: modelData.original; wrapMode: Text.WordWrap }
+                            Txt { objectName: "historyTrackingReturned_" + index; Layout.fillWidth: true
+                                  value: modelData.returned; wrapMode: Text.WordWrap; color: theme.accountPayable }
+                            Txt { objectName: "historyTrackingRemaining_" + index; Layout.fillWidth: true
+                                  value: modelData.remaining; wrapMode: Text.WordWrap }
+                        }
+                    }
+                }
+
                 // ============ 4. exchanges of this invoice (inline, compact; only exchange facts)
                 Section {
                     objectName: "historyExchangesSection"
@@ -701,6 +779,40 @@ Item {
                     }
                 }
 
+                // ============ 4d. After the invoice (REQ-BILL-12): the original stays; later movements apart
+                Section {
+                    objectName: "historyPostInvoiceSection"
+                    visible: !!historyPage.vm && !!historyPage.vm.postInvoice.visible
+                    title: "حركات حساب العميل اللاحقة"
+                    accent: theme.accountReceivable
+                    Txt { objectName: "historyPostOriginal"; Layout.fillWidth: true
+                          value: historyPage.vm && historyPage.vm.postInvoice.visible ? historyPage.vm.postInvoice.originalText : ""
+                          color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                    Txt { objectName: "historyPostCurrent"; Layout.fillWidth: true
+                          value: historyPage.vm && historyPage.vm.postInvoice.visible ? historyPage.vm.postInvoice.currentText : ""
+                          color: historyPage.vm && historyPage.vm.postInvoice.settled ? theme.green : theme.amber
+                          font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                    Repeater {
+                        model: historyPage.vm && historyPage.vm.postInvoice.visible ? historyPage.vm.postInvoice.rows : []
+                        delegate: RowLayout {
+                            required property var modelData
+                            required property int index
+                            objectName: "historyPostRow_" + index
+                            Layout.fillWidth: true
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 10
+                            Txt { value: modelData.reference; font.bold: true; color: theme.textPrimary }
+                            Txt { value: modelData.type; color: theme.textSecondary }
+                            Txt { value: modelData.amount + " ج"; color: theme.textPrimary }
+                            Txt { visible: value.length > 0; value: modelData.methods; color: theme.textMuted
+                                  font.pixelSize: theme.fontTableHeader }
+                            Txt { value: modelData.time + "  •  " + modelData.actor; color: theme.textMuted
+                                  font.pixelSize: theme.fontTableHeader }
+                            Item { Layout.fillWidth: true }
+                        }
+                    }
+                }
+
                 // ============ 4b. Returns of this invoice (the invoice above stays exactly as finalized)
                 Section {
                     objectName: "historyReturnsSection"
@@ -718,7 +830,7 @@ Item {
                             spacing: 1
                             Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: theme.border
                                         visible: returnBlock.index > 0 }
-                            RowLayout {
+                            Flow {
                                 Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 10
                                 Txt { value: returnBlock.modelData.code; color: theme.gold; font.bold: true
                                       font.pixelSize: theme.fontBodyStrong }
@@ -726,7 +838,6 @@ Item {
                                       value: returnBlock.modelData.headline; color: theme.textPrimary; font.bold: true }
                                 Txt { value: returnBlock.modelData.time + "  •  " + returnBlock.modelData.actor
                                       color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
-                                Item { Layout.fillWidth: true }
                                 Txt { value: "للعميل"; font.bold: true; color: theme.accountPayable }
                                 Txt { objectName: "historyReturnTotal_" + returnBlock.index
                                       value: returnBlock.modelData.total; font.bold: true; font.pixelSize: theme.fontSection
@@ -738,10 +849,20 @@ Item {
                                                 Layout.fillWidth: true
                                                 value: "مرتجع: " + modelData.item + " عيار " + modelData.karat + " — " + modelData.weight
                                                        + (modelData.partial ? " من " + modelData.sold : "")
-                                                       + "  •  " + modelData.price + "  •  ذهب " + modelData.gold
-                                                       + "  •  مصنعية " + modelData.making
+                                                       + (modelData.barcode ? " — " + modelData.barcode : "")
+                                                       + (modelData.itemId ? " (#" + modelData.itemId + ")" : "")
+                                                       + (modelData.historical ? "  •  " + modelData.valuation
+                                                          : "  •  " + modelData.price + "  •  ذهب " + modelData.gold
+                                                            + "  •  مصنعية " + modelData.making)
+                                                wrapMode: Text.WordWrap
                                                 color: theme.accountPayable }
                             }
+                            Txt { objectName: "historyReturnValuation_" + returnBlock.index
+                                  Layout.fillWidth: true; value: returnBlock.modelData.valuation
+                                  wrapMode: Text.WordWrap; color: theme.accountPayable }
+                            Txt { objectName: "historyReturnStatus_" + returnBlock.index
+                                  Layout.fillWidth: true; value: returnBlock.modelData.status
+                                  wrapMode: Text.WordWrap; color: theme.amber }
                             Flow {
                                 Layout.fillWidth: true
                                 layoutDirection: Qt.RightToLeft
@@ -824,12 +945,12 @@ Item {
             anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10
             layoutDirection: Qt.RightToLeft; spacing: 14
             Txt { value: (totalsRoot.summary.count || "0") + " " + totalsRoot.noun; color: theme.textMuted }
-            Txt { value: "الإجمالي " + (totalsRoot.summary.total || ""); color: totalsRoot.accent; font.bold: true
+            Txt { value: "الإجمالي " + (totalsRoot.summary.total ? totalsRoot.summary.total + " جرام" : ""); color: totalsRoot.accent; font.bold: true
                   font.pixelSize: theme.fontBodyStrong }
             Repeater {
                 model: totalsRoot.summary.karats || []
                 delegate: Txt { required property var modelData
-                                value: "عيار " + modelData.karat + ": " + modelData.weight; color: theme.textSecondary }
+                                value: "عيار " + modelData.karat + ": " + modelData.weight + " جرام"; color: theme.textSecondary }
             }
             Item { Layout.fillWidth: true }
             Txt { value: totalsRoot.extra; visible: value.length > 0; color: theme.textPrimary }

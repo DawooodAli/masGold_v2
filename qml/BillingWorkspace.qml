@@ -8,6 +8,7 @@ Item {
     objectName: "billingWorkspace"
 
     property string pageTitle: ""
+    signal customerRequested(string customerId)
     property int currentTab: 0
     // استبدال (opened from an invoice in History) covers both tabs while it is open.
     readonly property bool exchangeOpen: typeof exchangeVM !== "undefined" && !!exchangeVM && exchangeVM.isOpen
@@ -27,18 +28,21 @@ Item {
         anchors.fill: parent
         visible: workspace.exchangeOpen
         z: 1
+        onCustomerRequested: function(customerId) { workspace.customerRequested(customerId) }
     }
 
     ReturnWorkspace {
         anchors.fill: parent
         visible: workspace.returnOpen && !workspace.exchangeOpen
         z: 1
+        onCustomerRequested: function(customerId) { workspace.customerRequested(customerId) }
     }
 
     CorrectionWorkspace {
         anchors.fill: parent
         visible: workspace.correctionOpen && !workspace.exchangeOpen && !workspace.returnOpen
         z: 1
+        onCustomerRequested: function(customerId) { workspace.customerRequested(customerId) }
     }
 
     ColumnLayout {
@@ -65,7 +69,8 @@ Item {
             currentIndex: workspace.currentTab
 
             InvoicePage { pageTitle: workspace.pageTitle }
-            InvoiceHistoryPage { pageTitle: "🧾 سجل الفواتير" }
+            InvoiceHistoryPage { pageTitle: "🧾 سجل الفواتير"
+                onCustomerRequested: function(customerId) { workspace.customerRequested(customerId) } }
         }
     }
 

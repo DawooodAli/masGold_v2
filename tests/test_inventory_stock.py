@@ -7,10 +7,13 @@ import unittest
 from unittest.mock import patch
 
 
+from app.session import AppSession
 from app.viewmodels.stock_balance_viewmodel import StockBalanceViewModel
 from app.viewmodels.stocktake_viewmodel import DUPLICATE, UNKNOWN, StocktakeViewModel
 from repositories.inventory_repository import CURRENT_STOCK
+from services.authentication_service import AuthenticationResult, _VERIFIED
 from services.inventory_service import InventoryService
+from tests.auth_fakes import FakeAuthorization
 
 K21, K18, K24 = (1, 21, 1), (2, 18, 2), (3, 24, 3)        # (karat_id, value, sort_order)
 
@@ -82,12 +85,21 @@ class Store:
         self.pieces, self.created, self.movements, self.reads = list(pieces), [], [], 0
 
 
-def service_for(store):
+def session_for(permissions=frozenset({"APP_LOGIN", "INVENTORY_MANAGE"}), user_id=9):
+    session = AppSession()
+    session._establish(AuthenticationResult(user_id, None, "موظف", frozenset(permissions), _VERIFIED),
+                       int(session.generation))
+    return session
+
+
+def service_for(store, session=None, authorization=None):
     @contextmanager
     def transaction():
         store.reads += 1
         yield type("T", (), {"connection": type("C", (), {"store": store})()})()
-    return InventoryService(transaction_factory=transaction, repository=Repo)
+    session = session or session_for()
+    return InventoryService(transaction_factory=transaction, repository=Repo, session=session,
+                            authorization=authorization or FakeAuthorization(session))
 
 
 MIXED = [
@@ -117,10 +129,10 @@ class ManualEntryTests(unittest.TestCase):
     def test_created_without_an_employee_and_actor_kept(self):
         store = Store()
         new = service_for(store).create_inventory_item(item_type_id=1, karat_id=1, weight_grams="3.600",
-                                                       stock_classification="NEW_STOCK", user_id=9)
+                                                       stock_classification="NEW_STOCK")
         self.assertEqual(new, 41)
         self.assertIsNone(store.created[0]["entered_by_employee_id"])          # no fake / logged-in employee
-        self.assertEqual(store.created[0]["created_by_user_id"], 9)            # actor attribution is separate
+        self.assertEqual(store.created[0]["created_by_user_id"], 9)            # the AUTHENTICATED session actor
         self.assertIsNone(store.movements[0]["performed_by_employee_id"])
         self.assertEqual(store.movements[0]["performed_by_user_id"], 9)
 
@@ -272,13 +284,13 @@ class StocktakeTests(unittest.TestCase):
         self.assertEqual((empty.remainingCount, empty.scannedCount, empty.karatTotals), (0, 0, []))
 
 
-class BarcodePrintIdempotencyTests(unittest.TestCase):
-    """_ensure_barcodes: only pieces WITHOUT a barcode get one; existing barcodes are never replaced,
-    so a retry after a failed print allocates nothing new."""
+class BarcodePrintRuleTests(unittest.TestCase):
+    """A label is printed only for a piece that already has its stored barcode — always the SAME one.
+    A piece marked بدون باركود is refused before any label, queue entry or barcode allocation."""
 
-    def run_ensure(self, items):
+    def make(self, items):
         from services import barcode_print_service as module
-        allocated = []
+        calls = {"allocated": 0, "assigned": 0, "jobs": 0}
 
         class FakeRepo:
             def __init__(self, connection):
@@ -288,28 +300,49 @@ class BarcodePrintIdempotencyTests(unittest.TestCase):
                 return [dict(i) for i in items if i["inventory_item_id"] in ids]
 
             def allocate_barcode_value(self, today):
-                allocated.append(today)
-                return f"{len(allocated):02d}261001"
+                calls["allocated"] += 1
+                return "99261001"
 
-            def assign_barcode(self, inventory_item_id, barcode_value, **kw):
-                next(i for i in items if i["inventory_item_id"] == inventory_item_id)["barcode_value"] = barcode_value
+            def assign_barcode(self, **kw):
+                calls["assigned"] += 1
 
         @contextmanager
         def transaction():
             yield type("T", (), {"connection": None})()
 
-        with patch.object(module, "DatabaseTransaction", transaction), patch.object(module, "BarcodeRepository", FakeRepo):
-            service = module.BarcodePrintService.__new__(module.BarcodePrintService)
-            return service._ensure_barcodes([i["inventory_item_id"] for i in items]), allocated
+        patches = (patch.object(module, "DatabaseTransaction", transaction), patch.object(module, "BarcodeRepository", FakeRepo))
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        service = module.BarcodePrintService.__new__(module.BarcodePrintService)
+        service._create_print_job = lambda **kw: calls.__setitem__("jobs", calls["jobs"] + 1) or (1, "B1", [])
+        return service, calls
 
-    def test_generated_once_and_existing_never_replaced(self):
-        items = [{"inventory_item_id": 7, "barcode_value": "01261001"}, {"inventory_item_id": 8, "barcode_value": None}]
-        (result, count, new_ids), allocated = self.run_ensure(items)
-        self.assertEqual((count, new_ids, len(allocated)), (1, {8}, 1))
-        self.assertEqual([i["barcode_value"] for i in result], ["01261001", "01261001"])   # 8: first new value
-        (result2, count2, _), allocated2 = self.run_ensure(items)            # retry after a failed print
-        self.assertEqual((count2, len(allocated2)), (0, 0))
-        self.assertEqual(items[0]["barcode_value"], "01261001")
+    ITEMS = [{"inventory_item_id": 7, "barcode_value": "01261001"}, {"inventory_item_id": 8, "barcode_value": None}]
+
+    def test_queue_with_a_barcode_less_piece_is_refused(self):
+        service, calls = self.make(self.ITEMS)
+        with self.assertRaises(ValueError) as refused:
+            service.get_queue([7, 8])
+        self.assertIn("بدون باركود", str(refused.exception))
+        self.assertIn("8", str(refused.exception))
+
+    def test_print_refuses_without_allocating_a_job_or_a_barcode(self):
+        service, calls = self.make(self.ITEMS)
+        with self.assertRaises(ValueError):
+            service.print_items([7, 8])
+        self.assertEqual(calls, {"allocated": 0, "assigned": 0, "jobs": 0})
+        self.assertEqual(self.ITEMS[1]["barcode_value"], None)
+
+    def test_barcoded_piece_queues_and_keeps_its_stored_barcode(self):
+        service, calls = self.make(self.ITEMS)
+        queue = service.get_queue([7])
+        self.assertEqual((queue["item_count"], queue["existing_barcode_count"], queue["missing_barcode_count"]),
+                         (1, 1, 0))
+        self.assertEqual(queue["items"][0]["barcode_value"], "01261001")
+        items, assigned, new_ids = service._ensure_barcodes([7])
+        self.assertEqual((assigned, new_ids, calls["allocated"], items[0]["barcode_value"]),
+                         (0, set(), 0, "01261001"))
 
 
 if __name__ == "__main__":

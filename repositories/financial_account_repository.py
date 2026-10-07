@@ -134,7 +134,8 @@ class FinancialAccountRepository(BaseRepository):
                 c.source_type AS corrected_source_type, c.source_id AS corrected_source_id,
                 c.source_reference AS corrected_reference,
                 fo.id AS operation_id, fo.reason AS operation_reason, fo.category AS operation_category,
-                COALESCE(csc.name, csettle.name, cdc.name) AS customer_name
+                COALESCE(csc.name, csettle.name, cdc.name, isnap.customer_name_snapshot) AS customer_name,
+                COALESCE(csc.id, csettle.id, cdc.id, isnap.customer_id) AS customer_id
               FROM ordered o
               LEFT JOIN users u ON u.id = o.created_by_user_id
               LEFT JOIN invoices i ON o.reference_type = 'INVOICE' AND i.id = o.reference_id
@@ -151,6 +152,8 @@ class FinancialAccountRepository(BaseRepository):
               LEFT JOIN customer_account_settlements ccs
                 ON c.source_type = 'CUSTOMER_ACCOUNT_SETTLEMENT' AND ccs.id = c.source_id
               LEFT JOIN customers csettle ON csettle.id = ccs.customer_id
+              LEFT JOIN invoice_customer_snapshots isnap
+                ON isnap.invoice_id = COALESCE(i.id, x.source_invoice_id, r.source_invoice_id, c.invoice_id)
             )"""
 
     def statement(self, ledger, account_id, start=None, end=None, direction="", source="", search="", offset=0):

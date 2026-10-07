@@ -28,9 +28,24 @@ Item {
         if (visible && !activated) {
             activated = true
             invoiceVM.activate()
+        } else if (visible) {
+            invoiceVM.refreshReference()       // payment methods / accounts activated meanwhile
         }
         if (visible)
             focusBarcode()
+    }
+
+    // BUG-BILL-08: the ONE draft reset (فاتورة جديدة, تصفير الفاتورة, after a save) rebinds every
+    // money field, so a value typed in the previous draft can never survive or be sent again.
+    Connections {
+        target: invoiceVM
+        function onDraftReset() {
+            invoiceTotalField.text = Qt.binding(function() { return invoiceVM.invoiceTotal })
+            accountField.text = Qt.binding(function() { return invoiceVM.accountAmount })
+            settlementReason.text = Qt.binding(function() { return invoiceVM.settlementReason })
+            invoicePage.clearCustomerFields()
+            oldGoldWeight.text = ""
+        }
     }
     Component.onCompleted: {
         if (visible && !activated) {
@@ -320,7 +335,9 @@ Item {
         horizontalAlignment: TextInput.AlignRight
         inputMethodHints: Qt.ImhFormattedNumbersOnly
         selectByMouse: true
-        onActiveFocusChanged: if (activeFocus) selectAll()
+        // The value when this edit began: a refused final value goes back to it (never a typed prefix).
+        property string editStart: ""
+        onActiveFocusChanged: if (activeFocus) { editStart = text; selectAll() }
     }
 
     component TextInputField: TextField {
@@ -456,7 +473,7 @@ Item {
                 Label {
                     objectName: weights.objectName + "_" + modelData
                     anchors.centerIn: parent
-                    text: weights.title + " " + modelData + "K: " + parent.value
+                    text: weights.title + " " + modelData + "K: " + parent.value + (parent.value === "—" ? "" : " جرام")
                     color: parent.value === "—" ? theme.textDisabled : weights.accent
                     font.family: "Cairo"
                     font.pixelSize: 12
@@ -583,7 +600,7 @@ Item {
                         visible: text.length > 0
                         text: invoiceVM.customerInfo.code || (invoiceVM.customerInfo.sameMobile
                               ? "يوجد عميل بنفس الرقم: " + invoiceVM.customerInfo.sameMobile : "")
-                        color: invoiceVM.customerInfo.sameMobile ? theme.amber : theme.textMuted
+                        color: invoiceVM.customerInfo.sameMobile ? theme.statusWarning : theme.textMuted
                         font.family: "Cairo"
                         font.pixelSize: 10
                     }
@@ -596,12 +613,12 @@ Item {
                     // A caution, never a sales block (red stays reserved for errors).
                     color: "transparent"
                     radius: 4
-                    border.color: theme.amber
+                    border.color: theme.statusWarning
                     Label {
                         id: deadCashText
                         anchors.centerIn: parent
                         text: "⚠️ تنبيه: سبق شطب رصيد لهذا العميل."
-                        color: theme.amber
+                        color: theme.statusWarning
                         font.family: "Cairo"
                         font.pixelSize: 10
                         font.bold: true
@@ -618,7 +635,7 @@ Item {
                     objectName: "invoicePriceStatus"
                     visible: text.length > 0
                     text: invoiceVM.priceStale ? invoiceVM.priceStatusText : ""
-                    color: theme.priceWarning
+                    color: theme.statusWarning
                     font.family: "Cairo"
                     font.pixelSize: 11
                     font.bold: true
@@ -676,20 +693,25 @@ Item {
             visible: invoiceVM.hasSuccess && (invoiceVM.printBusy || invoiceVM.printFailed || invoiceVM.printSucceeded)
             color: theme.bgSecondary
             radius: 4
-            border.color: invoiceVM.printFailed ? theme.amber : theme.green
+            border.color: invoiceVM.printFailed ? theme.statusWarning : theme.green
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: 6
                 anchors.rightMargin: 10
                 layoutDirection: Qt.RightToLeft
                 spacing: 12
+                BusyIndicator {
+                    objectName: "printBusyIndicator"
+                    visible: invoiceVM.printBusy
+                    running: visible
+                    Layout.preferredWidth: 20
+                    Layout.preferredHeight: 20
+                }
                 Label {
                     objectName: "printStatusText"
                     Layout.fillWidth: true
-                    text: invoiceVM.printBusy ? "جارِ الطباعة…"
-                                              : invoiceVM.printFailed ? invoiceVM.printMessage
-                                                                      : "تم إرسال الفاتورة إلى الطابعة."
-                    color: invoiceVM.printFailed ? theme.amber : theme.textSecondary
+                    text: invoiceVM.printStatusText
+                    color: invoiceVM.printFailed ? theme.statusWarning : theme.textSecondary
                     font.family: "Cairo"
                     font.pixelSize: 12
                     horizontalAlignment: Text.AlignRight
@@ -1429,7 +1451,7 @@ Item {
                             TextInputField { id: manualNotes; objectName: "manualNotes"; Layout.fillWidth: true; placeholderText: text.length > 0 ? "" : manualPanel.reason === "OTHER" ? "اكتب السبب (مطلوب)" : "وصف / ملاحظات (اختياري)"; onAccepted: manualPanel.add() }
                             PrimaryButton { objectName: "manualAdd"; Layout.preferredWidth: 90; text: "إضافة"; onClicked: manualPanel.add() }
                         }
-                        Label { id: manualError; objectName: "manualError"; Layout.fillWidth: true; visible: text.length > 0; color: theme.amber; font.family: "Cairo"; font.pixelSize: 11; horizontalAlignment: Text.AlignRight }
+                        Label { id: manualError; objectName: "manualError"; Layout.fillWidth: true; visible: text.length > 0; color: theme.statusWarning; font.family: "Cairo"; font.pixelSize: 11; horizontalAlignment: Text.AlignRight }
                     }
                 }
 
@@ -1523,6 +1545,24 @@ Item {
                             }
                             Item { Layout.fillWidth: true }
                         }
+                        // Weight held for a manager decision is physically in Scrap but not usable (032).
+                        Label {
+                            objectName: "stockHeldBreakdown"
+                            Layout.fillWidth: true
+                            visible: text.length > 0
+                            text: {
+                                var rows = invoiceVM.oldGoldStock
+                                for (var i = 0; i < rows.length; ++i)
+                                    if (rows[i].karatId === stockPanel.karatId)
+                                        return rows[i].breakdown || ""
+                                return ""
+                            }
+                            color: theme.amber
+                            font.family: "Cairo"
+                            font.pixelSize: 12
+                            horizontalAlignment: Text.AlignRight
+                            wrapMode: Text.WordWrap
+                        }
                         RowLayout {
                             Layout.fillWidth: true
                             layoutDirection: Qt.RightToLeft
@@ -1552,7 +1592,7 @@ Item {
                             TextInputField { id: stockDescription; objectName: "stockDescription"; Layout.fillWidth: true; placeholderText: text.length > 0 ? "" : "مثال: دبلة سادة"; onAccepted: stockPanel.add() }
                             PrimaryButton { objectName: "stockAdd"; Layout.preferredWidth: 90; text: "إضافة"; onClicked: stockPanel.add() }
                         }
-                        Label { id: stockError; objectName: "stockError"; Layout.fillWidth: true; visible: text.length > 0; color: theme.amber; font.family: "Cairo"; font.pixelSize: 11; horizontalAlignment: Text.AlignRight }
+                        Label { id: stockError; objectName: "stockError"; Layout.fillWidth: true; visible: text.length > 0; color: theme.statusWarning; font.family: "Cairo"; font.pixelSize: 11; horizontalAlignment: Text.AlignRight }
                     }
                 }
             }
@@ -1737,7 +1777,7 @@ Item {
             visible: text.length > 0
             text: invoiceVM.blockingProblems.length > 0 ? invoiceVM.blockingProblems.join(" • ")
                                                         : invoiceVM.previewError
-            color: theme.priceWarning
+            color: theme.statusWarning
             font.family: "Cairo"
             font.pixelSize: 12
             horizontalAlignment: Text.AlignRight
@@ -1791,7 +1831,7 @@ Item {
                                 Layout.preferredWidth: averageRow.implicitWidth + 14
                                 radius: theme.radiusSmall
                                 color: theme.bgTertiary
-                                border.color: invoiceVM.summary.makingStatus === "OUT_OF_RANGE" ? theme.amber : theme.goldDark
+                                border.color: invoiceVM.summary.makingStatus === "OUT_OF_RANGE" ? theme.statusWarning : theme.goldDark
                                 RowLayout {
                                     id: averageRow
                                     anchors.centerIn: parent
@@ -1819,7 +1859,7 @@ Item {
                                 ToolTip.text: text
                                 HoverHandler { id: makingFlagHover }
                                 text: invoiceVM.summary.makingNotice
-                                color: invoiceVM.summary.makingStatus === "OUT_OF_RANGE" ? theme.amber : theme.textMuted
+                                color: invoiceVM.summary.makingStatus === "OUT_OF_RANGE" ? theme.statusWarning : theme.textMuted
                                 font.family: "Cairo"
                                 font.pixelSize: 11
                                 font.bold: invoiceVM.summary.makingStatus === "OUT_OF_RANGE"
@@ -1839,7 +1879,11 @@ Item {
                             AmountField {
                                 id: discountField
                                 objectName: "oldGoldDiscountField"
-                                Layout.preferredWidth: 50
+                                // Room for 1.25 / 2.00 / 5.00 without shrinking the font (default padding
+                                // alone ate most of the old 50 px).
+                                Layout.preferredWidth: 72
+                                leftPadding: 6
+                                rightPadding: 6
                                 placeholderText: ""
                                 font.pixelSize: 12
                                 color: invoiceVM.summary.discountChanged ? theme.amber : theme.textPrimary
@@ -1858,7 +1902,7 @@ Item {
                                 objectName: "discountWarning"
                                 visible: text.length > 0
                                 text: invoiceVM.discountWarning
-                                color: theme.amber
+                                color: theme.statusWarning
                                 font.family: "Cairo"
                                 font.pixelSize: 11
                             }
@@ -1893,7 +1937,10 @@ Item {
                             text: invoiceVM.invoiceTotal
                             onTextEdited: invoiceVM.setInvoiceTotal(text)
                             // A refused total is replaced by the last valid one when editing ends.
-                            onEditingFinished: text = Qt.binding(function() { return invoiceVM.invoiceTotal })
+                            onEditingFinished: {
+                                invoiceVM.commitInvoiceTotal()          // mixed invoice: nearest EGP 5, once
+                                text = Qt.binding(function() { return invoiceVM.invoiceTotal })
+                            }
                             onAccepted: invoicePage.findVisual(invoicePage, "legAmount_0").forceActiveFocus()
                         }
                         Label {
@@ -1904,6 +1951,14 @@ Item {
                             font.family: "Cairo"
                             font.pixelSize: 12
                             font.bold: true
+                        }
+                        Label {
+                            objectName: "totalRoundedNote"
+                            visible: text.length > 0
+                            text: invoiceVM.totalRoundedNote
+                            color: theme.amber
+                            font.family: "Cairo"
+                            font.pixelSize: 11
                         }
                         Label {
                             objectName: "paymentWarning"
@@ -1968,6 +2023,7 @@ Item {
                             ChoiceCombo {
                                 id: methodCombo
                                 objectName: "legMethod_" + legRow.legIndex
+                                popup.onAboutToShow: invoiceVM.refreshReference()
                                 Layout.preferredWidth: invoicePage.compact ? 118 : 126
                                 // All four supported methods stay visible; one without an active
                                 // account is shown dimmed and cannot be saved.
@@ -2015,7 +2071,7 @@ Item {
                                 objectName: "legUnavailable_" + legRow.legIndex
                                 visible: legRow.unavailableText.length > 0
                                 text: legRow.unavailableText
-                                color: theme.amber
+                                color: theme.statusWarning
                                 font.family: "Cairo"
                                 font.pixelSize: 11
                             }
@@ -2026,14 +2082,23 @@ Item {
                                 placeholderText: ""
                                 font.bold: true
                                 text: legRow.amount
-                                // Validated when committed (Enter, focus lost, Save): a value that would
-                                // exceed إجمالي الفاتورة is refused and the value from before the edit stays.
+                                // Every keystroke recalculates at once (remaining, على العميل, Save). A value
+                                // that would exceed إجمالي الفاتورة is refused; when editing ends the field
+                                // shows the last valid value again.
                                 function commit() {
-                                    if (text !== legRow.amount)
+                                    if (text !== legRow.amount) {
                                         invoiceVM.setLegAmount(legRow.legIndex, text)
+                                        if (text !== legRow.amount)        // refused: back to before this edit
+                                            invoiceVM.revertLegAmount(legRow.legIndex, editStart)
+                                    }
                                     text = Qt.binding(function() { return legRow.amount })
                                 }
+                                onTextEdited: invoiceVM.setLegAmount(legRow.legIndex, text)
                                 onEditingFinished: commit()
+                                Connections {
+                                    target: invoiceVM
+                                    function onDraftReset() { legAmount.text = Qt.binding(function() { return legRow.amount }) }
+                                }
                                 onAccepted: invoicePage.startFinalize()
                             }
                             RemoveButton {
@@ -2118,11 +2183,14 @@ Item {
                             Layout.preferredWidth: invoicePage.compact ? 84 : 100
                             placeholderText: ""
                             text: invoiceVM.accountAmount
+                            // على العميل = total − real payments, recalculated automatically (owner rule).
+                            readOnly: invoiceVM.accountAutomatic
                             function commit() {
                                 if (text !== invoiceVM.accountAmount)
                                     invoiceVM.setAccountAmount(text)
                                 text = Qt.binding(function() { return invoiceVM.accountAmount })
                             }
+                            onTextEdited: if (!invoiceVM.accountAutomatic) invoiceVM.setAccountAmount(text)
                             onEditingFinished: commit()
                             onAccepted: invoicePage.startFinalize()
                         }
@@ -2182,6 +2250,13 @@ Item {
                             placeholderText: text.length > 0 ? "" : "سبب التسوية"
                             text: invoiceVM.settlementReason
                             onTextEdited: invoiceVM.setSettlementReason(text)
+                        }
+                        SmallButton {
+                            objectName: "requestMakingApproval"
+                            visible: invoiceVM.makingNeedsApproval
+                            text: invoiceVM.makingCanConfirm ? "اعتماد المصنعية" : "موافقة المدير (المصنعية)"
+                            // The right to approve never approves by itself: an explicit confirmation.
+                            onClicked: invoiceVM.makingCanConfirm ? makingConfirmDialog.open() : approvalPopup.open()
                         }
                         SmallButton {
                             objectName: "requestApproval"
@@ -2279,6 +2354,24 @@ Item {
                             }
                         }
                     }
+                    Label {
+                        objectName: "makingApprovalNote"
+                        Layout.fillWidth: true
+                        visible: text.length > 0
+                        text: invoiceVM.makingApprovalNote
+                        color: theme.statusWarning
+                        font.family: "Cairo"
+                        font.pixelSize: 11
+                        wrapMode: Text.WordWrap
+                        horizontalAlignment: Text.AlignRight
+                    }
+                    // تصفير الفاتورة: the same reset as F2 فاتورة جديدة, after a confirmation.
+                    SmallButton {
+                        objectName: "clearInvoiceButton"
+                        Layout.fillWidth: true
+                        text: "تصفير الفاتورة"
+                        onClicked: clearInvoiceDialog.open()
+                    }
                     PrimaryButton {
                         objectName: "finalizeInvoice"
                         Layout.fillWidth: true
@@ -2290,6 +2383,77 @@ Item {
                     }
                 }
             }
+        }
+    }
+
+    Dialog {
+        id: makingConfirmDialog
+        objectName: "makingConfirmDialog"
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(440, invoicePage.width - 40)
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.panel; radius: 10; border.color: theme.amber; border.width: 1 }
+        contentItem: Label {
+            objectName: "makingConfirmText"
+            text: invoiceVM.makingConfirmText
+            color: theme.textPrimary
+            font.family: "Cairo"
+            wrapMode: Text.WordWrap
+            horizontalAlignment: Text.AlignRight
+        }
+        footer: RowLayout {
+            layoutDirection: Qt.RightToLeft
+            spacing: 8
+            Item { Layout.preferredWidth: 6; Layout.preferredHeight: 48 }
+            PrimaryButton {
+                objectName: "makingConfirmApprove"
+                text: "اعتماد البيع"
+                onClicked: { invoiceVM.confirmMaking(); makingConfirmDialog.close() }
+            }
+            Button {
+                objectName: "makingConfirmCancel"
+                text: "إلغاء"
+                font.family: "Cairo"
+                flat: true
+                onClicked: makingConfirmDialog.close()
+            }
+            Item { Layout.fillWidth: true }
+        }
+    }
+
+    Dialog {
+        id: clearInvoiceDialog
+        objectName: "clearInvoiceDialog"
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(420, invoicePage.width - 40)
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.panel; radius: 10; border.color: theme.amber; border.width: 1 }
+        contentItem: Label {
+            text: "سيتم مسح جميع بيانات الفاتورة الحالية. هل تريد المتابعة؟"
+            color: theme.textPrimary
+            font.family: "Cairo"
+            wrapMode: Text.WordWrap
+            horizontalAlignment: Text.AlignRight
+        }
+        footer: RowLayout {
+            layoutDirection: Qt.RightToLeft
+            spacing: 8
+            Item { Layout.preferredWidth: 6; Layout.preferredHeight: 48 }
+            PrimaryButton {
+                objectName: "clearInvoiceConfirm"
+                text: "تصفير"
+                onClicked: { clearInvoiceDialog.close(); invoicePage.startNewInvoice() }
+            }
+            Button {
+                objectName: "clearInvoiceCancel"
+                text: "إلغاء"
+                font.family: "Cairo"
+                flat: true
+                onClicked: clearInvoiceDialog.close()
+            }
+            Item { Layout.fillWidth: true }
         }
     }
 
@@ -2353,7 +2517,7 @@ Item {
                         Layout.fillWidth: true
                         text: [modelData.mobile, modelData.place, modelData.code, modelData.deadCash ? "⚠️ سبق شطب رصيد" : ""]
                               .filter(function(v) { return v.length > 0 }).join(" • ")
-                        color: modelData.deadCash ? theme.amber : theme.textMuted
+                        color: modelData.deadCash ? theme.statusWarning : theme.textMuted
                         font.family: "Cairo"
                         font.pixelSize: 10
                         horizontalAlignment: Text.AlignRight
@@ -2443,7 +2607,7 @@ Item {
                         [invoiceVM.summary.paidLabel, invoiceVM.summary.paidAmount],
                         [invoiceVM.settlementChoice === "SETTLE" ? "فرق تقريب مُسوّى"
                                                                  : invoiceVM.summary.remainingLabel,
-                         invoiceVM.settlementChoice === "SETTLE" ? invoiceVM.summary.differenceAmount
+                         invoiceVM.settlementChoice === "SETTLE" ? invoiceVM.summary.settleAmount
                                                                  : invoiceVM.summary.remainingAmount]]
                 delegate: RowLayout {
                     Layout.fillWidth: true
@@ -2486,7 +2650,7 @@ Item {
                     objectName: "billPrinterMissing"
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
-                    color: theme.amber
+                    color: theme.statusWarning
                     font.family: "Cairo"
                     font.pixelSize: 12
                     font.bold: true
@@ -2518,7 +2682,7 @@ Item {
             PrimaryButton {
                 id: confirmButton
                 objectName: "confirmFinalize"
-                text: "حفظ فقط (Enter)"
+                text: invoiceVM.printable ? "حفظ فقط (Enter)" : "حفظ (Enter)"
                 Layout.preferredWidth: 150
                 enabled: confirmDialog.acknowledged
                 onClicked: confirmDialog.confirm(false)
@@ -2527,6 +2691,7 @@ Item {
             }
             SmallButton {
                 objectName: "confirmSaveAndPrint"
+                visible: invoiceVM.printable           // old gold only: save only, there is nothing to print
                 text: "حفظ وطباعة"
                 Layout.preferredWidth: 100
                 enabled: confirmDialog.acknowledged

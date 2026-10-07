@@ -5,6 +5,7 @@ number shown comes from ReturnService.context() / preview() and is formatted her
 calculated in QML. After 72 hours the same screen requests the manager's approval, and resumes
 an open / approved Return of this invoice when it is reopened."""
 from decimal import Decimal, InvalidOperation
+from services.number_text import normalize_digits
 
 from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
 
@@ -20,9 +21,19 @@ APPROVAL_TEXT = {"NOT_REQUIRED": "", "REQUIRED": "يحتاج موافقة الم
 MAX_LEGS = 6
 
 
+def _identity(row):
+    """«الباركود • #id • الصنف» of an identified piece; «بدون باركود» when it never had one (never invented)."""
+    parts = [row.get("barcode") or "بدون باركود"]
+    if row.get("inventory_item_id"):
+        parts.append(f"#{row['inventory_item_id']}")
+    if row.get("item_type"):
+        parts.append(row["item_type"])
+    return "  •  ".join(parts)
+
+
 def _decimal(text):
     try:
-        return Decimal(str(text).strip()) if str(text or "").strip() else Decimal("0.00")
+        return Decimal(normalize_digits(str(text)).strip()) if str(text or "").strip() else Decimal("0.00")
     except (InvalidOperation, ValueError):
         return Decimal("0.00")
 
@@ -361,6 +372,7 @@ class ReturnViewModel(QObject):
             return {}
         return {"invoiceId": c["invoice_id"], "number": c["invoice_number"],
                 "finalizedAt": ltr(c["finalized_at"][:16]), "customerName": c["customer_name"] or "بدون عميل",
+                "customerId": str(c.get("customer_id") or ""),
                 "hasCustomer": c["has_customer"], "windowText": c["window_text"],
                 "windowOpen": c["making_window_open"], "approvalRequired": c["requires_approval"] and not c["expired"],
                 "deadlineText": "آخر موعد للاسترداد: " + ltr(c["last_allowed_at"][:16]),
@@ -373,14 +385,23 @@ class ReturnViewModel(QObject):
         out = []
         for l in self._context.get("lines", []):
             selected = l["line_id"] in self._selected
+            identified = l.get("identified") or bool(l.get("inventory_item_id"))
             out.append({"lineId": l["line_id"], "item": l.get("item_name") or ("من الكسر" if l["partial_allowed"] else "—"),
                         "barcode": l.get("barcode") or "", "karat": str(l["karat"]),
+                        # Physical identity of an identified piece: the stored barcode (never invented) and #id.
+                        "identity": _identity(l) if identified else "",
+                        "currentPiece": bool(l.get("current_piece")),
+                        "exchangeText": (f"القطعة الحالية لدى العميل — عبر {l['exchange_code']}"
+                                         + (f" • {ltr(l['acquired_at'][:16])}" if l.get("acquired_at") else ""))
+                        if l.get("current_piece") else "",
+                        "valueText": (money(l["historical_value"]) if l.get("full_refund_window") and l.get("historical_value")
+                                      else money(l["estimated_gold"]) if l.get("estimated_gold") else "—"),
                         "sold": grams(l["sold_grams"]), "consumed": grams(l["consumed_grams"]),
                         "remaining": grams(l["remaining_grams"]), "returnable": l["returnable"], "reason": l["reason"],
                         "partial": l["partial_allowed"], "selected": selected,
                         "weight": self._weights.get(l["line_id"], "") if l["partial_allowed"] else grams(l["sold_grams"]),
-                        "makingText": ("مصنعية مستردة" if l["making_refundable"]
-                                       else "مصنعية الفاتورة غير متاحة" if l["making_missing"] else "بدون مصنعية"),
+                        "makingText": ("يُرد ما دفعه العميل" if l.get("full_refund_window", l["making_refundable"])
+                                       else "سعر الشراء الحالي"),
                         "shopBuy": money(l["shop_buy"]) if l["shop_buy"] else "—",
                         "estimate": money(l["estimated_gold"]) if l.get("estimated_gold") else "—"})
         return out
@@ -390,14 +411,22 @@ class ReturnViewModel(QObject):
         p = self._preview
         if not p:
             return {}
+        historical = p.get("valuation_mode") == "HISTORICAL"
         return {"gold": money(p["gold_amount"]), "making": money(p["making_refund"]), "total": money(p["total_amount"]),
+                "historical": historical,
+                "modeText": ("استرداد كامل لما دفعه العميل (القيمة التاريخية)" if historical
+                             else "بعد مدة الاسترداد الكامل — الوزن × سعر شراء المحل الحالي"),
+                "basis": money(p.get("refund_basis") or p["total_amount"]),
+                "rounding": money(p.get("rounding_adjustment") or "0"),
                 "makingText": "رد المصنعية" if p["making_window_open"] else "رد المصنعية (انتهت المدة)",
                 "approvalState": p["approval_state"], "approvalText": APPROVAL_TEXT.get(p["approval_state"], ""),
                 "priceWarning": "، ".join(p.get("price_warnings") or []),
                 "needsAck": bool(p.get("requires_price_acknowledgement")),
                 "lines": [{"item": l.get("item_name") or "—", "karat": str(l["karat"]), "weight": grams(l["weight_grams"]),
-                           "price": money(l["shop_buy_price_per_gram"]), "gold": money(l["gold_amount"]),
-                           "making": money(l["making_refund"])} for l in p["lines"]]}
+                           "identity": _identity(l) if l.get("inventory_item_id") else "",
+                           "price": money(l["shop_buy_price_per_gram"]) if l.get("shop_buy_price_per_gram") else "",
+                           "value": money(l["historical_value"]) if l.get("historical_value") else money(l["gold_amount"]),
+                           "gold": money(l["gold_amount"]), "making": money(l["making_refund"])} for l in p["lines"]]}
 
     @Property("QVariantMap", notify=changed)
     def settlement(self):

@@ -11,9 +11,14 @@ FULL_REVERSAL (RV)  — the source should not have happened. Every posted effect
     Invoice     sold pieces SOLD → IN_STOCK (same item, same barcode); F7 grams back IN; the
                 customer's old gold bought on the invoice OUT again (only while the counted stock
                 still holds it); open F5 cases CANCELLED;
-    Exchange    returned pieces RETURNED_PENDING → SOLD (open inspection DISMISSED); identified
+    Exchange    returned pieces RETURNED_PENDING → SOLD (open inspection DISMISSED); a piece held in
+                Scrap (032, hold HELD): CONVERTED_TO_OLD_GOLD → SOLD, its exact held weight leaves Scrap
+                (REVERSAL_EXCHANGE_RETURN_SCRAP_OUT), hold REVERSED, review DISMISSED; a piece the
+                manager already decided (hold COMMITTED / RETURNED_TO_STOCK) blocks the reversal; identified
                 replacements SOLD → IN_STOCK; F7 replacement grams back IN; F5 case CANCELLED;
-    Return      pieces RETURNED_PENDING → SOLD (open inspection DISMISSED); F7 grams OUT again.
+    Return      pieces RETURNED_PENDING → SOLD (open inspection DISMISSED); a piece held in Scrap (033, HELD):
+                CONVERTED_TO_OLD_GOLD → SOLD, REVERSAL_RETURN_SCRAP_OUT of the held weight, hold REVERSED;
+                a decided piece (COMMITTED / RETURNED_TO_STOCK) blocks it; F7 grams OUT again.
   The reversed lifecycle lines are linked to the reversal, so the sale line is eligible again.
   One reversal per source (UNIQUE key). Anything downstream blocks it (newest first, no cascade).
 
@@ -27,6 +32,8 @@ reviews / cases → old-gold ledger → bank accounts.
 """
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
+from services.number_text import normalize_digits
+from services.old_gold_availability import held_grams
 import json
 
 from repositories.correction_repository import CorrectionRepository
@@ -55,6 +62,16 @@ SOURCE_TEXT = {"INVOICE": "الفاتورة", "EXCHANGE": "الاستبدال", 
 SOURCE_TEXT[CS] = "\u062a\u0633\u0648\u064a\u0629 \u062d\u0633\u0627\u0628"
 SOURCE_TEXT[FO] = "العملية المالية"
 SOURCE_TEXT[CD] = "العربون"
+
+
+def correction_source_text(source_type, direction=None, *, definite=True):
+    """Canonical correction labels, using the stored operation type and deposit direction."""
+    if source_type == CD and direction == "OUT":
+        return "استرداد العربون" if definite else "استرداد عربون"
+    if source_type == FO and not definite:
+        return "عملية مالية"
+    label = SOURCE_TEXT.get(source_type, "العملية")
+    return label if definite else label.removeprefix("ال")
 
 
 class CorrectionError(ValueError):
@@ -86,6 +103,7 @@ class _Plan:
     inventory: list = field(default_factory=list)        # (item id, from, to, movement code)
     old_gold: list = field(default_factory=list)         # (karat id, karat, signed grams, movement code)
     reviews: list = field(default_factory=list)          # open inspection review ids to dismiss
+    holds: list = field(default_factory=list)            # (hold id, karat id, karat, grams, item id, OUT code)
     cases: list = field(default_factory=list)            # open reconciliation case ids to cancel
     lines: tuple = ()                                    # (table, [line ids]) linked to the reversal
     blockers: list = field(default_factory=list)         # (code, Arabic reason)
@@ -102,7 +120,7 @@ def _reason(text):
 
 def _money_value(text, code="AMOUNT_INVALID", message="المبلغ غير صحيح."):
     try:
-        value = Decimal(str(text).strip())
+        value = Decimal(normalize_digits(str(text)).strip())
     except (InvalidOperation, ValueError):
         raise CorrectionError(code, message) from None
     if not value.is_finite() or value < 0 or value != value.quantize(MONEY):
@@ -179,6 +197,7 @@ class CorrectionService:
                 FinancialAccountRepository(connection).account("CASH", source["cash_account_id"], lock=True)
             reference = deposit_code(source["direction"], source_id)
             context = {"invoice_id": None, "invoice_number": reference,
+                       "source_direction": source["direction"],
                        "customer_name_snapshot": source.get("customer_name"), "customer_id": source["customer_id"],
                        "finalized_at": source["occurred_at"], "net_amount": source["amount"]}
             return context, source, reference
@@ -268,9 +287,12 @@ class CorrectionService:
         for karat_id, (karat, grams) in sorted(removals.items()):
             available = corrections.lock_old_gold_balance(karat_id)
             if grams > available:
+                held = held_grams(corrections, karat_id)
                 plan.blockers.append(("OLD_GOLD_DEPENDENCY_EXISTS",
                                       f"لا يمكن عكس حركة الكسر لأن الوزن تم استهلاكه لاحقاً: عيار {karat} المتاح "
-                                      f"{available:,.3f} والمطلوب {grams:,.3f} جرام."))
+                                      f"{available:,.3f} والمطلوب {grams:,.3f} جرام."
+                                      + (f" يوجد {held:,.3f} جرام محجوز لمراجعة المدير ولا يمكن استخدامه حتى اعتماد القرار."
+                                         if held > 0 else "")))
         return plan
 
     def _plan_invoice(self, connection, plan, _source, lock):
@@ -320,6 +342,11 @@ class CorrectionService:
             item = items.get(str(line.get("inventory_item_id")))
             if line["line_role"] == "RETURNED":
                 review = corrections.inspection_for(lifecycle_line_id=line["line_id"])
+                corrections.lock_old_gold_balance(int(line["karat_id"]))      # ledger before the hold
+                hold = corrections.hold_for(lifecycle_line_id=line["line_id"])
+                if hold is not None:
+                    self._plan_held_piece(plan, line, item, review, hold)
+                    continue
                 if item is None or item["inventory_status"] != "RETURNED_PENDING" or (review and review["review_status"] != "OPEN"):
                     plan.blockers.append(("RETURNED_ITEM_ALREADY_DISPOSED",
                                           "لا يمكن عكس الاستبدال لأن المدير حسم القطعة المرتجعة"
@@ -348,6 +375,35 @@ class CorrectionService:
                                           "لا يمكن عكس الاستبدال: حالة البديل اليدوي حُسمت في مراجعة المخزون."))
         plan.lines = ("invoice_lifecycle_lines", [l["line_id"] for l in source["lines"]])
 
+    @staticmethod
+    def _plan_held_piece(plan, line, item, review, hold, source="EXCHANGE"):
+        """An Exchange piece that entered Scrap at the exchange (032). Only a HELD piece can be reversed:
+        its reserved weight is guaranteed to still be in Scrap. A COMMITTED piece became ordinary Scrap
+        that may already be consumed; a RETURNED_TO_STOCK piece is sellable stock again."""
+        status = hold["hold_status"]
+        what = "الاستبدال" if source == "EXCHANGE" else "المرتجع"
+        if status == "COMMITTED":
+            plan.blockers.append(("RETURNED_ITEM_COMMITTED_TO_SCRAP",
+                                  f"لا يمكن عكس {what} لأن القطعة المرتجعة ثُبّتت في الكسر وأصبح وزنها كسراً عادياً"
+                                  " قد يكون استُهلك."))
+            return
+        if status == "RETURNED_TO_STOCK":
+            plan.blockers.append(("RETURNED_ITEM_RESTOCKED",
+                                  f"لا يمكن عكس {what} لأن المدير أعاد القطعة المرتجعة من الكسر إلى المخزون."))
+            return
+        if (status != "HELD" or item is None or item["inventory_status"] != "CONVERTED_TO_OLD_GOLD"
+                or review is None or review["review_status"] != "OPEN"):
+            plan.blockers.append(("RETURNED_ITEM_ALREADY_DISPOSED",
+                                  f"لا يمكن عكس {what}: حالة القطعة المرتجعة في الكسر تغيرت."))
+            return
+        plan.inventory.append((str(line["inventory_item_id"]), "CONVERTED_TO_OLD_GOLD", "SOLD",
+                               "REVERSAL_EXCHANGE_RETURN_TO_SOLD" if source == "EXCHANGE" else "REVERSAL_RETURN_TO_SOLD"))
+        plan.reviews.append(review["review_id"])
+        plan.holds.append((hold["hold_id"], int(hold["karat_id"]), line["karat_value"],
+                           Decimal(str(hold["weight_grams"])), str(line["inventory_item_id"]),
+                           "REVERSAL_EXCHANGE_RETURN_SCRAP_OUT" if source == "EXCHANGE"
+                           else "REVERSAL_RETURN_SCRAP_OUT"))
+
     def _plan_return(self, connection, plan, source, lock):
         corrections = self._corrections(connection)
         items = corrections.lock_items([l["inventory_item_id"] for l in source["lines"] if l.get("inventory_item_id")])
@@ -356,6 +412,11 @@ class CorrectionService:
             if line["line_type"] == "SELL_INVENTORY":
                 item = items.get(str(line["inventory_item_id"]))
                 review = corrections.inspection_for(return_line_id=line["line_id"])
+                corrections.lock_old_gold_balance(int(line["karat_id"]))      # ledger before the hold
+                hold = corrections.hold_for(return_line_id=line["line_id"])
+                if hold is not None:                                         # a Return piece in Scrap (033)
+                    self._plan_held_piece(plan, line, item, review, hold, source="RETURN")
+                    continue
                 if item is None or item["inventory_status"] != "RETURNED_PENDING" or (review and review["review_status"] != "OPEN"):
                     target = {"RETURN_TO_STOCK": "المخزون", "CONVERT_TO_OLD_GOLD": "الكسر"}.get(
                         (review or {}).get("resolution_code"), "حالة أخرى")
@@ -377,7 +438,9 @@ class CorrectionService:
             return "النقدية" if key[0] == "CASH" else names.get(key, f"حساب {key[1]}")
         return {
             "source_type": plan.source_type, "source_id": plan.source_id, "reference": plan.reference,
-            "source_text": SOURCE_TEXT[plan.source_type],
+            "source_text": correction_source_text(plan.source_type, plan.invoice.get("source_direction")),
+            "customer_id": str(plan.customer_id or ""),
+            "direction": plan.invoice.get("source_direction"),
             "invoice_id": plan.invoice["invoice_id"], "invoice_number": plan.invoice["invoice_number"],
             "customer_name": plan.invoice.get("customer_name_snapshot"),
             "original_date": (plan.invoice.get("finalized_at") or plan.invoice.get("invoice_date")).isoformat(sep=" "),
@@ -385,7 +448,8 @@ class CorrectionService:
             "money": [{"account": ledger_name(k), "ledger": k[0], "delta": str(v)} for k, v in sorted(plan.money.items())],
             "account": [{"customer_id": k, "delta": str(v)} for k, v in plan.account.items()],
             "inventory": [{"inventory_item_id": i, "from": f, "to": t} for i, f, t, _ in plan.inventory],
-            "old_gold": [{"karat": k, "grams": str(g)} for _, k, g, _ in plan.old_gold],
+            "old_gold": [{"karat": k, "grams": str(g)} for _, k, g, _ in plan.old_gold]
+                        + [{"karat": k, "grams": str(-g)} for _, _, k, g, _, _ in plan.holds],
             "reviews": len(plan.reviews), "cases": len(plan.cases),
             "blockers": [{"code": c, "message": m} for c, m in plan.blockers],
             "can_reverse": not plan.blockers,
@@ -423,6 +487,7 @@ class CorrectionService:
                             "reversed_by": None if reversal is None else correction_code(FULL_REVERSAL, reversal["correction_id"]),
                             "settlement_corrections": len(chain)})
             return {"invoice_id": invoice["invoice_id"], "invoice_number": invoice["invoice_number"],
+                    "customer_id": str(invoice.get("customer_id") or ""),
                     "customer_name": invoice.get("customer_name_snapshot"), "targets": out,
                     "bank_accounts": [{"id": a["id"], "name": a["name"], "account_type": a.get("account_type") or "BANK"}
                                       for a in invoices.active_bank_accounts()]}
@@ -434,6 +499,7 @@ class CorrectionService:
             context, source, reference = self._load(connection, CS, settlement_id, False)
             reversal, chain = self._history(self._corrections(connection), CS, settlement_id)
             return {"invoice_id": "", "invoice_number": reference, "customer_name": context.get("customer_name_snapshot"),
+                    "customer_id": str(context.get("customer_id") or ""),
                     "targets": [{"source_type": CS, "source_id": str(settlement_id),
                         "reference": reference, "source_text": SOURCE_TEXT[CS],
                         "reversed_by": None if reversal is None else correction_code(FULL_REVERSAL,reversal['correction_id']),
@@ -465,8 +531,10 @@ class CorrectionService:
             context, _source, reference = self._load(connection, CD, deposit_id, False)
             reversal, _ = self._history(self._corrections(connection), CD, deposit_id)
             return {"invoice_id": "", "invoice_number": reference, "customer_name": context.get("customer_name_snapshot"),
+                    "customer_id": str(context.get("customer_id") or ""),
                     "targets": [{"source_type": CD, "source_id": str(deposit_id), "reference": reference,
-                                 "source_text": SOURCE_TEXT[CD], "settlement_allowed": False,
+                                 "source_text": correction_source_text(CD, _source["direction"]),
+                                 "direction": _source["direction"], "settlement_allowed": False,
                                  "reversed_by": None if reversal is None else correction_code(
                                      FULL_REVERSAL, reversal["correction_id"]),
                                  "settlement_corrections": 0}],
@@ -517,6 +585,16 @@ class CorrectionService:
                                          correction_id=correction_id, code=code, notes=text,
                                          created_by_user_id=actor.user_id, employee_id=actor.employee_id,
                                          customer_id=plan.customer_id)
+            for hold_id, karat_id, _, grams, item_id, out_code in plan.holds:
+                # The exact HELD weight leaves Scrap with the piece (never more, never twice).
+                out_id = corrections.add_old_gold(karat_id=karat_id, weight_delta=-grams,
+                                                  movement_code=out_code,
+                                                  correction_id=correction_id, code=code, notes=text,
+                                                  created_by_user_id=actor.user_id, employee_id=actor.employee_id,
+                                                  customer_id=plan.customer_id, inventory_item_id=item_id)
+                if not corrections.reverse_hold(hold_id=hold_id, out_movement_id=out_id, user_id=actor.user_id,
+                                                at=now):
+                    raise RuntimeError("scrap hold is no longer held")
             for review_id in plan.reviews:
                 corrections.dismiss_review(review_id=review_id, user_id=actor.user_id, at=now,
                                            notes=f"{text} — {reason}")

@@ -160,6 +160,10 @@ class Repo:
                 found.append(child)
         return found
 
+    def used_master_ids(self, table):
+        return {r[column] for child, column in self.STOCK_REFERENCES[table]
+                for r in getattr(self.store, child) if r.get(column) is not None}
+
     def item_types_defaulting_to(self, category_id):
         return sum(t["default_category_id"] == category_id for t in self.store.item_types.values())
 
@@ -253,6 +257,29 @@ class ItemTypeDeleteTests(Harness):
         self.store.inventory_reconciliation_cases.append({"observed_item_type_id": new})
         with self.assertRaises(MasterDataInUse):
             self.service.delete_item_type(new)
+
+
+class EverUsedFlagTests(Harness):
+    """The lists tell the page whether the permanent-delete area may offer a button (display only)."""
+
+    def test_flag_follows_every_historical_reference(self):
+        factory = self.service.create_factory("EU F", None)
+        item_type = self.service.create_item_type("EU T", None)
+        flags = lambda: ({r["id"]: r["ever_used"] for r in self.service.get_all_factories()},
+                         {r["id"]: r["ever_used"] for r in self.service.get_all_item_types()})
+        self.assertEqual((flags()[0][factory], flags()[1][item_type]), (False, False))
+        self.stock("REMOVED", factory_id=factory, item_type_id=item_type)         # history, not current stock
+        self.assertEqual((flags()[0][factory], flags()[1][item_type]), (True, True))
+        other = self.service.create_factory("EU F2", None)
+        self.store.old_gold_movements.append({"factory_id": other})
+        self.assertTrue(flags()[0][other])
+
+    def test_the_delete_still_refuses_whatever_the_flag_says(self):
+        factory = self.service.create_factory("EU F3", None)
+        self.assertFalse(self.service.get_all_factories()[-1]["ever_used"])
+        self.stock("SOLD", factory_id=factory)                                    # used after the list loaded
+        with self.assertRaises(MasterDataInUse):
+            self.service.delete_factory(factory)
 
 
 class CategoryTests(Harness):

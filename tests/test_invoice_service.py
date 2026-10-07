@@ -499,22 +499,23 @@ class ScenarioTests(InvoiceServiceTestCase):
         self.assertEqual(self.commits, 1)
 
     def test_old_gold_purchase_only_partially_paid_leaves_shop_owing(self):
-        # 10 g × SHOP_BUY 6207 = 62,070.00 − 1.5% (931.05) = 61,138.95; wallet OUT 50,000; 11,138.95 kept for him.
+        # 10 g × SHOP_BUY 6207 = 62,070.00 − 1.5% (931.05) = 61,138.95 → final 61,140 (EGP 5, once);
+        # wallet OUT 50,000; 11,140.00 kept for him (the account follows the FINAL amount, not 11,138.95).
         result = self.finalize(InvoiceDraft(5, "12", (), (old(1, "10", **disc()),),
                                             (PaymentInput("MOBILE_WALLET", "50000", bank_account_id="9"),),
-                                            account_amount="11138.95", account_direction="SHOP_OWES"))
+                                            account_amount="11140", account_direction="SHOP_OWES"))
         self.assertEqual((result["invoice_type"], result["net_direction"], result["settlement_status"]),
                          ("BUY", "SHOP_PAYS_CUSTOMER", "PARTIAL"))
         self.assertIsNone(result["average_making_per_gram"])                  # nothing sold: no making
         self.assertEqual(self.store.payments[0]["direction"], "OUT")
         self.assertEqual((self.store.ledger[0]["type_code"], self.store.ledger[0]["amount_delta"]),
-                         ("BUY_BALANCE_DUE", D("-11138.95")))
+                         ("BUY_BALANCE_DUE", D("-11140.00")))
         self.assertEqual([(m["bank_account_id"], m["amount_delta"]) for m in self.store.bank_movements],
                          [(9, D("-50000.00"))])
         movement = self.store.old_gold[0]
         self.assertEqual((movement["gold_price_per_gram"], movement["cash_value"], movement["price_quote_id"]),
                          (D("6207.0000"), D("61138.95"), 51))
-        self.assertEqual(self.store.snapshots[0]["balance_after"], D("-11138.95"))
+        self.assertEqual(self.store.snapshots[0]["balance_after"], D("-11140.00"))
 
     def test_exchange_with_a_separate_customer_account_entry(self):
         # O = 5 g × 6207 = 31,035.00 − 1.5% (465.53) = 30,569.47; the customer owes 35,976:
@@ -575,8 +576,8 @@ class RuleTests(InvoiceServiceTestCase):
         self.assertRefused("ACCOUNT_DIRECTION_REQUIRED", InvoiceDraft(5, "12", (sale(),), (), (cash("67011"),),
                                                                       account_amount="7011"))
         # Old gold only: 5 g = 31,035.00 owed; nothing paid and nothing decided → refused.
-        self.assertRefused("SETTLEMENT_CHOICE_REQUIRED", InvoiceDraft(5, "12", (), (old(),), ()))
-        self.assertRefused("CUSTOMER_NAME_REQUIRED", InvoiceDraft(5, None, (), (old(),), (),
+        self.assertRefused("SETTLEMENT_CHOICE_REQUIRED", InvoiceDraft(5, "12", (), (old(1, "5", **disc()),), ()))
+        self.assertRefused("CUSTOMER_NAME_REQUIRED", InvoiceDraft(5, None, (), (old(1, "5", **disc()),), (),
                                                                   account_amount="31035",
                                                                   account_direction="SHOP_OWES"))
 
@@ -654,7 +655,7 @@ class RuleTests(InvoiceServiceTestCase):
                 self.finalize(draft)
         self.assertNothingWritten(before)
         # Old gold only: paying more than the old gold is worth is refused.
-        self.assertRefused("OVERPAYMENT", InvoiceDraft(5, "12", (), (old(),), (cash("40000"),)))
+        self.assertRefused("OVERPAYMENT", InvoiceDraft(5, "12", (), (old(1, "5", **disc()),), (cash("40000"),)))
 
     def test_empty_invoice_and_missing_price(self):
         with self.assertRaises(InvoiceError):
@@ -839,26 +840,26 @@ class InvoiceTotalTests(InvoiceServiceTestCase):
     customer account only allocate it (never above it, and exactly equal to it at finalize)."""
     # Item 100: 21K 10.500 g × 6232 = 65,436.00 gold value.
 
-    def draft(self, payments, total="67011", **kwargs):
+    def draft(self, payments, total="67010", **kwargs):
         return InvoiceDraft(5, "12", (sale(),), (), tuple(payments), invoice_total=total, **kwargs)
 
     def test_making_is_the_same_for_every_split_of_the_total(self):
         splits = [
-            [cash("67011")],
-            [cash("40000"), PaymentInput("MOBILE_WALLET", "27011", bank_account_id="9")],
-            [cash("40000"), PaymentInput("INSTAPAY", "20000", bank_account_id="7")],     # + 7,011 on the account
+            [cash("67010")],
+            [cash("40000"), PaymentInput("MOBILE_WALLET", "27010", bank_account_id="9")],
+            [cash("40000"), PaymentInput("INSTAPAY", "20000", bank_account_id="7")],     # + 7,010 on the account
         ]
         results = []
         for payments in splits:
-            kwargs = {"account_amount": "7011", "account_direction": "CUSTOMER_OWES"} if len(payments) == 2                 and payments[1].method_code == "INSTAPAY" else {}
+            kwargs = {"account_amount": "7010", "account_direction": "CUSTOMER_OWES"} if len(payments) == 2                 and payments[1].method_code == "INSTAPAY" else {}
             preview = self.service.preview(self.draft(payments, **kwargs))
             self.assertEqual(preview["blocking_problems"], [], payments)
             results.append((preview["effective_sale_total"], preview["making_total"], preview["average_making_per_gram"]))
-        self.assertEqual(set(results), {("67011.00", "1575.00", "150.00")})
+        self.assertEqual(set(results), {("67010.00", "1574.00", "149.90")})
 
     def test_payments_above_the_total_are_refused_even_without_the_screen(self):
         self.assertRefused("PAYMENT_ABOVE_TOTAL", self.draft([cash("60000"), cash("10000")]))
-        self.assertRefused("PAYMENT_ABOVE_TOTAL", self.draft([cash("67011")], account_amount="1000",
+        self.assertRefused("PAYMENT_ABOVE_TOTAL", self.draft([cash("67010")], account_amount="1000",
                                                               account_direction="CUSTOMER_OWES"))
 
     def test_an_incomplete_allocation_is_refused_and_never_becomes_debt(self):
@@ -866,23 +867,23 @@ class InvoiceTotalTests(InvoiceServiceTestCase):
         with self.assertRaises(InvoiceError) as context:
             self.finalize(self.draft([cash("60000")]))
         self.assertEqual(context.exception.code, "PAYMENT_ALLOCATION_INCOMPLETE")
-        self.assertIn("7,011.00", str(context.exception))
+        self.assertIn("7,010.00", str(context.exception))
         self.assertNothingWritten(before)
 
     def test_cash_plus_account_equal_to_the_total_finalizes_and_posts_only_real_money(self):
-        result = self.finalize(self.draft([cash("60000")], account_amount="7011", account_direction="CUSTOMER_OWES"))
-        self.assertEqual((result["effective_sale_total"], result["average_making_per_gram"]), ("67011.00", "150.00"))
+        result = self.finalize(self.draft([cash("60000")], account_amount="7010", account_direction="CUSTOMER_OWES"))
+        self.assertEqual((result["effective_sale_total"], result["average_making_per_gram"]), ("67010.00", "149.90"))
         header = self.store.invoices[0]
-        self.assertEqual((header["sell_total"], header["net_amount"]), (D("67011.00"), D("67011.00")))   # printed total
+        self.assertEqual((header["sell_total"], header["net_amount"]), (D("67010.00"), D("67010.00")))   # printed total
         self.assertEqual([m["amount_delta"] for m in self.store.cash_movements], [D("60000.00")])    # real money only
         self.assertEqual([p["amount"] for p in self.store.payments], [D("60000.00")])
-        self.assertEqual(len(self.store.ledger), 1)                                                  # the 7,011
+        self.assertEqual(len(self.store.ledger), 1)                                                  # the 7,010
 
     def test_three_methods_equal_to_the_total_finalize(self):
         result = self.finalize(self.draft([cash("40000"), PaymentInput("MOBILE_WALLET", "20000", bank_account_id="9"),
-                                           PaymentInput("BANK_TRANSFER", "7011", bank_account_id="7")]))
-        self.assertEqual(result["effective_sale_total"], "67011.00")
-        self.assertEqual(sorted(p["amount"] for p in self.store.payments), [D("7011.00"), D("20000.00"), D("40000.00")])
+                                           PaymentInput("BANK_TRANSFER", "7010", bank_account_id="7")]))
+        self.assertEqual(result["effective_sale_total"], "67010.00")
+        self.assertEqual(sorted(p["amount"] for p in self.store.payments), [D("7010.00"), D("20000.00"), D("40000.00")])
         self.assertEqual(self.store.ledger, [])
 
     def test_shop_pays_customer_direction_is_symmetric(self):

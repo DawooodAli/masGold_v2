@@ -81,7 +81,15 @@ class ManagementReviewRepository(BaseRepository):
                ii.stock_classification, it.name AS item_type_name, f.name AS factory_name,
                cat.name AS category_name, s.customer_name_snapshot,
                cu.display_name AS created_by_name, ru.display_name AS resolved_by_name,
-               {_STORED_BARCODE} AS stored_barcode
+               {_STORED_BARCODE} AS stored_barcode,
+               h.id AS hold_id, h.hold_status, h.weight_grams AS hold_weight_grams, h.created_at AS scrap_entered_at,
+               h.in_movement_id, h.out_movement_id,
+               COALESCE(xu.display_name, rtu.display_name) AS exchanged_by_name,
+               i.finalized_at AS invoice_finalized_at, rl.source_lifecycle_line_id,
+               (SELECT st.id FROM invoice_lifecycle_lines sl JOIN invoice_lifecycle_transactions st
+                  ON st.id = sl.lifecycle_transaction_id WHERE sl.id = rl.source_lifecycle_line_id) AS replacement_exchange_id,
+               av.physical_grams AS karat_physical_grams, av.available_grams AS karat_available_grams,
+               av.held_grams AS karat_held_grams
         FROM management_reviews r
         LEFT JOIN invoice_lifecycle_lines l ON l.id = r.lifecycle_line_id
         LEFT JOIN invoice_lifecycle_transactions t ON t.id = l.lifecycle_transaction_id
@@ -95,6 +103,10 @@ class ManagementReviewRepository(BaseRepository):
         LEFT JOIN invoice_customer_snapshots s ON s.invoice_id = r.invoice_id
         LEFT JOIN users cu ON cu.id = r.created_by_user_id
         LEFT JOIN users ru ON ru.id = r.resolved_by_user_id
+        LEFT JOIN old_gold_holds h ON h.review_id = r.id
+        LEFT JOIN users xu ON xu.id = t.performed_by_user_id
+        LEFT JOIN users rtu ON rtu.id = rt.finalized_by_user_id
+        LEFT JOIN vw_old_gold_available av ON av.karat_id = h.karat_id
         WHERE r.review_type = 'RETURNED_ITEM_INSPECTION'
     """
 
@@ -132,10 +144,55 @@ class ManagementReviewRepository(BaseRepository):
         return self._inspection(self._fetch_one(self._INSPECTION_SELECT + " AND r.id = %s", (int(review_id),)))
 
     def lock_old_gold_balance(self, karat_id):
-        """The same COUNTED-ledger lock Billing and the karat conversion take."""
-        self._fetch_all(
-            "SELECT id FROM old_gold_movements WHERE karat_id = %s AND weight_delta_grams IS NOT NULL "
+        """The same COUNTED-ledger lock Billing and the karat conversion take; returns the PHYSICAL grams."""
+        rows = self._fetch_all(
+            "SELECT weight_delta_grams FROM old_gold_movements WHERE karat_id = %s AND weight_delta_grams IS NOT NULL "
             "AND balance_effect = 'COUNTED' FOR UPDATE", (int(karat_id),))
+        from decimal import Decimal
+        return sum((Decimal(str(r["weight_delta_grams"])) for r in rows), Decimal("0.000"))
+
+    # ------------------------------------------------------------ Exchange piece held in Scrap (032)
+
+    def lock_hold(self, review_id):
+        """The Scrap hold of one returned piece (Exchange or Return), locked; None for a piece from before 032/033."""
+        return _stringify(self._fetch_one(
+            """
+            SELECT id AS hold_id, review_id, lifecycle_line_id, return_line_id, inventory_item_id, karat_id,
+                   weight_grams, in_movement_id, hold_status, out_movement_id
+            FROM old_gold_holds WHERE review_id = %s FOR UPDATE
+            """, (int(review_id),)))
+
+    def add_old_gold_out_to_stock(self, *, karat_id, weight_grams, inventory_item_id, review_id, reference_code,
+                                  notes, created_by_user_id, employee_id, movement_code="EXCHANGE_RETURN_TO_STOCK_OUT"):
+        """COUNTED …_TO_STOCK_OUT (negative): the held piece's exact weight leaves Scrap. The code follows the
+        piece's source: EXCHANGE_RETURN_TO_STOCK_OUT (Exchange, 032) or RETURN_TO_STOCK_OUT (Return, 033)."""
+        assert movement_code in ("EXCHANGE_RETURN_TO_STOCK_OUT", "RETURN_TO_STOCK_OUT")
+        movement_id, _ = self._execute(
+            """
+            INSERT INTO old_gold_movements (
+                movement_type_id, karat_id, weight_delta_grams, balance_effect, related_inventory_item_id,
+                reference_type, reference_id, reference_code, notes,
+                created_by_user_id, performed_by_user_id, received_by_employee_id, movement_code
+            )
+            SELECT t.id, %s, %s, 'COUNTED', %s, %s, %s, %s, %s, %s, %s, %s, %s
+            FROM old_gold_movement_types t WHERE t.code = %s AND t.is_active = TRUE
+            """,
+            (int(karat_id), -abs(weight_grams), int(inventory_item_id), REFERENCE_TYPE, int(review_id),
+             reference_code, notes, created_by_user_id, created_by_user_id, employee_id, movement_code, movement_code))
+        if not movement_id:
+            raise RuntimeError(f"old-gold movement type {movement_code} is missing")
+        return str(movement_id)
+
+    def close_hold(self, *, hold_id, hold_status, out_movement_id, resolved_by_user_id, resolved_at):
+        """HELD → RETURNED_TO_STOCK / COMMITTED, exactly once (the WHERE refuses a second decision)."""
+        _, rowcount = self._execute(
+            """
+            UPDATE old_gold_holds SET hold_status = %s, out_movement_id = %s, resolved_by_user_id = %s,
+                   resolved_at = %s
+            WHERE id = %s AND hold_status = 'HELD'
+            """, (hold_status, None if out_movement_id is None else int(out_movement_id), resolved_by_user_id,
+                  resolved_at, int(hold_id)))
+        return rowcount == 1
 
     def db_now(self):
         return self._fetch_one("SELECT NOW() AS now")["now"].replace(microsecond=0)

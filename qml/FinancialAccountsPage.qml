@@ -12,6 +12,7 @@ Rectangle {
     property var vm: typeof financialAccountsVM !== "undefined" ? financialAccountsVM : null
     signal invoiceRequested(string invoiceId)
     signal correctionRequested(string operationId)
+    signal customerRequested(string customerId)
     color: theme.bgPrimary
     Theme { id: theme }
 
@@ -34,6 +35,7 @@ Rectangle {
         function onChanged() { Qt.callLater(page.syncFilters) }
         function onInvoiceRequested(invoiceId) { page.invoiceRequested(invoiceId) }
         function onCorrectionRequested(operationId) { detailDialog.close(); page.correctionRequested(operationId) }
+        function onCustomerRequested(customerId) { page.customerRequested(customerId) }
         function onFinalized(code) { movementDialog.close() }
     }
 
@@ -107,13 +109,33 @@ Rectangle {
                     RowLayout {
                         anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; layoutDirection: Qt.RightToLeft
                         spacing: 8
-                        Txt { objectName: table.prefix + "Label_" + index; text: modelData.label
-                              Layout.fillWidth: true; Layout.preferredWidth: 68 }
+                        // الحركة — المرجع — العميل: the movement name, then what identifies it.
+                        RowLayout {
+                            objectName: table.prefix + "Info_" + index
+                            Layout.fillWidth: true; Layout.preferredWidth: 68; spacing: 8; layoutDirection: Qt.RightToLeft
+                            Txt { objectName: table.prefix + "Label_" + index; text: modelData.label; font.bold: true
+                                  elide: Text.ElideNone; Layout.alignment: Qt.AlignVCenter }
+                            Txt { objectName: table.prefix + "Ref_" + index; text: modelData.reference
+                                  visible: text.length > 0; color: modelData.linked ? theme.gold : theme.textSecondary
+                                  font.underline: modelData.linked && rowArea.containsMouse
+                                  Layout.alignment: Qt.AlignVCenter; Layout.maximumWidth: 210 }
+                            Txt { objectName: table.prefix + "Customer_" + index; text: modelData.customer
+                                  visible: text.length > 0; color: theme.textMuted; Layout.fillWidth: true
+                                  Layout.alignment: Qt.AlignVCenter
+                                  font.underline: modelData.customerId.length > 0 && customerArea.containsMouse
+                                  MouseArea { id: customerArea; anchors.fill: parent; hoverEnabled: true
+                                              enabled: modelData.customerId.length > 0
+                                              cursorShape: modelData.customerId.length > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                              onClicked: page.vm.openCustomer(modelData.customerId) } }
+                            Item { Layout.fillWidth: true; visible: modelData.customer.length === 0 }
+                        }
                         Txt { objectName: table.prefix + "Amount_" + index; text: modelData.amount; font.bold: true
                               color: table.accent; horizontalAlignment: Text.AlignRight
-                              Layout.fillWidth: true; Layout.preferredWidth: 32 }
+                              Layout.fillWidth: true; Layout.preferredWidth: 32
+                              Layout.minimumWidth: 96; Layout.alignment: Qt.AlignVCenter }
                     }
-                    MouseArea { id: rowArea; anchors.fill: parent; hoverEnabled: true; enabled: modelData.linked
+                    // z: -1 keeps the row click UNDER the customer link (the link wins where they overlap).
+                    MouseArea { id: rowArea; anchors.fill: parent; z: -1; hoverEnabled: true; enabled: modelData.linked
                                 cursorShape: modelData.linked ? Qt.PointingHandCursor : Qt.ArrowCursor
                                 onClicked: page.vm.openRow(modelData.key) }
                 }

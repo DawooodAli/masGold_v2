@@ -1,12 +1,13 @@
 """Customer account statement and explicit real-money settlement. No SQL/UI arithmetic."""
 from uuid import uuid4
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import json
 from PySide6.QtCore import QObject, Property, Signal, Slot
 from app.formatting import money
 from app.viewmodels.correction_viewmodel import METHODS, ACCOUNT_TYPE
 from services.customer_account_service import CustomerAccountService, PERMISSION
 from services.invoice_service import PaymentInput
+from services.number_text import normalize_digits
 
 LABELS = {'INVOICE':'فاتورة','EXCHANGE':'استبدال','RETURN':'مرتجع',
           'FULL_REVERSAL':'عكس','SETTLEMENT_CORRECTION':'تصحيح تسوية',
@@ -41,6 +42,7 @@ class CustomerAccountViewModel(QObject):
         self._invoice_filters=('', '', '', ''); self._invoice_page=1
         self._refresh_pending=False; self._pending_customer=None
         self._deposit_key=str(uuid4()); self._deposits=None
+        self._refund_status=None; self._refund_amount=''
 
     def _run(self, operation, call):
         from app.workers.invoice_worker import InvoiceWorker
@@ -72,10 +74,13 @@ class CustomerAccountViewModel(QObject):
             elif operation=='customer_invoices':
                 self._data=result['account']; self._invoice_data=result['invoices']
             elif operation=='deposit':
+                self._refund_status=None
                 self._message=('تم تسجيل العربون ' if result['direction']=='IN' else 'تم تسجيل استرداد العربون ')+result['code']
                 self._deposit_key=str(uuid4())
                 self.finalized.emit(self._customer_id)
                 self.refresh()
+            elif operation=='refund_status':
+                self._refund_status=result
             else:
                 self._message='تمت تسوية الحساب '+result['code']
                 self._legs=[]; self._request_key=str(uuid4()); self.legsChanged.emit()
@@ -94,6 +99,7 @@ class CustomerAccountViewModel(QObject):
         if self._customer_id==str(customer_id):
             self._open=True; self.refresh(); return
         self._customer_id=str(customer_id); self._open=True; self._data={}; self._page=1
+        self._refund_status=None; self._refund_amount=''
         self._invoice_data={}; self._invoice_filters=('', '', '', ''); self._invoice_page=1
         self._error=''; self._message=''; self._legs=[]; self._notes=''
         self._start_date=self._end_date=self._source=self._search=''
@@ -188,13 +194,47 @@ class CustomerAccountViewModel(QObject):
         if not self._busy:
             self._deposit_key=str(uuid4()); self._error=''; self._message=''; self.changed.emit()
 
-    @Slot(str,str,str)
-    def depositAction(self,direction,amount,note):
-        if not self.canDeposit or self._busy or direction not in ('IN','OUT'):return
+    def _deposit_service(self):
         if self._deposits is None:
             from services.customer_deposit_service import CustomerDepositService
             self._deposits=CustomerDepositService(self.session)
-        service,cid,key=self._deposits,self._customer_id,self._deposit_key
+        return self._deposits
+
+    @Slot()
+    def beginRefund(self):
+        if not self.canDeposit or self._busy:return
+        self.beginDeposit()
+        self._refund_status=None; self._refund_amount=''
+        service,cid=self._deposit_service(),self._customer_id
+        self._run('refund_status',lambda _expected_actor:service.refund_status(cid,_expected_actor=_expected_actor))
+
+    @Slot(str)
+    def setRefundAmount(self, text):
+        self._refund_amount=text; self._error=''; self.changed.emit()
+
+    def _refund_value(self, text):
+        try:
+            value=Decimal(normalize_digits(str(text)).strip())
+            return value if value.is_finite() and value>0 else None
+        except (InvalidOperation,ValueError):
+            return None
+
+    def _refund_problem(self, text):
+        if self._refund_status is None:return 'جارٍ التحقق من المتاح للاسترداد…'
+        available=Decimal(self._refund_status['available'])
+        if available<=0:return 'لا يوجد رصيد عربون متاح للاسترداد حاليًا.'
+        value=self._refund_value(text)
+        if value is None:return 'أدخل مبلغًا موجبًا للاسترداد.'
+        if value>available:return f'المتاح للاسترداد من العربون {money(available)} فقط.'
+        return ''
+
+    @Slot(str,str,str)
+    def depositAction(self,direction,amount,note):
+        if not self.canDeposit or self._busy or direction not in ('IN','OUT'):return
+        problem=self._refund_problem(amount) if direction=='OUT' else ''
+        if problem:
+            self._error=problem; self.changed.emit(); return
+        service,cid,key=self._deposit_service(),self._customer_id,self._deposit_key
         call=service.deposit if direction=='IN' else service.refund
         self._run('deposit',lambda _expected_actor:call(cid,amount,note,key,_expected_actor=_expected_actor))
 
@@ -225,6 +265,24 @@ class CustomerAccountViewModel(QObject):
     def canDeposit(self):
         a=self.session.current_actor()
         return bool(self._data.get('customer')) and bool(a and PERMISSION in a.permissions)
+    @Property(bool,notify=changed)
+    def canRefund(self):
+        return self.canDeposit and not self._busy and not self._refund_problem(self._refund_amount)
+    @Property(bool,notify=changed)
+    def refundHasCapacity(self):
+        return self._refund_status is not None and Decimal(self._refund_status['available'])>0
+    @Property(str,notify=changed)
+    def refundAvailability(self):
+        if not self.refundHasCapacity:return self._refund_problem('')
+        return 'المتاح للاسترداد من العربون: '+money(self._refund_status['available'])
+    @Property(str,notify=changed)
+    def refundAmountMessage(self):
+        return self._refund_problem(self._refund_amount) if self.refundHasCapacity and self._refund_amount else ''
+    @Property(str,notify=changed)
+    def refundBalance(self):
+        value=Decimal(str((self._refund_status or {}).get('balance',self._data.get('customer',{}).get('balance',0))))
+        meaning=('عليه ' if value>0 else 'له ')+money(abs(value)) if value else 'الحساب متوازن'
+        return 'رصيد العميل الحالي: '+meaning
     @Property(bool,notify=changed)
     def canCorrect(self):
         a=self.session.current_actor()
@@ -276,6 +334,11 @@ class CustomerAccountViewModel(QObject):
                  'invoiceId':str(r.get('invoice_id') or ''),'invoiceNumber':str(r.get('invoice_number') or ''),
                  'settlementId':str(r.get('settlement_id') or ''),
                  'depositId':str(r.get('deposit_id') or ''),
+                 # A write-off that is not yet reversed offers its reversal on its own row (the same flow as the
+                 # customer's Dead Cash history; permission and state are re-checked by the service).
+                 'deadCashId':str(r.get('dead_cash_id') or '') if r['source_type']=='DEAD_CASH_WRITE_OFF' else '',
+                 'deadCashReversed':bool(r.get('dead_cash_reversed')),
+                 'amountValue':f"{abs(Decimal(str(r['amount_delta']))):,.2f}",
                  'description':(('استلام من العميل — ' if r['amount_delta']<0 else 'دفع للعميل — ')
                     if r['source_type']=='CUSTOMER_ACCOUNT_SETTLEMENT' else '')+(r.get('description') or ''),
                  'actor':r.get('actor_name') or '—',

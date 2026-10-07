@@ -44,6 +44,8 @@ CASH_LABELS = {
     "EXPENSE": "مصروفات", "SALARY": "مرتبات", "RENT": "إيجار", "REVENUE": "إيراد", "REPAIR": "مرمة",
     "MANUAL_DEPOSIT": "إيداع يدوي", "MANUAL_WITHDRAWAL": "سحب يدوي", "OPENING_BALANCE": "رصيد افتتاحي",
     "OTHER": "حركة أخرى"}
+# The same business names seen from a bank / wallet / InstaPay account (a transfer INTO the account is a deposit).
+BANK_LABELS = {**CASH_LABELS, "TRANSFER_IN": "إيداع في الحساب", "TRANSFER_OUT": "سحب من الحساب"}
 # Manual cash movement types (prototype CASH_TYPES without a customer) and the cash directions they allow.
 # BANK_DEPOSIT / BANK_WITHDRAWAL are internal transfers (cash ↔ a real bank / wallet account).
 CASH_TYPES = {"EXPENSE": ("OUT",), "SALARY": ("OUT",), "RENT": ("OUT",), "REVENUE": ("IN",),
@@ -54,6 +56,18 @@ CASH_TYPE_TEXT = {**{k: CASH_LABELS[k] for k in ("EXPENSE", "SALARY", "RENT", "R
 
 class _Discard(Exception):
     pass
+
+
+def movement_context(row):
+    """What identifies a ledger movement to an accountant (all of it already resolved by the read model):
+    its own reference (invoice number / CS / DP / DR / RT / EX / RV / FC / FO / TR), the invoice it belongs to,
+    the corrected transaction's reference and the customer. Stored facts only — nothing is guessed."""
+    def text(key):
+        value = row.get(key)
+        return "" if value in (None, "") else str(value)
+    return {"reference": text("source_reference"), "invoice_number": text("invoice_number"),
+            "corrected_reference": text("corrected_reference"), "customer": text("customer_name"),
+            "customer_id": text("customer_id"), "kind": text("label_key")}
 
 
 def _text(value, *, required, label):
@@ -178,15 +192,19 @@ class FinancialAccountService:
         return {"account": {"key": account_key(ledger, account_id), "ledger": ledger, "name": account["name"],
                             "account_type": account["account_type"], "is_active": bool(account["is_active"]),
                             "balance": str(Decimal(str(balance)))},
-                "rows": [self._row(r) for r in rows[:PAGE_SIZE]], "has_more": len(rows) > PAGE_SIZE, "page": page}
+                "rows": [self._row(r, ledger) for r in rows[:PAGE_SIZE]], "has_more": len(rows) > PAGE_SIZE,
+                "page": page}
 
     @staticmethod
-    def _row(r):
+    def _row(r, ledger="CASH"):
         out = dict(r)
-        for name in ("id", "reference_id", "invoice_id", "corrected_source_id", "operation_id"):
+        for name in ("id", "reference_id", "invoice_id", "corrected_source_id", "operation_id", "customer_id"):
             out[name] = None if r.get(name) is None else str(r[name])
         out["amount_delta"] = Decimal(str(r["amount_delta"]))
         out["balance_after"] = Decimal(str(r["balance_after"]))
+        labels = BANK_LABELS if ledger == "BANK" else CASH_LABELS
+        out["label"] = labels.get(r.get("label_key"), CASH_LABELS["OTHER"])
+        out.update(movement_context(r))
         return out
 
     def operation(self, operation_id, *, _expected_actor=None):
@@ -265,7 +283,8 @@ class FinancialAccountService:
             return {"rows": [{"id": str(r["id"]), "label": CASH_LABELS.get(r["label_key"], CASH_LABELS["OTHER"]),
                               "amount": str(abs(Decimal(str(r["amount_delta"]))).quantize(Decimal("0.01"))),
                               "invoice_id": None if r.get("invoice_id") is None else str(r["invoice_id"]),
-                              "operation_id": None if r.get("operation_id") is None else str(r["operation_id"])}
+                              "operation_id": None if r.get("operation_id") is None else str(r["operation_id"]),
+                              **movement_context(r)}
                              for r in chosen],
                     "total": str(abs(Decimal(str(chosen[0]["side_total"]))).quantize(Decimal("0.01"))) if chosen else "0.00",
                     "count": int(chosen[0]["side_count"]) if chosen else 0}

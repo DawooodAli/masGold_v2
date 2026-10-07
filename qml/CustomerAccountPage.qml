@@ -9,6 +9,13 @@ Rectangle {
     signal invoiceRequested(string invoiceId)
     signal correctionRequested(string settlementId)
     signal depositCorrectionRequested(string depositId)
+    signal deadCashRequested(string customerId)
+    signal deadCashReversalRequested(string customerId, string deadCashId, string reference, string amountText)
+    // The write-off action follows the existing Customers eligibility (permission + receivable) and is only
+    // offered while that state belongs to THIS account's customer; the host re-synchronises before acting.
+    readonly property bool deadCashAvailable: !!page.vm && page.vm.customerId.length > 0
+        && typeof customerVM !== "undefined" && customerVM.selectedCustomerId === page.vm.customerId
+        && customerVM.canWriteOff
     color: theme.bgPrimary
     Theme { id: theme }
     property string appliedFilters: ""
@@ -41,16 +48,18 @@ Rectangle {
         background: Rectangle { color: theme.bgSecondary; radius: 5; border.color: theme.border }
     }
     component Btn: Button {
+        id: accountButton
         font.family: "Cairo"
-        contentItem: Txt { text: parent.text; verticalAlignment: Text.AlignVCenter
-            font.bold: parent.checked; color: parent.checked ? theme.gold : theme.textPrimary }
-        background: Rectangle { color: theme.bgTertiary; radius: 5; border.color: parent.checked ? theme.gold : theme.goldDark }
+        contentItem: Txt { text: accountButton.text; verticalAlignment: Text.AlignVCenter
+            font.bold: accountButton.checked; color: accountButton.checked ? theme.gold : theme.textPrimary }
+        background: Rectangle { color: theme.bgTertiary; radius: 5; border.color: accountButton.checked ? theme.gold : theme.goldDark }
     }
     component Combo: ComboBox {
+        id: accountCombo
         font.family: "Cairo"
-        contentItem: Txt { text: parent.displayText; verticalAlignment: Text.AlignVCenter; rightPadding: 25 }
-        delegate: ItemDelegate { width: parent.width; text: modelData.text || modelData.name || ""
-            font.family: "Cairo"; contentItem: Txt { text: parent.text } }
+        contentItem: Txt { text: accountCombo.displayText; verticalAlignment: Text.AlignVCenter; rightPadding: 25 }
+        delegate: ItemDelegate { id: accountChoice; width: accountCombo.width; text: modelData.text || modelData.name || ""
+            font.family: "Cairo"; contentItem: Txt { text: accountChoice.text } }
     }
     ColumnLayout {
         anchors.fill: parent; anchors.margins: 12; spacing: 7
@@ -64,6 +73,10 @@ Rectangle {
             Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
             Txt { objectName: "accountBalance"; text: page.vm ? page.vm.balance : ""; color: theme.gold; font.pixelSize: 20 }
             Txt { text: "آخر حركة: " + (page.vm ? page.vm.lastMovement : "") }
+            Btn { objectName: "customerAccountDeadCash"; text: "⛔ تحويل إلى رصيد مشطوب"
+                visible: page.deadCashAvailable
+                enabled: page.vm && !page.vm.busy && typeof customerVM !== "undefined" && !customerVM.busy
+                onClicked: page.deadCashRequested(page.vm.customerId) }
         }
         Txt { text: page.vm ? page.vm.message : ""; visible: text.length>0; color: theme.gold }
         RowLayout {
@@ -111,6 +124,13 @@ Rectangle {
                         Btn { objectName: "accountDepositReverse_"+modelData.key; text: "عكس "+modelData.reference
                             visible: page.vm && page.vm.canCorrect && modelData.depositId.length>0
                             onClicked: page.vm.openDepositCorrection(modelData.depositId) }
+                        // عكس الشطب sits on the write-off movement itself (hidden once reversed / without the right).
+                        Btn { objectName: "accountDeadCashReverse_"+modelData.key; text: "عكس الشطب"
+                            visible: modelData.deadCashId.length>0 && !modelData.deadCashReversed
+                                     && typeof customerVM !== "undefined" && customerVM.canReverseDeadCash
+                            enabled: !!page.vm && !page.vm.busy
+                            onClicked: page.deadCashReversalRequested(page.vm.customerId, modelData.deadCashId,
+                                                                      modelData.reference, modelData.amountValue) }
                     }
                     RowLayout {
                         Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
@@ -174,15 +194,23 @@ Rectangle {
         property string direction: "IN"
         property bool confirming: false
         function begin(d) { direction = d; confirming = false; depositAmount.text = ""; depositNote.text = ""
-            page.vm.beginDeposit(); open() }
+            if (d === "OUT") page.vm.beginRefund(); else page.vm.beginDeposit(); open() }
         anchors.centerIn: parent; width: Math.min(page.width-24,460)
         modal: true; title: direction === "IN" ? "عربون" : "استرداد عربون"; font.family: "Cairo"
         closePolicy: page.vm && page.vm.busy ? Popup.NoAutoClose : Popup.CloseOnEscape
         background: Rectangle { color: theme.bgPrimary; radius: 8; border.color: theme.goldDark }
         contentItem: ColumnLayout {
-            Txt { text: page.vm ? page.vm.balance : ""; color: theme.gold; font.bold: true }
+            Txt { objectName: "customerRefundBalance"
+                text: page.vm ? (depositDialog.direction === "OUT" ? page.vm.refundBalance : page.vm.balance) : ""
+                color: theme.gold; font.bold: true }
+            Txt { objectName: "customerRefundAvailability"; visible: depositDialog.direction === "OUT"
+                text: page.vm ? page.vm.refundAvailability : ""; color: theme.amber }
             Field { id: depositAmount; objectName: "customerDepositAmount"; Layout.fillWidth: true
-                placeholderText: "المبلغ"; enabled: !depositDialog.confirming }
+                placeholderText: "المبلغ"; enabled: !depositDialog.confirming && page.vm && !page.vm.busy
+                    && (depositDialog.direction === "IN" || page.vm.refundHasCapacity)
+                onTextChanged: if (page.vm && depositDialog.direction === "OUT") page.vm.setRefundAmount(text) }
+            Txt { objectName: "customerRefundAmountMessage"; visible: depositDialog.direction === "OUT" && text.length>0
+                text: page.vm ? page.vm.refundAmountMessage : ""; color: theme.red }
             Field { id: depositNote; objectName: "customerDepositNote"; Layout.fillWidth: true
                 placeholderText: "ملاحظة اختيارية"; enabled: !depositDialog.confirming }
             Txt { objectName: "customerDepositConfirmText"; visible: depositDialog.confirming; color: theme.amber
@@ -192,9 +220,11 @@ Rectangle {
             RowLayout {
                 Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
                 Btn { objectName: "customerDepositNext"; text: "متابعة"; visible: !depositDialog.confirming
-                    enabled: depositAmount.text.trim().length>0; onClicked: depositDialog.confirming = true }
+                    enabled: page.vm && !page.vm.busy && (depositDialog.direction === "OUT"
+                        ? page.vm.canRefund : depositAmount.text.trim().length>0)
+                    onClicked: depositDialog.confirming = true }
                 Btn { objectName: "customerDepositConfirm"; text: "تأكيد"; visible: depositDialog.confirming
-                    enabled: page.vm && !page.vm.busy
+                    enabled: page.vm && !page.vm.busy && (depositDialog.direction === "IN" || page.vm.canRefund)
                     onClicked: page.vm.depositAction(depositDialog.direction, depositAmount.text, depositNote.text) }
                 Btn { text: "تعديل"; visible: depositDialog.confirming; enabled: page.vm && !page.vm.busy
                     onClicked: depositDialog.confirming = false }

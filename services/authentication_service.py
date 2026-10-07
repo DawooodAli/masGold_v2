@@ -1,10 +1,13 @@
 """Verify credentials off-thread; no credential-bearing exception reaches QML."""
 from dataclasses import dataclass, field
+import getpass
 import logging
+import socket
 from threading import Lock
 from time import monotonic
 
 from repositories.authentication_repository import AuthenticationRepository, authentication_transaction
+from services.password_policy import validate_new_password
 from services.password_service import PasswordService
 
 GENERIC_ERROR = "تعذر تسجيل الدخول. تحقق من بيانات الدخول أو راجع المسؤول."
@@ -19,6 +22,33 @@ class AuthenticationError(Exception):
 
 class SetupAlreadyCompleted(ValueError):
     pass
+
+
+class RecoveryRefused(ValueError):
+    """OWNER recovery refused before any change; the message is safe to show (never a secret)."""
+
+
+class RecoveryFailed(Exception):
+    """OWNER recovery did not complete and nothing was committed; deliberately carries no cause."""
+
+
+RECOVERY_TARGET_REFUSED = "تعذر تنفيذ الاستعادة: يجب أن يكون الحساب موجوداً ونشطاً ومالكاً (OWNER)."
+RECOVERY_SAME_PASSWORD = "كلمة المرور الجديدة يجب أن تختلف عن كلمة المرور الحالية."
+RECOVERY_FAILED = "تعذر تنفيذ الاستعادة؛ لم تُعتمد أي تغييرات."
+OWNER_PASSWORD_RECOVERED = "OWNER_PASSWORD_RECOVERED"
+
+
+def _local_identity():
+    """Operating-system user and host of the machine running an emergency tool (audit context only)."""
+    try:
+        operator = getpass.getuser()
+    except Exception:
+        operator = "unknown"
+    try:
+        host = socket.gethostname()
+    except Exception:
+        host = "unknown"
+    return operator[:100], host[:150]
 
 
 @dataclass(frozen=True)
@@ -87,6 +117,55 @@ class AuthenticationService:
                                               permissions, _VERIFIED)
             # A verified result is published only after the transaction commits.
             return result
+        finally:
+            password = confirmation = None
+            self._lock.release()
+
+    def recover_owner_password(self, username, password, confirmation, reason):
+        """EMERGENCY, local-tool-only: replace an existing ACTIVE OWNER's password and audit it atomically.
+
+        The target is resolved from the database (user exists, is active and currently holds an active OWNER
+        role); a caller-supplied designation is never trusted. A password equal to the current one is refused.
+        Only users.password_hash changes; roles and permissions are untouched. The password, its hash and
+        its length never reach the audit row, a log or an exception."""
+        try:
+            validate_new_password(password, confirmation)
+            if not isinstance(username, str) or not 0 < len(username) <= 100:
+                raise RecoveryRefused(RECOVERY_TARGET_REFUSED)
+            reason_text = reason.strip() if isinstance(reason, str) else ""
+            if not reason_text:
+                raise RecoveryRefused("اكتب سبب الاستعادة.")
+            if len(reason_text) > 500:
+                raise RecoveryRefused("سبب الاستعادة طويل جداً.")
+            if password in reason_text:
+                raise RecoveryRefused("لا تكتب كلمة المرور في سبب الاستعادة.")
+            if not self._lock.acquire(blocking=False):
+                raise RecoveryRefused("جارٍ تنفيذ عملية أخرى. حاول مرة أخرى.")
+        except (ValueError, RecoveryRefused):
+            password = confirmation = None
+            raise
+        try:
+            encoded = self._passwords.hash(password)          # slow Argon2 work before any row lock
+            operator, host = _local_identity()
+            with self._transaction() as connection:
+                repository = self._repository(connection)
+                target = repository.find_recovery_target(username)
+                if not target or not target["is_active"] or not target["is_owner"]:
+                    raise RecoveryRefused(RECOVERY_TARGET_REFUSED)
+                if self._passwords.verify(target["password_hash"], password):
+                    raise RecoveryRefused(RECOVERY_SAME_PASSWORD)
+                repository.replace_password_hash(target["id"], encoded)
+                repository.record_security_event(
+                    OWNER_PASSWORD_RECOVERED, "USER", int(target["id"]), target["username"],
+                    "استعادة طارئة لكلمة مرور المالك",
+                    {"source": "CLI_EMERGENCY", "reason": reason_text, "os_user": operator, "host": host},
+                    workstation=host)
+                user_id = int(target["id"])
+            return {"user_id": str(user_id)}
+        except (ValueError, RecoveryRefused):
+            raise
+        except Exception:
+            raise RecoveryFailed(RECOVERY_FAILED) from None
         finally:
             password = confirmation = None
             self._lock.release()

@@ -33,6 +33,29 @@ class BarcodeRepository:
 
         return cleaned
 
+    def get_item_for_label_reprint(self, item_id):
+        """One piece with its ACTIVE stored barcode, whatever its status (a returned piece held in Scrap keeps its
+        identity); None when unknown. Reading only: a reprint never assigns or changes a barcode."""
+        cursor = self.connection.cursor(dictionary=True)
+        try:
+            cursor.execute(
+                """
+                SELECT ii.id AS inventory_item_id, ii.weight_grams, ii.size, ii.stock_classification,
+                       ii.inventory_status, ii.acquired_at, it.name AS item_type_name, k.karat_value,
+                       c.code AS category_code, f.code AS factory_code, f.name AS factory_name,
+                       ib.barcode_value, ib.assigned_at AS barcode_assigned_at
+                FROM inventory_items ii
+                JOIN item_types it ON it.id = ii.item_type_id
+                JOIN karats k ON k.id = ii.karat_id
+                LEFT JOIN item_categories c ON c.id = ii.category_id
+                LEFT JOIN factories f ON f.id = ii.factory_id
+                LEFT JOIN inventory_barcodes ib ON ib.inventory_item_id = ii.id AND ib.barcode_status = 'ACTIVE'
+                WHERE ii.id = %s
+                """, (int(item_id),))
+            return cursor.fetchone()
+        finally:
+            cursor.close()
+
     def get_items_for_print(self, item_ids):
         item_ids = self._clean_ids(item_ids)
 

@@ -7,6 +7,7 @@ from PySide6.QtCore import (
 
 from services.master_data_service import MasterDataInUse, MasterDataService
 from decimal import Decimal, InvalidOperation
+from services.number_text import normalize_digits
 
 class MasterDataViewModel(QObject):
 
@@ -976,7 +977,7 @@ class MasterDataViewModel(QObject):
         if value is None:
             return None
 
-        text = str(value).strip()
+        text = normalize_digits(str(value)).strip()
 
         if not text:
             return None

@@ -1,6 +1,6 @@
 """Explicit opt-in DEV validation of Financial Accounts V1 (025). Persists tagged history; never deletes it.
 
-Run only with MASGOLD_FINANCIAL_ACCOUNTS_DEV=1 against configured/live masgold_v2 at migration 25.
+Run only with MASGOLD_FINANCIAL_ACCOUNTS_DEV=1 against configured/live masgold_v2 at migration 33.
 Every manual operation carries the tag in its reason. Two deterministic tagged fixture accounts
 (FADEV_BANK_FIXTURE / FADEV_WALLET_FIXTURE) are reused on every run — never one new account per test — so
 every assertion is a delta against the balance read before the operation. Main Safe operations are
@@ -42,7 +42,7 @@ class FinancialAccountsMysqlTests(unittest.TestCase):
             q.execute("SELECT DATABASE()")
             assert q.fetchone()[0] == "masgold_v2"
             q.execute("SELECT MAX(version) FROM schema_migrations")
-            assert q.fetchone()[0] == 29
+            assert q.fetchone()[0] == 33
             q.execute("SET SESSION innodb_lock_wait_timeout = 10")
             q.close()
             c.commit()

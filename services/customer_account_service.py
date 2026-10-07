@@ -68,7 +68,7 @@ class CustomerAccountService:
             try:                                     # Dead Cash detail needs DEAD_CASH_VIEW (non-locking)
                 self.authorization.require_permission_read(connection, actor, 'DEAD_CASH_VIEW')
             except PermissionError:
-                rows = [dict(r, source_reference=None, dead_cash_reason=None, dead_cash_id=None, notes=None,
+                rows = [dict(r, source_reference=None, dead_cash_reason=None, dead_cash_id=None, dead_cash_reversed=None, notes=None,
                              description={'DEAD_CASH_WRITE_OFF':'شطب رصيد','DEAD_CASH_REVERSAL':'عكس شطب رصيد'}
                              [r['source_type']])
                         if r.get('source_type') in ('DEAD_CASH_WRITE_OFF','DEAD_CASH_REVERSAL') else r

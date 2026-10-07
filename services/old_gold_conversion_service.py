@@ -7,6 +7,7 @@ from database.transaction import DatabaseTransaction
 from repositories.old_gold_conversion_repository import (
     OldGoldConversionRepository,
 )
+from services.old_gold_availability import held_grams, shortage_message
 
 
 class OldGoldConversionService:
@@ -25,6 +26,37 @@ class OldGoldConversionService:
     MAX_NOTES_LENGTH = 1000
     MAX_SIZE_LENGTH = 50
     MAX_BARCODE_LENGTH = 100
+
+    # Consuming Scrap grams is an old-gold ledger movement: it needs OLD_GOLD_MANAGE ("normal old-gold
+    # movements") through the strict write path, and its actor is ALWAYS the authenticated AppSession user.
+    MANAGE_PERMISSION = "OLD_GOLD_MANAGE"
+
+    def __init__(self, session=None, authorization=None):
+        self._session = session
+        self._authorization = authorization
+
+    def can_manage(self) -> bool:
+        """UI hint only; the database check in _authorize_write is authoritative."""
+        actor = self._session.current_actor() if self._session is not None else None
+        return actor is not None and self.MANAGE_PERMISSION in actor.permissions
+
+    def _require_actor(self):
+        if self._session is None:
+            raise PermissionError("يلزم تسجيل الدخول لتحويل الكسر.")
+        actor = self._session.require_authenticated()
+        if self.MANAGE_PERMISSION not in actor.permissions:
+            raise PermissionError("لا توجد صلاحية لتحويل الكسر.")
+        return actor
+
+    def _authorize_write(self, connection, actor):
+        """Strict write-time check (locks the user, employee and grants) inside the conversion's transaction."""
+        if self._authorization is None:
+            from services.authorization_service import AuthorizationService
+            self._authorization = AuthorizationService(self._session)
+        verified = self._authorization.require_permission_for_write(connection, actor, self.MANAGE_PERMISSION)
+        if not self._session.is_current(actor):
+            raise PermissionError("انتهت جلسة الدخول.")
+        return verified
 
     @staticmethod
     def _clean_text(value):
@@ -73,7 +105,8 @@ class OldGoldConversionService:
     def convert_to_new_stock(
         self,
         *,
-        employee_id,
+        employee_id=None,
+        user_id=None,
         item_type_id,
         karat_id,
         category_id,
@@ -84,16 +117,18 @@ class OldGoldConversionService:
         barcode_value,
         notes,
     ):
+        # Authorization first: nothing is validated, read or written for a caller without the right.
+        session_actor = self._require_actor()
+        if user_id not in (None, "", 0) and int(user_id) != int(session_actor.user_id):
+            raise PermissionError("لا يمكن تحديد مستخدم آخر لتحويل الكسر.")      # the actor is the session's
+
+        # No manually chosen employee (owner review 2026-10-02): the authenticated actor is recorded.
         employee_id = int(employee_id or 0)
+        user_id = int(session_actor.user_id)
         item_type_id = int(item_type_id or 0)
         karat_id = int(karat_id or 0)
         category_id = int(category_id or 0)
         factory_id = int(factory_id or 0)
-
-        if employee_id <= 0:
-            raise ValueError(
-                "Employee is required."
-            )
 
         if item_type_id <= 0:
             raise ValueError(
@@ -146,23 +181,27 @@ class OldGoldConversionService:
 
         try:
             with DatabaseTransaction() as transaction:
+                # The attributed actor is the verified, locked session user (never the caller's argument).
+                user_id = int(self._authorize_write(transaction.connection, session_actor).user_id)
+
                 repository = OldGoldConversionRepository(
                     transaction.connection
                 )
 
-                employee = repository.get_active_employee(
-                    employee_id
-                )
+                if employee_id > 0:
+                    employee = repository.get_active_employee(
+                        employee_id
+                    )
 
-                if (
-                    not employee
-                    or not bool(
-                        employee.get("is_active")
-                    )
-                ):
-                    raise ValueError(
-                        "Employee does not exist or is inactive."
-                    )
+                    if (
+                        not employee
+                        or not bool(
+                            employee.get("is_active")
+                        )
+                    ):
+                        raise ValueError(
+                            "Employee does not exist or is inactive."
+                        )
 
                 item_type = repository.get_active_item_type(
                     item_type_id
@@ -252,6 +291,17 @@ class OldGoldConversionService:
                 )
 
                 if consumed_weight > available_balance:
+                    held = held_grams(repository, karat_id)
+                    if held > 0:
+                        # 032: the Scrap is physically there but HELD for a manager decision.
+                        raise ValueError(
+                            shortage_message(
+                                karat.get("karat_value") if isinstance(karat, dict) else karat_id,
+                                consumed_weight,
+                                available_balance,
+                                held,
+                            )
+                        )
                     raise ValueError(
                         "Not enough old-gold balance."
                     )
@@ -272,7 +322,8 @@ class OldGoldConversionService:
                     weight_grams=result_weight,
                     size=size,
                     notes=notes,
-                    employee_id=employee_id,
+                    employee_id=employee_id or None,
+                    user_id=user_id,
                 )
 
                 if barcode_value:
@@ -295,7 +346,8 @@ class OldGoldConversionService:
                     inventory_item_id=result_item_id,
                     movement_type_id=item_created_type_id,
                     to_weight_grams=result_weight,
-                    employee_id=employee_id,
+                    employee_id=employee_id or None,
+                    user_id=user_id,
                     reason=(
                         f"{conversion_code}: converted from old gold"
                     ),
@@ -306,7 +358,8 @@ class OldGoldConversionService:
                         karat_id=karat_id,
                         consumed_weight_grams=consumed_weight,
                         result_inventory_item_id=result_item_id,
-                        employee_id=employee_id,
+                        employee_id=employee_id or None,
+                    user_id=user_id,
                         conversion_code=conversion_code,
                         notes=notes,
                     )
@@ -327,7 +380,8 @@ class OldGoldConversionService:
                     consumed_weight_grams=consumed_weight,
                     result_weight_grams=result_weight,
                     weight_difference_grams=weight_difference,
-                    employee_id=employee_id,
+                    employee_id=employee_id or None,
+                    user_id=user_id,
                     notes=notes,
                 )
 

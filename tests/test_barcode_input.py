@@ -160,7 +160,7 @@ class BarcodeFieldTests(page_harness.InvoicePageTests):
             QTest.qWait(300)
             shown = []
             for text in self.all_visual("inventoryBarcodeText"):
-                box = text.parentItem().parentItem()
+                box = text.parentItem()                                              # compact row: the box itself
                 self.assertTrue(box.property("clip"))
                 left = text.mapToItem(box, QPointF(0, 0)).x()
                 self.assertGreaterEqual(left, 0)

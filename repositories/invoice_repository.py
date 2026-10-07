@@ -33,6 +33,22 @@ _HISTORY_KIND_SQL = (f"(CASE WHEN {_HISTORY_SOLD} AND {_HISTORY_OLD} THEN 'MIXED
                      f"WHEN {_HISTORY_OLD} THEN 'OLD_GOLD_PURCHASE' ELSE 'SALE' END)")
 
 
+
+def lock_available_old_gold(repository, karat_id):
+    """AVAILABLE Scrap of one karat, locked (032): the COUNTED ledger rows and the HELD Exchange holds are
+    both locked FOR UPDATE, so neither a consumer nor a manager decision can race this answer."""
+    rows = repository._fetch_all(
+        """
+        SELECT weight_delta_grams FROM old_gold_movements
+        WHERE karat_id = %s AND weight_delta_grams IS NOT NULL AND balance_effect = 'COUNTED'
+        FOR UPDATE
+        """, (int(karat_id),))
+    held = repository._fetch_all(
+        "SELECT weight_grams FROM old_gold_holds WHERE karat_id = %s AND hold_status = 'HELD' FOR UPDATE",
+        (int(karat_id),))
+    return (sum((Decimal(str(row["weight_delta_grams"])) for row in rows), Decimal("0.000"))
+            - sum((Decimal(str(row["weight_grams"])) for row in held), Decimal("0.000")))
+
 class InvoiceNumberExhausted(RuntimeError):
     """All 99 invoice numbers of a business day are used."""
 
@@ -291,7 +307,8 @@ class InvoiceRepository(BaseRepository):
         if not ids:
             return {}
         rows = self._fetch_all(
-            f"SELECT id, code, name, sale_making_min_per_gram, sale_making_max_per_gram "
+            f"SELECT id, code, name, sale_making_min_per_gram, sale_making_max_per_gram, "
+            f"manager_approval_below_per_gram "
             f"FROM item_categories WHERE id IN ({', '.join(['%s'] * len(ids))})", tuple(ids))
         return {int(row["id"]): row for row in rows}
 
@@ -303,10 +320,15 @@ class InvoiceRepository(BaseRepository):
     # ------------------------------------------------------------ old-gold stock (weight ledger)
 
     def old_gold_balances(self):
-        """COUNTED grams per karat (legacy REFERENCE_ONLY history excluded)."""
+        """AVAILABLE Scrap per karat (032): COUNTED grams (legacy REFERENCE_ONLY history excluded) minus the
+        Exchange-returned weight still HELD for the manager's decision. What F7 may consume."""
         return self._fetch_all(
             """
-            SELECT k.id AS karat_id, k.karat_value, COALESCE(SUM(og.weight_delta_grams), 0) AS balance_grams
+            SELECT k.id AS karat_id, k.karat_value,
+                   COALESCE(SUM(og.weight_delta_grams), 0)
+                   - (SELECT COALESCE(SUM(h.weight_grams), 0) FROM old_gold_holds h WHERE h.karat_id = k.id AND h.hold_status = 'HELD') AS balance_grams,
+                   COALESCE(SUM(og.weight_delta_grams), 0) AS physical_grams,
+                   (SELECT COALESCE(SUM(h.weight_grams), 0) FROM old_gold_holds h WHERE h.karat_id = k.id AND h.hold_status = 'HELD') AS held_grams
             FROM karats k
             LEFT JOIN old_gold_movements og
                 ON og.karat_id = k.id AND og.weight_delta_grams IS NOT NULL AND og.balance_effect = 'COUNTED'
@@ -316,15 +338,16 @@ class InvoiceRepository(BaseRepository):
             """)
 
     def lock_old_gold_balance(self, karat_id):
-        """Locks this karat's COUNTED ledger rows (the same lock the karat-conversion
-        path takes) and returns the balance before this transaction's own movements."""
-        rows = self._fetch_all(
-            """
-            SELECT weight_delta_grams FROM old_gold_movements
-            WHERE karat_id = %s AND weight_delta_grams IS NOT NULL AND balance_effect = 'COUNTED'
-            FOR UPDATE
-            """, (int(karat_id),))
-        return sum((Decimal(str(row["weight_delta_grams"])) for row in rows), Decimal("0.000"))
+        """Locks this karat's COUNTED ledger rows (the same lock the karat-conversion path takes) and its
+        HELD Scrap holds, and returns the AVAILABLE balance before this transaction's own movements."""
+        return lock_available_old_gold(self, karat_id)
+
+    def held_old_gold(self, karat_id):
+        """Grams HELD for a manager decision (032); a plain read — callers lock the holds first."""
+        row = self._fetch_one(
+            "SELECT COALESCE(SUM(weight_grams), 0) AS held FROM old_gold_holds "
+            "WHERE karat_id = %s AND hold_status = 'HELD'", (int(karat_id),))
+        return Decimal(str(row["held"])) if row else Decimal("0.000")
 
     def add_invoice_sale_out_movement(self, *, karat_id, weight_grams, gold_price_per_gram, cash_value,
                                       price_quote_id, movement_group_id, invoice_id, invoice_number,
@@ -865,6 +888,30 @@ class InvoiceRepository(BaseRepository):
             WHERE ct.customer_id = %s AND ct.reference_type = 'INVOICE' AND ct.reference_id = %s
             ORDER BY ct.id
             """, (_id(customer_id), _id(invoice_id)))]
+
+    def customer_movements_after(self, customer_id, after_transaction_id, limit=50):
+        """The customer's ledger AFTER this invoice's own entry (by id: never a clock comparison), with the
+        real methods of each Customer Account Settlement. Read only; history is never rewritten."""
+        return [_stringify_ids(row) for row in self._fetch_all(
+            """
+            SELECT ct.id AS transaction_id, ct.occurred_at, ct.amount_delta, ct.reference_type, ct.reference_code,
+                   ct.description, tt.code AS type_code, tt.name AS type_name, u.display_name AS actor,
+                   (SELECT GROUP_CONCAT(CONCAT(sp.payment_method_code, ':', sp.amount) ORDER BY sp.id SEPARATOR '|')
+                      FROM customer_account_settlement_payments sp
+                     WHERE ct.reference_type = 'CUSTOMER_ACCOUNT_SETTLEMENT' AND sp.settlement_id = ct.reference_id)
+                   AS settlement_legs
+            FROM customer_transactions ct
+            JOIN customer_transaction_types tt ON tt.id = ct.transaction_type_id
+            LEFT JOIN users u ON u.id = ct.created_by_user_id
+            WHERE ct.customer_id = %s AND ct.id > %s
+            ORDER BY ct.id
+            LIMIT %s
+            """, (_id(customer_id), _id(after_transaction_id), int(limit)))]
+
+    def customer_balance(self, customer_id):
+        row = self._fetch_one("SELECT COALESCE(SUM(amount_delta), 0) AS balance FROM customer_transactions "
+                              "WHERE customer_id = %s", (_id(customer_id),))
+        return row["balance"] if row else 0
 
     def search_invoices(self, *, number=None, customer_id=None, date_from=None, date_to_exclusive=None,
                         status=None, record_origin=None, limit=101, offset=0):

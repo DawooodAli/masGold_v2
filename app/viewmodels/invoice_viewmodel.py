@@ -11,6 +11,7 @@ that money (effective sale = O + P_in − P_out + L), then making and its averag
 The salesman sees the average making per gram, never the making total, and
 the money direction in words (المستلم من العميل / المدفوع للعميل), never a sign."""
 from decimal import Decimal, InvalidOperation
+from services.number_text import normalize_digits
 
 from PySide6.QtCore import QAbstractListModel, QByteArray, QModelIndex, QObject, Property, QTimer, Qt, Signal, Slot
 
@@ -33,8 +34,8 @@ REASONS = (("NO_BARCODE", "لم يُنشأ لها باركود"), ("BARCODE_LOST
            ("NOT_FOUND", "لم أجد القطعة في البحث"), ("OTHER", "سبب آخر"))
 UNIDENTIFIED, OLD_GOLD_STOCK = "UNIDENTIFIED", "OLD_GOLD_STOCK"
 # UX mirror of the service's hard rule (the service validates again on preview and finalize).
-DISCOUNT_MIN, DISCOUNT_MAX = Decimal("1.25"), Decimal("3.00")
-DISCOUNT_WARNING = "النسبة المسموح بها من \u20661.25%\u2069 إلى \u20663%\u2069"
+DISCOUNT_MIN, DISCOUNT_MAX = Decimal("1.25"), Decimal("5.00")
+DISCOUNT_WARNING = "النسبة المسموح بها من \u20661.25%\u2069 إلى \u20665%\u2069"
 PAYMENT_TEXT = {"PHYSICAL_CASH": "نقدي", "MOBILE_WALLET": "محفظة", "INSTAPAY": "InstaPay",
                 "BANK_TRANSFER": "تحويل بنكي"}
 ACCOUNT_TYPE_FOR_METHOD = {"MOBILE_WALLET": "MOBILE_WALLET", "INSTAPAY": "BANK", "BANK_TRANSFER": "BANK"}
@@ -61,6 +62,15 @@ def short_price(value):
     amount = Decimal(str(value))
     return f"{amount:,.0f}" if amount == amount.to_integral_value() else f"{amount:,.2f}"
 
+
+
+def _scrap_breakdown(row):
+    """Physical / held / available of one karat, only while something is HELD (032); else ""."""
+    from services.old_gold_availability import breakdown_text
+    held = Decimal(str(row.get("held") or 0))
+    if held <= 0:
+        return ""
+    return breakdown_text(row.get("physical") or 0, held, row.get("grams") or 0)
 
 def grams(value):
     return "" if value in (None, "") else f"{Decimal(str(value)):.3f}"
@@ -96,7 +106,7 @@ def _weight(value):
 
 def _decimal(text):
     try:
-        value = Decimal(str(text).strip())
+        value = Decimal(normalize_digits(str(text)).strip())
         return value if value.is_finite() else None
     except (InvalidOperation, ValueError):
         return None
@@ -158,6 +168,9 @@ class InvoiceViewModel(QObject):
     finalized = Signal(str)
     # حفظ وطباعة without a usable Bill printer: Main opens Settings → الطباعة.
     printingSettingsRequested = Signal()
+    # Emitted by the ONE canonical draft reset (new invoice, تصفير الفاتورة, after a save): the page
+    # rebinds every edited field, so no typed value from the previous draft can survive or come back.
+    draftReset = Signal()
 
     def __init__(self, session, service=None, master_data=None, print_service=None, parent=None,
                 preview_delay_ms=250):
@@ -207,10 +220,12 @@ class InvoiceViewModel(QObject):
         # types. Payment legs and the customer-account part only allocate it. While the single
         # first leg was never edited by hand it mirrors the total (the fast cash sale).
         self._invoice_total, self._leg0_auto, self._payment_warning = "", True, ""
+        self._total_rounded_note = ""
         self._discount_warning = ""
         default_discount = self._reference["settings"].get("old_gold_discount_default_percent") or "1.50"
         self._old_gold_discount = self._trim(default_discount)
         self._settlement_choice, self._settlement_reason, self._approver = "", "", None
+        self._making_confirmed = False             # the explicit «هل تعتمد البيع؟» confirmation
         self._approval_error = ""
         # بحث عن قطعة: cascading الصنف → العيار → المصنع; candidates are only shown.
         self._facets = {"item_types": [], "karats": [], "factories": []}
@@ -419,12 +434,24 @@ class InvoiceViewModel(QObject):
     def setNewCustomer(self, name, mobile, place):
         """Typed details of a customer who does not exist yet (created on finalize only)."""
         values = {"name": (name or "").strip(), "mobile": (mobile or "").strip(), "place": (place or "").strip()}
+        if self._customer_id and not self._matches_chosen(values):
+            # The typed text no longer describes the chosen customer (erased, or edited): the immutable
+            # binding is dropped at once — never a customer the screen no longer shows.
+            self._customer_id, self._customer = "", {}
+            self._new_customer = values
+            self._touched()
+            return
         if values == self._new_customer:
             return
         self._new_customer = values
-        if values["name"] and self._customer_id:
-            self._customer_id, self._customer = "", {}
         self._touched()
+
+    def _matches_chosen(self, values):
+        """True while the typed name / phone / place still describe the chosen existing customer."""
+        chosen = self._customer
+        if not chosen:
+            return False
+        return all((chosen.get(key) or "").strip() == values[key] for key in ("name", "mobile", "place"))
 
     @Slot()
     def clearCustomer(self):
@@ -581,8 +608,8 @@ class InvoiceViewModel(QObject):
             self._touched()
 
     def _discount_range_active(self):
-        """1.25–3.00% applies whenever new gold is sold on the invoice (never to old gold only)."""
-        return bool(self._sales or self._described)
+        """1.25–5.00% applies to every old-gold purchase: mixed invoices and old gold only."""
+        return True
 
     @Slot(str, result=str)
     def commitOldGoldDiscount(self, value):
@@ -637,6 +664,7 @@ class InvoiceViewModel(QObject):
         # An account belongs to one method; never carried to another method.
         accounts = self._accounts_for(code)
         self._legs[index].update(method=code, account=accounts[0]["id"] if len(accounts) == 1 else "")
+        self._rebalance()                     # an unusable method stops counting at once
         self._touched()
 
     @Slot(int, str)
@@ -648,6 +676,7 @@ class InvoiceViewModel(QObject):
             return
         if account_id != self._legs[index]["account"]:
             self._legs[index]["account"] = account_id
+            self._rebalance()
             self._touched()
 
     # ---- إجمالي الفاتورة: one total, payments allocate it
@@ -683,30 +712,60 @@ class InvoiceViewModel(QObject):
     @Slot(str, result=bool)
     def setInvoiceTotal(self, text):
         text = (text or "").strip()
+        self._total_rounded_note = ""
         if not text:
             self._invoice_total = ""
-            if self._auto_single_leg():
-                self._legs[0]["amount"] = ""
+            self._rebalance()
             return self._accepted()
         value = _decimal(text)
         if value is None or value < 0:
             return self._reject("إجمالي الفاتورة غير صحيح.")
-        account = self._account_value()
-        if self._auto_single_leg():
-            if account > value:
-                return self._reject("إجمالي الفاتورة لا يمكن أن يقل عن المبلغ على حساب العميل.")
-            self._legs[0]["amount"] = self._amount_text(value - account) if value - account > 0 else ""
-        elif self._legs_total() + account > value:
-            # Never redistribute a manual split silently: the smaller total is refused.
-            return self._reject("إجمالي الفاتورة لا يمكن أن يقل عن المبالغ الموزعة عليه (طرق الدفع وحساب العميل).")
+        fixed = (self._legs_total() if not self._leg0_auto
+                 else sum((_decimal(leg["amount"]) or Decimal("0") for leg in self._legs[1:]), Decimal("0")))
+        if not self._auto_account():
+            fixed += self._account_value()
+        if text != self._invoice_total:
+            self._making_confirmed = False    # a new price needs a new explicit approval
         self._invoice_total = text
+        self._rebalance()                     # the untouched cash leg follows: 32,220 → 31,820
+        if fixed > value:
+            # A manual split is never redistributed silently. The typed total stays (the employee may be
+            # mid-typing 31,825); Save stays blocked until payments no longer exceed it.
+            self._payment_warning = "إجمالي الفاتورة أقل من المبالغ المدفوعة فعلاً — عدّل طرق الدفع."
+            self._touched()
+            return False
         return self._accepted()
+
+    @Slot()
+    def commitInvoiceTotal(self):
+        """Editing of إجمالي الفاتورة ended. A MIXED invoice (new gold + old gold) is customer-facing
+        money like the old-gold-only final amount: it ends on a multiple of EGP 5. The ONE shared
+        rounding rule (nearest 5, half up) is applied once here; the service still refuses a total that
+        is not a multiple of 5, so nothing depends on this screen."""
+        self._total_rounded_note = ""
+        value = _decimal(self._invoice_total) if self._invoice_total else None
+        if value is None or value <= 0 or not (self._olds and (self._sales or self._described)):
+            self.changed.emit()
+            return
+        from services.invoice_service import is_egp5, round_to_egp5
+        if not is_egp5(value):
+            rounded = round_to_egp5(value)
+            if rounded > 0 and self.setInvoiceTotal(self._amount_text(rounded)):
+                self._total_rounded_note = (f"تم تقريب الإجمالي لأقرب 5 جنيه: {value:,.2f} ← {rounded:,.2f} ج")
+        self.changed.emit()
+
+    @Property(str, notify=changed)
+    def totalRoundedNote(self):
+        return self._total_rounded_note
 
     @Slot(int, str)
     def setLegAmount(self, index, amount):
+        """Called on every keystroke: totals, remainder, على العميل and Save update at once."""
         if not 0 <= index < len(self._legs):
             return
         amount = (amount or "").strip()
+        if amount == self._legs[index]["amount"]:
+            return
         if not self._total_mode():
             self._legs[index]["amount"] = amount
             self._touched()
@@ -719,17 +778,76 @@ class InvoiceViewModel(QObject):
         if total is None:
             self._reject("اكتب إجمالي الفاتورة أولاً.")
             return
-        others = self._legs_total() - (_decimal(self._legs[index]["amount"]) or Decimal("0"))
-        if others + value + self._account_value() > total:
-            self._reject("مجموع طرق الدفع لا يمكن أن يتجاوز المبلغ المطلوب دفعه الآن" if self._account_value() else "مجموع طرق الدفع لا يمكن أن يتجاوز إجمالي الفاتورة")
+        others = sum((_decimal(leg["amount"]) or Decimal("0") for i, leg in enumerate(self._legs)
+                      if i != index and (i != 0 or not self._leg0_auto or index == 0)), Decimal("0"))
+        if not self._auto_account():
+            others += self._account_value()
+        if others + value > total:
+            self._reject("مجموع طرق الدفع لا يمكن أن يتجاوز إجمالي الفاتورة")
             return
         self._legs[index]["amount"] = amount
         if index == 0:
-            self._leg0_auto = False
+            self._leg0_auto = False           # typed by hand: no longer follows the total
+        self._rebalance()
         self._accepted()
 
+    def _leg_valid(self, leg):
+        """A leg counts only on an ACTIVE method with its real account (never a disabled method)."""
+        method = self._method(leg["method"])
+        if method is None:
+            return False
+        if method.get("requires_bank_account"):
+            return bool(leg["account"]) and leg["account"] in {row["id"] for row in self._accounts_for(leg["method"])}
+        return True
+
+    @Slot(int, str)
+    def revertLegAmount(self, index, amount):
+        """Editing ended on a refused value: the leg goes back to its value from before the edit and
+        the refusal message stays visible (the employee sees why)."""
+        if not 0 <= index < len(self._legs) or self._legs[index]["amount"] == (amount or ""):
+            return
+        self._legs[index]["amount"] = amount or ""
+        self._rebalance()
+        self._version += 1
+        self.changed.emit()
+        if self._has_lines():
+            self._timer.start()
+
     def _legs_total(self):
-        return sum((_decimal(leg["amount"]) or Decimal("0") for leg in self._legs), Decimal("0"))
+        return sum((_decimal(leg["amount"]) or Decimal("0") for leg in self._legs if self._leg_valid(leg)),
+                   Decimal("0"))
+
+    def _invalid_leg_problem(self):
+        for leg in self._legs:
+            if (_decimal(leg["amount"]) or Decimal("0")) > 0 and not self._leg_valid(leg):
+                return (f"{PAYMENT_TEXT.get(leg['method'], leg['method'])}: طريقة الدفع غير مفعّلة أو بدون حساب — "
+                        "لا تُحتسب في السداد.")
+        return ""
+
+    def _auto_account(self):
+        """With sold pieces and the customer paying, the unpaid remainder is على العميل automatically
+        (owner decision 2026-10-02): account = total − real payments, recalculated on every change."""
+        return self._total_mode() and self._money_direction() == "IN"
+
+    def _rebalance(self):
+        """The ONE settlement recalculation: the untouched first leg follows the total, then the
+        customer account takes whatever the real payments leave (never negative, never typed)."""
+        total = self._total_value()
+        if not self._total_mode() or total is None:
+            if self._total_mode():
+                if self._leg0_auto:
+                    self._legs[0]["amount"] = ""      # no total: the untouched cash leg is empty too
+                if self._auto_account():
+                    self._account_amount = ""
+            return
+        if self._leg0_auto:
+            others = sum((_decimal(leg["amount"]) or Decimal("0") for leg in self._legs[1:]
+                          if self._leg_valid(leg)), Decimal("0"))
+            first = total - others - (Decimal("0") if self._auto_account() else self._account_value())
+            self._legs[0]["amount"] = self._amount_text(first) if first > 0 else ""
+        if self._auto_account():
+            rest = total - self._legs_total()
+            self._account_amount = self._amount_text(rest) if rest > 0 else ""
 
     def _account_value(self):
         value = _decimal(self._account_amount) if self._account_amount else None
@@ -742,9 +860,13 @@ class InvoiceViewModel(QObject):
     @Slot()
     def addPaymentLeg(self):
         """Split the money across methods (same direction), up to three legs. With a total, the new
-        leg starts with exactly the current remainder (never a guessed split, never a zero leg)."""
+        leg starts with exactly the current unpaid remainder (1,035 → InstaPay 1,035, على العميل 0)."""
         if self._total_mode():
-            remaining = self._remaining_now()
+            total = self._total_value()
+            if self._leg0_auto:
+                self._leg0_auto = False       # the first leg keeps its current amount from now on
+            remaining = None if total is None else total - self._legs_total() - (
+                Decimal("0") if self._auto_account() else self._account_value())
             if remaining is None:
                 self._reject("اكتب إجمالي الفاتورة أولاً.")
             elif remaining <= 0:
@@ -753,7 +875,7 @@ class InvoiceViewModel(QObject):
                 self._reject("الحد الأقصى ثلاث طرق دفع.")
             else:
                 self._legs.append({"method": "PHYSICAL_CASH", "account": "", "amount": self._amount_text(remaining)})
-                self._leg0_auto = False
+                self._rebalance()
                 self._accepted()
             return
         if len(self._legs) < 3:
@@ -768,6 +890,7 @@ class InvoiceViewModel(QObject):
             del self._legs[index]
             if len(self._legs) == 1:
                 self._commercial = None
+            self._rebalance()                 # its money goes back to على العميل
             self._touched()
 
     # The first leg, for the single-method layout and the keyboard flow.
@@ -804,8 +927,8 @@ class InvoiceViewModel(QObject):
     def setAccountDirection(self, direction):
         """The على العميل / للعميل button. With a total, choosing it puts the CURRENT remainder on the
         customer account — only when the employee asks (unpaid money is never turned into debt silently)."""
-        if direction != self._derived_account_direction():
-            return
+        if direction != self._derived_account_direction() or self._auto_account():
+            return                            # على العميل is automatic when the customer pays
         remaining = self._remaining_now()
         if remaining is not None and remaining > 0:
             self._account_amount = self._amount_text(self._account_value() + remaining)
@@ -821,8 +944,8 @@ class InvoiceViewModel(QObject):
         One payment leg is lowered/raised automatically (23,000 → 20,000 + 3,000 على العميل);
         with several legs the required amount is shown and the legs must add up to it."""
         amount = (amount or "").strip()
-        if amount == self._account_amount:
-            return
+        if amount == self._account_amount or self._auto_account():
+            return                            # automatic: total − real payments
         if self._total_mode():
             new = _decimal(amount) if amount else Decimal("0")
             if new is None or new < 0:
@@ -883,8 +1006,12 @@ class InvoiceViewModel(QObject):
     def canAddPayment(self):
         if not self._total_mode():
             return len(self._legs) < 3
-        remaining = self._remaining_now()
-        return remaining is not None and remaining > 0 and len(self._legs) < 3
+        total = self._total_value()
+        if total is None:
+            return False
+        # What real payments have not covered yet (with على العميل automatic, it sits on the account).
+        unpaid = total - self._legs_total() - (Decimal("0") if self._auto_account() else self._account_value())
+        return unpaid > 0 and len(self._legs) < 3
 
     @Property(str, notify=changed)
     def paymentWarning(self):
@@ -896,6 +1023,9 @@ class InvoiceViewModel(QObject):
         return "" if required is None else f"المطلوب دفعه الآن: {required:,.2f} ج"
 
     def _required_problem(self):
+        invalid = self._invalid_leg_problem()
+        if invalid:
+            return invalid
         if self._total_mode():
             remaining = self._remaining_now()
             if remaining is None:
@@ -926,7 +1056,7 @@ class InvoiceViewModel(QObject):
     def setSettlementChoice(self, choice):
         """Old gold only: SETTLE = تسوية فرق التقريب; ACCOUNT puts the gap on the customer account."""
         if choice == "ACCOUNT":
-            gap = abs(self._residual())
+            gap = abs(self._difference())          # against the rounded final amount: 9,005 − 9,000 = 5.00
             current = _decimal(self._account_amount or "0") or Decimal("0")
             self._settlement_choice = ""
             # Old gold only: the unpaid old-gold value is owed TO the customer (للعميل).
@@ -1089,6 +1219,7 @@ class InvoiceViewModel(QObject):
                             settlement_choice=self._settlement_choice or None,
                             settlement_reason=self._settlement_reason or None,
                             settlement_approver=self._approver, new_customer=new_customer,
+                            making_confirmed=self._making_confirmed,
                             invoice_total=self._invoice_total
                             if self._total_mode() and self._total_value() is not None else None)
 
@@ -1123,6 +1254,17 @@ class InvoiceViewModel(QObject):
         if not self._residual() and self._settlement_choice:
             self._settlement_choice = ""
 
+    def _difference(self):
+        """Old gold only: what is left to resolve against the FINAL (EGP-5 rounded) amount — the figure
+        the screen shows and the account button uses. Falls back to the exact gap when the service did
+        not supply it. The exact gap itself stays in _residual() (limits / approval)."""
+        if not self._has_lines() or not self._preview:
+            return Decimal("0")
+        value = self._preview.get("difference_signed")
+        if value in (None, ""):
+            return self._residual()
+        return _decimal(value) or Decimal("0")
+
     def _residual(self):
         # Old gold only: the gap (R − L) the employee must settle or put on the account.
         # The last computed gap stays shown while a newer preview is running,
@@ -1141,7 +1283,8 @@ class InvoiceViewModel(QObject):
         draft, token = self._draft(), self._preview["price_token"]
         service = self._service_instance()
         self._error = ""
-        self._pending_print, self._print_result = bool(print_after), {}
+        # Old gold only is save-only: a print request is dropped here whatever the caller asked for.
+        self._pending_print, self._print_result = bool(print_after) and self.printable, {}
         self._start("finalize", lambda _expected_actor: service.finalize(
             draft, token, stale_acknowledged=bool(stale_acknowledged),
             dead_cash_confirmed=bool(dead_cash_confirmed), _expected_actor=_expected_actor))
@@ -1177,11 +1320,8 @@ class InvoiceViewModel(QObject):
             "statusText": STATUS_TEXT.get(result["settlement_status"], result["settlement_status"]),
             "notes": " • ".join(notes),
         }
-        # The draft is discarded; reference data, the salesperson and the success summary stay.
-        salespeople, board, salesperson = self._salespeople, self._board, self._salesperson_id
-        self._timer.stop()
-        self._reset_state()
-        self._salespeople, self._board, self._salesperson_id = salespeople, board, salesperson
+        # The draft is discarded (the same reset as فاتورة جديدة / تصفير); the success summary stays.
+        self._clear_draft()
         self._success = success
         self._last_invoice_id = str(result["invoice_id"])
         self.finalized.emit(result["invoice_number"])
@@ -1194,6 +1334,8 @@ class InvoiceViewModel(QObject):
     def _start_print(self, invoice_id):
         """Printing is read-only after finalize: it can only report success or failure —
         it never rolls back or in any way changes the invoice that was already saved."""
+        if "print" in self._busy_ops:                  # one accepted request = one job (also for a repeated signal)
+            return
         service = self._print_service_instance()
         self._print_result = {}
         self._start("print", lambda _expected_actor: service.print_invoice(
@@ -1231,14 +1373,27 @@ class InvoiceViewModel(QObject):
         self._print_result = {}
         self.changed.emit()
 
-    @Slot()
-    def newInvoice(self):
-        # The salesperson stays for the next customer, as after a finalized invoice.
+    def _clear_draft(self):
+        """The ONE draft reset: every line, total, payment, account part, approval, warning and preview
+        is dropped; only reference data and the salesperson stay. The page then rebinds its fields."""
         salespeople, board, salesperson = self._salespeople, self._board, self._salesperson_id
         self._timer.stop()
+        self._version += 1                    # a preview still running for the old draft is ignored
+        version = self._version
         self._reset_state()
+        self._version = self._preview_version = version
         self._salespeople, self._board, self._salesperson_id = salespeople, board, salesperson
+        self.draftReset.emit()
+
+    @Slot()
+    def newInvoice(self):
+        self._clear_draft()
         self.changed.emit()
+
+    @Slot()
+    def clearInvoice(self):
+        """تصفير الفاتورة: exactly the same reset as فاتورة جديدة."""
+        self.newInvoice()
 
     @Slot()
     def dismissSuccess(self):
@@ -1276,6 +1431,16 @@ class InvoiceViewModel(QObject):
     @Property(str, notify=changed)
     def printMessage(self):
         return self._print_result.get("message", "")
+
+    @Property(str, notify=changed)
+    def printStatusText(self):
+        """The one banner text: handing over, sent, or failed (with the safe reason)."""
+        from services.invoice_print_service import PRINT_BUSY_TEXT, PRINT_FAILED_TEXT, PRINT_SENT_TEXT
+        if "print" in self._busy_ops:
+            return PRINT_BUSY_TEXT
+        if self.printFailed:
+            return f"{PRINT_FAILED_TEXT} {self.printMessage}".strip()
+        return PRINT_SENT_TEXT if self.printSucceeded else ""
 
     @Property(str, notify=changed)
     def errorMessage(self):
@@ -1354,7 +1519,8 @@ class InvoiceViewModel(QObject):
     @Property("QVariantList", notify=changed)
     def oldGoldStock(self):
         """Available COUNTED grams per karat, for بيع من الكسر."""
-        return [{"karatId": r["karat_id"], "karat": str(r["karat"]), "grams": grams(r["grams"])}
+        return [{"karatId": r["karat_id"], "karat": str(r["karat"]), "grams": grams(r["grams"]),
+                 "breakdown": _scrap_breakdown(r)}
                 for r in self._reference.get("old_gold_stock", [])]
 
     @Slot()
@@ -1419,6 +1585,11 @@ class InvoiceViewModel(QObject):
     @Property(int, notify=changed)
     def stockSaleCount(self):
         return len(self._sales)
+
+    @Property(bool, notify=changed)
+    def printable(self):
+        """SALE and MIXED can be printed; old gold only (no sold line at all) is save-only (حفظ)."""
+        return bool(self._sales or self._described) or not self._olds
 
     @Property(int, notify=changed)
     def oldGoldCount(self):
@@ -1631,13 +1802,15 @@ class InvoiceViewModel(QObject):
                  "dueLabel": self.paymentLabel, "dueAmount": "", "paidLabel": self.paymentLabel, "paidAmount": "",
                  "remainingLabel": "على حساب العميل", "remainingAmount": "", "goldValue": "", "averageMaking": "",
                  "effectiveSale": "", "makingNotice": "", "makingStatus": "", "oldGoldGross": "",
-                 "discountChanged": False, "differenceAmount": "", "differenceSigned": "", "accountEffect": ""}
+                 "discountChanged": False, "differenceAmount": "", "differenceSigned": "", "accountEffect": "",
+                 "settleAmount": ""}
         if not p:
             return empty
         residual = p["account_residual_direction"]
         out = p.get("payment_direction") == "OUT"
         gross = sum((Decimal(str(line["gross_total"])) for line in p.get("old_gold_lines", [])), Decimal("0"))
-        difference = self._residual()
+        difference = self._difference()
+        settle_gap = self._residual()
         paid = Decimal(str(p["money_paid"] if out else p["money_received"]))
         account = (f"{REMAINING_TEXT[residual]} {money(p['account_residual_amount'])}" if residual != "NONE" else "")
         methods = " + ".join(dict.fromkeys(PAYMENT_TEXT[leg["method"]] for leg in self._legs
@@ -1666,7 +1839,9 @@ class InvoiceViewModel(QObject):
                 "oldGoldGross": money(gross) if p.get("old_gold_lines") else "",
                 "discountChanged": bool(p.get("old_gold_discount_changed")),
                 "differenceAmount": "" if not difference else f"{abs(difference):,.2f}",
-                "differenceSigned": str(difference or ""), "accountEffect": account}
+                "differenceSigned": str(difference or ""), "accountEffect": account,
+                # The exact gap a «تسوية الفرق» waives (the audit row keeps the exact value).
+                "settleAmount": "" if not settle_gap else f"{abs(settle_gap):,.2f}"}
 
     @Property(str, notify=changed)
     def invoiceTotalText(self):
@@ -1708,7 +1883,7 @@ class InvoiceViewModel(QObject):
 
     @Property(bool, notify=changed)
     def hasDifference(self):
-        return bool(self._residual())
+        return bool(self._difference())
 
     @Property(str, notify=changed)
     def settlementChoice(self):
@@ -1729,6 +1904,44 @@ class InvoiceViewModel(QObject):
         if actor is not None and "INVOICE_SETTLEMENT_APPROVE" in actor.permissions:
             return False                                  # the logged-in user may approve directly
         return self.settlementNeedsReason
+
+    @Property(bool, notify=changed)
+    def makingNeedsApproval(self):
+        """Average making below the category's manager threshold and nobody has EXPLICITLY approved."""
+        return self.previewReady and bool(self._preview.get("making_needs_approval"))
+
+    @Property(bool, notify=changed)
+    def makingCanConfirm(self):
+        """The logged-in user holds the approval right: an explicit confirmation (not credentials)."""
+        return self.makingNeedsApproval and bool(self._preview.get("making_can_confirm"))
+
+    @Property(str, notify=changed)
+    def makingConfirmText(self):
+        category = self._preview.get("making_approval_category") or ""
+        return f"المصنعية أقل من الحد المحدد للفئة {category} — هل تعتمد البيع؟".replace("  ", " ")
+
+    @Slot()
+    def confirmMaking(self):
+        """The authorized user explicitly approves this making (re-checked by the service at Save)."""
+        if not self._making_confirmed:
+            self._making_confirmed = True
+            self._touched()
+
+    @Property(str, notify=changed)
+    def makingApprovalNote(self):
+        if not self.previewReady:
+            return ""
+        if self._preview.get("making_needs_approval"):
+            return ("⚠ متوسط المصنعية أقل من حد موافقة المدير — اعتمد البيع قبل الحفظ."
+                    if self._preview.get("making_can_confirm")
+                    else "⚠ متوسط المصنعية أقل من حد موافقة المدير — يلزم موافقة المدير قبل الحفظ.")
+        if self._making_confirmed:
+            return "✓ تم اعتماد المصنعية — تُسجل في مراجعات المدير."
+        return ""
+
+    @Property(bool, notify=changed)
+    def accountAutomatic(self):
+        return self._auto_account()
 
     @Property(str, notify=changed)
     def approverText(self):

@@ -28,23 +28,42 @@ from services.authorization_service import AuthorizationService
 from tests import test_authentication_qml as auth_fixture
 
 
-DEV_ENV = {"MASGOLD_ENV": "development", "MASGOLD_DB_NAME": "masgold_v2"}
+OPT_IN = {"MASGOLD_DEV_AUTO_LOGIN": "1"}
+DEV_ENV = {**OPT_IN, "MASGOLD_ENV": "development", "MASGOLD_DB_NAME": "masgold_v2"}
 
 
 class DevSettingsTests(unittest.TestCase):
-    def test_enabled_in_development(self):
-        self.assertEqual(dev_settings.dev_auto_login_username(DEV_ENV, frozen=False), "admin")
-        self.assertEqual(dev_settings.dev_auto_login_username({}, frozen=False), "admin")
+    def test_disabled_by_default_even_from_source_in_a_non_production_database(self):
+        # Fail closed: running from source, a development-looking environment or a non-production database
+        # name never enable the bypass by themselves.
+        for env in ({}, {"MASGOLD_ENV": "development"}, {"MASGOLD_DB_NAME": "masgold_v2"},
+                    {"MASGOLD_ENV": "development", "MASGOLD_DB_NAME": "masgold_v2"},
+                    {"MASGOLD_DB_NAME": "anything_else"}):
+            self.assertIsNone(dev_settings.dev_auto_login_username(env, frozen=False), env)
+        with patch.dict(os.environ, {}, clear=True):                     # the real process environment, nothing set
+            self.assertIsNone(dev_settings.dev_auto_login_username(frozen=False))
 
-    def test_never_in_production_release_or_protected_database(self):
+    def test_only_an_affirmative_explicit_opt_in_enables_it(self):
+        for value in ("", "0", "false", "no", "true", "yes", "on", "2", " "):
+            self.assertIsNone(dev_settings.dev_auto_login_username({"MASGOLD_DEV_AUTO_LOGIN": value}, frozen=False),
+                              repr(value))
+        self.assertEqual(dev_settings.dev_auto_login_username(OPT_IN, frozen=False), "admin")
+        self.assertEqual(dev_settings.dev_auto_login_username({"MASGOLD_DEV_AUTO_LOGIN": " 1 "}, frozen=False), "admin")
+        self.assertEqual(dev_settings.dev_auto_login_username(DEV_ENV, frozen=False), "admin")
+
+    def test_never_in_production_release_or_protected_database_even_when_opted_in(self):
         for env in ({"MASGOLD_ENV": "production"}, {"MASGOLD_ENV": "Release"}, {"MASGOLD_ENV": " prod "},
                     {"MASGOLD_DB_NAME": "masgold_prod"}):
-            self.assertIsNone(dev_settings.dev_auto_login_username(env, frozen=False), env)
+            self.assertIsNone(dev_settings.dev_auto_login_username({**OPT_IN, **env}, frozen=False), env)
         self.assertIsNone(dev_settings.dev_auto_login_username(DEV_ENV, frozen=True))   # packaged build
 
-    def test_one_setting_disables_it(self):
-        with patch.object(dev_settings, "DEV_AUTO_LOGIN", False):
-            self.assertIsNone(dev_settings.dev_auto_login_username(DEV_ENV, frozen=False))
+    def test_removing_the_single_opt_in_disables_it(self):
+        self.assertEqual(dev_settings.dev_auto_login_username(DEV_ENV, frozen=False), "admin")
+        without = {k: v for k, v in DEV_ENV.items() if k != "MASGOLD_DEV_AUTO_LOGIN"}
+        self.assertIsNone(dev_settings.dev_auto_login_username(without, frozen=False))
+
+    def test_there_is_no_code_level_default_on_flag(self):
+        self.assertFalse(hasattr(dev_settings, "DEV_AUTO_LOGIN"))          # one switch only: the environment
 
     def test_marker_and_no_password_in_settings(self):
         source = Path(dev_settings.__file__).read_text(encoding="utf-8")
@@ -87,7 +106,7 @@ class DevelopmentSessionServiceTests(unittest.TestCase):
         self.assertTrue(session._establish(result, int(session.generation)))
 
     def test_refused_when_disabled_or_for_another_account(self):
-        with patch.object(dev_settings, "DEV_AUTO_LOGIN", False):
+        with patch.dict(os.environ, {"MASGOLD_DEV_AUTO_LOGIN": "0"}):
             with self.assertRaises(AuthenticationError):
                 self.service.establish_development_session("admin")
         with patch.dict(os.environ, {"MASGOLD_ENV": "production"}):
@@ -236,11 +255,12 @@ class DevAutoLoginStartupTests(unittest.TestCase):
         self.assertIsNone(self.controller.operational_engine)
 
     def test_setting_is_read_only_for_the_real_service(self):
-        with patch.object(dev_settings, "DEV_AUTO_LOGIN", False):
+        with patch.dict(os.environ, {"MASGOLD_ENV": "development", "MASGOLD_DB_NAME": "masgold_v2",
+                                     "MASGOLD_DEV_AUTO_LOGIN": "0"}):         # no opt-in: the normal Login window
             controller = ApplicationController(self.app, gold_price_service=auth_fixture.EmptyGoldPrices())
             self.assertIsNone(controller.authentication._dev_auto_login)
             self._dispose(controller)
-        with patch.dict(os.environ, DEV_ENV), patch.object(dev_settings, "DEV_AUTO_LOGIN", True):
+        with patch.dict(os.environ, DEV_ENV):
             controller = ApplicationController(self.app, gold_price_service=auth_fixture.EmptyGoldPrices())
             self.assertEqual(controller.authentication._dev_auto_login, "admin")
             self._dispose(controller)

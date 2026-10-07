@@ -309,6 +309,8 @@ class SqliteLockConnection:
             CREATE TABLE old_gold_movements (id INTEGER PRIMARY KEY, karat_id INTEGER,
                 weight_delta_grams NUMERIC, balance_effect TEXT NOT NULL DEFAULT 'COUNTED',
                 legacy_source_table TEXT, legacy_source_id INTEGER);
+            CREATE TABLE old_gold_holds (id INTEGER PRIMARY KEY, karat_id INTEGER, weight_grams NUMERIC,
+                                         hold_status TEXT NOT NULL DEFAULT 'HELD');
             INSERT INTO karats VALUES (1, 21, '21K', 1, 1), (2, 18, '18K', 1, 2);
             INSERT INTO old_gold_movements (karat_id, weight_delta_grams) VALUES (1, 100), (1, -10.5), (2, 3);
             INSERT INTO old_gold_movements (karat_id, weight_delta_grams, balance_effect,
@@ -347,6 +349,28 @@ class OldGoldCountedBalanceTests(unittest.TestCase):
         rows = OldGoldConversionRepository(self.connection).lock_old_gold_balance(1)
         self.assertEqual(sorted(Decimal(str(r["weight_delta_grams"])) for r in rows),
                          [Decimal("-10.5"), Decimal("100")])
+
+    def test_held_exchange_scrap_is_not_available_to_any_consumer(self):
+        """032 pin: physical 10.000 g with 5.000 g HELD for a manager decision → available 5.000 g everywhere a
+        consumer reads it (conversion list + lock, Billing / Exchange F7 list + lock, corrections)."""
+        from repositories.correction_repository import CorrectionRepository
+        from repositories.invoice_repository import InvoiceRepository
+        db = self.connection.db
+        db.executescript("""
+            DELETE FROM old_gold_movements;
+            INSERT INTO old_gold_movements (karat_id, weight_delta_grams) VALUES (1, 10);
+            INSERT INTO old_gold_holds (karat_id, weight_grams, hold_status)
+            VALUES (1, 5, 'HELD'), (1, 2, 'COMMITTED'), (1, 1, 'RETURNED_TO_STOCK');
+        """)
+        conversion = OldGoldConversionRepository(self.connection)
+        self.assertEqual({r["karat_id"]: Decimal(str(r["balance_grams"])) for r in conversion.get_old_gold_balances()}[1],
+                         Decimal("5"))
+        self.assertEqual(sum(Decimal(str(r["weight_delta_grams"])) for r in conversion.lock_old_gold_balance(1)),
+                         Decimal("5"))
+        for repository in (InvoiceRepository(self.connection), CorrectionRepository(self.connection)):
+            self.assertEqual(repository.lock_old_gold_balance(1), Decimal("5"))
+        self.assertEqual({r["karat_id"]: Decimal(str(r["balance_grams"]))
+                          for r in InvoiceRepository(self.connection).old_gold_balances()}[1], Decimal("5"))
 
     def test_both_queries_filter_counted(self):
         source = Path("repositories/old_gold_conversion_repository.py").read_text(encoding="utf-8")

@@ -51,6 +51,10 @@ class CustomerDepositService:
 
     def available(self, customer_id, *, _expected_actor=None):
         """The refundable deposit right now (read-only)."""
+        return self.refund_status(customer_id, _expected_actor=_expected_actor)["available"]
+
+    def refund_status(self, customer_id, *, _expected_actor=None):
+        """Read capacity and current ledger balance together for the refund dialog."""
         actor = self._actor(_expected_actor)
         cid = str(CustomerService._customer_id(customer_id))
 
@@ -59,9 +63,10 @@ class CustomerDepositService:
         try:
             with self._transaction() as connection:
                 self._authorization.require_permission_read(connection, actor, PERMISSION)
-                raise _Done(self._available(connection, cid, lock=False)[0])
+                available, balance = self._available(connection, cid, lock=False)
+                raise _Done({"available": str(available), "balance": str(balance)})
         except _Done as done:
-            return str(done.args[0])
+            return done.args[0]
 
     def _actor(self, expected_actor):
         actor = self._session.require_authenticated()

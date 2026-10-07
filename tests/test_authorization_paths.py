@@ -97,7 +97,7 @@ class CallSiteAuditTests(unittest.TestCase):
     """The non-locking path is used only by the confirmed read-only flows; every mutation stays strict."""
     READ_SITES = {("services/financial_account_service.py", "_read"),              # Cash: any view permission
                   ("services/customer_account_service.py", "statement"),           # CUSTOMERS_VIEW or settle
-                  ("services/customer_deposit_service.py", "available"),           # CUSTOMER_ACCOUNT_SETTLE
+                  ("services/customer_deposit_service.py", "refund_status"),       # CUSTOMER_ACCOUNT_SETTLE; available delegates here
                   ("services/gold_price_settings_service.py", "load"),             # SETTINGS_MANAGE
                   ("services/dashboard_service.py", "today"),                      # APP_LOGIN (+ sales grants)
                   ("services/invoice_history_service.py", "_read_verified"),       # INVOICE_VIEW / INVOICE_REPRINT
@@ -107,7 +107,8 @@ class CallSiteAuditTests(unittest.TestCase):
                   ("services/invoice_service.py", "search_customers"),             # invoice permissions (Billing picker)
                   ("services/dead_cash_service.py", "context"),                    # DEAD_CASH_MANAGE (dialog balance)
                   ("services/customer_service.py", "_dead_cash_visible"),          # DEAD_CASH_VIEW (detail gate)
-                  ("services/customer_service.py", "get_dead_cash_history")}       # DEAD_CASH_VIEW (history)
+                  ("services/customer_service.py", "get_dead_cash_history"),       # DEAD_CASH_VIEW (history)
+                  ("services/user_admin_service.py", "overview")}                  # USERS_MANAGE (read model, no hashes)
 
     def sites(self, method):
         found = set()

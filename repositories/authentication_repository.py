@@ -70,6 +70,37 @@ class AuthenticationRepository(BaseRepository):
             self._execute("UPDATE users SET last_login_at = NOW(), password_hash = %s "
                           "WHERE id = %s", (replacement_hash, user_id))
 
+    # ------------------------------------------------------------ OWNER emergency recovery
+    def find_recovery_target(self, username):
+        """The user row (locked for the transaction) plus whether it currently holds an ACTIVE OWNER role.
+
+        The OWNER designation always comes from the stored roles, never from the caller."""
+        return self._fetch_one(
+            "SELECT u.id, u.username, u.is_active, u.password_hash, EXISTS("
+            "SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id "
+            "WHERE ur.user_id = u.id AND r.code = 'OWNER' AND r.is_active = TRUE) AS is_owner "
+            "FROM users u WHERE u.username = %s FOR UPDATE", (username,))
+
+    def replace_password_hash(self, user_id, encoded):
+        """Replace exactly one user's password hash; nothing else on the row is touched."""
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute("UPDATE users SET password_hash = %s WHERE id = %s", (encoded, user_id))
+            if cursor.rowcount != 1:
+                raise RuntimeError("Password replacement did not change exactly one user.")
+        finally:
+            cursor.close()
+
+    def record_security_event(self, event_type, entity_type, entity_id, reference, description,
+                              metadata, *, user_id=None, workstation=None):
+        """One canonical audit_log row. `metadata` must never contain a password or a hash."""
+        import json
+        self._execute(
+            "INSERT INTO audit_log (user_id, event_type, entity_type, entity_id, entity_reference, "
+            "description, metadata_json, workstation_name) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (user_id, event_type, entity_type, entity_id, reference, description,
+             json.dumps(metadata, ensure_ascii=False), workstation))
+
     def acquire_bootstrap_lock(self):
         row = self._fetch_one(
             "SELECT GET_LOCK(CONCAT(DATABASE(), ':auth_bootstrap'), 5) AS acquired")

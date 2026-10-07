@@ -31,11 +31,16 @@ KARATS = {1: 21, 2: 18, 3: 24}
 PRICES = {1: (D("6250.0000"), D("6400.0000")), 2: (D("5000.0000"), D("5150.0000")), 3: (D("7100.0000"), D("7300.0000"))}
 
 
+# The historical sale prices (SHOP_SELL at sale time): line_total = grams × sale price + making, as Billing stored it.
+SALE_PRICE = {1: D("6136"), 2: D("5260"), 3: D("7120")}
+
+
 def line(line_id, number, line_type, karat_id, weight, item_id=None, making=None, exchanged=None, name="خاتم"):
+    total = (D(weight) * SALE_PRICE[karat_id] + D(making or "0")).quantize(D("0.01"))
     return {"line_id": line_id, "line_number": number, "line_type": line_type, "inventory_item_id": item_id,
             "karat_id": karat_id, "karat_value": KARATS[karat_id], "weight_grams": D(weight),
             "item_name_snapshot": name, "barcode_snapshot": None if item_id is None else f"B{item_id}",
-            "making_total": None if making is None else D(making), "line_total": D("1.00"),
+            "making_total": None if making is None else D(making), "line_total": total,
             "consumed_by_exchange": exchanged}
 
 
@@ -56,6 +61,9 @@ class Store:
                               line("6", 6, "SELL_INVENTORY", 1, "5.000", "202", None),
                               line("7", 7, "SELL_INVENTORY", 1, "6.000", "203", "600.00", exchanged="9")],
                       "501": [line("8", 1, "SELL_INVENTORY", 1, "3.000", "204", "300.00")]}
+        # Authoritative historical values (Billing's stored line_total): what the customer paid for each line.
+        self.lines["500"][0]["line_total"] = D("64000.00")           # 10.000 g 21K piece
+        self.lines["500"][2]["line_total"] = D("63500.00")           # 10.000 g F7 (2 g → 12,700.00)
         self.items = {i: {"inventory_item_id": i, "inventory_status": s, "weight_grams": D(w),
                           "stock_classification": "NEW_STOCK"}
                       for i, s, w in (("200", "SOLD", "10.000"), ("201", "SOLD", "4.000"), ("202", "SOLD", "5.000"),
@@ -69,6 +77,8 @@ class Store:
         self.returns, self.return_lines, self.return_payments = [], [], []
         self.cash_movements, self.bank_movements, self.inventory_movements = [], [], []
         self.reviews, self.ledger, self.events, self.audit = [], [], [], []
+        self.lineage = []                 # finalized Exchanges of an invoice (InvoiceReturnRepository.exchange_lineage)
+        self.holds = []                   # old_gold_holds rows sourced from Return lines (033)
 
     def tables(self):
         return copy.deepcopy(vars(self))
@@ -138,6 +148,9 @@ class InvoiceRepo:
     def lock_customer(self, customer_id):
         return self.store.customers.get(str(customer_id))
 
+    def lock_old_gold_balance(self, karat_id):
+        return self.store.old_gold_balance(karat_id)
+
     def insert_event(self, **kwargs):
         self.store.events.append(kwargs)
 
@@ -158,9 +171,27 @@ class ReturnRepo:
             returned = sum((r["weight"] for r in self.store.return_lines if r["source_line_id"] == l["line_id"]),
                            D("0.000"))
             item = self.store.items.get(l["inventory_item_id"] or "")
-            rows.append(dict(l, returned_grams=returned, item_status=None if item is None else item["inventory_status"],
+            basis = sum(((r["historical_line_value"] if r["historical_line_value"] is not None else
+                          (l["line_total"] * r["weight"] / l["weight_grams"]).quantize(D("0.01"), rounding="ROUND_HALF_UP"))
+                         for r in self.store.return_lines if r["source_line_id"] == l["line_id"]), D("0.00"))
+            rows.append(dict(l, returned_grams=returned, returned_basis=basis,
+                             item_status=None if item is None else item["inventory_status"],
                              stored_barcode=l["barcode_snapshot"]))
         return rows
+
+    def exchange_lineage(self, invoice_id):
+        out = []
+        for exchange in copy.deepcopy(self.store.lineage):
+            if exchange["invoice_id"] != str(invoice_id):
+                continue
+            for l in exchange["lines"]:
+                item = self.store.items.get(l.get("inventory_item_id") or "")
+                l["item_status"] = None if item is None else item["inventory_status"]
+                l["returned_by_line"] = next((r["line_id"] for r in self.store.return_lines
+                                              if r.get("lifecycle_line_id") == l["lifecycle_line_id"]), None)
+                l.setdefault("stored_barcode", l.get("barcode_snapshot"))
+            out.append(exchange)
+        return out
 
     def lock_items(self, ids):
         return {i: dict(self.store.items[i]) for i in ids if i in self.store.items}
@@ -198,7 +229,12 @@ class ReturnRepo:
         assert row["requires_approval"] == (not row["making_window_open"])
         assert row["making_refund"] == 0 or row["making_window_open"]
         assert row["return_status"] not in ("PENDING_APPROVAL", "APPROVED", "REJECTED") or row["requires_approval"]
-        assert row["total_amount"] == row["gold_amount"] + row["making_refund"]
+        # 033 chk_return_amounts_v2: total = refund basis + the one EGP-5 rounding.
+        assert row["valuation_mode"] in ("HISTORICAL", "CURRENT_BUY")
+        assert row["valuation_mode"] == "HISTORICAL" or row["refund_basis"] == row["gold_amount"] + row["making_refund"]
+        assert -5 < row["rounding_adjustment"] < 5
+        assert row["total_amount"] == row["refund_basis"] + row["rounding_adjustment"]
+        assert row["rounding_adjustment"] == 0 or row["total_amount"] % 5 == 0
         if row["return_status"] == "FINALIZED":
             assert row["total_amount"] > 0 and row["money_paid"] + row["account_amount"] == row["total_amount"]
         else:
@@ -206,14 +242,16 @@ class ReturnRepo:
 
     def insert_header(self, *, status, source_invoice_id, source_finalized_at, customer_id, selection, selection_hash,
                       making_window_open, requires_approval, deadline_at, gold_amount, making_refund, notes,
-                      created_by_user_id, created_by_employee_id, created_at, details=None):
+                      created_by_user_id, created_by_employee_id, created_at, valuation, details=None):
         row = {"return_id": str(len(self.store.returns) + 1), "return_status": status,
                "source_invoice_id": str(source_invoice_id), "source_invoice_number": "x",
                "source_finalized_at": source_finalized_at, "customer_id": customer_id,
                "selection_json": copy.deepcopy(selection), "selection_hash": selection_hash,
                "making_window_open": making_window_open, "requires_approval": requires_approval,
                "return_deadline_at": deadline_at, "gold_amount": gold_amount, "making_refund": making_refund,
-               "total_amount": gold_amount + making_refund, "money_paid": D("0.00"), "account_amount": D("0.00"),
+               "valuation_mode": valuation["mode"], "refund_basis": valuation["basis"],
+               "rounding_adjustment": valuation["rounding"], "total_amount": valuation["total"],
+               "money_paid": D("0.00"), "account_amount": D("0.00"),
                "price_snapshot_json": None, "notes": notes, "created_by_name": "موظف", "created_at": created_at,
                "finalized_at": None, "finalized_by_name": None, "canceled_at": None, "canceled_by_name": None}
         self._check(row)
@@ -221,13 +259,14 @@ class ReturnRepo:
         return row["return_id"]
 
     def update_selection(self, *, return_id, status, selection, selection_hash, making_window_open, gold_amount,
-                         making_refund, notes):
+                         making_refund, notes, valuation):
         row = self._header(return_id)
         assert row["return_status"] in ("DRAFT", "PENDING_APPROVAL", "APPROVED", "REJECTED")
         row.update(return_status=status, selection_json=copy.deepcopy(selection), selection_hash=selection_hash,
                    making_window_open=making_window_open, requires_approval=not making_window_open,
-                   gold_amount=gold_amount, making_refund=making_refund, total_amount=gold_amount + making_refund,
-                   notes=notes)
+                   gold_amount=gold_amount, making_refund=making_refund, valuation_mode=valuation["mode"],
+                   refund_basis=valuation["basis"], rounding_adjustment=valuation["rounding"],
+                   total_amount=valuation["total"], notes=notes)
         self._check(row)
 
     def set_status(self, *, return_id, from_statuses, to_status):
@@ -246,12 +285,14 @@ class ReturnRepo:
         return True
 
     def finalize_header(self, *, return_id, making_window_open, gold_amount, making_refund, money_paid, account_amount,
-                        price_snapshot, details, notes, finalized_by_user_id, finalized_at):
+                        price_snapshot, details, notes, finalized_by_user_id, finalized_at, valuation):
         row = self._header(return_id)
         assert row["return_status"] in ("DRAFT", "APPROVED")
         row.update(return_status="FINALIZED", making_window_open=making_window_open,
                    requires_approval=not making_window_open, gold_amount=gold_amount, making_refund=making_refund,
-                   total_amount=gold_amount + making_refund, money_paid=money_paid, account_amount=account_amount,
+                   valuation_mode=valuation["mode"], refund_basis=valuation["basis"],
+                   rounding_adjustment=valuation["rounding"], total_amount=valuation["total"],
+                   money_paid=money_paid, account_amount=account_amount,
                    price_snapshot_json=price_snapshot, notes=notes, finalized_at=finalized_at,
                    finalized_by_name="موظف")
         self._check(row)
@@ -260,12 +301,20 @@ class ReturnRepo:
         # 022: an identified piece is whole and once; F7 has its own movement; grams never above the sold weight.
         if inventory_item_id:
             assert line.line_type == "SELL_INVENTORY" and old_gold_movement_id is None and line.weight == line.source_weight
-            if any(r["source_line_id"] == line.source_line_id for r in self.store.return_lines):
+            if line.invoice_line_id and any(r["source_line_id"] == line.source_line_id for r in self.store.return_lines):
                 raise RuntimeError("Duplicate entry for key uq_return_identified_source_line")
         else:
             assert line.line_type == "SELL_OLD_GOLD" and old_gold_movement_id is not None
         assert D("0") < line.weight <= line.source_weight
         assert line.making_refund == 0 or line.historical_making is not None
+        # 033: exactly one source; HISTORICAL needs its value, CURRENT_BUY its SHOP_BUY price.
+        assert (line.invoice_line_id is None) != (line.lifecycle_line_id is None)
+        assert line.lifecycle_line_id is None or (line.line_type == "SELL_INVENTORY" and inventory_item_id)
+        assert ((line.valuation_mode == "HISTORICAL" and line.historical_value is not None and line.historical_value >= 0)
+                or (line.valuation_mode == "CURRENT_BUY" and line.price_per_gram > 0))
+        if line.lifecycle_line_id and any(r.get("lifecycle_line_id") == line.lifecycle_line_id
+                                          for r in self.store.return_lines):
+            raise RuntimeError("Duplicate entry for key uq_return_active_identified_lifecycle_line")
         taken = sum((r["weight"] for r in self.store.return_lines if r["source_line_id"] == line.source_line_id), D("0"))
         assert taken + line.weight <= line.source_weight
         row = {"line_id": str(100 + len(self.store.return_lines) + 1), "return_id": str(return_id),
@@ -275,7 +324,9 @@ class ReturnRepo:
                "source_weight_grams": line.source_weight, "shop_buy_price_per_gram": line.price_per_gram,
                "price_provider_timestamp": line.provider_timestamp, "gold_amount": line.gold_amount,
                "making_refund": line.making_refund, "item_name_snapshot": line.item_name,
-               "barcode_snapshot": line.barcode, "stored_barcode": line.barcode, "quote_id": line.quote_id}
+               "barcode_snapshot": line.barcode, "stored_barcode": line.barcode, "quote_id": line.quote_id,
+               "lifecycle_line_id": line.lifecycle_line_id, "valuation_mode": line.valuation_mode,
+               "historical_line_value": line.historical_value}
         self.store.return_lines.append(row)
         return row["line_id"]
 
@@ -298,6 +349,32 @@ class ReturnRepo:
         self.store.bank_movements.append({"account": bank_account_id, "delta": -amount, "ref": return_id})
         return str(len(self.store.bank_movements))
 
+    def mark_item_returned_to_scrap(self, *, inventory_item_id, updated_by_user_id):
+        self._maybe_fail("mark_item_returned_to_scrap")
+        row = self.store.items[str(inventory_item_id)]
+        if row["inventory_status"] != "SOLD":
+            raise RuntimeError("no longer sold")
+        row["inventory_status"] = "CONVERTED_TO_OLD_GOLD"
+
+    def add_return_scrap_in(self, *, karat_id, weight_grams, inventory_item_id, return_id, invoice_id, **kwargs):
+        self._maybe_fail("add_return_scrap_in")
+        assert weight_grams > 0
+        self.store.old_gold_movements.append({"code": "RETURN_SCRAP_IN", "karat_id": karat_id, "delta": weight_grams,
+                                              "ref": return_id, "item": inventory_item_id, "invoice": invoice_id})
+        return str(len(self.store.old_gold_movements))
+
+    def insert_scrap_hold(self, *, review_id, return_line_id, inventory_item_id, karat_id, weight_grams,
+                          in_movement_id, created_by_user_id):
+        self._maybe_fail("insert_scrap_hold")
+        for key, value in (("review", review_id), ("return_line", return_line_id), ("in", in_movement_id)):
+            if any(h[key] == str(value) for h in self.store.holds):
+                raise RuntimeError(f"Duplicate entry for old_gold_holds.{key}")
+        self.store.holds.append({"hold_id": str(len(self.store.holds) + 1), "review": str(review_id),
+                                 "return_line": str(return_line_id), "item": str(inventory_item_id),
+                                 "karat_id": int(karat_id), "weight": weight_grams, "in": str(in_movement_id),
+                                 "status": "HELD"})
+        return str(len(self.store.holds))
+
     def mark_item_returned_pending(self, *, inventory_item_id, updated_by_user_id):
         self._maybe_fail("mark_item_returned_pending")
         row = self.store.items[str(inventory_item_id)]
@@ -305,9 +382,9 @@ class ReturnRepo:
             raise RuntimeError("no longer sold")
         row["inventory_status"] = "RETURNED_PENDING"
 
-    def add_inventory_return_movement(self, *, item, return_id, **kwargs):
+    def add_inventory_return_movement(self, *, item, return_id, to_status="CONVERTED_TO_OLD_GOLD", **kwargs):
         self._maybe_fail("add_inventory_return_movement")
-        self.store.inventory_movements.append((item["inventory_item_id"], "INVOICE_RETURN_IN", "SOLD", "RETURNED_PENDING"))
+        self.store.inventory_movements.append((item["inventory_item_id"], "INVOICE_RETURN_IN", "SOLD", to_status))
 
     def add_old_gold_in(self, *, karat_id, weight_grams, return_id, **kwargs):
         self._maybe_fail("add_old_gold_in")
@@ -471,13 +548,14 @@ class TimeBoundaryTests(ReturnTestCase):
                 preview = self.service.preview(self.draft())
                 self.assertEqual(preview["making_window_open"], window)
                 self.assertEqual(preview["requires_approval"], not window)
-                self.assertEqual(preview["making_refund"], "1500.00" if window else "0.00")
+                self.assertEqual((preview["valuation_mode"], preview["total_amount"]),
+                                 ("HISTORICAL", "64000.00") if window else ("CURRENT_BUY", "62500.00"))
                 self.assertEqual("APPROVAL_REQUIRED" in [p["code"] for p in preview["blocking_problems"]], not window)
 
     def test_exactly_72_hours_finalizes_without_approval(self):
         self.at(hours=72)
         result = self.finalize(self.full_cash())
-        self.assertEqual((result["making_refund"], result["total_amount"]), ("1500.00", "64000.00"))
+        self.assertEqual((result["valuation_mode"], result["total_amount"]), ("HISTORICAL", "64000.00"))
 
     def test_deadline_is_the_end_of_the_15th_calendar_day(self):
         window = eligibility(T0, T0.date(), datetime(2026, 9, 15, 23, 59, 59))
@@ -515,55 +593,83 @@ class TimeBoundaryTests(ReturnTestCase):
 
 # ----------------------------------------------------------------------------- 57. valuation
 class ValuationTests(ReturnTestCase):
-    def test_identified_piece_current_shop_buy_times_exact_weight_plus_making(self):
+    """Owner rule (2026-10-03): inside the full-refund window the customer gets back what they paid for the
+    returned portion (never today's gold price); after it, grams × current SHOP_BUY without making. The EGP-5
+    rounding applies ONCE to the final total."""
+
+    def test_inside_the_window_the_historical_value_is_refunded_not_todays_price(self):
         p = self.service.preview(self.draft())
-        self.assertEqual((p["gold_amount"], p["making_refund"], p["total_amount"]), ("62500.00", "1500.00", "64000.00"))
-        self.assertEqual(p["lines"][0]["shop_buy_price_per_gram"], "6250.0000")   # never SHOP_SELL 6400
+        self.assertEqual((p["valuation_mode"], p["refund_basis"], p["rounding_adjustment"], p["total_amount"]),
+                         ("HISTORICAL", "64000.00", "0.00", "64000.00"))
+        self.assertEqual((p["lines"][0]["historical_value"], p["lines"][0]["shop_buy_price_per_gram"]),
+                         ("64000.00", None))                             # no current SHOP_BUY involved
 
-    def test_multi_karat_each_line_its_own_quote(self):
-        p = self.service.preview(self.draft((("1", None), ("2", None))))
-        self.assertEqual([l["gold_amount"] for l in p["lines"]], ["62500.00", "20000.00"])      # 21K 6250, 18K 5000
-        self.assertEqual(p["total_amount"], str(D("62500.00") + D("20000.00") + D("1500.00") + D("400.00")))
-
-    def test_partial_f7_gold_and_proportional_making(self):
-        p = self.service.preview(self.draft((("3", "3.5"),)))
-        self.assertEqual((p["gold_amount"], p["making_refund"]), ("21875.00", "350.00"))
-
-    def test_after_72_hours_making_is_zero(self):
+    def test_after_the_window_current_shop_buy_and_no_making(self):
         self.at(hours=80)
         p = self.service.preview(self.draft((("3", "3.5"),)))
-        self.assertEqual((p["gold_amount"], p["making_refund"], p["total_amount"]), ("21875.00", "0.00", "21875.00"))
+        self.assertEqual((p["valuation_mode"], p["gold_amount"], p["making_refund"], p["total_amount"]),
+                         ("CURRENT_BUY", "21875.00", "0.00", "21875.00"))
+        self.assertEqual(p["lines"][0]["shop_buy_price_per_gram"], "6250.0000")   # never SHOP_SELL 6400
 
-    def test_missing_historical_making_inside_72_hours_is_refused(self):
-        with self.assertRaises(ReturnError) as refused:
-            self.service.preview(self.draft((("6", None),)))
-        self.assertEqual(refused.exception.code, "HISTORICAL_MAKING_UNAVAILABLE")
-        self.at(hours=100)                                       # after the window it is gold only
-        self.assertEqual(self.service.preview(self.draft((("6", None),)))["total_amount"], "31250.00")
+    def test_multi_line_sum_of_historical_values_rounded_once(self):
+        # line 1 64,000.00 + line 2 (4 g 18K, making 400) 4 × 5,260 + 400 = 21,440.00
+        p = self.service.preview(self.draft((("1", None), ("2", None))))
+        self.assertEqual([l["historical_value"] for l in p["lines"]], ["64000.00", "21440.00"])
+        self.assertEqual((p["refund_basis"], p["total_amount"]), ("85440.00", "85440.00"))
 
-    def test_quote_snapshot_is_persisted_per_line(self):
-        self.finalize(self.full_cash((("1", None), ("2", None))))
+    def test_egp5_rounding_once_on_the_final_total(self):
+        self.store.lines["500"][0]["line_total"] = D("22912.50")
+        p = self.service.preview(self.draft())
+        self.assertEqual((p["refund_basis"], p["rounding_adjustment"], p["total_amount"]),
+                         ("22912.50", "2.50", "22915.00"))
+        self.finalize(self.draft(payments=(cash("22915.00"),)))
+        header, line = self.store.returns[0], self.store.return_lines[0]
+        self.assertEqual((header["refund_basis"], header["rounding_adjustment"], header["total_amount"],
+                          header["money_paid"]), (D("22912.50"), D("2.50"), D("22915.00"), D("22915.00")))
+        self.assertEqual((line["valuation_mode"], line["historical_line_value"]), ("HISTORICAL", D("22912.50")))
+
+    def test_partial_f7_is_its_proportional_share(self):
+        p = self.service.preview(self.draft((("3", "3.5"),)))
+        self.assertEqual((p["refund_basis"], p["total_amount"]), ("22225.00", "22225.00"))   # 63,500 × 3.5 / 10
+
+    def test_partial_f7_refunds_add_up_to_the_line_total_exactly(self):
+        self.store.lines["500"][2]["line_total"] = D("100.00")
+        bases = []
+        for weight in ("3.333", "3.333", "3.334"):
+            bases.append(D(self.service.preview(self.draft((("3", weight),)))["refund_basis"]))
+            self.finalize(self.full_cash((("3", weight),)))
+        self.assertEqual(bases, [D("33.33"), D("33.33"), D("33.34")])            # the last takes the remainder
+        self.assertEqual(sum((l["historical_line_value"] for l in self.store.return_lines), D("0")), D("100.00"))
+
+    def test_quote_snapshot_after_the_window(self):
+        self.at(hours=80)
+        request = self.service.request_approval(self.draft((("1", None), ("2", None))))
+        self.manager.decide_approval(self.store.reviews[-1]["review_id"], True)
+        self.finalize(self.draft((("1", None), ("2", None)), payments=(cash("82500.00"),),
+                                 return_id=request["return_id"]))
         header, lines = self.store.returns[0], self.store.return_lines
         self.assertEqual([(l["karat_value"], l["shop_buy_price_per_gram"], l["quote_id"]) for l in lines],
                          [(21, D("6250.0000"), 51), (18, D("5000.0000"), 52)])
-        self.assertTrue(all(l["price_provider_timestamp"] is not None for l in lines))
-        self.assertEqual({p["karat"]: p["shop_buy"] for p in header["price_snapshot_json"]["prices"]},
-                         {21: D("6250.0000"), 18: D("5000.0000")})
         self.assertEqual(header["price_snapshot_json"]["basis"], "SHOP_BUY")
 
-    def test_partial_making_parts_add_up_exactly(self):
-        self.store.lines["500"][2]["making_total"] = D("100.00")
-        for weight in ("3.333", "3.333", "3.334"):
-            self.finalize(self.full_cash((("3", weight),)))
-        self.assertEqual(sum((l["making_refund"] for l in self.store.return_lines), D("0")), D("100.00"))
+    def test_missing_historical_value_inside_the_window_is_refused(self):
+        self.store.lines["500"][0]["line_total"] = None
+        with self.assertRaises(ReturnError) as refused:
+            self.service.preview(self.draft())
+        self.assertEqual(refused.exception.code, "HISTORICAL_VALUE_UNAVAILABLE")
 
 
 # ----------------------------------------------------------------------------- 58. lifecycle
 class LifecycleTests(ReturnTestCase):
     def test_identified_return_moves_to_returned_pending_with_one_inspection(self):
         result = self.finalize(self.full_cash())
-        self.assertEqual(self.store.items["200"]["inventory_status"], "RETURNED_PENDING")
-        self.assertEqual(self.store.inventory_movements, [("200", "INVOICE_RETURN_IN", "SOLD", "RETURNED_PENDING")])
+        # 033: the piece enters Scrap at once (its exact weight HELD for the manager) — never RETURNED_PENDING.
+        self.assertEqual(self.store.items["200"]["inventory_status"], "CONVERTED_TO_OLD_GOLD")
+        self.assertEqual(self.store.inventory_movements, [("200", "INVOICE_RETURN_IN", "SOLD", "CONVERTED_TO_OLD_GOLD")])
+        scrap = [m for m in self.store.old_gold_movements if m["code"] == "RETURN_SCRAP_IN"]
+        self.assertEqual([(m["karat_id"], m["delta"], m["item"]) for m in scrap], [(1, D("10.000"), "200")])
+        self.assertEqual([(h["item"], h["weight"], h["status"]) for h in self.store.holds],
+                         [("200", D("10.000"), "HELD")])
         inspections = [r for r in self.store.reviews if r["type"] == "RETURNED_ITEM_INSPECTION"]
         self.assertEqual(len(inspections), 1)
         self.assertEqual((inspections[0]["details"]["source"], inspections[0]["details"]["stored_barcode"],
@@ -630,7 +736,8 @@ class MixedInvoiceTests(ReturnTestCase):
         invoice, lines = copy.deepcopy(self.store.invoices), copy.deepcopy(self.store.lines)
         result = self.finalize(self.full_cash())
         self.assertEqual(result["total_amount"], "64000.00")
-        self.assertEqual(self.store.old_gold_movements, before)                  # no reversal, no recalculation
+        # The customer's old gold is untouched (only the returned piece's own Scrap entry is new).
+        self.assertEqual([m for m in self.store.old_gold_movements if m["code"] != "RETURN_SCRAP_IN"], before)
         self.assertEqual((self.store.invoices, self.store.lines), (invoice, lines))   # original invoice immutable
 
 
@@ -688,7 +795,8 @@ class ApprovalTests(ReturnTestCase):
 
     def test_within_72_hours_needs_no_approval(self):
         self.at(hours=5)
-        self.assertEqual(self.finalize(self.full_cash())["making_refund"], "1500.00")
+        result = self.finalize(self.full_cash())
+        self.assertEqual((result["valuation_mode"], result["total_amount"]), ("HISTORICAL", "64000.00"))
         self.assertRefused("APPROVAL_NOT_NEEDED", lambda: self.service.request_approval(self.draft((("2", None),))))
 
     def test_employee_blocked_without_approval(self):
@@ -783,8 +891,8 @@ class RollbackTests(ReturnTestCase):
         f7 = self.draft((("3", "2.000"),), payments=(cash("12700.00"),))            # 2 × 6250 + 1000 × 2/10
         for point, d in (("insert_payment", identified), ("add_cash_out", identified), ("add_bank_out", identified),
                          ("customer_ledger", identified), ("add_inventory_return_movement", identified),
-                         ("mark_item_returned_pending", identified), ("open_inspection", identified),
-                         ("add_old_gold_in", f7)):
+                         ("mark_item_returned_to_scrap", identified), ("add_return_scrap_in", identified),
+                         ("open_inspection", identified), ("insert_scrap_hold", identified), ("add_old_gold_in", f7)):
             with self.subTest(point=point):
                 ReturnRepo.fail_on = point
                 before = self.store.tables()
@@ -808,7 +916,7 @@ class PermissionAndOverlapTests(ReturnTestCase):
         """SALESPERSON / CASHIER: INVOICE_RETURN (+ PAYMENT_RECORD), never MANAGEMENT_REVIEW."""
         employee = self.make_service(frozenset({"APP_LOGIN", "INVOICE_RETURN", "PAYMENT_RECORD"}), user=21)
         # 1. <= 72 h: the employee finalizes directly.
-        self.assertEqual(employee.finalize(self.full_cash(), "T1")["making_refund"], "1500.00")
+        self.assertEqual(employee.finalize(self.full_cash(), "T1")["valuation_mode"], "HISTORICAL")
         # 3. > 72 h: blocked until a manager approves; the employee may request it.
         self.at(days=4)
         self.assertRefused("APPROVAL_REQUIRED", lambda: employee.finalize(
@@ -868,7 +976,8 @@ class HistoryTests(ReturnTestCase):
         vm = InvoiceHistoryViewModel.__new__(InvoiceHistoryViewModel)
         vm._detail = {"returns": rows}
         headlines = [r["headline"] for r in InvoiceHistoryViewModel.returns.fget(vm)]
-        self.assertEqual(headlines, ["مرتجع — تم رد الذهب والمصنعية"] * 2)
+        self.assertEqual(headlines, ["استرداد بالقيمة التاريخية"] * 2)
+        rows[0]["valuation_mode"] = "CURRENT_BUY"
         rows[0]["making_window_open"], rows[0]["approval_status"], rows[0]["age_days"] = False, "APPROVED", 3
         self.assertEqual(InvoiceHistoryViewModel.returns.fget(vm)[0]["headline"][:31],
                          "مرتجع بعد 3 أيام — تمت موافقة المدير"[:31])

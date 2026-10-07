@@ -7,6 +7,7 @@ import QtQuick.Layouts
 // CorrectionService and formatted by correctionVM. A reason is mandatory and a confirmation
 // always precedes execution. The original transaction is never edited or deleted.
 Item {
+    signal customerRequested(string customerId)
     id: correctionPage
     objectName: "correctionWorkspace"
 
@@ -106,9 +107,12 @@ Item {
         Btn { objectName: "correctionBack"; text: "رجوع  ⁦Esc⁩"; enabled: !!correctionPage.vm && !correctionPage.vm.saving
               onClicked: correctionPage.vm.close() }
         Txt { objectName: "correctionTitle"; color: theme.red; font.bold: true; font.pixelSize: theme.fontPageTitle
-              value: correctionPage.h.number ? "تصحيح / عكس — " + (correctionPage.h.invoiceId ? "فاتورة " : "تسوية حساب ") + correctionPage.h.number : "تصحيح / عكس" }
-        Txt { visible: !!correctionPage.h.number; value: correctionPage.h.customer ? "العميل: " + correctionPage.h.customer : ""
-              color: theme.textSecondary; font.pixelSize: theme.fontBodyStrong }
+              Layout.fillWidth: true
+              value: correctionPage.h.title || "تصحيح / عكس" }
+        CustomerNameLink { objectName: "correctionCustomerName"; visible: !!correctionPage.h.number
+              text: correctionPage.h.customer ? "العميل: " + correctionPage.h.customer : ""
+              customerId: correctionPage.h.customerId || ""
+              onCustomerRequested: function(customerId) { correctionPage.customerRequested(customerId) } }
         Item { Layout.fillWidth: true }
     }
 
@@ -169,8 +173,12 @@ Item {
                 visible: !!correctionPage.vm && correctionPage.vm.mode === "REVERSAL" && !!correctionPage.rv.title
                 title: "معاينة العكس — " + (correctionPage.rv.title || "")
                 accent: theme.red
-                Txt { Layout.fillWidth: true; value: "العميل: " + (correctionPage.rv.customer || "") + "  •  التاريخ: "
-                      + (correctionPage.rv.date || "") + "  •  إجمالي الفاتورة الأصلي: " + (correctionPage.rv.total || "")
+                CustomerNameLink { objectName: "correctionPreviewCustomerName"; Layout.fillWidth: true
+                    text: "العميل: " + (correctionPage.rv.customer || "")
+                    customerId: correctionPage.rv.customerId || ""
+                    onCustomerRequested: function(customerId) { correctionPage.customerRequested(customerId) } }
+                Txt { Layout.fillWidth: true; value: "التاريخ: " + (correctionPage.rv.date || "")
+                      + "  •  إجمالي الفاتورة الأصلي: " + (correctionPage.rv.total || "")
                       color: theme.textPrimary }
                 Txt { value: "الحركة المالية العكسية"; color: theme.textMuted; font.bold: true }
                 Lines { model: correctionPage.rv.money || []; tone: theme.textPrimary }
@@ -228,7 +236,8 @@ Item {
                             currentIndex: Math.max(0, model.findIndex(function(a) { return a.id === legRow.modelData.bank }))
                             onActivated: correctionPage.vm.setLegAccount(legRow.modelData.key, currentValue)
                         }
-                        Field { objectName: "correctionLegAmount_" + legRow.index; Layout.preferredWidth: 120
+                        Field { objectName: "correctionLegAmount_" + legRow.index; Layout.preferredWidth: 160
+                                leftPadding: 8; rightPadding: 8          // room for 120,000.00 without a smaller font
                                 enabled: correctionPage.editable; text: legRow.modelData.amount
                                 validator: RegularExpressionValidator { regularExpression: /^[0-9]{0,9}([.][0-9]{0,2})?$/ }
                                 onTextEdited: correctionPage.vm.setLegAmount(legRow.modelData.key, text) }
@@ -243,7 +252,8 @@ Item {
                     Btn { objectName: "correctionAddLeg"; text: "إضافة طريقة دفع"; enabled: correctionPage.editable
                           onClicked: correctionPage.vm.addLeg() }
                     Txt { visible: !!correctionPage.st.hasCustomer; value: "حساب العميل"; color: theme.textMuted }
-                    Field { objectName: "correctionAccountAmount"; Layout.preferredWidth: 110; visible: !!correctionPage.st.hasCustomer
+                    Field { objectName: "correctionAccountAmount"; Layout.preferredWidth: 150; visible: !!correctionPage.st.hasCustomer
+                            leftPadding: 8; rightPadding: 8
                             enabled: correctionPage.editable; text: correctionPage.vm ? correctionPage.vm.accountAmount : ""
                             placeholderText: activeFocus || text.length ? "" : "0.00"
                             validator: RegularExpressionValidator { regularExpression: /^[0-9]{0,9}([.][0-9]{0,2})?$/ }
@@ -280,6 +290,7 @@ Item {
                 Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
                 Txt { value: "سبب التصحيح (إلزامي)"; color: theme.red; font.bold: true }
                 Field { objectName: "correctionReason"; Layout.fillWidth: true; enabled: correctionPage.editable
+                        text: correctionPage.vm ? correctionPage.vm.reason : ""
                         placeholderText: activeFocus || text.length ? "" : "مثال: تم تسجيل الفاتورة بالخطأ"
                         onTextEdited: correctionPage.vm.setReason(text) }
             }
@@ -293,9 +304,10 @@ Item {
                 Item { Layout.fillWidth: true }
                 Txt { objectName: "correctionMessage"; Layout.maximumWidth: correctionPage.width * 0.7; visible: value.length > 0
                       value: !correctionPage.vm ? "" : correctionPage.vm.done ? correctionPage.vm.doneMessage
-                             : correctionPage.vm.errorMessage || (correctionPage.vm.mode && correctionPage.vm.reasonMissing
-                                                                  ? "اكتب سبب التصحيح" : "")
-                      color: correctionPage.vm && correctionPage.vm.done ? theme.green : theme.red }
+                             : correctionPage.vm.errorMessage || correctionPage.vm.notice
+                               || (correctionPage.vm.mode && correctionPage.vm.reasonMissing ? "اكتب سبب التصحيح" : "")
+                      color: correctionPage.vm && (correctionPage.vm.done || (!correctionPage.vm.errorMessage && correctionPage.vm.notice))
+                             ? theme.green : theme.red }
             }
         }
     }

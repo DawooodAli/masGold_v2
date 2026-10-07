@@ -1,14 +1,47 @@
 from database.transaction import DatabaseTransaction
 from repositories.inventory_repository import InventoryRepository, STOCK_CLASSES
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from services.number_text import normalize_digits
 
 from mysql.connector import IntegrityError
 
 class InventoryService:
+    """Stock reads are open to the logged-in application; EVERY stock write needs INVENTORY_MANAGE through the
+    strict (locking) write path, first thing inside the write's own transaction, and its actor is ALWAYS the
+    authenticated AppSession user — never an identity supplied by the caller or by QML."""
 
-    def __init__(self, transaction_factory=DatabaseTransaction, repository=InventoryRepository):
+    MANAGE_PERMISSION = "INVENTORY_MANAGE"
+
+    def __init__(self, transaction_factory=DatabaseTransaction, repository=InventoryRepository, session=None,
+                 authorization=None):
         self._transaction = transaction_factory
         self._repository = repository
+        self._session = session
+        self._authorization = authorization
+
+    def can_manage(self) -> bool:
+        """UI hint only (buttons); the database check in _authorize_write is authoritative."""
+        actor = self._session.current_actor() if self._session is not None else None
+        return actor is not None and self.MANAGE_PERMISSION in actor.permissions
+
+    def _require_actor(self):
+        if self._session is None:
+            raise PermissionError("يلزم تسجيل الدخول لإدخال المخزون.")
+        actor = self._session.require_authenticated()
+        if self.MANAGE_PERMISSION not in actor.permissions:
+            raise PermissionError("لا توجد صلاحية لإدارة المخزون.")
+        return actor
+
+    def _authorize_write(self, connection, actor):
+        """Strict write-time check (locks the user, employee and grants): a permission revoked in the
+        database refuses the write even while a stale session still lists it."""
+        if self._authorization is None:
+            from services.authorization_service import AuthorizationService
+            self._authorization = AuthorizationService(self._session)
+        verified = self._authorization.require_permission_for_write(connection, actor, self.MANAGE_PERMISSION)
+        if not self._session.is_current(actor):
+            raise PermissionError("انتهت جلسة الدخول.")
+        return verified
     @staticmethod
     def _clean_optional_text(
             value,
@@ -71,7 +104,7 @@ class InventoryService:
                 "Weight is required."
             )
 
-        text = str(value).strip()
+        text = normalize_digits(str(value)).strip()
 
         if not text:
             raise ValueError(
@@ -103,10 +136,23 @@ class InventoryService:
             )
 
         return weight
+    # 21K is the shop base: an operational total converts every karat to 21K grams.
+    BASE_KARAT = Decimal("21")
+
+    @classmethod
+    def equivalent_21(cls, weight_by_karat) -> Decimal:
+        """Σ weight × karat / 21 in exact Decimal, rounded once to 0.001 g at the end.
+        18K 4.500 + 21K 5.000 + 24K 10.000 = 3.857142… + 5 + 11.428571… = 20.286."""
+        total = sum((Decimal(str(weight)) * Decimal(str(karat)) / cls.BASE_KARAT
+                     for karat, weight in weight_by_karat), Decimal("0"))
+        return total.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+
     def get_stock_items(
         self,
         search: str = "",
         limit: int = 500,
+        karat_id=None,
+        item_type_id=None,
     ) -> list[dict]:
 
         search = (search or "").strip()
@@ -132,7 +178,14 @@ class InventoryService:
             return repository.get_stock_items(
                 search=search,
                 limit=limit,
+                karat_id=self._optional_id(karat_id),
+                item_type_id=self._optional_id(item_type_id),
             )
+
+    def find_piece(self, text) -> dict | None:
+        """Exact identity lookup (any status) for traceability: a SOLD piece stays findable."""
+        with self._transaction() as transaction:
+            return self._repository(transaction.connection).find_piece_identity(text)
 
 
     def get_stock_summary(self) -> dict:
@@ -143,7 +196,11 @@ class InventoryService:
                 transaction.connection
             )
 
-            return repository.get_stock_summary()
+            summary = dict(repository.get_stock_summary() or {})
+            by_karat = repository.get_stock_weight_by_karat()
+        summary["equivalent_21_weight_grams"] = self.equivalent_21(
+            (row["karat_value"], row["weight_grams"] or 0) for row in by_karat)
+        return summary
 
     def create_inventory_item(
             self,
@@ -159,6 +216,11 @@ class InventoryService:
             notes=None,
             user_id: int | None = None,
     ) -> int:
+
+        # Authorization first: nothing is validated, read or written for a caller without the right.
+        session_actor = self._require_actor()
+        if user_id is not None and int(user_id) != int(session_actor.user_id):
+            raise PermissionError("لا يمكن تحديد مستخدم آخر لتسجيل القطعة.")      # the actor is the session's
 
         # Manual entry has no "responsible employee" (owner decision). The nullable historical
         # column stays; an id is only stored when a caller explicitly passes one.
@@ -221,6 +283,9 @@ class InventoryService:
         try:
 
             with self._transaction() as transaction:
+
+                # The attributed actor is the verified, locked session user (never the caller's argument).
+                user_id = int(self._authorize_write(transaction.connection, session_actor).user_id)
 
                 repository = self._repository(
                     transaction.connection
@@ -453,8 +518,11 @@ class InventoryService:
             section["weight_grams"] += weight
             total_count += count
             total_weight += weight
-        return {"stock_classification": stock_class, "karats": [k for k in karats if k["piece_count"]],
-                "piece_count": total_count, "weight_grams": total_weight}
+        karats = [k for k in karats if k["piece_count"]]
+        return {"stock_classification": stock_class, "karats": karats,
+                "piece_count": total_count, "weight_grams": total_weight,
+                "equivalent_21_weight_grams": self.equivalent_21((k["karat_value"], k["weight_grams"])
+                                                                for k in karats)}
 
     # ========================================================
     # BARCODE STOCKTAKE — الجرد بالباركود (read only)

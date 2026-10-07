@@ -387,10 +387,12 @@ class CustomerViewModel(QObject):
         self.historyChanged.emit()
         self._publish_errors()
 
-    def _load_profile(self, customer_id):
+    def _load_profile(self, customer_id, navigation=False):
         try:
             result = self._service.get_customer_profile(customer_id)
             customer = self._customer_row(result["customer"])
+            if navigation and customer["customer_id"] != str(customer_id):
+                raise ValueError("تعذر فتح بيانات العميل.")
             flags = [self._flag_row(row) for row in result["active_flags"]]
             transaction_page = result["transactions_page"]
             transactions = [self._transaction_row(row) for row in transaction_page["items"]]
@@ -418,7 +420,11 @@ class CustomerViewModel(QObject):
             self._profile_errors.clear()
             return True
         except Exception as exc:
-            self._clear_profile(str(customer_id))
+            if navigation:
+                self._set_action(self._error_text(exc, "تعذر فتح بيانات العميل.")
+                                 if isinstance(exc, PermissionError) else "تعذر فتح بيانات العميل.", False)
+            else:
+                self._clear_profile(str(customer_id))
             self._profile_errors["profile"] = self._error_text(
                 exc, "تعذر تحميل ملف العميل وحركاته. حاول التحديث مرة أخرى.",
             )
@@ -431,6 +437,14 @@ class CustomerViewModel(QObject):
 
     @Slot()
     def refresh(self):
+        self._refresh(reload_profile=True)
+
+    @Slot()
+    def refreshList(self):
+        """Prepare the Customers page without reloading its already verified deep-linked profile."""
+        self._refresh(reload_profile=False)
+
+    def _refresh(self, reload_profile):
         if self._busy:
             return
         self._set_busy(True)
@@ -438,7 +452,7 @@ class CustomerViewModel(QObject):
             self._load_types()
             self._load_transaction_types()
             self._load_customers(self._page)
-            if self._selected_customer_id:
+            if reload_profile and self._selected_customer_id:
                 self._load_profile(self._selected_customer_id)
         finally:
             self._set_busy(False)
@@ -480,6 +494,32 @@ class CustomerViewModel(QObject):
         try:
             self._clear_profile()
             self._load_customers(page)
+        finally:
+            self._set_busy(False)
+
+    @Slot(str, result=bool)
+    def openCustomerDetails(self, customer_id):
+        """Load the exact profile before navigation; preserve the current selection on failure."""
+        if self._busy:
+            self._set_action("جارٍ تحميل بيانات العميل؛ حاول مرة أخرى.", False)
+            return False
+        try:
+            actor = self._session.require_authenticated() if self._session else None
+            if actor is None or CustomerService.VIEW_PERMISSION not in actor.permissions:
+                raise PermissionError("لا توجد صلاحية لتنفيذ العملية.")
+            customer_id = str(CustomerService._customer_id(customer_id))
+        except PermissionError as exc:
+            self._set_action(self._error_text(exc, "تعذر فتح بيانات العميل."), False)
+            return False
+        except ValueError:
+            self._set_action("تعذر فتح بيانات العميل.", False)
+            return False
+        self._set_busy(True)
+        try:
+            if not self._load_profile(customer_id, navigation=True):
+                return False
+            self._set_action("", False)
+            return True
         finally:
             self._set_busy(False)
 

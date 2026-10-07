@@ -4,21 +4,39 @@ from decimal import Decimal
 from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
 
 from app.formatting import datetime_text, ltr, number
+from app.viewmodels.account_history_viewmodel import AccountHistoryViewModel
 from app.workers.invoice_worker import InvoiceWorker
 
 
 TYPE_TEXT = {"INVENTORY_MATCH": "مراجعة مخزون", "MAKING_PRICE": "مراجعة تسعير / مصنعية",
              "CASH_SETTLEMENT": "مراجعة تسوية نقدية", "OLD_GOLD_DISCOUNT": "تعديل نسبة خصم الكسر",
-             "RETURNED_ITEM_INSPECTION": "فحص قطع مرتجعة", "RETURN_APPROVAL": "موافقة مرتجع"}
+             "RETURNED_ITEM_INSPECTION": "قطع مرتجعة بانتظار قرار المدير", "RETURN_APPROVAL": "موافقة مرتجع"}
 STATUS_TEXT = {"RETURNED_PENDING": "بانتظار الفحص", "IN_STOCK": "في المخزون", "SOLD": "مباعة",
                "CONVERTED_TO_OLD_GOLD": "محولة إلى الكسر"}
 RESOLVED_TEXT = {"RETURN_TO_STOCK": "أعيدت القطعة إلى المخزون بنفس الباركود المسجل: {barcode}",
                  "CONVERT_TO_OLD_GOLD": "تم تحويل القطعة إلى رصيد الكسر (الباركود المسجل {barcode} لم يعد قابلاً للبيع)."}
+# An Exchange piece already in Scrap (032): the decision moves it out of Scrap, or keeps it there.
+HELD_RESOLVED_TEXT = {"RETURN_TO_STOCK": "تمت إعادة القطعة من الكسر إلى المخزون بنفس الباركود: {barcode}",
+                      "CONVERT_TO_OLD_GOLD": "تم تثبيت القطعة داخل الكسر (الباركود {barcode} أصبح تاريخياً)."}
+# The summary / navigation cards at the top of the page: only categories backed by a real review state
+# (a count from ManagementReviewService.counts), plus the financial accounts section. A card FILTERS the
+# page to its category — it never approves or rejects anything. ACCOUNTS has no pending count.
+CARD_ORDER = ("MAKING_PRICE", "RETURNED_ITEM_INSPECTION", "RETURN_APPROVAL", "INVENTORY_MATCH",
+              "CASH_SETTLEMENT", "OLD_GOLD_DISCOUNT")
+CARD_TITLE = {"MAKING_PRICE": "تسعير / مصنعية", "RETURNED_ITEM_INSPECTION": "قطع مرتجعة بانتظار القرار",
+              "RETURN_APPROVAL": "موافقة مرتجع", "INVENTORY_MATCH": "مراجعة مخزون",
+              "CASH_SETTLEMENT": "تسوية نقدية", "OLD_GOLD_DISCOUNT": "خصم الكسر",
+              "ACCOUNTS": "الحسابات المالية"}
 ACCOUNT_TYPE_TEXT = {"CASH": "نقدية", "BANK": "بنك / InstaPay", "MOBILE_WALLET": "محفظة"}
 MAKING_STATUS_TEXT = {"WITHIN_RANGE": "داخل النطاق", "OUT_OF_RANGE": "خارج النطاق",
                       "NOT_CONFIGURED": "غير محدد النطاق"}
 REASON_TEXT = {"NO_BARCODE": "لم يُنشأ لها باركود", "BARCODE_LOST": "الباركود مفقود أو تالف",
                "NOT_FOUND": "لم أجد القطعة في البحث", "OTHER": "سبب آخر"}
+
+
+def _id(value):
+    """An immutable BIGINT id crossing into QML as a decimal string ('' when absent)."""
+    return "" if value in (None, "") else str(value)
 
 
 def _time(value):
@@ -85,6 +103,7 @@ def review_details(code, details):
 class ManagementReviewViewModel(QObject):
     changed = Signal()
     inspectionResolved = Signal()
+    invoiceRequested = Signal(str)          # exact invoice id → the existing Invoice History detail
 
     def __init__(self, session, service=None, parent=None, refresh_ms=60000, balance_service=None):
         super().__init__(parent)
@@ -95,6 +114,9 @@ class ManagementReviewViewModel(QObject):
         self._reviews, self._error, self._accounts = {}, "", []
         self._balance_service = balance_service
         self._resolving, self._inspection_message, self._inspection_error = "", "", ""
+        self._selected_category = ""
+        self._history = AccountHistoryViewModel(session, parent=self)
+        self._history.invoiceRequested.connect(self.invoiceRequested)
         self._timer = QTimer(self)
         self._timer.setInterval(refresh_ms)
         self._timer.timeout.connect(self.refresh)
@@ -222,8 +244,45 @@ class ManagementReviewViewModel(QObject):
     def shutdown(self):
         self._shutdown = True
         self._timer.stop()
+        self._history.shutdown()
         for worker in list(self._workers):
             worker.wait(5000)
+
+    # ---- dashboard cards: navigation / filter only (never an approve / reject gate)
+    @Property("QVariantList", notify=changed)
+    def dashboardCards(self):
+        cards = [{"code": code, "title": CARD_TITLE[code], "count": self._counts.get(code, 0),
+                  "pending": self._counts.get(code, 0) > 0, "selected": self._selected_category == code}
+                 for code in CARD_ORDER]
+        cards.append({"code": "ACCOUNTS", "title": CARD_TITLE["ACCOUNTS"], "count": len(self._accounts),
+                      "pending": False, "selected": self._selected_category == "ACCOUNTS"})
+        return cards
+
+    @Property(str, notify=changed)
+    def selectedCategory(self):
+        return self._selected_category
+
+    @Slot(str)
+    def selectCategory(self, code):
+        """Click a card: show only that category; click it again (or «الكل») to show everything."""
+        valid = code in CARD_TITLE
+        self._selected_category = "" if (not valid or code == self._selected_category) else code
+        self.changed.emit()
+
+    @Slot(str, result=bool)
+    def showsCategory(self, code):
+        return not self._selected_category or self._selected_category == code
+
+    # ---- source deep links (immutable invoice id; the existing Invoice History detail shows the
+    # invoice, its pricing review context and every Exchange / Return / correction of it)
+    @Slot(str)
+    def openSource(self, invoice_id):
+        if str(invoice_id or "").isdigit():
+            self.invoiceRequested.emit(str(invoice_id))
+
+    @Property(QObject, constant=True)
+    def history(self):
+        return self._history
 
     @Property(int, notify=changed)
     def totalCount(self):
@@ -255,14 +314,16 @@ class ManagementReviewViewModel(QObject):
                 r.get("item_type_name") or "", f"عيار {r['karat_value']}" if r.get("karat_value") else "",
                 f"{Decimal(str(weight)):.3f} جرام" if weight is not None else "", r.get("factory_name") or "",
                 f"مقاس {r['observed_size']}" if r.get("observed_size") else "") if v)
-            rows.append({"title": f"فاتورة {r.get('invoice_number') or ''}", "time": _time(r.get("sold_at")),
+            rows.append({"invoiceId": _id(r.get("invoice_id")),
+                         "title": f"فاتورة {r.get('invoice_number') or ''}", "time": _time(r.get("sold_at")),
                          "details": details, "reason": REASON_TEXT.get(r.get("reason_code"), r.get("reason") or ""),
                          "notes": r.get("notes") or "", "salesperson": r.get("salesperson_name") or "",
                          "customer": r.get("customer_name_snapshot") or "بدون عميل"})
         return rows
 
     def _generic(self, code):
-        return [{"title": r.get("summary") or "", "time": _time(r.get("created_at")),
+        return [{"invoiceId": _id(r.get("invoice_id")),
+                 "title": r.get("summary") or "", "time": _time(r.get("created_at")),
                  "by": r.get("created_by_name") or "", "invoice": r.get("invoice_number") or "",
                  "details": review_details(code, r.get("details_json"))}
                 for r in self._reviews.get(code, [])]
@@ -270,11 +331,21 @@ class ManagementReviewViewModel(QObject):
     # ---- returned-item inspection (manager decision; the service re-checks everything)
     @Property("QVariantList", notify=changed)
     def inspections(self):
+        """Returned pieces waiting for inspection outside Scrap (Return V1 / Exchanges before 032)."""
+        return [r for r in self._inspection_rows() if not r["inScrap"]]
+
+    @Property("QVariantList", notify=changed)
+    def scrapPieces(self):
+        """Exchange pieces already in Scrap (032), held for the manager's decision."""
+        return [r for r in self._inspection_rows() if r["inScrap"]]
+
+    def _inspection_rows(self):
         rows = []
         for r in self._reviews.get("RETURNED_ITEM_INSPECTION", []):
             weight = r.get("item_weight_grams") if r.get("item_weight_grams") is not None else r.get("weight_grams")
             barcode = r.get("stored_barcode") or ""
             rows.append({
+                "invoiceId": _id(r.get("invoice_id")),
                 "reviewId": str(r["review_id"]), "exchange": r.get("exchange_code") or "",
                 # «استبدال EX000014» or «مرتجع RT000001»: the real source of the returned piece.
                 "sourceTitle": r.get("source_label") or ("استبدال " + (r.get("exchange_code") or "")),
@@ -287,7 +358,19 @@ class ManagementReviewViewModel(QObject):
                 "barcode": barcode, "barcodeText": f"الباركود المسجل: {barcode or 'غير مسجل'}",
                 "status": r.get("inventory_status") or "",
                 "statusText": STATUS_TEXT.get(r.get("inventory_status"), r.get("inventory_status") or ""),
-                "busy": self._resolving == str(r["review_id"])})
+                "busy": self._resolving == str(r["review_id"]),
+                # 032: an Exchange piece already in Scrap (held for this decision).
+                "inScrap": bool(r.get("hold_id")), "itemId": str(r.get("inventory_item_id") or ""),
+                "isReturn": r.get("source") == "RETURN",
+                "scrapDestination": r.get("scrap_destination") or "",
+                "scrapState": r.get("scrap_state_text") or "",
+                "scrapEnteredAt": _time(r.get("scrap_entered_at")) if r.get("scrap_entered_at") else "",
+                "karatPhysical": _num(r.get("karat_physical_grams"), 3),
+                "karatAvailable": _num(r.get("karat_available_grams"), 3),
+                "karatHeld": _num(r.get("karat_held_grams"), 3),
+                "sourceLine": str(r.get("source_invoice_line_id") or ""),
+                "timeline": [{"title": e["title"], "detail": e.get("detail") or "", "by": e.get("by") or "",
+                              "at": _time(e["at"]) if e.get("at") else ""} for e in r.get("timeline", [])]})
         return rows
 
     # ---- مرتجع بعد 72 ساعة: موافقة / رفض of the exact selected goods (no reason required)
@@ -298,7 +381,8 @@ class ManagementReviewViewModel(QObject):
             d = r.get("details_json") or {}
             lines = " • ".join(f"{l.get('item_name') or 'من الكسر'} عيار {l.get('karat')} — "
                                f"{Decimal(str(l.get('weight_grams'))):.3f} جرام" for l in d.get("lines", []))
-            rows.append({"reviewId": str(r["review_id"]), "code": d.get("return_code") or "",
+            rows.append({"invoiceId": _id(r.get("invoice_id")),
+                         "reviewId": str(r["review_id"]), "code": d.get("return_code") or "",
                          "invoice": r.get("invoice_number") or "", "customer": r.get("customer_name_snapshot") or "بدون عميل",
                          "invoiceDate": _time(r.get("source_finalized_at")),
                          "age": _age_text(d.get("age_days")),
@@ -350,6 +434,30 @@ class ManagementReviewViewModel(QObject):
         self._start("resolve", lambda _expected_actor: call(str(review_id), _expected_actor=_expected_actor))
         self.changed.emit()
 
+    def _barcodes(self):
+        if getattr(self, "_barcode_service", None) is None:
+            from services.barcode_print_service import BarcodePrintService
+            self._barcode_service = BarcodePrintService()
+        return self._barcode_service
+
+    @Slot(str)
+    def reprintBarcode(self, item_id):
+        """إعادة طباعة الباركود: the SAME stored barcode of this piece (never a new one)."""
+        if not item_id or "reprint" in self._busy:
+            return
+        barcodes = self._barcodes()
+        self._inspection_message, self._inspection_error = "", ""
+        self._start("reprint", lambda _expected_actor: barcodes.reprint_item_barcode(item_id))
+        self.changed.emit()
+
+    def _on_reprint(self, result, error):
+        if error:
+            self._inspection_message, self._inspection_error = "", f"تعذرت إعادة طباعة الباركود: {error}"
+        else:
+            self._inspection_error = ""
+            self._inspection_message = (f"تمت إعادة طباعة الباركود {result['barcode_value']} "
+                                        f"للقطعة #{result['inventory_item_id']}.")
+
     @Slot(str)
     def returnToStock(self, review_id):
         self._resolve(review_id, "RETURN_TO_STOCK")
@@ -364,7 +472,8 @@ class ManagementReviewViewModel(QObject):
             self._inspection_message, self._inspection_error = "", error
         else:
             self._inspection_error = ""
-            self._inspection_message = RESOLVED_TEXT[result["resolution"]].format(
+            self._inspection_message = (HELD_RESOLVED_TEXT if result.get("hold_status") else RESOLVED_TEXT)[
+                result["resolution"]].format(
                 barcode=result.get("stored_barcode") or "—")
             self.inspectionResolved.emit()
         self.openReviews()
@@ -402,6 +511,7 @@ class ManagementReviewViewModel(QObject):
                                 f"{' — ' + m['reference_code'] if m.get('reference_code') else ''}"
                                 for m in a.get("recent", []))
             rows.append({"accountId": str(a["account_id"]), "ledger": a["ledger"],
+                         "accountKey": f"{a['ledger']}:{int(a['account_id'])}",
                          "active": bool(a.get("is_active", 1)),
                          "canInitialize": bool(a.get("can_initialize")), "canManage": bool(a.get("can_manage")),
                          "title": f"{a['name']} — {ACCOUNT_TYPE_TEXT.get(a['account_type'], a['account_type'])}"
