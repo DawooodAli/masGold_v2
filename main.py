@@ -315,6 +315,22 @@ class ApplicationController(QObject):
             # Settings → المستخدمون والصلاحيات (USERS_MANAGE, re-checked by the service on every call).
             from app.viewmodels.user_admin_viewmodel import UserAdminViewModel
             self.operational_viewmodels.setdefault("userAdminVM", UserAdminViewModel(self.session))
+            # Purchasing & Suppliers V1: each right (view / manage / edit / post / intake) is re-checked by its
+            # service inside the transaction; the view models only format and expose UI hints.
+            from app.viewmodels.supplier_viewmodel import SupplierViewModel
+            from app.viewmodels.supplier_purchase_viewmodel import SupplierPurchaseViewModel
+            suppliers = self.operational_viewmodels.setdefault("supplierVM", SupplierViewModel(self.session))
+            purchases = self.operational_viewmodels.setdefault("supplierPurchaseVM",
+                                                              SupplierPurchaseViewModel(self.session))
+            if hasattr(purchases, "invoicePosted") and hasattr(suppliers, "refresh"):
+                purchases.invoicePosted.connect(suppliers.refresh)      # the supplier ledgers just changed
+            if hasattr(purchases, "stockChanged"):
+                # A supplier-intake piece is a real new inventory item (+ barcode): stock views reload.
+                inventory_vm = self.operational_viewmodels.get("inventoryVM")
+                if hasattr(inventory_vm, "refresh"):
+                    purchases.stockChanged.connect(inventory_vm.refresh)
+                if hasattr(stock_balance, "refresh"):
+                    purchases.stockChanged.connect(lambda *_: stock_balance.loaded and stock_balance.refresh())
             if hasattr(invoice_vm, "attach_price_source"):
                 invoice_vm.attach_price_source(self.gold_prices)
             # Barcode fields map physical scan codes (independent of the Windows keyboard layout).

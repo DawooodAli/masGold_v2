@@ -489,6 +489,7 @@ class InventoryRepository(BaseRepository):
             notes: str | None,
             entered_by_employee_id: int | None,
             created_by_user_id: int | None = None,
+            acquisition_making_per_gram=None,
     ) -> int:
 
         cursor = self.connection.cursor()
@@ -509,7 +510,8 @@ class InventoryRepository(BaseRepository):
                     notes,
                     created_by_user_id,
                     entered_by_employee_id,
-                    updated_by_user_id
+                    updated_by_user_id,
+                    acquisition_making_per_gram
                 )
                 VALUES (
                     %s,
@@ -520,6 +522,7 @@ class InventoryRepository(BaseRepository):
                     %s,
                     %s,
                     'IN_STOCK',
+                    %s,
                     %s,
                     %s,
                     %s,
@@ -540,6 +543,7 @@ class InventoryRepository(BaseRepository):
                     created_by_user_id,
                     entered_by_employee_id,
                     created_by_user_id,
+                    acquisition_making_per_gram,
                 ),
             )
 

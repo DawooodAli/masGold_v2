@@ -202,6 +202,194 @@ class InventoryService:
             (row["karat_value"], row["weight_grams"] or 0) for row in by_karat)
         return summary
 
+    def _create_item(self, connection, *, user_id, employee_id, item_type_id, karat_id, category_id, factory_id,
+                     weight, size, stock_classification, barcode, notes, acquisition_source="MANUAL_ENTRY",
+                     acquisition_making_per_gram=None) -> int:
+        """The canonical stock entry on the CALLER's transaction: validated master data, the inventory row, its
+        optional initial barcode and the ITEM_CREATED movement. Authorization is the caller's job."""
+        extra = {}
+        if acquisition_making_per_gram is not None:
+            extra["acquisition_making_per_gram"] = acquisition_making_per_gram
+        repository = self._repository(connection)
+
+        # ----------------------------------------------
+        # Employee
+        # ----------------------------------------------
+
+        if employee_id is not None and (
+            repository
+            .get_active_employee_by_id(
+                employee_id
+            )
+        ) is None:
+            raise ValueError(
+                "Employee is not active or does not exist."
+            )
+
+        # ----------------------------------------------
+        # Item type
+        # ----------------------------------------------
+
+        item_type = (
+            repository
+            .get_active_item_type_by_id(
+                item_type_id
+            )
+        )
+
+        if item_type is None:
+            raise ValueError(
+                "Item type is not active or does not exist."
+            )
+        # Use the item's default category when
+        # the caller did not explicitly select one.
+        if category_id is None:
+
+            default_category_id = (
+                item_type.get(
+                    "default_category_id"
+                )
+            )
+
+            if default_category_id is not None:
+                category_id = int(
+                    default_category_id
+                )
+        # ----------------------------------------------
+        # Karat
+        # ----------------------------------------------
+
+        karat = (
+            repository
+            .get_active_karat_by_id(
+                karat_id
+            )
+        )
+
+        if karat is None:
+            raise ValueError(
+                "Karat is not active or does not exist."
+            )
+
+        # ----------------------------------------------
+        # Category
+        # ----------------------------------------------
+
+        if category_id is not None:
+
+            category = (
+                repository
+                .get_active_category_by_id(
+                    category_id
+                )
+            )
+
+            if category is None:
+                raise ValueError(
+                    "Category is not active or does not exist."
+                )
+
+        # ----------------------------------------------
+        # Factory
+        # ----------------------------------------------
+
+        if factory_id is not None:
+
+            factory = (
+                repository
+                .get_active_factory_by_id(
+                    factory_id
+                )
+            )
+
+            if factory is None:
+                raise ValueError(
+                    "Factory is not active or does not exist."
+                )
+
+        # ----------------------------------------------
+        # Movement type
+        # ----------------------------------------------
+
+        movement_type_id = (
+            repository
+            .get_inventory_movement_type_id(
+                "ITEM_CREATED"
+            )
+        )
+
+        if movement_type_id is None:
+            raise RuntimeError(
+                "ITEM_CREATED movement type is not configured."
+            )
+
+        # ----------------------------------------------
+        # 1. Physical inventory item
+        # ----------------------------------------------
+
+        inventory_item_id = (
+            repository.create_inventory_item(
+                item_type_id=item_type_id,
+                karat_id=karat_id,
+                category_id=category_id,
+                factory_id=factory_id,
+                weight_grams=weight,
+                size=size,
+                stock_classification=(
+                    stock_classification
+                ),
+
+                # MANUAL_ENTRY for the manual stock screen; supplier
+                # intake passes SUPPLIER_PURCHASE (MARKET_PURCHASE is
+                # reserved for gold bought on the market).
+                acquisition_source=acquisition_source,
+
+                notes=notes,
+                entered_by_employee_id=(
+                    employee_id
+                ),
+                created_by_user_id=user_id,
+                **extra,
+            )
+        )
+
+        # ----------------------------------------------
+        # 2. Optional barcode
+        # ----------------------------------------------
+
+        if barcode:
+            repository.assign_barcode(
+                inventory_item_id=(
+                    inventory_item_id
+                ),
+                barcode_value=barcode,
+                assigned_by_user_id=user_id,
+            )
+
+        # ----------------------------------------------
+        # 3. Permanent movement history
+        # ----------------------------------------------
+
+        repository.create_inventory_movement(
+            inventory_item_id=(
+                inventory_item_id
+            ),
+            movement_type_id=(
+                movement_type_id
+            ),
+            stock_classification=(
+                stock_classification
+            ),
+            weight_grams=weight,
+            performed_by_employee_id=(
+                employee_id
+            ),
+            performed_by_user_id=user_id,
+        )
+
+        return inventory_item_id
+
+
     def create_inventory_item(
             self,
             employee_id=None,
@@ -287,184 +475,11 @@ class InventoryService:
                 # The attributed actor is the verified, locked session user (never the caller's argument).
                 user_id = int(self._authorize_write(transaction.connection, session_actor).user_id)
 
-                repository = self._repository(
-                    transaction.connection
-                )
-
-                # ----------------------------------------------
-                # Employee
-                # ----------------------------------------------
-
-                if employee_id is not None and (
-                    repository
-                    .get_active_employee_by_id(
-                        employee_id
-                    )
-                ) is None:
-                    raise ValueError(
-                        "Employee is not active or does not exist."
-                    )
-
-                # ----------------------------------------------
-                # Item type
-                # ----------------------------------------------
-
-                item_type = (
-                    repository
-                    .get_active_item_type_by_id(
-                        item_type_id
-                    )
-                )
-
-                if item_type is None:
-                    raise ValueError(
-                        "Item type is not active or does not exist."
-                    )
-                # Use the item's default category when
-                # the caller did not explicitly select one.
-                if category_id is None:
-
-                    default_category_id = (
-                        item_type.get(
-                            "default_category_id"
-                        )
-                    )
-
-                    if default_category_id is not None:
-                        category_id = int(
-                            default_category_id
-                        )
-                # ----------------------------------------------
-                # Karat
-                # ----------------------------------------------
-
-                karat = (
-                    repository
-                    .get_active_karat_by_id(
-                        karat_id
-                    )
-                )
-
-                if karat is None:
-                    raise ValueError(
-                        "Karat is not active or does not exist."
-                    )
-
-                # ----------------------------------------------
-                # Category
-                # ----------------------------------------------
-
-                if category_id is not None:
-
-                    category = (
-                        repository
-                        .get_active_category_by_id(
-                            category_id
-                        )
-                    )
-
-                    if category is None:
-                        raise ValueError(
-                            "Category is not active or does not exist."
-                        )
-
-                # ----------------------------------------------
-                # Factory
-                # ----------------------------------------------
-
-                if factory_id is not None:
-
-                    factory = (
-                        repository
-                        .get_active_factory_by_id(
-                            factory_id
-                        )
-                    )
-
-                    if factory is None:
-                        raise ValueError(
-                            "Factory is not active or does not exist."
-                        )
-
-                # ----------------------------------------------
-                # Movement type
-                # ----------------------------------------------
-
-                movement_type_id = (
-                    repository
-                    .get_inventory_movement_type_id(
-                        "ITEM_CREATED"
-                    )
-                )
-
-                if movement_type_id is None:
-                    raise RuntimeError(
-                        "ITEM_CREATED movement type is not configured."
-                    )
-
-                # ----------------------------------------------
-                # 1. Physical inventory item
-                # ----------------------------------------------
-
-                inventory_item_id = (
-                    repository.create_inventory_item(
-                        item_type_id=item_type_id,
-                        karat_id=karat_id,
-                        category_id=category_id,
-                        factory_id=factory_id,
-                        weight_grams=weight,
-                        size=size,
-                        stock_classification=(
-                            stock_classification
-                        ),
-
-                        # This screen is manual stock entry.
-                        # Purchase receiving will later use
-                        # MARKET_PURCHASE.
-                        acquisition_source="MANUAL_ENTRY",
-
-                        notes=notes,
-                        entered_by_employee_id=(
-                            employee_id
-                        ),
-                        created_by_user_id=user_id,
-                    )
-                )
-
-                # ----------------------------------------------
-                # 2. Optional barcode
-                # ----------------------------------------------
-
-                if barcode:
-                    repository.assign_barcode(
-                        inventory_item_id=(
-                            inventory_item_id
-                        ),
-                        barcode_value=barcode,
-                        assigned_by_user_id=user_id,
-                    )
-
-                # ----------------------------------------------
-                # 3. Permanent movement history
-                # ----------------------------------------------
-
-                repository.create_inventory_movement(
-                    inventory_item_id=(
-                        inventory_item_id
-                    ),
-                    movement_type_id=(
-                        movement_type_id
-                    ),
-                    stock_classification=(
-                        stock_classification
-                    ),
-                    weight_grams=weight,
-                    performed_by_employee_id=(
-                        employee_id
-                    ),
-                    performed_by_user_id=user_id,
-                )
-
+                inventory_item_id = self._create_item(
+                    transaction.connection, user_id=user_id, employee_id=employee_id,
+                    item_type_id=item_type_id, karat_id=karat_id, category_id=category_id,
+                    factory_id=factory_id, weight=weight, size=size,
+                    stock_classification=stock_classification, barcode=barcode, notes=notes)
                 return inventory_item_id
 
 
@@ -479,6 +494,32 @@ class InventoryService:
                     "Barcode already exists."
                 ) from exc
 
+            raise
+
+    def create_item_on_connection(self, connection, *, actor_user_id, item_type_id, karat_id, weight_grams,
+                                  acquisition_source, employee_id=None, category_id=None, factory_id=None,
+                                  size=None, barcode=None, notes=None, acquisition_making_per_gram=None) -> int:
+        """One NEW_STOCK piece on the CALLER's transaction, for a module that has already authorized its own
+        right and verified its actor (supplier intake: SUPPLIER_INTAKE). It writes exactly the canonical rows of
+        create_inventory_item (inventory row, optional barcode, ITEM_CREATED movement) with the same validation,
+        so the piece and the caller's source link commit or roll back together. It never checks or bypasses
+        INVENTORY_MANAGE for a screen: manual stock entry still goes only through create_inventory_item."""
+        try:
+            return self._create_item(
+                connection, user_id=int(actor_user_id), employee_id=self._optional_id(employee_id),
+                item_type_id=self._required_id(item_type_id, "Item type is required."),
+                karat_id=self._required_id(karat_id, "Karat is required."),
+                category_id=self._optional_id(category_id), factory_id=self._optional_id(factory_id),
+                weight=self._parse_weight(weight_grams),
+                size=self._clean_optional_text(size, 50, "Size is too long."),
+                stock_classification="NEW_STOCK",
+                barcode=self._clean_optional_text(barcode, 100, "Barcode is too long."),
+                notes=self._clean_optional_text(notes, 1000, "Notes are too long."),
+                acquisition_source=acquisition_source,
+                acquisition_making_per_gram=acquisition_making_per_gram)
+        except IntegrityError as exc:
+            if getattr(exc, "errno", None) == 1062:
+                raise ValueError("Barcode already exists.") from exc
             raise
 
     # ========================================================

@@ -1,0 +1,196 @@
+"""Supplier purchase invoices, making groups, the two immutable supplier ledgers and the intake links (034).
+All writes use the caller's transaction. A ledger row is only ever inserted; a posted invoice's header and groups
+are never updated afterwards (the service refuses, and nothing here offers such an update for POSTED rows)."""
+from repositories.supplier_repository import SupplierRepository, _id
+
+ACTIVE_BARCODE_JOIN = ("LEFT JOIN inventory_barcodes ib ON ib.inventory_item_id = ii.id "
+                       "AND ib.barcode_status = 'ACTIVE'")
+
+
+class SupplierPurchaseRepository(SupplierRepository):
+
+    # ------------------------------------------------------------------ invoices
+    _INVOICE = """
+        SELECT i.*, s.name AS supplier_name, s.is_active AS supplier_active, k.karat_value, k.name AS karat_name
+        FROM supplier_purchase_invoices i
+        JOIN suppliers s ON s.id = i.supplier_id
+        JOIN karats k ON k.id = i.karat_id
+    """
+
+    def by_draft_key(self, key):
+        return self._fetch_one(self._INVOICE + " WHERE i.draft_request_key = %s FOR UPDATE", (key,))
+
+    def get_invoice(self, invoice_id, lock=False):
+        return self._fetch_one(self._INVOICE + " WHERE i.id = %s" + (" FOR UPDATE" if lock else ""),
+                               (_id(invoice_id),))
+
+    def insert_invoice(self, *, supplier_id, karat_id, supplier_reference, invoice_date, weight, gross_making, notes,
+                       key, user_id):
+        new_id, _ = self._execute(
+            """
+            INSERT INTO supplier_purchase_invoices (supplier_id, karat_id, supplier_reference, invoice_date,
+                supplier_weight_grams, gross_making_total, status, notes, draft_request_key, created_by_user_id)
+            VALUES (%s, %s, %s, %s, %s, %s, 'DRAFT', %s, %s, %s)
+            """, (_id(supplier_id), int(karat_id), supplier_reference, invoice_date, weight, gross_making, notes,
+                  key, user_id))
+        return int(new_id)
+
+    def update_draft(self, *, invoice_id, supplier_id, karat_id, supplier_reference, invoice_date, weight,
+                     gross_making, notes):
+        """Only a DRAFT row can match: a posted or cancelled invoice is never changed (rowcount 0)."""
+        _, count = self._execute(
+            """
+            UPDATE supplier_purchase_invoices
+            SET supplier_id = %s, karat_id = %s, supplier_reference = %s, invoice_date = %s,
+                supplier_weight_grams = %s, gross_making_total = %s, notes = %s
+            WHERE id = %s AND status = 'DRAFT'
+            """, (_id(supplier_id), int(karat_id), supplier_reference, invoice_date, weight, gross_making, notes,
+                  _id(invoice_id)))
+        return count
+
+    def replace_groups(self, invoice_id, groups):
+        """Draft groups only (the service has locked a DRAFT invoice); posted groups are never touched."""
+        self._execute("DELETE FROM supplier_invoice_groups WHERE invoice_id = %s", (_id(invoice_id),))
+        for group in groups:
+            self._execute(
+                """
+                INSERT INTO supplier_invoice_groups (invoice_id, group_no, description, supplier_weight_grams,
+                    making_per_gram, making_total)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """, (_id(invoice_id), group["group_no"], group["description"], group["supplier_weight_grams"],
+                      group["making_per_gram"], group["making_total"]))
+
+    def groups(self, invoice_id):
+        return self._fetch_all("SELECT * FROM supplier_invoice_groups WHERE invoice_id = %s ORDER BY group_no",
+                               (_id(invoice_id),))
+
+    def lock_group(self, group_id):
+        return self._fetch_one("SELECT * FROM supplier_invoice_groups WHERE id = %s FOR UPDATE", (_id(group_id),))
+
+    def mark_posted(self, *, invoice_id, key, user_id, now):
+        _, count = self._execute(
+            "UPDATE supplier_purchase_invoices SET status = 'POSTED', post_request_key = %s, posted_by_user_id = %s, "
+            "posted_at = %s WHERE id = %s AND status = 'DRAFT'", (key, user_id, now, _id(invoice_id)))
+        return count
+
+    def mark_cancelled(self, *, invoice_id, now):
+        _, count = self._execute(
+            "UPDATE supplier_purchase_invoices SET status = 'CANCELLED', cancelled_at = %s "
+            "WHERE id = %s AND status = 'DRAFT'", (now, _id(invoice_id)))
+        return count
+
+    def list_invoices(self, supplier_id=None, status=None, limit=200):
+        where, params = [], []
+        if supplier_id is not None:
+            where.append("i.supplier_id = %s")
+            params.append(_id(supplier_id))
+        if status:
+            where.append("i.status = %s")
+            params.append(status)
+        params.append(int(limit))
+        return self._fetch_all(
+            f"""
+            SELECT i.id, i.supplier_id, s.name AS supplier_name, i.karat_id, k.karat_value, i.supplier_reference,
+                   i.invoice_date, i.supplier_weight_grams, i.gross_making_total, i.status, i.created_at, i.posted_at,
+                   COALESCE(p.piece_count, 0) AS piece_count, COALESCE(p.actual_weight, 0) AS actual_weight
+            FROM supplier_purchase_invoices i
+            JOIN suppliers s ON s.id = i.supplier_id
+            JOIN karats k ON k.id = i.karat_id
+            LEFT JOIN (SELECT sp.invoice_id, COUNT(*) AS piece_count, SUM(ii.weight_grams) AS actual_weight
+                       FROM supplier_invoice_pieces sp JOIN inventory_items ii ON ii.id = sp.inventory_item_id
+                       GROUP BY sp.invoice_id) p ON p.invoice_id = i.id
+            {'WHERE ' + ' AND '.join(where) if where else ''}
+            ORDER BY i.invoice_date DESC, i.id DESC
+            LIMIT %s
+            """, tuple(params))
+
+    # ------------------------------------------------------------------ ledgers (insert only)
+    def gold_type_id(self, code):
+        row = self._fetch_one("SELECT id FROM supplier_gold_movement_types WHERE code = %s AND is_active = TRUE",
+                              (code,))
+        return None if row is None else int(row["id"])
+
+    def making_type_id(self, code):
+        row = self._fetch_one("SELECT id FROM supplier_making_movement_types WHERE code = %s AND is_active = TRUE",
+                              (code,))
+        return None if row is None else int(row["id"])
+
+    def insert_gold_movement(self, *, supplier_id, type_id, karat_id, weight_delta, eq21_delta, source_type,
+                             source_id, reference, description, now, user_id):
+        new_id, _ = self._execute(
+            """
+            INSERT INTO supplier_gold_movements (supplier_id, movement_type_id, karat_id, weight_delta_grams,
+                equivalent_21_delta_grams, source_type, source_id, source_reference, description, occurred_at,
+                created_by_user_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (_id(supplier_id), int(type_id), int(karat_id), weight_delta, eq21_delta, source_type,
+                  _id(source_id), reference, description, now, user_id))
+        return int(new_id)
+
+    def insert_making_movement(self, *, supplier_id, type_id, amount_delta, source_type, source_id, reference,
+                               description, now, user_id):
+        new_id, _ = self._execute(
+            """
+            INSERT INTO supplier_making_movements (supplier_id, movement_type_id, amount_delta, source_type,
+                source_id, source_reference, description, occurred_at, created_by_user_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (_id(supplier_id), int(type_id), amount_delta, source_type, _id(source_id), reference, description,
+                  now, user_id))
+        return int(new_id)
+
+    # ------------------------------------------------------------------ intake progress and pieces
+    def group_progress(self, invoice_id):
+        """Per group: pieces linked and their ACTUAL shop-scale weight (every linked piece counts, whatever its
+        later status). Context for the weight variance only — never an accounting input."""
+        return self._fetch_all(
+            """
+            SELECT g.id AS group_id, COUNT(sp.id) AS piece_count, COALESCE(SUM(ii.weight_grams), 0) AS actual_weight
+            FROM supplier_invoice_groups g
+            LEFT JOIN supplier_invoice_pieces sp ON sp.group_id = g.id
+            LEFT JOIN inventory_items ii ON ii.id = sp.inventory_item_id
+            WHERE g.invoice_id = %s GROUP BY g.id ORDER BY g.group_no
+            """, (_id(invoice_id),))
+
+    def piece_by_request(self, key):
+        return self._fetch_one("SELECT * FROM supplier_invoice_pieces WHERE request_key = %s FOR UPDATE", (key,))
+
+    def insert_piece(self, *, inventory_item_id, invoice_id, group_id, making_per_gram, key, user_id):
+        new_id, _ = self._execute(
+            """
+            INSERT INTO supplier_invoice_pieces (inventory_item_id, invoice_id, group_id, making_per_gram,
+                request_key, created_by_user_id)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """, (_id(inventory_item_id), _id(invoice_id), _id(group_id), making_per_gram, key, user_id))
+        return int(new_id)
+
+    def pieces(self, invoice_id, group_id=None, limit=500):
+        where, params = ["sp.invoice_id = %s"], [_id(invoice_id)]
+        if group_id is not None:
+            where.append("sp.group_id = %s")
+            params.append(_id(group_id))
+        params.append(int(limit))
+        return self._fetch_all(
+            f"""
+            SELECT sp.id, sp.inventory_item_id, sp.group_id, g.group_no, sp.making_per_gram, sp.created_at,
+                   ii.weight_grams, ii.size, ii.inventory_status, it.name AS item_type_name, ib.barcode_value
+            FROM supplier_invoice_pieces sp
+            JOIN supplier_invoice_groups g ON g.id = sp.group_id
+            JOIN inventory_items ii ON ii.id = sp.inventory_item_id
+            JOIN item_types it ON it.id = ii.item_type_id
+            {ACTIVE_BARCODE_JOIN}
+            WHERE {' AND '.join(where)}
+            ORDER BY sp.id DESC LIMIT %s
+            """, tuple(params))
+
+    def piece_for_item(self, inventory_item_id):
+        """Reverse traceability: the supplier invoice / group a piece came from (None for other stock)."""
+        return self._fetch_one(
+            """
+            SELECT sp.inventory_item_id, sp.invoice_id, sp.group_id, g.group_no, sp.making_per_gram,
+                   i.supplier_id, s.name AS supplier_name, i.supplier_reference
+            FROM supplier_invoice_pieces sp
+            JOIN supplier_invoice_groups g ON g.id = sp.group_id
+            JOIN supplier_purchase_invoices i ON i.id = sp.invoice_id
+            JOIN suppliers s ON s.id = i.supplier_id
+            WHERE sp.inventory_item_id = %s
+            """, (_id(inventory_item_id),))

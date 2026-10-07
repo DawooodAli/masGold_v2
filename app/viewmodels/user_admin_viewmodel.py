@@ -19,6 +19,9 @@ PERMISSION_TEXT = {
     "USERS_MANAGE": "إدارة المستخدمين والصلاحيات", "AUDIT_VIEW": "عرض سجل التدقيق",
     "MANAGEMENT_REVIEW": "مراجعات المدير", "TRANSACTION_CORRECT": "تصحيح / عكس العمليات",
     "INVOICE_SETTLEMENT_APPROVE": "الموافقة على تسوية الفاتورة", "CUSTOMER_ACCOUNT_SETTLE": "تسوية حساب العميل",
+    "SUPPLIER_VIEW": "عرض الموردين", "SUPPLIER_MANAGE": "إدارة الموردين",
+    "SUPPLIER_INVOICE_EDIT": "تحرير فواتير الموردين", "SUPPLIER_INVOICE_POST": "ترحيل فواتير الموردين",
+    "SUPPLIER_INTAKE": "إدخال قطع فواتير الموردين",
 }
 ROLE_TEXT = {"OWNER": "المالك", "MANAGER": "المدير", "SALESPERSON": "البائع", "CASHIER": "أمين الصندوق"}
 

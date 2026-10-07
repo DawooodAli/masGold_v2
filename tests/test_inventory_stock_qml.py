@@ -220,6 +220,28 @@ class InventoryStockPageTests(harness.InvoicePageTests):
                 self.wait_until(lambda: not dialog.property("visible"), "closed")
         self.assertEqual(self.warnings, [])
 
+    def test_supplier_items_are_labelled_tawrid_mawrid_never_market_purchase(self):
+        self.page(INVENTORY)
+        dialog = self.item("inventoryItemDetailsDialog")
+        base = {"inventory_item_id": 7, "item_type_name": "خاتم", "karat_value": 21, "weight_grams": 3.6, "size": "55",
+                "factory_name": "النور للتصنيع", "category_code": "A", "barcode_value": "01261001",
+                "stock_classification": "NEW_STOCK", "inventory_status": "IN_STOCK",
+                "acquired_at": "2026-10-01 10:00:00", "notes": ""}
+        expected = {"SUPPLIER_PURCHASE": "توريد مورد", "MARKET_PURCHASE": "شراء من السوق",
+                    "MANUAL_ENTRY": "إدخال يدوي", "OLD_GOLD_MANUFACTURE": "محولة من الكسر"}
+        for source, label in expected.items():
+            with self.subTest(source=source):
+                self.root.setProperty("selectedInventoryItem", {**base, "acquisition_source": source})
+                dialog.open()
+                self.wait_until(lambda: dialog.property("opened"), "details")
+                texts = self.labels(dialog.property("contentItem"))
+                self.assertIn(label, texts)
+                if source == "SUPPLIER_PURCHASE":
+                    self.assertNotIn("شراء من السوق", texts)
+                dialog.close()
+                self.wait_until(lambda: not dialog.property("visible"), "closed")
+        self.assertEqual(self.warnings, [])
+
     # ------------------------------------------------------------ barcode print + selection
     def print_setup(self):
         items = [{"inventory_item_id": 7, "barcode_value": "01261001", "item_type_name": "خاتم", "weight_grams": 3.6,

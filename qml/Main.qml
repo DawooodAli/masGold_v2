@@ -3162,6 +3162,12 @@ ApplicationWindow {
                     onBackRequested: root.currentPage = 6
                 }
 
+                // index 14: الموردون — supplier positions (gold / making), purchase invoices and barcode intake
+                SuppliersPage {
+                    objectName: "suppliersPage"
+                    pageTitle: "🤝 الموردون"
+                }
+
             }
         }
 
@@ -3262,6 +3268,18 @@ ApplicationWindow {
 
                     onClicked:
                         root.currentPage = 4
+                }
+
+
+                NavButton {
+                    objectName: "suppliersNavButton"
+                    // الموردون: shown to users who may view suppliers (the services re-check every right).
+                    visible: typeof supplierVM !== "undefined" && supplierVM.canView
+                    text: "🤝  الموردون"
+                    selected: root.currentPage === 14
+
+                    onClicked:
+                        root.currentPage = 14
                 }
 
 
@@ -11102,6 +11120,8 @@ ApplicationWindow {
                 return "إدخال يدوي"
             if (value === "MARKET_PURCHASE")
                 return "شراء من السوق"
+            if (value === "SUPPLIER_PURCHASE")
+                return "توريد مورد"
             if (value === "OLD_GOLD_MANUFACTURE")
                 return "محولة من الكسر"
             if (value === "LEGACY_MIGRATION")

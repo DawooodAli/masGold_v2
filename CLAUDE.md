@@ -810,9 +810,9 @@ using Git (`git branch --show-current`, `git log --oneline -10`, `git status`); 
 report unexpected files or commits. Do not treat any commit hash in this document as the
 current HEAD. Read both `AGENTS.md` and `CLAUDE.md`.
 
-- Schema chain: migrations `001–033` in `database/schema`; next migration is `034`
+- Schema chain: migrations `001–034` in `database/schema`; next migration is `035`
   unless later repository state proves otherwise. Already-applied migrations are
-  immutable, including 019–033. `database/migrations/*.sql` are historical prototypes
+  immutable, including 019–034. `database/migrations/*.sql` are historical prototypes
   (see its README) and are never applied. Future schema work needs the next forward migration,
   guarded rollback, `SHA256SUMS`, chain tooling and appropriate migration/rehearsal tests.
 - Normal DEV database: `masgold_v2`. Never mutate `golddb`. Rehearsal/prod databases
@@ -844,6 +844,17 @@ current HEAD. Read both `AGENTS.md` and `CLAUDE.md`.
 - **Re-authentication cooldown:** Dead Cash and settlement-approver password checks use one
   persistent `AuthenticationService` per owning service, so the failure cooldown persists.
 - **Frozen Billing V1:** `billingVM` is not registered; the V1 source files remain as history only.
+- **Purchasing & Suppliers V1 (migration 034):** supplier accounting has two independent dimensions that are never
+  combined: GOLD (grams, one karat per supplier invoice; the supplier invoice weight is authoritative; Eq21 =
+  weight x karat / 21 is stored beside the original weight and karat) and MAKING (EGP; per making group
+  = group supplier weight x EGP/g). Both are immutable ledgers (`supplier_gold_movements`,
+  `supplier_making_movements`); one sign convention: delta > 0 = the shop owes the supplier (علينا للمورد),
+  delta < 0 = the supplier owes the shop (لنا عند المورد); balances are SUM(delta), never floored or stored.
+  Posting is atomic and idempotent. Barcode intake creates real inventory pieces only through
+  `InventoryService.create_item_on_connection` (canonical path, acquisition source `SUPPLIER_PURCHASE` = توريد مورد, never `MARKET_PURCHASE` which is reserved for gold bought on the market, canonical barcode sequence) and
+  links invoice -> group -> piece with the group's original making rate. Weight variance (فرق الوزن = barcoded
+  weight - supplier weight) is informational only. Rights: `SUPPLIER_VIEW`, `SUPPLIER_MANAGE`,
+  `SUPPLIER_INVOICE_EDIT`, `SUPPLIER_INVOICE_POST`, `SUPPLIER_INTAKE` (OWNER/MANAGER, explicit grants).
 - **Line endings:** do not mass-convert files and never normalize migrations (checksums). No
   `.gitattributes` is added; with `core.autocrlf=true` a policy file would cause churn. Deferred.
 

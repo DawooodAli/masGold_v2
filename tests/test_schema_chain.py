@@ -19,6 +19,8 @@ PROTOTYPE_OLD_GOLD_COLUMNS = {"movement_code": "varchar(40)", "customer_id": "bi
                               "performed_by_user_id": "int unsigned"}
 ACQUISITION_ENUM = ("enum('MARKET_PURCHASE','OLD_GOLD_MANUFACTURE','OLD_STOCK_CONVERSION',"
                     "'LEGACY_MIGRATION','MANUAL_ENTRY')")
+# 034 appends exactly one value (supplier merchandise); nothing is renamed or removed.
+ACQUISITION_ENUM_034 = ACQUISITION_ENUM[:-1] + ",'SUPPLIER_PURCHASE')"
 
 
 def fk_problems(model):
@@ -46,14 +48,14 @@ class SchemaChainTests(unittest.TestCase):
 
     def test_chain_is_contiguous_001_to_030(self):
         files = schema_model.chain_files()
-        self.assertEqual([int(name[:3]) for name in files], list(range(1, 34)))
+        self.assertEqual([int(name[:3]) for name in files], list(range(1, 35)))
         self.assertEqual(files[12:], ["013_schema_consolidation.sql", "014_billing_v2.sql",
                                       "015_legacy_provenance.sql", "016_billing_workflow.sql",
                                       "017_payment_accounts.sql", "018_opening_balances.sql",
                                       "019_invoice_lifecycle_exchange.sql", "020_exchange_replacement_sources.sql",
                                       "021_returned_item_inspection.sql", "022_invoice_returns.sql",
                                       "023_transaction_corrections.sql", "024_customer_account.sql",
-                                      "025_financial_operations.sql", "026_cash_movement_categories.sql", "027_customer_deposits.sql", "028_dead_cash_v1.sql", "029_master_data_integrity.sql", "030_conversion_actor.sql", "031_exchange_making_model.sql", "032_exchange_returned_scrap_hold.sql", "033_return_v2_scrap_hold.sql"])
+                                      "025_financial_operations.sql", "026_cash_movement_categories.sql", "027_customer_deposits.sql", "028_dead_cash_v1.sql", "029_master_data_integrity.sql", "030_conversion_actor.sql", "031_exchange_making_model.sql", "032_exchange_returned_scrap_hold.sql", "033_return_v2_scrap_hold.sql", "034_suppliers_purchasing.sql"])
 
     def test_prototype_files_are_kept_but_not_part_of_the_chain(self):
         prototypes = sorted(p.name for p in PROTOTYPE_DIR.glob("20260921_*.sql"))
@@ -128,13 +130,24 @@ class SchemaChainTests(unittest.TestCase):
                                      consolidated[match.group(1)])
 
     def test_acquisition_source_allows_old_stock_conversion(self):
-        items = self.model.tables["inventory_items"]
+        # Through 033 the column holds the five values 013 defined; 034 appends SUPPLIER_PURCHASE (see below).
+        items = schema_model.build(schema_model.chain_files()[:33]).tables["inventory_items"]
         self.assertEqual(items["columns"]["acquisition_source"], {"type": ACQUISITION_ENUM, "nullable": False})
         self.assertIn("chk_inventory_acquisition_source", items["checks"])
         self.assertNotIn("chk_inventory_source", items["checks"])
         _, expression = sql.checks(sql.read("013_schema_consolidation.sql"))["chk_inventory_acquisition_source"]
         self.assertEqual(set(re.findall(r"'(\w+)'", expression)),
                          set(re.findall(r"'(\w+)'", ACQUISITION_ENUM)))
+
+    def test_034_appends_the_supplier_source_and_keeps_every_existing_value(self):
+        final = self.model.tables["inventory_items"]
+        self.assertEqual(final["columns"]["acquisition_source"], {"type": ACQUISITION_ENUM_034, "nullable": False})
+        self.assertIn("chk_inventory_acquisition_source", final["checks"])
+        self.assertNotIn("chk_inventory_source", final["checks"])
+        values = re.findall(r"'(\w+)'", ACQUISITION_ENUM_034)
+        self.assertEqual(values[:5], re.findall(r"'(\w+)'", ACQUISITION_ENUM))           # existing values keep order
+        self.assertEqual(values[5:], ["SUPPLIER_PURCHASE"])
+        self.assertIn("MARKET_PURCHASE", values)                                         # not redefined or removed
 
     def test_old_gold_karat_stays_not_null(self):
         self.assertEqual(self.model.tables["old_gold_movements"]["columns"]["karat_id"],
