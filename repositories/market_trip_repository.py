@@ -1,0 +1,224 @@
+"""Market-trip custody (037): trips, their insert-only entries, and the cash / Scrap movements those entries post.
+
+All writes use the caller's transaction and only INSERT (the trip header's `status` is the one updated column; every change
+of it is an insert-only event). Custody is never stored: it is derived from the entries that were not reversed.
+A reversed entry is one that has a FULL_REVERSAL row in transaction_corrections (source_type MARKET_TRIP_ENTRY)."""
+import json
+
+from repositories.base_repository import BaseRepository
+from repositories.invoice_repository import _id
+
+SOURCE = "MARKET_TRIP_ENTRY"            # transaction_corrections.source_type and the cash / Scrap reference_type
+MAIN_SAFE = "MAIN_SAFE"
+ISSUE, RETURN = "ISSUE", "RETURN"
+OPEN, CLOSED = "OPEN", "CLOSED"
+CASH_TYPE = {ISSUE: "TRIP_CASH_ISSUE", RETURN: "TRIP_CASH_RETURN"}
+SCRAP_TYPE = {ISSUE: "TRIP_CUSTODY_OUT", RETURN: "TRIP_CUSTODY_RETURN_IN"}
+
+_NOT_REVERSED = ("NOT EXISTS (SELECT 1 FROM transaction_corrections c WHERE c.source_type = '" + SOURCE + "' "
+                 "AND c.source_id = e.id AND c.correction_type = 'FULL_REVERSAL')")
+
+
+def trip_code(trip_id):
+    """MT + 6 digits. Distinct from S, SP, SM, DP, DR, CS, FO, TR, RV, FC, RT, EX."""
+    return f"MT{int(trip_id):06d}"
+
+
+def entry_code(trip_id, entry_no):
+    """The reference of one entry: its trip code and its number inside the trip (MT000001-2)."""
+    return f"{trip_code(trip_id)}-{int(entry_no)}"
+
+
+class MarketTripRepository(BaseRepository):
+
+    def _execute(self, query, params=()):
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(query, params)
+            return cursor.lastrowid, cursor.rowcount
+        finally:
+            cursor.close()
+
+    def db_now(self):
+        return self._fetch_one("SELECT NOW() AS now")["now"].replace(microsecond=0)
+
+    # ------------------------------------------------------------------ accounts and master data
+    def main_safe(self):
+        """The Main Safe resolved by its stable code (never a hard-coded id)."""
+        return self._fetch_one("SELECT id, code, name, is_active FROM cash_accounts WHERE code = %s", (MAIN_SAFE,))
+
+    def cash_balance(self, cash_account_id):
+        return self._fetch_one("SELECT COALESCE(SUM(amount_delta), 0) AS balance FROM cash_movements WHERE cash_account_id = %s",
+                               (int(cash_account_id),))["balance"]
+
+    def karat(self, karat_id):
+        return self._fetch_one("SELECT id, karat_value, name, is_active FROM karats WHERE id = %s", (int(karat_id),))
+
+    def active_karats(self):
+        return self._fetch_all("SELECT id, karat_value, name FROM karats WHERE is_active = TRUE ORDER BY karat_value DESC")
+
+    def shop_scrap(self):
+        """What the SHOP holds per karat: physical, held for manager review, and available (never includes trip custody)."""
+        return self._fetch_all("SELECT karat_id, karat_value, physical_grams, held_grams, available_grams "
+                               "FROM vw_old_gold_available ORDER BY karat_value DESC")
+
+    # ------------------------------------------------------------------ trips
+    def insert_trip(self, *, notes, actor, now):
+        trip_id, _ = self._execute("INSERT INTO market_trips (status, notes, created_by_user_id, created_at, status_changed_at) "
+                                   "VALUES ('OPEN', %s, %s, %s, %s)", (notes, actor.user_id, now, now))
+        return int(trip_id)
+
+    def trip(self, trip_id, lock=False):
+        return self._fetch_one("SELECT * FROM market_trips WHERE id = %s" + (" FOR UPDATE" if lock else ""), (_id(trip_id),))
+
+    def set_status(self, *, trip_id, status, now):
+        _, count = self._execute("UPDATE market_trips SET status = %s, status_changed_at = %s WHERE id = %s",
+                                 (status, now, _id(trip_id)))
+        if count != 1:
+            raise RuntimeError("trip status was not changed")
+
+    def insert_event(self, *, trip_id, event_type, reason, actor, now):
+        self._execute("INSERT INTO market_trip_status_events (trip_id, event_type, reason, performed_by_user_id, occurred_at) "
+                      "VALUES (%s, %s, %s, %s, %s)", (_id(trip_id), event_type, reason, actor.user_id, now))
+
+    def events(self, trip_id):
+        return self._fetch_all(
+            "SELECT e.event_type, e.reason, e.occurred_at, u.display_name AS actor_name FROM market_trip_status_events e "
+            "LEFT JOIN users u ON u.id = e.performed_by_user_id WHERE e.trip_id = %s ORDER BY e.id", (_id(trip_id),))
+
+    def trips(self, limit=100):
+        return self._fetch_all(
+            """
+            SELECT t.id, t.status, t.notes, t.created_at, t.status_changed_at,
+                   (SELECT COUNT(*) FROM market_trip_entries e WHERE e.trip_id = t.id) AS entry_count
+            FROM market_trips t ORDER BY t.id DESC LIMIT %s
+            """, (int(limit),))
+
+    # ------------------------------------------------------------------ entries
+    def by_request(self, key):
+        return self._fetch_one("SELECT * FROM market_trip_entries WHERE request_key = %s FOR UPDATE", (key,))
+
+    def next_entry_no(self, trip_id):
+        """Read under the trip lock: every writer of this trip's entries holds it."""
+        row = self._fetch_one("SELECT COALESCE(MAX(entry_no), 0) + 1 AS n FROM market_trip_entries WHERE trip_id = %s FOR SHARE",
+                              (_id(trip_id),))
+        return int(row["n"])
+
+    def insert_entry(self, *, trip_id, entry_no, kind, entry_date, notes, key, digest, actor, now):
+        entry_id, _ = self._execute(
+            """
+            INSERT INTO market_trip_entries (trip_id, entry_no, entry_kind, entry_date, notes, request_key, request_hash,
+                performed_by_user_id, performed_by_employee_id, occurred_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (_id(trip_id), entry_no, kind, entry_date, notes, key, digest, actor.user_id, actor.employee_id, now))
+        return int(entry_id)
+
+    def post_cash(self, *, kind, account_id, entry_id, code, amount, description, actor, now):
+        """The real cash movement of an entry on MAIN_SAFE: OUT for an issue, IN for a return (a negative balance is allowed)."""
+        delta = -amount if kind == ISSUE else amount
+        type_code = CASH_TYPE[kind]
+        movement_id, count = self._execute(
+            """
+            INSERT INTO cash_movements (cash_account_id, movement_type_id, amount_delta, reference_type, reference_id,
+                reference_code, description, occurred_at, created_by_user_id)
+            SELECT %s, t.id, %s, %s, %s, %s, %s, %s, %s FROM cash_movement_types t WHERE t.code = %s AND t.is_active = TRUE
+            """, (int(account_id), delta, SOURCE, _id(entry_id), code, description, now, actor.user_id, type_code))
+        if count != 1:
+            raise RuntimeError(f"cash_movement_types {type_code} is missing (migration 037)")
+        return int(movement_id)
+
+    def post_scrap(self, *, kind, karat_id, weight, entry_id, code, notes, actor, now):
+        """The counted Scrap movement of one karat: OUT for an issue, IN for a return. Physical grams, never converted."""
+        delta = -weight if kind == ISSUE else weight
+        type_code = SCRAP_TYPE[kind]
+        movement_id, count = self._execute(
+            """
+            INSERT INTO old_gold_movements (movement_type_id, karat_id, weight_delta_grams, balance_effect, reference_type,
+                reference_id, reference_code, notes, created_by_user_id, performed_by_user_id, received_by_employee_id,
+                movement_code, occurred_at)
+            SELECT t.id, %s, %s, 'COUNTED', %s, %s, %s, %s, %s, %s, %s, %s, %s FROM old_gold_movement_types t
+            WHERE t.code = %s AND t.is_active = TRUE
+            """, (int(karat_id), delta, SOURCE, _id(entry_id), code, notes, actor.user_id, actor.user_id, actor.employee_id,
+                  type_code, now, type_code))
+        if count != 1:
+            raise RuntimeError(f"old_gold_movement_types {type_code} is missing (migration 037)")
+        return int(movement_id)
+
+    def insert_cash_leg(self, *, entry_id, amount, cash_account_id, cash_movement_id):
+        self._execute("INSERT INTO market_trip_entry_cash (entry_id, amount, cash_account_id, cash_movement_id) VALUES (%s, %s, %s, %s)",
+                      (_id(entry_id), amount, int(cash_account_id), int(cash_movement_id)))
+
+    def insert_gold_leg(self, *, entry_id, karat_id, weight, scrap_movement_id):
+        self._execute("INSERT INTO market_trip_entry_gold (entry_id, karat_id, weight_grams, scrap_movement_id) VALUES (%s, %s, %s, %s)",
+                      (_id(entry_id), int(karat_id), weight, int(scrap_movement_id)))
+
+    # ------------------------------------------------------------------ custody (derived, read under the trip lock)
+    def custody_cash(self, trip_id, exclude_entry_id=None):
+        """(issued, returned) cash of the entries that were not reversed, as CURRENT (locking) reads."""
+        row = self._fetch_one(
+            f"""
+            SELECT COALESCE(SUM(IF(e.entry_kind = 'ISSUE', c.amount, 0)), 0) AS issued,
+                   COALESCE(SUM(IF(e.entry_kind = 'RETURN', c.amount, 0)), 0) AS returned
+            FROM market_trip_entries e JOIN market_trip_entry_cash c ON c.entry_id = e.id
+            WHERE e.trip_id = %s AND e.id <> %s AND {_NOT_REVERSED} FOR SHARE
+            """, (_id(trip_id), int(exclude_entry_id or 0)))
+        return row["issued"], row["returned"]
+
+    def custody_gold(self, trip_id, exclude_entry_id=None):
+        """Per karat: grams issued and returned by the entries that were not reversed."""
+        return self._fetch_all(
+            f"""
+            SELECT g.karat_id, k.karat_value,
+                   COALESCE(SUM(IF(e.entry_kind = 'ISSUE', g.weight_grams, 0)), 0) AS issued,
+                   COALESCE(SUM(IF(e.entry_kind = 'RETURN', g.weight_grams, 0)), 0) AS returned
+            FROM market_trip_entries e JOIN market_trip_entry_gold g ON g.entry_id = e.id JOIN karats k ON k.id = g.karat_id
+            WHERE e.trip_id = %s AND e.id <> %s AND {_NOT_REVERSED}
+            GROUP BY g.karat_id, k.karat_value ORDER BY k.karat_value DESC FOR SHARE OF e, g
+            """, (_id(trip_id), int(exclude_entry_id or 0)))
+
+    # ------------------------------------------------------------------ history
+    def entries(self, trip_id):
+        rows = self._fetch_all(
+            """
+            SELECT e.id, e.trip_id, e.entry_no, e.entry_kind, e.entry_date, e.notes, e.occurred_at, u.display_name AS actor_name,
+                   c.amount AS cash_amount, ca.name AS cash_account_name,
+                   r.id AS reversal_id, r.reason AS reversal_reason, r.occurred_at AS reversal_at
+            FROM market_trip_entries e
+            LEFT JOIN users u ON u.id = e.performed_by_user_id
+            LEFT JOIN market_trip_entry_cash c ON c.entry_id = e.id
+            LEFT JOIN cash_accounts ca ON ca.id = c.cash_account_id
+            LEFT JOIN transaction_corrections r ON r.source_type = '""" + SOURCE + """' AND r.source_id = e.id
+                 AND r.correction_type = 'FULL_REVERSAL'
+            WHERE e.trip_id = %s ORDER BY e.entry_no
+            """, (_id(trip_id),))
+        for row in rows:
+            row["gold"] = self._fetch_all(
+                "SELECT g.karat_id, k.karat_value, g.weight_grams FROM market_trip_entry_gold g "
+                "JOIN karats k ON k.id = g.karat_id WHERE g.entry_id = %s ORDER BY k.karat_value DESC", (int(row["id"]),))
+        return rows
+
+    # ------------------------------------------------------------------ as a correction source
+    def entry_source(self, entry_id, lock=False):
+        """The entry with its trip status. With lock=True the entry row is locked (the caller holds the trip and account locks)."""
+        return self._fetch_one(
+            "SELECT e.*, t.status AS trip_status FROM market_trip_entries e JOIN market_trips t ON t.id = e.trip_id "
+            "WHERE e.id = %s" + (" FOR UPDATE OF e" if lock else ""), (_id(entry_id),))
+
+    def entry_cash_leg(self, entry_id):
+        return self._fetch_one("SELECT amount, cash_account_id, cash_movement_id FROM market_trip_entry_cash WHERE entry_id = %s",
+                               (_id(entry_id),))
+
+    def entry_gold_legs(self, entry_id):
+        """The stored gold of an entry with the signed grams its Scrap movement posted (what a reversal negates)."""
+        return self._fetch_all(
+            "SELECT g.karat_id, k.karat_value, g.weight_grams, m.weight_delta_grams FROM market_trip_entry_gold g "
+            "JOIN karats k ON k.id = g.karat_id JOIN old_gold_movements m ON m.id = g.scrap_movement_id "
+            "WHERE g.entry_id = %s ORDER BY g.karat_id", (_id(entry_id),))
+
+    # ------------------------------------------------------------------ audit
+    def audit(self, *, actor, event_type, entity_id, reference, description, metadata, now):
+        self._execute(
+            "INSERT INTO audit_log (user_id, event_type, entity_type, entity_id, entity_reference, description, "
+            "metadata_json, occurred_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (actor.user_id, event_type, "MARKET_TRIP", int(entity_id), reference, description,
+             json.dumps(metadata, ensure_ascii=False, default=str), now))

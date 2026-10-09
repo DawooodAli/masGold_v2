@@ -341,6 +341,17 @@ class ApplicationController(QObject):
                     purchases.stockChanged.connect(inventory_vm.refresh)
                 if hasattr(stock_balance, "refresh"):
                     purchases.stockChanged.connect(lambda *_: stock_balance.loaded and stock_balance.refresh())
+            # Market-trip custody (037, OWNER only; the service re-checks the right in every transaction). Cash left or came back
+            # to MAIN_SAFE and Scrap left or came back to the counted balance: the top-bar balances, the wallet / bank balances,
+            # الحسابات المالية and every Scrap consumer reload from the database once the transaction has committed.
+            from app.viewmodels.market_trip_viewmodel import MarketTripViewModel
+            trips = self.operational_viewmodels.setdefault("marketTripVM", MarketTripViewModel(self.session))
+            if hasattr(trips, "custodyChanged"):
+                for target, slot in ((balances, "refresh"), (reviews, "reloadAccounts"), (accounts, "refresh"),
+                                     (invoice_vm, "refreshReference"),
+                                     (self.operational_viewmodels.get("oldGoldConversionVM"), "refreshBalances")):
+                    if target is not None and hasattr(target, slot):
+                        trips.custodyChanged.connect(getattr(target, slot))
             if hasattr(invoice_vm, "attach_price_source"):
                 invoice_vm.attach_price_source(self.gold_prices)
             # Barcode fields map physical scan codes (independent of the Windows keyboard layout).

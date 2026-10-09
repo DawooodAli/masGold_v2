@@ -3168,6 +3168,12 @@ ApplicationWindow {
                     pageTitle: "🤝 الموردون"
                 }
 
+                // index 15: عهدة السوق — custody of cash and Scrap taken to the market (OWNER only)
+                MarketTripsPage {
+                    objectName: "marketTripsPage"
+                    pageTitle: "🧭 عهدة السوق"
+                }
+
             }
         }
 
@@ -3280,6 +3286,18 @@ ApplicationWindow {
 
                     onClicked:
                         root.currentPage = 14
+                }
+
+
+                NavButton {
+                    objectName: "marketTripsNavButton"
+                    // عهدة السوق: owner only (the service re-checks the right in every transaction).
+                    visible: typeof marketTripVM !== "undefined" && marketTripVM.canManage
+                    text: "🧭  عهدة السوق"
+                    selected: root.currentPage === 15
+
+                    onClicked:
+                        root.currentPage = 15
                 }
 
 

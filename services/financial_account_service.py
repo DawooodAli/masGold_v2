@@ -39,7 +39,8 @@ CASH_ROWS = 200                         # per table on the cash screen (the peri
 CASH_LABELS = {
     "SALE": "بيع", "OLD_GOLD_PURCHASE": "شراء كسر", "EXCHANGE": "استبدال", "RETURN": "مرتجع",
     "CUSTOMER_PAYMENT": "سداد عميل", "CUSTOMER_PAYOUT": "دفع لعميل", "DEPOSIT": "عربون",
-    "DEPOSIT_REFUND": "استرداد عربون", "SUPPLIER_PAYMENT": "دفعة مصنعيات مورد", "REVERSAL": "إلغاء عملية",
+    "DEPOSIT_REFUND": "استرداد عربون", "SUPPLIER_PAYMENT": "دفعة مصنعيات مورد",
+    "TRIP_CASH_ISSUE": "إخراج عهدة السوق", "TRIP_CASH_RETURN": "رجوع عهدة السوق", "REVERSAL": "إلغاء عملية",
     "CORRECTION": "تصحيح تسوية", "TRANSFER_IN": "سحب بنك", "TRANSFER_OUT": "إيداع بنك",
     "EXPENSE": "مصروفات", "SALARY": "مرتبات", "RENT": "إيجار", "REVENUE": "إيراد", "REPAIR": "مرمة",
     "MANUAL_DEPOSIT": "إيداع يدوي", "MANUAL_WITHDRAWAL": "سحب يدوي", "OPENING_BALANCE": "رصيد افتتاحي",

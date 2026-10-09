@@ -53,8 +53,11 @@ FO = "FINANCIAL_OPERATION"            # manual deposit / withdrawal / transfer (
 CD = "CUSTOMER_DEPOSIT"               # عربون / استرداد عربون (027): full reversal only
 SMP = "SUPPLIER_MAKING_PAYMENT"       # supplier making payment (036): full reversal only, OWNER only
 SMP_REVERSE_PERMISSION = "SUPPLIER_MAKING_PAY_REVERSE"
-SOURCES = ("INVOICE", "EXCHANGE", "RETURN", CS, FO, CD, SMP)
-STANDALONE = (CS, FO, CD, SMP)         # sources without an invoice (never a fabricated one)
+MTE = "MARKET_TRIP_ENTRY"             # market-trip custody issue / return (037): full reversal only, OWNER only
+MTE_PERMISSION = "MARKET_TRIP_MANAGE"
+SOURCE_RIGHTS = {SMP: SMP_REVERSE_PERMISSION, MTE: MTE_PERMISSION}   # a right ON TOP of TRANSACTION_CORRECT
+SOURCES = ("INVOICE", "EXCHANGE", "RETURN", CS, FO, CD, SMP, MTE)
+STANDALONE = (CS, FO, CD, SMP, MTE)    # sources without an invoice (never a fabricated one)
 MONEY = Decimal("0.01")
 ZERO, ZERO_GRAMS = Decimal("0.00"), Decimal("0.000")
 METHOD_TEXT = {"PHYSICAL_CASH": "نقدي", "MOBILE_WALLET": "محفظة", "INSTAPAY": "InstaPay", "BANK_TRANSFER": "تحويل بنكي"}
@@ -65,6 +68,7 @@ SOURCE_TEXT[CS] = "\u062a\u0633\u0648\u064a\u0629 \u062d\u0633\u0627\u0628"
 SOURCE_TEXT[FO] = "العملية المالية"
 SOURCE_TEXT[CD] = "العربون"
 SOURCE_TEXT[SMP] = "دفعة المصنعيات"
+SOURCE_TEXT[MTE] = "حركة عهدة السوق"
 
 
 def correction_source_text(source_type, direction=None, *, definite=True):
@@ -173,8 +177,9 @@ class CorrectionService:
     def _source_right(actor, source_type):
         """A source may need a right ON TOP of TRANSACTION_CORRECT (never instead of it): a supplier making payment is
         reversed by the OWNER only. The transaction re-checks it against the database."""
-        if source_type == SMP and SMP_REVERSE_PERMISSION not in actor.permissions:
-            raise PermissionError("عكس دفعة المصنعيات للمالك فقط.")
+        needed = SOURCE_RIGHTS.get(source_type)
+        if needed and needed not in actor.permissions:
+            raise PermissionError("عكس هذه العملية للمالك فقط.")
 
     # ------------------------------------------------------------ the source and what it posted
     def _load(self, connection, source_type, source_id, lock):
@@ -211,6 +216,25 @@ class CorrectionService:
                        "source_direction": source["direction"],
                        "customer_name_snapshot": source.get("customer_name"), "customer_id": source["customer_id"],
                        "finalized_at": source["occurred_at"], "net_amount": source["amount"]}
+            return context, source, reference
+        if source_type == MTE:
+            from repositories.financial_account_repository import FinancialAccountRepository
+            from repositories.market_trip_repository import MarketTripRepository, entry_code
+            repo = MarketTripRepository(connection)
+            source = repo.entry_source(source_id)
+            if source is None:
+                raise CorrectionError("SOURCE_NOT_FOUND", "حركة العهدة غير موجودة.")
+            if lock:                                            # the entry's own lock order: trip → MAIN_SAFE → Scrap
+                repo.trip(source["trip_id"], lock=True)
+                leg = repo.entry_cash_leg(source_id)
+                if leg is not None:
+                    FinancialAccountRepository(connection).account("CASH", leg["cash_account_id"], lock=True)
+                source = repo.entry_source(source_id, lock=True)
+            reference = entry_code(source["trip_id"], source["entry_no"])
+            leg = repo.entry_cash_leg(source_id)
+            context = {"invoice_id": None, "invoice_number": reference, "customer_name_snapshot": None, "customer_id": None,
+                       "finalized_at": source["occurred_at"], "net_amount": None if leg is None else leg["amount"],
+                       "trip_id": str(source["trip_id"]), "source_direction": source["entry_kind"]}
             return context, source, reference
         if source_type == SMP:
             from repositories.financial_account_repository import FinancialAccountRepository
@@ -303,6 +327,22 @@ class CorrectionService:
                 plan.account[customer] = -Decimal(str(total))
         if source_type not in STANDALONE:
             getattr(self, f"_plan_{source_type.lower()}")(connection, plan, source, lock)
+        if source_type == MTE:
+            from repositories.market_trip_repository import ISSUE as TRIP_ISSUE, MarketTripRepository
+            trips = MarketTripRepository(connection)
+            if source["trip_status"] != "OPEN":
+                plan.blockers.append(("TRIP_CLOSED", "العهدة مغلقة: أعد فتحها أولاً قبل عكس أي حركة فيها."))
+            for leg in trips.entry_gold_legs(source_id):       # the exact stored Scrap movement is negated, never recomputed
+                code = "REVERSAL_TRIP_ISSUE_IN" if source["entry_kind"] == TRIP_ISSUE else "REVERSAL_TRIP_RETURN_OUT"
+                plan.old_gold.append((int(leg["karat_id"]), int(leg["karat_value"]), -Decimal(str(leg["weight_delta_grams"])), code))
+            if source["entry_kind"] == TRIP_ISSUE:
+                # Undoing an issue must not leave a later (unreversed) return larger than what remains in custody.
+                cash = trips.custody_cash(source["trip_id"], exclude_entry_id=source_id)
+                gold = trips.custody_gold(source["trip_id"], exclude_entry_id=source_id)
+                if Decimal(str(cash[0])) - Decimal(str(cash[1])) < 0 or any(
+                        Decimal(str(g["issued"])) - Decimal(str(g["returned"])) < 0 for g in gold):
+                    plan.blockers.append(("DEPENDENT_RETURN_EXISTS",
+                                          "لا يمكن عكس الإخراج لأن رجوعًا مسجلًا بعده يعتمد عليه — اعكس الرجوع أولاً."))
         if source_type == SMP:
             # The exact stored making movement is restored (never a recomputed amount): the payment's negative delta, negated.
             from repositories.supplier_payment_repository import REVERSAL_MOVEMENT, SupplierPaymentRepository
@@ -589,8 +629,8 @@ class CorrectionService:
         self._source_right(session_actor, source_type)
         with self._transaction() as connection:
             actor = self._authorization.require_permission(connection, session_actor, CORRECT_PERMISSION)
-            if source_type == SMP:
-                actor = self._authorization.require_permission(connection, session_actor, SMP_REVERSE_PERMISSION)
+            if source_type in SOURCE_RIGHTS:
+                actor = self._authorization.require_permission(connection, session_actor, SOURCE_RIGHTS[source_type])
             corrections, invoices = self._corrections(connection), self._invoices(connection)
             customers = self._customers(connection)
             plan = self._plan(connection, source_type, source_id, lock=True)
@@ -683,7 +723,7 @@ class CorrectionService:
     def _settlement_state(self, connection, source_type, source_id, lock):
         """The current EFFECTIVE settlement of a source: direction, legs, account part, total, chain."""
         corrections = self._corrections(connection)
-        if source_type in (FO, CD, SMP):
+        if source_type in (FO, CD, SMP, MTE):
             raise CorrectionError("SETTLEMENT_NOT_SUPPORTED",
                                   "هذه العملية تُصحح بالعكس الكامل ثم إعادة إدخالها صحيحة.")
         invoice, source, reference = self._load(connection, source_type, source_id, lock)

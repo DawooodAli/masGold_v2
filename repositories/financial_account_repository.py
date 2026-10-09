@@ -16,7 +16,7 @@ LEDGERS = {"CASH": ("cash_movements", "cash_account_id", "cash_movement_types", 
 # Source classification of a ledger row (the statement filter values).
 SOURCE_TYPES = ("INVOICE", "EXCHANGE", "RETURN", "CUSTOMER_ACCOUNT_SETTLEMENT", "CUSTOMER_DEPOSIT", "FULL_REVERSAL",
                 "SETTLEMENT_CORRECTION", "MANUAL_DEPOSIT", "MANUAL_WITHDRAWAL", "ACCOUNT_TRANSFER",
-                "OPENING_BALANCE", "SUPPLIER_MAKING_PAYMENT", "UNKNOWN")
+                "OPENING_BALANCE", "SUPPLIER_MAKING_PAYMENT", "MARKET_TRIP_ENTRY", "UNKNOWN")
 
 
 def operation_code(operation_type, operation_id):
@@ -105,6 +105,7 @@ class FinancialAccountRepository(BaseRepository):
                      WHEN cs.id IS NOT NULL THEN 'CUSTOMER_ACCOUNT_SETTLEMENT'
                      WHEN cd.id IS NOT NULL THEN 'CUSTOMER_DEPOSIT'
                      WHEN smp.id IS NOT NULL THEN 'SUPPLIER_MAKING_PAYMENT'
+                     WHEN met.id IS NOT NULL THEN 'MARKET_TRIP_ENTRY'
                      WHEN c.id IS NOT NULL THEN c.correction_type
                      WHEN fo.id IS NOT NULL THEN fo.operation_type
                      WHEN o.movement_code = 'OPENING_BALANCE' THEN 'OPENING_BALANCE'
@@ -115,6 +116,7 @@ class FinancialAccountRepository(BaseRepository):
                      WHEN cs.id IS NOT NULL THEN IF(o.amount_delta > 0, 'CUSTOMER_PAYMENT', 'CUSTOMER_PAYOUT')
                      WHEN cd.id IS NOT NULL THEN IF(o.amount_delta > 0, 'DEPOSIT', 'DEPOSIT_REFUND')
                      WHEN smp.id IS NOT NULL THEN 'SUPPLIER_PAYMENT'
+                     WHEN met.id IS NOT NULL THEN IF(o.amount_delta < 0, 'TRIP_CASH_ISSUE', 'TRIP_CASH_RETURN')
                      WHEN c.id IS NOT NULL THEN IF(c.correction_type = 'FULL_REVERSAL', 'REVERSAL', 'CORRECTION')
                      WHEN fo.operation_type = 'ACCOUNT_TRANSFER' THEN IF(o.amount_delta > 0, 'TRANSFER_IN', 'TRANSFER_OUT')
                      WHEN fo.id IS NOT NULL THEN COALESCE(fo.category, fo.operation_type)
@@ -129,6 +131,7 @@ class FinancialAccountRepository(BaseRepository):
                        WHEN cd.id IS NOT NULL THEN CONCAT(IF(cd.direction = 'IN', 'DP', 'DR'),
                                                           LPAD(cd.id, GREATEST(6, CHAR_LENGTH(cd.id)), '0'))
                        WHEN smp.id IS NOT NULL THEN CONCAT('SM', LPAD(smp.id, GREATEST(6, CHAR_LENGTH(smp.id)), '0'))
+                       WHEN met.id IS NOT NULL THEN CONCAT('MT', LPAD(met.trip_id, GREATEST(6, CHAR_LENGTH(met.trip_id)), '0'), '-', met.entry_no)
                        WHEN c.id IS NOT NULL THEN CONCAT(IF(c.correction_type = 'FULL_REVERSAL', 'RV', 'FC'),
                                                          LPAD(c.id, GREATEST(6, CHAR_LENGTH(c.id)), '0'))
                        WHEN fo.id IS NOT NULL THEN CONCAT(IF(fo.operation_type = 'ACCOUNT_TRANSFER', 'TR', 'FO'),
@@ -150,6 +153,7 @@ class FinancialAccountRepository(BaseRepository):
               LEFT JOIN customers cdc ON cdc.id = cd.customer_id
               LEFT JOIN supplier_making_payments smp
                 ON o.reference_type = 'SUPPLIER_MAKING_PAYMENT' AND smp.id = o.reference_id
+              LEFT JOIN market_trip_entries met ON o.reference_type = 'MARKET_TRIP_ENTRY' AND met.id = o.reference_id
               LEFT JOIN transaction_corrections c ON o.reference_type = 'TRANSACTION_CORRECTION' AND c.id = o.reference_id
               LEFT JOIN financial_operations fo ON o.reference_type = '{SOURCE}' AND fo.id = o.reference_id
               LEFT JOIN invoices origin ON origin.id = COALESCE(x.source_invoice_id, r.source_invoice_id, c.invoice_id)
