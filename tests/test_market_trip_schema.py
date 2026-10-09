@@ -45,7 +45,7 @@ class MarketTripSchemaTests(unittest.TestCase):
         for name, expected in FROZEN.items():
             self.assertEqual(digest(name), expected, name)
         files = {f.name: f for f in load_chain(require_committed=False)}
-        self.assertEqual(len(files), 38)
+        self.assertEqual(len(files), 39)
         self.assertEqual(files[FORWARD].sha256, digest(FORWARD))
         self.assertIn(f"{digest(FORWARD)}  {FORWARD}", (ROOT / "database" / "schema" / "SHA256SUMS").read_text(encoding="utf-8"))
 
@@ -90,7 +90,8 @@ class MarketTripSchemaTests(unittest.TestCase):
         cash = self.model.tables["market_trip_entry_cash"]["indexes"]
         gold = self.model.tables["market_trip_entry_gold"]["indexes"]
         self.assertTrue(cash["uq_mtec_entry"]["unique"] and cash["uq_mtec_movement"]["unique"])
-        self.assertEqual(gold["uq_mteg_entry_karat"]["cols"], ["entry_id", "karat_id"])
+        self.assertNotIn("uq_mteg_entry_karat", gold)                                     # 039 replaced it: one leg per (entry, karat, designation)
+        self.assertEqual(gold["uq_mteg_entry_karat_des"]["cols"], ["entry_id", "karat_id", "designation"])
         self.assertTrue(gold["uq_mteg_movement"]["unique"])
         self.assertEqual({self.model.tables["market_trip_entry_cash"]["fks"][n]["ref"] for n in self.model.tables["market_trip_entry_cash"]["fks"]},
                          {"market_trip_entries", "cash_accounts", "cash_movements"})

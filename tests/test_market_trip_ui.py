@@ -119,6 +119,7 @@ class MarketTripPageTests(harness.InvoicePageTests):
             if i:
                 self.click("addGoldRowButton")
             self.pick(f"tripGoldKarat_{i}", index)
+            self.pick(f"tripGoldDesignation_{i}", 1)                                    # للسبك: every gold line needs its designation
             self.type_in(f"tripGoldWeight_{i}", weight)
         self.click("confirmTripEntryButton")
         self.wait_until(lambda: len(self.db.trips) >= 1, "trip created")
@@ -185,6 +186,10 @@ class MarketTripPageTests(harness.InvoicePageTests):
         self.wait_until(lambda: self.tvm.context.get("karats"), "context")
         self.pick("tripGoldKarat_0", 1)                                                    # 24K: no Scrap at all
         self.type_in("tripGoldWeight_0", "5")
+        self.click("confirmTripEntryButton")                                              # no designation chosen yet
+        self.wait_until(lambda: self.tvm.errorMessage != "", "designation refusal")
+        self.assertIn("وجهة الذهب", self.text("tripEntryError"))
+        self.pick("tripGoldDesignation_0", 2)                                              # لوجو
         self.type_in("tripCashField", "100")
         self.type_in("tripNotesField", "ملاحظة")
         self.click("confirmTripEntryButton")
@@ -193,6 +198,7 @@ class MarketTripPageTests(harness.InvoicePageTests):
         self.assertTrue(self.item("tripEntryDialog").property("visible"))
         self.assertIn("غير كافٍ", self.text("tripEntryError"))
         self.assertEqual((self.text("tripCashField"), self.text("tripGoldWeight_0"), self.text("tripNotesField")), ("100", "5", "ملاحظة"))
+        self.assertEqual(self.item("tripGoldDesignation_0").property("currentIndex"), 2)       # the choice is kept too
         self.assertEqual((self.db.trips, self.db.entries), ({}, {}))
         self.pick("tripGoldKarat_0", 2)                                                    # 21K has grams: the corrected retry
         button = self.item("confirmTripEntryButton")
@@ -264,7 +270,7 @@ class MarketTripPageTests(harness.InvoicePageTests):
         self.wait_idle()
         after = (self.ledgers.strip_calls, self.ledgers.account_calls, self.ledgers.view_calls, self.ledgers.scrap_calls)
         self.assertEqual(tuple(a - b for a, b in zip(after, before)), (1, 1, 1, 1))
-        self.tvm.issue("", "", [{"karatId": "3", "weight": "1"}], TODAY, "", self.tvm.newRequestKey())            # refused: no 24K (karat id 3)
+        self.tvm.issue("", "", [{"karatId": "3", "weight": "1", "designation": "MELT"}], TODAY, "", self.tvm.newRequestKey())   # refused: no 24K
         self.wait_idle()
         self.assertEqual((self.ledgers.strip_calls, self.ledgers.account_calls, self.ledgers.view_calls, self.ledgers.scrap_calls), after)
 
@@ -303,16 +309,170 @@ class MarketTripPageTests(harness.InvoicePageTests):
                 self.click("newTripButton")
                 self.wait_until(lambda: self.item("tripEntryDialog").property("opened"), "entry dialog")
                 self.wait_until(lambda: self.tvm.context.get("karats"), "context")
-                for name in ("tripCashField", "tripDateField", "tripGoldKarat_0", "tripGoldWeight_0", "addGoldRowButton", "tripNotesField",
+                for name in ("tripCashField", "tripDateField", "tripGoldKarat_0", "tripGoldDesignation_0", "tripGoldWeight_0", "addGoldRowButton", "tripNotesField",
                              "confirmTripEntryButton", "cancelTripEntryButton"):
                     self.assert_inside_window(self.item(name))
                 self.item("tripEntryDialog").close()
                 self.closed("tripEntryDialog")
 
 
+class MarketTripMeltingPageTests(MarketTripPageTests):
+    """Melting on the real page: designation, mixed inputs, fineness, residues, refusals that keep every field, permanent analysis,
+    reversal - with real mouse clicks at the three target sizes."""
+
+    def start_trip(self):
+        self.open_page()
+        self.new_trip("", [(2, "30.000")])                                              # 21K 30 g, MELT
+        self.wait_until(lambda: self.tvm.detail.get("meltAvailable"), "melting available")
+
+    def reveal(self, item):
+        """Scroll the detail Flickable so that `item` is on screen (the employee's mouse wheel); clicking stays real."""
+        node = item.parentItem()
+        while node is not None and node.property("contentY") is None:
+            node = node.parentItem()
+        if node is not None:
+            node.setProperty("contentY", max(0, item.mapToItem(node.property("contentItem"), QPointF(0, 0)).y() - 40))
+            QTest.qWait(100)
+
+    def open_melt(self):
+        self.click("meltButton")
+        self.wait_until(lambda: self.item("tripMeltDialog").property("opened"), "melt dialog")
+
+    def fill_melt(self, weight="10", output="9.5", fineness="875.5", residue=("0.4", ""), workshop="ورشة النور"):
+        self.type_in("meltWorkshopField", workshop)
+        self.pick("meltInputKarat_0", 1)
+        self.type_in("meltInputWeight_0", weight)
+        self.type_in("meltOutputWeight", output)
+        self.type_in("meltOutputFineness", fineness)
+        if residue:
+            self.click("addResidueButton")
+            self.type_in("meltResidueWeight_0", residue[0])
+            if residue[1]:
+                self.type_in("meltResidueFineness_0", residue[1])
+            self.type_in("meltResidueLabel_0", "خبث")
+
+    def test_melting_with_real_clicks_shows_the_permanent_analysis_and_the_incomplete_marker(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.start_trip()
+        self.assertTrue(self.item("meltButton").property("enabled"))
+        self.open_melt()
+        for name in ("meltDateField", "meltWorkshopField", "meltInputKarat_0", "meltInputWeight_0", "addMeltInputButton",
+                     "meltOutputWeight", "meltOutputFineness", "addResidueButton", "meltGainField", "meltAssayField", "meltNotesField",
+                     "confirmMeltButton", "cancelMeltButton"):
+            with self.subTest(control=name):
+                self.item(name)                                                          # reachable controls (scrolled form + fixed buttons)
+        for name in ("confirmMeltButton", "cancelMeltButton"):
+            self.assert_inside_window(self.item(name))
+        self.assertIn("عيار 21", self.text("meltStockText"))
+        self.fill_melt()
+        self.snapshot("melt-dialog")
+        self.click("confirmMeltButton")
+        self.wait_until(lambda: len(self.db.melts) == 1, "melt posted")
+        self.closed("tripMeltDialog")
+        self.wait_idle()
+        self.snapshot("trip-after-melt")
+        melt = next(iter(self.db.melts.values()))
+        self.assertEqual((melt["workshop"], melt["input_weight"], melt["output_weight"], melt["pure_complete"]),
+                         ("ورشة النور", D("10.000"), D("9.900"), False))
+        self.assertEqual(self.db.cash(), D("50000.00"))                                  # no cash, shop Scrap or supplier movement
+        self.assertEqual(self.db.physical(1), D("70.000"))
+        values = " | ".join(self.visible_texts("meltAnalysisValue"))
+        self.assertIn("غير مكتمل", values)                                                # no definitive loss when a residue is unknown
+        self.assertIn("-0.100", values.replace("⁦", "").replace("⁩", "").replace("−", "-"))
+        self.assertIn("الناتج الرئيسي", " ".join(self.visible_texts("lotTitle")))
+        self.assertIn("مرحلة لاحقة", " ".join(self.visible_texts("lotNote")))
+        self.assertFalse(self.item("closeTripButton").property("enabled"))               # 20 g of 21K custody and the lot are outstanding
+        self.assertEqual(self.warnings, [])
+
+    def test_a_refused_melt_keeps_every_field_and_the_corrected_retry_posts_once(self):
+        self.start_trip()
+        self.open_melt()
+        self.fill_melt(fineness="870.55")                                                # 0.1 per-mille precision only
+        self.click("confirmMeltButton")
+        self.wait_until(lambda: self.tvm.errorMessage != "", "refusal")
+        QTest.qWait(100)
+        self.assertTrue(self.item("tripMeltDialog").property("visible"))
+        self.assertIn("خانة عشرية واحدة", self.text("meltEntryError"))
+        self.assertEqual((self.text("meltWorkshopField"), self.text("meltInputWeight_0"), self.text("meltOutputWeight"),
+                          self.text("meltOutputFineness"), self.text("meltResidueWeight_0")), ("ورشة النور", "10", "9.5", "870.55", "0.4"))
+        self.assertEqual(len(self.db.melts), 0)
+        self.click("meltOutputFineness")
+        QTest.keyClick(self.root, Qt.Key_A, Qt.ControlModifier)
+        self.type_text("870.5")
+        button = self.item("confirmMeltButton")
+        point = button.mapToScene(QPointF(button.width() / 2, button.height() / 2)).toPoint()
+        QTest.mouseClick(self.root, Qt.LeftButton, Qt.NoModifier, point)
+        QTest.mouseClick(self.root, Qt.LeftButton, Qt.NoModifier, point)                # a double click is one request
+        self.wait_until(lambda: len(self.db.melts) >= 1, "melt posted")
+        self.closed("tripMeltDialog")
+        self.wait_idle()
+        QTest.qWait(150)
+        self.assertEqual((len(self.db.melts), len(self.db.lots)), (1, 2))
+
+    def test_weight_gain_needs_its_explanation_and_the_form_fits_every_size(self):
+        self.start_trip()
+        for width, height in harness.SIZES:
+            with self.subTest(size=(width, height)):
+                self.root.setWidth(width)
+                self.root.setHeight(height)
+                QTest.qWait(150)
+                self.open_melt()
+                for name in ("confirmMeltButton", "cancelMeltButton", "meltDateField", "meltWorkshopField"):
+                    self.assert_inside_window(self.item(name))
+                self.item("tripMeltDialog").close()
+                self.closed("tripMeltDialog")
+        self.open_melt()
+        self.fill_melt(weight="5", output="5.5", residue=None)
+        self.click("confirmMeltButton")
+        self.wait_until(lambda: self.tvm.errorMessage != "", "refusal")
+        self.assertIn("سبب زيادة الوزن", self.text("meltEntryError"))
+        self.type_in("meltGainField", "شوائب أخف")
+        self.click("confirmMeltButton")
+        self.wait_until(lambda: len(self.db.melts) == 1, "melt posted")
+        self.closed("tripMeltDialog")
+        self.wait_idle()
+        self.assertEqual(next(iter(self.db.melts.values()))["gain_explanation"], "شوائب أخف")
+
+    def test_a_melt_is_reversed_from_the_log_and_its_analysis_stays_visible(self):
+        self.start_trip()
+        self.open_melt()
+        self.fill_melt(residue=None)
+        self.click("confirmMeltButton")
+        self.wait_until(lambda: len(self.db.melts) == 1, "melt posted")
+        self.closed("tripMeltDialog")
+        self.wait_idle()
+        buttons = []
+
+        def collect(node):
+            if node.objectName() == "reverseEntryButton" and node.property("visible"):
+                buttons.append(node)
+            for child in node.childItems():
+                collect(child)
+        collect(self.root.contentItem())
+        self.assertEqual(len(buttons), 2)
+        self.reveal(buttons[-1])
+        self.click(buttons[-1])                                                           # the melt (newest entry)
+        self.wait_until(lambda: self.item("tripReasonDialog").property("opened"), "reversal dialog")
+        self.type_in("tripReasonField", "وزن خاطئ")
+        self.click("confirmTripReasonButton")
+        self.wait_until(lambda: len(self.db.corrections) == 1, "reversed")
+        self.closed("tripReasonDialog")
+        self.wait_idle()
+        self.assertIn("معكوسة بالعملية RV000001", " ".join(self.visible_texts("meltState")))
+        self.assertIn("عملية معكوسة — الأرقام للتاريخ فقط ولا تؤثر على الرصيد الحالي", self.visible_texts("meltReversedNotice"))
+        self.assertTrue(self.visible_texts("meltAnalysisValue"))                           # the analysis is kept after the reversal
+        self.snapshot("reversed-melt")
+        self.assertEqual(self.tvm.detail["gold"][0]["outstanding"], "30.000")             # the input custody is back
+        self.assertEqual(self.tvm.detail["lots"], [])
+
+
 # The base class carries the invoice-page tests: only this module's own tests are collected here.
 for _inherited in [n for n in dir(harness.InvoicePageTests) if n.startswith("test_")]:
     setattr(MarketTripPageTests, _inherited, None)
+    setattr(MarketTripMeltingPageTests, _inherited, None)
+for _own in [n for n in dir(MarketTripPageTests) if n.startswith("test_") and getattr(MarketTripPageTests, n) is not None]:
+    setattr(MarketTripMeltingPageTests, _own, None)                                    # the subclass runs only its own melting tests
 
 
 if __name__ == "__main__":

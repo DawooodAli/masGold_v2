@@ -1,4 +1,4 @@
-"""Market-trip custody (037): trips, their insert-only entries, and the cash / Scrap movements those entries post.
+"""Market-trip custody (037, melting 039): trips, their insert-only entries, and the cash / Scrap movements those entries post.
 
 All writes use the caller's transaction and only INSERT (the trip header's `status` is the one updated column; every change
 of it is an insert-only event). Custody is never stored: it is derived from the entries that were not reversed.
@@ -10,13 +10,20 @@ from repositories.invoice_repository import _id
 
 SOURCE = "MARKET_TRIP_ENTRY"            # transaction_corrections.source_type and the cash / Scrap reference_type
 MAIN_SAFE = "MAIN_SAFE"
-ISSUE, RETURN = "ISSUE", "RETURN"
+ISSUE, RETURN, MELT = "ISSUE", "RETURN", "MELT"
+MELT_DESIGNATION, LOGO_DESIGNATION, UNCLASSIFIED = "MELT", "LOGO", "UNCLASSIFIED"     # the owner's decision on an issued gold line
+DESIGNATIONS = (MELT_DESIGNATION, LOGO_DESIGNATION, UNCLASSIFIED)
+MAIN_LOT, RESIDUE_LOT, CREATE_MOVEMENT = "MAIN", "RESIDUE", "CREATE"
 OPEN, CLOSED = "OPEN", "CLOSED"
 CASH_TYPE = {ISSUE: "TRIP_CASH_ISSUE", RETURN: "TRIP_CASH_RETURN"}
 SCRAP_TYPE = {ISSUE: "TRIP_CUSTODY_OUT", RETURN: "TRIP_CUSTODY_RETURN_IN"}
 
-_NOT_REVERSED = ("NOT EXISTS (SELECT 1 FROM transaction_corrections c WHERE c.source_type = '" + SOURCE + "' "
-                 "AND c.source_id = e.id AND c.correction_type = 'FULL_REVERSAL')")
+def _not_reversed(alias="e"):
+    return ("NOT EXISTS (SELECT 1 FROM transaction_corrections c WHERE c.source_type = '" + SOURCE + "' "
+            f"AND c.source_id = {alias}.id AND c.correction_type = 'FULL_REVERSAL')")
+
+
+_NOT_REVERSED = _not_reversed("e")
 
 
 def trip_code(trip_id):
@@ -148,9 +155,83 @@ class MarketTripRepository(BaseRepository):
         self._execute("INSERT INTO market_trip_entry_cash (entry_id, amount, cash_account_id, cash_movement_id) VALUES (%s, %s, %s, %s)",
                       (_id(entry_id), amount, int(cash_account_id), int(cash_movement_id)))
 
-    def insert_gold_leg(self, *, entry_id, karat_id, weight, scrap_movement_id):
-        self._execute("INSERT INTO market_trip_entry_gold (entry_id, karat_id, weight_grams, scrap_movement_id) VALUES (%s, %s, %s, %s)",
-                      (_id(entry_id), int(karat_id), weight, int(scrap_movement_id)))
+    def insert_gold_leg(self, *, entry_id, karat_id, designation, weight, scrap_movement_id):
+        self._execute("INSERT INTO market_trip_entry_gold (entry_id, karat_id, designation, weight_grams, scrap_movement_id) "
+                      "VALUES (%s, %s, %s, %s, %s)", (_id(entry_id), int(karat_id), designation, weight, int(scrap_movement_id)))
+
+    # ------------------------------------------------------------------ melting (039)
+    def insert_melt(self, *, entry_id, workshop, assay_reference, gain_explanation, analysis):
+        """The melt document with its immutable analytical snapshots (see services.market_trip_service.analyse)."""
+        self._execute(
+            """
+            INSERT INTO market_trip_melts (entry_id, workshop, assay_reference, gain_explanation, input_weight_grams, nominal_pure_grams,
+                output_weight_grams, known_output_pure_grams, weight_difference_grams, pure_complete, pure_difference_grams,
+                nominal_eq21_grams, known_output_eq21_grams, eq21_difference_grams)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (_id(entry_id), workshop, assay_reference, gain_explanation, analysis["input_weight"], analysis["nominal_pure"],
+                  analysis["output_weight"], analysis["known_output_pure"], analysis["weight_difference"],
+                  1 if analysis["pure_complete"] else 0, analysis["pure_difference"], analysis["nominal_eq21"],
+                  analysis["known_output_eq21"], analysis["eq21_difference"]))
+
+    def insert_melt_input(self, *, entry_id, karat_id, weight, pure):
+        self._execute("INSERT INTO market_trip_melt_inputs (entry_id, karat_id, weight_grams, pure_grams) VALUES (%s, %s, %s, %s)",
+                      (_id(entry_id), int(karat_id), weight, pure))
+
+    def insert_lot(self, *, entry_id, lot_no, kind, label, weight, fineness, pure):
+        lot_id, _ = self._execute(
+            "INSERT INTO market_trip_lots (entry_id, lot_no, lot_kind, label, weight_grams, fineness_permille, pure_grams) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)", (_id(entry_id), int(lot_no), kind, label, weight, fineness, pure))
+        return int(lot_id)
+
+    def insert_lot_movement(self, *, lot_id, entry_id, movement_type, weight_delta):
+        self._execute("INSERT INTO market_trip_lot_movements (lot_id, entry_id, movement_type, weight_delta) VALUES (%s, %s, %s, %s)",
+                      (int(lot_id), _id(entry_id), movement_type, weight_delta))
+
+    def custody_lots(self, trip_id, exclude_entry_id=None):
+        """The assayed lots of the trip with their OUTSTANDING grams: lots of reversed melts and movements of reversed entries do not count."""
+        return self._fetch_all(
+            f"""
+            SELECT l.id, l.entry_id, l.lot_no, l.lot_kind, l.label, l.weight_grams, l.fineness_permille, l.pure_grams, e.entry_no,
+                   COALESCE(SUM(m.weight_delta), 0) AS outstanding_grams
+            FROM market_trip_lots l
+            JOIN market_trip_entries e ON e.id = l.entry_id
+            JOIN market_trip_lot_movements m ON m.lot_id = l.id
+            JOIN market_trip_entries me ON me.id = m.entry_id
+            WHERE e.trip_id = %s AND e.id <> %s AND me.id <> %s AND {_not_reversed('e')} AND {_not_reversed('me')}
+            GROUP BY l.id, l.entry_id, l.lot_no, l.lot_kind, l.label, l.weight_grams, l.fineness_permille, l.pure_grams, e.entry_no
+            ORDER BY e.entry_no, l.lot_no FOR SHARE OF l, e, m, me
+            """, (_id(trip_id), int(exclude_entry_id or 0), int(exclude_entry_id or 0)))
+
+    def lot_downstream(self, entry_id):
+        """Unreversed entries that moved a lot of this melt after its birth (a CREATE is never a dependency)."""
+        return self._fetch_all(
+            f"""
+            SELECT DISTINCT me.id AS entry_id, me.trip_id, me.entry_no
+            FROM market_trip_lots l JOIN market_trip_lot_movements m ON m.lot_id = l.id
+            JOIN market_trip_entries me ON me.id = m.entry_id
+            WHERE l.entry_id = %s AND m.movement_type <> '{CREATE_MOVEMENT}' AND {_not_reversed('me')}
+            """, (_id(entry_id),))
+
+    def melts(self, trip_id):
+        """Every melt of the trip - reversed ones too: the analysis is permanent - with inputs and lots."""
+        rows = self._fetch_all(
+            """
+            SELECT mt.*, e.trip_id, e.entry_no, e.entry_date, e.notes, e.occurred_at, u.display_name AS actor_name,
+                   r.id AS reversal_id, r.reason AS reversal_reason, r.occurred_at AS reversal_at
+            FROM market_trip_melts mt JOIN market_trip_entries e ON e.id = mt.entry_id
+            LEFT JOIN users u ON u.id = e.performed_by_user_id
+            LEFT JOIN transaction_corrections r ON r.source_type = '""" + SOURCE + """' AND r.source_id = e.id
+                 AND r.correction_type = 'FULL_REVERSAL'
+            WHERE e.trip_id = %s ORDER BY e.entry_no
+            """, (_id(trip_id),))
+        for row in rows:
+            row["inputs"] = self._fetch_all(
+                "SELECT i.karat_id, k.karat_value, i.weight_grams, i.pure_grams FROM market_trip_melt_inputs i "
+                "JOIN karats k ON k.id = i.karat_id WHERE i.entry_id = %s ORDER BY k.karat_value DESC", (int(row["entry_id"]),))
+            row["lots"] = self._fetch_all(
+                "SELECT id, lot_no, lot_kind, label, weight_grams, fineness_permille, pure_grams FROM market_trip_lots "
+                "WHERE entry_id = %s ORDER BY lot_no", (int(row["entry_id"]),))
+        return rows
 
     # ------------------------------------------------------------------ custody (derived, read under the trip lock)
     def custody_cash(self, trip_id, exclude_entry_id=None):
@@ -165,16 +246,32 @@ class MarketTripRepository(BaseRepository):
         return row["issued"], row["returned"]
 
     def custody_gold(self, trip_id, exclude_entry_id=None):
-        """Per karat: grams issued and returned by the entries that were not reversed."""
-        return self._fetch_all(
+        """Per (karat, designation): grams issued, returned and consumed by melts, over the entries that were not reversed.
+        A melt consumes MELT-designated custody only, so `melted` is non-zero only on the MELT designation."""
+        legs = self._fetch_all(
             f"""
-            SELECT g.karat_id, k.karat_value,
+            SELECT g.karat_id, k.karat_value, g.designation,
                    COALESCE(SUM(IF(e.entry_kind = 'ISSUE', g.weight_grams, 0)), 0) AS issued,
                    COALESCE(SUM(IF(e.entry_kind = 'RETURN', g.weight_grams, 0)), 0) AS returned
             FROM market_trip_entries e JOIN market_trip_entry_gold g ON g.entry_id = e.id JOIN karats k ON k.id = g.karat_id
             WHERE e.trip_id = %s AND e.id <> %s AND {_NOT_REVERSED}
-            GROUP BY g.karat_id, k.karat_value ORDER BY k.karat_value DESC FOR SHARE OF e, g
+            GROUP BY g.karat_id, k.karat_value, g.designation FOR SHARE OF e, g
             """, (_id(trip_id), int(exclude_entry_id or 0)))
+        melted = self._fetch_all(
+            f"""
+            SELECT i.karat_id, k.karat_value, COALESCE(SUM(i.weight_grams), 0) AS melted
+            FROM market_trip_entries e JOIN market_trip_melt_inputs i ON i.entry_id = e.id JOIN karats k ON k.id = i.karat_id
+            WHERE e.trip_id = %s AND e.id <> %s AND {_NOT_REVERSED}
+            GROUP BY i.karat_id, k.karat_value FOR SHARE OF e, i
+            """, (_id(trip_id), int(exclude_entry_id or 0)))
+        rows = {(int(r["karat_id"]), r["designation"]): {**r, "melted": 0} for r in legs}
+        for m in melted:
+            key = (int(m["karat_id"]), MELT_DESIGNATION)
+            row = rows.setdefault(key, {"karat_id": m["karat_id"], "karat_value": m["karat_value"], "designation": MELT_DESIGNATION,
+                                        "issued": 0, "returned": 0, "melted": 0})
+            row["melted"] = m["melted"]
+        order = {MELT_DESIGNATION: 0, LOGO_DESIGNATION: 1, UNCLASSIFIED: 2}
+        return sorted(rows.values(), key=lambda r: (-int(r["karat_value"]), order[r["designation"]]))
 
     # ------------------------------------------------------------------ history
     def entries(self, trip_id):
@@ -193,8 +290,8 @@ class MarketTripRepository(BaseRepository):
             """, (_id(trip_id),))
         for row in rows:
             row["gold"] = self._fetch_all(
-                "SELECT g.karat_id, k.karat_value, g.weight_grams FROM market_trip_entry_gold g "
-                "JOIN karats k ON k.id = g.karat_id WHERE g.entry_id = %s ORDER BY k.karat_value DESC", (int(row["id"]),))
+                "SELECT g.karat_id, k.karat_value, g.designation, g.weight_grams FROM market_trip_entry_gold g "
+                "JOIN karats k ON k.id = g.karat_id WHERE g.entry_id = %s ORDER BY k.karat_value DESC, g.designation", (int(row["id"]),))
         return rows
 
     # ------------------------------------------------------------------ as a correction source
@@ -211,7 +308,7 @@ class MarketTripRepository(BaseRepository):
     def entry_gold_legs(self, entry_id):
         """The stored gold of an entry with the signed grams its Scrap movement posted (what a reversal negates)."""
         return self._fetch_all(
-            "SELECT g.karat_id, k.karat_value, g.weight_grams, m.weight_delta_grams FROM market_trip_entry_gold g "
+            "SELECT g.karat_id, k.karat_value, g.designation, g.weight_grams, m.weight_delta_grams FROM market_trip_entry_gold g "
             "JOIN karats k ON k.id = g.karat_id JOIN old_gold_movements m ON m.id = g.scrap_movement_id "
             "WHERE g.entry_id = %s ORDER BY g.karat_id", (_id(entry_id),))
 

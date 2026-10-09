@@ -35,7 +35,7 @@ class CustomerAccountMysqlTests(unittest.TestCase):
         c=DatabaseConnection(config).connect()
         try:
             q=c.cursor();q.execute('SELECT DATABASE()');assert q.fetchone()[0]=='masgold_v2'
-            q.execute('SELECT MAX(version) FROM schema_migrations');assert q.fetchone()[0]==38
+            q.execute('SELECT MAX(version) FROM schema_migrations');assert q.fetchone()[0]==39
             q.close();c.commit();c.start_transaction()
             yield c;c.commit()
         except BaseException:c.rollback();raise

@@ -2,8 +2,8 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// عهدة السوق (Market custody core): the OWNER takes cash from the Main Safe and Scrap (existing karat, physical grams) to the
-// market and brings back what was not used. Everything shown is formatted by marketTripVM; no custody is computed here and no right is
+// عهدة السوق (Market custody): the OWNER takes cash from the Main Safe and Scrap (existing karat, physical grams, with an explicit
+// designation للسبك / لوجو) to the market, melts designated gold into assayed lots and brings back what was not used. Everything shown is formatted by marketTripVM; no custody is computed here and no right is
 // decided here (the service re-checks the OWNER right in every transaction). Shop balances and custody balances are always apart.
 Item {
     id: page
@@ -22,7 +22,7 @@ Item {
 
     Connections {
         target: page.vm
-        function onEntryPosted(code) { entryDialog.close() }
+        function onEntryPosted(code) { entryDialog.close(); meltDialog.close() }
         function onActionDone(operation) { reasonDialog.close() }
     }
 
@@ -149,19 +149,21 @@ Item {
         }
     }
 
-    // One row of figures: a label and up to three values (issued / returned / outstanding).
+    // One row of figures: a label and four values (issued / returned / melted / outstanding).
     component FigureRow: RowLayout {
         property string label: ""
         property string issued: ""
         property string returned: ""
+        property string melted: ""
         property string outstanding: ""
         property bool zero: false
         Layout.fillWidth: true
         layoutDirection: Qt.RightToLeft
         spacing: 8
-        Txt { Layout.preferredWidth: 96; text: parent.label; font.bold: true; elide: Text.ElideNone }
+        Txt { Layout.preferredWidth: 150; text: parent.label; font.bold: true; elide: Text.ElideNone }
         Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: parent.issued; elide: Text.ElideNone }
         Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: parent.returned; elide: Text.ElideNone }
+        Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: parent.melted; elide: Text.ElideNone }
         Txt { objectName: "figureOutstanding"; Layout.fillWidth: true; Layout.preferredWidth: 1; text: parent.outstanding
               font.bold: true; color: parent.zero ? theme.textMuted : theme.amber; elide: Text.ElideNone }
     }
@@ -238,7 +240,7 @@ Item {
 
             Txt { objectName: "tripMessage"; Layout.fillWidth: true; visible: !!page.vm && page.vm.message !== ""
                   text: page.vm ? page.vm.message : ""; color: theme.green; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-            Txt { objectName: "tripError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== "" && !entryDialog.visible && !reasonDialog.visible
+            Txt { objectName: "tripError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== "" && !entryDialog.visible && !reasonDialog.visible && !meltDialog.visible
                   text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
 
             Txt {
@@ -280,6 +282,9 @@ Item {
                         Btn { objectName: "returnButton"; text: "تسجيل رجوع"; visible: !!page.detail.open
                               enabled: !!page.vm && !page.vm.writing
                               onClicked: entryDialog.openFor("RETURN", page.detail.id) }
+                        Btn { objectName: "meltButton"; text: "سبك"; visible: !!page.detail.open
+                              enabled: !!page.detail.meltAvailable && !!page.vm && !page.vm.writing
+                              onClicked: meltDialog.openFor(page.detail.id) }
                         Btn { objectName: "closeTripButton"; text: "إغلاق العهدة"; visible: !!page.detail.open; accent: theme.green
                               enabled: !!page.detail.closable && !!page.vm && !page.vm.writing
                               onClicked: page.vm.closeTrip(page.detail.id) }
@@ -299,9 +304,10 @@ Item {
                             Layout.fillWidth: true
                             layoutDirection: Qt.RightToLeft
                             spacing: 8
-                            Item { Layout.preferredWidth: 96 }
+                            Item { Layout.preferredWidth: 150 }
                             Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: "أُخرج"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
                             Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: "رجع"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+                            Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: "سُبك"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
                             Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: "المتبقي"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
                         }
                         FigureRow {
@@ -309,20 +315,52 @@ Item {
                             label: "النقدية"
                             issued: page.detail.cash ? page.detail.cash.issued : ""
                             returned: page.detail.cash ? page.detail.cash.returned : ""
+                            melted: "—"
                             outstanding: page.detail.cash ? page.detail.cash.outstanding : ""
                             zero: page.detail.cash ? page.detail.cash.zero : true
                         }
                         Repeater {
                             model: page.detail.gold || []
                             delegate: FigureRow {
-                                objectName: "custodyGoldRow_" + modelData.karat
-                                label: "ذهب عيار " + modelData.karat
+                                objectName: "custodyGoldRow_" + modelData.karat + "_" + modelData.designation
+                                label: "ذهب " + modelData.label
                                 issued: modelData.issued + " جرام"
                                 returned: modelData.returned + " جرام"
+                                melted: modelData.melted + " جرام"
                                 outstanding: modelData.outstanding + " جرام"
                                 zero: modelData.zero
                             }
                         }
+                    }
+                    // Assayed lots made by melting: never mixed with master-karat custody.
+                    Section {
+                        objectName: "assayedLotsSection"
+                        title: "شحنات السبك المعايَرة (منفصلة عن عهدة العيارات)"
+                        accent: theme.gold
+                        visible: (page.detail.lots || []).length > 0
+                        Repeater {
+                            model: page.detail.lots || []
+                            delegate: Rectangle {
+                                Layout.fillWidth: true
+                                implicitHeight: lotRow.implicitHeight + 12
+                                radius: theme.radiusSmall
+                                color: theme.bgTertiary
+                                border.color: theme.border
+                                ColumnLayout {
+                                    id: lotRow
+                                    anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                    anchors.leftMargin: 10; anchors.rightMargin: 10
+                                    spacing: 2
+                                    Txt { objectName: "lotTitle"; Layout.fillWidth: true; text: modelData.title; font.bold: true; elide: Text.ElideNone }
+                                    Txt { objectName: "lotFigures"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                          text: "المتبقي " + modelData.outstanding + " جرام • الوزن " + modelData.weight + " • العيار الفعلي "
+                                                + modelData.fineness + " • الذهب الصافي " + page.ltr(modelData.pure)
+                                          color: theme.textSecondary }
+                                }
+                            }
+                        }
+                        Txt { objectName: "lotNote"; Layout.fillWidth: true; text: page.detail.lotNote || ""; color: theme.amber
+                              font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                     }
                     Section {
                         title: "رصيد المحل (لا يشمل العهدة)"
@@ -356,7 +394,8 @@ Item {
                                         Layout.fillWidth: true
                                         spacing: 2
                                         Txt { Layout.fillWidth: true; text: modelData.kindText + "  " + page.ltr(modelData.code); font.bold: true
-                                              color: modelData.kind === "ISSUE" ? theme.amber : theme.green; elide: Text.ElideNone }
+                                              color: modelData.kind === "ISSUE" ? theme.amber : modelData.kind === "MELT" ? theme.gold : theme.green
+                                              elide: Text.ElideNone }
                                         Txt { objectName: "entryWhat"; Layout.fillWidth: true; text: modelData.what; wrapMode: Text.WordWrap
                                               elide: Text.ElideNone }
                                         Txt { Layout.fillWidth: true; text: modelData.date + "  •  " + modelData.time + "  •  " + modelData.actor
@@ -383,6 +422,65 @@ Item {
                                             wrapMode: Text.WordWrap; elide: Text.ElideNone }
                         }
                     }
+                    Section {
+                        objectName: "meltsSection"
+                        title: "سجل السبك والتحليل (دائم)"
+                        accent: theme.gold
+                        visible: (page.detail.melts || []).length > 0
+                        Repeater {
+                            model: page.detail.melts || []
+                            delegate: Rectangle {
+                                Layout.fillWidth: true
+                                id: meltCard
+                                readonly property bool dead: modelData.reversed === true
+                                implicitHeight: meltColumn.implicitHeight + 14
+                                radius: theme.radiusSmall
+                                // A reversed melt is history only: a neutral card (no accent colours) whose text stays readable.
+                                color: meltCard.dead ? theme.bgSecondary : theme.bgTertiary
+                                border.color: theme.border
+                                ColumnLayout {
+                                    id: meltColumn
+                                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                                    anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.topMargin: 7
+                                    spacing: 3
+                                    Txt { objectName: "meltTitle"; Layout.fillWidth: true; font.bold: true; elide: Text.ElideNone
+                                          color: meltCard.dead ? theme.textSecondary : theme.textPrimary
+                                          text: "سبك " + page.ltr(modelData.code) + "  •  " + modelData.workshop + "  •  " + modelData.date }
+                                    Txt { objectName: "meltReversedNotice"; Layout.fillWidth: true; visible: modelData.notice !== ""; text: modelData.notice
+                                          color: theme.textPrimary; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                    Txt { objectName: "meltState"; Layout.fillWidth: true; visible: modelData.state !== ""
+                                          text: modelData.state + (modelData.reason !== "" ? "  •  السبب: " + modelData.reason : "")
+                                          color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                    Txt { objectName: "meltInputs"; Layout.fillWidth: true; text: "المدخلات: " + modelData.inputsText
+                                          wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                    Repeater {
+                                        model: modelData.lots
+                                        delegate: Txt { objectName: "meltLot"; Layout.fillWidth: true; text: modelData.title + ": " + modelData.text
+                                                        color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                    }
+                                    Txt { Layout.fillWidth: true; visible: modelData.assay !== ""; text: "مرجع المعايرة: " + modelData.assay
+                                          color: theme.textMuted; font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
+                                    Txt { Layout.fillWidth: true; visible: modelData.gainExplanation !== ""; text: "سبب زيادة الوزن: " + modelData.gainExplanation
+                                          color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                    Repeater {
+                                        model: modelData.analysis
+                                        delegate: RowLayout {
+                                            Layout.fillWidth: true
+                                            layoutDirection: Qt.RightToLeft
+                                            spacing: 8
+                                            Txt { Layout.preferredWidth: 250; text: modelData.label; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                                                  elide: Text.ElideNone }
+                                            Txt { objectName: "meltAnalysisValue"; Layout.fillWidth: true; text: modelData.value; wrapMode: Text.WordWrap
+                                                  color: meltCard.dead ? theme.textSecondary
+                                                         : modelData.value.indexOf("غير مكتمل") === 0 ? theme.amber : theme.textPrimary
+                                                  elide: Text.ElideNone }
+                                        }
+                                    }
+                                    Item { Layout.preferredHeight: 4 }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -404,18 +502,27 @@ Item {
         property string requestKey: ""
         readonly property bool isReturn: mode === "RETURN"
         readonly property var karatChoices: [{ id: "", text: "اختر العيار" }].concat(page.ctx.karats || [])
+        readonly property var designationChoices: [{ id: "", text: "اختر الوجهة" }].concat(page.ctx.designations || [])
+        readonly property var lineChoices: [{ key: "", text: "اختر من العهدة" }].concat(page.detail.returnLines || [])
         readonly property bool hasQuantity: cashField.text.trim().length > 0 || hasGold()
         function hasGold() {
             for (var i = 0; i < goldModel.count; ++i)
-                if (goldModel.get(i).weight.trim().length > 0 && goldModel.get(i).karatIndex > 0) return true
+                if (goldModel.get(i).weight.trim().length > 0) return true
             return false
         }
         function collect() {
             var rows = []
             for (var i = 0; i < goldModel.count; ++i) {
                 var g = goldModel.get(i)
-                if (g.weight.trim().length > 0 || g.karatIndex > 0)
-                    rows.push({ karatId: g.karatIndex > 0 ? karatChoices[g.karatIndex].id : "", weight: g.weight })
+                if (isReturn) {
+                    if (g.weight.trim().length > 0 || g.lineIndex > 0) {
+                        var line = g.lineIndex > 0 ? lineChoices[g.lineIndex] : null
+                        rows.push({ karatId: line ? line.karatId : "", designation: line ? line.designation : "", weight: g.weight })
+                    }
+                } else if (g.weight.trim().length > 0 || g.karatIndex > 0 || g.designationIndex > 0) {
+                    rows.push({ karatId: g.karatIndex > 0 ? karatChoices[g.karatIndex].id : "",
+                                designation: g.designationIndex > 0 ? designationChoices[g.designationIndex].id : "", weight: g.weight })
+                }
             }
             return rows
         }
@@ -428,7 +535,7 @@ Item {
             dateField.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
             notesField.text = ""
             goldModel.clear()
-            goldModel.append({ karatIndex: 0, weight: "" })
+            goldModel.append({ karatIndex: 0, designationIndex: 0, lineIndex: 0, weight: "" })
             page.vm.clearMessage()
             page.vm.refresh()
             open()
@@ -448,7 +555,7 @@ Item {
                   text: entryDialog.isReturn ? "تسجيل رجوع من العهدة" : (entryDialog.tripId === "" ? "عهدة سوق جديدة" : "إخراج عهدة") }
             Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
                   text: entryDialog.isReturn ? "يُعاد المبلغ إلى الخزنة الرئيسية والذهب إلى كسر المحل بنفس العيار. لا يتجاوز الرجوع المتبقي في العهدة."
-                                              : "تُخصم النقدية من الخزنة الرئيسية مرة واحدة ويُخرج الذهب من كسر المحل المتاح فقط (دون المحجوز لمراجعة المدير). كلاهما عهدة وليس دفعة." }
+                                              : "تُخصم النقدية من الخزنة الرئيسية مرة واحدة ويُخرج الذهب من كسر المحل المتاح فقط (دون المحجوز لمراجعة المدير). حدّد وجهة كل سطر ذهب: للسبك أو لوجو. كلاهما عهدة وليس دفعة." }
             Flickable {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
@@ -479,7 +586,8 @@ Item {
                             Field { id: dateField; objectName: "tripDateField"; Layout.fillWidth: true }
                         }
                     }
-                    Txt { Layout.fillWidth: true; text: "الذهب (كسر) بالعيار والوزن الفعلي بالجرام"; color: theme.gold; font.bold: true }
+                    Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true
+                          text: entryDialog.isReturn ? "الذهب المُرجَع (اختر السطر من العهدة ثم الوزن)" : "الذهب (كسر): العيار والوجهة والوزن الفعلي بالجرام" }
                     Repeater {
                         model: goldModel
                         delegate: RowLayout {
@@ -487,12 +595,31 @@ Item {
                             layoutDirection: Qt.RightToLeft
                             spacing: 8
                             Combo {
+                                objectName: "tripGoldLine_" + index
+                                visible: entryDialog.isReturn
+                                Layout.preferredWidth: entryDialog.isReturn ? 270 : 0
+                                model: entryDialog.lineChoices
+                                textRole: "text"
+                                currentIndex: lineIndex
+                                onActivated: function (i) { goldModel.setProperty(index, "lineIndex", i) }
+                            }
+                            Combo {
                                 objectName: "tripGoldKarat_" + index
-                                Layout.preferredWidth: 150
+                                visible: !entryDialog.isReturn
+                                Layout.preferredWidth: entryDialog.isReturn ? 0 : 130
                                 model: entryDialog.karatChoices
                                 textRole: "text"
                                 currentIndex: karatIndex
                                 onActivated: function (i) { goldModel.setProperty(index, "karatIndex", i) }
+                            }
+                            Combo {
+                                objectName: "tripGoldDesignation_" + index
+                                visible: !entryDialog.isReturn
+                                Layout.preferredWidth: entryDialog.isReturn ? 0 : 130
+                                model: entryDialog.designationChoices
+                                textRole: "text"
+                                currentIndex: designationIndex
+                                onActivated: function (i) { goldModel.setProperty(index, "designationIndex", i) }
                             }
                             Field {
                                 objectName: "tripGoldWeight_" + index
@@ -504,9 +631,9 @@ Item {
                             }
                         }
                     }
-                    Btn { objectName: "addGoldRowButton"; text: "＋ عيار آخر"; accent: theme.textSecondary
-                          enabled: goldModel.count < 4
-                          onClicked: goldModel.append({ karatIndex: 0, weight: "" }) }
+                    Btn { objectName: "addGoldRowButton"; text: "＋ سطر ذهب آخر"; accent: theme.textSecondary
+                          enabled: goldModel.count < 8
+                          onClicked: goldModel.append({ karatIndex: 0, designationIndex: 0, lineIndex: 0, weight: "" }) }
                     Txt { Layout.fillWidth: true; text: "ملاحظات" }
                     Field { id: notesField; objectName: "tripNotesField"; Layout.fillWidth: true }
                 }
@@ -533,6 +660,200 @@ Item {
                 }
                 Btn { objectName: "cancelTripEntryButton"; text: "إلغاء"; accent: theme.textSecondary
                       enabled: !!page.vm && !page.vm.writing; onClicked: entryDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- melting: designated custody -> assayed lots
+    Popup {
+        id: meltDialog
+        objectName: "tripMeltDialog"
+        property string tripId: ""
+        property string requestKey: ""
+        readonly property var stockChoices: [{ karatId: "", text: "اختر العيار" }].concat(page.detail.meltStock || [])
+        function openFor(trip) {
+            if (!page.vm) return
+            tripId = trip
+            requestKey = page.vm.newRequestKey()
+            meltDateField.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            workshopField.text = ""
+            assayField.text = ""
+            outputWeightField.text = ""
+            outputFinenessField.text = ""
+            gainField.text = ""
+            meltNotesField.text = ""
+            inputModel.clear()
+            inputModel.append({ karatIndex: 0, weight: "" })
+            residueModel.clear()
+            page.vm.clearMessage()
+            page.vm.refresh()
+            open()
+        }
+        function inputs() {
+            var rows = []
+            for (var i = 0; i < inputModel.count; ++i) {
+                var g = inputModel.get(i)
+                if (g.weight.trim().length > 0 || g.karatIndex > 0)
+                    rows.push({ karatId: g.karatIndex > 0 ? stockChoices[g.karatIndex].karatId : "", weight: g.weight })
+            }
+            return rows
+        }
+        function residues() {
+            var rows = []
+            for (var i = 0; i < residueModel.count; ++i) {
+                var r = residueModel.get(i)
+                if (r.weight.trim().length > 0 || r.fineness.trim().length > 0 || r.label.trim().length > 0)
+                    rows.push({ weight: r.weight, fineness: r.fineness, label: r.label })
+            }
+            return rows
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(620, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 640, 640)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        ListModel { id: inputModel }
+        ListModel { id: residueModel }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; text: "سبك ذهب من العهدة" }
+            Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "يُسبك ذهب العهدة المخصص «للسبك» فقط (أي عيار، بوزنه الفعلي) ولا يُستهلك ذهب «لوجو» ولا كسر المحل. لا تتحرك أي نقدية ولا حساب مورد. يُحفظ فرق الوزن والذهب الصافي للتحليل نهائيًا." }
+            Flickable {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentHeight: meltColumnForm.implicitHeight
+                clip: true
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: meltColumnForm
+                    width: parent.width - 12
+                    spacing: 6
+                    Txt { objectName: "meltStockText"; Layout.fillWidth: true; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                          text: "المتاح للسبك: " + ((page.detail.meltStock || []).map(function (m) { return m.text }).join(" • ") || "لا يوجد") }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "تاريخ السبك (yyyy-MM-dd) *" }
+                            Field { id: meltDateField; objectName: "meltDateField"; Layout.fillWidth: true }
+                        }
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "الورشة / المسؤول *" }
+                            Field { id: workshopField; objectName: "meltWorkshopField"; Layout.fillWidth: true }
+                        }
+                    }
+                    Txt { Layout.fillWidth: true; text: "مدخلات السبك: العيار والوزن الفعلي بالجرام"; color: theme.gold; font.bold: true }
+                    Repeater {
+                        model: inputModel
+                        delegate: RowLayout {
+                            Layout.fillWidth: true
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 8
+                            Combo {
+                                objectName: "meltInputKarat_" + index
+                                Layout.preferredWidth: 260
+                                model: meltDialog.stockChoices
+                                textRole: "text"
+                                currentIndex: karatIndex
+                                onActivated: function (i) { inputModel.setProperty(index, "karatIndex", i) }
+                            }
+                            Field {
+                                objectName: "meltInputWeight_" + index
+                                Layout.fillWidth: true
+                                placeholderText: "الوزن (جرام)"
+                                text: weight
+                                inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                onTextEdited: inputModel.setProperty(index, "weight", text)
+                            }
+                        }
+                    }
+                    Btn { objectName: "addMeltInputButton"; text: "＋ عيار آخر"; accent: theme.textSecondary
+                          enabled: inputModel.count < 6
+                          onClicked: inputModel.append({ karatIndex: 0, weight: "" }) }
+                    Txt { Layout.fillWidth: true; text: "الناتج الرئيسي (معايَر)"; color: theme.gold; font.bold: true }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "الوزن الفعلي (جرام) *" }
+                            Field { id: outputWeightField; objectName: "meltOutputWeight"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+                        }
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "العيار الفعلي بالألف * (مثل 870 أو 870.5)" }
+                            Field { id: outputFinenessField; objectName: "meltOutputFineness"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+                        }
+                    }
+                    Txt { Layout.fillWidth: true; text: "رواسب قابلة للاسترداد (اختياري) — اترك العيار فارغًا إن كان غير معروف"; color: theme.gold; font.bold: true }
+                    Repeater {
+                        model: residueModel
+                        delegate: RowLayout {
+                            Layout.fillWidth: true
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 8
+                            Field {
+                                objectName: "meltResidueLabel_" + index
+                                Layout.preferredWidth: 130
+                                placeholderText: "الوصف"
+                                text: label
+                                onTextEdited: residueModel.setProperty(index, "label", text)
+                            }
+                            Field {
+                                objectName: "meltResidueWeight_" + index
+                                Layout.fillWidth: true
+                                placeholderText: "الوزن (جرام)"
+                                text: weight
+                                inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                onTextEdited: residueModel.setProperty(index, "weight", text)
+                            }
+                            Field {
+                                objectName: "meltResidueFineness_" + index
+                                Layout.fillWidth: true
+                                placeholderText: "العيار بالألف (غير معروف)"
+                                text: fineness
+                                inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                onTextEdited: residueModel.setProperty(index, "fineness", text)
+                            }
+                        }
+                    }
+                    Btn { objectName: "addResidueButton"; text: "＋ راسب"; accent: theme.textSecondary
+                          enabled: residueModel.count < 10
+                          onClicked: residueModel.append({ weight: "", fineness: "", label: "" }) }
+                    Txt { Layout.fillWidth: true; text: "سبب زيادة الوزن (مطلوب إذا زاد وزن النواتج عن المدخلات)" }
+                    Field { id: gainField; objectName: "meltGainField"; Layout.fillWidth: true }
+                    Txt { Layout.fillWidth: true; text: "مرجع المعايرة (اختياري)" }
+                    Field { id: assayField; objectName: "meltAssayField"; Layout.fillWidth: true }
+                    Txt { Layout.fillWidth: true; text: "ملاحظات" }
+                    Field { id: meltNotesField; objectName: "meltNotesField"; Layout.fillWidth: true }
+                }
+            }
+            Txt { objectName: "meltEntryError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmMeltButton"
+                    text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "تسجيل السبك"
+                    primary: true
+                    enabled: meltDateField.text.trim().length > 0 && !!page.vm && !page.vm.writing
+                    onClicked: page.vm.meltCustody(meltDialog.tripId, meltDialog.inputs(), meltDateField.text, workshopField.text,
+                                                   outputWeightField.text, outputFinenessField.text, meltDialog.residues(),
+                                                   assayField.text, gainField.text, meltNotesField.text, meltDialog.requestKey)
+                }
+                Btn { objectName: "cancelMeltButton"; text: "إلغاء"; accent: theme.textSecondary
+                      enabled: !!page.vm && !page.vm.writing; onClicked: meltDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }
@@ -567,7 +888,7 @@ Item {
                   text: reasonDialog.mode === "REVERSE" ? "عكس الحركة " + page.ltr(reasonDialog.targetCode) : "إعادة فتح العهدة" }
             Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
                   text: reasonDialog.mode === "REVERSE"
-                        ? "تبقى الحركة الأصلية في السجل وتُسجل حركات معاكسة مرتبطة بها. لا يُعكس إخراج بعده رجوع قائم، ولا تُعكس حركة في عهدة مغلقة."
+                        ? "تبقى الحركة الأصلية في السجل وتُسجل حركات معاكسة مرتبطة بها، ويبقى تحليل السبك محفوظًا. لا يُعكس إخراج بعده رجوع أو سبك قائم، ولا يُعكس سبك استُخدمت شحنته، ولا تُعكس حركة في عهدة مغلقة."
                         : "تعود العهدة مفتوحة لإخراج عهدة أو تسجيل رجوع أو عكس. لا تتغير أي أرصدة." }
             Txt { Layout.fillWidth: true; text: "السبب *" }
             Field { id: reasonField; objectName: "tripReasonField"; Layout.fillWidth: true }

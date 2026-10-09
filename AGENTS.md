@@ -740,9 +740,9 @@ using Git (`git branch --show-current`, `git log --oneline -10`, `git status`); 
 report unexpected files or commits. Do not treat any commit hash in this document as the
 current HEAD. Read both `AGENTS.md` and `CLAUDE.md`.
 
-- Schema chain: migrations `001–038` in `database/schema`; next migration is `039`
+- Schema chain: migrations `001–039` in `database/schema`; next migration is `040`
   unless later repository state proves otherwise. Already-applied migrations are
-  immutable, including 019–038. `database/migrations/*.sql` are historical prototypes
+  immutable, including 019–039. `database/migrations/*.sql` are historical prototypes
   (see its README) and are never applied. Future schema work needs the next forward migration,
   guarded rollback, `SHA256SUMS`, chain tooling and appropriate migration/rehearsal tests.
 - Normal DEV database: `masgold_v2`. Never mutate `golddb`. Rehearsal/prod databases
@@ -814,6 +814,7 @@ current HEAD. Read both `AGENTS.md` and `CLAUDE.md`.
   `MARKET_TRIP_MANAGE` (OWNER only, rechecked in each transaction). The only correction is a full reversal (`RVxxxxxx`) through
   `CorrectionService` (source `MARKET_TRIP_ENTRY`, also needs `TRANSACTION_CORRECT`): blocked for a closed trip, for an issue
   that a later return depends on, and for a return whose Scrap the shop has since used.
+- **Market-trip melting (migration 039):** every NEW gold line of a custody issue carries the OWNER's explicit designation, `MELT` (للسبك) or `LOGO` (لوجو); custody is tracked per (karat, designation) (both may exist for one karat, their combined issue is checked against available Scrap, shop Scrap stays pooled by karat) and a return preserves the designation and cannot exceed it. Gold written before 039 is `UNCLASSIFIED`: return only, never melted, never reclassified. A `MELT` entry (`MT…-n`) consumes MELT-designated custody (any active master karat, physical grams) and atomically creates assayed output lots: one MAIN lot (fineness in parts per thousand, 0.1 precision, exact `Decimal`, never mapped onto a master karat) plus optional RESIDUE lots whose fineness may be unknown (never inferred); a weight gain needs an explanation. No cash, shop Scrap or supplier movement occurs. The melt keeps immutable analytical snapshots (input weight, nominal pure gold `SUM(weight*karat/24)`, output weight, known pure gold, signed differences outputs - inputs, Eq21 = pure*24/21, six decimals); when any assay is unknown the pure-gold difference is incomplete and no loss is shown. Differences are permanent (also after closure or reversal) and never write off or touch a supplier account. A trip closes only when cash, every (karat, designation) and every assayed lot are zero. A melt is reversed through `CorrectionService` (`MARKET_TRIP_MANAGE` + `TRANSACTION_CORRECT`, reason mandatory) unless a later unreversed entry used its lots; an issue is not reversible while a return or melt depends on it. Shop return of assayed lots, sales, supplier settlement, allocation, heating and re-melting are not implemented (M2 and later).
 - **22K support (migration 038):** 22K is a normal master karat and a supplier may be dedicated to 18, 21, 22 or 24 (its account stays
   in PHYSICAL grams of that karat, no conversion). The price provider contract stays exactly 18/21/24; `GoldPriceService` publishes
   a derived 22K quote beside them, in the SAME group and activation: buy22/sell22 = the stored approved 24K price * 22 / 24, `Decimal`,

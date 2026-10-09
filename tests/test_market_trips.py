@@ -27,7 +27,8 @@ def key(n):
 
 
 def gold(*rows):
-    return [{"karat_id": k, "weight": w} for k, w in rows]
+    """(karat, grams[, designation]) lines; the designation defaults to MELT (للسبك), as 039 requires one on every issued line."""
+    return [{"karat_id": r[0], "weight": r[1], "designation": r[2] if len(r) > 2 else "MELT"} for r in rows]
 
 
 class TripCase(unittest.TestCase):
@@ -337,7 +338,7 @@ class CloseTests(TripCase):
     def test_closure_is_refused_with_the_exact_outstanding_quantities(self):
         error = self.refused("OUTSTANDING_CUSTODY", lambda: self.service.close(self.trip))
         self.assertIn("1,000.00 ج", error.args[0])
-        self.assertIn("عيار 21: 10.000 جرام", error.args[0])
+        self.assertIn("عيار 21 (للسبك): 10.000 جرام", error.args[0])
         self.ret(self.trip, "1000")
         self.assertIn("عيار 21", self.refused("OUTSTANDING_CUSTODY", lambda: self.service.close(self.trip)).args[0])      # gold still out
         self.ret(self.trip, "", [(K21, "9.999")])
@@ -527,13 +528,13 @@ class ViewModelTests(TripCase):
         self.assertIn("إرجاع كل النقدية وكل الذهب", self.vm.limitation)
 
     def test_notification_follows_only_a_committed_money_change(self):
-        self.vm.issue("", "700", [{"karatId": K21, "weight": "10"}], TODAY, "", self.vm.newRequestKey())
+        self.vm.issue("", "700", [{"karatId": K21, "weight": "10", "designation": "MELT"}], TODAY, "", self.vm.newRequestKey())
         self.assertEqual((self.signals["custody"], self.signals["entry"]), (1, ["MT000001-1"]))
         self.assertEqual(self.vm.message, "تم إخراج العهدة MT000001-1")
-        self.vm.issue("", "", [{"karatId": K24, "weight": "1"}], TODAY, "", self.vm.newRequestKey())              # refused: no 24K
+        self.vm.issue("", "", [{"karatId": K24, "weight": "1", "designation": "MELT"}], TODAY, "", self.vm.newRequestKey())              # refused: no 24K
         self.assertEqual((self.signals["custody"], len(self.signals["entry"])), (1, 1))
         self.assertIn("غير كافٍ", self.vm.errorMessage)
-        self.vm.returnCustody(self.vm.selectedTripId, "700", [{"karatId": K21, "weight": "10"}], TODAY, "", self.vm.newRequestKey())
+        self.vm.returnCustody(self.vm.selectedTripId, "700", [{"karatId": K21, "weight": "10", "designation": "MELT"}], TODAY, "", self.vm.newRequestKey())
         self.assertEqual(self.signals["custody"], 2)
         self.vm.closeTrip(self.vm.selectedTripId)
         self.assertEqual((self.signals["custody"], self.signals["action"]), (2, ["close"]))                       # no balance moved
@@ -556,18 +557,18 @@ class ViewModelTests(TripCase):
 
     def test_the_detail_separates_custody_from_the_shop_and_explains_what_blocks_closing(self):
         self.vm.refresh()
-        self.vm.issue("", "10000", [{"karatId": K21, "weight": "20"}], TODAY, "", self.vm.newRequestKey())
+        self.vm.issue("", "10000", [{"karatId": K21, "weight": "20", "designation": "MELT"}], TODAY, "", self.vm.newRequestKey())
         detail = self.vm.detail
         self.assertEqual((detail["cash"]["outstanding"], detail["gold"][0]["karat"], detail["gold"][0]["outstanding"], detail["closable"]),
                          ("10,000.00 ج", 21, "20.000", False))
-        self.assertIn("نقدية 10,000.00 ج • عيار 21: 20.000 جرام", detail["closeHint"])
+        self.assertIn("نقدية 10,000.00 ج • عيار 21 (للسبك): 20.000 جرام", detail["closeHint"])
         context = self.vm.context
         self.assertEqual(context["safeBalanceText"], "40,000.00 ج")                                              # the SHOP side
         self.assertIn("عيار 21: المتاح 75.000 جرام • محجوز لمراجعة المدير 5.000", " ".join(r["text"] for r in context["shop"]))
         self.assertEqual([k["text"] for k in context["karats"]], ["عيار 24", "عيار 21", "عيار 18"])
         row = detail["entries"][0]
         self.assertEqual((row["code"], row["kindText"], row["canReverse"]), ("MT000001-1", "إخراج عهدة", True))
-        self.assertEqual(self.vm.trips[0]["outstandingText"], "نقدية 10,000.00 ج • عيار 21: 20.000 جرام")
+        self.assertEqual(self.vm.trips[0]["outstandingText"], "نقدية 10,000.00 ج • عيار 21 (للسبك): 20.000 جرام")
 
 
 class RulesTests(unittest.TestCase):

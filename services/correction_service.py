@@ -328,7 +328,7 @@ class CorrectionService:
         if source_type not in STANDALONE:
             getattr(self, f"_plan_{source_type.lower()}")(connection, plan, source, lock)
         if source_type == MTE:
-            from repositories.market_trip_repository import ISSUE as TRIP_ISSUE, MarketTripRepository
+            from repositories.market_trip_repository import ISSUE as TRIP_ISSUE, MarketTripRepository, entry_code
             trips = MarketTripRepository(connection)
             if source["trip_status"] != "OPEN":
                 plan.blockers.append(("TRIP_CLOSED", "العهدة مغلقة: أعد فتحها أولاً قبل عكس أي حركة فيها."))
@@ -339,10 +339,18 @@ class CorrectionService:
                 # Undoing an issue must not leave a later (unreversed) return larger than what remains in custody.
                 cash = trips.custody_cash(source["trip_id"], exclude_entry_id=source_id)
                 gold = trips.custody_gold(source["trip_id"], exclude_entry_id=source_id)
+                # Per (karat, designation): later returns AND melts consume the issued custody (a melt only the MELT designation).
                 if Decimal(str(cash[0])) - Decimal(str(cash[1])) < 0 or any(
-                        Decimal(str(g["issued"])) - Decimal(str(g["returned"])) < 0 for g in gold):
+                        Decimal(str(g["issued"])) - Decimal(str(g["returned"])) - Decimal(str(g.get("melted", 0) or 0)) < 0
+                        for g in gold):
                     plan.blockers.append(("DEPENDENT_RETURN_EXISTS",
-                                          "لا يمكن عكس الإخراج لأن رجوعًا مسجلًا بعده يعتمد عليه — اعكس الرجوع أولاً."))
+                                          "لا يمكن عكس الإخراج لأن رجوعًا أو سبكًا مسجلًا بعده يعتمد عليه — اعكس الرجوع أو السبك أولاً."))
+            if source["entry_kind"] == "MELT":
+                # A melt can be undone only while its lots have no unreversed downstream use (their own CREATE is not one).
+                for dependent in trips.lot_downstream(source_id):
+                    plan.blockers.append(("DEPENDENT_LOT_USE_EXISTS",
+                                          "لا يمكن عكس السبك لأن شحنة ناتجة عنه استُخدمت في الحركة "
+                                          f"{entry_code(dependent['trip_id'], dependent['entry_no'])} — اعكسها أولاً."))
         if source_type == SMP:
             # The exact stored making movement is restored (never a recomputed amount): the payment's negative delta, negated.
             from repositories.supplier_payment_repository import REVERSAL_MOVEMENT, SupplierPaymentRepository

@@ -29,7 +29,7 @@ class SupplierMySqlTests(unittest.TestCase):
         self.cursor = self.connection.cursor(dictionary=True)
         self.cursor.execute("SELECT DATABASE() AS db, MAX(version) AS v FROM schema_migrations")
         row = self.cursor.fetchone()
-        self.assertEqual((row["db"], int(row["v"])), ("masgold_v2", 38))
+        self.assertEqual((row["db"], int(row["v"])), ("masgold_v2", 39))
         self.assertFalse(self.connection.autocommit)           # every statement below belongs to the ONE test transaction
         self.connection.rollback()                              # end the read above; nothing is ever committed
         self.addCleanup(self.cleanup)

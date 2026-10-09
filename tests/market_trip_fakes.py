@@ -1,6 +1,6 @@
 """In-memory doubles for the market-trip tests: a transactional fake database (a failed transaction restores every table, so
 atomicity is testable), the repository contracts of MarketTripRepository / the Scrap lock / the cash account / the
-CorrectionRepository subset a full reversal uses, with the 037 database checks and unique keys. The SQL itself is proven by the
+CorrectionRepository subset a full reversal uses, with the 037/039 database checks and unique keys. The SQL itself is proven by the
 schema tests and the rehearsal run; real-MySQL concurrency is NOT claimed from anything in here."""
 import copy
 from contextlib import contextmanager
@@ -10,7 +10,8 @@ from decimal import Decimal as D
 from mysql.connector import IntegrityError
 
 from app.session import AppSession
-from repositories.market_trip_repository import CASH_TYPE, ISSUE, SCRAP_TYPE, SOURCE
+from repositories.market_trip_repository import (CASH_TYPE, CREATE_MOVEMENT, DESIGNATIONS, ISSUE, MELT_DESIGNATION, SCRAP_TYPE,
+                                                 SOURCE, UNCLASSIFIED)
 from services.authentication_service import AuthenticationResult, _VERIFIED
 from tests.auth_fakes import FakeAuthorization
 
@@ -40,8 +41,9 @@ class Db:
                       {"id": 2, "karat_id": 2, "weight_delta": D("50.000"), "reference_type": "OPENING", "reference_id": "0", "type_code": "OPENING"}]
         self.holds = {1: D("5.000")}
         self.trips, self.entries, self.cash_legs, self.gold_legs, self.events = {}, {}, [], [], []
+        self.melts, self.melt_inputs, self.lots, self.lot_moves = {}, [], {}, []          # 039
         self.corrections, self.audit_rows = [], []
-        self.sequences = {"trip": 0, "entry": 0, "cash_move": 1, "scrap": 2, "correction": 0}
+        self.sequences = {"trip": 0, "entry": 0, "cash_move": 1, "scrap": 2, "correction": 0, "lot": 0}
         self.fail_at = None
         self.transactions = 0
 
@@ -165,7 +167,7 @@ class TripRepo:
 
     def insert_entry(self, *, trip_id, entry_no, kind, entry_date, notes, key, digest, actor, now):
         self._fail("entry")
-        assert kind in ("ISSUE", "RETURN")                                                   # chk_mte_kind
+        assert kind in ("ISSUE", "RETURN", "MELT")                                           # chk_mte_kind
         if any(e["request_key"] == key for e in self.db.entries.values()):
             raise _dup("uq_mte_request")
         if any((e["trip_id"], e["entry_no"]) == (int(trip_id), entry_no) for e in self.db.entries.values()):
@@ -201,13 +203,59 @@ class TripRepo:
         self.db.cash_legs.append({"entry_id": int(entry_id), "amount": amount, "cash_account_id": int(cash_account_id),
                                   "cash_movement_id": cash_movement_id})
 
-    def insert_gold_leg(self, *, entry_id, karat_id, weight, scrap_movement_id):
+    def insert_gold_leg(self, *, entry_id, karat_id, designation, weight, scrap_movement_id):
         self._fail("leg")
         assert weight > 0                                                                    # chk_mteg_weight
-        if any((l["entry_id"], l["karat_id"]) == (int(entry_id), int(karat_id)) for l in self.db.gold_legs):
-            raise _dup("uq_mteg_entry_karat")
-        self.db.gold_legs.append({"entry_id": int(entry_id), "karat_id": int(karat_id), "weight_grams": weight,
-                                  "scrap_movement_id": scrap_movement_id})
+        assert designation in DESIGNATIONS                                                   # chk_mteg_designation
+        if any((l["entry_id"], l["karat_id"], l["designation"]) == (int(entry_id), int(karat_id), designation) for l in self.db.gold_legs):
+            raise _dup("uq_mteg_entry_karat_des")
+        if any(l["scrap_movement_id"] == scrap_movement_id for l in self.db.gold_legs):
+            raise _dup("uq_mteg_movement")
+        self.db.gold_legs.append({"entry_id": int(entry_id), "karat_id": int(karat_id), "designation": designation,
+                                  "weight_grams": weight, "scrap_movement_id": scrap_movement_id})
+
+    # ---- melting (039): the CHECK constraints of the four tables are mirrored as asserts
+    def insert_melt(self, *, entry_id, workshop, assay_reference, gain_explanation, analysis):
+        self._fail("melt")
+        assert (workshop or "").strip()                                                      # chk_mtm_workshop
+        assert analysis["input_weight"] > 0 and analysis["output_weight"] > 0                # chk_mtm_weights
+        assert analysis["weight_difference"] == analysis["output_weight"] - analysis["input_weight"]
+        assert analysis["output_weight"] <= analysis["input_weight"] or (gain_explanation or "").strip()     # chk_mtm_gain
+        assert analysis["pure_complete"] == (analysis["pure_difference"] is not None) == (analysis["eq21_difference"] is not None)
+        assert int(entry_id) not in self.db.melts and self.db.entries[int(entry_id)]["entry_kind"] == "MELT"
+        self.db.melts[int(entry_id)] = {"entry_id": int(entry_id), "workshop": workshop, "assay_reference": assay_reference,
+                                        "gain_explanation": gain_explanation,
+                                        **{k: v for k, v in analysis.items()}}
+
+    def insert_melt_input(self, *, entry_id, karat_id, weight, pure):
+        self._fail("melt_input")
+        assert weight > 0 and pure > 0                                                       # chk_mtmi_weight
+        if any((i["entry_id"], i["karat_id"]) == (int(entry_id), int(karat_id)) for i in self.db.melt_inputs):
+            raise _dup("uq_mtmi_entry_karat")
+        self.db.melt_inputs.append({"entry_id": int(entry_id), "karat_id": int(karat_id), "weight_grams": weight, "pure_grams": pure})
+
+    def insert_lot(self, *, entry_id, lot_no, kind, label, weight, fineness, pure):
+        self._fail("lot")
+        assert kind in ("MAIN", "RESIDUE") and ((kind == "MAIN") == (lot_no == 1))           # chk_mtl_kind
+        assert weight > 0                                                                    # chk_mtl_weight
+        assert fineness is None or 0 < fineness <= 1000                                      # chk_mtl_fineness
+        assert kind != "MAIN" or fineness is not None
+        assert (fineness is None) == (pure is None)
+        if any((l["entry_id"], l["lot_no"]) == (int(entry_id), lot_no) for l in self.db.lots.values()):
+            raise _dup("uq_mtl_entry_no")
+        lot_id = self.db.next("lot")
+        self.db.lots[lot_id] = {"id": lot_id, "entry_id": int(entry_id), "lot_no": lot_no, "lot_kind": kind, "label": label,
+                                "weight_grams": weight, "fineness_permille": fineness, "pure_grams": pure}
+        return lot_id
+
+    def insert_lot_movement(self, *, lot_id, entry_id, movement_type, weight_delta):
+        self._fail("lot_movement")
+        assert movement_type == CREATE_MOVEMENT or movement_type in ("TEST_USE",)            # chk_mtlm_type (M1: CREATE only)
+        assert weight_delta != 0 and (movement_type != CREATE_MOVEMENT or weight_delta > 0)  # chk_mtlm_delta
+        if any((m["lot_id"], m["entry_id"], m["movement_type"]) == (int(lot_id), int(entry_id), movement_type) for m in self.db.lot_moves):
+            raise _dup("uq_mtlm_lot_entry_type")
+        self.db.lot_moves.append({"lot_id": int(lot_id), "entry_id": int(entry_id), "movement_type": movement_type,
+                                  "weight_delta": weight_delta})
 
     # ---- derived custody (entries that were not reversed)
     def _live(self, trip_id, exclude):
@@ -225,12 +273,66 @@ class TripRepo:
 
     def custody_gold(self, trip_id, exclude_entry_id=None):
         out = {}
-        for e in self._live(trip_id, exclude_entry_id):
+        live = self._live(trip_id, exclude_entry_id)
+        for e in live:
             for leg in (l for l in self.db.gold_legs if l["entry_id"] == e["id"]):
-                row = out.setdefault(leg["karat_id"], {"karat_id": leg["karat_id"], "karat_value": self.db.karats[leg["karat_id"]]["karat_value"],
-                                                       "issued": D("0.000"), "returned": D("0.000")})
+                row = out.setdefault((leg["karat_id"], leg["designation"]), {
+                    "karat_id": leg["karat_id"], "karat_value": self.db.karats[leg["karat_id"]]["karat_value"],
+                    "designation": leg["designation"], "issued": D("0.000"), "returned": D("0.000"), "melted": D("0.000")})
                 row["issued" if e["entry_kind"] == "ISSUE" else "returned"] += leg["weight_grams"]
-        return sorted(out.values(), key=lambda r: -r["karat_value"])
+            for i in (i for i in self.db.melt_inputs if i["entry_id"] == e["id"]):
+                row = out.setdefault((i["karat_id"], MELT_DESIGNATION), {
+                    "karat_id": i["karat_id"], "karat_value": self.db.karats[i["karat_id"]]["karat_value"],
+                    "designation": MELT_DESIGNATION, "issued": D("0.000"), "returned": D("0.000"), "melted": D("0.000")})
+                row["melted"] += i["weight_grams"]
+        order = {"MELT": 0, "LOGO": 1, "UNCLASSIFIED": 2}
+        return sorted(out.values(), key=lambda r: (-r["karat_value"], order[r["designation"]]))
+
+    def custody_lots(self, trip_id, exclude_entry_id=None):
+        live_ids = {e["id"] for e in self._live(trip_id, exclude_entry_id)}
+        rows = []
+        for lot in sorted(self.db.lots.values(), key=lambda l: (self.db.entries[l["entry_id"]]["entry_no"], l["lot_no"])):
+            if lot["entry_id"] not in live_ids:
+                continue
+            outstanding = sum((m["weight_delta"] for m in self.db.lot_moves if m["lot_id"] == lot["id"] and m["entry_id"] in live_ids),
+                              D("0.000"))
+            rows.append({**lot, "entry_no": self.db.entries[lot["entry_id"]]["entry_no"], "outstanding_grams": outstanding})
+        return rows
+
+    def lot_downstream(self, entry_id):
+        reversed_ids = {int(c["source_id"]) for c in self.db.corrections
+                        if c["source_type"] == SOURCE and c["correction_type"] == "FULL_REVERSAL"}
+        mine = {l["id"] for l in self.db.lots.values() if l["entry_id"] == int(entry_id)}
+        seen = {}
+        for m in self.db.lot_moves:
+            if m["lot_id"] in mine and m["movement_type"] != CREATE_MOVEMENT and m["entry_id"] not in reversed_ids:
+                e = self.db.entries[m["entry_id"]]
+                seen[e["id"]] = {"entry_id": e["id"], "trip_id": e["trip_id"], "entry_no": e["entry_no"]}
+        return list(seen.values())
+
+    def melts(self, trip_id):
+        rows = []
+        for e in sorted((e for e in self.db.entries.values() if e["trip_id"] == int(trip_id) and e["id"] in self.db.melts),
+                        key=lambda e: e["entry_no"]):
+            reversal = next((c for c in self.db.corrections if c["source_type"] == SOURCE and c["source_id"] == str(e["id"])
+                             and c["correction_type"] == "FULL_REVERSAL"), None)
+            m = self.db.melts[e["id"]]
+            rows.append({**m, "trip_id": e["trip_id"], "entry_no": e["entry_no"], "entry_date": e["entry_date"], "notes": e["notes"],
+                         "occurred_at": e["occurred_at"], "actor_name": "المالك",
+                         "input_weight_grams": m["input_weight"], "nominal_pure_grams": m["nominal_pure"],
+                         "output_weight_grams": m["output_weight"], "known_output_pure_grams": m["known_output_pure"],
+                         "weight_difference_grams": m["weight_difference"], "pure_difference_grams": m["pure_difference"],
+                         "nominal_eq21_grams": m["nominal_eq21"], "known_output_eq21_grams": m["known_output_eq21"],
+                         "eq21_difference_grams": m["eq21_difference"],
+                         "reversal_id": reversal and int(reversal["correction_id"]), "reversal_reason": reversal and reversal["reason"],
+                         "reversal_at": reversal and reversal["occurred_at"],
+                         "inputs": [{"karat_id": i["karat_id"], "karat_value": self.db.karats[i["karat_id"]]["karat_value"],
+                                     "weight_grams": i["weight_grams"], "pure_grams": i["pure_grams"]}
+                                    for i in sorted((i for i in self.db.melt_inputs if i["entry_id"] == e["id"]),
+                                                    key=lambda i: -self.db.karats[i["karat_id"]]["karat_value"])],
+                         "lots": [dict(l) for l in sorted((l for l in self.db.lots.values() if l["entry_id"] == e["id"]),
+                                                          key=lambda l: l["lot_no"])]})
+        return rows
 
     def entries(self, trip_id):
         rows = []
@@ -242,7 +344,8 @@ class TripRepo:
                          "reversal_id": reversal and int(reversal["correction_id"]), "reversal_reason": reversal and reversal["reason"],
                          "reversal_at": reversal and reversal["occurred_at"],
                          "gold": [{"karat_id": g["karat_id"], "karat_value": self.db.karats[g["karat_id"]]["karat_value"],
-                                   "weight_grams": g["weight_grams"]} for g in self.db.gold_legs if g["entry_id"] == e["id"]]})
+                                   "designation": g["designation"], "weight_grams": g["weight_grams"]}
+                                  for g in self.db.gold_legs if g["entry_id"] == e["id"]]})
         return rows
 
     # ---- as a correction source
@@ -259,7 +362,7 @@ class TripRepo:
         for g in (g for g in self.db.gold_legs if g["entry_id"] == int(entry_id)):
             move = next(m for m in self.db.scrap if m["id"] == g["scrap_movement_id"])
             out.append({"karat_id": g["karat_id"], "karat_value": self.db.karats[g["karat_id"]]["karat_value"],
-                        "weight_grams": g["weight_grams"], "weight_delta_grams": move["weight_delta"]})
+                        "designation": g["designation"], "weight_grams": g["weight_grams"], "weight_delta_grams": move["weight_delta"]})
         return out
 
     def audit(self, *, actor, event_type, entity_id, reference, description, metadata, now):
