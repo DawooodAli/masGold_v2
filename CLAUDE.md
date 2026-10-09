@@ -810,9 +810,9 @@ using Git (`git branch --show-current`, `git log --oneline -10`, `git status`); 
 report unexpected files or commits. Do not treat any commit hash in this document as the
 current HEAD. Read both `AGENTS.md` and `CLAUDE.md`.
 
-- Schema chain: migrations `001–037` in `database/schema`; next migration is `038`
+- Schema chain: migrations `001–038` in `database/schema`; next migration is `039`
   unless later repository state proves otherwise. Already-applied migrations are
-  immutable, including 019–037. `database/migrations/*.sql` are historical prototypes
+  immutable, including 019–038. `database/migrations/*.sql` are historical prototypes
   (see its README) and are never applied. Future schema work needs the next forward migration,
   guarded rollback, `SHA256SUMS`, chain tooling and appropriate migration/rehearsal tests.
 - Normal DEV database: `masgold_v2`. Never mutate `golddb`. Rehearsal/prod databases
@@ -845,7 +845,7 @@ current HEAD. Read both `AGENTS.md` and `CLAUDE.md`.
   persistent `AuthenticationService` per owning service, so the failure cooldown persists.
 - **Frozen Billing V1:** `billingVM` is not registered; the V1 source files remain as history only.
 - **Purchasing & Suppliers V1 (migration 034):** supplier accounting has two independent dimensions that are never
-  combined: GOLD (each supplier has ONE dedicated karat, 18, 21 or 24, and its invoices inherit it; supplier gold
+  combined: GOLD (each supplier has ONE dedicated karat, 18, 21, 22 or 24, and its invoices inherit it; supplier gold
   balances and running balances are PHYSICAL grams of that karat, with no Eq21 conversion; the supplier invoice weight
   is authoritative; the ledger's `equivalent_21_delta_grams` stays stored beside the original weight and karat as an
   internal compatibility field and never drives a supplier-account amount or direction; Eq21 rules outside supplier
@@ -884,6 +884,14 @@ current HEAD. Read both `AGENTS.md` and `CLAUDE.md`.
   `MARKET_TRIP_MANAGE` (OWNER only, rechecked in each transaction). The only correction is a full reversal (`RVxxxxxx`) through
   `CorrectionService` (source `MARKET_TRIP_ENTRY`, also needs `TRANSACTION_CORRECT`): blocked for a closed trip, for an issue
   that a later return depends on, and for a return whose Scrap the shop has since used.
+- **22K support (migration 038):** 22K is a normal master karat and a supplier may be dedicated to 18, 21, 22 or 24 (its account stays
+  in PHYSICAL grams of that karat, no conversion). The price provider contract stays exactly 18/21/24; `GoldPriceService` publishes
+  a derived 22K quote beside them, in the SAME group and activation: buy22/sell22 = the stored approved 24K price * 22 / 24, `Decimal`,
+  quantized to 0.0001 `ROUND_HALF_UP` (MANUAL derives from the already rounded 24K, which itself derives from 21K). It is stored as
+  `DERIVED` with `derived_from_quote_id` naming that exact 24K quote (invoice snapshots keep their `quote_id`, hence the provenance),
+  is never derived at read time, and a 22K row that is not exactly the derivation of its own group's 24K row is ignored (22K then
+  has no price: `PRICE_MISSING`; another karat's price is never substituted). A legacy three-karat active set stays usable; AUTO
+  republishes unchanged provider prices once if the set lacks 22K; MANUAL gains 22K at the next normal OWNER activation.
 - **Line endings:** do not mass-convert files and never normalize migrations (checksums). No
   `.gitattributes` is added; with `core.autocrlf=true` a policy file would cause churn. Deferred.
 

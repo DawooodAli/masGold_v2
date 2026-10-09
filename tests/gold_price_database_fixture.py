@@ -71,7 +71,7 @@ class SqlConnection:
 
 
 class PriceDatabase:
-    def __init__(self):
+    def __init__(self, with_22k=False):
         self.temp = TemporaryDirectory(prefix="masgold-price-test-")
         self.path = Path(self.temp.name) / "prices.sqlite"
         self.fail_second_pointer = False
@@ -99,7 +99,8 @@ class PriceDatabase:
                     source_id INTEGER REFERENCES gold_price_sources(id), karat_id INTEGER REFERENCES karats(id),
                     shop_buy_price_per_gram TEXT, shop_sell_price_per_gram TEXT, reference_price_per_gram TEXT,
                     quote_method TEXT, provider_timestamp TEXT, fetched_at TEXT, validation_status TEXT,
-                    deviation_percent TEXT, validation_message TEXT, entered_by_user_id INTEGER REFERENCES users(id), notes TEXT);
+                    deviation_percent TEXT, validation_message TEXT, entered_by_user_id INTEGER REFERENCES users(id), notes TEXT,
+                    derived_from_quote_id INTEGER REFERENCES gold_price_quotes(id));
                 CREATE TABLE gold_price_activations (id INTEGER PRIMARY KEY AUTOINCREMENT,
                     karat_id INTEGER REFERENCES karats(id), quote_id INTEGER REFERENCES gold_price_quotes(id),
                     activation_type TEXT, activated_at TEXT, activated_by_user_id INTEGER REFERENCES users(id), reason TEXT,
@@ -120,6 +121,8 @@ class PriceDatabase:
                 INSERT INTO gold_price_sources VALUES (6,'MANUAL','Manual','MANUAL',1,1);
                 INSERT INTO gold_price_engine_settings VALUES (1,'AUTO',NULL,NULL,NULL,60,300,'5',NULL,'2026-09-23T00:00:00');
             """)
+            if with_22k:                                    # the 22K master row (migration 038); absent by default = the legacy shape
+                db.execute("INSERT INTO karats VALUES (10,22,1)")
 
     def _connect(self):
         raw = sqlite3.connect(self.path)

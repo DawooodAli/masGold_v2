@@ -153,6 +153,11 @@ ApplicationWindow {
     component GoldPriceGrid: GridLayout {
         id: priceGrid
         property var priceRows: []
+        readonly property string derivedText: {
+            for (var i = 0; i < priceRows.length; ++i)
+                if (priceRows[i].derived === true) return "عيار " + priceRows[i].karat + ": " + priceRows[i].derived_note
+            return ""
+        }
         columns: 3
         columnSpacing: 18
         rowSpacing: 5
@@ -160,6 +165,17 @@ ApplicationWindow {
         GoldPriceLabel { Layout.preferredWidth: 72; value: "العيار"; color: theme.gold }
         GoldPriceLabel { Layout.fillWidth: true; value: "شراء المحل"; color: theme.priceBuy }
         GoldPriceLabel { Layout.fillWidth: true; value: "بيع المحل"; color: theme.priceSell }
+        // 22K is never quoted by the provider: its prices are derived from the approved 24K quote and are labelled as such.
+        GoldPriceLabel {
+            objectName: priceGrid.objectName + "-derivedNote"
+            Layout.columnSpan: 3
+            Layout.fillWidth: true
+            visible: priceGrid.derivedText !== ""
+            value: priceGrid.derivedText
+            color: theme.textMuted
+            font.pixelSize: 12
+            wrapMode: Text.WordWrap
+        }
         Repeater {
             model: priceGrid.priceRows.length * 3
             delegate: GoldPriceLabel {
@@ -700,9 +716,8 @@ ApplicationWindow {
                             BalanceBox {
                                 required property var modelData
                                 objectName: "balanceBox_" + modelData.karat
-                                // 21 turquoise • 18 blue • 24 violet; a zero balance is muted, never hidden.
-                                accent: modelData.karat === "21" ? theme.balanceKarat21
-                                      : modelData.karat === "18" ? theme.balanceKarat18 : theme.balanceKarat24
+                                // 21 turquoise • 18 blue • 22 amber • 24 violet; a zero balance is muted, never hidden.
+                                accent: theme.balanceKaratColor(modelData.karat)
                                 caption: "كسر"
                                 karat: modelData.karat
                                 valueName: "balanceKarat_" + modelData.karat

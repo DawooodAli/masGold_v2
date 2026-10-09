@@ -187,8 +187,7 @@ Item {
                             spacing: 0
                             Line { label: "عيار " + modelData.karat + "  •  " + modelData.pieces
                                    value: modelData.grams; strong: true
-                                   valueColor: modelData.karat === "21" ? theme.balanceKarat21
-                                             : modelData.karat === "18" ? theme.balanceKarat18 : theme.balanceKarat24 }
+                                   valueColor: theme.balanceKaratColor(modelData.karat) }
                             Txt { Layout.fillWidth: true; visible: modelData.fromOldGold.length > 0
                                   value: modelData.fromOldGold; color: theme.textMuted; font.pixelSize: theme.fontCaption }
                         }
@@ -268,8 +267,7 @@ Item {
                             layoutDirection: Qt.RightToLeft
                             spacing: 8
                             Txt { value: "كسر " + modelData.karat; font.bold: true; font.pixelSize: theme.fontBody
-                                  color: modelData.karat === "21" ? theme.balanceKarat21
-                                       : modelData.karat === "18" ? theme.balanceKarat18 : theme.balanceKarat24 }
+                                  color: theme.balanceKaratColor(modelData.karat) }
                             Txt { value: modelData.balance; font.bold: true; font.pixelSize: theme.fontBodyStrong
                                   color: modelData.zero ? theme.textMuted : theme.textPrimary }
                             Item { Layout.fillWidth: true }

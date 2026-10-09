@@ -804,7 +804,7 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.assertEqual([(r["itemName"], r["factory"], r["size"], r["notes"], r["tag"]) for r in rows],
                          [("خاتم", "لوكس", "", "فص أزرق", ""), ("دبلة", "لوكس", "18", "نقش", "تحتاج مراجعة"),
                           ("دبلة سادة", "", "", "", "من الكسر")])
-        self.assertEqual(self.vm.weightTotals["sold"], {"18": "—", "21": "17.700", "24": "—"})
+        self.assertEqual(self.vm.weightTotals["sold"], {"18": "—", "21": "17.700", "22": "—", "24": "—"})
         draft = self.vm._draft()
         self.assertEqual([(d.kind, d.reason_code, d.item_type_id) for d in draft.described_sale_lines],
                          [("UNIDENTIFIED", "BARCODE_LOST", 4), ("OLD_GOLD_STOCK", None, None)])
@@ -823,8 +823,8 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.vm.addOldGold(1, "5")
         self.vm.addOldGold(1, "2.25")
         totals = self.vm.weightTotals
-        self.assertEqual(totals["sold"], {"18": "—", "21": "10.500", "24": "—"})
-        self.assertEqual(totals["bought"], {"18": "—", "21": "7.250", "24": "—"})
+        self.assertEqual(totals["sold"], {"18": "—", "21": "10.500", "22": "—", "24": "—"})
+        self.assertEqual(totals["bought"], {"18": "—", "21": "7.250", "22": "—", "24": "—"})
 
     # ------------------------------------------------------------ cascading search
 

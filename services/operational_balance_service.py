@@ -13,7 +13,7 @@ from services.authorization_service import AuthorizationService
 from services.invoice_service import invoice_transaction
 
 
-STRIP_KARATS = (21, 18, 24)
+STRIP_KARATS = (21, 18, 22, 24)
 FINANCE_PERMISSIONS = ("MANAGEMENT_REVIEW",)
 ACCOUNT_TYPES = ("BANK", "MOBILE_WALLET")
 # Setup uses the existing Cash/Bank permissions (007): accounts = BANK_MANAGE, opening cash = CASH_ADJUST.
@@ -52,7 +52,7 @@ class OperationalBalanceService:
             return done.args[0]
 
     def strip(self, *, _expected_actor=None):
-        """Cash balance and counted old-gold grams per karat (21, 18, 24 in that order)."""
+        """Cash balance and counted old-gold grams per karat (21, 18, 22, 24 in that order)."""
         self._actor(_expected_actor)
 
         def read(repository):

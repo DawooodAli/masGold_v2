@@ -35,7 +35,14 @@ QtObject {
     readonly property color balanceCash: goldBright          // most prominent
     readonly property color balanceKarat21: "#4CC7BE"         // turquoise
     readonly property color balanceKarat18: "#6E9FE6"         // blue
+    readonly property color balanceKarat22: "#E6B450"         // amber (22K sits between 21K turquoise and 24K violet)
     readonly property color balanceKarat24: "#B08CDE"         // violet
+    // One explicit colour per karat: an unknown karat is muted, never painted as another karat.
+    function balanceKaratColor(karat) {
+        var k = String(karat)
+        return k === "21" ? balanceKarat21 : k === "18" ? balanceKarat18 : k === "22" ? balanceKarat22
+             : k === "24" ? balanceKarat24 : textMuted
+    }
 
     // Customer account direction: على العميل (receivable, cool) vs للعميل (payable, warm).
     readonly property color accountReceivable: "#4FC3E8"

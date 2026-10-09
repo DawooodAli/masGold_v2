@@ -462,7 +462,7 @@ Item {
         layoutDirection: Qt.RightToLeft
         spacing: 6
         Repeater {
-            model: ["18", "21", "24"]
+            model: ["18", "21", "22", "24"]
             Rectangle {
                 readonly property string value: weights.totals[modelData] || "—"
                 Layout.fillWidth: true

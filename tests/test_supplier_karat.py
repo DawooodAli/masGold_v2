@@ -1,4 +1,4 @@
-"""Each supplier is dedicated to ONE karat (18 / 21 / 24). Invoices inherit it; the supplier gold account is in PHYSICAL grams
+"""Each supplier is dedicated to ONE karat (18 / 21 / 22 / 24). Invoices inherit it; the supplier gold account is in PHYSICAL grams
 of that karat (no Eq21); making stays a separate EGP account. The karat is locked once any invoice exists; a legacy supplier
 without one is resolved only when its whole history agrees. Plus static checks of migration 035 (the real-MySQL rehearsal is
 a separate run)."""
@@ -39,10 +39,11 @@ class MasterTests(SupplierKaratCase):
         self.refused(lambda: self.suppliers.create_supplier("بلا عيار", karat_id=99), "KARAT_NOT_SUPPORTED")   # not in the master
         self.db.karats[K24]["is_active"] = 0
         self.refused(lambda: self.suppliers.create_supplier("بلا عيار", karat_id=K24), "KARAT_NOT_SUPPORTED")   # inactive
-        self.db.karats[9] = {"id": 9, "karat_value": 22, "name": "22K", "is_active": 1}
-        self.refused(lambda: self.suppliers.create_supplier("بلا عيار", karat_id=9), "KARAT_NOT_SUPPORTED")     # 22 is not offered
+        self.db.karats[9] = {"id": 9, "karat_value": 23, "name": "23K", "is_active": 1}
+        self.refused(lambda: self.suppliers.create_supplier("بلا عيار", karat_id=9), "KARAT_NOT_SUPPORTED")     # 23 is not offered
         self.assertEqual(len(self.db.suppliers), 1)                                       # only the fixture supplier exists
-        for karat in (K21, K18):
+        self.db.karats[10] = {"id": 10, "karat_value": 22, "name": "22K", "is_active": 1}
+        for karat in (K21, K18, 10):                                                      # 10 is the 22K master row
             sid = self.suppliers.create_supplier(f"مورد {karat}", karat_id=karat)
             self.assertEqual(self.db.suppliers[int(sid)]["karat_id"], karat)
 
@@ -173,6 +174,48 @@ class AccountTests(SupplierKaratCase):
         self.assertEqual((row["goldText"], row["karatText"]), ("علينا للمورد 7.000 جرام عيار 18", "عيار 18"))
 
 
+class Karat22SupplierTests(SupplierKaratCase):
+    """A 22K supplier: the invoice inherits 22, the gold account is PHYSICAL grams of 22K (no Eq21), intake creates 22K pieces."""
+
+    def setUp(self):
+        super().setUp()
+        self.db.karats[10] = {"id": 10, "karat_value": 22, "name": "22K", "is_active": 1}
+        self.k22 = 10
+
+    def test_a_22k_supplier_invoice_inherits_22_and_a_different_karat_is_refused(self):
+        sid = self.supplier("مورد 22", self.k22)
+        inherited = self.draft(supplier_id=sid, karat_id=None, rows=ROWS, reference="A")
+        self.assertEqual(inherited["karat_id"], self.k22)
+        message = self.refused(lambda: self.draft(supplier_id=sid, karat_id=K21, rows=ROWS), "KARAT_MISMATCH")
+        self.assertIn("عيار 22", message)
+
+    def test_seven_grams_from_a_22k_supplier_adds_seven_physical_grams_of_22k(self):
+        sid = self.supplier("مورد 22", self.k22)
+        self.posted(supplier_id=sid, karat_id=self.k22, rows=ROWS)
+        balance = self.balance(sid)
+        self.assertEqual((balance["gold_balance"], balance["gold_karat_value"], balance["gold_direction"]),
+                         (D("7.000"), 22, rules.SHOP_OWES))
+        self.assertEqual(gold_position_text(balance["gold_direction"], balance["gold_balance"], 22), "علينا للمورد 7.000 جرام عيار 22")
+        (movement,) = self.db.gold
+        self.assertEqual((movement["karat_id"], movement["weight_delta_grams"]), (self.k22, D("7.000")))
+        movement["equivalent_21_delta_grams"] = D("999.000000")                   # the stored Eq21 never drives the account
+        self.assertEqual(self.balance(sid)["gold_balance"], D("7.000"))
+
+    def test_making_for_a_22k_supplier_stays_a_separate_egp_account(self):
+        sid = self.supplier("مورد 22", self.k22)
+        self.posted(supplier_id=sid, karat_id=self.k22, rows=[{"weight": "7", "making_per_gram": "100"}])
+        balance = self.balance(sid)
+        self.assertEqual((balance["making"], balance["gold_balance"]), (D("700.00"), D("7.000")))
+
+    def test_barcode_intake_from_a_22k_invoice_creates_22k_inventory_pieces(self):
+        sid = self.supplier("مورد 22", self.k22)
+        invoice, _ = self.posted(supplier_id=sid, karat_id=self.k22, rows=[{"weight": "40", "making_per_gram": "100"}])
+        (group,) = self.group_ids(invoice["id"])
+        self.piece(invoice["id"], group, "10.000")
+        self.assertEqual([i["karat_id"] for i in self.db.items.values()], [self.k22])
+        self.assertEqual(self.balance(sid)["gold_balance"], D("40.000"))          # intake never changes the supplier account
+
+
 class UnresolvedHistoryTests(SupplierKaratCase):
     """A legacy supplier (karat NULL) whose history cannot be resolved: read-only per-karat history, nothing combined."""
 
@@ -247,8 +290,8 @@ class RuleTests(unittest.TestCase):
                 rules.check_supplier_karat_change(current, wanted, history)
             self.assertEqual(refused.exception.code, code)
 
-    def test_the_supported_karats_are_18_21_24(self):
-        self.assertEqual(rules.SUPPORTED_KARATS, (18, 21, 24))
+    def test_the_supported_karats_are_18_21_22_24(self):
+        self.assertEqual(rules.SUPPORTED_KARATS, (18, 21, 22, 24))
 
 
 class MigrationTests(unittest.TestCase):

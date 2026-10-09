@@ -18,7 +18,7 @@ from repositories.dashboard_repository import DashboardRepository
 from repositories.financial_balance_repository import FinancialBalanceRepository
 from services.invoice_service import invoice_transaction
 
-DASHBOARD_KARATS = (21, 18, 24)
+DASHBOARD_KARATS = (21, 18, 22, 24)
 SALES_PERMISSIONS = frozenset({"INVOICE_CREATE", "INVOICE_FINALIZE"})
 GRAMS, MONEY = Decimal("0.001"), Decimal("0.01")
 

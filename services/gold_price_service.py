@@ -22,7 +22,12 @@ from services.gold_price_provider import (
 
 UTC = timezone.utc
 PRICE = Decimal("0.0001")
-KARATS = (18, 21, 24)
+KARATS = (18, 21, 24)                    # the PROVIDER karats: fetched, validated, deviation- and history-checked
+DERIVED_KARAT = 22                       # published beside them, derived from the approved 24K quote of the SAME group
+DERIVATION_22K = {
+    "method": "KARAT_RATIO_FROM_24K", "base_karat": 24, "formula": "price(22K) = price(24K) * 22 / 24",
+    "rounding": "ROUND_HALF_UP", "decimal_places": 4,
+}
 DERIVATION = {
     "method": "BASE_21_K_DIV_21", "base_karat": 21,
     "formula": "price(K) = price(21K) * K / 21",
@@ -32,6 +37,46 @@ DERIVATION = {
 
 class PriceUnavailable(ValueError):
     pass
+
+
+def derive_22k(quote24):
+    """The 22K quote of one approved 24K quote: each side = stored 24K price * 22 / 24, 4 decimals, ROUND_HALF_UP (the engine's
+    one price rule). Same source, same provider and fetch timestamps; never read-time and never from another karat."""
+    if quote24.karat != 24:
+        raise ValueError("22K is derived from the 24K quote only.")
+    buy, sell = (
+        (value * Decimal(22) / Decimal(24)).quantize(PRICE, ROUND_HALF_UP)
+        for value in (quote24.shop_buy_price_per_gram, quote24.shop_sell_price_per_gram))
+    if not Decimal("0") < buy <= sell:
+        raise ValueError("المشتق عيار 22 خارج المجال المسموح؛ راجع سعر عيار 24.")
+    return NormalizedQuote(
+        source_code=quote24.source_code, karat=DERIVED_KARAT, shop_buy_price_per_gram=buy, shop_sell_price_per_gram=sell,
+        currency=quote24.currency, unit=quote24.unit, provider_timestamp=quote24.provider_timestamp,
+        fetched_at=quote24.fetched_at, refresh_attempt_id=quote24.refresh_attempt_id)
+
+
+def usable_rows(rows):
+    """The active rows a reader may use. A 22K row counts only when it is exactly the derivation of the 24K row of its OWN group
+    (method DERIVED, same group, provenance = that 24K quote, prices equal to the rule); otherwise it is dropped, so 22K is simply
+    unavailable (PRICE_MISSING) while 18/21/24 stay untouched. Nothing is ever derived here."""
+    rows = list(rows)
+    extra = [r for r in rows if int(r["karat_value"]) == DERIVED_KARAT]
+    if not extra:
+        return rows
+    base = [r for r in rows if int(r["karat_value"]) != DERIVED_KARAT]
+    row24 = next((r for r in base if int(r["karat_value"]) == 24), None)
+    if row24 is None or len(extra) != 1:
+        return base
+    row22 = extra[0]
+    try:
+        expected = [(row24[key] * Decimal(22) / Decimal(24)).quantize(PRICE, ROUND_HALF_UP)
+                    for key in ("shop_buy_price_per_gram", "shop_sell_price_per_gram")]
+        consistent = (row22["quote_group_id"] == row24["quote_group_id"] and row22["quote_method"] == "DERIVED"
+                      and row22.get("derived_from_quote_id") == row24["quote_id"]
+                      and [row22["shop_buy_price_per_gram"], row22["shop_sell_price_per_gram"]] == expected)
+    except (TypeError, InvalidOperation, KeyError):
+        consistent = False
+    return base + [row22] if consistent else base
 
 
 class PriceChanged(ValueError):
@@ -115,11 +160,12 @@ class GoldPriceService:
             repo = self._repository(connection)
             settings = repo.get_settings(lock=True)
             self._check_settings(settings)
-            return settings, repo.get_sources(), repo.get_karats(), repo.get_active()
+            return settings, repo.get_sources(), repo.get_karats(), usable_rows(repo.get_active())
 
     @staticmethod
     def _coherent(rows):
-        if len(rows) != 3 or {int(r["karat_value"]) for r in rows} != set(KARATS):
+        rows = usable_rows(rows)
+        if sorted(int(r["karat_value"]) for r in rows) not in (sorted(KARATS), sorted(KARATS + (DERIVED_KARAT,))):
             return False
         for field in ("quote_group_id", "source_code", "fetched_at",
                       "activation_type", "activated_at"):
@@ -198,7 +244,9 @@ class GoldPriceService:
             prices=[dict(karat=str(r["karat_value"]), karat_id=str(r["karat_id"]),
                          shop_buy_price_per_gram=format(r["shop_buy_price_per_gram"], ".4f"),
                          shop_sell_price_per_gram=format(r["shop_sell_price_per_gram"], ".4f"),
-                         provider_timestamp=stamp(r["provider_timestamp"]))
+                         provider_timestamp=stamp(r["provider_timestamp"]),
+                         derived=int(r["karat_value"]) == DERIVED_KARAT,
+                         derived_note="مشتق من عيار 24" if int(r["karat_value"]) == DERIVED_KARAT else "")
                     for r in sorted(rows, key=lambda r: int(r["karat_value"]))],
         )
         return result
@@ -242,6 +290,8 @@ class GoldPriceService:
             raise ValueError("الأسعار المشتقة خارج المجال المسموح؛ راجع أسعار عيار 21.") from exc
 
     def preview_manual(self, buy21, sell21):
+        """The provider-contract karats only (18/21/24). 22K is derived from the 24K row at activation and shown, labelled, in the
+        published prices; a preview stays a pure calculation with no database access."""
         return [dict(karat=str(q.karat),
                      shop_buy_price_per_gram=format(q.shop_buy_price_per_gram, ".4f"),
                      shop_sell_price_per_gram=format(q.shop_sell_price_per_gram, ".4f"))
@@ -275,6 +325,7 @@ class GoldPriceService:
             if not source or not source["is_enabled"] or source["source_type"] != "MANUAL":
                 raise PriceUnavailable("مصدر التسعير اليدوي غير متاح.")
             self._check_karats(karats)
+            quotes = self._with_derived(quotes, karats)       # 22K from the stored (rounded) 24K, when its master row is active
             group_id = repo.append_publication(
                 quotes, karat_ids=karats, source_id=source["id"], activation_type="MANUAL",
                 actor=actor, reason=reason, activated_at=as_utc(self._clock()), derivation=DERIVATION)
@@ -282,7 +333,7 @@ class GoldPriceService:
             # Read our own publication while the settings lock is still held.
             # A second connection after COMMIT could fail and misreport a saved
             # price as unsuccessful, leaving the dialog/top bar on old values.
-            saved_settings, saved_rows = repo.get_settings(), repo.get_active()
+            saved_settings, saved_rows = repo.get_settings(), usable_rows(repo.get_active())
             if (saved_settings["mode"] != "MANUAL" or not self._coherent(saved_rows)
                     or any(row["quote_group_id"] != group_id or row["source_code"] != "MANUAL"
                            for row in saved_rows)):
@@ -296,8 +347,19 @@ class GoldPriceService:
 
     @staticmethod
     def _check_karats(karats):
-        if set(karats) != set(KARATS):
+        if not set(KARATS) <= set(karats):                 # 22K is optional here: without its master row it is just unpublished
             raise PriceUnavailable("يلزم تفعيل عيارات 18 و21 و24 في البيانات الأساسية.")
+
+    @staticmethod
+    def _with_derived(quotes, karat_ids):
+        """The provider / manual quotes plus the derived 22K quote (after ALL provider validation), when 22K is an active karat."""
+        quotes = tuple(quotes)
+        if DERIVED_KARAT not in karat_ids:
+            return quotes
+        quote24 = next((q for q in quotes if q.karat == 24), None)
+        if quote24 is None:                                 # never substitute another karat
+            raise PriceUnavailable("تعذر اشتقاق عيار 22: لا يوجد سعر معتمد لعيار 24.")
+        return quotes + (derive_22k(quote24),)
 
     @staticmethod
     def _source_by_id(sources, source_id):
@@ -383,7 +445,7 @@ class GoldPriceService:
     @staticmethod
     def _same_quotes(quotes, rows):
         existing = {int(r["karat_value"]): r for r in rows}
-        if set(existing) != set(KARATS):
+        if not set(KARATS) <= set(existing):
             return False
         return all(as_utc(existing[q.karat]["provider_timestamp"]) == q.provider_timestamp
                    and existing[q.karat]["shop_buy_price_per_gram"] == q.shop_buy_price_per_gram
@@ -439,15 +501,18 @@ class GoldPriceService:
             now = as_utc(self._clock())
             if (now - min(q.provider_timestamp for q in quotes)).total_seconds() > int(settings["stale_after_seconds"]):
                 raise PriceUnavailable("أصبحت أسعار المصدر قديمة قبل اعتمادها.")
-            active = repo.get_active(lock=True)
+            active = usable_rows(repo.get_active(lock=True))
             if self._coherent(active):
                 self._check_deviation(quotes, {int(r["karat_value"]): r for r in active},
                                       settings["max_deviation_percent"])
             latest = repo.latest_source_quotes(source["id"])
             self._check_history(quotes, latest)
             if not returning and self._coherent(active) and active[0]["source_code"] == source["code"]:
-                if self._same_quotes(quotes, active):
+                # Unchanged provider prices are not republished -- unless the current set still lacks the 22K row it should have.
+                if self._same_quotes(quotes, active) and (
+                        DERIVED_KARAT not in karats or any(int(r["karat_value"]) == DERIVED_KARAT for r in active)):
                     return  # Preserve quote/token/fetched/activated timestamps.
+            quotes = self._with_derived(quotes, karats)
             repo.append_publication(
                 quotes, karat_ids=karats, source_id=source["id"], activation_type=activation_type,
                 actor=actor, reason=reason or "Automatic provider refresh", activated_at=now)
@@ -497,7 +562,7 @@ class GoldPriceService:
                 settings = repo.get_settings(lock=True)
                 self._check_settings(settings)
                 self._authorization.require_permission(connection, original, "SETTINGS_MANAGE")
-                sources, active = repo.get_sources(), repo.get_active()
+                sources, active = repo.get_sources(), usable_rows(repo.get_active())
             source, quotes, kind, warnings = self._candidate(settings, sources, active)
             self._publish_auto(original, settings, source, quotes, kind,
                                returning=True, reason=reason)
@@ -564,7 +629,7 @@ class GoldPriceService:
         repo = self._repository(connection)
         settings = repo.get_settings(lock=True)
         self._check_settings(settings)
-        result = self._billing_set(settings, repo.get_active(lock=True), required_karat_ids)
+        result = self._billing_set(settings, usable_rows(repo.get_active(lock=True)), required_karat_ids)
         if result.price_token != price_token:
             raise PriceChanged("تغيرت أسعار الذهب؛ راجع الأسعار وأكدها من جديد.")
         if result.requires_acknowledgement and acknowledged is not True:

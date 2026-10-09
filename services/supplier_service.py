@@ -163,16 +163,16 @@ class SupplierService:
     # ------------------------------------------------------------------ master writes
     @staticmethod
     def _supported_karat(repository, karat_id):
-        """The karat master row of a chosen supplier karat: it must exist, be active and be 18 / 21 / 24."""
+        """The karat master row of a chosen supplier karat: it must exist, be active and be 18 / 21 / 22 / 24."""
         try:
             wanted = int(str(karat_id).strip())
         except (TypeError, ValueError):
             wanted = 0
         if wanted <= 0:
-            raise rules.SupplierRuleError("KARAT_REQUIRED", "اختر عيار المورد (18 أو 21 أو 24).")
+            raise rules.SupplierRuleError("KARAT_REQUIRED", "اختر عيار المورد (18 أو 21 أو 22 أو 24).")
         karat = repository.get_karat(wanted)
         if karat is None or not karat["is_active"] or int(karat["karat_value"]) not in rules.SUPPORTED_KARATS:
-            raise rules.SupplierRuleError("KARAT_NOT_SUPPORTED", "عيار المورد يجب أن يكون 18 أو 21 أو 24 ومفعّلًا.")
+            raise rules.SupplierRuleError("KARAT_NOT_SUPPORTED", "عيار المورد يجب أن يكون 18 أو 21 أو 22 أو 24 ومفعّلًا.")
         return karat
 
     def create_supplier(self, name, phone=None, notes=None, karat_id=None, *, _expected_actor=None):

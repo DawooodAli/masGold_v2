@@ -12,7 +12,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from services.number_text import normalize_digits
 
-SUPPORTED_KARATS = (18, 21, 24)       # a supplier is dedicated to ONE of these; its gold account is in grams of that karat
+SUPPORTED_KARATS = (18, 21, 22, 24)   # a supplier is dedicated to ONE of these; its gold account is in physical grams of that karat
 WEIGHT_STEP = Decimal("0.001")
 MONEY_STEP = Decimal("0.01")
 EQ21_STEP = Decimal("0.000001")

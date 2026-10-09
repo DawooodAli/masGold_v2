@@ -1,7 +1,7 @@
 """Supplier purchase invoices, posting to the supplier ledgers, and piece-by-piece barcode intake.
 
 Locked rules implemented here:
-  * Each supplier has ONE dedicated karat (18, 21 or 24) and every invoice inherits it (a different karat is refused).
+  * Each supplier has ONE dedicated karat (18, 21, 22 or 24) and every invoice inherits it (a different karat is refused).
     The supplier invoice weight (the sum of its making-group weights) is the authoritative contractual gold: posting
     writes +weight, in physical grams of that karat, to the immutable GOLD ledger. The ledger's Eq21 column is stored
     only as an internal compatibility value and drives no supplier amount or direction.

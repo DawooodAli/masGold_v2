@@ -95,7 +95,7 @@ class DashboardServiceTests(unittest.TestCase):
         snapshot = make_service(empty_state())[0].today()
         self.assertEqual((snapshot["invoice_count"], snapshot["sell_total"], snapshot["sold"], snapshot["recent"]),
                          (0, "0.00", [], []))
-        self.assertEqual([r["balance"] for r in snapshot["old_gold"]], ["0.000", "0.000", "0.000"])
+        self.assertEqual([r["balance"] for r in snapshot["old_gold"]], ["0.000", "0.000", "0.000", "0.000"])
 
     def test_today_counts_values_and_weights_each_have_one_meaning(self):
         snapshot = make_service(busy_state())[0].today()
@@ -119,7 +119,7 @@ class DashboardServiceTests(unittest.TestCase):
         for key in ("invoice_count", "sell_total", "buy_total", "sold", "recent"):
             self.assertNotIn(key, snapshot)
         self.assertEqual(state["reads"], ["flow"])                          # sales queries never ran
-        self.assertEqual(len(snapshot["old_gold"]), 3)                       # the strip's information only
+        self.assertEqual(len(snapshot["old_gold"]), 4)                       # the strip's information only
 
     def test_one_small_set_of_queries_per_refresh(self):
         state = busy_state()
@@ -183,7 +183,7 @@ class DashboardViewModelTests(unittest.TestCase):
         vm = self.vm(empty_state())
         self.assertEqual(vm.invoiceBreakdown, "لا توجد فواتير اليوم بعد")
         self.assertEqual(vm.soldByKarat, [])
-        self.assertEqual([r["todayText"] for r in vm.oldGold], ["لا حركة اليوم"] * 3)
+        self.assertEqual([r["todayText"] for r in vm.oldGold], ["لا حركة اليوم"] * 4)
         self.assertTrue(all(r["zero"] for r in vm.oldGold))
 
     def test_view_only_user_sees_no_sales(self):
@@ -247,7 +247,7 @@ class DashboardPageTests(page_harness.InvoicePageTests):
         """Worst realistic header: 7-digit cash and 4-digit grams, at every target size."""
         balances = self.controller.operational_viewmodels["balancesVM"]
         balances._strip = {"cash_balance": "1234567.89",
-                           "old_gold": [{"karat": k, "grams": "1234.567"} for k in (21, 18, 24)]}
+                           "old_gold": [{"karat": k, "grams": "1234.567"} for k in (21, 18, 22, 24)]}
         balances.changed.emit()
         self.open_dashboard(self.busy_snapshot())
         target = os.getenv("MASGOLD_UI_REVIEW_DIR")
@@ -257,7 +257,7 @@ class DashboardPageTests(page_harness.InvoicePageTests):
             QTest.qWait(250)
             self.assertEqual(self.item("balanceCash").property("text"), "1,234,567.89 ج")
             boxes = []
-            for name in ("balanceCash", "balanceKarat_21", "balanceKarat_18", "balanceKarat_24",
+            for name in ("balanceCash", "balanceKarat_21", "balanceKarat_18", "balanceKarat_22", "balanceKarat_24",
                          "goldPriceArea", "connectionDot", "logoutButton"):
                 item = self.item(name)
                 self.assertTrue(item.property("visible"), f"{name} hidden at {width}x{height}")

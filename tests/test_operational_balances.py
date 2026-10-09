@@ -71,12 +71,12 @@ class OperationalBalanceTests(unittest.TestCase):
                 state["rolled_back"] = True
         return OperationalBalanceService(session, transaction_factory=transaction, repository=Repo), state
 
-    def test_strip_is_cash_and_counted_old_gold_21_18_24_only(self):
+    def test_strip_is_cash_and_counted_old_gold_21_18_22_24_only(self):
         service, state = self.service(self.session())
         strip = service.strip()
         self.assertEqual(strip, {"cash_balance": "125300.00",
                                  "old_gold": [{"karat": 21, "grams": "114.720"}, {"karat": 18, "grams": "32.500"},
-                                              {"karat": 24, "grams": "8.100"}]})
+                                              {"karat": 22, "grams": "0.000"}, {"karat": 24, "grams": "8.100"}]})
         self.assertTrue(state["rolled_back"])
         self.assertNotIn("bank", str(strip).lower())
 
@@ -85,7 +85,7 @@ class OperationalBalanceTests(unittest.TestCase):
         vm = OperationalBalanceViewModel(self.session(), service=service)
         vm._strip = service.strip()
         self.assertEqual((vm.cashText, [r["text"] for r in vm.oldGold]),
-                         ("125,300.00 ج", ["114.720", "32.500", "8.100"]))
+                         ("125,300.00 ج", ["114.720", "32.500", "0.000", "8.100"]))
         vm._strip = {"cash_balance": "-61138.95", "old_gold": []}
         self.assertEqual(vm.cashText, "⁦−61,138.95⁩ ج")
         self.assertEqual({"cashText", "oldGold"} & set(dir(vm)), {"cashText", "oldGold"})

@@ -123,7 +123,7 @@ class GoldPriceRepository(BaseRepository):
     def get_karats(self):
         rows = self._fetch_all(
             "SELECT id, karat_value FROM karats WHERE is_active = TRUE "
-            "AND karat_value IN (18, 21, 24) ORDER BY karat_value")
+            "AND karat_value IN (18, 21, 22, 24) ORDER BY karat_value")
         return {int(row["karat_value"]): int(row["id"]) for row in rows}
 
     def get_active(self, lock=False):
@@ -134,7 +134,7 @@ class GoldPriceRepository(BaseRepository):
             "q.shop_buy_price_per_gram, q.shop_sell_price_per_gram, "
             "q.reference_price_per_gram, q.provider_timestamp, q.fetched_at, "
             "q.quote_method, q.validation_status, q.deviation_percent, "
-            "q.validation_message, q.entered_by_user_id, q.notes, "
+            "q.validation_message, q.entered_by_user_id, q.notes, q.derived_from_quote_id, "
             "a.activated_at, a.activation_type, a.activated_by_user_id, a.reason "
             "FROM active_gold_prices p "
             "JOIN gold_price_quotes q ON q.id = p.quote_id AND q.karat_id = p.karat_id "
@@ -142,7 +142,7 @@ class GoldPriceRepository(BaseRepository):
             "AND a.quote_id = p.quote_id AND a.karat_id = p.karat_id "
             "JOIN karats k ON k.id = p.karat_id "
             "JOIN gold_price_sources s ON s.id = q.source_id "
-            "WHERE k.karat_value IN (18, 21, 24) "
+            "WHERE k.karat_value IN (18, 21, 22, 24) "
             "ORDER BY k.karat_value" + (" FOR UPDATE" if lock else ""))
 
     def latest_source_quotes(self, source_id):
@@ -175,11 +175,12 @@ class GoldPriceRepository(BaseRepository):
                            derivation=None):
         """Append and publish one complete set; caller holds the settings lock."""
         quotes = tuple(quotes)
-        if (len(quotes) != 3 or {q.karat for q in quotes} != {18, 21, 24}
-                or set(karat_ids) != {18, 21, 24}
-                or len(set(karat_ids.values())) != 3
+        published = {q.karat for q in quotes}
+        if (published not in ({18, 21, 24}, {18, 21, 22, 24}) or len(quotes) != len(published)
+                or not published <= set(karat_ids)
+                or len({karat_ids[k] for k in published}) != len(published)
                 or len({q.source_code for q in quotes}) != 1):
-            raise ValueError("A publication requires one coherent 18K/21K/24K set.")
+            raise ValueError("A publication requires one coherent 18K/21K/24K set (plus a derived 22K).")
         if activation_type not in {"AUTO", "MANUAL", "FALLBACK", "RESTORE"}:
             raise ValueError("Unsupported gold price activation type.")
         if activation_type == "MANUAL" and (actor is None or not reason or not reason.strip()):
@@ -191,13 +192,17 @@ class GoldPriceRepository(BaseRepository):
         publication_rows = []
         timestamps = [q.provider_timestamp for q in quotes]
         skew = (max(timestamps) - min(timestamps)).total_seconds()
-        for quote in sorted(quotes, key=lambda item: item.karat):
-            method = ("DERIVED" if derivation and quote.karat != 21 else "MANUAL"
-                      ) if activation_type == "MANUAL" else "DIRECT"
+        source_quote_id = None                               # the exact 24K quote the derived 22K quote points to
+        for quote in sorted(quotes, key=lambda item: (item.karat == 22, item.karat)):          # 24K is inserted before 22K
+            derived22 = quote.karat == 22
+            method = "DERIVED" if derived22 else (("DERIVED" if derivation and quote.karat != 21 else "MANUAL"
+                                                  ) if activation_type == "MANUAL" else "DIRECT")
             notes = _json({
                 "currency": quote.currency, "unit": quote.unit,
                 "employee_id": actor.employee_id if actor else None,
-                "derivation": derivation,
+                "derivation": ({"method": "KARAT_RATIO_FROM_24K", "base_karat": 24, "formula": "price(22K) = price(24K) * 22 / 24",
+                                "rounding": "ROUND_HALF_UP", "decimal_places": 4, "source_quote_id": source_quote_id}
+                               if derived22 else derivation),
                 "refresh_attempt_id": getattr(quote, "refresh_attempt_id", None),
                 "timestamp_skew_seconds": skew,
             })
@@ -207,12 +212,14 @@ class GoldPriceRepository(BaseRepository):
                 "INSERT INTO gold_price_quotes (quote_group_id, source_id, "
                 "karat_id, shop_buy_price_per_gram, shop_sell_price_per_gram, "
                 "quote_method, provider_timestamp, fetched_at, validation_status, "
-                "entered_by_user_id, notes) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'ACCEPTED', %s, %s)",
+                "entered_by_user_id, notes, derived_from_quote_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'ACCEPTED', %s, %s, %s)",
                 (group_id, source_id, karat_ids[quote.karat],
                  quote.shop_buy_price_per_gram, quote.shop_sell_price_per_gram,
                  method, _utc(quote.provider_timestamp), _utc(quote.fetched_at),
-                 actor.user_id if actor else None, notes))
+                 actor.user_id if actor else None, notes, source_quote_id if derived22 else None))
+            if quote.karat == 24:
+                source_quote_id = quote_id
             activation_id = self._execute(
                 "INSERT INTO gold_price_activations (karat_id, quote_id, "
                 "activation_type, activated_at, activated_by_user_id, reason) "
@@ -222,7 +229,7 @@ class GoldPriceRepository(BaseRepository):
             publication_rows.append({
                 "karat": quote.karat, "karat_id": karat_ids[quote.karat],
                 "quote_id": quote_id, "activation_id": activation_id,
-                "quote_method": method,
+                "quote_method": method, "derived_from_quote_id": source_quote_id if derived22 else None,
                 "shop_buy_price_per_gram": quote.shop_buy_price_per_gram,
                 "shop_sell_price_per_gram": quote.shop_sell_price_per_gram,
                 "provider_timestamp": quote.provider_timestamp,

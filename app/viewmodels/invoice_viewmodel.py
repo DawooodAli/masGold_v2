@@ -27,7 +27,7 @@ DUE_TEXT = {"CUSTOMER_PAYS_SHOP": "المطلوب من العميل", "SHOP_PAYS
             "SETTLED": "الفاتورة متعادلة"}
 REMAINING_TEXT = {"CUSTOMER_OWES_SHOP": "على حساب العميل (عليه)",
                   "SHOP_OWES_CUSTOMER": "لحساب العميل (له)", "NONE": "لا يوجد على الحساب"}
-WEIGHT_KARATS = ("18", "21", "24")
+WEIGHT_KARATS = ("18", "21", "22", "24")
 PRICE_STATUS_TEXT = {"FRESH": "", "STALE_ALLOWED": "السعر قديم", "STALE": "السعر قديم"}
 # Why the exact inventory piece could not be identified (a piece found through F3 is a normal sale).
 REASONS = (("NO_BARCODE", "لم يُنشأ لها باركود"), ("BARCODE_LOST", "الباركود مفقود أو تالف"),
