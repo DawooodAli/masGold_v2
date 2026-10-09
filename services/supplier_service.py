@@ -15,6 +15,7 @@ from mysql.connector import IntegrityError
 from repositories.supplier_repository import SupplierRepository
 from services import supplier_rules as rules
 from services.authorization_service import AuthorizationService
+from services.correction_rules import correction_code
 from services.invoice_service import invoice_transaction
 from services.number_text import normalize_digits
 
@@ -137,12 +138,27 @@ class SupplierService:
                                  "source_type": r["source_type"], "source_id": str(r["source_id"]),
                                  "reference": r["source_reference"] or "", "actor": r["actor_name"] or ""}
                                 for r in gold],
-                "making_ledger": [{"id": str(r["id"]), "occurred_at": r["occurred_at"], "movement": r["movement_name"],
-                                   "amount_delta": Decimal(str(r["amount_delta"])),
-                                   "balance_after": Decimal(str(r["balance_after"])),
-                                   "source_type": r["source_type"], "source_id": str(r["source_id"]),
-                                   "reference": r["source_reference"] or "", "actor": r["actor_name"] or ""}
-                                  for r in making]}
+                "making_ledger": [self._making_row(r) for r in making]}
+
+    @staticmethod
+    def _making_row(r):
+        """One making-ledger row. A PAYMENT row also names its method / account and (when reversed) its RV; a reversal row
+        names the payment it restores. The keys are absent only for rows read from a database older than migration 036."""
+        payment_id = r.get("payment_id")
+        method = r.get("payment_method")
+        reversed_payment = r.get("reversed_payment_id")
+        return {"id": str(r["id"]), "occurred_at": r["occurred_at"], "movement": r["movement_name"],
+                "movement_code": r.get("movement_code"),
+                "amount_delta": Decimal(str(r["amount_delta"])),
+                "balance_after": Decimal(str(r["balance_after"])),
+                "source_type": r["source_type"], "source_id": str(r["source_id"]),
+                "reference": r["source_reference"] or "", "actor": r["actor_name"] or "",
+                "payment_id": None if payment_id is None else str(payment_id),
+                "payment_method": method,
+                "payment_account": (r.get("bank_account_name") if method == "BANK" else r.get("cash_account_name")),
+                "reversed_by": (None if r.get("reversal_id") is None
+                                else correction_code("FULL_REVERSAL", r["reversal_id"])),
+                "reverses_reference": r.get("reversed_reference") if reversed_payment is not None else None}
 
     # ------------------------------------------------------------------ master writes
     @staticmethod

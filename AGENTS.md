@@ -740,9 +740,9 @@ using Git (`git branch --show-current`, `git log --oneline -10`, `git status`); 
 report unexpected files or commits. Do not treat any commit hash in this document as the
 current HEAD. Read both `AGENTS.md` and `CLAUDE.md`.
 
-- Schema chain: migrations `001–035` in `database/schema`; next migration is `036`
+- Schema chain: migrations `001–036` in `database/schema`; next migration is `037`
   unless later repository state proves otherwise. Already-applied migrations are
-  immutable, including 019–035. `database/migrations/*.sql` are historical prototypes
+  immutable, including 019–036. `database/migrations/*.sql` are historical prototypes
   (see its README) and are never applied. Future schema work needs the next forward migration,
   guarded rollback, `SHA256SUMS`, chain tooling and appropriate migration/rehearsal tests.
 - Normal DEV database: `masgold_v2`. Never mutate `golddb`. Rehearsal/prod databases
@@ -794,6 +794,16 @@ current HEAD. Read both `AGENTS.md` and `CLAUDE.md`.
   nothing is stored on the group; the item type never overrides it; a supplied category is only checked against it. No
   match, or several, refuses the piece with the exact reason (never guessed). Group intake is also capped at the group's
   supplier weight + 0.333 g (cumulative actual weight, fixed, enforced in the service).
+- **Supplier making payments (migration 036):** the supplier MAKING account (EGP) is paid by an immutable payment
+  document `SMxxxxxx` (`supplier_making_payments`; money OUT from `MAIN_SAFE`, resolved by its code, or from a selected
+  active bank / wallet account) that posts atomically ONE real money movement (`cash_movements` / `bank_movements`) and ONE
+  negative `supplier_making_movements` row (type `PAYMENT`). It is not allocated to an invoice, it is never capped at the
+  payable balance (the net making position may cross zero into supplier credit), financial accounts may go negative as
+  before, and the supplier GOLD account is never touched. Rights: `SUPPLIER_MAKING_PAY` (OWNER, MANAGER) and
+  `SUPPLIER_MAKING_PAY_REVERSE` (OWNER only), both re-checked in the transaction; the actor is the AppSession user. The only
+  correction is a full reversal (`RVxxxxxx`) through `CorrectionService` (standalone source `SUPPLIER_MAKING_PAYMENT`, which
+  needs `TRANSACTION_CORRECT` as well as the OWNER-only right): the exact opposite money movement on the ORIGINAL account plus
+  a `PAYMENT_REVERSAL` making movement; the payment and its movements are never rewritten. Idempotent on the request key.
 - **Line endings:** do not mass-convert files and never normalize migrations (checksums). No
   `.gitattributes` is added; with `core.autocrlf=true` a policy file would cause churn. Deferred.
 

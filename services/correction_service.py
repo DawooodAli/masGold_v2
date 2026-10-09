@@ -51,8 +51,10 @@ FULL_REVERSAL, SETTLEMENT = "FULL_REVERSAL", "SETTLEMENT_CORRECTION"
 CS = "CUSTOMER_ACCOUNT_SETTLEMENT"
 FO = "FINANCIAL_OPERATION"            # manual deposit / withdrawal / transfer (025): full reversal only
 CD = "CUSTOMER_DEPOSIT"               # عربون / استرداد عربون (027): full reversal only
-SOURCES = ("INVOICE", "EXCHANGE", "RETURN", CS, FO, CD)
-STANDALONE = (CS, FO, CD)              # sources without an invoice (never a fabricated one)
+SMP = "SUPPLIER_MAKING_PAYMENT"       # supplier making payment (036): full reversal only, OWNER only
+SMP_REVERSE_PERMISSION = "SUPPLIER_MAKING_PAY_REVERSE"
+SOURCES = ("INVOICE", "EXCHANGE", "RETURN", CS, FO, CD, SMP)
+STANDALONE = (CS, FO, CD, SMP)         # sources without an invoice (never a fabricated one)
 MONEY = Decimal("0.01")
 ZERO, ZERO_GRAMS = Decimal("0.00"), Decimal("0.000")
 METHOD_TEXT = {"PHYSICAL_CASH": "نقدي", "MOBILE_WALLET": "محفظة", "INSTAPAY": "InstaPay", "BANK_TRANSFER": "تحويل بنكي"}
@@ -62,6 +64,7 @@ SOURCE_TEXT = {"INVOICE": "الفاتورة", "EXCHANGE": "الاستبدال", 
 SOURCE_TEXT[CS] = "\u062a\u0633\u0648\u064a\u0629 \u062d\u0633\u0627\u0628"
 SOURCE_TEXT[FO] = "العملية المالية"
 SOURCE_TEXT[CD] = "العربون"
+SOURCE_TEXT[SMP] = "دفعة المصنعيات"
 
 
 def correction_source_text(source_type, direction=None, *, definite=True):
@@ -107,6 +110,7 @@ class _Plan:
     cases: list = field(default_factory=list)            # open reconciliation case ids to cancel
     lines: tuple = ()                                    # (table, [line ids]) linked to the reversal
     blockers: list = field(default_factory=list)         # (code, Arabic reason)
+    making: list = field(default_factory=list)           # (supplier id, signed making delta, movement code)
 
 
 def _reason(text):
@@ -165,6 +169,13 @@ class CorrectionService:
             raise CorrectionError("SOURCE_INVALID", "نوع العملية غير صحيح.")
         return value
 
+    @staticmethod
+    def _source_right(actor, source_type):
+        """A source may need a right ON TOP of TRANSACTION_CORRECT (never instead of it): a supplier making payment is
+        reversed by the OWNER only. The transaction re-checks it against the database."""
+        if source_type == SMP and SMP_REVERSE_PERMISSION not in actor.permissions:
+            raise PermissionError("عكس دفعة المصنعيات للمالك فقط.")
+
     # ------------------------------------------------------------ the source and what it posted
     def _load(self, connection, source_type, source_id, lock):
         """(invoice row, source row or None, reference) — the invoice row is locked first when writing."""
@@ -200,6 +211,26 @@ class CorrectionService:
                        "source_direction": source["direction"],
                        "customer_name_snapshot": source.get("customer_name"), "customer_id": source["customer_id"],
                        "finalized_at": source["occurred_at"], "net_amount": source["amount"]}
+            return context, source, reference
+        if source_type == SMP:
+            from repositories.financial_account_repository import FinancialAccountRepository
+            from repositories.supplier_payment_repository import SupplierPaymentRepository, payment_code
+            repo = SupplierPaymentRepository(connection)
+            source = repo.source(source_id)
+            if source is None:
+                raise CorrectionError("SOURCE_NOT_FOUND", "دفعة المصنعيات غير موجودة.")
+            if lock:                                            # the payment's own lock order: supplier → account
+                repo.get_supplier(source["supplier_id"], lock=True)
+                accounts = FinancialAccountRepository(connection)
+                if source["payment_method"] == "CASH":
+                    accounts.account("CASH", source["cash_account_id"], lock=True)
+                else:
+                    accounts.account("BANK", source["bank_account_id"], lock=True)
+                source = repo.source(source_id, lock=True)
+            reference = payment_code(source_id)
+            context = {"invoice_id": None, "invoice_number": reference, "customer_name_snapshot": None,
+                       "customer_id": None, "finalized_at": source["occurred_at"], "net_amount": source["amount"],
+                       "supplier_id": str(source["supplier_id"]), "supplier_name": source.get("supplier_name")}
             return context, source, reference
         if source_type == FO:
             from repositories.financial_account_repository import FinancialAccountRepository, operation_code
@@ -272,6 +303,14 @@ class CorrectionService:
                 plan.account[customer] = -Decimal(str(total))
         if source_type not in STANDALONE:
             getattr(self, f"_plan_{source_type.lower()}")(connection, plan, source, lock)
+        if source_type == SMP:
+            # The exact stored making movement is restored (never a recomputed amount): the payment's negative delta, negated.
+            from repositories.supplier_payment_repository import REVERSAL_MOVEMENT, SupplierPaymentRepository
+            movement = SupplierPaymentRepository(connection).payment_making_movement(source_id)
+            if movement is None:
+                plan.blockers.append(("PAYMENT_MOVEMENT_MISSING", "حركة المصنعيات الأصلية للدفعة غير موجودة."))
+            else:
+                plan.making.append((str(movement["supplier_id"]), -Decimal(str(movement["amount_delta"])), REVERSAL_MOVEMENT))
         if source_type == CD and source["direction"] == "IN":
             # Reversing a deposit must not leave refunds larger than the remaining deposits.
             from repositories.customer_deposit_repository import CustomerDepositRepository
@@ -447,6 +486,7 @@ class CorrectionService:
             "original_total": str(plan.invoice.get("net_amount")),
             "money": [{"account": ledger_name(k), "ledger": k[0], "delta": str(v)} for k, v in sorted(plan.money.items())],
             "account": [{"customer_id": k, "delta": str(v)} for k, v in plan.account.items()],
+            "making": [{"supplier_id": s, "delta": str(d)} for s, d, _ in plan.making],
             "inventory": [{"inventory_item_id": i, "from": f, "to": t} for i, f, t, _ in plan.inventory],
             "old_gold": [{"karat": k, "grams": str(g)} for _, k, g, _ in plan.old_gold]
                         + [{"karat": k, "grams": str(-g)} for _, _, k, g, _, _ in plan.holds],
@@ -458,8 +498,9 @@ class CorrectionService:
     # ------------------------------------------------------------ public: read side
     def preview_reversal(self, source_type, source_id, *, _expected_actor=None):
         """Exactly what a full reversal would do (or what blocks it). Read-only."""
-        self._actor(_expected_actor)
+        actor = self._actor(_expected_actor)
         source_type = self._source_type(source_type)
+        self._source_right(actor, source_type)
 
         def read(connection):
             plan = self._plan(connection, source_type, source_id, lock=False)
@@ -545,8 +586,11 @@ class CorrectionService:
     def reverse(self, source_type, source_id, reason, *, _expected_actor=None):
         session_actor = self._actor(_expected_actor)
         source_type, reason = self._source_type(source_type), _reason(reason)
+        self._source_right(session_actor, source_type)
         with self._transaction() as connection:
             actor = self._authorization.require_permission(connection, session_actor, CORRECT_PERMISSION)
+            if source_type == SMP:
+                actor = self._authorization.require_permission(connection, session_actor, SMP_REVERSE_PERMISSION)
             corrections, invoices = self._corrections(connection), self._invoices(connection)
             customers = self._customers(connection)
             plan = self._plan(connection, source_type, source_id, lock=True)
@@ -564,6 +608,16 @@ class CorrectionService:
             code = correction_code(FULL_REVERSAL, correction_id)
             text = f"عكس {code} — {SOURCE_TEXT[source_type]} {plan.reference}"
             self._post_money(corrections, correction_id, code, plan.money, "REVERSAL_PAYMENT", text, now, actor)
+            if plan.making:
+                from repositories.supplier_payment_repository import CORRECTION_REFERENCE, SupplierPaymentRepository
+                supplier_ledger = SupplierPaymentRepository(connection)
+                for supplier_id, delta, movement_code in plan.making:
+                    type_id = supplier_ledger.making_type_id(movement_code)
+                    if type_id is None:
+                        raise RuntimeError(f"supplier making movement type {movement_code} is missing (migration 036)")
+                    supplier_ledger.insert_making_movement(
+                        supplier_id=supplier_id, type_id=type_id, amount_delta=delta, source_type=CORRECTION_REFERENCE,
+                        source_id=correction_id, reference=code, description=text, now=now, user_id=actor.user_id)
             for customer_id, delta in plan.account.items():
                 transaction_id = customers.add_transaction(
                     customer_id=int(customer_id), type_code="REVERSAL_ACCOUNT", amount_delta=delta,
@@ -629,7 +683,7 @@ class CorrectionService:
     def _settlement_state(self, connection, source_type, source_id, lock):
         """The current EFFECTIVE settlement of a source: direction, legs, account part, total, chain."""
         corrections = self._corrections(connection)
-        if source_type in (FO, CD):
+        if source_type in (FO, CD, SMP):
             raise CorrectionError("SETTLEMENT_NOT_SUPPORTED",
                                   "هذه العملية تُصحح بالعكس الكامل ثم إعادة إدخالها صحيحة.")
         invoice, source, reference = self._load(connection, source_type, source_id, lock)

@@ -77,6 +77,31 @@ def parse_rate(value, label="المصنعية (ج/جرام)"):
     return rate
 
 
+MAX_PAYMENT = Decimal("100000000000000")      # the money columns are DECIMAL(16,2)
+
+
+def parse_amount(value, label="المبلغ"):
+    """A money amount in EGP, exact Decimal: strictly positive and at most two decimals. It is refused, never rounded,
+    because a payment moves real money and the entered figure is the authoritative one."""
+    amount = _number(value, label, "AMOUNT_INVALID")
+    if amount <= 0:
+        raise SupplierRuleError("AMOUNT_INVALID", f"{label} يجب أن يكون أكبر من صفر.")
+    if amount >= MAX_PAYMENT or amount != amount.quantize(MONEY_STEP):      # magnitude first: quantize() overflows on 1e30
+        raise SupplierRuleError("AMOUNT_INVALID", f"اكتب {label} بالأرقام بخانتين عشريتين على الأكثر وبقيمة مقبولة.")
+    return amount.quantize(MONEY_STEP)
+
+
+def money_amount(value):
+    """A stored EGP figure as an exact two-decimal Decimal."""
+    return Decimal(str(value)).quantize(MONEY_STEP)
+
+
+def making_after_payment(before, amount):
+    """The making position after paying `amount`: before - amount, exact. It is NOT capped at the payable balance: a larger
+    payment crosses zero into supplier credit (the sign convention above: delta < 0 = the supplier owes the shop)."""
+    return (Decimal(str(before)) - Decimal(str(amount))).quantize(MONEY_STEP)
+
+
 def group_making_total(weight, rate):
     """Contractual group making = supplier group weight x EGP/gram, rounded once to 0.01 (Decimal only)."""
     return (Decimal(weight) * Decimal(rate)).quantize(MONEY_STEP, rounding=ROUND_HALF_UP)

@@ -43,6 +43,8 @@ Item {
             page.tab = 0
             page.pvm.showSupplier(supplierId)
         }
+        function onPaymentPosted(code) { payDialog.close() }
+        function onReversalDone(code) { reverseDialog.close() }
     }
     Connections {
         target: page.pvm
@@ -580,6 +582,15 @@ Item {
                             accent: page.toneColor(page.detail.makingTone)
                             PositionLine { objectName: "makingPosition"; parts: page.detail.makingParts || ({})
                                            numberColor: theme.gold }
+                            Btn {
+                                objectName: "payMakingButton"
+                                Layout.alignment: Qt.AlignRight
+                                visible: !!page.vm && page.vm.canPayMaking
+                                enabled: page.hasSelection && !page.vm.busy          // an inactive supplier can still be paid
+                                text: "دفع مصنعيات"
+                                primary: true
+                                onClicked: payDialog.openFor()
+                            }
                         }
                     }
 
@@ -810,6 +821,12 @@ Item {
                                                 Txt { Layout.fillWidth: true; text: modelData.time + "  •  " + page.ltr(modelData.reference)
                                                       color: theme.textMuted; font.pixelSize: theme.fontTableHeader
                                                       wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                                Txt { objectName: "makingPaymentDetail"; Layout.fillWidth: true; visible: modelData.detail !== ""
+                                                      text: modelData.detail; color: theme.textSecondary
+                                                      font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                                Txt { objectName: "makingPaymentState"; Layout.fillWidth: true; visible: modelData.state !== ""
+                                                      text: modelData.state; color: modelData.reversed ? theme.amber : theme.textMuted
+                                                      font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                                             }
                                             // the movement value; in the narrowest window the running balance sits under it
                                             ColumnLayout {
@@ -826,6 +843,13 @@ Item {
                                             Txt { Layout.fillWidth: true; visible: !page.compactInvoices
                                                   text: "الرصيد: " + modelData.balance; color: theme.textSecondary
                                                   font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                            Btn {
+                                                objectName: "reversePaymentButton"
+                                                visible: !!page.vm && page.vm.canReversePayment && modelData.canReverse === true
+                                                text: "عكس"
+                                                accent: theme.red
+                                                onClicked: reverseDialog.openFor(modelData)
+                                            }
                                         }
                                     }
                                     Txt { anchors.centerIn: parent; visible: makingList.count === 0; text: "لا توجد حركات مصنعيات"
@@ -932,6 +956,239 @@ Item {
                 Btn { text: "حذف"; accent: theme.red; primary: true
                       onClicked: { deleteConfirm.close(); page.vm.deleteSupplier(page.detail.id) } }
                 Btn { text: "إلغاء"; accent: theme.textSecondary; onClicked: deleteConfirm.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+
+    // ---------------------------------------------------------------- making payment (دفع مصنعيات)
+    // Cash from MAIN_SAFE or a transfer from a selected active bank account. The figures (current / resulting position,
+    // even a credit balance) come from supplierVM; nothing is calculated here and the service re-checks every right.
+    Popup {
+        id: payDialog
+        objectName: "payMakingDialog"
+        property string requestKey: ""
+        property string method: "CASH"
+        property var preview: ({ valid: false, error: "", afterText: "", afterParts: ({}), afterTone: "settled", note: "" })
+        readonly property var ctx: page.vm ? page.vm.payContext : ({})
+        readonly property bool ready: !!ctx && ctx.supplierId !== undefined
+        // Entry 0 is a placeholder: a ComboBox whose model arrives after it is created would otherwise silently pick the
+        // first account, and a payment must never leave an account the employee did not choose.
+        readonly property var bankChoices: [{ id: "", text: "اختر الحساب" }].concat(ready ? ctx.banks : [])
+        readonly property bool accountReady: method === "CASH" ? (ready && ctx.safeReady === true)
+                                                              : (payBankCombo.currentIndex > 0)
+        readonly property bool canSubmit: ready && preview.valid === true && accountReady
+                                          && payDateField.text.trim().length > 0 && !!page.vm && !page.vm.paying
+        function recompute() {
+            if (page.vm) preview = page.vm.previewPayment(payAmountField.text)
+        }
+        function openFor() {
+            if (!page.vm || !page.hasSelection) return
+            requestKey = page.vm.newRequestKey()
+            method = "CASH"
+            payBankCombo.currentIndex = 0
+            payAmountField.text = ""
+            payDateField.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            payReferenceField.text = ""
+            payNotesField.text = ""
+            preview = ({ valid: false, error: "", afterText: "", afterParts: ({}), afterTone: "settled", note: "" })
+            page.vm.loadPaymentContext(page.detail.id)
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(560, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 600, 590)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection
+                  text: "دفع مصنعيات — " + (payDialog.ready ? payDialog.ctx.supplierName : (page.detail.name || ""))
+                        + (payDialog.ready && payDialog.ctx.supplierActive === false ? "  (موقوف)" : "") }
+            Txt { objectName: "payInactiveNote"; Layout.fillWidth: true; visible: payDialog.ready && payDialog.ctx.supplierActive === false
+                  text: "المورد موقوف: لا تُنشأ له فواتير شراء جديدة، لكن يمكن تسجيل دفعة مصنعيات على رصيده."
+                  color: theme.amber; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            Flickable {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentHeight: payColumn.implicitHeight
+                clip: true
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: payColumn
+                    width: parent.width - 12
+                    spacing: 6
+                    Txt { Layout.fillWidth: true; visible: !payDialog.ready; text: "جارٍ تحميل موقف المصنعيات…"
+                          color: theme.textMuted }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        visible: payDialog.ready
+                        implicitHeight: currentColumn.implicitHeight + 14
+                        radius: 4
+                        color: theme.bgTertiary
+                        border.color: theme.border
+                        ColumnLayout {
+                            id: currentColumn
+                            anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                            anchors.leftMargin: 10; anchors.rightMargin: 10
+                            spacing: 2
+                            Txt { Layout.fillWidth: true; text: "موقف المصنعيات الحالي"; color: theme.textMuted
+                                  font.pixelSize: theme.fontTableHeader }
+                            Txt { objectName: "payCurrentPosition"; Layout.fillWidth: true; text: payDialog.ctx.currentText || ""
+                                  color: page.toneColor(payDialog.ctx.currentTone); font.bold: true
+                                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                        }
+                    }
+                    Txt { Layout.fillWidth: true; text: "طريقة الدفع *" }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        Btn { objectName: "payMethodCash"; text: "نقدًا من الخزنة الرئيسية"; primary: payDialog.method === "CASH"
+                              onClicked: payDialog.method = "CASH" }
+                        Btn { objectName: "payMethodBank"; text: "تحويل بنكي"; primary: payDialog.method === "BANK"
+                              onClicked: payDialog.method = "BANK" }
+                        Item { Layout.fillWidth: true }
+                    }
+                    Txt { Layout.fillWidth: true; visible: payDialog.method === "CASH" && payDialog.ready
+                          text: payDialog.ctx.safeReady === true ? "يُخصم المبلغ من: " + (payDialog.ctx.safeName || "")
+                                                                  : "الخزنة الرئيسية غير متاحة."
+                          color: payDialog.ctx.safeReady === true ? theme.textSecondary : theme.red
+                          wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                    Txt { Layout.fillWidth: true; visible: payDialog.method === "BANK"; text: "الحساب البنكي *" }
+                    Combo {
+                        id: payBankCombo
+                        objectName: "payBankCombo"
+                        Layout.fillWidth: true
+                        visible: payDialog.method === "BANK"
+                        model: payDialog.bankChoices
+                        textRole: "text"
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "المبلغ (ج) *" }
+                            Field { id: payAmountField; objectName: "payAmountField"; Layout.fillWidth: true
+                                    inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                    onTextChanged: payDialog.recompute() }
+                        }
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "تاريخ الدفع (yyyy-MM-dd) *" }
+                            Field { id: payDateField; objectName: "payDateField"; Layout.fillWidth: true }
+                        }
+                    }
+                    Txt { Layout.fillWidth: true; visible: payAmountField.text.trim().length > 0 && payDialog.preview.error !== ""
+                          text: payDialog.preview.error; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                    Txt { Layout.fillWidth: true; text: "المرجع" }
+                    Field { id: payReferenceField; objectName: "payReferenceField"; Layout.fillWidth: true }
+                    Txt { Layout.fillWidth: true; text: "ملاحظات" }
+                    Field { id: payNotesField; objectName: "payNotesField"; Layout.fillWidth: true }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: afterColumn.implicitHeight + 14
+                        radius: 4
+                        color: theme.bgTertiary
+                        border.color: payDialog.preview.valid ? page.toneColor(payDialog.preview.afterTone) : theme.border
+                        ColumnLayout {
+                            id: afterColumn
+                            anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                            anchors.leftMargin: 10; anchors.rightMargin: 10
+                            spacing: 2
+                            Txt { Layout.fillWidth: true; text: "موقف المصنعيات بعد الدفع"; color: theme.textMuted
+                                  font.pixelSize: theme.fontTableHeader }
+                            Txt { objectName: "payResultPosition"; Layout.fillWidth: true
+                                  text: payDialog.preview.valid ? payDialog.preview.afterText : "—"
+                                  color: payDialog.preview.valid ? page.toneColor(payDialog.preview.afterTone) : theme.textMuted
+                                  font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "payCreditNote"; Layout.fillWidth: true; visible: payDialog.preview.note !== ""
+                                  text: payDialog.preview.note; color: theme.amber; font.pixelSize: theme.fontTableHeader
+                                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                        }
+                    }
+                }
+            }
+            Txt { objectName: "payError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmPayMakingButton"
+                    text: !!page.vm && page.vm.paying ? "جارٍ الحفظ…" : "تسجيل الدفعة"
+                    primary: true
+                    enabled: payDialog.canSubmit
+                    onClicked: page.vm.payMaking(payDialog.ctx.supplierId, payDialog.method,
+                                                 payDialog.method === "BANK" ? payDialog.bankChoices[payBankCombo.currentIndex].id : "",
+                                                 payAmountField.text, payDateField.text, payReferenceField.text,
+                                                 payNotesField.text, payDialog.requestKey)
+                }
+                Btn { objectName: "cancelPayMakingButton"; text: "إلغاء"; accent: theme.textSecondary
+                      enabled: !!page.vm && !page.vm.paying; onClicked: payDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- reverse a making payment (OWNER only)
+    Popup {
+        id: reverseDialog
+        objectName: "reversePaymentDialog"
+        property string paymentId: ""
+        property string code: ""
+        property string amountText: ""
+        property string detailText: ""
+        function openFor(row) {
+            paymentId = row.paymentId
+            code = row.reference
+            amountText = row.amount
+            detailText = row.detail
+            reverseReasonField.text = ""
+            if (page.vm) page.vm.clearMessage()
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(480, page.width - 24)
+        modal: true
+        padding: 16
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.red }
+        contentItem: ColumnLayout {
+            spacing: 8
+            Txt { Layout.fillWidth: true; text: "عكس دفعة مصنعيات " + page.ltr(reverseDialog.code); color: theme.red
+                  font.bold: true; font.pixelSize: theme.fontSection }
+            Txt { Layout.fillWidth: true; text: reverseDialog.amountText + "  •  " + reverseDialog.detailText
+                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                  wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "يُعاد المبلغ إلى نفس الحساب الأصلي ويرجع موقف المصنعيات كما كان. تبقى الدفعة الأصلية في السجل ولا تُعدّل." }
+            Txt { Layout.fillWidth: true; text: "سبب العكس *" }
+            Field { id: reverseReasonField; objectName: "reverseReasonField"; Layout.fillWidth: true }
+            Txt { objectName: "reverseError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmReversePaymentButton"
+                    text: !!page.vm && page.vm.reversing ? "جارٍ العكس…" : "عكس الدفعة"
+                    accent: theme.red
+                    primary: true
+                    enabled: reverseReasonField.text.trim().length > 0 && !!page.vm && !page.vm.reversing
+                    onClicked: page.vm.reversePayment(reverseDialog.paymentId, reverseReasonField.text)
+                }
+                Btn { text: "إلغاء"; accent: theme.textSecondary; enabled: !!page.vm && !page.vm.reversing
+                      onClicked: reverseDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }

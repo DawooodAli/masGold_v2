@@ -50,6 +50,15 @@ class Db:
                        2: {"id": 2, "karat_value": 18, "name": "18K", "is_active": 1},
                        3: {"id": 3, "karat_value": 24, "name": "24K", "is_active": 1}}
         self.items, self.barcodes, self.movements = {}, {}, []
+        # Supplier making payments (036): accounts, the money ledgers, the payment documents and the corrections.
+        self.cash_accounts = {1: {"id": 1, "code": "MAIN_SAFE", "name": "الخزنة الرئيسية", "is_active": 1}}
+        self.bank_accounts = {
+            5: {"id": 5, "name": "بنك مصر", "account_type": "BANK", "bank_name": "بنك مصر", "account_label": None, "is_active": 1},
+            6: {"id": 6, "name": "فودافون كاش", "account_type": "MOBILE_WALLET", "bank_name": None,
+                "account_label": "01000000000", "is_active": 1},
+            7: {"id": 7, "name": "حساب موقوف", "account_type": "BANK", "bank_name": None, "account_label": None, "is_active": 0}}
+        self.payments, self.legs, self.cash_moves, self.bank_moves, self.corrections = {}, [], [], [], []
+        self.fail_at = None                       # raise at a named step of a payment / reversal (atomicity tests)
         # The category master with its purchase-making ranges. The default is ONE catch-all grade so that every rate used by
         # the general tests resolves; the category tests install a realistic (overlapping / gapped) set instead.
         self.categories = {1: {"id": 1, "code": "A", "name": "A", "is_active": 1,
@@ -57,7 +66,7 @@ class Db:
         self.item_types = {1: "خاتم", 2: "سلسلة"}
         self.item_type_defaults = {}              # item type id -> its default_category_id (never allowed to win over the group)
         self.sequences = {"supplier": 0, "invoice": 0, "group": 0, "gold": 0, "making": 0, "link": 0, "item": 100,
-                          "barcode": 0}
+                          "barcode": 0, "payment": 0, "cash_move": 0, "bank_move": 0, "correction": 0}
         self.fail_after_item = False             # raise after the inventory item is written (atomicity tests)
         self.transactions = 0
 
@@ -65,10 +74,13 @@ class Db:
         self.sequences[name] += 1
         return self.sequences[name]
 
+    def cursor(self, dictionary=False):
+        return _AuditCursor(self)
+
     @contextmanager
     def transaction(self):
         self.transactions += 1
-        snapshot = copy.deepcopy({k: v for k, v in self.__dict__.items() if k not in ("fail_after_item", "transactions")})
+        snapshot = copy.deepcopy({k: v for k, v in self.__dict__.items() if k not in ("fail_after_item", "transactions", "fail_at")})
         connection = Connection(self)
         try:
             yield connection
@@ -106,6 +118,23 @@ class Connection:
 
 def _dup():
     return IntegrityError("duplicate", errno=1062)
+
+
+class _AuditCursor:
+    """CorrectionService writes its audit row through a plain cursor."""
+
+    def __init__(self, db):
+        self.db = db
+
+    def execute(self, sql, params=()):
+        assert sql.startswith("INSERT INTO audit_log"), sql[:60]
+        if self.db.fail_at == "audit":
+            raise RuntimeError("forced failure at audit")
+        self.db.audit_rows.append({"user_id": params[0], "event_type": params[1], "entity_type": params[2],
+                                   "entity_id": params[3], "reference": params[4], "metadata": params[6]})
+
+    def close(self):
+        pass
 
 
 class SupplierRepo:
@@ -208,8 +237,21 @@ class SupplierRepo:
         for m in sorted((m for m in self.db.making if m["supplier_id"] == int(supplier_id)),
                         key=lambda r: (r["occurred_at"], r["id"])):
             running += m["amount_delta"]
-            rows.append({**m, "movement_code": "PURCHASE_INVOICE", "movement_name": "Supplier Purchase Invoice Making",
-                         "actor_name": "المدير", "balance_after": running})
+            code, name = MAKING_TYPES[m["movement_type_id"]]
+            payment = (self.db.payments.get(m["source_id"])
+                       if code == "PAYMENT" and m["source_type"] == "SUPPLIER_MAKING_PAYMENT" else None)
+            reversal = next((c for c in self.db.corrections if payment and c["source_type"] == "SUPPLIER_MAKING_PAYMENT"
+                             and c["source_id"] == str(payment["id"]) and c["correction_type"] == "FULL_REVERSAL"), None)
+            undone = next((c for c in self.db.corrections if code == "PAYMENT_REVERSAL"
+                           and m["source_type"] == "TRANSACTION_CORRECTION" and c["correction_id"] == str(m["source_id"])), None)
+            cash = self.db.cash_accounts.get(payment["cash_account_id"]) if payment and payment["cash_account_id"] else None
+            bank = self.db.bank_accounts.get(payment["bank_account_id"]) if payment and payment["bank_account_id"] else None
+            rows.append({**m, "movement_code": code, "movement_name": name, "actor_name": "المدير", "balance_after": running,
+                         "payment_id": payment and payment["id"], "payment_method": payment and payment["payment_method"],
+                         "cash_account_name": cash and cash["name"], "bank_account_name": bank and bank["name"],
+                         "reversal_id": reversal and int(reversal["correction_id"]),
+                         "reversed_payment_id": undone and int(undone["source_id"]),
+                         "reversed_reference": undone and undone["source_reference"]})
         return rows[::-1][:limit]
 
     def audit(self, *, actor, event_type, entity_id, reference, description, metadata, now, entity_type="SUPPLIER"):
@@ -465,3 +507,142 @@ def build(permissions=ALL, user_id=7, employee_id=None, granted=None, session=No
     purchases = SupplierPurchaseService(session, transaction_factory=db.transaction, repository=PurchaseRepo,
                                         barcodes=Barcodes, inventory=inventory, authorization=authorization)
     return db, session, authorization, suppliers, purchases
+
+# ------------------------------------------------------------------------------------------ supplier making payments (036)
+# The money ledgers, the payment document and the corrections are fake tables of the same Db, so one transaction
+# snapshot/rollback covers the payment, its money movement, its making movement and a reversal together (atomicity).
+OWNER_RIGHTS = frozenset(ALL | {"SUPPLIER_MAKING_PAY", "SUPPLIER_MAKING_PAY_REVERSE", "TRANSACTION_CORRECT"})
+MANAGER_RIGHTS = frozenset(ALL | {"SUPPLIER_MAKING_PAY", "TRANSACTION_CORRECT"})
+CASHIER_RIGHTS = frozenset({"APP_LOGIN", "SUPPLIER_VIEW"})
+MAKING_TYPES = {1: ("PURCHASE_INVOICE", "Supplier Purchase Invoice Making"), 2: ("PAYMENT", "Supplier Making Payment"),
+                3: ("PAYMENT_REVERSAL", "Supplier Making Payment Reversal")}
+MAKING_TYPE_ID = {code: type_id for type_id, (code, _) in MAKING_TYPES.items()}
+
+
+class PaymentRepo(PurchaseRepo):
+    """SupplierPaymentRepository contract, including the 036 database checks and unique keys."""
+
+    def _fail(self, step):
+        if self.db.fail_at == step:
+            raise RuntimeError(f"forced failure at {step}")
+
+    def main_safe(self):
+        row = next((a for a in self.db.cash_accounts.values() if a["code"] == "MAIN_SAFE"), None)
+        return None if row is None else dict(row)
+
+    def active_bank_accounts(self):
+        return [dict(b) for b in sorted(self.db.bank_accounts.values(), key=lambda b: (b["account_type"], b["name"], b["id"]))
+                if b["is_active"]]
+
+    def making_balance_current(self, supplier_id):
+        return self.making_balance(supplier_id)
+
+    def by_request(self, key):
+        row = next((p for p in self.db.payments.values() if p["request_key"] == key), None)
+        return None if row is None else dict(row)
+
+    def insert_header(self, *, supplier_id, method, cash_account_id, bank_account_id, amount, payment_date, reference,
+                      notes, before, after, key, digest, actor, now):
+        assert amount > 0 and after == before - amount                                  # chk_smp_amount / chk_smp_balance
+        assert (method == "CASH" and cash_account_id is not None and bank_account_id is None) or \
+               (method == "BANK" and bank_account_id is not None and cash_account_id is None)     # chk_smp_method
+        if any(p["request_key"] == key for p in self.db.payments.values()):            # uq_smp_request, as MySQL words it
+            raise IntegrityError(f"1062 (23000): Duplicate entry '{key}' for key 'supplier_making_payments.uq_smp_request'",
+                                 errno=1062)
+        self._fail("header")
+        payment_id = self.db.next("payment")
+        self.db.payments[payment_id] = {
+            "id": payment_id, "supplier_id": int(supplier_id), "payment_method": method, "cash_account_id": cash_account_id,
+            "bank_account_id": bank_account_id, "amount": amount, "payment_date": payment_date, "reference": reference,
+            "notes": notes, "balance_before": before, "balance_after": after, "request_key": key, "request_hash": digest,
+            "performed_by_user_id": actor.user_id, "performed_by_employee_id": actor.employee_id, "occurred_at": now}
+        return payment_id
+
+    def post_money(self, *, ledger, account_id, payment_id, code, amount, description, notes, actor, now):
+        self._fail("money")
+        table = self.db.cash_moves if ledger == "CASH" else self.db.bank_moves
+        movement_id = self.db.next("cash_move" if ledger == "CASH" else "bank_move")
+        table.append({"id": movement_id, "account_id": int(account_id), "amount_delta": -amount,
+                      "reference_type": "SUPPLIER_MAKING_PAYMENT", "reference_id": str(payment_id),
+                      "reference_code": code, "type_code": "SUPPLIER_MAKING_PAYMENT", "description": description})
+        return movement_id
+
+    def making_type_id(self, code):
+        return MAKING_TYPE_ID.get(code)
+
+    def insert_making_movement(self, *, supplier_id, type_id, amount_delta, source_type, source_id, reference,
+                               description, now, user_id):
+        self._fail("making")
+        return super().insert_making_movement(supplier_id=supplier_id, type_id=type_id, amount_delta=amount_delta,
+                                              source_type=source_type, source_id=source_id, reference=reference,
+                                              description=description, now=now, user_id=user_id)
+
+    def insert_leg(self, *, payment_id, kind, cash_movement_id=None, bank_movement_id=None, making_movement_id=None):
+        self._fail("leg")
+        if (kind, payment_id) in {(l["leg_kind"], l["payment_id"]) for l in self.db.legs}:
+            raise _dup()                                                                # uq_smpl_kind
+        shaped = (kind == "MONEY" and making_movement_id is None and (cash_movement_id is None) != (bank_movement_id is None)) or \
+                 (kind == "MAKING" and making_movement_id is not None and cash_movement_id is None and bank_movement_id is None)
+        assert shaped                                                                   # chk_smpl_leg
+        self.db.legs.append({"payment_id": payment_id, "leg_kind": kind, "cash_movement_id": cash_movement_id,
+                             "bank_movement_id": bank_movement_id, "making_movement_id": making_movement_id})
+
+    def audit(self, **kw):
+        self._fail("audit")
+        super().audit(**kw)
+
+    def _joined(self, payment):
+        supplier = self.db.suppliers[payment["supplier_id"]]
+        cash = self.db.cash_accounts.get(payment["cash_account_id"]) if payment["cash_account_id"] else None
+        bank = self.db.bank_accounts.get(payment["bank_account_id"]) if payment["bank_account_id"] else None
+        reversal = next((c for c in self.db.corrections if c["source_type"] == "SUPPLIER_MAKING_PAYMENT"
+                         and c["source_id"] == str(payment["id"]) and c["correction_type"] == "FULL_REVERSAL"), None)
+        return {**payment, "supplier_name": supplier["name"], "supplier_active": supplier["is_active"],
+                "cash_account_name": cash and cash["name"], "bank_account_name": bank and bank["name"],
+                "bank_account_type": bank and bank["account_type"], "actor_name": "المدير",
+                "reversal_id": reversal and int(reversal["correction_id"]),
+                "reversal_reason": reversal and reversal["reason"], "reversal_at": reversal and reversal["occurred_at"],
+                "reversal_actor_name": reversal and "المدير"}
+
+    def payment(self, payment_id):
+        row = self.db.payments.get(int(payment_id))
+        return None if row is None else self._joined(row)
+
+    def source(self, payment_id, lock=False):
+        row = self.db.payments.get(int(payment_id))
+        return None if row is None else {**row, "supplier_name": self.db.suppliers[row["supplier_id"]]["name"]}
+
+    def payment_making_movement(self, payment_id):
+        leg = next((l for l in self.db.legs if l["payment_id"] == int(payment_id) and l["leg_kind"] == "MAKING"), None)
+        if leg is None:
+            return None
+        move = next(m for m in self.db.making if m["id"] == leg["making_movement_id"])
+        return {"id": move["id"], "supplier_id": move["supplier_id"], "amount_delta": move["amount_delta"]}
+
+    def payments_of(self, supplier_id, limit=200):
+        return [self._joined(p) for p in sorted(self.db.payments.values(), key=lambda p: -p["id"])
+                if p["supplier_id"] == int(supplier_id)][:limit]
+
+
+class AccountsRepo:
+    """FinancialAccountRepository.account(): one account row (None when it does not exist)."""
+
+    def __init__(self, db):
+        self.db = db
+
+    def account(self, ledger, account_id, lock=False):
+        table = self.db.cash_accounts if ledger == "CASH" else self.db.bank_accounts
+        row = table.get(int(account_id))
+        if row is None:
+            return None
+        return {"id": row["id"], "name": row["name"], "account_type": "CASH" if ledger == "CASH" else row["account_type"],
+                "is_active": row["is_active"]}
+
+
+def build_payments(permissions=OWNER_RIGHTS, user_id=7, granted=None, session=None):
+    """(db, session, authorization, SupplierService, SupplierPurchaseService, SupplierPaymentService) over one fake database."""
+    from services.supplier_payment_service import SupplierPaymentService
+    db, session, authorization, suppliers, purchases = build(permissions, user_id, None, granted, session)
+    payments = SupplierPaymentService(session, transaction_factory=db.transaction, repository=PaymentRepo,
+                                      accounts=AccountsRepo, authorization=authorization)
+    return db, session, authorization, suppliers, purchases, payments

@@ -8,6 +8,7 @@ Positions are never shown as an ambiguous signed number: the Arabic wording carr
 (مصنعيات) are always separate lines. Weights use the project unit جرام.
 """
 from decimal import Decimal
+from uuid import uuid4
 
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
@@ -15,6 +16,8 @@ from app.formatting import date_text, datetime_text, grams, money
 from services import supplier_rules as rules
 
 SHOP_OWES_TEXT, SUPPLIER_OWES_TEXT, SETTLED_TEXT = "علينا للمورد", "لنا عند المورد", "الحساب متوازن"
+ACCOUNT_TYPE_TEXT = {"BANK": "حساب بنكي", "MOBILE_WALLET": "محفظة"}
+PAYMENT_METHOD_TEXT = {"CASH": "نقدًا من", "BANK": "تحويل من"}
 TONES = {rules.SHOP_OWES: "shopOwes", rules.SUPPLIER_OWES: "supplierOwes", rules.SETTLED: "settled"}
 
 
@@ -66,14 +69,38 @@ def movement_side_text(delta):
     return SHOP_OWES_TEXT if delta > 0 else SUPPLIER_OWES_TEXT
 
 
+def making_row(r):
+    """One making-ledger row for the view. A payment row names its method and account and, once reversed, the RV that
+    reversed it; a reversal row names the payment it restores. The original payment row is never altered or hidden."""
+    is_payment = r.get("movement_code") == "PAYMENT" and bool(r.get("payment_id"))
+    reversed_by = r.get("reversed_by") if is_payment else None
+    detail = f"{PAYMENT_METHOD_TEXT[r['payment_method']]} {r['payment_account'] or ''}".strip() if is_payment else ""
+    if is_payment and reversed_by:
+        state = f"معكوسة بالعملية {reversed_by}"
+    elif r.get("movement_code") == "PAYMENT_REVERSAL" and r.get("reverses_reference"):
+        state = f"عكس الدفعة {r['reverses_reference']}"
+    else:
+        state = ""
+    return {"id": r["id"], "time": datetime_text(r["occurred_at"]), "movement": r["movement"],
+            "side": movement_side_text(r["amount_delta"]), "amount": money(abs(r["amount_delta"])),
+            "balance": making_position_text(rules.direction(r["balance_after"]), r["balance_after"]),
+            "reference": r["reference"], "sourceId": r["source_id"], "actor": r["actor"],
+            "tone": TONES[rules.direction(r["amount_delta"])],
+            "paymentId": r.get("payment_id") or "", "detail": detail, "state": state,
+            "reversed": bool(reversed_by), "canReverse": is_payment and not reversed_by}
+
+
 class SupplierViewModel(QObject):
     changed = Signal()
     supplierSaved = Signal(str)
     selectionChanged = Signal(str)       # the selected supplier id: whoever selects (click, save), dependents follow
+    paymentPosted = Signal(str)          # a making payment was posted (its code): the payment dialog can close
+    reversalDone = Signal(str)           # a making payment was reversed (the RV code): the reversal dialog can close
 
-    def __init__(self, session, service=None, parent=None):
+    def __init__(self, session, service=None, parent=None, payments=None):
         super().__init__(parent)
-        self._session, self._service = session, service
+        self._session, self._service, self._payments = session, service, payments
+        self._pay_context = {}
         self._workers, self._request, self._latest, self._busy = set(), 0, {}, set()
         self._shutdown = False
         self._suppliers, self._detail = [], {}
@@ -86,6 +113,12 @@ class SupplierViewModel(QObject):
             from services.supplier_service import SupplierService
             self._service = SupplierService(self._session)
         return self._service
+
+    def _payment_service(self):
+        if self._payments is None:
+            from services.supplier_payment_service import SupplierPaymentService
+            self._payments = SupplierPaymentService(self._session)
+        return self._payments
 
     def _start(self, operation, call):
         from app.workers.invoice_worker import InvoiceWorker
@@ -216,7 +249,121 @@ class SupplierViewModel(QObject):
         self._selected = "" if self._selected == supplier_id else self._selected
         self._write("تم حذف المورد.", call)
 
+    # ------------------------------------------------------------ making payment (دفع مصنعيات) and its reversal
+    @Slot(result=str)
+    def newRequestKey(self):
+        """One key per opened payment dialog: a double click re-sends the SAME key, so it stays idempotent."""
+        return str(uuid4())
+
+    @Slot(str)
+    def loadPaymentContext(self, supplier_id):
+        """The CURRENT making position, MAIN_SAFE and the active bank accounts for the payment dialog."""
+        self._pay_context = {}
+        self._error = self._message = ""
+        service = self._payment_service()
+        self._start("paycontext", lambda _expected_actor: service.payment_context(supplier_id,
+                                                                                _expected_actor=_expected_actor))
+
+    def _on_paycontext(self, result, error):
+        if error:
+            self._error = error
+            return
+        self._pay_context = result
+
+    @Slot(str, result="QVariantMap")
+    def previewPayment(self, amount):
+        """The making position after paying `amount` (exact; may cross zero into supplier credit). Uses the position the
+        dialog loaded; the figures come from supplier_rules, never from QML arithmetic."""
+        context = self._pay_context
+        text = str(amount or "").strip()
+        empty = {"valid": False, "error": "", "afterText": "", "afterParts": {}, "afterTone": "settled", "note": ""}
+        if not context or not text:
+            return empty
+        try:
+            value = rules.parse_amount(text)
+        except rules.SupplierRuleError as exc:
+            return {**empty, "error": str(exc)}
+        after = rules.making_after_payment(context["making"], value)
+        direction = rules.direction(after)
+        return {"valid": True, "error": "", "afterText": making_position_text(direction, after),
+                "afterParts": position_parts(direction, after, "making"), "afterTone": TONES[direction],
+                "note": ("المبلغ أكبر من المستحق: يصبح رصيد المصنعيات «لنا عند المورد» (رصيد دائن للمحل)."
+                         if after < 0 else "")}
+
+    @Slot(str, str, str, str, str, str, str, str)
+    def payMaking(self, supplier_id, method, bank_account_id, amount, payment_date, reference, notes, request_key):
+        if "pay" in self._busy:
+            return                                                     # a double click never submits twice
+        self._message = self._error = ""
+        service = self._payment_service()
+        self._start("pay", lambda _expected_actor: service.pay(
+            supplier_id, method, bank_account_id, amount, payment_date, reference, notes, request_key,
+            _expected_actor=_expected_actor))
+        self.changed.emit()
+
+    def _on_pay(self, result, error):
+        if error:
+            self._error = error                                        # the dialog stays open with every field kept
+            return
+        self._message = (f"دفعة المصنعيات {result['code']} مسجلة من قبل (لم تُسجل مرة ثانية)." if result.get("duplicate")
+                         else f"تم تسجيل دفعة المصنعيات {result['code']}.")
+        self.refresh()
+        self.paymentPosted.emit(result["code"])
+
+    @Slot(str, str)
+    def reversePayment(self, payment_id, reason):
+        if "reverse" in self._busy:
+            return
+        self._message = self._error = ""
+        service = self._payment_service()
+        self._start("reverse", lambda _expected_actor: service.reverse(payment_id, reason, _expected_actor=_expected_actor))
+        self.changed.emit()
+
+    def _on_reverse(self, result, error):
+        if error:
+            self._error = error
+            return
+        self._message = f"تم عكس دفعة المصنعيات {result['source_reference']} ({result['code']})."
+        self.refresh()
+        self.reversalDone.emit(result["code"])
+
     # ------------------------------------------------------------ properties
+    @Property(bool, notify=changed)
+    def canPayMaking(self):
+        actor = self._session.current_actor()
+        return bool(actor and "SUPPLIER_MAKING_PAY" in actor.permissions)
+
+    @Property(bool, notify=changed)
+    def canReversePayment(self):
+        actor = self._session.current_actor()
+        return bool(actor and "SUPPLIER_MAKING_PAY_REVERSE" in actor.permissions)
+
+    @Property(bool, notify=changed)
+    def paying(self):
+        return "pay" in self._busy
+
+    @Property(bool, notify=changed)
+    def reversing(self):
+        return "reverse" in self._busy
+
+    @Property("QVariantMap", notify=changed)
+    def payContext(self):
+        """The payment dialog's data (empty while it loads): supplier, current making position, Main Safe, bank accounts."""
+        context = self._pay_context
+        if not context:
+            return {}
+        direction = context["making_direction"]
+        safe = context["safe"]
+        return {"supplierId": context["supplier"]["id"], "supplierName": context["supplier"]["name"],
+                "supplierCode": context["supplier"]["code"], "supplierActive": context["supplier"]["active"],
+                "currentParts": position_parts(direction, context["making"], "making"),
+                "currentText": making_position_text(direction, context["making"]),
+                "currentTone": TONES[direction],
+                "safeName": "" if safe is None else safe["name"], "safeReady": bool(safe and safe["active"]),
+                "banks": [{"id": b["id"],
+                           "text": f"{b['name']} — {ACCOUNT_TYPE_TEXT.get(b['account_type'], b['account_type'])}"
+                                   + (f" ({b['label']})" if b["label"] else "")} for b in context["banks"]]}
+
     @Property(bool, notify=changed)
     def canView(self):
         actor = self._session.current_actor()
@@ -294,10 +441,5 @@ class SupplierViewModel(QObject):
                                               r["weight_balance_after"].quantize(rules.WEIGHT_STEP), r["karat_value"]),
                 "reference": r["reference"], "sourceId": r["source_id"], "actor": r["actor"],
                 "tone": TONES[rules.direction(r["weight_delta"])]} for r in self._detail["gold_ledger"]],
-            "makingLedger": [{
-                "id": r["id"], "time": datetime_text(r["occurred_at"]), "movement": r["movement"],
-                "side": movement_side_text(r["amount_delta"]), "amount": money(abs(r["amount_delta"])),
-                "balance": making_position_text(rules.direction(r["balance_after"]), r["balance_after"]),
-                "reference": r["reference"], "sourceId": r["source_id"], "actor": r["actor"],
-                "tone": TONES[rules.direction(r["amount_delta"])]} for r in self._detail["making_ledger"]],
+            "makingLedger": [making_row(r) for r in self._detail["making_ledger"]],
         }

@@ -324,6 +324,16 @@ class ApplicationController(QObject):
                                                               SupplierPurchaseViewModel(self.session))
             if hasattr(purchases, "invoicePosted") and hasattr(suppliers, "refresh"):
                 purchases.invoicePosted.connect(suppliers.refresh)      # the supplier ledgers just changed
+            # A supplier making payment / its reversal moved REAL money (Main Safe or a bank account): the top-bar
+            # balances, the wallet / bank balances and الحسابات المالية reload from the database at once. The signals are
+            # emitted only after the transaction committed; every target keeps its latest request, so a refresh asked
+            # while another load is running still ends with a fresh read. (No local arithmetic: balances are re-read.)
+            for money_changed in (getattr(suppliers, "paymentPosted", None), getattr(suppliers, "reversalDone", None)):
+                if money_changed is None:
+                    continue
+                for target, slot in ((balances, "refresh"), (reviews, "reloadAccounts"), (accounts, "refresh")):
+                    if hasattr(target, slot):
+                        money_changed.connect(getattr(target, slot))
             if hasattr(purchases, "stockChanged"):
                 # A supplier-intake piece is a real new inventory item (+ barcode): stock views reload.
                 inventory_vm = self.operational_viewmodels.get("inventoryVM")

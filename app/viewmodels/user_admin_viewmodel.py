@@ -22,6 +22,7 @@ PERMISSION_TEXT = {
     "SUPPLIER_VIEW": "عرض الموردين", "SUPPLIER_MANAGE": "إدارة الموردين",
     "SUPPLIER_INVOICE_EDIT": "تحرير فواتير الموردين", "SUPPLIER_INVOICE_POST": "ترحيل فواتير الموردين",
     "SUPPLIER_INTAKE": "إدخال قطع فواتير الموردين",
+    "SUPPLIER_MAKING_PAY": "دفع مصنعيات الموردين", "SUPPLIER_MAKING_PAY_REVERSE": "عكس دفعة مصنعيات المورد",
 }
 ROLE_TEXT = {"OWNER": "المالك", "MANAGER": "المدير", "SALESPERSON": "البائع", "CASHIER": "أمين الصندوق"}
 

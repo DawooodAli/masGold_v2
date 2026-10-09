@@ -138,15 +138,27 @@ class SupplierRepository(BaseRepository):
             """, (_id(supplier_id), int(limit)))
 
     def making_ledger(self, supplier_id, limit=200):
+        """The making ledger with its running balance over the WHOLE ledger. A payment row also carries its method,
+        account and reversal (036); a reversal row carries the payment reference it restores."""
         return self._fetch_all(
             """
             SELECT x.* FROM (
                 SELECT m.id, m.occurred_at, t.code AS movement_code, t.name AS movement_name, m.amount_delta,
                        m.source_type, m.source_id, m.source_reference, m.description, u.display_name AS actor_name,
-                       SUM(m.amount_delta) OVER (ORDER BY m.occurred_at, m.id) AS balance_after
+                       SUM(m.amount_delta) OVER (ORDER BY m.occurred_at, m.id) AS balance_after,
+                       p.id AS payment_id, p.payment_method, ca.name AS cash_account_name, ba.name AS bank_account_name,
+                       c.id AS reversal_id, rc.source_id AS reversed_payment_id, rc.source_reference AS reversed_reference
                 FROM supplier_making_movements m
                 JOIN supplier_making_movement_types t ON t.id = m.movement_type_id
                 LEFT JOIN users u ON u.id = m.created_by_user_id
+                LEFT JOIN supplier_making_payments p ON t.code = 'PAYMENT' AND m.source_type = 'SUPPLIER_MAKING_PAYMENT'
+                     AND p.id = m.source_id
+                LEFT JOIN cash_accounts ca ON ca.id = p.cash_account_id
+                LEFT JOIN bank_accounts ba ON ba.id = p.bank_account_id
+                LEFT JOIN transaction_corrections c ON c.source_type = 'SUPPLIER_MAKING_PAYMENT' AND c.source_id = p.id
+                     AND c.correction_type = 'FULL_REVERSAL'
+                LEFT JOIN transaction_corrections rc ON t.code = 'PAYMENT_REVERSAL' AND m.source_type = 'TRANSACTION_CORRECTION'
+                     AND rc.id = m.source_id
                 WHERE m.supplier_id = %s
             ) x ORDER BY x.occurred_at DESC, x.id DESC LIMIT %s
             """, (_id(supplier_id), int(limit)))
