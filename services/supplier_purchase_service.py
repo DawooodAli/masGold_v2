@@ -1,8 +1,10 @@
 """Supplier purchase invoices, posting to the supplier ledgers, and piece-by-piece barcode intake.
 
 Locked rules implemented here:
-  * ONE supplier invoice = ONE karat. The supplier invoice weight (the sum of its making-group weights) is the
-    authoritative contractual gold: posting writes +weight (and its Eq21) to the immutable GOLD ledger.
+  * Each supplier has ONE dedicated karat (18, 21 or 24) and every invoice inherits it (a different karat is refused).
+    The supplier invoice weight (the sum of its making-group weights) is the authoritative contractual gold: posting
+    writes +weight, in physical grams of that karat, to the immutable GOLD ledger. The ledger's Eq21 column is stored
+    only as an internal compatibility value and drives no supplier amount or direction.
   * Making is EGP per gram per group: gross making = SUM(group supplier weight x EGP/g), posted to the immutable
     MAKING ledger. Gold and making are independent; neither depends on any barcoded weight.
   * Posting is atomic and idempotent (row lock + status transition + unique ledger source keys + request key).
@@ -112,17 +114,34 @@ class SupplierPurchaseService:
         return self._authorization.require_permission_for_write(connection, actor, permission)
 
     # ------------------------------------------------------------------ drafts
+    @staticmethod
+    def _inherited_karat(repository, supplier, supplied=None):
+        """The invoice karat IS the supplier's dedicated karat. A supplier without one cannot take an invoice, and a supplied
+        karat that differs is refused: the screen is never trusted and an incompatible draft is never silently converted."""
+        if supplier["karat_id"] is None:
+            raise rules.SupplierRuleError(
+                "SUPPLIER_KARAT_MISSING", "عيار هذا المورد غير محدد. حدّد عياره من تعديل المورد قبل إنشاء أو ترحيل فواتيره.")
+        if supplied not in (None, "", 0, "0"):
+            try:
+                same = int(str(supplied).strip()) == int(supplier["karat_id"])
+            except ValueError:
+                same = False
+            if not same:
+                raise rules.SupplierRuleError(
+                    "KARAT_MISMATCH", f"عيار الفاتورة يتبع عيار المورد (عيار {int(supplier['karat_value'])}) ولا يمكن أن يختلف عنه.")
+        karat = repository.get_karat(supplier["karat_id"])
+        if karat is None or not karat["is_active"]:
+            raise rules.SupplierRuleError("KARAT_NOT_FOUND", "العيار غير موجود أو غير نشط.")
+        return int(supplier["karat_id"])
+
     def _validated_header(self, repository, supplier_id, karat_id, reference, invoice_date, groups, notes):
         supplier_id = _id(supplier_id, "SUPPLIER_REQUIRED", "اختر المورد.")
-        karat_id = _id(karat_id, "KARAT_REQUIRED", "اختر العيار.")
-        supplier = repository.get_supplier(supplier_id, lock=True)
+        supplier = repository.get_supplier(supplier_id, lock=True)       # the supplier row lock also guards its karat
         if supplier is None:
             raise rules.SupplierRuleError("SUPPLIER_NOT_FOUND", "المورد غير موجود.")
         if not supplier["is_active"]:
             raise rules.SupplierRuleError("SUPPLIER_INACTIVE", "المورد غير نشط.")
-        karat = repository.get_karat(karat_id)
-        if karat is None or not karat["is_active"]:
-            raise rules.SupplierRuleError("KARAT_NOT_FOUND", "العيار غير موجود أو غير نشط.")
+        karat_id = self._inherited_karat(repository, supplier, karat_id)
         normalized = rules.normalize_groups(groups)
         return {"supplier_id": supplier_id, "karat_id": karat_id,
                 "supplier_reference": clean_text(reference, REFERENCE_MAX, "رقم فاتورة المورد"),
@@ -169,10 +188,13 @@ class SupplierPurchaseService:
             self._require_draft(invoice)
             data = self._validated_header(repository, supplier_id, karat_id, supplier_reference, invoice_date,
                                           groups, notes)
-            if repository.update_draft(invoice_id=invoice_id, supplier_id=data["supplier_id"],
-                                       karat_id=data["karat_id"], supplier_reference=data["supplier_reference"],
-                                       invoice_date=data["invoice_date"], weight=data["weight"],
-                                       gross_making=data["gross_making"], notes=data["notes"]) != 1:
+            changed = repository.update_draft(invoice_id=invoice_id, supplier_id=data["supplier_id"],
+                                              karat_id=data["karat_id"], supplier_reference=data["supplier_reference"],
+                                              invoice_date=data["invoice_date"], weight=data["weight"],
+                                              gross_making=data["gross_making"], notes=data["notes"])
+            # MySQL reports CHANGED rows: saving a draft without edits legitimately reports 0. The row is locked and was
+            # just verified as a DRAFT, so 0 only means "nothing differed"; a non-draft still never gets here.
+            if changed != 1 and repository.get_invoice(invoice_id)["status"] != rules.DRAFT:
                 raise rules.SupplierRuleError("INVOICE_NOT_DRAFT", "لا يمكن تعديل الفاتورة بعد ترحيلها.")
             repository.replace_groups(invoice_id, data["groups"])
             repository.audit(actor=actor, event_type="SUPPLIER_INVOICE_DRAFT_UPDATED", entity_id=invoice_id,
@@ -225,6 +247,9 @@ class SupplierPurchaseService:
                 raise rules.SupplierRuleError("INVOICE_NOT_DRAFT", "الفاتورة ملغاة ولا يمكن ترحيلها.")
             if not invoice["supplier_active"]:
                 raise rules.SupplierRuleError("SUPPLIER_INACTIVE", "المورد غير نشط.")
+            # Revalidated at posting under the supplier row lock: the draft's karat must still be the supplier's karat.
+            supplier = repository.get_supplier(invoice["supplier_id"], lock=True)
+            self._inherited_karat(repository, supplier, invoice["karat_id"])
             groups = repository.groups(invoice_id)
             reconciled = rules.normalize_groups(
                 [{"weight": g["supplier_weight_grams"], "making_per_gram": g["making_per_gram"],
@@ -239,6 +264,7 @@ class SupplierPurchaseService:
                 raise RuntimeError("supplier movement types are missing (migration 034)")
             weight = Decimal(str(invoice["supplier_weight_grams"]))
             gross = Decimal(str(invoice["gross_making_total"]))
+            # The stored Eq21 column is an internal compatibility field (NOT NULL, sign-checked); it drives nothing.
             eq21 = rules.equivalent_21(weight, invoice["karat_value"])
             code = rules.invoice_code(invoice_id)
             now = repository.db_now()
@@ -257,7 +283,7 @@ class SupplierPurchaseService:
             repository.audit(actor=actor, event_type="SUPPLIER_INVOICE_POSTED", entity_id=invoice_id,
                              entity_type="SUPPLIER_INVOICE", reference=code, description=label,
                              metadata={"supplier_id": invoice["supplier_id"], "karat_value": int(invoice["karat_value"]),
-                                       "weight": str(weight), "eq21": str(eq21), "gross_making": str(gross),
+                                       "weight": str(weight), "gross_making": str(gross),
                                        "groups": len(groups)}, now=now)
             if not self._session.is_current(session_actor):
                 raise PermissionError("انتهت جلسة الدخول.")
@@ -267,6 +293,10 @@ class SupplierPurchaseService:
     def add_piece(self, invoice_id, group_id, item_type_id, weight, request_key, *, category_id=None, factory_id=None,
                   size=None, barcode_mode="AUTO", barcode=None, notes=None, _expected_actor=None):
         """One physical piece of a POSTED invoice group: canonical inventory entry + barcode + source link, atomic.
+
+        The piece's category (grade) is resolved HERE from the group's making rate and the existing category purchase-making
+        ranges, never taken from the caller and never from the item type. `category_id` exists only so that a caller that
+        still supplies one is checked: a value that differs from the resolved category is refused, it never overrides.
 
         barcode_mode: AUTO (next barcode of the canonical daily sequence), MANUAL (the value given) or NONE (the
         piece is entered without a barcode and stays non-printable until it has one)."""
@@ -298,8 +328,23 @@ class SupplierPurchaseService:
             group = repository.lock_group(group_id)
             if group is None or int(group["invoice_id"]) != invoice_id:
                 raise rules.SupplierRuleError("GROUP_NOT_FOUND", "مجموعة الفاتورة غير موجودة.")
+            # The category comes from the group's making rate (existing purchase-making ranges), resolved under the group lock
+            # and before any write. No match, or several, refuses the piece with the exact reason: it is never guessed.
+            category = rules.require_category(group["making_per_gram"], repository.purchase_categories())
+            if category_id not in (None, "", 0, "0"):
+                try:
+                    supplied = int(Decimal(str(category_id)))
+                except (ValueError, ArithmeticError):
+                    supplied = -1
+                if supplied != int(category["id"]):
+                    raise rules.SupplierRuleError(
+                        "CATEGORY_CONFLICT", "فئة القطعة تُحدَّد تلقائيًا من مصنعية المجموعة ولا يمكن اختيار فئة مختلفة.")
             if weight > Decimal(str(invoice["supplier_weight_grams"])):
                 raise rules.SupplierRuleError("PIECE_TOO_HEAVY", "وزن القطعة يتجاوز وزن فاتورة المورد بالكامل.")
+            # The group's cumulative actual weight (+ this piece) may not exceed its supplier weight + 0.333 g. Read
+            # under the group lock and in this same transaction, before any barcode or inventory write, so a refusal
+            # persists nothing and two concurrent intakes of one group cannot both spend the same remaining allowance.
+            rules.check_intake(group["supplier_weight_grams"], repository.group_actual_weight(group_id), weight)
             now = repository.db_now()
             value = (self._barcodes(connection).allocate_barcode_value(now.date()) if mode == "AUTO"
                      else manual if mode == "MANUAL" else None)
@@ -307,7 +352,7 @@ class SupplierPurchaseService:
                 item_id = self._inventory.create_item_on_connection(
                     connection, actor_user_id=actor.user_id, employee_id=actor.employee_id,
                     item_type_id=item_type_id, karat_id=invoice["karat_id"], weight_grams=weight,
-                    acquisition_source=INTAKE_SOURCE, category_id=category_id, factory_id=factory_id, size=size,
+                    acquisition_source=INTAKE_SOURCE, category_id=int(category["id"]), factory_id=factory_id, size=size,
                     barcode=value, notes=notes, acquisition_making_per_gram=group["making_per_gram"])
             except ValueError as exc:
                 raise rules.SupplierRuleError("INVENTORY_REFUSED", _INVENTORY_MESSAGES.get(str(exc), str(exc))) from exc
@@ -318,10 +363,13 @@ class SupplierPurchaseService:
                              entity_type="SUPPLIER_INVOICE", reference=rules.invoice_code(invoice_id),
                              description="إدخال قطعة من فاتورة مورد",
                              metadata={"inventory_item_id": item_id, "group_id": group_id, "weight": str(weight),
-                                       "barcode": value, "making_per_gram": str(group["making_per_gram"])}, now=now)
+                                       "barcode": value, "making_per_gram": str(group["making_per_gram"]),
+                                       "category_id": int(category["id"]), "category_code": category["code"],
+                                       "category_basis": "PURCHASE_MAKING_RANGE"}, now=now)
             return {"id": str(link_id), "inventory_item_id": str(item_id), "invoice_id": str(invoice_id),
                     "group_id": str(group_id), "barcode": value or "", "weight": weight,
-                    "making_per_gram": Decimal(str(group["making_per_gram"])), "duplicate": False}
+                    "making_per_gram": Decimal(str(group["making_per_gram"])),
+                    "category_code": category["code"], "duplicate": False}
 
     def _piece_result(self, repository, link, duplicate):
         piece = next((p for p in repository.pieces(link["invoice_id"], link["group_id"])
@@ -356,8 +404,10 @@ class SupplierPurchaseService:
             groups = repository.groups(invoice_id)
             progress = {int(r["group_id"]): r for r in repository.group_progress(invoice_id)}
             pieces = repository.pieces(invoice_id)
+            categories = repository.purchase_categories()        # a read: it belongs inside the transaction (the connection is closed after it)
         group_rows, total_actual, total_count = [], Decimal("0"), 0
         for group in groups:
+            resolution = rules.resolve_category(group["making_per_gram"], categories)
             stats = progress.get(int(group["id"]), {})
             actual = Decimal(str(stats.get("actual_weight") or 0))
             count = int(stats.get("piece_count") or 0)
@@ -368,11 +418,19 @@ class SupplierPurchaseService:
                 "supplier_weight": Decimal(str(group["supplier_weight_grams"])),
                 "making_per_gram": Decimal(str(group["making_per_gram"])),
                 "making_total": Decimal(str(group["making_total"])), "piece_count": count,
+                # the category the group's making rate resolves to under the existing rules (nothing is stored)
+                "category_status": resolution["status"],
+                "category_id": None if resolution["category"] is None else int(resolution["category"]["id"]),
+                "category_code": "" if resolution["category"] is None else resolution["category"]["code"],
+                "category_name": "" if resolution["category"] is None else resolution["category"]["name"],
+                "category_problem": rules.category_problem(group["making_per_gram"], resolution),
+                # tolerance-inclusive allowance (separate from the reference remaining weight; may be negative)
+                "intake_limit": rules.intake_limit(group["supplier_weight_grams"]),
+                "intake_allowance": rules.intake_allowance(group["supplier_weight_grams"], actual),
                 **rules.progress(actual, group["supplier_weight_grams"])})
         weight = Decimal(str(invoice["supplier_weight_grams"]))
         return {**self._header_result(invoice),
                 "supplier_name": invoice["supplier_name"], "karat_value": int(invoice["karat_value"]),
-                "eq21": rules.equivalent_21(weight, invoice["karat_value"]),
                 "posted_at": invoice["posted_at"], "groups": group_rows, "piece_count": total_count,
                 "intake": rules.progress(total_actual, weight),
                 "pieces": [{"id": str(p["id"]), "inventory_item_id": str(p["inventory_item_id"]),
@@ -408,8 +466,7 @@ class SupplierPurchaseService:
 
     def _post_result(self, invoice, duplicate=False):
         weight = Decimal(str(invoice["supplier_weight_grams"]))
-        return {**self._header_result(invoice, duplicate), "karat_value": int(invoice["karat_value"]),
-                "eq21": rules.equivalent_21(weight, invoice["karat_value"])}
+        return {**self._header_result(invoice, duplicate), "karat_value": int(invoice["karat_value"])}
 
     @staticmethod
     def _summary(row):

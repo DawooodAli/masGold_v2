@@ -84,7 +84,7 @@ class RulesTests(unittest.TestCase):
 class SupplierCase(unittest.TestCase):
     def setUp(self):
         self.db, self.session, self.authorization, self.suppliers, self.purchases = build()
-        self.supplier_id = self.suppliers.create_supplier("مورد الذهب", "0100", "ملاحظة")
+        self.supplier_id = self.suppliers.create_supplier("مورد الذهب", "0100", "ملاحظة", karat_id=1)
         self.n = 0
 
     def key(self):
@@ -119,7 +119,7 @@ class SupplierMasterTests(SupplierCase):
         self.suppliers.update_supplier(self.supplier_id, "مورد الذهب الجديد", "0111", "")
         self.assertEqual(self.db.suppliers[int(self.supplier_id)]["name"], "مورد الذهب الجديد")
         with self.assertRaises(SupplierRuleError) as refused:
-            self.suppliers.create_supplier("مورد الذهب الجديد")
+            self.suppliers.create_supplier("مورد الذهب الجديد", karat_id=1)
         self.assertEqual(refused.exception.code, "SUPPLIER_EXISTS")
         self.suppliers.set_active(self.supplier_id, False)
         self.assertFalse(self.suppliers.list_suppliers(active_only=True))
@@ -134,13 +134,13 @@ class SupplierMasterTests(SupplierCase):
             self.suppliers.delete_unused_supplier(self.supplier_id)
         self.assertEqual(refused.exception.code, "SUPPLIER_IN_USE")
         self.assertIn(int(self.supplier_id), self.db.suppliers)
-        spare = self.suppliers.create_supplier("مورد بلا حركة")
+        spare = self.suppliers.create_supplier("مورد بلا حركة", karat_id=1)
         self.suppliers.delete_unused_supplier(spare)
         self.assertNotIn(int(spare), self.db.suppliers)
 
     def test_a_blank_name_is_refused(self):
         with self.assertRaises(SupplierRuleError):
-            self.suppliers.create_supplier("   ")
+            self.suppliers.create_supplier("   ", karat_id=1)
 
 
 class DraftTests(SupplierCase):
@@ -174,12 +174,48 @@ class DraftTests(SupplierCase):
         self.assertEqual((first["id"], second["duplicate"]), (second["id"], True))
         self.assertEqual(len(self.db.invoices), 1)
 
+    def test_an_edited_draft_keeps_its_invoice_and_reference_and_touches_no_ledger_or_balance(self):
+        draft = self.draft()
+        before = (self.balances(), list(self.db.gold), list(self.db.making), len(self.db.invoices))
+        rows = [{"weight": "45.000", "making_per_gram": "130", "description": "خواتم"},
+                {"weight": "55.000", "making_per_gram": "100", "description": "سلاسل"}]
+        edited = self.purchases.update_draft(draft["id"], self.supplier_id, 1, "INV-EDITED", "2026-10-09", rows, "ملاحظة",
+                                             _expected_actor=None)
+        self.assertEqual((edited["id"], edited["code"], edited["status"]), (draft["id"], draft["code"], "DRAFT"))
+        detail = self.purchases.invoice_detail(draft["id"])                              # reopen: the changes persisted
+        self.assertEqual((detail["code"], detail["supplier_reference"], detail["supplier_weight"], detail["gross_making"]),
+                         (draft["code"], "INV-EDITED", D("100.000"), D("11350.00")))
+        self.assertEqual([(g["supplier_weight"], g["making_per_gram"], g["description"]) for g in detail["groups"]],
+                         [(D("45.000"), D("130.00"), "خواتم"), (D("55.000"), D("100.00"), "سلاسل")])
+        self.assertEqual((self.balances(), list(self.db.gold), list(self.db.making), len(self.db.invoices)), before)
+        self.assertEqual(self.db.audit_rows[-1]["event_type"], "SUPPLIER_INVOICE_DRAFT_UPDATED")
+
+    def test_saving_a_draft_without_any_change_is_fine_even_though_mysql_reports_zero_changed_rows(self):
+        draft = self.draft()
+        detail = self.purchases.invoice_detail(draft["id"])
+        same_rows = [{"weight": str(g["supplier_weight"]), "making_per_gram": str(g["making_per_gram"]),
+                      "description": g["description"]} for g in detail["groups"]]
+        again = self.purchases.update_draft(draft["id"], self.supplier_id, detail["karat_id"], detail["supplier_reference"],
+                                            str(detail["invoice_date"]), same_rows, detail["notes"])
+        self.assertEqual((again["id"], again["status"]), (draft["id"], "DRAFT"))         # not "already posted"
+
+    def test_a_posted_invoice_can_never_be_edited_through_the_draft_path(self):
+        posted, draft = self.posted()
+        before = (dict(self.db.invoices[int(posted["id"])]), [dict(g) for g in self.db.groups.values()],
+                  list(self.db.gold), list(self.db.making))
+        with self.assertRaises(SupplierRuleError) as refused:
+            self.purchases.update_draft(posted["id"], self.supplier_id, 1, "HACK", "2026-10-09",
+                                        [{"weight": "1", "making_per_gram": "1", "description": ""}], "")
+        self.assertEqual(refused.exception.code, "INVOICE_NOT_DRAFT")
+        self.assertEqual((self.db.invoices[int(posted["id"])], list(self.db.groups.values()), list(self.db.gold),
+                          list(self.db.making)), (before[0], before[1], before[2], before[3]))
+
     def test_draft_can_be_edited_and_cancelled_until_posted(self):
         draft = self.draft()
-        edited = self.purchases.update_draft(draft["id"], self.supplier_id, 2, "R2", "2026-10-09",
+        edited = self.purchases.update_draft(draft["id"], self.supplier_id, 1, "R2", "2026-10-09",
                                              [{"weight": "50", "making_per_gram": "10"}], "")
         self.assertEqual((edited["karat_id"], edited["supplier_weight"], edited["gross_making"]),
-                         (2, D("50.000"), D("500.00")))
+                         (1, D("50.000"), D("500.00")))              # the invoice karat is the supplier's (21K)
         self.assertEqual(len(self.purchases._repository(self.db).groups(draft["id"])), 1)
         self.purchases.cancel_draft(draft["id"])
         self.assertEqual(self.db.invoices[int(draft["id"])]["status"], "CANCELLED")
@@ -191,7 +227,8 @@ class DraftTests(SupplierCase):
 class PostingTests(SupplierCase):
     def test_posting_writes_the_gold_liability_and_the_making_liability(self):
         posted, draft = self.posted()
-        self.assertEqual((posted["status"], posted["duplicate"], posted["eq21"]), ("POSTED", False, D("100.000000")))
+        self.assertEqual((posted["status"], posted["duplicate"]), ("POSTED", False))
+        self.assertNotIn("eq21", posted)                                          # no Eq21 on a supplier-facing result
         (gold,) = self.db.gold
         self.assertEqual((gold["weight_delta_grams"], gold["equivalent_21_delta_grams"], gold["karat_id"],
                           gold["source_type"], gold["source_id"], gold["created_by_user_id"]),
@@ -200,15 +237,15 @@ class PostingTests(SupplierCase):
         self.assertEqual((making["amount_delta"], making["source_id"]), (D("14850.00"), int(draft["id"])))
         self.assertEqual(self.db.audit_rows[-1]["event_type"], "SUPPLIER_INVOICE_POSTED")
 
-    def test_original_physical_weight_and_karat_are_preserved_with_the_eq21_beside_them(self):
-        self.posted(karat_id=2, rows=[{"weight": "100", "making_per_gram": "10"}])
+    def test_original_physical_weight_and_karat_are_preserved_and_the_supplier_account_is_in_those_grams(self):
+        supplier = self.suppliers.create_supplier("مورد عيار 18", karat_id=2)
+        self.posted(supplier_id=supplier, karat_id=2, rows=[{"weight": "100", "making_per_gram": "10"}])
         (gold,) = self.db.gold
-        self.assertEqual((gold["karat_id"], gold["weight_delta_grams"], gold["equivalent_21_delta_grams"]),
-                         (2, D("100.000"), D("85.714286")))
-        balances = self.balances()
-        self.assertEqual((balances["gold_by_karat"][0]["karat_value"], balances["gold_by_karat"][0]["weight_balance"]),
-                         (18, D("100.000")))
-        self.assertEqual(balances["gold_eq21"], D("85.714"))
+        self.assertEqual((gold["karat_id"], gold["weight_delta_grams"]), (2, D("100.000")))
+        self.assertEqual(gold["equivalent_21_delta_grams"], D("85.714286"))      # stored unchanged, an internal compatibility field
+        balances = self.suppliers.supplier_detail(supplier)["balances"]
+        self.assertEqual((balances["gold_status"], balances["gold_karat_value"], balances["gold_balance"],
+                          balances["gold_direction"]), ("RESOLVED", 18, D("100.000"), rules.SHOP_OWES))   # 100 g of 18K, not 85.714
 
     def test_posting_twice_never_duplicates_a_ledger_movement(self):
         draft = self.draft()
@@ -246,19 +283,17 @@ class PostingTests(SupplierCase):
 
     def test_net_balances_are_independent_per_dimension_and_never_floored(self):
         self.posted()                                                          # 100.000 g 21K, making 14,850
-        self.posted(karat_id=2, rows=[{"weight": "50", "making_per_gram": "100"}], reference="B")
+        self.posted(rows=[{"weight": "50", "making_per_gram": "100"}], reference="B")   # the same supplier, the same 21K
         balances = self.balances()
-        self.assertEqual((balances["gold_direction"], balances["gold_eq21"], balances["making"]),
-                         (rules.SHOP_OWES, D("142.857"), D("19850.00")))
-        self.assertEqual([(k["karat_value"], k["weight_balance"]) for k in balances["gold_by_karat"]],
-                         [(18, D("50.000")), (21, D("100.000"))])
+        self.assertEqual((balances["gold_direction"], balances["gold_balance"], balances["making"]),
+                         (rules.SHOP_OWES, D("150.000"), D("19850.00")))
+        self.assertEqual([(k["karat_value"], k["weight_balance"]) for k in balances["gold_by_karat"]], [(21, D("150.000"))])
         # A later credit (a future phase's movement) can take the supplier past zero: no floor, explicit direction.
-        self.db.gold.append({**self.db.gold[0], "id": 99, "weight_delta_grams": D("-109.950"),
-                             "equivalent_21_delta_grams": D("-109.950"), "source_id": 99, "karat_id": 1})
+        self.db.gold.append({**self.db.gold[0], "id": 99, "weight_delta_grams": D("-159.950"),
+                             "equivalent_21_delta_grams": D("-159.950"), "source_id": 99, "karat_id": 1})
         self.db.making.append({**self.db.making[0], "id": 99, "amount_delta": D("-21350.00"), "source_id": 99})
         after = self.balances()
-        self.assertEqual((after["gold_by_karat"][1]["direction"], after["gold_by_karat"][1]["weight_balance"]),
-                         (rules.SUPPLIER_OWES, D("-9.950")))
+        self.assertEqual((after["gold_direction"], after["gold_balance"]), (rules.SUPPLIER_OWES, D("-9.950")))
         self.assertEqual((after["making_direction"], after["making"]), (rules.SUPPLIER_OWES, D("-1500.00")))
 
     def test_the_actor_is_always_the_session_user(self):
@@ -335,10 +370,10 @@ class IntakeTests(SupplierCase):
     def test_variance_changes_neither_supplier_balance_nor_making_nor_inventory_weights(self):
         before = (self.balances(), len(self.db.gold), len(self.db.making), list(self.db.gold), list(self.db.making))
         self.piece(self.invoice_id, self.g1, "39.000")
-        self.piece(self.invoice_id, self.g1, "3.000")                          # group 1 now OVER its supplier weight
+        self.piece(self.invoice_id, self.g1, "1.200")                          # group 1 now OVER its supplier weight (within 0.333)
         after = (self.balances(), len(self.db.gold), len(self.db.making), list(self.db.gold), list(self.db.making))
         self.assertEqual(before, after)
-        self.assertEqual(sorted(i["weight_grams"] for i in self.db.items.values()), [D("3.000"), D("39.000")])
+        self.assertEqual(sorted(i["weight_grams"] for i in self.db.items.values()), [D("1.200"), D("39.000")])
         self.assertEqual(self.db.movements[0]["weight_grams"], D("39.000"))    # inventory keeps the shop-scale weight
 
     def test_intake_never_mutates_the_posted_contract(self):
@@ -444,7 +479,7 @@ class PermissionTests(SupplierCase):
 
     def test_each_protected_write_is_denied_without_its_own_permission(self):
         for missing, action in (
-                ("SUPPLIER_MANAGE", lambda s, p: s.create_supplier("جديد")),
+                ("SUPPLIER_MANAGE", lambda s, p: s.create_supplier("جديد", karat_id=1)),
                 ("SUPPLIER_INVOICE_EDIT", lambda s, p: p.create_draft("1", 1, "", "2026-10-08",
                                                                        [{"weight": "1", "making_per_gram": "1"}], "", key(1))),
                 ("SUPPLIER_INVOICE_POST", lambda s, p: p.post_invoice("1", key(2))),
@@ -477,7 +512,7 @@ class PermissionTests(SupplierCase):
         authorization.permissions = {"APP_LOGIN", "SUPPLIER_VIEW"}              # revoked behind the cached session
         self.assertIn("SUPPLIER_INVOICE_POST", session.current_actor().permissions)     # the cache still lists it
         with self.assertRaises(PermissionError):
-            suppliers.create_supplier("جديد")
+            suppliers.create_supplier("جديد", karat_id=1)
         with self.assertRaises(PermissionError):
             purchases.post_invoice("1", key(5))
         self.assertEqual((db.suppliers, db.gold), ({}, []))
@@ -488,7 +523,7 @@ class PermissionTests(SupplierCase):
         service = SupplierService(AppSession(), transaction_factory=self.db.transaction)
         opened = self.db.transactions
         with self.assertRaises(Exception):
-            service.create_supplier("x")
+            service.create_supplier("x", karat_id=1)
         self.assertEqual(self.db.transactions, opened)                          # no transaction was opened
 
     def test_supplier_rights_are_explicit_grants_in_the_migration_for_owner_and_manager_only(self):

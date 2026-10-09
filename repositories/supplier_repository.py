@@ -32,12 +32,16 @@ class SupplierRepository(BaseRepository):
         params.append(int(limit))
         return self._fetch_all(
             f"""
-            SELECT s.id, s.name, s.phone, s.notes, s.is_active, s.created_at,
-                   COALESCE(g.eq21, 0) AS gold_eq21_balance, COALESCE(m.amount, 0) AS making_balance,
-                   COALESCE(i.posted_count, 0) AS posted_invoice_count
+            SELECT s.id, s.name, s.phone, s.notes, s.is_active, s.created_at, s.karat_id, kk.karat_value,
+                   COALESCE(g.grams, 0) AS gold_grams_balance, COALESCE(g.foreign_rows, 0) AS gold_foreign_rows,
+                   COALESCE(m.amount, 0) AS making_balance, COALESCE(i.posted_count, 0) AS posted_invoice_count
             FROM suppliers s
-            LEFT JOIN (SELECT supplier_id, SUM(equivalent_21_delta_grams) AS eq21
-                       FROM supplier_gold_movements GROUP BY supplier_id) g ON g.supplier_id = s.id
+            LEFT JOIN karats kk ON kk.id = s.karat_id
+            LEFT JOIN (SELECT gm.supplier_id,
+                              SUM(CASE WHEN gm.karat_id = s2.karat_id THEN gm.weight_delta_grams ELSE 0 END) AS grams,
+                              SUM(CASE WHEN s2.karat_id IS NULL OR gm.karat_id <> s2.karat_id THEN 1 ELSE 0 END) AS foreign_rows
+                       FROM supplier_gold_movements gm JOIN suppliers s2 ON s2.id = gm.supplier_id
+                       GROUP BY gm.supplier_id) g ON g.supplier_id = s.id
             LEFT JOIN (SELECT supplier_id, SUM(amount_delta) AS amount
                        FROM supplier_making_movements GROUP BY supplier_id) m ON m.supplier_id = s.id
             LEFT JOIN (SELECT supplier_id, COUNT(*) AS posted_count
@@ -49,14 +53,33 @@ class SupplierRepository(BaseRepository):
             """, tuple(params))
 
     def get_supplier(self, supplier_id, lock=False):
-        return self._fetch_one("SELECT * FROM suppliers WHERE id = %s" + (" FOR UPDATE" if lock else ""),
-                               (_id(supplier_id),))
+        """The supplier with its dedicated karat (value). OF s: only the supplier row is locked, never the karat master."""
+        return self._fetch_one(
+            "SELECT s.*, k.karat_value FROM suppliers s LEFT JOIN karats k ON k.id = s.karat_id WHERE s.id = %s"
+            + (" FOR UPDATE OF s" if lock else ""), (_id(supplier_id),))
 
-    def create_supplier(self, *, name, phone, notes, user_id):
+    def create_supplier(self, *, name, phone, notes, karat_id, user_id):
         new_id, _ = self._execute(
-            "INSERT INTO suppliers (name, phone, notes, created_by_user_id, updated_by_user_id) "
-            "VALUES (%s, %s, %s, %s, %s)", (name, phone, notes, user_id, user_id))
+            "INSERT INTO suppliers (name, karat_id, phone, notes, created_by_user_id, updated_by_user_id) "
+            "VALUES (%s, %s, %s, %s, %s, %s)", (name, int(karat_id), phone, notes, user_id, user_id))
         return int(new_id)
+
+    def set_karat(self, *, supplier_id, karat_id, user_id):
+        self._execute("UPDATE suppliers SET karat_id = %s, updated_by_user_id = %s WHERE id = %s",
+                      (int(karat_id), user_id, _id(supplier_id)))
+
+    def history_karats(self, supplier_id, lock=False):
+        """The distinct karats of ALL the supplier's invoices (drafts and cancelled included) and gold movements. With
+        lock=True a locking CURRENT read (FOR SHARE): under REPEATABLE READ a plain read could miss an invoice that
+        committed after this transaction's snapshot. Call it while holding the supplier row lock."""
+        found = {}
+        for table, alias in (("supplier_purchase_invoices", "i"), ("supplier_gold_movements", "m")):
+            rows = self._fetch_all(
+                f"SELECT DISTINCT {alias}.karat_id, k.karat_value FROM {table} {alias} JOIN karats k ON k.id = {alias}.karat_id "
+                f"WHERE {alias}.supplier_id = %s" + (f" FOR SHARE OF {alias}" if lock else ""), (_id(supplier_id),))
+            for row in rows:
+                found[int(row["karat_id"])] = {"karat_id": int(row["karat_id"]), "karat_value": int(row["karat_value"])}
+        return sorted(found.values(), key=lambda h: h["karat_value"])
 
     def update_supplier(self, *, supplier_id, name, phone, notes, user_id):
         self._execute("UPDATE suppliers SET name = %s, phone = %s, notes = %s, updated_by_user_id = %s "
@@ -84,11 +107,10 @@ class SupplierRepository(BaseRepository):
 
     # ------------------------------------------------------------------ balances
     def gold_balances(self, supplier_id):
-        """Per karat: contractual grams and their 21K equivalent (SUM of the immutable gold ledger)."""
+        """Per karat: contractual PHYSICAL grams (SUM of the immutable gold ledger). No Eq21 conversion."""
         return self._fetch_all(
             """
-            SELECT m.karat_id, k.karat_value, SUM(m.weight_delta_grams) AS weight_balance,
-                   SUM(m.equivalent_21_delta_grams) AS eq21_balance
+            SELECT m.karat_id, k.karat_value, SUM(m.weight_delta_grams) AS weight_balance
             FROM supplier_gold_movements m JOIN karats k ON k.id = m.karat_id
             WHERE m.supplier_id = %s GROUP BY m.karat_id, k.karat_value ORDER BY k.karat_value
             """, (_id(supplier_id),))
@@ -104,9 +126,9 @@ class SupplierRepository(BaseRepository):
             """
             SELECT x.* FROM (
                 SELECT m.id, m.occurred_at, t.code AS movement_code, t.name AS movement_name, m.karat_id,
-                       k.karat_value, m.weight_delta_grams, m.equivalent_21_delta_grams, m.source_type, m.source_id,
+                       k.karat_value, m.weight_delta_grams, m.source_type, m.source_id,
                        m.source_reference, m.description, u.display_name AS actor_name,
-                       SUM(m.equivalent_21_delta_grams) OVER (ORDER BY m.occurred_at, m.id) AS eq21_balance_after
+                       SUM(m.weight_delta_grams) OVER (PARTITION BY m.karat_id ORDER BY m.occurred_at, m.id) AS weight_balance_after
                 FROM supplier_gold_movements m
                 JOIN supplier_gold_movement_types t ON t.id = m.movement_type_id
                 JOIN karats k ON k.id = m.karat_id

@@ -27,19 +27,38 @@ def gold_position_text(direction, amount, karat=None):
     return f"{lead} {grams(abs(Decimal(str(amount))))} جرام{suffix}"
 
 
-def eq21_position_text(direction, amount):
-    if direction == rules.SETTLED:
-        return SETTLED_TEXT
-    lead = SHOP_OWES_TEXT if direction == rules.SHOP_OWES else SUPPLIER_OWES_TEXT
-    return f"{lead} {grams(abs(Decimal(str(amount))))} جرام (مكافئ عيار 21)"
-
-
 def making_position_text(direction, amount):
     """'علينا للمورد 6,500.00 ج مصنعيات' / 'لنا عند المورد 1,500.00 ج مصنعيات'."""
     if direction == rules.SETTLED:
         return SETTLED_TEXT
     lead = SHOP_OWES_TEXT if direction == rules.SHOP_OWES else SUPPLIER_OWES_TEXT
     return f"{lead} {money(abs(Decimal(str(amount))))} مصنعيات"
+
+
+def position_parts(direction, amount, kind, karat=None):
+    """The same sentence as gold_position_text / making_position_text, split so the view can emphasise the figure:
+    {lead: direction words, number: the magnitude (money keeps its 'ج'), tail: unit / basis}. Joined with spaces the
+    parts equal the full text exactly; a settled position is only a lead."""
+    if direction == rules.SETTLED:
+        return {"lead": SETTLED_TEXT, "number": "", "tail": ""}
+    lead = SHOP_OWES_TEXT if direction == rules.SHOP_OWES else SUPPLIER_OWES_TEXT
+    value = abs(Decimal(str(amount)))
+    if kind == "making":
+        return {"lead": lead, "number": money(value), "tail": "مصنعيات"}
+    return {"lead": lead, "number": grams(value), "tail": f"جرام عيار {karat}" if karat else "جرام"}
+
+
+def karat_note(supplier):
+    """Why a supplier's gold account is not a single balance (an unresolved karat), or ''."""
+    if supplier["karat_id"] is not None:
+        return ""
+    values = supplier["history_karats"]
+    if len(values) > 1:
+        return (f"عيار هذا المورد غير محدد وتاريخه يحتوي أعيرة مختلفة ({'، '.join(str(v) for v in values)}). "
+                "تُعرض أرصدته لكل عيار على حدة دون جمعها، ولا يمكن إنشاء فواتير جديدة له.")
+    if len(values) == 1:
+        return f"عيار هذا المورد غير محدد. يمكن تحديده (عيار {values[0]}) من تعديل المورد قبل إنشاء فواتير جديدة."
+    return "عيار هذا المورد غير محدد. حدّده من تعديل المورد قبل إنشاء فواتير جديدة."
 
 
 def movement_side_text(delta):
@@ -50,6 +69,7 @@ def movement_side_text(delta):
 class SupplierViewModel(QObject):
     changed = Signal()
     supplierSaved = Signal(str)
+    selectionChanged = Signal(str)       # the selected supplier id: whoever selects (click, save), dependents follow
 
     def __init__(self, session, service=None, parent=None):
         super().__init__(parent)
@@ -135,6 +155,7 @@ class SupplierViewModel(QObject):
         self.changed.emit()
         if self._selected:
             self._load_detail()
+        self.selectionChanged.emit(self._selected)
 
     def _load_detail(self):
         service, supplier_id = self._service_instance(), self._selected
@@ -173,14 +194,14 @@ class SupplierViewModel(QObject):
         self.refresh()
         self.supplierSaved.emit(saved)
 
-    @Slot(str, str, str)
-    def createSupplier(self, name, phone, notes):
-        self._write("تم إضافة المورد.", lambda s, a: s.create_supplier(name, phone, notes, _expected_actor=a))
+    @Slot(str, str, str, int)
+    def createSupplier(self, name, phone, notes, karat_id):
+        self._write("تم إضافة المورد.", lambda s, a: s.create_supplier(name, phone, notes, karat_id, _expected_actor=a))
 
-    @Slot(str, str, str, str)
-    def updateSupplier(self, supplier_id, name, phone, notes):
+    @Slot(str, str, str, str, int)
+    def updateSupplier(self, supplier_id, name, phone, notes, karat_id):
         self._write("تم حفظ بيانات المورد.",
-                    lambda s, a: s.update_supplier(supplier_id, name, phone, notes, _expected_actor=a) or supplier_id)
+                    lambda s, a: s.update_supplier(supplier_id, name, phone, notes, karat_id, _expected_actor=a) or supplier_id)
 
     @Slot(str, bool)
     def setSupplierActive(self, supplier_id, active):
@@ -226,8 +247,10 @@ class SupplierViewModel(QObject):
     def suppliers(self):
         return [{"id": s["id"], "code": s["code"], "name": s["name"], "phone": s["phone"], "notes": s["notes"],
                  "active": s["is_active"], "stateText": "نشط" if s["is_active"] else "موقوف",
-                 "goldText": eq21_position_text(s["gold_direction"], s["gold_eq21"]),
-                 "goldTone": TONES[s["gold_direction"]],
+                 "karatId": s["karat_id"] or 0, "karatText": f"عيار {s['karat_value']}" if s["karat_value"] else "العيار غير محدد",
+                 "goldText": (gold_position_text(s["gold_direction"], s["gold_balance"], s["karat_value"])
+                              if s["gold_status"] == "RESOLVED" else "العيار غير محدد"),
+                 "goldTone": TONES.get(s["gold_direction"], "settled"),
                  "makingText": making_position_text(s["making_direction"], s["making"]),
                  "makingTone": TONES[s["making_direction"]],
                  "invoiceCount": s["posted_invoice_count"], "selected": s["id"] == self._selected}
@@ -239,22 +262,36 @@ class SupplierViewModel(QObject):
         if not self._detail:
             return {}
         supplier, balances = self._detail["supplier"], self._detail["balances"]
+        resolved = balances["gold_status"] == "RESOLVED"
+        karat = balances["gold_karat_value"]
+        gold_lines = [{"karat": k["karat_value"],
+                       "text": gold_position_text(k["direction"], k["weight_balance"], k["karat_value"]),
+                       "tone": TONES[k["direction"]]} for k in balances["gold_by_karat"]]
+        direction = balances["gold_direction"]
         return {
             "id": supplier["id"], "code": supplier["code"], "name": supplier["name"], "phone": supplier["phone"],
             "notes": supplier["notes"], "active": supplier["is_active"],
-            "goldEq21Text": eq21_position_text(balances["gold_direction"], balances["gold_eq21"]),
-            "goldTone": TONES[balances["gold_direction"]],
-            "goldLines": [{"karat": k["karat_value"],
-                           "text": gold_position_text(k["direction"], k["weight_balance"], k["karat_value"]),
-                           "tone": TONES[k["direction"]]} for k in balances["gold_by_karat"]],
+            # the supplier's dedicated karat (invoices inherit it) and whether it can still be changed
+            "karatId": supplier["karat_id"] or 0, "karatValue": supplier["karat_value"] or 0,
+            "karatText": f"عيار {supplier['karat_value']}" if supplier["karat_value"] else "العيار غير محدد",
+            "karatResolved": supplier["karat_id"] is not None, "karatLocked": supplier["karat_locked"],
+            "goldResolved": resolved, "goldNote": karat_note(supplier),
+            "goldText": gold_position_text(direction, balances["gold_balance"], karat) if resolved else "العيار غير محدد",
+            "goldTone": TONES.get(direction, "settled"),
+            "goldParts": (position_parts(direction, balances["gold_balance"], "gold", karat) if resolved
+                          else {"lead": "العيار غير محدد", "number": "", "tail": ""}),
+            "makingParts": position_parts(balances["making_direction"], balances["making"], "making"),
+            "goldLines": gold_lines,
+            # read-only per-karat history, only for a supplier whose karat is unresolved (never added into one balance)
+            "goldBreakdown": [] if resolved else gold_lines,
             "makingText": making_position_text(balances["making_direction"], balances["making"]),
             "makingTone": TONES[balances["making_direction"]],
             "goldLedger": [{
                 "id": r["id"], "time": datetime_text(r["occurred_at"]), "movement": r["movement"],
                 "karat": r["karat_value"], "side": movement_side_text(r["weight_delta"]),
-                "weight": grams(abs(r["weight_delta"])), "eq21": grams(abs(r["eq21_delta"])),
-                "balance": eq21_position_text(rules.direction(r["eq21_balance_after"].quantize(rules.WEIGHT_STEP)),
-                                              r["eq21_balance_after"].quantize(rules.WEIGHT_STEP)),
+                "weight": grams(abs(r["weight_delta"])),
+                "balance": gold_position_text(rules.direction(r["weight_balance_after"].quantize(rules.WEIGHT_STEP)),
+                                              r["weight_balance_after"].quantize(rules.WEIGHT_STEP), r["karat_value"]),
                 "reference": r["reference"], "sourceId": r["source_id"], "actor": r["actor"],
                 "tone": TONES[rules.direction(r["weight_delta"])]} for r in self._detail["gold_ledger"]],
             "makingLedger": [{

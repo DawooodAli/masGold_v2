@@ -6,7 +6,7 @@ from tools.schema_rehearsal.chain import load_chain
 
 class AccountSchemaTests(unittest.TestCase):
     def test_chain_and_cs_foreign_keys(self):
-        self.assertEqual(len(load_chain(require_committed=False)),34)
+        self.assertEqual(len(load_chain(require_committed=False)),35)
         model=build()
         self.assertEqual(model.problems,[])
         from tests.test_schema_chain import fk_problems

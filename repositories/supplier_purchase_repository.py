@@ -1,6 +1,8 @@
 """Supplier purchase invoices, making groups, the two immutable supplier ledgers and the intake links (034).
 All writes use the caller's transaction. A ledger row is only ever inserted; a posted invoice's header and groups
 are never updated afterwards (the service refuses, and nothing here offers such an update for POSTED rows)."""
+from decimal import Decimal
+
 from repositories.supplier_repository import SupplierRepository, _id
 
 ACTIVE_BARCODE_JOIN = ("LEFT JOIN inventory_barcodes ib ON ib.inventory_item_id = ii.id "
@@ -66,6 +68,18 @@ class SupplierPurchaseRepository(SupplierRepository):
 
     def lock_group(self, group_id):
         return self._fetch_one("SELECT * FROM supplier_invoice_groups WHERE id = %s FOR UPDATE", (_id(group_id),))
+
+    def purchase_categories(self):
+        """The ACTIVE inventory categories that have a purchase-making range (the existing item_categories rules the
+        group's making rate is matched against). A category with neither bound is not configured and is left out."""
+        return self._fetch_all(
+            """
+            SELECT id, code, name, is_active, purchase_making_min_per_gram, purchase_making_max_per_gram
+            FROM item_categories
+            WHERE is_active = 1
+              AND (purchase_making_min_per_gram IS NOT NULL OR purchase_making_max_per_gram IS NOT NULL)
+            ORDER BY id
+            """)
 
     def mark_posted(self, *, invoice_id, key, user_id, now):
         _, count = self._execute(
@@ -150,6 +164,21 @@ class SupplierPurchaseRepository(SupplierRepository):
             LEFT JOIN inventory_items ii ON ii.id = sp.inventory_item_id
             WHERE g.invoice_id = %s GROUP BY g.id ORDER BY g.group_no
             """, (_id(invoice_id),))
+
+    def group_actual_weight(self, group_id):
+        """The authoritative cumulative ACTUAL weight of a group: every piece ever linked to it counts, whatever its
+        later inventory status (selling or returning a piece never frees intake allowance) — the same inclusion rule as
+        group_progress. A locking CURRENT read (FOR SHARE), not a consistent-snapshot read: under REPEATABLE READ a
+        plain SUM could be answered from a snapshot taken before a concurrent intake of the same group committed.
+        Call it while holding the group row lock (lock_group) so concurrent intakes of one group are serialized."""
+        row = self._fetch_one(
+            """
+            SELECT COALESCE(SUM(ii.weight_grams), 0) AS actual_weight
+            FROM supplier_invoice_pieces sp
+            JOIN inventory_items ii ON ii.id = sp.inventory_item_id
+            WHERE sp.group_id = %s FOR SHARE
+            """, (_id(group_id),))
+        return Decimal(str(row["actual_weight"]))
 
     def piece_by_request(self, key):
         return self._fetch_one("SELECT * FROM supplier_invoice_pieces WHERE request_key = %s FOR UPDATE", (key,))

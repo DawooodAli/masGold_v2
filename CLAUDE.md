@@ -810,9 +810,9 @@ using Git (`git branch --show-current`, `git log --oneline -10`, `git status`); 
 report unexpected files or commits. Do not treat any commit hash in this document as the
 current HEAD. Read both `AGENTS.md` and `CLAUDE.md`.
 
-- Schema chain: migrations `001–034` in `database/schema`; next migration is `035`
+- Schema chain: migrations `001–035` in `database/schema`; next migration is `036`
   unless later repository state proves otherwise. Already-applied migrations are
-  immutable, including 019–034. `database/migrations/*.sql` are historical prototypes
+  immutable, including 019–035. `database/migrations/*.sql` are historical prototypes
   (see its README) and are never applied. Future schema work needs the next forward migration,
   guarded rollback, `SHA256SUMS`, chain tooling and appropriate migration/rehearsal tests.
 - Normal DEV database: `masgold_v2`. Never mutate `golddb`. Rehearsal/prod databases
@@ -845,8 +845,11 @@ current HEAD. Read both `AGENTS.md` and `CLAUDE.md`.
   persistent `AuthenticationService` per owning service, so the failure cooldown persists.
 - **Frozen Billing V1:** `billingVM` is not registered; the V1 source files remain as history only.
 - **Purchasing & Suppliers V1 (migration 034):** supplier accounting has two independent dimensions that are never
-  combined: GOLD (grams, one karat per supplier invoice; the supplier invoice weight is authoritative; Eq21 =
-  weight x karat / 21 is stored beside the original weight and karat) and MAKING (EGP; per making group
+  combined: GOLD (each supplier has ONE dedicated karat, 18, 21 or 24, and its invoices inherit it; supplier gold
+  balances and running balances are PHYSICAL grams of that karat, with no Eq21 conversion; the supplier invoice weight
+  is authoritative; the ledger's `equivalent_21_delta_grams` stays stored beside the original weight and karat as an
+  internal compatibility field and never drives a supplier-account amount or direction; Eq21 rules outside supplier
+  accounts are unchanged) and MAKING (EGP; per making group
   = group supplier weight x EGP/g). Both are immutable ledgers (`supplier_gold_movements`,
   `supplier_making_movements`); one sign convention: delta > 0 = the shop owes the supplier (علينا للمورد),
   delta < 0 = the supplier owes the shop (لنا عند المورد); balances are SUM(delta), never floored or stored.
@@ -855,6 +858,12 @@ current HEAD. Read both `AGENTS.md` and `CLAUDE.md`.
   links invoice -> group -> piece with the group's original making rate. Weight variance (فرق الوزن = barcoded
   weight - supplier weight) is informational only. Rights: `SUPPLIER_VIEW`, `SUPPLIER_MANAGE`,
   `SUPPLIER_INVOICE_EDIT`, `SUPPLIER_INVOICE_POST`, `SUPPLIER_INTAKE` (OWNER/MANAGER, explicit grants).
+- **Supplier intake category (automatic):** the inventory category of a supplier-intake piece is resolved by the service
+  from the making group's making rate and the existing `item_categories` purchase-making ranges (inclusive at both ends,
+  a missing bound is open, unconfigured or inactive categories never match). Nothing is chosen on invoice creation and
+  nothing is stored on the group; the item type never overrides it; a supplied category is only checked against it. No
+  match, or several, refuses the piece with the exact reason (never guessed). Group intake is also capped at the group's
+  supplier weight + 0.333 g (cumulative actual weight, fixed, enforced in the service).
 - **Line endings:** do not mass-convert files and never normalize migrations (checksums). No
   `.gitattributes` is added; with `core.autocrlf=true` a policy file would cause churn. Deferred.
 

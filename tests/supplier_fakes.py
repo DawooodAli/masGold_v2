@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from datetime import date, datetime
 from decimal import Decimal as D
 
-from mysql.connector import IntegrityError
+from mysql.connector import IntegrityError, OperationalError
 
 from app.session import AppSession
 from services.authentication_service import AuthenticationResult, _VERIFIED
@@ -18,6 +18,18 @@ from tests.auth_fakes import FakeAuthorization
 
 ALL = frozenset({"APP_LOGIN", "SUPPLIER_VIEW", "SUPPLIER_MANAGE", "SUPPLIER_INVOICE_EDIT", "SUPPLIER_INVOICE_POST",
                  "SUPPLIER_INTAKE"})
+
+
+def dev_categories(db):
+    """The real DEV category rules: purchase-making ranges A 50-150, B 200-250, C 250-300, D 300-350, L 350-400, T none
+    (they overlap at 250 / 300 / 350 and leave gaps)."""
+    def category(category_id, code, low, high):
+        return {"id": category_id, "code": code, "name": code, "is_active": 1,
+                "purchase_making_min_per_gram": None if low is None else D(low),
+                "purchase_making_max_per_gram": None if high is None else D(high)}
+    db.categories = {c["id"]: c for c in (category(1, "A", "50", "150"), category(2, "B", "200", "250"),
+                                          category(3, "C", "250", "300"), category(4, "D", "300", "350"),
+                                          category(5, "L", "350", "400"), category(6, "T", None, None))}
 
 
 def session_for(permissions=ALL, user_id=7, employee_id=None):
@@ -38,7 +50,12 @@ class Db:
                        2: {"id": 2, "karat_value": 18, "name": "18K", "is_active": 1},
                        3: {"id": 3, "karat_value": 24, "name": "24K", "is_active": 1}}
         self.items, self.barcodes, self.movements = {}, {}, []
+        # The category master with its purchase-making ranges. The default is ONE catch-all grade so that every rate used by
+        # the general tests resolves; the category tests install a realistic (overlapping / gapped) set instead.
+        self.categories = {1: {"id": 1, "code": "A", "name": "A", "is_active": 1,
+                               "purchase_making_min_per_gram": D("0.00"), "purchase_making_max_per_gram": D("100000.00")}}
         self.item_types = {1: "خاتم", 2: "سلسلة"}
+        self.item_type_defaults = {}              # item type id -> its default_category_id (never allowed to win over the group)
         self.sequences = {"supplier": 0, "invoice": 0, "group": 0, "gold": 0, "making": 0, "link": 0, "item": 100,
                           "barcode": 0}
         self.fail_after_item = False             # raise after the inventory item is written (atomicity tests)
@@ -52,12 +69,39 @@ class Db:
     def transaction(self):
         self.transactions += 1
         snapshot = copy.deepcopy({k: v for k, v in self.__dict__.items() if k not in ("fail_after_item", "transactions")})
+        connection = Connection(self)
         try:
-            yield self
+            yield connection
         except BaseException:
             for key, value in snapshot.items():
                 setattr(self, key, value)
             raise
+        finally:
+            connection.close()                    # like MySQL: nothing may be read through it after the transaction
+
+
+class Connection:
+    """What a service receives inside a transaction: the fake database while the transaction is open and, exactly like a
+    closed MySQL connection, an OperationalError afterwards. (A repository call placed after the `with` block, which the
+    old always-open fake let through, is how SP000022's intake dialog failed to load on the real database.)"""
+
+    def __init__(self, db):
+        object.__setattr__(self, "_db", db)
+        object.__setattr__(self, "_open", True)
+
+    def close(self):
+        object.__setattr__(self, "_open", False)
+
+    def _live(self):
+        if not self._open:
+            raise OperationalError("MySQL Connection not available")
+        return self._db
+
+    def __getattr__(self, name):
+        return getattr(self._live(), name)
+
+    def __setattr__(self, name, value):
+        setattr(self._live(), name, value)
 
 
 def _dup():
@@ -76,8 +120,12 @@ class SupplierRepo:
                 continue
             if active is not None and bool(s["is_active"]) != bool(active):
                 continue
-            rows.append({**s, "gold_eq21_balance": sum((m["equivalent_21_delta_grams"] for m in self.db.gold
-                                                        if m["supplier_id"] == s["id"]), D("0")),
+            karat_id = s.get("karat_id")
+            ledger = [m for m in self.db.gold if m["supplier_id"] == s["id"]]
+            rows.append({**s, "karat_id": karat_id,
+                         "karat_value": None if karat_id is None else self.db.karats[karat_id]["karat_value"],
+                         "gold_grams_balance": sum((m["weight_delta_grams"] for m in ledger if m["karat_id"] == karat_id), D("0")),
+                         "gold_foreign_rows": sum(1 for m in ledger if karat_id is None or m["karat_id"] != karat_id),
                          "making_balance": sum((m["amount_delta"] for m in self.db.making
                                                 if m["supplier_id"] == s["id"]), D("0")),
                          "posted_invoice_count": sum(1 for i in self.db.invoices.values()
@@ -85,15 +133,31 @@ class SupplierRepo:
         return rows[:limit]
 
     def get_supplier(self, supplier_id, lock=False):
-        return self.db.suppliers.get(int(supplier_id))
+        row = self.db.suppliers.get(int(supplier_id))
+        if row is None:
+            return None
+        karat_id = row.get("karat_id")
+        return {**row, "karat_id": karat_id,
+                "karat_value": None if karat_id is None else self.db.karats[karat_id]["karat_value"]}
 
-    def create_supplier(self, *, name, phone, notes, user_id):
+    def create_supplier(self, *, name, phone, notes, karat_id, user_id):
         if any(s["name"] == name for s in self.db.suppliers.values()):
             raise _dup()
         new_id = self.db.next("supplier")
-        self.db.suppliers[new_id] = {"id": new_id, "name": name, "phone": phone, "notes": notes, "is_active": 1,
-                                     "created_by_user_id": user_id}
+        self.db.suppliers[new_id] = {"id": new_id, "name": name, "karat_id": int(karat_id), "phone": phone, "notes": notes,
+                                     "is_active": 1, "created_by_user_id": user_id}
         return new_id
+
+    def set_karat(self, *, supplier_id, karat_id, user_id):
+        self.db.suppliers[int(supplier_id)]["karat_id"] = int(karat_id)
+
+    def history_karats(self, supplier_id, lock=False):
+        """The distinct karats of ALL invoices (any status) and gold movements, as the real repository."""
+        sid = int(supplier_id)
+        ids = {i["karat_id"] for i in self.db.invoices.values() if i["supplier_id"] == sid}
+        ids |= {m["karat_id"] for m in self.db.gold if m["supplier_id"] == sid}
+        return sorted(({"karat_id": k, "karat_value": self.db.karats[k]["karat_value"]} for k in ids),
+                      key=lambda h: h["karat_value"])
 
     def update_supplier(self, *, supplier_id, name, phone, notes, user_id):
         if any(s["name"] == name and s["id"] != int(supplier_id) for s in self.db.suppliers.values()):
@@ -122,22 +186,21 @@ class SupplierRepo:
             if m["supplier_id"] == int(supplier_id):
                 row = out.setdefault(m["karat_id"], {"karat_id": m["karat_id"],
                                                      "karat_value": self.db.karats[m["karat_id"]]["karat_value"],
-                                                     "weight_balance": D("0"), "eq21_balance": D("0")})
+                                                     "weight_balance": D("0")})
                 row["weight_balance"] += m["weight_delta_grams"]
-                row["eq21_balance"] += m["equivalent_21_delta_grams"]
         return sorted(out.values(), key=lambda r: r["karat_value"])
 
     def making_balance(self, supplier_id):
         return sum((m["amount_delta"] for m in self.db.making if m["supplier_id"] == int(supplier_id)), D("0"))
 
     def gold_ledger(self, supplier_id, limit=200):
-        rows, running = [], D("0")
+        rows, running = [], {}
         for m in sorted((m for m in self.db.gold if m["supplier_id"] == int(supplier_id)),
                         key=lambda r: (r["occurred_at"], r["id"])):
-            running += m["equivalent_21_delta_grams"]
+            running[m["karat_id"]] = running.get(m["karat_id"], D("0")) + m["weight_delta_grams"]   # per karat, as the SQL window
             rows.append({**m, "movement_code": "PURCHASE_INVOICE", "movement_name": "Supplier Purchase Invoice",
                          "karat_value": self.db.karats[m["karat_id"]]["karat_value"], "actor_name": "المدير",
-                         "eq21_balance_after": running})
+                         "weight_balance_after": running[m["karat_id"]]})
         return rows[::-1][:limit]
 
     def making_ledger(self, supplier_id, limit=200):
@@ -189,9 +252,11 @@ class PurchaseRepo(SupplierRepo):
         invoice = self.db.invoices[int(invoice_id)]
         if invoice["status"] != "DRAFT":
             return 0
-        invoice.update(supplier_id=int(supplier_id), karat_id=int(karat_id), supplier_reference=supplier_reference,
-                       invoice_date=invoice_date, supplier_weight_grams=weight, gross_making_total=gross_making,
-                       notes=notes)
+        values = dict(supplier_id=int(supplier_id), karat_id=int(karat_id), supplier_reference=supplier_reference,
+                      invoice_date=invoice_date, supplier_weight_grams=weight, gross_making_total=gross_making, notes=notes)
+        if all(invoice.get(key) == value for key, value in values.items()):
+            return 0                            # like MySQL: CHANGED rows are counted, an identical UPDATE reports 0
+        invoice.update(values)
         return 1
 
     def replace_groups(self, invoice_id, groups):
@@ -276,6 +341,17 @@ class PurchaseRepo(SupplierRepo):
                                               for link in links), D("0"))})
         return out
 
+    def purchase_categories(self):
+        """As the real repository: ACTIVE categories having at least one purchase-making bound."""
+        return [dict(c) for c in sorted(self.db.categories.values(), key=lambda c: c["id"])
+                if c["is_active"] and (c["purchase_making_min_per_gram"] is not None
+                                       or c["purchase_making_max_per_gram"] is not None)]
+
+    def group_actual_weight(self, group_id):
+        """Every piece ever linked to the group counts, whatever its inventory status (as the real repository)."""
+        return sum((self.db.items[link["inventory_item_id"]]["weight_grams"]
+                    for link in self.db.links if link["group_id"] == int(group_id)), D("0"))
+
     def piece_by_request(self, key):
         return next((link for link in self.db.links if link["request_key"] == key), None)
 
@@ -322,13 +398,15 @@ class InventoryRepo:
         return {"id": employee_id}
 
     def get_active_item_type_by_id(self, item_type_id):
-        return {"id": item_type_id, "default_category_id": None} if int(item_type_id) in self.db.item_types else None
+        return ({"id": item_type_id, "default_category_id": self.db.item_type_defaults.get(int(item_type_id))}
+                if int(item_type_id) in self.db.item_types else None)
 
     def get_active_karat_by_id(self, karat_id):
         return self.db.karats.get(int(karat_id))
 
     def get_active_category_by_id(self, category_id):
-        return {"id": category_id}
+        category = self.db.categories.get(int(category_id))
+        return dict(category) if category and category["is_active"] else None
 
     def get_active_factory_by_id(self, factory_id):
         return {"id": factory_id}

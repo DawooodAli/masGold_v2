@@ -25,13 +25,23 @@ Item {
              : tone === "supplierOwes" ? theme.accountReceivable : theme.textMuted
     }
 
-    onVisibleChanged: if (visible && vm && vm.canView) { vm.clearMessage(); vm.refresh() }
-    Component.onCompleted: if (visible && vm && vm.canView) vm.refresh()
+    // The invoices follow the selected supplier. Opening the page (or returning to it) with a supplier already
+    // selected loads its invoices; choosing a supplier does it through supplierVM.selectionChanged below.
+    function loadSelectedInvoices() {
+        if (visible && vm && vm.canView && pvm && vm.selectedSupplierId !== "") pvm.showSupplier(vm.selectedSupplierId)
+    }
+    onVisibleChanged: if (visible && vm && vm.canView) { vm.clearMessage(); vm.refresh(); loadSelectedInvoices() }
+    Component.onCompleted: if (visible && vm && vm.canView) { vm.refresh(); loadSelectedInvoices() }
 
     Connections {
         target: page.vm
         function onSupplierSaved(supplierId) {
             if (supplierId !== "" && page.vm.selectedSupplierId === "") page.vm.selectSupplier(supplierId)
+        }
+        function onSelectionChanged(supplierId) {
+            if (supplierId === "" || !page.pvm) return
+            page.tab = 0
+            page.pvm.showSupplier(supplierId)
         }
     }
     Connections {
@@ -43,6 +53,18 @@ Item {
     Rectangle { anchors.fill: parent; color: theme.bgPrimary }
 
     // ---------------------------------------------------------------- small building blocks
+    // Presentation helpers only. ltr(): keep a reference / barcode / id as one left-to-right unit inside Arabic text
+    // (the same isolate the ViewModels use for dates and signed numbers). after(): the value part of a ViewModel
+    // "label: value" string, so a labelled tile does not repeat its own label.
+    function ltr(text) {
+        return text === undefined || text === null || text === "" ? "" : "⁦" + text + "⁩"
+    }
+    function after(text) {
+        var s = String(text === undefined || text === null ? "" : text)
+        var i = s.indexOf(": ")
+        return i >= 0 ? s.substring(i + 2) : s
+    }
+
     component Txt: Label {
         color: theme.textPrimary
         font.family: "Cairo"
@@ -53,15 +75,24 @@ Item {
         textFormat: Text.PlainText
     }
 
+    // Material buttons carry a 6 px top/bottom inset that shrinks a custom background to ~60 % of the item height
+    // (the cause of the clipped tab labels): the insets are cleared so the control is as tall as it says.
     component Btn: Button {
         id: btn
         property bool primary: false
         property color accent: theme.gold
         font.family: "Cairo"
         font.pixelSize: theme.fontBody
-        implicitHeight: 32
-        leftPadding: 14
-        rightPadding: 14
+        implicitHeight: 34
+        topInset: 0
+        bottomInset: 0
+        leftInset: 0
+        rightInset: 0
+        topPadding: 0
+        bottomPadding: 0
+        leftPadding: 16
+        rightPadding: 16
+        hoverEnabled: true
         contentItem: Label {
             text: btn.text
             font: btn.font
@@ -71,79 +102,248 @@ Item {
         }
         background: Rectangle {
             radius: theme.radiusSmall
-            color: btn.primary && btn.enabled ? btn.accent : btn.down ? theme.panelHover : "transparent"
-            border.color: btn.enabled ? btn.accent : theme.border
+            color: !btn.enabled ? (btn.primary ? theme.bgTertiary : "transparent")
+                 : btn.primary ? (btn.down || btn.hovered ? Qt.lighter(btn.accent, 1.12) : btn.accent)
+                 : btn.down ? theme.panelHover : btn.hovered ? theme.bgTertiary : "transparent"
+            border.color: btn.visualFocus ? theme.goldBright : btn.enabled ? btn.accent : theme.border
+            border.width: btn.visualFocus ? 2 : 1
         }
     }
 
     component Field: TextField {
+        id: field
         font.family: "Cairo"
         font.pixelSize: theme.fontBody
         color: theme.textPrimary
         placeholderTextColor: theme.textDisabled
         horizontalAlignment: TextInput.AlignRight
         selectByMouse: true
-        implicitHeight: 32
-        background: Rectangle { radius: 4; color: theme.bgSecondary
-                                border.color: parent.activeFocus ? theme.gold : theme.border }
+        implicitHeight: 34
+        hoverEnabled: true
+        background: Rectangle { radius: 4; color: theme.bgPrimary
+                                border.color: field.activeFocus ? theme.gold : field.hovered ? theme.goldDark : theme.border }
     }
 
+    // Arabic value on the right, gold drop-down arrow on the left (the application's ComboBox convention).
     component Combo: ComboBox {
+        id: combo
         font.family: "Cairo"
         font.pixelSize: theme.fontBody
-        implicitHeight: 32
+        implicitHeight: 34
+        hoverEnabled: true
         delegate: ItemDelegate {
-            width: parent ? parent.width : 100
-            contentItem: Label { text: modelData[textRole]; font.family: "Cairo"; font.pixelSize: theme.fontBody
-                                 color: theme.textPrimary; horizontalAlignment: Text.AlignRight }
+            width: combo.width
+            height: 34
+            highlighted: combo.highlightedIndex === index
+            contentItem: Label { text: modelData[combo.textRole]; font.family: "Cairo"; font.pixelSize: theme.fontBody
+                                 color: theme.textPrimary; horizontalAlignment: Text.AlignRight
+                                 verticalAlignment: Text.AlignVCenter; elide: Text.ElideLeft }
+        }
+        indicator: Label {
+            x: 10
+            y: (combo.height - height) / 2
+            text: "▾"
+            color: theme.gold
+            font.pixelSize: theme.fontBodyStrong
         }
         contentItem: Label {
-            text: parent.displayText
-            font: parent.font
+            text: combo.displayText
+            font: combo.font
             color: theme.textPrimary
             horizontalAlignment: Text.AlignRight
             verticalAlignment: Text.AlignVCenter
-            rightPadding: 8
-            leftPadding: 24
+            rightPadding: 10
+            leftPadding: 30
             elide: Text.ElideLeft
         }
-        background: Rectangle { radius: 4; color: theme.bgSecondary; border.color: theme.border }
+        background: Rectangle {
+            radius: 4
+            color: theme.bgPrimary
+            border.color: combo.activeFocus || combo.popup.visible ? theme.gold : combo.hovered ? theme.goldDark : theme.border
+        }
     }
 
+    // Supplier position card (gold in grams of the supplier's karat / making in EGP): both cards of a row share one height.
     component Card: Rectangle {
         default property alias content: body.data
         property string title: ""
         property color accent: theme.gold
         Layout.fillWidth: true
-        implicitHeight: body.implicitHeight + 40
-        color: theme.panel
+        Layout.fillHeight: true
+        implicitHeight: body.implicitHeight + 34
+        color: theme.bgTertiary
         radius: theme.radiusSmall
         border.color: theme.border
         Rectangle { anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom
                     anchors.margins: 1; width: 3; radius: 2; color: parent.accent }
-        Txt { id: cardTitle; anchors.top: parent.top; anchors.right: parent.right; anchors.topMargin: 6
+        Txt { id: cardTitle; anchors.top: parent.top; anchors.right: parent.right; anchors.topMargin: 4
               anchors.rightMargin: 14; text: parent.title; color: parent.accent; font.bold: true }
         ColumnLayout {
             id: body
             anchors.top: cardTitle.bottom; anchors.left: parent.left; anchors.right: parent.right
-            anchors.topMargin: 4; anchors.leftMargin: 12; anchors.rightMargin: 14
+            anchors.topMargin: 2; anchors.leftMargin: 12; anchors.rightMargin: 14
             spacing: 4
         }
     }
 
-    component TabBtn: Button {
-        id: tabBtn
-        property bool on: false
-        font.family: "Cairo"
-        font.pixelSize: theme.fontBody
-        implicitHeight: 30
-        contentItem: Label { text: tabBtn.text; font: tabBtn.font; horizontalAlignment: Text.AlignHCenter
-                             color: tabBtn.on ? theme.bgPrimary : theme.textSecondary }
-        background: Rectangle { radius: theme.radiusSmall; color: tabBtn.on ? theme.gold : "transparent"
-                                border.color: tabBtn.on ? theme.gold : theme.border }
+    // A position sentence with its figure emphasised: direction words and unit/basis in a readable neutral, the number
+    // bold and larger in `numberColor` (the colour tells gold weight from making money, never payable from receivable).
+    // `text` is the plain sentence (the same words as before).
+    component PositionLine: RowLayout {
+        property var parts: ({})
+        property color numberColor: theme.gold
+        readonly property string text: [parts.lead, parts.number, parts.tail].filter(function (x) { return !!x }).join(" ")
+        Layout.fillWidth: true
+        layoutDirection: Qt.RightToLeft
+        spacing: 5
+        Txt { text: parent.parts.lead || ""; color: theme.textSecondary; font.pixelSize: theme.fontBodyStrong
+              elide: Text.ElideNone }
+        Txt { visible: !!parent.parts.number; text: page.ltr(parent.parts.number || ""); color: parent.numberColor
+              font.bold: true; font.pixelSize: theme.fontSection + 2; elide: Text.ElideNone }
+        Txt { visible: !!parent.parts.tail; text: parent.parts.tail || ""; color: theme.textSecondary
+              font.pixelSize: theme.fontBodyStrong; elide: Text.ElideNone }
+        Item { Layout.fillWidth: true }
     }
 
+    // One tab of the supplier detail tab bar. 42 px tall, label never clipped, gold top bar + gold label when
+    // selected (the selected tab takes the colour of the content below it, so the bar and the content read as one),
+    // distinct hover and keyboard-focus states.
+    component SegTab: Button {
+        id: seg
+        property bool on: false
+        font.family: "Cairo"
+        font.pixelSize: theme.fontBodyStrong
+        font.bold: on
+        implicitHeight: 42
+        implicitWidth: Math.max(150, contentItem.implicitWidth + 44)
+        Layout.fillHeight: true
+        topInset: 0
+        bottomInset: 0
+        leftInset: 0
+        rightInset: 0
+        topPadding: 0
+        bottomPadding: 0
+        leftPadding: 22
+        rightPadding: 22
+        hoverEnabled: true
+        focusPolicy: Qt.StrongFocus
+        contentItem: Label {
+            text: seg.text
+            font: seg.font
+            color: seg.on ? theme.gold : seg.hovered ? theme.textPrimary : theme.textSecondary
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideNone
+        }
+        background: Rectangle {
+            color: seg.on ? theme.bgPrimary : seg.down || seg.hovered ? theme.panelHover : "transparent"
+            Rectangle { visible: seg.on; anchors.top: parent.top; width: parent.width; height: 3; color: theme.gold }
+            Rectangle { visible: !seg.on; anchors.left: parent.left; width: 1; height: parent.height - 14
+                        anchors.verticalCenter: parent.verticalCenter; color: theme.border }
+            Rectangle { visible: seg.visualFocus; anchors.fill: parent; anchors.margins: 3; radius: 4
+                        color: "transparent"; border.color: theme.goldBright; border.width: 1 }
+        }
+    }
+
+    // A caption over a value (labelled summary / group figures). Equal-width cells inside a GridLayout.
+    component Stat: ColumnLayout {
+        property string label: ""
+        property string value: ""
+        property color valueColor: theme.textPrimary
+        property bool strong: false
+        property alias valueName: statValue.objectName
+        Layout.fillWidth: true
+        Layout.preferredWidth: 1
+        spacing: 1
+        Txt { Layout.fillWidth: true; text: parent.label; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+        Txt { id: statValue; Layout.fillWidth: true; text: parent.value; color: parent.valueColor; font.bold: parent.strong
+              font.pixelSize: parent.strong ? theme.fontBodyStrong : theme.fontBody }
+    }
+
+    // A titled section card of the intake dialog: gold tick + title on the right, an optional status hint on the left.
+    component Section: Rectangle {
+        id: section
+        default property alias content: sectionBody.data
+        property string title: ""
+        property string hint: ""
+        property color hintColor: theme.textMuted
+        property int bodySpacing: 8
+        Layout.fillWidth: true
+        implicitHeight: sectionColumn.implicitHeight + 24
+        color: theme.panel
+        radius: theme.radiusSmall
+        border.color: theme.border
+        ColumnLayout {
+            id: sectionColumn
+            anchors.fill: parent
+            anchors.margins: 12
+            spacing: 10
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Rectangle { implicitWidth: 3; implicitHeight: 16; radius: 2; color: theme.gold }
+                Txt { text: section.title; color: theme.gold; font.bold: true; font.pixelSize: theme.fontBodyStrong }
+                Item { Layout.fillWidth: true }
+                Txt { visible: section.hint !== ""; text: section.hint; color: section.hintColor; font.bold: true }
+            }
+            ColumnLayout { id: sectionBody; Layout.fillWidth: true; spacing: section.bodySpacing }
+        }
+    }
+
+    // Inline "label: value" (compact group cards); wraps as a unit inside a Flow.
+    // The horizontal gap to the next pair is part of the pair (Flow.spacing would also add it between wrapped lines).
+    component Pair: Item {
+        id: pair
+        property string label: ""
+        property string value: ""
+        property color valueColor: theme.textPrimary
+        property bool strong: false
+        property int gap: 22
+        implicitWidth: pairRow.implicitWidth + gap
+        implicitHeight: pairRow.implicitHeight
+        RowLayout {
+            id: pairRow
+            anchors.right: parent.right
+            spacing: 5
+            layoutDirection: Qt.RightToLeft
+            Txt { text: pair.label + ":"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
+            Txt { text: pair.value; color: pair.valueColor; font.bold: pair.strong; elide: Text.ElideNone
+                  font.pixelSize: pair.strong ? theme.fontBodyStrong : theme.fontBody }
+        }
+    }
+
+    // Caption (+ required mark) over a control; cells share equal width inside a GridLayout.
+    component FieldBox: ColumnLayout {
+        id: box
+        property string label: ""
+        property bool required: false
+        Layout.fillWidth: true
+        Layout.preferredWidth: 1
+        spacing: 4
+        RowLayout {
+            Layout.fillWidth: true
+            layoutDirection: Qt.RightToLeft
+            spacing: 4
+            Txt { text: box.label; color: theme.textSecondary; font.pixelSize: theme.fontTableHeader; font.bold: true }
+            Txt { visible: box.required; text: "*"; color: theme.amber; font.bold: true }
+            Item { Layout.fillWidth: true }
+        }
+    }
+
+    component ColHead: Txt { color: theme.textMuted; font.pixelSize: theme.fontTableHeader; font.bold: true }
+
     // ---------------------------------------------------------------- page body
+    // Stable column widths shared by the invoice list header and its rows; a compact set (wrapping secondary lines,
+    // taller rows) when the list is narrower than 640 px, i.e. at the smallest supported window.
+    readonly property bool compactInvoices: invoiceList.width < 640
+    readonly property int colInvoiceWidth: compactInvoices ? 120 : 190
+    readonly property int colFiguresWidth: compactInvoices ? 132 : 220
+    readonly property int colActionWidth: compactInvoices ? 92 : 112
+    // Ledger rows: the rightmost column carries the movement description, the date/time and the invoice reference.
+    readonly property int colLedgerWidth: compactInvoices ? 210 : 310
+    readonly property int colLedgerValueWidth: 175
+
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 14
@@ -178,299 +378,462 @@ Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
             layoutDirection: Qt.RightToLeft
-            spacing: 10
+            spacing: 12
 
-            // ------------------------------------------------------------ supplier list (right)
-            ColumnLayout {
-                Layout.preferredWidth: 310
+            // ------------------------------------------------------------ supplier list panel (right)
+            Rectangle {
+                Layout.preferredWidth: page.width < 960 ? 250 : 310
                 Layout.maximumWidth: 330
                 Layout.fillHeight: true
-                spacing: 6
-                Field {
-                    objectName: "supplierSearch"
-                    Layout.fillWidth: true
-                    placeholderText: "بحث بالاسم أو الهاتف"
-                    onTextEdited: if (page.vm) page.vm.search(text)
-                }
-                CheckBox {
-                    Layout.alignment: Qt.AlignRight
-                    text: "النشطون فقط"
-                    font.family: "Cairo"
-                    onToggled: if (page.vm) page.vm.setActiveOnly(checked)
-                    contentItem: Label { text: parent.text; font: parent.font; color: theme.textSecondary
-                                         leftPadding: parent.indicator.width + 6; horizontalAlignment: Text.AlignRight }
-                }
-                ListView {
-                    id: supplierList
-                    objectName: "supplierList"
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    clip: true
-                    spacing: 5
-                    model: page.vm ? page.vm.suppliers : []
-                    delegate: Rectangle {
-                        width: supplierList.width
-                        height: supplierColumn.implicitHeight + 14
-                        radius: theme.radiusSmall
-                        color: modelData.selected ? theme.panelHover : theme.panel
-                        border.color: modelData.selected ? theme.gold : theme.border
-                        opacity: modelData.active ? 1 : 0.6
-                        MouseArea {
-                            anchors.fill: parent
-                            onClicked: {
-                                page.vm.selectSupplier(modelData.id)
-                                page.pvm.showSupplier(modelData.id)
-                                page.tab = 0
+                color: theme.bgSecondary
+                radius: theme.radiusMedium
+                border.color: theme.border
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.margins: 10
+                    spacing: 8
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        Txt { text: "قائمة الموردين"; color: theme.textSecondary; font.bold: true }
+                        Item { Layout.fillWidth: true }
+                        Txt { text: supplierList.count + ""; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+                    }
+                    Field {
+                        objectName: "supplierSearch"
+                        Layout.fillWidth: true
+                        placeholderText: "بحث بالاسم أو الهاتف"
+                        onTextEdited: if (page.vm) page.vm.search(text)
+                    }
+                    CheckBox {
+                        Layout.alignment: Qt.AlignRight
+                        text: "النشطون فقط"
+                        font.family: "Cairo"
+                        onToggled: if (page.vm) page.vm.setActiveOnly(checked)
+                        contentItem: Label { text: parent.text; font: parent.font; color: theme.textSecondary
+                                             leftPadding: parent.indicator.width + 6; horizontalAlignment: Text.AlignRight }
+                    }
+                    ListView {
+                        id: supplierList
+                        objectName: "supplierList"
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        spacing: 6
+                        model: page.vm ? page.vm.suppliers : []
+                        delegate: Rectangle {
+                            width: supplierList.width
+                            height: supplierColumn.implicitHeight + 16
+                            radius: theme.radiusSmall
+                            color: modelData.selected ? theme.panelHover : theme.bgTertiary
+                            border.color: modelData.selected ? theme.gold : theme.border
+                            opacity: modelData.active ? 1 : 0.6
+                            MouseArea {
+                                anchors.fill: parent
+                                onClicked: page.vm.selectSupplier(modelData.id)
                             }
-                        }
-                        ColumnLayout {
-                            id: supplierColumn
-                            anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                            anchors.leftMargin: 10; anchors.rightMargin: 12
-                            spacing: 2
-                            RowLayout {
-                                Layout.fillWidth: true
-                                layoutDirection: Qt.RightToLeft
-                                Txt { text: modelData.name; font.bold: true; Layout.fillWidth: true }
-                                Txt { text: modelData.stateText; color: modelData.active ? theme.green : theme.textMuted
+                            ColumnLayout {
+                                id: supplierColumn
+                                anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                anchors.leftMargin: 10; anchors.rightMargin: 12
+                                spacing: 2
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    layoutDirection: Qt.RightToLeft
+                                    Txt { text: modelData.name; font.bold: true; Layout.fillWidth: true }
+                                    Txt { text: modelData.stateText; color: modelData.active ? theme.green : theme.textMuted
+                                          font.pixelSize: theme.fontCaption }
+                                }
+                                Txt { Layout.fillWidth: true; text: modelData.goldText; color: page.toneColor(modelData.goldTone)
+                                      font.pixelSize: theme.fontCaption }
+                                Txt { Layout.fillWidth: true; text: modelData.makingText; color: page.toneColor(modelData.makingTone)
                                       font.pixelSize: theme.fontCaption }
                             }
-                            Txt { Layout.fillWidth: true; text: modelData.goldText; color: page.toneColor(modelData.goldTone)
-                                  font.pixelSize: theme.fontCaption }
-                            Txt { Layout.fillWidth: true; text: modelData.makingText; color: page.toneColor(modelData.makingTone)
-                                  font.pixelSize: theme.fontCaption }
                         }
-                    }
-                    Txt {
-                        anchors.centerIn: parent
-                        visible: supplierList.count === 0
-                        text: page.vm && page.vm.busy ? "جار التحميل..." : "لا يوجد موردون"
-                        color: theme.textMuted
+                        Txt {
+                            anchors.centerIn: parent
+                            visible: supplierList.count === 0
+                            text: page.vm && page.vm.busy ? "جار التحميل..." : "لا يوجد موردون"
+                            color: theme.textMuted
+                        }
                     }
                 }
             }
 
-            // ------------------------------------------------------------ selected supplier (left)
-            ColumnLayout {
+            // ------------------------------------------------------------ selected supplier (left): one grouped panel
+            Rectangle {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                spacing: 8
+                color: theme.bgSecondary
+                radius: theme.radiusMedium
+                border.color: page.hasSelection ? theme.goldDark : theme.border
 
                 Txt {
                     visible: !page.hasSelection
-                    Layout.fillWidth: true
-                    Layout.topMargin: 40
-                    horizontalAlignment: Text.AlignHCenter
+                    anchors.centerIn: parent
                     text: "اختر موردًا لعرض موقفه وفواتيره وسجلاته."
                     color: theme.textMuted
                 }
 
-                RowLayout {
+                ColumnLayout {
                     visible: page.hasSelection
-                    Layout.fillWidth: true
-                    layoutDirection: Qt.RightToLeft
-                    spacing: 6
-                    Txt { text: page.detail.name || ""; font.bold: true; font.pixelSize: theme.fontSection; color: theme.gold }
-                    Txt { text: page.detail.code || ""; color: theme.textMuted }
-                    Item { Layout.fillWidth: true }
-                    Btn {
-                        objectName: "newInvoiceButton"
-                        visible: !!page.pvm && page.pvm.canEdit
-                        enabled: page.hasSelection && page.detail.active === true
-                        text: "＋  فاتورة شراء جديدة"
-                        primary: true
-                        onClicked: newInvoiceDialog.openFor()
-                    }
-                    Btn {
-                        objectName: "editSupplierButton"
-                        visible: !!page.vm && page.vm.canManage
-                        text: "تعديل"
-                        onClicked: supplierDialog.openFor(page.detail)
-                    }
-                    Btn {
-                        objectName: "toggleSupplierButton"
-                        visible: !!page.vm && page.vm.canManage
-                        text: page.detail.active ? "إيقاف" : "تفعيل"
-                        accent: page.detail.active ? theme.amber : theme.green
-                        onClicked: page.vm.setSupplierActive(page.detail.id, !page.detail.active)
-                    }
-                    Btn {
-                        objectName: "deleteSupplierButton"
-                        visible: !!page.vm && page.vm.canManage
-                        text: "حذف"
-                        accent: theme.red
-                        onClicked: deleteConfirm.open()
-                    }
-                }
+                    anchors.fill: parent
+                    anchors.margins: 12
+                    spacing: 10
 
-                // The two independent positions: gold (Eq21 + per karat) and making (EGP).
-                RowLayout {
-                    visible: page.hasSelection
-                    Layout.fillWidth: true
-                    layoutDirection: Qt.RightToLeft
-                    spacing: 8
-                    Card {
-                        Layout.preferredWidth: 1
+                    // name + code, then the supplier's actions (side by side when wide, stacked when narrow)
+                    GridLayout {
                         Layout.fillWidth: true
-                        title: "موقف الذهب"
-                        accent: page.toneColor(page.detail.goldTone)
-                        Txt { objectName: "goldPosition"; Layout.fillWidth: true; text: page.detail.goldEq21Text || ""
-                              font.bold: true; color: page.toneColor(page.detail.goldTone); font.pixelSize: theme.fontBodyStrong }
-                        Repeater {
-                            model: page.detail.goldLines || []
-                            delegate: Txt { Layout.fillWidth: true; text: modelData.text; color: page.toneColor(modelData.tone)
-                                            font.pixelSize: theme.fontCaption }
-                        }
-                    }
-                    Card {
-                        Layout.preferredWidth: 1
-                        Layout.fillWidth: true
-                        title: "موقف المصنعيات"
-                        accent: page.toneColor(page.detail.makingTone)
-                        Txt { objectName: "makingPosition"; Layout.fillWidth: true; text: page.detail.makingText || ""
-                              font.bold: true; color: page.toneColor(page.detail.makingTone); font.pixelSize: theme.fontBodyStrong }
-                    }
-                }
-
-                RowLayout {
-                    visible: page.hasSelection
-                    Layout.fillWidth: true
-                    layoutDirection: Qt.RightToLeft
-                    spacing: 6
-                    TabBtn { objectName: "tabInvoices"; text: "فواتير الشراء"; on: page.tab === 0; onClicked: page.tab = 0 }
-                    TabBtn { objectName: "tabGold"; text: "سجل الذهب"; on: page.tab === 1; onClicked: page.tab = 1 }
-                    TabBtn { objectName: "tabMaking"; text: "سجل المصنعيات"; on: page.tab === 2; onClicked: page.tab = 2 }
-                    Item { Layout.fillWidth: true }
-                }
-
-                // ---- invoices
-                ListView {
-                    id: invoiceList
-                    objectName: "supplierInvoiceList"
-                    visible: page.hasSelection && page.tab === 0
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    clip: true
-                    spacing: 5
-                    model: page.pvm ? page.pvm.invoices : []
-                    delegate: Rectangle {
-                        width: invoiceList.width
-                        height: 54
-                        radius: theme.radiusSmall
-                        color: theme.panel
-                        border.color: theme.border
+                        columns: width >= 720 ? 2 : 1
+                        layoutDirection: Qt.RightToLeft
+                        columnSpacing: 8
+                        rowSpacing: 8
                         RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 10; anchors.rightMargin: 12
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
                             layoutDirection: Qt.RightToLeft
-                            spacing: 10
-                            ColumnLayout {
-                                Layout.preferredWidth: 150
-                                spacing: 0
-                                Txt { Layout.fillWidth: true; text: modelData.code; font.bold: true; color: theme.gold }
-                                Txt { Layout.fillWidth: true; text: modelData.reference + "  •  " + modelData.date
-                                      color: theme.textMuted; font.pixelSize: theme.fontCaption }
+                            spacing: 8
+                            Txt { text: page.detail.name || ""; font.bold: true; font.pixelSize: theme.fontPageTitle; color: theme.gold
+                                  elide: Text.ElideRight; Layout.maximumWidth: 360 }
+                            Rectangle {
+                                visible: !!page.detail.code
+                                implicitWidth: codeText.implicitWidth + 16
+                                implicitHeight: 24
+                                radius: 4
+                                color: theme.bgTertiary
+                                border.color: theme.border
+                                Txt { id: codeText; anchors.centerIn: parent; text: page.ltr(page.detail.code || "")
+                                      color: theme.textSecondary; font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
                             }
-                            ColumnLayout {
-                                Layout.preferredWidth: 170
-                                spacing: 0
-                                Txt { Layout.fillWidth: true; text: "عيار " + modelData.karat + " — " + modelData.weightText }
-                                Txt { Layout.fillWidth: true; text: "مصنعيات: " + modelData.makingText
-                                      color: theme.textSecondary; font.pixelSize: theme.fontCaption }
+                            Rectangle {
+                                objectName: "supplierKaratChip"
+                                implicitWidth: karatChipText.implicitWidth + 16
+                                implicitHeight: 24
+                                radius: 4
+                                color: theme.bgTertiary
+                                border.color: page.detail.karatResolved ? theme.goldDark : theme.amber
+                                Txt { id: karatChipText; anchors.centerIn: parent; text: page.detail.karatText || ""
+                                      color: page.detail.karatResolved ? theme.gold : theme.amber; font.bold: true
+                                      font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
                             }
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: 0
-                                Txt { Layout.fillWidth: true; text: modelData.statusText
-                                      color: modelData.status === "POSTED" ? theme.green : theme.textSecondary; font.bold: true }
-                                Txt { Layout.fillWidth: true; visible: modelData.status === "POSTED"
-                                      text: "القطع: " + modelData.pieceCount + "  •  " + modelData.varianceText
-                                      color: theme.textMuted; font.pixelSize: theme.fontCaption }
+                            Item { Layout.fillWidth: true }
+                        }
+                        RowLayout {
+                            Layout.alignment: Qt.AlignRight
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 8
+                            Btn {
+                                objectName: "newInvoiceButton"
+                                visible: !!page.pvm && page.pvm.canEdit
+                                enabled: page.hasSelection && page.detail.active === true && page.detail.karatResolved === true
+                                text: "＋  فاتورة شراء جديدة"
+                                primary: true
+                                onClicked: newInvoiceDialog.openFor()
                             }
                             Btn {
-                                text: modelData.status === "POSTED" ? "إدخال القطع" : "فتح"
-                                onClicked: intakeDialog.openFor(modelData.id)
+                                objectName: "editSupplierButton"
+                                visible: !!page.vm && page.vm.canManage
+                                text: "تعديل"
+                                onClicked: supplierDialog.openFor(page.detail)
+                            }
+                            Btn {
+                                objectName: "toggleSupplierButton"
+                                visible: !!page.vm && page.vm.canManage
+                                text: page.detail.active ? "إيقاف" : "تفعيل"
+                                accent: page.detail.active ? theme.amber : theme.green
+                                onClicked: page.vm.setSupplierActive(page.detail.id, !page.detail.active)
+                            }
+                            Btn {
+                                objectName: "deleteSupplierButton"
+                                visible: !!page.vm && page.vm.canManage
+                                text: "حذف"
+                                accent: theme.red
+                                onClicked: deleteConfirm.open()
                             }
                         }
                     }
-                    Txt { anchors.centerIn: parent; visible: invoiceList.count === 0; text: "لا توجد فواتير"
-                          color: theme.textMuted }
-                }
 
-                // ---- gold ledger
-                ListView {
-                    id: goldList
-                    objectName: "supplierGoldLedger"
-                    visible: page.hasSelection && page.tab === 1
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    clip: true
-                    spacing: 4
-                    model: page.detail.goldLedger || []
-                    delegate: Rectangle {
-                        width: goldList.width
-                        height: 46
-                        radius: theme.radiusSmall
-                        color: theme.panel
-                        border.color: theme.border
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 10; anchors.rightMargin: 12
-                            layoutDirection: Qt.RightToLeft
-                            spacing: 8
-                            ColumnLayout {
-                                Layout.preferredWidth: 150
-                                spacing: 0
-                                Txt { Layout.fillWidth: true; text: modelData.movement; font.bold: true }
-                                Txt { Layout.fillWidth: true; text: modelData.time + "  •  " + modelData.reference
-                                      color: theme.textMuted; font.pixelSize: theme.fontCaption }
+                    // The two independent positions: gold (physical grams of the supplier's karat) and making (EGP). Equal cards, equal height.
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: false          // natural height: the cards' own fillHeight only equalises the pair
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 10
+                        Card {
+                            Layout.preferredWidth: 1
+                            title: "موقف الذهب"
+                            accent: page.toneColor(page.detail.goldTone)
+                            PositionLine { objectName: "goldPosition"; parts: page.detail.goldParts || ({})
+                                           numberColor: theme.balanceKarat21 }
+                            Repeater {
+                                model: page.detail.goldBreakdown || []
+                                delegate: Txt { Layout.fillWidth: true; text: modelData.text; color: page.toneColor(modelData.tone)
+                                                font.pixelSize: theme.fontTableHeader }
                             }
-                            Txt { Layout.preferredWidth: 190; text: modelData.side + " " + modelData.weight + " جرام عيار " + modelData.karat
-                                  color: page.toneColor(modelData.tone) }
-                            Txt { Layout.fillWidth: true; text: "الرصيد: " + modelData.balance; color: theme.textSecondary
-                                  font.pixelSize: theme.fontCaption }
+                            Txt { objectName: "goldNote"; Layout.fillWidth: true; visible: !!page.detail.goldNote
+                                  text: page.detail.goldNote || ""; color: theme.amber; font.pixelSize: theme.fontTableHeader
+                                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                        }
+                        Card {
+                            Layout.preferredWidth: 1
+                            title: "موقف المصنعيات"
+                            accent: page.toneColor(page.detail.makingTone)
+                            PositionLine { objectName: "makingPosition"; parts: page.detail.makingParts || ({})
+                                           numberColor: theme.gold }
                         }
                     }
-                    Txt { anchors.centerIn: parent; visible: goldList.count === 0; text: "لا توجد حركات ذهب"
-                          color: theme.textMuted }
-                }
 
-                // ---- making ledger
-                ListView {
-                    id: makingList
-                    objectName: "supplierMakingLedger"
-                    visible: page.hasSelection && page.tab === 2
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    clip: true
-                    spacing: 4
-                    model: page.detail.makingLedger || []
-                    delegate: Rectangle {
-                        width: makingList.width
-                        height: 46
+                    // Tab bar + its content as one connected card.
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        color: theme.bgPrimary
                         radius: theme.radiusSmall
-                        color: theme.panel
                         border.color: theme.border
-                        RowLayout {
+                        clip: true
+
+                        ColumnLayout {
                             anchors.fill: parent
-                            anchors.leftMargin: 10; anchors.rightMargin: 12
-                            layoutDirection: Qt.RightToLeft
-                            spacing: 8
-                            ColumnLayout {
-                                Layout.preferredWidth: 150
-                                spacing: 0
-                                Txt { Layout.fillWidth: true; text: modelData.movement; font.bold: true }
-                                Txt { Layout.fillWidth: true; text: modelData.time + "  •  " + modelData.reference
-                                      color: theme.textMuted; font.pixelSize: theme.fontCaption }
+                            anchors.margins: 1
+                            spacing: 0
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 42
+                                color: theme.bgTertiary
+                                Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.border }
+                                RowLayout {
+                                    anchors.fill: parent
+                                    layoutDirection: Qt.RightToLeft
+                                    spacing: 0
+                                    RowLayout {
+                                        Layout.fillHeight: true
+                                        layoutDirection: Qt.RightToLeft
+                                        spacing: 0
+                                        uniformCellSizes: true
+                                        SegTab { objectName: "tabInvoices"; text: "نظرة عامة"; on: page.tab === 0; onClicked: page.tab = 0 }
+                                        SegTab { objectName: "tabGold"; text: "سجل الذهب"; on: page.tab === 1; onClicked: page.tab = 1 }
+                                        SegTab { objectName: "tabMaking"; text: "سجل المصنعيات"; on: page.tab === 2; onClicked: page.tab = 2 }
+                                    }
+                                    Item { Layout.fillWidth: true }
+                                }
                             }
-                            Txt { Layout.preferredWidth: 190; text: modelData.side + " " + modelData.amount + " مصنعيات"
-                                  color: page.toneColor(modelData.tone) }
-                            Txt { Layout.fillWidth: true; text: "الرصيد: " + modelData.balance; color: theme.textSecondary
-                                  font.pixelSize: theme.fontCaption }
+
+                            Item {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+
+                                // ---- overview: purchase invoices
+                                ColumnLayout {
+                                    visible: page.tab === 0
+                                    anchors.fill: parent
+                                    anchors.margins: 10
+                                    spacing: 6
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        layoutDirection: Qt.RightToLeft
+                                        Txt { text: "فواتير الشراء"; color: theme.gold; font.bold: true }
+                                        Item { Layout.fillWidth: true }
+                                        Txt { text: !!page.pvm && page.pvm.invoicesState === "loaded" ? invoiceList.count + " فاتورة" : "…"
+                                              color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+                                    }
+                                    RowLayout {
+                                        visible: invoiceList.count > 0
+                                        Layout.fillWidth: true
+                                        Layout.leftMargin: 12
+                                        Layout.rightMargin: 14
+                                        layoutDirection: Qt.RightToLeft
+                                        spacing: 12
+                                        ColHead { Layout.preferredWidth: page.colInvoiceWidth; text: "الفاتورة والتاريخ" }
+                                        ColHead { Layout.preferredWidth: page.colFiguresWidth; text: "العيار والوزن والمصنعيات" }
+                                        ColHead { Layout.fillWidth: true; text: "الحالة والإدخال" }
+                                        Item { Layout.preferredWidth: page.colActionWidth }
+                                    }
+                                    ListView {
+                                        id: invoiceList
+                                        objectName: "supplierInvoiceList"
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
+                                        clip: true
+                                        spacing: 6
+                                        model: page.pvm ? page.pvm.invoices : []
+                                        delegate: Rectangle {
+                                            width: invoiceList.width
+                                            height: page.compactInvoices ? 84 : 64
+                                            radius: theme.radiusSmall
+                                            color: theme.panel
+                                            border.color: theme.border
+                                            RowLayout {
+                                                anchors.fill: parent
+                                                anchors.leftMargin: 12; anchors.rightMargin: 14
+                                                layoutDirection: Qt.RightToLeft
+                                                spacing: 12
+                                                ColumnLayout {
+                                                    Layout.preferredWidth: page.colInvoiceWidth
+                                                    Layout.maximumWidth: page.colInvoiceWidth
+                                                    Layout.fillWidth: false
+                                                    spacing: 1
+                                                    Txt { Layout.fillWidth: true; text: page.ltr(modelData.code); font.bold: true
+                                                          color: theme.gold; font.pixelSize: theme.fontBodyStrong }
+                                                    Txt { Layout.fillWidth: true; text: page.ltr(modelData.reference) + "  •  " + modelData.date
+                                                          color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                                                          wrapMode: page.compactInvoices ? Text.WordWrap : Text.NoWrap
+                                                          elide: page.compactInvoices ? Text.ElideNone : Text.ElideLeft }
+                                                }
+                                                ColumnLayout {
+                                                    Layout.preferredWidth: page.colFiguresWidth
+                                                    Layout.maximumWidth: page.colFiguresWidth
+                                                    Layout.fillWidth: false
+                                                    spacing: 1
+                                                    Txt { Layout.fillWidth: true; text: "عيار " + modelData.karat + "  •  " + modelData.weightText + " جرام"
+                                                          font.bold: true }
+                                                    Txt { Layout.fillWidth: true; text: "المصنعيات: " + page.ltr(modelData.makingText)
+                                                          color: theme.textSecondary; font.pixelSize: theme.fontTableHeader
+                                                          wrapMode: page.compactInvoices ? Text.WordWrap : Text.NoWrap
+                                                          elide: page.compactInvoices ? Text.ElideNone : Text.ElideLeft }
+                                                }
+                                                ColumnLayout {
+                                                    Layout.fillWidth: true
+                                                    spacing: 1
+                                                    Txt { Layout.fillWidth: true; text: modelData.statusText; font.bold: true
+                                                          color: modelData.status === "POSTED" ? theme.green : theme.textSecondary }
+                                                    Txt { Layout.fillWidth: true; visible: modelData.status === "POSTED"
+                                                          text: "القطع: " + modelData.pieceCount + "  •  " + modelData.varianceText
+                                                          color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                                                          wrapMode: page.compactInvoices ? Text.WordWrap : Text.NoWrap
+                                                          elide: page.compactInvoices ? Text.ElideNone : Text.ElideLeft }
+                                                }
+                                                Btn {
+                                                    Layout.preferredWidth: page.colActionWidth
+                                                    text: modelData.status === "POSTED" ? "إدخال القطع" : "فتح"
+                                                    onClicked: intakeDialog.openFor(modelData.id)
+                                                }
+                                            }
+                                        }
+                                        Txt { objectName: "invoiceListState"; anchors.centerIn: parent
+                                              width: parent.width - 40; horizontalAlignment: Text.AlignHCenter
+                                              visible: invoiceList.count === 0
+                                              text: !page.pvm ? "" : page.pvm.invoicesState === "failed" ? "تعذر تحميل الفواتير. " + page.pvm.errorMessage
+                                                    : page.pvm.invoicesState === "loaded" ? "لا توجد فواتير" : "جار تحميل الفواتير..."
+                                              color: !!page.pvm && page.pvm.invoicesState === "failed" ? theme.red : theme.textMuted
+                                              wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                    }
+                                }
+
+                                // ---- gold ledger
+                                ListView {
+                                    id: goldList
+                                    objectName: "supplierGoldLedger"
+                                    visible: page.tab === 1
+                                    anchors.fill: parent
+                                    anchors.margins: 10
+                                    clip: true
+                                    spacing: 5
+                                    model: page.detail.goldLedger || []
+                                    delegate: Rectangle {
+                                        width: goldList.width
+                                        height: Math.max(50, goldLedgerRow.implicitHeight + 14)       // grows with wrapped text
+                                        radius: theme.radiusSmall
+                                        color: theme.panel
+                                        border.color: theme.border
+                                        RowLayout {
+                                            id: goldLedgerRow
+                                            anchors.left: parent.left; anchors.right: parent.right
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            anchors.leftMargin: 12; anchors.rightMargin: 14
+                                            layoutDirection: Qt.RightToLeft
+                                            spacing: 12
+                                            // movement description (wraps), then date/time and reference, each kept as a left-to-right unit
+                                            ColumnLayout {
+                                                Layout.preferredWidth: page.colLedgerWidth
+                                                Layout.maximumWidth: page.colLedgerWidth
+                                                Layout.fillWidth: false
+                                                spacing: 2
+                                                Txt { Layout.fillWidth: true; text: modelData.movement; font.bold: true
+                                                      wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                                Txt { Layout.fillWidth: true; text: modelData.time + "  •  " + page.ltr(modelData.reference)
+                                                      color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                                                      wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                            }
+                                            // the movement value; in the narrowest window the running balance sits under it
+                                            ColumnLayout {
+                                                Layout.fillWidth: page.compactInvoices
+                                                Layout.preferredWidth: page.compactInvoices ? 1 : page.colLedgerValueWidth
+                                                Layout.maximumWidth: page.compactInvoices ? 100000 : page.colLedgerValueWidth
+                                                spacing: 2
+                                                Txt { Layout.fillWidth: true; text: modelData.side + " " + modelData.weight + " جرام عيار " + modelData.karat
+                                                      color: page.toneColor(modelData.tone); wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                                Txt { Layout.fillWidth: true; visible: page.compactInvoices
+                                                      text: "الرصيد: " + modelData.balance; color: theme.textSecondary
+                                                      font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                            }
+                                            Txt { Layout.fillWidth: true; visible: !page.compactInvoices
+                                                  text: "الرصيد: " + modelData.balance; color: theme.textSecondary
+                                                  font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                        }
+                                    }
+                                    Txt { anchors.centerIn: parent; visible: goldList.count === 0; text: "لا توجد حركات ذهب"
+                                          color: theme.textMuted }
+                                }
+
+                                // ---- making ledger
+                                ListView {
+                                    id: makingList
+                                    objectName: "supplierMakingLedger"
+                                    visible: page.tab === 2
+                                    anchors.fill: parent
+                                    anchors.margins: 10
+                                    clip: true
+                                    spacing: 5
+                                    model: page.detail.makingLedger || []
+                                    delegate: Rectangle {
+                                        width: makingList.width
+                                        height: Math.max(50, makingLedgerRow.implicitHeight + 14)       // grows with wrapped text
+                                        radius: theme.radiusSmall
+                                        color: theme.panel
+                                        border.color: theme.border
+                                        RowLayout {
+                                            id: makingLedgerRow
+                                            anchors.left: parent.left; anchors.right: parent.right
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            anchors.leftMargin: 12; anchors.rightMargin: 14
+                                            layoutDirection: Qt.RightToLeft
+                                            spacing: 12
+                                            // movement description (wraps), then date/time and reference, each kept as a left-to-right unit
+                                            ColumnLayout {
+                                                Layout.preferredWidth: page.colLedgerWidth
+                                                Layout.maximumWidth: page.colLedgerWidth
+                                                Layout.fillWidth: false
+                                                spacing: 2
+                                                Txt { Layout.fillWidth: true; text: modelData.movement; font.bold: true
+                                                      wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                                Txt { Layout.fillWidth: true; text: modelData.time + "  •  " + page.ltr(modelData.reference)
+                                                      color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                                                      wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                            }
+                                            // the movement value; in the narrowest window the running balance sits under it
+                                            ColumnLayout {
+                                                Layout.fillWidth: page.compactInvoices
+                                                Layout.preferredWidth: page.compactInvoices ? 1 : page.colLedgerValueWidth
+                                                Layout.maximumWidth: page.compactInvoices ? 100000 : page.colLedgerValueWidth
+                                                spacing: 2
+                                                Txt { Layout.fillWidth: true; text: modelData.side + " " + modelData.amount + " مصنعيات"
+                                                      color: page.toneColor(modelData.tone); wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                                Txt { Layout.fillWidth: true; visible: page.compactInvoices
+                                                      text: "الرصيد: " + modelData.balance; color: theme.textSecondary
+                                                      font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                            }
+                                            Txt { Layout.fillWidth: true; visible: !page.compactInvoices
+                                                  text: "الرصيد: " + modelData.balance; color: theme.textSecondary
+                                                  font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                        }
+                                    }
+                                    Txt { anchors.centerIn: parent; visible: makingList.count === 0; text: "لا توجد حركات مصنعيات"
+                                          color: theme.textMuted }
+                                }
+                            }
                         }
                     }
-                    Txt { anchors.centerIn: parent; visible: makingList.count === 0; text: "لا توجد حركات مصنعيات"
-                          color: theme.textMuted }
                 }
             }
         }
@@ -488,8 +851,11 @@ Item {
         id: supplierDialog
         objectName: "supplierDialog"
         property string editId: ""
+        property bool karatLocked: false
         function openFor(data) {
             editId = data ? data.id : ""
+            karatLocked = !!data && data.karatResolved === true && data.karatLocked === true
+            supplierKaratCombo.currentIndex = data ? page.karatChoiceIndex(data.karatId) : 0
             nameField.text = data ? data.name : ""
             phoneField.text = data ? data.phone : ""
             notesField.text = data ? data.notes : ""
@@ -509,6 +875,12 @@ Item {
                   color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
             Txt { Layout.fillWidth: true; text: "اسم المورد *" }
             Field { id: nameField; objectName: "supplierNameField"; Layout.fillWidth: true }
+            // Each supplier is dedicated to ONE karat; its invoices inherit it. Locked once an invoice exists.
+            Txt { Layout.fillWidth: true; text: "العيار *" }
+            Combo { id: supplierKaratCombo; objectName: "supplierKaratCombo"; Layout.fillWidth: true
+                    model: page.karatChoices; textRole: "label"; enabled: !supplierDialog.karatLocked }
+            Txt { Layout.fillWidth: true; visible: supplierDialog.karatLocked; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                  wrapMode: Text.WordWrap; elide: Text.ElideNone; text: "لا يتغير عيار المورد بعد وجود فاتورة له." }
             Txt { Layout.fillWidth: true; text: "رقم الهاتف" }
             Field { id: phoneField; objectName: "supplierPhoneField"; Layout.fillWidth: true }
             Txt { Layout.fillWidth: true; text: "ملاحظات" }
@@ -524,9 +896,12 @@ Item {
                     text: "حفظ"
                     primary: true
                     enabled: nameField.text.trim().length > 0 && !!page.vm && !page.vm.busy
+                             && (supplierDialog.editId !== "" || supplierKaratCombo.currentIndex > 0)
                     onClicked: {
-                        if (supplierDialog.editId === "") page.vm.createSupplier(nameField.text, phoneField.text, notesField.text)
-                        else page.vm.updateSupplier(supplierDialog.editId, nameField.text, phoneField.text, notesField.text)
+                        if (supplierDialog.editId === "") page.vm.createSupplier(nameField.text, phoneField.text, notesField.text,
+                                                                                 page.karatChoices[supplierKaratCombo.currentIndex].id)
+                        else page.vm.updateSupplier(supplierDialog.editId, nameField.text, phoneField.text, notesField.text,
+                                                    page.karatChoices[supplierKaratCombo.currentIndex].id)
                         supplierDialog.close()
                     }
                 }
@@ -567,9 +942,17 @@ Item {
         id: newInvoiceDialog
         objectName: "newSupplierInvoiceDialog"
         property string requestKey: ""
-        property var preview: ({ valid: false, error: "", weightText: "—", makingText: "—", eq21Text: "—", groupMaking: [] })
-        readonly property int karatValue: karatCombo.currentIndex >= 0 && page.masterKarats.length > karatCombo.currentIndex
-                                          ? page.masterKarats[karatCombo.currentIndex].karat_value : 0
+        // Edit mode: the SAME form edits a saved draft (same invoice id; saving updates it, never creates another).
+        property string editId: ""
+        property string editCode: ""
+        property string editSupplierId: ""
+        property var preview: ({ valid: false, error: "", weightText: "—", makingText: "—", groupMaking: [] })
+        // The invoice karat is the supplier's dedicated karat (shown read-only). When editing a saved draft its own saved
+        // karat is sent, so the service refuses an incompatible draft instead of silently converting it.
+        property int editKaratId: 0
+        property int editKaratValue: 0
+        readonly property int invoiceKaratId: editId !== "" ? editKaratId : (page.detail.karatId || 0)
+        readonly property string invoiceKaratText: editId !== "" ? "عيار " + editKaratValue : (page.detail.karatText || "")
         function collect() {
             var rows = []
             for (var i = 0; i < groupModel.count; ++i) {
@@ -579,16 +962,37 @@ Item {
             return rows
         }
         function recompute() {
-            if (page.pvm) preview = page.pvm.previewGroups(collect(), karatValue)
+            if (page.pvm) preview = page.pvm.previewGroups(collect())
+        }
+        function openForEdit(form) {
+            editId = form.id
+            editCode = form.code
+            editSupplierId = form.supplierId
+            requestKey = ""
+            groupModel.clear()
+            for (var i = 0; i < form.groups.length; ++i)
+                groupModel.append({ weight: form.groups[i].weight, rate: form.groups[i].rate, description: form.groups[i].description })
+            referenceField.text = form.reference
+            notesField2.text = form.notes
+            dateField.text = form.date
+            editKaratId = form.karatId
+            editKaratValue = form.karatValue
+            if (page.pvm) page.pvm.clearMessage()
+            recompute()
+            open()
         }
         function openFor() {
+            editId = ""
+            editCode = ""
+            editSupplierId = ""
             requestKey = page.pvm ? page.pvm.newRequestKey() : ""
             groupModel.clear()
             groupModel.append({ weight: "", rate: "", description: "" })
             referenceField.text = ""
             notesField2.text = ""
             dateField.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
-            karatCombo.currentIndex = Math.max(0, page.indexOfKarat(21))
+            editKaratId = 0
+            editKaratValue = 0
             if (page.pvm) page.pvm.clearMessage()
             recompute()
             open()
@@ -605,7 +1009,8 @@ Item {
         contentItem: ColumnLayout {
             spacing: 6
             Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection
-                  text: "فاتورة شراء جديدة — " + (page.detail.name || "") }
+                  text: (newInvoiceDialog.editId !== "" ? "تعديل المسودة " + page.ltr(newInvoiceDialog.editCode) : "فاتورة شراء جديدة")
+                        + " — " + (page.detail.name || "") }
             Flickable {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
@@ -632,14 +1037,15 @@ Item {
                         }
                         ColumnLayout {
                             Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
-                            Txt { Layout.fillWidth: true; text: "العيار (فاتورة واحدة = عيار واحد) *" }
-                            Combo {
-                                id: karatCombo
-                                objectName: "invoiceKaratCombo"
+                            Txt { Layout.fillWidth: true; text: "العيار (عيار المورد)" }
+                            Rectangle {
                                 Layout.fillWidth: true
-                                model: page.masterKarats
-                                textRole: "label"
-                                onActivated: newInvoiceDialog.recompute()
+                                implicitHeight: 34
+                                radius: 4
+                                color: theme.bgTertiary
+                                border.color: theme.border
+                                Txt { objectName: "invoiceKaratText"; anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10
+                                      text: newInvoiceDialog.invoiceKaratText; color: theme.gold; font.bold: true; elide: Text.ElideNone }
                             }
                         }
                     }
@@ -676,7 +1082,7 @@ Item {
                                 onTextEdited: groupModel.setProperty(index, "description", text)
                             }
                             Txt { Layout.preferredWidth: 110
-                                  text: newInvoiceDialog.preview.valid && index < newInvoiceDialog.preview.groupMaking.length
+                                  text: newInvoiceDialog.preview.valid && index >= 0 && index < newInvoiceDialog.preview.groupMaking.length
                                         ? newInvoiceDialog.preview.groupMaking[index] : "—"
                                   color: theme.textSecondary }
                             Btn { text: "✕"; accent: theme.red; implicitWidth: 34; leftPadding: 4; rightPadding: 4
@@ -709,8 +1115,6 @@ Item {
                     layoutDirection: Qt.RightToLeft
                     spacing: 14
                     Txt { objectName: "invoiceTotalWeight"; text: "وزن المورد: " + newInvoiceDialog.preview.weightText; font.bold: true }
-                    Txt { objectName: "invoiceTotalEq21"; text: "مكافئ عيار 21: " + newInvoiceDialog.preview.eq21Text
-                          color: theme.textSecondary }
                     Txt { objectName: "invoiceTotalMaking"; text: "إجمالي المصنعيات: " + newInvoiceDialog.preview.makingText
                           color: theme.gold; font.bold: true }
                     Item { Layout.fillWidth: true }
@@ -725,22 +1129,26 @@ Item {
                 spacing: 8
                 Btn {
                     objectName: "postInvoiceButton"
-                    visible: !!page.pvm && page.pvm.canPost
+                    visible: !!page.pvm && page.pvm.canPost && newInvoiceDialog.editId === ""
                     text: "ترحيل الفاتورة"
                     primary: true
                     enabled: newInvoiceDialog.preview.valid && !!page.pvm && !page.pvm.busy && page.hasSelection
-                    onClicked: page.pvm.saveInvoice(page.detail.id, page.karatIdAt(karatCombo.currentIndex), referenceField.text,
+                    onClicked: page.pvm.saveInvoice(page.detail.id, newInvoiceDialog.invoiceKaratId, referenceField.text,
                                                     dateField.text, newInvoiceDialog.collect(), notesField2.text,
                                                     newInvoiceDialog.requestKey, true)
                 }
                 Btn {
                     objectName: "saveDraftButton"
                     visible: !!page.pvm && page.pvm.canEdit
-                    text: "حفظ كمسودة"
+                    text: newInvoiceDialog.editId !== "" ? "حفظ التعديلات" : "حفظ كمسودة"
                     enabled: newInvoiceDialog.preview.valid && !!page.pvm && !page.pvm.busy && page.hasSelection
-                    onClicked: page.pvm.saveInvoice(page.detail.id, page.karatIdAt(karatCombo.currentIndex), referenceField.text,
-                                                    dateField.text, newInvoiceDialog.collect(), notesField2.text,
-                                                    newInvoiceDialog.requestKey, false)
+                    onClicked: newInvoiceDialog.editId !== ""
+                               ? page.pvm.updateDraft(newInvoiceDialog.editId, newInvoiceDialog.editSupplierId,
+                                                      newInvoiceDialog.invoiceKaratId, referenceField.text, dateField.text,
+                                                      newInvoiceDialog.collect(), notesField2.text)
+                               : page.pvm.saveInvoice(page.detail.id, newInvoiceDialog.invoiceKaratId, referenceField.text,
+                                                      dateField.text, newInvoiceDialog.collect(), notesField2.text,
+                                                      newInvoiceDialog.requestKey, false)
                 }
                 Btn { text: "إلغاء"; accent: theme.textSecondary; onClicked: newInvoiceDialog.close() }
                 Item { Layout.fillWidth: true }
@@ -755,21 +1163,65 @@ Item {
             out.push({ id: rows[i].id, karat_value: rows[i].karat_value, label: "عيار " + rows[i].karat_value })
         return out
     }
-    function indexOfKarat(value) {
-        for (var i = 0; i < masterKarats.length; ++i) if (masterKarats[i].karat_value === value) return i
+    // The karats master for the supplier form. Entry 0 is the explicit "not chosen" placeholder: nothing defaults.
+    readonly property var karatChoices: {
+        var out = [{ id: 0, label: "اختر العيار *" }]
+        for (var i = 0; i < masterKarats.length; ++i) out.push({ id: masterKarats[i].id, label: masterKarats[i].label })
+        return out
+    }
+    function karatChoiceIndex(id) {
+        for (var i = 0; i < karatChoices.length; ++i) if (karatChoices[i].id === id) return i
         return 0
     }
-    function karatIdAt(index) { return index >= 0 && index < masterKarats.length ? masterKarats[index].id : 0 }
 
     // ---------------------------------------------------------------- invoice detail + piece-by-piece intake
+    // Layout: a fixed header (reference, supplier, status, actions, close) over ONE scrolling body of sections:
+    // invoice summary, making groups, piece form, entered pieces. Presentation only: every value is the one the
+    // ViewModel already formats; the actions, validation and request keys are unchanged.
     Popup {
         id: intakeDialog
         objectName: "supplierIntakeDialog"
         property string selectedGroup: ""
         property string pieceKey: ""
         property string postKey: ""
+        property string pieceProblem: ""          // the known refusal for the typed weight (refreshPieceProblem)
         readonly property var inv: page.pvm ? page.pvm.detail : ({})
         readonly property bool ready: !!inv && inv.id !== undefined
+        // entered-pieces table columns (header and rows share them)
+        readonly property int colId: 76
+        readonly property int colGroup: 92
+        readonly property int colWeight: 112
+        readonly property int colBarcode: 150
+        readonly property int colStatus: 150
+        // One field of the selected group (a plain value, no retained object); `fallback` when none is selected.
+        function groupValue(field, fallback) {
+            var rows = ready ? inv.groups : []
+            for (var i = 0; i < rows.length; ++i) if (rows[i].id === selectedGroup) return rows[i][field]
+            return fallback
+        }
+        // The refusal the service would give for the typed weight in the selected group, from the loaded detail.
+        // Called from events only (typing, choosing a group, a fresh detail) — a convenience; the service decides.
+        function refreshPieceProblem() {
+            intakeDialog.pieceProblem = opened && ready && selectedGroup !== "" && !!page.pvm
+                                ? page.pvm.pieceWeightProblem(selectedGroup, weightField.text) : ""
+        }
+        onInvChanged: refreshPieceProblem()
+        onSelectedGroupChanged: refreshPieceProblem()
+        function groupNo(id) {
+            var rows = ready ? inv.groups : []
+            for (var i = 0; i < rows.length; ++i) if (rows[i].id === id) return rows[i].no
+            return ""
+        }
+        // Choosing a group is the start of an entry: bring the piece form into view when it is not fully visible
+        // (small windows), and leave the scroll position alone when everything already fits.
+        function revealForm() {
+            if (!pieceForm.visible) return
+            var top = pieceForm.mapToItem(intakeScroll.contentItem, 0, 0).y
+            var bottom = top + pieceForm.height
+            var maximum = Math.max(0, intakeScroll.contentHeight - intakeScroll.height)
+            if (top >= intakeScroll.contentY && bottom <= intakeScroll.contentY + intakeScroll.height) return
+            intakeScroll.contentY = Math.min(maximum, Math.max(0, top - 8))
+        }
         function openFor(invoiceId) {
             selectedGroup = ""
             pieceKey = page.pvm ? page.pvm.newRequestKey() : ""
@@ -780,13 +1232,13 @@ Item {
         }
         parent: Overlay.overlay
         anchors.centerIn: parent
-        width: Math.min(900, page.width - 24)
-        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 640, 660)
+        width: Math.min(960, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 640, 780)
         modal: true
-        padding: 14
+        padding: 0
         closePolicy: Popup.CloseOnEscape
-        onClosed: if (page.pvm) page.pvm.closeInvoice()
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        onClosed: { intakeDialog.pieceProblem = ""; if (page.pvm) page.pvm.closeInvoice() }
+        background: Rectangle { color: theme.bgSecondary; radius: 8; border.color: theme.gold }
         Connections {
             target: page.pvm
             function onStockChanged() {
@@ -796,194 +1248,429 @@ Item {
             }
         }
         contentItem: ColumnLayout {
-            spacing: 6
-            RowLayout {
+            spacing: 0
+
+            // ---- 1. header (always visible: the close action never scrolls away)
+            Rectangle {
                 Layout.fillWidth: true
-                layoutDirection: Qt.RightToLeft
-                spacing: 8
-                Txt { text: intakeDialog.ready ? "فاتورة " + intakeDialog.inv.code + " — " + intakeDialog.inv.supplierName : "..."
-                      color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
-                Txt { visible: intakeDialog.ready; text: intakeDialog.ready ? intakeDialog.inv.statusText : ""
-                      color: intakeDialog.ready && intakeDialog.inv.posted ? theme.green : theme.textSecondary; font.bold: true }
-                Item { Layout.fillWidth: true }
-                Btn { objectName: "intakePostButton"
-                      visible: intakeDialog.ready && intakeDialog.inv.draft && !!page.pvm && page.pvm.canPost
-                      text: "ترحيل الفاتورة"; primary: true; enabled: !page.pvm.busy
-                      onClicked: page.pvm.postInvoice(intakeDialog.inv.id, intakeDialog.postKey) }
-                Btn { visible: intakeDialog.ready && intakeDialog.inv.draft && !!page.pvm && page.pvm.canEdit
-                      text: "إلغاء المسودة"; accent: theme.red; enabled: !page.pvm.busy
-                      onClicked: { page.pvm.cancelDraft(intakeDialog.inv.id); intakeDialog.close() } }
-                Btn { text: "إغلاق"; accent: theme.textSecondary; onClicked: intakeDialog.close() }
+                Layout.preferredHeight: 68
+                color: theme.bgTertiary
+                radius: 8
+                Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 8; color: parent.color }
+                Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.border }
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 14
+                    anchors.rightMargin: 16
+                    layoutDirection: Qt.RightToLeft
+                    spacing: 10
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 0
+                        RowLayout {
+                            Layout.fillWidth: true
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 10
+                            Txt { text: intakeDialog.ready ? "فاتورة " + page.ltr(intakeDialog.inv.code) : "..."
+                                  color: theme.gold; font.bold: true; font.pixelSize: theme.fontPageTitle; elide: Text.ElideNone }
+                            Rectangle {
+                                visible: intakeDialog.ready
+                                implicitWidth: statusLabel.implicitWidth + 22
+                                implicitHeight: 24
+                                radius: 12
+                                readonly property color tone: intakeDialog.ready && intakeDialog.inv.posted ? theme.green : theme.textSecondary
+                                color: Qt.rgba(tone.r, tone.g, tone.b, 0.14)
+                                border.color: tone
+                                Txt { id: statusLabel; anchors.centerIn: parent; text: intakeDialog.ready ? intakeDialog.inv.statusText : ""
+                                      color: parent.tone; font.bold: true; font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
+                            }
+                            Item { Layout.fillWidth: true }
+                        }
+                        Txt { Layout.fillWidth: true; color: theme.textSecondary
+                              text: intakeDialog.ready ? "المورد: " + intakeDialog.inv.supplierName
+                                    + "  •  رقم فاتورة المورد: " + page.ltr(intakeDialog.inv.reference)
+                                    + "  •  " + intakeDialog.inv.date : "" }
+                    }
+                    Btn { objectName: "intakePostButton"
+                          visible: intakeDialog.ready && intakeDialog.inv.draft && !!page.pvm && page.pvm.canPost
+                          text: "ترحيل الفاتورة"; primary: true; enabled: !page.pvm.busy
+                          onClicked: page.pvm.postInvoice(intakeDialog.inv.id, intakeDialog.postKey) }
+                    Btn { objectName: "editDraftButton"
+                          visible: intakeDialog.ready && intakeDialog.inv.draft && !!page.pvm && page.pvm.canEdit
+                          text: "تعديل المسودة"; enabled: !page.pvm.busy
+                          onClicked: {
+                              var form = intakeDialog.inv.form            // copied before the details dialog clears its invoice
+                              intakeDialog.close()
+                              newInvoiceDialog.openForEdit(form)
+                          } }
+                    Btn { visible: intakeDialog.ready && intakeDialog.inv.draft && !!page.pvm && page.pvm.canEdit
+                          text: "إلغاء المسودة"; accent: theme.red; enabled: !page.pvm.busy
+                          onClicked: { page.pvm.cancelDraft(intakeDialog.inv.id); intakeDialog.close() } }
+                    Btn { objectName: "intakeCloseButton"; text: "إغلاق"; accent: theme.textSecondary; onClicked: intakeDialog.close() }
+                }
             }
+
+            // a validation / service error stays visible whatever the scroll position
+            Rectangle {
+                visible: !!page.pvm && page.pvm.errorMessage !== ""
+                Layout.fillWidth: true
+                Layout.leftMargin: 14
+                Layout.rightMargin: 14
+                Layout.topMargin: 10
+                implicitHeight: errorText.implicitHeight + 14
+                radius: theme.radiusSmall
+                color: Qt.rgba(theme.red.r, theme.red.g, theme.red.b, 0.12)
+                border.color: theme.red
+                Txt { id: errorText; objectName: "intakeError"; anchors.fill: parent; anchors.margins: 7
+                      text: page.pvm ? page.pvm.errorMessage : ""; color: theme.red; font.bold: true
+                      wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            }
+
+            // ---- body: the only scroll area of the dialog
             Flickable {
+                id: intakeScroll
+                objectName: "intakeScroll"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+                Layout.leftMargin: 14
+                Layout.topMargin: 12
+                Layout.bottomMargin: 12
+                contentWidth: width
                 contentHeight: intakeColumn.implicitHeight
                 clip: true
-                ScrollBar.vertical: ScrollBar {}
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
                 ColumnLayout {
                     id: intakeColumn
-                    width: parent.width - 12
-                    spacing: 6
+                    width: intakeScroll.width - 14
+                    spacing: 12
                     visible: intakeDialog.ready
 
-                    // Contractual truth vs shop-scale truth (variance is information, never a balance).
-                    Card {
-                        title: "الفاتورة"
-                        Txt { Layout.fillWidth: true; objectName: "intakeSummary"
-                              text: intakeDialog.ready ? "عيار " + intakeDialog.inv.karat + "  •  وزن المورد " + intakeDialog.inv.weightText
-                                    + "  •  مكافئ عيار 21: " + intakeDialog.inv.eq21Text + "  •  إجمالي المصنعيات: "
-                                    + intakeDialog.inv.makingText : "" }
-                        Txt { Layout.fillWidth: true; objectName: "intakeProgress"
-                              text: intakeDialog.ready ? "الوزن المُدخل (فعلي): " + intakeDialog.inv.actualText + "  •  "
-                                    + intakeDialog.inv.varianceText + "  •  " + intakeDialog.inv.remainingText
-                                    + "  •  " + intakeDialog.inv.percentText : ""
-                              color: intakeDialog.ready && intakeDialog.inv.overSupplier ? theme.amber : theme.textSecondary }
-                        Txt { Layout.fillWidth: true; font.pixelSize: theme.fontCaption; color: theme.textMuted
+                    // ---- 2. invoice summary: contractual figures (row 1) and shop-scale intake figures (row 2)
+                    Section {
+                        title: "ملخص الفاتورة"
+                        GridLayout {
+                            Layout.fillWidth: true
+                            columns: width >= 600 ? 4 : 2
+                            layoutDirection: Qt.RightToLeft
+                            columnSpacing: 12
+                            rowSpacing: 10
+                            uniformCellWidths: true
+                            Stat { label: "العيار"; value: intakeDialog.ready ? "" + intakeDialog.inv.karat : ""; valueName: "intakeKarat"; strong: true }
+                            Stat { label: "وزن المورد (جرام)"; value: intakeDialog.ready ? intakeDialog.inv.weightText : ""
+                                   valueName: "intakeSupplierWeight"; strong: true }
+                            Stat { label: "إجمالي المصنعيات"; value: intakeDialog.ready ? page.ltr(intakeDialog.inv.makingText) : ""
+                                   valueName: "intakeMaking"; strong: true; valueColor: theme.gold }
+                            Item { Layout.fillWidth: true; Layout.preferredWidth: 1 }          // keeps the contractual figures on row 1
+                            Stat { label: "الوزن المُدخل (جرام)"; value: intakeDialog.ready ? intakeDialog.inv.actualText : ""
+                                   valueName: "intakeActual"
+                                   valueColor: intakeDialog.ready && intakeDialog.inv.overSupplier ? theme.amber : theme.textPrimary }
+                            // neutral on purpose: a negative difference during incomplete intake is information, not an error
+                            Stat { label: "فرق الوزن (جرام)"; value: intakeDialog.ready ? page.after(intakeDialog.inv.varianceText) : ""
+                                   valueName: "intakeVariance" }
+                            Stat { label: "المتبقي للإدخال (مرجعي، جرام)"; value: intakeDialog.ready ? page.after(intakeDialog.inv.remainingText) : ""
+                                   valueName: "intakeRemaining"
+                                   valueColor: intakeDialog.ready && intakeDialog.inv.overSupplier ? theme.amber : theme.textPrimary }
+                            Stat { label: "نسبة الإدخال"; value: intakeDialog.ready ? intakeDialog.inv.percentText : ""
+                                   valueName: "intakePercent"
+                                   valueColor: intakeDialog.ready && intakeDialog.inv.overSupplier ? theme.amber : theme.textPrimary }
+                        }
+                        Txt { Layout.fillWidth: true; font.pixelSize: theme.fontTableHeader; color: theme.textMuted
                               text: "فرق الوزن للعلم فقط: لا يغيّر رصيد المورد ولا المصنعيات ولا أوزان القطع." }
                     }
-                    Txt { Layout.fillWidth: true; text: "المجموعات (اضغط مجموعة لإدخال قطعة منها)"; color: theme.gold; font.bold: true }
-                    Repeater {
-                        model: intakeDialog.ready ? intakeDialog.inv.groups : []
-                        delegate: Rectangle {
-                            objectName: "intakeGroup_" + index
-                            Layout.fillWidth: true
-                            implicitHeight: groupColumn.implicitHeight + 12
-                            radius: theme.radiusSmall
-                            color: intakeDialog.selectedGroup === modelData.id ? theme.panelHover : theme.panel
-                            border.color: intakeDialog.selectedGroup === modelData.id ? theme.gold : theme.border
-                            MouseArea { anchors.fill: parent; onClicked: intakeDialog.selectedGroup = modelData.id }
-                            ColumnLayout {
-                                id: groupColumn
-                                anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                                anchors.leftMargin: 10; anchors.rightMargin: 12
-                                spacing: 1
-                                Txt { Layout.fillWidth: true; font.bold: true
-                                      text: "مجموعة " + modelData.no + (modelData.description !== "" ? " — " + modelData.description : "")
-                                            + "  •  " + modelData.weightText + " @ " + modelData.rateText
-                                            + "  •  مصنعيات " + modelData.makingText }
-                                Txt { Layout.fillWidth: true; font.pixelSize: theme.fontCaption
-                                      color: modelData.overSupplier ? theme.amber : theme.textSecondary
-                                      text: "القطع: " + modelData.pieceCount + "  •  المُدخل: " + modelData.actualText + "  •  "
-                                            + modelData.varianceText + "  •  " + modelData.remainingText + "  •  " + modelData.percentText }
+
+                    // ---- 3. making-group selection
+                    Section {
+                        title: "مجموعات المصنعية"
+                        bodySpacing: 6
+                        hint: intakeDialog.selectedGroup === "" ? "اختر مجموعة لإدخال قطعة منها"
+                              : "المجموعة المختارة: مجموعة " + intakeDialog.groupNo(intakeDialog.selectedGroup)
+                        hintColor: intakeDialog.selectedGroup === "" ? theme.amber : theme.gold
+                        Repeater {
+                            model: intakeDialog.ready ? intakeDialog.inv.groups : []
+                            delegate: Rectangle {
+                                id: groupCard
+                                objectName: "intakeGroup_" + index
+                                readonly property bool selected: intakeDialog.selectedGroup === modelData.id
+                                Layout.fillWidth: true
+                                implicitHeight: groupBody.implicitHeight + 14
+                                radius: theme.radiusSmall
+                                color: selected ? Qt.rgba(theme.gold.r, theme.gold.g, theme.gold.b, 0.09)
+                                       : groupMouse.containsMouse ? theme.panelHover : theme.bgSecondary
+                                border.color: selected ? theme.gold : groupMouse.containsMouse ? theme.goldDark : theme.border
+                                border.width: selected ? 2 : 1
+                                MouseArea { id: groupMouse; anchors.fill: parent; hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: { intakeDialog.selectedGroup = modelData.id; intakeDialog.revealForm() } }
+                                ColumnLayout {
+                                    id: groupBody
+                                    anchors.fill: parent
+                                    anchors.margins: 7
+                                    anchors.leftMargin: 10
+                                    anchors.rightMargin: 10
+                                    spacing: 3
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        layoutDirection: Qt.RightToLeft
+                                        spacing: 8
+                                        Rectangle {                        // radio indicator
+                                            implicitWidth: 18; implicitHeight: 18; radius: 9; color: "transparent"
+                                            border.color: groupCard.selected ? theme.gold : theme.textMuted
+                                            border.width: 2
+                                            Rectangle { visible: groupCard.selected; anchors.centerIn: parent; width: 8; height: 8
+                                                        radius: 4; color: theme.gold }
+                                        }
+                                        Txt { text: "مجموعة " + modelData.no; font.bold: true; font.pixelSize: theme.fontBodyStrong
+                                              color: groupCard.selected ? theme.gold : theme.textPrimary; elide: Text.ElideNone }
+                                        Txt { visible: modelData.description !== ""; text: "—  " + modelData.description
+                                              color: theme.textSecondary }
+                                        Item { Layout.fillWidth: true }
+                                        Rectangle {
+                                            visible: groupCard.selected
+                                            implicitWidth: pickedLabel.implicitWidth + 20
+                                            implicitHeight: 22
+                                            radius: 11
+                                            color: theme.gold
+                                            Txt { id: pickedLabel; anchors.centerIn: parent; text: "✓  مختارة للإدخال"
+                                                  color: theme.bgPrimary; font.bold: true; font.pixelSize: theme.fontTableHeader
+                                                  elide: Text.ElideNone }
+                                        }
+                                        Txt { visible: !groupCard.selected; text: "اضغط للاختيار"; color: theme.textMuted
+                                              font.pixelSize: theme.fontTableHeader }
+                                    }
+                                    // key contractual values first (prominent), then the five intake figures; both rows wrap naturally
+                                    Flow {
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: childrenRect.height      // the real wrapped height
+                                        layoutDirection: Qt.RightToLeft
+                                        spacing: 2
+                                        Pair { label: "الفئة (من المصنعية)"; strong: true
+                                               value: modelData.categoryResolved ? modelData.categoryText : "غير محددة"
+                                               valueColor: modelData.categoryResolved ? theme.textPrimary : theme.amber }
+                                        Pair { label: "وزن المورد (جرام)"; value: modelData.weightText; strong: true }
+                                        Pair { label: "مصنعية الجرام"; value: page.ltr(modelData.rateText); strong: true }
+                                        Pair { label: "إجمالي مصنعية المجموعة"; value: page.ltr(modelData.makingText); strong: true }
+                                    }
+                                    Flow {
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: childrenRect.height      // the real wrapped height
+                                        layoutDirection: Qt.RightToLeft
+                                        spacing: 2
+                                        Pair { label: "عدد القطع"; value: "" + modelData.pieceCount }
+                                        Pair { label: "الوزن المُدخل (جرام)"; value: modelData.actualText
+                                               valueColor: modelData.overSupplier ? theme.amber : theme.textPrimary }
+                                        Pair { label: "فرق الوزن (جرام)"; value: page.after(modelData.varianceText) }
+                                        Pair { label: "المتبقي للإدخال (مرجعي، جرام)"; value: page.after(modelData.remainingText)
+                                               valueColor: modelData.overSupplier ? theme.amber : theme.textPrimary }
+                                        Pair { label: "نسبة الإدخال"; value: modelData.percentText
+                                               valueColor: modelData.overSupplier ? theme.amber : theme.textPrimary }
+                                    }
+                                }
                             }
                         }
                     }
 
-                    // ---- the piece form (posted invoices only)
-                    Card {
+                    // ---- 4. piece-entry form (posted invoices only)
+                    Section {
+                        id: pieceForm
+                        objectName: "pieceForm"
                         visible: intakeDialog.ready && intakeDialog.inv.posted && !!page.pvm && page.pvm.canIntake
                         title: "إدخال قطعة"
-                        RowLayout {
+                        hint: intakeDialog.selectedGroup === "" ? "اختر المجموعة أولًا"
+                              : "إلى مجموعة " + intakeDialog.groupNo(intakeDialog.selectedGroup)
+                        hintColor: intakeDialog.selectedGroup === "" ? theme.amber : theme.gold
+                        // The tolerance-inclusive allowance of the selected group (separate from the reference remaining
+                        // weight above), and the refusal the service would give — known from the loaded detail.
+                        // Resolved by the service from the group's making rate and the existing category ranges, read-only here:
+                        // the employee never chooses it and the item type never overrides it.
+                        Rectangle {
+                            objectName: "pieceInheritance"
+                            visible: intakeDialog.selectedGroup !== ""
                             Layout.fillWidth: true
+                            implicitHeight: inheritRow.implicitHeight + 14
+                            radius: theme.radiusSmall
+                            color: theme.bgTertiary
+                            border.color: theme.border
+                            RowLayout {
+                                id: inheritRow
+                                anchors.fill: parent
+                                anchors.margins: 7
+                                layoutDirection: Qt.RightToLeft
+                                spacing: 16
+                                Txt { text: "تحدَّد من مصنعية المجموعة:"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                                      elide: Text.ElideNone }
+                                Txt { objectName: "pieceInheritedCategory"; font.bold: true; elide: Text.ElideNone
+                                      color: intakeDialog.groupValue("categoryResolved", false) === true ? theme.gold : theme.amber
+                                      text: intakeDialog.groupValue("categoryResolved", false) === true
+                                            ? "الفئة: " + intakeDialog.groupValue("categoryText", "") : "الفئة غير محددة" }
+                                Txt { objectName: "pieceInheritedRate"; elide: Text.ElideNone
+                                      text: "مصنعية الجرام: " + page.ltr(intakeDialog.groupValue("rateText", "—")) }
+                                Txt { objectName: "pieceInheritedKarat"; elide: Text.ElideNone
+                                      text: "عيار " + (intakeDialog.ready ? intakeDialog.inv.karat : "") }
+                                Item { Layout.fillWidth: true }
+                            }
+                        }
+                        Txt { objectName: "pieceCategoryProblem"; Layout.fillWidth: true; font.bold: true; color: theme.amber
+                              wrapMode: Text.WordWrap; elide: Text.ElideNone
+                              visible: intakeDialog.selectedGroup !== "" && intakeDialog.groupValue("categoryResolved", false) !== true
+                              text: intakeDialog.groupValue("categoryProblem", "") }
+                        Txt { objectName: "pieceAllowance"; Layout.fillWidth: true; font.bold: true
+                              visible: intakeDialog.groupValue("allowanceLine", "") !== ""
+                              text: intakeDialog.groupValue("allowanceLine", "")
+                              color: intakeDialog.groupValue("overLimit", false) ? theme.amber : theme.gold }
+                        Txt { objectName: "pieceProblem"; Layout.fillWidth: true; font.bold: true; color: theme.red
+                              wrapMode: Text.WordWrap; elide: Text.ElideNone
+                              visible: intakeDialog.pieceProblem !== "" || intakeDialog.groupValue("overLimit", false) === true
+                              text: intakeDialog.pieceProblem !== "" ? intakeDialog.pieceProblem : intakeDialog.groupValue("overLimitText", "") }
+                        GridLayout {
+                            id: pieceGrid
+                            Layout.fillWidth: true
+                            columns: width >= 640 ? 3 : (width >= 430 ? 2 : 1)
                             layoutDirection: Qt.RightToLeft
-                            spacing: 6
-                            ColumnLayout {
-                                Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
-                                Txt { Layout.fillWidth: true; text: "الصنف *" }
+                            columnSpacing: 12
+                            rowSpacing: 10
+                            uniformCellWidths: true
+                            FieldBox {
+                                label: "الصنف"; required: true
                                 Combo { id: itemTypeCombo; objectName: "pieceItemTypeCombo"; Layout.fillWidth: true
                                         model: typeof masterDataVM !== "undefined" ? masterDataVM.itemTypes : []
                                         textRole: "name" }
                             }
-                            ColumnLayout {
-                                Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
-                                Txt { Layout.fillWidth: true; text: "الوزن على ميزان المحل (جرام) *" }
-                                Field { id: weightField; objectName: "pieceWeightField"; Layout.fillWidth: true
-                                        inputMethodHints: Qt.ImhFormattedNumbersOnly }
+                            FieldBox {
+                                label: "الوزن على ميزان المحل"; required: true
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    layoutDirection: Qt.RightToLeft
+                                    spacing: 6
+                                    Field { id: weightField; objectName: "pieceWeightField"; Layout.fillWidth: true
+                                            inputMethodHints: Qt.ImhFormattedNumbersOnly; placeholderText: "0.000"
+                                            onTextChanged: intakeDialog.refreshPieceProblem() }
+                                    Txt { text: "جرام"; color: theme.textSecondary; elide: Text.ElideNone }
+                                }
                             }
-                            ColumnLayout {
-                                Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
-                                Txt { Layout.fillWidth: true; text: "المقاس" }
+                            FieldBox {
+                                label: "المقاس"
                                 Field { id: sizeField; objectName: "pieceSizeField"; Layout.fillWidth: true }
                             }
-                        }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            layoutDirection: Qt.RightToLeft
-                            spacing: 6
-                            ColumnLayout {
-                                Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
-                                Txt { Layout.fillWidth: true; text: "الفئة" }
-                                Combo { id: categoryCombo; objectName: "pieceCategoryCombo"; Layout.fillWidth: true
-                                        model: [{ id: 0, name: "حسب الصنف" }].concat(typeof masterDataVM !== "undefined" ? masterDataVM.categories : [])
-                                        textRole: "name" }
-                            }
-                            ColumnLayout {
-                                Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
-                                Txt { Layout.fillWidth: true; text: "المصنع" }
+                            FieldBox {
+                                label: "المصنع"
                                 Combo { id: factoryCombo; objectName: "pieceFactoryCombo"; Layout.fillWidth: true
                                         model: [{ id: 0, name: "غير محدد" }].concat(typeof masterDataVM !== "undefined" ? masterDataVM.factories : [])
                                         textRole: "name" }
                             }
-                            ColumnLayout {
-                                Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
-                                Txt { Layout.fillWidth: true; text: "الباركود" }
+                            FieldBox {
+                                label: "الباركود"
                                 Combo { id: barcodeMode; objectName: "pieceBarcodeMode"; Layout.fillWidth: true
                                         model: [{ code: "AUTO", name: "توليد تلقائي" }, { code: "MANUAL", name: "إدخال يدوي" },
                                                 { code: "NONE", name: "بدون باركود" }]
                                         textRole: "name" }
                             }
                         }
-                        Field { id: manualBarcode; objectName: "pieceManualBarcode"; Layout.fillWidth: true
-                                visible: barcodeMode.currentIndex === 1; placeholderText: "قيمة الباركود" }
-                        Field { id: pieceNotes; objectName: "pieceNotesField"; Layout.fillWidth: true; placeholderText: "ملاحظات القطعة (اختياري)" }
+                        FieldBox {
+                            visible: barcodeMode.currentIndex === 1
+                            label: "قيمة الباركود"; required: true
+                            Field { id: manualBarcode; objectName: "pieceManualBarcode"; Layout.fillWidth: true
+                                    placeholderText: "قيمة الباركود" }
+                        }
+                        FieldBox {
+                            label: "ملاحظات القطعة (اختياري)"
+                            Field { id: pieceNotes; objectName: "pieceNotesField"; Layout.fillWidth: true
+                                    placeholderText: "ملاحظات القطعة (اختياري)" }
+                        }
                         RowLayout {
                             Layout.fillWidth: true
                             layoutDirection: Qt.RightToLeft
-                            spacing: 8
+                            spacing: 10
                             Btn {
                                 objectName: "addPieceButton"
                                 text: "＋  إدخال القطعة"
                                 primary: true
+                                implicitWidth: 170
                                 enabled: intakeDialog.selectedGroup !== "" && weightField.text.trim().length > 0
                                          && itemTypeCombo.currentIndex >= 0 && !!page.pvm && !page.pvm.busy
+                                         && intakeDialog.pieceProblem === ""
+                                         && intakeDialog.groupValue("categoryResolved", false) === true
                                 onClicked: page.pvm.addPiece(
                                     intakeDialog.inv.id, intakeDialog.selectedGroup,
                                     itemTypeCombo.model[itemTypeCombo.currentIndex].id, weightField.text, intakeDialog.pieceKey,
-                                    categoryCombo.model[categoryCombo.currentIndex].id,
                                     factoryCombo.model[factoryCombo.currentIndex].id, sizeField.text,
                                     barcodeMode.model[barcodeMode.currentIndex].code, manualBarcode.text, pieceNotes.text)
                             }
-                            Txt { visible: intakeDialog.selectedGroup === ""; text: "اختر المجموعة أولًا"; color: theme.amber
-                                  font.pixelSize: theme.fontCaption }
+                            Txt { objectName: "pieceHint"
+                                  visible: intakeDialog.selectedGroup === "" || weightField.text.trim().length === 0
+                                           || intakeDialog.groupValue("categoryResolved", false) !== true
+                                  text: intakeDialog.selectedGroup === "" ? "اختر المجموعة أولًا"
+                                        : intakeDialog.groupValue("categoryResolved", false) !== true ? "الفئة غير محددة"
+                                        : "أدخل وزن القطعة"
+                                  color: theme.amber; font.bold: true; font.pixelSize: theme.fontTableHeader }
                             Item { Layout.fillWidth: true }
                         }
                         Txt { objectName: "lastPieceText"; Layout.fillWidth: true; color: theme.green; font.bold: true
                               visible: !!page.pvm && page.pvm.lastPiece.inventoryItemId !== undefined
                               text: page.pvm && page.pvm.lastPiece.inventoryItemId !== undefined
-                                    ? "آخر قطعة: #" + page.pvm.lastPiece.inventoryItemId + "  •  باركود " + page.pvm.lastPiece.barcode
-                                      + "  •  " + page.pvm.lastPiece.weightText + "  •  مصنعية " + page.pvm.lastPiece.makingText : "" }
+                                    ? "آخر قطعة: " + page.ltr("#" + page.pvm.lastPiece.inventoryItemId) + "  •  باركود "
+                                      + page.ltr(page.pvm.lastPiece.barcode)
+                                      + (page.pvm.lastPiece.categoryCode ? "  •  فئة " + page.ltr(page.pvm.lastPiece.categoryCode) : "")
+                                      + "  •  " + page.pvm.lastPiece.weightText
+                                      + "  •  مصنعية " + page.ltr(page.pvm.lastPiece.makingText) : ""
+                              leftPadding: 10; rightPadding: 10; topPadding: 6; bottomPadding: 6
+                              background: Rectangle { radius: theme.radiusSmall; color: Qt.rgba(theme.green.r, theme.green.g, theme.green.b, 0.10)
+                                                      border.color: theme.green } }
                     }
 
-                    Txt { Layout.fillWidth: true; visible: intakeDialog.ready && intakeDialog.inv.pieces.length > 0
-                          text: "القطع المُدخلة"; color: theme.gold; font.bold: true }
-                    Repeater {
-                        model: intakeDialog.ready ? intakeDialog.inv.pieces : []
-                        delegate: Rectangle {
+                    // ---- 5. entered pieces: labelled columns, rows aligned to them
+                    Section {
+                        visible: intakeDialog.ready && (intakeDialog.inv.pieces.length > 0 || intakeDialog.inv.posted)
+                        title: "القطع المُدخلة"
+                        hint: intakeDialog.ready ? intakeDialog.inv.pieces.length + " قطعة" : ""
+                        hintColor: theme.textMuted
+                        Txt { visible: intakeDialog.ready && intakeDialog.inv.pieces.length === 0; Layout.fillWidth: true
+                              text: "لم تُدخل أي قطعة بعد."; color: theme.textMuted }
+                        Rectangle {
+                            visible: intakeDialog.ready && intakeDialog.inv.pieces.length > 0
                             Layout.fillWidth: true
-                            implicitHeight: 34
-                            radius: theme.radiusSmall
-                            color: theme.panel
-                            border.color: theme.border
+                            implicitHeight: 28
+                            radius: 4
+                            color: theme.bgTertiary
                             RowLayout {
                                 anchors.fill: parent
                                 anchors.leftMargin: 10; anchors.rightMargin: 12
                                 layoutDirection: Qt.RightToLeft
                                 spacing: 10
-                                Txt { Layout.preferredWidth: 70; text: "#" + modelData.itemId; color: theme.gold }
-                                Txt { Layout.preferredWidth: 90; text: "مجموعة " + modelData.groupNo }
-                                Txt { Layout.preferredWidth: 120; text: modelData.itemType + (modelData.size !== "" ? " " + modelData.size : "") }
-                                Txt { Layout.preferredWidth: 80; text: modelData.weightText }
-                                Txt { Layout.fillWidth: true; text: modelData.barcode
-                                      color: modelData.hasBarcode ? theme.textPrimary : theme.textMuted }
-                                Txt { Layout.preferredWidth: 110; text: modelData.statusText; color: theme.textSecondary
-                                      font.pixelSize: theme.fontCaption }
+                                ColHead { Layout.preferredWidth: intakeDialog.colId; text: "رقم القطعة" }
+                                ColHead { Layout.preferredWidth: intakeDialog.colGroup; text: "المجموعة" }
+                                ColHead { Layout.fillWidth: true; Layout.minimumWidth: 120; text: "الصنف / المقاس" }
+                                ColHead { Layout.preferredWidth: intakeDialog.colWeight; text: "الوزن (جرام)" }
+                                ColHead { Layout.preferredWidth: intakeDialog.colBarcode; text: "الباركود" }
+                                ColHead { Layout.preferredWidth: intakeDialog.colStatus; text: "الحالة" }
+                            }
+                        }
+                        Repeater {
+                            model: intakeDialog.ready ? intakeDialog.inv.pieces : []
+                            delegate: Rectangle {
+                                Layout.fillWidth: true
+                                implicitHeight: 36
+                                radius: 4
+                                color: index % 2 === 0 ? theme.bgSecondary : "transparent"
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 10; anchors.rightMargin: 12
+                                    layoutDirection: Qt.RightToLeft
+                                    spacing: 10
+                                    Txt { Layout.preferredWidth: intakeDialog.colId; text: page.ltr("#" + modelData.itemId); color: theme.gold }
+                                    Txt { Layout.preferredWidth: intakeDialog.colGroup; text: "مجموعة " + modelData.groupNo }
+                                    Txt { Layout.fillWidth: true; Layout.minimumWidth: 120
+                                          text: modelData.itemType + (modelData.size !== "" ? "  " + modelData.size : "") }
+                                    Txt { Layout.preferredWidth: intakeDialog.colWeight; text: modelData.weightText; font.bold: true }
+                                    Txt { Layout.preferredWidth: intakeDialog.colBarcode
+                                          text: modelData.hasBarcode ? page.ltr(modelData.barcode) : modelData.barcode
+                                          color: modelData.hasBarcode ? theme.textPrimary : theme.textMuted }
+                                    Txt { Layout.preferredWidth: intakeDialog.colStatus; text: modelData.statusText; color: theme.textSecondary
+                                          font.pixelSize: theme.fontTableHeader }
+                                }
                             }
                         }
                     }
-                    Txt { Layout.fillWidth: true; visible: !!page.pvm && page.pvm.errorMessage !== ""
-                          text: page.pvm ? page.pvm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap
-                          elide: Text.ElideNone }
                 }
             }
         }

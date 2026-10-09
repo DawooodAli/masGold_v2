@@ -48,14 +48,14 @@ class SchemaChainTests(unittest.TestCase):
 
     def test_chain_is_contiguous_001_to_030(self):
         files = schema_model.chain_files()
-        self.assertEqual([int(name[:3]) for name in files], list(range(1, 35)))
+        self.assertEqual([int(name[:3]) for name in files], list(range(1, 36)))
         self.assertEqual(files[12:], ["013_schema_consolidation.sql", "014_billing_v2.sql",
                                       "015_legacy_provenance.sql", "016_billing_workflow.sql",
                                       "017_payment_accounts.sql", "018_opening_balances.sql",
                                       "019_invoice_lifecycle_exchange.sql", "020_exchange_replacement_sources.sql",
                                       "021_returned_item_inspection.sql", "022_invoice_returns.sql",
                                       "023_transaction_corrections.sql", "024_customer_account.sql",
-                                      "025_financial_operations.sql", "026_cash_movement_categories.sql", "027_customer_deposits.sql", "028_dead_cash_v1.sql", "029_master_data_integrity.sql", "030_conversion_actor.sql", "031_exchange_making_model.sql", "032_exchange_returned_scrap_hold.sql", "033_return_v2_scrap_hold.sql", "034_suppliers_purchasing.sql"])
+                                      "025_financial_operations.sql", "026_cash_movement_categories.sql", "027_customer_deposits.sql", "028_dead_cash_v1.sql", "029_master_data_integrity.sql", "030_conversion_actor.sql", "031_exchange_making_model.sql", "032_exchange_returned_scrap_hold.sql", "033_return_v2_scrap_hold.sql", "034_suppliers_purchasing.sql", "035_supplier_karat.sql"])
 
     def test_prototype_files_are_kept_but_not_part_of_the_chain(self):
         prototypes = sorted(p.name for p in PROTOTYPE_DIR.glob("20260921_*.sql"))

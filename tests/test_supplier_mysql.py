@@ -1,4 +1,4 @@
-"""Opt-in DEV validation of Purchasing & Suppliers V1 on the real schema (masgold_v2 at migration 034 only).
+"""Opt-in DEV validation of Purchasing & Suppliers V1 on the real schema (masgold_v2 at migration 035, after the OWNER approves it).
 
     set MASGOLD_SUPPLIER_DEV=1
 
@@ -29,7 +29,7 @@ class SupplierMySqlTests(unittest.TestCase):
         self.cursor = self.connection.cursor(dictionary=True)
         self.cursor.execute("SELECT DATABASE() AS db, MAX(version) AS v FROM schema_migrations")
         row = self.cursor.fetchone()
-        self.assertEqual((row["db"], int(row["v"])), ("masgold_v2", 34))
+        self.assertEqual((row["db"], int(row["v"])), ("masgold_v2", 35))
         self.assertFalse(self.connection.autocommit)           # every statement below belongs to the ONE test transaction
         self.connection.rollback()                              # end the read above; nothing is ever committed
         self.addCleanup(self.cleanup)
@@ -92,7 +92,7 @@ class SupplierMySqlTests(unittest.TestCase):
         self.assertTrue(PERMISSIONS <= set(self.permissions))
 
     def test_posting_persists_exact_decimals_and_is_idempotent(self):
-        supplier = self.suppliers.create_supplier("DEV SUPPLIER " + uuid4().hex[:6])
+        supplier = self.suppliers.create_supplier("DEV SUPPLIER " + uuid4().hex[:6], karat_id=self.karat(21))
         groups = [{"weight": "40", "making_per_gram": "120"}, {"weight": "35", "making_per_gram": "180"},
                   {"weight": "25", "making_per_gram": "150"}]
         draft, posted = self.invoice(self.karat(21), groups, supplier)
@@ -105,13 +105,14 @@ class SupplierMySqlTests(unittest.TestCase):
         self.assertTrue(self.purchases.post_invoice(draft["id"], post_key)["duplicate"])      # a retry creates nothing
         self.assertEqual(self.one("SELECT COUNT(*) AS n FROM supplier_gold_movements WHERE source_id=%s",
                                   (draft["id"],))["n"], 1)
-        eighteen, _ = self.invoice(self.karat(18), [{"weight": "100", "making_per_gram": "10"}], supplier)
+        supplier18 = self.suppliers.create_supplier("DEV SUPPLIER " + uuid4().hex[:6], karat_id=self.karat(18))
+        eighteen, _ = self.invoice(self.karat(18), [{"weight": "100", "making_per_gram": "10"}], supplier18)
         row = self.one("SELECT weight_delta_grams, equivalent_21_delta_grams FROM supplier_gold_movements "
                        "WHERE source_id=%s", (eighteen["id"],))
         self.assertEqual((row["weight_delta_grams"], row["equivalent_21_delta_grams"]), (D("100.000"), D("85.714286")))
 
     def test_database_constraints_protect_the_ledgers(self):
-        supplier = self.suppliers.create_supplier("DEV SUPPLIER " + uuid4().hex[:6])
+        supplier = self.suppliers.create_supplier("DEV SUPPLIER " + uuid4().hex[:6], karat_id=self.karat(21))
         draft, _ = self.invoice(self.karat(21), [{"weight": "10", "making_per_gram": "5"}], supplier)
         type_id = self.one("SELECT id FROM supplier_gold_movement_types WHERE code='PURCHASE_INVOICE'")["id"]
         cursor = self.connection.cursor()
@@ -130,7 +131,7 @@ class SupplierMySqlTests(unittest.TestCase):
         cursor.close()
 
     def test_intake_uses_the_canonical_inventory_and_barcode_path_and_variance_is_informational(self):
-        supplier = self.suppliers.create_supplier("DEV SUPPLIER " + uuid4().hex[:6])
+        supplier = self.suppliers.create_supplier("DEV SUPPLIER " + uuid4().hex[:6], karat_id=self.karat(21))
         draft, _ = self.invoice(self.karat(21), [{"weight": "50", "making_per_gram": "120"},
                                                  {"weight": "50", "making_per_gram": "180"}], supplier)
         group_ids = [str(g["id"]) for g in self.all("SELECT id FROM supplier_invoice_groups WHERE invoice_id=%s "

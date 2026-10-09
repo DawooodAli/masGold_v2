@@ -30,6 +30,27 @@ def intake_fields(progress):
             "percentText": percent(progress["percent"], 1), "overSupplier": bool(progress["over_supplier_weight"])}
 
 
+def category_fields(group):
+    """The category a group's MAKING RATE resolves to under the existing category rules (shown read-only), or the exact
+    reason it cannot be resolved (no matching category / several). Nothing here is stored or chosen on a screen."""
+    code, name = str(group["category_code"] or "").strip(), str(group["category_name"] or "").strip()
+    text = code if not name or name == code else f"{code} — {name}"
+    return {"categoryStatus": group["category_status"], "categoryResolved": group["category_status"] == rules.CATEGORY_RESOLVED,
+            "categoryText": text, "categoryProblem": group["category_problem"]}
+
+
+def allowance_fields(group):
+    """'المتاح للإدخال شامل السماحية' — what a group can still take, tolerance (0.333 g) included. Shown as zero when
+    negative (display only); `overLimit` marks legacy data that already exceeds the maximum."""
+    allowance = group["intake_allowance"]
+    over = allowance < 0
+    return {"allowanceText": grams(max(allowance, 0)),
+            "allowanceLine": f"المتاح للإدخال شامل السماحية: {grams(max(allowance, 0))} جرام",
+            "overLimit": bool(over),
+            "overLimitText": (f"تجاوزت هذه المجموعة الحد الأقصى المسموح للإدخال (وزن المورد + {rules.INTAKE_TOLERANCE} جرام)"
+                              "، ولا يمكن إدخال قطع إضافية منها.") if over else ""}
+
+
 class SupplierPurchaseViewModel(QObject):
     changed = Signal()
     invoicePosted = Signal(str)          # invoice id: supplier balances changed
@@ -42,8 +63,10 @@ class SupplierPurchaseViewModel(QObject):
         self._workers, self._request, self._latest, self._busy = set(), 0, {}, set()
         self._shutdown = False
         self._invoices, self._detail = [], {}
+        self._invoices_state = "idle"          # idle | loading | loaded | failed (an empty list is only "no invoices" when loaded)
         self._supplier_filter, self._open_invoice = "", ""
         self._error, self._message, self._done_text = "", "", ""
+        self._error_from_write = False         # a rejected write's message is not cleared by a later successful read
         self._last_piece = {}
 
     # ------------------------------------------------------------ plumbing
@@ -94,7 +117,10 @@ class SupplierPurchaseViewModel(QObject):
     @Slot(str)
     def showSupplier(self, supplier_id):
         """Invoices of one supplier ('' = every supplier)."""
-        self._supplier_filter = str(supplier_id or "")
+        supplier = str(supplier_id or "")
+        if supplier != self._supplier_filter:
+            self._invoices = []                # never show the previous supplier's invoices under the new one
+        self._supplier_filter = supplier
         self.refresh()
 
     @Slot()
@@ -102,6 +128,7 @@ class SupplierPurchaseViewModel(QObject):
         if not self.canView:
             return
         service, supplier = self._service_instance(), self._supplier_filter or None
+        self._invoices_state = "loading"
         self._start("list", lambda _expected_actor: service.list_invoices(supplier, None,
                                                                          _expected_actor=_expected_actor))
         if self._open_invoice:
@@ -109,9 +136,9 @@ class SupplierPurchaseViewModel(QObject):
 
     def _on_list(self, result, error):
         if error:
-            self._error = error
+            self._error, self._invoices_state = error, "failed"
             return
-        self._invoices, self._error = result, ""
+        self._invoices, self._error, self._invoices_state = result, "", "loaded"
 
     @Slot(str)
     def openInvoice(self, invoice_id):
@@ -136,36 +163,53 @@ class SupplierPurchaseViewModel(QObject):
             self._error = error
             return
         if result["id"] == self._open_invoice:
-            self._detail, self._error = result, ""
+            self._detail = result
+            if not self._error_from_write:
+                self._error = ""
 
     @Slot()
     def clearMessage(self):
         if self._message or self._error:
             self._message = self._error = ""
+            self._error_from_write = False
             self.changed.emit()
 
     # ------------------------------------------------------------ live form totals (the same pure rules)
-    @Slot("QVariantList", int, result="QVariantMap")
-    def previewGroups(self, groups, karat_value):
-        """Totals of the invoice form: supplier weight, gross making, Eq21 and each group's making."""
+    @Slot("QVariantList", result="QVariantMap")
+    def previewGroups(self, groups):
+        """Totals of the invoice form: supplier weight, gross making and each group's making (the karat is the supplier's)."""
         try:
             normalized = rules.normalize_groups(
                 [{"weight": g.get("weight"), "making_per_gram": g.get("rate"), "description": g.get("description")}
                  for g in groups])
         except rules.SupplierRuleError as exc:
-            return {"valid": False, "error": str(exc), "weightText": "—", "makingText": "—", "eq21Text": "—",
+            return {"valid": False, "error": str(exc), "weightText": "—", "makingText": "—",
                     "groupMaking": []}
         weight = normalized["total_weight"]
-        eq21 = rules.equivalent_21(weight, karat_value) if int(karat_value or 0) > 0 else None
         return {"valid": True, "error": "", "weightText": grams(weight), "makingText": money(normalized["gross_making"]),
-                "eq21Text": grams(eq21) if eq21 is not None else "—",
                 "groupMaking": [money(g["making_total"]) for g in normalized["groups"]]}
+
+    @Slot(str, str, result=str)
+    def pieceWeightProblem(self, group_id, weight):
+        """The refusal the service would give for this piece weight in this group, from the loaded detail ('' when
+        none is known: empty / unreadable input is the service's to report). A convenience for the form only — the
+        service re-checks inside the transaction whatever this says (the detail may be stale)."""
+        group = next((g for g in (self._detail or {}).get("groups", []) if g["id"] == str(group_id)), None)
+        if group is None:
+            return ""
+        try:
+            piece = rules.parse_weight(weight)
+            rules.check_intake(group["supplier_weight"], group["actual_weight"], piece)
+        except rules.SupplierRuleError as exc:
+            return str(exc) if exc.code in ("GROUP_WEIGHT_LIMIT", "GROUP_OVER_LIMIT") else ""
+        return ""
 
     # ------------------------------------------------------------ writes (each re-checked by the service)
     def _write(self, text, call):
         if "write" in self._busy:
             return
         self._message = self._error = ""
+        self._error_from_write = False
         self._done_text = text
         service = self._service_instance()
         self._start("write", lambda _expected_actor: call(service, _expected_actor))
@@ -173,7 +217,9 @@ class SupplierPurchaseViewModel(QObject):
 
     def _on_write(self, result, error):
         if error:
-            self._error = error
+            self._error, self._error_from_write = error, True
+            if self._open_invoice:
+                self._load_detail()            # the allowance may have changed (another submission): show the truth
             return
         self._message = self._done_text
         result = result or {}
@@ -212,6 +258,17 @@ class SupplierPurchaseViewModel(QObject):
             return {**posted, "posted": True}
         self._write("تم ترحيل فاتورة المورد." if post_now else "تم حفظ مسودة الفاتورة.", call)
 
+    @Slot(str, str, int, str, str, "QVariantList", str)
+    def updateDraft(self, invoice_id, supplier_id, karat_id, reference, invoice_date, groups, notes):
+        """Save an edited DRAFT under the same invoice id (never a new invoice). The service re-checks that it is still a
+        draft, the right to edit and every rule of a new invoice; no ledger or balance is touched."""
+        grouped = self._groups(groups)
+
+        def call(service, expected):
+            return service.update_draft(invoice_id, supplier_id, karat_id, reference, invoice_date, grouped, notes,
+                                        _expected_actor=expected)
+        self._write("تم حفظ تعديلات المسودة.", call)
+
     @Slot(str, str)
     def postInvoice(self, invoice_id, request_key):
         self._write("تم ترحيل فاتورة المورد.",
@@ -224,12 +281,13 @@ class SupplierPurchaseViewModel(QObject):
             return {"id": invoice_id}
         self._write("تم إلغاء المسودة.", call)
 
-    @Slot(str, str, int, str, str, int, int, str, str, str, str)
-    def addPiece(self, invoice_id, group_id, item_type_id, weight, request_key, category_id, factory_id, size,
+    @Slot(str, str, int, str, str, int, str, str, str, str)
+    def addPiece(self, invoice_id, group_id, item_type_id, weight, request_key, factory_id, size,
                  barcode_mode, barcode, notes):
+        """The category is NOT a parameter: the service resolves it from the group's making rate."""
         def call(service, expected):
             piece = service.add_piece(invoice_id, group_id, item_type_id, weight, request_key,
-                                      category_id=category_id or None, factory_id=factory_id or None, size=size,
+                                      factory_id=factory_id or None, size=size,
                                       barcode_mode=barcode_mode, barcode=barcode, notes=notes, _expected_actor=expected)
             return {**piece, "kind": "piece"}
         self._write("تم إدخال القطعة بنجاح.", call)
@@ -276,9 +334,14 @@ class SupplierPurchaseViewModel(QObject):
         piece = self._last_piece
         if not piece:
             return {}
-        return {"inventoryItemId": piece["inventory_item_id"], "barcode": piece["barcode"] or "بدون باركود",
+        return {"inventoryItemId": piece["inventory_item_id"], "categoryCode": piece.get("category_code", ""),
+                "barcode": piece["barcode"] or "بدون باركود",
                 "hasBarcode": bool(piece["barcode"]), "weightText": grams(piece["weight"]),
                 "makingText": money(piece["making_per_gram"]) + " / جرام", "duplicate": bool(piece["duplicate"])}
+
+    @Property(str, notify=changed)
+    def invoicesState(self):
+        return self._invoices_state
 
     @Property("QVariantList", notify=changed)
     def invoices(self):
@@ -302,14 +365,20 @@ class SupplierPurchaseViewModel(QObject):
             "reference": d["supplier_reference"] or "—", "date": date_text(d["invoice_date"]),
             "karat": d["karat_value"], "status": d["status"], "statusText": STATUS_TEXT.get(d["status"], d["status"]),
             "posted": d["status"] == "POSTED", "draft": d["status"] == "DRAFT",
-            "weightText": grams(d["supplier_weight"]), "eq21Text": grams(d["eq21"]),
+            "weightText": grams(d["supplier_weight"]),
             "makingText": money(d["gross_making"]), "notes": d["notes"],
             "postedAt": datetime_text(d["posted_at"]) if d["posted_at"] else "",
             "pieceCount": d["piece_count"], **intake_fields(d["intake"]),
+            # the saved values of a draft, in the form the invoice editor takes them (raw strings, not display texts)
+            "form": {"id": d["id"], "code": d["code"], "supplierId": d["supplier_id"], "karatId": int(d["karat_id"]), "karatValue": int(d["karat_value"]),
+                     "reference": d["supplier_reference"] or "", "notes": d["notes"] or "",
+                     "date": d["invoice_date"].isoformat() if hasattr(d["invoice_date"], "isoformat") else str(d["invoice_date"]),
+                     "groups": [{"weight": format(g["supplier_weight"], "f"), "rate": format(g["making_per_gram"], "f"),
+                                 "description": g["description"]} for g in d["groups"]]},
             "groups": [{"id": g["id"], "no": g["group_no"], "description": g["description"],
                         "weightText": grams(g["supplier_weight"]), "rateText": money(g["making_per_gram"]) + " / جرام",
                         "makingText": money(g["making_total"]), "pieceCount": g["piece_count"],
-                        **intake_fields(g)} for g in d["groups"]],
+                        **intake_fields(g), **allowance_fields(g), **category_fields(g)} for g in d["groups"]],
             "pieces": [{"id": p["id"], "itemId": p["inventory_item_id"], "groupNo": p["group_no"],
                         "weightText": grams(p["weight"]), "rateText": money(p["making_per_gram"]),
                         "itemType": p["item_type"], "size": p["size"],

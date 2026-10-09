@@ -1,17 +1,18 @@
-"""Pure supplier-accounting rules (no I/O, no database): parsing, making groups, Eq21, balances, variance.
+"""Pure supplier-accounting rules (no I/O, no database): parsing, making groups, balances, variance, intake limits.
 
 Sign convention (documented once, used by both supplier ledgers and every read model):
     delta > 0  → the SHOP OWES the supplier   (علينا للمورد)  direction SHOP_OWES
     delta < 0  → the SUPPLIER owes the SHOP   (لنا عند المورد) direction SUPPLIER_OWES
     delta = 0  → settled                                      direction SETTLED
-Gold (grams, per karat; Eq21 normalizes across karats) and making (EGP) are independent dimensions and are
-never combined into one amount. The supplier invoice weight is the contractual gold truth; shop-scale
+Gold (physical grams of the supplier's one dedicated karat; no Eq21 conversion in the supplier account) and making (EGP)
+are independent dimensions and are never combined into one amount. The supplier invoice weight is the contractual gold truth; shop-scale
 barcoded weight is only compared with it (variance), never substituted for it.
 """
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from services.number_text import normalize_digits
 
+SUPPORTED_KARATS = (18, 21, 24)       # a supplier is dedicated to ONE of these; its gold account is in grams of that karat
 WEIGHT_STEP = Decimal("0.001")
 MONEY_STEP = Decimal("0.01")
 EQ21_STEP = Decimal("0.000001")
@@ -24,6 +25,11 @@ PURCHASE_SOURCE = "SUPPLIER_PURCHASE_INVOICE"
 PURCHASE_MOVEMENT = "PURCHASE_INVOICE"
 
 MAX_GROUPS = 50                      # a sanity bound on one invoice's making groups, not a business tolerance
+
+# OWNER rule: the cumulative ACTUAL weight of the pieces entered from one making group may not exceed the group's
+# supplier weight + exactly 0.333 g. Fixed: not a percentage, not per piece, not a setting, no override. Physical
+# grams only (never Eq21). Each group has its own allowance; another group's unused weight never adds to it.
+INTAKE_TOLERANCE = Decimal("0.333")
 
 
 class SupplierRuleError(ValueError):
@@ -77,8 +83,9 @@ def group_making_total(weight, rate):
 
 
 def equivalent_21(weight, karat_value):
-    """Eq21 = physical weight x actual karat / 21 (6 decimals, no premature rounding). The physical weight and the
-    karat are never replaced by this normalized accounting value."""
+    """Eq21 = physical weight x actual karat / 21 (6 decimals, no premature rounding). In the supplier ledger it is only
+    an internal compatibility value stored beside the physical weight and karat: it drives no supplier-account amount or
+    direction, and the physical weight and karat are never replaced by it."""
     return (Decimal(weight) * Decimal(str(karat_value)) / BASE_KARAT).quantize(EQ21_STEP, rounding=ROUND_HALF_UP)
 
 
@@ -108,6 +115,31 @@ def normalize_groups(groups):
     return {"groups": cleaned, "total_weight": total_weight, "gross_making": gross}
 
 
+def check_supplier_karat_change(current_karat_id, wanted_karat_id, history):
+    """May this supplier carry `wanted_karat_id`? `history` = the distinct karats ({karat_id, karat_value}) of ALL its
+    invoices (drafts and cancelled included) and gold movements.
+      * no history: free (choose or change);
+      * karat already assigned + any history: it can never change;
+      * legacy supplier without a karat: only the ONE karat its whole history agrees on; mixed history stays unresolved."""
+    wanted = int(wanted_karat_id)
+    ids = {int(h["karat_id"]) for h in history}
+    values = sorted({int(h["karat_value"]) for h in history})
+    if not ids:
+        return
+    if current_karat_id is not None:
+        if int(current_karat_id) != wanted:
+            raise SupplierRuleError("KARAT_LOCKED", "لا يمكن تغيير عيار المورد بعد وجود فاتورة له، حتى لو كانت مسودة أو ملغاة.")
+        return
+    if len(ids) > 1:
+        raise SupplierRuleError(
+            "KARAT_HISTORY_MIXED",
+            f"تاريخ هذا المورد يحتوي أعيرة مختلفة ({'، '.join(str(v) for v in values)}) ولا يمكن تحديد عيار واحد له. "
+            "راجع فواتيره قبل المتابعة.")
+    if wanted not in ids:
+        raise SupplierRuleError("KARAT_HISTORY_MISMATCH",
+                                f"العيار المختار لا يتوافق مع فواتير المورد السابقة (عيار {values[0]}).")
+
+
 def direction(delta):
     delta = Decimal(str(delta or 0))
     return SHOP_OWES if delta > 0 else SUPPLIER_OWES if delta < 0 else SETTLED
@@ -117,6 +149,88 @@ def variance(actual_weight, supplier_weight):
     """فرق الوزن = actual barcoded weight − supplier weight. Informational only: it never changes a supplier
     balance, a making liability, an inventory weight, and it is not a shortage claim (either scale may differ)."""
     return (Decimal(str(actual_weight or 0)) - Decimal(str(supplier_weight or 0))).quantize(WEIGHT_STEP)
+
+
+CATEGORY_RESOLVED, CATEGORY_NO_MATCH, CATEGORY_AMBIGUOUS = "RESOLVED", "NO_MATCH", "AMBIGUOUS"
+
+
+def resolve_category(making_rate, categories):
+    """The inventory category (grade) of a making group, from its MAKING RATE and the EXISTING category rules
+    (item_categories.purchase_making_min_per_gram / purchase_making_max_per_gram). Never from a category name, never
+    from the item type, no threshold of its own. Same convention as the rest of the application (invoice / exchange
+    making ranges): inclusive at both ends, a missing bound is open, a category with neither bound is not configured
+    and never matches; only ACTIVE categories count. Exactly one match resolves; none or several is reported with the
+    codes involved and never guessed. Returns {status, category (the row or None), matches (codes)}."""
+    rate = Decimal(str(making_rate))
+    matches = []
+    for row in categories:
+        if not row.get("is_active"):
+            continue
+        low, high = row.get("purchase_making_min_per_gram"), row.get("purchase_making_max_per_gram")
+        if low is None and high is None:
+            continue
+        if low is not None and rate < Decimal(str(low)):
+            continue
+        if high is not None and rate > Decimal(str(high)):
+            continue
+        matches.append(row)
+    status = CATEGORY_RESOLVED if len(matches) == 1 else CATEGORY_NO_MATCH if not matches else CATEGORY_AMBIGUOUS
+    return {"status": status, "category": matches[0] if len(matches) == 1 else None,
+            "matches": [row["code"] for row in matches]}
+
+
+def category_problem(making_rate, resolution):
+    """The Arabic explanation of an unresolved category ('' when resolved)."""
+    rate = f"{Decimal(str(making_rate)).quantize(MONEY_STEP):,.2f}"
+    if resolution["status"] == CATEGORY_NO_MATCH:
+        return (f"لا توجد فئة نشطة تطابق مصنعية المجموعة ({rate} ج/جرام) حسب حدود مصنعية الشراء المعرّفة للفئات. "
+                "راجع حدود الفئات في الإعدادات.")
+    if resolution["status"] == CATEGORY_AMBIGUOUS:
+        return (f"مصنعية المجموعة ({rate} ج/جرام) تطابق أكثر من فئة ({'، '.join(resolution['matches'])}) "
+                "حسب حدود مصنعية الشراء. عدّل حدود الفئات في الإعدادات حتى تتطابق فئة واحدة فقط.")
+    return ""
+
+
+def require_category(making_rate, categories):
+    """The resolved category row, or a SupplierRuleError naming the exact problem (no match / ambiguity)."""
+    resolution = resolve_category(making_rate, categories)
+    if resolution["status"] != CATEGORY_RESOLVED:
+        code = "CATEGORY_NO_MATCH" if resolution["status"] == CATEGORY_NO_MATCH else "CATEGORY_AMBIGUOUS"
+        raise SupplierRuleError(code, category_problem(making_rate, resolution))
+    return resolution["category"]
+
+
+def intake_limit(supplier_weight):
+    """The most actual weight a group may hold: its supplier weight + 0.333 g."""
+    return (Decimal(str(supplier_weight or 0)) + INTAKE_TOLERANCE).quantize(WEIGHT_STEP)
+
+
+def intake_allowance(supplier_weight, actual_weight):
+    """What can still be entered, tolerance included. Negative for a group that already exceeds its maximum
+    (legacy data): the value is kept as is — only a display may show it as zero."""
+    return (intake_limit(supplier_weight) - Decimal(str(actual_weight or 0))).quantize(WEIGHT_STEP)
+
+
+def _grams_text(value):
+    return f"{Decimal(str(value)).quantize(WEIGHT_STEP):,.3f}"
+
+
+def check_intake(supplier_weight, existing_actual_weight, piece_weight):
+    """Refuse a piece that would take the group's cumulative actual weight above supplier weight + 0.333 g
+    (equality is allowed). Pure Decimal arithmetic; the service calls it under the group lock."""
+    existing, piece = Decimal(str(existing_actual_weight or 0)), Decimal(str(piece_weight))
+    limit = intake_limit(supplier_weight)
+    if existing + piece <= limit:
+        return
+    if existing > limit:
+        raise SupplierRuleError(
+            "GROUP_OVER_LIMIT",
+            f"تجاوزت هذه المجموعة الحد الأقصى المسموح للإدخال (وزن المورد + {INTAKE_TOLERANCE} جرام)، "
+            "ولا يمكن إدخال قطع إضافية منها.")
+    raise SupplierRuleError(
+        "GROUP_WEIGHT_LIMIT",
+        f"وزن القطعة يتجاوز المتاح للمجموعة. المتاح: {_grams_text(limit - existing)} جرام، "
+        f"والسماحية المسموحة: {INTAKE_TOLERANCE} جرام.")
 
 
 def progress(actual_weight, supplier_weight):

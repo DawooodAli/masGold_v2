@@ -44,16 +44,21 @@ def clean_text(value, limit, label, required=False):
     return text or None
 
 
-def balance_row(gold_rows, making_balance):
-    """The two independent positions of one supplier (Decimals, with the explicit owes-direction)."""
-    karats = [{"karat_id": r["karat_id"], "karat_value": int(r["karat_value"]),
-               "weight_balance": Decimal(str(r["weight_balance"])).quantize(rules.WEIGHT_STEP),
-               "eq21_balance": Decimal(str(r["eq21_balance"])),
-               "direction": rules.direction(r["weight_balance"])} for r in gold_rows]
-    eq21 = sum((k["eq21_balance"] for k in karats), Decimal("0"))
+def balance_row(supplier, gold_rows, making_balance):
+    """The two independent positions of one supplier. GOLD is in PHYSICAL grams of the supplier's dedicated karat (no
+    Eq21); making is EGP. A supplier without a karat, or whose ledger holds another karat, is UNRESOLVED: its per-karat
+    history stays readable and different karats are never added into one balance."""
+    lines = [{"karat_id": r["karat_id"], "karat_value": int(r["karat_value"]),
+              "weight_balance": Decimal(str(r["weight_balance"])).quantize(rules.WEIGHT_STEP),
+              "direction": rules.direction(r["weight_balance"])} for r in gold_rows]
+    karat_id = supplier.get("karat_id")
+    resolved = karat_id is not None and all(line["karat_id"] == karat_id for line in lines)
+    own = sum((line["weight_balance"] for line in lines if line["karat_id"] == karat_id), Decimal("0")) if resolved else None
     making = Decimal(str(making_balance or 0)).quantize(rules.MONEY_STEP)
-    return {"gold_by_karat": karats, "gold_eq21": eq21.quantize(rules.WEIGHT_STEP),
-            "gold_direction": rules.direction(eq21.quantize(rules.WEIGHT_STEP)),
+    return {"gold_status": "RESOLVED" if resolved else "UNRESOLVED", "gold_by_karat": lines,
+            "gold_karat_id": karat_id, "gold_karat_value": supplier.get("karat_value"),
+            "gold_balance": None if own is None else own.quantize(rules.WEIGHT_STEP),
+            "gold_direction": None if own is None else rules.direction(own.quantize(rules.WEIGHT_STEP)),
             "making": making, "making_direction": rules.direction(making)}
 
 
@@ -90,18 +95,21 @@ class SupplierService:
                 str(search or "").strip() or None, True if active_only else None)
         result = []
         for row in rows:
-            eq21 = Decimal(str(row["gold_eq21_balance"])).quantize(rules.WEIGHT_STEP)
+            resolved = row["karat_id"] is not None and not int(row["gold_foreign_rows"])
+            grams = Decimal(str(row["gold_grams_balance"])).quantize(rules.WEIGHT_STEP)
             making = Decimal(str(row["making_balance"])).quantize(rules.MONEY_STEP)
             result.append({"id": str(row["id"]), "code": rules.supplier_code(row["id"]), "name": row["name"],
                            "phone": row["phone"] or "", "notes": row["notes"] or "",
-                           "is_active": bool(row["is_active"]), "gold_eq21": eq21,
-                           "gold_direction": rules.direction(eq21), "making": making,
+                           "karat_id": row["karat_id"], "karat_value": None if row["karat_value"] is None else int(row["karat_value"]),
+                           "is_active": bool(row["is_active"]), "gold_status": "RESOLVED" if resolved else "UNRESOLVED",
+                           "gold_balance": grams if resolved else None,
+                           "gold_direction": rules.direction(grams) if resolved else None, "making": making,
                            "making_direction": rules.direction(making),
                            "posted_invoice_count": int(row["posted_invoice_count"])})
         return result
 
     def supplier_detail(self, supplier_id, *, _expected_actor=None):
-        """Balances (per karat, Eq21 and making) plus both ledgers with their running balances."""
+        """Balances (gold in physical grams of the supplier's karat, and making) plus both ledgers with running balances."""
         actor = authenticated_actor(self._session, VIEW, "لا توجد صلاحية لعرض الموردين.", _expected_actor)
         supplier_id = _supplier_id(supplier_id)
         with self._transaction() as connection:
@@ -110,18 +118,22 @@ class SupplierService:
             supplier = repository.get_supplier(supplier_id)
             if supplier is None:
                 raise rules.SupplierRuleError("SUPPLIER_NOT_FOUND", "المورد غير موجود.")
-            balances = balance_row(repository.gold_balances(supplier_id), repository.making_balance(supplier_id))
+            balances = balance_row(supplier, repository.gold_balances(supplier_id), repository.making_balance(supplier_id))
+            history = repository.history_karats(supplier_id)
             gold = repository.gold_ledger(supplier_id)
             making = repository.making_ledger(supplier_id)
         return {"supplier": {"id": str(supplier["id"]), "code": rules.supplier_code(supplier["id"]),
                              "name": supplier["name"], "phone": supplier["phone"] or "",
-                             "notes": supplier["notes"] or "", "is_active": bool(supplier["is_active"])},
+                             "notes": supplier["notes"] or "", "is_active": bool(supplier["is_active"]),
+                             "karat_id": supplier["karat_id"],
+                             "karat_value": None if supplier["karat_value"] is None else int(supplier["karat_value"]),
+                             "karat_locked": bool(history),                       # an invoice exists: the karat can no longer change
+                             "history_karats": [h["karat_value"] for h in history]},
                 "balances": balances,
                 "gold_ledger": [{"id": str(r["id"]), "occurred_at": r["occurred_at"], "movement": r["movement_name"],
                                  "karat_value": int(r["karat_value"]),
                                  "weight_delta": Decimal(str(r["weight_delta_grams"])),
-                                 "eq21_delta": Decimal(str(r["equivalent_21_delta_grams"])),
-                                 "eq21_balance_after": Decimal(str(r["eq21_balance_after"])),
+                                 "weight_balance_after": Decimal(str(r["weight_balance_after"])),
                                  "source_type": r["source_type"], "source_id": str(r["source_id"]),
                                  "reference": r["source_reference"] or "", "actor": r["actor_name"] or ""}
                                 for r in gold],
@@ -133,7 +145,21 @@ class SupplierService:
                                   for r in making]}
 
     # ------------------------------------------------------------------ master writes
-    def create_supplier(self, name, phone=None, notes=None, *, _expected_actor=None):
+    @staticmethod
+    def _supported_karat(repository, karat_id):
+        """The karat master row of a chosen supplier karat: it must exist, be active and be 18 / 21 / 24."""
+        try:
+            wanted = int(str(karat_id).strip())
+        except (TypeError, ValueError):
+            wanted = 0
+        if wanted <= 0:
+            raise rules.SupplierRuleError("KARAT_REQUIRED", "اختر عيار المورد (18 أو 21 أو 24).")
+        karat = repository.get_karat(wanted)
+        if karat is None or not karat["is_active"] or int(karat["karat_value"]) not in rules.SUPPORTED_KARATS:
+            raise rules.SupplierRuleError("KARAT_NOT_SUPPORTED", "عيار المورد يجب أن يكون 18 أو 21 أو 24 ومفعّلًا.")
+        return karat
+
+    def create_supplier(self, name, phone=None, notes=None, karat_id=None, *, _expected_actor=None):
         actor = authenticated_actor(self._session, MANAGE, "لا توجد صلاحية لإدارة الموردين.", _expected_actor)
         name = clean_text(name, NAME_MAX, "اسم المورد", required=True)
         phone, notes = clean_text(phone, PHONE_MAX, "رقم الهاتف"), clean_text(notes, NOTES_MAX, "الملاحظات")
@@ -141,15 +167,17 @@ class SupplierService:
             with self._transaction() as connection:
                 actor = self._write_verified(connection, actor)
                 repository = self._repository(connection)
-                supplier_id = repository.create_supplier(name=name, phone=phone, notes=notes, user_id=actor.user_id)
+                karat = self._supported_karat(repository, karat_id)
+                supplier_id = repository.create_supplier(name=name, phone=phone, notes=notes, karat_id=karat["id"],
+                                                         user_id=actor.user_id)
                 repository.audit(actor=actor, event_type="SUPPLIER_CREATED", entity_id=supplier_id,
                                  reference=rules.supplier_code(supplier_id), description=f"إنشاء مورد {name}",
-                                 metadata={"name": name}, now=repository.db_now())
+                                 metadata={"name": name, "karat_value": int(karat["karat_value"])}, now=repository.db_now())
         except IntegrityError as exc:
             raise _duplicate_name(exc) from exc
         return str(supplier_id)
 
-    def update_supplier(self, supplier_id, name, phone=None, notes=None, *, _expected_actor=None):
+    def update_supplier(self, supplier_id, name, phone=None, notes=None, karat_id=None, *, _expected_actor=None):
         actor = authenticated_actor(self._session, MANAGE, "لا توجد صلاحية لإدارة الموردين.", _expected_actor)
         supplier_id = _supplier_id(supplier_id)
         name = clean_text(name, NAME_MAX, "اسم المورد", required=True)
@@ -158,13 +186,23 @@ class SupplierService:
             with self._transaction() as connection:
                 actor = self._write_verified(connection, actor)
                 repository = self._repository(connection)
-                if repository.get_supplier(supplier_id, lock=True) is None:
+                supplier = repository.get_supplier(supplier_id, lock=True)
+                if supplier is None:
                     raise rules.SupplierRuleError("SUPPLIER_NOT_FOUND", "المورد غير موجود.")
+                changed_karat = None
+                if karat_id not in (None, "", 0, "0"):
+                    karat = self._supported_karat(repository, karat_id)
+                    if supplier["karat_id"] is None or int(supplier["karat_id"]) != int(karat["id"]):
+                        # under the supplier row lock; the history read is a locking current read (no race with a new invoice)
+                        rules.check_supplier_karat_change(supplier["karat_id"], karat["id"],
+                                                          repository.history_karats(supplier_id, lock=True))
+                        repository.set_karat(supplier_id=supplier_id, karat_id=karat["id"], user_id=actor.user_id)
+                        changed_karat = int(karat["karat_value"])
                 repository.update_supplier(supplier_id=supplier_id, name=name, phone=phone, notes=notes,
                                            user_id=actor.user_id)
                 repository.audit(actor=actor, event_type="SUPPLIER_UPDATED", entity_id=supplier_id,
                                  reference=rules.supplier_code(supplier_id), description=f"تعديل بيانات المورد {name}",
-                                 metadata={"name": name}, now=repository.db_now())
+                                 metadata={"name": name, "karat_value": changed_karat}, now=repository.db_now())
         except IntegrityError as exc:
             raise _duplicate_name(exc) from exc
 
