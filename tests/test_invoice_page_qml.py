@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, QPointF, Qt
 from PySide6.QtGui import QFont, QFontDatabase, QGuiApplication, QKeyEvent
+from PySide6.QtQuick import QQuickItem
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtTest import QTest
 
@@ -279,11 +280,30 @@ class InvoicePageTests(unittest.TestCase):
             QTest.qWait(20)
         self.fail(message)
 
+    @staticmethod
+    def child_items(parent):
+        """parent.childItems(), refusing anything that is not a QQuickItem.
+
+        The tree walkers twice met a PySide QMetaObject wrapper where a child item was expected (an AttributeError on objectName in
+        two different full runs, never reproducible in isolation). The cause is NOT established; the failure stays a failure, but it now
+        names the type, the object and where in the tree it was met, so the next sighting carries the evidence."""
+        children = list(parent.childItems())
+        for index, child in enumerate(children):
+            if not isinstance(child, QQuickItem):
+                ancestors, node = [], parent
+                while node is not None and len(ancestors) < 25:
+                    ancestors.append(f"{type(node).__name__}:{node.objectName() or '-'}")
+                    node = node.parentItem()
+                raise AssertionError(
+                    f"UI tree walk met {type(child).__module__}.{type(child).__qualname__} ({child!r}) as child {index} of {len(children)} of "
+                    f"{type(parent).__name__} {parent.objectName()!r}; ancestors (nearest first): {' < '.join(ancestors)}")
+            yield child
+
     def visual_item(self, name, parent=None):
         parent = parent or self.root.contentItem()
         if parent.objectName() == name:
             return parent
-        for child in parent.childItems():
+        for child in self.child_items(parent):
             found = self.visual_item(name, child)
             if found is not None:
                 return found
@@ -294,7 +314,7 @@ class InvoicePageTests(unittest.TestCase):
         parent = parent or self.root.contentItem()
         if parent.objectName() == name and parent.property("visible"):
             return parent
-        for child in parent.childItems():
+        for child in self.child_items(parent):
             found = self.visible_item(name, child)
             if found is not None:
                 return found
