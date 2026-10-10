@@ -11,10 +11,9 @@ import unittest
 from PySide6.QtCore import QObject
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQuick import QQuickItem
+from PySide6.QtQuickControls2 import QQuickStyle
 
 from tests import test_invoice_page_qml as harness
-
-APP = QGuiApplication.instance() or QGuiApplication([])
 
 
 class Walker:
@@ -43,6 +42,13 @@ class FailingChildren(QQuickItem):
 
 
 class TreeWalkTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # The application is created here, never at import: a QGuiApplication made while the test modules are still being collected comes
+        # before the Material style and the other modules' own setup and broke every QML test that ran after it in a full discovery.
+        QQuickStyle.setStyle("Material")
+        cls.app = QGuiApplication.instance() or QGuiApplication([])
+
     def test_a_non_item_child_fails_the_walk_with_the_evidence(self):
         page = item("page")
         row = StrangeChildren()
