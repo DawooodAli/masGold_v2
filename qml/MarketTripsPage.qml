@@ -22,7 +22,7 @@ Item {
 
     Connections {
         target: page.vm
-        function onEntryPosted(code) { entryDialog.close(); meltDialog.close(); lotReturnDialog.close(); lotIssueDialog.close() }
+        function onEntryPosted(code) { entryDialog.close(); meltDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close() }
         function onActionDone(operation) { reasonDialog.close() }
     }
 
@@ -287,7 +287,7 @@ Item {
             Txt { objectName: "tripMessage"; Layout.fillWidth: true; visible: !!page.vm && page.vm.message !== ""
                   text: page.vm ? page.vm.message : ""; color: theme.green; wrapMode: Text.WordWrap; elide: Text.ElideNone }
             Txt { objectName: "tripError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== "" && !entryDialog.visible && !reasonDialog.visible && !meltDialog.visible
-                           && !lotReturnDialog.visible && !lotIssueDialog.visible
+                           && !lotReturnDialog.visible && !lotIssueDialog.visible && !heatDialog.visible
                   text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
 
             Txt {
@@ -335,6 +335,9 @@ Item {
                         Btn { objectName: "lotReturnButton"; text: "رجوع ناتج السبك"; visible: !!page.detail.open
                               enabled: !!page.detail.lotReturnAvailable && !!page.vm && !page.vm.writing
                               onClicked: lotReturnDialog.openFor(page.detail.id) }
+                        Btn { objectName: "heatButton"; text: "حمّية اللوجو"; visible: !!page.detail.open
+                              enabled: !!page.detail.heatAvailable && !!page.vm && !page.vm.writing
+                              onClicked: heatDialog.openFor(page.detail.id) }
                         Btn { objectName: "meltButton"; text: "سبك"; visible: !!page.detail.open
                               enabled: !!page.detail.meltAvailable && !!page.vm && !page.vm.writing
                               onClicked: meltDialog.openFor(page.detail.id) }
@@ -379,7 +382,7 @@ Item {
                                 label: "ذهب " + modelData.label
                                 issued: modelData.issued + " جرام"
                                 returned: modelData.returned + " جرام"
-                                melted: modelData.melted + " جرام"
+                                melted: modelData.heated !== "" ? "حمّية " + modelData.heated + " جرام" : modelData.melted + " جرام"
                                 outstanding: modelData.outstanding + " جرام"
                                 zero: modelData.zero
                             }
@@ -473,6 +476,54 @@ Item {
                                             text: modelData.text + "  •  " + modelData.time + (modelData.actor ? "  •  " + modelData.actor : "")
                                                   + (modelData.reason ? "  •  " + modelData.reason : "")
                                             wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                        }
+                    }
+                    Section {
+                        objectName: "heatsSection"
+                        title: "سجل حمّية اللوجو والفروق (دائم)"
+                        accent: theme.gold
+                        visible: (page.detail.heats || []).length > 0
+                        Txt { objectName: "heatTotals"; Layout.fillWidth: true; visible: (page.detail.heatTotals || []).length > 0
+                              text: "الفرق التراكمي للحمّيات الفعّالة — " + (page.detail.heatTotals || []).map(function (t) { return t.text }).join(" | ")
+                              color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                        Repeater {
+                            model: page.detail.heats || []
+                            delegate: Rectangle {
+                                Layout.fillWidth: true
+                                id: heatCard
+                                readonly property bool dead: modelData.reversed === true
+                                implicitHeight: heatColumn.implicitHeight + 14
+                                radius: theme.radiusSmall
+                                // A reversed heat is history only: a neutral card whose measurements stay readable.
+                                color: heatCard.dead ? theme.bgSecondary : theme.bgTertiary
+                                border.color: theme.border
+                                ColumnLayout {
+                                    id: heatColumn
+                                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                                    anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.topMargin: 7
+                                    spacing: 3
+                                    Txt { objectName: "heatTitle"; Layout.fillWidth: true; font.bold: true; elide: Text.ElideNone
+                                          color: heatCard.dead ? theme.textSecondary : theme.textPrimary
+                                          text: "حمّية اللوجو " + page.ltr(modelData.code) + "  •  " + modelData.workshop + "  •  " + modelData.date }
+                                    Txt { objectName: "heatReversedNotice"; Layout.fillWidth: true; visible: modelData.notice !== ""; text: modelData.notice
+                                          color: theme.textPrimary; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                    Txt { objectName: "heatState"; Layout.fillWidth: true; visible: modelData.state !== ""
+                                          text: modelData.state + (modelData.reason !== "" ? "  •  السبب: " + modelData.reason : "")
+                                          color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                    Repeater {
+                                        model: modelData.lines
+                                        delegate: Txt { objectName: "heatLine"; Layout.fillWidth: true; text: modelData.text
+                                                        color: heatCard.dead ? theme.textSecondary : theme.textPrimary; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                    }
+                                    Txt { objectName: "heatTotal"; Layout.fillWidth: true; text: modelData.total; font.bold: true
+                                          color: heatCard.dead ? theme.textSecondary : theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                    Txt { Layout.fillWidth: true; visible: modelData.reference !== ""; text: "المرجع: " + modelData.reference
+                                          color: theme.textMuted; font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
+                                    Txt { Layout.fillWidth: true; visible: modelData.gainExplanation !== ""; text: "سبب زيادة الوزن: " + modelData.gainExplanation
+                                          color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                    Item { Layout.preferredHeight: 4 }
+                                }
+                            }
                         }
                     }
                     Section {
@@ -769,6 +820,151 @@ Item {
                 }
                 Btn { objectName: "cancelTripEntryButton"; text: "إلغاء"; accent: theme.textSecondary
                       enabled: !!page.vm && !page.vm.writing; onClicked: entryDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- Logo heating (حمّية اللوجو)
+    // Weights only: the processed LOGO grams leave and the ACTUAL resulting grams return under the same karat and designation.
+    Popup {
+        id: heatDialog
+        objectName: "tripHeatDialog"
+        property string tripId: ""
+        property string requestKey: ""
+        readonly property var stockChoices: [{ karatId: "", text: "اختر العيار" }].concat(page.detail.heatStock || [])
+        function openFor(trip) {
+            if (!page.vm) return
+            tripId = trip
+            requestKey = page.vm.newRequestKey()
+            heatDateField.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            heatWorkshopField.text = ""
+            heatReferenceField.text = ""
+            heatGainField.text = ""
+            heatNotesField.text = ""
+            heatModel.clear()
+            heatModel.append({ karatIndex: 0, inputWeight: "", outputWeight: "" })
+            page.vm.clearMessage()
+            page.vm.refresh()
+            open()
+        }
+        function lines() {
+            var rows = []
+            for (var i = 0; i < heatModel.count; ++i) {
+                var g = heatModel.get(i)
+                if (g.inputWeight.trim().length > 0 || g.outputWeight.trim().length > 0 || g.karatIndex > 0)
+                    rows.push({ karatId: g.karatIndex > 0 ? stockChoices[g.karatIndex].karatId : "", inputWeight: g.inputWeight, outputWeight: g.outputWeight })
+            }
+            return rows
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(620, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 600, 600)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        ListModel { id: heatModel }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; text: "حمّية اللوجو" }
+            Txt { objectName: "heatRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "يُسخَّن ذهب «لوجو» فقط ويبقى بنفس العيار ونفس الوجهة. سجّل الوزن قبل الحمّية والوزن الفعلي بعدها: يُحفظ الفرق نهائيًا كمرجع للمراجعة (ليس شطبًا ولا عجزًا) ويُرجَع الوزن المتبقي فعليًا بالرجوع العادي. لا تتحرك نقدية ولا كسر ولا مورد، ولا تُسجَّل أي نقاوة." }
+            Flickable {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentHeight: heatForm.implicitHeight
+                clip: true
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: heatForm
+                    width: parent.width - 12
+                    spacing: 6
+                    Txt { objectName: "heatStockText"; Layout.fillWidth: true; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                          text: "المتاح للحمّية الآن: " + ((page.detail.heatStock || []).map(function (m) { return m.text }).join(" • ") || "لا يوجد") }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "تاريخ الحمّية (yyyy-MM-dd) *" }
+                            Field { id: heatDateField; objectName: "heatDateField"; Layout.fillWidth: true }
+                        }
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "الورشة / المسؤول *" }
+                            Field { id: heatWorkshopField; objectName: "heatWorkshopField"; Layout.fillWidth: true }
+                        }
+                    }
+                    Txt { Layout.fillWidth: true; text: "السطور: العيار والوزن المُسخَّن قبل الحمّية والوزن الفعلي بعدها (جرام)"; color: theme.gold; font.bold: true }
+                    Repeater {
+                        model: heatModel
+                        delegate: ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+                            RowLayout {
+                                Layout.fillWidth: true
+                                layoutDirection: Qt.RightToLeft
+                                spacing: 8
+                                Combo {
+                                    objectName: "heatKarat_" + index
+                                    Layout.preferredWidth: 230
+                                    model: heatDialog.stockChoices
+                                    textRole: "text"
+                                    currentIndex: karatIndex
+                                    onActivated: function (i) { heatModel.setProperty(index, "karatIndex", i) }
+                                }
+                                Field {
+                                    objectName: "heatInput_" + index
+                                    Layout.fillWidth: true
+                                    placeholderText: "قبل الحمّية (جرام)"
+                                    text: inputWeight
+                                    inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                    onTextEdited: heatModel.setProperty(index, "inputWeight", text)
+                                }
+                                Field {
+                                    objectName: "heatOutput_" + index
+                                    Layout.fillWidth: true
+                                    placeholderText: "بعد الحمّية (جرام)"
+                                    text: outputWeight
+                                    inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                    onTextEdited: heatModel.setProperty(index, "outputWeight", text)
+                                }
+                            }
+                            Txt { objectName: "heatDiff_" + index; Layout.fillWidth: true
+                                  readonly property string diff: !!page.vm ? page.vm.heatDifference(inputWeight, outputWeight) : ""
+                                  visible: diff !== ""; text: "الفرق: " + diff; color: theme.amber; elide: Text.ElideNone }
+                        }
+                    }
+                    Btn { objectName: "addHeatLineButton"; text: "＋ عيار آخر"; accent: theme.textSecondary
+                          enabled: heatModel.count < 6
+                          onClicked: heatModel.append({ karatIndex: 0, inputWeight: "", outputWeight: "" }) }
+                    Txt { Layout.fillWidth: true; text: "سبب زيادة الوزن (مطلوب إذا زاد الوزن بعد الحمّية)" }
+                    Field { id: heatGainField; objectName: "heatGainField"; Layout.fillWidth: true }
+                    Txt { Layout.fillWidth: true; text: "المرجع (اختياري)" }
+                    Field { id: heatReferenceField; objectName: "heatReferenceField"; Layout.fillWidth: true }
+                    Txt { Layout.fillWidth: true; text: "ملاحظات" }
+                    Field { id: heatNotesField; objectName: "heatNotesField"; Layout.fillWidth: true }
+                }
+            }
+            Txt { objectName: "heatEntryError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmHeatButton"
+                    text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "تسجيل الحمّية"
+                    primary: true
+                    enabled: heatDateField.text.trim().length > 0 && heatDialog.lines().length > 0 && !!page.vm && !page.vm.writing
+                    onClicked: page.vm.heatCustody(heatDialog.tripId, heatDialog.lines(), heatDateField.text, heatWorkshopField.text,
+                                                   heatReferenceField.text, heatGainField.text, heatNotesField.text, heatDialog.requestKey)
+                }
+                Btn { objectName: "cancelHeatButton"; text: "إلغاء"; accent: theme.textSecondary
+                      enabled: !!page.vm && !page.vm.writing; onClicked: heatDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }

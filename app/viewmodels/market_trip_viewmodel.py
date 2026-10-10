@@ -15,7 +15,8 @@ from app.formatting import date_text, datetime_text, grams, ltr, money, number
 LIMITATION = ("في هذه المرحلة لا توجد عمليات بيع أو تسوية للموردين: تُغلق العهدة فقط بعد إرجاع كل النقدية وكل الذهب الذي أُخرج منها "
               "وإرجاع كل شحنات السبك إلى المحل. النقدية والذهب في العهدة ملك للمحل لكنهما غير متاحين داخله حتى يُرجَعا.")
 STATUS_TEXT = {"OPEN": "مفتوحة", "CLOSED": "مغلقة"}
-KIND_TEXT = {"ISSUE": "إخراج عهدة", "RETURN": "رجوع من العهدة", "MELT": "سبك", "LOT_RETURN": "رجوع ناتج السبك", "LOT_ISSUE": "إخراج سبكة من المحل"}
+KIND_TEXT = {"ISSUE": "إخراج عهدة", "RETURN": "رجوع من العهدة", "MELT": "سبك", "LOT_RETURN": "رجوع ناتج السبك", "LOT_ISSUE": "إخراج سبكة من المحل",
+             "HEAT": "حمّية اللوجو"}
 DESIGNATION_TEXT = {"MELT": "للسبك", "LOGO": "لوجو", "UNCLASSIFIED": "غير مصنف (قبل التصنيف)"}
 DESIGNATION_CHOICES = [{"id": "MELT", "text": "للسبك"}, {"id": "LOGO", "text": "لوجو"}]
 LOT_TEXT = {"MAIN": "الناتج الرئيسي", "RESIDUE": "راسب"}
@@ -186,7 +187,7 @@ class MarketTripViewModel(QObject):
         # Notified only after the transaction succeeded; a failing refresh belongs to the view that failed, never to this write.
         if self._moved:
             self.custodyChanged.emit()
-        if self._operation in ("issue", "create", "return", "melt", "lotreturn", "lotissue"):
+        if self._operation in ("issue", "create", "return", "melt", "lotreturn", "lotissue", "heat"):
             self.entryPosted.emit(result["code"])
         else:
             self.actionDone.emit(self._operation)
@@ -227,6 +228,27 @@ class MarketTripViewModel(QObject):
         self._write("melt", "تم تسجيل السبك", lambda s, a: s.melt(
             trip_id, inputs, entry_date, workshop, output, residues, assay_reference, gain_explanation, notes, request_key,
             _expected_actor=a), False)
+
+    @Slot(str, "QVariantList", str, str, str, str, str, str)
+    def heatCustody(self, trip_id, lines, entry_date, workshop, reference, gain_explanation, notes, request_key):
+        """Heat LOGO custody (حمّية اللوجو): processed grams out, the actual resulting grams back, same karat and designation.
+        Weights only: no cash, Scrap, supplier, inventory or lot movement, and no purity figure."""
+        heat_lines = [{"karat_id": str(line.get("karatId", "")), "input_weight": str(line.get("inputWeight", "")),
+                       "output_weight": str(line.get("outputWeight", ""))} for line in (lines or [])]
+        self._write("heat", "تم تسجيل حمّية اللوجو", lambda s, a: s.heat(
+            trip_id, heat_lines, entry_date, workshop, reference, gain_explanation, notes, request_key, _expected_actor=a), False)
+
+    @Slot(str, str, result=str)
+    def heatDifference(self, input_weight, output_weight):
+        """A display-only preview of output - input in grams (the service recomputes and stores the authoritative value)."""
+        from services.market_trip_service import TripError, parse_weight      # the service's own parser: one definition of a valid weight
+        try:
+            before, after = parse_weight(input_weight), parse_weight(output_weight)
+        except TripError:
+            return ""
+        if before == 0 or after == 0:
+            return ""
+        return f"{grams(after - before, signed=True)} جرام"
 
     @Slot(str, "QVariantList", str, str, str)
     def issueLots(self, trip_id, lot_lines, entry_date, notes, request_key):
@@ -338,6 +360,8 @@ class MarketTripViewModel(QObject):
         gold = custody["gold"]
         melt_stock = [{"karatId": str(g["karat_id"]), "text": f"عيار {g['karat_value']} — المتاح للسبك {grams(g['outstanding'])}"}
                       for g in gold if g["designation"] == "MELT" and g["outstanding"] > 0]
+        heat_stock = [{"karatId": str(g["karat_id"]), "text": f"عيار {g['karat_value']} — لوجو متاح للحمّية {grams(g['outstanding'])}"}
+                      for g in gold if g["designation"] == "LOGO" and g["outstanding"] > 0]
         return_lines = [{"key": f"{g['karat_id']}:{g['designation']}", "karatId": str(g["karat_id"]), "designation": g["designation"],
                          "text": f"{_gold_label(g)} — المتبقي {grams(g['outstanding'])}"}
                         for g in gold if g["outstanding"] > 0]
@@ -352,6 +376,7 @@ class MarketTripViewModel(QObject):
             "gold": [{"karat": g["karat_value"], "karatId": str(g["karat_id"]), "designation": g["designation"],
                       "designationText": DESIGNATION_TEXT[g["designation"]], "label": _gold_label(g), "issued": grams(g["issued"]),
                       "returned": grams(g["returned"]), "melted": grams(g["melted"]), "outstanding": grams(g["outstanding"]),
+                      "heated": grams(g["heat_delta"], signed=True) if g["designation"] == "LOGO" and g.get("heat_delta") else "",
                       "zero": g["outstanding"] == 0} for g in gold],
             "lots": [{"lotId": l["lot_id"], "title": f"{LOT_TEXT[l['kind']]} — الحركة {l['entry_no']}"
                       + (f" • {l['label']}" if l["label"] else "")
@@ -369,9 +394,13 @@ class MarketTripViewModel(QObject):
             "lotReturnAvailable": is_open and bool(custody["lots"]),
             "lotNote": LOT_NOTE if custody["lots"] else "",
             "meltStock": melt_stock, "meltAvailable": is_open and bool(melt_stock), "returnLines": return_lines,
+            "heatStock": heat_stock, "heatAvailable": is_open and bool(heat_stock),
             "outstandingText": outstanding_text(custody),
             "entries": [self._entry(e, is_open) for e in d["entries"]],
             "melts": [self._melt(m) for m in d.get("melts", [])],
+            "heats": [self._heat(h) for h in d.get("heats", [])],
+            "heatTotals": [{"text": f"عيار {t['karat_value']}: قبل {grams(t['input'])} • بعد {grams(t['output'])} • الفرق {grams(t['difference'], signed=True)} جرام"}
+                           for t in d.get("heat_totals", [])],
             "events": [{"text": {"OPENED": "فتح العهدة", "CLOSED": "إغلاق العهدة", "REOPENED": "إعادة فتح العهدة"}[e["type"]],
                         "reason": e["reason"], "time": datetime_text(e["at"]), "actor": e["actor"]} for e in d["events"]]}
 
@@ -384,11 +413,23 @@ class MarketTripViewModel(QObject):
         parts += [f"شحنة {l['lot_no']} من {l['code']}: {grams(l['weight'])} جرام (العيار {fineness_text(l['fineness'])})"
                   for l in e.get("lot_returns", []) + e.get("lot_issues", [])]
         return {"id": e["id"], "code": e["code"], "kind": e["kind"], "kindText": KIND_TEXT[e["kind"]],
-                "what": " • ".join(parts) if parts else ("انظر تفاصيل السبك أدناه" if e["kind"] == "MELT" else ""),
+                "what": " • ".join(parts) if parts else ("انظر تفاصيل السبك أدناه" if e["kind"] == "MELT"
+                                                     else "انظر تفاصيل الحمّية أدناه" if e["kind"] == "HEAT" else ""),
                 "date": date_text(e["date"]), "time": datetime_text(e["at"]), "actor": e["actor"],
                 "notes": e["notes"], "reversed": e["reversed"],
                 "state": f"معكوسة بالعملية {e['reversal_code']}" if e["reversed"] else "",
                 "reason": e["reversal_reason"] or "", "canReverse": trip_open and not e["reversed"]}
+
+    @staticmethod
+    def _heat(h):
+        """One heating document: the raw measurements per karat and their permanent difference (kept after reversal)."""
+        return {"id": h["entry_id"], "code": h["code"], "date": date_text(h["date"]), "workshop": h["workshop"], "reference": h["reference"],
+                "gainExplanation": h["gain_explanation"], "notes": h["notes"], "actor": h["actor"],
+                "lines": [{"text": f"عيار {l['karat_value']}: قبل الحمّية {grams(l['input'])} • بعدها {grams(l['output'])} • "
+                                   f"الفرق {grams(l['difference'], signed=True)} جرام"} for l in h["lines"]],
+                "total": f"الفرق الإجمالي {grams(h['total_difference'], signed=True)} جرام (قبل {grams(h['total_input'])} • بعد {grams(h['total_output'])})",
+                "reversed": h["reversed"], "state": f"معكوسة بالعملية {h['reversal_code']}" if h["reversed"] else "",
+                "notice": REVERSED_NOTICE if h["reversed"] else "", "reason": h["reversal_reason"] or ""}
 
     @staticmethod
     def _melt(m):

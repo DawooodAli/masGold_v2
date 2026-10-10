@@ -1,4 +1,4 @@
-"""Market-trip custody (037, melting 039, lot returns 040, lot reissue 041): trips, their insert-only entries, and the cash / Scrap movements those entries post.
+"""Market-trip custody (037, melting 039, lot returns 040, lot reissue 041, Logo heating 042): trips, their insert-only entries, and the cash / Scrap movements those entries post.
 
 All writes use the caller's transaction and only INSERT (the trip header's `status` is the one updated column; every change
 of it is an insert-only event). Custody is never stored: it is derived from the entries that were not reversed.
@@ -10,7 +10,7 @@ from repositories.invoice_repository import _id
 
 SOURCE = "MARKET_TRIP_ENTRY"            # transaction_corrections.source_type and the cash / Scrap reference_type
 MAIN_SAFE = "MAIN_SAFE"
-ISSUE, RETURN, MELT, LOT_RETURN, LOT_ISSUE = "ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE"
+ISSUE, RETURN, MELT, LOT_RETURN, LOT_ISSUE, HEAT = "ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT"
 MELT_DESIGNATION, LOGO_DESIGNATION, UNCLASSIFIED = "MELT", "LOGO", "UNCLASSIFIED"     # the owner's decision on an issued gold line
 DESIGNATIONS = (MELT_DESIGNATION, LOGO_DESIGNATION, UNCLASSIFIED)
 MAIN_LOT, RESIDUE_LOT, CREATE_MOVEMENT = "MAIN", "RESIDUE", "CREATE"
@@ -305,6 +305,69 @@ class MarketTripRepository(BaseRepository):
                 "WHERE entry_id = %s ORDER BY lot_no", (int(row["entry_id"]),))
         return rows
 
+    # ------------------------------------------------------------------ Logo heating (042)
+    def insert_heat(self, *, entry_id, workshop, reference, gain_explanation, total_input, total_output):
+        """The immutable heating header; the difference is stored beside the two weights it was derived from."""
+        self._execute(
+            "INSERT INTO market_trip_heats (entry_id, workshop, reference, gain_explanation, total_input_grams, total_output_grams, "
+            "total_difference_grams) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (_id(entry_id), workshop, reference, gain_explanation, total_input, total_output, total_output - total_input))
+
+    def insert_heat_line(self, *, entry_id, karat_id, input_weight, output_weight):
+        self._execute(
+            "INSERT INTO market_trip_heat_lines (entry_id, karat_id, designation, input_weight_grams, output_weight_grams, difference_grams) "
+            "VALUES (%s, %s, 'LOGO', %s, %s, %s)",
+            (_id(entry_id), int(karat_id), input_weight, output_weight, output_weight - input_weight))
+
+    def heats(self, trip_id):
+        """Every heating document of the trip - reversed ones too: the measurements are permanent - with its lines."""
+        rows = self._fetch_all(
+            """
+            SELECT ht.*, e.trip_id, e.entry_no, e.entry_date, e.notes, e.occurred_at, u.display_name AS actor_name,
+                   r.id AS reversal_id, r.reason AS reversal_reason, r.occurred_at AS reversal_at
+            FROM market_trip_heats ht JOIN market_trip_entries e ON e.id = ht.entry_id
+            LEFT JOIN users u ON u.id = e.performed_by_user_id
+            LEFT JOIN transaction_corrections r ON r.source_type = '""" + SOURCE + """' AND r.source_id = e.id
+                 AND r.correction_type = 'FULL_REVERSAL'
+            WHERE e.trip_id = %s ORDER BY e.entry_no
+            """, (_id(trip_id),))
+        for row in rows:
+            row["lines"] = self._fetch_all(
+                "SELECT l.karat_id, k.karat_value, l.input_weight_grams, l.output_weight_grams, l.difference_grams FROM market_trip_heat_lines l "
+                "JOIN karats k ON k.id = l.karat_id WHERE l.entry_id = %s ORDER BY k.karat_value DESC", (int(row["entry_id"]),))
+        return rows
+
+    def entry_heat_lines(self, entry_id):
+        return self._fetch_all("SELECT karat_id, input_weight_grams, output_weight_grams FROM market_trip_heat_lines WHERE entry_id = %s "
+                               "ORDER BY karat_id", (_id(entry_id),))
+
+    def later_heat_entries(self, trip_id, after_entry_no, karat_ids):
+        """Effective (not reversed) HEAT entries of the trip numbered after `after_entry_no` that carry a line of one of the karats."""
+        ids = sorted({int(k) for k in karat_ids})
+        if not ids:
+            return []
+        marks = ", ".join(["%s"] * len(ids))
+        return self._fetch_all(
+            f"""
+            SELECT DISTINCT e.id, e.trip_id, e.entry_no FROM market_trip_entries e JOIN market_trip_heat_lines h ON h.entry_id = e.id
+            WHERE e.trip_id = %s AND e.entry_no > %s AND e.entry_kind = 'HEAT' AND h.karat_id IN ({marks}) AND {_NOT_REVERSED}
+            ORDER BY e.entry_no FOR SHARE OF e, h
+            """, (_id(trip_id), int(after_entry_no), *ids))
+
+    def later_logo_returns(self, trip_id, after_entry_no, karat_ids):
+        """Effective RETURN entries of the trip numbered after `after_entry_no` that return LOGO gold of one of the karats."""
+        ids = sorted({int(k) for k in karat_ids})
+        if not ids:
+            return []
+        marks = ", ".join(["%s"] * len(ids))
+        return self._fetch_all(
+            f"""
+            SELECT DISTINCT e.id, e.trip_id, e.entry_no FROM market_trip_entries e JOIN market_trip_entry_gold g ON g.entry_id = e.id
+            WHERE e.trip_id = %s AND e.entry_no > %s AND e.entry_kind = 'RETURN' AND g.designation = 'LOGO' AND g.karat_id IN ({marks})
+              AND {_NOT_REVERSED}
+            ORDER BY e.entry_no FOR SHARE OF e, g
+            """, (_id(trip_id), int(after_entry_no), *ids))
+
     # ------------------------------------------------------------------ custody (derived, read under the trip lock)
     def custody_cash(self, trip_id, exclude_entry_id=None):
         """(issued, returned) cash of the entries that were not reversed, as CURRENT (locking) reads."""
@@ -318,8 +381,9 @@ class MarketTripRepository(BaseRepository):
         return row["issued"], row["returned"]
 
     def custody_gold(self, trip_id, exclude_entry_id=None):
-        """Per (karat, designation): grams issued, returned and consumed by melts, over the entries that were not reversed.
-        A melt consumes MELT-designated custody only, so `melted` is non-zero only on the MELT designation."""
+        """Per (karat, designation): grams issued, returned and consumed by melts, over the entries that were not reversed, plus the
+        signed effective Logo heating differences (output - input). A melt consumes MELT-designated custody only (`melted` is non-zero
+        only on MELT) and a heat changes LOGO custody only (`heat_delta` is non-zero only on LOGO)."""
         legs = self._fetch_all(
             f"""
             SELECT g.karat_id, k.karat_value, g.designation,
@@ -336,11 +400,23 @@ class MarketTripRepository(BaseRepository):
             WHERE e.trip_id = %s AND e.id <> %s AND {_NOT_REVERSED}
             GROUP BY i.karat_id, k.karat_value FOR SHARE OF e, i
             """, (_id(trip_id), int(exclude_entry_id or 0)))
-        rows = {(int(r["karat_id"]), r["designation"]): {**r, "melted": 0} for r in legs}
+        heated = self._fetch_all(
+            f"""
+            SELECT h.karat_id, k.karat_value, COALESCE(SUM(h.output_weight_grams - h.input_weight_grams), 0) AS heat_delta
+            FROM market_trip_entries e JOIN market_trip_heat_lines h ON h.entry_id = e.id JOIN karats k ON k.id = h.karat_id
+            WHERE e.trip_id = %s AND e.id <> %s AND {_NOT_REVERSED}
+            GROUP BY h.karat_id, k.karat_value FOR SHARE OF e, h
+            """, (_id(trip_id), int(exclude_entry_id or 0)))
+        rows = {(int(r["karat_id"]), r["designation"]): {**r, "melted": 0, "heat_delta": 0} for r in legs}
+        for h in heated:
+            key = (int(h["karat_id"]), LOGO_DESIGNATION)
+            row = rows.setdefault(key, {"karat_id": h["karat_id"], "karat_value": h["karat_value"], "designation": LOGO_DESIGNATION,
+                                        "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0})
+            row["heat_delta"] = h["heat_delta"]
         for m in melted:
             key = (int(m["karat_id"]), MELT_DESIGNATION)
             row = rows.setdefault(key, {"karat_id": m["karat_id"], "karat_value": m["karat_value"], "designation": MELT_DESIGNATION,
-                                        "issued": 0, "returned": 0, "melted": 0})
+                                        "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0})
             row["melted"] = m["melted"]
         order = {MELT_DESIGNATION: 0, LOGO_DESIGNATION: 1, UNCLASSIFIED: 2}
         return sorted(rows.values(), key=lambda r: (-int(r["karat_value"]), order[r["designation"]]))

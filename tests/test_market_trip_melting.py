@@ -535,7 +535,8 @@ class RepositoryMergeTests(unittest.TestCase):
         answers = iter([[{"karat_id": 1, "karat_value": 21, "designation": "LOGO", "issued": D("20"), "returned": D("0")},
                          {"karat_id": 1, "karat_value": 21, "designation": "MELT", "issued": D("40"), "returned": D("5")},
                          {"karat_id": 3, "karat_value": 24, "designation": "UNCLASSIFIED", "issued": D("2"), "returned": D("0")}],
-                        [{"karat_id": 1, "karat_value": 21, "melted": D("10")}]])
+                        [{"karat_id": 1, "karat_value": 21, "melted": D("10")}],
+                        []])                                                              # no Logo heating (042)
         repo._fetch_all = lambda *args, **kwargs: next(answers)
         rows = repo.custody_gold(1)
         self.assertEqual([(r["karat_value"], r["designation"], r["melted"]) for r in rows],

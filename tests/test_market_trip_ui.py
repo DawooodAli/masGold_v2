@@ -850,6 +850,150 @@ class MarketTripLotIssuePageTests(MarketTripLotReturnPageTests):
         self.assertEqual(self.tvm.detail["lots"], [])
 
 
+class MarketTripHeatPageTests(MarketTripMeltingPageTests):
+    """Logo heating (حمّية اللوجو) on the real page, real clicks: weights only, permanent difference, refusals that keep the fields,
+    the normal return of the remaining Logo grams and reversal. The 1080x680 viewport is the binding case."""
+
+    def logo_trip(self):
+        self.open_page()
+        self.click("newTripButton")
+        self.wait_until(lambda: self.item("tripEntryDialog").property("opened"), "entry dialog")
+        self.wait_until(lambda: self.tvm.context.get("karats"), "context")
+        self.pick("tripGoldKarat_0", 2)                                                  # 21K
+        self.pick("tripGoldDesignation_0", 2)                                            # لوجو
+        self.type_in("tripGoldWeight_0", "10.000")
+        self.click("confirmTripEntryButton")
+        self.wait_until(lambda: len(self.db.trips) == 1, "trip created")
+        self.closed("tripEntryDialog")
+        self.wait_idle()
+        self.wait_until(lambda: self.tvm.detail.get("heatAvailable"), "heating available")
+
+    def open_heat(self):
+        self.reveal(self.item("heatButton"))
+        self.click("heatButton")
+        self.wait_until(lambda: self.item("tripHeatDialog").property("opened"), "heat dialog")
+
+    def fill_heat(self, before="4", after="3.9", workshop="ورشة الحمية"):
+        self.type_in("heatWorkshopField", workshop)
+        self.pick("heatKarat_0", 1)
+        self.type_in("heatInput_0", before)
+        self.type_in("heatOutput_0", after)
+
+    @staticmethod
+    def plain(text):
+        return text.replace("⁦", "").replace("⁩", "").replace("−", "-")
+
+    def test_heating_with_real_clicks_keeps_the_difference_and_the_remaining_grams_return_normally(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.logo_trip()
+        before = (self.db.cash(), self.db.physical(1))
+        self.assertTrue(self.item("heatButton").property("enabled"))
+        self.open_heat()
+        for name in ("heatDateField", "heatWorkshopField", "heatKarat_0", "heatInput_0", "heatOutput_0", "addHeatLineButton",
+                     "heatGainField", "heatReferenceField", "heatNotesField", "confirmHeatButton", "cancelHeatButton"):
+            with self.subTest(control=name):
+                self.item(name)
+        for name in ("confirmHeatButton", "cancelHeatButton"):
+            self.assert_inside_window(self.item(name))
+        self.assertIn("حمّية", self.text("heatRule"))
+        self.fill_heat()
+        self.assertIn("-0.100", self.plain(self.text("heatDiff_0")))                     # a display-only preview
+        self.snapshot("heat-dialog")
+        self.click("confirmHeatButton")
+        self.wait_until(lambda: len(self.db.heats) == 1, "heat posted")
+        self.closed("tripHeatDialog")
+        self.wait_idle()
+        self.snapshot("trip-after-heat")
+        self.assertEqual((self.db.cash(), self.db.physical(1)), before)                  # no cash / Scrap movement
+        self.assertEqual(self.tvm.detail["gold"][0]["outstanding"], "9.900")
+        self.assertIn("ورشة الحمية", " ".join(self.visible_texts("heatTitle")))
+        self.assertIn("-0.100", self.plain(" ".join(self.visible_texts("heatTotal"))))
+        self.assertEqual(self.warnings, [])
+        # the remaining 9.900 g return through the normal Logo return and the custody can close
+        self.reveal(self.item("returnButton"))
+        self.click("returnButton")
+        self.wait_until(lambda: self.item("tripEntryDialog").property("opened"), "return dialog")
+        self.pick("tripGoldLine_0", 1)
+        self.type_in("tripGoldWeight_0", "9.900")
+        self.click("confirmTripEntryButton")
+        self.wait_until(lambda: len(self.db.entries) == 3, "returned")
+        self.closed("tripEntryDialog")
+        self.wait_idle()
+        self.assertTrue(self.item("closeTripButton").property("enabled"))
+
+    def test_a_refused_heat_keeps_every_field_and_a_gain_needs_its_explanation(self):
+        self.logo_trip()
+        self.open_heat()
+        self.fill_heat(before="11", after="10")                                          # more than the 10 g of Logo in custody
+        self.click("confirmHeatButton")
+        self.wait_until(lambda: self.tvm.errorMessage != "", "refusal")
+        QTest.qWait(100)
+        self.assertTrue(self.item("tripHeatDialog").property("visible"))
+        self.assertEqual((self.text("heatWorkshopField"), self.text("heatInput_0"), self.text("heatOutput_0")), ("ورشة الحمية", "11", "10"))
+        self.assertEqual(len(self.db.heats), 0)
+        self.click("heatInput_0")
+        QTest.keyClick(self.root, Qt.Key_A, Qt.ControlModifier)
+        self.type_text("4")
+        self.click("heatOutput_0")
+        QTest.keyClick(self.root, Qt.Key_A, Qt.ControlModifier)
+        self.type_text("4.1")                                                            # a gain without an explanation
+        self.click("confirmHeatButton")
+        self.wait_until(lambda: "سبب زيادة الوزن" in self.tvm.errorMessage, "gain refusal")
+        self.assertEqual(len(self.db.heats), 0)
+        self.type_in("heatGainField", "شوائب")
+        button = self.item("confirmHeatButton")
+        point = button.mapToScene(QPointF(button.width() / 2, button.height() / 2)).toPoint()
+        QTest.mouseClick(self.root, Qt.LeftButton, Qt.NoModifier, point)
+        QTest.mouseClick(self.root, Qt.LeftButton, Qt.NoModifier, point)                # a double click is one request
+        self.wait_until(lambda: len(self.db.heats) >= 1, "heat posted")
+        self.closed("tripHeatDialog")
+        self.wait_idle()
+        QTest.qWait(150)
+        self.assertEqual(len(self.db.heats), 1)
+
+    def test_the_dialog_fits_every_size_and_a_heat_is_reversed_from_the_history(self):
+        self.logo_trip()
+        for width, height in harness.SIZES:
+            with self.subTest(size=(width, height)):
+                self.root.setWidth(width)
+                self.root.setHeight(height)
+                QTest.qWait(150)
+                self.open_heat()
+                for name in ("confirmHeatButton", "cancelHeatButton", "heatDateField", "heatWorkshopField"):
+                    self.assert_inside_window(self.item(name))
+                self.item("tripHeatDialog").close()
+                self.closed("tripHeatDialog")
+        self.open_heat()
+        self.fill_heat()
+        self.click("confirmHeatButton")
+        self.wait_until(lambda: len(self.db.heats) == 1, "heat posted")
+        self.closed("tripHeatDialog")
+        self.wait_idle()
+        buttons = []
+
+        def collect(node):
+            if node.objectName() == "reverseEntryButton" and node.property("visible"):
+                buttons.append(node)
+            for child in node.childItems():
+                collect(child)
+        collect(self.root.contentItem())
+        self.assertEqual(len(buttons), 2)                                                # issue, heat
+        self.reveal(buttons[-1])
+        self.click(buttons[-1])
+        self.wait_until(lambda: self.item("tripReasonDialog").property("opened"), "reversal dialog")
+        self.type_in("tripReasonField", "وزن خاطئ")
+        self.click("confirmTripReasonButton")
+        self.wait_until(lambda: len(self.db.corrections) == 1, "reversed")
+        self.closed("tripReasonDialog")
+        self.wait_idle()
+        self.assertIn("معكوسة بالعملية RV000001", " ".join(self.visible_texts("heatState")))
+        self.assertTrue(self.visible_texts("heatReversedNotice"))
+        self.assertIn("قبل الحمّية", " ".join(self.visible_texts("heatLine")))            # the measurements stay readable
+        self.assertEqual(self.tvm.detail["gold"][0]["outstanding"], "10.000")
+        self.assertEqual(len(self.db.heat_lines), 1)
+
+
 # The base class carries the invoice-page tests: only this module's own tests are collected here.
 for _inherited in [n for n in dir(harness.InvoicePageTests) if n.startswith("test_")]:
     setattr(MarketTripPageTests, _inherited, None)
@@ -860,6 +1004,8 @@ for _melting in [n for n in dir(MarketTripMeltingPageTests) if n.startswith("tes
     setattr(MarketTripLotReturnPageTests, _melting, None)                              # the lot-return class runs only its own tests
 for _returns in [n for n in dir(MarketTripLotReturnPageTests) if n.startswith("test_") and getattr(MarketTripLotReturnPageTests, n) is not None]:
     setattr(MarketTripLotIssuePageTests, _returns, None)                               # the reissue class runs only its own tests
+for _melting in [n for n in dir(MarketTripMeltingPageTests) if n.startswith("test_") and getattr(MarketTripMeltingPageTests, n) is not None]:
+    setattr(MarketTripHeatPageTests, _melting, None)                                   # the heating class runs only its own tests
 
 
 if __name__ == "__main__":

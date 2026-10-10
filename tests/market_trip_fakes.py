@@ -43,6 +43,7 @@ class Db:
         self.holds = {1: D("5.000")}
         self.trips, self.entries, self.cash_legs, self.gold_legs, self.events = {}, {}, [], [], []
         self.melts, self.melt_inputs, self.lots, self.lot_moves = {}, [], {}, []          # 039
+        self.heats, self.heat_lines = {}, []                                                  # 042: Logo heating headers and lines
         self.shop_moves, self.lot_returns, self.lot_issues = [], [], []                      # 040/041: shop-side lot ledger, return / issue links
         self.corrections, self.audit_rows = [], []
         self.sequences = {"trip": 0, "entry": 0, "cash_move": 1, "scrap": 2, "correction": 0, "lot": 0, "lot_move": 0, "shop_move": 0}
@@ -169,7 +170,7 @@ class TripRepo:
 
     def insert_entry(self, *, trip_id, entry_no, kind, entry_date, notes, key, digest, actor, now):
         self._fail("entry")
-        assert kind in ("ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE")                # chk_mte_kind
+        assert kind in ("ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT")                # chk_mte_kind
         if any(e["request_key"] == key for e in self.db.entries.values()):
             raise _dup("uq_mte_request")
         if any((e["trip_id"], e["entry_no"]) == (int(trip_id), entry_no) for e in self.db.entries.values()):
@@ -353,13 +354,20 @@ class TripRepo:
             for leg in (l for l in self.db.gold_legs if l["entry_id"] == e["id"]):
                 row = out.setdefault((leg["karat_id"], leg["designation"]), {
                     "karat_id": leg["karat_id"], "karat_value": self.db.karats[leg["karat_id"]]["karat_value"],
-                    "designation": leg["designation"], "issued": D("0.000"), "returned": D("0.000"), "melted": D("0.000")})
+                    "designation": leg["designation"], "issued": D("0.000"), "returned": D("0.000"), "melted": D("0.000"),
+                    "heat_delta": D("0.000")})
                 row["issued" if e["entry_kind"] == "ISSUE" else "returned"] += leg["weight_grams"]
             for i in (i for i in self.db.melt_inputs if i["entry_id"] == e["id"]):
                 row = out.setdefault((i["karat_id"], MELT_DESIGNATION), {
                     "karat_id": i["karat_id"], "karat_value": self.db.karats[i["karat_id"]]["karat_value"],
-                    "designation": MELT_DESIGNATION, "issued": D("0.000"), "returned": D("0.000"), "melted": D("0.000")})
+                    "designation": MELT_DESIGNATION, "issued": D("0.000"), "returned": D("0.000"), "melted": D("0.000"),
+                    "heat_delta": D("0.000")})
                 row["melted"] += i["weight_grams"]
+            for h in (h for h in self.db.heat_lines if h["entry_id"] == e["id"]):
+                row = out.setdefault((h["karat_id"], "LOGO"), {
+                    "karat_id": h["karat_id"], "karat_value": self.db.karats[h["karat_id"]]["karat_value"],
+                    "designation": "LOGO", "issued": D("0.000"), "returned": D("0.000"), "melted": D("0.000"), "heat_delta": D("0.000")})
+                row["heat_delta"] += h["output_weight_grams"] - h["input_weight_grams"]
         order = {"MELT": 0, "LOGO": 1, "UNCLASSIFIED": 2}
         return sorted(out.values(), key=lambda r: (-r["karat_value"], order[r["designation"]]))
 
@@ -411,6 +419,58 @@ class TripRepo:
                          "lots": [dict(l) for l in sorted((l for l in self.db.lots.values() if l["entry_id"] == e["id"]),
                                                           key=lambda l: l["lot_no"])]})
         return rows
+
+    # ---- Logo heating (042): the CHECK constraints of the two tables are mirrored as asserts
+    def insert_heat(self, *, entry_id, workshop, reference, gain_explanation, total_input, total_output):
+        self._fail("heat")
+        assert (workshop or "").strip()                                                      # chk_mth_workshop
+        assert total_input > 0 and total_output > 0                                          # chk_mth_weights
+        assert int(entry_id) not in self.db.heats and self.db.entries[int(entry_id)]["entry_kind"] == "HEAT"
+        self.db.heats[int(entry_id)] = {"entry_id": int(entry_id), "workshop": workshop, "reference": reference,
+                                        "gain_explanation": gain_explanation, "total_input_grams": total_input,
+                                        "total_output_grams": total_output, "total_difference_grams": total_output - total_input}
+
+    def insert_heat_line(self, *, entry_id, karat_id, input_weight, output_weight):
+        self._fail("heat_line")
+        assert input_weight > 0 and output_weight > 0                                        # chk_mthl_weights
+        assert int(entry_id) in self.db.heats                                                # fk_mthl_heat
+        if any((l["entry_id"], l["karat_id"]) == (int(entry_id), int(karat_id)) for l in self.db.heat_lines):
+            raise _dup("uq_mthl_entry_karat")
+        self.db.heat_lines.append({"entry_id": int(entry_id), "karat_id": int(karat_id), "designation": "LOGO",
+                                   "input_weight_grams": input_weight, "output_weight_grams": output_weight,
+                                   "difference_grams": output_weight - input_weight})
+
+    def entry_heat_lines(self, entry_id):
+        return [dict(l) for l in sorted((l for l in self.db.heat_lines if l["entry_id"] == int(entry_id)), key=lambda l: l["karat_id"])]
+
+    def heats(self, trip_id):
+        rows = []
+        for e in sorted((e for e in self.db.entries.values() if e["trip_id"] == int(trip_id) and e["id"] in self.db.heats),
+                        key=lambda e: e["entry_no"]):
+            reversal = next((c for c in self.db.corrections if c["source_type"] == SOURCE and c["source_id"] == str(e["id"])
+                             and c["correction_type"] == "FULL_REVERSAL"), None)
+            rows.append({**self.db.heats[e["id"]], "trip_id": e["trip_id"], "entry_no": e["entry_no"], "entry_date": e["entry_date"],
+                         "notes": e["notes"], "occurred_at": e["occurred_at"], "actor_name": "المالك",
+                         "reversal_id": reversal and int(reversal["correction_id"]), "reversal_reason": reversal and reversal["reason"],
+                         "reversal_at": reversal and reversal["occurred_at"],
+                         "lines": [{**l, "karat_value": self.db.karats[l["karat_id"]]["karat_value"]}
+                                   for l in sorted((l for l in self.db.heat_lines if l["entry_id"] == e["id"]),
+                                                   key=lambda l: -self.db.karats[l["karat_id"]]["karat_value"])]})
+        return rows
+
+    def later_heat_entries(self, trip_id, after_entry_no, karat_ids):
+        wanted = {int(k) for k in karat_ids}
+        return [{"id": e["id"], "trip_id": e["trip_id"], "entry_no": e["entry_no"]}
+                for e in sorted(self._live(trip_id, None), key=lambda e: e["entry_no"])
+                if e["entry_kind"] == "HEAT" and e["entry_no"] > int(after_entry_no)
+                and any(l["entry_id"] == e["id"] and l["karat_id"] in wanted for l in self.db.heat_lines)]
+
+    def later_logo_returns(self, trip_id, after_entry_no, karat_ids):
+        wanted = {int(k) for k in karat_ids}
+        return [{"id": e["id"], "trip_id": e["trip_id"], "entry_no": e["entry_no"]}
+                for e in sorted(self._live(trip_id, None), key=lambda e: e["entry_no"])
+                if e["entry_kind"] == "RETURN" and e["entry_no"] > int(after_entry_no)
+                and any(g["entry_id"] == e["id"] and g["designation"] == "LOGO" and g["karat_id"] in wanted for g in self.db.gold_legs)]
 
     def entries(self, trip_id):
         rows = []

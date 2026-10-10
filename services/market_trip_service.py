@@ -11,11 +11,16 @@ decides what each gold line is for, melts designated gold into assayed lots and 
   LOT_ISSUE   sends a whole shop bar (a lot that returned to the shop) out again into a DIFFERENT open custody: one shop OUT and one
           custody IN, atomically. A lot is in the shop or in exactly ONE custody; its location is derived from the effective movements,
           never from its origin melt, so the origin trip may stay closed. Returning it is the exact opposite transfer (LOT_RETURN)
+  HEAT    (حمّية اللوجو) heats LOGO-designated custody without melting it: the declared processed grams of each karat leave and the
+          ACTUAL resulting grams return under the SAME karat and the LOGO designation. Only physical weights are stored (no purity, pure
+          gold or Eq21); a weight gain needs an explanation; the signed difference is permanent evidence, never a shortage or write-off.
+          No cash, Scrap, supplier, inventory or lot movement exists and a heat is not part of any melt analysis
   MELT    consumes MELT-designated custody (any active master karat, physical grams) and creates assayed LOTS: one MAIN output with
           its fineness (parts per thousand, 0.1) and optional RESIDUE lots whose fineness may be unknown. No cash, shop Scrap or
           supplier movement exists in a melt; the processing difference is stored permanently with the document.
 
-Custody = issued - returned - melted over the entries that were not reversed, per (karat, designation) and for cash; none can
+Custody = issued - returned - melted (+ the effective Logo heating differences on LOGO) over the entries that were not reversed,
+per (karat, designation) and for cash; none can
 ever go negative. Gold written before the designation existed is UNCLASSIFIED: it can only be returned. Gold in custody is
 shop-owned but unavailable inside the shop (it really left the counted Scrap balance), and master-karat custody is shown apart
 from assayed lots. A trip closes only when cash, every (karat, designation) and every lot are exactly zero. Shop return of an
@@ -37,7 +42,7 @@ from uuid import UUID, uuid5
 from mysql.connector import IntegrityError
 
 from repositories.financial_account_repository import FinancialAccountRepository
-from repositories.market_trip_repository import (CLOSED, CREATE_MOVEMENT, ISSUE, LOGO_DESIGNATION, LOT_ISSUE, LOT_RETURN, MAIN_LOT, MELT,
+from repositories.market_trip_repository import (CLOSED, CREATE_MOVEMENT, HEAT, ISSUE, LOGO_DESIGNATION, LOT_ISSUE, LOT_RETURN, MAIN_LOT, MELT,
                                                  MELT_DESIGNATION, OPEN, RESIDUE_LOT, RETURN, SHOP_ISSUE_MOVEMENT, SHOP_ISSUE_OUT,
                                                  SHOP_RETURN_IN, SHOP_RETURN_MOVEMENT, SOURCE, UNCLASSIFIED, MarketTripRepository,
                                                  entry_code, trip_code)
@@ -53,7 +58,8 @@ MONEY_STEP, WEIGHT_STEP, FINENESS_STEP, ANALYSIS_STEP = Decimal("0.01"), Decimal
 MAX_MONEY, MAX_WEIGHT = Decimal("100000000000000"), Decimal("1000000000")
 NOTES_MAX, REASON_MAX, WORKSHOP_MAX, ASSAY_MAX, LABEL_MAX, MAX_RESIDUES = 1000, 1000, 120, 120, 120, 10
 ZERO_MONEY, ZERO_WEIGHT = Decimal("0.00"), Decimal("0.000")
-KIND_TEXT = {ISSUE: "إخراج عهدة", RETURN: "رجوع من العهدة", MELT: "سبك", LOT_RETURN: "رجوع ناتج السبك", LOT_ISSUE: "إخراج سبكة من المحل"}
+KIND_TEXT = {ISSUE: "إخراج عهدة", RETURN: "رجوع من العهدة", MELT: "سبك", LOT_RETURN: "رجوع ناتج السبك", LOT_ISSUE: "إخراج سبكة من المحل",
+             HEAT: "حمّية اللوجو"}
 DESIGNATION_TEXT = {MELT_DESIGNATION: "للسبك", LOGO_DESIGNATION: "لوجو", UNCLASSIFIED: "غير مصنف (قبل التصنيف)"}
 _DESIGNATION_INPUT = {"MELT": MELT_DESIGNATION, "للسبك": MELT_DESIGNATION, "LOGO": LOGO_DESIGNATION, "لوجو": LOGO_DESIGNATION,
                       "UNCLASSIFIED": UNCLASSIFIED, "غير مصنف": UNCLASSIFIED}
@@ -185,10 +191,10 @@ def custody_view(cash_rows, gold_rows, lot_rows=(), trip_id=None):
     gold = []
     for r in gold_rows:
         g_issued, g_returned = Decimal(str(r["issued"])), Decimal(str(r["returned"]))
-        g_melted = Decimal(str(r.get("melted", 0) or 0))
+        g_melted, g_heat = Decimal(str(r.get("melted", 0) or 0)), Decimal(str(r.get("heat_delta", 0) or 0))
         gold.append({"karat_id": int(r["karat_id"]), "karat_value": int(r["karat_value"]),
                      "designation": r.get("designation", UNCLASSIFIED), "issued": g_issued, "returned": g_returned,
-                     "melted": g_melted, "outstanding": g_issued - g_returned - g_melted})
+                     "melted": g_melted, "heat_delta": g_heat, "outstanding": g_issued - g_returned - g_melted + g_heat})
     lots = [{"lot_id": str(r["id"]), "entry_id": str(r["entry_id"]), "lot_no": int(r["lot_no"]), "kind": r["lot_kind"],
              "label": r.get("label") or "", "weight": Decimal(str(r["weight_grams"])),
              "fineness": None if r.get("fineness_permille") is None else Decimal(str(r["fineness_permille"])),
@@ -327,9 +333,11 @@ class MarketTripService:
                 raise TripError("TRIP_NOT_FOUND", "العهدة غير موجودة.")
             custody = self._custody(repository, trip_id)
             entries, events, melts = repository.entries(trip_id), repository.events(trip_id), repository.melts(trip_id)
+            heats = repository.heats(trip_id)
         return {"trip": self._trip_row(trip, custody), "custody": custody,
                 "entries": [self._entry_row(e) for e in entries],
                 "melts": [self._melt_row(m) for m in melts],
+                "heats": [self._heat_row(h) for h in heats], "heat_totals": self._heat_totals(heats),
                 "events": [{"type": e["event_type"], "reason": e["reason"] or "", "at": e["occurred_at"],
                             "actor": e["actor_name"] or ""} for e in events]}
 
@@ -682,6 +690,134 @@ class MarketTripService:
                 raise PermissionError("انتهت جلسة الدخول.")
         return {"entry_id": str(entry_id), "trip_id": str(trip_id), "trip_code": trip_code(trip_id), "code": code, "kind": MELT,
                 "created": False, "duplicate": False, "analysis": analysis}
+
+    @staticmethod
+    def _heat_row(h):
+        """One heating document with its raw measurements (kept after closure and after reversal)."""
+        lines = [{"karat_id": int(l["karat_id"]), "karat_value": int(l["karat_value"]), "input": Decimal(str(l["input_weight_grams"])),
+                  "output": Decimal(str(l["output_weight_grams"])), "difference": Decimal(str(l["difference_grams"]))}
+                 for l in h["lines"]]
+        return {"entry_id": str(h["entry_id"]), "code": entry_code(h["trip_id"], h["entry_no"]), "date": h["entry_date"],
+                "workshop": h["workshop"], "reference": h["reference"] or "", "gain_explanation": h["gain_explanation"] or "",
+                "notes": h["notes"] or "", "actor": h.get("actor_name") or "", "at": h["occurred_at"], "lines": lines,
+                "total_input": Decimal(str(h["total_input_grams"])), "total_output": Decimal(str(h["total_output_grams"])),
+                "total_difference": Decimal(str(h["total_difference_grams"])),
+                "reversed": h["reversal_id"] is not None,
+                "reversal_code": None if h["reversal_id"] is None else correction_code("FULL_REVERSAL", h["reversal_id"]),
+                "reversal_reason": h["reversal_reason"]}
+
+    @staticmethod
+    def _heat_totals(heats):
+        """The cumulative EFFECTIVE heating per karat: the sum of the non-reversed documents' own differences. Each document is
+        independent evidence (Logo custody is pooled per karat; nothing links one heat's output to the next heat's input)."""
+        totals = {}
+        for h in heats:
+            if h["reversal_id"] is not None:
+                continue
+            for l in h["lines"]:
+                row = totals.setdefault(int(l["karat_id"]), {"karat_id": int(l["karat_id"]), "karat_value": int(l["karat_value"]),
+                                                             "input": ZERO_WEIGHT, "output": ZERO_WEIGHT, "difference": ZERO_WEIGHT})
+                row["input"] += Decimal(str(l["input_weight_grams"]))
+                row["output"] += Decimal(str(l["output_weight_grams"]))
+                row["difference"] += Decimal(str(l["difference_grams"]))
+        return sorted(totals.values(), key=lambda r: -r["karat_value"])
+
+    # ------------------------------------------------------------------ Logo heating (042)
+    @staticmethod
+    def _heat_lines(lines):
+        """Validated {karat_id: (input grams, output grams)}: one line per karat, both weights positive. A fully blank line is unused."""
+        plan = {}
+        for line in lines or []:
+            raw_karat = str(line.get("karat_id") if isinstance(line, dict) else line[0]).strip()
+            raw_in = line.get("input_weight") if isinstance(line, dict) else line[1]
+            raw_out = line.get("output_weight") if isinstance(line, dict) else line[2]
+            if raw_karat in ("", "None") and not str(raw_in or "").strip() and not str(raw_out or "").strip():
+                continue
+            try:
+                karat_id = int(raw_karat)
+            except ValueError:
+                raise TripError("KARAT_REQUIRED", "اختر عيار كل سطر من سطور الحمّية.") from None
+            if karat_id in plan:
+                raise TripError("KARAT_DUPLICATE", "العيار نفسه مكرر: سطر واحد لكل عيار في المستند الواحد.")
+            before, after = parse_weight(raw_in), parse_weight(raw_out)
+            if before == 0:
+                raise TripError("HEAT_INPUT_REQUIRED", "وزن اللوجو المُسخَّن قبل الحمّية مطلوب بقيمة موجبة.")
+            if after == 0:
+                raise TripError("HEAT_OUTPUT_REQUIRED", "الوزن الفعلي بعد الحمّية مطلوب بقيمة موجبة.")
+            plan[karat_id] = (before, after)
+        if not plan:
+            raise TripError("HEAT_LINES_REQUIRED", "أدخل سطر حمّية واحدًا على الأقل: العيار والوزن قبل وبعد الحمّية.")
+        return plan
+
+    def heat(self, trip_id, lines, entry_date, workshop, reference, gain_explanation, notes, request_key, *, _expected_actor=None):
+        """HEAT LOGO custody of an OPEN trip: the declared processed grams leave and the actual resulting grams return under the same
+        karat and LOGO designation. Weights only; permanent difference; no cash, Scrap, supplier, inventory or lot effect."""
+        session_actor = self._actor(_expected_actor)
+        if str(trip_id or "").strip() == "":
+            raise TripError("TRIP_NOT_FOUND", "اختر العهدة.")
+        trip_number = _trip_id(trip_id)
+        plan = self._heat_lines(lines)
+        heated_on = _entry_date(entry_date)
+        workshop_text = _text(workshop, WORKSHOP_MAX, "اسم الورشة أو المسؤول", required=True)
+        reference_text, notes_text = _text(reference, ASSAY_MAX, "مرجع الحمّية"), _text(notes, NOTES_MAX, "الملاحظات")
+        gain_text = _text(gain_explanation, NOTES_MAX, "سبب زيادة الوزن")
+        key = _key(request_key)
+        if any(after > before for before, after in plan.values()) and not gain_text:
+            raise TripError("GAIN_EXPLANATION_REQUIRED", "الوزن بعد الحمّية أكبر من الوزن قبلها في أحد السطور: اكتب سبب زيادة الوزن.")
+        digest = hashlib.sha256(json.dumps(
+            [HEAT, trip_number, sorted((k, str(b), str(a)) for k, (b, a) in plan.items()), heated_on.isoformat(), workshop_text,
+             reference_text, gain_text, notes_text], ensure_ascii=False).encode()).hexdigest()
+        try:
+            return self._post_heat(session_actor, trip_number, plan, heated_on, workshop_text, reference_text, gain_text, notes_text, key, digest)
+        except IntegrityError as exc:
+            if not _is_request_key_violation(exc):
+                raise
+            return self._replay(session_actor, key, digest, exc)
+
+    def _post_heat(self, session_actor, trip_id, plan, heated_on, workshop, reference, gain, notes, key, digest):
+        with self._transaction() as connection:
+            actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+            repository = self._repository(connection)
+            trip, replay = self._open_trip(repository, trip_id, key, digest, actor)          # the trip lock is the only lock
+            if replay is not None:
+                return replay
+            karats = {}
+            for karat_id in sorted(plan):
+                karat = repository.karat(karat_id)
+                if karat is None or not karat["is_active"]:
+                    raise TripError("KARAT_NOT_FOUND", "العيار غير موجود أو غير نشط.")
+                karats[karat_id] = karat
+            custody = self._custody(repository, trip_id)                                       # read under the trip lock
+            by_key = {(g["karat_id"], g["designation"]): g["outstanding"] for g in custody["gold"]}
+            for karat_id in sorted(plan):
+                available = by_key.get((karat_id, LOGO_DESIGNATION), ZERO_WEIGHT)
+                if plan[karat_id][0] > available:
+                    others = [f"{DESIGNATION_TEXT[d]} {by_key[(karat_id, d)]:,.3f}" for d in (MELT_DESIGNATION, UNCLASSIFIED)
+                              if by_key.get((karat_id, d), ZERO_WEIGHT) > 0]
+                    raise TripError("HEAT_EXCEEDS_CUSTODY",
+                                    f"المتاح للحمّية في العهدة من لوجو عيار {karats[karat_id]['karat_value']} هو {available:,.3f} جرام فقط."
+                                    + (f" (ذهب هذا العيار الآخر لا يُحمَّى: {'، '.join(others)} جرام)." if others else ""))
+            total_in = sum((b for b, _ in plan.values()), ZERO_WEIGHT)
+            total_out = sum((a for _, a in plan.values()), ZERO_WEIGHT)
+            now = repository.db_now()
+            entry_no = repository.next_entry_no(trip_id)
+            entry_id = repository.insert_entry(trip_id=trip_id, entry_no=entry_no, kind=HEAT, entry_date=heated_on, notes=notes,
+                                               key=key, digest=digest, actor=actor, now=now)
+            code = entry_code(trip_id, entry_no)
+            repository.insert_heat(entry_id=entry_id, workshop=workshop, reference=reference, gain_explanation=gain,
+                                   total_input=total_in, total_output=total_out)
+            for karat_id, (before, after) in sorted(plan.items()):
+                repository.insert_heat_line(entry_id=entry_id, karat_id=karat_id, input_weight=before, output_weight=after)
+            repository.audit(actor=actor, event_type="MARKET_TRIP_HEAT", entity_id=entry_id, reference=code,
+                             description=f"{KIND_TEXT[HEAT]} {code} — {trip_code(trip_id)}",
+                             metadata={"trip_id": trip_id, "kind": HEAT, "date": heated_on.isoformat(), "workshop": workshop,
+                                       "lines": {str(karats[k]["karat_value"]): {"input": str(b), "output": str(a), "difference": str(a - b)}
+                                                 for k, (b, a) in plan.items()},
+                                       "total_difference": str(total_out - total_in), "employee_id": actor.employee_id}, now=now)
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        return {"entry_id": str(entry_id), "trip_id": str(trip_id), "trip_code": trip_code(trip_id), "code": code, "kind": HEAT,
+                "created": False, "duplicate": False, "difference": total_out - total_in}
 
     # ------------------------------------------------------------------ lot returns to the shop (M2)
     def shop_lots(self, *, _expected_actor=None):

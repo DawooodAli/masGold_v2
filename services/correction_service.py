@@ -345,10 +345,18 @@ class CorrectionService:
                 gold = trips.custody_gold(source["trip_id"], exclude_entry_id=source_id)
                 # Per (karat, designation): later returns AND melts consume the issued custody (a melt only the MELT designation).
                 if Decimal(str(cash[0])) - Decimal(str(cash[1])) < 0 or any(
-                        Decimal(str(g["issued"])) - Decimal(str(g["returned"])) - Decimal(str(g.get("melted", 0) or 0)) < 0
+                        Decimal(str(g["issued"])) - Decimal(str(g["returned"])) - Decimal(str(g.get("melted", 0) or 0))
+                        + Decimal(str(g.get("heat_delta", 0) or 0)) < 0
                         for g in gold):
                     plan.blockers.append(("DEPENDENT_RETURN_EXISTS",
-                                          "لا يمكن عكس الإخراج لأن رجوعًا أو سبكًا مسجلًا بعده يعتمد عليه — اعكس الرجوع أو السبك أولاً."))
+                                          "لا يمكن عكس الإخراج لأن رجوعًا أو سبكًا أو حمّية مسجلة بعده يعتمد عليه — اعكسها أولاً."))
+                # Logo is pooled per karat: a later effective heating of an issued LOGO karat depends on this issue (newest first), even
+                # when the balance would stay non-negative.
+                logo_karats = [int(leg["karat_id"]) for leg in trips.entry_gold_legs(source_id) if leg["designation"] == "LOGO"]
+                for dependent in trips.later_heat_entries(source["trip_id"], source["entry_no"], logo_karats):
+                    plan.blockers.append(("DEPENDENT_HEAT_EXISTS",
+                                          "لا يمكن عكس الإخراج لأن حمّية لوجو مسجلة بعده على نفس العيار "
+                                          f"({entry_code(dependent['trip_id'], dependent['entry_no'])}) — اعكسها أولاً."))
             if source["entry_kind"] == "LOT_RETURN":
                 # The exact stored grams leave the shop lot stock again; the custody grams return because this entry stops counting.
                 for line in trips.entry_lot_returns(source_id):
@@ -368,6 +376,23 @@ class CorrectionService:
                 if any(Decimal(str(l["outstanding_grams"])) < 0 for l in trips.custody_lots(source["trip_id"], exclude_entry_id=source_id)):
                     plan.blockers.append(("DEPENDENT_LOT_RETURN_EXISTS",
                                           "لا يمكن عكس إخراج السبكة لأن رجوعها إلى المحل مسجل بعده — اعكس الرجوع أولاً."))
+            if source["entry_kind"] == "HEAT":
+                # Nothing is posted outside the custody ledger (no cash, Scrap, supplier or lot movement): only the dependencies are
+                # checked, newest first. The heat row and its measurements stay as history.
+                karats = [int(l["karat_id"]) for l in trips.entry_heat_lines(source_id)]
+                for dependent in trips.later_heat_entries(source["trip_id"], source["entry_no"], karats):
+                    plan.blockers.append(("DEPENDENT_HEAT_EXISTS",
+                                          "لا يمكن عكس الحمّية لأن حمّية لوجو أحدث على نفس العيار مسجلة بعدها "
+                                          f"({entry_code(dependent['trip_id'], dependent['entry_no'])}) — اعكسها أولاً."))
+                for dependent in trips.later_logo_returns(source["trip_id"], source["entry_no"], karats):
+                    plan.blockers.append(("DEPENDENT_LOGO_RETURN_EXISTS",
+                                          "لا يمكن عكس الحمّية لأن رجوع لوجو من نفس العيار مسجل بعدها "
+                                          f"({entry_code(dependent['trip_id'], dependent['entry_no'])}) — اعكس الرجوع أولاً."))
+                for g in trips.custody_gold(source["trip_id"], exclude_entry_id=source_id):
+                    if g["designation"] == "LOGO" and Decimal(str(g["issued"])) - Decimal(str(g["returned"])) - Decimal(
+                            str(g.get("melted", 0) or 0)) + Decimal(str(g.get("heat_delta", 0) or 0)) < 0:
+                        plan.blockers.append(("DEPENDENT_RETURN_EXISTS",
+                                              "لا يمكن عكس الحمّية لأن رصيد اللوجو بعد عكسها يصبح سالبًا — اعكس ما يعتمد عليها أولاً."))
             if source["entry_kind"] == "MELT":
                 # A melt can be undone only while its lots have no unreversed downstream use (their own CREATE is not one).
                 for dependent in trips.lot_downstream(source_id):
