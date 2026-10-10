@@ -11,12 +11,16 @@ from uuid import uuid4
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
 from app.formatting import date_text, datetime_text, grams, ltr, money, number
+from app.viewmodels.supplier_viewmodel import making_position_text
+from services import supplier_rules as rules
 
-LIMITATION = ("في هذه المرحلة لا توجد عمليات بيع أو تسوية للموردين: تُغلق العهدة فقط بعد إرجاع كل النقدية وكل الذهب الذي أُخرج منها "
+LIMITATION = ("في هذه المرحلة لا توجد عمليات بيع أو تسوية ذهب للموردين (يمكن فقط دفع مصنعيات المورد نقدًا من العهدة): تُغلق العهدة فقط بعد إرجاع كل النقدية وكل الذهب الذي أُخرج منها "
               "وإرجاع كل شحنات السبك إلى المحل. النقدية والذهب في العهدة ملك للمحل لكنهما غير متاحين داخله حتى يُرجَعا.")
 STATUS_TEXT = {"OPEN": "مفتوحة", "CLOSED": "مغلقة"}
+PAYMENT_REVERSAL_NOTE = ("عكس دفع المصنعيات يسجّل أن المبلغ عاد فعلًا إلى عهدة السوق (بالمبلغ المخزّن في الدفعة) ويعيد مستحقات المورد بنفس المبلغ. "
+                         "لا يُعاد المبلغ تلقائيًا إلى الخزنة الرئيسية: سجّل «تسجيل رجوع» من العهدة عند إرجاعه فعلًا.")
 KIND_TEXT = {"ISSUE": "إخراج عهدة", "RETURN": "رجوع من العهدة", "MELT": "سبك", "LOT_RETURN": "رجوع ناتج السبك", "LOT_ISSUE": "إخراج سبكة من المحل",
-             "HEAT": "حمّية اللوجو"}
+             "HEAT": "حمّية اللوجو", "SUPPLIER_PAY": "دفع مصنعيات من العهدة"}
 DESIGNATION_TEXT = {"MELT": "للسبك", "LOGO": "لوجو", "UNCLASSIFIED": "غير مصنف (قبل التصنيف)"}
 DESIGNATION_CHOICES = [{"id": "MELT", "text": "للسبك"}, {"id": "LOGO", "text": "لوجو"}]
 LOT_TEXT = {"MAIN": "الناتج الرئيسي", "RESIDUE": "راسب"}
@@ -49,6 +53,7 @@ class MarketTripViewModel(QObject):
     changed = Signal()
     entryPosted = Signal(str)            # the entry code: the entry dialog can close
     actionDone = Signal(str)             # close / reopen / reversal finished (the dialogs can close)
+    supplierPaymentChanged = Signal()    # a supplier payment from custody was posted or reversed: the supplier views reload from the database
     custodyChanged = Signal()            # cash / Scrap really moved: every balance view reloads from the database
 
     def __init__(self, session, service=None, parent=None):
@@ -58,6 +63,7 @@ class MarketTripViewModel(QObject):
         self._shutdown = False
         self._trips, self._detail, self._context, self._shop_lots = [], {}, {}, []
         self._selected, self._error, self._message = "", "", ""
+        self._reversing_payment = False
 
     # ------------------------------------------------------------ plumbing
     def _service_instance(self):
@@ -177,7 +183,7 @@ class MarketTripViewModel(QObject):
             return
         text = self._done_text
         if isinstance(result, dict) and result.get("code"):
-            text = f"{text} {result['code']}"
+            text = f"{text} {result['code']}" + (f" ({result['payment_code']})" if result.get("payment_code") else "")
             if result.get("duplicate"):
                 text = f"{self._done_text} {result['code']} (مسجلة من قبل)"
         self._message = text
@@ -187,7 +193,10 @@ class MarketTripViewModel(QObject):
         # Notified only after the transaction succeeded; a failing refresh belongs to the view that failed, never to this write.
         if self._moved:
             self.custodyChanged.emit()
-        if self._operation in ("issue", "create", "return", "melt", "lotreturn", "lotissue", "heat"):
+        if self._operation == "paysupplier" or (self._operation == "reverse" and self._reversing_payment):
+            self.supplierPaymentChanged.emit()
+        self._reversing_payment = False
+        if self._operation in ("issue", "create", "return", "melt", "lotreturn", "lotissue", "heat", "paysupplier"):
             self.entryPosted.emit(result["code"])
         else:
             self.actionDone.emit(self._operation)
@@ -272,8 +281,15 @@ class MarketTripViewModel(QObject):
     def reopenTrip(self, trip_id, reason):
         self._write("reopen", "تمت إعادة فتح العهدة", lambda s, a: s.reopen(trip_id, reason, _expected_actor=a), False)
 
+    @Slot(str, str, str, str, str, str, str)
+    def paySupplier(self, trip_id, supplier_id, amount, payment_date, reference, notes, request_key):
+        """Pay a supplier's making with cash already in this custody (no Main Safe / bank movement; the service re-checks every right)."""
+        self._write("paysupplier", "تم دفع مصنعيات من العهدة", lambda s, a: s.pay_supplier(
+            trip_id, supplier_id, amount, payment_date, reference, notes, request_key, _expected_actor=a), False)
+
     @Slot(str, str)
     def reverseEntry(self, entry_id, reason):
+        self._reversing_payment = any(e["id"] == str(entry_id) and e["kind"] == "SUPPLIER_PAY" for e in (self._detail or {}).get("entries", []))
         self._write("reverse", "تم عكس الحركة", lambda s, a: s.reverse(entry_id, reason, _expected_actor=a), True)
 
     # ------------------------------------------------------------ properties
@@ -345,6 +361,8 @@ class MarketTripViewModel(QObject):
                 "safeBalanceText": "" if safe is None else money(safe["balance"]),
                 "karats": [{"id": str(k["id"]), "text": f"عيار {k['karat_value']}"} for k in c["karats"]],
                 "designations": DESIGNATION_CHOICES,
+                "suppliers": [{"id": r["id"], "text": r["name"] + ("" if r["active"] else " (متوقف)") + " — "
+                               + making_position_text(rules.direction(r["making_balance"]), r["making_balance"])} for r in c.get("suppliers", [])],
                 "shop": [{"karat": s["karat_value"], "text": f"عيار {s['karat_value']}: المتاح {grams(s['available'])} جرام"
                           + (f" • محجوز لمراجعة المدير {grams(s['held'])}" if s["held"] > 0 else "")}
                          for s in c["shop_scrap"] if s["physical"] != 0 or s["available"] != 0]}
@@ -371,6 +389,7 @@ class MarketTripViewModel(QObject):
             "closeHint": "" if not is_open else ("كل العهدة عادت: يمكن إغلاق العهدة." if settled
                                                   else "لا يمكن الإغلاق قبل إرجاع المتبقي: " + outstanding_text(custody)),
             "cash": {"issued": money(custody["cash"]["issued"]), "returned": money(custody["cash"]["returned"]),
+                     "paid": money(custody["cash"]["paid"]), "hasPaid": custody["cash"]["paid"] != 0,
                      "outstanding": money(custody["cash"]["outstanding"]), "zero": custody["cash"]["outstanding"] == 0,
                      "outstandingValue": f"{custody['cash']['outstanding']:.2f}"},
             "gold": [{"karat": g["karat_value"], "karatId": str(g["karat_id"]), "designation": g["designation"],
@@ -395,6 +414,7 @@ class MarketTripViewModel(QObject):
             "lotNote": LOT_NOTE if custody["lots"] else "",
             "meltStock": melt_stock, "meltAvailable": is_open and bool(melt_stock), "returnLines": return_lines,
             "heatStock": heat_stock, "heatAvailable": is_open and bool(heat_stock),
+            "payAvailable": is_open and custody["cash"]["outstanding"] > 0,
             "outstandingText": outstanding_text(custody),
             "entries": [self._entry(e, is_open) for e in d["entries"]],
             "melts": [self._melt(m) for m in d.get("melts", [])],
@@ -413,11 +433,13 @@ class MarketTripViewModel(QObject):
         parts += [f"شحنة {l['lot_no']} من {l['code']}: {grams(l['weight'])} جرام (العيار {fineness_text(l['fineness'])})"
                   for l in e.get("lot_returns", []) + e.get("lot_issues", [])]
         return {"id": e["id"], "code": e["code"], "kind": e["kind"], "kindText": KIND_TEXT[e["kind"]],
-                "what": " • ".join(parts) if parts else ("انظر تفاصيل السبك أدناه" if e["kind"] == "MELT"
+                "what": (f"{e['supplier_payment']['code']} — المورد {e['supplier_payment']['supplier_name']}: {money(e['supplier_payment']['amount'])}"
+                         if e.get("supplier_payment") else " • ".join(parts)) if parts or e.get("supplier_payment") else ("انظر تفاصيل السبك أدناه" if e["kind"] == "MELT"
                                                      else "انظر تفاصيل الحمّية أدناه" if e["kind"] == "HEAT" else ""),
                 "date": date_text(e["date"]), "time": datetime_text(e["at"]), "actor": e["actor"],
                 "notes": e["notes"], "reversed": e["reversed"],
                 "state": f"معكوسة بالعملية {e['reversal_code']}" if e["reversed"] else "",
+                "reverseNote": PAYMENT_REVERSAL_NOTE if e["kind"] == "SUPPLIER_PAY" else "",
                 "reason": e["reversal_reason"] or "", "canReverse": trip_open and not e["reversed"]}
 
     @staticmethod

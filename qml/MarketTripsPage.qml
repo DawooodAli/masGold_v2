@@ -22,7 +22,7 @@ Item {
 
     Connections {
         target: page.vm
-        function onEntryPosted(code) { entryDialog.close(); meltDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close() }
+        function onEntryPosted(code) { entryDialog.close(); meltDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close(); payDialog.close() }
         function onActionDone(operation) { reasonDialog.close() }
     }
 
@@ -287,7 +287,7 @@ Item {
             Txt { objectName: "tripMessage"; Layout.fillWidth: true; visible: !!page.vm && page.vm.message !== ""
                   text: page.vm ? page.vm.message : ""; color: theme.green; wrapMode: Text.WordWrap; elide: Text.ElideNone }
             Txt { objectName: "tripError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== "" && !entryDialog.visible && !reasonDialog.visible && !meltDialog.visible
-                           && !lotReturnDialog.visible && !lotIssueDialog.visible && !heatDialog.visible
+                           && !lotReturnDialog.visible && !lotIssueDialog.visible && !heatDialog.visible && !payDialog.visible
                   text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
 
             Txt {
@@ -335,6 +335,9 @@ Item {
                         Btn { objectName: "lotReturnButton"; text: "رجوع ناتج السبك"; visible: !!page.detail.open
                               enabled: !!page.detail.lotReturnAvailable && !!page.vm && !page.vm.writing
                               onClicked: lotReturnDialog.openFor(page.detail.id) }
+                        Btn { objectName: "custodyPayButton"; text: "دفع مصنعيات من العهدة"; visible: !!page.detail.open
+                              enabled: !!page.detail.payAvailable && !!page.vm && !page.vm.writing
+                              onClicked: payDialog.openFor(page.detail.id) }
                         Btn { objectName: "heatButton"; text: "حمّية اللوجو"; visible: !!page.detail.open
                               enabled: !!page.detail.heatAvailable && !!page.vm && !page.vm.writing
                               onClicked: heatDialog.openFor(page.detail.id) }
@@ -363,7 +366,7 @@ Item {
                             Item { Layout.preferredWidth: 150 }
                             Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: "أُخرج"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
                             Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: "رجع"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
-                            Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: "سُبك"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+                            Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: "سُبك / مدفوع"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
                             Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: "المتبقي"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
                         }
                         FigureRow {
@@ -371,7 +374,7 @@ Item {
                             label: "النقدية"
                             issued: page.detail.cash ? page.detail.cash.issued : ""
                             returned: page.detail.cash ? page.detail.cash.returned : ""
-                            melted: "—"
+                            melted: page.detail.cash && page.detail.cash.hasPaid ? page.detail.cash.paid : "—"
                             outstanding: page.detail.cash ? page.detail.cash.outstanding : ""
                             zero: page.detail.cash ? page.detail.cash.zero : true
                         }
@@ -465,7 +468,7 @@ Item {
                                         visible: !!page.vm && modelData.canReverse === true
                                         text: "عكس"
                                         accent: theme.red
-                                        onClicked: reasonDialog.openFor("REVERSE", modelData.id, modelData.code)
+                                        onClicked: reasonDialog.openFor("REVERSE", modelData.id, modelData.code, modelData.reverseNote)
                                     }
                                 }
                             }
@@ -820,6 +823,103 @@ Item {
                 }
                 Btn { objectName: "cancelTripEntryButton"; text: "إلغاء"; accent: theme.textSecondary
                       enabled: !!page.vm && !page.vm.writing; onClicked: entryDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- pay a supplier's making with custody cash (دفع مصنعيات من العهدة)
+    // The cash is already outside Main Safe: nothing moves in Main Safe or a bank; the custody cash and the supplier's making position drop together.
+    Popup {
+        id: payDialog
+        objectName: "tripSupplierPayDialog"
+        property string tripId: ""
+        property string requestKey: ""
+        readonly property var supplierChoices: [{ id: "", text: "اختر المورد" }].concat(page.ctx.suppliers || [])
+        function openFor(trip) {
+            if (!page.vm) return
+            tripId = trip
+            requestKey = page.vm.newRequestKey()
+            payDateField.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            payAmountField.text = ""
+            payReferenceField.text = ""
+            payNotesField.text = ""
+            paySupplierCombo.currentIndex = 0
+            page.vm.clearMessage()
+            page.vm.refresh()
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(560, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 520, 520)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; text: "دفع مصنعيات من العهدة" }
+            Txt { objectName: "custodyPayRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "يُدفع للمورد من النقدية الموجودة فعلًا في هذه العهدة ولا يتجاوز المتبقي منها. لا تتحرك الخزنة الرئيسية ولا أي حساب بنكي، وتنقص مستحقات المورد (المصنعيات) بنفس المبلغ ويمكن أن تصبح له رصيدًا دائنًا. لا يتغير حساب ذهب المورد." }
+            Flickable {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentHeight: payForm.implicitHeight
+                clip: true
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: payForm
+                    width: parent.width - 12
+                    spacing: 6
+                    Txt { objectName: "custodyPayOutstandingText"; Layout.fillWidth: true; color: theme.amber; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                          text: "النقدية المتبقية في العهدة: " + ((page.detail.cash || {}).outstanding || "—") }
+                    Txt { Layout.fillWidth: true; text: "المورد *" }
+                    Combo {
+                        id: paySupplierCombo
+                        objectName: "custodyPaySupplierCombo"
+                        Layout.fillWidth: true
+                        model: payDialog.supplierChoices
+                        textRole: "text"
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "المبلغ (ج) *" }
+                            Field { id: payAmountField; objectName: "custodyPayAmountField"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+                        }
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
+                            Field { id: payDateField; objectName: "custodyPayDateField"; Layout.fillWidth: true }
+                        }
+                    }
+                    Txt { Layout.fillWidth: true; text: "المرجع (اختياري)" }
+                    Field { id: payReferenceField; objectName: "custodyPayReferenceField"; Layout.fillWidth: true }
+                    Txt { Layout.fillWidth: true; text: "ملاحظات" }
+                    Field { id: payNotesField; objectName: "custodyPayNotesField"; Layout.fillWidth: true }
+                }
+            }
+            Txt { objectName: "custodyPayEntryError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmCustodyPayButton"
+                    text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "تسجيل الدفعة"
+                    primary: true
+                    enabled: paySupplierCombo.currentIndex > 0 && payAmountField.text.trim().length > 0 && payDateField.text.trim().length > 0
+                             && !!page.vm && !page.vm.writing
+                    onClicked: page.vm.paySupplier(payDialog.tripId, payDialog.supplierChoices[paySupplierCombo.currentIndex].id, payAmountField.text,
+                                                   payDateField.text, payReferenceField.text, payNotesField.text, payDialog.requestKey)
+                }
+                Btn { objectName: "cancelCustodyPayButton"; text: "إلغاء"; accent: theme.textSecondary
+                      enabled: !!page.vm && !page.vm.writing; onClicked: payDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }
@@ -1407,10 +1507,12 @@ Item {
         property string mode: "REVERSE"
         property string targetId: ""
         property string targetCode: ""
-        function openFor(kind, id, code) {
+        property string targetNote: ""
+        function openFor(kind, id, code, note) {
             mode = kind
             targetId = id
             targetCode = code
+            targetNote = note || ""
             reasonField.text = ""
             if (page.vm) page.vm.clearMessage()
             open()
@@ -1431,6 +1533,8 @@ Item {
                   text: reasonDialog.mode === "REVERSE"
                         ? "تبقى الحركة الأصلية في السجل وتُسجل حركات معاكسة مرتبطة بها، ويبقى تحليل السبك محفوظًا. لا يُعكس إخراج بعده رجوع أو سبك قائم، ولا يُعكس سبك رجعت شحنته إلى المحل قبل عكس الرجوع، ولا تُعكس حركة في عهدة مغلقة."
                         : "تعود العهدة مفتوحة لإخراج عهدة أو تسجيل رجوع أو عكس. لا تتغير أي أرصدة." }
+            Txt { objectName: "tripReasonNote"; Layout.fillWidth: true; visible: reasonDialog.mode === "REVERSE" && reasonDialog.targetNote !== ""
+                  text: reasonDialog.targetNote; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
             Txt { Layout.fillWidth: true; text: "السبب *" }
             Field { id: reasonField; objectName: "tripReasonField"; Layout.fillWidth: true }
             Txt { objectName: "tripReasonError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""

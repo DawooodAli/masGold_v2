@@ -139,7 +139,8 @@ class SupplierRepository(BaseRepository):
 
     def making_ledger(self, supplier_id, limit=200):
         """The making ledger with its running balance over the WHOLE ledger. A payment row also carries its method,
-        account and reversal (036); a reversal row carries the payment reference it restores."""
+        account and reversal (036; a payment made from market custody names its custody entry and is reversed by the reversal of
+        that entry, 043); a reversal row carries the payment reference it restores."""
         return self._fetch_all(
             """
             SELECT x.* FROM (
@@ -147,7 +148,10 @@ class SupplierRepository(BaseRepository):
                        m.source_type, m.source_id, m.source_reference, m.description, u.display_name AS actor_name,
                        SUM(m.amount_delta) OVER (ORDER BY m.occurred_at, m.id) AS balance_after,
                        p.id AS payment_id, p.payment_method, ca.name AS cash_account_name, ba.name AS bank_account_name,
-                       c.id AS reversal_id, rc.source_id AS reversed_payment_id, rc.source_reference AS reversed_reference
+                       c.id AS reversal_id, te.trip_id AS custody_trip_id, te.entry_no AS custody_entry_no,
+                       IF(rc.source_type = 'SUPPLIER_MAKING_PAYMENT', rc.source_id, rl.payment_id) AS reversed_payment_id,
+                       IF(rc.source_type = 'SUPPLIER_MAKING_PAYMENT', rc.source_reference, NULL) AS reversed_reference,
+                       re.trip_id AS reversed_custody_trip_id, re.entry_no AS reversed_custody_entry_no
                 FROM supplier_making_movements m
                 JOIN supplier_making_movement_types t ON t.id = m.movement_type_id
                 LEFT JOIN users u ON u.id = m.created_by_user_id
@@ -155,10 +159,15 @@ class SupplierRepository(BaseRepository):
                      AND p.id = m.source_id
                 LEFT JOIN cash_accounts ca ON ca.id = p.cash_account_id
                 LEFT JOIN bank_accounts ba ON ba.id = p.bank_account_id
-                LEFT JOIN transaction_corrections c ON c.source_type = 'SUPPLIER_MAKING_PAYMENT' AND c.source_id = p.id
-                     AND c.correction_type = 'FULL_REVERSAL'
+                LEFT JOIN market_trip_supplier_payments tl ON tl.payment_id = p.id
+                LEFT JOIN market_trip_entries te ON te.id = tl.entry_id
+                LEFT JOIN transaction_corrections c ON c.correction_type = 'FULL_REVERSAL'
+                     AND ((c.source_type = 'SUPPLIER_MAKING_PAYMENT' AND c.source_id = p.id)
+                          OR (tl.entry_id IS NOT NULL AND c.source_type = 'MARKET_TRIP_ENTRY' AND c.source_id = tl.entry_id))
                 LEFT JOIN transaction_corrections rc ON t.code = 'PAYMENT_REVERSAL' AND m.source_type = 'TRANSACTION_CORRECTION'
                      AND rc.id = m.source_id
+                LEFT JOIN market_trip_supplier_payments rl ON rc.source_type = 'MARKET_TRIP_ENTRY' AND rl.entry_id = rc.source_id
+                LEFT JOIN market_trip_entries re ON re.id = rl.entry_id
                 WHERE m.supplier_id = %s
             ) x ORDER BY x.occurred_at DESC, x.id DESC LIMIT %s
             """, (_id(supplier_id), int(limit)))

@@ -1,4 +1,4 @@
-"""Market-trip custody (037, melting 039, lot returns 040, lot reissue 041, Logo heating 042): trips, their insert-only entries, and the cash / Scrap movements those entries post.
+"""Market-trip custody (037, melting 039, lot returns 040, lot reissue 041, Logo heating 042, supplier payments 043): trips, their insert-only entries, and the cash / Scrap movements those entries post.
 
 All writes use the caller's transaction and only INSERT (the trip header's `status` is the one updated column; every change
 of it is an insert-only event). Custody is never stored: it is derived from the entries that were not reversed.
@@ -11,6 +11,7 @@ from repositories.invoice_repository import _id
 SOURCE = "MARKET_TRIP_ENTRY"            # transaction_corrections.source_type and the cash / Scrap reference_type
 MAIN_SAFE = "MAIN_SAFE"
 ISSUE, RETURN, MELT, LOT_RETURN, LOT_ISSUE, HEAT = "ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT"
+SUPPLIER_PAY = "SUPPLIER_PAY"          # a supplier making payment made with custody cash (043)
 MELT_DESIGNATION, LOGO_DESIGNATION, UNCLASSIFIED = "MELT", "LOGO", "UNCLASSIFIED"     # the owner's decision on an issued gold line
 DESIGNATIONS = (MELT_DESIGNATION, LOGO_DESIGNATION, UNCLASSIFIED)
 MAIN_LOT, RESIDUE_LOT, CREATE_MOVEMENT = "MAIN", "RESIDUE", "CREATE"
@@ -370,7 +371,8 @@ class MarketTripRepository(BaseRepository):
 
     # ------------------------------------------------------------------ custody (derived, read under the trip lock)
     def custody_cash(self, trip_id, exclude_entry_id=None):
-        """(issued, returned) cash of the entries that were not reversed, as CURRENT (locking) reads."""
+        """(issued, returned, paid to suppliers) cash of the entries that were not reversed, as CURRENT (locking) reads. A supplier
+        payment made from custody consumes custody cash without any Main Safe movement."""
         row = self._fetch_one(
             f"""
             SELECT COALESCE(SUM(IF(e.entry_kind = 'ISSUE', c.amount, 0)), 0) AS issued,
@@ -378,7 +380,37 @@ class MarketTripRepository(BaseRepository):
             FROM market_trip_entries e JOIN market_trip_entry_cash c ON c.entry_id = e.id
             WHERE e.trip_id = %s AND e.id <> %s AND {_NOT_REVERSED} FOR SHARE
             """, (_id(trip_id), int(exclude_entry_id or 0)))
-        return row["issued"], row["returned"]
+        paid = self._fetch_one(
+            f"""
+            SELECT COALESCE(SUM(p.amount), 0) AS paid
+            FROM market_trip_entries e JOIN market_trip_supplier_payments p ON p.entry_id = e.id
+            WHERE e.trip_id = %s AND e.id <> %s AND {_NOT_REVERSED} FOR SHARE OF e, p
+            """, (_id(trip_id), int(exclude_entry_id or 0)))
+        return row["issued"], row["returned"], paid["paid"]
+
+    # ------------------------------------------------------------------ supplier payments from custody (043)
+    def suppliers(self):
+        """Every supplier (an inactive one can still be paid) with its current net making position (delta > 0: the shop owes it)."""
+        return self._fetch_all(
+            "SELECT s.id, s.name, s.is_active, COALESCE((SELECT SUM(m.amount_delta) FROM supplier_making_movements m "
+            "WHERE m.supplier_id = s.id), 0) AS making_balance FROM suppliers s ORDER BY s.is_active DESC, s.name, s.id")
+
+    def insert_supplier_payment_link(self, *, entry_id, payment_id, supplier_id, amount):
+        self._execute("INSERT INTO market_trip_supplier_payments (entry_id, payment_id, supplier_id, amount) VALUES (%s, %s, %s, %s)",
+                      (_id(entry_id), _id(payment_id), int(supplier_id), amount))
+
+    def entry_supplier_payment(self, entry_id):
+        """The payment a SUPPLIER_PAY entry made (None for any other entry)."""
+        return self._fetch_one(
+            "SELECT l.entry_id, l.payment_id, l.supplier_id, l.amount, s.name AS supplier_name FROM market_trip_supplier_payments l "
+            "JOIN suppliers s ON s.id = l.supplier_id WHERE l.entry_id = %s", (_id(entry_id),))
+
+    def payment_entry(self, payment_id):
+        """The custody entry that made a supplier payment (None for a direct cash / bank payment), with its stored request facts."""
+        return self._fetch_one(
+            "SELECT l.entry_id, l.supplier_id, l.amount, e.trip_id, e.entry_no, e.request_hash, e.performed_by_user_id "
+            "FROM market_trip_supplier_payments l JOIN market_trip_entries e ON e.id = l.entry_id WHERE l.payment_id = %s",
+            (_id(payment_id),))
 
     def custody_gold(self, trip_id, exclude_entry_id=None):
         """Per (karat, designation): grams issued, returned and consumed by melts, over the entries that were not reversed, plus the
@@ -445,6 +477,7 @@ class MarketTripRepository(BaseRepository):
                 "SELECT li.lot_id, li.weight_grams, l.lot_no, l.lot_kind, l.fineness_permille, me.trip_id, me.entry_no AS melt_entry_no "
                 "FROM market_trip_lot_issues li JOIN market_trip_lots l ON l.id = li.lot_id "
                 "JOIN market_trip_entries me ON me.id = l.entry_id WHERE li.entry_id = %s ORDER BY li.lot_id", (int(row["id"]),))
+            row["supplier_payment"] = self.entry_supplier_payment(row["id"])
             row["gold"] = self._fetch_all(
                 "SELECT g.karat_id, k.karat_value, g.designation, g.weight_grams FROM market_trip_entry_gold g "
                 "JOIN karats k ON k.id = g.karat_id WHERE g.entry_id = %s ORDER BY k.karat_value DESC, g.designation", (int(row["id"]),))

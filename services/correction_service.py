@@ -117,6 +117,7 @@ class _Plan:
     making: list = field(default_factory=list)           # (supplier id, signed making delta, movement code)
     lot_returns: list = field(default_factory=list)      # (lot id, grams) a LOT_RETURN reversal takes back out of the shop lot stock
     lot_issues: list = field(default_factory=list)       # (lot id, grams) a LOT_ISSUE reversal puts back into the shop lot stock
+    extra_permission: str = ""                           # a right required ON TOP of the source's own (a custody supplier payment)
 
 
 def _reason(text):
@@ -228,6 +229,10 @@ class CorrectionService:
                 raise CorrectionError("SOURCE_NOT_FOUND", "حركة العهدة غير موجودة.")
             if lock:                                            # the entry's own lock order: trip → MAIN_SAFE → Scrap
                 repo.trip(source["trip_id"], lock=True)
+                payment_link = repo.entry_supplier_payment(source_id)         # trip -> supplier (the payment's own order)
+                if payment_link is not None:
+                    from repositories.supplier_payment_repository import SupplierPaymentRepository as _Suppliers
+                    _Suppliers(connection).get_supplier(payment_link["supplier_id"], lock=True)
                 leg = repo.entry_cash_leg(source_id)
                 if leg is not None:
                     FinancialAccountRepository(connection).account("CASH", leg["cash_account_id"], lock=True)
@@ -252,7 +257,7 @@ class CorrectionService:
                 accounts = FinancialAccountRepository(connection)
                 if source["payment_method"] == "CASH":
                     accounts.account("CASH", source["cash_account_id"], lock=True)
-                else:
+                elif source["payment_method"] == "BANK":
                     accounts.account("BANK", source["bank_account_id"], lock=True)
                 source = repo.source(source_id, lock=True)
             reference = payment_code(source_id)
@@ -344,7 +349,7 @@ class CorrectionService:
                 cash = trips.custody_cash(source["trip_id"], exclude_entry_id=source_id)
                 gold = trips.custody_gold(source["trip_id"], exclude_entry_id=source_id)
                 # Per (karat, designation): later returns AND melts consume the issued custody (a melt only the MELT designation).
-                if Decimal(str(cash[0])) - Decimal(str(cash[1])) < 0 or any(
+                if Decimal(str(cash[0])) - Decimal(str(cash[1])) - Decimal(str(cash[2])) < 0 or any(
                         Decimal(str(g["issued"])) - Decimal(str(g["returned"])) - Decimal(str(g.get("melted", 0) or 0))
                         + Decimal(str(g.get("heat_delta", 0) or 0)) < 0
                         for g in gold):
@@ -376,6 +381,17 @@ class CorrectionService:
                 if any(Decimal(str(l["outstanding_grams"])) < 0 for l in trips.custody_lots(source["trip_id"], exclude_entry_id=source_id)):
                     plan.blockers.append(("DEPENDENT_LOT_RETURN_EXISTS",
                                           "لا يمكن عكس إخراج السبكة لأن رجوعها إلى المحل مسجل بعده — اعكس الرجوع أولاً."))
+            if source["entry_kind"] == "SUPPLIER_PAY":
+                # The stored making movement is restored (never a recomputed amount) and the entry stops consuming custody cash. Nothing
+                # moves in Main Safe or a bank: the money is recorded as actually back in custody (return it with a normal custody return).
+                from repositories.supplier_payment_repository import REVERSAL_MOVEMENT, SupplierPaymentRepository
+                link = trips.entry_supplier_payment(source_id)
+                movement = None if link is None else SupplierPaymentRepository(connection).payment_making_movement(link["payment_id"])
+                if movement is None:
+                    plan.blockers.append(("PAYMENT_MOVEMENT_MISSING", "حركة المصنعيات الأصلية للدفعة غير موجودة."))
+                else:
+                    plan.making.append((str(movement["supplier_id"]), -Decimal(str(movement["amount_delta"])), REVERSAL_MOVEMENT))
+                plan.extra_permission = SMP_REVERSE_PERMISSION
             if source["entry_kind"] == "HEAT":
                 # Nothing is posted outside the custody ledger (no cash, Scrap, supplier or lot movement): only the dependencies are
                 # checked, newest first. The heat row and its measurements stay as history.
@@ -399,7 +415,15 @@ class CorrectionService:
                     plan.blockers.append(("DEPENDENT_LOT_USE_EXISTS",
                                           "لا يمكن عكس السبك لأن شحنة ناتجة عنه استُخدمت في الحركة "
                                           f"{entry_code(dependent['trip_id'], dependent['entry_no'])} — اعكسها أولاً."))
-        if source_type == SMP:
+        if source_type == SMP and source["payment_method"] == "CUSTODY":
+            # Paid with market-custody cash: the custody entry is the only reversal path (it also restores the custody cash).
+            from repositories.market_trip_repository import MarketTripRepository, entry_code
+            entry = MarketTripRepository(connection).payment_entry(source_id)
+            plan.blockers.append(("CUSTODY_PAYMENT_REVERSE_FROM_TRIP",
+                                  "هذه الدفعة سُدِّدت من عهدة السوق"
+                                  + ("" if entry is None else f" ({entry_code(entry['trip_id'], entry['entry_no'])})")
+                                  + ": اعكسها من حركة العهدة نفسها (دفع مصنعيات من العهدة) من صفحة عهدة السوق."))
+        elif source_type == SMP:
             # The exact stored making movement is restored (never a recomputed amount): the payment's negative delta, negated.
             from repositories.supplier_payment_repository import REVERSAL_MOVEMENT, SupplierPaymentRepository
             movement = SupplierPaymentRepository(connection).payment_making_movement(source_id)
@@ -690,6 +714,8 @@ class CorrectionService:
             corrections, invoices = self._corrections(connection), self._invoices(connection)
             customers = self._customers(connection)
             plan = self._plan(connection, source_type, source_id, lock=True)
+            if plan.extra_permission:                   # e.g. SUPPLIER_MAKING_PAY_REVERSE for a custody supplier payment
+                actor = self._authorization.require_permission(connection, session_actor, plan.extra_permission)
             if plan.blockers:
                 code, message = plan.blockers[0]
                 raise CorrectionError(code, message)

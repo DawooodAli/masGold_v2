@@ -26,6 +26,7 @@ from uuid import UUID
 from mysql.connector import IntegrityError
 
 from repositories.financial_account_repository import FinancialAccountRepository
+from repositories.market_trip_repository import entry_code
 from repositories.supplier_payment_repository import (BANK, CASH, PAYMENT_MOVEMENT, SOURCE, SupplierPaymentRepository,
                                                       payment_code)
 from services import supplier_rules as rules
@@ -38,7 +39,8 @@ from services.supplier_service import VIEW, authenticated_actor, clean_text
 PAY, REVERSE = "SUPPLIER_MAKING_PAY", "SUPPLIER_MAKING_PAY_REVERSE"
 METHODS = (CASH, BANK)
 REFERENCE_MAX, NOTES_MAX = 100, 1000
-METHOD_TEXT = {CASH: "نقدًا من الخزنة الرئيسية", BANK: "تحويل من حساب بنكي"}
+CUSTODY = "CUSTODY"                         # paid with cash already in an open market custody (043): never a direct payment method
+METHOD_TEXT = {CASH: "نقدًا من الخزنة الرئيسية", BANK: "تحويل من حساب بنكي", CUSTODY: "من عهدة السوق"}
 
 
 def _key(value):
@@ -143,11 +145,14 @@ class SupplierPaymentService:
     @staticmethod
     def document(row):
         bank = row["payment_method"] == BANK
+        custody = row["payment_method"] == CUSTODY
         return {"id": str(row["id"]), "code": payment_code(row["id"]), "supplier_id": str(row["supplier_id"]),
                 "supplier_name": row["supplier_name"], "method": row["payment_method"],
                 "method_text": METHOD_TEXT[row["payment_method"]],
-                "account_id": str(row["bank_account_id"] if bank else row["cash_account_id"]),
-                "account_name": row["bank_account_name"] if bank else row["cash_account_name"],
+                "account_id": "" if custody else str(row["bank_account_id"] if bank else row["cash_account_id"]),
+                "account_name": (entry_code(row["custody_trip_id"], row["custody_entry_no"]) if custody
+                                 else row["bank_account_name"] if bank else row["cash_account_name"]),
+                "custody_reference": entry_code(row["custody_trip_id"], row["custody_entry_no"]) if custody else "",
                 "amount": row["amount"], "payment_date": row["payment_date"], "reference": row["reference"] or "",
                 "notes": row["notes"] or "", "balance_before": row["balance_before"],
                 "balance_after": row["balance_after"], "actor": row["actor_name"] or "",

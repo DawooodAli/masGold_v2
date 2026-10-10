@@ -93,7 +93,7 @@ class SupplierPaymentRepository(SupplierRepository):
 
     # ------------------------------------------------------------------ reads
     _SELECT = """
-        SELECT p.*, s.name AS supplier_name, s.is_active AS supplier_active,
+        SELECT p.*, s.name AS supplier_name, s.is_active AS supplier_active, te.trip_id AS custody_trip_id, te.entry_no AS custody_entry_no,
                ca.name AS cash_account_name, ba.name AS bank_account_name, ba.account_type AS bank_account_type,
                u.display_name AS actor_name,
                c.id AS reversal_id, c.reason AS reversal_reason, c.occurred_at AS reversal_at,
@@ -103,8 +103,11 @@ class SupplierPaymentRepository(SupplierRepository):
         LEFT JOIN cash_accounts ca ON ca.id = p.cash_account_id
         LEFT JOIN bank_accounts ba ON ba.id = p.bank_account_id
         LEFT JOIN users u ON u.id = p.performed_by_user_id
-        LEFT JOIN transaction_corrections c ON c.source_type = '""" + SOURCE + """' AND c.source_id = p.id
-             AND c.correction_type = 'FULL_REVERSAL'
+        LEFT JOIN market_trip_supplier_payments tl ON tl.payment_id = p.id
+        LEFT JOIN market_trip_entries te ON te.id = tl.entry_id
+        LEFT JOIN transaction_corrections c ON c.correction_type = 'FULL_REVERSAL'
+             AND ((c.source_type = '""" + SOURCE + """' AND c.source_id = p.id)
+                  OR (tl.entry_id IS NOT NULL AND c.source_type = 'MARKET_TRIP_ENTRY' AND c.source_id = tl.entry_id))
         LEFT JOIN users cu ON cu.id = c.performed_by_user_id
     """
 

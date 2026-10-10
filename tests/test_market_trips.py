@@ -14,7 +14,7 @@ from mysql.connector import IntegrityError
 
 from services.correction_service import CorrectionError
 from services.market_trip_service import MarketTripService, TripError, parse_cash, parse_weight
-from tests.market_trip_fakes import (AccountsRepo, MANAGER, OWNER, OWNER_NO_CORRECT, TripRepo, build, session_for)
+from tests.market_trip_fakes import (AccountsRepo, MANAGER, OWNER, OWNER_NO_CORRECT, SupplierPayRepo, TripRepo, build, session_for)
 from tests.auth_fakes import FakeAuthorization
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +36,7 @@ class TripCase(unittest.TestCase):
         self.db, self.session, self.authorization, self.service, self.corrections = build()
         self.n = 0
         for target, value in (("repositories.market_trip_repository.MarketTripRepository", TripRepo),
+                              ("repositories.supplier_payment_repository.SupplierPaymentRepository", SupplierPayRepo),
                               ("repositories.financial_account_repository.FinancialAccountRepository", AccountsRepo)):
             started = patch(target, value)
             started.start()
@@ -71,7 +72,7 @@ class TripCase(unittest.TestCase):
         from tests.market_trip_fakes import Corrections, Customers, Invoices
         corrections = CorrectionService(session, authorization=authorization, transaction_factory=self.db.transaction,
                                         invoice_repository=Invoices, correction_repository=Corrections, customer_repository=Customers)
-        return MarketTripService(session, transaction_factory=self.db.transaction, repository=TripRepo, accounts=AccountsRepo,
+        return MarketTripService(session, transaction_factory=self.db.transaction, repository=TripRepo, accounts=AccountsRepo, supplier_payments=SupplierPayRepo,
                                  scrap=__import__("tests.market_trip_fakes", fromlist=["ScrapRepo"]).ScrapRepo,
                                  authorization=authorization, corrections=corrections), authorization
 
@@ -160,7 +161,7 @@ class IssueTests(TripCase):
 
     def test_no_supplier_or_other_business_effect_exists_in_this_slice(self):
         source = "".join((ROOT / p).read_text(encoding="utf-8") for p in ("services/market_trip_service.py", "repositories/market_trip_repository.py"))
-        for forbidden in ("supplier_", "equivalent_21", "financial_operations", "golddb", "float("):
+        for forbidden in ("supplier_gold", "supplier_purchase", "supplier_invoice", "equivalent_21", "financial_operations", "golddb", "float("):   # 043: only the making payment
             self.assertNotIn(forbidden, source, forbidden)
         self.assertEqual([m for m in self.db.cash_moves if m["type_code"].startswith("SUPPLIER")], [])
         self.issue("1", [(K21, "1")])

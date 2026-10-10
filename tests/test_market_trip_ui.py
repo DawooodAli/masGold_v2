@@ -12,7 +12,7 @@ from PySide6.QtTest import QTest
 
 from app.formatting import money
 from tests import test_invoice_page_qml as harness
-from tests.market_trip_fakes import AccountsRepo, Corrections, Customers, Invoices, OWNER, ScrapRepo, TripRepo, build
+from tests.market_trip_fakes import AccountsRepo, Corrections, Customers, Invoices, OWNER, ScrapRepo, SupplierPayRepo, TripRepo, build
 
 TODAY = "2026-10-10"
 
@@ -58,6 +58,7 @@ class MarketTripPageTests(harness.InvoicePageTests):
         self.db, _, self.authorization, service, _ = build(session=session)
         self.tvm._service = service
         for target, value in (("repositories.market_trip_repository.MarketTripRepository", TripRepo),
+                              ("repositories.supplier_payment_repository.SupplierPaymentRepository", SupplierPayRepo),
                               ("repositories.financial_account_repository.FinancialAccountRepository", AccountsRepo)):
             started = patch(target, value)
             started.start()
@@ -994,6 +995,162 @@ class MarketTripHeatPageTests(MarketTripMeltingPageTests):
         self.assertEqual(len(self.db.heat_lines), 1)
 
 
+class SupplierViewStub:
+    """A counting stand-in for SupplierService: every supplier-view reload is one list_suppliers call (read from the database, never local arithmetic)."""
+
+    def __init__(self):
+        self.reloads = 0
+
+    def list_suppliers(self, search, active_only, *, _expected_actor=None):
+        self.reloads += 1
+        return []
+
+
+class MarketTripSupplierPayPageTests(MarketTripMeltingPageTests):
+    """Supplier making payment from custody (043, «دفع مصنعيات من العهدة») on the real page, real clicks: Main Safe does not move, the custody
+    cash and the supplier position drop together, refusals keep the fields, and the supplier view reloads after the payment and its reversal."""
+
+    def setUp(self):
+        super().setUp()
+        started = patch("repositories.supplier_payment_repository.SupplierPaymentRepository", SupplierPayRepo)
+        started.start()
+        self.addCleanup(started.stop)
+        self.supplier_vm = self.controller.operational_viewmodels["supplierVM"]
+        self.stub = SupplierViewStub()
+        self.supplier_vm._service = self.stub
+        self.grant("SUPPLIER_VIEW", "SUPPLIER_MAKING_PAY", "SUPPLIER_MAKING_PAY_REVERSE")
+
+    def cash_trip(self, cash="10000"):
+        self.open_page()
+        self.new_trip(cash)
+        self.wait_until(lambda: self.tvm.detail.get("payAvailable"), "payment available")
+
+    def open_pay(self):
+        self.reveal(self.item("custodyPayButton"))
+        self.click("custodyPayButton")
+        self.wait_until(lambda: self.item("tripSupplierPayDialog").property("opened"), "pay dialog")
+        self.wait_until(lambda: len(self.tvm.context.get("suppliers", [])) == 2, "suppliers loaded")
+
+    def fill_pay(self, supplier_index=1, amount="7000"):
+        self.pick("custodyPaySupplierCombo", supplier_index)
+        self.type_in("custodyPayAmountField", amount)
+
+    def test_paying_a_supplier_from_custody_moves_no_main_safe_money_and_refreshes_the_supplier_view(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.cash_trip()
+        safe_after_issue, reloads = self.db.cash(), self.stub.reloads
+        self.open_pay()
+        for name in ("custodyPaySupplierCombo", "custodyPayAmountField", "custodyPayDateField", "custodyPayReferenceField", "custodyPayNotesField", "confirmCustodyPayButton", "cancelCustodyPayButton"):
+            with self.subTest(control=name):
+                self.item(name)
+        for name in ("confirmCustodyPayButton", "cancelCustodyPayButton"):
+            self.assert_inside_window(self.item(name))
+        self.assertIn("10,000.00", self.text("custodyPayOutstandingText"))
+        self.assertFalse(self.item("confirmCustodyPayButton").property("enabled"))      # nothing chosen yet
+        self.fill_pay()
+        self.assertTrue(self.item("confirmCustodyPayButton").property("enabled"))
+        self.snapshot("pay-dialog")
+        self.click("confirmCustodyPayButton")
+        self.wait_until(lambda: len(self.db.sm_payments) == 1, "payment posted")
+        self.closed("tripSupplierPayDialog")
+        self.wait_idle()
+        self.snapshot("trip-after-payment")
+        self.assertEqual(self.db.cash(), safe_after_issue)                              # NO second cash OUT at payment
+        self.assertIn("3,000.00", self.tvm.detail["cash"]["outstanding"])
+        self.assertIn("SM000001", " ".join(self.visible_texts("entryWhat")))             # the SM document and the supplier are shown in the history
+        self.assertIn("مورد نشط", " ".join(self.visible_texts("entryWhat")))
+        self.wait_until(lambda: self.stub.reloads > reloads, "supplier view reloaded")   # the open supplier view re-reads the database
+        self.assertEqual(self.warnings, [])
+        # the rest returns to Main Safe: net reduction is exactly the payment
+        self.reveal(self.item("returnButton"))
+        self.click("returnButton")
+        self.wait_until(lambda: self.item("tripEntryDialog").property("opened"), "return dialog")
+        self.type_in("tripCashField", "3000")
+        self.click("confirmTripEntryButton")
+        self.wait_until(lambda: len(self.db.entries) == 3, "returned")
+        self.closed("tripEntryDialog")
+        self.wait_idle()
+        self.assertEqual(self.db.cash(), D("43000.00"))
+        self.assertTrue(self.item("closeTripButton").property("enabled"))
+
+    def test_a_refused_payment_keeps_the_fields_and_a_double_click_posts_once(self):
+        self.cash_trip()
+        self.open_pay()
+        self.fill_pay(amount="10000.01")                                                 # more than the custody holds
+        self.click("confirmCustodyPayButton")
+        self.wait_until(lambda: self.tvm.errorMessage != "", "refusal")
+        QTest.qWait(100)
+        self.assertTrue(self.item("tripSupplierPayDialog").property("visible"))
+        self.assertEqual(self.text("custodyPayAmountField"), "10000.01")
+        self.assertEqual(self.item("custodyPaySupplierCombo").property("currentIndex"), 1)
+        self.assertEqual(len(self.db.sm_payments), 0)
+        self.click("custodyPayAmountField")
+        QTest.keyClick(self.root, Qt.Key_A, Qt.ControlModifier)
+        self.type_text("10000")                                                          # the entire outstanding cash is allowed
+        button = self.item("confirmCustodyPayButton")
+        point = button.mapToScene(QPointF(button.width() / 2, button.height() / 2)).toPoint()
+        QTest.mouseClick(self.root, Qt.LeftButton, Qt.NoModifier, point)
+        QTest.mouseClick(self.root, Qt.LeftButton, Qt.NoModifier, point)                # a double click is one request
+        self.wait_until(lambda: len(self.db.sm_payments) >= 1, "payment posted")
+        self.closed("tripSupplierPayDialog")
+        self.wait_idle()
+        QTest.qWait(150)
+        self.assertEqual(len(self.db.sm_payments), 1)
+        self.assertFalse(self.item("custodyPayButton").property("enabled"))             # nothing is left to pay with
+
+    def test_the_dialog_fits_every_size_and_an_inactive_supplier_can_be_chosen(self):
+        self.cash_trip()
+        for width, height in harness.SIZES:
+            with self.subTest(size=(width, height)):
+                self.root.setWidth(width)
+                self.root.setHeight(height)
+                QTest.qWait(150)
+                self.open_pay()
+                for name in ("confirmCustodyPayButton", "cancelCustodyPayButton", "custodyPayAmountField", "custodyPayDateField"):
+                    self.assert_inside_window(self.item(name))
+                self.item("tripSupplierPayDialog").close()
+                self.closed("tripSupplierPayDialog")
+        self.open_pay()
+        self.fill_pay(supplier_index=2, amount="100")                                    # the inactive supplier
+        self.click("confirmCustodyPayButton")
+        self.wait_until(lambda: len(self.db.sm_payments) == 1, "payment posted")
+        self.closed("tripSupplierPayDialog")
+
+    def test_the_reversal_from_the_history_explains_the_custody_effect_and_refreshes_everything(self):
+        self.cash_trip()
+        self.open_pay()
+        self.fill_pay(amount="4000")
+        self.click("confirmCustodyPayButton")
+        self.wait_until(lambda: len(self.db.sm_payments) == 1, "payment posted")
+        self.closed("tripSupplierPayDialog")
+        self.wait_idle()
+        reloads, safe = self.stub.reloads, self.db.cash()
+        buttons = []
+
+        def collect(node):
+            if node.objectName() == "reverseEntryButton" and node.property("visible"):
+                buttons.append(node)
+            for child in node.childItems():
+                collect(child)
+        collect(self.root.contentItem())
+        self.assertEqual(len(buttons), 2)                                                # issue, payment
+        self.reveal(buttons[-1])
+        self.click(buttons[-1])
+        self.wait_until(lambda: self.item("tripReasonDialog").property("opened"), "reversal dialog")
+        self.assertIn("لا يُعاد المبلغ تلقائيًا إلى الخزنة الرئيسية", self.text("tripReasonNote"))
+        self.type_in("tripReasonField", "دفعة بالخطأ")
+        self.click("confirmTripReasonButton")
+        self.wait_until(lambda: len(self.db.corrections) == 1, "reversed")
+        self.closed("tripReasonDialog")
+        self.wait_idle()
+        self.assertEqual(self.db.cash(), safe)                                           # Main Safe is untouched by the reversal
+        self.assertIn("10,000.00", self.tvm.detail["cash"]["outstanding"])               # the cash is recorded as back in custody
+        self.assertIn("معكوسة بالعملية RV000001", " ".join(self.visible_texts("entryState")))
+        self.wait_until(lambda: self.stub.reloads > reloads, "supplier view reloaded after the reversal")
+        self.assertEqual(self.warnings, [])
+
+
 # The base class carries the invoice-page tests: only this module's own tests are collected here.
 for _inherited in [n for n in dir(harness.InvoicePageTests) if n.startswith("test_")]:
     setattr(MarketTripPageTests, _inherited, None)
@@ -1006,6 +1163,7 @@ for _returns in [n for n in dir(MarketTripLotReturnPageTests) if n.startswith("t
     setattr(MarketTripLotIssuePageTests, _returns, None)                               # the reissue class runs only its own tests
 for _melting in [n for n in dir(MarketTripMeltingPageTests) if n.startswith("test_") and getattr(MarketTripMeltingPageTests, n) is not None]:
     setattr(MarketTripHeatPageTests, _melting, None)                                   # the heating class runs only its own tests
+    setattr(MarketTripSupplierPayPageTests, _melting, None)                            # the supplier-payment class runs only its own tests
 
 
 if __name__ == "__main__":

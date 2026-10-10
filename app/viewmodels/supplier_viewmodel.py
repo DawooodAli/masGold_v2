@@ -17,7 +17,7 @@ from services import supplier_rules as rules
 
 SHOP_OWES_TEXT, SUPPLIER_OWES_TEXT, SETTLED_TEXT = "علينا للمورد", "لنا عند المورد", "الحساب متوازن"
 ACCOUNT_TYPE_TEXT = {"BANK": "حساب بنكي", "MOBILE_WALLET": "محفظة"}
-PAYMENT_METHOD_TEXT = {"CASH": "نقدًا من", "BANK": "تحويل من"}
+PAYMENT_METHOD_TEXT = {"CASH": "نقدًا من", "BANK": "تحويل من", "CUSTODY": "من عهدة السوق"}
 TONES = {rules.SHOP_OWES: "shopOwes", rules.SUPPLIER_OWES: "supplierOwes", rules.SETTLED: "settled"}
 
 
@@ -87,7 +87,8 @@ def making_row(r):
             "reference": r["reference"], "sourceId": r["source_id"], "actor": r["actor"],
             "tone": TONES[rules.direction(r["amount_delta"])],
             "paymentId": r.get("payment_id") or "", "detail": detail, "state": state,
-            "reversed": bool(reversed_by), "canReverse": is_payment and not reversed_by}
+            "reversed": bool(reversed_by),
+            "canReverse": is_payment and not reversed_by and r.get("payment_method") != "CUSTODY"}
 
 
 class SupplierViewModel(QObject):

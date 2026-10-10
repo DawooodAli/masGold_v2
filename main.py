@@ -346,6 +346,8 @@ class ApplicationController(QObject):
             # الحسابات المالية and every Scrap consumer reload from the database once the transaction has committed.
             from app.viewmodels.market_trip_viewmodel import MarketTripViewModel
             trips = self.operational_viewmodels.setdefault("marketTripVM", MarketTripViewModel(self.session))
+            if hasattr(trips, "supplierPaymentChanged") and hasattr(suppliers, "refresh"):
+                trips.supplierPaymentChanged.connect(suppliers.refresh)         # the supplier ledger / payment history just changed
             if hasattr(trips, "custodyChanged"):
                 for target, slot in ((balances, "refresh"), (reviews, "reloadAccounts"), (accounts, "refresh"),
                                      (invoice_vm, "refreshReference"),

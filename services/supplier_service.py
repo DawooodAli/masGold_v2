@@ -12,6 +12,8 @@ from decimal import Decimal
 
 from mysql.connector import IntegrityError
 
+from repositories.market_trip_repository import entry_code as _custody_code
+from repositories.supplier_payment_repository import payment_code as _payment_code
 from repositories.supplier_repository import SupplierRepository
 from services import supplier_rules as rules
 from services.authorization_service import AuthorizationService
@@ -147,6 +149,12 @@ class SupplierService:
         payment_id = r.get("payment_id")
         method = r.get("payment_method")
         reversed_payment = r.get("reversed_payment_id")
+        custody = (None if r.get("custody_entry_no") is None
+                   else _custody_code(r["custody_trip_id"], r["custody_entry_no"]))        # a payment made from market custody (043)
+        reverses = r.get("reversed_reference") if reversed_payment is not None else None
+        if reversed_payment is not None and r.get("reversed_custody_entry_no") is not None:
+            reverses = (f"{_payment_code(reversed_payment)} • "
+                        f"{_custody_code(r['reversed_custody_trip_id'], r['reversed_custody_entry_no'])}")
         return {"id": str(r["id"]), "occurred_at": r["occurred_at"], "movement": r["movement_name"],
                 "movement_code": r.get("movement_code"),
                 "amount_delta": Decimal(str(r["amount_delta"])),
@@ -155,10 +163,12 @@ class SupplierService:
                 "reference": r["source_reference"] or "", "actor": r["actor_name"] or "",
                 "payment_id": None if payment_id is None else str(payment_id),
                 "payment_method": method,
-                "payment_account": (r.get("bank_account_name") if method == "BANK" else r.get("cash_account_name")),
+                "payment_account": (custody if method == "CUSTODY"
+                                    else r.get("bank_account_name") if method == "BANK" else r.get("cash_account_name")),
+                "custody_reference": custody,
                 "reversed_by": (None if r.get("reversal_id") is None
                                 else correction_code("FULL_REVERSAL", r["reversal_id"])),
-                "reverses_reference": r.get("reversed_reference") if reversed_payment is not None else None}
+                "reverses_reference": reverses}
 
     # ------------------------------------------------------------------ master writes
     @staticmethod

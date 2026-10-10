@@ -42,24 +42,29 @@ from uuid import UUID, uuid5
 from mysql.connector import IntegrityError
 
 from repositories.financial_account_repository import FinancialAccountRepository
-from repositories.market_trip_repository import (CLOSED, CREATE_MOVEMENT, HEAT, ISSUE, LOGO_DESIGNATION, LOT_ISSUE, LOT_RETURN, MAIN_LOT, MELT,
+from repositories.market_trip_repository import (CLOSED, CREATE_MOVEMENT, HEAT, ISSUE, LOGO_DESIGNATION, SUPPLIER_PAY, LOT_ISSUE, LOT_RETURN, MAIN_LOT, MELT,
                                                  MELT_DESIGNATION, OPEN, RESIDUE_LOT, RETURN, SHOP_ISSUE_MOVEMENT, SHOP_ISSUE_OUT,
                                                  SHOP_RETURN_IN, SHOP_RETURN_MOVEMENT, SOURCE, UNCLASSIFIED, MarketTripRepository,
                                                  entry_code, trip_code)
 from repositories.old_gold_conversion_repository import OldGoldConversionRepository
+from repositories.supplier_payment_repository import PAYMENT_MOVEMENT, SOURCE as SMP_SOURCE, SupplierPaymentRepository, payment_code
 from services.authorization_service import AuthorizationService
 from services.correction_rules import correction_code
 from services.invoice_service import invoice_transaction
 from services.number_text import normalize_digits
 from services.old_gold_availability import held_grams, shortage_message
+from services import supplier_rules as rules
 
 PERMISSION = "MARKET_TRIP_MANAGE"
+SUPPLIER_PAY_PERMISSION = "SUPPLIER_MAKING_PAY"      # a supplier payment made from custody needs this right too (043)
+CUSTODY_METHOD = "CUSTODY"
+PAYMENT_REFERENCE_MAX = 100
 MONEY_STEP, WEIGHT_STEP, FINENESS_STEP, ANALYSIS_STEP = Decimal("0.01"), Decimal("0.001"), Decimal("0.1"), Decimal("0.000001")
 MAX_MONEY, MAX_WEIGHT = Decimal("100000000000000"), Decimal("1000000000")
 NOTES_MAX, REASON_MAX, WORKSHOP_MAX, ASSAY_MAX, LABEL_MAX, MAX_RESIDUES = 1000, 1000, 120, 120, 120, 10
 ZERO_MONEY, ZERO_WEIGHT = Decimal("0.00"), Decimal("0.000")
 KIND_TEXT = {ISSUE: "إخراج عهدة", RETURN: "رجوع من العهدة", MELT: "سبك", LOT_RETURN: "رجوع ناتج السبك", LOT_ISSUE: "إخراج سبكة من المحل",
-             HEAT: "حمّية اللوجو"}
+             HEAT: "حمّية اللوجو", SUPPLIER_PAY: "دفع مصنعيات من العهدة"}
 DESIGNATION_TEXT = {MELT_DESIGNATION: "للسبك", LOGO_DESIGNATION: "لوجو", UNCLASSIFIED: "غير مصنف (قبل التصنيف)"}
 _DESIGNATION_INPUT = {"MELT": MELT_DESIGNATION, "للسبك": MELT_DESIGNATION, "LOGO": LOGO_DESIGNATION, "لوجو": LOGO_DESIGNATION,
                       "UNCLASSIFIED": UNCLASSIFIED, "غير مصنف": UNCLASSIFIED}
@@ -188,6 +193,7 @@ def custody_view(cash_rows, gold_rows, lot_rows=(), trip_id=None):
     """Issued / returned / melted / OUTSTANDING for cash and for every (karat, designation), plus the outstanding assayed lots, from
     the repository's derived sums. A trip is settled only when all of them are exactly zero."""
     issued, returned = (Decimal(str(cash_rows[0])), Decimal(str(cash_rows[1])))
+    paid = Decimal(str(cash_rows[2])) if len(cash_rows) > 2 else Decimal("0.00")          # paid to suppliers from custody (043)
     gold = []
     for r in gold_rows:
         g_issued, g_returned = Decimal(str(r["issued"])), Decimal(str(r["returned"]))
@@ -203,8 +209,9 @@ def custody_view(cash_rows, gold_rows, lot_rows=(), trip_id=None):
              "origin_trip_id": int(r.get("origin_trip_id") or trip_id or 0) or None,
              "code": None if not (r.get("origin_trip_id") or trip_id) else entry_code(r.get("origin_trip_id") or trip_id, r["entry_no"])}
             for r in lot_rows if Decimal(str(r["outstanding_grams"])) != 0]
-    return {"cash": {"issued": issued, "returned": returned, "outstanding": issued - returned}, "gold": gold, "lots": lots,
-            "settled": issued == returned and all(g["outstanding"] == 0 for g in gold) and not lots}
+    return {"cash": {"issued": issued, "returned": returned, "paid": paid, "outstanding": issued - returned - paid}, "gold": gold,
+            "lots": lots,
+            "settled": issued == returned + paid and all(g["outstanding"] == 0 for g in gold) and not lots}
 
 
 def analyse(inputs, main, residues):
@@ -269,9 +276,10 @@ def entry_label(lot):
 
 class MarketTripService:
     def __init__(self, session, *, transaction_factory=invoice_transaction, repository=MarketTripRepository,
-                 accounts=FinancialAccountRepository, scrap=OldGoldConversionRepository, authorization=None, corrections=None):
+                 accounts=FinancialAccountRepository, scrap=OldGoldConversionRepository, authorization=None, corrections=None,
+                 supplier_payments=SupplierPaymentRepository):
         self._session, self._transaction, self._repository = session, transaction_factory, repository
-        self._accounts, self._scrap = accounts, scrap
+        self._accounts, self._scrap, self._supplier_payments = accounts, scrap, supplier_payments
         self._authorization = authorization or AuthorizationService(session)
         self._corrections = corrections
 
@@ -304,9 +312,12 @@ class MarketTripService:
             karats = repository.active_karats()
             scrap = repository.shop_scrap()
             cash = None if safe is None else Decimal(str(repository.cash_balance(safe["id"])))
+            suppliers = repository.suppliers()
         return {"safe": None if safe is None else {"id": str(safe["id"]), "name": safe["name"], "active": bool(safe["is_active"]),
                                                    "balance": cash},
                 "karats": [{"id": int(k["id"]), "karat_value": int(k["karat_value"]), "name": k["name"]} for k in karats],
+                "suppliers": [{"id": str(r["id"]), "name": r["name"], "active": bool(r["is_active"]),
+                               "making_balance": Decimal(str(r["making_balance"]))} for r in suppliers],
                 "shop_scrap": [{"karat_id": int(r["karat_id"]), "karat_value": int(r["karat_value"]),
                                 "physical": Decimal(str(r["physical_grams"])), "held": Decimal(str(r["held_grams"])),
                                 "available": Decimal(str(r["available_grams"]))} for r in scrap]}
@@ -364,6 +375,10 @@ class MarketTripService:
                                 "code": entry_code(l["trip_id"], l["melt_entry_no"]), "weight": Decimal(str(l["weight_grams"])),
                                 "fineness": None if l["fineness_permille"] is None else Decimal(str(l["fineness_permille"]))}
                                for l in e.get("lot_issues", [])],
+                "supplier_payment": None if not e.get("supplier_payment") else {
+                    "payment_id": str(e["supplier_payment"]["payment_id"]), "code": payment_code(e["supplier_payment"]["payment_id"]),
+                    "supplier_id": str(e["supplier_payment"]["supplier_id"]), "supplier_name": e["supplier_payment"]["supplier_name"],
+                    "amount": Decimal(str(e["supplier_payment"]["amount"]))},
                 "reversed": e["reversal_id"] is not None,
                 "reversal_code": None if e["reversal_id"] is None else correction_code("FULL_REVERSAL", e["reversal_id"]),
                 "reversal_reason": e["reversal_reason"], "reversal_at": e["reversal_at"]}
@@ -818,6 +833,118 @@ class MarketTripService:
                 raise PermissionError("انتهت جلسة الدخول.")
         return {"entry_id": str(entry_id), "trip_id": str(trip_id), "trip_code": trip_code(trip_id), "code": code, "kind": HEAT,
                 "created": False, "duplicate": False, "difference": total_out - total_in}
+
+    # ------------------------------------------------------------------ supplier making payment from custody (043)
+    def pay_supplier(self, trip_id, supplier_id, amount, payment_date, reference, notes, request_key, *, _expected_actor=None):
+        """PAY a supplier's making (EGP) with cash that is already in an OPEN custody (دفع مصنعيات من العهدة). One transaction posts the
+        SUPPLIER_PAY entry, the SM document (method CUSTODY), its negative making movement and MAKING leg, the entry-payment link and the
+        audit rows. No Main Safe / bank movement and no MONEY leg: Main Safe moved when the cash left it. Capped at the outstanding
+        custody cash; an inactive supplier and a crossing into supplier credit are allowed; supplier gold is never touched."""
+        session_actor = self._actor(_expected_actor)
+        if SUPPLIER_PAY_PERMISSION not in session_actor.permissions:
+            raise PermissionError("دفع مصنعيات الموردين غير متاح لك.")
+        if str(trip_id or "").strip() == "":
+            raise TripError("TRIP_NOT_FOUND", "اختر العهدة.")
+        trip_number = _trip_id(trip_id)
+        try:
+            supplier_number = int(str(supplier_id).strip())
+        except (TypeError, ValueError):
+            raise TripError("SUPPLIER_NOT_FOUND", "اختر المورد.") from None
+        if supplier_number <= 0:
+            raise TripError("SUPPLIER_NOT_FOUND", "اختر المورد.")
+        value = parse_cash(amount)
+        if value == 0:
+            raise TripError("AMOUNT_REQUIRED", "أدخل مبلغ الدفعة بقيمة موجبة.")
+        paid_on = _entry_date(payment_date)
+        reference_text, notes_text = _text(reference, PAYMENT_REFERENCE_MAX, "المرجع"), _text(notes, NOTES_MAX, "الملاحظات")
+        key = _key(request_key)
+        digest = hashlib.sha256(json.dumps(
+            [SUPPLIER_PAY, trip_number, supplier_number, str(value), paid_on.isoformat(), reference_text, notes_text],
+            ensure_ascii=False).encode()).hexdigest()
+        try:
+            return self._post_supplier_pay(session_actor, trip_number, supplier_number, value, paid_on, reference_text, notes_text, key, digest)
+        except IntegrityError as exc:
+            if getattr(exc, "errno", None) != 1062 or not ("uq_smp_request" in str(exc) or "uq_mte_request" in str(exc)):
+                raise
+            with self._transaction() as connection:                       # a twin committed first: decide from a FRESH read
+                actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+                replay = self._supplier_pay_prior(self._repository(connection), self._supplier_payments(connection), key, digest, actor)
+                if replay is None:
+                    raise
+                return replay
+
+    @staticmethod
+    def _supplier_pay_prior(repository, suppliers, key, digest, actor):
+        """The replay of an already-recorded request (None when the key is unused). BOTH the SM header and the custody entry carry the
+        request key (each table is unique on it), so any other flow reusing the key meets it in its own table. A replay needs the
+        entry AND the payment to exist, linked to each other, with the SAME complete payload (trip and supplier included) by the SAME
+        user; anything else is a conflict and writes nothing."""
+        entry, payment = repository.by_request(key), suppliers.by_request(key)
+        if entry is None and payment is None:
+            return None
+        link = None if payment is None else repository.payment_entry(payment["id"])
+        if (entry is None or payment is None or link is None or int(link["entry_id"]) != int(entry["id"]) or entry["request_hash"] != digest
+                or int(entry["performed_by_user_id"]) != int(actor.user_id)):
+            raise TripError("REQUEST_CONFLICT", "طلب العملية مستخدم لعملية مختلفة.")
+        return {"entry_id": str(link["entry_id"]), "trip_id": str(link["trip_id"]), "trip_code": trip_code(link["trip_id"]),
+                "code": entry_code(link["trip_id"], link["entry_no"]), "kind": SUPPLIER_PAY, "created": False, "duplicate": True,
+                "payment_id": str(payment["id"]), "payment_code": payment_code(payment["id"]), "supplier_id": str(payment["supplier_id"]),
+                "amount": str(payment["amount"]), "balance_before": str(payment["balance_before"]),
+                "balance_after": str(payment["balance_after"])}
+
+    def _post_supplier_pay(self, session_actor, trip_id, supplier_id, value, paid_on, reference, notes, key, digest):
+        with self._transaction() as connection:
+            self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+            actor = self._authorization.require_permission_for_write(connection, session_actor, SUPPLIER_PAY_PERMISSION)
+            repository, suppliers = self._repository(connection), self._supplier_payments(connection)
+            trip = repository.trip(trip_id, lock=True)                           # lock order: trip -> supplier
+            if trip is None:
+                raise TripError("TRIP_NOT_FOUND", "العهدة غير موجودة.")
+            replay = self._supplier_pay_prior(repository, suppliers, key, digest, actor)
+            if replay is not None:
+                return replay
+            if trip["status"] != OPEN:
+                raise TripError("TRIP_CLOSED", "العهدة مغلقة: أعد فتحها أولاً لدفع مصنعيات من العهدة.")
+            supplier = suppliers.get_supplier(supplier_id, lock=True)            # an INACTIVE supplier may still be paid
+            if supplier is None:
+                raise TripError("SUPPLIER_NOT_FOUND", "المورد غير موجود.")
+            outstanding = self._custody(repository, trip_id)["cash"]["outstanding"]          # read under the trip lock
+            if value > outstanding:
+                raise TripError("PAYMENT_EXCEEDS_CUSTODY_CASH", f"النقدية المتبقية في العهدة {outstanding:,.2f} ج فقط: لا يمكن دفع {value:,.2f} ج.")
+            making_type = suppliers.making_type_id(PAYMENT_MOVEMENT)
+            if making_type is None:
+                raise RuntimeError("supplier making movement type PAYMENT is missing (migration 036)")
+            before = rules.money_amount(suppliers.making_balance_current(supplier_id))
+            after = rules.making_after_payment(before, value)
+            now = repository.db_now()
+            payment_id = suppliers.insert_header(supplier_id=supplier_id, method=CUSTODY_METHOD, cash_account_id=None, bank_account_id=None,
+                                                 amount=value, payment_date=paid_on, reference=reference, notes=notes, before=before,
+                                                 after=after, key=key, digest=digest, actor=actor, now=now)
+            pcode = payment_code(payment_id)
+            entry_no = repository.next_entry_no(trip_id)
+            entry_id = repository.insert_entry(trip_id=trip_id, entry_no=entry_no, kind=SUPPLIER_PAY, entry_date=paid_on, notes=notes,
+                                               key=key, digest=digest, actor=actor, now=now)
+            code = entry_code(trip_id, entry_no)
+            label = f"دفعة مصنعيات للمورد {pcode} من عهدة السوق {code}"
+            making_id = suppliers.insert_making_movement(supplier_id=supplier_id, type_id=making_type, amount_delta=-value,
+                                                         source_type=SMP_SOURCE, source_id=payment_id, reference=pcode, description=label,
+                                                         now=now, user_id=actor.user_id)
+            suppliers.insert_leg(payment_id=payment_id, kind="MAKING", making_movement_id=making_id)
+            repository.insert_supplier_payment_link(entry_id=entry_id, payment_id=payment_id, supplier_id=supplier_id, amount=value)
+            suppliers.audit(actor=actor, event_type="SUPPLIER_MAKING_PAYMENT", entity_id=payment_id, entity_type=SMP_SOURCE, reference=pcode,
+                            description=f"{label} {value:,.2f} ج",
+                            metadata={"supplier_id": supplier_id, "method": CUSTODY_METHOD, "custody_entry": code, "amount": str(value),
+                                      "before": str(before), "after": str(after), "payment_date": paid_on.isoformat(),
+                                      "reference": reference, "employee_id": actor.employee_id}, now=now)
+            repository.audit(actor=actor, event_type="MARKET_TRIP_SUPPLIER_PAY", entity_id=entry_id, reference=code,
+                             description=f"{KIND_TEXT[SUPPLIER_PAY]} {code} — {trip_code(trip_id)} — {pcode}",
+                             metadata={"trip_id": trip_id, "kind": SUPPLIER_PAY, "supplier_id": supplier_id, "payment": pcode,
+                                       "amount": str(value), "date": paid_on.isoformat(), "employee_id": actor.employee_id}, now=now)
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        return {"entry_id": str(entry_id), "trip_id": str(trip_id), "trip_code": trip_code(trip_id), "code": code, "kind": SUPPLIER_PAY,
+                "created": False, "duplicate": False, "payment_id": str(payment_id), "payment_code": pcode, "supplier_id": str(supplier_id),
+                "amount": str(value), "balance_before": str(before), "balance_after": str(after)}
 
     # ------------------------------------------------------------------ lot returns to the shop (M2)
     def shop_lots(self, *, _expected_actor=None):

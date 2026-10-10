@@ -16,7 +16,7 @@ from repositories.market_trip_repository import (CASH_TYPE, CREATE_MOVEMENT, DES
 from services.authentication_service import AuthenticationResult, _VERIFIED
 from tests.auth_fakes import FakeAuthorization
 
-OWNER = frozenset({"APP_LOGIN", "MARKET_TRIP_MANAGE", "TRANSACTION_CORRECT"})
+OWNER = frozenset({"APP_LOGIN", "MARKET_TRIP_MANAGE", "TRANSACTION_CORRECT", "SUPPLIER_MAKING_PAY", "SUPPLIER_MAKING_PAY_REVERSE"})
 OWNER_NO_CORRECT = frozenset({"APP_LOGIN", "MARKET_TRIP_MANAGE"})
 MANAGER = frozenset({"APP_LOGIN", "TRANSACTION_CORRECT", "SUPPLIER_MAKING_PAY"})
 
@@ -44,9 +44,12 @@ class Db:
         self.trips, self.entries, self.cash_legs, self.gold_legs, self.events = {}, {}, [], [], []
         self.melts, self.melt_inputs, self.lots, self.lot_moves = {}, [], {}, []          # 039
         self.heats, self.heat_lines = {}, []                                                  # 042: Logo heating headers and lines
+        self.suppliers = {10: {"id": 10, "name": "مورد نشط", "is_active": 1}, 11: {"id": 11, "name": "مورد متوقف", "is_active": 0}}   # 043
+        self.sm_payments, self.sm_making, self.sm_legs, self.supplier_links = {}, [], [], {}
         self.shop_moves, self.lot_returns, self.lot_issues = [], [], []                      # 040/041: shop-side lot ledger, return / issue links
         self.corrections, self.audit_rows = [], []
-        self.sequences = {"trip": 0, "entry": 0, "cash_move": 1, "scrap": 2, "correction": 0, "lot": 0, "lot_move": 0, "shop_move": 0}
+        self.sequences = {"trip": 0, "entry": 0, "cash_move": 1, "scrap": 2, "correction": 0, "lot": 0, "lot_move": 0, "shop_move": 0,
+                          "payment": 0, "sm_making": 0}
         self.fail_at = None
         self.transactions = 0
 
@@ -125,6 +128,11 @@ class TripRepo:
     def active_karats(self):
         return [dict(k) for k in sorted(self.db.karats.values(), key=lambda k: -k["karat_value"]) if k["is_active"]]
 
+    def suppliers(self):
+        return [{"id": r["id"], "name": r["name"], "is_active": r["is_active"],
+                 "making_balance": sum((m["amount_delta"] for m in self.db.sm_making if m["supplier_id"] == r["id"]), D("0.00"))}
+                for r in sorted(self.db.suppliers.values(), key=lambda r: (-r["is_active"], r["name"], r["id"]))]
+
     def shop_scrap(self):
         return [{"karat_id": k["id"], "karat_value": k["karat_value"], "physical_grams": self.db.physical(k["id"]),
                  "held_grams": self.db.holds.get(k["id"], D("0.000")), "available_grams": self.db.available(k["id"])}
@@ -170,7 +178,7 @@ class TripRepo:
 
     def insert_entry(self, *, trip_id, entry_no, kind, entry_date, notes, key, digest, actor, now):
         self._fail("entry")
-        assert kind in ("ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT")                # chk_mte_kind
+        assert kind in ("ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT", "SUPPLIER_PAY")                # chk_mte_kind
         if any(e["request_key"] == key for e in self.db.entries.values()):
             raise _dup("uq_mte_request")
         if any((e["trip_id"], e["entry_no"]) == (int(trip_id), entry_no) for e in self.db.entries.values()):
@@ -341,11 +349,13 @@ class TripRepo:
                 if e["trip_id"] == int(trip_id) and e["id"] not in reversed_ids and e["id"] != int(exclude or 0)]
 
     def custody_cash(self, trip_id, exclude_entry_id=None):
-        issued = returned = D("0.00")
+        issued = returned = paid = D("0.00")
         for e in self._live(trip_id, exclude_entry_id):
             for leg in (l for l in self.db.cash_legs if l["entry_id"] == e["id"]):
                 issued, returned = (issued + leg["amount"], returned) if e["entry_kind"] == "ISSUE" else (issued, returned + leg["amount"])
-        return issued, returned
+            if e["id"] in self.db.supplier_links:
+                paid += self.db.supplier_links[e["id"]]["amount"]
+        return issued, returned, paid
 
     def custody_gold(self, trip_id, exclude_entry_id=None):
         out = {}
@@ -492,10 +502,34 @@ class TripRepo:
                                           "fineness_permille": self.db.lots[r["lot_id"]]["fineness_permille"], "trip_id": self.db.entries[self.db.lots[r["lot_id"]]["entry_id"]]["trip_id"],
                                           "melt_entry_no": self.db.entries[self.db.lots[r["lot_id"]]["entry_id"]]["entry_no"]}
                                          for r in self.db.lot_returns if r["entry_id"] == e["id"]],
+                         "supplier_payment": self.entry_supplier_payment(e["id"]),
                          "gold": [{"karat_id": g["karat_id"], "karat_value": self.db.karats[g["karat_id"]]["karat_value"],
                                    "designation": g["designation"], "weight_grams": g["weight_grams"]}
                                   for g in self.db.gold_legs if g["entry_id"] == e["id"]]})
         return rows
+
+    # ---- supplier payments from custody (043): the CHECK / unique constraints of the link are mirrored as asserts
+    def insert_supplier_payment_link(self, *, entry_id, payment_id, supplier_id, amount):
+        self._fail("link")
+        assert amount > 0                                                                    # chk_mtsp_amount
+        assert int(entry_id) in self.db.entries and int(payment_id) in self.db.sm_payments and int(supplier_id) in self.db.suppliers   # FKs
+        assert self.db.sm_payments[int(payment_id)]["amount"] == amount                      # the service keeps the two amounts equal
+        if int(entry_id) in self.db.supplier_links or any(l["payment_id"] == int(payment_id) for l in self.db.supplier_links.values()):
+            raise _dup("uq_mtsp_payment")
+        self.db.supplier_links[int(entry_id)] = {"entry_id": int(entry_id), "payment_id": int(payment_id), "supplier_id": int(supplier_id),
+                                                 "amount": amount}
+
+    def entry_supplier_payment(self, entry_id):
+        link = self.db.supplier_links.get(int(entry_id))
+        return None if link is None else {**link, "supplier_name": self.db.suppliers[link["supplier_id"]]["name"]}
+
+    def payment_entry(self, payment_id):
+        link = next((l for l in self.db.supplier_links.values() if l["payment_id"] == int(payment_id)), None)
+        if link is None:
+            return None
+        entry = self.db.entries[link["entry_id"]]
+        return {**link, "trip_id": entry["trip_id"], "entry_no": entry["entry_no"], "request_hash": entry["request_hash"],
+                "performed_by_user_id": entry["performed_by_user_id"]}
 
     # ---- as a correction source
     def entry_source(self, entry_id, lock=False):
@@ -641,5 +675,78 @@ def build(permissions=OWNER, user_id=7, granted=None, session=None):
     corrections = CorrectionService(session, authorization=authorization, transaction_factory=db.transaction,
                                     invoice_repository=Invoices, correction_repository=Corrections, customer_repository=Customers)
     service = MarketTripService(session, transaction_factory=db.transaction, repository=TripRepo, accounts=AccountsRepo, scrap=ScrapRepo,
-                                authorization=authorization, corrections=corrections)
+                                authorization=authorization, corrections=corrections, supplier_payments=SupplierPayRepo)
     return db, session, authorization, service, corrections
+
+
+class SupplierPayRepo:
+    """The slice of SupplierPaymentRepository a custody payment and its reversal use, over the same fake database. The 036 / 043
+    constraints of supplier_making_payments and its legs are mirrored as asserts."""
+    TYPES = {"PAYMENT": 1, "PAYMENT_REVERSAL": 2}
+
+    def __init__(self, db):
+        self.db = db
+
+    def _fail(self, step):
+        if self.db.fail_at == step:
+            raise RuntimeError(f"forced failure at {step}")
+
+    def get_supplier(self, supplier_id, lock=False):
+        row = self.db.suppliers.get(int(supplier_id))
+        return None if row is None else dict(row)
+
+    def by_request(self, key):
+        row = next((p for p in self.db.sm_payments.values() if p["request_key"] == key), None)
+        return None if row is None else dict(row)
+
+    def making_type_id(self, code):
+        return self.TYPES.get(code)
+
+    def making_balance_current(self, supplier_id):
+        return sum((m["amount_delta"] for m in self.db.sm_making if m["supplier_id"] == int(supplier_id)), D("0.00"))
+
+    def insert_header(self, *, supplier_id, method, cash_account_id, bank_account_id, amount, payment_date, reference, notes, before, after,
+                      key, digest, actor, now):
+        self._fail("sm_header")
+        assert amount > 0 and after == before - amount                                       # chk_smp_amount / chk_smp_balance
+        assert (method == "CUSTODY" and cash_account_id is None and bank_account_id is None) or method in ("CASH", "BANK")   # chk_smp_method
+        if any(p["request_key"] == key for p in self.db.sm_payments.values()):
+            raise _dup("uq_smp_request")
+        payment_id = self.db.next("payment")
+        self.db.sm_payments[payment_id] = {"id": payment_id, "supplier_id": int(supplier_id), "payment_method": method,
+                                           "cash_account_id": cash_account_id, "bank_account_id": bank_account_id, "amount": amount,
+                                           "payment_date": payment_date, "reference": reference, "notes": notes, "balance_before": before,
+                                           "balance_after": after, "request_key": key, "request_hash": digest,
+                                           "performed_by_user_id": actor.user_id, "occurred_at": now}
+        return payment_id
+
+    def insert_making_movement(self, *, supplier_id, type_id, amount_delta, source_type, source_id, reference, description, now, user_id):
+        self._fail("sm_making")
+        movement_id = self.db.next("sm_making")
+        self.db.sm_making.append({"id": movement_id, "supplier_id": int(supplier_id), "type_id": int(type_id), "amount_delta": amount_delta,
+                                  "source_type": source_type, "source_id": int(source_id), "reference": reference})
+        return movement_id
+
+    def insert_leg(self, *, payment_id, kind, cash_movement_id=None, bank_movement_id=None, making_movement_id=None):
+        self._fail("sm_leg")
+        assert kind == "MAKING" and making_movement_id is not None and cash_movement_id is None and bank_movement_id is None   # no MONEY leg here
+        self.db.sm_legs.append({"payment_id": int(payment_id), "leg_kind": kind, "making_movement_id": int(making_movement_id)})
+
+    def audit(self, *, actor, event_type, entity_id, reference, description, metadata, now, entity_type="SUPPLIER"):
+        self._fail("sm_audit")
+        self.db.audit_rows.append({"user_id": actor.user_id, "event_type": event_type, "entity_type": entity_type, "entity_id": int(entity_id),
+                                   "reference": reference, "metadata": metadata})
+
+    def payment_making_movement(self, payment_id):
+        leg = next((l for l in self.db.sm_legs if l["payment_id"] == int(payment_id) and l["leg_kind"] == "MAKING"), None)
+        if leg is None:
+            return None
+        move = next(m for m in self.db.sm_making if m["id"] == leg["making_movement_id"])
+        return {"id": move["id"], "supplier_id": move["supplier_id"], "amount_delta": move["amount_delta"]}
+
+    def source(self, payment_id, lock=False):
+        row = self.db.sm_payments.get(int(payment_id))
+        return None if row is None else {**row, "supplier_name": self.db.suppliers[row["supplier_id"]]["name"]}
+
+    def balance(self, supplier_id):
+        return self.making_balance_current(supplier_id)
