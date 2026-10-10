@@ -5,6 +5,9 @@ decides what each gold line is for, melts designated gold into assayed lots and 
           every new gold line carries the OWNER's designation: MELT (للسبك) or LOGO (لوجو)
   RETURN  custody leaves the trip -> cash back into MAIN_SAFE + counted Scrap IN of the SAME karat (never converted, no Eq21);
           the designation is preserved and a return never exceeds that (karat, designation) balance
+  LOT_RETURN  returns whole assayed lots from custody to the shop's separate lot stock (a melt bar is indivisible: complete or not at all):
+          the lot keeps its identity, melt reference, kind and exact assay; nothing is classified into a master karat; no cash, bank,
+          supplier, inventory-piece or Scrap movement exists
   MELT    consumes MELT-designated custody (any active master karat, physical grams) and creates assayed LOTS: one MAIN output with
           its fineness (parts per thousand, 0.1) and optional RESIDUE lots whose fineness may be unknown. No cash, shop Scrap or
           supplier movement exists in a melt; the processing difference is stored permanently with the document.
@@ -31,9 +34,9 @@ from uuid import UUID
 from mysql.connector import IntegrityError
 
 from repositories.financial_account_repository import FinancialAccountRepository
-from repositories.market_trip_repository import (CLOSED, CREATE_MOVEMENT, ISSUE, LOGO_DESIGNATION, MAIN_LOT, MELT, MELT_DESIGNATION, OPEN,
-                                                 RESIDUE_LOT, RETURN, SOURCE, UNCLASSIFIED, MarketTripRepository, entry_code,
-                                                 trip_code)
+from repositories.market_trip_repository import (CLOSED, CREATE_MOVEMENT, ISSUE, LOGO_DESIGNATION, LOT_RETURN, MAIN_LOT, MELT,
+                                                 MELT_DESIGNATION, OPEN, RESIDUE_LOT, RETURN, SHOP_RETURN_IN, SHOP_RETURN_MOVEMENT,
+                                                 SOURCE, UNCLASSIFIED, MarketTripRepository, entry_code, trip_code)
 from repositories.old_gold_conversion_repository import OldGoldConversionRepository
 from services.authorization_service import AuthorizationService
 from services.correction_rules import correction_code
@@ -46,11 +49,11 @@ MONEY_STEP, WEIGHT_STEP, FINENESS_STEP, ANALYSIS_STEP = Decimal("0.01"), Decimal
 MAX_MONEY, MAX_WEIGHT = Decimal("100000000000000"), Decimal("1000000000")
 NOTES_MAX, REASON_MAX, WORKSHOP_MAX, ASSAY_MAX, LABEL_MAX, MAX_RESIDUES = 1000, 1000, 120, 120, 120, 10
 ZERO_MONEY, ZERO_WEIGHT = Decimal("0.00"), Decimal("0.000")
-KIND_TEXT = {ISSUE: "إخراج عهدة", RETURN: "رجوع من العهدة", MELT: "سبك"}
+KIND_TEXT = {ISSUE: "إخراج عهدة", RETURN: "رجوع من العهدة", MELT: "سبك", LOT_RETURN: "رجوع ناتج السبك"}
 DESIGNATION_TEXT = {MELT_DESIGNATION: "للسبك", LOGO_DESIGNATION: "لوجو", UNCLASSIFIED: "غير مصنف (قبل التصنيف)"}
 _DESIGNATION_INPUT = {"MELT": MELT_DESIGNATION, "للسبك": MELT_DESIGNATION, "LOGO": LOGO_DESIGNATION, "لوجو": LOGO_DESIGNATION,
                       "UNCLASSIFIED": UNCLASSIFIED, "غير مصنف": UNCLASSIFIED}
-LOT_RETURN_NOTE = "إرجاع الشحنات المعايَرة إلى المحل سيتاح في مرحلة لاحقة؛ لا يمكن إغلاق العهدة قبل ذلك."
+LOT_RETURN_NOTE = "أرجع الشحنات المعايَرة إلى المحل من «رجوع ناتج السبك» قبل إغلاق العهدة."
 
 
 class TripError(ValueError):
@@ -171,7 +174,7 @@ def _trip_id(value):
     return number
 
 
-def custody_view(cash_rows, gold_rows, lot_rows=()):
+def custody_view(cash_rows, gold_rows, lot_rows=(), trip_id=None):
     """Issued / returned / melted / OUTSTANDING for cash and for every (karat, designation), plus the outstanding assayed lots, from
     the repository's derived sums. A trip is settled only when all of them are exactly zero."""
     issued, returned = (Decimal(str(cash_rows[0])), Decimal(str(cash_rows[1])))
@@ -186,7 +189,8 @@ def custody_view(cash_rows, gold_rows, lot_rows=()):
              "label": r.get("label") or "", "weight": Decimal(str(r["weight_grams"])),
              "fineness": None if r.get("fineness_permille") is None else Decimal(str(r["fineness_permille"])),
              "pure": None if r.get("pure_grams") is None else Decimal(str(r["pure_grams"])),
-             "entry_no": int(r["entry_no"]), "outstanding": Decimal(str(r["outstanding_grams"]))}
+             "entry_no": int(r["entry_no"]), "outstanding": Decimal(str(r["outstanding_grams"])),
+             "code": None if trip_id is None else entry_code(trip_id, r["entry_no"])}
             for r in lot_rows if Decimal(str(r["outstanding_grams"])) != 0]
     return {"cash": {"issued": issued, "returned": returned, "outstanding": issued - returned}, "gold": gold, "lots": lots,
             "settled": issued == returned and all(g["outstanding"] == 0 for g in gold) and not lots}
@@ -275,7 +279,8 @@ class MarketTripService:
 
     @staticmethod
     def _custody(repository, trip_id):
-        return custody_view(repository.custody_cash(trip_id), repository.custody_gold(trip_id), repository.custody_lots(trip_id))
+        return custody_view(repository.custody_cash(trip_id), repository.custody_gold(trip_id), repository.custody_lots(trip_id),
+                            trip_id=trip_id)
 
     # ------------------------------------------------------------------ reads
     def context(self, *, _expected_actor=None):
@@ -338,6 +343,10 @@ class MarketTripService:
                 "gold": [{"karat_id": int(g["karat_id"]), "karat_value": int(g["karat_value"]),
                           "designation": g.get("designation", UNCLASSIFIED), "weight": Decimal(str(g["weight_grams"]))}
                          for g in e["gold"]],
+                "lot_returns": [{"lot_id": str(l["lot_id"]), "lot_no": int(l["lot_no"]), "kind": l["lot_kind"],
+                                 "code": entry_code(l["trip_id"], l["melt_entry_no"]), "weight": Decimal(str(l["weight_grams"])),
+                                 "fineness": None if l["fineness_permille"] is None else Decimal(str(l["fineness_permille"]))}
+                                for l in e.get("lot_returns", [])],
                 "reversed": e["reversal_id"] is not None,
                 "reversal_code": None if e["reversal_id"] is None else correction_code("FULL_REVERSAL", e["reversal_id"]),
                 "reversal_reason": e["reversal_reason"], "reversal_at": e["reversal_at"]}
@@ -650,6 +659,116 @@ class MarketTripService:
                 raise PermissionError("انتهت جلسة الدخول.")
         return {"entry_id": str(entry_id), "trip_id": str(trip_id), "trip_code": trip_code(trip_id), "code": code, "kind": MELT,
                 "created": False, "duplicate": False, "analysis": analysis}
+
+    # ------------------------------------------------------------------ lot returns to the shop (M2)
+    def shop_lots(self, *, _expected_actor=None):
+        """The shop-side lot stock: physical grams and exact assay per lot; pure grams only when the assay is known. Kept apart from
+        Scrap, inventory pieces and every karat total."""
+        actor = self._actor(_expected_actor)
+        with self._transaction() as connection:
+            self._authorization.require_permission_read(connection, actor, PERMISSION)
+            rows = self._repository(connection).shop_lots()
+        result = []
+        for r in rows:
+            stock = Decimal(str(r["stock_grams"]))
+            fineness = None if r["fineness_permille"] is None else Decimal(str(r["fineness_permille"]))
+            result.append({"lot_id": str(r["id"]), "trip_id": str(r["trip_id"]), "trip_code": trip_code(r["trip_id"]),
+                           "code": entry_code(r["trip_id"], r["entry_no"]), "lot_no": int(r["lot_no"]), "kind": r["lot_kind"],
+                           "label": r.get("label") or "", "original_weight": Decimal(str(r["original_weight"])), "stock": stock,
+                           "fineness": fineness, "pure": lot_pure(stock, fineness)})
+        return result
+
+    @staticmethod
+    def _lot_lines(lines):
+        """Validated {lot_id: supplied_weight|None}. A melt lot is an indivisible bar: the caller only SELECTS lots. A weight may still be
+        sent (an old client) but it is never used - it is only compared with the full weight under the locks. A lot twice is refused."""
+        selected = {}
+        for line in lines or []:
+            raw_id = str(line.get("lot_id") if isinstance(line, dict) else line[0]).strip()
+            raw_weight = line.get("weight") if isinstance(line, dict) else (line[1] if len(line) > 1 else None)
+            if raw_id in ("", "None"):
+                if not str(raw_weight or "").strip():
+                    continue
+                raise TripError("LOT_REQUIRED", "اختر الشحنة.")
+            try:
+                lot_id = int(raw_id)
+            except ValueError:
+                raise TripError("LOT_NOT_FOUND", "الشحنة غير موجودة.") from None
+            if lot_id in selected:
+                raise TripError("LOT_DUPLICATE", "الشحنة نفسها مكررة في الطلب: اخترها مرة واحدة.")
+            supplied = None if not str(raw_weight if raw_weight is not None else "").strip() else parse_weight(raw_weight)
+            selected[lot_id] = supplied
+        if not selected:
+            raise TripError("NOTHING_TO_RECORD", "اختر شحنة واحدة على الأقل لإرجاعها.")
+        return selected
+
+    def return_lots(self, trip_id, lines, entry_date, notes, request_key, *, _expected_actor=None):
+        """RETURN whole melt lots from custody to the shop's lot stock (OPEN trip). A lot returns complete or stays in custody: the
+        posted grams are the lot's full outstanding weight, derived under the locks, never taken from the caller. Each lot keeps its
+        identity and assay; the grams leave custody once and enter the shop lot ledger once, atomically."""
+        session_actor = self._actor(_expected_actor)
+        if str(trip_id or "").strip() == "":
+            raise TripError("TRIP_NOT_FOUND", "اختر العهدة.")
+        trip_number = _trip_id(trip_id)
+        selected = self._lot_lines(lines)
+        returned_on, notes_text, key = _entry_date(entry_date), _text(notes, NOTES_MAX, "الملاحظات"), _key(request_key)
+        digest = hashlib.sha256(json.dumps(
+            [LOT_RETURN, trip_number, sorted((k, None if w is None else str(w)) for k, w in selected.items()), returned_on.isoformat(),
+             notes_text], ensure_ascii=False).encode()).hexdigest()
+        try:
+            return self._post_lot_return(session_actor, trip_number, selected, returned_on, notes_text, key, digest)
+        except IntegrityError as exc:
+            if not _is_request_key_violation(exc):
+                raise
+            return self._replay(session_actor, key, digest, exc)
+
+    def _post_lot_return(self, session_actor, trip_id, selected, returned_on, notes, key, digest):
+        with self._transaction() as connection:
+            actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+            repository = self._repository(connection)
+            trip, replay = self._open_trip(repository, trip_id, key, digest, actor)      # trip lock first
+            if replay is not None:
+                return replay
+            locked = {int(r["id"]): r for r in repository.lock_lots(selected)}            # then the lots, ascending
+            for lot_id in sorted(selected):
+                if lot_id not in locked or int(locked[lot_id]["trip_id"]) != trip_id:
+                    raise TripError("LOT_NOT_FOUND", "الشحنة غير موجودة في هذه العهدة.")
+            outstanding = {int(l["lot_id"]): l for l in self._custody(repository, trip_id)["lots"]}   # read under the locks
+            grams = {}
+            for lot_id in sorted(selected):
+                row = locked[lot_id]
+                name = f"الشحنة {int(row['lot_no'])} من {entry_code(trip_id, row['entry_no'])}"
+                lot = outstanding.get(lot_id)
+                if lot is None:
+                    raise TripError("LOT_NOT_IN_CUSTODY", f"{name} ليست في العهدة (رجعت إلى المحل أو عُكس سبكها).")
+                if lot["outstanding"] != lot["weight"]:
+                    raise TripError("LOT_PARTIALLY_RETURNED",
+                                    f"{name} رُجع جزء منها سابقًا (المتبقي {lot['outstanding']:,.3f} من {lot['weight']:,.3f} جرام). "
+                                    "لا يُكمل النظام الرجوع الجزئي: اعكس الرجوع الجزئي أولًا ثم أرجع الشحنة كاملة.")
+                if selected[lot_id] is not None and selected[lot_id] != lot["weight"]:
+                    raise TripError("LOT_PARTIAL_NOT_ALLOWED",
+                                    f"ترجع السبكة كاملة ولا يمكن إرجاع جزء منها: وزن {name} الكامل {lot['weight']:,.3f} جرام.")
+                grams[lot_id] = lot["outstanding"]                                         # the full weight, derived here
+            now = repository.db_now()
+            entry_no = repository.next_entry_no(trip_id)
+            entry_id = repository.insert_entry(trip_id=trip_id, entry_no=entry_no, kind=LOT_RETURN, entry_date=returned_on, notes=notes,
+                                               key=key, digest=digest, actor=actor, now=now)
+            code = entry_code(trip_id, entry_no)
+            for lot_id in sorted(grams):
+                custody_movement = repository.insert_lot_movement(lot_id=lot_id, entry_id=entry_id, movement_type=SHOP_RETURN_MOVEMENT,
+                                                                  weight_delta=-grams[lot_id])
+                shop_movement = repository.insert_shop_lot_movement(lot_id=lot_id, entry_id=entry_id, movement_type=SHOP_RETURN_IN,
+                                                                    weight_delta=grams[lot_id])
+                repository.insert_lot_return(entry_id=entry_id, lot_id=lot_id, weight=grams[lot_id],
+                                             custody_movement_id=custody_movement, shop_movement_id=shop_movement)
+            repository.audit(actor=actor, event_type="MARKET_TRIP_LOT_RETURN", entity_id=entry_id, reference=code,
+                             description=f"{KIND_TEXT[LOT_RETURN]} {code} — {trip_code(trip_id)}",
+                             metadata={"trip_id": trip_id, "kind": LOT_RETURN, "date": returned_on.isoformat(),
+                                       "lots": {str(k): str(w) for k, w in sorted(grams.items())}, "employee_id": actor.employee_id}, now=now)
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        return {"entry_id": str(entry_id), "trip_id": str(trip_id), "trip_code": trip_code(trip_id), "code": code, "kind": LOT_RETURN,
+                "created": False, "duplicate": False}
 
     # ------------------------------------------------------------------ closure and reopening
     def close(self, trip_id, *, _expected_actor=None):

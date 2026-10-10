@@ -5,26 +5,29 @@ Formats what MarketTripService returns; nothing here decides authorization or co
 re-checks the right in the transaction on every call, and every figure is re-read from the database after each change). Shop
 balances, master-karat custody and assayed lots are always separate. Ids cross the QML boundary as decimal strings.
 """
+from decimal import Decimal
 from uuid import uuid4
 
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
 from app.formatting import date_text, datetime_text, grams, ltr, money, number
 
-LIMITATION = ("في هذه المرحلة لا توجد عمليات بيع أو تسوية للموردين أو إرجاع للشحنات المعايَرة: تُغلق العهدة فقط بعد إرجاع كل النقدية "
-              "وكل الذهب الذي أُخرج منها وإنهاء كل الشحنات. النقدية والذهب في العهدة ملك للمحل لكنهما غير متاحين داخله حتى يُرجَعا.")
+LIMITATION = ("في هذه المرحلة لا توجد عمليات بيع أو تسوية للموردين: تُغلق العهدة فقط بعد إرجاع كل النقدية وكل الذهب الذي أُخرج منها "
+              "وإرجاع كل شحنات السبك إلى المحل. النقدية والذهب في العهدة ملك للمحل لكنهما غير متاحين داخله حتى يُرجَعا.")
 STATUS_TEXT = {"OPEN": "مفتوحة", "CLOSED": "مغلقة"}
-KIND_TEXT = {"ISSUE": "إخراج عهدة", "RETURN": "رجوع من العهدة", "MELT": "سبك"}
+KIND_TEXT = {"ISSUE": "إخراج عهدة", "RETURN": "رجوع من العهدة", "MELT": "سبك", "LOT_RETURN": "رجوع ناتج السبك"}
 DESIGNATION_TEXT = {"MELT": "للسبك", "LOGO": "لوجو", "UNCLASSIFIED": "غير مصنف (قبل التصنيف)"}
 DESIGNATION_CHOICES = [{"id": "MELT", "text": "للسبك"}, {"id": "LOGO", "text": "لوجو"}]
 LOT_TEXT = {"MAIN": "الناتج الرئيسي", "RESIDUE": "راسب"}
 REVERSED_NOTICE = "عملية معكوسة — الأرقام للتاريخ فقط ولا تؤثر على الرصيد الحالي"
 INCOMPLETE_TEXT = "غير مكتمل — عيار بعض الرواسب غير معروف، فلا يُعرض فرق نهائي للذهب الصافي."
-LOT_NOTE = "إرجاع الشحنات المعايَرة إلى المحل سيتاح في مرحلة لاحقة؛ ولا يمكن إغلاق العهدة قبل ذلك."
+LOT_NOTE = "أرجع الشحنات المعايَرة إلى المحل من «رجوع ناتج السبك» قبل إغلاق العهدة؛ ترجع السبكة كاملة ولا يمكن إرجاع جزء منها."
+WHOLE_LOT_RULE = "ترجع السبكة كاملة ولا يمكن إرجاع جزء منها"
+UNKNOWN_ASSAY = "غير معلومة"
 
 
 def fineness_text(value):
-    return "غير معروف" if value is None else f"{ltr(number(value, 1))} في الألف"
+    return UNKNOWN_ASSAY if value is None else f"{ltr(number(value, 1))} في الألف"
 
 
 def _gold_label(g):
@@ -52,7 +55,7 @@ class MarketTripViewModel(QObject):
         self._session, self._service = session, service
         self._workers, self._request, self._latest, self._busy = set(), 0, {}, set()
         self._shutdown = False
-        self._trips, self._detail, self._context = [], {}, {}
+        self._trips, self._detail, self._context, self._shop_lots = [], {}, {}, []
         self._selected, self._error, self._message = "", "", ""
 
     # ------------------------------------------------------------ plumbing
@@ -103,6 +106,7 @@ class MarketTripViewModel(QObject):
         service = self._service_instance()
         self._start("list", lambda _expected_actor: service.trips(_expected_actor=_expected_actor))
         self._start("context", lambda _expected_actor: service.context(_expected_actor=_expected_actor))
+        self._start("shoplots", lambda _expected_actor: service.shop_lots(_expected_actor=_expected_actor))
         if self._selected:
             self._load_detail()
 
@@ -113,6 +117,12 @@ class MarketTripViewModel(QObject):
         self._trips, self._error = result, ""
         if self._selected and not any(t["id"] == self._selected for t in result):
             self._selected, self._detail = "", {}
+
+    def _on_shoplots(self, result, error):
+        if error:
+            self._error = error
+            return
+        self._shop_lots = result
 
     def _on_context(self, result, error):
         if error:
@@ -176,7 +186,7 @@ class MarketTripViewModel(QObject):
         # Notified only after the transaction succeeded; a failing refresh belongs to the view that failed, never to this write.
         if self._moved:
             self.custodyChanged.emit()
-        if self._operation in ("issue", "return", "melt"):
+        if self._operation in ("issue", "return", "melt", "lotreturn"):
             self.entryPosted.emit(result["code"])
         else:
             self.actionDone.emit(self._operation)
@@ -209,6 +219,13 @@ class MarketTripViewModel(QObject):
         self._write("melt", "تم تسجيل السبك", lambda s, a: s.melt(
             trip_id, inputs, entry_date, workshop, output, residues, assay_reference, gain_explanation, notes, request_key,
             _expected_actor=a), False)
+
+    @Slot(str, "QVariantList", str, str, str)
+    def returnLots(self, trip_id, lot_lines, entry_date, notes, request_key):
+        """Return whole assayed lots from custody to the shop's lot stock. Only the lot ids are sent: the service derives the full weight."""
+        lines = [{"lot_id": str(line.get("lotId", ""))} for line in (lot_lines or [])]
+        self._write("lotreturn", "تم رجوع ناتج السبك", lambda s, a: s.return_lots(
+            trip_id, lines, entry_date, notes, request_key, _expected_actor=a), False)
 
     @Slot(str)
     def closeTrip(self, trip_id):
@@ -259,6 +276,24 @@ class MarketTripViewModel(QObject):
                  "entryCount": t["entry_count"], "date": date_text(t["created_at"]), "selected": t["id"] == self._selected}
                 for t in self._trips]
 
+    @Property("QVariantList", notify=changed)
+    def shopLots(self):
+        """The shop-side lot stock (ناتج السبك بالمحل): physical grams and exact assay per lot; pure grams only when the assay is known."""
+        return [{"lotId": l["lot_id"], "ref": f"{l['code']} • شحنة {l['lot_no']}", "tripCode": l["trip_code"],
+                 "kindText": LOT_TEXT[l["kind"]] + (f" — {l['label']}" if l["label"] else ""), "weight": grams(l["stock"]),
+                 "fineness": fineness_text(l["fineness"]), "pure": UNKNOWN_ASSAY if l["pure"] is None else number(l["pure"], 6)}
+                for l in self._shop_lots]
+
+    @Property(str, notify=changed)
+    def shopLotSummary(self):
+        if not self._shop_lots:
+            return ""
+        total = sum((l["stock"] for l in self._shop_lots), Decimal("0"))
+        known = sum((l["pure"] for l in self._shop_lots if l["pure"] is not None), Decimal("0"))
+        unknown = sum(1 for l in self._shop_lots if l["pure"] is None)
+        return (f"الإجمالي الفعلي {grams(total)} جرام • الذهب الصافي المعروف {number(known, 6)} جرام"
+                + (f" • {unknown} شحنة بلا عيار معلوم" if unknown else ""))
+
     @Property("QVariantMap", notify=changed)
     def context(self):
         """Entry-dialog data and the SHOP balances (shown apart from custody)."""
@@ -303,8 +338,16 @@ class MarketTripViewModel(QObject):
             "lots": [{"lotId": l["lot_id"], "title": f"{LOT_TEXT[l['kind']]} — الحركة {l['entry_no']}"
                       + (f" • {l['label']}" if l["label"] else ""),
                       "weight": grams(l["weight"]), "fineness": fineness_text(l["fineness"]),
-                      "pure": "غير معروف" if l["pure"] is None else number(l["pure"], 6), "outstanding": grams(l["outstanding"])}
+                      "pure": UNKNOWN_ASSAY if l["pure"] is None else number(l["pure"], 6), "outstanding": grams(l["outstanding"])}
                      for l in custody["lots"]],
+            "returnableLots": [{"lotId": l["lot_id"], "ref": f"{l['code'] or ''} • شحنة {l['lot_no']}",
+                                "kindText": LOT_TEXT[l["kind"]] + (f" — {l['label']}" if l["label"] else ""),
+                                "fineness": fineness_text(l["fineness"]), "weight": grams(l["weight"]), "available": grams(l["outstanding"]),
+                                "returnable": l["outstanding"] == l["weight"],
+                                "reason": "" if l["outstanding"] == l["weight"] else
+                                f"رُجع منها جزء سابقًا (المتبقي {grams(l['outstanding'])} من {grams(l['weight'])} جرام): اعكس الرجوع الجزئي أولًا."}
+                               for l in custody["lots"]],
+            "lotReturnAvailable": is_open and bool(custody["lots"]),
             "lotNote": LOT_NOTE if custody["lots"] else "",
             "meltStock": melt_stock, "meltAvailable": is_open and bool(melt_stock), "returnLines": return_lines,
             "outstandingText": outstanding_text(custody),
@@ -319,6 +362,8 @@ class MarketTripViewModel(QObject):
         if e["cash"] is not None:
             parts.append(f"نقدية {money(e['cash'])}")
         parts += [f"عيار {g['karat_value']} ({DESIGNATION_TEXT[g['designation']]}): {grams(g['weight'])} جرام" for g in e["gold"]]
+        parts += [f"شحنة {l['lot_no']} من {l['code']}: {grams(l['weight'])} جرام (العيار {fineness_text(l['fineness'])})"
+                  for l in e.get("lot_returns", [])]
         return {"id": e["id"], "code": e["code"], "kind": e["kind"], "kindText": KIND_TEXT[e["kind"]],
                 "what": " • ".join(parts) if parts else ("انظر تفاصيل السبك أدناه" if e["kind"] == "MELT" else ""),
                 "date": date_text(e["date"]), "time": datetime_text(e["at"]), "actor": e["actor"],

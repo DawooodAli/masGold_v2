@@ -381,7 +381,7 @@ class MarketTripMeltingPageTests(MarketTripPageTests):
         self.assertIn("غير مكتمل", values)                                                # no definitive loss when a residue is unknown
         self.assertIn("-0.100", values.replace("⁦", "").replace("⁩", "").replace("−", "-"))
         self.assertIn("الناتج الرئيسي", " ".join(self.visible_texts("lotTitle")))
-        self.assertIn("مرحلة لاحقة", " ".join(self.visible_texts("lotNote")))
+        self.assertIn("رجوع ناتج السبك", " ".join(self.visible_texts("lotNote")))
         self.assertFalse(self.item("closeTripButton").property("enabled"))               # 20 g of 21K custody and the lot are outstanding
         self.assertEqual(self.warnings, [])
 
@@ -467,12 +467,163 @@ class MarketTripMeltingPageTests(MarketTripPageTests):
         self.assertEqual(self.tvm.detail["lots"], [])
 
 
+class MarketTripLotReturnPageTests(MarketTripMeltingPageTests):
+    """M2 on the real page, real clicks: whole melt lots return to the shop (a melt bar is indivisible), the separate shop lot stock,
+    refusals that keep the fields and reversal. The 1080x680 viewport is the binding case."""
+
+    def melted_trip(self):
+        self.start_trip()
+        self.open_melt()
+        self.fill_melt(weight="10", output="9.5", fineness="930", residue=("0.4", ""))
+        self.click("confirmMeltButton")
+        self.wait_until(lambda: len(self.db.melts) == 1, "melt posted")
+        self.closed("tripMeltDialog")
+        self.wait_idle()
+
+    def open_lot_return(self):
+        self.click("lotReturnButton")
+        self.wait_until(lambda: self.item("tripLotReturnDialog").property("opened"), "lot return dialog")
+
+    def test_returning_whole_lots_with_real_clicks_updates_custody_and_the_separate_shop_stock(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.melted_trip()
+        self.assertTrue(self.item("lotReturnButton").property("enabled"))
+        self.assertEqual(self.tvm.shopLots, [])                                         # nothing in the shop yet
+        before_cash, before_scrap = self.db.cash(), self.db.physical(1)
+        self.open_lot_return()
+        self.assertEqual(self.text("lotReturnRule"), "ترجع السبكة كاملة ولا يمكن إرجاع جزء منها")
+        for name in ("lotReturnDateField", "lotReturnSelect_0", "lotReturnSelect_1", "lotReturnNotesField", "confirmLotReturnButton", "cancelLotReturnButton"):
+            with self.subTest(control=name):
+                self.item(name)
+        for name in ("confirmLotReturnButton", "cancelLotReturnButton"):
+            self.assert_inside_window(self.item(name))
+        self.assertIsNone(self.visible_item("lotReturnQty_0"))                          # there is no quantity to type
+        self.assertIn("930", self.text("lotReturnInfo_0"))
+        self.assertIn("الوزن الكامل: 9.500", self.text("lotReturnInfo_0"))
+        self.assertIn("يتبقى في العهدة بعد الرجوع: 0.000", self.text("lotReturnInfo_0"))
+        self.assertIn("غير معلومة", self.text("lotReturnInfo_1"))                     # the unassayed residue
+        self.assertIn("الوزن الكامل: 0.400", self.text("lotReturnInfo_1"))
+        self.assertFalse(self.item("confirmLotReturnButton").property("enabled"))     # nothing selected yet
+        self.click("lotReturnSelect_0")
+        self.click("lotReturnSelect_1")
+        self.assertTrue(self.item("confirmLotReturnButton").property("enabled"))
+        self.snapshot("lot-return-dialog")
+        self.click("confirmLotReturnButton")
+        self.wait_until(lambda: len(self.db.lot_returns) == 2, "lots returned")
+        self.closed("tripLotReturnDialog")
+        self.wait_idle()
+        self.snapshot("trip-after-lot-return")
+        self.assertEqual((self.db.cash(), self.db.physical(1)), (before_cash, before_scrap))        # no cash / Scrap movement
+        self.assertEqual(sorted(m["weight_delta"] for m in self.db.shop_moves), [D("0.400"), D("9.500")])     # the full weights
+        self.assertIn("MT000001-2", " | ".join(self.visible_texts("shopLotRef")))
+        figures = " | ".join(self.visible_texts("shopLotFigures"))
+        self.assertIn("9.500 جرام", figures)
+        self.assertIn("غير معلومة", figures)                                            # the residue purity stays unknown
+        self.assertIn("8.835000", figures)                                              # 9.5 g * 930 / 1000, known assay only
+        self.assertEqual(self.tvm.detail["lots"], [])                                   # nothing of the melt is left in custody
+        # the shop stock is readable with no trip selected
+        self.tvm.selectTrip("")
+        QTest.qWait(150)
+        self.assertIn("9.500 جرام", " | ".join(self.visible_texts("shopLotFigures")))
+        self.assertEqual(self.warnings, [])
+
+    def test_a_stale_selection_is_refused_keeps_the_fields_and_a_double_click_posts_once(self):
+        self.melted_trip()
+        self.open_lot_return()
+        self.click("lotReturnSelect_0")
+        self.type_in("lotReturnNotesField", "ملاحظة")
+        main_lot = next(l["id"] for l in self.db.lots.values() if l["lot_kind"] == "MAIN")
+        self.tvm._service.return_lots("1", [{"lot_id": str(main_lot)}], TODAY, "", "11111111-1111-4111-8111-111111111111")   # returned elsewhere meanwhile
+        self.click("confirmLotReturnButton")
+        self.wait_until(lambda: self.tvm.errorMessage != "", "refusal")
+        QTest.qWait(100)
+        self.assertTrue(self.item("tripLotReturnDialog").property("visible"))
+        self.assertIn("ليست في العهدة", self.text("lotReturnError"))
+        self.assertEqual(self.text("lotReturnNotesField"), "ملاحظة")
+        self.assertTrue(self.item("lotReturnSelect_0").property("checked"))              # the choice is kept
+        self.assertEqual(len(self.db.lot_returns), 1)                                    # only the direct service call
+        self.click("lotReturnSelect_0")                                                  # unselect the stale lot, select the residue
+        self.click("lotReturnSelect_1")
+        button = self.item("confirmLotReturnButton")
+        point = button.mapToScene(QPointF(button.width() / 2, button.height() / 2)).toPoint()
+        QTest.mouseClick(self.root, Qt.LeftButton, Qt.NoModifier, point)
+        QTest.mouseClick(self.root, Qt.LeftButton, Qt.NoModifier, point)
+        self.wait_until(lambda: len(self.db.lot_returns) >= 2, "residue returned")
+        self.closed("tripLotReturnDialog")
+        self.wait_idle()
+        QTest.qWait(150)
+        self.assertEqual(len(self.db.lot_returns), 2)
+
+    def test_a_partially_returned_legacy_lot_cannot_be_selected_and_says_why(self):
+        self.melted_trip()
+        from datetime import date
+        from types import SimpleNamespace
+        repo = TripRepo(self.db)
+        main_lot = next(l["id"] for l in self.db.lots.values() if l["lot_kind"] == "MAIN")
+        entry = repo.insert_entry(trip_id=1, entry_no=repo.next_entry_no(1), kind="LOT_RETURN", entry_date=date(2026, 10, 10), notes=None,
+                                  key="22222222-2222-4222-8222-222222222222", digest="x" * 64,
+                                  actor=SimpleNamespace(user_id=7, employee_id=None), now=self.db.now)
+        custody = repo.insert_lot_movement(lot_id=main_lot, entry_id=entry, movement_type="SHOP_RETURN", weight_delta=D("-1.000"))
+        shop = repo.insert_shop_lot_movement(lot_id=main_lot, entry_id=entry, movement_type="TRIP_RETURN", weight_delta=D("1.000"))
+        repo.insert_lot_return(entry_id=entry, lot_id=main_lot, weight=D("1.000"), custody_movement_id=custody, shop_movement_id=shop)
+        self.tvm.refresh()
+        self.wait_idle()
+        self.open_lot_return()
+        self.assertFalse(self.item("lotReturnSelect_0").property("enabled"))
+        self.assertIn("اعكس الرجوع الجزئي", self.text("lotReturnReason_0"))
+        self.assertTrue(self.item("lotReturnSelect_1").property("enabled"))               # the residue is still a whole lot
+        self.assertEqual(len(self.db.lot_returns), 1)                                      # nothing was rewritten
+
+    def test_the_dialog_fits_every_size_and_a_whole_return_is_reversed_from_the_history(self):
+        self.melted_trip()
+        for width, height in harness.SIZES:
+            with self.subTest(size=(width, height)):
+                self.root.setWidth(width)
+                self.root.setHeight(height)
+                QTest.qWait(150)
+                self.assert_inside_window(self.item("lotReturnButton"))
+                self.open_lot_return()
+                for name in ("confirmLotReturnButton", "cancelLotReturnButton", "lotReturnDateField"):
+                    self.assert_inside_window(self.item(name))
+                self.item("tripLotReturnDialog").close()
+                self.closed("tripLotReturnDialog")
+        self.open_lot_return()
+        self.click("lotReturnSelect_0")
+        self.click("confirmLotReturnButton")
+        self.wait_until(lambda: len(self.db.lot_returns) == 1, "lot returned")
+        self.closed("tripLotReturnDialog")
+        self.wait_idle()
+        buttons = []
+
+        def collect(node):
+            if node.objectName() == "reverseEntryButton" and node.property("visible"):
+                buttons.append(node)
+            for child in node.childItems():
+                collect(child)
+        collect(self.root.contentItem())
+        self.assertEqual(len(buttons), 3)                                                # issue, melt, lot return
+        self.reveal(buttons[-1])
+        self.click(buttons[-1])                                                           # the lot return (newest)
+        self.wait_until(lambda: self.item("tripReasonDialog").property("opened"), "reversal dialog")
+        self.type_in("tripReasonField", "رجوع بالخطأ")
+        self.click("confirmTripReasonButton")
+        self.wait_until(lambda: len(self.db.corrections) == 1, "reversed")
+        self.closed("tripReasonDialog")
+        self.wait_idle()
+        self.assertIn("معكوسة بالعملية RV000001", " ".join(self.visible_texts("entryState")))
+        self.assertEqual(self.tvm.shopLots, [])                                           # the shop stock is gone again
+        self.assertEqual([l["outstanding"] for l in self.tvm.detail["lots"]], ["9.500", "0.400"])   # and the whole lot is back in custody
+
+
 # The base class carries the invoice-page tests: only this module's own tests are collected here.
 for _inherited in [n for n in dir(harness.InvoicePageTests) if n.startswith("test_")]:
     setattr(MarketTripPageTests, _inherited, None)
     setattr(MarketTripMeltingPageTests, _inherited, None)
 for _own in [n for n in dir(MarketTripPageTests) if n.startswith("test_") and getattr(MarketTripPageTests, n) is not None]:
     setattr(MarketTripMeltingPageTests, _own, None)                                    # the subclass runs only its own melting tests
+for _melting in [n for n in dir(MarketTripMeltingPageTests) if n.startswith("test_") and getattr(MarketTripMeltingPageTests, n) is not None]:
+    setattr(MarketTripLotReturnPageTests, _melting, None)                              # the lot-return class runs only its own tests
 
 
 if __name__ == "__main__":

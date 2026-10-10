@@ -42,7 +42,7 @@ class FinancialAccountsMysqlTests(unittest.TestCase):
             q.execute("SELECT DATABASE()")
             assert q.fetchone()[0] == "masgold_v2"
             q.execute("SELECT MAX(version) FROM schema_migrations")
-            assert q.fetchone()[0] == 39
+            assert q.fetchone()[0] == 40
             q.execute("SET SESSION innodb_lock_wait_timeout = 10")
             q.close()
             c.commit()

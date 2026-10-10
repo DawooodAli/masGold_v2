@@ -1,4 +1,4 @@
-"""Market-trip custody (037, melting 039): trips, their insert-only entries, and the cash / Scrap movements those entries post.
+"""Market-trip custody (037, melting 039, lot returns 040): trips, their insert-only entries, and the cash / Scrap movements those entries post.
 
 All writes use the caller's transaction and only INSERT (the trip header's `status` is the one updated column; every change
 of it is an insert-only event). Custody is never stored: it is derived from the entries that were not reversed.
@@ -10,10 +10,12 @@ from repositories.invoice_repository import _id
 
 SOURCE = "MARKET_TRIP_ENTRY"            # transaction_corrections.source_type and the cash / Scrap reference_type
 MAIN_SAFE = "MAIN_SAFE"
-ISSUE, RETURN, MELT = "ISSUE", "RETURN", "MELT"
+ISSUE, RETURN, MELT, LOT_RETURN = "ISSUE", "RETURN", "MELT", "LOT_RETURN"
 MELT_DESIGNATION, LOGO_DESIGNATION, UNCLASSIFIED = "MELT", "LOGO", "UNCLASSIFIED"     # the owner's decision on an issued gold line
 DESIGNATIONS = (MELT_DESIGNATION, LOGO_DESIGNATION, UNCLASSIFIED)
 MAIN_LOT, RESIDUE_LOT, CREATE_MOVEMENT = "MAIN", "RESIDUE", "CREATE"
+SHOP_RETURN_MOVEMENT = "SHOP_RETURN"                      # custody-side lot movement of a LOT_RETURN (negative grams)
+SHOP_RETURN_IN, SHOP_RETURN_REVERSAL = "TRIP_RETURN", "RETURN_REVERSAL"      # shop-side lot ledger movement types
 OPEN, CLOSED = "OPEN", "CLOSED"
 CASH_TYPE = {ISSUE: "TRIP_CASH_ISSUE", RETURN: "TRIP_CASH_RETURN"}
 SCRAP_TYPE = {ISSUE: "TRIP_CUSTODY_OUT", RETURN: "TRIP_CUSTODY_RETURN_IN"}
@@ -184,8 +186,58 @@ class MarketTripRepository(BaseRepository):
         return int(lot_id)
 
     def insert_lot_movement(self, *, lot_id, entry_id, movement_type, weight_delta):
-        self._execute("INSERT INTO market_trip_lot_movements (lot_id, entry_id, movement_type, weight_delta) VALUES (%s, %s, %s, %s)",
-                      (int(lot_id), _id(entry_id), movement_type, weight_delta))
+        movement_id, _ = self._execute(
+            "INSERT INTO market_trip_lot_movements (lot_id, entry_id, movement_type, weight_delta) VALUES (%s, %s, %s, %s)",
+            (int(lot_id), _id(entry_id), movement_type, weight_delta))
+        return int(movement_id)
+
+    # ------------------------------------------------------------------ lot returns to the shop (040)
+    def lock_lots(self, lot_ids):
+        """Lock the lot rows in ascending id order (the order every writer of lot grams uses)."""
+        ids = sorted({int(i) for i in lot_ids})
+        if not ids:
+            return []
+        marks = ", ".join(["%s"] * len(ids))
+        return self._fetch_all(
+            f"SELECT l.id, l.entry_id, e.trip_id, e.entry_no, l.lot_no, l.lot_kind, l.label, l.fineness_permille FROM market_trip_lots l "
+            f"JOIN market_trip_entries e ON e.id = l.entry_id WHERE l.id IN ({marks}) ORDER BY l.id FOR UPDATE OF l", tuple(ids))
+
+    def insert_shop_lot_movement(self, *, lot_id, entry_id, movement_type, weight_delta, correction_id=None):
+        movement_id, _ = self._execute(
+            "INSERT INTO market_trip_lot_shop_movements (lot_id, entry_id, movement_type, weight_delta, correction_id) "
+            "VALUES (%s, %s, %s, %s, %s)", (int(lot_id), _id(entry_id), movement_type, weight_delta,
+                                            None if correction_id is None else _id(correction_id)))
+        return int(movement_id)
+
+    def insert_lot_return(self, *, entry_id, lot_id, weight, custody_movement_id, shop_movement_id):
+        self._execute(
+            "INSERT INTO market_trip_lot_returns (entry_id, lot_id, weight_grams, custody_movement_id, shop_movement_id) "
+            "VALUES (%s, %s, %s, %s, %s)", (_id(entry_id), int(lot_id), weight, int(custody_movement_id), int(shop_movement_id)))
+
+    def entry_lot_returns(self, entry_id):
+        """The stored lot lines of a LOT_RETURN entry (what a reversal negates: the exact stored grams)."""
+        return self._fetch_all(
+            "SELECT lr.lot_id, lr.weight_grams, lr.custody_movement_id, lr.shop_movement_id, l.lot_no, l.entry_id AS melt_entry_id "
+            "FROM market_trip_lot_returns lr JOIN market_trip_lots l ON l.id = lr.lot_id WHERE lr.entry_id = %s ORDER BY lr.lot_id",
+            (_id(entry_id),))
+
+    def shop_lot_balance(self, lot_id):
+        """Grams of one lot currently held by the shop (a locking read for the reversal check)."""
+        row = self._fetch_one("SELECT COALESCE(SUM(weight_delta), 0) AS grams FROM market_trip_lot_shop_movements WHERE lot_id = %s FOR SHARE",
+                              (int(lot_id),))
+        return row["grams"]
+
+    def shop_lots(self):
+        """The shop-side lot stock: one row per lot with grams in the shop. Separate from Scrap and inventory pieces."""
+        return self._fetch_all(
+            """
+            SELECT l.id, l.entry_id AS melt_entry_id, e.trip_id, e.entry_no, l.lot_no, l.lot_kind, l.label, l.weight_grams AS original_weight,
+                   l.fineness_permille, SUM(s.weight_delta) AS stock_grams
+            FROM market_trip_lots l JOIN market_trip_entries e ON e.id = l.entry_id
+            JOIN market_trip_lot_shop_movements s ON s.lot_id = l.id
+            GROUP BY l.id, l.entry_id, e.trip_id, e.entry_no, l.lot_no, l.lot_kind, l.label, l.weight_grams, l.fineness_permille
+            HAVING SUM(s.weight_delta) > 0 ORDER BY e.trip_id, e.entry_no, l.lot_no
+            """)
 
     def custody_lots(self, trip_id, exclude_entry_id=None):
         """The assayed lots of the trip with their OUTSTANDING grams: lots of reversed melts and movements of reversed entries do not count."""
@@ -289,6 +341,10 @@ class MarketTripRepository(BaseRepository):
             WHERE e.trip_id = %s ORDER BY e.entry_no
             """, (_id(trip_id),))
         for row in rows:
+            row["lot_returns"] = self._fetch_all(
+                "SELECT lr.lot_id, lr.weight_grams, l.lot_no, l.lot_kind, l.fineness_permille, me.trip_id, me.entry_no AS melt_entry_no "
+                "FROM market_trip_lot_returns lr JOIN market_trip_lots l ON l.id = lr.lot_id "
+                "JOIN market_trip_entries me ON me.id = l.entry_id WHERE lr.entry_id = %s ORDER BY lr.lot_id", (int(row["id"]),))
             row["gold"] = self._fetch_all(
                 "SELECT g.karat_id, k.karat_value, g.designation, g.weight_grams FROM market_trip_entry_gold g "
                 "JOIN karats k ON k.id = g.karat_id WHERE g.entry_id = %s ORDER BY k.karat_value DESC, g.designation", (int(row["id"]),))

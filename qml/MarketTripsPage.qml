@@ -22,7 +22,7 @@ Item {
 
     Connections {
         target: page.vm
-        function onEntryPosted(code) { entryDialog.close(); meltDialog.close() }
+        function onEntryPosted(code) { entryDialog.close(); meltDialog.close(); lotReturnDialog.close() }
         function onActionDone(operation) { reasonDialog.close() }
     }
 
@@ -229,6 +229,52 @@ Item {
                     }
                     Txt { anchors.centerIn: parent; visible: tripList.count === 0; text: "لا توجد عهدة سوق مسجلة بعد"; color: theme.textMuted }
                 }
+                // ناتج السبك بالمحل: lots the shop holds after a return from the market. Apart from the Scrap strip, the karat totals and custody.
+                Rectangle {
+                    objectName: "shopLotsSection"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 250
+                    color: theme.panel
+                    radius: theme.radiusSmall
+                    border.color: theme.border
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 8
+                        spacing: 4
+                        Txt { Layout.fillWidth: true; text: "ناتج السبك بالمحل"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontBodyStrong }
+                        Txt { objectName: "shopLotSummary"; Layout.fillWidth: true; visible: !!page.vm && page.vm.shopLotSummary !== ""
+                              text: page.vm ? page.vm.shopLotSummary : ""; color: theme.textSecondary; font.pixelSize: theme.fontTableHeader
+                              wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                        ListView {
+                            id: shopLotList
+                            objectName: "shopLotList"
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            clip: true
+                            spacing: 4
+                            model: page.vm ? page.vm.shopLots : []
+                            delegate: Rectangle {
+                                width: shopLotList.width
+                                height: shopLotCol.implicitHeight + 10
+                                radius: theme.radiusSmall
+                                color: theme.bgTertiary
+                                border.color: theme.border
+                                ColumnLayout {
+                                    id: shopLotCol
+                                    anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                    anchors.leftMargin: 8; anchors.rightMargin: 8
+                                    spacing: 1
+                                    Txt { objectName: "shopLotRef"; Layout.fillWidth: true; text: page.ltr(modelData.ref) + "  " + modelData.kindText
+                                          font.bold: true; font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone; wrapMode: Text.WordWrap }
+                                    Txt { objectName: "shopLotFigures"; Layout.fillWidth: true; font.pixelSize: theme.fontTableHeader
+                                          text: modelData.weight + " جرام • العيار الفعلي " + modelData.fineness + " • صافي " + page.ltr(modelData.pure)
+                                          color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                }
+                            }
+                            Txt { anchors.centerIn: parent; visible: shopLotList.count === 0; text: "لا يوجد ناتج سبك بالمحل"; color: theme.textMuted }
+                        }
+                    }
+                }
             }
         }
 
@@ -241,6 +287,7 @@ Item {
             Txt { objectName: "tripMessage"; Layout.fillWidth: true; visible: !!page.vm && page.vm.message !== ""
                   text: page.vm ? page.vm.message : ""; color: theme.green; wrapMode: Text.WordWrap; elide: Text.ElideNone }
             Txt { objectName: "tripError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== "" && !entryDialog.visible && !reasonDialog.visible && !meltDialog.visible
+                           && !lotReturnDialog.visible
                   text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
 
             Txt {
@@ -282,6 +329,9 @@ Item {
                         Btn { objectName: "returnButton"; text: "تسجيل رجوع"; visible: !!page.detail.open
                               enabled: !!page.vm && !page.vm.writing
                               onClicked: entryDialog.openFor("RETURN", page.detail.id) }
+                        Btn { objectName: "lotReturnButton"; text: "رجوع ناتج السبك"; visible: !!page.detail.open
+                              enabled: !!page.detail.lotReturnAvailable && !!page.vm && !page.vm.writing
+                              onClicked: lotReturnDialog.openFor(page.detail.id) }
                         Btn { objectName: "meltButton"; text: "سبك"; visible: !!page.detail.open
                               enabled: !!page.detail.meltAvailable && !!page.vm && !page.vm.writing
                               onClicked: meltDialog.openFor(page.detail.id) }
@@ -859,6 +909,124 @@ Item {
         }
     }
 
+    // ---------------------------------------------------------------- return whole melt lots to the shop (ناتج السبك بالمحل)
+    // A melt bar is indivisible: the dialog only SELECTS lots. Weight and assay are read-only; the service posts the full weight.
+    Popup {
+        id: lotReturnDialog
+        objectName: "tripLotReturnDialog"
+        property string tripId: ""
+        property string requestKey: ""
+        function openFor(trip) {
+            if (!page.vm) return
+            tripId = trip
+            requestKey = page.vm.newRequestKey()
+            lotReturnDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            lotReturnNotes.text = ""
+            lotPickModel.clear()
+            var lots = page.detail.returnableLots || []
+            for (var i = 0; i < lots.length; ++i)
+                lotPickModel.append({ lotId: lots[i].lotId, ref: lots[i].ref, kindText: lots[i].kindText, fineness: lots[i].fineness,
+                                      weight: lots[i].weight, returnable: lots[i].returnable, reason: lots[i].reason, picked: false })
+            page.vm.clearMessage()
+            page.vm.refresh()
+            open()
+        }
+        function lines() {
+            var rows = []
+            for (var i = 0; i < lotPickModel.count; ++i) {
+                var g = lotPickModel.get(i)
+                if (g.picked) rows.push({ lotId: g.lotId })
+            }
+            return rows
+        }
+        readonly property bool hasSelection: lines().length > 0
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(620, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 600, 600)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        ListModel { id: lotPickModel }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; text: "رجوع ناتج السبك إلى المحل" }
+            Txt { objectName: "lotReturnRule"; Layout.fillWidth: true; color: theme.amber; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "ترجع السبكة كاملة ولا يمكن إرجاع جزء منها" }
+            Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "اختر الشحنات التي تعود إلى المحل: تدخل مخزون «ناتج السبك بالمحل» بنفس هويتها ووزنها الكامل وعيارها الفعلي، ولا تتحول إلى عيار 18/21/22/24 ولا تدخل كسر المحل. لا تتحرك نقدية ولا حساب مورد." }
+            Flickable {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentHeight: lotReturnColumn.implicitHeight
+                clip: true
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: lotReturnColumn
+                    width: parent.width - 12
+                    spacing: 6
+                    Txt { Layout.fillWidth: true; text: "تاريخ الرجوع (yyyy-MM-dd) *" }
+                    Field { id: lotReturnDate; objectName: "lotReturnDateField"; Layout.fillWidth: true }
+                    Repeater {
+                        model: lotPickModel
+                        delegate: Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: lotReturnRow.implicitHeight + 12
+                            radius: theme.radiusSmall
+                            color: theme.bgTertiary
+                            border.color: picked ? theme.gold : theme.border
+                            RowLayout {
+                                id: lotReturnRow
+                                anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                anchors.leftMargin: 10; anchors.rightMargin: 10
+                                layoutDirection: Qt.RightToLeft
+                                spacing: 10
+                                CheckBox {
+                                    objectName: "lotReturnSelect_" + index
+                                    enabled: returnable && !!page.vm && !page.vm.writing
+                                    checked: picked
+                                    onToggled: lotPickModel.setProperty(index, "picked", checked)
+                                }
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 2
+                                    Txt { objectName: "lotReturnRef_" + index; Layout.fillWidth: true; font.bold: true; elide: Text.ElideNone
+                                          text: page.ltr(ref) + "  " + kindText }
+                                    Txt { objectName: "lotReturnInfo_" + index; Layout.fillWidth: true; color: theme.textSecondary; wrapMode: Text.WordWrap
+                                          elide: Text.ElideNone
+                                          text: "العيار الفعلي: " + fineness + " • الوزن الكامل: " + weight + " جرام • يتبقى في العهدة بعد الرجوع: 0.000" }
+                                    Txt { objectName: "lotReturnReason_" + index; Layout.fillWidth: true; visible: !returnable; text: reason
+                                          color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                }
+                            }
+                        }
+                    }
+                    Txt { Layout.fillWidth: true; text: "ملاحظات" }
+                    Field { id: lotReturnNotes; objectName: "lotReturnNotesField"; Layout.fillWidth: true }
+                }
+            }
+            Txt { objectName: "lotReturnError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmLotReturnButton"
+                    text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "إرجاع الشحنات المحددة"
+                    primary: true
+                    enabled: lotReturnDialog.hasSelection && lotReturnDate.text.trim().length > 0 && !!page.vm && !page.vm.writing
+                    onClicked: page.vm.returnLots(lotReturnDialog.tripId, lotReturnDialog.lines(), lotReturnDate.text, lotReturnNotes.text,
+                                                  lotReturnDialog.requestKey)
+                }
+                Btn { objectName: "cancelLotReturnButton"; text: "إلغاء"; accent: theme.textSecondary
+                      enabled: !!page.vm && !page.vm.writing; onClicked: lotReturnDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- reason (reopen a closed trip / reverse an entry)
     Popup {
         id: reasonDialog
@@ -888,7 +1056,7 @@ Item {
                   text: reasonDialog.mode === "REVERSE" ? "عكس الحركة " + page.ltr(reasonDialog.targetCode) : "إعادة فتح العهدة" }
             Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
                   text: reasonDialog.mode === "REVERSE"
-                        ? "تبقى الحركة الأصلية في السجل وتُسجل حركات معاكسة مرتبطة بها، ويبقى تحليل السبك محفوظًا. لا يُعكس إخراج بعده رجوع أو سبك قائم، ولا يُعكس سبك استُخدمت شحنته، ولا تُعكس حركة في عهدة مغلقة."
+                        ? "تبقى الحركة الأصلية في السجل وتُسجل حركات معاكسة مرتبطة بها، ويبقى تحليل السبك محفوظًا. لا يُعكس إخراج بعده رجوع أو سبك قائم، ولا يُعكس سبك رجعت شحنته إلى المحل قبل عكس الرجوع، ولا تُعكس حركة في عهدة مغلقة."
                         : "تعود العهدة مفتوحة لإخراج عهدة أو تسجيل رجوع أو عكس. لا تتغير أي أرصدة." }
             Txt { Layout.fillWidth: true; text: "السبب *" }
             Field { id: reasonField; objectName: "tripReasonField"; Layout.fillWidth: true }

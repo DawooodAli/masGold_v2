@@ -313,7 +313,7 @@ class ClosureTests(MeltCase):
         message = self.refused("OUTSTANDING_CUSTODY", lambda: self.service.close(self.trip)).args[0]
         self.assertIn("شحنة سبك 1", message)
         self.assertIn("60.000 جرام", message)
-        self.assertIn("مرحلة لاحقة", message)                                              # shop return arrives later
+        self.assertIn("رجوع ناتج السبك", message)                                         # the way out is named
 
     def test_master_karat_custody_and_assayed_lots_are_reported_separately(self):
         self.melt()
@@ -414,9 +414,7 @@ class ReversalTests(MeltCase):
         lot_id = next(l["id"] for l in self.db.lots.values() if l["entry_id"] == self.melt_entry and l["lot_kind"] == "MAIN")
         self.assertEqual(self.db.lot_moves[0]["movement_type"], "CREATE")                  # born by the melt itself
         self.assertEqual(self.service._repository(self.db).lot_downstream(self.melt_entry), [])
-        later = self.ret(self.trip, "", [(K21, "1", "LOGO")])                              # a later, unrelated entry
-        self.db.lot_moves.append({"lot_id": lot_id, "entry_id": int(later["entry_id"]), "movement_type": "TEST_USE",
-                                  "weight_delta": D("-1.000")})                            # simulates M2's consumption of the lot
+        later = self.service.return_lots(self.trip, [{"lot_id": str(lot_id)}], TODAY, "", key(95))   # an effective lot return
         with self.assertRaises(CorrectionError) as refused:
             self.reverse()
         self.assertEqual(refused.exception.code, "DEPENDENT_LOT_USE_EXISTS")
@@ -471,13 +469,13 @@ class MeltViewModelTests(MeltCase):
         self.assertEqual(self.vm.message, "تم تسجيل السبك MT000001-2")
         detail = self.vm.detail
         self.assertEqual([l["title"] for l in detail["lots"]], ["الناتج الرئيسي — الحركة 2", "راسب — الحركة 2 • خبث"])
-        self.assertIn("مرحلة لاحقة", detail["lotNote"])
+        self.assertIn("رجوع ناتج السبك", detail["lotNote"])
         melt = detail["melts"][0]
         values = {r["label"]: r["value"] for r in melt["analysis"]}
         self.assertEqual(values["فرق الذهب الصافي"], "غير مكتمل — عيار بعض الرواسب غير معروف، فلا يُعرض فرق نهائي للذهب الصافي.")
         self.assertFalse(melt["complete"])
         self.assertIn("عيار 22: 5.000 جرام", melt["inputsText"])
-        self.assertIn("غير معروف", melt["lots"][1]["text"])
+        self.assertIn("غير معلومة", melt["lots"][1]["text"])
         self.assertIn("925.0", melt["lots"][0]["text"])
         self.assertIn("في الألف", melt["lots"][0]["text"])
 
