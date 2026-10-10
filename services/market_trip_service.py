@@ -8,6 +8,9 @@ decides what each gold line is for, melts designated gold into assayed lots and 
   LOT_RETURN  returns whole assayed lots from custody to the shop's separate lot stock (a melt bar is indivisible: complete or not at all):
           the lot keeps its identity, melt reference, kind and exact assay; nothing is classified into a master karat; no cash, bank,
           supplier, inventory-piece or Scrap movement exists
+  LOT_ISSUE   sends a whole shop bar (a lot that returned to the shop) out again into a DIFFERENT open custody: one shop OUT and one
+          custody IN, atomically. A lot is in the shop or in exactly ONE custody; its location is derived from the effective movements,
+          never from its origin melt, so the origin trip may stay closed. Returning it is the exact opposite transfer (LOT_RETURN)
   MELT    consumes MELT-designated custody (any active master karat, physical grams) and creates assayed LOTS: one MAIN output with
           its fineness (parts per thousand, 0.1) and optional RESIDUE lots whose fineness may be unknown. No cash, shop Scrap or
           supplier movement exists in a melt; the processing difference is stored permanently with the document.
@@ -29,14 +32,15 @@ from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation, localcontext
 import hashlib
 import json
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from mysql.connector import IntegrityError
 
 from repositories.financial_account_repository import FinancialAccountRepository
-from repositories.market_trip_repository import (CLOSED, CREATE_MOVEMENT, ISSUE, LOGO_DESIGNATION, LOT_RETURN, MAIN_LOT, MELT,
-                                                 MELT_DESIGNATION, OPEN, RESIDUE_LOT, RETURN, SHOP_RETURN_IN, SHOP_RETURN_MOVEMENT,
-                                                 SOURCE, UNCLASSIFIED, MarketTripRepository, entry_code, trip_code)
+from repositories.market_trip_repository import (CLOSED, CREATE_MOVEMENT, ISSUE, LOGO_DESIGNATION, LOT_ISSUE, LOT_RETURN, MAIN_LOT, MELT,
+                                                 MELT_DESIGNATION, OPEN, RESIDUE_LOT, RETURN, SHOP_ISSUE_MOVEMENT, SHOP_ISSUE_OUT,
+                                                 SHOP_RETURN_IN, SHOP_RETURN_MOVEMENT, SOURCE, UNCLASSIFIED, MarketTripRepository,
+                                                 entry_code, trip_code)
 from repositories.old_gold_conversion_repository import OldGoldConversionRepository
 from services.authorization_service import AuthorizationService
 from services.correction_rules import correction_code
@@ -49,7 +53,7 @@ MONEY_STEP, WEIGHT_STEP, FINENESS_STEP, ANALYSIS_STEP = Decimal("0.01"), Decimal
 MAX_MONEY, MAX_WEIGHT = Decimal("100000000000000"), Decimal("1000000000")
 NOTES_MAX, REASON_MAX, WORKSHOP_MAX, ASSAY_MAX, LABEL_MAX, MAX_RESIDUES = 1000, 1000, 120, 120, 120, 10
 ZERO_MONEY, ZERO_WEIGHT = Decimal("0.00"), Decimal("0.000")
-KIND_TEXT = {ISSUE: "إخراج عهدة", RETURN: "رجوع من العهدة", MELT: "سبك", LOT_RETURN: "رجوع ناتج السبك"}
+KIND_TEXT = {ISSUE: "إخراج عهدة", RETURN: "رجوع من العهدة", MELT: "سبك", LOT_RETURN: "رجوع ناتج السبك", LOT_ISSUE: "إخراج سبكة من المحل"}
 DESIGNATION_TEXT = {MELT_DESIGNATION: "للسبك", LOGO_DESIGNATION: "لوجو", UNCLASSIFIED: "غير مصنف (قبل التصنيف)"}
 _DESIGNATION_INPUT = {"MELT": MELT_DESIGNATION, "للسبك": MELT_DESIGNATION, "LOGO": LOGO_DESIGNATION, "لوجو": LOGO_DESIGNATION,
                       "UNCLASSIFIED": UNCLASSIFIED, "غير مصنف": UNCLASSIFIED}
@@ -190,7 +194,8 @@ def custody_view(cash_rows, gold_rows, lot_rows=(), trip_id=None):
              "fineness": None if r.get("fineness_permille") is None else Decimal(str(r["fineness_permille"])),
              "pure": None if r.get("pure_grams") is None else Decimal(str(r["pure_grams"])),
              "entry_no": int(r["entry_no"]), "outstanding": Decimal(str(r["outstanding_grams"])),
-             "code": None if trip_id is None else entry_code(trip_id, r["entry_no"])}
+             "origin_trip_id": int(r.get("origin_trip_id") or trip_id or 0) or None,
+             "code": None if not (r.get("origin_trip_id") or trip_id) else entry_code(r.get("origin_trip_id") or trip_id, r["entry_no"])}
             for r in lot_rows if Decimal(str(r["outstanding_grams"])) != 0]
     return {"cash": {"issued": issued, "returned": returned, "outstanding": issued - returned}, "gold": gold, "lots": lots,
             "settled": issued == returned and all(g["outstanding"] == 0 for g in gold) and not lots}
@@ -347,6 +352,10 @@ class MarketTripService:
                                  "code": entry_code(l["trip_id"], l["melt_entry_no"]), "weight": Decimal(str(l["weight_grams"])),
                                  "fineness": None if l["fineness_permille"] is None else Decimal(str(l["fineness_permille"]))}
                                 for l in e.get("lot_returns", [])],
+                "lot_issues": [{"lot_id": str(l["lot_id"]), "lot_no": int(l["lot_no"]), "kind": l["lot_kind"],
+                                "code": entry_code(l["trip_id"], l["melt_entry_no"]), "weight": Decimal(str(l["weight_grams"])),
+                                "fineness": None if l["fineness_permille"] is None else Decimal(str(l["fineness_permille"]))}
+                               for l in e.get("lot_issues", [])],
                 "reversed": e["reversal_id"] is not None,
                 "reversal_code": None if e["reversal_id"] is None else correction_code("FULL_REVERSAL", e["reversal_id"]),
                 "reversal_reason": e["reversal_reason"], "reversal_at": e["reversal_at"]}
@@ -376,7 +385,7 @@ class MarketTripService:
 
     # ------------------------------------------------------------------ issue and return entries
     @staticmethod
-    def _lines(cash, gold, kind):
+    def _lines(cash, gold, kind, allow_empty=False):
         """Validated (cash, {(karat_id, designation): grams}) with at least one positive quantity; the same pair twice is summed.
         The same karat may carry both designations (separate custody balances, separate Scrap movements)."""
         amount = parse_cash(cash)
@@ -392,7 +401,7 @@ class MarketTripService:
             raw = line.get("designation") if isinstance(line, dict) else (line[2] if len(line) > 2 else None)
             key = (karat_id, parse_designation(raw, kind))
             grams[key] = grams.get(key, ZERO_WEIGHT) + weight
-        if amount == 0 and not grams:
+        if amount == 0 and not grams and not allow_empty:
             raise TripError("NOTHING_TO_RECORD", "أدخل مبلغًا نقديًا أو وزن ذهب موجبًا واحدًا على الأقل.")
         return amount, grams
 
@@ -449,63 +458,77 @@ class MarketTripService:
                 if replay is not None:
                     return replay
                 trip_id = trip_number
-            account = None
-            if amount > 0:
-                safe = repository.main_safe()
-                if safe is None:
-                    raise TripError("ACCOUNT_NOT_FOUND", "الخزنة الرئيسية غير موجودة.")
-                account = self._accounts(connection).account("CASH", safe["id"], lock=True)
-                if account is None:
-                    raise TripError("ACCOUNT_NOT_FOUND", "الخزنة الرئيسية غير موجودة.")
-                if not account["is_active"]:
-                    raise TripError("ACCOUNT_INACTIVE", f"الحساب «{account['name']}» غير نشط.")
-            karats = {}
-            for karat_id in sorted({k for k, _ in grams}):
-                karat = repository.karat(karat_id)
-                if karat is None or not karat["is_active"]:
-                    raise TripError("KARAT_NOT_FOUND", "العيار غير موجود أو غير نشط.")
-                karats[karat_id] = karat
-            scrap = self._scrap(connection)
-            if kind == ISSUE:
-                per_karat = {}
-                for (karat_id, _), weight in grams.items():                 # both designations of a karat draw on the SAME Scrap
-                    per_karat[karat_id] = per_karat.get(karat_id, ZERO_WEIGHT) + weight
-                for karat_id in sorted(per_karat):                           # only AVAILABLE Scrap: manager-review holds are excluded
-                    available = sum((Decimal(str(r["weight_delta_grams"])) for r in scrap.lock_old_gold_balance(karat_id)),
-                                    ZERO_WEIGHT)
-                    if per_karat[karat_id] > available:
-                        raise TripError("SCRAP_SHORTAGE", shortage_message(
-                            karats[karat_id]["karat_value"], per_karat[karat_id], available, held_grams(scrap, karat_id)))
-            else:
-                self._check_returnable(repository, trip_id, amount, grams, karats)
-            now = repository.db_now()
-            entry_no = repository.next_entry_no(trip_id)
-            entry_id = repository.insert_entry(trip_id=trip_id, entry_no=entry_no, kind=kind, entry_date=paid_on,
-                                               notes=notes_text, key=key, digest=digest, actor=actor, now=now)
-            code = entry_code(trip_id, entry_no)
-            label = f"{KIND_TEXT[kind]} {code}"
-            if amount > 0:
-                movement = repository.post_cash(kind=kind, account_id=account["id"], entry_id=entry_id, code=code, amount=amount,
-                                                description=label, actor=actor, now=now)
-                repository.insert_cash_leg(entry_id=entry_id, amount=amount, cash_account_id=account["id"], cash_movement_id=movement)
-            for (karat_id, designation), weight in sorted(grams.items()):   # one Scrap movement per (karat, designation) leg
-                movement = repository.post_scrap(kind=kind, karat_id=karat_id, weight=weight, entry_id=entry_id, code=code,
-                                                 notes=f"{label} — {DESIGNATION_TEXT[designation]}", actor=actor, now=now)
-                repository.insert_gold_leg(entry_id=entry_id, karat_id=karat_id, designation=designation, weight=weight,
-                                           scrap_movement_id=movement)
-            if created:
-                repository.insert_event(trip_id=trip_id, event_type="OPENED", reason=None, actor=actor, now=now)
-            gold_meta = {}
-            for (karat_id, designation), weight in sorted(grams.items()):
-                gold_meta.setdefault(str(karats[karat_id]["karat_value"]), {})[designation] = str(weight)
-            repository.audit(actor=actor, event_type="MARKET_TRIP_ISSUE" if kind == ISSUE else "MARKET_TRIP_RETURN",
-                             entity_id=entry_id, reference=code, description=f"{label} — {trip_code(trip_id)}",
-                             metadata={"trip_id": trip_id, "kind": kind, "cash": str(amount), "date": paid_on.isoformat(),
-                                       "gold": gold_meta, "employee_id": actor.employee_id}, now=now)
+            account, karats = self._issue_resources(connection, repository, kind, trip_id, amount, grams)
+            entry_id, code = self._write_entry(repository, kind=kind, trip_id=trip_id, paid_on=paid_on, notes_text=notes_text, key=key,
+                                               digest=digest, actor=actor, amount=amount, grams=grams, account=account, karats=karats,
+                                               created=created)
             if not self._session.is_current(session_actor):
                 raise PermissionError("انتهت جلسة الدخول.")
         return {"entry_id": str(entry_id), "trip_id": str(trip_id), "trip_code": trip_code(trip_id), "code": code, "kind": kind,
                 "created": created, "duplicate": False}
+
+    def _issue_resources(self, connection, repository, kind, trip_id, amount, grams):
+        """The locked MAIN_SAFE account (when cash is moved), the active karats and - for an issue - the AVAILABLE Scrap per karat
+        (both designations of a karat draw on the same Scrap) or - for a return - the outstanding custody. Locks and checks only."""
+        account = None
+        if amount > 0:
+            safe = repository.main_safe()
+            if safe is None:
+                raise TripError("ACCOUNT_NOT_FOUND", "الخزنة الرئيسية غير موجودة.")
+            account = self._accounts(connection).account("CASH", safe["id"], lock=True)
+            if account is None:
+                raise TripError("ACCOUNT_NOT_FOUND", "الخزنة الرئيسية غير موجودة.")
+            if not account["is_active"]:
+                raise TripError("ACCOUNT_INACTIVE", f"الحساب «{account['name']}» غير نشط.")
+        karats = {}
+        for karat_id in sorted({k for k, _ in grams}):
+            karat = repository.karat(karat_id)
+            if karat is None or not karat["is_active"]:
+                raise TripError("KARAT_NOT_FOUND", "العيار غير موجود أو غير نشط.")
+            karats[karat_id] = karat
+        scrap = self._scrap(connection)
+        if kind == ISSUE:
+            per_karat = {}
+            for (karat_id, _), weight in grams.items():                 # both designations of a karat draw on the SAME Scrap
+                per_karat[karat_id] = per_karat.get(karat_id, ZERO_WEIGHT) + weight
+            for karat_id in sorted(per_karat):                           # only AVAILABLE Scrap: manager-review holds are excluded
+                available = sum((Decimal(str(r["weight_delta_grams"])) for r in scrap.lock_old_gold_balance(karat_id)),
+                                ZERO_WEIGHT)
+                if per_karat[karat_id] > available:
+                    raise TripError("SCRAP_SHORTAGE", shortage_message(
+                        karats[karat_id]["karat_value"], per_karat[karat_id], available, held_grams(scrap, karat_id)))
+        else:
+            self._check_returnable(repository, trip_id, amount, grams, karats)
+        return account, karats
+
+    def _write_entry(self, repository, *, kind, trip_id, paid_on, notes_text, key, digest, actor, amount, grams, account, karats, created):
+        """Post one ISSUE / RETURN entry on the caller's connection: the entry, its cash leg, one Scrap leg per (karat, designation),
+        the OPENED event of a new trip and the audit row. Returns (entry_id, code)."""
+        now = repository.db_now()
+        entry_no = repository.next_entry_no(trip_id)
+        entry_id = repository.insert_entry(trip_id=trip_id, entry_no=entry_no, kind=kind, entry_date=paid_on,
+                                           notes=notes_text, key=key, digest=digest, actor=actor, now=now)
+        code = entry_code(trip_id, entry_no)
+        label = f"{KIND_TEXT[kind]} {code}"
+        if amount > 0:
+            movement = repository.post_cash(kind=kind, account_id=account["id"], entry_id=entry_id, code=code, amount=amount,
+                                            description=label, actor=actor, now=now)
+            repository.insert_cash_leg(entry_id=entry_id, amount=amount, cash_account_id=account["id"], cash_movement_id=movement)
+        for (karat_id, designation), weight in sorted(grams.items()):   # one Scrap movement per (karat, designation) leg
+            movement = repository.post_scrap(kind=kind, karat_id=karat_id, weight=weight, entry_id=entry_id, code=code,
+                                             notes=f"{label} — {DESIGNATION_TEXT[designation]}", actor=actor, now=now)
+            repository.insert_gold_leg(entry_id=entry_id, karat_id=karat_id, designation=designation, weight=weight,
+                                       scrap_movement_id=movement)
+        if created:
+            repository.insert_event(trip_id=trip_id, event_type="OPENED", reason=None, actor=actor, now=now)
+        gold_meta = {}
+        for (karat_id, designation), weight in sorted(grams.items()):
+            gold_meta.setdefault(str(karats[karat_id]["karat_value"]), {})[designation] = str(weight)
+        repository.audit(actor=actor, event_type="MARKET_TRIP_ISSUE" if kind == ISSUE else "MARKET_TRIP_RETURN",
+                         entity_id=entry_id, reference=code, description=f"{label} — {trip_code(trip_id)}",
+                         metadata={"trip_id": trip_id, "kind": kind, "cash": str(amount), "date": paid_on.isoformat(),
+                                   "gold": gold_meta, "employee_id": actor.employee_id}, now=now)
+        return entry_id, code
 
     @staticmethod
     def _same_request(prior, digest, actor):
@@ -679,7 +702,7 @@ class MarketTripService:
         return result
 
     @staticmethod
-    def _lot_lines(lines):
+    def _lot_lines(lines, required=True):
         """Validated {lot_id: supplied_weight|None}. A melt lot is an indivisible bar: the caller only SELECTS lots. A weight may still be
         sent (an old client) but it is never used - it is only compared with the full weight under the locks. A lot twice is refused."""
         selected = {}
@@ -698,7 +721,7 @@ class MarketTripService:
                 raise TripError("LOT_DUPLICATE", "الشحنة نفسها مكررة في الطلب: اخترها مرة واحدة.")
             supplied = None if not str(raw_weight if raw_weight is not None else "").strip() else parse_weight(raw_weight)
             selected[lot_id] = supplied
-        if not selected:
+        if not selected and required:
             raise TripError("NOTHING_TO_RECORD", "اختر شحنة واحدة على الأقل لإرجاعها.")
         return selected
 
@@ -731,16 +754,16 @@ class MarketTripService:
                 return replay
             locked = {int(r["id"]): r for r in repository.lock_lots(selected)}            # then the lots, ascending
             for lot_id in sorted(selected):
-                if lot_id not in locked or int(locked[lot_id]["trip_id"]) != trip_id:
-                    raise TripError("LOT_NOT_FOUND", "الشحنة غير موجودة في هذه العهدة.")
+                if lot_id not in locked:
+                    raise TripError("LOT_NOT_FOUND", "الشحنة غير موجودة.")
             outstanding = {int(l["lot_id"]): l for l in self._custody(repository, trip_id)["lots"]}   # read under the locks
             grams = {}
             for lot_id in sorted(selected):
                 row = locked[lot_id]
-                name = f"الشحنة {int(row['lot_no'])} من {entry_code(trip_id, row['entry_no'])}"
+                name = f"الشحنة {int(row['lot_no'])} من {entry_code(row['trip_id'], row['entry_no'])}"
                 lot = outstanding.get(lot_id)
                 if lot is None:
-                    raise TripError("LOT_NOT_IN_CUSTODY", f"{name} ليست في العهدة (رجعت إلى المحل أو عُكس سبكها).")
+                    raise TripError("LOT_NOT_IN_CUSTODY", f"{name} ليست في هذه العهدة (هي بالمحل أو في عهدة أخرى أو عُكس سبكها).")
                 if lot["outstanding"] != lot["weight"]:
                     raise TripError("LOT_PARTIALLY_RETURNED",
                                     f"{name} رُجع جزء منها سابقًا (المتبقي {lot['outstanding']:,.3f} من {lot['weight']:,.3f} جرام). "
@@ -768,6 +791,153 @@ class MarketTripService:
             if not self._session.is_current(session_actor):
                 raise PermissionError("انتهت جلسة الدخول.")
         return {"entry_id": str(entry_id), "trip_id": str(trip_id), "trip_code": trip_code(trip_id), "code": code, "kind": LOT_RETURN,
+                "created": False, "duplicate": False}
+
+    # ------------------------------------------------------------------ reissue whole shop bars into a custody (M3)
+    def issue_lots(self, trip_id, lines, entry_date, notes, request_key, *, _expected_actor=None):
+        """ISSUE whole shop bars (lots that returned to the shop) into an OPEN custody. The bar keeps its identity, weight, kind and assay;
+        one shop OUT and one custody IN post atomically, the full weight derived under the locks (a client quantity is only compared).
+        A lot is in the shop or in one custody only: a bar already out, or with a partial shop balance, is refused."""
+        session_actor = self._actor(_expected_actor)
+        if str(trip_id or "").strip() == "":
+            raise TripError("TRIP_NOT_FOUND", "اختر العهدة.")
+        trip_number = _trip_id(trip_id)
+        selected = self._lot_lines(lines)
+        issued_on, notes_text, key = _entry_date(entry_date), _text(notes, NOTES_MAX, "الملاحظات"), _key(request_key)
+        digest = hashlib.sha256(json.dumps(
+            [LOT_ISSUE, trip_number, sorted((k, None if w is None else str(w)) for k, w in selected.items()), issued_on.isoformat(),
+             notes_text], ensure_ascii=False).encode()).hexdigest()
+        try:
+            return self._post_lot_issue(session_actor, trip_number, selected, issued_on, notes_text, key, digest)
+        except IntegrityError as exc:
+            if not _is_request_key_violation(exc):
+                raise
+            return self._replay(session_actor, key, digest, exc)
+
+    def _plan_lot_issue(self, repository, selected):
+        """Lock the selected bars (ascending, after the trip) and derive each one's FULL weight under the locks: {lot_id: grams}.
+        A bar not in the shop, with a partial shop balance, or with a supplied weight that is not the full weight is refused."""
+        locked = {int(r["id"]): r for r in repository.lock_lots(selected)}            # then the lots, ascending (same order as a return)
+        for lot_id in sorted(selected):
+            if lot_id not in locked:
+                raise TripError("LOT_NOT_FOUND", "الشحنة غير موجودة.")
+        grams = {}
+        for lot_id in sorted(selected):
+            row = locked[lot_id]
+            name = f"الشحنة {int(row['lot_no'])} من {entry_code(row['trip_id'], row['entry_no'])}"
+            full = Decimal(str(repository.lot_by_id(lot_id)["weight_grams"]))
+            held = Decimal(str(repository.shop_lot_balance(lot_id)))                 # read under the lot lock
+            if held == 0:
+                raise TripError("LOT_NOT_IN_SHOP", f"{name} ليست بالمحل (هي في عهدة أخرى أو لم تُرجع بعد): لا تُخرج إلا سبكة موجودة بالمحل.")
+            if held != full:
+                raise TripError("LOT_PARTIAL_SHOP_STOCK",
+                                f"رصيد {name} بالمحل جزئي ({held:,.3f} من {full:,.3f} جرام): لا تُخرج السبكة إلا كاملة؛ "
+                                "اعكس الرجوع الجزئي أولًا.")
+            if selected[lot_id] is not None and selected[lot_id] != full:
+                raise TripError("LOT_PARTIAL_NOT_ALLOWED",
+                                f"تخرج السبكة كاملة ولا يمكن إخراج جزء منها: وزن {name} الكامل {full:,.3f} جرام.")
+            grams[lot_id] = held                                                       # the full weight, derived here
+        return grams
+
+    def _write_lot_issue(self, repository, *, trip_id, grams, issued_on, notes, key, digest, actor):
+        """Post one LOT_ISSUE entry on the caller's connection: per bar one shop OUT, one custody IN and the link row, then the audit."""
+        now = repository.db_now()
+        entry_no = repository.next_entry_no(trip_id)
+        entry_id = repository.insert_entry(trip_id=trip_id, entry_no=entry_no, kind=LOT_ISSUE, entry_date=issued_on, notes=notes,
+                                           key=key, digest=digest, actor=actor, now=now)
+        code = entry_code(trip_id, entry_no)
+        for lot_id in sorted(grams):
+            shop_movement = repository.insert_shop_lot_movement(lot_id=lot_id, entry_id=entry_id, movement_type=SHOP_ISSUE_OUT,
+                                                                weight_delta=-grams[lot_id])
+            custody_movement = repository.insert_lot_movement(lot_id=lot_id, entry_id=entry_id, movement_type=SHOP_ISSUE_MOVEMENT,
+                                                              weight_delta=grams[lot_id])
+            repository.insert_lot_issue(entry_id=entry_id, lot_id=lot_id, weight=grams[lot_id], custody_movement_id=custody_movement,
+                                        shop_movement_id=shop_movement)
+        repository.audit(actor=actor, event_type="MARKET_TRIP_LOT_ISSUE", entity_id=entry_id, reference=code,
+                         description=f"{KIND_TEXT[LOT_ISSUE]} {code} — {trip_code(trip_id)}",
+                         metadata={"trip_id": trip_id, "kind": LOT_ISSUE, "date": issued_on.isoformat(),
+                                   "lots": {str(k): str(w) for k, w in sorted(grams.items())}, "employee_id": actor.employee_id}, now=now)
+        return entry_id, code
+
+    def create_trip(self, cash, gold, lots, entry_date, notes, request_key, *, _expected_actor=None):
+        """ONE new custody holding any combination of MAIN_SAFE cash, Scrap lines (karat + MELT/LOGO) and whole shop bars (at least one
+        positive quantity or one bar). Everything posts in ONE transaction: the trip, the ISSUE entry (cash / Scrap, when present) and the
+        LOT_ISSUE entry (bars, when present); any failure rolls back every row. One request key and hash cover the whole payload (the
+        bar entry of a mixed creation carries a key derived from it); a replay returns the original custody with all its entries."""
+        session_actor = self._actor(_expected_actor)
+        amount, grams = self._lines(cash, gold, ISSUE, allow_empty=True)
+        selected = self._lot_lines(lots, required=False)
+        if amount == 0 and not grams and not selected:
+            raise TripError("NOTHING_TO_RECORD", "أدخل مبلغًا نقديًا أو وزن ذهب موجبًا، أو اختر سبيكة موجودة بالمحل.")
+        paid_on, notes_text, key = _entry_date(entry_date), _text(notes, NOTES_MAX, "الملاحظات"), _key(request_key)
+        digest = hashlib.sha256(json.dumps(
+            ["CREATE_TRIP", str(amount), sorted((k, d, str(w)) for (k, d), w in grams.items()),
+             sorted((k, None if w is None else str(w)) for k, w in selected.items()), paid_on.isoformat(), notes_text],
+            ensure_ascii=False).encode()).hexdigest()
+        try:
+            return self._post_create(session_actor, amount, grams, selected, paid_on, notes_text, key, digest)
+        except IntegrityError as exc:
+            if not _is_request_key_violation(exc):
+                raise
+            with self._transaction() as connection:                      # a twin committed first: decide from a FRESH read
+                actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+                repository = self._repository(connection)
+                prior = repository.by_request(key)
+                if prior is None:
+                    raise
+                return self._created_replay(repository, prior, digest, actor)
+
+    def _created_replay(self, repository, prior, digest, actor):
+        result = self._same_request(prior, digest, actor)
+        result["entries"] = [{"entry_id": str(e["id"]), "code": entry_code(e["trip_id"], e["entry_no"]), "kind": e["entry_kind"]}
+                             for e in repository.entries(prior["trip_id"])]
+        return result
+
+    def _post_create(self, session_actor, amount, grams, selected, paid_on, notes_text, key, digest):
+        with self._transaction() as connection:
+            actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+            repository = self._repository(connection)
+            prior = repository.by_request(key)
+            if prior is not None:
+                return self._created_replay(repository, prior, digest, actor)
+            trip_id = repository.insert_trip(notes=notes_text, actor=actor, now=repository.db_now())      # the new trip: locked by this transaction
+            has_gold = amount > 0 or bool(grams)
+            account = karats = None
+            if has_gold:                                                  # cash account, then Scrap per karat ascending
+                account, karats = self._issue_resources(connection, repository, ISSUE, trip_id, amount, grams)
+            lot_grams = self._plan_lot_issue(repository, selected) if selected else {}      # then the bars, ascending
+            entries = []
+            if has_gold:
+                entry_id, code = self._write_entry(repository, kind=ISSUE, trip_id=trip_id, paid_on=paid_on, notes_text=notes_text, key=key,
+                                                   digest=digest, actor=actor, amount=amount, grams=grams, account=account, karats=karats,
+                                                   created=True)
+                entries.append({"entry_id": str(entry_id), "code": code, "kind": ISSUE})
+            if lot_grams:
+                bar_key = key if not has_gold else str(uuid5(UUID(key), "market-trip-create-lots"))
+                entry_id, code = self._write_lot_issue(repository, trip_id=trip_id, grams=lot_grams, issued_on=paid_on, notes=notes_text,
+                                                       key=bar_key, digest=digest, actor=actor)
+                entries.append({"entry_id": str(entry_id), "code": code, "kind": LOT_ISSUE})
+                if not has_gold:
+                    repository.insert_event(trip_id=trip_id, event_type="OPENED", reason=None, actor=actor, now=repository.db_now())
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        first = entries[0]
+        return {"entry_id": first["entry_id"], "trip_id": str(trip_id), "trip_code": trip_code(trip_id), "code": first["code"],
+                "kind": first["kind"], "created": True, "duplicate": False, "entries": entries}
+
+    def _post_lot_issue(self, session_actor, trip_id, selected, issued_on, notes, key, digest):
+        with self._transaction() as connection:
+            actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+            repository = self._repository(connection)
+            trip, replay = self._open_trip(repository, trip_id, key, digest, actor)      # destination trip lock first
+            if replay is not None:
+                return replay
+            grams = self._plan_lot_issue(repository, selected)
+            entry_id, code = self._write_lot_issue(repository, trip_id=trip_id, grams=grams, issued_on=issued_on, notes=notes, key=key,
+                                                   digest=digest, actor=actor)
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        return {"entry_id": str(entry_id), "trip_id": str(trip_id), "trip_code": trip_code(trip_id), "code": code, "kind": LOT_ISSUE,
                 "created": False, "duplicate": False}
 
     # ------------------------------------------------------------------ closure and reopening

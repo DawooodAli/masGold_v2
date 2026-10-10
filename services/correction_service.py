@@ -116,6 +116,7 @@ class _Plan:
     blockers: list = field(default_factory=list)         # (code, Arabic reason)
     making: list = field(default_factory=list)           # (supplier id, signed making delta, movement code)
     lot_returns: list = field(default_factory=list)      # (lot id, grams) a LOT_RETURN reversal takes back out of the shop lot stock
+    lot_issues: list = field(default_factory=list)       # (lot id, grams) a LOT_ISSUE reversal puts back into the shop lot stock
 
 
 def _reason(text):
@@ -230,7 +231,8 @@ class CorrectionService:
                 leg = repo.entry_cash_leg(source_id)
                 if leg is not None:
                     FinancialAccountRepository(connection).account("CASH", leg["cash_account_id"], lock=True)
-                repo.lock_lots([r["lot_id"] for r in repo.entry_lot_returns(source_id)])      # the lots of a lot return, ascending
+                repo.lock_lots([r["lot_id"] for r in repo.entry_lot_returns(source_id)]
+                               + [r["lot_id"] for r in repo.entry_lot_issues(source_id)])         # the lots of a lot transfer, ascending
                 source = repo.entry_source(source_id, lock=True)
             reference = entry_code(source["trip_id"], source["entry_no"])
             leg = repo.entry_cash_leg(source_id)
@@ -357,6 +359,15 @@ class CorrectionService:
                         plan.blockers.append(("SHOP_LOT_STOCK_INSUFFICIENT",
                                               f"لا يمكن عكس رجوع الشحنة {int(line['lot_no'])}: الرصيد المتاح بالمحل {held:,.3f} جرام "
                                               f"والمطلوب {grams:,.3f} — اعكس ما استُخدم منها أولاً."))
+            if source["entry_kind"] == "LOT_ISSUE":
+                # The bar goes back into the shop stock (the exact stored grams); the custody grams disappear because this entry stops
+                # counting. If a later effective return already took the bar out of this custody, undoing the issue would leave the
+                # custody negative AND put the bar in two places: the return has to be reversed first (newest first).
+                for line in trips.entry_lot_issues(source_id):
+                    plan.lot_issues.append((int(line["lot_id"]), Decimal(str(line["weight_grams"]))))
+                if any(Decimal(str(l["outstanding_grams"])) < 0 for l in trips.custody_lots(source["trip_id"], exclude_entry_id=source_id)):
+                    plan.blockers.append(("DEPENDENT_LOT_RETURN_EXISTS",
+                                          "لا يمكن عكس إخراج السبكة لأن رجوعها إلى المحل مسجل بعده — اعكس الرجوع أولاً."))
             if source["entry_kind"] == "MELT":
                 # A melt can be undone only while its lots have no unreversed downstream use (their own CREATE is not one).
                 for dependent in trips.lot_downstream(source_id):
@@ -699,6 +710,11 @@ class CorrectionService:
                                          correction_id=correction_id, code=code, notes=text,
                                          created_by_user_id=actor.user_id, employee_id=actor.employee_id,
                                          customer_id=plan.customer_id)
+            if plan.lot_issues:
+                from repositories.market_trip_repository import SHOP_ISSUE_REVERSAL, MarketTripRepository as IssueLedger
+                for lot_id, grams in sorted(plan.lot_issues):
+                    IssueLedger(connection).insert_shop_lot_movement(lot_id=lot_id, entry_id=source_id, movement_type=SHOP_ISSUE_REVERSAL,
+                                                                     weight_delta=grams, correction_id=correction_id)
             if plan.lot_returns:
                 from repositories.market_trip_repository import SHOP_RETURN_REVERSAL, MarketTripRepository as TripLedger
                 shop_lots = TripLedger(connection)

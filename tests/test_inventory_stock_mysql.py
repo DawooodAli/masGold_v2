@@ -26,7 +26,7 @@ class InventoryStockMySqlTests(unittest.TestCase):
         self.cursor = self.connection.cursor(dictionary=True)
         self.cursor.execute("SELECT DATABASE() AS db, MAX(version) AS v FROM schema_migrations")
         row = self.cursor.fetchone()
-        self.assertEqual((row["db"], int(row["v"])), ("masgold_v2", 40))
+        self.assertEqual((row["db"], int(row["v"])), ("masgold_v2", 41))
         self.suffix = uuid4().hex[:6].upper()
         self.ids = []
         self.addCleanup(self.cleanup)

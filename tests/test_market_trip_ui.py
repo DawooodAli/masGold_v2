@@ -539,7 +539,7 @@ class MarketTripLotReturnPageTests(MarketTripMeltingPageTests):
         self.wait_until(lambda: self.tvm.errorMessage != "", "refusal")
         QTest.qWait(100)
         self.assertTrue(self.item("tripLotReturnDialog").property("visible"))
-        self.assertIn("ليست في العهدة", self.text("lotReturnError"))
+        self.assertIn("ليست في هذه العهدة", self.text("lotReturnError"))
         self.assertEqual(self.text("lotReturnNotesField"), "ملاحظة")
         self.assertTrue(self.item("lotReturnSelect_0").property("checked"))              # the choice is kept
         self.assertEqual(len(self.db.lot_returns), 1)                                    # only the direct service call
@@ -616,6 +616,240 @@ class MarketTripLotReturnPageTests(MarketTripMeltingPageTests):
         self.assertEqual([l["outstanding"] for l in self.tvm.detail["lots"]], ["9.500", "0.400"])   # and the whole lot is back in custody
 
 
+class MarketTripLotIssuePageTests(MarketTripLotReturnPageTests):
+    """M3 on the real page, real clicks: a whole shop bar leaves again into a DIFFERENT open custody and returns from it."""
+
+    def shop_bar(self):
+        """Trip 1 melts and returns the whole 9.500 g @ 930 bar (and the residue) to the shop; trip 2 is then opened and selected."""
+        self.melted_trip()
+        self.open_lot_return()
+        self.click("lotReturnSelect_0")
+        self.click("confirmLotReturnButton")
+        self.wait_until(lambda: len(self.db.lot_returns) == 1, "bar returned")
+        self.closed("tripLotReturnDialog")
+        self.wait_idle()
+        self.new_trip("1000")
+        self.wait_until(lambda: len(self.db.trips) == 2, "second custody created")
+        self.tvm.selectTrip("2")                                                      # the trip list selection (a new trip keeps the current one)
+        self.wait_until(lambda: self.tvm.detail.get("id") == "2", "second custody selected")
+        self.wait_idle()
+
+    def open_lot_issue(self):
+        self.click("lotIssueButton")
+        self.wait_until(lambda: self.item("tripLotIssueDialog").property("opened"), "lot issue dialog")
+
+    def test_reissuing_a_whole_bar_with_real_clicks_moves_it_between_shop_and_custody(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.shop_bar()
+        before = (self.db.cash(), self.db.physical(1))
+        self.assertTrue(self.item("lotIssueButton").property("enabled"))
+        self.open_lot_issue()
+        self.assertEqual(self.text("lotIssueRule"), "تخرج السبكة كاملة ولا يمكن إخراج جزء منها")
+        for name in ("lotIssueDateField", "lotIssueSelect_0", "lotIssueNotesField", "confirmLotIssueButton", "cancelLotIssueButton"):
+            with self.subTest(control=name):
+                self.item(name)
+        for name in ("confirmLotIssueButton", "cancelLotIssueButton"):
+            self.assert_inside_window(self.item(name))
+        self.assertIsNone(self.visible_item("lotIssueQty_0"))                           # selection only: no quantity to type
+        self.assertIn("930", self.text("lotIssueInfo_0"))
+        self.assertIn("الوزن الكامل: 9.500", self.text("lotIssueInfo_0"))
+        self.assertFalse(self.item("confirmLotIssueButton").property("enabled"))        # nothing selected yet
+        self.click("lotIssueSelect_0")
+        self.assertTrue(self.item("confirmLotIssueButton").property("enabled"))
+        self.snapshot("lot-issue-dialog")
+        self.click("confirmLotIssueButton")
+        self.wait_until(lambda: len(self.db.lot_issues) == 1, "bar issued")
+        self.closed("tripLotIssueDialog")
+        self.wait_idle()
+        self.snapshot("trip-after-lot-issue")
+        self.assertEqual((self.db.cash(), self.db.physical(1)), (before[0], before[1]))        # no cash / Scrap movement
+        self.assertEqual(self.db.lot_issues[0]["weight_grams"], D("9.500"))
+        self.assertEqual(self.tvm.detail["lots"][0]["outstanding"], "9.500")                  # now held by THIS custody
+        self.assertNotIn("9.500 جرام", " | ".join(self.visible_texts("shopLotFigures")))      # gone from the shop stock
+        self.assertIn("LOT_ISSUE", [e["kind"] for e in self.tvm.detail["entries"]])           # the history distinguishes a reissue
+        self.assertEqual(self.warnings, [])
+        # the bar returns whole from the destination custody
+        self.open_lot_return()
+        self.click("lotReturnSelect_0")
+        self.click("confirmLotReturnButton")
+        self.wait_until(lambda: len(self.db.lot_returns) == 2, "returned from the destination")
+        self.closed("tripLotReturnDialog")
+        self.wait_idle()
+        self.assertIn("9.500 جرام", " | ".join(self.visible_texts("shopLotFigures")))         # back in the shop
+        self.assertEqual(self.tvm.detail["lots"], [])
+
+    # ---- unified creation: the "عهدة سوق جديدة" dialog also selects existing shop bars
+    def returned_bar(self):
+        self.melted_trip()
+        self.open_lot_return()
+        self.click("lotReturnSelect_0")
+        self.click("confirmLotReturnButton")
+        self.wait_until(lambda: len(self.db.lot_returns) == 1, "bar returned")
+        self.closed("tripLotReturnDialog")
+        self.wait_idle()
+
+    def open_new_custody(self):
+        self.click("newTripButton")
+        self.wait_until(lambda: self.item("tripEntryDialog").property("opened"), "entry dialog")
+        self.wait_until(lambda: self.tvm.context.get("karats"), "context")
+
+    def test_a_bar_only_custody_is_created_from_the_real_dialog_with_blank_cash_and_scrap(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.returned_bar()
+        trips, before = len(self.db.trips), (self.db.cash(), self.db.physical(1))
+        self.open_new_custody()
+        self.assertIn("سبائك موجودة بالمحل", self.text("createLotsTitle"))
+        self.assertIn("930", self.text("createLotInfo_0"))
+        self.assertIn("الوزن الكامل: 9.500", self.text("createLotInfo_0"))
+        self.assertIsNone(self.visible_item("createLotQty_0"))                           # whole bars: no weight editing
+        self.assertFalse(self.item("confirmTripEntryButton").property("enabled"))        # nothing chosen yet
+        self.click("createLotSelect_0")
+        self.assertTrue(self.item("confirmTripEntryButton").property("enabled"))         # no dummy cash or Scrap needed
+        self.assert_inside_window(self.item("confirmTripEntryButton"))
+        self.snapshot("create-bar-only")
+        button = self.item("confirmTripEntryButton")
+        point = button.mapToScene(QPointF(button.width() / 2, button.height() / 2)).toPoint()
+        QTest.mouseClick(self.root, Qt.LeftButton, Qt.NoModifier, point)
+        QTest.mouseClick(self.root, Qt.LeftButton, Qt.NoModifier, point)                # a double click is one request
+        self.wait_until(lambda: len(self.db.trips) >= trips + 1, "custody created")
+        self.closed("tripEntryDialog")
+        self.wait_idle()
+        QTest.qWait(150)
+        self.assertEqual((len(self.db.trips), len(self.db.lot_issues)), (trips + 1, 1))
+        self.assertEqual((self.db.cash(), self.db.physical(1)), before)
+        self.assertEqual(self.tvm.shopLots, [])                                          # gone from the shop stock
+        self.tvm.selectTrip(str(trips + 1))
+        self.wait_until(lambda: self.tvm.detail.get("id") == str(trips + 1), "new custody selected")
+        self.assertEqual(self.tvm.detail["lots"][0]["outstanding"], "9.500")
+        self.wait_idle()
+        self.assertTrue(self.item("lotReturnButton").property("enabled"))
+        self.reveal(self.item("lotReturnButton"))
+        self.open_lot_return()                                                            # whole return, then the custody closes
+        self.click("lotReturnSelect_0")
+        self.click("confirmLotReturnButton")
+        self.wait_until(lambda: len(self.db.lot_returns) == 2, "returned")
+        self.closed("tripLotReturnDialog")
+        self.wait_idle()
+        self.assertEqual(self.tvm.detail["lots"], [])
+        self.assertEqual(self.warnings, [])
+
+    def test_cash_scrap_and_a_bar_together_create_one_custody(self):
+        self.returned_bar()
+        self.open_new_custody()
+        self.type_in("tripCashField", "100")
+        self.pick("tripGoldKarat_0", 2)
+        self.pick("tripGoldDesignation_0", 1)
+        self.type_in("tripGoldWeight_0", "1")
+        self.click("createLotSelect_0")
+        self.click("confirmTripEntryButton")
+        self.wait_until(lambda: len(self.db.lot_issues) == 1, "created")
+        self.closed("tripEntryDialog")
+        self.wait_idle()
+        self.assertEqual(len(self.db.trips), 2)
+        self.assertEqual(sorted(e["entry_kind"] for e in self.db.entries.values() if e["trip_id"] == 2), ["ISSUE", "LOT_ISSUE"])
+        self.assertEqual(self.warnings, [])
+
+    def test_a_refused_creation_keeps_the_fields_and_the_chosen_bar(self):
+        self.returned_bar()
+        self.open_new_custody()
+        self.type_in("tripCashField", "100")
+        self.pick("tripGoldKarat_0", 2)
+        self.pick("tripGoldDesignation_0", 1)
+        self.type_in("tripGoldWeight_0", "99999")                                         # more Scrap than the shop holds
+        self.click("createLotSelect_0")
+        self.click("confirmTripEntryButton")
+        self.wait_until(lambda: self.tvm.errorMessage != "", "refusal")
+        QTest.qWait(100)
+        self.assertTrue(self.item("tripEntryDialog").property("visible"))
+        self.assertEqual((self.text("tripCashField"), self.text("tripGoldWeight_0")), ("100", "99999"))
+        self.assertTrue(self.item("createLotSelect_0").property("checked"))
+        self.assertEqual((len(self.db.trips), len(self.db.lot_issues)), (1, 0))             # nothing was created
+
+    def test_the_new_custody_dialog_with_bars_fits_every_size(self):
+        self.returned_bar()
+        for width, height in harness.SIZES:
+            with self.subTest(size=(width, height)):
+                self.root.setWidth(width)
+                self.root.setHeight(height)
+                QTest.qWait(150)
+                self.open_new_custody()
+                for name in ("confirmTripEntryButton", "cancelTripEntryButton", "tripCashField", "tripDateField"):
+                    self.assert_inside_window(self.item(name))
+                self.item("tripEntryDialog").close()
+                self.closed("tripEntryDialog")
+
+    def test_a_bar_held_by_another_custody_is_refused_keeps_the_fields_and_a_double_click_posts_once(self):
+        self.shop_bar()
+        self.open_lot_issue()
+        self.click("lotIssueSelect_0")
+        self.type_in("lotIssueNotesField", "ملاحظة")
+        main_lot = next(l["id"] for l in self.db.lots.values() if l["lot_kind"] == "MAIN")
+        self.tvm._service.issue_lots("2", [{"lot_id": str(main_lot)}], TODAY, "", "33333333-3333-4333-8333-333333333333")   # issued meanwhile
+        self.click("confirmLotIssueButton")
+        self.wait_until(lambda: self.tvm.errorMessage != "", "refusal")
+        QTest.qWait(100)
+        self.assertTrue(self.item("tripLotIssueDialog").property("visible"))
+        self.assertTrue(self.text("lotIssueError"))
+        self.assertEqual(self.text("lotIssueNotesField"), "ملاحظة")
+        self.assertTrue(self.item("lotIssueSelect_0").property("checked"))               # the choice is kept
+        self.assertEqual(len(self.db.lot_issues), 1)                                      # only the direct service call
+
+    def test_a_double_click_issues_once(self):
+        self.shop_bar()
+        self.open_lot_issue()
+        self.click("lotIssueSelect_0")
+        button = self.item("confirmLotIssueButton")
+        point = button.mapToScene(QPointF(button.width() / 2, button.height() / 2)).toPoint()
+        QTest.mouseClick(self.root, Qt.LeftButton, Qt.NoModifier, point)
+        QTest.mouseClick(self.root, Qt.LeftButton, Qt.NoModifier, point)
+        self.wait_until(lambda: len(self.db.lot_issues) >= 1, "bar issued")
+        self.closed("tripLotIssueDialog")
+        self.wait_idle()
+        QTest.qWait(150)
+        self.assertEqual(len(self.db.lot_issues), 1)
+
+    def test_the_dialog_fits_every_size_and_a_reissue_is_reversed_from_the_history(self):
+        self.shop_bar()
+        for width, height in harness.SIZES:
+            with self.subTest(size=(width, height)):
+                self.root.setWidth(width)
+                self.root.setHeight(height)
+                QTest.qWait(150)
+                self.assert_inside_window(self.item("lotIssueButton"))
+                self.open_lot_issue()
+                for name in ("confirmLotIssueButton", "cancelLotIssueButton", "lotIssueDateField"):
+                    self.assert_inside_window(self.item(name))
+                self.item("tripLotIssueDialog").close()
+                self.closed("tripLotIssueDialog")
+        self.open_lot_issue()
+        self.click("lotIssueSelect_0")
+        self.click("confirmLotIssueButton")
+        self.wait_until(lambda: len(self.db.lot_issues) == 1, "bar issued")
+        self.closed("tripLotIssueDialog")
+        self.wait_idle()
+        buttons = []
+
+        def collect(node):
+            if node.objectName() == "reverseEntryButton" and node.property("visible"):
+                buttons.append(node)
+            for child in node.childItems():
+                collect(child)
+        collect(self.root.contentItem())
+        self.assertEqual(len(buttons), 2)                                                # issue (cash) and the bar issue
+        self.reveal(buttons[-1])
+        self.click(buttons[-1])                                                           # the bar issue (newest)
+        self.wait_until(lambda: self.item("tripReasonDialog").property("opened"), "reversal dialog")
+        self.type_in("tripReasonField", "إخراج بالخطأ")
+        self.click("confirmTripReasonButton")
+        self.wait_until(lambda: len(self.db.corrections) == 1, "reversed")
+        self.closed("tripReasonDialog")
+        self.wait_idle()
+        self.assertIn("9.500 جرام", " | ".join(self.visible_texts("shopLotFigures")))     # the whole bar is back in the shop
+        self.assertEqual(self.tvm.detail["lots"], [])
+
+
 # The base class carries the invoice-page tests: only this module's own tests are collected here.
 for _inherited in [n for n in dir(harness.InvoicePageTests) if n.startswith("test_")]:
     setattr(MarketTripPageTests, _inherited, None)
@@ -624,6 +858,8 @@ for _own in [n for n in dir(MarketTripPageTests) if n.startswith("test_") and ge
     setattr(MarketTripMeltingPageTests, _own, None)                                    # the subclass runs only its own melting tests
 for _melting in [n for n in dir(MarketTripMeltingPageTests) if n.startswith("test_") and getattr(MarketTripMeltingPageTests, n) is not None]:
     setattr(MarketTripLotReturnPageTests, _melting, None)                              # the lot-return class runs only its own tests
+for _returns in [n for n in dir(MarketTripLotReturnPageTests) if n.startswith("test_") and getattr(MarketTripLotReturnPageTests, n) is not None]:
+    setattr(MarketTripLotIssuePageTests, _returns, None)                               # the reissue class runs only its own tests
 
 
 if __name__ == "__main__":

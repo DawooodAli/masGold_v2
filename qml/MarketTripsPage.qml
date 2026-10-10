@@ -22,7 +22,7 @@ Item {
 
     Connections {
         target: page.vm
-        function onEntryPosted(code) { entryDialog.close(); meltDialog.close(); lotReturnDialog.close() }
+        function onEntryPosted(code) { entryDialog.close(); meltDialog.close(); lotReturnDialog.close(); lotIssueDialog.close() }
         function onActionDone(operation) { reasonDialog.close() }
     }
 
@@ -287,7 +287,7 @@ Item {
             Txt { objectName: "tripMessage"; Layout.fillWidth: true; visible: !!page.vm && page.vm.message !== ""
                   text: page.vm ? page.vm.message : ""; color: theme.green; wrapMode: Text.WordWrap; elide: Text.ElideNone }
             Txt { objectName: "tripError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== "" && !entryDialog.visible && !reasonDialog.visible && !meltDialog.visible
-                           && !lotReturnDialog.visible
+                           && !lotReturnDialog.visible && !lotIssueDialog.visible
                   text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
 
             Txt {
@@ -329,6 +329,9 @@ Item {
                         Btn { objectName: "returnButton"; text: "تسجيل رجوع"; visible: !!page.detail.open
                               enabled: !!page.vm && !page.vm.writing
                               onClicked: entryDialog.openFor("RETURN", page.detail.id) }
+                        Btn { objectName: "lotIssueButton"; text: "إخراج سبكة من المحل"; visible: !!page.detail.open
+                              enabled: !!page.vm && !page.vm.writing && page.vm.shopLots.length > 0
+                              onClicked: lotIssueDialog.openFor(page.detail.id) }
                         Btn { objectName: "lotReturnButton"; text: "رجوع ناتج السبك"; visible: !!page.detail.open
                               enabled: !!page.detail.lotReturnAvailable && !!page.vm && !page.vm.writing
                               onClicked: lotReturnDialog.openFor(page.detail.id) }
@@ -444,7 +447,7 @@ Item {
                                         Layout.fillWidth: true
                                         spacing: 2
                                         Txt { Layout.fillWidth: true; text: modelData.kindText + "  " + page.ltr(modelData.code); font.bold: true
-                                              color: modelData.kind === "ISSUE" ? theme.amber : modelData.kind === "MELT" ? theme.gold : theme.green
+                                              color: modelData.kind === "ISSUE" || modelData.kind === "LOT_ISSUE" ? theme.amber : modelData.kind === "MELT" ? theme.gold : theme.green
                                               elide: Text.ElideNone }
                                         Txt { objectName: "entryWhat"; Layout.fillWidth: true; text: modelData.what; wrapMode: Text.WordWrap
                                               elide: Text.ElideNone }
@@ -554,7 +557,16 @@ Item {
         readonly property var karatChoices: [{ id: "", text: "اختر العيار" }].concat(page.ctx.karats || [])
         readonly property var designationChoices: [{ id: "", text: "اختر الوجهة" }].concat(page.ctx.designations || [])
         readonly property var lineChoices: [{ key: "", text: "اختر من العهدة" }].concat(page.detail.returnLines || [])
-        readonly property bool hasQuantity: cashField.text.trim().length > 0 || hasGold()
+        readonly property bool withLots: !isReturn && tripId === ""        // only a NEW custody can start with existing shop bars
+        readonly property bool hasQuantity: cashField.text.trim().length > 0 || hasGold() || (withLots && lotLines().length > 0)
+        function lotLines() {
+            var rows = []
+            for (var i = 0; i < createLotModel.count; ++i) {
+                var g = createLotModel.get(i)
+                if (g.picked) rows.push({ lotId: g.lotId })
+            }
+            return rows
+        }
         function hasGold() {
             for (var i = 0; i < goldModel.count; ++i)
                 if (goldModel.get(i).weight.trim().length > 0) return true
@@ -586,6 +598,11 @@ Item {
             notesField.text = ""
             goldModel.clear()
             goldModel.append({ karatIndex: 0, designationIndex: 0, lineIndex: 0, weight: "" })
+            createLotModel.clear()
+            var lots = page.vm.shopLots || []
+            for (var i = 0; i < lots.length; ++i)
+                createLotModel.append({ lotId: lots[i].lotId, ref: lots[i].ref, kindText: lots[i].kindText, fineness: lots[i].fineness,
+                                        weight: lots[i].fullWeight, issuable: lots[i].issuable, reason: lots[i].reason, picked: false })
             page.vm.clearMessage()
             page.vm.refresh()
             open()
@@ -599,6 +616,7 @@ Item {
         closePolicy: Popup.CloseOnEscape
         background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
         ListModel { id: goldModel }
+        ListModel { id: createLotModel }
         contentItem: ColumnLayout {
             spacing: 6
             Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection
@@ -684,6 +702,44 @@ Item {
                     Btn { objectName: "addGoldRowButton"; text: "＋ سطر ذهب آخر"; accent: theme.textSecondary
                           enabled: goldModel.count < 8
                           onClicked: goldModel.append({ karatIndex: 0, designationIndex: 0, lineIndex: 0, weight: "" }) }
+                    // ---- existing shop bars (a separate source from the Scrap karat lines): whole, read-only weight and assay
+                    Txt { objectName: "createLotsTitle"; Layout.fillWidth: true; visible: entryDialog.withLots; color: theme.gold; font.bold: true
+                          text: "سبائك موجودة بالمحل (تخرج كاملة بنفس هويتها ووزنها وعيارها)" }
+                    Txt { objectName: "createLotsEmpty"; Layout.fillWidth: true; visible: entryDialog.withLots && createLotModel.count === 0
+                          text: "لا توجد سبائك بالمحل"; color: theme.textMuted }
+                    Repeater {
+                        model: entryDialog.withLots ? createLotModel : null
+                        delegate: Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: createLotRow.implicitHeight + 12
+                            radius: theme.radiusSmall
+                            color: theme.bgTertiary
+                            border.color: picked ? theme.gold : theme.border
+                            RowLayout {
+                                id: createLotRow
+                                anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                anchors.leftMargin: 10; anchors.rightMargin: 10
+                                layoutDirection: Qt.RightToLeft
+                                spacing: 10
+                                CheckBox {
+                                    objectName: "createLotSelect_" + index
+                                    enabled: issuable && !!page.vm && !page.vm.writing
+                                    checked: picked
+                                    onToggled: createLotModel.setProperty(index, "picked", checked)
+                                }
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 2
+                                    Txt { objectName: "createLotRef_" + index; Layout.fillWidth: true; font.bold: true; elide: Text.ElideNone
+                                          text: page.ltr(ref) + "  " + kindText }
+                                    Txt { objectName: "createLotInfo_" + index; Layout.fillWidth: true; color: theme.textSecondary; wrapMode: Text.WordWrap
+                                          elide: Text.ElideNone; text: "العيار الفعلي: " + fineness + " • الوزن الكامل: " + weight + " جرام" }
+                                    Txt { objectName: "createLotReason_" + index; Layout.fillWidth: true; visible: !issuable; text: reason
+                                          color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                }
+                            }
+                        }
+                    }
                     Txt { Layout.fillWidth: true; text: "ملاحظات" }
                     Field { id: notesField; objectName: "tripNotesField"; Layout.fillWidth: true }
                 }
@@ -702,6 +758,9 @@ Item {
                     onClicked: {
                         if (entryDialog.isReturn)
                             page.vm.returnCustody(entryDialog.tripId, cashField.text, entryDialog.collect(), dateField.text,
+                                                  notesField.text, entryDialog.requestKey)
+                        else if (entryDialog.withLots)
+                            page.vm.createCustody(cashField.text, entryDialog.collect(), entryDialog.lotLines(), dateField.text,
                                                   notesField.text, entryDialog.requestKey)
                         else
                             page.vm.issue(entryDialog.tripId, cashField.text, entryDialog.collect(), dateField.text,
@@ -904,6 +963,124 @@ Item {
                 }
                 Btn { objectName: "cancelMeltButton"; text: "إلغاء"; accent: theme.textSecondary
                       enabled: !!page.vm && !page.vm.writing; onClicked: meltDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- reissue whole shop bars into this custody
+    // Selection only: the bar leaves the shop stock complete (identity, weight and assay unchanged) and enters THIS custody.
+    Popup {
+        id: lotIssueDialog
+        objectName: "tripLotIssueDialog"
+        property string tripId: ""
+        property string requestKey: ""
+        function openFor(trip) {
+            if (!page.vm) return
+            tripId = trip
+            requestKey = page.vm.newRequestKey()
+            lotIssueDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            lotIssueNotes.text = ""
+            issuePickModel.clear()
+            var lots = page.vm.shopLots || []
+            for (var i = 0; i < lots.length; ++i)
+                issuePickModel.append({ lotId: lots[i].lotId, ref: lots[i].ref, kindText: lots[i].kindText, fineness: lots[i].fineness,
+                                        weight: lots[i].fullWeight, issuable: lots[i].issuable, reason: lots[i].reason, picked: false })
+            page.vm.clearMessage()
+            page.vm.refresh()
+            open()
+        }
+        function lines() {
+            var rows = []
+            for (var i = 0; i < issuePickModel.count; ++i) {
+                var g = issuePickModel.get(i)
+                if (g.picked) rows.push({ lotId: g.lotId })
+            }
+            return rows
+        }
+        readonly property bool hasSelection: lines().length > 0
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(620, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 600, 600)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        ListModel { id: issuePickModel }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; text: "إخراج سبكة من المحل إلى هذه العهدة" }
+            Txt { objectName: "lotIssueRule"; Layout.fillWidth: true; color: theme.amber; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "تخرج السبكة كاملة ولا يمكن إخراج جزء منها" }
+            Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "اختر السبائك الموجودة بالمحل: تبقى بنفس هويتها ووزنها وعيارها الفعلي، وتكون في مكان واحد فقط (المحل أو عهدة واحدة). لا تتحرك نقدية ولا كسر ولا حساب مورد." }
+            Flickable {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentHeight: lotIssueColumn.implicitHeight
+                clip: true
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: lotIssueColumn
+                    width: parent.width - 12
+                    spacing: 6
+                    Txt { Layout.fillWidth: true; text: "تاريخ الإخراج (yyyy-MM-dd) *" }
+                    Field { id: lotIssueDate; objectName: "lotIssueDateField"; Layout.fillWidth: true }
+                    Txt { Layout.fillWidth: true; visible: issuePickModel.count === 0; text: "لا توجد سبائك بالمحل لإخراجها"; color: theme.textMuted }
+                    Repeater {
+                        model: issuePickModel
+                        delegate: Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: lotIssueRow.implicitHeight + 12
+                            radius: theme.radiusSmall
+                            color: theme.bgTertiary
+                            border.color: picked ? theme.gold : theme.border
+                            RowLayout {
+                                id: lotIssueRow
+                                anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                anchors.leftMargin: 10; anchors.rightMargin: 10
+                                layoutDirection: Qt.RightToLeft
+                                spacing: 10
+                                CheckBox {
+                                    objectName: "lotIssueSelect_" + index
+                                    enabled: issuable && !!page.vm && !page.vm.writing
+                                    checked: picked
+                                    onToggled: issuePickModel.setProperty(index, "picked", checked)
+                                }
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 2
+                                    Txt { objectName: "lotIssueRef_" + index; Layout.fillWidth: true; font.bold: true; elide: Text.ElideNone
+                                          text: page.ltr(ref) + "  " + kindText }
+                                    Txt { objectName: "lotIssueInfo_" + index; Layout.fillWidth: true; color: theme.textSecondary; wrapMode: Text.WordWrap
+                                          elide: Text.ElideNone; text: "العيار الفعلي: " + fineness + " • الوزن الكامل: " + weight + " جرام" }
+                                    Txt { objectName: "lotIssueReason_" + index; Layout.fillWidth: true; visible: !issuable; text: reason
+                                          color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                }
+                            }
+                        }
+                    }
+                    Txt { Layout.fillWidth: true; text: "ملاحظات" }
+                    Field { id: lotIssueNotes; objectName: "lotIssueNotesField"; Layout.fillWidth: true }
+                }
+            }
+            Txt { objectName: "lotIssueError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmLotIssueButton"
+                    text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "إخراج السبائك المحددة"
+                    primary: true
+                    enabled: lotIssueDialog.hasSelection && lotIssueDate.text.trim().length > 0 && !!page.vm && !page.vm.writing
+                    onClicked: page.vm.issueLots(lotIssueDialog.tripId, lotIssueDialog.lines(), lotIssueDate.text, lotIssueNotes.text,
+                                                 lotIssueDialog.requestKey)
+                }
+                Btn { objectName: "cancelLotIssueButton"; text: "إلغاء"; accent: theme.textSecondary
+                      enabled: !!page.vm && !page.vm.writing; onClicked: lotIssueDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }

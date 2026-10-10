@@ -201,7 +201,7 @@ class ValidationAndAtomicityTests(LotCase):
 
     def test_a_lot_of_another_trip_or_already_returned_is_not_returnable(self):
         other = self.issue("", [(K21, "1", "MELT")])["trip_id"]
-        self.refused("LOT_NOT_FOUND", lambda: self.give_back([self.lot], trip=other))
+        self.refused("LOT_NOT_IN_CUSTODY", lambda: self.give_back([self.lot], trip=other))      # its location is derived, not its origin
         self.give_back([self.lot])
         self.refused("LOT_NOT_IN_CUSTODY", lambda: self.give_back([self.lot]))
         self.assertEqual(self.shop(), {str(self.lot): D("2.950")})

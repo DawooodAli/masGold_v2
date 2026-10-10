@@ -11,7 +11,8 @@ from mysql.connector import IntegrityError
 
 from app.session import AppSession
 from repositories.market_trip_repository import (CASH_TYPE, CREATE_MOVEMENT, DESIGNATIONS, ISSUE, MELT_DESIGNATION, SCRAP_TYPE,
-                                                 SHOP_RETURN_IN, SHOP_RETURN_MOVEMENT, SHOP_RETURN_REVERSAL, SOURCE, UNCLASSIFIED)
+                                                 SHOP_ISSUE_MOVEMENT, SHOP_ISSUE_OUT, SHOP_ISSUE_REVERSAL, SHOP_RETURN_IN, SHOP_RETURN_MOVEMENT,
+                                                 SHOP_RETURN_REVERSAL, SOURCE, UNCLASSIFIED)
 from services.authentication_service import AuthenticationResult, _VERIFIED
 from tests.auth_fakes import FakeAuthorization
 
@@ -42,7 +43,7 @@ class Db:
         self.holds = {1: D("5.000")}
         self.trips, self.entries, self.cash_legs, self.gold_legs, self.events = {}, {}, [], [], []
         self.melts, self.melt_inputs, self.lots, self.lot_moves = {}, [], {}, []          # 039
-        self.shop_moves, self.lot_returns = [], []                                           # 040: shop-side lot ledger, return links
+        self.shop_moves, self.lot_returns, self.lot_issues = [], [], []                      # 040/041: shop-side lot ledger, return / issue links
         self.corrections, self.audit_rows = [], []
         self.sequences = {"trip": 0, "entry": 0, "cash_move": 1, "scrap": 2, "correction": 0, "lot": 0, "lot_move": 0, "shop_move": 0}
         self.fail_at = None
@@ -168,7 +169,7 @@ class TripRepo:
 
     def insert_entry(self, *, trip_id, entry_no, kind, entry_date, notes, key, digest, actor, now):
         self._fail("entry")
-        assert kind in ("ISSUE", "RETURN", "MELT", "LOT_RETURN")                             # chk_mte_kind
+        assert kind in ("ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE")                # chk_mte_kind
         if any(e["request_key"] == key for e in self.db.entries.values()):
             raise _dup("uq_mte_request")
         if any((e["trip_id"], e["entry_no"]) == (int(trip_id), entry_no) for e in self.db.entries.values()):
@@ -251,9 +252,10 @@ class TripRepo:
 
     def insert_lot_movement(self, *, lot_id, entry_id, movement_type, weight_delta):
         self._fail("lot_movement")
-        assert movement_type in (CREATE_MOVEMENT, SHOP_RETURN_MOVEMENT)                      # chk_mtlm_type
+        assert movement_type in (CREATE_MOVEMENT, SHOP_RETURN_MOVEMENT, SHOP_ISSUE_MOVEMENT)  # chk_mtlm_type
         assert weight_delta != 0 and (movement_type != CREATE_MOVEMENT or weight_delta > 0)  # chk_mtlm_delta
         assert movement_type != SHOP_RETURN_MOVEMENT or weight_delta < 0
+        assert movement_type != SHOP_ISSUE_MOVEMENT or weight_delta > 0
         if any((m["lot_id"], m["entry_id"], m["movement_type"]) == (int(lot_id), int(entry_id), movement_type) for m in self.db.lot_moves):
             raise _dup("uq_mtlm_lot_entry_type")
         move_id = self.db.next("lot_move")
@@ -274,13 +276,33 @@ class TripRepo:
     def insert_shop_lot_movement(self, *, lot_id, entry_id, movement_type, weight_delta, correction_id=None):
         self._fail("shop_movement")
         assert (movement_type == SHOP_RETURN_IN and weight_delta > 0 and correction_id is None) or \
-               (movement_type == SHOP_RETURN_REVERSAL and weight_delta < 0 and correction_id is not None)    # chk_mtlsm_shape
+               (movement_type == SHOP_RETURN_REVERSAL and weight_delta < 0 and correction_id is not None) or \
+               (movement_type == SHOP_ISSUE_OUT and weight_delta < 0 and correction_id is None) or \
+               (movement_type == SHOP_ISSUE_REVERSAL and weight_delta > 0 and correction_id is not None)      # chk_mtlsm_shape
         if any((m["lot_id"], m["entry_id"], m["movement_type"]) == (int(lot_id), int(entry_id), movement_type) for m in self.db.shop_moves):
             raise _dup("uq_mtlsm_lot_entry_type")
         move_id = self.db.next("shop_move")
         self.db.shop_moves.append({"id": move_id, "lot_id": int(lot_id), "entry_id": int(entry_id), "movement_type": movement_type,
                                    "weight_delta": weight_delta, "correction_id": correction_id})
         return move_id
+
+    def insert_lot_issue(self, *, entry_id, lot_id, weight, custody_movement_id, shop_movement_id):
+        self._fail("lot_issue")
+        assert weight > 0                                                                    # chk_mtli_weight
+        for key, value in (("entry_lot", (int(entry_id), int(lot_id))), ("custody", custody_movement_id), ("shop", shop_movement_id)):
+            if any(((r["entry_id"], r["lot_id"]) if key == "entry_lot" else r[key + "_movement_id"]) == value for r in self.db.lot_issues):
+                raise _dup("uq_mtli_" + key)
+        self.db.lot_issues.append({"entry_id": int(entry_id), "lot_id": int(lot_id), "weight_grams": weight,
+                                   "custody_movement_id": custody_movement_id, "shop_movement_id": shop_movement_id})
+
+    def entry_lot_issues(self, entry_id):
+        return [{**r, "lot_no": self.db.lots[r["lot_id"]]["lot_no"], "melt_entry_id": self.db.lots[r["lot_id"]]["entry_id"]}
+                for r in sorted(self.db.lot_issues, key=lambda r: r["lot_id"]) if r["entry_id"] == int(entry_id)]
+
+    def lot_by_id(self, lot_id):
+        lot = self.db.lots.get(int(lot_id))
+        return None if lot is None else {**lot, "origin_trip_id": self.db.entries[lot["entry_id"]]["trip_id"],
+                                         "entry_no": self.db.entries[lot["entry_id"]]["entry_no"]}
 
     def insert_lot_return(self, *, entry_id, lot_id, weight, custody_movement_id, shop_movement_id):
         self._fail("lot_return")
@@ -342,14 +364,17 @@ class TripRepo:
         return sorted(out.values(), key=lambda r: (-r["karat_value"], order[r["designation"]]))
 
     def custody_lots(self, trip_id, exclude_entry_id=None):
+        """Lots CURRENTLY held by this trip's custody: derived from the movements of this trip's live entries, never from the lot's origin."""
         live_ids = {e["id"] for e in self._live(trip_id, exclude_entry_id)}
         rows = []
-        for lot in sorted(self.db.lots.values(), key=lambda l: (self.db.entries[l["entry_id"]]["entry_no"], l["lot_no"])):
-            if lot["entry_id"] not in live_ids:
+        for lot in sorted(self.db.lots.values(), key=lambda l: (self.db.entries[l["entry_id"]]["trip_id"],
+                                                                 self.db.entries[l["entry_id"]]["entry_no"], l["lot_no"])):
+            moves = [m for m in self.db.lot_moves if m["lot_id"] == lot["id"] and m["entry_id"] in live_ids]
+            if not moves:
                 continue
-            outstanding = sum((m["weight_delta"] for m in self.db.lot_moves if m["lot_id"] == lot["id"] and m["entry_id"] in live_ids),
-                              D("0.000"))
-            rows.append({**lot, "entry_no": self.db.entries[lot["entry_id"]]["entry_no"], "outstanding_grams": outstanding})
+            origin = self.db.entries[lot["entry_id"]]
+            rows.append({**lot, "entry_no": origin["entry_no"], "origin_trip_id": origin["trip_id"],
+                         "outstanding_grams": sum((m["weight_delta"] for m in moves), D("0.000"))})
         return rows
 
     def lot_downstream(self, entry_id):
@@ -396,9 +421,15 @@ class TripRepo:
             rows.append({**e, "actor_name": "المالك", "cash_amount": cash and cash["amount"], "cash_account_name": cash and "الخزنة الرئيسية",
                          "reversal_id": reversal and int(reversal["correction_id"]), "reversal_reason": reversal and reversal["reason"],
                          "reversal_at": reversal and reversal["occurred_at"],
+                         "lot_issues": [{"lot_id": r["lot_id"], "weight_grams": r["weight_grams"], "lot_no": self.db.lots[r["lot_id"]]["lot_no"],
+                                         "lot_kind": self.db.lots[r["lot_id"]]["lot_kind"],
+                                         "fineness_permille": self.db.lots[r["lot_id"]]["fineness_permille"],
+                                         "trip_id": self.db.entries[self.db.lots[r["lot_id"]]["entry_id"]]["trip_id"],
+                                         "melt_entry_no": self.db.entries[self.db.lots[r["lot_id"]]["entry_id"]]["entry_no"]}
+                                        for r in self.db.lot_issues if r["entry_id"] == e["id"]],
                          "lot_returns": [{"lot_id": r["lot_id"], "weight_grams": r["weight_grams"], "lot_no": self.db.lots[r["lot_id"]]["lot_no"],
                                           "lot_kind": self.db.lots[r["lot_id"]]["lot_kind"],
-                                          "fineness_permille": self.db.lots[r["lot_id"]]["fineness_permille"], "trip_id": e["trip_id"],
+                                          "fineness_permille": self.db.lots[r["lot_id"]]["fineness_permille"], "trip_id": self.db.entries[self.db.lots[r["lot_id"]]["entry_id"]]["trip_id"],
                                           "melt_entry_no": self.db.entries[self.db.lots[r["lot_id"]]["entry_id"]]["entry_no"]}
                                          for r in self.db.lot_returns if r["entry_id"] == e["id"]],
                          "gold": [{"karat_id": g["karat_id"], "karat_value": self.db.karats[g["karat_id"]]["karat_value"],

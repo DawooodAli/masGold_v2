@@ -1,4 +1,4 @@
-"""Market-trip custody (037, melting 039, lot returns 040): trips, their insert-only entries, and the cash / Scrap movements those entries post.
+"""Market-trip custody (037, melting 039, lot returns 040, lot reissue 041): trips, their insert-only entries, and the cash / Scrap movements those entries post.
 
 All writes use the caller's transaction and only INSERT (the trip header's `status` is the one updated column; every change
 of it is an insert-only event). Custody is never stored: it is derived from the entries that were not reversed.
@@ -10,12 +10,14 @@ from repositories.invoice_repository import _id
 
 SOURCE = "MARKET_TRIP_ENTRY"            # transaction_corrections.source_type and the cash / Scrap reference_type
 MAIN_SAFE = "MAIN_SAFE"
-ISSUE, RETURN, MELT, LOT_RETURN = "ISSUE", "RETURN", "MELT", "LOT_RETURN"
+ISSUE, RETURN, MELT, LOT_RETURN, LOT_ISSUE = "ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE"
 MELT_DESIGNATION, LOGO_DESIGNATION, UNCLASSIFIED = "MELT", "LOGO", "UNCLASSIFIED"     # the owner's decision on an issued gold line
 DESIGNATIONS = (MELT_DESIGNATION, LOGO_DESIGNATION, UNCLASSIFIED)
 MAIN_LOT, RESIDUE_LOT, CREATE_MOVEMENT = "MAIN", "RESIDUE", "CREATE"
 SHOP_RETURN_MOVEMENT = "SHOP_RETURN"                      # custody-side lot movement of a LOT_RETURN (negative grams)
 SHOP_RETURN_IN, SHOP_RETURN_REVERSAL = "TRIP_RETURN", "RETURN_REVERSAL"      # shop-side lot ledger movement types
+SHOP_ISSUE_MOVEMENT = "SHOP_ISSUE"                                 # custody-side lot movement of a LOT_ISSUE (positive grams)
+SHOP_ISSUE_OUT, SHOP_ISSUE_REVERSAL = "TRIP_ISSUE", "ISSUE_REVERSAL"         # shop-side movements of a reissue and of its reversal
 OPEN, CLOSED = "OPEN", "CLOSED"
 CASH_TYPE = {ISSUE: "TRIP_CASH_ISSUE", RETURN: "TRIP_CASH_RETURN"}
 SCRAP_TYPE = {ISSUE: "TRIP_CUSTODY_OUT", RETURN: "TRIP_CUSTODY_RETURN_IN"}
@@ -209,6 +211,22 @@ class MarketTripRepository(BaseRepository):
                                             None if correction_id is None else _id(correction_id)))
         return int(movement_id)
 
+    def insert_lot_issue(self, *, entry_id, lot_id, weight, custody_movement_id, shop_movement_id):
+        self._execute(
+            "INSERT INTO market_trip_lot_issues (entry_id, lot_id, weight_grams, custody_movement_id, shop_movement_id) "
+            "VALUES (%s, %s, %s, %s, %s)", (_id(entry_id), int(lot_id), weight, int(custody_movement_id), int(shop_movement_id)))
+
+    def entry_lot_issues(self, entry_id):
+        """The stored lot lines of a LOT_ISSUE entry (what its reversal negates: the exact stored grams)."""
+        return self._fetch_all(
+            "SELECT li.lot_id, li.weight_grams, li.custody_movement_id, li.shop_movement_id, l.lot_no, l.entry_id AS melt_entry_id "
+            "FROM market_trip_lot_issues li JOIN market_trip_lots l ON l.id = li.lot_id WHERE li.entry_id = %s ORDER BY li.lot_id",
+            (_id(entry_id),))
+
+    def lot_by_id(self, lot_id):
+        return self._fetch_one("SELECT l.id, l.weight_grams, l.fineness_permille, l.lot_no, l.lot_kind, l.label, e.trip_id AS origin_trip_id, "
+                               "e.entry_no FROM market_trip_lots l JOIN market_trip_entries e ON e.id = l.entry_id WHERE l.id = %s", (int(lot_id),))
+
     def insert_lot_return(self, *, entry_id, lot_id, weight, custody_movement_id, shop_movement_id):
         self._execute(
             "INSERT INTO market_trip_lot_returns (entry_id, lot_id, weight_grams, custody_movement_id, shop_movement_id) "
@@ -240,19 +258,21 @@ class MarketTripRepository(BaseRepository):
             """)
 
     def custody_lots(self, trip_id, exclude_entry_id=None):
-        """The assayed lots of the trip with their OUTSTANDING grams: lots of reversed melts and movements of reversed entries do not count."""
+        """The assayed lots CURRENTLY held by this trip's custody, with their OUTSTANDING grams. The location is derived from the effective
+        movements of this trip's entries (a CREATE of its own melt, a SHOP_ISSUE of a reissued bar, a SHOP_RETURN out), never from the
+        lot's origin: a bar reissued into this custody is listed here and not in its origin's. Movements of reversed entries do not count."""
         return self._fetch_all(
             f"""
-            SELECT l.id, l.entry_id, l.lot_no, l.lot_kind, l.label, l.weight_grams, l.fineness_permille, l.pure_grams, e.entry_no,
-                   COALESCE(SUM(m.weight_delta), 0) AS outstanding_grams
+            SELECT l.id, l.entry_id, l.lot_no, l.lot_kind, l.label, l.weight_grams, l.fineness_permille, l.pure_grams, oe.entry_no,
+                   oe.trip_id AS origin_trip_id, COALESCE(SUM(m.weight_delta), 0) AS outstanding_grams
             FROM market_trip_lots l
-            JOIN market_trip_entries e ON e.id = l.entry_id
+            JOIN market_trip_entries oe ON oe.id = l.entry_id
             JOIN market_trip_lot_movements m ON m.lot_id = l.id
             JOIN market_trip_entries me ON me.id = m.entry_id
-            WHERE e.trip_id = %s AND e.id <> %s AND me.id <> %s AND {_not_reversed('e')} AND {_not_reversed('me')}
-            GROUP BY l.id, l.entry_id, l.lot_no, l.lot_kind, l.label, l.weight_grams, l.fineness_permille, l.pure_grams, e.entry_no
-            ORDER BY e.entry_no, l.lot_no FOR SHARE OF l, e, m, me
-            """, (_id(trip_id), int(exclude_entry_id or 0), int(exclude_entry_id or 0)))
+            WHERE me.trip_id = %s AND me.id <> %s AND {_not_reversed('me')}
+            GROUP BY l.id, l.entry_id, l.lot_no, l.lot_kind, l.label, l.weight_grams, l.fineness_permille, l.pure_grams, oe.entry_no, oe.trip_id
+            ORDER BY oe.trip_id, oe.entry_no, l.lot_no FOR SHARE OF l, oe, m, me
+            """, (_id(trip_id), int(exclude_entry_id or 0)))
 
     def lot_downstream(self, entry_id):
         """Unreversed entries that moved a lot of this melt after its birth (a CREATE is never a dependency)."""
@@ -345,6 +365,10 @@ class MarketTripRepository(BaseRepository):
                 "SELECT lr.lot_id, lr.weight_grams, l.lot_no, l.lot_kind, l.fineness_permille, me.trip_id, me.entry_no AS melt_entry_no "
                 "FROM market_trip_lot_returns lr JOIN market_trip_lots l ON l.id = lr.lot_id "
                 "JOIN market_trip_entries me ON me.id = l.entry_id WHERE lr.entry_id = %s ORDER BY lr.lot_id", (int(row["id"]),))
+            row["lot_issues"] = self._fetch_all(
+                "SELECT li.lot_id, li.weight_grams, l.lot_no, l.lot_kind, l.fineness_permille, me.trip_id, me.entry_no AS melt_entry_no "
+                "FROM market_trip_lot_issues li JOIN market_trip_lots l ON l.id = li.lot_id "
+                "JOIN market_trip_entries me ON me.id = l.entry_id WHERE li.entry_id = %s ORDER BY li.lot_id", (int(row["id"]),))
             row["gold"] = self._fetch_all(
                 "SELECT g.karat_id, k.karat_value, g.designation, g.weight_grams FROM market_trip_entry_gold g "
                 "JOIN karats k ON k.id = g.karat_id WHERE g.entry_id = %s ORDER BY k.karat_value DESC, g.designation", (int(row["id"]),))

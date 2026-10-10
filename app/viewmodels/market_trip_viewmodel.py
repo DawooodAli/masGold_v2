@@ -15,7 +15,7 @@ from app.formatting import date_text, datetime_text, grams, ltr, money, number
 LIMITATION = ("في هذه المرحلة لا توجد عمليات بيع أو تسوية للموردين: تُغلق العهدة فقط بعد إرجاع كل النقدية وكل الذهب الذي أُخرج منها "
               "وإرجاع كل شحنات السبك إلى المحل. النقدية والذهب في العهدة ملك للمحل لكنهما غير متاحين داخله حتى يُرجَعا.")
 STATUS_TEXT = {"OPEN": "مفتوحة", "CLOSED": "مغلقة"}
-KIND_TEXT = {"ISSUE": "إخراج عهدة", "RETURN": "رجوع من العهدة", "MELT": "سبك", "LOT_RETURN": "رجوع ناتج السبك"}
+KIND_TEXT = {"ISSUE": "إخراج عهدة", "RETURN": "رجوع من العهدة", "MELT": "سبك", "LOT_RETURN": "رجوع ناتج السبك", "LOT_ISSUE": "إخراج سبكة من المحل"}
 DESIGNATION_TEXT = {"MELT": "للسبك", "LOGO": "لوجو", "UNCLASSIFIED": "غير مصنف (قبل التصنيف)"}
 DESIGNATION_CHOICES = [{"id": "MELT", "text": "للسبك"}, {"id": "LOGO", "text": "لوجو"}]
 LOT_TEXT = {"MAIN": "الناتج الرئيسي", "RESIDUE": "راسب"}
@@ -186,7 +186,7 @@ class MarketTripViewModel(QObject):
         # Notified only after the transaction succeeded; a failing refresh belongs to the view that failed, never to this write.
         if self._moved:
             self.custodyChanged.emit()
-        if self._operation in ("issue", "return", "melt", "lotreturn"):
+        if self._operation in ("issue", "create", "return", "melt", "lotreturn", "lotissue"):
             self.entryPosted.emit(result["code"])
         else:
             self.actionDone.emit(self._operation)
@@ -201,6 +201,14 @@ class MarketTripViewModel(QObject):
         lines = self._gold(gold_lines)
         self._write("issue", "تم إخراج العهدة", lambda s, a: s.issue(
             trip_id, cash, lines, entry_date, notes, request_key, _expected_actor=a), True)
+
+    @Slot(str, "QVariantList", "QVariantList", str, str, str)
+    def createCustody(self, cash, gold_lines, lot_lines, entry_date, notes, request_key):
+        """ONE new custody from any combination of cash, Scrap lines and whole shop bars, posted in one service transaction."""
+        lines = self._gold(gold_lines)
+        lots = [{"lot_id": str(line.get("lotId", ""))} for line in (lot_lines or [])]
+        self._write("create", "تم إخراج العهدة", lambda s, a: s.create_trip(
+            cash, lines, lots, entry_date, notes, request_key, _expected_actor=a), True)
 
     @Slot(str, str, "QVariantList", str, str, str)
     def returnCustody(self, trip_id, cash, gold_lines, entry_date, notes, request_key):
@@ -219,6 +227,13 @@ class MarketTripViewModel(QObject):
         self._write("melt", "تم تسجيل السبك", lambda s, a: s.melt(
             trip_id, inputs, entry_date, workshop, output, residues, assay_reference, gain_explanation, notes, request_key,
             _expected_actor=a), False)
+
+    @Slot(str, "QVariantList", str, str, str)
+    def issueLots(self, trip_id, lot_lines, entry_date, notes, request_key):
+        """Send whole shop bars out into an OPEN custody. Only the lot ids are sent: the service derives the full weight."""
+        lines = [{"lot_id": str(line.get("lotId", ""))} for line in (lot_lines or [])]
+        self._write("lotissue", "تم إخراج السبكة من المحل", lambda s, a: s.issue_lots(
+            trip_id, lines, entry_date, notes, request_key, _expected_actor=a), False)
 
     @Slot(str, "QVariantList", str, str, str)
     def returnLots(self, trip_id, lot_lines, entry_date, notes, request_key):
@@ -281,7 +296,10 @@ class MarketTripViewModel(QObject):
         """The shop-side lot stock (ناتج السبك بالمحل): physical grams and exact assay per lot; pure grams only when the assay is known."""
         return [{"lotId": l["lot_id"], "ref": f"{l['code']} • شحنة {l['lot_no']}", "tripCode": l["trip_code"],
                  "kindText": LOT_TEXT[l["kind"]] + (f" — {l['label']}" if l["label"] else ""), "weight": grams(l["stock"]),
-                 "fineness": fineness_text(l["fineness"]), "pure": UNKNOWN_ASSAY if l["pure"] is None else number(l["pure"], 6)}
+                 "fineness": fineness_text(l["fineness"]), "pure": UNKNOWN_ASSAY if l["pure"] is None else number(l["pure"], 6),
+                 "fullWeight": grams(l["original_weight"]), "issuable": l["stock"] == l["original_weight"],
+                 "reason": "" if l["stock"] == l["original_weight"] else
+                 f"رصيدها بالمحل جزئي ({grams(l['stock'])} من {grams(l['original_weight'])} جرام): اعكس الرجوع الجزئي أولًا."}
                 for l in self._shop_lots]
 
     @Property(str, notify=changed)
@@ -336,7 +354,8 @@ class MarketTripViewModel(QObject):
                       "returned": grams(g["returned"]), "melted": grams(g["melted"]), "outstanding": grams(g["outstanding"]),
                       "zero": g["outstanding"] == 0} for g in gold],
             "lots": [{"lotId": l["lot_id"], "title": f"{LOT_TEXT[l['kind']]} — الحركة {l['entry_no']}"
-                      + (f" • {l['label']}" if l["label"] else ""),
+                      + (f" • {l['label']}" if l["label"] else "")
+                      + (f" • أُعيد إخراجها من المحل (سبكة {l['code']})" if str(l.get("origin_trip_id") or "") not in ("", trip["id"]) else ""),
                       "weight": grams(l["weight"]), "fineness": fineness_text(l["fineness"]),
                       "pure": UNKNOWN_ASSAY if l["pure"] is None else number(l["pure"], 6), "outstanding": grams(l["outstanding"])}
                      for l in custody["lots"]],
@@ -363,7 +382,7 @@ class MarketTripViewModel(QObject):
             parts.append(f"نقدية {money(e['cash'])}")
         parts += [f"عيار {g['karat_value']} ({DESIGNATION_TEXT[g['designation']]}): {grams(g['weight'])} جرام" for g in e["gold"]]
         parts += [f"شحنة {l['lot_no']} من {l['code']}: {grams(l['weight'])} جرام (العيار {fineness_text(l['fineness'])})"
-                  for l in e.get("lot_returns", [])]
+                  for l in e.get("lot_returns", []) + e.get("lot_issues", [])]
         return {"id": e["id"], "code": e["code"], "kind": e["kind"], "kindText": KIND_TEXT[e["kind"]],
                 "what": " • ".join(parts) if parts else ("انظر تفاصيل السبك أدناه" if e["kind"] == "MELT" else ""),
                 "date": date_text(e["date"]), "time": datetime_text(e["at"]), "actor": e["actor"],
