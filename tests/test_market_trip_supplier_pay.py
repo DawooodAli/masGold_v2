@@ -94,6 +94,11 @@ class PaymentTests(PayCase):
         self.denied(lambda: self.pay("1", service=self.owner_like(OWNER - {"SUPPLIER_MAKING_PAY"})[0]))   # no SUPPLIER_MAKING_PAY
         self.assertEqual(self.db.sm_payments, {})
 
+    def test_an_intermediary_only_party_cannot_be_paid_making_and_is_not_offered(self):
+        self.refused("SUPPLIER_ROLE_REQUIRED", lambda: self.pay("100", supplier="12"))             # the role is enforced by the service
+        self.assertEqual(self.db.sm_payments, {})
+        self.assertEqual([s["id"] for s in self.service.context()["suppliers"]], ["10", "11"])      # and the dialog never lists it
+
     def test_a_closed_trip_refuses_until_it_is_reopened(self):
         self.ret(self.trip, "10000")
         self.service.close(self.trip)

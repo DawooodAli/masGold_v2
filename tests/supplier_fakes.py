@@ -142,16 +142,20 @@ class SupplierRepo:
         self.db = db
 
     # ------------------------------------------------------------ master
-    def list_suppliers(self, search=None, active=None, limit=500):
+    def list_suppliers(self, search=None, active=None, limit=500, role=None):
         rows = []
         for s in sorted(self.db.suppliers.values(), key=lambda r: (not r["is_active"], r["name"], r["id"])):
             if search and search not in s["name"] and search not in (s["phone"] or ""):
+                continue
+            if role == "SUPPLIER" and not s.get("is_supplier", True):
+                continue
+            if role == "INTERMEDIARY" and not s.get("is_intermediary", False):
                 continue
             if active is not None and bool(s["is_active"]) != bool(active):
                 continue
             karat_id = s.get("karat_id")
             ledger = [m for m in self.db.gold if m["supplier_id"] == s["id"]]
-            rows.append({**s, "karat_id": karat_id,
+            rows.append({**s, "is_supplier": s.get("is_supplier", True), "is_intermediary": s.get("is_intermediary", False), "karat_id": karat_id,
                          "karat_value": None if karat_id is None else self.db.karats[karat_id]["karat_value"],
                          "gold_grams_balance": sum((m["weight_delta_grams"] for m in ledger if m["karat_id"] == karat_id), D("0")),
                          "gold_foreign_rows": sum(1 for m in ledger if karat_id is None or m["karat_id"] != karat_id),
@@ -169,15 +173,34 @@ class SupplierRepo:
         return {**row, "karat_id": karat_id,
                 "karat_value": None if karat_id is None else self.db.karats[karat_id]["karat_value"]}
 
-    def create_supplier(self, *, name, phone, notes, karat_id, user_id):
+    def create_supplier(self, *, name, phone, notes, karat_id, user_id, is_supplier=True, is_intermediary=False):
+        assert is_supplier or is_intermediary                                                  # chk_suppliers_role
+        assert is_supplier or karat_id is None                                                 # chk_suppliers_intermediary_karat
         if any(s["name"] == name for s in self.db.suppliers.values()):
             raise _dup()
         new_id = self.db.next("supplier")
-        self.db.suppliers[new_id] = {"id": new_id, "name": name, "karat_id": int(karat_id), "phone": phone, "notes": notes,
-                                     "is_active": 1, "created_by_user_id": user_id}
+        self.db.suppliers[new_id] = {"id": new_id, "name": name, "karat_id": None if karat_id is None else int(karat_id), "phone": phone,
+                                     "notes": notes, "is_active": 1, "created_by_user_id": user_id,
+                                     "is_supplier": bool(is_supplier), "is_intermediary": bool(is_intermediary)}
         return new_id
 
+    def set_roles(self, *, supplier_id, is_supplier, is_intermediary, user_id):
+        assert is_supplier or is_intermediary                                                  # chk_suppliers_role
+        row = self.db.suppliers[int(supplier_id)]
+        assert is_supplier or row.get("karat_id") is None                                      # chk_suppliers_intermediary_karat
+        row.update(is_supplier=bool(is_supplier), is_intermediary=bool(is_intermediary))
+
+    def clear_karat(self, *, supplier_id, user_id):
+        self.db.suppliers[int(supplier_id)]["karat_id"] = None
+
+    def role_history_count(self, supplier_id):
+        sid = int(supplier_id)
+        return (sum(1 for i in self.db.invoices.values() if i["supplier_id"] == sid) + sum(1 for m in self.db.gold if m["supplier_id"] == sid)
+                + sum(1 for m in self.db.making if m["supplier_id"] == sid)
+                + sum(1 for p in getattr(self.db, "payments", {}).values() if p["supplier_id"] == sid))
+
     def set_karat(self, *, supplier_id, karat_id, user_id):
+        assert self.db.suppliers[int(supplier_id)].get("is_supplier", True)                    # chk_suppliers_intermediary_karat
         self.db.suppliers[int(supplier_id)]["karat_id"] = int(karat_id)
 
     def history_karats(self, supplier_id, lock=False):

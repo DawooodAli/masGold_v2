@@ -908,6 +908,8 @@ class MarketTripService:
             supplier = suppliers.get_supplier(supplier_id, lock=True)            # an INACTIVE supplier may still be paid
             if supplier is None:
                 raise TripError("SUPPLIER_NOT_FOUND", "المورد غير موجود.")
+            if not rules.has_supplier_role(supplier):                        # making belongs to a SUPPLIER, never to an intermediary-only party
+                raise TripError("SUPPLIER_ROLE_REQUIRED", "هذا الطرف وسيط سوق فقط وليس مورِّدًا: لا يُدفع له مصنعيات.")
             outstanding = self._custody(repository, trip_id)["cash"]["outstanding"]          # read under the trip lock
             if value > outstanding:
                 raise TripError("PAYMENT_EXCEEDS_CUSTODY_CASH", f"النقدية المتبقية في العهدة {outstanding:,.2f} ج فقط: لا يمكن دفع {value:,.2f} ج.")

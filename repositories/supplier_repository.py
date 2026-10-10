@@ -20,8 +20,12 @@ class SupplierRepository(BaseRepository):
             cursor.close()
 
     # ------------------------------------------------------------------ master
-    def list_suppliers(self, search=None, active=None, limit=500):
+    def list_suppliers(self, search=None, active=None, limit=500, role=None):
         where, params = [], []
+        if role == "SUPPLIER":
+            where.append("s.is_supplier = 1")
+        elif role == "INTERMEDIARY":
+            where.append("s.is_intermediary = 1")
         if search:
             where.append("(s.name LIKE %s OR s.phone LIKE %s)")
             like = f"%{search}%"
@@ -32,7 +36,7 @@ class SupplierRepository(BaseRepository):
         params.append(int(limit))
         return self._fetch_all(
             f"""
-            SELECT s.id, s.name, s.phone, s.notes, s.is_active, s.created_at, s.karat_id, kk.karat_value,
+            SELECT s.id, s.name, s.phone, s.notes, s.is_active, s.is_supplier, s.is_intermediary, s.created_at, s.karat_id, kk.karat_value,
                    COALESCE(g.grams, 0) AS gold_grams_balance, COALESCE(g.foreign_rows, 0) AS gold_foreign_rows,
                    COALESCE(m.amount, 0) AS making_balance, COALESCE(i.posted_count, 0) AS posted_invoice_count
             FROM suppliers s
@@ -58,11 +62,31 @@ class SupplierRepository(BaseRepository):
             "SELECT s.*, k.karat_value FROM suppliers s LEFT JOIN karats k ON k.id = s.karat_id WHERE s.id = %s"
             + (" FOR UPDATE OF s" if lock else ""), (_id(supplier_id),))
 
-    def create_supplier(self, *, name, phone, notes, karat_id, user_id):
+    def create_supplier(self, *, name, phone, notes, karat_id, user_id, is_supplier=True, is_intermediary=False):
         new_id, _ = self._execute(
-            "INSERT INTO suppliers (name, karat_id, phone, notes, created_by_user_id, updated_by_user_id) "
-            "VALUES (%s, %s, %s, %s, %s, %s)", (name, int(karat_id), phone, notes, user_id, user_id))
+            "INSERT INTO suppliers (name, karat_id, phone, notes, is_supplier, is_intermediary, created_by_user_id, updated_by_user_id) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (name, None if karat_id is None else int(karat_id), phone, notes, 1 if is_supplier else 0, 1 if is_intermediary else 0,
+             user_id, user_id))
         return int(new_id)
+
+    def set_roles(self, *, supplier_id, is_supplier, is_intermediary, user_id):
+        self._execute("UPDATE suppliers SET is_supplier = %s, is_intermediary = %s, updated_by_user_id = %s WHERE id = %s",
+                      (1 if is_supplier else 0, 1 if is_intermediary else 0, user_id, _id(supplier_id)))
+
+    def clear_karat(self, *, supplier_id, user_id):
+        """An intermediary-only party has no supplier-account karat (the 044 check); only reachable when the party has no history."""
+        self._execute("UPDATE suppliers SET karat_id = NULL, updated_by_user_id = %s WHERE id = %s", (user_id, _id(supplier_id)))
+
+    def role_history_count(self, supplier_id):
+        """Every row that proves the party acted as a SUPPLIER: invoices of any status (cancelled and reversed included), gold and making
+        ledger rows and making payments (custody payments included). Locking CURRENT reads (FOR SHARE): call it while holding the
+        supplier row lock, so a concurrent invoice or payment is never missed by an older snapshot."""
+        total = 0
+        for table in ("supplier_purchase_invoices", "supplier_gold_movements", "supplier_making_movements", "supplier_making_payments"):
+            row = self._fetch_one(f"SELECT COUNT(*) AS n FROM {table} WHERE supplier_id = %s FOR SHARE", (_id(supplier_id),))
+            total += int(row["n"])
+        return total
 
     def set_karat(self, *, supplier_id, karat_id, user_id):
         self._execute("UPDATE suppliers SET karat_id = %s, updated_by_user_id = %s WHERE id = %s",

@@ -196,6 +196,7 @@ class SupplierPaymentService:
             supplier = repository.get_supplier(supplier_id, lock=True)
             if supplier is None:
                 raise rules.SupplierRuleError("SUPPLIER_NOT_FOUND", "المورد غير موجود.")
+            rules.require_supplier_role(supplier)                            # making payments belong to a SUPPLIER
             if method == CASH:
                 safe = repository.main_safe()
                 if safe is None:

@@ -390,10 +390,11 @@ class MarketTripRepository(BaseRepository):
 
     # ------------------------------------------------------------------ supplier payments from custody (043)
     def suppliers(self):
-        """Every supplier (an inactive one can still be paid) with its current net making position (delta > 0: the shop owes it)."""
+        """Every SUPPLIER (an inactive one can still be paid; an intermediary-only party has no making account) with its current net making
+        position (delta > 0: the shop owes it)."""
         return self._fetch_all(
             "SELECT s.id, s.name, s.is_active, COALESCE((SELECT SUM(m.amount_delta) FROM supplier_making_movements m "
-            "WHERE m.supplier_id = s.id), 0) AS making_balance FROM suppliers s ORDER BY s.is_active DESC, s.name, s.id")
+            "WHERE m.supplier_id = s.id), 0) AS making_balance FROM suppliers s WHERE s.is_supplier = 1 ORDER BY s.is_active DESC, s.name, s.id")
 
     def insert_supplier_payment_link(self, *, entry_id, payment_id, supplier_id, amount):
         self._execute("INSERT INTO market_trip_supplier_payments (entry_id, payment_id, supplier_id, amount) VALUES (%s, %s, %s, %s)",

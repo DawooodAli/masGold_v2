@@ -106,6 +106,7 @@ class SupplierViewModel(QObject):
         self._shutdown = False
         self._suppliers, self._detail = [], {}
         self._selected, self._search, self._active_only = "", "", False
+        self._role = ""                                  # the list filter: "" (all) / SUPPLIER / INTERMEDIARY
         self._error, self._message, self._done_text = "", "", ""
 
     # ------------------------------------------------------------ plumbing
@@ -158,9 +159,9 @@ class SupplierViewModel(QObject):
     def refresh(self):
         if not self.canView:
             return
-        service, search, active = self._service_instance(), self._search, self._active_only
-        self._start("list", lambda _expected_actor: service.list_suppliers(search, active,
-                                                                           _expected_actor=_expected_actor))
+        service, search, active, role = self._service_instance(), self._search, self._active_only, self._role
+        extra = {"role": role} if role else {}           # the role filter is passed only when chosen
+        self._start("list", lambda _expected_actor: service.list_suppliers(search, active, _expected_actor=_expected_actor, **extra))
 
     def _on_list(self, result, error):
         if error:
@@ -180,6 +181,13 @@ class SupplierViewModel(QObject):
     @Slot(bool)
     def setActiveOnly(self, value):
         self._active_only = bool(value)
+        self.refresh()
+
+    @Slot(str)
+    def setRoleFilter(self, role):
+        """All parties, suppliers (alone or also intermediaries) or market intermediaries (idem)."""
+        role = str(role or "").strip().upper()
+        self._role = role if role in ("SUPPLIER", "INTERMEDIARY") else ""
         self.refresh()
 
     @Slot(str)
@@ -236,6 +244,18 @@ class SupplierViewModel(QObject):
     def updateSupplier(self, supplier_id, name, phone, notes, karat_id):
         self._write("تم حفظ بيانات المورد.",
                     lambda s, a: s.update_supplier(supplier_id, name, phone, notes, karat_id, _expected_actor=a) or supplier_id)
+
+    @Slot(str, str, str, int, bool, bool)
+    def createParty(self, name, phone, notes, karat_id, is_supplier, is_intermediary):
+        """Create a party with its roles (a supplier needs its karat; an intermediary-only party has none)."""
+        self._write("تم إضافة الطرف.", lambda s, a: s.create_supplier(name, phone, notes, karat_id, is_supplier=is_supplier,
+                                                                      is_intermediary=is_intermediary, _expected_actor=a))
+
+    @Slot(str, str, str, str, int, bool, bool)
+    def updateParty(self, supplier_id, name, phone, notes, karat_id, is_supplier, is_intermediary):
+        self._write("تم حفظ بيانات الطرف.",
+                    lambda s, a: s.update_supplier(supplier_id, name, phone, notes, karat_id, is_supplier=is_supplier,
+                                                   is_intermediary=is_intermediary, _expected_actor=a) or supplier_id)
 
     @Slot(str, bool)
     def setSupplierActive(self, supplier_id, active):
@@ -395,11 +415,14 @@ class SupplierViewModel(QObject):
     def suppliers(self):
         return [{"id": s["id"], "code": s["code"], "name": s["name"], "phone": s["phone"], "notes": s["notes"],
                  "active": s["is_active"], "stateText": "نشط" if s["is_active"] else "موقوف",
+                 "isSupplier": s.get("is_supplier", True), "isIntermediary": s.get("is_intermediary", False),
+                 "roleText": s.get("role_text", "مورد"),
                  "karatId": s["karat_id"] or 0, "karatText": f"عيار {s['karat_value']}" if s["karat_value"] else "العيار غير محدد",
-                 "goldText": (gold_position_text(s["gold_direction"], s["gold_balance"], s["karat_value"])
+                 "goldText": ("" if s["gold_status"] == "NOT_APPLICABLE"
+                              else gold_position_text(s["gold_direction"], s["gold_balance"], s["karat_value"])
                               if s["gold_status"] == "RESOLVED" else "العيار غير محدد"),
                  "goldTone": TONES.get(s["gold_direction"], "settled"),
-                 "makingText": making_position_text(s["making_direction"], s["making"]),
+                 "makingText": "" if s["gold_status"] == "NOT_APPLICABLE" else making_position_text(s["making_direction"], s["making"]),
                  "makingTone": TONES[s["making_direction"]],
                  "invoiceCount": s["posted_invoice_count"], "selected": s["id"] == self._selected}
                 for s in self._suppliers]
@@ -412,6 +435,7 @@ class SupplierViewModel(QObject):
         supplier, balances = self._detail["supplier"], self._detail["balances"]
         resolved = balances["gold_status"] == "RESOLVED"
         karat = balances["gold_karat_value"]
+        applicable = balances["gold_status"] != "NOT_APPLICABLE"         # an intermediary-only party has no supplier account
         gold_lines = [{"karat": k["karat_value"],
                        "text": gold_position_text(k["direction"], k["weight_balance"], k["karat_value"]),
                        "tone": TONES[k["direction"]]} for k in balances["gold_by_karat"]]
@@ -419,11 +443,14 @@ class SupplierViewModel(QObject):
         return {
             "id": supplier["id"], "code": supplier["code"], "name": supplier["name"], "phone": supplier["phone"],
             "notes": supplier["notes"], "active": supplier["is_active"],
+            "isSupplier": supplier.get("is_supplier", True), "isIntermediary": supplier.get("is_intermediary", False),
+            "roleText": supplier.get("role_text", "مورد"),
             # the supplier's dedicated karat (invoices inherit it) and whether it can still be changed
             "karatId": supplier["karat_id"] or 0, "karatValue": supplier["karat_value"] or 0,
             "karatText": f"عيار {supplier['karat_value']}" if supplier["karat_value"] else "العيار غير محدد",
             "karatResolved": supplier["karat_id"] is not None, "karatLocked": supplier["karat_locked"],
-            "goldResolved": resolved, "goldNote": karat_note(supplier),
+            "hasAccount": applicable,
+            "goldResolved": resolved, "goldNote": karat_note(supplier) if applicable else "",
             "goldText": gold_position_text(direction, balances["gold_balance"], karat) if resolved else "العيار غير محدد",
             "goldTone": TONES.get(direction, "settled"),
             "goldParts": (position_parts(direction, balances["gold_balance"], "gold", karat) if resolved

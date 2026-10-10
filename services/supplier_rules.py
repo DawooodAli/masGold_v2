@@ -165,6 +165,35 @@ def check_supplier_karat_change(current_karat_id, wanted_karat_id, history):
                                 f"العيار المختار لا يتوافق مع فواتير المورد السابقة (عيار {values[0]}).")
 
 
+ROLE_SUPPLIER, ROLE_INTERMEDIARY = "SUPPLIER", "INTERMEDIARY"
+ROLE_FILTERS = (None, ROLE_SUPPLIER, ROLE_INTERMEDIARY)      # all / suppliers (alone or with the other role) / intermediaries (idem)
+
+
+def role_text(is_supplier, is_intermediary):
+    """The party's role in words: «مورد» / «وسيط سوق» / both."""
+    parts = (["مورد"] if is_supplier else []) + (["وسيط سوق"] if is_intermediary else [])
+    return " • ".join(parts)
+
+
+def validate_roles(is_supplier, is_intermediary):
+    """The two role flags as booleans; at least one is required."""
+    is_supplier, is_intermediary = bool(is_supplier), bool(is_intermediary)
+    if not (is_supplier or is_intermediary):
+        raise SupplierRuleError("ROLE_REQUIRED", "اختر دورًا واحدًا على الأقل: مورد أو وسيط سوق.")
+    return is_supplier, is_intermediary
+
+
+def has_supplier_role(supplier):
+    """True when the party carries the supplier role. A row read from a database older than migration 044 has no flag and is a supplier."""
+    return bool(supplier.get("is_supplier", True))
+
+
+def require_supplier_role(supplier):
+    """Supplier invoices, making payments and the gold account belong to a SUPPLIER; an intermediary-only party has none of them."""
+    if not has_supplier_role(supplier):
+        raise SupplierRuleError("SUPPLIER_ROLE_REQUIRED", "هذا الطرف وسيط سوق فقط وليس مورِّدًا: لا فواتير شراء ولا دفعات مصنعيات ولا حساب ذهب له.")
+
+
 def direction(delta):
     delta = Decimal(str(delta or 0))
     return SHOP_OWES if delta > 0 else SUPPLIER_OWES if delta < 0 else SETTLED

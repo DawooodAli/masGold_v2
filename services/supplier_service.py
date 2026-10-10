@@ -47,6 +47,10 @@ def clean_text(value, limit, label, required=False):
     return text or None
 
 
+def _given(value):
+    return value not in (None, "", 0, "0")
+
+
 def balance_row(supplier, gold_rows, making_balance):
     """The two independent positions of one supplier. GOLD is in PHYSICAL grams of the supplier's dedicated karat (no
     Eq21); making is EGP. A supplier without a karat, or whose ledger holds another karat, is UNRESOLVED: its per-karat
@@ -90,21 +94,27 @@ class SupplierService:
         return self._authorization.require_permission_for_write(connection, actor, MANAGE)
 
     # ------------------------------------------------------------------ reads
-    def list_suppliers(self, search="", active_only=False, *, _expected_actor=None):
+    def list_suppliers(self, search="", active_only=False, role=None, *, _expected_actor=None):
         actor = authenticated_actor(self._session, VIEW, "لا توجد صلاحية لعرض الموردين.", _expected_actor)
+        role = role or None
+        if role not in rules.ROLE_FILTERS:
+            raise rules.SupplierRuleError("ROLE_FILTER_INVALID", "تصفية الأدوار غير صحيحة.")
         with self._transaction() as connection:
             self._read_verified(connection, actor)
             rows = self._repository(connection).list_suppliers(
-                str(search or "").strip() or None, True if active_only else None)
+                str(search or "").strip() or None, True if active_only else None, role=role)
         result = []
         for row in rows:
-            resolved = row["karat_id"] is not None and not int(row["gold_foreign_rows"])
+            is_supplier, is_intermediary = rules.has_supplier_role(row), bool(row.get("is_intermediary", False))
+            resolved = is_supplier and row["karat_id"] is not None and not int(row["gold_foreign_rows"])
             grams = Decimal(str(row["gold_grams_balance"])).quantize(rules.WEIGHT_STEP)
             making = Decimal(str(row["making_balance"])).quantize(rules.MONEY_STEP)
             result.append({"id": str(row["id"]), "code": rules.supplier_code(row["id"]), "name": row["name"],
                            "phone": row["phone"] or "", "notes": row["notes"] or "",
                            "karat_id": row["karat_id"], "karat_value": None if row["karat_value"] is None else int(row["karat_value"]),
-                           "is_active": bool(row["is_active"]), "gold_status": "RESOLVED" if resolved else "UNRESOLVED",
+                           "is_active": bool(row["is_active"]), "is_supplier": is_supplier, "is_intermediary": is_intermediary,
+                           "role_text": rules.role_text(is_supplier, is_intermediary),
+                           "gold_status": "RESOLVED" if resolved else ("UNRESOLVED" if is_supplier else "NOT_APPLICABLE"),
                            "gold_balance": grams if resolved else None,
                            "gold_direction": rules.direction(grams) if resolved else None, "making": making,
                            "making_direction": rules.direction(making),
@@ -122,6 +132,8 @@ class SupplierService:
             if supplier is None:
                 raise rules.SupplierRuleError("SUPPLIER_NOT_FOUND", "المورد غير موجود.")
             balances = balance_row(supplier, repository.gold_balances(supplier_id), repository.making_balance(supplier_id))
+            if not rules.has_supplier_role(supplier):
+                balances = {**balances, "gold_status": "NOT_APPLICABLE"}                 # an intermediary-only party has no supplier account
             history = repository.history_karats(supplier_id)
             gold = repository.gold_ledger(supplier_id)
             making = repository.making_ledger(supplier_id)
@@ -129,6 +141,8 @@ class SupplierService:
                              "name": supplier["name"], "phone": supplier["phone"] or "",
                              "notes": supplier["notes"] or "", "is_active": bool(supplier["is_active"]),
                              "karat_id": supplier["karat_id"],
+                             "is_supplier": rules.has_supplier_role(supplier), "is_intermediary": bool(supplier.get("is_intermediary", False)),
+                             "role_text": rules.role_text(rules.has_supplier_role(supplier), bool(supplier.get("is_intermediary", False))),
                              "karat_value": None if supplier["karat_value"] is None else int(supplier["karat_value"]),
                              "karat_locked": bool(history),                       # an invoice exists: the karat can no longer change
                              "history_karats": [h["karat_value"] for h in history]},
@@ -185,25 +199,30 @@ class SupplierService:
             raise rules.SupplierRuleError("KARAT_NOT_SUPPORTED", "عيار المورد يجب أن يكون 18 أو 21 أو 22 أو 24 ومفعّلًا.")
         return karat
 
-    def create_supplier(self, name, phone=None, notes=None, karat_id=None, *, _expected_actor=None):
+    def create_supplier(self, name, phone=None, notes=None, karat_id=None, *, is_supplier=True, is_intermediary=False, _expected_actor=None):
         actor = authenticated_actor(self._session, MANAGE, "لا توجد صلاحية لإدارة الموردين.", _expected_actor)
+        is_supplier, is_intermediary = rules.validate_roles(is_supplier, is_intermediary)
+        if not is_supplier and _given(karat_id):
+            raise rules.SupplierRuleError("KARAT_NOT_ALLOWED", "وسيط السوق بلا عيار حساب: لا يُحدَّد عيار إلا للمورد.")
         name = clean_text(name, NAME_MAX, "اسم المورد", required=True)
         phone, notes = clean_text(phone, PHONE_MAX, "رقم الهاتف"), clean_text(notes, NOTES_MAX, "الملاحظات")
         try:
             with self._transaction() as connection:
                 actor = self._write_verified(connection, actor)
                 repository = self._repository(connection)
-                karat = self._supported_karat(repository, karat_id)
-                supplier_id = repository.create_supplier(name=name, phone=phone, notes=notes, karat_id=karat["id"],
-                                                         user_id=actor.user_id)
+                karat = self._supported_karat(repository, karat_id) if is_supplier else None      # a supplier needs its karat; an intermediary has none
+                supplier_id = repository.create_supplier(name=name, phone=phone, notes=notes, karat_id=None if karat is None else karat["id"],
+                                                         user_id=actor.user_id, is_supplier=is_supplier, is_intermediary=is_intermediary)
                 repository.audit(actor=actor, event_type="SUPPLIER_CREATED", entity_id=supplier_id,
-                                 reference=rules.supplier_code(supplier_id), description=f"إنشاء مورد {name}",
-                                 metadata={"name": name, "karat_value": int(karat["karat_value"])}, now=repository.db_now())
+                                 reference=rules.supplier_code(supplier_id), description=f"إنشاء {rules.role_text(is_supplier, is_intermediary)} {name}",
+                                 metadata={"name": name, "karat_value": None if karat is None else int(karat["karat_value"]),
+                                           "is_supplier": is_supplier, "is_intermediary": is_intermediary}, now=repository.db_now())
         except IntegrityError as exc:
             raise _duplicate_name(exc) from exc
         return str(supplier_id)
 
-    def update_supplier(self, supplier_id, name, phone=None, notes=None, karat_id=None, *, _expected_actor=None):
+    def update_supplier(self, supplier_id, name, phone=None, notes=None, karat_id=None, *, is_supplier=None, is_intermediary=None,
+                        _expected_actor=None):
         actor = authenticated_actor(self._session, MANAGE, "لا توجد صلاحية لإدارة الموردين.", _expected_actor)
         supplier_id = _supplier_id(supplier_id)
         name = clean_text(name, NAME_MAX, "اسم المورد", required=True)
@@ -215,8 +234,27 @@ class SupplierService:
                 supplier = repository.get_supplier(supplier_id, lock=True)
                 if supplier is None:
                     raise rules.SupplierRuleError("SUPPLIER_NOT_FOUND", "المورد غير موجود.")
+                was_supplier, was_intermediary = rules.has_supplier_role(supplier), bool(supplier.get("is_intermediary", False))
+                now_supplier = was_supplier if is_supplier is None else bool(is_supplier)
+                now_intermediary = was_intermediary if is_intermediary is None else bool(is_intermediary)
+                rules.validate_roles(now_supplier, now_intermediary)
                 changed_karat = None
-                if karat_id not in (None, "", 0, "0"):
+                if was_supplier and not now_supplier:
+                    # Under the supplier row lock: any invoice (cancelled included), payment or ledger row keeps the supplier role.
+                    if repository.role_history_count(supplier_id):
+                        raise rules.SupplierRuleError("ROLE_HISTORY_EXISTS", "لا يمكن إزالة دور المورد: له فواتير أو دفعات أو حركات سابقة "
+                                                      "(حتى الملغاة أو المعكوسة). أوقف المورد بدلًا من ذلك.")
+                    if supplier["karat_id"] is not None:
+                        repository.clear_karat(supplier_id=supplier_id, user_id=actor.user_id)
+                if not now_supplier and _given(karat_id):
+                    raise rules.SupplierRuleError("KARAT_NOT_ALLOWED", "وسيط السوق بلا عيار حساب: لا يُحدَّد عيار إلا للمورد.")
+                if now_supplier and not was_supplier and not _given(karat_id):
+                    raise rules.SupplierRuleError("KARAT_REQUIRED", "اختر عيار المورد (18 أو 21 أو 22 أو 24) عند إضافة دور المورد.")
+                if (now_supplier, now_intermediary) != (was_supplier, was_intermediary):
+                    repository.set_roles(supplier_id=supplier_id, is_supplier=now_supplier, is_intermediary=now_intermediary,
+                                         user_id=actor.user_id)
+                # The roles are written BEFORE a karat is set: the 044 check allows a karat only on a party that is a supplier.
+                if now_supplier and _given(karat_id):
                     karat = self._supported_karat(repository, karat_id)
                     if supplier["karat_id"] is None or int(supplier["karat_id"]) != int(karat["id"]):
                         # under the supplier row lock; the history read is a locking current read (no race with a new invoice)
@@ -228,7 +266,8 @@ class SupplierService:
                                            user_id=actor.user_id)
                 repository.audit(actor=actor, event_type="SUPPLIER_UPDATED", entity_id=supplier_id,
                                  reference=rules.supplier_code(supplier_id), description=f"تعديل بيانات المورد {name}",
-                                 metadata={"name": name, "karat_value": changed_karat}, now=repository.db_now())
+                                 metadata={"name": name, "karat_value": changed_karat, "is_supplier": now_supplier,
+                                           "is_intermediary": now_intermediary}, now=repository.db_now())
         except IntegrityError as exc:
             raise _duplicate_name(exc) from exc
 

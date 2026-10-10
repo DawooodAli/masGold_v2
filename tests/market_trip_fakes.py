@@ -44,7 +44,9 @@ class Db:
         self.trips, self.entries, self.cash_legs, self.gold_legs, self.events = {}, {}, [], [], []
         self.melts, self.melt_inputs, self.lots, self.lot_moves = {}, [], {}, []          # 039
         self.heats, self.heat_lines = {}, []                                                  # 042: Logo heating headers and lines
-        self.suppliers = {10: {"id": 10, "name": "مورد نشط", "is_active": 1}, 11: {"id": 11, "name": "مورد متوقف", "is_active": 0}}   # 043
+        self.suppliers = {10: {"id": 10, "name": "مورد نشط", "is_active": 1, "is_supplier": True, "is_intermediary": False},
+                          11: {"id": 11, "name": "مورد متوقف", "is_active": 0, "is_supplier": True, "is_intermediary": False},
+                          12: {"id": 12, "name": "وسيط فقط", "is_active": 1, "is_supplier": False, "is_intermediary": True}}   # 043 / 044
         self.sm_payments, self.sm_making, self.sm_legs, self.supplier_links = {}, [], [], {}
         self.shop_moves, self.lot_returns, self.lot_issues = [], [], []                      # 040/041: shop-side lot ledger, return / issue links
         self.corrections, self.audit_rows = [], []
@@ -131,7 +133,7 @@ class TripRepo:
     def suppliers(self):
         return [{"id": r["id"], "name": r["name"], "is_active": r["is_active"],
                  "making_balance": sum((m["amount_delta"] for m in self.db.sm_making if m["supplier_id"] == r["id"]), D("0.00"))}
-                for r in sorted(self.db.suppliers.values(), key=lambda r: (-r["is_active"], r["name"], r["id"]))]
+                for r in sorted(self.db.suppliers.values(), key=lambda r: (-r["is_active"], r["name"], r["id"])) if r.get("is_supplier", True)]
 
     def shop_scrap(self):
         return [{"karat_id": k["id"], "karat_value": k["karat_value"], "physical_grams": self.db.physical(k["id"]),

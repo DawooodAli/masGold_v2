@@ -415,6 +415,16 @@ Item {
                         contentItem: Label { text: parent.text; font: parent.font; color: theme.textSecondary
                                              leftPadding: parent.indicator.width + 6; horizontalAlignment: Text.AlignRight }
                     }
+                    Combo {
+                        id: roleFilterCombo
+                        objectName: "supplierRoleFilter"
+                        Layout.fillWidth: true
+                        readonly property var choices: [{ role: "", text: "كل الأطراف" }, { role: "SUPPLIER", text: "الموردون" },
+                                                        { role: "INTERMEDIARY", text: "وسطاء السوق" }]
+                        model: choices
+                        textRole: "text"
+                        onActivated: function (i) { if (page.vm) page.vm.setRoleFilter(choices[i].role) }
+                    }
                     ListView {
                         id: supplierList
                         objectName: "supplierList"
@@ -446,9 +456,11 @@ Item {
                                     Txt { text: modelData.stateText; color: modelData.active ? theme.green : theme.textMuted
                                           font.pixelSize: theme.fontCaption }
                                 }
-                                Txt { Layout.fillWidth: true; text: modelData.goldText; color: page.toneColor(modelData.goldTone)
+                                Txt { objectName: "supplierRoleText"; Layout.fillWidth: true; text: modelData.roleText; color: theme.gold
                                       font.pixelSize: theme.fontCaption }
-                                Txt { Layout.fillWidth: true; text: modelData.makingText; color: page.toneColor(modelData.makingTone)
+                                Txt { Layout.fillWidth: true; visible: modelData.isSupplier; text: modelData.goldText; color: page.toneColor(modelData.goldTone)
+                                      font.pixelSize: theme.fontCaption }
+                                Txt { Layout.fillWidth: true; visible: modelData.isSupplier; text: modelData.makingText; color: page.toneColor(modelData.makingTone)
                                       font.pixelSize: theme.fontCaption }
                             }
                         }
@@ -508,7 +520,18 @@ Item {
                                       color: theme.textSecondary; font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
                             }
                             Rectangle {
+                                objectName: "supplierRoleChip"
+                                implicitWidth: roleChipText.implicitWidth + 16
+                                implicitHeight: 24
+                                radius: 4
+                                color: theme.bgTertiary
+                                border.color: theme.goldDark
+                                Txt { id: roleChipText; anchors.centerIn: parent; text: page.detail.roleText || ""; color: theme.gold; font.bold: true
+                                      font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
+                            }
+                            Rectangle {
                                 objectName: "supplierKaratChip"
+                                visible: page.detail.isSupplier !== false
                                 implicitWidth: karatChipText.implicitWidth + 16
                                 implicitHeight: 24
                                 radius: 4
@@ -526,7 +549,7 @@ Item {
                             spacing: 8
                             Btn {
                                 objectName: "newInvoiceButton"
-                                visible: !!page.pvm && page.pvm.canEdit
+                                visible: !!page.pvm && page.pvm.canEdit && page.detail.isSupplier !== false
                                 enabled: page.hasSelection && page.detail.active === true && page.detail.karatResolved === true
                                 text: "＋  فاتورة شراء جديدة"
                                 primary: true
@@ -555,8 +578,19 @@ Item {
                         }
                     }
 
+                    Card {
+                        objectName: "intermediaryOnlyNote"
+                        Layout.fillWidth: true
+                        visible: page.detail.hasAccount === false
+                        title: "وسيط سوق"
+                        accent: theme.gold
+                        Txt { Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textSecondary
+                              text: "هذا الطرف وسيط سوق فقط: لا يوجد له حساب مورد (ذهب أو مصنعيات) ولا فواتير شراء. ستظهر هنا لاحقًا أرصدة الذهب والنقدية التي تخص المحل لدى الوسيط." }
+                    }
+
                     // The two independent positions: gold (physical grams of the supplier's karat) and making (EGP). Equal cards, equal height.
                     RowLayout {
+                        visible: page.detail.hasAccount !== false
                         Layout.fillWidth: true
                         Layout.fillHeight: false          // natural height: the cards' own fillHeight only equalises the pair
                         layoutDirection: Qt.RightToLeft
@@ -596,6 +630,7 @@ Item {
 
                     // Tab bar + its content as one connected card.
                     Rectangle {
+                        visible: page.detail.hasAccount !== false
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         color: theme.bgPrimary
@@ -876,8 +911,12 @@ Item {
         objectName: "supplierDialog"
         property string editId: ""
         property bool karatLocked: false
+        property bool wasSupplier: true
         function openFor(data) {
             editId = data ? data.id : ""
+            wasSupplier = data ? data.isSupplier !== false : true
+            roleSupplier.checked = data ? data.isSupplier !== false : true
+            roleIntermediary.checked = data ? data.isIntermediary === true : false
             karatLocked = !!data && data.karatResolved === true && data.karatLocked === true
             supplierKaratCombo.currentIndex = data ? page.karatChoiceIndex(data.karatId) : 0
             nameField.text = data ? data.name : ""
@@ -899,11 +938,27 @@ Item {
                   color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
             Txt { Layout.fillWidth: true; text: "اسم المورد *" }
             Field { id: nameField; objectName: "supplierNameField"; Layout.fillWidth: true }
-            // Each supplier is dedicated to ONE karat; its invoices inherit it. Locked once an invoice exists.
-            Txt { Layout.fillWidth: true; text: "العيار *" }
-            Combo { id: supplierKaratCombo; objectName: "supplierKaratCombo"; Layout.fillWidth: true
+            Txt { Layout.fillWidth: true; text: "الدور *" }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 12
+                CheckBox { id: roleSupplier; objectName: "supplierRoleSupplier"; text: "مورد"; checked: true; font.family: "Cairo"
+                           contentItem: Label { text: parent.text; font: parent.font; color: theme.textSecondary
+                                                leftPadding: parent.indicator.width + 6; horizontalAlignment: Text.AlignRight } }
+                CheckBox { id: roleIntermediary; objectName: "supplierRoleIntermediary"; text: "وسيط سوق"; font.family: "Cairo"
+                           contentItem: Label { text: parent.text; font: parent.font; color: theme.textSecondary
+                                                leftPadding: parent.indicator.width + 6; horizontalAlignment: Text.AlignRight } }
+                Item { Layout.fillWidth: true }
+            }
+            Txt { objectName: "roleRequiredHint"; Layout.fillWidth: true; visible: !roleSupplier.checked && !roleIntermediary.checked
+                  color: theme.amber; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "اختر دورًا واحدًا على الأقل: مورد أو وسيط سوق." }
+            // Each supplier is dedicated to ONE karat; its invoices inherit it. Locked once an invoice exists. A market intermediary has none.
+            Txt { Layout.fillWidth: true; visible: roleSupplier.checked; text: "العيار *" }
+            Combo { id: supplierKaratCombo; objectName: "supplierKaratCombo"; Layout.fillWidth: true; visible: roleSupplier.checked
                     model: page.karatChoices; textRole: "label"; enabled: !supplierDialog.karatLocked }
-            Txt { Layout.fillWidth: true; visible: supplierDialog.karatLocked; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+            Txt { Layout.fillWidth: true; visible: supplierDialog.karatLocked && roleSupplier.checked; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
                   wrapMode: Text.WordWrap; elide: Text.ElideNone; text: "لا يتغير عيار المورد بعد وجود فاتورة له." }
             Txt { Layout.fillWidth: true; text: "رقم الهاتف" }
             Field { id: phoneField; objectName: "supplierPhoneField"; Layout.fillWidth: true }
@@ -920,12 +975,15 @@ Item {
                     text: "حفظ"
                     primary: true
                     enabled: nameField.text.trim().length > 0 && !!page.vm && !page.vm.busy
-                             && (supplierDialog.editId !== "" || supplierKaratCombo.currentIndex > 0)
+                             && (roleSupplier.checked || roleIntermediary.checked)
+                             && (!roleSupplier.checked
+                                 || (supplierDialog.editId !== "" && supplierDialog.wasSupplier) || supplierKaratCombo.currentIndex > 0)
                     onClicked: {
-                        if (supplierDialog.editId === "") page.vm.createSupplier(nameField.text, phoneField.text, notesField.text,
-                                                                                 page.karatChoices[supplierKaratCombo.currentIndex].id)
-                        else page.vm.updateSupplier(supplierDialog.editId, nameField.text, phoneField.text, notesField.text,
-                                                    page.karatChoices[supplierKaratCombo.currentIndex].id)
+                        var karat = roleSupplier.checked ? page.karatChoices[supplierKaratCombo.currentIndex].id : 0
+                        if (supplierDialog.editId === "") page.vm.createParty(nameField.text, phoneField.text, notesField.text, karat,
+                                                                              roleSupplier.checked, roleIntermediary.checked)
+                        else page.vm.updateParty(supplierDialog.editId, nameField.text, phoneField.text, notesField.text, karat,
+                                                 roleSupplier.checked, roleIntermediary.checked)
                         supplierDialog.close()
                     }
                 }

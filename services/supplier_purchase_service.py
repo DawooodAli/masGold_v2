@@ -118,6 +118,7 @@ class SupplierPurchaseService:
     def _inherited_karat(repository, supplier, supplied=None):
         """The invoice karat IS the supplier's dedicated karat. A supplier without one cannot take an invoice, and a supplied
         karat that differs is refused: the screen is never trusted and an incompatible draft is never silently converted."""
+        rules.require_supplier_role(supplier)                                # invoices belong to a SUPPLIER, never to an intermediary-only party
         if supplier["karat_id"] is None:
             raise rules.SupplierRuleError(
                 "SUPPLIER_KARAT_MISSING", "عيار هذا المورد غير محدد. حدّد عياره من تعديل المورد قبل إنشاء أو ترحيل فواتيره.")
