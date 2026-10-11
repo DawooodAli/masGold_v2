@@ -234,6 +234,16 @@ class CorrectionService:
                 raise CorrectionError("SOURCE_NOT_FOUND", "حركة العهدة غير موجودة.")
             if lock:                                            # the entry's own lock order: trip → MAIN_SAFE → Scrap
                 repo.trip(source["trip_id"], lock=True)
+                lot_link = repo.entry_lot_settlement(source_id)
+                lot_ids = [r["lot_id"] for r in repo.entry_lot_returns(source_id)] + [r["lot_id"] for r in repo.entry_lot_issues(source_id)]
+                if source["entry_kind"] == "MELT":
+                    lot_ids += repo.melt_lot_ids(source_id)        # protect origin melt vs downstream settlement/transfer
+                if lot_link is not None:
+                    lot_ids.append(lot_link["lot_id"])
+                repo.lock_lots(lot_ids)                         # trip -> lots ascending -> supplier; no origin-trip lock
+                if lot_link is not None:
+                    from repositories.supplier_gold_settlement_repository import SupplierGoldSettlementRepository as _LotSuppliers
+                    _LotSuppliers(connection).get_supplier(lot_link["supplier_id"], lock=True)
                 payment_link = repo.entry_supplier_payment(source_id)         # trip -> supplier (the payment's own order)
                 if payment_link is not None:
                     from repositories.supplier_payment_repository import SupplierPaymentRepository as _Suppliers
@@ -245,8 +255,6 @@ class CorrectionService:
                 leg = repo.entry_cash_leg(source_id)
                 if leg is not None:
                     FinancialAccountRepository(connection).account("CASH", leg["cash_account_id"], lock=True)
-                repo.lock_lots([r["lot_id"] for r in repo.entry_lot_returns(source_id)]
-                               + [r["lot_id"] for r in repo.entry_lot_issues(source_id)])         # the lots of a lot transfer, ascending
                 source = repo.entry_source(source_id, lock=True)
             reference = entry_code(source["trip_id"], source["entry_no"])
             leg = repo.entry_cash_leg(source_id)
@@ -410,7 +418,7 @@ class CorrectionService:
                     plan.lot_issues.append((int(line["lot_id"]), Decimal(str(line["weight_grams"]))))
                 if any(Decimal(str(l["outstanding_grams"])) < 0 for l in trips.custody_lots(source["trip_id"], exclude_entry_id=source_id)):
                     plan.blockers.append(("DEPENDENT_LOT_RETURN_EXISTS",
-                                          "لا يمكن عكس إخراج السبكة لأن رجوعها إلى المحل مسجل بعده — اعكس الرجوع أولاً."))
+                                          "لا يمكن عكس إخراج السبكة لأن رجوعها أو تسويتها للمورد مسجل بعده — اعكس الحركة التابعة أولًا."))
             if source["entry_kind"] == "SUPPLIER_PAY":
                 # The stored making movement is restored (never a recomputed amount) and the entry stops consuming custody cash. Nothing
                 # moves in Main Safe or a bank: the money is recorded as actually back in custody (return it with a normal custody return).
@@ -422,12 +430,12 @@ class CorrectionService:
                 else:
                     plan.making.append((str(movement["supplier_id"]), -Decimal(str(movement["amount_delta"])), REVERSAL_MOVEMENT))
                 plan.extra_permission = SMP_REVERSE_PERMISSION
-            if source["entry_kind"] == "GOLD_SETTLE":
+            if source["entry_kind"] in ("GOLD_SETTLE", "LOT_SETTLE"):
                 # The stored supplier gold movement is restored (never a recomputed amount) and the entry stops consuming custody gold, so the
                 # stored delivered grams are back in custody. No Scrap, cash, making, bank or lot movement is posted. The supplier-side
                 # reversal of this document is refused: the custody entry is the only reversal path.
                 from repositories.supplier_gold_settlement_repository import GOLD_REVERSAL, SupplierGoldSettlementRepository
-                link = trips.entry_gold_settlement(source_id)
+                link = trips.entry_lot_settlement(source_id) if source["entry_kind"] == "LOT_SETTLE" else trips.entry_gold_settlement(source_id)
                 movement = None if link is None else SupplierGoldSettlementRepository(connection).gold_movement(link["settlement_id"])
                 if movement is None:
                     plan.blockers.append(("SETTLEMENT_MOVEMENT_MISSING", "حركة ذهب المورد الأصلية للتسوية غير موجودة."))
@@ -459,7 +467,7 @@ class CorrectionService:
                 # A melt can be undone only while its lots have no unreversed downstream use (their own CREATE is not one).
                 for dependent in trips.lot_downstream(source_id):
                     plan.blockers.append(("DEPENDENT_LOT_USE_EXISTS",
-                                          "لا يمكن عكس السبك لأن شحنة ناتجة عنه استُخدمت في الحركة "
+                                          "لا يمكن عكس السبك لأن شحنة ناتجة عنه نُقلت أو سُوّيت للمورد في الحركة "
                                           f"{entry_code(dependent['trip_id'], dependent['entry_no'])} — اعكسها أولاً."))
         if source_type == SGS:
             # The STORED movements are what is undone (never a recomputed amount): the delivered grams return to Scrap and the credit is restored.

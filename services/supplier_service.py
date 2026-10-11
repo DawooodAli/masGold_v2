@@ -164,6 +164,9 @@ class SupplierService:
                                  "custody_reference": (None if r.get("custody_entry_no") is None
                                                        else _custody_code(r["custody_trip_id"], r["custody_entry_no"])),
                                  "custody_designation": r.get("custody_designation"),
+                                 "lot_id": None if r.get("delivered_lot_id") is None else str(r["delivered_lot_id"]),
+                                 "lot_fineness": r.get("delivered_fineness_permille"), "lot_kind": r.get("lot_kind"), "lot_no": r.get("lot_no"),
+                                 "lot_origin": None if r.get("origin_entry_no") is None else _custody_code(r["origin_trip_id"], r["origin_entry_no"]),
                                  "reverses_reference": (None if r.get("reversed_settlement_id") is None
                                                         else _settlement_code(r["reversed_settlement_id"])
                                                         + ("" if r.get("reversed_custody_entry_no") is None else

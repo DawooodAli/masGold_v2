@@ -22,7 +22,7 @@ Item {
 
     Connections {
         target: page.vm
-        function onEntryPosted(code) { entryDialog.close(); meltDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close(); payDialog.close(); goldSettleDialog.close() }
+        function onEntryPosted(code) { entryDialog.close(); meltDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close(); payDialog.close(); goldSettleDialog.close(); lotSettleDialog.close() }
         function onActionDone(operation) { reasonDialog.close() }
     }
 
@@ -287,7 +287,7 @@ Item {
             Txt { objectName: "tripMessage"; Layout.fillWidth: true; visible: !!page.vm && page.vm.message !== ""
                   text: page.vm ? page.vm.message : ""; color: theme.green; wrapMode: Text.WordWrap; elide: Text.ElideNone }
             Txt { objectName: "tripError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== "" && !entryDialog.visible && !reasonDialog.visible && !meltDialog.visible
-                           && !lotReturnDialog.visible && !lotIssueDialog.visible && !heatDialog.visible && !payDialog.visible && !goldSettleDialog.visible
+                           && !lotReturnDialog.visible && !lotIssueDialog.visible && !heatDialog.visible && !payDialog.visible && !goldSettleDialog.visible && !lotSettleDialog.visible
                   text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
 
             Txt {
@@ -335,6 +335,9 @@ Item {
                         Btn { objectName: "lotReturnButton"; text: "رجوع ناتج السبك"; visible: !!page.detail.open
                               enabled: !!page.detail.lotReturnAvailable && !!page.vm && !page.vm.writing
                               onClicked: lotReturnDialog.openFor(page.detail.id) }
+                        Btn { objectName: "custodyLotSettleButton"; text: "تسوية سبكة من العهدة"; visible: !!page.detail.open
+                              enabled: !!page.detail.lotSettleAvailable && !!page.vm && !page.vm.writing
+                              onClicked: lotSettleDialog.openFor(page.detail.id) }
                         Btn { objectName: "custodyPayButton"; text: "دفع مصنعيات من العهدة"; visible: !!page.detail.open
                               enabled: !!page.detail.payAvailable && !!page.vm && !page.vm.writing
                               onClicked: payDialog.openFor(page.detail.id) }
@@ -925,6 +928,96 @@ Item {
                 Btn { objectName: "cancelCustodyPayButton"; text: "إلغاء"; accent: theme.textSecondary
                       enabled: !!page.vm && !page.vm.writing; onClicked: payDialog.close() }
                 Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // Whole stored lot: the service derives physical facts, credit and eligibility.
+    Popup {
+        id: lotSettleDialog
+        objectName: "tripLotSettleDialog"
+        property string tripId: ""
+        property string requestKey: ""
+        readonly property var supplierChoices: [{id: "", text: "اختر المورد"}].concat(page.ctx.goldSuppliers || [])
+        readonly property var lotChoices: [{id: "", text: "اختر الشحنة الكاملة"}].concat(page.detail.lotSettleSources || [])
+        readonly property string supplierId: supplierChoices[lotSettleSupplier.currentIndex] ? supplierChoices[lotSettleSupplier.currentIndex].id : ""
+        readonly property string lotId: lotChoices[lotSettleLot.currentIndex] ? lotChoices[lotSettleLot.currentIndex].id : ""
+        readonly property var preview: {
+            var loaded = page.detail.id !== undefined && page.ctx.goldSuppliers !== undefined
+            return loaded && page.vm ? page.vm.previewLotSettlement(supplierId, lotId) : ({})
+        }
+        function openFor(trip) {
+            if (!page.vm) return
+            tripId = trip
+            requestKey = page.vm.newRequestKey()
+            lotSettleSupplier.currentIndex = 0
+            lotSettleLot.currentIndex = 0
+            lotSettleDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            lotSettleReference.text = ""
+            lotSettleNotes.text = ""
+            page.vm.clearMessage()
+            page.vm.refresh()
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(560, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 600, 600)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { Layout.fillWidth: true; text: "تسوية سبكة من العهدة"; color: theme.gold; font.bold: true }
+            Txt { Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "تُسلَّم الشحنة كاملة بوزنها وعيارها الفعلي المخزّنين. يُحتسب للمورد: الوزن × العيار بالألف ÷ 1000 × 24 ÷ عيار حسابه. لا حركة بكسر المحل أو النقدية أو المصنعيات." }
+            Flickable {
+                Layout.fillWidth: true; Layout.fillHeight: true
+                contentHeight: lotSettleForm.implicitHeight; clip: true
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: lotSettleForm
+                    width: parent.width - 12; spacing: 6
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 8
+                        Combo { id: lotSettleSupplier; objectName: "custodyLotSettleSupplierCombo"; Layout.fillWidth: true; model: lotSettleDialog.supplierChoices; textRole: "text" }
+                        Txt { text: "المورد *" }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 8
+                        Combo { id: lotSettleLot; objectName: "custodyLotSettleLotCombo"; Layout.fillWidth: true; model: lotSettleDialog.lotChoices; textRole: "text" }
+                        Txt { text: "الشحنة الكاملة *" }
+                    }
+                    Txt { objectName: "custodyLotSettleFacts"; Layout.fillWidth: true; text: lotSettleDialog.preview.facts || ""; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                    Txt { objectName: "custodyLotSettleCredit"; Layout.fillWidth: true; text: lotSettleDialog.preview.credit || ""; color: theme.gold; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                    Txt { objectName: "custodyLotSettleAnalysis"; Layout.fillWidth: true; text: lotSettleDialog.preview.analysis || ""; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                    Txt { objectName: "custodyLotSettlePreviewError"; Layout.fillWidth: true; text: lotSettleDialog.preview.error || ""; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 8
+                        Field { id: lotSettleDate; objectName: "custodyLotSettleDateField"; Layout.fillWidth: true }
+                        Txt { text: "التاريخ *" }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 8
+                        Field { id: lotSettleReference; objectName: "custodyLotSettleReferenceField"; Layout.fillWidth: true }
+                        Txt { text: "المرجع" }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 8
+                        Field { id: lotSettleNotes; objectName: "custodyLotSettleNotesField"; Layout.fillWidth: true }
+                        Txt { text: "ملاحظات" }
+                    }
+                }
+            }
+            Txt { Layout.fillWidth: true; text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                Btn { objectName: "confirmCustodyLotSettleButton"; text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "تسجيل التسوية"; primary: true
+                      enabled: lotSettleDialog.preview.valid === true && lotSettleDate.text.trim().length > 0 && !!page.vm && !page.vm.writing
+                      onClicked: page.vm.settleLot(lotSettleDialog.tripId, lotSettleDialog.supplierId, lotSettleDialog.lotId,
+                                                  lotSettleDate.text, lotSettleReference.text, lotSettleNotes.text, lotSettleDialog.requestKey) }
+                Btn { objectName: "cancelCustodyLotSettleButton"; text: "إلغاء"; enabled: !!page.vm && !page.vm.writing; onClicked: lotSettleDialog.close() }
             }
         }
     }

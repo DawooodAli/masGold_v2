@@ -468,7 +468,7 @@ class MeltViewModelTests(MeltCase):
         self.assertEqual((self.signals["entry"], self.signals["custody"]), (["MT000001-2"], 0))        # a melt moves no shop balance
         self.assertEqual(self.vm.message, "تم تسجيل السبك MT000001-2")
         detail = self.vm.detail
-        self.assertEqual([l["title"] for l in detail["lots"]], ["الناتج الرئيسي — الحركة 2", "راسب — الحركة 2 • خبث"])
+        self.assertEqual([l["title"] for l in detail["lots"]], ["الناتج الرئيسي — الحركة 2", "رواسب — الحركة 2 • خبث"])
         self.assertIn("رجوع ناتج السبك", detail["lotNote"])
         melt = detail["melts"][0]
         values = {r["label"]: r["value"] for r in melt["analysis"]}

@@ -126,7 +126,7 @@ class SupplierGoldSettlementService:
     @staticmethod
     def document(row):
         return {"id": str(row["id"]), "code": settlement_code(row["id"]), "supplier_id": str(row["supplier_id"]),
-                "supplier_name": row["supplier_name"], "delivered_karat": int(row["delivered_karat_value"]),
+                "supplier_name": row["supplier_name"], "delivered_karat": None if row["delivered_karat_value"] is None else int(row["delivered_karat_value"]),
                 "target_karat": int(row["target_karat_value"]), "delivered_weight": row["delivered_weight_grams"],
                 "credited_weight": row["credited_weight_grams"], "analytical": row["credited_analytical_grams"],
                 "rounding_difference": row["rounding_difference_grams"], "settlement_date": row["settlement_date"],
@@ -135,7 +135,10 @@ class SupplierGoldSettlementService:
                 # a settlement made from market custody (046): its custody entry, where the reversal belongs
                 "custody_reference": (None if row.get("custody_entry_no") is None
                                       else _custody_code(row["custody_trip_id"], row["custody_entry_no"])),
-                "custody_designation": row.get("custody_designation"), "reversed": row.get("reversal_id") is not None,
+                "custody_designation": row.get("custody_designation"),
+                "lot_id": None if row.get("delivered_lot_id") is None else str(row["delivered_lot_id"]),
+                "fineness": row.get("delivered_fineness_permille"), "lot_kind": row.get("lot_kind"), "lot_no": row.get("lot_no"),
+                "lot_origin": None if row.get("origin_entry_no") is None else _custody_code(row["origin_trip_id"], row["origin_entry_no"]), "reversed": row.get("reversal_id") is not None,
                 "reversal_code": None if row.get("reversal_id") is None else correction_code("FULL_REVERSAL", row["reversal_id"]),
                 "reversal_reason": row.get("reversal_reason")}
 

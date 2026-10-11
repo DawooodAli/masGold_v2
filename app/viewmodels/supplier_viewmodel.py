@@ -594,7 +594,7 @@ class SupplierViewModel(QObject):
                 "tone": TONES[rules.direction(r["weight_delta"])],
                 # a gold settlement shows what was delivered beside what was credited; a reversal row names the settlement it restores
                 # (046) a settlement delivered from market custody names its LOGO source and its custody entry, where its reversal belongs
-                "detail": ((f"سُلِّم {grams(r['delivered_weight'])} جرام عيار {r['delivered_karat']}"
+                "detail": (((f"سُلِّم {grams(r['delivered_weight'])} جرام • {'رواسب' if r.get('lot_kind') == 'RESIDUE' else 'الناتج الرئيسي'} • {r.get('lot_origin')} • شحنة {r.get('lot_no')} • العيار الفعلي {r.get('lot_fineness')} بالألف" if r.get("lot_id") else f"سُلِّم {grams(r['delivered_weight'])} جرام عيار {r['delivered_karat']}")
                             + (f" ({GOLD_SOURCE_TEXT[r['custody_designation']]})" if r.get("custody_designation") in GOLD_SOURCE_TEXT else "")
                             + f" ← احتُسب {grams(abs(r['weight_delta']))} جرام عيار {r['karat_value']}"
                             + (f" • من عهدة السوق {r['custody_reference']} (تُعكس من صفحة العهدة)" if r.get("custody_reference") else ""))

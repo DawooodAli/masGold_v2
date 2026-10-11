@@ -13,6 +13,7 @@ MAIN_SAFE = "MAIN_SAFE"
 ISSUE, RETURN, MELT, LOT_RETURN, LOT_ISSUE, HEAT = "ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT"
 SUPPLIER_PAY = "SUPPLIER_PAY"          # a supplier making payment made with custody cash (043)
 GOLD_SETTLE = "GOLD_SETTLE"            # custody gold delivered to a supplier against its gold account (046, LOGO only in this slice)
+LOT_SETTLE, LOT_SETTLE_MOVEMENT = "LOT_SETTLE", "SUPPLIER_SETTLE"
 MELT_DESIGNATION, LOGO_DESIGNATION, UNCLASSIFIED = "MELT", "LOGO", "UNCLASSIFIED"     # the owner's decision on an issued gold line
 DESIGNATIONS = (MELT_DESIGNATION, LOGO_DESIGNATION, UNCLASSIFIED)
 MAIN_LOT, RESIDUE_LOT, CREATE_MOVEMENT = "MAIN", "RESIDUE", "CREATE"
@@ -24,9 +25,12 @@ OPEN, CLOSED = "OPEN", "CLOSED"
 CASH_TYPE = {ISSUE: "TRIP_CASH_ISSUE", RETURN: "TRIP_CASH_RETURN"}
 SCRAP_TYPE = {ISSUE: "TRIP_CUSTODY_OUT", RETURN: "TRIP_CUSTODY_RETURN_IN"}
 
-def _not_reversed(alias="e"):
+def _not_reversed(alias="e", *, current=False):
+    # A locking outer query does not make its nested correction lookup current under RR.
+    # Lot write/dependency callers already hold trip -> original lot locks before requesting this form.
     return ("NOT EXISTS (SELECT 1 FROM transaction_corrections c WHERE c.source_type = '" + SOURCE + "' "
-            f"AND c.source_id = {alias}.id AND c.correction_type = 'FULL_REVERSAL')")
+            f"AND c.source_id = {alias}.id AND c.correction_type = 'FULL_REVERSAL'"
+            + (" FOR SHARE" if current else "") + ")")
 
 
 _NOT_REVERSED = _not_reversed("e")
@@ -203,7 +207,7 @@ class MarketTripRepository(BaseRepository):
             return []
         marks = ", ".join(["%s"] * len(ids))
         return self._fetch_all(
-            f"SELECT l.id, l.entry_id, e.trip_id, e.entry_no, l.lot_no, l.lot_kind, l.label, l.fineness_permille FROM market_trip_lots l "
+            f"SELECT l.id, l.entry_id, l.weight_grams, e.trip_id, e.entry_no, l.lot_no, l.lot_kind, l.label, l.fineness_permille FROM market_trip_lots l "
             f"JOIN market_trip_entries e ON e.id = l.entry_id WHERE l.id IN ({marks}) ORDER BY l.id FOR UPDATE OF l", tuple(ids))
 
     def insert_shop_lot_movement(self, *, lot_id, entry_id, movement_type, weight_delta, correction_id=None):
@@ -212,6 +216,24 @@ class MarketTripRepository(BaseRepository):
             "VALUES (%s, %s, %s, %s, %s)", (int(lot_id), _id(entry_id), movement_type, weight_delta,
                                             None if correction_id is None else _id(correction_id)))
         return int(movement_id)
+
+    def melt_lot_ids(self, entry_id):
+        return [int(r["id"]) for r in self._fetch_all("SELECT id FROM market_trip_lots WHERE entry_id = %s ORDER BY id", (_id(entry_id),))]
+
+    def insert_lot_settlement_link(self, *, entry_id, settlement_id, supplier_id, lot, weight, movement_id):
+        self._execute("""INSERT INTO market_trip_lot_settlements
+            (entry_id, settlement_id, supplier_id, lot_id, origin_melt_entry_id, weight_grams, fineness_permille,
+             custody_movement_id, weight_delta) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (_id(entry_id), _id(settlement_id), _id(supplier_id), int(lot["id"]), int(lot["entry_id"]), weight,
+             lot["fineness_permille"], int(movement_id), -weight))
+
+    def entry_lot_settlement(self, entry_id):
+        return self._fetch_one("""SELECT x.*, s.name AS supplier_name, l.lot_no, l.lot_kind,
+            oe.trip_id AS origin_trip_id, oe.entry_no AS origin_entry_no, g.target_karat_value,
+            g.credited_weight_grams, g.credited_analytical_grams, g.rounding_difference_grams
+            FROM market_trip_lot_settlements x JOIN supplier_gold_settlements g ON g.id=x.settlement_id
+            JOIN suppliers s ON s.id=x.supplier_id JOIN market_trip_lots l ON l.id=x.lot_id
+            JOIN market_trip_entries oe ON oe.id=x.origin_melt_entry_id WHERE x.entry_id=%s""", (_id(entry_id),))
 
     def insert_lot_issue(self, *, entry_id, lot_id, weight, custody_movement_id, shop_movement_id):
         self._execute(
@@ -259,10 +281,12 @@ class MarketTripRepository(BaseRepository):
             HAVING SUM(s.weight_delta) > 0 ORDER BY e.trip_id, e.entry_no, l.lot_no
             """)
 
-    def custody_lots(self, trip_id, exclude_entry_id=None):
+    def custody_lots(self, trip_id, exclude_entry_id=None, *, lot_id=None):
         """The assayed lots CURRENTLY held by this trip's custody, with their OUTSTANDING grams. The location is derived from the effective
         movements of this trip's entries (a CREATE of its own melt, a SHOP_ISSUE of a reissued bar, a SHOP_RETURN out), never from the
         lot's origin: a bar reissued into this custody is listed here and not in its origin's. Movements of reversed entries do not count."""
+        # Write callers lock the current trip and affected lot facts explicitly. Locking unrelated lot facts or the immutable
+        # origin entry here would invert the ascending lot order of origin-melt reversal. Movement reads remain current/locking.
         return self._fetch_all(
             f"""
             SELECT l.id, l.entry_id, l.lot_no, l.lot_kind, l.label, l.weight_grams, l.fineness_permille, l.pure_grams, oe.entry_no,
@@ -271,19 +295,24 @@ class MarketTripRepository(BaseRepository):
             JOIN market_trip_entries oe ON oe.id = l.entry_id
             JOIN market_trip_lot_movements m ON m.lot_id = l.id
             JOIN market_trip_entries me ON me.id = m.entry_id
-            WHERE me.trip_id = %s AND me.id <> %s AND {_not_reversed('me')}
+            WHERE me.trip_id = %s AND me.id <> %s AND (%s IS NULL OR l.id = %s) AND {_not_reversed('me', current=True)}
             GROUP BY l.id, l.entry_id, l.lot_no, l.lot_kind, l.label, l.weight_grams, l.fineness_permille, l.pure_grams, oe.entry_no, oe.trip_id
-            ORDER BY oe.trip_id, oe.entry_no, l.lot_no FOR SHARE OF l, oe, m, me
-            """, (_id(trip_id), int(exclude_entry_id or 0)))
+            ORDER BY l.id FOR SHARE OF m, me
+            """, (_id(trip_id), int(exclude_entry_id or 0), lot_id, lot_id))
 
     def lot_downstream(self, entry_id):
-        """Unreversed entries that moved a lot of this melt after its birth (a CREATE is never a dependency)."""
+        """Current dependencies after the caller locks the melt's original lots; CREATE is never a dependency.
+
+        Lock movement/consuming-entry rows on this connection, not an earlier RR snapshot or an origin-trip row.
+        The caller already holds the current trip and lot locks in their established order.
+        """
         return self._fetch_all(
             f"""
             SELECT DISTINCT me.id AS entry_id, me.trip_id, me.entry_no
             FROM market_trip_lots l JOIN market_trip_lot_movements m ON m.lot_id = l.id
             JOIN market_trip_entries me ON me.id = m.entry_id
-            WHERE l.entry_id = %s AND m.movement_type <> '{CREATE_MOVEMENT}' AND {_not_reversed('me')}
+            WHERE l.entry_id = %s AND m.movement_type <> '{CREATE_MOVEMENT}' AND {_not_reversed('me', current=True)}
+            ORDER BY me.id FOR SHARE OF m, me
             """, (_id(entry_id),))
 
     def melts(self, trip_id):
@@ -524,6 +553,7 @@ class MarketTripRepository(BaseRepository):
                 "JOIN market_trip_entries me ON me.id = l.entry_id WHERE li.entry_id = %s ORDER BY li.lot_id", (int(row["id"]),))
             row["supplier_payment"] = self.entry_supplier_payment(row["id"])
             row["gold_settlement"] = self.entry_gold_settlement(row["id"])
+            row["lot_settlement"] = self.entry_lot_settlement(row["id"])
             row["gold"] = self._fetch_all(
                 "SELECT g.karat_id, k.karat_value, g.designation, g.weight_grams FROM market_trip_entry_gold g "
                 "JOIN karats k ON k.id = g.karat_id WHERE g.entry_id = %s ORDER BY k.karat_value DESC, g.designation", (int(row["id"]),))

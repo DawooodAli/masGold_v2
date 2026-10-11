@@ -155,9 +155,10 @@ class SupplierRepository(BaseRepository):
                        SUM(m.weight_delta_grams) OVER (PARTITION BY m.karat_id ORDER BY m.occurred_at, m.id) AS weight_balance_after,
                        gs.id AS settlement_id, gs.delivered_weight_grams, gs.delivered_karat_value, gs.target_karat_value,
                        gs.source_kind AS settlement_source_kind, lk.designation AS custody_designation,
+                       gs.delivered_lot_id, gs.delivered_fineness_permille, ml.lot_kind, ml.lot_no, oe.trip_id AS origin_trip_id, oe.entry_no AS origin_entry_no,
                        le.trip_id AS custody_trip_id, le.entry_no AS custody_entry_no,
                        COALESCE(gc.id, gcc.id) AS settlement_reversal_id,
-                       IF(grc.source_type = 'SUPPLIER_GOLD_SETTLEMENT', grc.source_id, rlk.settlement_id) AS reversed_settlement_id,
+                       IF(grc.source_type = 'SUPPLIER_GOLD_SETTLEMENT', grc.source_id, COALESCE(rlk.settlement_id, rll.settlement_id)) AS reversed_settlement_id,
                        rle.trip_id AS reversed_custody_trip_id, rle.entry_no AS reversed_custody_entry_no
                 FROM supplier_gold_movements m
                 JOIN supplier_gold_movement_types t ON t.id = m.movement_type_id
@@ -165,15 +166,19 @@ class SupplierRepository(BaseRepository):
                 LEFT JOIN users u ON u.id = m.created_by_user_id
                 LEFT JOIN supplier_gold_settlements gs ON t.code = 'SETTLEMENT' AND m.source_type = 'SUPPLIER_GOLD_SETTLEMENT' AND gs.id = m.source_id
                 LEFT JOIN market_trip_gold_settlements lk ON lk.settlement_id = gs.id
-                LEFT JOIN market_trip_entries le ON le.id = lk.entry_id
+                LEFT JOIN market_trip_lot_settlements ll ON ll.settlement_id = gs.id
+                LEFT JOIN market_trip_lots ml ON ml.id = gs.delivered_lot_id
+                LEFT JOIN market_trip_entries oe ON oe.id = gs.origin_melt_entry_id
+                LEFT JOIN market_trip_entries le ON le.id = COALESCE(lk.entry_id, ll.entry_id)
                 LEFT JOIN transaction_corrections gc ON gc.source_type = 'SUPPLIER_GOLD_SETTLEMENT' AND gc.source_id = gs.id
                      AND gc.correction_type = 'FULL_REVERSAL'
-                LEFT JOIN transaction_corrections gcc ON gcc.source_type = 'MARKET_TRIP_ENTRY' AND gcc.source_id = lk.entry_id
+                LEFT JOIN transaction_corrections gcc ON gcc.source_type = 'MARKET_TRIP_ENTRY' AND gcc.source_id = COALESCE(lk.entry_id, ll.entry_id)
                      AND gcc.correction_type = 'FULL_REVERSAL'
                 LEFT JOIN transaction_corrections grc ON t.code = 'SETTLEMENT_REVERSAL' AND m.source_type = 'TRANSACTION_CORRECTION'
                      AND grc.id = m.source_id
                 LEFT JOIN market_trip_gold_settlements rlk ON grc.source_type = 'MARKET_TRIP_ENTRY' AND rlk.entry_id = grc.source_id
-                LEFT JOIN market_trip_entries rle ON rle.id = rlk.entry_id
+                LEFT JOIN market_trip_lot_settlements rll ON grc.source_type = 'MARKET_TRIP_ENTRY' AND rll.entry_id = grc.source_id
+                LEFT JOIN market_trip_entries rle ON rle.id = COALESCE(rlk.entry_id, rll.entry_id)
                 WHERE m.supplier_id = %s
             ) x ORDER BY x.occurred_at DESC, x.id DESC LIMIT %s
             """, (_id(supplier_id), int(limit)))

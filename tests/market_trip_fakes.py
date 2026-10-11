@@ -49,6 +49,7 @@ class Db:
                           11: {"id": 11, "name": "مورد متوقف", "is_active": 0, "is_supplier": True, "is_intermediary": False, "karat_id": 2},
                           12: {"id": 12, "name": "وسيط فقط", "is_active": 1, "is_supplier": False, "is_intermediary": True, "karat_id": None}}   # 043 / 044
         self.settlements, self.settlement_legs, self.sup_gold = {}, [], []                      # 045: SG documents, legs and the supplier gold ledger
+        self.lot_settle_links = {}
         self.gold_settle_links = {}                                                              # 046: entry id -> the SG document it made
         self.sm_payments, self.sm_making, self.sm_legs, self.supplier_links = {}, [], [], {}
         self.shop_moves, self.lot_returns, self.lot_issues = [], [], []                      # 040/041: shop-side lot ledger, return / issue links
@@ -184,7 +185,7 @@ class TripRepo:
 
     def insert_entry(self, *, trip_id, entry_no, kind, entry_date, notes, key, digest, actor, now):
         self._fail("entry")
-        assert kind in ("ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT", "SUPPLIER_PAY", "GOLD_SETTLE")                # chk_mte_kind
+        assert kind in ("ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT", "SUPPLIER_PAY", "GOLD_SETTLE", "LOT_SETTLE")                # chk_mte_kind
         if any(e["request_key"] == key for e in self.db.entries.values()):
             raise _dup("uq_mte_request")
         if any((e["trip_id"], e["entry_no"]) == (int(trip_id), entry_no) for e in self.db.entries.values()):
@@ -267,7 +268,7 @@ class TripRepo:
 
     def insert_lot_movement(self, *, lot_id, entry_id, movement_type, weight_delta):
         self._fail("lot_movement")
-        assert movement_type in (CREATE_MOVEMENT, SHOP_RETURN_MOVEMENT, SHOP_ISSUE_MOVEMENT)  # chk_mtlm_type
+        assert movement_type in (CREATE_MOVEMENT, SHOP_RETURN_MOVEMENT, SHOP_ISSUE_MOVEMENT, "SUPPLIER_SETTLE")  # chk_mtlm_type
         assert weight_delta != 0 and (movement_type != CREATE_MOVEMENT or weight_delta > 0)  # chk_mtlm_delta
         assert movement_type != SHOP_RETURN_MOVEMENT or weight_delta < 0
         assert movement_type != SHOP_ISSUE_MOVEMENT or weight_delta > 0
@@ -395,14 +396,14 @@ class TripRepo:
         order = {"MELT": 0, "LOGO": 1, "UNCLASSIFIED": 2}
         return sorted(out.values(), key=lambda r: (-r["karat_value"], order[r["designation"]]))
 
-    def custody_lots(self, trip_id, exclude_entry_id=None):
+    def custody_lots(self, trip_id, exclude_entry_id=None, *, lot_id=None):
         """Lots CURRENTLY held by this trip's custody: derived from the movements of this trip's live entries, never from the lot's origin."""
         live_ids = {e["id"] for e in self._live(trip_id, exclude_entry_id)}
         rows = []
         for lot in sorted(self.db.lots.values(), key=lambda l: (self.db.entries[l["entry_id"]]["trip_id"],
                                                                  self.db.entries[l["entry_id"]]["entry_no"], l["lot_no"])):
             moves = [m for m in self.db.lot_moves if m["lot_id"] == lot["id"] and m["entry_id"] in live_ids]
-            if not moves:
+            if not moves or (lot_id is not None and lot["id"] != int(lot_id)):
                 continue
             origin = self.db.entries[lot["entry_id"]]
             rows.append({**lot, "entry_no": origin["entry_no"], "origin_trip_id": origin["trip_id"],
@@ -525,6 +526,7 @@ class TripRepo:
                                          for r in self.db.lot_returns if r["entry_id"] == e["id"]],
                          "supplier_payment": self.entry_supplier_payment(e["id"]),
                          "gold_settlement": self.entry_gold_settlement(e["id"]),
+                         "lot_settlement": self.entry_lot_settlement(e["id"]),
                          "gold": [{"karat_id": g["karat_id"], "karat_value": self.db.karats[g["karat_id"]]["karat_value"],
                                    "designation": g["designation"], "weight_grams": g["weight_grams"]}
                                   for g in self.db.gold_legs if g["entry_id"] == e["id"]]})
@@ -565,6 +567,23 @@ class TripRepo:
             raise _dup("uq_mtgs_settlement")
         self.db.gold_settle_links[int(entry_id)] = {"entry_id": int(entry_id), "settlement_id": int(settlement_id), "supplier_id": int(supplier_id),
                                                     "karat_id": int(karat_id), "designation": designation, "weight_grams": weight}
+
+    def melt_lot_ids(self, entry_id):
+        return sorted(l["id"] for l in self.db.lots.values() if l["entry_id"] == int(entry_id))
+
+    def insert_lot_settlement_link(self, *, entry_id, settlement_id, supplier_id, lot, weight, movement_id):
+        self._fail("lot_link")
+        h=self.db.settlements[int(settlement_id)]
+        assert (h["source_kind"],h["delivered_lot_id"],h["delivered_weight_grams"],h["delivered_fineness_permille"]) == ("CUSTODY_LOT",lot["id"],weight,lot["fineness_permille"])
+        m=next(m for m in self.db.lot_moves if m["id"]==movement_id)
+        assert (m["entry_id"],m["lot_id"],m["movement_type"],m["weight_delta"]) == (int(entry_id),lot["id"],"SUPPLIER_SETTLE",-weight)
+        self.db.lot_settle_links[int(entry_id)]={"entry_id":int(entry_id),"settlement_id":int(settlement_id),"supplier_id":int(supplier_id),"lot_id":lot["id"],"origin_melt_entry_id":lot["entry_id"],"weight_grams":weight,"fineness_permille":lot["fineness_permille"],"custody_movement_id":movement_id}
+
+    def entry_lot_settlement(self, entry_id):
+        x=self.db.lot_settle_links.get(int(entry_id))
+        if x is None: return None
+        h=self.db.settlements[x["settlement_id"]];l=self.db.lots[x["lot_id"]];o=self.db.entries[l["entry_id"]]
+        return {**h,**x,"lot_no":l["lot_no"],"lot_kind":l["lot_kind"],"origin_trip_id":o["trip_id"],"origin_entry_no":o["entry_no"],"supplier_name":self.db.suppliers[x["supplier_id"]]["name"]}
 
     def entry_gold_settlement(self, entry_id):
         link = self.db.gold_settle_links.get(int(entry_id))
@@ -834,7 +853,7 @@ class SettlementRepo:
     def insert_header(self, *, supplier_id, delivered_karat, target_karat, delivered_weight, credited, analytical, difference, settlement_date,
                       reference, notes, key, digest, actor, now, source_kind="SHOP_SCRAP"):
         self._fail("sg_header")
-        assert source_kind in ("SHOP_SCRAP", "CUSTODY_GOLD")                                  # chk_sgs_source (046)
+        assert source_kind in ("SHOP_SCRAP", "CUSTODY_GOLD", "CUSTODY_LOT")                                  # chk_sgs_source (046)
         assert delivered_weight > 0 and credited > 0 and analytical > 0                       # chk_sgs_weights
         assert difference == credited - analytical                                            # chk_sgs_rounding
         if any(g["request_key"] == key for g in self.db.settlements.values()):
@@ -848,6 +867,14 @@ class SettlementRepo:
             "reference": reference, "notes": notes, "request_key": key, "request_hash": digest, "performed_by_user_id": actor.user_id,
             "occurred_at": now}
         return settlement_id
+
+    def insert_lot_header(self, *, supplier_id, lot, target_karat, credited, analytical, difference, settlement_date, reference, notes, key, digest, actor, now):
+        self._fail("sg_header")
+        assert lot["fineness_permille"] is not None and credited>0
+        if any(h["request_key"]==key for h in self.db.settlements.values()): raise _dup("uq_sgs_request")
+        sid=self.db.next("settlement")
+        self.db.settlements[sid]={"id":sid,"supplier_id":int(supplier_id),"source_kind":"CUSTODY_LOT","delivered_lot_id":lot["id"],"origin_melt_entry_id":lot["entry_id"],"delivered_fineness_permille":lot["fineness_permille"],"delivered_karat_id":None,"delivered_karat_value":None,"target_karat_id":target_karat["id"],"target_karat_value":target_karat["karat_value"],"delivered_weight_grams":lot["weight_grams"],"credited_weight_grams":credited,"credited_analytical_grams":analytical,"rounding_difference_grams":difference,"settlement_date":settlement_date,"reference":reference,"notes":notes,"request_key":key,"request_hash":digest,"performed_by_user_id":actor.user_id,"occurred_at":now}
+        return sid
 
     def post_scrap_out(self, *, settlement_id, karat_id, weight, code, notes, actor, now):
         self._fail("sg_scrap")
@@ -873,7 +900,7 @@ class SettlementRepo:
 
     def insert_leg(self, *, settlement_id, kind, source_kind, old_gold_movement_id=None, supplier_gold_movement_id=None):
         self._fail("sg_leg")
-        assert source_kind in ("SHOP_SCRAP", "CUSTODY_GOLD")                                  # chk_sgsl_source
+        assert source_kind in ("SHOP_SCRAP", "CUSTODY_GOLD", "CUSTODY_LOT")                                  # chk_sgsl_source
         assert kind != "SCRAP" or source_kind == "SHOP_SCRAP"                                 # chk_sgsl_scrap_only: no second Scrap deduction
         assert self.db.settlements[int(settlement_id)]["source_kind"] == source_kind          # fk_sgsl_source (the composite foreign key)
         assert (kind == "SCRAP" and old_gold_movement_id is not None and supplier_gold_movement_id is None) or \
@@ -893,17 +920,17 @@ class SettlementRepo:
         return self.db.now
 
     def _reversal(self, settlement_id):
-        link = next((l for l in self.db.gold_settle_links.values() if l["settlement_id"] == int(settlement_id)), None)
+        link = next((l for l in list(self.db.gold_settle_links.values()) + list(self.db.lot_settle_links.values()) if l["settlement_id"] == int(settlement_id)), None)
         return next((c for c in self.db.corrections if c["correction_type"] == "FULL_REVERSAL"
                      and ((c["source_type"] == "SUPPLIER_GOLD_SETTLEMENT" and c["source_id"] == str(settlement_id))
                           or (link is not None and c["source_type"] == "MARKET_TRIP_ENTRY" and c["source_id"] == str(link["entry_id"])))), None)
 
     def custody_entry(self, settlement_id):
-        link = next((l for l in self.db.gold_settle_links.values() if l["settlement_id"] == int(settlement_id)), None)
+        link = next((l for l in list(self.db.gold_settle_links.values()) + list(self.db.lot_settle_links.values()) if l["settlement_id"] == int(settlement_id)), None)
         if link is None:
             return None
         entry = self.db.entries[link["entry_id"]]
-        return {"entry_id": link["entry_id"], "designation": link["designation"], "trip_id": entry["trip_id"], "entry_no": entry["entry_no"]}
+        return {"entry_id": link["entry_id"], "designation": link.get("designation"), "trip_id": entry["trip_id"], "entry_no": entry["entry_no"]}
 
     def settlement(self, settlement_id):
         row = self.db.settlements.get(int(settlement_id))

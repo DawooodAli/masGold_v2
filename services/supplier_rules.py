@@ -100,6 +100,25 @@ def settlement_credit(weight, delivered_karat_value, target_karat_value):
     return posted, analytical, posted - analytical
 
 
+def lot_settlement_credit(weight, fineness, target_karat_value):
+    """Credit an indivisible assayed lot from its physical facts, never rounded pure_grams."""
+    if fineness is None:
+        raise SupplierRuleError("FINENESS_REQUIRED", "العيار الفعلي لهذه الشحنة غير معلوم: لا يمكن تسويتها للمورد.")
+    with localcontext() as context:
+        context.prec = 50
+        assay = Decimal(str(fineness))
+        if not assay.is_finite() or not 0 < assay <= 1000:
+            raise SupplierRuleError("FINENESS_INVALID", "العيار الفعلي للشحنة غير صالح.")
+        raw = Decimal(str(weight)) * assay / Decimal(1000) * Decimal(24) / Decimal(str(target_karat_value))
+        posted = raw.quantize(WEIGHT_STEP, rounding=ROUND_HALF_UP)
+        analytical = raw.quantize(ANALYTICAL_STEP, rounding=ROUND_HALF_UP)
+        difference = posted - analytical
+    if posted <= 0:
+        raise SupplierRuleError("CREDIT_ROUNDS_TO_ZERO",
+                                "الذهب المحتسب لهذه السبكة يُقرَّب إلى صفر جرام في حساب المورد؛ لا يمكن تسجيل التسوية وتبقى السبكة في العهدة.")
+    return posted, analytical, difference
+
+
 def parse_rate(value, label="المصنعية (ج/جرام)"):
     """EGP per gram, exact Decimal, rounded once to 0.01, never negative."""
     rate = _number(value, label, "RATE_INVALID").quantize(MONEY_STEP, rounding=ROUND_HALF_UP)

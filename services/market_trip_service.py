@@ -19,6 +19,8 @@ decides what each gold line is for, melts designated gold into assayed lots and 
           second Scrap movement, no cash, making, bank or lot movement) and the supplier is credited in its own dedicated karat
           (delivered grams x delivered karat / supplier karat, the same rounding as the direct settlement). One SG document per source line
           and supplier; MELT and unclassified gold are outside this slice
+  LOT_SETTLE (047) delivers one whole MAIN or known-assay RESIDUE lot from its CURRENT custody to one supplier; one SG document,
+          negative custody lot movement and supplier gold movement, with original lot/assay preserved and no shop-lot movement.
   MELT    consumes MELT-designated custody (any active master karat, physical grams) and creates assayed LOTS: one MAIN output with
           its fineness (parts per thousand, 0.1) and optional RESIDUE lots whose fineness may be unknown. No cash, shop Scrap or
           supplier movement exists in a melt; the processing difference is stored permanently with the document.
@@ -27,8 +29,8 @@ Custody = issued - returned - melted (+ the effective Logo heating differences o
 entries that were not reversed, per (karat, designation) and for cash (the arithmetic lives in services.custody_rules); none can
 ever go negative. Gold written before the designation existed is UNCLASSIFIED: it can only be returned. Gold in custody is
 shop-owned but unavailable inside the shop (it really left the counted Scrap balance), and master-karat custody is shown apart
-from assayed lots. A trip closes only when cash, every (karat, designation) and every lot are exactly zero. Shop return of an
-assayed lot, sales, supplier settlement and merchandise allocation are NOT part of this slice.
+from assayed lots. A trip closes only when cash, every (karat, designation) and every lot are exactly zero. Whole lots can return
+to the shop or settle a supplier; partial allocation, sales and merchandise allocation remain outside this slice.
 
 Right: MARKET_TRIP_MANAGE (OWNER only), re-checked inside every transaction through AuthorizationService; the actor is the
 AppSession user. Entries are immutable; their only correction is a full reversal (RV) through CorrectionService, which also
@@ -46,12 +48,12 @@ from uuid import UUID, uuid5
 from mysql.connector import IntegrityError
 
 from repositories.financial_account_repository import FinancialAccountRepository
-from repositories.market_trip_repository import (CLOSED, CREATE_MOVEMENT, GOLD_SETTLE, HEAT, ISSUE, LOGO_DESIGNATION, SUPPLIER_PAY, LOT_ISSUE, LOT_RETURN, MAIN_LOT, MELT,
+from repositories.market_trip_repository import (CLOSED, CREATE_MOVEMENT, GOLD_SETTLE, LOT_SETTLE, LOT_SETTLE_MOVEMENT, HEAT, ISSUE, LOGO_DESIGNATION, SUPPLIER_PAY, LOT_ISSUE, LOT_RETURN, MAIN_LOT, MELT,
                                                  MELT_DESIGNATION, OPEN, RESIDUE_LOT, RETURN, SHOP_ISSUE_MOVEMENT, SHOP_ISSUE_OUT,
                                                  SHOP_RETURN_IN, SHOP_RETURN_MOVEMENT, SOURCE, UNCLASSIFIED, MarketTripRepository,
                                                  entry_code, trip_code)
 from repositories.old_gold_conversion_repository import OldGoldConversionRepository
-from repositories.supplier_gold_settlement_repository import (CUSTODY_SOURCE_KIND, GOLD_MOVEMENT, SupplierGoldSettlementRepository,
+from repositories.supplier_gold_settlement_repository import (CUSTODY_SOURCE_KIND, LOT_SOURCE_KIND, GOLD_MOVEMENT, SupplierGoldSettlementRepository,
                                                               settlement_code)
 from repositories.supplier_payment_repository import PAYMENT_MOVEMENT, SOURCE as SMP_SOURCE, SupplierPaymentRepository, payment_code
 from services.authorization_service import AuthorizationService
@@ -72,11 +74,11 @@ MAX_MONEY, MAX_WEIGHT = Decimal("100000000000000"), Decimal("1000000000")
 NOTES_MAX, REASON_MAX, WORKSHOP_MAX, ASSAY_MAX, LABEL_MAX, MAX_RESIDUES = 1000, 1000, 120, 120, 120, 10
 ZERO_MONEY, ZERO_WEIGHT = Decimal("0.00"), Decimal("0.000")
 KIND_TEXT = {ISSUE: "إخراج عهدة", RETURN: "رجوع من العهدة", MELT: "سبك", LOT_RETURN: "رجوع ناتج السبك", LOT_ISSUE: "إخراج سبكة من المحل",
-             HEAT: "حمّية اللوجو", SUPPLIER_PAY: "دفع مصنعيات من العهدة", GOLD_SETTLE: "تسوية ذهب من العهدة"}
+             HEAT: "حمّية اللوجو", SUPPLIER_PAY: "دفع مصنعيات من العهدة", GOLD_SETTLE: "تسوية ذهب من العهدة", LOT_SETTLE: "تسوية سبكة من العهدة"}
 DESIGNATION_TEXT = {MELT_DESIGNATION: "للسبك", LOGO_DESIGNATION: "لوجو", UNCLASSIFIED: "غير مصنف (قبل التصنيف)"}
 _DESIGNATION_INPUT = {"MELT": MELT_DESIGNATION, "للسبك": MELT_DESIGNATION, "LOGO": LOGO_DESIGNATION, "لوجو": LOGO_DESIGNATION,
                       "UNCLASSIFIED": UNCLASSIFIED, "غير مصنف": UNCLASSIFIED}
-LOT_RETURN_NOTE = "أرجع الشحنات المعايَرة إلى المحل من «رجوع ناتج السبك» قبل إغلاق العهدة."
+LOT_RETURN_NOTE = "صفِّ السبائك المتبقية برجوع ناتج السبك إلى المحل أو بتسوية سبكة معلومة العيار من العهدة قبل الإغلاق."
 
 
 class TripError(ValueError):
@@ -402,6 +404,9 @@ class MarketTripService:
                     "credited_weight": Decimal(str(e["gold_settlement"]["credited_weight_grams"])),
                     "analytical": Decimal(str(e["gold_settlement"]["credited_analytical_grams"])),
                     "rounding_difference": Decimal(str(e["gold_settlement"]["rounding_difference_grams"]))},
+                "lot_settlement": None if not e.get("lot_settlement") else {
+                    **MarketTripService._lot_settle_result(e, e["lot_settlement"], False),
+                    "supplier_name": e["lot_settlement"]["supplier_name"]},
                 "reversed": e["reversal_id"] is not None,
                 "reversal_code": None if e["reversal_id"] is None else correction_code("FULL_REVERSAL", e["reversal_id"]),
                 "reversal_reason": e["reversal_reason"], "reversal_at": e["reversal_at"]}
@@ -1123,6 +1128,134 @@ class MarketTripService:
                 "supplier_id": str(supplier_id), "designation": designation, "delivered_karat": int(delivered["karat_value"]),
                 "target_karat": int(target["karat_value"]), "delivered_weight": str(grams), "credited_weight": str(credited),
                 "analytical": str(analytical), "rounding_difference": str(difference)}
+
+    # ------------------------------------------------------------------ whole assayed lot supplier settlement (047)
+    @staticmethod
+    def lot_settlement_preview(lot, supplier):
+        """Shared preview and posting calculation. The caller supplies stored facts, never rounded pure_grams."""
+        rules.require_supplier_role(supplier)
+        if supplier.get("karat_value") is None:
+            raise TripError("SUPPLIER_KARAT_MISSING", "عيار هذا المورد غير محدد: حدّده من تعديل المورد أولًا.")
+        if lot["outstanding"] != lot["weight"]:
+            raise TripError("LOT_PARTIAL_NOT_ALLOWED", "رصيد الشحنة في العهدة جزئي: اعكس الرجوع الجزئي أولًا؛ تُسوّى الشحنة كاملة فقط.")
+        return rules.lot_settlement_credit(lot["weight"], lot["fineness"], supplier["karat_value"])
+
+    def settle_supplier_lot(self, trip_id, supplier_id, lot_id, settlement_date, reference, notes, request_key,
+                            *, weight=None, _expected_actor=None):
+        actor = self._actor(_expected_actor)
+        if GOLD_SETTLE_PERMISSION not in actor.permissions:
+            raise PermissionError("تسوية ذهب الموردين غير متاحة لك.")
+        trip_id, supplier_id, lot_id = _trip_id(trip_id), _trip_id(supplier_id), _trip_id(lot_id)
+        supplied = None if weight is None else parse_weight(weight)
+        settled_on = _entry_date(settlement_date)
+        reference, notes, key = _text(reference, PAYMENT_REFERENCE_MAX, "المرجع"), _text(notes, NOTES_MAX, "الملاحظات"), _key(request_key)
+        digest = hashlib.sha256(json.dumps([LOT_SETTLE, trip_id, supplier_id, lot_id, settled_on.isoformat(), reference, notes,
+                                           None if supplied is None else str(supplied)], ensure_ascii=False).encode()).hexdigest()
+        try:
+            return self._post_lot_settlement(actor, trip_id, supplier_id, lot_id, supplied, settled_on, reference, notes, key, digest)
+        except IntegrityError as exc:
+            if getattr(exc, "errno", None) != 1062 or not any(k in str(exc) for k in ("uq_sgs_request", "uq_mte_request")):
+                raise
+            with self._transaction() as connection:
+                self._authorization.require_permission_for_write(connection, actor, PERMISSION)
+                checked = self._authorization.require_permission_for_write(connection, actor, GOLD_SETTLE_PERMISSION)
+                result = self._lot_settle_prior(self._repository(connection), self._gold_settlements(connection), key, digest, checked)
+                if result is None:
+                    raise
+                return result
+
+    @staticmethod
+    def _lot_settle_result(entry, link, duplicate):
+        return {"entry_id": str(entry["id"]), "trip_id": str(entry["trip_id"]), "trip_code": trip_code(entry["trip_id"]),
+                "code": entry_code(entry["trip_id"], entry["entry_no"]), "kind": LOT_SETTLE, "created": False, "duplicate": duplicate,
+                "settlement_id": str(link["settlement_id"]), "settlement_code": settlement_code(link["settlement_id"]),
+                "supplier_id": str(link["supplier_id"]), "lot_id": str(link["lot_id"]), "lot_kind": link["lot_kind"],
+                "origin": entry_code(link["origin_trip_id"], link["origin_entry_no"]), "lot_no": int(link["lot_no"]),
+                "fineness": str(link["fineness_permille"]), "delivered_weight": str(link["weight_grams"]),
+                "target_karat": int(link["target_karat_value"]), "credited_weight": str(link["credited_weight_grams"]),
+                "analytical": str(link["credited_analytical_grams"]), "rounding_difference": str(link["rounding_difference_grams"])}
+
+    @classmethod
+    def _lot_settle_prior(cls, repository, settlements, key, digest, actor):
+        entry, header = repository.by_request(key), settlements.by_request(key)
+        if entry is None and header is None:
+            return None
+        link = None if entry is None else repository.entry_lot_settlement(entry["id"])
+        if (entry is None or header is None or link is None or header["source_kind"] != LOT_SOURCE_KIND
+                or entry["entry_kind"] != LOT_SETTLE or int(link["settlement_id"]) != int(header["id"])
+                or entry["request_hash"] != digest or header["request_hash"] != digest
+                or int(entry["performed_by_user_id"]) != int(actor.user_id)):
+            raise TripError("REQUEST_CONFLICT", "طلب العملية مستخدم لعملية مختلفة.")
+        return cls._lot_settle_result(entry, link, True)
+
+    def _post_lot_settlement(self, session_actor, trip_id, supplier_id, lot_id, supplied, settled_on, reference, notes, key, digest):
+        with self._transaction() as connection:
+            self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+            actor = self._authorization.require_permission_for_write(connection, session_actor, GOLD_SETTLE_PERMISSION)
+            repository, settlements = self._repository(connection), self._gold_settlements(connection)
+            trip = repository.trip(trip_id, lock=True)                       # trip -> lot -> supplier, also used by RV
+            if trip is None:
+                raise TripError("TRIP_NOT_FOUND", "العهدة غير موجودة.")
+            replay = self._lot_settle_prior(repository, settlements, key, digest, actor)
+            if replay is not None:
+                return replay                                             # even after reversal: no new weight derivation
+            if trip["status"] != OPEN:
+                raise TripError("TRIP_CLOSED", "العهدة مغلقة: أعد فتحها أولًا.")
+            locked = repository.lock_lots([lot_id])
+            if not locked:
+                raise TripError("LOT_NOT_FOUND", "الشحنة غير موجودة.")
+            lot = locked[0]
+            full = Decimal(str(lot["weight_grams"]))
+            current = next(iter(repository.custody_lots(trip_id, lot_id=lot_id)), None)
+            if current is None or Decimal(str(current["outstanding_grams"])) == 0:
+                raise TripError("LOT_NOT_IN_CUSTODY", "الشحنة ليست في هذه العهدة أو تمت تسويتها أو عُكس سبكها.")
+            outstanding = Decimal(str(current["outstanding_grams"]))
+            if outstanding != full:
+                raise TripError("LOT_PARTIAL_NOT_ALLOWED", "رصيد الشحنة في العهدة جزئي: اعكس الرجوع الجزئي أولًا؛ تُسوّى الشحنة كاملة فقط.")
+            if supplied is not None and supplied != full:
+                raise TripError("LOT_PARTIAL_NOT_ALLOWED", "تُسوّى الشحنة كاملة فقط؛ الكمية المرسلة لا تطابق وزنها الكامل.")
+            supplier = settlements.get_supplier(supplier_id, lock=True)     # inactive and crossing zero are allowed
+            if supplier is None:
+                raise TripError("SUPPLIER_NOT_FOUND", "المورد غير موجود.")
+            rules.require_supplier_role(supplier)
+            if supplier["karat_id"] is None:
+                raise TripError("SUPPLIER_KARAT_MISSING", "عيار هذا المورد غير محدد: حدّده من تعديل المورد أولًا.")
+            target = settlements.get_karat(supplier["karat_id"])
+            credited, analytical, difference = self.lot_settlement_preview(
+                {"weight": full, "outstanding": outstanding, "fineness": lot["fineness_permille"]},
+                {**supplier, "karat_value": target["karat_value"]})
+            type_id = settlements.gold_type_id(GOLD_MOVEMENT)
+            if type_id is None:
+                raise RuntimeError("supplier gold movement type SETTLEMENT is missing")
+            now = repository.db_now()
+            settlement_id = settlements.insert_lot_header(supplier_id=supplier_id, lot=lot, target_karat=target,
+                credited=credited, analytical=analytical, difference=difference, settlement_date=settled_on, reference=reference,
+                notes=notes, key=key, digest=digest, actor=actor, now=now)
+            sg_code = settlement_code(settlement_id)
+            entry_id = repository.insert_entry(trip_id=trip_id, entry_no=repository.next_entry_no(trip_id), kind=LOT_SETTLE,
+                entry_date=settled_on, notes=notes, key=key, digest=digest, actor=actor, now=now)
+            entry = repository.by_request(key)
+            code = entry_code(trip_id, entry["entry_no"])
+            label = f"تسوية سبكة من العهدة {code} — {sg_code}: {full:,.3f} جرام، عيار فعلي {lot['fineness_permille']} بالألف"
+            movement_id = repository.insert_lot_movement(lot_id=lot_id, entry_id=entry_id, movement_type=LOT_SETTLE_MOVEMENT, weight_delta=-full)
+            gold_id = settlements.insert_gold_movement(supplier_id=supplier_id, type_id=type_id, karat_id=target["id"],
+                weight_delta=-credited, eq21_delta=-rules.equivalent_21(credited, target["karat_value"]), source_type="SUPPLIER_GOLD_SETTLEMENT",
+                source_id=settlement_id, reference=sg_code, description=label, now=now, user_id=actor.user_id)
+            settlements.insert_leg(settlement_id=settlement_id, kind="GOLD", source_kind=LOT_SOURCE_KIND, supplier_gold_movement_id=gold_id)
+            repository.insert_lot_settlement_link(entry_id=entry_id, settlement_id=settlement_id, supplier_id=supplier_id, lot=lot,
+                                                  weight=full, movement_id=movement_id)
+            metadata = {"trip_id": trip_id, "lot_id": str(lot_id), "origin_melt_entry_id": str(lot["entry_id"]),
+                        "lot_kind": lot["lot_kind"], "source": LOT_SOURCE_KIND, "custody_entry": code, "settlement": sg_code,
+                        "weight": str(full), "fineness": str(lot["fineness_permille"]), "credited": str(credited),
+                        "analytical": str(analytical), "rounding_difference": str(difference), "supplier_id": supplier_id}
+            settlements.audit(actor=actor, event_type="SUPPLIER_GOLD_SETTLEMENT", entity_id=settlement_id,
+                entity_type="SUPPLIER_GOLD_SETTLEMENT", reference=sg_code, description=label, metadata=metadata, now=now)
+            repository.audit(actor=actor, event_type="MARKET_TRIP_LOT_SETTLE", entity_id=entry_id, reference=code,
+                             description=label, metadata=metadata, now=now)
+            result = self._lot_settle_result(entry, repository.entry_lot_settlement(entry_id), False)
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        return result
 
     # ------------------------------------------------------------------ lot returns to the shop (M2)
     def shop_lots(self, *, _expected_actor=None):
