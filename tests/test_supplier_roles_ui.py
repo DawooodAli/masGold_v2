@@ -1,4 +1,4 @@
-"""Market-party roles on the real Suppliers page (044): «مورد» / «وسيط سوق», both allowed, a role filter, supplier account cards and actions only
+"""Market-party roles on the real Suppliers page (044): «مورد» / «مسوقجي», both allowed, a role filter, supplier account cards and actions only
 for the supplier role, and the form at the three target sizes - with real mouse clicks. Settlement, holdings, sales, bar allocation and reports are
 NOT part of this slice."""
 import unittest
@@ -55,7 +55,7 @@ class SupplierRolePageTests(base.SupplierPageTests):
         self.assertIsNone(self.visible_item("newInvoiceButton"))
         self.assertIsNotNone(self.visible_item("intermediaryOnlyNote"))
         self.assertIsNotNone(self.visible_item("editSupplierButton"))                  # the party itself remains editable
-        self.assertEqual(self.svm.detail["roleText"], "وسيط سوق")
+        self.assertEqual(self.svm.detail["roleText"], "مسوقجي")
         self.assertEqual(self.warnings, [])
 
     def test_both_roles_need_the_karat_and_no_role_cannot_be_saved(self):

@@ -63,7 +63,7 @@ class MasterRoleTests(RoleCase):
         stored = self.db.suppliers[int(sid)]
         self.assertEqual((stored["is_supplier"], stored["is_intermediary"], stored["karat_id"]), (False, True, None))
         row = self.row(sid)
-        self.assertEqual((row["gold_status"], row["gold_balance"], row["role_text"]), ("NOT_APPLICABLE", None, "وسيط سوق"))
+        self.assertEqual((row["gold_status"], row["gold_balance"], row["role_text"]), ("NOT_APPLICABLE", None, "مسوقجي"))
         detail = self.detail(sid)
         self.assertEqual(detail["balances"]["gold_status"], "NOT_APPLICABLE")                        # never the "unresolved karat" state
         self.assertEqual((detail["gold_ledger"], detail["making_ledger"]), ([], []))
@@ -73,7 +73,7 @@ class MasterRoleTests(RoleCase):
         self.refused(lambda: self.suppliers.create_supplier("كلاهما", None, None, None, is_supplier=True, is_intermediary=True), "KARAT_REQUIRED")
         sid = self.suppliers.create_supplier("كلاهما", None, None, K18, is_supplier=True, is_intermediary=True)
         row = self.row(sid)
-        self.assertEqual((row["is_supplier"], row["is_intermediary"], row["role_text"], row["karat_id"]), (True, True, "مورد • وسيط سوق", K18))
+        self.assertEqual((row["is_supplier"], row["is_intermediary"], row["role_text"], row["karat_id"]), (True, True, "مورد • مسوقجي", K18))
         self.refused(lambda: self.suppliers.create_supplier("بلا دور", None, None, K21, is_supplier=False, is_intermediary=False), "ROLE_REQUIRED")
         self.refused(lambda: self.suppliers.update_supplier(sid, "كلاهما", is_supplier=False, is_intermediary=False), "ROLE_REQUIRED")
         self.assertEqual(len(self.db.suppliers), 1)
@@ -160,10 +160,10 @@ class ViewModelRoleTests(RoleCase):
         rows = {r["id"]: r for r in self.vm.suppliers}
         self.assertEqual((rows[supplier]["roleText"], rows[supplier]["isSupplier"]), ("مورد", True))
         self.assertEqual((rows[intermediary]["roleText"], rows[intermediary]["isSupplier"], rows[intermediary]["goldText"],
-                          rows[intermediary]["makingText"]), ("وسيط سوق", False, "", ""))
+                          rows[intermediary]["makingText"]), ("مسوقجي", False, "", ""))
         detail = self.vm.detail
         self.assertEqual((detail["roleText"], detail["isSupplier"], detail["isIntermediary"], detail["hasAccount"], detail["goldNote"]),
-                         ("وسيط سوق", False, True, False, ""))
+                         ("مسوقجي", False, True, False, ""))
         self.load(supplier)
         self.assertEqual((self.vm.detail["hasAccount"], self.vm.detail["isSupplier"]), (True, True))
 
@@ -186,7 +186,7 @@ class ViewModelRoleTests(RoleCase):
 
 class RulesTests(unittest.TestCase):
     def test_role_text_and_validation(self):
-        self.assertEqual((rules.role_text(True, False), rules.role_text(False, True), rules.role_text(True, True)), ("مورد", "وسيط سوق", "مورد • وسيط سوق"))
+        self.assertEqual((rules.role_text(True, False), rules.role_text(False, True), rules.role_text(True, True)), ("مورد", "مسوقجي", "مورد • مسوقجي"))
         self.assertEqual(rules.validate_roles(1, 0), (True, False))
         with self.assertRaises(SupplierRuleError):
             rules.validate_roles(False, False)

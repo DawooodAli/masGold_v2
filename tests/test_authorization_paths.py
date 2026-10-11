@@ -98,6 +98,8 @@ class CallSiteAuditTests(unittest.TestCase):
     READ_SITES = {("services/financial_account_service.py", "_read"),              # Cash: any view permission
                   ("services/supplier_payment_service.py", "payment_context"),      # SUPPLIER_MAKING_PAY (payment dialog)
                   ("services/supplier_payment_service.py", "payment_detail"),       # SUPPLIER_VIEW (payment document)
+                 ("services/supplier_gold_settlement_service.py", "settlement_context"),   # SUPPLIER_GOLD_SETTLE (settlement dialog)
+                 ("services/supplier_gold_settlement_service.py", "settlement_detail"),    # SUPPLIER_GOLD_SETTLE (settlement document)
                   ("services/market_trip_service.py", "context"),                  # MARKET_TRIP_MANAGE (entry dialog data)
                   ("services/market_trip_service.py", "trips"),                    # MARKET_TRIP_MANAGE (trip list)
                   ("services/market_trip_service.py", "trip_detail"),              # MARKET_TRIP_MANAGE (custody and history)

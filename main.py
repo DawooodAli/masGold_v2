@@ -334,6 +334,14 @@ class ApplicationController(QObject):
                 for target, slot in ((balances, "refresh"), (reviews, "reloadAccounts"), (accounts, "refresh")):
                     if hasattr(target, slot):
                         money_changed.connect(getattr(target, slot))
+            # A supplier gold settlement / its reversal moved REAL Scrap (no cash): the Scrap consumers reload from the database at once.
+            for scrap_changed in (getattr(suppliers, "settlementPosted", None), getattr(suppliers, "settlementReversed", None)):
+                if scrap_changed is None:
+                    continue
+                for target, slot in ((balances, "refresh"), (invoice_vm, "refreshReference"),
+                                     (self.operational_viewmodels.get("oldGoldConversionVM"), "refreshBalances")):
+                    if target is not None and hasattr(target, slot):
+                        scrap_changed.connect(getattr(target, slot))
             if hasattr(purchases, "stockChanged"):
                 # A supplier-intake piece is a real new inventory item (+ barcode): stock views reload.
                 inventory_vm = self.operational_viewmodels.get("inventoryVM")

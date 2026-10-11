@@ -45,6 +45,8 @@ Item {
         }
         function onPaymentPosted(code) { payDialog.close() }
         function onReversalDone(code) { reverseDialog.close() }
+        function onSettlementPosted(code) { goldSettleDialog.close() }
+        function onSettlementReversed(code) { reverseSettlementDialog.close() }
     }
     Connections {
         target: page.pvm
@@ -420,7 +422,7 @@ Item {
                         objectName: "supplierRoleFilter"
                         Layout.fillWidth: true
                         readonly property var choices: [{ role: "", text: "كل الأطراف" }, { role: "SUPPLIER", text: "الموردون" },
-                                                        { role: "INTERMEDIARY", text: "وسطاء السوق" }]
+                                                        { role: "INTERMEDIARY", text: "المسوقجية" }]
                         model: choices
                         textRole: "text"
                         onActivated: function (i) { if (page.vm) page.vm.setRoleFilter(choices[i].role) }
@@ -582,10 +584,10 @@ Item {
                         objectName: "intermediaryOnlyNote"
                         Layout.fillWidth: true
                         visible: page.detail.hasAccount === false
-                        title: "وسيط سوق"
+                        title: "مسوقجي"
                         accent: theme.gold
                         Txt { Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textSecondary
-                              text: "هذا الطرف وسيط سوق فقط: لا يوجد له حساب مورد (ذهب أو مصنعيات) ولا فواتير شراء. ستظهر هنا لاحقًا أرصدة الذهب والنقدية التي تخص المحل لدى الوسيط." }
+                              text: "هذا الطرف مسوقجي فقط: لا يوجد له حساب مورد (ذهب أو مصنعيات) ولا فواتير شراء. ستظهر هنا لاحقًا أرصدة الذهب والنقدية التي تخص المحل لدى المسوقجي." }
                     }
 
                     // The two independent positions: gold (physical grams of the supplier's karat) and making (EGP). Equal cards, equal height.
@@ -609,6 +611,15 @@ Item {
                             Txt { objectName: "goldNote"; Layout.fillWidth: true; visible: !!page.detail.goldNote
                                   text: page.detail.goldNote || ""; color: theme.amber; font.pixelSize: theme.fontTableHeader
                                   wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Btn {
+                                objectName: "settleGoldButton"
+                                Layout.alignment: Qt.AlignRight
+                                visible: !!page.vm && page.vm.canSettleGold && page.detail.isSupplier !== false
+                                enabled: page.hasSelection && !page.vm.busy && page.detail.karatResolved === true      // an inactive supplier can still receive it
+                                text: "تسوية ذهب"
+                                primary: true
+                                onClicked: goldSettleDialog.openFor()
+                            }
                         }
                         Card {
                             Layout.preferredWidth: 1
@@ -809,6 +820,10 @@ Item {
                                                 spacing: 2
                                                 Txt { Layout.fillWidth: true; text: modelData.side + " " + modelData.weight + " جرام عيار " + modelData.karat
                                                       color: page.toneColor(modelData.tone); wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                                Txt { objectName: "settlementDetail"; Layout.fillWidth: true; visible: modelData.detail !== ""; text: modelData.detail
+                                                      color: theme.textSecondary; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                                Txt { objectName: "settlementState"; Layout.fillWidth: true; visible: modelData.state !== ""; text: modelData.state
+                                                      color: theme.amber; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                                                 Txt { Layout.fillWidth: true; visible: page.compactInvoices
                                                       text: "الرصيد: " + modelData.balance; color: theme.textSecondary
                                                       font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
@@ -816,6 +831,13 @@ Item {
                                             Txt { Layout.fillWidth: true; visible: !page.compactInvoices
                                                   text: "الرصيد: " + modelData.balance; color: theme.textSecondary
                                                   font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                            Btn {
+                                                objectName: "reverseSettlementButton"
+                                                visible: !!page.vm && page.vm.canReverseSettlement && modelData.canReverse === true
+                                                text: "عكس"
+                                                accent: theme.red
+                                                onClicked: reverseSettlementDialog.openFor(modelData)
+                                            }
                                         }
                                     }
                                     Txt { anchors.centerIn: parent; visible: goldList.count === 0; text: "لا توجد حركات ذهب"
@@ -946,14 +968,14 @@ Item {
                 CheckBox { id: roleSupplier; objectName: "supplierRoleSupplier"; text: "مورد"; checked: true; font.family: "Cairo"
                            contentItem: Label { text: parent.text; font: parent.font; color: theme.textSecondary
                                                 leftPadding: parent.indicator.width + 6; horizontalAlignment: Text.AlignRight } }
-                CheckBox { id: roleIntermediary; objectName: "supplierRoleIntermediary"; text: "وسيط سوق"; font.family: "Cairo"
+                CheckBox { id: roleIntermediary; objectName: "supplierRoleIntermediary"; text: "مسوقجي"; font.family: "Cairo"
                            contentItem: Label { text: parent.text; font: parent.font; color: theme.textSecondary
                                                 leftPadding: parent.indicator.width + 6; horizontalAlignment: Text.AlignRight } }
                 Item { Layout.fillWidth: true }
             }
             Txt { objectName: "roleRequiredHint"; Layout.fillWidth: true; visible: !roleSupplier.checked && !roleIntermediary.checked
                   color: theme.amber; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                  text: "اختر دورًا واحدًا على الأقل: مورد أو وسيط سوق." }
+                  text: "اختر دورًا واحدًا على الأقل: مورد أو مسوقجي." }
             // Each supplier is dedicated to ONE karat; its invoices inherit it. Locked once an invoice exists. A market intermediary has none.
             Txt { Layout.fillWidth: true; visible: roleSupplier.checked; text: "العيار *" }
             Combo { id: supplierKaratCombo; objectName: "supplierKaratCombo"; Layout.fillWidth: true; visible: roleSupplier.checked
@@ -1247,6 +1269,189 @@ Item {
                 }
                 Btn { text: "إلغاء"; accent: theme.textSecondary; enabled: !!page.vm && !page.vm.reversing
                       onClicked: reverseDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- gold settlement from shop Scrap (تسوية ذهب)
+    // The delivered gold leaves the counted Scrap once; the supplier is credited in grams of ITS karat. Everything shown here is computed by the
+    // service rules through the view model (no arithmetic in QML); the service recomputes and re-checks the available Scrap when it posts.
+    Popup {
+        id: goldSettleDialog
+        objectName: "goldSettleDialog"
+        property string requestKey: ""
+        readonly property var karatOptions: [{ karatId: "", text: "اختر عيار الذهب المُسلَّم" }].concat(page.vm && page.vm.settlementContext.scrap
+                                                                                                  ? page.vm.settlementContext.scrap : [])
+        readonly property string karatId: karatOptions[goldSettleKarat.currentIndex] ? karatOptions[goldSettleKarat.currentIndex].karatId : ""
+        readonly property var preview: {
+            var context = page.vm ? page.vm.settlementContext : ({})                // read, so the preview follows the loaded Scrap
+            return page.vm && context.supplierId !== undefined ? page.vm.previewSettlement(karatId, goldSettleWeight.text) : ({})
+        }
+        function openFor() {
+            if (!page.vm || !page.hasSelection) return
+            requestKey = page.vm.newRequestKey()
+            goldSettleKarat.currentIndex = 0
+            goldSettleWeight.text = ""
+            goldSettleDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            goldSettleReference.text = ""
+            goldSettleNotes.text = ""
+            page.vm.clearMessage()
+            page.vm.loadSettlementContext(page.detail.id)
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(560, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 620, 620)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection
+                  text: "تسوية ذهب للمورد " + (page.vm && page.vm.settlementContext.supplierName ? page.vm.settlementContext.supplierName : "") }
+            Txt { objectName: "goldSettleRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                  wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "يُخصم الذهب المُسلَّم فعليًا من كسر المحل المتاح مرة واحدة، ويُحتسب للمورد بعياره: الوزن × عيار المُسلَّم ÷ عيار المورد. لا نقدية ولا مصنعيات ولا بيع أو شراء." }
+            Flickable {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentHeight: goldSettleForm.implicitHeight
+                clip: true
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: goldSettleForm
+                    width: parent.width - 12
+                    spacing: 6
+                    Txt { objectName: "goldSettleSupplierKarat"; Layout.fillWidth: true; color: theme.amber; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                          text: "عيار حساب المورد: " + (page.vm && page.vm.settlementContext.karatText ? page.vm.settlementContext.karatText : "—") }
+                    Txt { Layout.fillWidth: true; text: "عيار الذهب المُسلَّم *" }
+                    Combo { id: goldSettleKarat; objectName: "goldSettleKarat"; Layout.fillWidth: true; model: goldSettleDialog.karatOptions; textRole: "text" }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "الوزن المُسلَّم الفعلي (جرام) *" }
+                            Field { id: goldSettleWeight; objectName: "goldSettleWeight"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+                        }
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
+                            Field { id: goldSettleDate; objectName: "goldSettleDate"; Layout.fillWidth: true }
+                        }
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: previewColumn.implicitHeight + 14
+                        radius: theme.radiusSmall
+                        color: theme.bgTertiary
+                        border.color: goldSettleDialog.preview.short ? theme.red : theme.border
+                        ColumnLayout {
+                            id: previewColumn
+                            anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                            anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.topMargin: 7
+                            spacing: 3
+                            Txt { objectName: "goldSettleAvailable"; Layout.fillWidth: true; visible: !!goldSettleDialog.preview.availableText
+                                  text: "المتاح في كسر المحل: " + goldSettleDialog.preview.availableText; color: theme.textSecondary
+                                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "goldSettleDelivered"; Layout.fillWidth: true; visible: !!goldSettleDialog.preview.deliveredText
+                                  text: "المُسلَّم: " + goldSettleDialog.preview.deliveredText; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "goldSettleFormula"; Layout.fillWidth: true; visible: !!goldSettleDialog.preview.formulaText
+                                  text: "الحساب: " + goldSettleDialog.preview.formulaText; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "goldSettleCredited"; Layout.fillWidth: true; visible: !!goldSettleDialog.preview.creditedText
+                                  text: "يُحتسب للمورد: " + goldSettleDialog.preview.creditedText; color: theme.gold; font.bold: true
+                                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "goldSettleAnalytical"; Layout.fillWidth: true; visible: !!goldSettleDialog.preview.analyticalText
+                                  text: "القيمة التحليلية: " + goldSettleDialog.preview.analyticalText + " • فرق التقريب: " + goldSettleDialog.preview.differenceText
+                                  color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "goldSettleShort"; Layout.fillWidth: true; visible: goldSettleDialog.preview.short === true
+                                  text: "الوزن أكبر من المتاح في كسر المحل."; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "goldSettlePreviewError"; Layout.fillWidth: true; visible: !!goldSettleDialog.preview.error
+                                  text: goldSettleDialog.preview.error || ""; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Item { Layout.preferredHeight: 2 }
+                        }
+                    }
+                    Txt { Layout.fillWidth: true; text: "المرجع (اختياري)" }
+                    Field { id: goldSettleReference; objectName: "goldSettleReference"; Layout.fillWidth: true }
+                    Txt { Layout.fillWidth: true; text: "ملاحظات" }
+                    Field { id: goldSettleNotes; objectName: "goldSettleNotes"; Layout.fillWidth: true }
+                }
+            }
+            Txt { objectName: "goldSettleError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmGoldSettleButton"
+                    text: !!page.vm && page.vm.settling ? "جارٍ الحفظ…" : "تسجيل التسوية"
+                    primary: true
+                    enabled: goldSettleDialog.karatId !== "" && goldSettleWeight.text.trim().length > 0 && goldSettleDate.text.trim().length > 0
+                             && !!page.vm && !page.vm.settling && goldSettleDialog.preview.short !== true && !goldSettleDialog.preview.error
+                    onClicked: page.vm.postSettlement(page.detail.id, goldSettleDialog.karatId, goldSettleWeight.text, goldSettleDate.text,
+                                                      goldSettleReference.text, goldSettleNotes.text, goldSettleDialog.requestKey)
+                }
+                Btn { objectName: "cancelGoldSettleButton"; text: "إلغاء"; accent: theme.textSecondary
+                      enabled: !!page.vm && !page.vm.settling; onClicked: goldSettleDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- reverse a gold settlement (OWNER only)
+    Popup {
+        id: reverseSettlementDialog
+        objectName: "reverseSettlementDialog"
+        property string settlementId: ""
+        property string code: ""
+        property string detailText: ""
+        function openFor(row) {
+            settlementId = row.settlementId
+            code = row.reference
+            detailText = row.detail
+            reverseSettlementReason.text = ""
+            if (page.vm) page.vm.clearMessage()
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(500, page.width - 24)
+        modal: true
+        padding: 16
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.red }
+        contentItem: ColumnLayout {
+            spacing: 8
+            Txt { Layout.fillWidth: true; text: "عكس تسوية ذهب " + page.ltr(reverseSettlementDialog.code); color: theme.red
+                  font.bold: true; font.pixelSize: theme.fontSection }
+            Txt { Layout.fillWidth: true; text: reverseSettlementDialog.detailText; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            Txt { objectName: "reverseSettlementNote"; Layout.fillWidth: true; color: theme.amber; font.pixelSize: theme.fontTableHeader
+                  wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "يُسجَّل أن الذهب المُسلَّم استُرد فعليًا: يعود إلى كسر المحل بنفس الوزن والعيار المُسلَّمين، ويعود رصيد المورد كما كان قبل التسوية بنفس الكمية المحتسبة المخزَّنة. تبقى التسوية الأصلية في السجل ولا تُعدّل." }
+            Txt { Layout.fillWidth: true; text: "سبب العكس *" }
+            Field { id: reverseSettlementReason; objectName: "reverseSettlementReason"; Layout.fillWidth: true }
+            Txt { objectName: "reverseSettlementError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmReverseSettlementButton"
+                    text: !!page.vm && page.vm.settlementReversing ? "جارٍ العكس…" : "عكس التسوية"
+                    accent: theme.red
+                    primary: true
+                    enabled: reverseSettlementReason.text.trim().length > 0 && !!page.vm && !page.vm.settlementReversing
+                    onClicked: page.vm.reverseSettlement(reverseSettlementDialog.settlementId, reverseSettlementReason.text)
+                }
+                Btn { text: "إلغاء"; accent: theme.textSecondary; enabled: !!page.vm && !page.vm.settlementReversing
+                      onClicked: reverseSettlementDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }

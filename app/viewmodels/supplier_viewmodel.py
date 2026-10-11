@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
-from app.formatting import date_text, datetime_text, grams, money
+from app.formatting import date_text, datetime_text, grams, money, number
 from services import supplier_rules as rules
 
 SHOP_OWES_TEXT, SUPPLIER_OWES_TEXT, SETTLED_TEXT = "علينا للمورد", "لنا عند المورد", "الحساب متوازن"
@@ -97,11 +97,14 @@ class SupplierViewModel(QObject):
     selectionChanged = Signal(str)       # the selected supplier id: whoever selects (click, save), dependents follow
     paymentPosted = Signal(str)          # a making payment was posted (its code): the payment dialog can close
     reversalDone = Signal(str)           # a making payment was reversed (the RV code): the reversal dialog can close
+    settlementPosted = Signal(str)       # a gold settlement was posted (its SG code): the dialog can close and the Scrap views reload
+    settlementReversed = Signal(str)     # a gold settlement was reversed (the RV code): the dialog can close and the Scrap views reload
 
     def __init__(self, session, service=None, parent=None, payments=None):
         super().__init__(parent)
         self._session, self._service, self._payments = session, service, payments
         self._pay_context = {}
+        self._settlements, self._set_context = None, {}
         self._workers, self._request, self._latest, self._busy = set(), 0, {}, set()
         self._shutdown = False
         self._suppliers, self._detail = [], {}
@@ -121,6 +124,12 @@ class SupplierViewModel(QObject):
             from services.supplier_payment_service import SupplierPaymentService
             self._payments = SupplierPaymentService(self._session)
         return self._payments
+
+    def _settlement_service(self):
+        if self._settlements is None:
+            from services.supplier_gold_settlement_service import SupplierGoldSettlementService
+            self._settlements = SupplierGoldSettlementService(self._session)
+        return self._settlements
 
     def _start(self, operation, call):
         from app.workers.invoice_worker import InvoiceWorker
@@ -348,7 +357,118 @@ class SupplierViewModel(QObject):
         self.refresh()
         self.reversalDone.emit(result["code"])
 
+    # ------------------------------------------------------------ gold settlement (تسوية ذهب) and its reversal (045)
+    @Slot(str)
+    def loadSettlementContext(self, supplier_id):
+        """The recipient and the SHOP Scrap available per karat for the settlement dialog."""
+        self._set_context = {}
+        self._error = self._message = ""
+        service = self._settlement_service()
+        self._start("setctx", lambda _expected_actor: service.settlement_context(supplier_id, _expected_actor=_expected_actor))
+
+    def _on_setctx(self, result, error):
+        if error:
+            self._error = error
+            return
+        self._set_context = result
+
+    @Slot(str, str, result="QVariantMap")
+    def previewSettlement(self, karat_id, weight):
+        """What the settlement would credit, before submitting: the figures come from supplier_rules (the same function the service uses), never
+        from QML arithmetic. The service recomputes and re-checks the available Scrap when it posts."""
+        context = self._set_context
+        empty = {"valid": False, "error": "", "deliveredText": "", "creditedText": "", "analyticalText": "", "differenceText": "",
+                 "formulaText": "", "availableText": "", "short": False}
+        if not context or not str(weight or "").strip() or not str(karat_id or "").strip():
+            return empty
+        supplier = context["supplier"]
+        if supplier["karat_value"] is None:
+            return {**empty, "error": "عيار هذا المورد غير محدد: حدّده من تعديل المورد أولًا."}
+        try:
+            grams_in = rules.parse_delivered_weight(weight)
+            row = next(k for k in context["scrap"] if str(k["karat_id"]) == str(karat_id))
+            credited, analytical, difference = rules.settlement_credit(grams_in, row["karat_value"], supplier["karat_value"])
+        except StopIteration:
+            return {**empty, "error": "اختر عيار الذهب المُسلَّم."}
+        except rules.SupplierRuleError as exc:
+            return {**empty, "error": str(exc)}
+        short = grams_in > row["available"]
+        return {"valid": not short, "error": "", "short": short,
+                "deliveredText": f"{grams(grams_in)} جرام عيار {row['karat_value']}",
+                "creditedText": f"{grams(credited)} جرام عيار {supplier['karat_value']}",
+                "analyticalText": number(analytical, 6), "differenceText": number(difference, 6, signed=True),
+                "formulaText": f"{grams(grams_in)} × {row['karat_value']} ÷ {supplier['karat_value']}",
+                "availableText": f"{grams(row['available'])} جرام عيار {row['karat_value']}"}
+
+    @Slot(str, str, str, str, str, str, str)
+    def postSettlement(self, supplier_id, karat_id, weight, settlement_date, reference, notes, request_key):
+        if "settle" in self._busy:
+            return                                                     # a double click never submits twice
+        self._message = self._error = ""
+        service = self._settlement_service()
+        self._start("settle", lambda _expected_actor: service.settle(
+            supplier_id, karat_id, weight, settlement_date, reference, notes, request_key, _expected_actor=_expected_actor))
+        self.changed.emit()
+
+    def _on_settle(self, result, error):
+        if error:
+            self._error = error                                        # the dialog stays open with every field kept
+            return
+        self._message = (f"تسوية الذهب {result['code']} مسجلة من قبل (لم تُسجل مرة ثانية)." if result.get("duplicate")
+                         else f"تم تسجيل تسوية الذهب {result['code']}: سُلِّم {grams(Decimal(result['delivered_weight']))} جرام عيار "
+                              f"{result['delivered_karat']} واحتُسب للمورد {grams(Decimal(result['credited_weight']))} جرام عيار {result['target_karat']}.")
+        self.refresh()
+        self.settlementPosted.emit(result["code"])
+
+    @Slot(str, str)
+    def reverseSettlement(self, settlement_id, reason):
+        if "setrev" in self._busy:
+            return
+        self._message = self._error = ""
+        service = self._settlement_service()
+        self._start("setrev", lambda _expected_actor: service.reverse(settlement_id, reason, _expected_actor=_expected_actor))
+        self.changed.emit()
+
+    def _on_setrev(self, result, error):
+        if error:
+            self._error = error
+            return
+        self._message = f"تم عكس تسوية الذهب {result['source_reference']} ({result['code']}): عاد الذهب المُسلَّم فعليًا إلى كسر المحل وعاد رصيد المورد."
+        self.refresh()
+        self.settlementReversed.emit(result["code"])
+
     # ------------------------------------------------------------ properties
+    @Property(bool, notify=changed)
+    def canSettleGold(self):
+        actor = self._session.current_actor()
+        return bool(actor and "SUPPLIER_GOLD_SETTLE" in actor.permissions)
+
+    @Property(bool, notify=changed)
+    def canReverseSettlement(self):
+        actor = self._session.current_actor()
+        return bool(actor and "SUPPLIER_GOLD_SETTLE_REVERSE" in actor.permissions)
+
+    @Property(bool, notify=changed)
+    def settling(self):
+        return "settle" in self._busy
+
+    @Property(bool, notify=changed)
+    def settlementReversing(self):
+        return "setrev" in self._busy
+
+    @Property("QVariantMap", notify=changed)
+    def settlementContext(self):
+        """The settlement dialog's data (empty while it loads): recipient, its karat and the available Scrap per karat."""
+        context = self._set_context
+        if not context:
+            return {}
+        supplier = context["supplier"]
+        return {"supplierId": supplier["id"], "supplierName": supplier["name"], "supplierCode": supplier["code"], "supplierActive": supplier["is_active"],
+                "isSupplier": supplier["is_supplier"], "karatResolved": supplier["karat_value"] is not None,
+                "karatText": f"عيار {supplier['karat_value']}" if supplier["karat_value"] else "العيار غير محدد",
+                "scrap": [{"karatId": str(k["karat_id"]), "text": f"عيار {k['karat_value']} — المتاح {grams(k['available'])} جرام"
+                           + (f" • محجوز لمراجعة المدير {grams(k['held'])}" if k["held"] > 0 else "")} for k in context["scrap"]]}
+
     @Property(bool, notify=changed)
     def canPayMaking(self):
         actor = self._session.current_actor()
@@ -468,6 +588,13 @@ class SupplierViewModel(QObject):
                 "balance": gold_position_text(rules.direction(r["weight_balance_after"].quantize(rules.WEIGHT_STEP)),
                                               r["weight_balance_after"].quantize(rules.WEIGHT_STEP), r["karat_value"]),
                 "reference": r["reference"], "sourceId": r["source_id"], "actor": r["actor"],
-                "tone": TONES[rules.direction(r["weight_delta"])]} for r in self._detail["gold_ledger"]],
+                "tone": TONES[rules.direction(r["weight_delta"])],
+                # a gold settlement shows what was delivered beside what was credited; a reversal row names the settlement it restores
+                "detail": (f"سُلِّم {grams(r['delivered_weight'])} جرام عيار {r['delivered_karat']} ← احتُسب {grams(abs(r['weight_delta']))} جرام عيار {r['karat_value']}"
+                           if r.get("settlement_id") else ""),
+                "state": (f"معكوسة بالعملية {r['reversed_by']}" if r.get("reversed_by")
+                          else f"عكس التسوية {r['reverses_reference']}" if r.get("reverses_reference") else ""),
+                "settlementId": r.get("settlement_id") or "", "reversed": bool(r.get("reversed_by")),
+                "canReverse": bool(r.get("settlement_id")) and not r.get("reversed_by")} for r in self._detail["gold_ledger"]],
             "makingLedger": [making_row(r) for r in self._detail["making_ledger"]],
         }

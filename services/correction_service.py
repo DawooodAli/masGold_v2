@@ -55,9 +55,11 @@ SMP = "SUPPLIER_MAKING_PAYMENT"       # supplier making payment (036): full reve
 SMP_REVERSE_PERMISSION = "SUPPLIER_MAKING_PAY_REVERSE"
 MTE = "MARKET_TRIP_ENTRY"             # market-trip custody issue / return (037): full reversal only, OWNER only
 MTE_PERMISSION = "MARKET_TRIP_MANAGE"
-SOURCE_RIGHTS = {SMP: SMP_REVERSE_PERMISSION, MTE: MTE_PERMISSION}   # a right ON TOP of TRANSACTION_CORRECT
-SOURCES = ("INVOICE", "EXCHANGE", "RETURN", CS, FO, CD, SMP, MTE)
-STANDALONE = (CS, FO, CD, SMP, MTE)    # sources without an invoice (never a fabricated one)
+SGS = "SUPPLIER_GOLD_SETTLEMENT"      # direct supplier gold settlement from shop Scrap (045): full reversal only, OWNER only
+SGS_REVERSE_PERMISSION = "SUPPLIER_GOLD_SETTLE_REVERSE"
+SOURCE_RIGHTS = {SMP: SMP_REVERSE_PERMISSION, MTE: MTE_PERMISSION, SGS: SGS_REVERSE_PERMISSION}   # a right ON TOP of TRANSACTION_CORRECT
+SOURCES = ("INVOICE", "EXCHANGE", "RETURN", CS, FO, CD, SMP, MTE, SGS)
+STANDALONE = (CS, FO, CD, SMP, MTE, SGS)    # sources without an invoice (never a fabricated one)
 MONEY = Decimal("0.01")
 ZERO, ZERO_GRAMS = Decimal("0.00"), Decimal("0.000")
 METHOD_TEXT = {"PHYSICAL_CASH": "نقدي", "MOBILE_WALLET": "محفظة", "INSTAPAY": "InstaPay", "BANK_TRANSFER": "تحويل بنكي"}
@@ -69,6 +71,7 @@ SOURCE_TEXT[FO] = "العملية المالية"
 SOURCE_TEXT[CD] = "العربون"
 SOURCE_TEXT[SMP] = "دفعة المصنعيات"
 SOURCE_TEXT[MTE] = "حركة عهدة السوق"
+SOURCE_TEXT[SGS] = "تسوية ذهب المورد"
 
 
 def correction_source_text(source_type, direction=None, *, definite=True):
@@ -118,6 +121,7 @@ class _Plan:
     lot_returns: list = field(default_factory=list)      # (lot id, grams) a LOT_RETURN reversal takes back out of the shop lot stock
     lot_issues: list = field(default_factory=list)       # (lot id, grams) a LOT_ISSUE reversal puts back into the shop lot stock
     extra_permission: str = ""                           # a right required ON TOP of the source's own (a custody supplier payment)
+    supplier_gold: list = field(default_factory=list)    # (supplier id, karat id, signed grams, signed Eq21, movement code) a gold settlement reversal restores
 
 
 def _reason(text):
@@ -244,6 +248,21 @@ class CorrectionService:
             context = {"invoice_id": None, "invoice_number": reference, "customer_name_snapshot": None, "customer_id": None,
                        "finalized_at": source["occurred_at"], "net_amount": None if leg is None else leg["amount"],
                        "trip_id": str(source["trip_id"]), "source_direction": source["entry_kind"]}
+            return context, source, reference
+        if source_type == SGS:
+            from repositories.supplier_gold_settlement_repository import SupplierGoldSettlementRepository, settlement_code
+            repo = SupplierGoldSettlementRepository(connection)
+            source = repo.source(source_id)
+            if source is None:
+                raise CorrectionError("SOURCE_NOT_FOUND", "تسوية ذهب المورد غير موجودة.")
+            if lock:                                            # the settlement's own lock order: supplier -> Scrap karat
+                repo.get_supplier(source["supplier_id"], lock=True)
+                corrections.lock_old_gold_balance(source["delivered_karat_id"])
+                source = repo.source(source_id, lock=True)
+            reference = settlement_code(source_id)
+            context = {"invoice_id": None, "invoice_number": reference, "customer_name_snapshot": None, "customer_id": None,
+                       "finalized_at": source["occurred_at"], "net_amount": source["credited_weight_grams"],
+                       "supplier_id": str(source["supplier_id"]), "supplier_name": source.get("supplier_name")}
             return context, source, reference
         if source_type == SMP:
             from repositories.financial_account_repository import FinancialAccountRepository
@@ -415,6 +434,18 @@ class CorrectionService:
                     plan.blockers.append(("DEPENDENT_LOT_USE_EXISTS",
                                           "لا يمكن عكس السبك لأن شحنة ناتجة عنه استُخدمت في الحركة "
                                           f"{entry_code(dependent['trip_id'], dependent['entry_no'])} — اعكسها أولاً."))
+        if source_type == SGS:
+            # The STORED movements are what is undone (never a recomputed amount): the delivered grams return to Scrap and the credit is restored.
+            from repositories.supplier_gold_settlement_repository import GOLD_REVERSAL, SCRAP_REVERSAL_IN, SupplierGoldSettlementRepository
+            settlements = SupplierGoldSettlementRepository(connection)
+            scrap_leg, gold_leg = settlements.scrap_movement(source_id), settlements.gold_movement(source_id)
+            if scrap_leg is None or gold_leg is None:
+                plan.blockers.append(("SETTLEMENT_MOVEMENT_MISSING", "حركات التسوية الأصلية غير موجودة."))
+            else:
+                plan.old_gold.append((int(scrap_leg["karat_id"]), int(source["delivered_karat_value"]),
+                                      -Decimal(str(scrap_leg["weight_delta_grams"])), SCRAP_REVERSAL_IN))
+                plan.supplier_gold.append((int(gold_leg["supplier_id"]), int(gold_leg["karat_id"]), -Decimal(str(gold_leg["weight_delta_grams"])),
+                                           -Decimal(str(gold_leg["equivalent_21_delta_grams"])), GOLD_REVERSAL))
         if source_type == SMP and source["payment_method"] == "CUSTODY":
             # Paid with market-custody cash: the custody entry is the only reversal path (it also restores the custody cash).
             from repositories.market_trip_repository import MarketTripRepository, entry_code
@@ -607,6 +638,7 @@ class CorrectionService:
             "money": [{"account": ledger_name(k), "ledger": k[0], "delta": str(v)} for k, v in sorted(plan.money.items())],
             "account": [{"customer_id": k, "delta": str(v)} for k, v in plan.account.items()],
             "making": [{"supplier_id": s, "delta": str(d)} for s, d, _ in plan.making],
+            "supplier_gold": [{"supplier_id": s, "karat_id": k, "delta": str(d)} for s, k, d, _, _ in plan.supplier_gold],
             "inventory": [{"inventory_item_id": i, "from": f, "to": t} for i, f, t, _ in plan.inventory],
             "old_gold": [{"karat": k, "grams": str(g)} for _, k, g, _ in plan.old_gold]
                         + [{"karat": k, "grams": str(-g)} for _, _, k, g, _, _ in plan.holds],
@@ -740,6 +772,16 @@ class CorrectionService:
                     supplier_ledger.insert_making_movement(
                         supplier_id=supplier_id, type_id=type_id, amount_delta=delta, source_type=CORRECTION_REFERENCE,
                         source_id=correction_id, reference=code, description=text, now=now, user_id=actor.user_id)
+            if plan.supplier_gold:
+                from repositories.supplier_gold_settlement_repository import CORRECTION_REFERENCE as GOLD_CORRECTION, SupplierGoldSettlementRepository
+                gold_ledger = SupplierGoldSettlementRepository(connection)
+                for supplier_id, karat_id, delta, eq21, movement_code in plan.supplier_gold:
+                    type_id = gold_ledger.gold_type_id(movement_code)
+                    if type_id is None:
+                        raise RuntimeError(f"supplier gold movement type {movement_code} is missing (migration 045)")
+                    gold_ledger.insert_gold_movement(supplier_id=supplier_id, type_id=type_id, karat_id=karat_id, weight_delta=delta,
+                                                     eq21_delta=eq21, source_type=GOLD_CORRECTION, source_id=correction_id, reference=code,
+                                                     description=text, now=now, user_id=actor.user_id)
             for customer_id, delta in plan.account.items():
                 transaction_id = customers.add_transaction(
                     customer_id=int(customer_id), type_code="REVERSAL_ACCOUNT", amount_delta=delta,
@@ -816,7 +858,7 @@ class CorrectionService:
     def _settlement_state(self, connection, source_type, source_id, lock):
         """The current EFFECTIVE settlement of a source: direction, legs, account part, total, chain."""
         corrections = self._corrections(connection)
-        if source_type in (FO, CD, SMP, MTE):
+        if source_type in (FO, CD, SMP, MTE, SGS):
             raise CorrectionError("SETTLEMENT_NOT_SUPPORTED",
                                   "هذه العملية تُصحح بالعكس الكامل ثم إعادة إدخالها صحيحة.")
         invoice, source, reference = self._load(connection, source_type, source_id, lock)

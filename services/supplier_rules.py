@@ -8,7 +8,7 @@ Gold (physical grams of the supplier's one dedicated karat; no Eq21 conversion i
 are independent dimensions and are never combined into one amount. The supplier invoice weight is the contractual gold truth; shop-scale
 barcoded weight is only compared with it (variance), never substituted for it.
 """
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
 
 from services.number_text import normalize_digits
 
@@ -67,6 +67,37 @@ def parse_weight(value, label="الوزن"):
     if weight <= 0:
         raise SupplierRuleError("WEIGHT_INVALID", f"{label} يجب أن يكون أكبر من صفر.")
     return weight
+
+
+def parse_delivered_weight(value, label="الوزن المُسلَّم"):
+    """The ACTUAL physical grams delivered: exact Decimal, strictly positive, at most three decimals. Unlike parse_weight it never rounds the
+    figure the employee typed: a physical fact is refused when it cannot be stored as entered."""
+    weight = _number(value, label, "WEIGHT_INVALID")
+    if weight <= 0:
+        raise SupplierRuleError("WEIGHT_INVALID", f"{label} يجب أن يكون أكبر من صفر.")
+    if weight != weight.quantize(WEIGHT_STEP):
+        raise SupplierRuleError("WEIGHT_INVALID", f"{label}: ثلاث خانات عشرية على الأكثر.")
+    return weight.quantize(WEIGHT_STEP)
+
+
+ANALYTICAL_STEP = Decimal("0.000001")
+
+
+def settlement_credit(weight, delivered_karat_value, target_karat_value):
+    """The supplier gold credit of a settlement: delivered grams x delivered karat / supplier karat.
+
+    The POSTED credit comes straight from the high-precision value (Decimal, precision 50), quantized ONCE to 0.001 g ROUND_HALF_UP: it is never
+    derived from the six-decimal analytical figure. The analytical value is quantized once to six decimals from the same high-precision value
+    (it is NOT exact: a ratio such as 21/18 has no finite decimal). The rounding difference is computed from the two quantized figures.
+    Returns (posted, analytical, difference); a positive delivery whose credit would post as zero is refused."""
+    with localcontext() as context:
+        context.prec = 50
+        raw = Decimal(weight) * Decimal(str(delivered_karat_value)) / Decimal(str(target_karat_value))
+        posted = raw.quantize(WEIGHT_STEP, rounding=ROUND_HALF_UP)
+        analytical = raw.quantize(ANALYTICAL_STEP, rounding=ROUND_HALF_UP)
+    if posted <= 0:
+        raise SupplierRuleError("CREDIT_ROUNDS_TO_ZERO", "الوزن المُسلَّم صغير بحيث يُحتسب للمورد صفرًا: زِد الوزن.")
+    return posted, analytical, posted - analytical
 
 
 def parse_rate(value, label="المصنعية (ج/جرام)"):
@@ -165,13 +196,22 @@ def check_supplier_karat_change(current_karat_id, wanted_karat_id, history):
                                 f"العيار المختار لا يتوافق مع فواتير المورد السابقة (عيار {values[0]}).")
 
 
+# Supplier gold ledger: the display label of a movement TYPE by its stable code (the stored English type names are history and are never rewritten).
+GOLD_MOVEMENT_TEXT = {"SETTLEMENT": "تسوية ذهب مورد", "SETTLEMENT_REVERSAL": "عكس تسوية ذهب مورد"}
+
+
+def gold_movement_text(code, stored_name):
+    """The Arabic label of a supplier gold movement type when one is defined, else the stored name (unchanged behaviour for the other types)."""
+    return GOLD_MOVEMENT_TEXT.get(code, stored_name)
+
+
 ROLE_SUPPLIER, ROLE_INTERMEDIARY = "SUPPLIER", "INTERMEDIARY"
 ROLE_FILTERS = (None, ROLE_SUPPLIER, ROLE_INTERMEDIARY)      # all / suppliers (alone or with the other role) / intermediaries (idem)
 
 
 def role_text(is_supplier, is_intermediary):
-    """The party's role in words: «مورد» / «وسيط سوق» / both."""
-    parts = (["مورد"] if is_supplier else []) + (["وسيط سوق"] if is_intermediary else [])
+    """The party's role in words: «مورد» / «مسوقجي» / both."""
+    parts = (["مورد"] if is_supplier else []) + (["مسوقجي"] if is_intermediary else [])
     return " • ".join(parts)
 
 
@@ -179,7 +219,7 @@ def validate_roles(is_supplier, is_intermediary):
     """The two role flags as booleans; at least one is required."""
     is_supplier, is_intermediary = bool(is_supplier), bool(is_intermediary)
     if not (is_supplier or is_intermediary):
-        raise SupplierRuleError("ROLE_REQUIRED", "اختر دورًا واحدًا على الأقل: مورد أو وسيط سوق.")
+        raise SupplierRuleError("ROLE_REQUIRED", "اختر دورًا واحدًا على الأقل: مورد أو مسوقجي.")
     return is_supplier, is_intermediary
 
 
@@ -191,7 +231,7 @@ def has_supplier_role(supplier):
 def require_supplier_role(supplier):
     """Supplier invoices, making payments and the gold account belong to a SUPPLIER; an intermediary-only party has none of them."""
     if not has_supplier_role(supplier):
-        raise SupplierRuleError("SUPPLIER_ROLE_REQUIRED", "هذا الطرف وسيط سوق فقط وليس مورِّدًا: لا فواتير شراء ولا دفعات مصنعيات ولا حساب ذهب له.")
+        raise SupplierRuleError("SUPPLIER_ROLE_REQUIRED", "هذا الطرف مسوقجي فقط وليس مورِّدًا: لا فواتير شراء ولا دفعات مصنعيات ولا حساب ذهب له.")
 
 
 def direction(delta):

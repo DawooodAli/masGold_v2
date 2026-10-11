@@ -152,11 +152,18 @@ class SupplierRepository(BaseRepository):
                 SELECT m.id, m.occurred_at, t.code AS movement_code, t.name AS movement_name, m.karat_id,
                        k.karat_value, m.weight_delta_grams, m.source_type, m.source_id,
                        m.source_reference, m.description, u.display_name AS actor_name,
-                       SUM(m.weight_delta_grams) OVER (PARTITION BY m.karat_id ORDER BY m.occurred_at, m.id) AS weight_balance_after
+                       SUM(m.weight_delta_grams) OVER (PARTITION BY m.karat_id ORDER BY m.occurred_at, m.id) AS weight_balance_after,
+                       gs.id AS settlement_id, gs.delivered_weight_grams, gs.delivered_karat_value, gs.target_karat_value,
+                       gc.id AS settlement_reversal_id, grc.source_id AS reversed_settlement_id
                 FROM supplier_gold_movements m
                 JOIN supplier_gold_movement_types t ON t.id = m.movement_type_id
                 JOIN karats k ON k.id = m.karat_id
                 LEFT JOIN users u ON u.id = m.created_by_user_id
+                LEFT JOIN supplier_gold_settlements gs ON t.code = 'SETTLEMENT' AND m.source_type = 'SUPPLIER_GOLD_SETTLEMENT' AND gs.id = m.source_id
+                LEFT JOIN transaction_corrections gc ON gc.source_type = 'SUPPLIER_GOLD_SETTLEMENT' AND gc.source_id = gs.id
+                     AND gc.correction_type = 'FULL_REVERSAL'
+                LEFT JOIN transaction_corrections grc ON t.code = 'SETTLEMENT_REVERSAL' AND m.source_type = 'TRANSACTION_CORRECTION'
+                     AND grc.id = m.source_id
                 WHERE m.supplier_id = %s
             ) x ORDER BY x.occurred_at DESC, x.id DESC LIMIT %s
             """, (_id(supplier_id), int(limit)))

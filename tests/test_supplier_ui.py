@@ -588,7 +588,7 @@ class SupplierPageTests(harness.InvoicePageTests):
 
     def gold_card_texts(self):
         body = self.item("goldPosition").parentItem()
-        return [str(c.property("text")) for c in body.childItems() if c.property("text")]
+        return [str(c.property("text")) for c in body.childItems() if c.property("text") and c.objectName() != "settleGoldButton"]   # the balance lines, not the action button
 
     def test_the_gold_card_states_the_balance_once_in_grams_of_the_suppliers_karat(self):
         self.seed_supplier("A-supplier", [(1, "100.5"), (1, "50")])               # a 21K supplier

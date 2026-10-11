@@ -13,6 +13,7 @@ from decimal import Decimal
 from mysql.connector import IntegrityError
 
 from repositories.market_trip_repository import entry_code as _custody_code
+from repositories.supplier_gold_settlement_repository import settlement_code as _settlement_code
 from repositories.supplier_payment_repository import payment_code as _payment_code
 from repositories.supplier_repository import SupplierRepository
 from services import supplier_rules as rules
@@ -147,12 +148,20 @@ class SupplierService:
                              "karat_locked": bool(history),                       # an invoice exists: the karat can no longer change
                              "history_karats": [h["karat_value"] for h in history]},
                 "balances": balances,
-                "gold_ledger": [{"id": str(r["id"]), "occurred_at": r["occurred_at"], "movement": r["movement_name"],
+                "gold_ledger": [{"id": str(r["id"]), "occurred_at": r["occurred_at"], "movement": rules.gold_movement_text(r.get("movement_code"), r["movement_name"]),
                                  "karat_value": int(r["karat_value"]),
                                  "weight_delta": Decimal(str(r["weight_delta_grams"])),
                                  "weight_balance_after": Decimal(str(r["weight_balance_after"])),
                                  "source_type": r["source_type"], "source_id": str(r["source_id"]),
-                                 "reference": r["source_reference"] or "", "actor": r["actor_name"] or ""}
+                                 "reference": r["source_reference"] or "", "actor": r["actor_name"] or "",
+                                 # a gold settlement (045): the delivered grams / karat beside the credited ones, and its reversed state
+                                 "settlement_id": None if r.get("settlement_id") is None else str(r["settlement_id"]),
+                                 "delivered_weight": None if r.get("delivered_weight_grams") is None else Decimal(str(r["delivered_weight_grams"])),
+                                 "delivered_karat": None if r.get("delivered_karat_value") is None else int(r["delivered_karat_value"]),
+                                 "reversed_by": (None if r.get("settlement_reversal_id") is None
+                                                 else correction_code("FULL_REVERSAL", r["settlement_reversal_id"])),
+                                 "reverses_reference": (None if r.get("reversed_settlement_id") is None
+                                                        else _settlement_code(r["reversed_settlement_id"]))}
                                 for r in gold],
                 "making_ledger": [self._making_row(r) for r in making]}
 
@@ -203,7 +212,7 @@ class SupplierService:
         actor = authenticated_actor(self._session, MANAGE, "لا توجد صلاحية لإدارة الموردين.", _expected_actor)
         is_supplier, is_intermediary = rules.validate_roles(is_supplier, is_intermediary)
         if not is_supplier and _given(karat_id):
-            raise rules.SupplierRuleError("KARAT_NOT_ALLOWED", "وسيط السوق بلا عيار حساب: لا يُحدَّد عيار إلا للمورد.")
+            raise rules.SupplierRuleError("KARAT_NOT_ALLOWED", "المسوقجي بلا عيار حساب: لا يُحدَّد عيار إلا للمورد.")
         name = clean_text(name, NAME_MAX, "اسم المورد", required=True)
         phone, notes = clean_text(phone, PHONE_MAX, "رقم الهاتف"), clean_text(notes, NOTES_MAX, "الملاحظات")
         try:
@@ -247,7 +256,7 @@ class SupplierService:
                     if supplier["karat_id"] is not None:
                         repository.clear_karat(supplier_id=supplier_id, user_id=actor.user_id)
                 if not now_supplier and _given(karat_id):
-                    raise rules.SupplierRuleError("KARAT_NOT_ALLOWED", "وسيط السوق بلا عيار حساب: لا يُحدَّد عيار إلا للمورد.")
+                    raise rules.SupplierRuleError("KARAT_NOT_ALLOWED", "المسوقجي بلا عيار حساب: لا يُحدَّد عيار إلا للمورد.")
                 if now_supplier and not was_supplier and not _given(karat_id):
                     raise rules.SupplierRuleError("KARAT_REQUIRED", "اختر عيار المورد (18 أو 21 أو 22 أو 24) عند إضافة دور المورد.")
                 if (now_supplier, now_intermediary) != (was_supplier, was_intermediary):
