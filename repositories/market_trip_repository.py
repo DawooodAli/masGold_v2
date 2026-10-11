@@ -1,4 +1,4 @@
-"""Market-trip custody (037, melting 039, lot returns 040, lot reissue 041, Logo heating 042, supplier payments 043): trips, their insert-only entries, and the cash / Scrap movements those entries post.
+"""Market-trip custody (037, melting 039, lot returns 040, lot reissue 041, Logo heating 042, supplier payments 043, supplier gold settlements 046): trips, their insert-only entries, and the cash / Scrap movements those entries post.
 
 All writes use the caller's transaction and only INSERT (the trip header's `status` is the one updated column; every change
 of it is an insert-only event). Custody is never stored: it is derived from the entries that were not reversed.
@@ -12,6 +12,7 @@ SOURCE = "MARKET_TRIP_ENTRY"            # transaction_corrections.source_type an
 MAIN_SAFE = "MAIN_SAFE"
 ISSUE, RETURN, MELT, LOT_RETURN, LOT_ISSUE, HEAT = "ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT"
 SUPPLIER_PAY = "SUPPLIER_PAY"          # a supplier making payment made with custody cash (043)
+GOLD_SETTLE = "GOLD_SETTLE"            # custody gold delivered to a supplier against its gold account (046, LOGO only in this slice)
 MELT_DESIGNATION, LOGO_DESIGNATION, UNCLASSIFIED = "MELT", "LOGO", "UNCLASSIFIED"     # the owner's decision on an issued gold line
 DESIGNATIONS = (MELT_DESIGNATION, LOGO_DESIGNATION, UNCLASSIFIED)
 MAIN_LOT, RESIDUE_LOT, CREATE_MOVEMENT = "MAIN", "RESIDUE", "CREATE"
@@ -393,8 +394,9 @@ class MarketTripRepository(BaseRepository):
         """Every SUPPLIER (an inactive one can still be paid; an intermediary-only party has no making account) with its current net making
         position (delta > 0: the shop owes it)."""
         return self._fetch_all(
-            "SELECT s.id, s.name, s.is_active, COALESCE((SELECT SUM(m.amount_delta) FROM supplier_making_movements m "
-            "WHERE m.supplier_id = s.id), 0) AS making_balance FROM suppliers s WHERE s.is_supplier = 1 ORDER BY s.is_active DESC, s.name, s.id")
+            "SELECT s.id, s.name, s.is_active, s.karat_id, k.karat_value, COALESCE((SELECT SUM(m.amount_delta) FROM supplier_making_movements m "
+            "WHERE m.supplier_id = s.id), 0) AS making_balance FROM suppliers s LEFT JOIN karats k ON k.id = s.karat_id "
+            "WHERE s.is_supplier = 1 ORDER BY s.is_active DESC, s.name, s.id")
 
     def insert_supplier_payment_link(self, *, entry_id, payment_id, supplier_id, amount):
         self._execute("INSERT INTO market_trip_supplier_payments (entry_id, payment_id, supplier_id, amount) VALUES (%s, %s, %s, %s)",
@@ -413,10 +415,40 @@ class MarketTripRepository(BaseRepository):
             "FROM market_trip_supplier_payments l JOIN market_trip_entries e ON e.id = l.entry_id WHERE l.payment_id = %s",
             (_id(payment_id),))
 
+    # ------------------------------------------------------------------ supplier gold settlements from custody (046)
+    def insert_gold_settlement_link(self, *, entry_id, settlement_id, supplier_id, karat_id, designation, weight):
+        """The immutable link entry -> SG document with the consumed source line (the database keeps it equal to the document)."""
+        self._execute(
+            "INSERT INTO market_trip_gold_settlements (entry_id, settlement_id, supplier_id, karat_id, designation, weight_grams) "
+            "VALUES (%s, %s, %s, %s, %s, %s)", (_id(entry_id), _id(settlement_id), int(supplier_id), int(karat_id), designation, weight))
+
+    def entry_gold_settlement(self, entry_id):
+        """The settlement a GOLD_SETTLE entry made (None for any other entry), with the document's stored figures."""
+        return self._fetch_one(
+            "SELECT l.entry_id, l.settlement_id, l.supplier_id, l.karat_id, k.karat_value, l.designation, l.weight_grams, s.name AS supplier_name, "
+            "g.credited_weight_grams, g.credited_analytical_grams, g.rounding_difference_grams, g.target_karat_value "
+            "FROM market_trip_gold_settlements l JOIN suppliers s ON s.id = l.supplier_id JOIN karats k ON k.id = l.karat_id "
+            "JOIN supplier_gold_settlements g ON g.id = l.settlement_id WHERE l.entry_id = %s", (_id(entry_id),))
+
+    def later_gold_settlements(self, trip_id, after_entry_no, karat_ids):
+        """Effective (not reversed) GOLD_SETTLE entries of the trip numbered after `after_entry_no` that delivered gold of one of the karats."""
+        ids = sorted({int(k) for k in karat_ids})
+        if not ids:
+            return []
+        marks = ", ".join(["%s"] * len(ids))
+        return self._fetch_all(
+            f"""
+            SELECT DISTINCT e.id, e.trip_id, e.entry_no FROM market_trip_entries e JOIN market_trip_gold_settlements l ON l.entry_id = e.id
+            WHERE e.trip_id = %s AND e.entry_no > %s AND e.entry_kind = 'GOLD_SETTLE' AND l.karat_id IN ({marks}) AND {_NOT_REVERSED}
+            ORDER BY e.entry_no FOR SHARE OF e, l
+            """, (_id(trip_id), int(after_entry_no), *ids))
+
     def custody_gold(self, trip_id, exclude_entry_id=None):
         """Per (karat, designation): grams issued, returned and consumed by melts, over the entries that were not reversed, plus the
-        signed effective Logo heating differences (output - input). A melt consumes MELT-designated custody only (`melted` is non-zero
-        only on MELT) and a heat changes LOGO custody only (`heat_delta` is non-zero only on LOGO)."""
+        signed effective Logo heating differences (output - input) and the grams delivered to suppliers (046). A melt consumes
+        MELT-designated custody only (`melted` is non-zero only on MELT), a heat changes LOGO custody only (`heat_delta` is non-zero only
+        on LOGO) and a supplier settlement consumes LOGO custody only in this slice (`supplier_settled`). The arithmetic that combines
+        these terms lives in services.custody_rules, the single definition every caller uses."""
         legs = self._fetch_all(
             f"""
             SELECT g.karat_id, k.karat_value, g.designation,
@@ -440,17 +472,29 @@ class MarketTripRepository(BaseRepository):
             WHERE e.trip_id = %s AND e.id <> %s AND {_NOT_REVERSED}
             GROUP BY h.karat_id, k.karat_value FOR SHARE OF e, h
             """, (_id(trip_id), int(exclude_entry_id or 0)))
-        rows = {(int(r["karat_id"]), r["designation"]): {**r, "melted": 0, "heat_delta": 0} for r in legs}
+        settled = self._fetch_all(
+            f"""
+            SELECT l.karat_id, k.karat_value, l.designation, COALESCE(SUM(l.weight_grams), 0) AS supplier_settled
+            FROM market_trip_entries e JOIN market_trip_gold_settlements l ON l.entry_id = e.id JOIN karats k ON k.id = l.karat_id
+            WHERE e.trip_id = %s AND e.id <> %s AND {_NOT_REVERSED}
+            GROUP BY l.karat_id, k.karat_value, l.designation FOR SHARE OF e, l
+            """, (_id(trip_id), int(exclude_entry_id or 0)))
+        rows = {(int(r["karat_id"]), r["designation"]): {**r, "melted": 0, "heat_delta": 0, "supplier_settled": 0} for r in legs}
         for h in heated:
             key = (int(h["karat_id"]), LOGO_DESIGNATION)
             row = rows.setdefault(key, {"karat_id": h["karat_id"], "karat_value": h["karat_value"], "designation": LOGO_DESIGNATION,
-                                        "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0})
+                                        "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0, "supplier_settled": 0})
             row["heat_delta"] = h["heat_delta"]
         for m in melted:
             key = (int(m["karat_id"]), MELT_DESIGNATION)
             row = rows.setdefault(key, {"karat_id": m["karat_id"], "karat_value": m["karat_value"], "designation": MELT_DESIGNATION,
-                                        "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0})
+                                        "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0, "supplier_settled": 0})
             row["melted"] = m["melted"]
+        for s in settled:
+            key = (int(s["karat_id"]), s["designation"])
+            row = rows.setdefault(key, {"karat_id": s["karat_id"], "karat_value": s["karat_value"], "designation": s["designation"],
+                                        "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0, "supplier_settled": 0})
+            row["supplier_settled"] = s["supplier_settled"]
         order = {MELT_DESIGNATION: 0, LOGO_DESIGNATION: 1, UNCLASSIFIED: 2}
         return sorted(rows.values(), key=lambda r: (-int(r["karat_value"]), order[r["designation"]]))
 
@@ -479,6 +523,7 @@ class MarketTripRepository(BaseRepository):
                 "FROM market_trip_lot_issues li JOIN market_trip_lots l ON l.id = li.lot_id "
                 "JOIN market_trip_entries me ON me.id = l.entry_id WHERE li.entry_id = %s ORDER BY li.lot_id", (int(row["id"]),))
             row["supplier_payment"] = self.entry_supplier_payment(row["id"])
+            row["gold_settlement"] = self.entry_gold_settlement(row["id"])
             row["gold"] = self._fetch_all(
                 "SELECT g.karat_id, k.karat_value, g.designation, g.weight_grams FROM market_trip_entry_gold g "
                 "JOIN karats k ON k.id = g.karat_id WHERE g.entry_id = %s ORDER BY k.karat_value DESC, g.designation", (int(row["id"]),))

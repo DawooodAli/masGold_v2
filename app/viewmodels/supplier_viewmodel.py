@@ -64,6 +64,9 @@ def karat_note(supplier):
     return "عيار هذا المورد غير محدد. حدّده من تعديل المورد قبل إنشاء فواتير جديدة."
 
 
+GOLD_SOURCE_TEXT = {"LOGO": "لوجو", "MELT": "للسبك"}      # the custody designation of a custody-sourced gold settlement (046)
+
+
 def movement_side_text(delta):
     delta = Decimal(str(delta))
     return SHOP_OWES_TEXT if delta > 0 else SUPPLIER_OWES_TEXT
@@ -590,11 +593,17 @@ class SupplierViewModel(QObject):
                 "reference": r["reference"], "sourceId": r["source_id"], "actor": r["actor"],
                 "tone": TONES[rules.direction(r["weight_delta"])],
                 # a gold settlement shows what was delivered beside what was credited; a reversal row names the settlement it restores
-                "detail": (f"سُلِّم {grams(r['delivered_weight'])} جرام عيار {r['delivered_karat']} ← احتُسب {grams(abs(r['weight_delta']))} جرام عيار {r['karat_value']}"
+                # (046) a settlement delivered from market custody names its LOGO source and its custody entry, where its reversal belongs
+                "detail": ((f"سُلِّم {grams(r['delivered_weight'])} جرام عيار {r['delivered_karat']}"
+                            + (f" ({GOLD_SOURCE_TEXT[r['custody_designation']]})" if r.get("custody_designation") in GOLD_SOURCE_TEXT else "")
+                            + f" ← احتُسب {grams(abs(r['weight_delta']))} جرام عيار {r['karat_value']}"
+                            + (f" • من عهدة السوق {r['custody_reference']} (تُعكس من صفحة العهدة)" if r.get("custody_reference") else ""))
                            if r.get("settlement_id") else ""),
+                "custodyReference": r.get("custody_reference") or "",
                 "state": (f"معكوسة بالعملية {r['reversed_by']}" if r.get("reversed_by")
                           else f"عكس التسوية {r['reverses_reference']}" if r.get("reverses_reference") else ""),
                 "settlementId": r.get("settlement_id") or "", "reversed": bool(r.get("reversed_by")),
-                "canReverse": bool(r.get("settlement_id")) and not r.get("reversed_by")} for r in self._detail["gold_ledger"]],
+                "canReverse": bool(r.get("settlement_id")) and not r.get("reversed_by") and not r.get("custody_reference")}
+                           for r in self._detail["gold_ledger"]],
             "makingLedger": [making_row(r) for r in self._detail["making_ledger"]],
         }

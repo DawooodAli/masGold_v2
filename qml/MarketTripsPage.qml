@@ -22,7 +22,7 @@ Item {
 
     Connections {
         target: page.vm
-        function onEntryPosted(code) { entryDialog.close(); meltDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close(); payDialog.close() }
+        function onEntryPosted(code) { entryDialog.close(); meltDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close(); payDialog.close(); goldSettleDialog.close() }
         function onActionDone(operation) { reasonDialog.close() }
     }
 
@@ -287,7 +287,7 @@ Item {
             Txt { objectName: "tripMessage"; Layout.fillWidth: true; visible: !!page.vm && page.vm.message !== ""
                   text: page.vm ? page.vm.message : ""; color: theme.green; wrapMode: Text.WordWrap; elide: Text.ElideNone }
             Txt { objectName: "tripError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== "" && !entryDialog.visible && !reasonDialog.visible && !meltDialog.visible
-                           && !lotReturnDialog.visible && !lotIssueDialog.visible && !heatDialog.visible && !payDialog.visible
+                           && !lotReturnDialog.visible && !lotIssueDialog.visible && !heatDialog.visible && !payDialog.visible && !goldSettleDialog.visible
                   text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
 
             Txt {
@@ -338,6 +338,9 @@ Item {
                         Btn { objectName: "custodyPayButton"; text: "دفع مصنعيات من العهدة"; visible: !!page.detail.open
                               enabled: !!page.detail.payAvailable && !!page.vm && !page.vm.writing
                               onClicked: payDialog.openFor(page.detail.id) }
+                        Btn { objectName: "custodyGoldSettleButton"; text: "تسوية ذهب من العهدة"; visible: !!page.detail.open
+                              enabled: !!page.detail.goldSettleAvailable && !!page.vm && !page.vm.writing
+                              onClicked: goldSettleDialog.openFor(page.detail.id) }
                         Btn { objectName: "heatButton"; text: "حمّية اللوجو"; visible: !!page.detail.open
                               enabled: !!page.detail.heatAvailable && !!page.vm && !page.vm.writing
                               onClicked: heatDialog.openFor(page.detail.id) }
@@ -385,7 +388,8 @@ Item {
                                 label: "ذهب " + modelData.label
                                 issued: modelData.issued + " جرام"
                                 returned: modelData.returned + " جرام"
-                                melted: modelData.heated !== "" ? "حمّية " + modelData.heated + " جرام" : modelData.melted + " جرام"
+                                melted: (modelData.heated !== "" ? "حمّية " + modelData.heated + " جرام" : modelData.melted + " جرام")
+                                        + (modelData.settled !== "" ? " • سُلِّم لمورد " + modelData.settled + " جرام" : "")
                                 outstanding: modelData.outstanding + " جرام"
                                 zero: modelData.zero
                             }
@@ -920,6 +924,143 @@ Item {
                 }
                 Btn { objectName: "cancelCustodyPayButton"; text: "إلغاء"; accent: theme.textSecondary
                       enabled: !!page.vm && !page.vm.writing; onClicked: payDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- deliver LOGO custody gold to a supplier (تسوية ذهب من العهدة)
+    // The gold is already outside the shop: nothing moves in the shop Scrap, Main Safe or a bank, and no lot or making moves. The custody gold and the
+    // supplier's gold account (in ITS karat) change together. Every figure below is computed by the service rules through marketTripVM.
+    Popup {
+        id: goldSettleDialog
+        objectName: "tripGoldSettleDialog"
+        property string tripId: ""
+        property string requestKey: ""
+        readonly property var supplierChoices: [{ id: "", text: "اختر المورد" }].concat(page.ctx.goldSuppliers || [])
+        readonly property var sourceChoices: [{ key: "", karatId: "", designation: "", text: "اختر مصدر الذهب من العهدة" }].concat(page.detail.goldSettleSources || [])
+        readonly property string supplierId: supplierChoices[goldSettleSupplier.currentIndex] ? supplierChoices[goldSettleSupplier.currentIndex].id : ""
+        readonly property var source: sourceChoices[goldSettleSource.currentIndex] ? sourceChoices[goldSettleSource.currentIndex] : ({})
+        readonly property var preview: {
+            var known = page.detail.id !== undefined && page.ctx.goldSuppliers !== undefined            // read, so the preview follows the loaded custody and suppliers
+            return known && page.vm ? page.vm.previewGoldSettlement(supplierId, source.karatId || "", source.designation || "", goldSettleWeight.text) : ({})
+        }
+        function openFor(trip) {
+            if (!page.vm) return
+            tripId = trip
+            requestKey = page.vm.newRequestKey()
+            goldSettleSupplier.currentIndex = 0
+            goldSettleSource.currentIndex = 0
+            goldSettleWeight.text = ""
+            goldSettleDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            goldSettleReference.text = ""
+            goldSettleNotes.text = ""
+            page.vm.clearMessage()
+            page.vm.refresh()
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(560, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 640, 640)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; text: "تسوية ذهب من العهدة" }
+            Txt { objectName: "custodyGoldSettleRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "يُسلَّم للمورد ذهب لوجو موجود فعلًا في هذه العهدة ولا يتجاوز المتبقي منه، ويُحتسب في حسابه بعياره: الوزن × عيار المُسلَّم ÷ عيار المورد. لا يُخصم من كسر المحل مرة ثانية، ولا نقدية ولا مصنعيات ولا شحنات سبك." }
+            Flickable {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentHeight: goldSettleForm.implicitHeight
+                clip: true
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: goldSettleForm
+                    width: parent.width - 12
+                    spacing: 6
+                    Txt { Layout.fillWidth: true; text: "المورد *" }
+                    Combo { id: goldSettleSupplier; objectName: "custodyGoldSettleSupplierCombo"; Layout.fillWidth: true; model: goldSettleDialog.supplierChoices; textRole: "text" }
+                    Txt { Layout.fillWidth: true; text: "مصدر الذهب من العهدة *" }
+                    Combo { id: goldSettleSource; objectName: "custodyGoldSettleSourceCombo"; Layout.fillWidth: true; model: goldSettleDialog.sourceChoices; textRole: "text" }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "الوزن المُسلَّم الفعلي (جرام) *" }
+                            Field { id: goldSettleWeight; objectName: "custodyGoldSettleWeightField"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+                        }
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
+                            Field { id: goldSettleDate; objectName: "custodyGoldSettleDateField"; Layout.fillWidth: true }
+                        }
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: goldSettlePreview.implicitHeight + 14
+                        radius: theme.radiusSmall
+                        color: theme.bgTertiary
+                        border.color: goldSettleDialog.preview.short ? theme.red : theme.border
+                        ColumnLayout {
+                            id: goldSettlePreview
+                            anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                            anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.topMargin: 7
+                            spacing: 3
+                            Txt { objectName: "custodyGoldSettleAvailable"; Layout.fillWidth: true; visible: !!goldSettleDialog.preview.availableText
+                                  text: "المتاح من هذا المصدر في العهدة: " + goldSettleDialog.preview.availableText; color: theme.amber; font.bold: true
+                                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "custodyGoldSettleSupplierKarat"; Layout.fillWidth: true; visible: !!goldSettleDialog.preview.supplierKaratText
+                                  text: "عيار حساب المورد: " + goldSettleDialog.preview.supplierKaratText; color: theme.textSecondary
+                                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "custodyGoldSettleDelivered"; Layout.fillWidth: true; visible: !!goldSettleDialog.preview.deliveredText
+                                  text: "المُسلَّم: " + goldSettleDialog.preview.deliveredText; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "custodyGoldSettleFormula"; Layout.fillWidth: true; visible: !!goldSettleDialog.preview.formulaText
+                                  text: "الحساب: " + goldSettleDialog.preview.formulaText; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "custodyGoldSettleCredited"; Layout.fillWidth: true; visible: !!goldSettleDialog.preview.creditedText
+                                  text: "يُحتسب للمورد: " + goldSettleDialog.preview.creditedText; color: theme.gold; font.bold: true
+                                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "custodyGoldSettleAnalytical"; Layout.fillWidth: true; visible: !!goldSettleDialog.preview.analyticalText
+                                  text: "القيمة التحليلية: " + goldSettleDialog.preview.analyticalText + " • فرق التقريب: " + goldSettleDialog.preview.differenceText
+                                  color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "custodyGoldSettleShort"; Layout.fillWidth: true; visible: goldSettleDialog.preview.short === true
+                                  text: "الوزن أكبر من المتاح من هذا المصدر في العهدة."; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "custodyGoldSettlePreviewError"; Layout.fillWidth: true; visible: !!goldSettleDialog.preview.error
+                                  text: goldSettleDialog.preview.error || ""; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Item { Layout.preferredHeight: 2 }
+                        }
+                    }
+                    Txt { Layout.fillWidth: true; text: "المرجع (اختياري)" }
+                    Field { id: goldSettleReference; objectName: "custodyGoldSettleReferenceField"; Layout.fillWidth: true }
+                    Txt { Layout.fillWidth: true; text: "ملاحظات" }
+                    Field { id: goldSettleNotes; objectName: "custodyGoldSettleNotesField"; Layout.fillWidth: true }
+                }
+            }
+            Txt { objectName: "custodyGoldSettleError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmCustodyGoldSettleButton"
+                    text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "تسجيل التسوية"
+                    primary: true
+                    enabled: goldSettleDialog.supplierId !== "" && !!goldSettleDialog.source.karatId && goldSettleWeight.text.trim().length > 0
+                             && goldSettleDate.text.trim().length > 0 && !!page.vm && !page.vm.writing
+                             && goldSettleDialog.preview.short !== true && !goldSettleDialog.preview.error
+                    onClicked: page.vm.settleGold(goldSettleDialog.tripId, goldSettleDialog.supplierId, goldSettleDialog.source.karatId,
+                                                  goldSettleDialog.source.designation, goldSettleWeight.text, goldSettleDate.text,
+                                                  goldSettleReference.text, goldSettleNotes.text, goldSettleDialog.requestKey)
+                }
+                Btn { objectName: "cancelCustodyGoldSettleButton"; text: "إلغاء"; accent: theme.textSecondary
+                      enabled: !!page.vm && !page.vm.writing; onClicked: goldSettleDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }

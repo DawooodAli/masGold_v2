@@ -11,6 +11,7 @@ SCRAP_OUT, SCRAP_REVERSAL_IN = "SUPPLIER_GOLD_SETTLEMENT_OUT", "REVERSAL_SUPPLIE
 GOLD_MOVEMENT, GOLD_REVERSAL = "SETTLEMENT", "SETTLEMENT_REVERSAL"
 CORRECTION_REFERENCE = "TRANSACTION_CORRECTION"
 SOURCE_KIND = "SHOP_SCRAP"
+CUSTODY_SOURCE_KIND = "CUSTODY_GOLD"          # 046: gold already held in an OPEN market custody (no Scrap movement)
 
 
 def settlement_code(settlement_id):
@@ -35,7 +36,7 @@ class SupplierGoldSettlementRepository(SupplierRepository):
 
     # ------------------------------------------------------------------ the settlement
     def insert_header(self, *, supplier_id, delivered_karat, target_karat, delivered_weight, credited, analytical, difference,
-                      settlement_date, reference, notes, key, digest, actor, now):
+                      settlement_date, reference, notes, key, digest, actor, now, source_kind=SOURCE_KIND):
         settlement_id, _ = self._execute(
             """
             INSERT INTO supplier_gold_settlements (supplier_id, source_kind, delivered_karat_id, delivered_karat_value, target_karat_id,
@@ -43,7 +44,7 @@ class SupplierGoldSettlementRepository(SupplierRepository):
                 settlement_date, reference, notes, request_key, request_hash, performed_by_user_id, performed_by_employee_id, occurred_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (_id(supplier_id), SOURCE_KIND, int(delivered_karat["id"]), int(delivered_karat["karat_value"]), int(target_karat["id"]),
+            (_id(supplier_id), source_kind, int(delivered_karat["id"]), int(delivered_karat["karat_value"]), int(target_karat["id"]),
              int(target_karat["karat_value"]), delivered_weight, credited, analytical, difference, settlement_date, reference, notes, key,
              digest, actor.user_id, actor.employee_id, now))
         return int(settlement_id)
@@ -78,21 +79,30 @@ class SupplierGoldSettlementRepository(SupplierRepository):
                   description, now, user_id))
         return int(new_id)
 
-    def insert_leg(self, *, settlement_id, kind, old_gold_movement_id=None, supplier_gold_movement_id=None):
+    def insert_leg(self, *, settlement_id, kind, source_kind, old_gold_movement_id=None, supplier_gold_movement_id=None):
+        """One leg. The database keeps the leg's source kind equal to the document's and refuses a SCRAP leg on any source but SHOP_SCRAP,
+        so a custody settlement can never carry a second Scrap deduction."""
         self._execute(
-            "INSERT INTO supplier_gold_settlement_legs (settlement_id, leg_kind, old_gold_movement_id, supplier_gold_movement_id) "
-            "VALUES (%s, %s, %s, %s)", (_id(settlement_id), kind, old_gold_movement_id, supplier_gold_movement_id))
+            "INSERT INTO supplier_gold_settlement_legs (settlement_id, source_kind, leg_kind, old_gold_movement_id, supplier_gold_movement_id) "
+            "VALUES (%s, %s, %s, %s, %s)", (_id(settlement_id), source_kind, kind, old_gold_movement_id, supplier_gold_movement_id))
 
     # ------------------------------------------------------------------ reads
     _SELECT = """
         SELECT g.*, s.name AS supplier_name, s.is_active AS supplier_active, u.display_name AS actor_name,
-               c.id AS reversal_id, c.reason AS reversal_reason, c.occurred_at AS reversal_at, cu.display_name AS reversal_actor_name
+               COALESCE(c.id, cc.id) AS reversal_id, COALESCE(c.reason, cc.reason) AS reversal_reason,
+               COALESCE(c.occurred_at, cc.occurred_at) AS reversal_at, cu.display_name AS reversal_actor_name,
+               lk.entry_id AS custody_entry_id, lk.designation AS custody_designation,
+               le.trip_id AS custody_trip_id, le.entry_no AS custody_entry_no
         FROM supplier_gold_settlements g
         JOIN suppliers s ON s.id = g.supplier_id
         LEFT JOIN users u ON u.id = g.performed_by_user_id
+        LEFT JOIN market_trip_gold_settlements lk ON lk.settlement_id = g.id
+        LEFT JOIN market_trip_entries le ON le.id = lk.entry_id
         LEFT JOIN transaction_corrections c ON c.source_type = '""" + SOURCE + """' AND c.source_id = g.id
              AND c.correction_type = 'FULL_REVERSAL'
-        LEFT JOIN users cu ON cu.id = c.performed_by_user_id
+        LEFT JOIN transaction_corrections cc ON cc.source_type = 'MARKET_TRIP_ENTRY' AND cc.source_id = lk.entry_id
+             AND cc.correction_type = 'FULL_REVERSAL'
+        LEFT JOIN users cu ON cu.id = COALESCE(c.performed_by_user_id, cc.performed_by_user_id)
     """
 
     def settlement(self, settlement_id):
@@ -105,6 +115,12 @@ class SupplierGoldSettlementRepository(SupplierRepository):
 
     def settlements_of(self, supplier_id, limit=200):
         return self._fetch_all(self._SELECT + " WHERE g.supplier_id = %s ORDER BY g.id DESC LIMIT %s", (_id(supplier_id), int(limit)))
+
+    def custody_entry(self, settlement_id):
+        """The custody entry a CUSTODY_GOLD settlement was made from (None for a direct settlement): where its reversal belongs."""
+        return self._fetch_one(
+            "SELECT l.entry_id, l.designation, e.trip_id, e.entry_no FROM market_trip_gold_settlements l "
+            "JOIN market_trip_entries e ON e.id = l.entry_id WHERE l.settlement_id = %s", (_id(settlement_id),))
 
     def scrap_movement(self, settlement_id):
         """The STORED Scrap movement of the settlement (its delivered karat and signed grams: what a reversal negates)."""

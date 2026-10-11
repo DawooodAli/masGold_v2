@@ -27,7 +27,9 @@ from uuid import UUID
 from mysql.connector import IntegrityError
 
 from repositories.old_gold_conversion_repository import OldGoldConversionRepository
-from repositories.supplier_gold_settlement_repository import (GOLD_MOVEMENT, SOURCE, SupplierGoldSettlementRepository, settlement_code)
+from repositories.market_trip_repository import entry_code as _custody_code
+from repositories.supplier_gold_settlement_repository import (CUSTODY_SOURCE_KIND, GOLD_MOVEMENT, SOURCE, SOURCE_KIND,
+                                                              SupplierGoldSettlementRepository, settlement_code)
 from services import supplier_rules as rules
 from services.authorization_service import AuthorizationService
 from services.correction_rules import correction_code
@@ -129,7 +131,11 @@ class SupplierGoldSettlementService:
                 "credited_weight": row["credited_weight_grams"], "analytical": row["credited_analytical_grams"],
                 "rounding_difference": row["rounding_difference_grams"], "settlement_date": row["settlement_date"],
                 "reference": row["reference"] or "", "notes": row["notes"] or "", "actor": row.get("actor_name") or "",
-                "occurred_at": row["occurred_at"], "reversed": row.get("reversal_id") is not None,
+                "occurred_at": row["occurred_at"], "source_kind": row.get("source_kind", SOURCE_KIND),
+                # a settlement made from market custody (046): its custody entry, where the reversal belongs
+                "custody_reference": (None if row.get("custody_entry_no") is None
+                                      else _custody_code(row["custody_trip_id"], row["custody_entry_no"])),
+                "custody_designation": row.get("custody_designation"), "reversed": row.get("reversal_id") is not None,
                 "reversal_code": None if row.get("reversal_id") is None else correction_code("FULL_REVERSAL", row["reversal_id"]),
                 "reversal_reason": row.get("reversal_reason")}
 
@@ -192,8 +198,8 @@ class SupplierGoldSettlementService:
                 supplier_id=supplier_id, type_id=type_id, karat_id=target["id"], weight_delta=-credited,
                 eq21_delta=-rules.equivalent_21(credited, target["karat_value"]), source_type=SOURCE, source_id=settlement_id,
                 reference=code, description=label, now=now, user_id=actor.user_id)
-            repository.insert_leg(settlement_id=settlement_id, kind="SCRAP", old_gold_movement_id=scrap_id)
-            repository.insert_leg(settlement_id=settlement_id, kind="GOLD", supplier_gold_movement_id=gold_id)
+            repository.insert_leg(settlement_id=settlement_id, kind="SCRAP", source_kind=SOURCE_KIND, old_gold_movement_id=scrap_id)
+            repository.insert_leg(settlement_id=settlement_id, kind="GOLD", source_kind=SOURCE_KIND, supplier_gold_movement_id=gold_id)
             repository.audit(actor=actor, event_type="SUPPLIER_GOLD_SETTLEMENT", entity_id=settlement_id, entity_type=SOURCE, reference=code,
                              description=label,
                              metadata={"supplier_id": supplier_id, "delivered_karat": int(delivered["karat_value"]), "delivered_weight": str(weight),

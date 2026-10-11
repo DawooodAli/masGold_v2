@@ -42,6 +42,7 @@ from repositories.invoice_lifecycle_repository import exchange_code
 from repositories.invoice_repository import InvoiceRepository
 from repositories.invoice_return_repository import return_code
 from services.authorization_service import AuthorizationService
+from services import custody_rules
 from services.correction_rules import correction_code, reversal_of
 from services.invoice_service import InvoiceService, PaymentInput, invoice_transaction
 
@@ -237,6 +238,10 @@ class CorrectionService:
                 if payment_link is not None:
                     from repositories.supplier_payment_repository import SupplierPaymentRepository as _Suppliers
                     _Suppliers(connection).get_supplier(payment_link["supplier_id"], lock=True)
+                gold_link = repo.entry_gold_settlement(source_id)             # trip -> supplier (the gold settlement's own order, 046)
+                if gold_link is not None:
+                    from repositories.supplier_gold_settlement_repository import SupplierGoldSettlementRepository as _GoldSuppliers
+                    _GoldSuppliers(connection).get_supplier(gold_link["supplier_id"], lock=True)
                 leg = repo.entry_cash_leg(source_id)
                 if leg is not None:
                     FinancialAccountRepository(connection).account("CASH", leg["cash_account_id"], lock=True)
@@ -257,7 +262,8 @@ class CorrectionService:
                 raise CorrectionError("SOURCE_NOT_FOUND", "تسوية ذهب المورد غير موجودة.")
             if lock:                                            # the settlement's own lock order: supplier -> Scrap karat
                 repo.get_supplier(source["supplier_id"], lock=True)
-                corrections.lock_old_gold_balance(source["delivered_karat_id"])
+                if source.get("source_kind", "SHOP_SCRAP") == "SHOP_SCRAP":       # a custody-sourced settlement never touched Scrap
+                    corrections.lock_old_gold_balance(source["delivered_karat_id"])
                 source = repo.source(source_id, lock=True)
             reference = settlement_code(source_id)
             context = {"invoice_id": None, "invoice_number": reference, "customer_name_snapshot": None, "customer_id": None,
@@ -367,13 +373,18 @@ class CorrectionService:
                 # Undoing an issue must not leave a later (unreversed) return larger than what remains in custody.
                 cash = trips.custody_cash(source["trip_id"], exclude_entry_id=source_id)
                 gold = trips.custody_gold(source["trip_id"], exclude_entry_id=source_id)
-                # Per (karat, designation): later returns AND melts consume the issued custody (a melt only the MELT designation).
-                if Decimal(str(cash[0])) - Decimal(str(cash[1])) - Decimal(str(cash[2])) < 0 or any(
-                        Decimal(str(g["issued"])) - Decimal(str(g["returned"])) - Decimal(str(g.get("melted", 0) or 0))
-                        + Decimal(str(g.get("heat_delta", 0) or 0)) < 0
-                        for g in gold):
+                # Gold delivered to a supplier from this custody (046) depends on the issue of its LOGO karat (pooled per karat, newest first,
+                # even when the balance would stay non-negative).
+                logo_issued = [int(leg["karat_id"]) for leg in trips.entry_gold_legs(source_id) if leg["designation"] == "LOGO"]
+                for dependent in trips.later_gold_settlements(source["trip_id"], source["entry_no"], logo_issued):
+                    plan.blockers.append(("DEPENDENT_SETTLEMENT_EXISTS",
+                                          "لا يمكن عكس الإخراج لأن تسوية ذهب لمورد من العهدة مسجلة بعده على نفس العيار "
+                                          f"({entry_code(dependent['trip_id'], dependent['entry_no'])}) — اعكسها أولاً."))
+                # Per (karat, designation): later returns, melts, heats AND supplier settlements consume the issued custody - ONE calculation
+                # (services.custody_rules), the same one posting, return checks and closure use.
+                if custody_rules.any_negative(cash, gold):
                     plan.blockers.append(("DEPENDENT_RETURN_EXISTS",
-                                          "لا يمكن عكس الإخراج لأن رجوعًا أو سبكًا أو حمّية مسجلة بعده يعتمد عليه — اعكسها أولاً."))
+                                          "لا يمكن عكس الإخراج لأن رجوعًا أو سبكًا أو حمّية أو تسوية ذهب مسجلة بعده يعتمد عليه — اعكسها أولاً."))
                 # Logo is pooled per karat: a later effective heating of an issued LOGO karat depends on this issue (newest first), even
                 # when the balance would stay non-negative.
                 logo_karats = [int(leg["karat_id"]) for leg in trips.entry_gold_legs(source_id) if leg["designation"] == "LOGO"]
@@ -411,6 +422,19 @@ class CorrectionService:
                 else:
                     plan.making.append((str(movement["supplier_id"]), -Decimal(str(movement["amount_delta"])), REVERSAL_MOVEMENT))
                 plan.extra_permission = SMP_REVERSE_PERMISSION
+            if source["entry_kind"] == "GOLD_SETTLE":
+                # The stored supplier gold movement is restored (never a recomputed amount) and the entry stops consuming custody gold, so the
+                # stored delivered grams are back in custody. No Scrap, cash, making, bank or lot movement is posted. The supplier-side
+                # reversal of this document is refused: the custody entry is the only reversal path.
+                from repositories.supplier_gold_settlement_repository import GOLD_REVERSAL, SupplierGoldSettlementRepository
+                link = trips.entry_gold_settlement(source_id)
+                movement = None if link is None else SupplierGoldSettlementRepository(connection).gold_movement(link["settlement_id"])
+                if movement is None:
+                    plan.blockers.append(("SETTLEMENT_MOVEMENT_MISSING", "حركة ذهب المورد الأصلية للتسوية غير موجودة."))
+                else:
+                    plan.supplier_gold.append((int(movement["supplier_id"]), int(movement["karat_id"]), -Decimal(str(movement["weight_delta_grams"])),
+                                               -Decimal(str(movement["equivalent_21_delta_grams"])), GOLD_REVERSAL))
+                plan.extra_permission = SGS_REVERSE_PERMISSION
             if source["entry_kind"] == "HEAT":
                 # Nothing is posted outside the custody ledger (no cash, Scrap, supplier or lot movement): only the dependencies are
                 # checked, newest first. The heat row and its measurements stay as history.
@@ -423,11 +447,14 @@ class CorrectionService:
                     plan.blockers.append(("DEPENDENT_LOGO_RETURN_EXISTS",
                                           "لا يمكن عكس الحمّية لأن رجوع لوجو من نفس العيار مسجل بعدها "
                                           f"({entry_code(dependent['trip_id'], dependent['entry_no'])}) — اعكس الرجوع أولاً."))
-                for g in trips.custody_gold(source["trip_id"], exclude_entry_id=source_id):
-                    if g["designation"] == "LOGO" and Decimal(str(g["issued"])) - Decimal(str(g["returned"])) - Decimal(
-                            str(g.get("melted", 0) or 0)) + Decimal(str(g.get("heat_delta", 0) or 0)) < 0:
-                        plan.blockers.append(("DEPENDENT_RETURN_EXISTS",
-                                              "لا يمكن عكس الحمّية لأن رصيد اللوجو بعد عكسها يصبح سالبًا — اعكس ما يعتمد عليها أولاً."))
+                for dependent in trips.later_gold_settlements(source["trip_id"], source["entry_no"], karats):
+                    plan.blockers.append(("DEPENDENT_SETTLEMENT_EXISTS",
+                                          "لا يمكن عكس الحمّية لأن تسوية ذهب لمورد من لوجو نفس العيار مسجلة بعدها "
+                                          f"({entry_code(dependent['trip_id'], dependent['entry_no'])}) — اعكسها أولاً."))
+                if custody_rules.any_negative(trips.custody_cash(source["trip_id"], exclude_entry_id=source_id),
+                                              trips.custody_gold(source["trip_id"], exclude_entry_id=source_id), designation="LOGO"):
+                    plan.blockers.append(("DEPENDENT_RETURN_EXISTS",
+                                          "لا يمكن عكس الحمّية لأن رصيد اللوجو بعد عكسها يصبح سالبًا — اعكس ما يعتمد عليها أولاً."))
             if source["entry_kind"] == "MELT":
                 # A melt can be undone only while its lots have no unreversed downstream use (their own CREATE is not one).
                 for dependent in trips.lot_downstream(source_id):
@@ -438,8 +465,16 @@ class CorrectionService:
             # The STORED movements are what is undone (never a recomputed amount): the delivered grams return to Scrap and the credit is restored.
             from repositories.supplier_gold_settlement_repository import GOLD_REVERSAL, SCRAP_REVERSAL_IN, SupplierGoldSettlementRepository
             settlements = SupplierGoldSettlementRepository(connection)
+            custody = None if source.get("source_kind", "SHOP_SCRAP") == "SHOP_SCRAP" else settlements.custody_entry(source_id)
             scrap_leg, gold_leg = settlements.scrap_movement(source_id), settlements.gold_movement(source_id)
-            if scrap_leg is None or gold_leg is None:
+            if source.get("source_kind", "SHOP_SCRAP") != "SHOP_SCRAP":
+                # Delivered from market custody (046): the custody entry is the only reversal path (it also restores the custody gold).
+                from repositories.market_trip_repository import entry_code as _entry_code
+                plan.blockers.append(("CUSTODY_SETTLEMENT_REVERSE_FROM_TRIP",
+                                      "هذه التسوية سُلِّم ذهبها من عهدة السوق"
+                                      + ("" if custody is None else f" ({_entry_code(custody['trip_id'], custody['entry_no'])})")
+                                      + ": اعكسها من حركة العهدة نفسها (تسوية ذهب من العهدة) من صفحة عهدة السوق."))
+            elif scrap_leg is None or gold_leg is None:
                 plan.blockers.append(("SETTLEMENT_MOVEMENT_MISSING", "حركات التسوية الأصلية غير موجودة."))
             else:
                 plan.old_gold.append((int(scrap_leg["karat_id"]), int(source["delivered_karat_value"]),

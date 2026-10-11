@@ -160,8 +160,14 @@ class SupplierService:
                                  "delivered_karat": None if r.get("delivered_karat_value") is None else int(r["delivered_karat_value"]),
                                  "reversed_by": (None if r.get("settlement_reversal_id") is None
                                                  else correction_code("FULL_REVERSAL", r["settlement_reversal_id"])),
+                                 # a settlement made from market custody (046) names its custody entry and is reversed from there
+                                 "custody_reference": (None if r.get("custody_entry_no") is None
+                                                       else _custody_code(r["custody_trip_id"], r["custody_entry_no"])),
+                                 "custody_designation": r.get("custody_designation"),
                                  "reverses_reference": (None if r.get("reversed_settlement_id") is None
-                                                        else _settlement_code(r["reversed_settlement_id"]))}
+                                                        else _settlement_code(r["reversed_settlement_id"])
+                                                        + ("" if r.get("reversed_custody_entry_no") is None else
+                                                           f" • {_custody_code(r['reversed_custody_trip_id'], r['reversed_custody_entry_no'])}"))}
                                 for r in gold],
                 "making_ledger": [self._making_row(r) for r in making]}
 

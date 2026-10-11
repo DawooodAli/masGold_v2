@@ -161,7 +161,10 @@ class IssueTests(TripCase):
 
     def test_no_supplier_or_other_business_effect_exists_in_this_slice(self):
         source = "".join((ROOT / p).read_text(encoding="utf-8") for p in ("services/market_trip_service.py", "repositories/market_trip_repository.py"))
-        for forbidden in ("supplier_gold", "supplier_purchase", "supplier_invoice", "equivalent_21", "financial_operations", "golddb", "float("):   # 043: only the making payment
+        # 043: only the making payment; 046: gold goes to a supplier only THROUGH the settlement repository, so the trip modules never touch the
+        # supplier gold ledger tables themselves (and the Eq21 compatibility column is filled by the settlement code, never read here)
+        for forbidden in ("supplier_gold_movements", "supplier_gold_movement_types", "supplier_purchase", "supplier_invoice", "equivalent_21_delta",
+                          "financial_operations", "golddb", "float("):
             self.assertNotIn(forbidden, source, forbidden)
         self.assertEqual([m for m in self.db.cash_moves if m["type_code"].startswith("SUPPLIER")], [])
         self.issue("1", [(K21, "1")])

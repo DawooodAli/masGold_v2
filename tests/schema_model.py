@@ -101,6 +101,9 @@ class SchemaModel:
                     if name not in t["columns"]:
                         self.problems.append(f"{source}: MODIFY missing column {table}.{name}")
                     t["columns"][name] = column
+                elif m := re.match(r"ALTER COLUMN\s+(\w+)\s+DROP DEFAULT$", clause, re.I):
+                    if m.group(1) not in t["columns"]:                  # defaults are not modelled; the column must exist
+                        self.problems.append(f"{source}: ALTER COLUMN {table}.{m.group(1)} DROP DEFAULT on a missing column")
                 elif m := re.match(r"ADD\s+(.*)$", clause, re.I | re.S):
                     self._item(table, m.group(1))
                 elif m := re.match(r"DROP (CHECK|INDEX|FOREIGN KEY|COLUMN)\s+(\w+)$", clause, re.I):

@@ -14,13 +14,16 @@ from app.formatting import date_text, datetime_text, grams, ltr, money, number
 from app.viewmodels.supplier_viewmodel import making_position_text
 from services import supplier_rules as rules
 
-LIMITATION = ("في هذه المرحلة لا توجد عمليات بيع أو تسوية ذهب للموردين (يمكن فقط دفع مصنعيات المورد نقدًا من العهدة): تُغلق العهدة فقط بعد إرجاع كل النقدية وكل الذهب الذي أُخرج منها "
-              "وإرجاع كل شحنات السبك إلى المحل. النقدية والذهب في العهدة ملك للمحل لكنهما غير متاحين داخله حتى يُرجَعا.")
+LIMITATION = ("في هذه المرحلة لا توجد عمليات بيع. من العهدة يمكن دفع مصنعيات المورد نقدًا وتسوية ذهب اللوجو للمورد (تسوية ذهب السبك والشحنات المعايَرة غير متاحة بعد): "
+              "تُغلق العهدة فقط بعد أن يصبح المتبقي صفرًا، أي بعد إرجاع كل النقدية وكل الذهب الذي أُخرج منها (ما لم يُسلَّم لمورد) وإرجاع كل شحنات السبك إلى المحل. "
+              "النقدية والذهب في العهدة ملك للمحل لكنهما غير متاحين داخله حتى يُرجَعا.")
 STATUS_TEXT = {"OPEN": "مفتوحة", "CLOSED": "مغلقة"}
+GOLD_SETTLE_REVERSAL_NOTE = ("عكس تسوية الذهب يسجّل أن الذهب المُسلَّم عاد فعلًا إلى عهدة السوق (بالوزن المخزّن في التسوية) ويعيد رصيد المورد بنفس الكمية المحتسبة المخزَّنة. "
+                             "لا يتحرك كسر المحل ولا النقدية؛ أرجع الذهب إلى المحل بـ«تسجيل رجوع» عند إرجاعه فعلًا.")
 PAYMENT_REVERSAL_NOTE = ("عكس دفع المصنعيات يسجّل أن المبلغ عاد فعلًا إلى عهدة السوق (بالمبلغ المخزّن في الدفعة) ويعيد مستحقات المورد بنفس المبلغ. "
                          "لا يُعاد المبلغ تلقائيًا إلى الخزنة الرئيسية: سجّل «تسجيل رجوع» من العهدة عند إرجاعه فعلًا.")
 KIND_TEXT = {"ISSUE": "إخراج عهدة", "RETURN": "رجوع من العهدة", "MELT": "سبك", "LOT_RETURN": "رجوع ناتج السبك", "LOT_ISSUE": "إخراج سبكة من المحل",
-             "HEAT": "حمّية اللوجو", "SUPPLIER_PAY": "دفع مصنعيات من العهدة"}
+             "HEAT": "حمّية اللوجو", "SUPPLIER_PAY": "دفع مصنعيات من العهدة", "GOLD_SETTLE": "تسوية ذهب من العهدة"}
 DESIGNATION_TEXT = {"MELT": "للسبك", "LOGO": "لوجو", "UNCLASSIFIED": "غير مصنف (قبل التصنيف)"}
 DESIGNATION_CHOICES = [{"id": "MELT", "text": "للسبك"}, {"id": "LOGO", "text": "لوجو"}]
 LOT_TEXT = {"MAIN": "الناتج الرئيسي", "RESIDUE": "راسب"}
@@ -53,7 +56,7 @@ class MarketTripViewModel(QObject):
     changed = Signal()
     entryPosted = Signal(str)            # the entry code: the entry dialog can close
     actionDone = Signal(str)             # close / reopen / reversal finished (the dialogs can close)
-    supplierPaymentChanged = Signal()    # a supplier payment from custody was posted or reversed: the supplier views reload from the database
+    supplierPaymentChanged = Signal()    # a supplier payment OR gold settlement from custody was posted or reversed: the supplier views reload from the database
     custodyChanged = Signal()            # cash / Scrap really moved: every balance view reloads from the database
 
     def __init__(self, session, service=None, parent=None):
@@ -183,7 +186,8 @@ class MarketTripViewModel(QObject):
             return
         text = self._done_text
         if isinstance(result, dict) and result.get("code"):
-            text = f"{text} {result['code']}" + (f" ({result['payment_code']})" if result.get("payment_code") else "")
+            reference = result.get("payment_code") or result.get("settlement_code")
+            text = f"{text} {result['code']}" + (f" ({reference})" if reference else "")
             if result.get("duplicate"):
                 text = f"{self._done_text} {result['code']} (مسجلة من قبل)"
         self._message = text
@@ -193,10 +197,10 @@ class MarketTripViewModel(QObject):
         # Notified only after the transaction succeeded; a failing refresh belongs to the view that failed, never to this write.
         if self._moved:
             self.custodyChanged.emit()
-        if self._operation == "paysupplier" or (self._operation == "reverse" and self._reversing_payment):
+        if self._operation in ("paysupplier", "goldsettle") or (self._operation == "reverse" and self._reversing_payment):
             self.supplierPaymentChanged.emit()
         self._reversing_payment = False
-        if self._operation in ("issue", "create", "return", "melt", "lotreturn", "lotissue", "heat", "paysupplier"):
+        if self._operation in ("issue", "create", "return", "melt", "lotreturn", "lotissue", "heat", "paysupplier", "goldsettle"):
             self.entryPosted.emit(result["code"])
         else:
             self.actionDone.emit(self._operation)
@@ -287,9 +291,49 @@ class MarketTripViewModel(QObject):
         self._write("paysupplier", "تم دفع مصنعيات من العهدة", lambda s, a: s.pay_supplier(
             trip_id, supplier_id, amount, payment_date, reference, notes, request_key, _expected_actor=a), False)
 
+    @Slot(str, str, str, str, str, str, str, str, str)
+    def settleGold(self, trip_id, supplier_id, karat_id, designation, weight, settlement_date, reference, notes, request_key):
+        """Deliver LOGO custody gold to a supplier against its gold account (تسوية ذهب من العهدة). Only ids and the typed text are sent: the
+        service derives the source balance, the credit and the rounding, re-checks every right and posts atomically. No Scrap, cash or lot moves."""
+        self._write("goldsettle", "تمت تسوية الذهب من العهدة", lambda s, a: s.settle_supplier_gold(
+            trip_id, supplier_id, karat_id, designation, weight, settlement_date, reference, notes, request_key, _expected_actor=a), False)
+
+    @Slot(str, str, str, str, result="QVariantMap")
+    def previewGoldSettlement(self, supplier_id, karat_id, designation, weight):
+        """What the settlement would credit, BEFORE submitting: figures come from supplier_rules (the function the service uses), never from QML
+        arithmetic. The service recomputes and re-checks the effective outstanding when it posts."""
+        empty = {"valid": False, "error": "", "short": False, "availableText": "", "supplierKaratText": "", "deliveredText": "", "formulaText": "",
+                 "creditedText": "", "analyticalText": "", "differenceText": ""}
+        if not self._detail or not self._context or not str(supplier_id or "").strip() or not str(karat_id or "").strip() \
+                or not str(designation or "").strip():
+            return empty
+        line = next((g for g in self._detail["custody"]["gold"] if str(g["karat_id"]) == str(karat_id) and g["designation"] == designation), None)
+        supplier = next((s for s in self._context.get("suppliers", []) if s["id"] == str(supplier_id)), None)
+        if line is None or supplier is None:
+            return {**empty, "error": "اختر المورد ومصدر الذهب من العهدة."}
+        available = f"{grams(line['outstanding'])} جرام عيار {line['karat_value']}"
+        if supplier["karat_value"] is None:
+            return {**empty, "availableText": available,
+                    "error": "عيار هذا المورد غير محدد: حدّده من تعديل المورد أولًا."}
+        base = {**empty, "availableText": available, "supplierKaratText": f"عيار {supplier['karat_value']}"}
+        if not str(weight or "").strip():
+            return base
+        try:
+            delivered = rules.parse_delivered_weight(weight)
+            credited, analytical, difference = rules.settlement_credit(delivered, line["karat_value"], supplier["karat_value"])
+        except rules.SupplierRuleError as exc:
+            return {**base, "error": str(exc)}
+        short = delivered > line["outstanding"]
+        return {**base, "valid": not short, "short": short,
+                "deliveredText": f"{grams(delivered)} جرام عيار {line['karat_value']} ({DESIGNATION_TEXT[designation]})",
+                "formulaText": f"{grams(delivered)} × {line['karat_value']} ÷ {supplier['karat_value']}",
+                "creditedText": f"{grams(credited)} جرام عيار {supplier['karat_value']}",
+                "analyticalText": number(analytical, 6), "differenceText": number(difference, 6, signed=True)}
+
     @Slot(str, str)
     def reverseEntry(self, entry_id, reason):
-        self._reversing_payment = any(e["id"] == str(entry_id) and e["kind"] == "SUPPLIER_PAY" for e in (self._detail or {}).get("entries", []))
+        self._reversing_payment = any(e["id"] == str(entry_id) and e["kind"] in ("SUPPLIER_PAY", "GOLD_SETTLE")
+                                      for e in (self._detail or {}).get("entries", []))
         self._write("reverse", "تم عكس الحركة", lambda s, a: s.reverse(entry_id, reason, _expected_actor=a), True)
 
     # ------------------------------------------------------------ properties
@@ -363,6 +407,10 @@ class MarketTripViewModel(QObject):
                 "designations": DESIGNATION_CHOICES,
                 "suppliers": [{"id": r["id"], "text": r["name"] + ("" if r["active"] else " (متوقف)") + " — "
                                + making_position_text(rules.direction(r["making_balance"]), r["making_balance"])} for r in c.get("suppliers", [])],
+                # the gold-settlement dialog: the supplier's DEDICATED karat is what the credit is converted into
+                "goldSuppliers": [{"id": r["id"], "text": r["name"] + ("" if r["active"] else " (متوقف)") + " — "
+                                   + (f"عيار حساب الذهب {r['karat_value']}" if r.get("karat_value") else "العيار غير محدد"),
+                                   "karatResolved": bool(r.get("karat_value"))} for r in c.get("suppliers", [])],
                 "shop": [{"karat": s["karat_value"], "text": f"عيار {s['karat_value']}: المتاح {grams(s['available'])} جرام"
                           + (f" • محجوز لمراجعة المدير {grams(s['held'])}" if s["held"] > 0 else "")}
                          for s in c["shop_scrap"] if s["physical"] != 0 or s["available"] != 0]}
@@ -380,6 +428,9 @@ class MarketTripViewModel(QObject):
                       for g in gold if g["designation"] == "MELT" and g["outstanding"] > 0]
         heat_stock = [{"karatId": str(g["karat_id"]), "text": f"عيار {g['karat_value']} — لوجو متاح للحمّية {grams(g['outstanding'])}"}
                       for g in gold if g["designation"] == "LOGO" and g["outstanding"] > 0]
+        settle_sources = [{"key": f"{g['karat_id']}:{g['designation']}", "karatId": str(g["karat_id"]), "designation": g["designation"],
+                           "text": f"{_gold_label(g)} — المتاح {grams(g['outstanding'])} جرام"}
+                          for g in gold if g["designation"] == "LOGO" and g["outstanding"] > 0]
         return_lines = [{"key": f"{g['karat_id']}:{g['designation']}", "karatId": str(g["karat_id"]), "designation": g["designation"],
                          "text": f"{_gold_label(g)} — المتبقي {grams(g['outstanding'])}"}
                         for g in gold if g["outstanding"] > 0]
@@ -396,6 +447,7 @@ class MarketTripViewModel(QObject):
                       "designationText": DESIGNATION_TEXT[g["designation"]], "label": _gold_label(g), "issued": grams(g["issued"]),
                       "returned": grams(g["returned"]), "melted": grams(g["melted"]), "outstanding": grams(g["outstanding"]),
                       "heated": grams(g["heat_delta"], signed=True) if g["designation"] == "LOGO" and g.get("heat_delta") else "",
+                      "settled": grams(g["supplier_settled"]) if g.get("supplier_settled") else "",
                       "zero": g["outstanding"] == 0} for g in gold],
             "lots": [{"lotId": l["lot_id"], "title": f"{LOT_TEXT[l['kind']]} — الحركة {l['entry_no']}"
                       + (f" • {l['label']}" if l["label"] else "")
@@ -414,6 +466,7 @@ class MarketTripViewModel(QObject):
             "lotNote": LOT_NOTE if custody["lots"] else "",
             "meltStock": melt_stock, "meltAvailable": is_open and bool(melt_stock), "returnLines": return_lines,
             "heatStock": heat_stock, "heatAvailable": is_open and bool(heat_stock),
+            "goldSettleSources": settle_sources, "goldSettleAvailable": is_open and bool(settle_sources),
             "payAvailable": is_open and custody["cash"]["outstanding"] > 0,
             "outstandingText": outstanding_text(custody),
             "entries": [self._entry(e, is_open) for e in d["entries"]],
@@ -432,14 +485,22 @@ class MarketTripViewModel(QObject):
         parts += [f"عيار {g['karat_value']} ({DESIGNATION_TEXT[g['designation']]}): {grams(g['weight'])} جرام" for g in e["gold"]]
         parts += [f"شحنة {l['lot_no']} من {l['code']}: {grams(l['weight'])} جرام (العيار {fineness_text(l['fineness'])})"
                   for l in e.get("lot_returns", []) + e.get("lot_issues", [])]
+        settlement = e.get("gold_settlement")
+        if settlement:
+            settlement_text = (f"{settlement['code']} — المورد {settlement['supplier_name']}: سُلِّم {grams(settlement['delivered_weight'])} جرام عيار "
+                               f"{settlement['karat_value']} ({DESIGNATION_TEXT[settlement['designation']]}) ← احتُسب {grams(settlement['credited_weight'])} جرام "
+                               f"عيار {settlement['target_karat']} • القيمة التحليلية {number(settlement['analytical'], 6)} • فرق التقريب "
+                               f"{number(settlement['rounding_difference'], 6, signed=True)}")
         return {"id": e["id"], "code": e["code"], "kind": e["kind"], "kindText": KIND_TEXT[e["kind"]],
-                "what": (f"{e['supplier_payment']['code']} — المورد {e['supplier_payment']['supplier_name']}: {money(e['supplier_payment']['amount'])}"
-                         if e.get("supplier_payment") else " • ".join(parts)) if parts or e.get("supplier_payment") else ("انظر تفاصيل السبك أدناه" if e["kind"] == "MELT"
+                "what": (settlement_text if settlement else
+                         f"{e['supplier_payment']['code']} — المورد {e['supplier_payment']['supplier_name']}: {money(e['supplier_payment']['amount'])}"
+                         if e.get("supplier_payment") else " • ".join(parts)) if settlement or parts or e.get("supplier_payment") else ("انظر تفاصيل السبك أدناه" if e["kind"] == "MELT"
                                                      else "انظر تفاصيل الحمّية أدناه" if e["kind"] == "HEAT" else ""),
+                "settlementCode": settlement["code"] if settlement else "",
                 "date": date_text(e["date"]), "time": datetime_text(e["at"]), "actor": e["actor"],
                 "notes": e["notes"], "reversed": e["reversed"],
                 "state": f"معكوسة بالعملية {e['reversal_code']}" if e["reversed"] else "",
-                "reverseNote": PAYMENT_REVERSAL_NOTE if e["kind"] == "SUPPLIER_PAY" else "",
+                "reverseNote": PAYMENT_REVERSAL_NOTE if e["kind"] == "SUPPLIER_PAY" else GOLD_SETTLE_REVERSAL_NOTE if e["kind"] == "GOLD_SETTLE" else "",
                 "reason": e["reversal_reason"] or "", "canReverse": trip_open and not e["reversed"]}
 
     @staticmethod

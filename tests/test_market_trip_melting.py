@@ -536,7 +536,8 @@ class RepositoryMergeTests(unittest.TestCase):
                          {"karat_id": 1, "karat_value": 21, "designation": "MELT", "issued": D("40"), "returned": D("5")},
                          {"karat_id": 3, "karat_value": 24, "designation": "UNCLASSIFIED", "issued": D("2"), "returned": D("0")}],
                         [{"karat_id": 1, "karat_value": 21, "melted": D("10")}],
-                        []])                                                              # no Logo heating (042)
+                        [],                                                               # no Logo heating (042)
+                        []])                                                              # no supplier settlements (046)
         repo._fetch_all = lambda *args, **kwargs: next(answers)
         rows = repo.custody_gold(1)
         self.assertEqual([(r["karat_value"], r["designation"], r["melted"]) for r in rows],
@@ -544,6 +545,30 @@ class RepositoryMergeTests(unittest.TestCase):
         view = custody_view((D(0), D(0)), rows)
         self.assertEqual({(g["karat_value"], g["designation"]): g["outstanding"] for g in view["gold"]},
                          {(24, "UNCLASSIFIED"): D("2"), (21, "MELT"): D("25"), (21, "LOGO"): D("20")})
+
+
+    def test_effective_supplier_settlements_are_merged_onto_their_row_and_consumed_by_the_one_shared_calculation(self):
+        """046: the settled grams land on their (karat, designation) row - even when that row has no leg of its own in the sums - and
+        custody_view and services.custody_rules agree on what is outstanding."""
+        from repositories.market_trip_repository import MarketTripRepository
+        from services import custody_rules
+        repo = MarketTripRepository.__new__(MarketTripRepository)
+        answers = iter([[{"karat_id": 1, "karat_value": 21, "designation": "LOGO", "issued": D("20"), "returned": D("2")}],
+                        [],
+                        [{"karat_id": 1, "karat_value": 21, "heat_delta": D("-0.500")}],
+                        [{"karat_id": 1, "karat_value": 21, "designation": "LOGO", "supplier_settled": D("6.250")},
+                         {"karat_id": 3, "karat_value": 24, "designation": "LOGO", "supplier_settled": D("1")}]])
+        repo._fetch_all = lambda *args, **kwargs: next(answers)
+        rows = repo.custody_gold(1)
+        by_key = {(r["karat_value"], r["designation"]): r for r in rows}
+        self.assertEqual(by_key[(21, "LOGO")]["supplier_settled"], D("6.250"))
+        self.assertEqual(by_key[(24, "LOGO")]["issued"], 0)                                   # a row with no issue leg is still present (and negative)
+        self.assertEqual(custody_rules.gold_outstanding(by_key[(21, "LOGO")]), D("20") - D("2") - D("0.500") - D("6.250"))
+        self.assertEqual(custody_rules.gold_outstanding(by_key[(24, "LOGO")]), D("-1"))
+        view = custody_view((D(0), D(0)), rows)
+        self.assertEqual({(g["karat_value"], g["designation"]): g["outstanding"] for g in view["gold"]},
+                         {(21, "LOGO"): D("11.250"), (24, "LOGO"): D("-1")})
+        self.assertTrue(custody_rules.any_negative((D(0), D(0)), rows))
 
 
 class AnalysisFunctionTests(unittest.TestCase):
