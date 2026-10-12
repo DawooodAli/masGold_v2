@@ -373,7 +373,8 @@ class MarketTripRepository(BaseRepository):
                                "ORDER BY karat_id", (_id(entry_id),))
 
     def later_heat_entries(self, trip_id, after_entry_no, karat_ids):
-        """Effective (not reversed) HEAT entries of the trip numbered after `after_entry_no` that carry a line of one of the karats."""
+        """Effective (not reversed) HEAT entries of the trip numbered after `after_entry_no` that carry a line of one of the karats.
+        A reversal-guard decision under the trip lock: the nested reversal lookup is a CURRENT read (see `_not_reversed`)."""
         ids = sorted({int(k) for k in karat_ids})
         if not ids:
             return []
@@ -381,12 +382,13 @@ class MarketTripRepository(BaseRepository):
         return self._fetch_all(
             f"""
             SELECT DISTINCT e.id, e.trip_id, e.entry_no FROM market_trip_entries e JOIN market_trip_heat_lines h ON h.entry_id = e.id
-            WHERE e.trip_id = %s AND e.entry_no > %s AND e.entry_kind = 'HEAT' AND h.karat_id IN ({marks}) AND {_NOT_REVERSED}
+            WHERE e.trip_id = %s AND e.entry_no > %s AND e.entry_kind = 'HEAT' AND h.karat_id IN ({marks}) AND {_not_reversed('e', current=True)}
             ORDER BY e.entry_no FOR SHARE OF e, h
             """, (_id(trip_id), int(after_entry_no), *ids))
 
     def later_logo_returns(self, trip_id, after_entry_no, karat_ids):
-        """Effective RETURN entries of the trip numbered after `after_entry_no` that return LOGO gold of one of the karats."""
+        """Effective RETURN entries of the trip numbered after `after_entry_no` that return LOGO gold of one of the karats.
+        A reversal-guard decision under the trip lock: the nested reversal lookup is a CURRENT read (see `_not_reversed`)."""
         ids = sorted({int(k) for k in karat_ids})
         if not ids:
             return []
@@ -395,26 +397,29 @@ class MarketTripRepository(BaseRepository):
             f"""
             SELECT DISTINCT e.id, e.trip_id, e.entry_no FROM market_trip_entries e JOIN market_trip_entry_gold g ON g.entry_id = e.id
             WHERE e.trip_id = %s AND e.entry_no > %s AND e.entry_kind = 'RETURN' AND g.designation = 'LOGO' AND g.karat_id IN ({marks})
-              AND {_NOT_REVERSED}
+              AND {_not_reversed('e', current=True)}
             ORDER BY e.entry_no FOR SHARE OF e, g
             """, (_id(trip_id), int(after_entry_no), *ids))
 
     # ------------------------------------------------------------------ custody (derived, read under the trip lock)
-    def custody_cash(self, trip_id, exclude_entry_id=None):
-        """(issued, returned, paid to suppliers) cash of the entries that were not reversed, as CURRENT (locking) reads. A supplier
-        payment made from custody consumes custody cash without any Main Safe movement."""
+    def custody_cash(self, trip_id, exclude_entry_id=None, *, current=False):
+        """(issued, returned, paid to suppliers) cash of the entries that were not reversed. A supplier payment made from custody
+        consumes custody cash without any Main Safe movement. The entry and leg rows are locking (current) reads; the nested
+        reversal lookup is a snapshot read unless `current=True`, which every DECISION made under the trip lock passes (a display
+        read does not, so it takes no locks on correction rows)."""
+        not_reversed = _not_reversed("e", current=current)
         row = self._fetch_one(
             f"""
             SELECT COALESCE(SUM(IF(e.entry_kind = 'ISSUE', c.amount, 0)), 0) AS issued,
                    COALESCE(SUM(IF(e.entry_kind = 'RETURN', c.amount, 0)), 0) AS returned
             FROM market_trip_entries e JOIN market_trip_entry_cash c ON c.entry_id = e.id
-            WHERE e.trip_id = %s AND e.id <> %s AND {_NOT_REVERSED} FOR SHARE
+            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed} FOR SHARE
             """, (_id(trip_id), int(exclude_entry_id or 0)))
         paid = self._fetch_one(
             f"""
             SELECT COALESCE(SUM(p.amount), 0) AS paid
             FROM market_trip_entries e JOIN market_trip_supplier_payments p ON p.entry_id = e.id
-            WHERE e.trip_id = %s AND e.id <> %s AND {_NOT_REVERSED} FOR SHARE OF e, p
+            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed} FOR SHARE OF e, p
             """, (_id(trip_id), int(exclude_entry_id or 0)))
         return row["issued"], row["returned"], paid["paid"]
 
@@ -460,7 +465,8 @@ class MarketTripRepository(BaseRepository):
             "JOIN supplier_gold_settlements g ON g.id = l.settlement_id WHERE l.entry_id = %s", (_id(entry_id),))
 
     def later_gold_settlements(self, trip_id, after_entry_no, karat_ids):
-        """Effective (not reversed) GOLD_SETTLE entries of the trip numbered after `after_entry_no` that delivered gold of one of the karats."""
+        """Effective (not reversed) GOLD_SETTLE entries of the trip numbered after `after_entry_no` that delivered gold of one of the karats.
+        A reversal-guard decision under the trip lock: the nested reversal lookup is a CURRENT read (see `_not_reversed`)."""
         ids = sorted({int(k) for k in karat_ids})
         if not ids:
             return []
@@ -468,44 +474,47 @@ class MarketTripRepository(BaseRepository):
         return self._fetch_all(
             f"""
             SELECT DISTINCT e.id, e.trip_id, e.entry_no FROM market_trip_entries e JOIN market_trip_gold_settlements l ON l.entry_id = e.id
-            WHERE e.trip_id = %s AND e.entry_no > %s AND e.entry_kind = 'GOLD_SETTLE' AND l.karat_id IN ({marks}) AND {_NOT_REVERSED}
+            WHERE e.trip_id = %s AND e.entry_no > %s AND e.entry_kind = 'GOLD_SETTLE' AND l.karat_id IN ({marks})
+              AND {_not_reversed('e', current=True)}
             ORDER BY e.entry_no FOR SHARE OF e, l
             """, (_id(trip_id), int(after_entry_no), *ids))
 
-    def custody_gold(self, trip_id, exclude_entry_id=None):
+    def custody_gold(self, trip_id, exclude_entry_id=None, *, current=False):
         """Per (karat, designation): grams issued, returned and consumed by melts, over the entries that were not reversed, plus the
         signed effective Logo heating differences (output - input) and the grams delivered to suppliers (046). A melt consumes
         MELT-designated custody only (`melted` is non-zero only on MELT), a heat changes LOGO custody only (`heat_delta` is non-zero only
         on LOGO) and a supplier settlement consumes LOGO custody only in this slice (`supplier_settled`). The arithmetic that combines
-        these terms lives in services.custody_rules, the single definition every caller uses."""
+        these terms lives in services.custody_rules, the single definition every caller uses. The nested reversal lookup is a snapshot
+        read unless `current=True`, which every DECISION made under the trip lock passes (see `custody_cash`)."""
+        not_reversed = _not_reversed("e", current=current)
         legs = self._fetch_all(
             f"""
             SELECT g.karat_id, k.karat_value, g.designation,
                    COALESCE(SUM(IF(e.entry_kind = 'ISSUE', g.weight_grams, 0)), 0) AS issued,
                    COALESCE(SUM(IF(e.entry_kind = 'RETURN', g.weight_grams, 0)), 0) AS returned
             FROM market_trip_entries e JOIN market_trip_entry_gold g ON g.entry_id = e.id JOIN karats k ON k.id = g.karat_id
-            WHERE e.trip_id = %s AND e.id <> %s AND {_NOT_REVERSED}
+            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}
             GROUP BY g.karat_id, k.karat_value, g.designation FOR SHARE OF e, g
             """, (_id(trip_id), int(exclude_entry_id or 0)))
         melted = self._fetch_all(
             f"""
             SELECT i.karat_id, k.karat_value, COALESCE(SUM(i.weight_grams), 0) AS melted
             FROM market_trip_entries e JOIN market_trip_melt_inputs i ON i.entry_id = e.id JOIN karats k ON k.id = i.karat_id
-            WHERE e.trip_id = %s AND e.id <> %s AND {_NOT_REVERSED}
+            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}
             GROUP BY i.karat_id, k.karat_value FOR SHARE OF e, i
             """, (_id(trip_id), int(exclude_entry_id or 0)))
         heated = self._fetch_all(
             f"""
             SELECT h.karat_id, k.karat_value, COALESCE(SUM(h.output_weight_grams - h.input_weight_grams), 0) AS heat_delta
             FROM market_trip_entries e JOIN market_trip_heat_lines h ON h.entry_id = e.id JOIN karats k ON k.id = h.karat_id
-            WHERE e.trip_id = %s AND e.id <> %s AND {_NOT_REVERSED}
+            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}
             GROUP BY h.karat_id, k.karat_value FOR SHARE OF e, h
             """, (_id(trip_id), int(exclude_entry_id or 0)))
         settled = self._fetch_all(
             f"""
             SELECT l.karat_id, k.karat_value, l.designation, COALESCE(SUM(l.weight_grams), 0) AS supplier_settled
             FROM market_trip_entries e JOIN market_trip_gold_settlements l ON l.entry_id = e.id JOIN karats k ON k.id = l.karat_id
-            WHERE e.trip_id = %s AND e.id <> %s AND {_NOT_REVERSED}
+            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}
             GROUP BY l.karat_id, k.karat_value, l.designation FOR SHARE OF e, l
             """, (_id(trip_id), int(exclude_entry_id or 0)))
         rows = {(int(r["karat_id"]), r["designation"]): {**r, "melted": 0, "heat_delta": 0, "supplier_settled": 0} for r in legs}

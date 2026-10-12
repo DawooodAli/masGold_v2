@@ -59,7 +59,7 @@ class SettlementCase(unittest.TestCase):
         return (service or self.service).settle(supplier, karat, weight, when, reference, notes, request or key(self.n))
 
     def state(self):
-        return copy.deepcopy({k: v for k, v in vars(self.db).items() if k not in ("fail_at", "transactions")})
+        return copy.deepcopy({k: v for k, v in vars(self.db).items() if k not in ("fail_at", "transactions", "lock_log")})
 
     def refused(self, code, call, error=SupplierRuleError):
         before = self.state()

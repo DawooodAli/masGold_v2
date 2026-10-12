@@ -311,9 +311,11 @@ class MarketTripService:
         return actor
 
     @staticmethod
-    def _custody(repository, trip_id):
-        return custody_view(repository.custody_cash(trip_id), repository.custody_gold(trip_id), repository.custody_lots(trip_id),
-                            trip_id=trip_id)
+    def _custody(repository, trip_id, *, current=False):
+        """The derived custody. `current=True` is for DECISIONS made under the trip lock: the nested reversal lookups of the cash and
+        gold reads are then current reads too, not the connection's REPEATABLE READ snapshot (a display read keeps the cheaper form)."""
+        return custody_view(repository.custody_cash(trip_id, current=current), repository.custody_gold(trip_id, current=current),
+                            repository.custody_lots(trip_id), trip_id=trip_id)
 
     # ------------------------------------------------------------------ reads
     def context(self, *, _expected_actor=None):
@@ -600,7 +602,7 @@ class MarketTripService:
     @staticmethod
     def _check_returnable(repository, trip_id, amount, grams, karats):
         """A return can never exceed the outstanding custody: cash and each (karat, designation) on their own (read under the trip lock)."""
-        custody = custody_view(repository.custody_cash(trip_id), repository.custody_gold(trip_id))
+        custody = custody_view(repository.custody_cash(trip_id, current=True), repository.custody_gold(trip_id, current=True))
         if amount > custody["cash"]["outstanding"]:
             raise TripError("RETURN_EXCEEDS_CUSTODY",
                             f"النقدية المتبقية في العهدة {custody['cash']['outstanding']:,.2f} ج فقط.")
@@ -693,7 +695,7 @@ class MarketTripService:
                 if karat is None or not karat["is_active"]:
                     raise TripError("KARAT_NOT_FOUND", "العيار غير موجود أو غير نشط.")
                 karats[karat_id] = karat
-            custody = self._custody(repository, trip_id)                    # read under the trip lock
+            custody = self._custody(repository, trip_id, current=True)      # read under the trip lock
             by_key = {(g["karat_id"], g["designation"]): g["outstanding"] for g in custody["gold"]}
             for karat_id in sorted(grams):
                 available = by_key.get((karat_id, MELT_DESIGNATION), ZERO_WEIGHT)
@@ -830,7 +832,7 @@ class MarketTripService:
                 if karat is None or not karat["is_active"]:
                     raise TripError("KARAT_NOT_FOUND", "العيار غير موجود أو غير نشط.")
                 karats[karat_id] = karat
-            custody = self._custody(repository, trip_id)                                       # read under the trip lock
+            custody = self._custody(repository, trip_id, current=True)                         # read under the trip lock
             by_key = {(g["karat_id"], g["designation"]): g["outstanding"] for g in custody["gold"]}
             for karat_id in sorted(plan):
                 available = by_key.get((karat_id, LOGO_DESIGNATION), ZERO_WEIGHT)
@@ -938,7 +940,7 @@ class MarketTripService:
                 raise TripError("SUPPLIER_NOT_FOUND", "المورد غير موجود.")
             if not rules.has_supplier_role(supplier):                        # making belongs to a SUPPLIER, never to an intermediary-only party
                 raise TripError("SUPPLIER_ROLE_REQUIRED", "هذا الطرف مسوقجي فقط وليس مورِّدًا: لا يُدفع له مصنعيات.")
-            outstanding = self._custody(repository, trip_id)["cash"]["outstanding"]          # read under the trip lock
+            outstanding = self._custody(repository, trip_id, current=True)["cash"]["outstanding"]   # read under the trip lock
             if value > outstanding:
                 raise TripError("PAYMENT_EXCEEDS_CUSTODY_CASH", f"النقدية المتبقية في العهدة {outstanding:,.2f} ج فقط: لا يمكن دفع {value:,.2f} ج.")
             making_type = suppliers.making_type_id(PAYMENT_MOVEMENT)
@@ -1079,7 +1081,7 @@ class MarketTripService:
             if delivered is None or not delivered["is_active"]:
                 raise TripError("KARAT_NOT_FOUND", "العيار غير موجود أو غير نشط.")
             target = settlements.get_karat(supplier["karat_id"])
-            custody = self._custody(repository, trip_id)                          # read under the trip lock: the effective outstanding
+            custody = self._custody(repository, trip_id, current=True)            # read under the trip lock: the effective outstanding
             line = next((g for g in custody["gold"] if g["karat_id"] == karat_id and g["designation"] == designation), None)
             outstanding = ZERO_WEIGHT if line is None else line["outstanding"]
             if grams > outstanding:
@@ -1477,9 +1479,12 @@ class MarketTripService:
             trip_id = repository.insert_trip(notes=notes_text, actor=actor, now=repository.db_now())      # the new trip: locked by this transaction
             has_gold = amount > 0 or bool(grams)
             account = karats = None
-            if has_gold:                                                  # cash account, then Scrap per karat ascending
+            # Resource order: new trip -> existing bars (ascending id, shop availability checked) -> cash account -> Scrap per karat
+            # ascending. A bar is locked before any financial account or Scrap row, so a refused bar never holds cash / Scrap locks, and the
+            # order agrees with every other path that takes a bar after the trip (whole-lot settlement, lot return, reissue).
+            lot_grams = self._plan_lot_issue(repository, selected) if selected else {}
+            if has_gold:
                 account, karats = self._issue_resources(connection, repository, ISSUE, trip_id, amount, grams)
-            lot_grams = self._plan_lot_issue(repository, selected) if selected else {}      # then the bars, ascending
             entries = []
             if has_gold:
                 entry_id, code = self._write_entry(repository, kind=ISSUE, trip_id=trip_id, paid_on=paid_on, notes_text=notes_text, key=key,
@@ -1527,7 +1532,7 @@ class MarketTripService:
                 raise TripError("TRIP_NOT_FOUND", "العهدة غير موجودة.")
             if trip["status"] != OPEN:
                 raise TripError("TRIP_ALREADY_CLOSED", "العهدة مغلقة بالفعل.")
-            custody = self._custody(repository, trip_id)
+            custody = self._custody(repository, trip_id, current=True)
             if not custody["settled"]:
                 raise TripError("OUTSTANDING_CUSTODY", self.outstanding_text(custody))
             now = repository.db_now()

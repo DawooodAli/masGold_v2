@@ -379,8 +379,8 @@ class CorrectionService:
                 plan.old_gold.append((int(leg["karat_id"]), int(leg["karat_value"]), -Decimal(str(leg["weight_delta_grams"])), code))
             if source["entry_kind"] == TRIP_ISSUE:
                 # Undoing an issue must not leave a later (unreversed) return larger than what remains in custody.
-                cash = trips.custody_cash(source["trip_id"], exclude_entry_id=source_id)
-                gold = trips.custody_gold(source["trip_id"], exclude_entry_id=source_id)
+                cash = trips.custody_cash(source["trip_id"], exclude_entry_id=source_id, current=True)
+                gold = trips.custody_gold(source["trip_id"], exclude_entry_id=source_id, current=True)
                 # Gold delivered to a supplier from this custody (046) depends on the issue of its LOGO karat (pooled per karat, newest first,
                 # even when the balance would stay non-negative).
                 logo_issued = [int(leg["karat_id"]) for leg in trips.entry_gold_legs(source_id) if leg["designation"] == "LOGO"]
@@ -459,8 +459,9 @@ class CorrectionService:
                     plan.blockers.append(("DEPENDENT_SETTLEMENT_EXISTS",
                                           "لا يمكن عكس الحمّية لأن تسوية ذهب لمورد من لوجو نفس العيار مسجلة بعدها "
                                           f"({entry_code(dependent['trip_id'], dependent['entry_no'])}) — اعكسها أولاً."))
-                if custody_rules.any_negative(trips.custody_cash(source["trip_id"], exclude_entry_id=source_id),
-                                              trips.custody_gold(source["trip_id"], exclude_entry_id=source_id), designation="LOGO"):
+                if custody_rules.any_negative(trips.custody_cash(source["trip_id"], exclude_entry_id=source_id, current=True),
+                                              trips.custody_gold(source["trip_id"], exclude_entry_id=source_id, current=True),
+                                              designation="LOGO"):
                     plan.blockers.append(("DEPENDENT_RETURN_EXISTS",
                                           "لا يمكن عكس الحمّية لأن رصيد اللوجو بعد عكسها يصبح سالبًا — اعكس ما يعتمد عليها أولاً."))
             if source["entry_kind"] == "MELT":

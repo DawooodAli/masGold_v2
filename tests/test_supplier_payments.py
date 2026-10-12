@@ -150,7 +150,7 @@ class PaymentCase(unittest.TestCase):
         return sum((m["amount_delta"] for m in self.db.bank_moves if m["account_id"] == account), D("0.00"))
 
     def state(self):
-        return copy.deepcopy({k: v for k, v in vars(self.db).items() if k not in ("fail_at", "transactions")})
+        return copy.deepcopy({k: v for k, v in vars(self.db).items() if k not in ("fail_at", "transactions", "lock_log")})
 
     def refused(self, code, call, error=SupplierRuleError):
         before = self.state()

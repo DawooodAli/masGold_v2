@@ -58,6 +58,7 @@ class Db:
                           "payment": 0, "sm_making": 0, "settlement": 0, "sup_gold": 0}
         self.fail_at = None
         self.transactions = 0
+        self.lock_log = []          # resource acquisitions in order, kept across a rollback so a refused post still shows what it locked
 
     def next(self, name):
         self.sequences[name] += 1
@@ -66,7 +67,7 @@ class Db:
     @contextmanager
     def transaction(self):
         self.transactions += 1
-        snapshot = copy.deepcopy({k: v for k, v in self.__dict__.items() if k not in ("fail_at", "transactions")})
+        snapshot = copy.deepcopy({k: v for k, v in self.__dict__.items() if k not in ("fail_at", "transactions", "lock_log")})
         try:
             yield self
         except BaseException:
@@ -148,6 +149,7 @@ class TripRepo:
     # ---- trips
     def insert_trip(self, *, notes, actor, now):
         self._fail("trip")
+        self.db.lock_log.append(("trip",))
         trip_id = self.db.next("trip")
         self.db.trips[trip_id] = {"id": trip_id, "status": "OPEN", "notes": notes, "created_by_user_id": actor.user_id,
                                   "created_at": now, "status_changed_at": now}
@@ -282,6 +284,7 @@ class TripRepo:
     # ---- lot returns to the shop (040)
     def lock_lots(self, lot_ids):
         out = []
+        self.db.lock_log.append(("lots", tuple(sorted({int(i) for i in lot_ids}))))
         for lot_id in sorted({int(i) for i in lot_ids}):
             lot = self.db.lots.get(lot_id)
             if lot is not None:
@@ -355,7 +358,7 @@ class TripRepo:
         return [e for e in self.db.entries.values()
                 if e["trip_id"] == int(trip_id) and e["id"] not in reversed_ids and e["id"] != int(exclude or 0)]
 
-    def custody_cash(self, trip_id, exclude_entry_id=None):
+    def custody_cash(self, trip_id, exclude_entry_id=None, *, current=False):
         issued = returned = paid = D("0.00")
         for e in self._live(trip_id, exclude_entry_id):
             for leg in (l for l in self.db.cash_legs if l["entry_id"] == e["id"]):
@@ -364,7 +367,7 @@ class TripRepo:
                 paid += self.db.supplier_links[e["id"]]["amount"]
         return issued, returned, paid
 
-    def custody_gold(self, trip_id, exclude_entry_id=None):
+    def custody_gold(self, trip_id, exclude_entry_id=None, *, current=False):
         out = {}
         live = self._live(trip_id, exclude_entry_id)
         for e in live:
@@ -624,6 +627,7 @@ class ScrapRepo:
         self.db = db
 
     def lock_old_gold_balance(self, karat_id):
+        self.db.lock_log.append(("scrap", int(karat_id)))
         rows = [{"id": m["id"], "weight_delta_grams": m["weight_delta"]} for m in self.db.scrap if m["karat_id"] == int(karat_id)]
         held = self.db.holds.get(int(karat_id), D("0.000"))
         return rows + ([{"id": None, "weight_delta_grams": -held}] if held else [])
@@ -637,6 +641,8 @@ class AccountsRepo:
         self.db = db
 
     def account(self, ledger, account_id, lock=False):
+        if lock:
+            self.db.lock_log.append(("account", ledger, int(account_id)))
         row = self.db.cash_accounts.get(int(account_id)) if ledger == "CASH" else None
         return None if row is None else {"id": row["id"], "name": row["name"], "account_type": "CASH", "is_active": row["is_active"]}
 
