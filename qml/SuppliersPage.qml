@@ -47,7 +47,7 @@ Item {
         function onReversalDone(code) { reverseDialog.close() }
         function onSettlementPosted(code) { goldSettleDialog.close() }
         function onSettlementReversed(code) { reverseSettlementDialog.close() }
-        function onHoldingReturned(code) { holdingReturnDialog.close() }
+        function onHoldingReturned(code) { holdingReturnDialog.close(); logoReturnDialog.close() }
     }
     Connections {
         target: page.pvm
@@ -638,6 +638,55 @@ Item {
                                     }
                                 }
                             }
+                        }
+                        // Pooled master-karat LOGO grams: a different kind of source from the assayed bars above.
+                        Txt { objectName: "logoSectionTitle"; Layout.fillWidth: true; text: "ذهب لوجو بالجرام (عيار واحد لكل مصدر)"; color: theme.gold; font.bold: true
+                              visible: (page.vm ? (page.vm.holdingsPanel.logoPools || []) : []).length > 0 }
+                        Txt { objectName: "logoSummary"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.gold
+                              visible: !!(page.vm && page.vm.holdingsPanel.logoSummary); text: page.vm ? (page.vm.holdingsPanel.logoSummary || "") : "" }
+                        Repeater {
+                            model: page.vm ? (page.vm.holdingsPanel.logoPools || []) : []
+                            delegate: Rectangle {
+                                Layout.fillWidth: true
+                                implicitHeight: logoRow.implicitHeight + 12
+                                radius: theme.radiusSmall
+                                color: theme.bgTertiary
+                                border.color: theme.border
+                                RowLayout {
+                                    id: logoRow
+                                    anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                    anchors.leftMargin: 10; anchors.rightMargin: 10
+                                    layoutDirection: Qt.RightToLeft
+                                    spacing: 10
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 2
+                                        Txt { objectName: "logoSource"; Layout.fillWidth: true; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                              text: "لوجو " + modelData.karat + " • " + modelData.document }
+                                        Txt { objectName: "logoFigures"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textSecondary
+                                              text: "المتبقي لدى المسوقجي " + modelData.outstanding + " جرام من " + modelData.initial + " جرام مُسلَّمة" }
+                                        Txt { objectName: "logoRefs"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textMuted
+                                              font.pixelSize: theme.fontTableHeader
+                                              text: modelData.custodyEntry + " • العهدة الأصلية " + modelData.tripCode + " • " + modelData.date }
+                                        Txt { objectName: "logoReason"; Layout.fillWidth: true; visible: modelData.reason !== ""; text: modelData.reason; color: theme.amber
+                                              font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                    }
+                                    Btn {
+                                        objectName: "logoReturnButton"
+                                        visible: !!page.vm && page.vm.canManageHoldings
+                                        enabled: modelData.returnable && !page.vm.returningHolding
+                                        text: "تسجيل رجوع"
+                                        primary: true
+                                        onClicked: logoReturnDialog.openFor(modelData)
+                                    }
+                                }
+                            }
+                        }
+                        Repeater {
+                            model: page.vm ? (page.vm.holdingsPanel.logoHistory || []) : []
+                            delegate: Txt { objectName: "logoHistoryRow"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                            color: modelData.reversed ? theme.textMuted : theme.textSecondary; font.pixelSize: theme.fontTableHeader
+                                            text: modelData.kindText + " " + modelData.code + " • " + modelData.text + (modelData.state !== "" ? " • " + modelData.state : "") }
                         }
                         Txt { Layout.fillWidth: true; text: "سجل التسليم والرجوع"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
                               visible: (page.vm ? (page.vm.holdingsPanel.history || []) : []).length > 0 }
@@ -1538,6 +1587,80 @@ Item {
                 }
                 Btn { objectName: "cancelHoldingReturnButton"; text: "إلغاء"; accent: theme.textSecondary
                       enabled: !!page.vm && !page.vm.returningHolding; onClicked: holdingReturnDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- return pooled LOGO grams (partial or whole) from the intermediary (OWNER only)
+    Popup {
+        id: logoReturnDialog
+        objectName: "logoReturnDialog"
+        property string poolId: ""
+        property string sourceText: ""
+        property string figuresText: ""
+        property string requestKey: ""
+        function openFor(row) {
+            if (!page.vm) return
+            poolId = row.poolId
+            sourceText = "لوجو " + row.karat + " • " + row.document
+            figuresText = "المتبقي لدى المسوقجي " + row.outstanding + " جرام • العهدة الأصلية " + row.tripCode
+            requestKey = page.vm.newRequestKey()
+            logoReturnGrams.text = ""
+            logoReturnDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            logoReturnReference.text = ""
+            logoReturnNotes.text = ""
+            page.vm.clearMessage()
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(520, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 500, 500)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { Layout.fillWidth: true; text: "تسجيل رجوع لوجو من المسوقجي"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
+            Txt { objectName: "logoReturnSource"; Layout.fillWidth: true; text: logoReturnDialog.sourceText; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            Txt { objectName: "logoReturnFigures"; Layout.fillWidth: true; text: logoReturnDialog.figuresText; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textSecondary }
+            Txt { objectName: "logoReturnRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "يرجع إلى عهدته الأصلية المفتوحة بالوزن الذي تكتبه (كليًا أو جزئيًا) حتى المتبقي من هذا المصدر. لا كسر ولا نقدية ولا مورد، ولا تأكيد سبيكة لأنه ذهب بالجرام." }
+            Flickable {
+                Layout.fillWidth: true; Layout.fillHeight: true
+                contentHeight: logoReturnForm.implicitHeight; clip: true
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: logoReturnForm
+                    width: parent.width - 12; spacing: 6
+                    Txt { Layout.fillWidth: true; text: "الوزن العائد الفعلي (جرام) *" }
+                    Field { id: logoReturnGrams; objectName: "logoReturnGrams"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+                    Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
+                    Field { id: logoReturnDate; objectName: "logoReturnDate"; Layout.fillWidth: true }
+                    Txt { Layout.fillWidth: true; text: "المرجع" }
+                    Field { id: logoReturnReference; objectName: "logoReturnReference"; Layout.fillWidth: true }
+                    Txt { Layout.fillWidth: true; text: "ملاحظات" }
+                    Field { id: logoReturnNotes; objectName: "logoReturnNotes"; Layout.fillWidth: true }
+                }
+            }
+            Txt { objectName: "logoReturnError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmLogoReturnButton"
+                    text: !!page.vm && page.vm.returningHolding ? "جارٍ الحفظ…" : "تسجيل الرجوع"
+                    primary: true
+                    enabled: logoReturnGrams.text.trim().length > 0 && logoReturnDate.text.trim().length > 0 && !!page.vm && !page.vm.returningHolding
+                    onClicked: page.vm.returnLogo(logoReturnDialog.poolId, logoReturnGrams.text, logoReturnDate.text,
+                                                  logoReturnReference.text, logoReturnNotes.text, logoReturnDialog.requestKey)
+                }
+                Btn { objectName: "cancelLogoReturnButton"; text: "إلغاء"; accent: theme.textSecondary
+                      enabled: !!page.vm && !page.vm.returningHolding; onClicked: logoReturnDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }

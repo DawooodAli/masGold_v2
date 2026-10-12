@@ -237,6 +237,13 @@ class MarketTripRepository(BaseRepository):
             "JOIN suppliers s ON s.id = d.party_id JOIN market_trip_lots l ON l.id = k.lot_id "
             "JOIN market_trip_entries oe ON oe.id = l.entry_id WHERE k.entry_id = %s", (_id(entry_id),))
 
+    def entry_logo_holding(self, entry_id):
+        """The master-karat LOGO document a LOGO_HOLD / HOLD_BACK entry posted (None for any other entry) - 049."""
+        return self._fetch_one(
+            "SELECT k.entry_id, k.document_id, k.doc_kind, k.pool_id, k.karat_id, kk.karat_value, k.weight_grams, d.party_id, s.name AS party_name "
+            "FROM market_trip_logo_hold_links k JOIN logo_holding_documents d ON d.id = k.document_id JOIN suppliers s ON s.id = d.party_id "
+            "JOIN karats kk ON kk.id = k.karat_id WHERE k.entry_id = %s", (_id(entry_id),))
+
     def entry_lot_settlement(self, entry_id):
         return self._fetch_one("""SELECT x.*, s.name AS supplier_name, l.lot_no, l.lot_kind,
             oe.trip_id AS origin_trip_id, oe.entry_no AS origin_entry_no, g.target_karat_value,
@@ -531,7 +538,21 @@ class MarketTripRepository(BaseRepository):
             WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}
             GROUP BY l.karat_id, k.karat_value, l.designation FOR SHARE OF e, l
             """, (_id(trip_id), int(exclude_entry_id or 0)))
+        held = self._fetch_all(
+            f"""
+            SELECT l.karat_id, k.karat_value, l.designation,
+                   COALESCE(SUM(IF(e.entry_kind = 'LOGO_HOLD', l.weight_grams, 0)), 0) AS held_out,
+                   COALESCE(SUM(IF(e.entry_kind = 'HOLD_BACK', l.weight_grams, 0)), 0) AS held_back
+            FROM market_trip_entries e JOIN market_trip_logo_hold_links l ON l.entry_id = e.id JOIN karats k ON k.id = l.karat_id
+            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}
+            GROUP BY l.karat_id, k.karat_value, l.designation FOR SHARE OF e, l
+            """, (_id(trip_id), int(exclude_entry_id or 0)))
         rows = {(int(r["karat_id"]), r["designation"]): {**r, "melted": 0, "heat_delta": 0, "supplier_settled": 0} for r in legs}
+        for h in held:
+            key = (int(h["karat_id"]), h["designation"])
+            row = rows.setdefault(key, {"karat_id": h["karat_id"], "karat_value": h["karat_value"], "designation": h["designation"],
+                                        "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0, "supplier_settled": 0})
+            row["held_out"], row["held_back"] = h["held_out"], h["held_back"]
         for h in heated:
             key = (int(h["karat_id"]), LOGO_DESIGNATION)
             row = rows.setdefault(key, {"karat_id": h["karat_id"], "karat_value": h["karat_value"], "designation": LOGO_DESIGNATION,
@@ -578,6 +599,7 @@ class MarketTripRepository(BaseRepository):
             row["gold_settlement"] = self.entry_gold_settlement(row["id"])
             row["lot_settlement"] = self.entry_lot_settlement(row["id"])
             row["holding"] = self.entry_holding(row["id"])
+            row["logo_holding"] = self.entry_logo_holding(row["id"])
             row["gold"] = self._fetch_all(
                 "SELECT g.karat_id, k.karat_value, g.designation, g.weight_grams FROM market_trip_entry_gold g "
                 "JOIN karats k ON k.id = g.karat_id WHERE g.entry_id = %s ORDER BY k.karat_value DESC, g.designation", (int(row["id"]),))

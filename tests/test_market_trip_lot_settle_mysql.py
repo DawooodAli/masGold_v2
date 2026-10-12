@@ -33,7 +33,7 @@ class WholeLotMySqlTests(unittest.TestCase):
         with cls.tx() as c:
             q=c.cursor(dictionary=True)
             q.execute('SELECT DATABASE() AS db, MAX(version) AS v FROM schema_migrations')
-            row=q.fetchone();assert row['db']==TARGET and row['v'] in (47,48),row;cls.version=row['v']   # an explicit pair: the code is 048-aware, so only the guard test can run at 47
+            row=q.fetchone();assert row['db']==TARGET and row['v'] in (47,48,49),row;cls.version=row['v']   # an explicit pair: the code is 048-aware, so only the guard test can run at 47
             q.execute("SELECT target_database FROM masgold_rehearsal_marker WHERE marker_key='MASGOLD_SCHEMA_REHEARSAL'")
             assert q.fetchone()['target_database']==TARGET
             q.execute("INSERT INTO employees(name) VALUES('047 rehearsal owner')");emp=q.lastrowid
@@ -219,8 +219,11 @@ class WholeLotMySqlTests(unittest.TestCase):
 
     def test_047_rollback_refuses_while_a_later_migration_exists_at_048(self):
         """At 048 the guard also refuses for the later migration; the isolated case (clean 001-048, zero 047 rows) was run by the rehearsal script."""
-        if self.version!=48:self.skipTest('needs a sandbox at 048')
-        self.rollback_refusal('later migration');self.assertEqual(self.query('SELECT MAX(version) AS v FROM schema_migrations')[0]['v'],48)
+        if self.version not in (48,49):self.skipTest('needs a sandbox at 048 or later')
+        history=sum(self.query(sql)[0]['n'] for sql in ('SELECT COUNT(*) AS n FROM market_trip_lot_settlements',"SELECT COUNT(*) AS n FROM supplier_gold_settlements WHERE source_kind='CUSTODY_LOT'",
+            "SELECT COUNT(*) AS n FROM market_trip_entries WHERE entry_kind='LOT_SETTLE'","SELECT COUNT(*) AS n FROM market_trip_lot_movements WHERE movement_type='SUPPLIER_SETTLE'"))
+        if history:self.skipTest(f'{history} 047 history rows exist: a refusal here could be the history guard, so it would not isolate the later-migration guard (needs a clean 001-048+ schema)')
+        self.rollback_refusal('later migration');self.assertEqual(self.query('SELECT MAX(version) AS v FROM schema_migrations')[0]['v'],self.version)
 
     def test_controlled_lot_block_and_current_trip_lock_without_authorization_holder(self):
         """A raw holder does not acquire actor/grant locks; this is a resource-lock probe, not a two-writer stress test."""

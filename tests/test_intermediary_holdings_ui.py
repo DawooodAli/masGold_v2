@@ -113,6 +113,112 @@ class HoldingCustodyPageTests(GoldSettlePageTests):
                 self.click("cancelCustodyLotHoldButton")
                 self.closed("tripLotHoldDialog")
 
+
+    # ------------------------------------------------------------ 049: master-karat LOGO grams
+    def prepare_logo(self, grams="20"):
+        self.open_page()
+        trip = self.tvm._service.issue("", "", [{"karat_id": "1", "weight": grams, "designation": "LOGO"}], TODAY, "", self.tvm.newRequestKey())
+        self.tvm.selectTrip(trip["trip_id"])
+        self.tvm.refresh()
+        self.wait_idle()
+        self.wait_until(lambda: self.tvm.detail.get("logoHoldAvailable"), "logo handover available")
+        return trip["trip_id"]
+
+    def open_logo_hold(self):
+        self.reveal(self.item("custodyLogoHoldButton"))
+        self.click("custodyLogoHoldButton")
+        self.wait_until(lambda: self.item("tripLogoHoldDialog").property("opened"), "logo handover dialog")
+        self.wait_until(lambda: len(self.tvm.context.get("holdParties", [])) == 3, "parties loaded")
+        QTest.qWait(120)
+
+    def fill_logo(self, grams):
+        self.pick("custodyLogoHoldPartyCombo", self.party_index(PARTY))
+        self.pick("custodyLogoHoldKaratCombo", 1)
+        self.type_in("custodyLogoHoldGramsField", grams)
+
+    def test_logo_handover_with_real_clicks_at_1080_moves_exact_grams_and_nothing_else(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        trip = self.prepare_logo()
+        before, reloads = self.untouched(), self.stub.reloads
+        self.open_logo_hold()
+        for name in ("custodyLogoHoldPartyCombo", "custodyLogoHoldKaratCombo", "custodyLogoHoldGramsField", "confirmCustodyLogoHoldButton", "cancelCustodyLogoHoldButton"):
+            self.assert_inside_window(self.item(name))
+        self.assertFalse(self.item("confirmCustodyLogoHoldButton").property("enabled"))
+        self.fill_logo("8")
+        self.assertIn("20.000", self.text("custodyLogoHoldFacts"))
+        self.assertTrue(self.item("confirmCustodyLogoHoldButton").property("enabled"))
+        self.click("confirmCustodyLogoHoldButton")
+        self.wait_until(lambda: len(self.db.logo_docs) == 1, "handover posted")
+        self.closed("tripLogoHoldDialog")
+        self.wait_idle()
+        self.assertEqual(self.untouched(), before)
+        self.wait_until(lambda: self.stub.reloads > reloads, "supplier views refreshed after the commit")
+        gold = next(g for g in self.tvm._service.trip_detail(trip)["custody"]["gold"] if g["designation"] == "LOGO")
+        self.assertEqual((gold["outstanding"], gold["held_out"]), (D("12.000"), D("8.000")))
+        self.assertIn("IG000001", " ".join(self.visible_texts("entryWhat")))
+        self.assertEqual(len(self.visible_texts("externalHoldingRow")), 1)
+        self.assertEqual(self.warnings, [])
+
+    def test_logo_handover_refusals_keep_the_fields_and_a_double_submission_posts_once(self):
+        self.prepare_logo()
+        self.open_logo_hold()
+        self.fill_logo("25")
+        self.assertFalse(self.item("confirmCustodyLogoHoldButton").property("enabled"))        # more than the effective custody
+        self.assertIn("20.000", self.text("custodyLogoHoldPreviewError"))
+        self.type_replace("custodyLogoHoldGramsField", "5")
+        self.type_in("custodyLogoHoldReferenceField", "مرجع لوجو")
+        self.db.fail_at = "logo_link"
+        self.click("confirmCustodyLogoHoldButton")
+        self.wait_idle()
+        self.assertTrue(self.item("tripLogoHoldDialog").property("opened"))
+        self.assertEqual((self.text("custodyLogoHoldGramsField"), self.text("custodyLogoHoldReferenceField")), ("5", "مرجع لوجو"))
+        self.assertEqual(self.db.logo_docs, {})
+        self.db.fail_at = None
+        self.click("confirmCustodyLogoHoldButton")
+        # a double click re-sends the SAME request key of the opened dialog: it is idempotent, never a second handover
+        self.tvm.handOverLogo(self.tvm.selectedTripId, PARTY, "1", "5", TODAY, "", "", self.item("tripLogoHoldDialog").property("requestKey"))
+        self.wait_until(lambda: len(self.db.logo_docs) == 1, "retry posted")
+        self.wait_idle()
+        self.assertEqual(len(self.db.logo_pools), 1)
+        self.assertEqual(len(self.db.logo_links), 1)
+
+    def test_the_logo_dialog_is_fully_visible_at_the_three_target_sizes(self):
+        self.prepare_logo()
+        for width, height in ((1440, 900), (1280, 800), (1080, 680)):
+            with self.subTest(size=f"{width}x{height}"):
+                self.root.setWidth(width)
+                self.root.setHeight(height)
+                QTest.qWait(200)
+                self.open_logo_hold()
+                for name in ("custodyLogoHoldPartyCombo", "custodyLogoHoldKaratCombo", "custodyLogoHoldGramsField", "custodyLogoHoldDateField",
+                             "confirmCustodyLogoHoldButton", "cancelCustodyLogoHoldButton"):
+                    self.assert_inside_window(self.item(name))
+                self.click("cancelCustodyLogoHoldButton")
+                self.closed("tripLogoHoldDialog")
+
+    def test_reversing_a_logo_handover_from_the_custody_page_restores_the_stored_grams(self):
+        trip = self.prepare_logo()
+        self.open_logo_hold()
+        self.fill_logo("8")
+        self.click("confirmCustodyLogoHoldButton")
+        self.wait_until(lambda: len(self.db.logo_docs) == 1, "posted")
+        self.closed("tripLogoHoldDialog")
+        self.wait_idle()
+        buttons = self.reverse_buttons()
+        self.reveal(buttons[-1])
+        self.click(buttons[-1])
+        self.wait_until(lambda: self.item("tripReasonDialog").property("opened"), "reversal dialog")
+        self.type_in("tripReasonField", "تسليم بالخطأ")
+        self.click("confirmTripReasonButton")
+        self.wait_until(lambda: len(self.db.corrections) == 1, "reversed")
+        self.closed("tripReasonDialog")
+        self.wait_idle()
+        gold = next(g for g in self.tvm._service.trip_detail(trip)["custody"]["gold"] if g["designation"] == "LOGO")
+        self.assertEqual(gold["outstanding"], D("20.000"))
+        self.assertEqual([m["movement_type"] for m in self.db.logo_moves], ["HANDOVER", "HANDOVER_REVERSAL"])
+        self.assertEqual(self.warnings, [])
+
     def test_unknown_assay_inactive_party_and_a_closed_custody_offer_no_handover(self):
         self.prepare([("2", "")])
         self.open_hold()
@@ -195,7 +301,8 @@ class HoldingSupplierStub:
                 "balances": {"gold_status": "NOT_APPLICABLE", "gold_karat_value": None, "gold_karat_id": None, "gold_by_karat": [], "gold_direction": None,
                              "gold_balance": None, "making_direction": "SETTLED", "making": D("0.00")},
                 "gold_ledger": [], "making_ledger": [], "holdings": {"pools": holdings["pools"], "history": holdings["history"], "total": holdings["total"],
-                                                                      "pure": holdings["pure"], "can_manage": holdings["can_manage"]}}
+                                                                      "pure": holdings["pure"], "can_manage": holdings["can_manage"],
+                                                                      "logo_pools": holdings["logo_pools"], "logo_history": holdings["logo_history"]}}
 
 
 class HoldingPartyPageTests(harness.InvoicePageTests):
@@ -339,6 +446,98 @@ class HoldingPartyPageTests(harness.InvoicePageTests):
         self.click(name)
         self.type_text(text)
         QTest.qWait(50)
+
+    # ------------------------------------------------------------ 049: master-karat LOGO grams
+    def logo_hand_over(self, grams="8", party=PARTY):
+        trip = self.trips.issue("", "", [{"karat_id": "1", "weight": "20", "designation": "LOGO"}], TODAY, "", self.key())
+        done = self.holding.hand_over_logo(trip["trip_id"], party, "1", grams, TODAY, "", "", self.key())
+        return trip["trip_id"], done
+
+    def open_logo_return(self):
+        self.reveal_party()
+        self.click("logoReturnButton")
+        self.wait_until(lambda: self.item("logoReturnDialog").property("opened"), "logo return dialog")
+        QTest.qWait(100)
+
+    def reveal_party(self):
+        QTest.qWait(50)
+
+    def test_logo_panel_partial_returns_with_real_clicks_at_1080(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        trip, done = self.logo_hand_over("8")
+        self.tvm.selectTrip(trip)
+        self.open_party()
+        self.assertTrue(self.item("logoSource").property("visible"))
+        self.assertIn("IG000001", self.text("logoSource"))
+        self.assertIn("8.000", self.text("logoFigures"))
+        self.assertIn("عيار 21", self.text("logoSummary") + self.text("logoSource"))
+        self.assertIn("MT000001-2", self.text("logoRefs"))
+        self.assert_inside_window(self.item("logoReturnButton"))
+        self.open_logo_return()
+        for name in ("logoReturnGrams", "logoReturnDate", "confirmLogoReturnButton", "cancelLogoReturnButton"):
+            self.assert_inside_window(self.item(name))
+        self.assertFalse(self.item("confirmLogoReturnButton").property("enabled"))
+        self.type_in("logoReturnGrams", "9")                                                  # more than the source holds: refused by the service
+        self.click("confirmLogoReturnButton")
+        self.wait_idle()
+        self.assertTrue(self.item("logoReturnDialog").property("opened"))
+        self.assertIn("8.000", self.text("logoReturnError"))
+        self.assertEqual(self.text("logoReturnGrams"), "9")
+        self.assertEqual(len(self.db.logo_docs), 1)
+        self.type_replace("logoReturnGrams", "3")
+        reloads = self.stub.reloads
+        self.click("confirmLogoReturnButton")
+        self.wait_until(lambda: len(self.db.logo_docs) == 2, "partial return posted")
+        self.closed("logoReturnDialog")
+        self.wait_idle()
+        self.assertEqual(self.holding.party_holdings(PARTY)["logo_pools"][0]["balance"], D("5.000"))
+        gold = next(g for g in self.trips.trip_detail(trip)["custody"]["gold"] if g["designation"] == "LOGO")
+        self.assertEqual(gold["outstanding"], D("15.000"))
+        self.wait_until(lambda: self.stub.reloads > reloads, "party reloaded after the commit")
+        self.wait_until(lambda: self.tvm.detail.get("gold") and self.tvm.detail["gold"][0]["outstanding"] == "15.000", "custody view reloaded after the commit")
+        self.open_logo_return()
+        self.type_in("logoReturnGrams", "5")
+        self.click("confirmLogoReturnButton")
+        self.wait_until(lambda: len(self.db.logo_docs) == 3, "rest returned")
+        self.closed("logoReturnDialog")
+        self.wait_idle()
+        self.assertEqual(self.holding.party_holdings(PARTY)["logo_pools"], [])
+        self.assertEqual(len(self.visible_texts("logoHistoryRow")), 3)
+        self.assertEqual(self.warnings, [])
+
+    def test_the_logo_and_bar_sections_are_distinct_and_a_closed_custody_disables_the_logo_return(self):
+        trip, done = self.logo_hand_over("4")
+        self.hand_over()
+        self.trips.return_custody(trip, "", [{"karat_id": "1", "weight": "16", "designation": "LOGO"}], TODAY, "", self.key())
+        self.trips.close(trip)
+        self.open_party()
+        self.assertTrue(self.item("holdingSource").property("visible"))
+        self.assertTrue(self.item("logoSource").property("visible"))
+        self.assertFalse(self.item("logoReturnButton").property("enabled"))
+        self.assertIn("مغلقة", self.text("logoReason"))
+        self.assertTrue(self.item("holdingReturnButton").property("enabled"))              # the bar belongs to another (open) custody
+
+    def test_the_logo_return_dialog_is_fully_visible_at_the_three_target_sizes(self):
+        self.logo_hand_over("6")
+        self.open_party()
+        for width, height in ((1440, 900), (1280, 800), (1080, 680)):
+            with self.subTest(size=f"{width}x{height}"):
+                self.root.setWidth(width)
+                self.root.setHeight(height)
+                QTest.qWait(200)
+                self.assert_inside_window(self.item("logoReturnButton"))
+                self.open_logo_return()
+                for name in ("logoReturnGrams", "logoReturnDate", "confirmLogoReturnButton", "cancelLogoReturnButton"):
+                    self.assert_inside_window(self.item(name))
+                self.click("cancelLogoReturnButton")
+                self.closed("logoReturnDialog")
+
+    def type_replace(self, name, text):
+        self.click(name)
+        QTest.keyClick(self.root, Qt.Key_A, Qt.ControlModifier)
+        self.type_text(text)
+        QTest.qWait(80)
 
     def test_the_panel_is_hidden_without_the_view_right_and_the_return_button_without_the_manage_right(self):
         self.hand_over()

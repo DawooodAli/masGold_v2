@@ -536,6 +536,12 @@ class HoldingHistoryRepo:
     def party_documents(self, party_id):
         return []
 
+    def logo_open_pools(self, *, party_id=None, trip_id=None):
+        return []
+
+    def logo_party_documents(self, party_id):
+        return []
+
 
 def build(permissions=ALL, user_id=7, employee_id=None, granted=None, session=None):
     """(db, session, authorization, SupplierService, SupplierPurchaseService) over one shared fake database."""

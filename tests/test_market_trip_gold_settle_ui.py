@@ -65,7 +65,7 @@ class GoldSettlePageTests(base.MarketTripHeatPageTests):
         def collect(node):
             if node.objectName() == "reverseEntryButton" and node.property("visible"):
                 found.append(node)
-            for child in node.childItems():
+            for child in self.child_items(node):                      # an unexpected non-item child FAILS with its type, index and ancestors
                 collect(child)
         collect(self.root.contentItem())
         return found

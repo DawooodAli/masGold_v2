@@ -52,14 +52,14 @@ from repositories.market_trip_repository import (CLOSED, CREATE_MOVEMENT, GOLD_S
                                                  MELT_DESIGNATION, OPEN, RESIDUE_LOT, RETURN, SHOP_ISSUE_MOVEMENT, SHOP_ISSUE_OUT,
                                                  SHOP_RETURN_IN, SHOP_RETURN_MOVEMENT, SOURCE, UNCLASSIFIED, MarketTripRepository,
                                                  entry_code, trip_code)
-from repositories.intermediary_holding_repository import IntermediaryHoldingRepository, holding_code
+from repositories.intermediary_holding_repository import IntermediaryHoldingRepository, holding_code, logo_holding_code
 from repositories.old_gold_conversion_repository import OldGoldConversionRepository
 from repositories.supplier_gold_settlement_repository import (CUSTODY_SOURCE_KIND, LOT_SOURCE_KIND, GOLD_MOVEMENT, SupplierGoldSettlementRepository,
                                                               settlement_code)
 from repositories.supplier_payment_repository import PAYMENT_MOVEMENT, SOURCE as SMP_SOURCE, SupplierPaymentRepository, payment_code
 from services.authorization_service import AuthorizationService
 from services.correction_rules import correction_code
-from services.intermediary_holding_rules import MANAGE_PERMISSION as MANAGE_HOLDINGS, VIEW_PERMISSION as VIEW_HOLDINGS, pool_row
+from services.intermediary_holding_rules import (MANAGE_PERMISSION as MANAGE_HOLDINGS, VIEW_PERMISSION as VIEW_HOLDINGS, logo_pool_row, pool_row)
 from services.invoice_service import invoice_transaction
 from services.number_text import normalize_digits
 from services.old_gold_availability import held_grams, shortage_message
@@ -77,7 +77,7 @@ NOTES_MAX, REASON_MAX, WORKSHOP_MAX, ASSAY_MAX, LABEL_MAX, MAX_RESIDUES = 1000, 
 ZERO_MONEY, ZERO_WEIGHT = Decimal("0.00"), Decimal("0.000")
 KIND_TEXT = {ISSUE: "إخراج عهدة", RETURN: "رجوع من العهدة", MELT: "سبك", LOT_RETURN: "رجوع ناتج السبك", LOT_ISSUE: "إخراج سبكة من المحل",
              HEAT: "حمّية اللوجو", SUPPLIER_PAY: "دفع مصنعيات من العهدة", GOLD_SETTLE: "تسوية ذهب من العهدة", LOT_SETTLE: "تسوية سبكة من العهدة",
-             "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي"}
+             "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي", "LOGO_HOLD": "تسليم لوجو لمسوقجي", "HOLD_BACK": "رجوع لوجو من مسوقجي"}
 DESIGNATION_TEXT = {MELT_DESIGNATION: "للسبك", LOGO_DESIGNATION: "لوجو", UNCLASSIFIED: "غير مصنف (قبل التصنيف)"}
 _DESIGNATION_INPUT = {"MELT": MELT_DESIGNATION, "للسبك": MELT_DESIGNATION, "LOGO": LOGO_DESIGNATION, "لوجو": LOGO_DESIGNATION,
                       "UNCLASSIFIED": UNCLASSIFIED, "غير مصنف": UNCLASSIFIED}
@@ -212,9 +212,11 @@ def custody_view(cash_rows, gold_rows, lot_rows=(), trip_id=None):
         g_issued, g_returned = Decimal(str(r["issued"])), Decimal(str(r["returned"]))
         g_melted, g_heat = Decimal(str(r.get("melted", 0) or 0)), Decimal(str(r.get("heat_delta", 0) or 0))
         g_settled = Decimal(str(r.get("supplier_settled", 0) or 0))                       # delivered to suppliers from custody (046)
+        g_held_out, g_held_back = Decimal(str(r.get("held_out", 0) or 0)), Decimal(str(r.get("held_back", 0) or 0))   # at / back from an intermediary (049)
         gold.append({"karat_id": int(r["karat_id"]), "karat_value": int(r["karat_value"]),
                      "designation": r.get("designation", UNCLASSIFIED), "issued": g_issued, "returned": g_returned,
                      "melted": g_melted, "heat_delta": g_heat, "supplier_settled": g_settled,
+                     "held_out": g_held_out, "held_back": g_held_back,
                      "outstanding": custody_rules.gold_outstanding(r)})
     lots = [{"lot_id": str(r["id"]), "entry_id": str(r["entry_id"]), "lot_no": int(r["lot_no"]), "kind": r["lot_kind"],
              "label": r.get("label") or "", "weight": Decimal(str(r["weight_grams"])),
@@ -364,8 +366,11 @@ class MarketTripService:
         if VIEW_HOLDINGS not in actor.permissions:
             return {}
         grouped = {}
-        for row in self._holdings(connection).open_pools():
+        ledger = self._holdings(connection)
+        for row in ledger.open_pools():
             grouped.setdefault(int(row["trip_id"]), []).append(pool_row(row))
+        for row in ledger.logo_open_pools():
+            grouped.setdefault(int(row["trip_id"]), []).append({**logo_pool_row(row), "logo": True})
         return grouped
 
     def trip_detail(self, trip_id, *, _expected_actor=None):
@@ -427,6 +432,10 @@ class MarketTripService:
                 "lot_settlement": None if not e.get("lot_settlement") else {
                     **MarketTripService._lot_settle_result(e, e["lot_settlement"], False),
                     "supplier_name": e["lot_settlement"]["supplier_name"]},
+                "logo_holding": None if not e.get("logo_holding") else {
+                    "document_id": str(e["logo_holding"]["document_id"]), "code": logo_holding_code(e["logo_holding"]["document_id"]),
+                    "kind": e["logo_holding"]["doc_kind"], "party_name": e["logo_holding"]["party_name"],
+                    "karat_value": int(e["logo_holding"]["karat_value"]), "weight": Decimal(str(e["logo_holding"]["weight_grams"]))},
                 "holding": None if not e.get("holding") else {
                     "document_id": str(e["holding"]["document_id"]), "code": holding_code(e["holding"]["document_id"]),
                     "kind": e["holding"]["doc_kind"], "party_id": str(e["holding"]["party_id"]), "party_name": e["holding"]["party_name"],

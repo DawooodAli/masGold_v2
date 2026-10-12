@@ -52,12 +52,13 @@ class Db:
         self.settlements, self.settlement_legs, self.sup_gold = {}, [], []                      # 045: SG documents, legs and the supplier gold ledger
         self.lot_settle_links = {}
         self.holding_pools, self.holding_docs, self.holding_moves, self.holding_links = {}, {}, [], {}      # 048
+        self.logo_pools, self.logo_docs, self.logo_moves, self.logo_links = {}, {}, [], {}                  # 049
         self.gold_settle_links = {}                                                              # 046: entry id -> the SG document it made
         self.sm_payments, self.sm_making, self.sm_legs, self.supplier_links = {}, [], [], {}
         self.shop_moves, self.lot_returns, self.lot_issues = [], [], []                      # 040/041: shop-side lot ledger, return / issue links
         self.corrections, self.audit_rows = [], []
         self.sequences = {"trip": 0, "entry": 0, "cash_move": 1, "scrap": 2, "correction": 0, "lot": 0, "lot_move": 0, "shop_move": 0,
-                          "payment": 0, "sm_making": 0, "settlement": 0, "sup_gold": 0, "pool": 0, "doc": 0, "hmove": 0}
+                          "payment": 0, "sm_making": 0, "settlement": 0, "sup_gold": 0, "pool": 0, "doc": 0, "hmove": 0, "lpool": 0, "ldoc": 0, "lmove": 0}
         self.fail_at = None
         self.transactions = 0
         self.lock_log = []          # resource acquisitions in order, kept across a rollback so a refused post still shows what it locked
@@ -195,7 +196,7 @@ class TripRepo:
 
     def insert_entry(self, *, trip_id, entry_no, kind, entry_date, notes, key, digest, actor, now):
         self._fail("entry")
-        assert kind in ("ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT", "SUPPLIER_PAY", "GOLD_SETTLE", "LOT_SETTLE", "LOT_HOLD", "HOLD_RETURN")                # chk_mte_kind
+        assert kind in ("ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT", "SUPPLIER_PAY", "GOLD_SETTLE", "LOT_SETTLE", "LOT_HOLD", "HOLD_RETURN", "LOGO_HOLD", "HOLD_BACK")                # chk_mte_kind
         if any(e["request_key"] == key for e in self.db.entries.values()):
             raise _dup("uq_mte_request")
         if any((e["trip_id"], e["entry_no"]) == (int(trip_id), entry_no) for e in self.db.entries.values()):
@@ -399,6 +400,13 @@ class TripRepo:
                     "designation": "LOGO", "issued": D("0.000"), "returned": D("0.000"), "melted": D("0.000"), "heat_delta": D("0.000"),
                     "supplier_settled": D("0.000")})
                 row["heat_delta"] += h["output_weight_grams"] - h["input_weight_grams"]
+            held = self.db.logo_links.get(e["id"])
+            if held is not None:                                                                  # 049: handed to / taken back from an intermediary
+                row = out.setdefault((held["karat_id"], "LOGO"), {
+                    "karat_id": held["karat_id"], "karat_value": self.db.karats[held["karat_id"]]["karat_value"],
+                    "designation": "LOGO", "issued": D("0.000"), "returned": D("0.000"), "melted": D("0.000"), "heat_delta": D("0.000"),
+                    "supplier_settled": D("0.000")})
+                row["held_out" if held["entry_kind"] == "LOGO_HOLD" else "held_back"] = row.get("held_out" if held["entry_kind"] == "LOGO_HOLD" else "held_back", D("0.000")) + held["weight_grams"]
             link = self.db.gold_settle_links.get(e["id"])
             if link is not None:                                                                  # 046: delivered to a supplier from custody
                 row = out.setdefault((link["karat_id"], link["designation"]), {
@@ -541,6 +549,7 @@ class TripRepo:
                          "gold_settlement": self.entry_gold_settlement(e["id"]),
                          "lot_settlement": self.entry_lot_settlement(e["id"]),
                          "holding": self.entry_holding(e["id"]),
+                         "logo_holding": self.entry_logo_holding(e["id"]),
                          "gold": [{"karat_id": g["karat_id"], "karat_value": self.db.karats[g["karat_id"]]["karat_value"],
                                    "designation": g["designation"], "weight_grams": g["weight_grams"]}
                                   for g in self.db.gold_legs if g["entry_id"] == e["id"]]})
@@ -598,6 +607,14 @@ class TripRepo:
         if x is None: return None
         h=self.db.settlements[x["settlement_id"]];l=self.db.lots[x["lot_id"]];o=self.db.entries[l["entry_id"]]
         return {**h,**x,"lot_no":l["lot_no"],"lot_kind":l["lot_kind"],"origin_trip_id":o["trip_id"],"origin_entry_no":o["entry_no"],"supplier_name":self.db.suppliers[x["supplier_id"]]["name"]}
+
+    def entry_logo_holding(self, entry_id):
+        link = self.db.logo_links.get(int(entry_id))
+        if link is None:
+            return None
+        document = self.db.logo_docs[link["document_id"]]
+        return {**link, "party_id": document["party_id"], "party_name": self.db.suppliers[document["party_id"]]["name"],
+                "karat_value": self.db.karats[link["karat_id"]]["karat_value"]}
 
     def entry_holding(self, entry_id):
         link = self.db.holding_links.get(int(entry_id))
@@ -881,7 +898,125 @@ class HoldingRepo:
 
     def history_count(self, party_id):
         return (sum(1 for p in self.db.holding_pools.values() if p["party_id"] == int(party_id))
-                + sum(1 for d in self.db.holding_docs.values() if d["party_id"] == int(party_id)))
+                + sum(1 for d in self.db.holding_docs.values() if d["party_id"] == int(party_id))
+                + sum(1 for p in self.db.logo_pools.values() if p["party_id"] == int(party_id))
+                + sum(1 for d in self.db.logo_docs.values() if d["party_id"] == int(party_id)))
+    # ---- 049: master-karat LOGO holdings
+    def insert_logo_pool(self, *, party_id, karat_id, trip_id, weight, user_id):
+        self._fail("logo_pool")
+        assert weight > 0 and int(party_id) in self.db.suppliers and int(karat_id) in self.db.karats and int(trip_id) in self.db.trips   # chk_lhp_facts + FKs
+        pool_id = self.db.next("lpool")
+        self.db.logo_pools[pool_id] = {"id": pool_id, "party_id": int(party_id), "karat_id": int(karat_id), "trip_id": int(trip_id), "weight_grams": weight}
+        return pool_id
+
+    def insert_logo_document(self, *, kind, pool, weight, document_date, reference, notes, key, digest, actor, now):
+        self._fail("logo_document")
+        stored = self.db.logo_pools[int(pool["id"])]
+        assert (stored["party_id"], stored["karat_id"], stored["trip_id"]) == (int(pool["party_id"]), int(pool["karat_id"]), int(pool["trip_id"]))   # fk_lhd_pool
+        assert kind in ("HANDOVER", "RETURN") and weight > 0
+        if kind == "HANDOVER":                                                                 # chk_lhd_shape, fk_lhd_handover, uq_lhd_one_handover
+            assert weight == stored["weight_grams"]
+            if any(d["handover_pool_id"] == int(pool["id"]) for d in self.db.logo_docs.values()):
+                raise _dup("uq_lhd_one_handover")
+        if any(d["request_key"] == key for d in self.db.logo_docs.values()):
+            raise _dup("uq_lhd_request")
+        document_id = self.db.next("ldoc")
+        self.db.logo_docs[document_id] = {
+            "id": document_id, "doc_kind": kind, "pool_id": int(pool["id"]), "party_id": int(pool["party_id"]), "karat_id": int(pool["karat_id"]),
+            "trip_id": int(pool["trip_id"]), "weight_grams": weight, "handover_pool_id": int(pool["id"]) if kind == "HANDOVER" else None,
+            "document_date": document_date, "reference": reference, "notes": notes, "request_key": key, "request_hash": digest,
+            "performed_by_user_id": actor.user_id, "occurred_at": now}
+        return document_id
+
+    def insert_logo_movement(self, *, pool_id, document_id, doc_kind, movement_type, weight, delta, correction_id=None):
+        self._fail("logo_movement")
+        document = self.db.logo_docs[int(document_id)]
+        assert (document["doc_kind"], document["pool_id"], document["weight_grams"]) == (doc_kind, int(pool_id), weight)      # fk_lhm_document
+        shapes = {"HANDOVER": ("HANDOVER", weight, False), "RETURN": ("RETURN", -weight, False),
+                  "HANDOVER_REVERSAL": ("HANDOVER", -weight, True), "RETURN_REVERSAL": ("RETURN", weight, True)}
+        kind, expected, needs_correction = shapes[movement_type]                              # chk_lhm_shape
+        assert weight > 0 and kind == doc_kind and delta == expected and (correction_id is not None) == needs_correction
+        if any((m["document_id"], m["movement_type"]) == (int(document_id), movement_type) for m in self.db.logo_moves):
+            raise _dup("uq_lhm_document_type")
+        if correction_id is not None and any(m["correction_id"] == int(correction_id) for m in self.db.logo_moves):
+            raise _dup("uq_lhm_correction")
+        move_id = self.db.next("lmove")
+        self.db.logo_moves.append({"id": move_id, "pool_id": int(pool_id), "document_id": int(document_id), "doc_kind": doc_kind,
+                                   "movement_type": movement_type, "weight_grams": weight, "weight_delta": delta,
+                                   "correction_id": None if correction_id is None else int(correction_id)})
+        return move_id
+
+    def insert_logo_link(self, *, entry_id, entry_kind, trip_id, document_id, doc_kind, pool_id, karat_id, weight):
+        self._fail("logo_link")
+        entry = self.db.entries[int(entry_id)]
+        assert (entry["entry_kind"], entry["trip_id"]) == (entry_kind, int(trip_id))          # fk_mtlhl_entry
+        document = self.db.logo_docs[int(document_id)]
+        assert (document["doc_kind"], document["pool_id"], document["karat_id"], document["weight_grams"], document["trip_id"]) == (
+            doc_kind, int(pool_id), int(karat_id), weight, int(trip_id))                      # fk_mtlhl_document
+        assert weight > 0 and (entry_kind, doc_kind) in (("LOGO_HOLD", "HANDOVER"), ("HOLD_BACK", "RETURN"))     # chk_mtlhl_shape
+        if int(entry_id) in self.db.logo_links or any(l["document_id"] == int(document_id) for l in self.db.logo_links.values()):
+            raise _dup("uq_mtlhl_document")
+        self.db.logo_links[int(entry_id)] = {"entry_id": int(entry_id), "entry_kind": entry_kind, "trip_id": int(trip_id), "document_id": int(document_id),
+                                             "doc_kind": doc_kind, "pool_id": int(pool_id), "karat_id": int(karat_id), "designation": "LOGO", "weight_grams": weight}
+
+    def logo_by_request(self, key):
+        row = next((d for d in self.db.logo_docs.values() if d["request_key"] == key), None)
+        return None if row is None else dict(row)
+
+    def lock_logo_pool(self, pool_id):
+        self.db.lock_log.append(("logo_pool", int(pool_id)))
+        row = self.db.logo_pools.get(int(pool_id))
+        return None if row is None else dict(row)
+
+    def logo_pool(self, pool_id):
+        row = self.db.logo_pools.get(int(pool_id))
+        return None if row is None else dict(row)
+
+    def logo_pool_balance(self, pool_id):
+        return sum((m["weight_delta"] for m in self.db.logo_moves if m["pool_id"] == int(pool_id)), D("0.000"))
+
+    def logo_pool_handover(self, pool_id):
+        row = next((d for d in sorted(self.db.logo_docs.values(), key=lambda d: d["id"]) if d["pool_id"] == int(pool_id) and d["doc_kind"] == "HANDOVER"), None)
+        return None if row is None else dict(row)
+
+    def logo_link_by_entry(self, entry_id):
+        link = self.db.logo_links.get(int(entry_id))
+        if link is None:
+            return None
+        document = self.db.logo_docs[link["document_id"]]
+        return {**link, "party_id": document["party_id"], "document_date": document["document_date"], "request_key": document["request_key"]}
+
+    def logo_party_documents(self, party_id):
+        rows = []
+        for d in sorted(self.db.logo_docs.values(), key=lambda d: -d["id"]):
+            if d["party_id"] != int(party_id):
+                continue
+            link = next(l for l in self.db.logo_links.values() if l["document_id"] == d["id"])
+            entry = self.db.entries[link["entry_id"]]
+            reversal = self._reversal(link["entry_id"])
+            rows.append({"document_id": d["id"], "doc_kind": d["doc_kind"], "pool_id": d["pool_id"], "weight_grams": d["weight_grams"],
+                         "document_date": d["document_date"], "reference": d["reference"], "notes": d["notes"], "occurred_at": d["occurred_at"],
+                         "actor_name": "المالك", "karat_id": d["karat_id"], "karat_value": self.db.karats[d["karat_id"]]["karat_value"],
+                         "entry_id": entry["id"], "trip_id": entry["trip_id"], "entry_no": entry["entry_no"],
+                         "trip_status": self.db.trips[entry["trip_id"]]["status"], "pool_balance": self.logo_pool_balance(d["pool_id"]),
+                         "reversal_id": reversal and int(reversal["correction_id"]), "reversal_reason": reversal and reversal["reason"]})
+        return rows
+
+    def logo_open_pools(self, *, party_id=None, trip_id=None):
+        rows = []
+        for p in sorted(self.db.logo_pools.values(), key=lambda p: -p["id"]):
+            balance = self.logo_pool_balance(p["id"])
+            if balance <= 0 or (party_id is not None and p["party_id"] != int(party_id)) or (trip_id is not None and p["trip_id"] != int(trip_id)):
+                continue
+            handover = self.logo_pool_handover(p["id"])
+            link = next(l for l in self.db.logo_links.values() if l["document_id"] == handover["id"])
+            rows.append({"pool_id": p["id"], "party_id": p["party_id"], "party_name": self.db.suppliers[p["party_id"]]["name"],
+                         "party_active": self.db.suppliers[p["party_id"]]["is_active"], "karat_id": p["karat_id"],
+                         "karat_value": self.db.karats[p["karat_id"]]["karat_value"], "weight_grams": p["weight_grams"], "trip_id": p["trip_id"],
+                         "trip_status": self.db.trips[p["trip_id"]]["status"], "handover_id": handover["id"], "document_date": handover["document_date"],
+                         "handover_entry_no": self.db.entries[link["entry_id"]]["entry_no"], "balance": balance})
+        return rows
+
 
     def pool_handover(self, pool_id):
         row = next((d for d in sorted(self.db.holding_docs.values(), key=lambda d: d["id"])
@@ -1058,7 +1193,8 @@ class SettlementRepo:
 
     def request_key_used_elsewhere(self, key):
         return (any(e["request_key"] == key for e in self.db.entries.values())
-                or any(d["request_key"] == key for d in self.db.holding_docs.values()))
+                or any(d["request_key"] == key for d in self.db.holding_docs.values())
+                or any(d["request_key"] == key for d in self.db.logo_docs.values()))
 
     def insert_header(self, *, supplier_id, delivered_karat, target_karat, delivered_weight, credited, analytical, difference, settlement_date,
                       reference, notes, key, digest, actor, now, source_kind="SHOP_SCRAP"):

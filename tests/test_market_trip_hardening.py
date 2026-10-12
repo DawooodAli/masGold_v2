@@ -206,7 +206,7 @@ class RepositorySqlTests(unittest.TestCase):
 
     def test_the_current_form_of_custody_cash_and_gold_locks_every_nested_lookup(self):
         statements = self.run_all(current=True)
-        self.assertEqual(len(statements), 6)                                       # 2 cash reads + 4 gold reads
+        self.assertEqual(len(statements), 7)                                       # 2 cash reads + 5 gold reads (legs, melts, heats, settlements, holdings)
         for sql in statements:
             self.assertEqual(len(NESTED_CURRENT.findall(sql)), 1, sql)
             self.assertNotRegex(sql, NESTED_SNAPSHOT.pattern)

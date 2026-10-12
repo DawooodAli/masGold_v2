@@ -22,7 +22,7 @@ Item {
 
     Connections {
         target: page.vm
-        function onEntryPosted(code) { entryDialog.close(); meltDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close(); payDialog.close(); goldSettleDialog.close(); lotSettleDialog.close(); lotHoldDialog.close() }
+        function onEntryPosted(code) { entryDialog.close(); meltDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close(); payDialog.close(); goldSettleDialog.close(); lotSettleDialog.close(); lotHoldDialog.close(); logoHoldDialog.close() }
         function onActionDone(operation) { reasonDialog.close() }
     }
 
@@ -287,7 +287,7 @@ Item {
             Txt { objectName: "tripMessage"; Layout.fillWidth: true; visible: !!page.vm && page.vm.message !== ""
                   text: page.vm ? page.vm.message : ""; color: theme.green; wrapMode: Text.WordWrap; elide: Text.ElideNone }
             Txt { objectName: "tripError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== "" && !entryDialog.visible && !reasonDialog.visible && !meltDialog.visible
-                           && !lotReturnDialog.visible && !lotIssueDialog.visible && !heatDialog.visible && !payDialog.visible && !goldSettleDialog.visible && !lotSettleDialog.visible && !lotHoldDialog.visible
+                           && !lotReturnDialog.visible && !lotIssueDialog.visible && !heatDialog.visible && !payDialog.visible && !goldSettleDialog.visible && !lotSettleDialog.visible && !lotHoldDialog.visible && !logoHoldDialog.visible
                   text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
 
             Txt {
@@ -341,6 +341,9 @@ Item {
                         Btn { objectName: "custodyLotHoldButton"; text: "تسليم ذهب لمسوقجي"; visible: !!page.detail.holdVisible
                               enabled: !!page.detail.holdAvailable && !!page.vm && !page.vm.writing
                               onClicked: lotHoldDialog.openFor(page.detail.id) }
+                        Btn { objectName: "custodyLogoHoldButton"; text: "تسليم لوجو لمسوقجي"; visible: !!page.detail.holdVisible
+                              enabled: !!page.detail.logoHoldAvailable && !!page.vm && !page.vm.writing
+                              onClicked: logoHoldDialog.openFor(page.detail.id) }
                         Btn { objectName: "custodyPayButton"; text: "دفع مصنعيات من العهدة"; visible: !!page.detail.open
                               enabled: !!page.detail.payAvailable && !!page.vm && !page.vm.writing
                               onClicked: payDialog.openFor(page.detail.id) }
@@ -1125,6 +1128,101 @@ Item {
                       onClicked: page.vm.handOverLot(lotHoldDialog.tripId, lotHoldDialog.partyId, lotHoldDialog.lotId,
                                                      lotHoldDate.text, lotHoldReference.text, lotHoldNotes.text, lotHoldDialog.requestKey) }
                 Btn { objectName: "cancelCustodyLotHoldButton"; text: "إلغاء"; enabled: !!page.vm && !page.vm.writing; onClicked: lotHoldDialog.close() }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- hand pooled LOGO grams to an intermediary (تسليم لوجو لمسوقجي)
+    // Physical grams of one master karat; the service derives the effective custody availability. No bar, no assay.
+    Popup {
+        id: logoHoldDialog
+        objectName: "tripLogoHoldDialog"
+        property string tripId: ""
+        property string requestKey: ""
+        readonly property var partyChoices: [{id: "", text: "اختر المسوقجي"}].concat(page.ctx.holdParties || [])
+        readonly property var karatChoices: [{karatId: "", text: "اختر عيار اللوجو"}].concat(page.detail.logoHoldSources || [])
+        readonly property string partyId: partyChoices[logoHoldParty.currentIndex] ? partyChoices[logoHoldParty.currentIndex].id : ""
+        readonly property string karatId: karatChoices[logoHoldKarat.currentIndex] ? karatChoices[logoHoldKarat.currentIndex].karatId : ""
+        readonly property var preview: {
+            var loaded = page.detail.id !== undefined && page.ctx.holdParties !== undefined
+            return loaded && page.vm ? page.vm.previewLogoHandover(partyId, karatId, logoHoldGrams.text) : ({})
+        }
+        function openFor(trip) {
+            if (!page.vm) return
+            tripId = trip
+            requestKey = page.vm.newRequestKey()
+            logoHoldParty.currentIndex = 0
+            logoHoldKarat.currentIndex = 0
+            logoHoldGrams.text = ""
+            logoHoldDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            logoHoldReference.text = ""
+            logoHoldNotes.text = ""
+            page.vm.clearMessage()
+            page.vm.refresh()
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(560, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 580, 580)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { Layout.fillWidth: true; text: "تسليم لوجو لمسوقجي"; color: theme.gold; font.bold: true }
+            Txt { objectName: "custodyLogoHoldRule"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "لوجو بالجرام الفعلي لعيار واحد من العهدة (غير محدد الهوية ولا العيار الفعلي): يخرج من العهدة ويصير ذهبًا للمحل لدى المسوقجي، وكل تسليم مصدر مستقل. لا كسر ولا نقدية ولا مصنعيات ولا دين على المورد." }
+            Flickable {
+                Layout.fillWidth: true; Layout.fillHeight: true
+                contentHeight: logoHoldForm.implicitHeight; clip: true
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: logoHoldForm
+                    width: parent.width - 12; spacing: 6
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 8
+                        Combo { id: logoHoldParty; objectName: "custodyLogoHoldPartyCombo"; Layout.fillWidth: true; model: logoHoldDialog.partyChoices; textRole: "text" }
+                        Txt { text: "المسوقجي *" }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 8
+                        Combo { id: logoHoldKarat; objectName: "custodyLogoHoldKaratCombo"; Layout.fillWidth: true; model: logoHoldDialog.karatChoices; textRole: "text" }
+                        Txt { text: "عيار اللوجو *" }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 8
+                        Field { id: logoHoldGrams; objectName: "custodyLogoHoldGramsField"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+                        Txt { text: "الوزن الفعلي (جرام) *" }
+                    }
+                    Txt { objectName: "custodyLogoHoldFacts"; Layout.fillWidth: true; text: logoHoldDialog.preview.facts || ""; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                    Txt { objectName: "custodyLogoHoldPreviewError"; Layout.fillWidth: true; text: logoHoldDialog.preview.error || ""; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 8
+                        Field { id: logoHoldDate; objectName: "custodyLogoHoldDateField"; Layout.fillWidth: true }
+                        Txt { text: "التاريخ *" }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 8
+                        Field { id: logoHoldReference; objectName: "custodyLogoHoldReferenceField"; Layout.fillWidth: true }
+                        Txt { text: "المرجع" }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 8
+                        Field { id: logoHoldNotes; objectName: "custodyLogoHoldNotesField"; Layout.fillWidth: true }
+                        Txt { text: "ملاحظات" }
+                    }
+                }
+            }
+            Txt { objectName: "custodyLogoHoldError"; Layout.fillWidth: true; text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                Btn { objectName: "confirmCustodyLogoHoldButton"; text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "تسجيل التسليم"; primary: true
+                      enabled: logoHoldDialog.preview.valid === true && logoHoldDate.text.trim().length > 0 && !!page.vm && !page.vm.writing
+                      onClicked: page.vm.handOverLogo(logoHoldDialog.tripId, logoHoldDialog.partyId, logoHoldDialog.karatId, logoHoldGrams.text,
+                                                      logoHoldDate.text, logoHoldReference.text, logoHoldNotes.text, logoHoldDialog.requestKey) }
+                Btn { objectName: "cancelCustodyLogoHoldButton"; text: "إلغاء"; enabled: !!page.vm && !page.vm.writing; onClicked: logoHoldDialog.close() }
             }
         }
     }

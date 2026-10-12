@@ -14,7 +14,7 @@ from PySide6.QtCore import QObject, Property, Signal, Slot
 
 from app.formatting import date_text, datetime_text, grams, ltr, money, number
 from services import supplier_rules as rules
-from services.intermediary_holding_rules import CONFIRMATION_TEXT, HOLDING_NOTE
+from services.intermediary_holding_rules import CONFIRMATION_TEXT, HOLDING_NOTE, LOGO_NOTE
 
 SHOP_OWES_TEXT, SUPPLIER_OWES_TEXT, SETTLED_TEXT = "علينا للمورد", "لنا عند المورد", "الحساب متوازن"
 ACCOUNT_TYPE_TEXT = {"BANK": "حساب بنكي", "MOBILE_WALLET": "محفظة"}
@@ -472,6 +472,27 @@ class SupplierViewModel(QObject):
         self.holdingReturned.emit(result["document_code"])
         self.holdingChanged.emit()
 
+    @Slot(str, str, str, str, str, str)
+    def returnLogo(self, pool_id, grams_text, return_date, reference, notes, request_key):
+        """Take back some or all of ONE master-karat LOGO source into its ORIGINAL custody (049). No intact confirmation: pooled grams."""
+        if "logoret" in self._busy:
+            return                                                     # a double click never submits twice
+        self._message = self._error = ""
+        service = self._holding_service()
+        self._start("logoret", lambda _expected_actor: service.return_logo(
+            pool_id, grams_text, return_date, reference, notes, request_key, _expected_actor=_expected_actor))
+        self.changed.emit()
+
+    def _on_logoret(self, result, error):
+        if error:
+            self._error = error                                        # the dialog stays open with every field kept
+            return
+        self._message = (f"رجوع اللوجو {result['document_code']} مسجل من قبل (لم يُسجل مرة ثانية)." if result.get("duplicate")
+                         else f"تم تسجيل رجوع اللوجو {result['document_code']} ({grams(Decimal(result['weight']))} جرام) إلى العهدة {result['trip_code']}.")
+        self.refresh()
+        self.holdingReturned.emit(result["document_code"])
+        self.holdingChanged.emit()
+
     # ------------------------------------------------------------ properties
     @Property(bool, notify=changed)
     def canViewHoldings(self):
@@ -485,7 +506,7 @@ class SupplierViewModel(QObject):
 
     @Property(bool, notify=changed)
     def returningHolding(self):
-        return "holdret" in self._busy
+        return "holdret" in self._busy or "logoret" in self._busy
 
     @Property(str, constant=True)
     def holdingConfirmationText(self):
@@ -497,7 +518,7 @@ class SupplierViewModel(QObject):
         whole document history (reversed documents stay listed). Independent of the supplier account of a dual-role party."""
         data = (self._detail or {}).get("holdings")
         supplier = (self._detail or {}).get("supplier", {})
-        if not data or not (supplier.get("is_intermediary") or data["history"]):
+        if not data or not (supplier.get("is_intermediary") or data["history"] or data.get("logo_history")):
             return {"visible": False}
         pools = [{"poolId": p["pool_id"], "source": p["source"], "weight": grams(p["balance"]), "fineness": f"{ltr(number(p['fineness'], 1))} في الألف",
                   "pure": "غير معلومة" if p["pure"] is None else number(p["pure"], 6), "document": ltr(p["document"]),
@@ -508,9 +529,20 @@ class SupplierViewModel(QObject):
                     "text": f"{h['source']} • {grams(h['weight'])} جرام • {ltr(h['custody_entry'])} • {date_text(h['date'])}"
                             + (f" • تأكيد المالك: {CONFIRMATION_TEXT}" if h["intact"] else ""),
                     "reversed": h["reversed"], "state": f"معكوس بالعملية {h['reversed_by']}" if h["reversed"] else ""} for h in data["history"]]
-        return {"visible": True, "note": HOLDING_NOTE,
+        logo_pools = [{"poolId": p["pool_id"], "karat": f"عيار {p['karat_value']}", "outstanding": grams(p["balance"]), "initial": grams(p["weight"]),
+                       "document": ltr(p["document"]), "custodyEntry": ltr(p["custody_entry"]), "tripCode": ltr(p["trip_code"]), "date": date_text(p["date"]),
+                       "returnable": bool(data["can_manage"] and p["returnable"]), "reason": p["reason"]} for p in data.get("logo_pools", [])]
+        logo_history = [{"id": h["document_id"], "code": ltr(h["code"]), "kindText": "تسليم" if h["kind"] == "HANDOVER" else "رجوع",
+                         "text": f"لوجو عيار {h['karat_value']} • {grams(h['weight'])} جرام • {ltr(h['custody_entry'])} • {date_text(h['date'])}",
+                         "reversed": h["reversed"], "state": f"معكوس بالعملية {h['reversed_by']}" if h["reversed"] else ""} for h in data.get("logo_history", [])]
+        by_karat = {}
+        for p in data.get("logo_pools", []):
+            by_karat[p["karat_value"]] = by_karat.get(p["karat_value"], Decimal("0")) + p["balance"]
+        logo_summary = (" • ".join(f"لوجو عيار {k}: {grams(v)} جرام" for k, v in sorted(by_karat.items(), reverse=True)) if by_karat else "")
+        return {"visible": True, "note": HOLDING_NOTE, "logoPools": logo_pools, "logoHistory": logo_history, "logoSummary": logo_summary,
+                "logoNote": LOGO_NOTE,
                 "summary": (f"الإجمالي لدى المسوقجي {grams(data['total'])} جرام • الذهب الصافي المعروف {number(data['pure'], 6)} جرام" if pools
-                            else "لا يوجد ذهب للمحل لدى هذا المسوقجي الآن."),
+                            else "" if logo_pools else "لا يوجد ذهب للمحل لدى هذا المسوقجي الآن."),
                 "pools": pools, "history": history, "canManage": bool(data["can_manage"])}
 
     @Property(bool, notify=changed)

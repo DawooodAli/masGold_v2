@@ -40,7 +40,8 @@ class SupplierGoldSettlementRepository(SupplierRepository):
         settlement must not reuse it. Custody-sourced settlements carry their own SG header and are found by `by_request`."""
         row = self._fetch_one(
             "SELECT (SELECT COUNT(*) FROM market_trip_entries WHERE request_key = %s FOR SHARE) "
-            "+ (SELECT COUNT(*) FROM intermediary_holding_documents WHERE request_key = %s FOR SHARE) AS used", (key, key))
+            "+ (SELECT COUNT(*) FROM intermediary_holding_documents WHERE request_key = %s FOR SHARE) "
+            "+ (SELECT COUNT(*) FROM logo_holding_documents WHERE request_key = %s FOR SHARE) AS used", (key, key, key))
         return int(row["used"]) > 0
 
     # ------------------------------------------------------------------ the settlement

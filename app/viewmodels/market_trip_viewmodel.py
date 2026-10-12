@@ -26,7 +26,7 @@ PAYMENT_REVERSAL_NOTE = ("عكس دفع المصنعيات يسجّل أن ال�
                          "لا يُعاد المبلغ تلقائيًا إلى الخزنة الرئيسية: سجّل «تسجيل رجوع» من العهدة عند إرجاعه فعلًا.")
 KIND_TEXT = {"ISSUE": "إخراج عهدة", "RETURN": "رجوع من العهدة", "MELT": "سبك", "LOT_RETURN": "رجوع ناتج السبك", "LOT_ISSUE": "إخراج سبكة من المحل",
              "HEAT": "حمّية اللوجو", "SUPPLIER_PAY": "دفع مصنعيات من العهدة", "GOLD_SETTLE": "تسوية ذهب من العهدة", "LOT_SETTLE": "تسوية سبكة من العهدة",
-             "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي"}
+             "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي", "LOGO_HOLD": "تسليم لوجو لمسوقجي", "HOLD_BACK": "رجوع لوجو من مسوقجي"}
 HOLD_REVERSE_NOTE = ("عكس التسليم يعيد الشحنة الأصلية كاملة إلى هذه العهدة ويسجّل حركة تعويض بالوزن المخزّن في ذهب المحل لدى المسوقجي؛ "
                      "تبقى حركة التسليم الأصلية في السجل. لا نقدية ولا كسر ولا مورد.")
 RETURN_REVERSE_NOTE = ("عكس الرجوع يُخرج الشحنة من هذه العهدة ويعيدها إلى ذهب المحل لدى المسوقجي بالوزن المخزّن بحركة تعويض؛ "
@@ -210,10 +210,10 @@ class MarketTripViewModel(QObject):
         # Notified only after the transaction succeeded; a failing refresh belongs to the view that failed, never to this write.
         if self._moved:
             self.custodyChanged.emit()
-        if self._operation in ("paysupplier", "goldsettle", "lotsettle", "lothold") or (self._operation == "reverse" and self._reversing_payment):
+        if self._operation in ("paysupplier", "goldsettle", "lotsettle", "lothold", "logohold") or (self._operation == "reverse" and self._reversing_payment):
             self.supplierPaymentChanged.emit()
         self._reversing_payment = False
-        if self._operation in ("issue", "create", "return", "melt", "lotreturn", "lotissue", "heat", "paysupplier", "goldsettle", "lotsettle", "lothold"):
+        if self._operation in ("issue", "create", "return", "melt", "lotreturn", "lotissue", "heat", "paysupplier", "goldsettle", "lotsettle", "lothold", "logohold"):
             self.entryPosted.emit(result["code"])
         else:
             self.actionDone.emit(self._operation)
@@ -345,7 +345,7 @@ class MarketTripViewModel(QObject):
 
     @Slot(str, str)
     def reverseEntry(self, entry_id, reason):
-        self._reversing_payment = any(e["id"] == str(entry_id) and e["kind"] in ("SUPPLIER_PAY", "GOLD_SETTLE", "LOT_SETTLE", "LOT_HOLD", "HOLD_RETURN")
+        self._reversing_payment = any(e["id"] == str(entry_id) and e["kind"] in ("SUPPLIER_PAY", "GOLD_SETTLE", "LOT_SETTLE", "LOT_HOLD", "HOLD_RETURN", "LOGO_HOLD", "HOLD_BACK")
                                       for e in (self._detail or {}).get("entries", []))
         self._write("reverse", "تم عكس الحركة", lambda s, a: s.reverse(entry_id, reason, _expected_actor=a), True)
 
@@ -361,6 +361,34 @@ class MarketTripViewModel(QObject):
         holding = self._holding_service()
         self._write("lothold", "تم تسليم الذهب للمسوقجي", lambda s, a: holding.hand_over_lot(
             trip_id, party_id, lot_id, handover_date, reference, notes, request_key, _expected_actor=a), False)
+
+    @Slot(str, str, str, str, str, str, str, str)
+    def handOverLogo(self, trip_id, party_id, karat_id, grams_text, handover_date, reference, notes, request_key):
+        """Hand pooled LOGO grams of one master karat to an intermediary. Only ids and typed text are sent: the service derives the effective
+        custody availability, re-checks every right and posts atomically."""
+        holding = self._holding_service()
+        self._write("logohold", "تم تسليم اللوجو للمسوقجي", lambda s, a: holding.hand_over_logo(
+            trip_id, party_id, karat_id, grams_text, handover_date, reference, notes, request_key, _expected_actor=a), False)
+
+    @Slot(str, str, str, result="QVariantMap")
+    def previewLogoHandover(self, party_id, karat_id, grams_text):
+        empty = {"valid": False, "error": "", "facts": ""}
+        if not self._detail or not party_id or not karat_id:
+            return empty
+        line = next((g for g in self._detail["custody"]["gold"] if str(g["karat_id"]) == str(karat_id) and g["designation"] == "LOGO"), None)
+        party = next((p for p in self._context.get("intermediaries", []) if p["id"] == str(party_id)), None)
+        if line is None or party is None:
+            return {**empty, "error": "اختر المسوقجي وعيار اللوجو."}
+        facts = f"لوجو عيار {line['karat_value']} • المتاح في العهدة {grams(line['outstanding'])} جرام"
+        if not str(grams_text or "").strip():
+            return {**empty, "facts": facts}
+        from services.market_trip_service import parse_weight
+        try:
+            quantity = parse_weight(grams_text)
+            self._holding_service().logo_handover_check(line["outstanding"], quantity, {"is_intermediary": True, "is_active": party["active"]})
+        except TripError as exc:
+            return {**empty, "facts": facts, "error": str(exc)}
+        return {**empty, "valid": True, "facts": facts + f" • يُسلَّم {grams(quantity)} جرام"}
 
     @Slot(str, str, result="QVariantMap")
     def previewHandover(self, party_id, lot_id):
@@ -511,9 +539,16 @@ class MarketTripViewModel(QObject):
             "holdVisible": is_open and self._holding_service().can_manage(),
             "holdAvailable": is_open and any(p["active"] for p in self._context.get("intermediaries", [])) and any(
                 l["outstanding"] == l["weight"] and l["fineness"] is not None for l in custody["lots"]),
-            "externalHoldings": [{"poolId": p["pool_id"], "party": p["party_name"] + ("" if p["party_active"] else " (متوقف)"), "source": p["source"],
-                                  "text": f"{p['party_name']} • {p['source']} • {grams(p['balance'])} جرام • العيار الفعلي {fineness_text(p['fineness'])} • {p['document']}"}
+            "externalHoldings": [{"poolId": p["pool_id"], "party": p["party_name"] + ("" if p["party_active"] else " (متوقف)"),
+                                  "source": f"لوجو عيار {p['karat_value']}" if p.get("logo") else p["source"],
+                                  "text": (f"{p['party_name']} • لوجو عيار {p['karat_value']} (جرام فعلي) • المتبقي {grams(p['balance'])} من {grams(p['weight'])} جرام • {p['document']}"
+                                           if p.get("logo") else
+                                           f"{p['party_name']} • {p['source']} • {grams(p['balance'])} جرام • العيار الفعلي {fineness_text(p['fineness'])} • {p['document']}")}
                                  for p in d.get("external_holdings", [])],
+            "logoHoldSources": [{"karatId": str(g["karat_id"]), "text": f"عيار {g['karat_value']} — المتاح للتسليم {grams(g['outstanding'])} جرام"}
+                                for g in gold if g["designation"] == "LOGO" and g["outstanding"] > 0],
+            "logoHoldAvailable": is_open and any(p["active"] for p in self._context.get("intermediaries", []))
+                                 and any(g["designation"] == "LOGO" and g["outstanding"] > 0 for g in gold),
             "externalNote": CLOSURE_NOTE if d.get("external_holdings") else "",
             "cash": {"issued": money(custody["cash"]["issued"]), "returned": money(custody["cash"]["returned"]),
                      "paid": money(custody["cash"]["paid"]), "hasPaid": custody["cash"]["paid"] != 0,
@@ -524,6 +559,7 @@ class MarketTripViewModel(QObject):
                       "returned": grams(g["returned"]), "melted": grams(g["melted"]), "outstanding": grams(g["outstanding"]),
                       "heated": grams(g["heat_delta"], signed=True) if g["designation"] == "LOGO" and g.get("heat_delta") else "",
                       "settled": grams(g["supplier_settled"]) if g.get("supplier_settled") else "",
+                      "held": grams(g["held_out"] - g["held_back"]) if g.get("held_out") or g.get("held_back") else "",
                       "zero": g["outstanding"] == 0} for g in gold],
             "lots": [{"lotId": l["lot_id"], "title": f"{LOT_TEXT[l['kind']]} — الحركة {l['entry_no']}"
                       + (f" • {l['label']}" if l["label"] else "")
@@ -567,6 +603,9 @@ class MarketTripViewModel(QObject):
                                f"{settlement['karat_value']} ({DESIGNATION_TEXT[settlement['designation']]}) ← احتُسب {grams(settlement['credited_weight'])} جرام "
                                f"عيار {settlement['target_karat']} • القيمة التحليلية {number(settlement['analytical'], 6)} • فرق التقريب "
                                f"{number(settlement['rounding_difference'], 6, signed=True)}")
+        logo_holding = e.get("logo_holding")
+        if logo_holding:
+            parts.append(f"{logo_holding['code']} — {logo_holding['party_name']} • لوجو عيار {logo_holding['karat_value']}: {grams(logo_holding['weight'])} جرام")
         holding = e.get("holding")
         if holding:
             parts.append(f"{holding['code']} — {holding['party_name']} • {LOT_TEXT[holding['lot_kind']]} • {holding['origin']} • شحنة {holding['lot_no']}: "

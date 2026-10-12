@@ -3,6 +3,7 @@
 Every caller uses these functions, so posting, return checks, closure and the correction guards can never disagree:
 
   gold (per karat and designation)   outstanding = issued - returned - melted + effective heating differences - effective supplier settlements
+                                                   - handed to an intermediary (held_out) + taken back from it (held_back)   (049, LOGO only)
   cash                               outstanding = issued - returned - paid to suppliers
 
 The inputs are the repository's derived sums over the entries that were NOT reversed (a reversed entry simply stops counting), so a
@@ -19,9 +20,9 @@ def _dec(value):
 def gold_outstanding(row):
     """Grams of one (karat, designation) still in custody. `row` is a repository row (issued / returned / melted / heat_delta /
     supplier_settled); the Logo heating difference is signed and only ever non-zero on LOGO, a melt only on MELT, a supplier settlement
-    (046) only on LOGO in this slice."""
+    (046) only on LOGO in this slice; held_out / held_back (049) are the effective LOGO handovers to and returns from an intermediary."""
     return (_dec(row.get("issued")) - _dec(row.get("returned")) - _dec(row.get("melted")) + _dec(row.get("heat_delta"))
-            - _dec(row.get("supplier_settled")))
+            - _dec(row.get("supplier_settled")) - _dec(row.get("held_out")) + _dec(row.get("held_back")))
 
 
 def cash_outstanding(issued, returned, paid=0):
