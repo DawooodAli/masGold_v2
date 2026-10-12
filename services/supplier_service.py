@@ -12,6 +12,7 @@ from decimal import Decimal
 
 from mysql.connector import IntegrityError
 
+from repositories.intermediary_holding_repository import IntermediaryHoldingRepository
 from repositories.market_trip_repository import entry_code as _custody_code
 from repositories.supplier_gold_settlement_repository import settlement_code as _settlement_code
 from repositories.supplier_payment_repository import payment_code as _payment_code
@@ -19,6 +20,8 @@ from repositories.supplier_repository import SupplierRepository
 from services import supplier_rules as rules
 from services.authorization_service import AuthorizationService
 from services.correction_rules import correction_code
+from services.intermediary_holding_rules import (MANAGE_PERMISSION as MANAGE_HOLDINGS, TRIP_PERMISSION as TRIP_MANAGE, VIEW_PERMISSION as VIEW_HOLDINGS,
+                                                 document_row, pool_row)
 from services.invoice_service import invoice_transaction
 from services.number_text import normalize_digits
 
@@ -72,8 +75,9 @@ def balance_row(supplier, gold_rows, making_balance):
 
 class SupplierService:
     def __init__(self, session, *, transaction_factory=invoice_transaction, repository=SupplierRepository,
-                 authorization=None):
+                 authorization=None, holdings=IntermediaryHoldingRepository):
         self._session, self._transaction, self._repository = session, transaction_factory, repository
+        self._holdings = holdings
         self._authorization = authorization or AuthorizationService(session)
 
     # ------------------------------------------------------------------ UI hints (never the authority)
@@ -138,7 +142,8 @@ class SupplierService:
             history = repository.history_karats(supplier_id)
             gold = repository.gold_ledger(supplier_id)
             making = repository.making_ledger(supplier_id)
-        return {"supplier": {"id": str(supplier["id"]), "code": rules.supplier_code(supplier["id"]),
+            holdings = self._holdings_view(connection, actor, supplier_id)
+        return {"holdings": holdings, "supplier": {"id": str(supplier["id"]), "code": rules.supplier_code(supplier["id"]),
                              "name": supplier["name"], "phone": supplier["phone"] or "",
                              "notes": supplier["notes"] or "", "is_active": bool(supplier["is_active"]),
                              "karat_id": supplier["karat_id"],
@@ -173,6 +178,22 @@ class SupplierService:
                                                            f" • {_custody_code(r['reversed_custody_trip_id'], r['reversed_custody_entry_no'])}"))}
                                 for r in gold],
                 "making_ledger": [self._making_row(r) for r in making]}
+
+    def _holdings_view(self, connection, actor, supplier_id):
+        """«ذهب المحل لدى المسوقجي»: shop-owned whole lots at this party, for an actor with INTERMEDIARY_HOLDING_VIEW (re-checked against the
+        database). Independent of the supplier account: a dual-role party keeps both, never combined. None when the actor may not see it."""
+        if VIEW_HOLDINGS not in actor.permissions:
+            return None
+        try:
+            self._authorization.require_permission_read(connection, actor, VIEW_HOLDINGS)
+        except PermissionError:
+            return None
+        ledger = self._holdings(connection)
+        pools = [pool_row(r) for r in ledger.open_pools(party_id=supplier_id)]
+        return {"pools": pools, "history": [document_row(r) for r in ledger.party_documents(supplier_id)],
+                "total": sum((p["balance"] for p in pools), Decimal("0.000")),
+                "pure": sum((p["pure"] for p in pools if p["pure"] is not None), Decimal("0")),
+                "can_manage": {MANAGE_HOLDINGS, TRIP_MANAGE} <= set(actor.permissions)}
 
     @staticmethod
     def _making_row(r):
@@ -257,6 +278,11 @@ class SupplierService:
                 now_intermediary = was_intermediary if is_intermediary is None else bool(is_intermediary)
                 rules.validate_roles(now_supplier, now_intermediary)
                 changed_karat = None
+                if was_intermediary and not now_intermediary:
+                    # Under the party row lock, a CURRENT read: any holding pool or document (reversed ones too) keeps the intermediary role.
+                    if self._holdings(connection).history_count(supplier_id):
+                        raise rules.SupplierRuleError("ROLE_HISTORY_EXISTS", "لا يمكن إزالة دور المسوقجي: له حركات ذهب لدى المسوقجي سابقة "
+                                                      "(حتى المعكوسة). أوقفه بدلًا من ذلك.")
                 if was_supplier and not now_supplier:
                     # Under the supplier row lock: any invoice (cancelled included), payment or ledger row keeps the supplier role.
                     if repository.role_history_count(supplier_id):

@@ -226,7 +226,8 @@ class SupplierRepo:
         sid = int(supplier_id)
         return (sum(1 for i in self.db.invoices.values() if i["supplier_id"] == sid)
                 + sum(1 for m in self.db.gold if m["supplier_id"] == sid)
-                + sum(1 for m in self.db.making if m["supplier_id"] == sid))
+                + sum(1 for m in self.db.making if m["supplier_id"] == sid)
+                + getattr(self.db, "holding_history", {}).get(sid, 0))                         # 048: a holding pool / document
 
     def delete_supplier(self, supplier_id):
         del self.db.suppliers[int(supplier_id)]
@@ -519,6 +520,23 @@ class Barcodes:
         return f"{self.db.next('barcode'):02d}{for_date:%y%m%d}"
 
 
+class HoldingHistoryRepo:
+    """The slice of IntermediaryHoldingRepository the Supplier Master uses: the history count (a pool or document, reversed ones included) and the
+    two display reads. db.holding_history maps party id -> number of pools + documents."""
+
+    def __init__(self, db):
+        self.db = db
+
+    def history_count(self, party_id):
+        return getattr(self.db, "holding_history", {}).get(int(party_id), 0)
+
+    def open_pools(self, *, party_id=None, trip_id=None):
+        return []
+
+    def party_documents(self, party_id):
+        return []
+
+
 def build(permissions=ALL, user_id=7, employee_id=None, granted=None, session=None):
     """(db, session, authorization, SupplierService, SupplierPurchaseService) over one shared fake database."""
     db = Db()
@@ -526,7 +544,7 @@ def build(permissions=ALL, user_id=7, employee_id=None, granted=None, session=No
     authorization = FakeAuthorization(session, granted)
     inventory = InventoryService(repository=InventoryRepo)
     suppliers = SupplierService(session, transaction_factory=db.transaction, repository=SupplierRepo,
-                                authorization=authorization)
+                                authorization=authorization, holdings=HoldingHistoryRepo)
     purchases = SupplierPurchaseService(session, transaction_factory=db.transaction, repository=PurchaseRepo,
                                         barcodes=Barcodes, inventory=inventory, authorization=authorization)
     return db, session, authorization, suppliers, purchases

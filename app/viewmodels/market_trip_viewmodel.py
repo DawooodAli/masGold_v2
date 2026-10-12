@@ -13,6 +13,7 @@ from PySide6.QtCore import QObject, Property, Signal, Slot
 from app.formatting import date_text, datetime_text, grams, ltr, money, number
 from app.viewmodels.supplier_viewmodel import making_position_text
 from services import supplier_rules as rules
+from services.intermediary_holding_rules import CLOSURE_NOTE
 from services.market_trip_service import TripError
 
 LIMITATION = ("في هذه المرحلة لا توجد عمليات بيع. من العهدة يمكن دفع مصنعيات المورد نقدًا وتسوية ذهب اللوجو للمورد (تُسوّى أيضًا شحنة معايَرة كاملة للمورد): "
@@ -24,7 +25,12 @@ GOLD_SETTLE_REVERSAL_NOTE = ("عكس تسوية الذهب يسجّل أن ال�
 PAYMENT_REVERSAL_NOTE = ("عكس دفع المصنعيات يسجّل أن المبلغ عاد فعلًا إلى عهدة السوق (بالمبلغ المخزّن في الدفعة) ويعيد مستحقات المورد بنفس المبلغ. "
                          "لا يُعاد المبلغ تلقائيًا إلى الخزنة الرئيسية: سجّل «تسجيل رجوع» من العهدة عند إرجاعه فعلًا.")
 KIND_TEXT = {"ISSUE": "إخراج عهدة", "RETURN": "رجوع من العهدة", "MELT": "سبك", "LOT_RETURN": "رجوع ناتج السبك", "LOT_ISSUE": "إخراج سبكة من المحل",
-             "HEAT": "حمّية اللوجو", "SUPPLIER_PAY": "دفع مصنعيات من العهدة", "GOLD_SETTLE": "تسوية ذهب من العهدة", "LOT_SETTLE": "تسوية سبكة من العهدة"}
+             "HEAT": "حمّية اللوجو", "SUPPLIER_PAY": "دفع مصنعيات من العهدة", "GOLD_SETTLE": "تسوية ذهب من العهدة", "LOT_SETTLE": "تسوية سبكة من العهدة",
+             "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي"}
+HOLD_REVERSE_NOTE = ("عكس التسليم يعيد الشحنة الأصلية كاملة إلى هذه العهدة ويسجّل حركة تعويض بالوزن المخزّن في ذهب المحل لدى المسوقجي؛ "
+                     "تبقى حركة التسليم الأصلية في السجل. لا نقدية ولا كسر ولا مورد.")
+RETURN_REVERSE_NOTE = ("عكس الرجوع يُخرج الشحنة من هذه العهدة ويعيدها إلى ذهب المحل لدى المسوقجي بالوزن المخزّن بحركة تعويض؛ "
+                       "تبقى حركة الرجوع الأصلية وتأكيد المالك في السجل.")
 DESIGNATION_TEXT = {"MELT": "للسبك", "LOGO": "لوجو", "UNCLASSIFIED": "غير مصنف (قبل التصنيف)"}
 DESIGNATION_CHOICES = [{"id": "MELT", "text": "للسبك"}, {"id": "LOGO", "text": "لوجو"}]
 LOT_TEXT = {"MAIN": "الناتج الرئيسي", "RESIDUE": "رواسب"}
@@ -60,9 +66,9 @@ class MarketTripViewModel(QObject):
     supplierPaymentChanged = Signal()    # a supplier payment OR gold settlement from custody was posted or reversed: the supplier views reload from the database
     custodyChanged = Signal()            # cash / Scrap really moved: every balance view reloads from the database
 
-    def __init__(self, session, service=None, parent=None):
+    def __init__(self, session, service=None, parent=None, holdings=None):
         super().__init__(parent)
-        self._session, self._service = session, service
+        self._session, self._service, self._holdings = session, service, holdings
         self._workers, self._request, self._latest, self._busy = set(), 0, {}, set()
         self._shutdown = False
         self._trips, self._detail, self._context, self._shop_lots = [], {}, {}, []
@@ -75,6 +81,12 @@ class MarketTripViewModel(QObject):
             from services.market_trip_service import MarketTripService
             self._service = MarketTripService(self._session)
         return self._service
+
+    def _holding_service(self):
+        if self._holdings is None:
+            from services.intermediary_holding_service import IntermediaryHoldingService
+            self._holdings = IntermediaryHoldingService(self._session)
+        return self._holdings
 
     def _start(self, operation, call):
         from app.workers.invoice_worker import InvoiceWorker
@@ -187,7 +199,7 @@ class MarketTripViewModel(QObject):
             return
         text = self._done_text
         if isinstance(result, dict) and result.get("code"):
-            reference = result.get("payment_code") or result.get("settlement_code")
+            reference = result.get("payment_code") or result.get("settlement_code") or result.get("document_code")
             text = f"{text} {result['code']}" + (f" ({reference})" if reference else "")
             if result.get("duplicate"):
                 text = f"{self._done_text} {result['code']} (مسجلة من قبل)"
@@ -198,10 +210,10 @@ class MarketTripViewModel(QObject):
         # Notified only after the transaction succeeded; a failing refresh belongs to the view that failed, never to this write.
         if self._moved:
             self.custodyChanged.emit()
-        if self._operation in ("paysupplier", "goldsettle", "lotsettle") or (self._operation == "reverse" and self._reversing_payment):
+        if self._operation in ("paysupplier", "goldsettle", "lotsettle", "lothold") or (self._operation == "reverse" and self._reversing_payment):
             self.supplierPaymentChanged.emit()
         self._reversing_payment = False
-        if self._operation in ("issue", "create", "return", "melt", "lotreturn", "lotissue", "heat", "paysupplier", "goldsettle", "lotsettle"):
+        if self._operation in ("issue", "create", "return", "melt", "lotreturn", "lotissue", "heat", "paysupplier", "goldsettle", "lotsettle", "lothold"):
             self.entryPosted.emit(result["code"])
         else:
             self.actionDone.emit(self._operation)
@@ -333,7 +345,7 @@ class MarketTripViewModel(QObject):
 
     @Slot(str, str)
     def reverseEntry(self, entry_id, reason):
-        self._reversing_payment = any(e["id"] == str(entry_id) and e["kind"] in ("SUPPLIER_PAY", "GOLD_SETTLE", "LOT_SETTLE")
+        self._reversing_payment = any(e["id"] == str(entry_id) and e["kind"] in ("SUPPLIER_PAY", "GOLD_SETTLE", "LOT_SETTLE", "LOT_HOLD", "HOLD_RETURN")
                                       for e in (self._detail or {}).get("entries", []))
         self._write("reverse", "تم عكس الحركة", lambda s, a: s.reverse(entry_id, reason, _expected_actor=a), True)
 
@@ -341,6 +353,31 @@ class MarketTripViewModel(QObject):
     def settleLot(self, trip_id, supplier_id, lot_id, settlement_date, reference, notes, request_key):
         self._write("lotsettle", "تمت تسوية السبكة من العهدة", lambda s, a: s.settle_supplier_lot(
             trip_id, supplier_id, lot_id, settlement_date, reference, notes, request_key, _expected_actor=a), False)
+
+    @Slot(str, str, str, str, str, str, str)
+    def handOverLot(self, trip_id, party_id, lot_id, handover_date, reference, notes, request_key):
+        """Hand one WHOLE known-assay lot of this custody to an intermediary (تسليم ذهب لمسوقجي). Only ids and typed text are sent: the service
+        derives the full weight under the locks, re-checks every right and posts atomically. No cash, Scrap, making, supplier or shop-lot movement."""
+        holding = self._holding_service()
+        self._write("lothold", "تم تسليم الذهب للمسوقجي", lambda s, a: holding.hand_over_lot(
+            trip_id, party_id, lot_id, handover_date, reference, notes, request_key, _expected_actor=a), False)
+
+    @Slot(str, str, result="QVariantMap")
+    def previewHandover(self, party_id, lot_id):
+        empty = {"valid": False, "error": "", "facts": "", "note": ""}
+        if not self._detail or not party_id or not lot_id:
+            return empty
+        lot = next((l for l in self._detail["custody"]["lots"] if l["lot_id"] == str(lot_id)), None)
+        party = next((p for p in self._context.get("intermediaries", []) if p["id"] == str(party_id)), None)
+        if lot is None or party is None:
+            return {**empty, "error": "اختر الشحنة والمسوقجي."}
+        facts = (f"{LOT_TEXT[lot['kind']]} • {lot['code']} • شحنة {lot['lot_no']} • {grams(lot['weight'])} جرام • العيار الفعلي {fineness_text(lot['fineness'])}")
+        try:
+            self._holding_service().handover_check(lot, {"is_intermediary": True, "is_active": party["active"]})
+        except TripError as exc:
+            return {**empty, "facts": facts, "error": str(exc)}
+        return {**empty, "valid": True, "facts": facts,
+                "note": "تخرج السبكة كاملة من العهدة وتُسجَّل ذهبًا للمحل لدى المسوقجي (ليس دينًا للمورد ولا بيعًا)، وتعود إلى هذه العهدة بالرجوع."}
 
     @Slot(str, str, result="QVariantMap")
     def previewLotSettlement(self, supplier_id, lot_id):
@@ -393,7 +430,9 @@ class MarketTripViewModel(QObject):
     @Property("QVariantList", notify=changed)
     def trips(self):
         return [{"id": t["id"], "code": t["code"], "status": t["status"], "statusText": STATUS_TEXT[t["status"]],
-                 "outstandingText": outstanding_text(t["custody"]), "settled": t["custody"]["settled"],
+                 "outstandingText": outstanding_text(t["custody"]) + (
+                     " • ذهب خارج المحل لدى مسوقجي: " + grams(sum((p["balance"] for p in t.get("external_holdings", [])), Decimal("0"))) + " جرام"
+                     if t.get("external_holdings") else ""), "settled": t["custody"]["settled"],
                  "entryCount": t["entry_count"], "date": date_text(t["created_at"]), "selected": t["id"] == self._selected}
                 for t in self._trips]
 
@@ -429,6 +468,7 @@ class MarketTripViewModel(QObject):
                 "safeBalanceText": "" if safe is None else money(safe["balance"]),
                 "karats": [{"id": str(k["id"]), "text": f"عيار {k['karat_value']}"} for k in c["karats"]],
                 "designations": DESIGNATION_CHOICES,
+                "holdParties": [{"id": r["id"], "text": r["name"] + ("" if r["active"] else " (متوقف)")} for r in c.get("intermediaries", [])],
                 "suppliers": [{"id": r["id"], "text": r["name"] + ("" if r["active"] else " (متوقف)") + " — "
                                + making_position_text(rules.direction(r["making_balance"]), r["making_balance"])} for r in c.get("suppliers", [])],
                 # the gold-settlement dialog: the supplier's DEDICATED karat is what the credit is converted into
@@ -461,11 +501,20 @@ class MarketTripViewModel(QObject):
         return {
             "id": trip["id"], "code": trip["code"], "open": is_open, "statusText": STATUS_TEXT[trip["status"]],
             "closable": is_open and settled,
-            "closeHint": "" if not is_open else ("لا متبقي في العهدة: يمكن إغلاق العهدة." if settled
+            "closeHint": "" if not is_open else (("لا متبقي في العهدة: يمكن إغلاق العهدة." + ((" " + CLOSURE_NOTE) if d.get("external_holdings") else "")) if settled
                                                   else "لا يمكن الإغلاق قبل تصفية المتبقي: " + outstanding_text(custody)),
             "lotSettleSources": [{"id": l["lot_id"], "text": f"{LOT_TEXT[l['kind']]} • {l['code']} • شحنة {l['lot_no']} • {grams(l['weight'])} جرام",
                                   "known": l["fineness"] is not None} for l in custody["lots"] if l["outstanding"] > 0],
             "lotSettleAvailable": is_open and any(l["outstanding"] == l["weight"] and l["fineness"] is not None for l in custody["lots"]),
+            "holdSources": [{"id": l["lot_id"], "text": f"{LOT_TEXT[l['kind']]} • {l['code']} • شحنة {l['lot_no']} • {grams(l['weight'])} جرام • {fineness_text(l['fineness'])}"}
+                            for l in custody["lots"] if l["outstanding"] == l["weight"] and l["fineness"] is not None],
+            "holdVisible": is_open and self._holding_service().can_manage(),
+            "holdAvailable": is_open and any(p["active"] for p in self._context.get("intermediaries", [])) and any(
+                l["outstanding"] == l["weight"] and l["fineness"] is not None for l in custody["lots"]),
+            "externalHoldings": [{"poolId": p["pool_id"], "party": p["party_name"] + ("" if p["party_active"] else " (متوقف)"), "source": p["source"],
+                                  "text": f"{p['party_name']} • {p['source']} • {grams(p['balance'])} جرام • العيار الفعلي {fineness_text(p['fineness'])} • {p['document']}"}
+                                 for p in d.get("external_holdings", [])],
+            "externalNote": CLOSURE_NOTE if d.get("external_holdings") else "",
             "cash": {"issued": money(custody["cash"]["issued"]), "returned": money(custody["cash"]["returned"]),
                      "paid": money(custody["cash"]["paid"]), "hasPaid": custody["cash"]["paid"] != 0,
                      "outstanding": money(custody["cash"]["outstanding"]), "zero": custody["cash"]["outstanding"] == 0,
@@ -518,6 +567,10 @@ class MarketTripViewModel(QObject):
                                f"{settlement['karat_value']} ({DESIGNATION_TEXT[settlement['designation']]}) ← احتُسب {grams(settlement['credited_weight'])} جرام "
                                f"عيار {settlement['target_karat']} • القيمة التحليلية {number(settlement['analytical'], 6)} • فرق التقريب "
                                f"{number(settlement['rounding_difference'], 6, signed=True)}")
+        holding = e.get("holding")
+        if holding:
+            parts.append(f"{holding['code']} — {holding['party_name']} • {LOT_TEXT[holding['lot_kind']]} • {holding['origin']} • شحنة {holding['lot_no']}: "
+                         f"{grams(holding['weight'])} جرام • العيار الفعلي {fineness_text(holding['fineness'])}")
         lot_settlement = e.get("lot_settlement")
         if lot_settlement:
             parts.append(f"{lot_settlement['settlement_code']} — المورد {lot_settlement['supplier_name']} • "
@@ -534,7 +587,7 @@ class MarketTripViewModel(QObject):
                 "date": date_text(e["date"]), "time": datetime_text(e["at"]), "actor": e["actor"],
                 "notes": e["notes"], "reversed": e["reversed"],
                 "state": f"معكوسة بالعملية {e['reversal_code']}" if e["reversed"] else "",
-                "reverseNote": "عكس التسوية يعيد الشحنة الأصلية كاملة إلى نفس العهدة ويعيد رصيد المورد بالكمية المخزّنة؛ لا حركة بالمحل." if e["kind"] == "LOT_SETTLE" else PAYMENT_REVERSAL_NOTE if e["kind"] == "SUPPLIER_PAY" else GOLD_SETTLE_REVERSAL_NOTE if e["kind"] == "GOLD_SETTLE" else "",
+                "reverseNote": HOLD_REVERSE_NOTE if e["kind"] == "LOT_HOLD" else RETURN_REVERSE_NOTE if e["kind"] == "HOLD_RETURN" else "عكس التسوية يعيد الشحنة الأصلية كاملة إلى نفس العهدة ويعيد رصيد المورد بالكمية المخزّنة؛ لا حركة بالمحل." if e["kind"] == "LOT_SETTLE" else PAYMENT_REVERSAL_NOTE if e["kind"] == "SUPPLIER_PAY" else GOLD_SETTLE_REVERSAL_NOTE if e["kind"] == "GOLD_SETTLE" else "",
                 "reason": e["reversal_reason"] or "", "canReverse": trip_open and not e["reversed"]}
 
     @staticmethod

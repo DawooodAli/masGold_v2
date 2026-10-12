@@ -14,6 +14,7 @@ ISSUE, RETURN, MELT, LOT_RETURN, LOT_ISSUE, HEAT = "ISSUE", "RETURN", "MELT", "L
 SUPPLIER_PAY = "SUPPLIER_PAY"          # a supplier making payment made with custody cash (043)
 GOLD_SETTLE = "GOLD_SETTLE"            # custody gold delivered to a supplier against its gold account (046, LOGO only in this slice)
 LOT_SETTLE, LOT_SETTLE_MOVEMENT = "LOT_SETTLE", "SUPPLIER_SETTLE"
+LOT_HOLD, HOLD_RETURN = "LOT_HOLD", "HOLD_RETURN"          # 048: a whole lot handed to / taken back from an intermediary (holding links)
 MELT_DESIGNATION, LOGO_DESIGNATION, UNCLASSIFIED = "MELT", "LOGO", "UNCLASSIFIED"     # the owner's decision on an issued gold line
 DESIGNATIONS = (MELT_DESIGNATION, LOGO_DESIGNATION, UNCLASSIFIED)
 MAIN_LOT, RESIDUE_LOT, CREATE_MOVEMENT = "MAIN", "RESIDUE", "CREATE"
@@ -227,6 +228,15 @@ class MarketTripRepository(BaseRepository):
             (_id(entry_id), _id(settlement_id), _id(supplier_id), int(lot["id"]), int(lot["entry_id"]), weight,
              lot["fineness_permille"], int(movement_id), -weight))
 
+    def entry_holding(self, entry_id):
+        """The intermediary holding document a LOT_HOLD / HOLD_RETURN entry posted (None for any other entry), with its party and lot."""
+        return self._fetch_one(
+            "SELECT k.entry_id, k.document_id, k.doc_kind, k.pool_id, k.lot_id, k.weight_grams, d.party_id, s.name AS party_name, "
+            "d.fineness_permille, l.lot_no, l.lot_kind, l.label, oe.trip_id AS origin_trip_id, oe.entry_no AS origin_entry_no "
+            "FROM market_trip_holding_links k JOIN intermediary_holding_documents d ON d.id = k.document_id "
+            "JOIN suppliers s ON s.id = d.party_id JOIN market_trip_lots l ON l.id = k.lot_id "
+            "JOIN market_trip_entries oe ON oe.id = l.entry_id WHERE k.entry_id = %s", (_id(entry_id),))
+
     def entry_lot_settlement(self, entry_id):
         return self._fetch_one("""SELECT x.*, s.name AS supplier_name, l.lot_no, l.lot_kind,
             oe.trip_id AS origin_trip_id, oe.entry_no AS origin_entry_no, g.target_karat_value,
@@ -432,6 +442,10 @@ class MarketTripRepository(BaseRepository):
             "WHERE m.supplier_id = s.id), 0) AS making_balance FROM suppliers s LEFT JOIN karats k ON k.id = s.karat_id "
             "WHERE s.is_supplier = 1 ORDER BY s.is_active DESC, s.name, s.id")
 
+    def intermediaries(self):
+        """Every party with the intermediary (مسوقجي) role, active ones first (a handover needs an ACTIVE one; the service re-checks it)."""
+        return self._fetch_all("SELECT id, name, is_active, is_supplier FROM suppliers WHERE is_intermediary = 1 ORDER BY is_active DESC, name, id")
+
     def insert_supplier_payment_link(self, *, entry_id, payment_id, supplier_id, amount):
         self._execute("INSERT INTO market_trip_supplier_payments (entry_id, payment_id, supplier_id, amount) VALUES (%s, %s, %s, %s)",
                       (_id(entry_id), _id(payment_id), int(supplier_id), amount))
@@ -563,6 +577,7 @@ class MarketTripRepository(BaseRepository):
             row["supplier_payment"] = self.entry_supplier_payment(row["id"])
             row["gold_settlement"] = self.entry_gold_settlement(row["id"])
             row["lot_settlement"] = self.entry_lot_settlement(row["id"])
+            row["holding"] = self.entry_holding(row["id"])
             row["gold"] = self._fetch_all(
                 "SELECT g.karat_id, k.karat_value, g.designation, g.weight_grams FROM market_trip_entry_gold g "
                 "JOIN karats k ON k.id = g.karat_id WHERE g.entry_id = %s ORDER BY k.karat_value DESC, g.designation", (int(row["id"]),))

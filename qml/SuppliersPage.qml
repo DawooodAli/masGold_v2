@@ -47,6 +47,7 @@ Item {
         function onReversalDone(code) { reverseDialog.close() }
         function onSettlementPosted(code) { goldSettleDialog.close() }
         function onSettlementReversed(code) { reverseSettlementDialog.close() }
+        function onHoldingReturned(code) { holdingReturnDialog.close() }
     }
     Connections {
         target: page.pvm
@@ -587,7 +588,65 @@ Item {
                         title: "مسوقجي"
                         accent: theme.gold
                         Txt { Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textSecondary
-                              text: "هذا الطرف مسوقجي فقط: لا يوجد له حساب مورد (ذهب أو مصنعيات) ولا فواتير شراء. ستظهر هنا لاحقًا أرصدة الذهب والنقدية التي تخص المحل لدى المسوقجي." }
+                              text: "هذا الطرف مسوقجي فقط: لا يوجد له حساب مورد (ذهب أو مصنعيات) ولا فواتير شراء. ما يخص المحل لديه يظهر في «ذهب المحل لدى المسوقجي» أدناه." }
+                    }
+
+                    // Shop-owned whole lots physically at this intermediary (048). Independent of the supplier account of a dual-role party.
+                    Card {
+                        objectName: "holdingsPanel"
+                        Layout.fillWidth: true
+                        visible: !!page.vm && page.vm.holdingsPanel.visible === true
+                        title: "ذهب المحل لدى المسوقجي"
+                        accent: theme.amber
+                        Txt { objectName: "holdingsNote"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textMuted
+                              font.pixelSize: theme.fontTableHeader; text: page.vm ? (page.vm.holdingsPanel.note || "") : "" }
+                        Txt { objectName: "holdingsSummary"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.gold; font.bold: true
+                              text: page.vm ? (page.vm.holdingsPanel.summary || "") : "" }
+                        Repeater {
+                            model: page.vm ? (page.vm.holdingsPanel.pools || []) : []
+                            delegate: Rectangle {
+                                Layout.fillWidth: true
+                                implicitHeight: holdRow.implicitHeight + 12
+                                radius: theme.radiusSmall
+                                color: theme.bgTertiary
+                                border.color: theme.border
+                                RowLayout {
+                                    id: holdRow
+                                    anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                    anchors.leftMargin: 10; anchors.rightMargin: 10
+                                    layoutDirection: Qt.RightToLeft
+                                    spacing: 10
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 2
+                                        Txt { objectName: "holdingSource"; Layout.fillWidth: true; text: modelData.source; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                        Txt { objectName: "holdingFigures"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textSecondary
+                                              text: modelData.weight + " جرام • العيار الفعلي " + modelData.fineness + " • الذهب الصافي " + page.ltr(modelData.pure) }
+                                        Txt { objectName: "holdingRefs"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textMuted
+                                              font.pixelSize: theme.fontTableHeader
+                                              text: modelData.document + " • " + modelData.custodyEntry + " • العهدة الأصلية " + modelData.tripCode + " • " + modelData.date }
+                                        Txt { objectName: "holdingReason"; Layout.fillWidth: true; visible: modelData.reason !== ""; text: modelData.reason; color: theme.amber
+                                              font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                    }
+                                    Btn {
+                                        objectName: "holdingReturnButton"
+                                        visible: !!page.vm && page.vm.canManageHoldings
+                                        enabled: modelData.returnable && !page.vm.returningHolding
+                                        text: "تسجيل رجوع"
+                                        primary: true
+                                        onClicked: holdingReturnDialog.openFor(modelData)
+                                    }
+                                }
+                            }
+                        }
+                        Txt { Layout.fillWidth: true; text: "سجل التسليم والرجوع"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                              visible: (page.vm ? (page.vm.holdingsPanel.history || []) : []).length > 0 }
+                        Repeater {
+                            model: page.vm ? (page.vm.holdingsPanel.history || []) : []
+                            delegate: Txt { objectName: "holdingHistoryRow"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                            color: modelData.reversed ? theme.textMuted : theme.textSecondary; font.pixelSize: theme.fontTableHeader
+                                            text: modelData.kindText + " " + modelData.code + " • " + modelData.text + (modelData.state !== "" ? " • " + modelData.state : "") }
+                        }
                     }
 
                     // The two independent positions: gold (physical grams of the supplier's karat) and making (EGP). Equal cards, equal height.
@@ -1399,6 +1458,86 @@ Item {
                 }
                 Btn { objectName: "cancelGoldSettleButton"; text: "إلغاء"; accent: theme.textSecondary
                       enabled: !!page.vm && !page.vm.settling; onClicked: goldSettleDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- normal intact return of a whole lot from the intermediary (OWNER only)
+    Popup {
+        id: holdingReturnDialog
+        objectName: "holdingReturnDialog"
+        property string poolId: ""
+        property string sourceText: ""
+        property string figuresText: ""
+        property string requestKey: ""
+        function openFor(row) {
+            if (!page.vm) return
+            poolId = row.poolId
+            sourceText = row.source
+            figuresText = row.weight + " جرام • العيار الفعلي " + row.fineness + " • العهدة الأصلية " + row.tripCode
+            requestKey = page.vm.newRequestKey()
+            holdingIntact.checked = false
+            holdingReturnDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            holdingReturnReference.text = ""
+            holdingReturnNotes.text = ""
+            page.vm.clearMessage()
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(520, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 520, 520)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { Layout.fillWidth: true; text: "تسجيل رجوع سبكة من المسوقجي"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
+            Txt { objectName: "holdingReturnSource"; Layout.fillWidth: true; text: holdingReturnDialog.sourceText; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            Txt { objectName: "holdingReturnFigures"; Layout.fillWidth: true; text: holdingReturnDialog.figuresText; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textSecondary }
+            Txt { objectName: "holdingReturnRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "ترجع السبكة كاملة إلى عهدتها الأصلية المفتوحة، بنفس هويتها ووزنها وعيارها. لا كسر ولا نقدية ولا مورد. وجود الرصيد وحده لا يثبت أنها نفس السبكة." }
+            Flickable {
+                Layout.fillWidth: true; Layout.fillHeight: true
+                contentHeight: holdingReturnForm.implicitHeight; clip: true
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: holdingReturnForm
+                    width: parent.width - 12; spacing: 6
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        CheckBox { id: holdingIntact; objectName: "holdingIntactConfirm"; enabled: !!page.vm && !page.vm.returningHolding }
+                        Txt { objectName: "holdingIntactText"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; font.bold: true
+                              text: page.vm ? page.vm.holdingConfirmationText : "" }
+                    }
+                    Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
+                    Field { id: holdingReturnDate; objectName: "holdingReturnDate"; Layout.fillWidth: true }
+                    Txt { Layout.fillWidth: true; text: "المرجع" }
+                    Field { id: holdingReturnReference; objectName: "holdingReturnReference"; Layout.fillWidth: true }
+                    Txt { Layout.fillWidth: true; text: "ملاحظات" }
+                    Field { id: holdingReturnNotes; objectName: "holdingReturnNotes"; Layout.fillWidth: true }
+                }
+            }
+            Txt { objectName: "holdingReturnError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmHoldingReturnButton"
+                    text: !!page.vm && page.vm.returningHolding ? "جارٍ الحفظ…" : "تسجيل الرجوع"
+                    primary: true
+                    enabled: holdingIntact.checked && holdingReturnDate.text.trim().length > 0 && !!page.vm && !page.vm.returningHolding
+                    onClicked: page.vm.returnHolding(holdingReturnDialog.poolId, holdingIntact.checked, holdingReturnDate.text,
+                                                     holdingReturnReference.text, holdingReturnNotes.text, holdingReturnDialog.requestKey)
+                }
+                Btn { objectName: "cancelHoldingReturnButton"; text: "إلغاء"; accent: theme.textSecondary
+                      enabled: !!page.vm && !page.vm.returningHolding; onClicked: holdingReturnDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }

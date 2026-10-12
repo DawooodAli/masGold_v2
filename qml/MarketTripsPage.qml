@@ -22,7 +22,7 @@ Item {
 
     Connections {
         target: page.vm
-        function onEntryPosted(code) { entryDialog.close(); meltDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close(); payDialog.close(); goldSettleDialog.close(); lotSettleDialog.close() }
+        function onEntryPosted(code) { entryDialog.close(); meltDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close(); payDialog.close(); goldSettleDialog.close(); lotSettleDialog.close(); lotHoldDialog.close() }
         function onActionDone(operation) { reasonDialog.close() }
     }
 
@@ -287,7 +287,7 @@ Item {
             Txt { objectName: "tripMessage"; Layout.fillWidth: true; visible: !!page.vm && page.vm.message !== ""
                   text: page.vm ? page.vm.message : ""; color: theme.green; wrapMode: Text.WordWrap; elide: Text.ElideNone }
             Txt { objectName: "tripError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== "" && !entryDialog.visible && !reasonDialog.visible && !meltDialog.visible
-                           && !lotReturnDialog.visible && !lotIssueDialog.visible && !heatDialog.visible && !payDialog.visible && !goldSettleDialog.visible && !lotSettleDialog.visible
+                           && !lotReturnDialog.visible && !lotIssueDialog.visible && !heatDialog.visible && !payDialog.visible && !goldSettleDialog.visible && !lotSettleDialog.visible && !lotHoldDialog.visible
                   text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
 
             Txt {
@@ -338,6 +338,9 @@ Item {
                         Btn { objectName: "custodyLotSettleButton"; text: "تسوية سبكة من العهدة"; visible: !!page.detail.open
                               enabled: !!page.detail.lotSettleAvailable && !!page.vm && !page.vm.writing
                               onClicked: lotSettleDialog.openFor(page.detail.id) }
+                        Btn { objectName: "custodyLotHoldButton"; text: "تسليم ذهب لمسوقجي"; visible: !!page.detail.holdVisible
+                              enabled: !!page.detail.holdAvailable && !!page.vm && !page.vm.writing
+                              onClicked: lotHoldDialog.openFor(page.detail.id) }
                         Btn { objectName: "custodyPayButton"; text: "دفع مصنعيات من العهدة"; visible: !!page.detail.open
                               enabled: !!page.detail.payAvailable && !!page.vm && !page.vm.writing
                               onClicked: payDialog.openFor(page.detail.id) }
@@ -426,6 +429,20 @@ Item {
                             }
                         }
                         Txt { objectName: "lotNote"; Layout.fillWidth: true; text: page.detail.lotNote || ""; color: theme.amber
+                              font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                    }
+                    // Shop-owned gold that left this custody for an intermediary (مسوقجي): still outstanding although the custody's own figures are zero.
+                    Section {
+                        objectName: "externalHoldingsSection"
+                        title: "ذهب خارج المحل لدى المسوقجي (من هذه العهدة)"
+                        accent: theme.amber
+                        visible: (page.detail.externalHoldings || []).length > 0
+                        Repeater {
+                            model: page.detail.externalHoldings || []
+                            delegate: Txt { objectName: "externalHoldingRow"; Layout.fillWidth: true; text: modelData.text; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                            color: theme.textSecondary }
+                        }
+                        Txt { objectName: "externalHoldingNote"; Layout.fillWidth: true; text: page.detail.externalNote || ""; color: theme.amber
                               font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                     }
                     Section {
@@ -1018,6 +1035,96 @@ Item {
                       onClicked: page.vm.settleLot(lotSettleDialog.tripId, lotSettleDialog.supplierId, lotSettleDialog.lotId,
                                                   lotSettleDate.text, lotSettleReference.text, lotSettleNotes.text, lotSettleDialog.requestKey) }
                 Btn { objectName: "cancelCustodyLotSettleButton"; text: "إلغاء"; enabled: !!page.vm && !page.vm.writing; onClicked: lotSettleDialog.close() }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- hand a whole assayed lot to an intermediary (تسليم ذهب لمسوقجي)
+    // The service derives the full weight under the locks; nothing here sends a quantity.
+    Popup {
+        id: lotHoldDialog
+        objectName: "tripLotHoldDialog"
+        property string tripId: ""
+        property string requestKey: ""
+        readonly property var partyChoices: [{id: "", text: "اختر المسوقجي"}].concat(page.ctx.holdParties || [])
+        readonly property var lotChoices: [{id: "", text: "اختر الشحنة الكاملة"}].concat(page.detail.holdSources || [])
+        readonly property string partyId: partyChoices[lotHoldParty.currentIndex] ? partyChoices[lotHoldParty.currentIndex].id : ""
+        readonly property string lotId: lotChoices[lotHoldLot.currentIndex] ? lotChoices[lotHoldLot.currentIndex].id : ""
+        readonly property var preview: {
+            var loaded = page.detail.id !== undefined && page.ctx.holdParties !== undefined
+            return loaded && page.vm ? page.vm.previewHandover(partyId, lotId) : ({})
+        }
+        function openFor(trip) {
+            if (!page.vm) return
+            tripId = trip
+            requestKey = page.vm.newRequestKey()
+            lotHoldParty.currentIndex = 0
+            lotHoldLot.currentIndex = 0
+            lotHoldDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            lotHoldReference.text = ""
+            lotHoldNotes.text = ""
+            page.vm.clearMessage()
+            page.vm.refresh()
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(560, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 580, 580)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { Layout.fillWidth: true; text: "تسليم ذهب لمسوقجي"; color: theme.gold; font.bold: true }
+            Txt { objectName: "custodyLotHoldRule"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "تُسلَّم الشحنة كاملة بوزنها وعيارها الفعلي المخزّنين (معلوم العيار فقط) وتصير ذهبًا للمحل لدى المسوقجي. لا نقدية ولا كسر ولا مصنعيات ولا دين على المورد." }
+            Flickable {
+                Layout.fillWidth: true; Layout.fillHeight: true
+                contentHeight: lotHoldForm.implicitHeight; clip: true
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: lotHoldForm
+                    width: parent.width - 12; spacing: 6
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 8
+                        Combo { id: lotHoldParty; objectName: "custodyLotHoldPartyCombo"; Layout.fillWidth: true; model: lotHoldDialog.partyChoices; textRole: "text" }
+                        Txt { text: "المسوقجي *" }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 8
+                        Combo { id: lotHoldLot; objectName: "custodyLotHoldLotCombo"; Layout.fillWidth: true; model: lotHoldDialog.lotChoices; textRole: "text" }
+                        Txt { text: "الشحنة الكاملة *" }
+                    }
+                    Txt { objectName: "custodyLotHoldFacts"; Layout.fillWidth: true; text: lotHoldDialog.preview.facts || ""; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                    Txt { objectName: "custodyLotHoldNote"; Layout.fillWidth: true; text: lotHoldDialog.preview.note || ""; color: theme.gold; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                    Txt { objectName: "custodyLotHoldPreviewError"; Layout.fillWidth: true; text: lotHoldDialog.preview.error || ""; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 8
+                        Field { id: lotHoldDate; objectName: "custodyLotHoldDateField"; Layout.fillWidth: true }
+                        Txt { text: "التاريخ *" }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 8
+                        Field { id: lotHoldReference; objectName: "custodyLotHoldReferenceField"; Layout.fillWidth: true }
+                        Txt { text: "المرجع" }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 8
+                        Field { id: lotHoldNotes; objectName: "custodyLotHoldNotesField"; Layout.fillWidth: true }
+                        Txt { text: "ملاحظات" }
+                    }
+                }
+            }
+            Txt { objectName: "custodyLotHoldError"; Layout.fillWidth: true; text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                Btn { objectName: "confirmCustodyLotHoldButton"; text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "تسجيل التسليم"; primary: true
+                      enabled: lotHoldDialog.preview.valid === true && lotHoldDate.text.trim().length > 0 && !!page.vm && !page.vm.writing
+                      onClicked: page.vm.handOverLot(lotHoldDialog.tripId, lotHoldDialog.partyId, lotHoldDialog.lotId,
+                                                     lotHoldDate.text, lotHoldReference.text, lotHoldNotes.text, lotHoldDialog.requestKey) }
+                Btn { objectName: "cancelCustodyLotHoldButton"; text: "إلغاء"; enabled: !!page.vm && !page.vm.writing; onClicked: lotHoldDialog.close() }
             }
         }
     }

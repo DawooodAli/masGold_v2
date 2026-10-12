@@ -12,8 +12,9 @@ from uuid import uuid4
 
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
-from app.formatting import date_text, datetime_text, grams, money, number
+from app.formatting import date_text, datetime_text, grams, ltr, money, number
 from services import supplier_rules as rules
+from services.intermediary_holding_rules import CONFIRMATION_TEXT, HOLDING_NOTE
 
 SHOP_OWES_TEXT, SUPPLIER_OWES_TEXT, SETTLED_TEXT = "علينا للمورد", "لنا عند المورد", "الحساب متوازن"
 ACCOUNT_TYPE_TEXT = {"BANK": "حساب بنكي", "MOBILE_WALLET": "محفظة"}
@@ -102,10 +103,12 @@ class SupplierViewModel(QObject):
     reversalDone = Signal(str)           # a making payment was reversed (the RV code): the reversal dialog can close
     settlementPosted = Signal(str)       # a gold settlement was posted (its SG code): the dialog can close and the Scrap views reload
     settlementReversed = Signal(str)     # a gold settlement was reversed (the RV code): the dialog can close and the Scrap views reload
+    holdingReturned = Signal(str)        # a whole lot came back from the intermediary (its IH code): the dialog can close
+    holdingChanged = Signal()            # custody entries changed by a holding return (after commit): the custody views reload
 
-    def __init__(self, session, service=None, parent=None, payments=None):
+    def __init__(self, session, service=None, parent=None, payments=None, holdings=None):
         super().__init__(parent)
-        self._session, self._service, self._payments = session, service, payments
+        self._session, self._service, self._payments, self._holdings = session, service, payments, holdings
         self._pay_context = {}
         self._settlements, self._set_context = None, {}
         self._workers, self._request, self._latest, self._busy = set(), 0, {}, set()
@@ -127,6 +130,12 @@ class SupplierViewModel(QObject):
             from services.supplier_payment_service import SupplierPaymentService
             self._payments = SupplierPaymentService(self._session)
         return self._payments
+
+    def _holding_service(self):
+        if self._holdings is None:
+            from services.intermediary_holding_service import IntermediaryHoldingService
+            self._holdings = IntermediaryHoldingService(self._session)
+        return self._holdings
 
     def _settlement_service(self):
         if self._settlements is None:
@@ -440,7 +449,70 @@ class SupplierViewModel(QObject):
         self.refresh()
         self.settlementReversed.emit(result["code"])
 
+    # ------------------------------------------------------------ whole-lot holdings (048): the normal intact return
+    @Slot(str, bool, str, str, str, str)
+    def returnHolding(self, pool_id, intact_confirmed, return_date, reference, notes, request_key):
+        """Take one whole source back into its ORIGINAL custody. The OWNER's explicit confirmation travels with the request; the service re-checks
+        every right, the open custody and the exact balance, and refuses without moving anything otherwise."""
+        if "holdret" in self._busy:
+            return                                                     # a double click never submits twice
+        self._message = self._error = ""
+        service = self._holding_service()
+        self._start("holdret", lambda _expected_actor: service.return_holding(
+            pool_id, intact_confirmed, return_date, reference, notes, request_key, _expected_actor=_expected_actor))
+        self.changed.emit()
+
+    def _on_holdret(self, result, error):
+        if error:
+            self._error = error                                        # the dialog stays open with every field kept
+            return
+        self._message = (f"رجوع السبكة {result['document_code']} مسجل من قبل (لم يُسجل مرة ثانية)." if result.get("duplicate")
+                         else f"تم تسجيل رجوع السبكة {result['document_code']} إلى العهدة {result['trip_code']}.")
+        self.refresh()
+        self.holdingReturned.emit(result["document_code"])
+        self.holdingChanged.emit()
+
     # ------------------------------------------------------------ properties
+    @Property(bool, notify=changed)
+    def canViewHoldings(self):
+        actor = self._session.current_actor()
+        return bool(actor and "INTERMEDIARY_HOLDING_VIEW" in actor.permissions)
+
+    @Property(bool, notify=changed)
+    def canManageHoldings(self):
+        actor = self._session.current_actor()
+        return bool(actor and {"INTERMEDIARY_HOLDING_MANAGE", "MARKET_TRIP_MANAGE"} <= set(actor.permissions))
+
+    @Property(bool, notify=changed)
+    def returningHolding(self):
+        return "holdret" in self._busy
+
+    @Property(str, constant=True)
+    def holdingConfirmationText(self):
+        return CONFIRMATION_TEXT
+
+    @Property("QVariantMap", notify=changed)
+    def holdingsPanel(self):
+        """«ذهب المحل لدى المسوقجي»: shop-owned whole lots at this party (physical grams and exact assay per source), their references and the
+        whole document history (reversed documents stay listed). Independent of the supplier account of a dual-role party."""
+        data = (self._detail or {}).get("holdings")
+        supplier = (self._detail or {}).get("supplier", {})
+        if not data or not (supplier.get("is_intermediary") or data["history"]):
+            return {"visible": False}
+        pools = [{"poolId": p["pool_id"], "source": p["source"], "weight": grams(p["balance"]), "fineness": f"{ltr(number(p['fineness'], 1))} في الألف",
+                  "pure": "غير معلومة" if p["pure"] is None else number(p["pure"], 6), "document": ltr(p["document"]),
+                  "custodyEntry": ltr(p["custody_entry"]), "tripCode": ltr(p["trip_code"]), "date": date_text(p["date"]),
+                  "returnable": bool(data["can_manage"] and p["returnable"]), "reason": p["reason"]} for p in data["pools"]]
+        history = [{"id": h["document_id"], "code": ltr(h["code"]),
+                    "kindText": "تسليم" if h["kind"] == "HANDOVER" else "رجوع",
+                    "text": f"{h['source']} • {grams(h['weight'])} جرام • {ltr(h['custody_entry'])} • {date_text(h['date'])}"
+                            + (f" • تأكيد المالك: {CONFIRMATION_TEXT}" if h["intact"] else ""),
+                    "reversed": h["reversed"], "state": f"معكوس بالعملية {h['reversed_by']}" if h["reversed"] else ""} for h in data["history"]]
+        return {"visible": True, "note": HOLDING_NOTE,
+                "summary": (f"الإجمالي لدى المسوقجي {grams(data['total'])} جرام • الذهب الصافي المعروف {number(data['pure'], 6)} جرام" if pools
+                            else "لا يوجد ذهب للمحل لدى هذا المسوقجي الآن."),
+                "pools": pools, "history": history, "canManage": bool(data["can_manage"])}
+
     @Property(bool, notify=changed)
     def canSettleGold(self):
         actor = self._session.current_actor()

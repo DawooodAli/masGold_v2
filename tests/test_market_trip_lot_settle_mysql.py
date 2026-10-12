@@ -33,7 +33,7 @@ class WholeLotMySqlTests(unittest.TestCase):
         with cls.tx() as c:
             q=c.cursor(dictionary=True)
             q.execute('SELECT DATABASE() AS db, MAX(version) AS v FROM schema_migrations')
-            row=q.fetchone();assert (row['db'],row['v'])==(TARGET,47)
+            row=q.fetchone();assert row['db']==TARGET and row['v'] in (47,48),row;cls.version=row['v']   # an explicit pair: the code is 048-aware, so only the guard test can run at 47
             q.execute("SELECT target_database FROM masgold_rehearsal_marker WHERE marker_key='MASGOLD_SCHEMA_REHEARSAL'")
             assert q.fetchone()['target_database']==TARGET
             q.execute("INSERT INTO employees(name) VALUES('047 rehearsal owner')");emp=q.lastrowid
@@ -196,20 +196,31 @@ class WholeLotMySqlTests(unittest.TestCase):
                         self.fail('invalid shape accepted')
                 self.assertEqual(getattr(e.exception,'errno',None),errno)
 
-    def test_guarded_rollback_refuses_existing_and_reversed_lot_history(self):
+    def rollback_refusal(self, stage):
         from tools.schema_rehearsal.mysql_client import Credentials, option_file, MysqlClient, DEFAULT_MYSQL, MysqlError
         from tools.schema_rehearsal.guards import prepare_sql
         from pathlib import Path
-        t,m,l=self.lots();done=self.settle(t,l[0])
         sql=prepare_sql('047_supplier_gold_whole_lot_settlement_rollback.sql',Path('database/schema/rollback/047_supplier_gold_whole_lot_settlement_rollback.sql').read_text(encoding='utf8'))
         with option_file(Credentials(self.config.host,self.config.port,self.config.user,self.config.password)) as options:
-            client=MysqlClient(DEFAULT_MYSQL,options)
-            for reversed in (False,True):
-                if reversed:self.correct.reverse('MARKET_TRIP_ENTRY',done['entry_id'],'047 rollback probe')
-                before=self.snapshot()
-                with self.assertRaises(MysqlError) as e:client.run_script(sql,TARGET)
-                self.assertIn('ROLLBACK_047_REFUSED',str(e.exception).upper());self.assertEqual(before,self.snapshot())
-                self.assertEqual(self.query('SELECT MAX(version) AS v FROM schema_migrations')[0]['v'],47)
+            before=self.snapshot()
+            with self.assertRaises(MysqlError) as e:MysqlClient(DEFAULT_MYSQL,options).run_script(sql,TARGET)
+            self.assertIn('ROLLBACK_047_REFUSED',str(e.exception).upper());self.assertEqual(before,self.snapshot(),stage)
+
+    @unittest.skipUnless(os.environ.get('MASGOLD_LOT_SETTLE_REHEARSAL')=='1','explicit rehearsal-only opt-in')
+    def test_047_rollback_refuses_because_047_business_history_exists_on_a_schema_at_exactly_047(self):
+        """Run ONLY on a disposable schema genuinely at 047 (no 048 object, no later migration): the refusal can only be the 047 history."""
+        if self.version!=47:self.skipTest('needs a sandbox at exactly 047 (the 048-aware code runs the other tests at 048)')
+        self.assertEqual(self.query('SELECT MAX(version) AS v FROM schema_migrations')[0]['v'],47)
+        t,m,l=self.lots();done=self.settle(t,l[0])
+        self.rollback_refusal('settled history');self.assertEqual(self.query('SELECT MAX(version) AS v FROM schema_migrations')[0]['v'],47)
+        with self.tx() as c:                                   # reversed consumption is history too: the stored rows stay
+            q=c.cursor();q.execute("INSERT INTO transaction_corrections(correction_type,source_type,source_id,source_reference,invoice_id,reason,performed_by_user_id,occurred_at) VALUES('FULL_REVERSAL','MARKET_TRIP_ENTRY',%s,'047 probe',NULL,'047 rollback probe',%s,NOW())",(done['entry_id'],self.user));q.close()
+        self.rollback_refusal('reversed history');self.assertEqual(self.query('SELECT MAX(version) AS v FROM schema_migrations')[0]['v'],47)
+
+    def test_047_rollback_refuses_while_a_later_migration_exists_at_048(self):
+        """At 048 the guard also refuses for the later migration; the isolated case (clean 001-048, zero 047 rows) was run by the rehearsal script."""
+        if self.version!=48:self.skipTest('needs a sandbox at 048')
+        self.rollback_refusal('later migration');self.assertEqual(self.query('SELECT MAX(version) AS v FROM schema_migrations')[0]['v'],48)
 
     def test_controlled_lot_block_and_current_trip_lock_without_authorization_holder(self):
         """A raw holder does not acquire actor/grant locks; this is a resource-lock probe, not a two-writer stress test."""

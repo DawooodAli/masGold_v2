@@ -14,7 +14,7 @@ from mysql.connector import IntegrityError
 
 from services.correction_service import CorrectionError
 from services.market_trip_service import MarketTripService, TripError, parse_cash, parse_weight
-from tests.market_trip_fakes import (AccountsRepo, MANAGER, OWNER, OWNER_NO_CORRECT, SupplierPayRepo, TripRepo, build, session_for)
+from tests.market_trip_fakes import (AccountsRepo, HoldingRepo, MANAGER, OWNER, OWNER_NO_CORRECT, SupplierPayRepo, TripRepo, build, session_for)
 from tests.auth_fakes import FakeAuthorization
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,7 +37,8 @@ class TripCase(unittest.TestCase):
         self.n = 0
         for target, value in (("repositories.market_trip_repository.MarketTripRepository", TripRepo),
                               ("repositories.supplier_payment_repository.SupplierPaymentRepository", SupplierPayRepo),
-                              ("repositories.financial_account_repository.FinancialAccountRepository", AccountsRepo)):
+                              ("repositories.financial_account_repository.FinancialAccountRepository", AccountsRepo),
+                              ("repositories.intermediary_holding_repository.IntermediaryHoldingRepository", HoldingRepo)):
             started = patch(target, value)
             started.start()
             self.addCleanup(started.stop)

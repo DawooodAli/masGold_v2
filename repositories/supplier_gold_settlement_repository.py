@@ -35,6 +35,14 @@ class SupplierGoldSettlementRepository(SupplierRepository):
     def by_request(self, key):
         return self._fetch_one("SELECT * FROM supplier_gold_settlements WHERE request_key = %s FOR UPDATE", (key,))
 
+    def request_key_used_elsewhere(self, key):
+        """True when a custody entry or an intermediary holding document (048) already carries this key (a CURRENT read): a direct
+        settlement must not reuse it. Custody-sourced settlements carry their own SG header and are found by `by_request`."""
+        row = self._fetch_one(
+            "SELECT (SELECT COUNT(*) FROM market_trip_entries WHERE request_key = %s FOR SHARE) "
+            "+ (SELECT COUNT(*) FROM intermediary_holding_documents WHERE request_key = %s FOR SHARE) AS used", (key, key))
+        return int(row["used"]) > 0
+
     # ------------------------------------------------------------------ the settlement
     def insert_header(self, *, supplier_id, delivered_karat, target_karat, delivered_weight, credited, analytical, difference,
                       settlement_date, reference, notes, key, digest, actor, now, source_kind=SOURCE_KIND):

@@ -52,12 +52,14 @@ from repositories.market_trip_repository import (CLOSED, CREATE_MOVEMENT, GOLD_S
                                                  MELT_DESIGNATION, OPEN, RESIDUE_LOT, RETURN, SHOP_ISSUE_MOVEMENT, SHOP_ISSUE_OUT,
                                                  SHOP_RETURN_IN, SHOP_RETURN_MOVEMENT, SOURCE, UNCLASSIFIED, MarketTripRepository,
                                                  entry_code, trip_code)
+from repositories.intermediary_holding_repository import IntermediaryHoldingRepository, holding_code
 from repositories.old_gold_conversion_repository import OldGoldConversionRepository
 from repositories.supplier_gold_settlement_repository import (CUSTODY_SOURCE_KIND, LOT_SOURCE_KIND, GOLD_MOVEMENT, SupplierGoldSettlementRepository,
                                                               settlement_code)
 from repositories.supplier_payment_repository import PAYMENT_MOVEMENT, SOURCE as SMP_SOURCE, SupplierPaymentRepository, payment_code
 from services.authorization_service import AuthorizationService
 from services.correction_rules import correction_code
+from services.intermediary_holding_rules import MANAGE_PERMISSION as MANAGE_HOLDINGS, VIEW_PERMISSION as VIEW_HOLDINGS, pool_row
 from services.invoice_service import invoice_transaction
 from services.number_text import normalize_digits
 from services.old_gold_availability import held_grams, shortage_message
@@ -74,7 +76,8 @@ MAX_MONEY, MAX_WEIGHT = Decimal("100000000000000"), Decimal("1000000000")
 NOTES_MAX, REASON_MAX, WORKSHOP_MAX, ASSAY_MAX, LABEL_MAX, MAX_RESIDUES = 1000, 1000, 120, 120, 120, 10
 ZERO_MONEY, ZERO_WEIGHT = Decimal("0.00"), Decimal("0.000")
 KIND_TEXT = {ISSUE: "إخراج عهدة", RETURN: "رجوع من العهدة", MELT: "سبك", LOT_RETURN: "رجوع ناتج السبك", LOT_ISSUE: "إخراج سبكة من المحل",
-             HEAT: "حمّية اللوجو", SUPPLIER_PAY: "دفع مصنعيات من العهدة", GOLD_SETTLE: "تسوية ذهب من العهدة", LOT_SETTLE: "تسوية سبكة من العهدة"}
+             HEAT: "حمّية اللوجو", SUPPLIER_PAY: "دفع مصنعيات من العهدة", GOLD_SETTLE: "تسوية ذهب من العهدة", LOT_SETTLE: "تسوية سبكة من العهدة",
+             "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي"}
 DESIGNATION_TEXT = {MELT_DESIGNATION: "للسبك", LOGO_DESIGNATION: "لوجو", UNCLASSIFIED: "غير مصنف (قبل التصنيف)"}
 _DESIGNATION_INPUT = {"MELT": MELT_DESIGNATION, "للسبك": MELT_DESIGNATION, "LOGO": LOGO_DESIGNATION, "لوجو": LOGO_DESIGNATION,
                       "UNCLASSIFIED": UNCLASSIFIED, "غير مصنف": UNCLASSIFIED}
@@ -290,10 +293,12 @@ def entry_label(lot):
 class MarketTripService:
     def __init__(self, session, *, transaction_factory=invoice_transaction, repository=MarketTripRepository,
                  accounts=FinancialAccountRepository, scrap=OldGoldConversionRepository, authorization=None, corrections=None,
-                 supplier_payments=SupplierPaymentRepository, gold_settlements=SupplierGoldSettlementRepository):
+                 supplier_payments=SupplierPaymentRepository, gold_settlements=SupplierGoldSettlementRepository,
+                 holdings=IntermediaryHoldingRepository):
         self._session, self._transaction, self._repository = session, transaction_factory, repository
         self._accounts, self._scrap, self._supplier_payments = accounts, scrap, supplier_payments
         self._gold_settlements = gold_settlements
+        self._holdings = holdings
         self._authorization = authorization or AuthorizationService(session)
         self._corrections = corrections
 
@@ -329,7 +334,9 @@ class MarketTripService:
             scrap = repository.shop_scrap()
             cash = None if safe is None else Decimal(str(repository.cash_balance(safe["id"])))
             suppliers = repository.suppliers()
-        return {"safe": None if safe is None else {"id": str(safe["id"]), "name": safe["name"], "active": bool(safe["is_active"]),
+            intermediaries = repository.intermediaries() if {VIEW_HOLDINGS, MANAGE_HOLDINGS} <= set(actor.permissions) else []
+        return {"intermediaries": [{"id": str(r["id"]), "name": r["name"], "active": bool(r["is_active"])} for r in intermediaries],
+                "safe": None if safe is None else {"id": str(safe["id"]), "name": safe["name"], "active": bool(safe["is_active"]),
                                                    "balance": cash},
                 "karats": [{"id": int(k["id"]), "karat_value": int(k["karat_value"]), "name": k["name"]} for k in karats],
                 "suppliers": [{"id": str(r["id"]), "name": r["name"], "active": bool(r["is_active"]),
@@ -346,10 +353,20 @@ class MarketTripService:
             self._authorization.require_permission_read(connection, actor, PERMISSION)
             repository = self._repository(connection)
             rows = repository.trips()
+            external = self._external_holdings(connection, actor)
             result = []
             for row in rows:
-                result.append(self._trip_row(row, self._custody(repository, row["id"])))
+                result.append(self._trip_row(row, self._custody(repository, row["id"]), external.get(int(row["id"]), [])))
         return result
+
+    def _external_holdings(self, connection, actor):
+        """Sources of this trip's gold that still sit with an intermediary, per trip (only for an actor who may VIEW holdings)."""
+        if VIEW_HOLDINGS not in actor.permissions:
+            return {}
+        grouped = {}
+        for row in self._holdings(connection).open_pools():
+            grouped.setdefault(int(row["trip_id"]), []).append(pool_row(row))
+        return grouped
 
     def trip_detail(self, trip_id, *, _expected_actor=None):
         actor = self._actor(_expected_actor)
@@ -363,7 +380,8 @@ class MarketTripService:
             custody = self._custody(repository, trip_id)
             entries, events, melts = repository.entries(trip_id), repository.events(trip_id), repository.melts(trip_id)
             heats = repository.heats(trip_id)
-        return {"trip": self._trip_row(trip, custody), "custody": custody,
+            external = self._external_holdings(connection, actor).get(trip_id, [])
+        return {"trip": self._trip_row(trip, custody, external), "custody": custody, "external_holdings": external,
                 "entries": [self._entry_row(e) for e in entries],
                 "melts": [self._melt_row(m) for m in melts],
                 "heats": [self._heat_row(h) for h in heats], "heat_totals": self._heat_totals(heats),
@@ -371,10 +389,10 @@ class MarketTripService:
                             "actor": e["actor_name"] or ""} for e in events]}
 
     @staticmethod
-    def _trip_row(row, custody):
+    def _trip_row(row, custody, external=()):
         return {"id": str(row["id"]), "code": trip_code(row["id"]), "status": row["status"], "notes": row["notes"] or "",
                 "created_at": row["created_at"], "status_changed_at": row["status_changed_at"],
-                "entry_count": int(row.get("entry_count", 0) or 0), "custody": custody}
+                "entry_count": int(row.get("entry_count", 0) or 0), "custody": custody, "external_holdings": list(external)}
 
     @staticmethod
     def _entry_row(e):
@@ -409,6 +427,12 @@ class MarketTripService:
                 "lot_settlement": None if not e.get("lot_settlement") else {
                     **MarketTripService._lot_settle_result(e, e["lot_settlement"], False),
                     "supplier_name": e["lot_settlement"]["supplier_name"]},
+                "holding": None if not e.get("holding") else {
+                    "document_id": str(e["holding"]["document_id"]), "code": holding_code(e["holding"]["document_id"]),
+                    "kind": e["holding"]["doc_kind"], "party_id": str(e["holding"]["party_id"]), "party_name": e["holding"]["party_name"],
+                    "lot_id": str(e["holding"]["lot_id"]), "lot_no": int(e["holding"]["lot_no"]), "lot_kind": e["holding"]["lot_kind"],
+                    "origin": entry_code(e["holding"]["origin_trip_id"], e["holding"]["origin_entry_no"]),
+                    "weight": Decimal(str(e["holding"]["weight_grams"])), "fineness": Decimal(str(e["holding"]["fineness_permille"]))},
                 "reversed": e["reversal_id"] is not None,
                 "reversal_code": None if e["reversal_id"] is None else correction_code("FULL_REVERSAL", e["reversal_id"]),
                 "reversal_reason": e["reversal_reason"], "reversal_at": e["reversal_at"]}

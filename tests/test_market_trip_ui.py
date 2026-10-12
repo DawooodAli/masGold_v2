@@ -12,7 +12,8 @@ from PySide6.QtTest import QTest
 
 from app.formatting import money
 from tests import test_invoice_page_qml as harness
-from tests.market_trip_fakes import AccountsRepo, Corrections, Customers, Invoices, OWNER, ScrapRepo, SupplierPayRepo, TripRepo, build
+from tests.market_trip_fakes import (AccountsRepo, Corrections, Customers, HoldingRepo, Invoices, OWNER, ScrapRepo, SupplierPayRepo, TripRepo,
+                                     build)
 
 TODAY = "2026-10-10"
 
@@ -59,7 +60,8 @@ class MarketTripPageTests(harness.InvoicePageTests):
         self.tvm._service = service
         for target, value in (("repositories.market_trip_repository.MarketTripRepository", TripRepo),
                               ("repositories.supplier_payment_repository.SupplierPaymentRepository", SupplierPayRepo),
-                              ("repositories.financial_account_repository.FinancialAccountRepository", AccountsRepo)):
+                              ("repositories.financial_account_repository.FinancialAccountRepository", AccountsRepo),
+                              ("repositories.intermediary_holding_repository.IntermediaryHoldingRepository", HoldingRepo)):
             started = patch(target, value)
             started.start()
             self.addCleanup(started.stop)

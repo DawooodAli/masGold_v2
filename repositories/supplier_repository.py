@@ -122,8 +122,10 @@ class SupplierRepository(BaseRepository):
             """
             SELECT (SELECT COUNT(*) FROM supplier_purchase_invoices WHERE supplier_id = %s)
                  + (SELECT COUNT(*) FROM supplier_gold_movements WHERE supplier_id = %s)
-                 + (SELECT COUNT(*) FROM supplier_making_movements WHERE supplier_id = %s) AS references_count
-            """, (_id(supplier_id),) * 3)
+                 + (SELECT COUNT(*) FROM supplier_making_movements WHERE supplier_id = %s)
+                 + (SELECT COUNT(*) FROM intermediary_holding_pools WHERE party_id = %s)
+                 + (SELECT COUNT(*) FROM intermediary_holding_documents WHERE party_id = %s) AS references_count
+            """, (_id(supplier_id),) * 5)
         return int(row["references_count"])
 
     def delete_supplier(self, supplier_id):

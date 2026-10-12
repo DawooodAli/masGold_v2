@@ -175,6 +175,8 @@ class SupplierGoldSettlementService:
             prior = repository.by_request(key)
             if prior is not None:
                 return self._replayed(prior, digest, actor)
+            if repository.request_key_used_elsewhere(key):                                   # a custody / holding operation owns this key
+                raise rules.SupplierRuleError("REQUEST_CONFLICT", "طلب العملية مستخدم لعملية مختلفة.")
             rules.require_supplier_role(supplier)                                            # an intermediary-only party has no gold account
             if supplier["karat_id"] is None:
                 raise rules.SupplierRuleError("SUPPLIER_KARAT_MISSING",

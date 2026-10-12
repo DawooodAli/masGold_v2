@@ -356,6 +356,8 @@ class ApplicationController(QObject):
             trips = self.operational_viewmodels.setdefault("marketTripVM", MarketTripViewModel(self.session))
             if hasattr(trips, "supplierPaymentChanged") and hasattr(suppliers, "refresh"):
                 trips.supplierPaymentChanged.connect(suppliers.refresh)         # the supplier ledger / payment history just changed
+            if hasattr(suppliers, "holdingChanged") and hasattr(trips, "refresh"):
+                suppliers.holdingChanged.connect(trips.refresh)                 # a whole lot came back from an intermediary: the custody views reload
             if hasattr(trips, "custodyChanged"):
                 for target, slot in ((balances, "refresh"), (reviews, "reloadAccounts"), (accounts, "refresh"),
                                      (invoice_vm, "refreshReference"),
