@@ -12,6 +12,8 @@ from repositories.invoice_repository import _id
 HANDOVER, RETURN = "HANDOVER", "RETURN"                       # document kinds
 MOVE_HANDOVER, MOVE_RETURN = "HANDOVER", "RETURN"             # original movements
 MOVE_HANDOVER_REVERSAL, MOVE_RETURN_REVERSAL = "HANDOVER_REVERSAL", "RETURN_REVERSAL"      # compensations posted by a reversal
+MOVE_RECEIPT, MOVE_RECEIPT_REVERSAL = "RECEIPT", "RECEIPT_REVERSAL"                           # 051: physical grams received from the party
+RECEIVE, RECEIVE_REVERSAL = "RECEIVE", "RECEIVE_REVERSAL"                                   # 051: the shop receipt stock movements
 MOVE_SETTLEMENT, MOVE_SETTLEMENT_REVERSAL = "SETTLEMENT", "SETTLEMENT_REVERSAL"           # 050: a supplier settlement from a holding and its compensation
 LOT_HOLD, HOLD_RETURN = "LOT_HOLD", "HOLD_RETURN"             # custody entry kinds
 HOLD_OUT, HOLD_IN = "HOLD_OUT", "HOLD_IN"                     # custody lot movement types
@@ -23,6 +25,16 @@ LOGO_HOLD, HOLD_BACK = "LOGO_HOLD", "HOLD_BACK"               # 049 custody entr
 def holding_code(document_id):
     """IH + 6 digits. Free prefix (S, SP, SM, SG, MT, DP, DR, CS, FO, TR, RV, FC, RT, EX are taken); SG stays reserved for supplier settlements."""
     return f"IH{int(document_id):06d}"
+
+
+def receipt_code(receipt_id):
+    """HR + 6 digits (051): a physical receipt document. Free prefix (S, SP, SM, SG, MT, DP, DR, CS, FO, TR, RV, FC, RT, EX, IH, IG, DC are taken)."""
+    return f"HR{int(receipt_id):06d}"
+
+
+def piece_code(piece_id):
+    """RP + 6 digits (051): the NEW identity of a received piece. Never the identity of the original bar."""
+    return f"RP{int(piece_id):06d}"
 
 
 def logo_holding_code(document_id):
@@ -113,7 +125,79 @@ class IntermediaryHoldingRepository(BaseRepository):
         for table in ("intermediary_holding_pools", "intermediary_holding_documents", "logo_holding_pools", "logo_holding_documents"):
             total += int(self._fetch_one(f"SELECT COUNT(*) AS n FROM {table} WHERE party_id = %s FOR SHARE", (_id(party_id),))["n"])
         total += int(self._fetch_one("SELECT COUNT(*) AS n FROM supplier_gold_settlements WHERE holding_party_id = %s FOR SHARE", (_id(party_id),))["n"])
+        total += int(self._fetch_one("SELECT COUNT(*) AS n FROM holding_receipts WHERE party_id = %s FOR SHARE", (_id(party_id),))["n"])
         return total
+
+    # ------------------------------------------------------------------ physical receipts (051): insert-only writes
+    def insert_receipt(self, *, pool, grams, receipt_date, reference, notes, key, digest, actor, now):
+        receipt_id, _ = self._execute(
+            "INSERT INTO holding_receipts (pool_id, party_id, lot_id, origin_melt_entry_id, grams, receipt_date, reference, notes, request_key, request_hash, "
+            "performed_by_user_id, performed_by_employee_id, occurred_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (int(pool["id"]), int(pool["party_id"]), int(pool["lot_id"]), int(pool["origin_melt_entry_id"]), grams, receipt_date, reference, notes, key, digest,
+             actor.user_id, actor.employee_id, now))
+        return int(receipt_id)
+
+    def insert_piece(self, *, receipt_id, pool, grams):
+        """The new receipt identity. Assay status, location and identity kind take their constrained defaults (UNKNOWN, SHOP, RECEIPT_PIECE)."""
+        piece_id, _ = self._execute(
+            "INSERT INTO receipt_pieces (receipt_id, pool_id, party_id, lot_id, origin_melt_entry_id, grams) VALUES (%s, %s, %s, %s, %s, %s)",
+            (_id(receipt_id), int(pool["id"]), int(pool["party_id"]), int(pool["lot_id"]), int(pool["origin_melt_entry_id"]), grams))
+        return int(piece_id)
+
+    def insert_stock_movement(self, *, piece_id, receipt_id, movement_type, weight, delta, correction_id=None):
+        movement_id, _ = self._execute(
+            "INSERT INTO receipt_stock_movements (piece_id, receipt_id, movement_type, weight_grams, weight_delta, correction_id) VALUES (%s, %s, %s, %s, %s, %s)",
+            (_id(piece_id), _id(receipt_id), movement_type, weight, delta, None if correction_id is None else _id(correction_id)))
+        return int(movement_id)
+
+    def insert_receipt_movement(self, *, pool_id, receipt_id, movement_type, weight, delta, correction_id=None):
+        movement_id, _ = self._execute(
+            "INSERT INTO intermediary_holding_movements (pool_id, document_id, doc_kind, settlement_id, receipt_id, movement_type, weight_grams, weight_delta, correction_id) "
+            "VALUES (%s, NULL, NULL, NULL, %s, %s, %s, %s, %s)",
+            (_id(pool_id), _id(receipt_id), movement_type, weight, delta, None if correction_id is None else _id(correction_id)))
+        return int(movement_id)
+
+    # ------------------------------------------------------------------ physical receipts (051): reads
+    def receipt_by_request(self, key):
+        return self._fetch_one("SELECT * FROM holding_receipts WHERE request_key = %s FOR UPDATE", (key,))
+
+    def receipt(self, receipt_id):
+        """The immutable receipt with its piece (a plain read: only finds what to lock)."""
+        return self._fetch_one(
+            "SELECT r.*, p.id AS piece_id FROM holding_receipts r JOIN receipt_pieces p ON p.receipt_id = r.id WHERE r.id = %s", (_id(receipt_id),))
+
+    def lock_piece(self, piece_id):
+        """The piece row is immutable; locking it is the serialization point of its stock (every consumer of receipt stock locks it FIRST)."""
+        return self._fetch_one("SELECT * FROM receipt_pieces WHERE id = %s FOR UPDATE", (_id(piece_id),))
+
+    def piece_stock(self, piece_id):
+        """Grams of this piece in the shop NOW (a CURRENT read of every movement, compensations included)."""
+        return self._fetch_one("SELECT COALESCE(SUM(weight_delta), 0) AS grams FROM receipt_stock_movements WHERE piece_id = %s FOR SHARE", (_id(piece_id),))["grams"]
+
+    def display_piece_stock(self, piece_id):
+        return self._fetch_one("SELECT COALESCE(SUM(weight_delta), 0) AS grams FROM receipt_stock_movements WHERE piece_id = %s", (_id(piece_id),))["grams"]
+
+    def receipt_movement(self, receipt_id):
+        return self._fetch_one("SELECT * FROM intermediary_holding_movements WHERE receipt_id = %s AND movement_type = 'RECEIPT'", (_id(receipt_id),))
+
+    def party_receipts(self, party_id):
+        """Display only: every receipt of the party (newest first) with its piece, the piece's CURRENT stock and the reversal of the receipt, if any."""
+        return self._fetch_all(
+            """
+            SELECT r.id, r.pool_id, r.party_id, r.lot_id, r.grams, r.receipt_date, r.reference, r.notes, r.occurred_at, u.display_name AS actor_name,
+                   p.id AS piece_id, p.assay_status, l.lot_no, l.lot_kind, oe.trip_id AS origin_trip_id, oe.entry_no AS origin_entry_no,
+                   pl.weight_grams AS pool_weight, pl.fineness_permille AS source_fineness,
+                   (SELECT COALESCE(SUM(m.weight_delta), 0) FROM receipt_stock_movements m WHERE m.piece_id = p.id) AS stock_grams,
+                   c.id AS reversal_id, c.reason AS reversal_reason
+            FROM holding_receipts r
+            JOIN receipt_pieces p ON p.receipt_id = r.id
+            JOIN intermediary_holding_pools pl ON pl.id = r.pool_id
+            JOIN market_trip_lots l ON l.id = r.lot_id
+            JOIN market_trip_entries oe ON oe.id = r.origin_melt_entry_id
+            LEFT JOIN users u ON u.id = r.performed_by_user_id
+            LEFT JOIN transaction_corrections c ON c.source_type = 'HOLDING_RECEIPT' AND c.source_id = r.id AND c.correction_type = 'FULL_REVERSAL'
+            WHERE r.party_id = %s ORDER BY r.id DESC
+            """, (_id(party_id),))
 
     # ------------------------------------------------------------------ supplier settlement from a holding (050)
     def pool_settlement_history(self, pool_id):

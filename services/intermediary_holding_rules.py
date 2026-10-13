@@ -2,7 +2,7 @@
 shape of a holding pool / document. No database, no authorization: the services decide, this module only names and formats."""
 from decimal import ROUND_HALF_UP, Decimal, localcontext
 
-from repositories.intermediary_holding_repository import CONFIRMATION_CODE, holding_code, logo_holding_code
+from repositories.intermediary_holding_repository import CONFIRMATION_CODE, holding_code, logo_holding_code, piece_code, receipt_code
 from repositories.market_trip_repository import entry_code, trip_code
 from services.correction_rules import correction_code
 
@@ -64,7 +64,7 @@ def pool_row(r):
             "pure": pure_grams(balance, r["fineness_permille"]), "document": holding_code(r["handover_id"]),
             "custody_entry": entry_code(r["trip_id"], r["handover_entry_no"]), "trip_id": str(r["trip_id"]), "trip_code": trip_code(r["trip_id"]),
             "trip_open": trip_open, "date": r["document_date"], "returnable": trip_open and whole and not allocated, "reason": reason,
-            "allocated": allocated, "settleable": balance > 0,
+            "allocated": allocated, "settleable": balance > 0, "receivable": allocated and balance > 0,
             "history_note": ("سبق تسليم هذه السبكة كاملة لمورد وعُكس: يبقى رجوعها بتأكيد المالك الصريح."
                              if settled_before and not allocated and whole else "")}
 
@@ -171,3 +171,21 @@ def holding_preview(context, supplier_id, quantity):
     except supplier.SupplierRuleError as exc:
         return {**result, "error": str(exc)}
     return {**result, "valid": True, "credited": credited, "analytical": analytical, "rounding_difference": difference}
+
+
+RECEIPT_NOTE = ("استلام فعلي من المسوقجي: يُنقل الوزن المقاس فعليًا إلى مخزون استلام في المحل بهوية جديدة (RP) دون استعادة هوية السبكة الأصلية، "
+                "ويساوي ما يُخصم من رصيد المسوقجي. العيار غير معلوم؛ الاستلام لا يثبت تكافؤ العيار ولا يُسقط أي فرق عيار غير مقاس. "
+                "المخزون المستلم ظاهر لكنه غير متاح للبيع أو التسوية أو الإصدار أو السبك.")
+
+
+def receipt_row(r):
+    """One physical receipt with its piece (display). Stock is the CURRENT sum of the piece's movements; a reversed receipt stays listed with stock 0."""
+    reversed_by = None if r["reversal_id"] is None else correction_code("FULL_REVERSAL", r["reversal_id"])
+    stock = Decimal(str(r["stock_grams"]))
+    return {"receipt_id": str(r["id"]), "code": receipt_code(r["id"]), "piece_id": str(r["piece_id"]), "piece_code": piece_code(r["piece_id"]),
+            "pool_id": str(r["pool_id"]), "grams": Decimal(str(r["grams"])), "stock": stock, "date": r["receipt_date"], "at": r["occurred_at"],
+            "actor": r.get("actor_name") or "", "reference": r.get("reference") or "", "notes": r.get("notes") or "",
+            "source": source_text(r["lot_kind"], r["origin_trip_id"], r["origin_entry_no"], r["lot_no"]),
+            "pool_weight": Decimal(str(r["pool_weight"])), "source_fineness": None if r["source_fineness"] is None else Decimal(str(r["source_fineness"])),
+            "assay_known": r["assay_status"] != "UNKNOWN", "reversed": reversed_by is not None, "reversed_by": reversed_by,
+            "reversal_reason": r.get("reversal_reason") or "", "in_stock": stock > 0}

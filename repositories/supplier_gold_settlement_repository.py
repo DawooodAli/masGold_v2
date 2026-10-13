@@ -43,7 +43,8 @@ class SupplierGoldSettlementRepository(SupplierRepository):
         row = self._fetch_one(
             "SELECT (SELECT COUNT(*) FROM market_trip_entries WHERE request_key = %s FOR SHARE) "
             "+ (SELECT COUNT(*) FROM intermediary_holding_documents WHERE request_key = %s FOR SHARE) "
-            "+ (SELECT COUNT(*) FROM logo_holding_documents WHERE request_key = %s FOR SHARE) AS used", (key, key, key))
+            "+ (SELECT COUNT(*) FROM logo_holding_documents WHERE request_key = %s FOR SHARE) "
+            "+ (SELECT COUNT(*) FROM holding_receipts WHERE request_key = %s FOR SHARE) AS used", (key, key, key, key))
         return int(row["used"]) > 0
 
     # ------------------------------------------------------------------ the settlement

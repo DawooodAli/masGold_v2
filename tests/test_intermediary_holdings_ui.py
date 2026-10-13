@@ -304,7 +304,8 @@ class HoldingSupplierStub:
                                                                       "pure": holdings["pure"], "can_manage": holdings["can_manage"],
                                                                       "logo_pools": holdings["logo_pools"], "logo_history": holdings["logo_history"],
                                                                       "settlements": holdings["settlements"], "can_settle": holdings["can_settle"],
-                                                                      "can_reverse": holdings["can_reverse"]}}
+                                                                      "can_reverse": holdings["can_reverse"], "receipts": holdings["receipts"],
+                                                                      "can_receive": holdings["can_receive"], "can_reverse_receipt": holdings["can_reverse_receipt"]}}
 
 
 class HoldingPartyPageTests(harness.InvoicePageTests):

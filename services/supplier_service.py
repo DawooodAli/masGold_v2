@@ -21,7 +21,7 @@ from services import supplier_rules as rules
 from services.authorization_service import AuthorizationService
 from services.correction_rules import correction_code
 from services.intermediary_holding_rules import (MANAGE_PERMISSION as MANAGE_HOLDINGS, TRIP_PERMISSION as TRIP_MANAGE, VIEW_PERMISSION as VIEW_HOLDINGS,
-                                                 document_row, holding_settlement_row, logo_document_row, logo_pool_row, pool_row)
+                                                 document_row, holding_settlement_row, logo_document_row, logo_pool_row, pool_row, receipt_row)
 from services.invoice_service import invoice_transaction
 from services.number_text import normalize_digits
 
@@ -195,6 +195,9 @@ class SupplierService:
         pools = [pool_row(r) for r in ledger.open_pools(party_id=supplier_id)]
         logo_pools = [logo_pool_row(r) for r in ledger.logo_open_pools(party_id=supplier_id)]
         return {"settlements": [holding_settlement_row(r) for r in ledger.holding_settlements(supplier_id)],
+                "receipts": [receipt_row(r) for r in ledger.party_receipts(supplier_id)],
+                "can_receive": MANAGE_HOLDINGS in actor.permissions,
+                "can_reverse_receipt": {"TRANSACTION_CORRECT", "INTERMEDIARY_HOLDING_REVERSE"} <= set(actor.permissions),
                 "pools": pools, "history": [document_row(r) for r in ledger.party_documents(supplier_id)],
                 "logo_pools": logo_pools, "logo_history": [logo_document_row(r) for r in ledger.logo_party_documents(supplier_id)],
                 "total": sum((p["balance"] for p in pools), Decimal("0.000")),

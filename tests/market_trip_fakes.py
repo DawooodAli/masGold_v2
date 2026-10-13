@@ -52,13 +52,14 @@ class Db:
         self.settlements, self.settlement_legs, self.sup_gold = {}, [], []                      # 045: SG documents, legs and the supplier gold ledger
         self.lot_settle_links = {}
         self.holding_pools, self.holding_docs, self.holding_moves, self.holding_links = {}, {}, [], {}      # 048
+        self.receipts, self.pieces, self.stock_moves = {}, {}, []                                          # 051: HR documents, RP pieces, shop receipt stock
         self.logo_pools, self.logo_docs, self.logo_moves, self.logo_links = {}, {}, [], {}                  # 049
         self.gold_settle_links = {}                                                              # 046: entry id -> the SG document it made
         self.sm_payments, self.sm_making, self.sm_legs, self.supplier_links = {}, [], [], {}
         self.shop_moves, self.lot_returns, self.lot_issues = [], [], []                      # 040/041: shop-side lot ledger, return / issue links
         self.corrections, self.audit_rows = [], []
         self.sequences = {"trip": 0, "entry": 0, "cash_move": 1, "scrap": 2, "correction": 0, "lot": 0, "lot_move": 0, "shop_move": 0,
-                          "payment": 0, "sm_making": 0, "settlement": 0, "sup_gold": 0, "pool": 0, "doc": 0, "hmove": 0, "lpool": 0, "ldoc": 0, "lmove": 0}
+                          "payment": 0, "sm_making": 0, "settlement": 0, "sup_gold": 0, "pool": 0, "doc": 0, "hmove": 0, "lpool": 0, "ldoc": 0, "lmove": 0, "receipt": 0, "piece": 0, "smove": 0}
         self.fail_at = None
         self.transactions = 0
         self.lock_log = []          # resource acquisitions in order, kept across a rollback so a refused post still shows what it locked
@@ -719,7 +720,7 @@ class Corrections:
     def insert_correction(self, **kw):
         self._fail("correction")
         assert kw["reason"].strip()
-        assert kw["source_type"] in (SOURCE, "SUPPLIER_GOLD_SETTLEMENT") and kw["invoice_id"] is None and kw["correction_type"] == "FULL_REVERSAL"
+        assert kw["source_type"] in (SOURCE, "SUPPLIER_GOLD_SETTLEMENT", "HOLDING_RECEIPT") and kw["invoice_id"] is None and kw["correction_type"] == "FULL_REVERSAL"
         if any((c["source_type"], c["source_id"], c["correction_type"]) == (kw["source_type"], str(kw["source_id"]), "FULL_REVERSAL")
                for c in self.db.corrections):
             raise RuntimeError("Duplicate entry for key uq_correction_one_reversal")
@@ -901,7 +902,110 @@ class HoldingRepo:
                 + sum(1 for d in self.db.holding_docs.values() if d["party_id"] == int(party_id))
                 + sum(1 for p in self.db.logo_pools.values() if p["party_id"] == int(party_id))
                 + sum(1 for d in self.db.logo_docs.values() if d["party_id"] == int(party_id))
-                + sum(1 for s in self.db.settlements.values() if s.get("holding_party_id") == int(party_id)))
+                + sum(1 for s in self.db.settlements.values() if s.get("holding_party_id") == int(party_id))
+                + sum(1 for r in self.db.receipts.values() if r["party_id"] == int(party_id)))
+
+    # ---- 051: physical receipts (the constraints of migration 051 mirrored as asserts)
+    def insert_receipt(self, *, pool, grams, receipt_date, reference, notes, key, digest, actor, now):
+        self._fail("receipt")
+        stored = self.db.holding_pools[int(pool["id"])]                                          # fk_hr_pool
+        assert (stored["party_id"], stored["lot_id"], stored["origin_melt_entry_id"]) == (int(pool["party_id"]), int(pool["lot_id"]), int(pool["origin_melt_entry_id"]))
+        assert grams > 0                                                                         # chk_hr_grams
+        if any(r["request_key"] == key for r in self.db.receipts.values()):
+            raise _dup("uq_hr_request")
+        receipt_id = self.db.next("receipt")
+        self.db.receipts[receipt_id] = {"id": receipt_id, "pool_id": int(pool["id"]), "party_id": int(pool["party_id"]), "lot_id": int(pool["lot_id"]),
+                                        "origin_melt_entry_id": int(pool["origin_melt_entry_id"]), "grams": grams, "receipt_date": receipt_date,
+                                        "reference": reference, "notes": notes, "request_key": key, "request_hash": digest,
+                                        "performed_by_user_id": actor.user_id, "occurred_at": now}
+        return receipt_id
+
+    def insert_piece(self, *, receipt_id, pool, grams):
+        self._fail("piece")
+        receipt = self.db.receipts[int(receipt_id)]                                              # fk_rp_receipt
+        assert (receipt["pool_id"], receipt["party_id"], receipt["lot_id"], receipt["origin_melt_entry_id"], receipt["grams"]) == (
+            int(pool["id"]), int(pool["party_id"]), int(pool["lot_id"]), int(pool["origin_melt_entry_id"]), grams)
+        if any(p["receipt_id"] == int(receipt_id) for p in self.db.pieces.values()):
+            raise _dup("uq_rp_receipt")
+        piece_id = self.db.next("piece")
+        self.db.pieces[piece_id] = {"id": piece_id, "receipt_id": int(receipt_id), "pool_id": int(pool["id"]), "grams": grams, "identity_kind": "RECEIPT_PIECE",
+                                    "location": "SHOP", "assay_status": "UNKNOWN", "fineness_permille": None, "pure_grams": None}
+        return piece_id
+
+    def insert_stock_movement(self, *, piece_id, receipt_id, movement_type, weight, delta, correction_id=None):
+        self._fail("stock_movement")
+        piece = self.db.pieces[int(piece_id)]                                                    # fk_rsm_piece
+        assert (piece["receipt_id"], piece["grams"]) == (int(receipt_id), weight)
+        expected, needs_correction = {"RECEIVE": (weight, False), "RECEIVE_REVERSAL": (-weight, True)}[movement_type]        # chk_rsm_shape
+        assert weight > 0 and delta == expected and (correction_id is not None) == needs_correction
+        if any((m["piece_id"], m["movement_type"]) == (int(piece_id), movement_type) for m in self.db.stock_moves):
+            raise _dup("uq_rsm_piece_type")
+        if correction_id is not None and any(m["correction_id"] == int(correction_id) for m in self.db.stock_moves):
+            raise _dup("uq_rsm_correction")
+        move_id = self.db.next("smove")
+        self.db.stock_moves.append({"id": move_id, "piece_id": int(piece_id), "receipt_id": int(receipt_id), "movement_type": movement_type,
+                                    "weight_grams": weight, "weight_delta": delta, "correction_id": None if correction_id is None else int(correction_id)})
+        return move_id
+
+    def insert_receipt_movement(self, *, pool_id, receipt_id, movement_type, weight, delta, correction_id=None):
+        self._fail("receipt_movement")
+        receipt = self.db.receipts[int(receipt_id)]                                              # fk_ihm_receipt
+        assert (receipt["pool_id"], receipt["grams"]) == (int(pool_id), weight)
+        expected, needs_correction = {"RECEIPT": (-weight, False), "RECEIPT_REVERSAL": (weight, True)}[movement_type]        # chk_ihm_shape (receipt branches)
+        assert weight > 0 and delta == expected and (correction_id is not None) == needs_correction
+        if any(m.get("receipt_id") == int(receipt_id) and m["movement_type"] == movement_type for m in self.db.holding_moves):
+            raise _dup("uq_ihm_receipt_type")
+        if correction_id is not None and any(m["correction_id"] == int(correction_id) for m in self.db.holding_moves):
+            raise _dup("uq_ihm_correction")
+        move_id = self.db.next("hmove")
+        self.db.holding_moves.append({"id": move_id, "pool_id": int(pool_id), "document_id": None, "doc_kind": None, "settlement_id": None,
+                                      "receipt_id": int(receipt_id), "movement_type": movement_type, "weight_grams": weight, "weight_delta": delta,
+                                      "correction_id": None if correction_id is None else int(correction_id)})
+        return move_id
+
+    def receipt_by_request(self, key):
+        row = next((r for r in self.db.receipts.values() if r["request_key"] == key), None)
+        return None if row is None else dict(row)
+
+    def receipt(self, receipt_id):
+        row = self.db.receipts.get(int(receipt_id))
+        if row is None:
+            return None
+        piece = next(p for p in self.db.pieces.values() if p["receipt_id"] == int(receipt_id))
+        return {**row, "piece_id": piece["id"]}
+
+    def lock_piece(self, piece_id):
+        self.db.lock_log.append(("piece", int(piece_id)))
+        row = self.db.pieces.get(int(piece_id))
+        return None if row is None else dict(row)
+
+    def piece_stock(self, piece_id):
+        return sum((m["weight_delta"] for m in self.db.stock_moves if m["piece_id"] == int(piece_id)), D("0.000"))
+
+    display_piece_stock = piece_stock
+
+    def receipt_movement(self, receipt_id):
+        row = next((m for m in self.db.holding_moves if m.get("receipt_id") == int(receipt_id) and m["movement_type"] == "RECEIPT"), None)
+        return None if row is None else dict(row)
+
+    def party_receipts(self, party_id):
+        rows = []
+        for r in sorted(self.db.receipts.values(), key=lambda r: -r["id"]):
+            if r["party_id"] != int(party_id):
+                continue
+            piece = next(p for p in self.db.pieces.values() if p["receipt_id"] == r["id"])
+            lot = self.db.lots[r["lot_id"]]
+            origin = self.db.entries[lot["entry_id"]]
+            pool = self.db.holding_pools[r["pool_id"]]
+            reversal = next((c for c in self.db.corrections if c["correction_type"] == "FULL_REVERSAL" and c["source_type"] == "HOLDING_RECEIPT"
+                             and c["source_id"] == str(r["id"])), None)
+            rows.append({"id": r["id"], "pool_id": r["pool_id"], "party_id": r["party_id"], "lot_id": r["lot_id"], "grams": r["grams"],
+                         "receipt_date": r["receipt_date"], "reference": r["reference"], "notes": r["notes"], "occurred_at": r["occurred_at"],
+                         "actor_name": "المالك", "piece_id": piece["id"], "assay_status": piece["assay_status"], "lot_no": lot["lot_no"],
+                         "lot_kind": lot["lot_kind"], "origin_trip_id": origin["trip_id"], "origin_entry_no": origin["entry_no"],
+                         "pool_weight": pool["weight_grams"], "source_fineness": pool["fineness_permille"], "stock_grams": self.piece_stock(piece["id"]),
+                         "reversal_id": reversal and int(reversal["correction_id"]), "reversal_reason": reversal and reversal["reason"]})
+        return rows
 
     # ---- 050: supplier settlement from a holding
     def pool_settlement_history(self, pool_id):
@@ -1262,7 +1366,8 @@ class SettlementRepo:
     def request_key_used_elsewhere(self, key):
         return (any(e["request_key"] == key for e in self.db.entries.values())
                 or any(d["request_key"] == key for d in self.db.holding_docs.values())
-                or any(d["request_key"] == key for d in self.db.logo_docs.values()))
+                or any(d["request_key"] == key for d in self.db.logo_docs.values())
+                or any(r["request_key"] == key for r in self.db.receipts.values()))
 
     def insert_header(self, *, supplier_id, delivered_karat, target_karat, delivered_weight, credited, analytical, difference, settlement_date,
                       reference, notes, key, digest, actor, now, source_kind="SHOP_SCRAP"):

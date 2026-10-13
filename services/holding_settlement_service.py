@@ -45,7 +45,7 @@ from services.invoice_service import invoice_transaction
 from services.market_trip_service import NOTES_MAX, PAYMENT_REFERENCE_MAX, TripError, _entry_date, _text
 from decimal import Decimal
 
-KEY_CONSTRAINTS = ("uq_sgs_request", "uq_mte_request", "uq_ihd_request", "uq_lhd_request")
+KEY_CONSTRAINTS = ("uq_sgs_request", "uq_mte_request", "uq_ihd_request", "uq_lhd_request", "uq_hr_request")
 ZERO = Decimal("0.000")
 KINDS = {POOL_LOT: HOLDING_LOT_KIND, POOL_LOGO: HOLDING_LOGO_KIND}
 

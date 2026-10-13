@@ -14,8 +14,8 @@ from PySide6.QtCore import QObject, Property, Signal, Slot
 
 from app.formatting import date_text, datetime_text, grams, ltr, money, number
 from services import supplier_rules as rules
-from services.intermediary_holding_rules import (CONFIRMATION_TEXT, DECLARATION_TEXT, HOLDING_NOTE, LOGO_NOTE, POOL_LOGO, POOL_LOT, SETTLE_CONFIRMATION_TEXT,
-                                                 holding_preview)
+from services.intermediary_holding_rules import (CONFIRMATION_TEXT, DECLARATION_TEXT, HOLDING_NOTE, LOGO_NOTE, POOL_LOGO, POOL_LOT, RECEIPT_NOTE,
+                                                 SETTLE_CONFIRMATION_TEXT, holding_preview)
 
 SHOP_OWES_TEXT, SUPPLIER_OWES_TEXT, SETTLED_TEXT = "علينا للمورد", "لنا عند المورد", "الحساب متوازن"
 ACCOUNT_TYPE_TEXT = {"BANK": "حساب بنكي", "MOBILE_WALLET": "محفظة"}
@@ -107,11 +107,14 @@ class SupplierViewModel(QObject):
     holdingReturned = Signal(str)        # a whole lot came back from the intermediary (its IH code): the dialog can close
     holdingChanged = Signal()            # custody entries changed by a holding return (after commit): the custody views reload
     holdingSettled = Signal(str)         # a supplier was settled from a holding (its SG code): the dialog can close
+    receiptPosted = Signal(str)          # a physical receipt was posted (its HR code): the dialog can close
+    receiptReversed = Signal(str)        # a physical receipt was reversed (the RV code): the dialog can close
 
     def __init__(self, session, service=None, parent=None, payments=None, holdings=None, holding_settlements=None):
         super().__init__(parent)
         self._session, self._service, self._payments, self._holdings = session, service, payments, holdings
         self._holding_settlements, self._hs_context = holding_settlements, {}
+        self._holding_receipts, self._hr_context = None, {}
         self._pay_context = {}
         self._settlements, self._set_context = None, {}
         self._workers, self._request, self._latest, self._busy = set(), 0, {}, set()
@@ -139,6 +142,12 @@ class SupplierViewModel(QObject):
             from services.intermediary_holding_service import IntermediaryHoldingService
             self._holdings = IntermediaryHoldingService(self._session)
         return self._holdings
+
+    def _holding_receipt_service(self):
+        if self._holding_receipts is None:
+            from services.holding_receipt_service import HoldingReceiptService
+            self._holding_receipts = HoldingReceiptService(self._session)
+        return self._holding_receipts
 
     def _holding_settlement_service(self):
         if self._holding_settlements is None:
@@ -577,7 +586,103 @@ class SupplierViewModel(QObject):
         self.holdingSettled.emit(result["code"])
         self.holdingChanged.emit()
 
+    # ------------------------------------------------------------ physical receipts from a holding (051)
+    @Slot(str)
+    def loadReceiptContext(self, pool_id):
+        self._hr_context = {}
+        self._error = self._message = ""
+        service = self._holding_receipt_service()
+        self._start("hrctx", lambda _expected_actor: service.context(pool_id, _expected_actor=_expected_actor))
+        self.changed.emit()
+
+    def _on_hrctx(self, result, error):
+        if error:
+            self._error = error
+            return
+        self._hr_context = result
+
+    @Slot(str, str, result="QVariantMap")
+    def previewReceipt(self, entitlement, measured):
+        """The pre-submit check of the two weights, by the SAME parser the service uses (never QML arithmetic): positive, at most three decimals and equal."""
+        context = self._hr_context
+        empty = {"valid": False, "error": "", "remainingText": ""}
+        if not context or not str(entitlement or "").strip() or not str(measured or "").strip():
+            return empty
+        try:
+            consumed, weighed = rules.parse_delivered_weight(entitlement), rules.parse_delivered_weight(measured)
+        except rules.SupplierRuleError as exc:
+            return {**empty, "error": str(exc)}
+        if consumed != weighed:
+            return {**empty, "error": "الوزن المقاس فعليًا يجب أن يساوي الجرامات المخصومة من رصيد المسوقجي."}
+        if consumed > context["balance"]:
+            return {**empty, "error": f"المتبقي من هذا المصدر لدى المسوقجي {grams(context['balance'])} جرام فقط."}
+        return {"valid": True, "error": "", "remainingText": f"{grams(context['balance'] - consumed)} جرام"}
+
+    @Slot(str, str, str, str, str, str, str)
+    def postReceipt(self, pool_id, entitlement, measured, receipt_date, reference, notes, request_key):
+        if "hrpost" in self._busy:
+            return                                                     # a double click never submits twice
+        self._message = self._error = ""
+        service = self._holding_receipt_service()
+        self._start("hrpost", lambda _expected_actor: service.receive(
+            pool_id, entitlement, measured, receipt_date, reference, notes, request_key, _expected_actor=_expected_actor))
+        self.changed.emit()
+
+    def _on_hrpost(self, result, error):
+        if error:
+            self._error = error                                        # the dialog stays open with every field kept
+            return
+        self._message = (f"الاستلام {result['code']} مسجل من قبل (لم يُسجل مرة ثانية)." if result.get("duplicate")
+                         else f"تم تسجيل الاستلام {result['code']}: {grams(Decimal(result['grams']))} جرام مقاسة فعليًا ← قطعة {result['piece_code']} في مخزون الاستلام "
+                              f"(المتبقي لدى المسوقجي {grams(Decimal(result['remaining']))} جرام).")
+        self.refresh()
+        self.receiptPosted.emit(result["code"])
+
+    @Slot(str, str)
+    def reverseReceipt(self, receipt_id, reason):
+        if "hrrev" in self._busy:
+            return
+        self._message = self._error = ""
+        service = self._holding_receipt_service()
+        self._start("hrrev", lambda _expected_actor: service.reverse(receipt_id, reason, _expected_actor=_expected_actor))
+        self.changed.emit()
+
+    def _on_hrrev(self, result, error):
+        if error:
+            self._error = error
+            return
+        self._message = (f"تم عكس الاستلام {result['source_reference']} ({result['code']}): خرجت القطعة المستلمة من مخزون الاستلام "
+                         "وعادت الجرامات المخزَّنة إلى رصيد المسوقجي (دون إثبات سلامة السبكة الأصلية).")
+        self.refresh()
+        self.receiptReversed.emit(result["code"])
+
     # ------------------------------------------------------------ properties
+    @Property(bool, notify=changed)
+    def canReceiveFromHolding(self):
+        actor = self._session.current_actor()
+        return bool(actor and "INTERMEDIARY_HOLDING_MANAGE" in actor.permissions)
+
+    @Property(bool, notify=changed)
+    def receivingFromHolding(self):
+        return "hrpost" in self._busy
+
+    @Property(bool, notify=changed)
+    def receiptReversing(self):
+        return "hrrev" in self._busy
+
+    @Property("QVariantMap", notify=changed)
+    def receiptContext(self):
+        context = self._hr_context
+        if not context:
+            return {}
+        return {"poolId": context["pool_id"], "holderName": context["holder"]["name"], "availableText": f"{grams(context['balance'])} جرام",
+                "sourceText": f"سبكة وزنها الأصلي {grams(context['weight'])} جرام • العيار المسجل للمصدر {number(context['source_fineness'], 1)} بالألف (للمرجع فقط، لا يُنسب للقطعة المستلمة)",
+                "receivable": bool(context["receivable"])}
+
+    @Property(str, constant=True)
+    def receiptNote(self):
+        return RECEIPT_NOTE
+
     @Property(bool, notify=changed)
     def canSettleFromHolding(self):
         actor = self._session.current_actor()
@@ -640,7 +745,8 @@ class SupplierViewModel(QObject):
                   "pure": "غير معلومة" if p["pure"] is None else number(p["pure"], 6), "document": ltr(p["document"]),
                   "custodyEntry": ltr(p["custody_entry"]), "tripCode": ltr(p["trip_code"]), "date": date_text(p["date"]),
                   "returnable": bool(data["can_manage"] and p["returnable"]), "reason": p["reason"],
-                  "settleable": bool(data.get("can_settle") and p["settleable"]), "historyNote": p.get("history_note", "")} for p in data["pools"]]
+                  "settleable": bool(data.get("can_settle") and p["settleable"]), "historyNote": p.get("history_note", ""),
+                  "receivable": bool(data.get("can_receive") and p.get("receivable"))} for p in data["pools"]]
         history = [{"id": h["document_id"], "code": ltr(h["code"]),
                     "kindText": "تسليم" if h["kind"] == "HANDOVER" else "رجوع",
                     "text": f"{h['source']} • {grams(h['weight'])} جرام • {ltr(h['custody_entry'])} • {date_text(h['date'])}"
@@ -663,12 +769,18 @@ class SupplierViewModel(QObject):
         logo_history = [{"id": h["document_id"], "code": ltr(h["code"]), "kindText": "تسليم" if h["kind"] == "HANDOVER" else "رجوع",
                          "text": f"لوجو عيار {h['karat_value']} • {grams(h['weight'])} جرام • {ltr(h['custody_entry'])} • {date_text(h['date'])}",
                          "reversed": h["reversed"], "state": f"معكوس بالعملية {h['reversed_by']}" if h["reversed"] else ""} for h in data.get("logo_history", [])]
+        receipts = [{"id": r["receipt_id"], "code": ltr(r["code"]), "piece": ltr(r["piece_code"]),
+                     "text": (f"{grams(r['grams'])} جرام مقاسة فعليًا • {r['source']} • عيار القطعة غير معلوم • {date_text(r['date'])}"
+                              + (f" • مرجع: {r['reference']}" if r["reference"] else "")),
+                     "stockText": f"المخزون {grams(r['stock'])} جرام", "inStock": r["in_stock"], "reversed": r["reversed"],
+                     "state": f"معكوس بالعملية {r['reversed_by']}" if r["reversed"] else "",
+                     "canReverse": bool(data.get("can_reverse_receipt")) and not r["reversed"] and r["in_stock"]} for r in data.get("receipts", [])]
         by_karat = {}
         for p in data.get("logo_pools", []):
             by_karat[p["karat_value"]] = by_karat.get(p["karat_value"], Decimal("0")) + p["balance"]
         logo_summary = (" • ".join(f"لوجو عيار {k}: {grams(v)} جرام" for k, v in sorted(by_karat.items(), reverse=True)) if by_karat else "")
         return {"visible": True, "note": HOLDING_NOTE, "logoPools": logo_pools, "logoHistory": logo_history, "logoSummary": logo_summary,
-                "logoNote": LOGO_NOTE, "settlements": settlements,
+                "logoNote": LOGO_NOTE, "settlements": settlements, "receipts": receipts, "receiptNote": RECEIPT_NOTE,
                 "summary": (f"الإجمالي لدى المسوقجي {grams(data['total'])} جرام • الذهب الصافي المعروف {number(data['pure'], 6)} جرام" if pools
                             else "" if logo_pools else "لا يوجد ذهب للمحل لدى هذا المسوقجي الآن."),
                 "pools": pools, "history": history, "canManage": bool(data["can_manage"])}

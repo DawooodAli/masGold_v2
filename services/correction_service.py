@@ -59,9 +59,10 @@ MTE_PERMISSION = "MARKET_TRIP_MANAGE"
 SGS = "SUPPLIER_GOLD_SETTLEMENT"      # direct supplier gold settlement from shop Scrap (045): full reversal only, OWNER only
 SGS_REVERSE_PERMISSION = "SUPPLIER_GOLD_SETTLE_REVERSE"
 HOLDING_REVERSE_PERMISSION = "INTERMEDIARY_HOLDING_REVERSE"
+HRC = "HOLDING_RECEIPT"              # physical receipt from an intermediary holding (051): full reversal only, OWNER only
 SOURCE_RIGHTS = {SMP: SMP_REVERSE_PERMISSION, MTE: MTE_PERMISSION, SGS: SGS_REVERSE_PERMISSION}   # a right ON TOP of TRANSACTION_CORRECT
-SOURCES = ("INVOICE", "EXCHANGE", "RETURN", CS, FO, CD, SMP, MTE, SGS)
-STANDALONE = (CS, FO, CD, SMP, MTE, SGS)    # sources without an invoice (never a fabricated one)
+SOURCES = ("INVOICE", "EXCHANGE", "RETURN", CS, FO, CD, SMP, MTE, SGS, HRC)
+STANDALONE = (CS, FO, CD, SMP, MTE, SGS, HRC)    # sources without an invoice (never a fabricated one)
 MONEY = Decimal("0.01")
 ZERO, ZERO_GRAMS = Decimal("0.00"), Decimal("0.000")
 METHOD_TEXT = {"PHYSICAL_CASH": "نقدي", "MOBILE_WALLET": "محفظة", "INSTAPAY": "InstaPay", "BANK_TRANSFER": "تحويل بنكي"}
@@ -74,6 +75,7 @@ SOURCE_TEXT[CD] = "العربون"
 SOURCE_TEXT[SMP] = "دفعة المصنعيات"
 SOURCE_TEXT[MTE] = "حركة عهدة السوق"
 SOURCE_TEXT[SGS] = "تسوية ذهب المورد"
+SOURCE_TEXT[HRC] = "استلام ذهب من المسوقجي"
 
 
 def correction_source_text(source_type, direction=None, *, definite=True):
@@ -127,6 +129,7 @@ class _Plan:
     holdings: list = field(default_factory=list)         # (pool id, document id, doc kind, movement type, grams, signed delta) explicit holding compensations (048)
     logo_holdings: list = field(default_factory=list)    # the same for master-karat LOGO pools (049)
     holding_settlements: list = field(default_factory=list)   # (is LOGO pool, pool id, settlement id, grams) the compensation of a settlement from a holding (050)
+    receipts: list = field(default_factory=list)         # (pool id, receipt id, piece id, grams) a physical receipt reversal: stock out, holding grams back (051)
 
 
 def _reason(text):
@@ -310,6 +313,24 @@ class CorrectionService:
                        "finalized_at": source["occurred_at"], "net_amount": source["credited_weight_grams"],
                        "supplier_id": str(source["supplier_id"]), "supplier_name": source.get("supplier_name")}
             return context, source, reference
+        if source_type == HRC:
+            from repositories.intermediary_holding_repository import IntermediaryHoldingRepository, receipt_code
+            from repositories.market_trip_repository import MarketTripRepository
+            from repositories.supplier_gold_settlement_repository import SupplierGoldSettlementRepository
+            holdings = IntermediaryHoldingRepository(connection)
+            source = holdings.receipt(source_id)
+            if source is None:
+                raise CorrectionError("SOURCE_NOT_FOUND", "الاستلام غير موجود.")
+            if lock:                                            # lot -> holder party -> holding source pool -> receipt piece; no trip is locked or reopened
+                MarketTripRepository(connection).lock_lots([source["lot_id"]])
+                SupplierGoldSettlementRepository(connection).get_supplier(source["party_id"], lock=True)
+                holdings.lock_pool(source["pool_id"])
+                holdings.lock_piece(source["piece_id"])
+                source = holdings.receipt(source_id)
+            reference = receipt_code(source_id)
+            context = {"invoice_id": None, "invoice_number": reference, "customer_name_snapshot": None, "customer_id": None,
+                       "finalized_at": source["occurred_at"], "net_amount": source["grams"]}
+            return context, source, reference
         if source_type == SMP:
             from repositories.financial_account_repository import FinancialAccountRepository
             from repositories.supplier_payment_repository import SupplierPaymentRepository, payment_code
@@ -381,7 +402,7 @@ class CorrectionService:
     def _plan(self, connection, source_type, source_id, lock):
         corrections, invoices = self._corrections(connection), self._invoices(connection)
         invoice, source, reference = self._load(connection, source_type, source_id, lock)
-        holding_decision = bool(lock and source_type == SGS and (source or {}).get("source_kind") in ("HOLDING_LOT", "HOLDING_LOGO"))
+        holding_decision = bool(lock and (source_type == HRC or (source_type == SGS and (source or {}).get("source_kind") in ("HOLDING_LOT", "HOLDING_LOGO"))))
         # a settlement from a holding: a CURRENT read decides ALREADY_REVERSED (every other source keeps its established call)
         reversal, chain = (self._history(corrections, source_type, source_id, True) if holding_decision
                            else self._history(corrections, source_type, source_id))
@@ -606,6 +627,8 @@ class CorrectionService:
                                       -Decimal(str(scrap_leg["weight_delta_grams"])), SCRAP_REVERSAL_IN))
                 plan.supplier_gold.append((int(gold_leg["supplier_id"]), int(gold_leg["karat_id"]), -Decimal(str(gold_leg["weight_delta_grams"])),
                                            -Decimal(str(gold_leg["equivalent_21_delta_grams"])), GOLD_REVERSAL))
+        if source_type == HRC:
+            self._plan_receipt(connection, plan, source, lock)
         if source_type == SMP and source["payment_method"] == "CUSTODY":
             # Paid with market-custody cash: the custody entry is the only reversal path (it also restores the custody cash).
             from repositories.market_trip_repository import MarketTripRepository, entry_code
@@ -781,6 +804,29 @@ class CorrectionService:
         plan.lines = ("invoice_return_lines", [l["line_id"] for l in source["lines"]])
 
     @staticmethod
+    def _plan_receipt(connection, plan, source, lock):
+        """051. The receipt piece is already locked (_load). Its FULL received stock must still be present: any later consumer of receipt stock (none exists in
+        this slice) must lock the piece first, take a current stock read and post a negative movement, which makes this reversal refuse. The stored grams
+        are restored to the holding; the resulting balance must stay within the pool's initial quantity."""
+        from repositories.intermediary_holding_repository import IntermediaryHoldingRepository
+        holdings = IntermediaryHoldingRepository(connection)
+        piece_id, pool_id, grams = int(source["piece_id"]), int(source["pool_id"]), Decimal(str(source["grams"]))
+        plan.extra_permissions.append(HOLDING_REVERSE_PERMISSION)
+        if holdings.receipt_movement(source["id"]) is None:
+            plan.blockers.append(("RECEIPT_MOVEMENT_MISSING", "حركة الاستلام الأصلية على رصيد المسوقجي غير موجودة."))
+            return
+        stock = Decimal(str(holdings.piece_stock(piece_id) if lock else holdings.display_piece_stock(piece_id)))      # a decision: CURRENT
+        if stock != grams:
+            plan.blockers.append(("RECEIPT_STOCK_NOT_PRESENT",
+                                  f"لا يمكن عكس الاستلام لأن مخزون القطعة المستلمة لم يعد كاملًا ({stock:,.3f} من {grams:,.3f} جرام): "
+                                  "ما استُخدم منها يُعاد أولًا."))
+        pool = holdings.pool(pool_id)
+        balance = Decimal(str(holdings.pool_balance(pool_id) if lock else holdings.display_balance(logo=False, pool_id=pool_id)))
+        if balance + grams > Decimal(str(pool["weight_grams"])):
+            plan.blockers.append(("HOLDING_BALANCE_INVALID", "رصيد المصدر لدى المسوقجي بعد العكس يتجاوز كمية التسليم الأصلية."))
+        plan.receipts.append((pool_id, int(source["id"]), piece_id, grams))
+
+    @staticmethod
     def _plan_holding_settlement(connection, plan, source, source_id, settlements, lock):
         from repositories.intermediary_holding_repository import IntermediaryHoldingRepository
         from repositories.supplier_gold_settlement_repository import GOLD_REVERSAL
@@ -826,6 +872,7 @@ class CorrectionService:
             "holdings": [{"pool_id": p, "document_id": d, "movement": m, "delta": str(delta)} for p, d, _, m, _, delta in plan.holdings],
             "logo_holdings": [{"pool_id": p, "document_id": d, "movement": m, "delta": str(delta)} for p, d, _, m, _, delta in plan.logo_holdings],
             "holding_settlements": [{"pool_id": p, "settlement_id": s, "logo": logo, "delta": str(g)} for logo, p, s, g in plan.holding_settlements],
+            "receipts": [{"pool_id": p, "receipt_id": r, "piece_id": i, "grams": str(g)} for p, r, i, g in plan.receipts],
             "inventory": [{"inventory_item_id": i, "from": f, "to": t} for i, f, t, _ in plan.inventory],
             "old_gold": [{"karat": k, "grams": str(g)} for _, k, g, _ in plan.old_gold]
                         + [{"karat": k, "grams": str(-g)} for _, _, k, g, _, _ in plan.holds],
@@ -1012,6 +1059,20 @@ class CorrectionService:
                     after = Decimal(str(settlement_ledger.logo_pool_balance(pool_id) if logo else settlement_ledger.pool_balance(pool_id)))
                     if not Decimal("0") <= after <= Decimal(str(pool["weight_grams"])):         # explicit check of the resulting pool balance
                         raise RuntimeError("holding balance out of range after the settlement reversal")
+            if plan.receipts:
+                from repositories.intermediary_holding_repository import IntermediaryHoldingRepository as ReceiptLedger, MOVE_RECEIPT_REVERSAL, RECEIVE_REVERSAL
+                receipt_ledger = ReceiptLedger(connection)
+                for pool_id, receipt_id, piece_id, grams in sorted(plan.receipts):
+                    # the stock leaves and the holding grams come back in ONE transaction, under one correction
+                    receipt_ledger.insert_stock_movement(piece_id=piece_id, receipt_id=receipt_id, movement_type=RECEIVE_REVERSAL, weight=grams, delta=-grams,
+                                                         correction_id=correction_id)
+                    receipt_ledger.insert_receipt_movement(pool_id=pool_id, receipt_id=receipt_id, movement_type=MOVE_RECEIPT_REVERSAL, weight=grams, delta=grams,
+                                                           correction_id=correction_id)
+                    pool = receipt_ledger.pool(pool_id)
+                    stock_after = Decimal(str(receipt_ledger.piece_stock(piece_id)))
+                    pool_after = Decimal(str(receipt_ledger.pool_balance(pool_id)))
+                    if stock_after != 0 or not Decimal("0") <= pool_after <= Decimal(str(pool["weight_grams"])):     # explicit conservation check
+                        raise RuntimeError("receipt stock or holding balance out of range after the receipt reversal")
             if plan.lot_issues:
                 from repositories.market_trip_repository import SHOP_ISSUE_REVERSAL, MarketTripRepository as IssueLedger
                 for lot_id, grams in sorted(plan.lot_issues):
@@ -1067,7 +1128,7 @@ class CorrectionService:
     def _settlement_state(self, connection, source_type, source_id, lock):
         """The current EFFECTIVE settlement of a source: direction, legs, account part, total, chain."""
         corrections = self._corrections(connection)
-        if source_type in (FO, CD, SMP, MTE, SGS):
+        if source_type in (FO, CD, SMP, MTE, SGS, HRC):
             raise CorrectionError("SETTLEMENT_NOT_SUPPORTED",
                                   "هذه العملية تُصحح بالعكس الكامل ثم إعادة إدخالها صحيحة.")
         invoice, source, reference = self._load(connection, source_type, source_id, lock)

@@ -49,6 +49,8 @@ Item {
         function onSettlementReversed(code) { reverseSettlementDialog.close() }
         function onHoldingReturned(code) { holdingReturnDialog.close(); logoReturnDialog.close() }
         function onHoldingSettled(code) { holdingSettleDialog.close() }
+        function onReceiptPosted(code) { receiptDialog.close() }
+        function onReceiptReversed(code) { reverseReceiptDialog.close() }
     }
     Connections {
         target: page.pvm
@@ -639,6 +641,13 @@ Item {
                                         onClicked: holdingSettleDialog.openFor("LOT", modelData)
                                     }
                                     Btn {
+                                        objectName: "holdingReceiveButton"
+                                        visible: !!page.vm && page.vm.canReceiveFromHolding && modelData.receivable === true
+                                        enabled: !page.vm.receivingFromHolding
+                                        text: "استلام فعلي"
+                                        onClicked: receiptDialog.openFor(modelData)
+                                    }
+                                    Btn {
                                         objectName: "holdingReturnButton"
                                         visible: !!page.vm && page.vm.canManageHoldings
                                         enabled: modelData.returnable && !page.vm.returningHolding
@@ -722,6 +731,28 @@ Item {
                                     text: "عكس"
                                     accent: theme.red
                                     onClicked: reverseSettlementDialog.openFor({ settlementId: modelData.id, reference: modelData.code, detail: modelData.text, fromHolding: true })
+                                }
+                            }
+                        }
+                        Txt { objectName: "receiptSectionTitle"; Layout.fillWidth: true; text: "مخزون الاستلام في المحل (قطع مستلمة فعليًا من المسوقجي)"; color: theme.gold; font.bold: true
+                              visible: (page.vm ? (page.vm.holdingsPanel.receipts || []) : []).length > 0 }
+                        Txt { objectName: "receiptSectionNote"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                              visible: (page.vm ? (page.vm.holdingsPanel.receipts || []) : []).length > 0; text: page.vm ? (page.vm.holdingsPanel.receiptNote || "") : "" }
+                        Repeater {
+                            model: page.vm ? (page.vm.holdingsPanel.receipts || []) : []
+                            delegate: RowLayout {
+                                Layout.fillWidth: true
+                                layoutDirection: Qt.RightToLeft
+                                spacing: 8
+                                Txt { objectName: "receiptRow"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                      color: modelData.reversed ? theme.textMuted : theme.textSecondary; font.pixelSize: theme.fontTableHeader
+                                      text: modelData.code + " ← " + modelData.piece + " • " + modelData.text + " • " + modelData.stockText + (modelData.state !== "" ? " • " + modelData.state : "") }
+                                Btn {
+                                    objectName: "receiptReverseButton"
+                                    visible: !!page.vm && modelData.canReverse === true
+                                    text: "عكس"
+                                    accent: theme.red
+                                    onClicked: reverseReceiptDialog.openFor(modelData)
                                 }
                             }
                         }
@@ -1878,6 +1909,158 @@ Item {
                 }
                 Btn { objectName: "cancelHoldingSettleButton"; text: "إلغاء"; accent: theme.textSecondary
                       enabled: !!page.vm && !page.vm.settlingFromHolding; onClicked: holdingSettleDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- physical receipt from a lot pool with allocation history (051, OWNER only)
+    // The measured grams equal the grams taken off the intermediary's balance; the gold becomes a NEW shop receipt piece (never the original bar), assay unknown.
+    Popup {
+        id: receiptDialog
+        objectName: "receiptDialog"
+        property string poolId: ""
+        property string requestKey: ""
+        readonly property var context: page.vm ? page.vm.receiptContext : ({})
+        readonly property var preview: {
+            var c = page.vm ? page.vm.receiptContext : ({})                              // read, so the check follows the loaded context
+            return page.vm && c.poolId !== undefined ? page.vm.previewReceipt(receiptConsumed.text, receiptMeasured.text) : ({})
+        }
+        function openFor(row) {
+            if (!page.vm) return
+            poolId = row.poolId
+            requestKey = page.vm.newRequestKey()
+            receiptConsumed.text = ""
+            receiptMeasured.text = ""
+            receiptDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            receiptReference.text = ""
+            receiptNotes.text = ""
+            page.vm.clearMessage()
+            page.vm.loadReceiptContext(row.poolId)
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(560, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 640, 640)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; text: "استلام فعلي من المسوقجي" }
+            Txt { objectName: "receiptSource"; Layout.fillWidth: true; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: receiptDialog.context.sourceText ? receiptDialog.context.sourceText : "" }
+            Txt { objectName: "receiptAvailable"; Layout.fillWidth: true; color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  visible: !!receiptDialog.context.availableText
+                  text: "المسوقجي: " + (receiptDialog.context.holderName ? receiptDialog.context.holderName : "") + " • المتبقي لديه: "
+                        + (receiptDialog.context.availableText ? receiptDialog.context.availableText : "") }
+            Txt { objectName: "receiptRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: page.vm ? page.vm.receiptNote : "" }
+            Flickable {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentHeight: receiptForm.implicitHeight
+                clip: true
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: receiptForm
+                    width: parent.width - 12
+                    spacing: 6
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "الجرامات المخصومة من رصيد المسوقجي *" }
+                            Field { id: receiptConsumed; objectName: "receiptConsumed"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+                        }
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "الوزن المقاس فعليًا (جرام) *" }
+                            Field { id: receiptMeasured; objectName: "receiptMeasured"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+                        }
+                    }
+                    Txt { objectName: "receiptCheck"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                          visible: !!receiptDialog.preview.error || !!receiptDialog.preview.remainingText
+                          color: receiptDialog.preview.error ? theme.amber : theme.textSecondary
+                          text: receiptDialog.preview.error ? receiptDialog.preview.error : ("المتبقي لدى المسوقجي بعد الاستلام: " + receiptDialog.preview.remainingText) }
+                    Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
+                    Field { id: receiptDate; objectName: "receiptDate"; Layout.fillWidth: true }
+                    Txt { Layout.fillWidth: true; text: "المرجع (اختياري)" }
+                    Field { id: receiptReference; objectName: "receiptReference"; Layout.fillWidth: true }
+                    Txt { Layout.fillWidth: true; text: "ملاحظات" }
+                    Field { id: receiptNotes; objectName: "receiptNotes"; Layout.fillWidth: true }
+                }
+            }
+            Txt { objectName: "receiptError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmReceiptButton"
+                    text: !!page.vm && page.vm.receivingFromHolding ? "جارٍ الحفظ…" : "تسجيل الاستلام"
+                    primary: true
+                    enabled: receiptDialog.preview.valid === true && receiptDate.text.trim().length > 0 && !!page.vm && !page.vm.receivingFromHolding
+                    onClicked: page.vm.postReceipt(receiptDialog.poolId, receiptConsumed.text, receiptMeasured.text, receiptDate.text, receiptReference.text,
+                                                   receiptNotes.text, receiptDialog.requestKey)
+                }
+                Btn { objectName: "cancelReceiptButton"; text: "إلغاء"; accent: theme.textSecondary
+                      enabled: !!page.vm && !page.vm.receivingFromHolding; onClicked: receiptDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- reverse a physical receipt (OWNER only)
+    Popup {
+        id: reverseReceiptDialog
+        objectName: "reverseReceiptDialog"
+        property string receiptId: ""
+        property string code: ""
+        property string detailText: ""
+        function openFor(row) {
+            receiptId = row.id
+            code = row.code
+            detailText = row.text
+            reverseReceiptReason.text = ""
+            if (page.vm) page.vm.clearMessage()
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(500, page.width - 24)
+        modal: true
+        padding: 16
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.red }
+        contentItem: ColumnLayout {
+            spacing: 8
+            Txt { Layout.fillWidth: true; text: "عكس استلام " + page.ltr(reverseReceiptDialog.code); color: theme.red; font.bold: true; font.pixelSize: theme.fontSection }
+            Txt { Layout.fillWidth: true; text: reverseReceiptDialog.detailText; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            Txt { objectName: "reverseReceiptNote"; Layout.fillWidth: true; color: theme.amber; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "تخرج القطعة المستلمة كاملة من مخزون الاستلام وتعود الجرامات المخزَّنة نفسها إلى رصيد المسوقجي، معًا في عملية واحدة. لا يُثبت العكس سلامة السبكة الأصلية ولا يفتح رجوعها كاملة. يبقى الاستلام الأصلي في السجل ولا يُعدّل." }
+            Txt { Layout.fillWidth: true; text: "سبب العكس *" }
+            Field { id: reverseReceiptReason; objectName: "reverseReceiptReason"; Layout.fillWidth: true }
+            Txt { objectName: "reverseReceiptError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmReverseReceiptButton"
+                    text: !!page.vm && page.vm.receiptReversing ? "جارٍ العكس…" : "عكس الاستلام"
+                    accent: theme.red
+                    primary: true
+                    enabled: reverseReceiptReason.text.trim().length > 0 && !!page.vm && !page.vm.receiptReversing
+                    onClicked: page.vm.reverseReceipt(reverseReceiptDialog.receiptId, reverseReceiptReason.text)
+                }
+                Btn { text: "إلغاء"; accent: theme.textSecondary; enabled: !!page.vm && !page.vm.receiptReversing; onClicked: reverseReceiptDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }

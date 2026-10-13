@@ -100,6 +100,7 @@ class CallSiteAuditTests(unittest.TestCase):
                   ("services/supplier_payment_service.py", "payment_detail"),       # SUPPLIER_VIEW (payment document)
                  ("services/supplier_gold_settlement_service.py", "settlement_context"),   # SUPPLIER_GOLD_SETTLE (settlement dialog)
                  ("services/supplier_gold_settlement_service.py", "settlement_detail"),    # SUPPLIER_GOLD_SETTLE (settlement document)
+                  ("services/holding_receipt_service.py", "context"),                # INTERMEDIARY_HOLDING_VIEW + MANAGE (receipt dialog context)
                   ("services/holding_settlement_service.py", "context"),            # SUPPLIER_GOLD_SETTLE + INTERMEDIARY_HOLDING_MANAGE (settlement dialog context)
                   ("services/intermediary_holding_service.py", "party_holdings"),        # INTERMEDIARY_HOLDING_VIEW (party panel)
                  ("services/supplier_service.py", "_holdings_view"),                    # INTERMEDIARY_HOLDING_VIEW (holdings inside the supplier detail)

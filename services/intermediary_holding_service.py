@@ -21,13 +21,13 @@ from repositories.supplier_gold_settlement_repository import SupplierGoldSettlem
 from services.authorization_service import AuthorizationService
 from services.intermediary_holding_rules import (ALLOCATING, CONFIRMATION_TEXT, MANAGE_PERMISSION, TRIP_PERMISSION, VIEW_PERMISSION,
                                                  allocation_note, document_row, holding_settlement_row, logo_document_row, logo_pool_row,
-                                                 pool_row, pure_grams)
+                                                 pool_row, pure_grams, receipt_row)
 from services.invoice_service import invoice_transaction
 from services.market_trip_service import (NOTES_MAX, PAYMENT_REFERENCE_MAX, TripError, ZERO_WEIGHT, _entry_date, _key, _text, _trip_id,
                                           custody_view, parse_weight)
 from decimal import Decimal
 
-KEY_CONSTRAINTS = ("uq_mte_request", "uq_ihd_request", "uq_lhd_request", "uq_sgs_request")
+KEY_CONSTRAINTS = ("uq_mte_request", "uq_ihd_request", "uq_lhd_request", "uq_sgs_request", "uq_hr_request")
 
 
 def _pool_id(value):
@@ -86,10 +86,13 @@ class IntermediaryHoldingService:
             logo_pools = [logo_pool_row(r) for r in holdings.logo_open_pools(party_id=party_id)]
             logo_history = [logo_document_row(r) for r in holdings.logo_party_documents(party_id)]
             settlements = [holding_settlement_row(r) for r in holdings.holding_settlements(party_id)]
+            receipts = [receipt_row(r) for r in holdings.party_receipts(party_id)]
         total = sum((p["balance"] for p in pools), ZERO_WEIGHT)
         pure = sum((p["pure"] for p in pools if p["pure"] is not None), Decimal("0"))
         return {"party_id": str(party_id), "pools": pools, "history": history, "total": total, "pure": pure,
-                "logo_pools": logo_pools, "logo_history": logo_history, "settlements": settlements,
+                "logo_pools": logo_pools, "logo_history": logo_history, "settlements": settlements, "receipts": receipts,
+                "can_receive": MANAGE_PERMISSION in actor.permissions,
+                "can_reverse_receipt": {"TRANSACTION_CORRECT", "INTERMEDIARY_HOLDING_REVERSE"} <= set(actor.permissions),
                 "can_manage": MANAGE_PERMISSION in actor.permissions and TRIP_PERMISSION in actor.permissions,
                 "can_settle": MANAGE_PERMISSION in actor.permissions and "SUPPLIER_GOLD_SETTLE" in actor.permissions,
                 "can_reverse": "SUPPLIER_GOLD_SETTLE_REVERSE" in actor.permissions and "INTERMEDIARY_HOLDING_REVERSE" in actor.permissions}
@@ -120,7 +123,7 @@ class IntermediaryHoldingService:
         """The original linked records of an already-recorded key, decided BEFORE any availability is derived. Any other use of the key
         (another operation, another payload, another actor, a supplier settlement) is a conflict."""
         entry, document, header = repository.by_request(key), holdings.by_request(key), settlements.by_request(key)
-        if entry is None and document is None and header is None and holdings.logo_by_request(key) is None:
+        if entry is None and document is None and header is None and holdings.logo_by_request(key) is None and holdings.receipt_by_request(key) is None:
             return None
         link = None if entry is None else holdings.link_by_entry(entry["id"])
         if (entry is None or document is None or header is not None or link is None or entry["entry_kind"] != kind
@@ -318,7 +321,7 @@ class IntermediaryHoldingService:
     def _prior_logo(self, repository, holdings, settlements, key, digest, actor, kind):
         """Exact replay of a LOGO request, decided before any availability is derived; any other use of the key is a conflict."""
         entry, document, header = repository.by_request(key), holdings.logo_by_request(key), settlements.by_request(key)
-        if entry is None and document is None and header is None and holdings.by_request(key) is None:
+        if entry is None and document is None and header is None and holdings.by_request(key) is None and holdings.receipt_by_request(key) is None:
             return None
         link = None if entry is None else holdings.logo_link_by_entry(entry["id"])
         if (entry is None or document is None or header is not None or link is None or entry["entry_kind"] != kind

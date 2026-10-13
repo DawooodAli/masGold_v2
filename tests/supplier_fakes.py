@@ -545,6 +545,9 @@ class HoldingHistoryRepo:
     def holding_settlements(self, party_id):
         return []
 
+    def party_receipts(self, party_id):
+        return []
+
 
 def build(permissions=ALL, user_id=7, employee_id=None, granted=None, session=None):
     """(db, session, authorization, SupplierService, SupplierPurchaseService) over one shared fake database."""
