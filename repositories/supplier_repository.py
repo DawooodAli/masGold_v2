@@ -159,6 +159,7 @@ class SupplierRepository(BaseRepository):
                        SUM(m.weight_delta_grams) OVER (PARTITION BY m.karat_id ORDER BY m.occurred_at, m.id) AS weight_balance_after,
                        gs.id AS settlement_id, gs.delivered_weight_grams, gs.delivered_karat_value, gs.target_karat_value,
                        gs.source_kind AS settlement_source_kind, lk.designation AS custody_designation,
+                       gs.holding_party_id, hs.name AS holding_party_name, gs.physical_declaration, gs.delivered_lot_weight_grams,
                        gs.delivered_lot_id, gs.delivered_fineness_permille, ml.lot_kind, ml.lot_no, oe.trip_id AS origin_trip_id, oe.entry_no AS origin_entry_no,
                        le.trip_id AS custody_trip_id, le.entry_no AS custody_entry_no,
                        COALESCE(gc.id, gcc.id) AS settlement_reversal_id,
@@ -169,6 +170,7 @@ class SupplierRepository(BaseRepository):
                 JOIN karats k ON k.id = m.karat_id
                 LEFT JOIN users u ON u.id = m.created_by_user_id
                 LEFT JOIN supplier_gold_settlements gs ON t.code = 'SETTLEMENT' AND m.source_type = 'SUPPLIER_GOLD_SETTLEMENT' AND gs.id = m.source_id
+                LEFT JOIN suppliers hs ON hs.id = gs.holding_party_id
                 LEFT JOIN market_trip_gold_settlements lk ON lk.settlement_id = gs.id
                 LEFT JOIN market_trip_lot_settlements ll ON ll.settlement_id = gs.id
                 LEFT JOIN market_trip_lots ml ON ml.id = gs.delivered_lot_id

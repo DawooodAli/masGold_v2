@@ -12,6 +12,7 @@ from repositories.invoice_repository import _id
 HANDOVER, RETURN = "HANDOVER", "RETURN"                       # document kinds
 MOVE_HANDOVER, MOVE_RETURN = "HANDOVER", "RETURN"             # original movements
 MOVE_HANDOVER_REVERSAL, MOVE_RETURN_REVERSAL = "HANDOVER_REVERSAL", "RETURN_REVERSAL"      # compensations posted by a reversal
+MOVE_SETTLEMENT, MOVE_SETTLEMENT_REVERSAL = "SETTLEMENT", "SETTLEMENT_REVERSAL"           # 050: a supplier settlement from a holding and its compensation
 LOT_HOLD, HOLD_RETURN = "LOT_HOLD", "HOLD_RETURN"             # custody entry kinds
 HOLD_OUT, HOLD_IN = "HOLD_OUT", "HOLD_IN"                     # custody lot movement types
 CONFIRMATION_CODE = "SAME_BAR_WHOLE_UNDIVIDED"                # the stored code of the owner's «same bar, whole, undivided» confirmation
@@ -95,6 +96,11 @@ class IntermediaryHoldingRepository(BaseRepository):
         return self._fetch_one("SELECT COALESCE(SUM(weight_delta), 0) AS grams FROM intermediary_holding_movements WHERE pool_id = %s FOR SHARE",
                                (_id(pool_id),))["grams"]
 
+    def display_balance(self, *, logo, pool_id):
+        """Display only (a plain read, no lock): what a preview shows; a decision always uses pool_balance / logo_pool_balance."""
+        table = "logo_holding_movements" if logo else "intermediary_holding_movements"
+        return self._fetch_one(f"SELECT COALESCE(SUM(weight_delta), 0) AS grams FROM {table} WHERE pool_id = %s", (_id(pool_id),))["grams"]
+
     def lot_held_total(self, lot_id):
         """Grams of this lot held by ANY party across every pool it ever had (a CURRENT read): what keeps a lot from being in two places."""
         return self._fetch_one(
@@ -106,7 +112,52 @@ class IntermediaryHoldingRepository(BaseRepository):
         total = 0
         for table in ("intermediary_holding_pools", "intermediary_holding_documents", "logo_holding_pools", "logo_holding_documents"):
             total += int(self._fetch_one(f"SELECT COUNT(*) AS n FROM {table} WHERE party_id = %s FOR SHARE", (_id(party_id),))["n"])
+        total += int(self._fetch_one("SELECT COUNT(*) AS n FROM supplier_gold_settlements WHERE holding_party_id = %s FOR SHARE", (_id(party_id),))["n"])
         return total
+
+    # ------------------------------------------------------------------ supplier settlement from a holding (050)
+    def pool_settlement_history(self, pool_id):
+        """Every supplier gold settlement ever made from this assayed-lot pool, reversed ones included, with its physical declaration (a CURRENT
+        locking read: the allocation history is permanent, so no reversal lookup is needed)."""
+        return self._fetch_all("SELECT id, physical_declaration FROM supplier_gold_settlements WHERE lot_pool_id = %s ORDER BY id FOR SHARE",
+                               (_id(pool_id),))
+
+    def display_pool_history(self, pool_id):
+        """Display only (a plain read, no lock): the pool's settlement declarations for a dialog; a decision uses pool_settlement_history."""
+        return self._fetch_all("SELECT id, physical_declaration FROM supplier_gold_settlements WHERE lot_pool_id = %s ORDER BY id", (_id(pool_id),))
+
+    def logo_pool_settlements(self, pool_id):
+        """Every settlement of a LOGO pool (CURRENT read; explanatory messages only, the decisions are arithmetic)."""
+        return self._fetch_all("SELECT id FROM supplier_gold_settlements WHERE logo_pool_id = %s ORDER BY id FOR SHARE", (_id(pool_id),))
+
+    def insert_settlement_movement(self, *, logo, pool_id, settlement_id, movement_type, weight, delta, correction_id=None):
+        """The explicit signed holding movement of a settlement (SETTLEMENT) or of its reversal (SETTLEMENT_REVERSAL); no document."""
+        table = "logo_holding_movements" if logo else "intermediary_holding_movements"
+        movement_id, _ = self._execute(
+            f"INSERT INTO {table} (pool_id, document_id, doc_kind, settlement_id, movement_type, weight_grams, weight_delta, correction_id) "
+            "VALUES (%s, NULL, NULL, %s, %s, %s, %s, %s)",
+            (_id(pool_id), _id(settlement_id), movement_type, weight, delta, None if correction_id is None else _id(correction_id)))
+        return int(movement_id)
+
+    def settlement_movement(self, *, logo, settlement_id):
+        table = "logo_holding_movements" if logo else "intermediary_holding_movements"
+        return self._fetch_one(f"SELECT * FROM {table} WHERE settlement_id = %s AND movement_type = 'SETTLEMENT'", (_id(settlement_id),))
+
+    def holding_settlements(self, party_id):
+        """Display only: every settlement made from this party's holdings (newest first), reversed ones included."""
+        return self._fetch_all(
+            """
+            SELECT g.id, g.source_kind, g.supplier_id, s.name AS supplier_name, g.lot_pool_id, g.logo_pool_id, g.delivered_weight_grams,
+                   g.credited_weight_grams, g.credited_analytical_grams, g.rounding_difference_grams, g.target_karat_value, g.delivered_karat_value,
+                   g.delivered_fineness_permille, g.delivered_lot_weight_grams, g.physical_declaration, g.self_settlement_confirmed,
+                   g.settlement_date, g.occurred_at, u.display_name AS actor_name, c.id AS reversal_id, c.reason AS reversal_reason
+            FROM supplier_gold_settlements g
+            JOIN suppliers s ON s.id = g.supplier_id
+            LEFT JOIN users u ON u.id = g.performed_by_user_id
+            LEFT JOIN transaction_corrections c ON c.source_type = 'SUPPLIER_GOLD_SETTLEMENT' AND c.source_id = g.id
+                 AND c.correction_type = 'FULL_REVERSAL'
+            WHERE g.holding_party_id = %s ORDER BY g.id DESC
+            """, (_id(party_id),))
 
     # ------------------------------------------------------------------ master-karat LOGO holdings (049)
     def insert_logo_pool(self, *, party_id, karat_id, trip_id, weight, user_id):
@@ -256,7 +307,12 @@ class IntermediaryHoldingRepository(BaseRepository):
             f"""
             SELECT p.id AS pool_id, p.party_id, s.name AS party_name, s.is_active AS party_active, p.lot_id, p.weight_grams, p.fineness_permille,
                    l.lot_no, l.lot_kind, l.label, oe.trip_id AS origin_trip_id, oe.entry_no AS origin_entry_no,
-                   h.id AS handover_id, h.document_date, h.trip_id, t.status AS trip_status, he.entry_no AS handover_entry_no, bal.grams AS balance
+                   h.id AS handover_id, h.document_date, h.trip_id, t.status AS trip_status, he.entry_no AS handover_entry_no, bal.grams AS balance,
+                   (SELECT COUNT(*) FROM supplier_gold_settlements g WHERE g.lot_pool_id = p.id) AS settlement_count,
+                   (SELECT COUNT(*) FROM supplier_gold_settlements g WHERE g.lot_pool_id = p.id
+                        AND g.physical_declaration IN ('GRAM_ENTITLEMENT', 'PHYSICALLY_DIVIDED')) AS allocation_count,
+                   (SELECT MIN(g.id) FROM supplier_gold_settlements g WHERE g.lot_pool_id = p.id
+                        AND g.physical_declaration IN ('GRAM_ENTITLEMENT', 'PHYSICALLY_DIVIDED')) AS first_allocation_id
             FROM intermediary_holding_pools p
             JOIN (SELECT pool_id, SUM(weight_delta) AS grams FROM intermediary_holding_movements GROUP BY pool_id) bal ON bal.pool_id = p.id
             JOIN suppliers s ON s.id = p.party_id

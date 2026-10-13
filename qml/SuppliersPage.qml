@@ -48,6 +48,7 @@ Item {
         function onSettlementPosted(code) { goldSettleDialog.close() }
         function onSettlementReversed(code) { reverseSettlementDialog.close() }
         function onHoldingReturned(code) { holdingReturnDialog.close(); logoReturnDialog.close() }
+        function onHoldingSettled(code) { holdingSettleDialog.close() }
     }
     Connections {
         target: page.pvm
@@ -627,6 +628,15 @@ Item {
                                               text: modelData.document + " • " + modelData.custodyEntry + " • العهدة الأصلية " + modelData.tripCode + " • " + modelData.date }
                                         Txt { objectName: "holdingReason"; Layout.fillWidth: true; visible: modelData.reason !== ""; text: modelData.reason; color: theme.amber
                                               font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                        Txt { objectName: "holdingHistoryNote"; Layout.fillWidth: true; visible: modelData.historyNote !== ""; text: modelData.historyNote
+                                              color: theme.textSecondary; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                    }
+                                    Btn {
+                                        objectName: "holdingSettleButton"
+                                        visible: !!page.vm && page.vm.canSettleFromHolding
+                                        enabled: modelData.settleable === true && !page.vm.settlingFromHolding
+                                        text: "تسوية لمورد"
+                                        onClicked: holdingSettleDialog.openFor("LOT", modelData)
                                     }
                                     Btn {
                                         objectName: "holdingReturnButton"
@@ -679,6 +689,13 @@ Item {
                                         primary: true
                                         onClicked: logoReturnDialog.openFor(modelData)
                                     }
+                                    Btn {
+                                        objectName: "logoSettleButton"
+                                        visible: !!page.vm && page.vm.canSettleFromHolding
+                                        enabled: modelData.settleable === true && !page.vm.settlingFromHolding
+                                        text: "تسوية لمورد"
+                                        onClicked: holdingSettleDialog.openFor("LOGO", modelData)
+                                    }
                                 }
                             }
                         }
@@ -687,6 +704,26 @@ Item {
                             delegate: Txt { objectName: "logoHistoryRow"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
                                             color: modelData.reversed ? theme.textMuted : theme.textSecondary; font.pixelSize: theme.fontTableHeader
                                             text: modelData.kindText + " " + modelData.code + " • " + modelData.text + (modelData.state !== "" ? " • " + modelData.state : "") }
+                        }
+                        Txt { objectName: "holdingSettlementsTitle"; Layout.fillWidth: true; text: "تسويات الذهب لموردين من رصيد المسوقجي"; color: theme.gold; font.bold: true
+                              visible: (page.vm ? (page.vm.holdingsPanel.settlements || []) : []).length > 0 }
+                        Repeater {
+                            model: page.vm ? (page.vm.holdingsPanel.settlements || []) : []
+                            delegate: RowLayout {
+                                Layout.fillWidth: true
+                                layoutDirection: Qt.RightToLeft
+                                spacing: 8
+                                Txt { objectName: "holdingSettlementRow"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                      color: modelData.reversed ? theme.textMuted : theme.textSecondary; font.pixelSize: theme.fontTableHeader
+                                      text: modelData.code + " • " + modelData.text + (modelData.state !== "" ? " • " + modelData.state : "") }
+                                Btn {
+                                    objectName: "holdingSettlementReverseButton"
+                                    visible: !!page.vm && page.vm.canReverseSettlement && modelData.canReverse === true
+                                    text: "عكس"
+                                    accent: theme.red
+                                    onClicked: reverseSettlementDialog.openFor({ settlementId: modelData.id, reference: modelData.code, detail: modelData.text, fromHolding: true })
+                                }
+                            }
                         }
                         Txt { Layout.fillWidth: true; text: "سجل التسليم والرجوع"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
                               visible: (page.vm ? (page.vm.holdingsPanel.history || []) : []).length > 0 }
@@ -1666,6 +1703,186 @@ Item {
         }
     }
 
+    // ---------------------------------------------------------------- supplier gold settlement from a holding at the intermediary (050, OWNER only)
+    // ONE source, ONE supplier, ONE quantity. The credit shown is computed by the service rules through the view model (no arithmetic in QML); the
+    // service recomputes it and re-checks the balance, the declaration and the rights under its locks. No custody, Scrap, cash or making moves.
+    Popup {
+        id: holdingSettleDialog
+        objectName: "holdingSettleDialog"
+        property string poolKind: ""
+        property string poolId: ""
+        property string requestKey: ""
+        property string declarationCode: ""
+        readonly property var context: page.vm ? page.vm.holdingSettlementContext : ({})
+        readonly property var recipientOptions: [{ id: "", text: "اختر المورد المستلم" }].concat(context.recipients ? context.recipients : [])
+        readonly property string supplierId: recipientOptions[holdingSettleSupplier.currentIndex] ? recipientOptions[holdingSettleSupplier.currentIndex].id : ""
+        readonly property var preview: {
+            var c = page.vm ? page.vm.holdingSettlementContext : ({})                   // read, so the preview follows the loaded context
+            return page.vm && c.poolId !== undefined ? page.vm.previewHoldingSettlement(supplierId, holdingSettleQty.text) : ({})
+        }
+        readonly property var options: preview.options ? preview.options : []
+        readonly property bool declarationOk: context.isLot !== true || declarationCode !== ""
+        onOptionsChanged: {
+            var still = false
+            for (var i = 0; i < options.length; i++) if (options[i].code === declarationCode) still = true
+            if (!still) declarationCode = ""                                              // never preselected, never kept when no longer applicable
+        }
+        function openFor(kind, row) {
+            if (!page.vm) return
+            poolKind = kind
+            poolId = row.poolId
+            requestKey = page.vm.newRequestKey()
+            declarationCode = ""
+            holdingSettleSupplier.currentIndex = 0
+            holdingSettleQty.text = ""
+            holdingSettleDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            holdingSettleReference.text = ""
+            holdingSettleNotes.text = ""
+            holdingSettleSelf.checked = false
+            page.vm.clearMessage()
+            page.vm.loadHoldingSettlement(kind, row.poolId)
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(580, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 700, 700)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection
+                  text: "تسوية ذهب لمورد من رصيد المسوقجي" }
+            Txt { objectName: "holdingSettleSource"; Layout.fillWidth: true; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: holdingSettleDialog.context.sourceText ? holdingSettleDialog.context.sourceText : "" }
+            Txt { objectName: "holdingSettleAvailable"; Layout.fillWidth: true; color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  visible: !!holdingSettleDialog.context.availableText
+                  text: "المسوقجي: " + (holdingSettleDialog.context.holderName ? holdingSettleDialog.context.holderName : "") + " • المتاح من هذا المصدر: "
+                        + (holdingSettleDialog.context.availableText ? holdingSettleDialog.context.availableText : "") }
+            Txt { objectName: "holdingSettleRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                  wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "يُخصم الذهب من رصيد هذا المصدر لدى المسوقجي ويُحتسب للمورد بعياره. لا يتحرك شيء في العهدة أو الكسر أو النقدية أو المصنعيات، ولا تُفتح عهدة مغلقة." }
+            Flickable {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentHeight: holdingSettleForm.implicitHeight
+                clip: true
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: holdingSettleForm
+                    width: parent.width - 12
+                    spacing: 6
+                    Txt { Layout.fillWidth: true; text: "المورد المستلم *" }
+                    Combo { id: holdingSettleSupplier; objectName: "holdingSettleSupplier"; Layout.fillWidth: true
+                            model: holdingSettleDialog.recipientOptions; textRole: "text" }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "الوزن المُسلَّم الفعلي (جرام) *" }
+                            Field { id: holdingSettleQty; objectName: "holdingSettleQty"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+                        }
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
+                            Field { id: holdingSettleDate; objectName: "holdingSettleDate"; Layout.fillWidth: true }
+                        }
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: holdingPreviewColumn.implicitHeight + 14
+                        radius: theme.radiusSmall
+                        color: theme.bgTertiary
+                        border.color: holdingSettleDialog.preview.short === true ? theme.red : theme.border
+                        ColumnLayout {
+                            id: holdingPreviewColumn
+                            anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                            anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.topMargin: 7
+                            spacing: 3
+                            Txt { objectName: "holdingSettleDelivered"; Layout.fillWidth: true; visible: !!holdingSettleDialog.preview.deliveredText
+                                  text: "المُسلَّم: " + holdingSettleDialog.preview.deliveredText; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "holdingSettleFormula"; Layout.fillWidth: true; visible: !!holdingSettleDialog.preview.formulaText
+                                  text: "الحساب: " + holdingSettleDialog.preview.formulaText; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "holdingSettleCredited"; Layout.fillWidth: true; visible: !!holdingSettleDialog.preview.creditedText
+                                  text: "يُحتسب للمورد: " + holdingSettleDialog.preview.creditedText; color: theme.gold; font.bold: true
+                                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "holdingSettleAnalytical"; Layout.fillWidth: true; visible: !!holdingSettleDialog.preview.analyticalText
+                                  text: "القيمة التحليلية: " + holdingSettleDialog.preview.analyticalText + " • فرق التقريب: " + holdingSettleDialog.preview.differenceText
+                                  color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "holdingSettleRemaining"; Layout.fillWidth: true; visible: !!holdingSettleDialog.preview.remainingText
+                                  text: "المتبقي لدى المسوقجي بعد التسوية: " + holdingSettleDialog.preview.remainingText; color: theme.textSecondary
+                                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "holdingSettlePreviewError"; Layout.fillWidth: true; visible: !!holdingSettleDialog.preview.error
+                                  text: holdingSettleDialog.preview.error || ""; color: holdingSettleDialog.preview.short === true ? theme.red : theme.amber
+                                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Item { Layout.preferredHeight: 2 }
+                        }
+                    }
+                    // The physical declaration of a lot: ONLY the applicable choices, none preselected. A full quantity alone never proves a whole bar.
+                    Txt { objectName: "holdingSettleDeclarationTitle"; Layout.fillWidth: true; font.bold: true
+                          visible: holdingSettleDialog.context.isLot === true && holdingSettleDialog.options.length > 0
+                          text: "حالة السبكة الفعلية عند التسليم *" }
+                    Repeater {
+                        model: holdingSettleDialog.options
+                        delegate: RowLayout {
+                            Layout.fillWidth: true
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 8
+                            RadioButton {
+                                objectName: "holdingSettleDeclaration_" + modelData.code
+                                checked: holdingSettleDialog.declarationCode === modelData.code
+                                enabled: !!page.vm && !page.vm.settlingFromHolding
+                                onClicked: holdingSettleDialog.declarationCode = modelData.code
+                            }
+                            Txt { Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; text: modelData.text
+                                  font.bold: modelData.code === "WHOLE_ORIGINAL_BAR" }
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: holdingSettleDialog.preview.isSelf === true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        CheckBox { id: holdingSettleSelf; objectName: "holdingSettleSelfConfirm"; enabled: !!page.vm && !page.vm.settlingFromHolding }
+                        Txt { objectName: "holdingSettleSelfText"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.amber; font.bold: true
+                              text: "المسوقجي هو نفسه المورد المستلم: أؤكد أن ذهب المحل لديه يبقى منفصلًا عن حساب المورد، وأن هذه التسوية تُنقص رصيد الذهب الذي نحاسبه عليه فقط." }
+                    }
+                    Txt { Layout.fillWidth: true; text: "المرجع (اختياري)" }
+                    Field { id: holdingSettleReference; objectName: "holdingSettleReference"; Layout.fillWidth: true }
+                    Txt { Layout.fillWidth: true; text: "ملاحظات" }
+                    Field { id: holdingSettleNotes; objectName: "holdingSettleNotes"; Layout.fillWidth: true }
+                }
+            }
+            Txt { objectName: "holdingSettleError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmHoldingSettleButton"
+                    text: !!page.vm && page.vm.settlingFromHolding ? "جارٍ الحفظ…" : "تسجيل التسوية"
+                    primary: true
+                    enabled: holdingSettleDialog.supplierId !== "" && holdingSettleQty.text.trim().length > 0 && holdingSettleDate.text.trim().length > 0
+                             && holdingSettleDialog.preview.valid === true && holdingSettleDialog.declarationOk
+                             && (holdingSettleDialog.preview.isSelf !== true || holdingSettleSelf.checked) && !!page.vm && !page.vm.settlingFromHolding
+                    onClicked: page.vm.postHoldingSettlement(holdingSettleDialog.poolKind, holdingSettleDialog.poolId, holdingSettleDialog.supplierId,
+                                                             holdingSettleQty.text, holdingSettleDialog.declarationCode, holdingSettleSelf.checked,
+                                                             holdingSettleDate.text, holdingSettleReference.text, holdingSettleNotes.text,
+                                                             holdingSettleDialog.requestKey)
+                }
+                Btn { objectName: "cancelHoldingSettleButton"; text: "إلغاء"; accent: theme.textSecondary
+                      enabled: !!page.vm && !page.vm.settlingFromHolding; onClicked: holdingSettleDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- reverse a gold settlement (OWNER only)
     Popup {
         id: reverseSettlementDialog
@@ -1673,10 +1890,12 @@ Item {
         property string settlementId: ""
         property string code: ""
         property string detailText: ""
+        property bool fromHolding: false
         function openFor(row) {
             settlementId = row.settlementId
             code = row.reference
             detailText = row.detail
+            fromHolding = row.fromHolding === true || row.holdingParty === true
             reverseSettlementReason.text = ""
             if (page.vm) page.vm.clearMessage()
             open()
@@ -1695,7 +1914,9 @@ Item {
             Txt { Layout.fillWidth: true; text: reverseSettlementDialog.detailText; wrapMode: Text.WordWrap; elide: Text.ElideNone }
             Txt { objectName: "reverseSettlementNote"; Layout.fillWidth: true; color: theme.amber; font.pixelSize: theme.fontTableHeader
                   wrapMode: Text.WordWrap; elide: Text.ElideNone
-                  text: "يُسجَّل أن الذهب المُسلَّم استُرد فعليًا: يعود إلى كسر المحل بنفس الوزن والعيار المُسلَّمين، ويعود رصيد المورد كما كان قبل التسوية بنفس الكمية المحتسبة المخزَّنة. تبقى التسوية الأصلية في السجل ولا تُعدّل." }
+                  text: reverseSettlementDialog.fromHolding
+                        ? "يعود الذهب المُسلَّم إلى رصيد المسوقجي بنفس الوزن (كرصيد جرامات فقط: لا يثبت هذا العكس سلامة السبكة الفعلية)، ويعود رصيد المورد كما كان قبل التسوية بنفس الكمية المحتسبة المخزَّنة. لا يتحرك شيء في الكسر أو العهدة. تبقى التسوية الأصلية في السجل ولا تُعدّل."
+                        : "يُسجَّل أن الذهب المُسلَّم استُرد فعليًا: يعود إلى كسر المحل بنفس الوزن والعيار المُسلَّمين، ويعود رصيد المورد كما كان قبل التسوية بنفس الكمية المحتسبة المخزَّنة. تبقى التسوية الأصلية في السجل ولا تُعدّل." }
             Txt { Layout.fillWidth: true; text: "سبب العكس *" }
             Field { id: reverseSettlementReason; objectName: "reverseSettlementReason"; Layout.fillWidth: true }
             Txt { objectName: "reverseSettlementError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""

@@ -13,6 +13,8 @@ CORRECTION_REFERENCE = "TRANSACTION_CORRECTION"
 SOURCE_KIND = "SHOP_SCRAP"
 CUSTODY_SOURCE_KIND = "CUSTODY_GOLD"          # 046: gold already held in an OPEN market custody (no Scrap movement)
 LOT_SOURCE_KIND = "CUSTODY_LOT"
+HOLDING_LOT_KIND, HOLDING_LOGO_KIND = "HOLDING_LOT", "HOLDING_LOGO"       # 050: gold already held by a market intermediary (no custody, no Scrap)
+HOLDING_KINDS = (HOLDING_LOT_KIND, HOLDING_LOGO_KIND)
 
 
 def settlement_code(settlement_id):
@@ -72,6 +74,27 @@ class SupplierGoldSettlementRepository(SupplierRepository):
              settlement_date, reference, notes, key, digest, actor.user_id, actor.employee_id, now))
         return int(settlement_id)
 
+    def insert_holding_header(self, *, kind, supplier_id, pool, target_karat, quantity, credited, analytical, difference, declaration, self_confirmed,
+                              settlement_date, reference, notes, key, digest, actor, now):
+        """The SG header of a settlement from a holding. LOT keeps the ORIGINAL full-lot facts (weight, assay, melt) apart from the delivered
+        grams; LOGO keeps the master karat. The holder, the pool and the quantity tie the header to its holding ledger (composite keys)."""
+        lot = kind == HOLDING_LOT_KIND
+        settlement_id, _ = self._execute(
+            """
+            INSERT INTO supplier_gold_settlements (supplier_id, source_kind, delivered_karat_id, delivered_karat_value, target_karat_id, target_karat_value,
+                delivered_weight_grams, credited_weight_grams, credited_analytical_grams, rounding_difference_grams, settlement_date, reference, notes,
+                request_key, request_hash, performed_by_user_id, performed_by_employee_id, occurred_at, delivered_lot_id, delivered_lot_weight_grams,
+                origin_melt_entry_id, delivered_fineness_permille, holding_party_id, lot_pool_id, logo_pool_id, physical_declaration,
+                holding_weight_grams, self_settlement_confirmed)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (_id(supplier_id), kind, None if lot else int(pool["karat_id"]), None if lot else int(pool["karat_value"]), int(target_karat["id"]),
+             int(target_karat["karat_value"]), quantity, credited, analytical, difference, settlement_date, reference, notes, key, digest,
+             actor.user_id, actor.employee_id, now, int(pool["lot_id"]) if lot else None, pool["weight_grams"] if lot else None,
+             int(pool["origin_melt_entry_id"]) if lot else None, pool["fineness_permille"] if lot else None, int(pool["party_id"]),
+             int(pool["id"]) if lot else None, None if lot else int(pool["id"]), declaration if lot else None, quantity, 1 if self_confirmed else 0))
+        return int(settlement_id)
+
     def post_scrap_out(self, *, settlement_id, karat_id, weight, code, notes, actor, now):
         """The COUNTED Scrap OUT of the delivered karat (actual physical grams, never converted). Returns the movement id."""
         movement_id, count = self._execute(
@@ -116,9 +139,10 @@ class SupplierGoldSettlementRepository(SupplierRepository):
                COALESCE(c.occurred_at, cc.occurred_at) AS reversal_at, cu.display_name AS reversal_actor_name,
                COALESCE(lk.entry_id, ll.entry_id) AS custody_entry_id, lk.designation AS custody_designation,
                ml.lot_no, ml.lot_kind, oe.trip_id AS origin_trip_id, oe.entry_no AS origin_entry_no,
-               le.trip_id AS custody_trip_id, le.entry_no AS custody_entry_no
+               le.trip_id AS custody_trip_id, le.entry_no AS custody_entry_no, hs.name AS holding_party_name
         FROM supplier_gold_settlements g
         JOIN suppliers s ON s.id = g.supplier_id
+        LEFT JOIN suppliers hs ON hs.id = g.holding_party_id
         LEFT JOIN users u ON u.id = g.performed_by_user_id
         LEFT JOIN market_trip_gold_settlements lk ON lk.settlement_id = g.id
         LEFT JOIN market_trip_lot_settlements ll ON ll.settlement_id = g.id

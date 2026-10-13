@@ -140,7 +140,12 @@ class SupplierGoldSettlementService:
                 "fineness": row.get("delivered_fineness_permille"), "lot_kind": row.get("lot_kind"), "lot_no": row.get("lot_no"),
                 "lot_origin": None if row.get("origin_entry_no") is None else _custody_code(row["origin_trip_id"], row["origin_entry_no"]), "reversed": row.get("reversal_id") is not None,
                 "reversal_code": None if row.get("reversal_id") is None else correction_code("FULL_REVERSAL", row["reversal_id"]),
-                "reversal_reason": row.get("reversal_reason")}
+                "reversal_reason": row.get("reversal_reason"),
+                # a settlement made from a holding (050): the holder, the pool and the immutable physical declaration
+                "holding_party_id": None if row.get("holding_party_id") is None else str(row["holding_party_id"]),
+                "holding_party_name": row.get("holding_party_name"),
+                "pool_id": None if row.get("lot_pool_id") is None and row.get("logo_pool_id") is None else str(row.get("lot_pool_id") or row.get("logo_pool_id")),
+                "lot_weight": row.get("delivered_lot_weight_grams"), "physical_declaration": row.get("physical_declaration")}
 
     # ------------------------------------------------------------------ the settlement
     def settle(self, supplier_id, delivered_karat_id, delivered_weight, settlement_date, reference, notes, request_key, *,

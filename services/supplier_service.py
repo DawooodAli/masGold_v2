@@ -21,7 +21,7 @@ from services import supplier_rules as rules
 from services.authorization_service import AuthorizationService
 from services.correction_rules import correction_code
 from services.intermediary_holding_rules import (MANAGE_PERMISSION as MANAGE_HOLDINGS, TRIP_PERMISSION as TRIP_MANAGE, VIEW_PERMISSION as VIEW_HOLDINGS,
-                                                 document_row, logo_document_row, logo_pool_row, pool_row)
+                                                 document_row, holding_settlement_row, logo_document_row, logo_pool_row, pool_row)
 from services.invoice_service import invoice_transaction
 from services.number_text import normalize_digits
 
@@ -169,6 +169,9 @@ class SupplierService:
                                  "custody_reference": (None if r.get("custody_entry_no") is None
                                                        else _custody_code(r["custody_trip_id"], r["custody_entry_no"])),
                                  "custody_designation": r.get("custody_designation"),
+                                 # a settlement made from shop gold held by an intermediary (050)
+                                 "holding_party": r.get("holding_party_name"), "declaration": r.get("physical_declaration"),
+                                 "lot_weight": None if r.get("delivered_lot_weight_grams") is None else Decimal(str(r["delivered_lot_weight_grams"])),
                                  "lot_id": None if r.get("delivered_lot_id") is None else str(r["delivered_lot_id"]),
                                  "lot_fineness": r.get("delivered_fineness_permille"), "lot_kind": r.get("lot_kind"), "lot_no": r.get("lot_no"),
                                  "lot_origin": None if r.get("origin_entry_no") is None else _custody_code(r["origin_trip_id"], r["origin_entry_no"]),
@@ -191,11 +194,14 @@ class SupplierService:
         ledger = self._holdings(connection)
         pools = [pool_row(r) for r in ledger.open_pools(party_id=supplier_id)]
         logo_pools = [logo_pool_row(r) for r in ledger.logo_open_pools(party_id=supplier_id)]
-        return {"pools": pools, "history": [document_row(r) for r in ledger.party_documents(supplier_id)],
+        return {"settlements": [holding_settlement_row(r) for r in ledger.holding_settlements(supplier_id)],
+                "pools": pools, "history": [document_row(r) for r in ledger.party_documents(supplier_id)],
                 "logo_pools": logo_pools, "logo_history": [logo_document_row(r) for r in ledger.logo_party_documents(supplier_id)],
                 "total": sum((p["balance"] for p in pools), Decimal("0.000")),
                 "pure": sum((p["pure"] for p in pools if p["pure"] is not None), Decimal("0")),
-                "can_manage": {MANAGE_HOLDINGS, TRIP_MANAGE} <= set(actor.permissions)}
+                "can_manage": {MANAGE_HOLDINGS, TRIP_MANAGE} <= set(actor.permissions),
+                "can_settle": {MANAGE_HOLDINGS, "SUPPLIER_GOLD_SETTLE"} <= set(actor.permissions),
+                "can_reverse": {"SUPPLIER_GOLD_SETTLE_REVERSE", "INTERMEDIARY_HOLDING_REVERSE"} <= set(actor.permissions)}
 
     @staticmethod
     def _making_row(r):

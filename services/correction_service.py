@@ -122,10 +122,11 @@ class _Plan:
     making: list = field(default_factory=list)           # (supplier id, signed making delta, movement code)
     lot_returns: list = field(default_factory=list)      # (lot id, grams) a LOT_RETURN reversal takes back out of the shop lot stock
     lot_issues: list = field(default_factory=list)       # (lot id, grams) a LOT_ISSUE reversal puts back into the shop lot stock
-    extra_permission: str = ""                           # a right required ON TOP of the source's own (a custody supplier payment)
+    extra_permissions: list = field(default_factory=list)    # rights required ON TOP of the source's own, EVERY one checked (a custody supplier payment, a holding)
     supplier_gold: list = field(default_factory=list)    # (supplier id, karat id, signed grams, signed Eq21, movement code) a gold settlement reversal restores
     holdings: list = field(default_factory=list)         # (pool id, document id, doc kind, movement type, grams, signed delta) explicit holding compensations (048)
     logo_holdings: list = field(default_factory=list)    # the same for master-karat LOGO pools (049)
+    holding_settlements: list = field(default_factory=list)   # (is LOGO pool, pool id, settlement id, grams) the compensation of a settlement from a holding (050)
 
 
 def _reason(text):
@@ -285,7 +286,21 @@ class CorrectionService:
             source = repo.source(source_id)
             if source is None:
                 raise CorrectionError("SOURCE_NOT_FOUND", "تسوية ذهب المورد غير موجودة.")
-            if lock:                                            # the settlement's own lock order: supplier -> Scrap karat
+            if lock and source.get("source_kind") in ("HOLDING_LOT", "HOLDING_LOGO"):
+                # 050: lot (lot pools) -> holder and recipient in ASCENDING party id -> holding source pool. No trip is locked or reopened.
+                from repositories.intermediary_holding_repository import IntermediaryHoldingRepository
+                from repositories.market_trip_repository import MarketTripRepository
+                holdings = IntermediaryHoldingRepository(connection)
+                if source["lot_pool_id"] is not None:
+                    MarketTripRepository(connection).lock_lots([source["delivered_lot_id"]])
+                for party in sorted({int(source["supplier_id"]), int(source["holding_party_id"])}):
+                    repo.get_supplier(party, lock=True)
+                if source["lot_pool_id"] is not None:
+                    holdings.lock_pool(source["lot_pool_id"])
+                else:
+                    holdings.lock_logo_pool(source["logo_pool_id"])
+                source = repo.source(source_id, lock=True)
+            elif lock:                                          # the settlement's own lock order: supplier -> Scrap karat
                 repo.get_supplier(source["supplier_id"], lock=True)
                 if source.get("source_kind", "SHOP_SCRAP") == "SHOP_SCRAP":       # a custody-sourced settlement never touched Scrap
                     corrections.lock_old_gold_balance(source["delivered_karat_id"])
@@ -356,8 +371,8 @@ class CorrectionService:
             source = corrections.exchange_source(source_id) if source_type == "EXCHANGE" else corrections.return_source(source_id)
         return invoice, source, reference or invoice["invoice_number"]
 
-    def _history(self, corrections, source_type, source_id):
-        rows = corrections.corrections_for_source(source_type, source_id)
+    def _history(self, corrections, source_type, source_id, current=False):
+        rows = corrections.corrections_for_source(source_type, source_id, current=True) if current else corrections.corrections_for_source(source_type, source_id)
         reversal = next((r for r in rows if r["correction_type"] == FULL_REVERSAL), None)
         chain = [r for r in rows if r["correction_type"] == SETTLEMENT]
         return reversal, chain
@@ -366,7 +381,10 @@ class CorrectionService:
     def _plan(self, connection, source_type, source_id, lock):
         corrections, invoices = self._corrections(connection), self._invoices(connection)
         invoice, source, reference = self._load(connection, source_type, source_id, lock)
-        reversal, chain = self._history(corrections, source_type, source_id)
+        holding_decision = bool(lock and source_type == SGS and (source or {}).get("source_kind") in ("HOLDING_LOT", "HOLDING_LOGO"))
+        # a settlement from a holding: a CURRENT read decides ALREADY_REVERSED (every other source keeps its established call)
+        reversal, chain = (self._history(corrections, source_type, source_id, True) if holding_decision
+                           else self._history(corrections, source_type, source_id))
         plan = _Plan(source_type, str(source_id), reference, invoice,
                      (source or invoice).get("customer_id"))
         if reversal is not None:
@@ -446,7 +464,7 @@ class CorrectionService:
                     plan.blockers.append(("PAYMENT_MOVEMENT_MISSING", "حركة المصنعيات الأصلية للدفعة غير موجودة."))
                 else:
                     plan.making.append((str(movement["supplier_id"]), -Decimal(str(movement["amount_delta"])), REVERSAL_MOVEMENT))
-                plan.extra_permission = SMP_REVERSE_PERMISSION
+                plan.extra_permissions.append(SMP_REVERSE_PERMISSION)
             if source["entry_kind"] in ("GOLD_SETTLE", "LOT_SETTLE"):
                 # The stored supplier gold movement is restored (never a recomputed amount) and the entry stops consuming custody gold, so the
                 # stored delivered grams are back in custody. No Scrap, cash, making, bank or lot movement is posted. The supplier-side
@@ -459,7 +477,7 @@ class CorrectionService:
                 else:
                     plan.supplier_gold.append((int(movement["supplier_id"]), int(movement["karat_id"]), -Decimal(str(movement["weight_delta_grams"])),
                                                -Decimal(str(movement["equivalent_21_delta_grams"])), GOLD_REVERSAL))
-                plan.extra_permission = SGS_REVERSE_PERMISSION
+                plan.extra_permissions.append(SGS_REVERSE_PERMISSION)
             if source["entry_kind"] in ("LOT_HOLD", "HOLD_RETURN"):
                 # 048. The CUSTODY side follows the established convention (this entry stops counting, so the lot is back in / leaves the custody
                 # exactly as before it); the HOLDING side posts an explicit signed compensation and the original movement stays counted.
@@ -470,14 +488,27 @@ class CorrectionService:
                 if link is None:
                     plan.blockers.append(("HOLDING_LINK_MISSING", "ربط حركة المسوقجي الأصلية غير موجود."))
                 else:
-                    plan.extra_permission = HOLDING_REVERSE_PERMISSION
+                    plan.extra_permissions.append(HOLDING_REVERSE_PERMISSION)
                     grams = Decimal(str(link["weight_grams"]))
                     balance = Decimal(str(holdings.pool_balance(link["pool_id"])))                 # CURRENT, compensations included
                     others = trips.custody_lots(source["trip_id"], exclude_entry_id=source_id, lot_id=link["lot_id"])
                     in_custody = sum((Decimal(str(l["outstanding_grams"])) for l in others), Decimal("0.000"))
                     held_total = Decimal(str(holdings.lot_held_total(link["lot_id"])))
                     if source["entry_kind"] == "LOT_HOLD":
-                        if balance != grams:
+                        settled = (holdings.pool_settlement_history(link["pool_id"]) if lock                # a decision: CURRENT, reversed ones included
+                                   else holdings.display_pool_history(link["pool_id"]))                       # a preview: a plain read
+                        if settled:
+                            from repositories.supplier_gold_settlement_repository import settlement_code
+                            codes = "، ".join(settlement_code(r["id"]) for r in settled)
+                            if any(r["physical_declaration"] in ("GRAM_ENTITLEMENT", "PHYSICALLY_DIVIDED") for r in settled):
+                                # allocation history: the whole-bar return is blocked as well, so no confirmed return is suggested
+                                advice = ("وقد سبق تخصيص جرامات منها لمورد (دون إثبات سلامتها الفعلية)، فيبقى رجوعها كاملة محجوبًا أيضًا "
+                                          "إلى حين تنفيذ عملية الاستلام الفعلي المستقبلية.")
+                            else:
+                                advice = "ولا يُعاد الاعتماد على سلامتها الفعلية بعكس التسليم؛ سجّل رجوعها العادي بتأكيد المالك الصريح."
+                            plan.blockers.append(("DEPENDENT_HOLDING_SETTLEMENT_EXISTS",
+                                                  f"لا يمكن عكس التسليم لأن لهذه السبكة تسوية ذهب لمورد مسجلة ({codes}) ولو عُكست: {advice}"))
+                        elif balance != grams:
                             plan.blockers.append(("DEPENDENT_HOLDING_RETURN_EXISTS",
                                                   "لا يمكن عكس التسليم لأن رجوعًا لهذه السبكة من المسوقجي مسجل بعده — اعكس الرجوع أولًا."))
                         elif in_custody != grams:
@@ -501,7 +532,7 @@ class CorrectionService:
                 if link is None:
                     plan.blockers.append(("HOLDING_LINK_MISSING", "ربط حركة المسوقجي الأصلية غير موجود."))
                 else:
-                    plan.extra_permission = HOLDING_REVERSE_PERMISSION
+                    plan.extra_permissions.append(HOLDING_REVERSE_PERMISSION)
                     quantity = Decimal(str(link["weight_grams"]))
                     pool = holdings.logo_pool(link["pool_id"])
                     initial = Decimal(str(pool["weight_grams"]))
@@ -510,8 +541,12 @@ class CorrectionService:
                     gold = trips.custody_gold(source["trip_id"], exclude_entry_id=source_id, current=True)
                     if source["entry_kind"] == "LOGO_HOLD":
                         if balance != initial:
+                            from repositories.supplier_gold_settlement_repository import settlement_code
+                            named = holdings.logo_pool_settlements(link["pool_id"])           # explanatory only: the decision is the arithmetic above
                             plan.blockers.append(("DEPENDENT_HOLDING_RETURN_EXISTS",
-                                                  "لا يمكن عكس التسليم لأن رجوعًا من هذا المصدر لدى المسوقجي ما زال قائمًا — اعكس الرجوع أولًا."))
+                                                  "لا يمكن عكس التسليم لأن رجوعًا من هذا المصدر لدى المسوقجي ما زال قائمًا — اعكس الرجوع أولًا."
+                                                  + ("" if not named else " (تسويات الذهب المسجلة لهذا المصدر: " + "، ".join(settlement_code(r["id"]) for r in named)
+                                                                           + " — اعكس الفعّال منها أولًا.)")))
                         plan.logo_holdings.append((int(link["pool_id"]), int(link["document_id"]), link["doc_kind"], MOVE_HANDOVER_REVERSAL, quantity, -quantity))
                     else:
                         if custody_rules.any_negative(cash, gold, designation="LOGO"):
@@ -551,9 +586,13 @@ class CorrectionService:
             # The STORED movements are what is undone (never a recomputed amount): the delivered grams return to Scrap and the credit is restored.
             from repositories.supplier_gold_settlement_repository import GOLD_REVERSAL, SCRAP_REVERSAL_IN, SupplierGoldSettlementRepository
             settlements = SupplierGoldSettlementRepository(connection)
-            custody = None if source.get("source_kind", "SHOP_SCRAP") == "SHOP_SCRAP" else settlements.custody_entry(source_id)
+            holding_source = source.get("source_kind") in ("HOLDING_LOT", "HOLDING_LOGO")
+            custody = None if holding_source or source.get("source_kind", "SHOP_SCRAP") == "SHOP_SCRAP" else settlements.custody_entry(source_id)
             scrap_leg, gold_leg = settlements.scrap_movement(source_id), settlements.gold_movement(source_id)
-            if source.get("source_kind", "SHOP_SCRAP") != "SHOP_SCRAP":
+            if holding_source:
+                # 050: ONE canonical correction on the SG, from either page. The stored supplier credit and the stored delivered grams are restored.
+                self._plan_holding_settlement(connection, plan, source, source_id, settlements, lock)
+            elif source.get("source_kind", "SHOP_SCRAP") != "SHOP_SCRAP":
                 # Delivered from market custody (046): the custody entry is the only reversal path (it also restores the custody gold).
                 from repositories.market_trip_repository import entry_code as _entry_code
                 plan.blockers.append(("CUSTODY_SETTLEMENT_REVERSE_FROM_TRIP",
@@ -742,6 +781,30 @@ class CorrectionService:
         plan.lines = ("invoice_return_lines", [l["line_id"] for l in source["lines"]])
 
     @staticmethod
+    def _plan_holding_settlement(connection, plan, source, source_id, settlements, lock):
+        from repositories.intermediary_holding_repository import IntermediaryHoldingRepository
+        from repositories.supplier_gold_settlement_repository import GOLD_REVERSAL
+        holdings = IntermediaryHoldingRepository(connection)
+        logo = source["source_kind"] == "HOLDING_LOGO"
+        pool_id = int(source["logo_pool_id"] if logo else source["lot_pool_id"])
+        quantity = Decimal(str(source["holding_weight_grams"]))
+        gold_leg = settlements.gold_movement(source_id)
+        if gold_leg is None or holdings.settlement_movement(logo=logo, settlement_id=source_id) is None:
+            plan.blockers.append(("SETTLEMENT_MOVEMENT_MISSING", "حركات التسوية الأصلية غير موجودة."))
+            return
+        plan.supplier_gold.append((int(gold_leg["supplier_id"]), int(gold_leg["karat_id"]), -Decimal(str(gold_leg["weight_delta_grams"])),
+                                   -Decimal(str(gold_leg["equivalent_21_delta_grams"])), GOLD_REVERSAL))
+        plan.extra_permissions.append(HOLDING_REVERSE_PERMISSION)
+        pool = holdings.logo_pool(pool_id) if logo else holdings.pool(pool_id)
+        if lock:                                                              # a decision: CURRENT, compensations included
+            balance = Decimal(str(holdings.logo_pool_balance(pool_id) if logo else holdings.pool_balance(pool_id)))
+        else:                                                                 # a preview: a plain read, no lock
+            balance = Decimal(str(holdings.display_balance(logo=logo, pool_id=pool_id)))
+        if balance + quantity > Decimal(str(pool["weight_grams"])):
+            plan.blockers.append(("HOLDING_BALANCE_INVALID", "رصيد المصدر لدى المسوقجي بعد العكس يتجاوز كمية التسليم الأصلية."))
+        plan.holding_settlements.append((logo, pool_id, int(source_id), quantity))
+
+    @staticmethod
     def _plan_view(plan, accounts):
         names = {("BANK", int(a["id"])): a["name"] for a in accounts}
 
@@ -762,6 +825,7 @@ class CorrectionService:
             "supplier_gold": [{"supplier_id": s, "karat_id": k, "delta": str(d)} for s, k, d, _, _ in plan.supplier_gold],
             "holdings": [{"pool_id": p, "document_id": d, "movement": m, "delta": str(delta)} for p, d, _, m, _, delta in plan.holdings],
             "logo_holdings": [{"pool_id": p, "document_id": d, "movement": m, "delta": str(delta)} for p, d, _, m, _, delta in plan.logo_holdings],
+            "holding_settlements": [{"pool_id": p, "settlement_id": s, "logo": logo, "delta": str(g)} for logo, p, s, g in plan.holding_settlements],
             "inventory": [{"inventory_item_id": i, "from": f, "to": t} for i, f, t, _ in plan.inventory],
             "old_gold": [{"karat": k, "grams": str(g)} for _, k, g, _ in plan.old_gold]
                         + [{"karat": k, "grams": str(-g)} for _, _, k, g, _, _ in plan.holds],
@@ -869,8 +933,8 @@ class CorrectionService:
             corrections, invoices = self._corrections(connection), self._invoices(connection)
             customers = self._customers(connection)
             plan = self._plan(connection, source_type, source_id, lock=True)
-            if plan.extra_permission:                   # e.g. SUPPLIER_MAKING_PAY_REVERSE for a custody supplier payment
-                actor = self._authorization.require_permission(connection, session_actor, plan.extra_permission)
+            for extra in plan.extra_permissions:        # e.g. SUPPLIER_MAKING_PAY_REVERSE for a custody supplier payment; EVERY one is checked
+                actor = self._authorization.require_permission(connection, session_actor, extra)
             if plan.blockers:
                 code, message = plan.blockers[0]
                 raise CorrectionError(code, message)
@@ -938,6 +1002,16 @@ class CorrectionService:
                 for pool_id, document_id, doc_kind, movement_type, grams, delta in sorted(plan.logo_holdings):
                     logo_ledger.insert_logo_movement(pool_id=pool_id, document_id=document_id, doc_kind=doc_kind, movement_type=movement_type,
                                                      weight=grams, delta=delta, correction_id=correction_id)
+            if plan.holding_settlements:
+                from repositories.intermediary_holding_repository import IntermediaryHoldingRepository as SettlementLedger, MOVE_SETTLEMENT_REVERSAL
+                settlement_ledger = SettlementLedger(connection)
+                for logo, pool_id, settlement_id, grams in sorted(plan.holding_settlements):
+                    settlement_ledger.insert_settlement_movement(logo=logo, pool_id=pool_id, settlement_id=settlement_id,
+                                                                 movement_type=MOVE_SETTLEMENT_REVERSAL, weight=grams, delta=grams, correction_id=correction_id)
+                    pool = settlement_ledger.logo_pool(pool_id) if logo else settlement_ledger.pool(pool_id)
+                    after = Decimal(str(settlement_ledger.logo_pool_balance(pool_id) if logo else settlement_ledger.pool_balance(pool_id)))
+                    if not Decimal("0") <= after <= Decimal(str(pool["weight_grams"])):         # explicit check of the resulting pool balance
+                        raise RuntimeError("holding balance out of range after the settlement reversal")
             if plan.lot_issues:
                 from repositories.market_trip_repository import SHOP_ISSUE_REVERSAL, MarketTripRepository as IssueLedger
                 for lot_id, grams in sorted(plan.lot_issues):

@@ -33,7 +33,7 @@ class WholeLotMySqlTests(unittest.TestCase):
         with cls.tx() as c:
             q=c.cursor(dictionary=True)
             q.execute('SELECT DATABASE() AS db, MAX(version) AS v FROM schema_migrations')
-            row=q.fetchone();assert row['db']==TARGET and row['v'] in (47,48,49),row;cls.version=row['v']   # an explicit pair: the code is 048-aware, so only the guard test can run at 47
+            row=q.fetchone();assert row['db']==TARGET and row['v'] in (47,48,49,50),row;cls.version=row['v']   # an explicit pair: the code is 048-aware, so only the guard test can run at 47
             q.execute("SELECT target_database FROM masgold_rehearsal_marker WHERE marker_key='MASGOLD_SCHEMA_REHEARSAL'")
             assert q.fetchone()['target_database']==TARGET
             q.execute("INSERT INTO employees(name) VALUES('047 rehearsal owner')");emp=q.lastrowid
@@ -178,9 +178,9 @@ class WholeLotMySqlTests(unittest.TestCase):
         movement=self.query('SELECT * FROM market_trip_lot_settlements WHERE entry_id=%s',(done['entry_id'],))[0]['custody_movement_id']
         probes=(
             ('UPDATE supplier_gold_settlements SET delivered_karat_id=%s,delivered_karat_value=21 WHERE id=%s',(self.karats[21],done['settlement_id']),3819),
-            ('UPDATE supplier_gold_settlements SET delivered_fineness_permille=874.9 WHERE id=%s',(done['settlement_id'],),1452),
+            ('UPDATE supplier_gold_settlements SET delivered_fineness_permille=874.9 WHERE id=%s',(done['settlement_id'],),(1451,1452)),
             ('UPDATE supplier_gold_settlements SET delivered_lot_weight_grams=9 WHERE id=%s',(done['settlement_id'],),3819),
-            ('UPDATE supplier_gold_settlements SET origin_melt_entry_id=%s WHERE id=%s',(otherm['entry_id'],done['settlement_id']),1452),
+            ('UPDATE supplier_gold_settlements SET origin_melt_entry_id=%s WHERE id=%s',(otherm['entry_id'],done['settlement_id']),(1451,1452)),
             ('UPDATE market_trip_lot_settlements SET supplier_id=%s WHERE entry_id=%s',(self.sup24,done['entry_id']),1452),
             ('UPDATE market_trip_lot_settlements SET lot_id=%s WHERE entry_id=%s',(otherlots[0]['id'],done['entry_id']),1452),
             ('UPDATE market_trip_lot_settlements SET movement_type=\'CREATE\' WHERE entry_id=%s',(done['entry_id'],),3819),
@@ -194,7 +194,9 @@ class WholeLotMySqlTests(unittest.TestCase):
                     with self.tx() as c:
                         q=c.cursor();q.execute(sql,args);q.close()
                         self.fail('invalid shape accepted')
-                self.assertEqual(getattr(e.exception,'errno',None),errno)
+                # a row that is both a child (fk_sgs_lot_facts: 1452) and a parent (fk_mtls_header: 1451) is refused by whichever constraint InnoDB evaluates first;
+                # the evaluation order depends on the table's constraint set (it changed when 050 added foreign keys): the refusal is the contract
+                self.assertIn(getattr(e.exception,'errno',None),errno if isinstance(errno,tuple) else (errno,))
 
     def rollback_refusal(self, stage):
         from tools.schema_rehearsal.mysql_client import Credentials, option_file, MysqlClient, DEFAULT_MYSQL, MysqlError
@@ -219,7 +221,7 @@ class WholeLotMySqlTests(unittest.TestCase):
 
     def test_047_rollback_refuses_while_a_later_migration_exists_at_048(self):
         """At 048 the guard also refuses for the later migration; the isolated case (clean 001-048, zero 047 rows) was run by the rehearsal script."""
-        if self.version not in (48,49):self.skipTest('needs a sandbox at 048 or later')
+        if self.version not in (48,49,50):self.skipTest('needs a sandbox at 048 or later')
         history=sum(self.query(sql)[0]['n'] for sql in ('SELECT COUNT(*) AS n FROM market_trip_lot_settlements',"SELECT COUNT(*) AS n FROM supplier_gold_settlements WHERE source_kind='CUSTODY_LOT'",
             "SELECT COUNT(*) AS n FROM market_trip_entries WHERE entry_kind='LOT_SETTLE'","SELECT COUNT(*) AS n FROM market_trip_lot_movements WHERE movement_type='SUPPLIER_SETTLE'"))
         if history:self.skipTest(f'{history} 047 history rows exist: a refusal here could be the history guard, so it would not isolate the later-migration guard (needs a clean 001-048+ schema)')

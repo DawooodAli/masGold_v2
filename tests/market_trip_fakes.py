@@ -696,7 +696,7 @@ class Corrections:
         if self.db.fail_at == step:
             raise RuntimeError(f"forced failure at {step}")
 
-    def corrections_for_source(self, source_type, source_id):
+    def corrections_for_source(self, source_type, source_id, current=False):
         return [{"correction_id": c["correction_id"], "correction_type": c["correction_type"], "chain_sequence": None,
                  "after_json": None, "occurred_at": c["occurred_at"]}
                 for c in self.db.corrections if (c["source_type"], c["source_id"]) == (source_type, str(source_id))]
@@ -900,7 +900,61 @@ class HoldingRepo:
         return (sum(1 for p in self.db.holding_pools.values() if p["party_id"] == int(party_id))
                 + sum(1 for d in self.db.holding_docs.values() if d["party_id"] == int(party_id))
                 + sum(1 for p in self.db.logo_pools.values() if p["party_id"] == int(party_id))
-                + sum(1 for d in self.db.logo_docs.values() if d["party_id"] == int(party_id)))
+                + sum(1 for d in self.db.logo_docs.values() if d["party_id"] == int(party_id))
+                + sum(1 for s in self.db.settlements.values() if s.get("holding_party_id") == int(party_id)))
+
+    # ---- 050: supplier settlement from a holding
+    def pool_settlement_history(self, pool_id):
+        return [{"id": s["id"], "physical_declaration": s["physical_declaration"]}
+                for s in sorted(self.db.settlements.values(), key=lambda s: s["id"]) if s.get("lot_pool_id") == int(pool_id)]
+
+    def display_pool_history(self, pool_id):
+        return self.pool_settlement_history(pool_id)
+
+    def logo_pool_settlements(self, pool_id):
+        return [{"id": s["id"]} for s in sorted(self.db.settlements.values(), key=lambda s: s["id"]) if s.get("logo_pool_id") == int(pool_id)]
+
+    def display_balance(self, *, logo, pool_id):
+        moves = self.db.logo_moves if logo else self.db.holding_moves
+        return sum((m["weight_delta"] for m in moves if m["pool_id"] == int(pool_id)), D("0.000"))
+
+    def insert_settlement_movement(self, *, logo, pool_id, settlement_id, movement_type, weight, delta, correction_id=None):
+        self._fail("settlement_movement")
+        moves = self.db.logo_moves if logo else self.db.holding_moves
+        header = self.db.settlements[int(settlement_id)]
+        key = "logo_pool_id" if logo else "lot_pool_id"
+        assert header[key] == int(pool_id) and header["holding_weight_grams"] == weight                       # fk_ihm_settlement / fk_lhm_settlement
+        assert weight > 0                                                                                    # chk_*_shape
+        expected, needs_correction = {"SETTLEMENT": (-weight, False), "SETTLEMENT_REVERSAL": (weight, True)}[movement_type]
+        assert delta == expected and (correction_id is not None) == needs_correction
+        if any(m.get("settlement_id") == int(settlement_id) and m["movement_type"] == movement_type for m in moves):
+            raise _dup("uq_lhm_settlement_type" if logo else "uq_ihm_settlement_type")
+        if correction_id is not None and any(m["correction_id"] == int(correction_id) for m in moves):
+            raise _dup("uq_lhm_correction" if logo else "uq_ihm_correction")
+        move_id = self.db.next("lmove" if logo else "hmove")
+        moves.append({"id": move_id, "pool_id": int(pool_id), "document_id": None, "doc_kind": None, "settlement_id": int(settlement_id),
+                      "movement_type": movement_type, "weight_grams": weight, "weight_delta": delta,
+                      "correction_id": None if correction_id is None else int(correction_id)})
+        return move_id
+
+    def settlement_movement(self, *, logo, settlement_id):
+        moves = self.db.logo_moves if logo else self.db.holding_moves
+        return next((dict(m) for m in moves if m.get("settlement_id") == int(settlement_id) and m["movement_type"] == "SETTLEMENT"), None)
+
+    def holding_settlements(self, party_id):
+        rows = []
+        for s in sorted(self.db.settlements.values(), key=lambda s: -s["id"]):
+            if s.get("holding_party_id") != int(party_id):
+                continue
+            reversal = next((c for c in self.db.corrections if c["correction_type"] == "FULL_REVERSAL" and c["source_type"] == "SUPPLIER_GOLD_SETTLEMENT"
+                             and c["source_id"] == str(s["id"])), None)
+            rows.append({**{k: s.get(k) for k in ("id", "source_kind", "supplier_id", "lot_pool_id", "logo_pool_id", "delivered_weight_grams",
+                                                  "credited_weight_grams", "credited_analytical_grams", "rounding_difference_grams", "target_karat_value",
+                                                  "delivered_karat_value", "delivered_fineness_permille", "delivered_lot_weight_grams",
+                                                  "physical_declaration", "settlement_date", "occurred_at")},
+                         "supplier_name": self.db.suppliers[s["supplier_id"]]["name"], "self_settlement_confirmed": s.get("self_settlement_confirmed", 0),
+                         "actor_name": "المالك", "reversal_id": reversal and int(reversal["correction_id"]), "reversal_reason": reversal and reversal["reason"]})
+        return rows
     # ---- 049: master-karat LOGO holdings
     def insert_logo_pool(self, *, party_id, karat_id, trip_id, weight, user_id):
         self._fail("logo_pool")
@@ -1078,7 +1132,11 @@ class HoldingRepo:
                          "origin_trip_id": origin["trip_id"], "origin_entry_no": origin["entry_no"], "handover_id": handover["id"],
                          "document_date": handover["document_date"], "trip_id": handover["trip_id"],
                          "trip_status": self.db.trips[handover["trip_id"]]["status"],
-                         "handover_entry_no": self.db.entries[link["entry_id"]]["entry_no"], "balance": balance})
+                         "handover_entry_no": self.db.entries[link["entry_id"]]["entry_no"], "balance": balance,
+                         "settlement_count": len(self.pool_settlement_history(p["id"])),
+                         "allocation_count": sum(1 for h in self.pool_settlement_history(p["id"]) if h["physical_declaration"] in ("GRAM_ENTITLEMENT", "PHYSICALLY_DIVIDED")),
+                         "first_allocation_id": next((h["id"] for h in self.pool_settlement_history(p["id"])
+                                                      if h["physical_declaration"] in ("GRAM_ENTITLEMENT", "PHYSICALLY_DIVIDED")), None)})
         return rows
 
 
@@ -1180,6 +1238,16 @@ class SettlementRepo:
         row = self.db.karats.get(int(karat_id))
         return None if row is None else dict(row)
 
+    def list_suppliers(self, search=None, active=None, limit=500, role=None):
+        """The Supplier Master list the holding settlement dialog offers as recipients (role SUPPLIER = the supplier flag)."""
+        rows = []
+        for row in sorted(self.db.suppliers.values(), key=lambda s: (-s["is_active"], s["id"])):
+            if role == "SUPPLIER" and not row.get("is_supplier", True):
+                continue
+            karat_id = row.get("karat_id")
+            rows.append({**row, "karat_value": None if karat_id is None else self.db.karats[karat_id]["karat_value"]})
+        return rows
+
     def active_karats(self):
         return [dict(k) for k in sorted(self.db.karats.values(), key=lambda k: -k["karat_value"]) if k["is_active"]]
 
@@ -1222,6 +1290,39 @@ class SettlementRepo:
         self.db.settlements[sid]={"id":sid,"supplier_id":int(supplier_id),"source_kind":"CUSTODY_LOT","delivered_lot_id":lot["id"],"origin_melt_entry_id":lot["entry_id"],"delivered_fineness_permille":lot["fineness_permille"],"delivered_karat_id":None,"delivered_karat_value":None,"target_karat_id":target_karat["id"],"target_karat_value":target_karat["karat_value"],"delivered_weight_grams":lot["weight_grams"],"credited_weight_grams":credited,"credited_analytical_grams":analytical,"rounding_difference_grams":difference,"settlement_date":settlement_date,"reference":reference,"notes":notes,"request_key":key,"request_hash":digest,"performed_by_user_id":actor.user_id,"occurred_at":now}
         return sid
 
+    def insert_holding_header(self, *, kind, supplier_id, pool, target_karat, quantity, credited, analytical, difference, declaration, self_confirmed,
+                              settlement_date, reference, notes, key, digest, actor, now):
+        self._fail("sg_header")
+        lot = kind == "HOLDING_LOT"
+        assert kind in ("HOLDING_LOT", "HOLDING_LOGO")                                                       # chk_sgs_source
+        assert quantity > 0 and credited > 0 and analytical > 0 and difference == credited - analytical     # chk_sgs_weights / chk_sgs_rounding
+        if lot:                                                                                              # chk_sgs_shape + fk_sgs_lot_pool
+            stored = self.db.holding_pools[int(pool["id"])]
+            assert (stored["party_id"], stored["lot_id"], stored["weight_grams"], stored["fineness_permille"]) == (
+                int(pool["party_id"]), int(pool["lot_id"]), pool["weight_grams"], pool["fineness_permille"])
+            assert quantity <= pool["weight_grams"] and declaration in ("WHOLE_ORIGINAL_BAR", "GRAM_ENTITLEMENT", "PHYSICALLY_DIVIDED")
+            assert declaration != "WHOLE_ORIGINAL_BAR" or quantity == pool["weight_grams"]
+        else:                                                                                                # fk_sgs_logo_pool
+            stored = self.db.logo_pools[int(pool["id"])]
+            assert (stored["party_id"], stored["karat_id"]) == (int(pool["party_id"]), int(pool["karat_id"])) and declaration is None
+        assert int(supplier_id) != int(pool["party_id"]) or self_confirmed                                  # chk_sgs_self
+        if any(g["request_key"] == key for g in self.db.settlements.values()):
+            raise _dup("uq_sgs_request")
+        settlement_id = self.db.next("settlement")
+        self.db.settlements[settlement_id] = {
+            "id": settlement_id, "supplier_id": int(supplier_id), "source_kind": kind,
+            "delivered_karat_id": None if lot else int(pool["karat_id"]), "delivered_karat_value": None if lot else int(pool["karat_value"]),
+            "target_karat_id": int(target_karat["id"]), "target_karat_value": int(target_karat["karat_value"]), "delivered_weight_grams": quantity,
+            "credited_weight_grams": credited, "credited_analytical_grams": analytical, "rounding_difference_grams": difference,
+            "settlement_date": settlement_date, "reference": reference, "notes": notes, "request_key": key, "request_hash": digest,
+            "performed_by_user_id": actor.user_id, "occurred_at": now,
+            "delivered_lot_id": int(pool["lot_id"]) if lot else None, "delivered_lot_weight_grams": pool["weight_grams"] if lot else None,
+            "origin_melt_entry_id": int(pool["origin_melt_entry_id"]) if lot else None,
+            "delivered_fineness_permille": pool["fineness_permille"] if lot else None, "holding_party_id": int(pool["party_id"]),
+            "lot_pool_id": int(pool["id"]) if lot else None, "logo_pool_id": None if lot else int(pool["id"]), "physical_declaration": declaration if lot else None,
+            "holding_weight_grams": quantity, "self_settlement_confirmed": 1 if self_confirmed else 0}
+        return settlement_id
+
     def post_scrap_out(self, *, settlement_id, karat_id, weight, code, notes, actor, now):
         self._fail("sg_scrap")
         move_id = self.db.next("scrap")
@@ -1246,7 +1347,7 @@ class SettlementRepo:
 
     def insert_leg(self, *, settlement_id, kind, source_kind, old_gold_movement_id=None, supplier_gold_movement_id=None):
         self._fail("sg_leg")
-        assert source_kind in ("SHOP_SCRAP", "CUSTODY_GOLD", "CUSTODY_LOT")                                  # chk_sgsl_source
+        assert source_kind in ("SHOP_SCRAP", "CUSTODY_GOLD", "CUSTODY_LOT", "HOLDING_LOT", "HOLDING_LOGO")   # chk_sgsl_source
         assert kind != "SCRAP" or source_kind == "SHOP_SCRAP"                                 # chk_sgsl_scrap_only: no second Scrap deduction
         assert self.db.settlements[int(settlement_id)]["source_kind"] == source_kind          # fk_sgsl_source (the composite foreign key)
         assert (kind == "SCRAP" and old_gold_movement_id is not None and supplier_gold_movement_id is None) or \
@@ -1284,6 +1385,7 @@ class SettlementRepo:
             return None
         reversal, custody = self._reversal(settlement_id), self.custody_entry(settlement_id)
         return {**row, "supplier_name": self.db.suppliers[row["supplier_id"]]["name"], "actor_name": "المالك",
+                "holding_party_name": (self.db.suppliers[row["holding_party_id"]]["name"] if row.get("holding_party_id") else None),
                 "custody_entry_id": custody and custody["entry_id"], "custody_designation": custody and custody["designation"],
                 "custody_trip_id": custody and custody["trip_id"], "custody_entry_no": custody and custody["entry_no"],
                 "reversal_id": reversal and int(reversal["correction_id"]), "reversal_reason": reversal and reversal["reason"]}

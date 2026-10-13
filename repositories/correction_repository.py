@@ -47,12 +47,14 @@ class CorrectionRepository(BaseRepository):
 
     # ------------------------------------------------------------ corrections of a source
 
-    def corrections_for_source(self, source_type, source_id):
+    def corrections_for_source(self, source_type, source_id, current=False):
+        """The corrections of a source. `current=True` is a locking CURRENT read (the 'already reversed' DECISION of a settlement from a holding,
+        050): under REPEATABLE READ a plain read could return a snapshot older than a reversal committed while this transaction waited for a lock."""
         return [_ids(r) for r in self._fetch_all(
             """
             SELECT id AS correction_id, correction_type, chain_sequence, after_json, occurred_at
             FROM transaction_corrections WHERE source_type = %s AND source_id = %s ORDER BY id
-            """, (source_type, _id(source_id)))]
+            """ + (" FOR SHARE" if current else ""), (source_type, _id(source_id)))]
 
     def effective_legs(self, correction_id):
         return [_ids(r) for r in self._fetch_all(

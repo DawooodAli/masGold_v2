@@ -302,7 +302,9 @@ class HoldingSupplierStub:
                              "gold_balance": None, "making_direction": "SETTLED", "making": D("0.00")},
                 "gold_ledger": [], "making_ledger": [], "holdings": {"pools": holdings["pools"], "history": holdings["history"], "total": holdings["total"],
                                                                       "pure": holdings["pure"], "can_manage": holdings["can_manage"],
-                                                                      "logo_pools": holdings["logo_pools"], "logo_history": holdings["logo_history"]}}
+                                                                      "logo_pools": holdings["logo_pools"], "logo_history": holdings["logo_history"],
+                                                                      "settlements": holdings["settlements"], "can_settle": holdings["can_settle"],
+                                                                      "can_reverse": holdings["can_reverse"]}}
 
 
 class HoldingPartyPageTests(harness.InvoicePageTests):

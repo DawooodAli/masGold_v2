@@ -14,7 +14,8 @@ from PySide6.QtCore import QObject, Property, Signal, Slot
 
 from app.formatting import date_text, datetime_text, grams, ltr, money, number
 from services import supplier_rules as rules
-from services.intermediary_holding_rules import CONFIRMATION_TEXT, HOLDING_NOTE, LOGO_NOTE
+from services.intermediary_holding_rules import (CONFIRMATION_TEXT, DECLARATION_TEXT, HOLDING_NOTE, LOGO_NOTE, POOL_LOGO, POOL_LOT, SETTLE_CONFIRMATION_TEXT,
+                                                 holding_preview)
 
 SHOP_OWES_TEXT, SUPPLIER_OWES_TEXT, SETTLED_TEXT = "علينا للمورد", "لنا عند المورد", "الحساب متوازن"
 ACCOUNT_TYPE_TEXT = {"BANK": "حساب بنكي", "MOBILE_WALLET": "محفظة"}
@@ -105,10 +106,12 @@ class SupplierViewModel(QObject):
     settlementReversed = Signal(str)     # a gold settlement was reversed (the RV code): the dialog can close and the Scrap views reload
     holdingReturned = Signal(str)        # a whole lot came back from the intermediary (its IH code): the dialog can close
     holdingChanged = Signal()            # custody entries changed by a holding return (after commit): the custody views reload
+    holdingSettled = Signal(str)         # a supplier was settled from a holding (its SG code): the dialog can close
 
-    def __init__(self, session, service=None, parent=None, payments=None, holdings=None):
+    def __init__(self, session, service=None, parent=None, payments=None, holdings=None, holding_settlements=None):
         super().__init__(parent)
         self._session, self._service, self._payments, self._holdings = session, service, payments, holdings
+        self._holding_settlements, self._hs_context = holding_settlements, {}
         self._pay_context = {}
         self._settlements, self._set_context = None, {}
         self._workers, self._request, self._latest, self._busy = set(), 0, {}, set()
@@ -136,6 +139,12 @@ class SupplierViewModel(QObject):
             from services.intermediary_holding_service import IntermediaryHoldingService
             self._holdings = IntermediaryHoldingService(self._session)
         return self._holdings
+
+    def _holding_settlement_service(self):
+        if self._holding_settlements is None:
+            from services.holding_settlement_service import HoldingSettlementService
+            self._holding_settlements = HoldingSettlementService(self._session)
+        return self._holding_settlements
 
     def _settlement_service(self):
         if self._settlements is None:
@@ -445,6 +454,13 @@ class SupplierViewModel(QObject):
         if error:
             self._error = error
             return
+        if (result.get("effects") or {}).get("holding_settlements"):          # 050: the grams go back to the intermediary's holding, never to Scrap
+            self._message = (f"تم عكس تسوية الذهب {result['source_reference']} ({result['code']}): عاد الذهب المُسلَّم إلى رصيد المسوقجي "
+                             "(كرصيد جرامات فقط، دون إثبات سلامة السبكة الفعلية) وعاد رصيد المورد.")
+            self.refresh()
+            self.settlementReversed.emit(result["code"])
+            self.holdingChanged.emit()
+            return
         self._message = f"تم عكس تسوية الذهب {result['source_reference']} ({result['code']}): عاد الذهب المُسلَّم فعليًا إلى كسر المحل وعاد رصيد المورد."
         self.refresh()
         self.settlementReversed.emit(result["code"])
@@ -493,7 +509,107 @@ class SupplierViewModel(QObject):
         self.holdingReturned.emit(result["document_code"])
         self.holdingChanged.emit()
 
+    # ------------------------------------------------------------ supplier gold settlement from a holding (050)
+    @Slot(str, str)
+    def loadHoldingSettlement(self, pool_kind, pool_id):
+        """The source, its available grams, the recipients and the settlement history for the dialog."""
+        self._hs_context = {}
+        self._error = self._message = ""
+        service = self._holding_settlement_service()
+        self._start("hsctx", lambda _expected_actor: service.context(pool_kind, pool_id, _expected_actor=_expected_actor))
+        self.changed.emit()
+
+    def _on_hsctx(self, result, error):
+        if error:
+            self._error = error
+            return
+        self._hs_context = result
+
+    @Slot()
+    def clearHoldingSettlement(self):
+        self._hs_context = {}
+        self.changed.emit()
+
+    @Slot(str, str, result="QVariantMap")
+    def previewHoldingSettlement(self, supplier_id, quantity):
+        """The credit a quantity would post, before submitting: computed by the SAME rule functions the service uses (never QML arithmetic).
+        The service recomputes everything under its locks when it posts."""
+        context = self._hs_context
+        empty = {"valid": False, "error": "", "short": False, "isSelf": False, "options": [], "deliveredText": "", "creditedText": "",
+                 "analyticalText": "", "differenceText": "", "formulaText": "", "remainingText": ""}
+        if not context:
+            return empty
+        raw = holding_preview(context, supplier_id, quantity)
+        out = {**empty, "valid": raw["valid"], "error": raw["error"], "short": raw["short"], "isSelf": raw["self"], "options": raw["options"]}
+        if raw.get("delivered") is not None:
+            facts = context["facts"]
+            source = (f"عيار فعلي {number(facts['fineness'], 1)} بالألف" if context["pool_kind"] == POOL_LOT else f"عيار {facts['karat_value']}")
+            out["deliveredText"] = f"{grams(raw['delivered'])} جرام ({source})"
+            out["remainingText"] = f"{grams(raw['remaining'])} جرام"
+            out["formulaText"] = (f"{grams(raw['delivered'])} × {number(facts['fineness'], 1)} ÷ 1000 × 24 ÷ {raw['supplier_karat']}" if context["pool_kind"] == POOL_LOT
+                                  else f"{grams(raw['delivered'])} × {facts['karat_value']} ÷ {raw['supplier_karat']}")
+        if raw.get("credited") is not None:
+            out["creditedText"] = f"{grams(raw['credited'])} جرام عيار {raw['supplier_karat']}"
+            out["analyticalText"] = number(raw["analytical"], 6)
+            out["differenceText"] = number(raw["rounding_difference"], 6, signed=True)
+        return out
+
+    @Slot(str, str, str, str, str, bool, str, str, str, str)
+    def postHoldingSettlement(self, pool_kind, pool_id, supplier_id, quantity, declaration, self_confirmed, settlement_date, reference, notes, request_key):
+        if "hsettle" in self._busy:
+            return                                                     # a double click never submits twice
+        self._message = self._error = ""
+        service = self._holding_settlement_service()
+        self._start("hsettle", lambda _expected_actor: service.settle(
+            pool_kind, pool_id, supplier_id, quantity, declaration, self_confirmed, settlement_date, reference, notes, request_key,
+            _expected_actor=_expected_actor))
+        self.changed.emit()
+
+    def _on_hsettle(self, result, error):
+        if error:
+            self._error = error                                        # the dialog stays open with every field kept
+            return
+        self._message = (f"تسوية الذهب {result['code']} مسجلة من قبل (لم تُسجل مرة ثانية)." if result.get("duplicate")
+                         else f"تم تسجيل تسوية الذهب {result['code']} من رصيد المسوقجي: سُلِّم {grams(Decimal(result['delivered_weight']))} جرام "
+                              f"واحتُسب للمورد {grams(Decimal(result['credited_weight']))} جرام عيار {result['target_karat']} "
+                              f"(المتبقي لدى المسوقجي {grams(Decimal(result['remaining']))} جرام).")
+        self.refresh()
+        self.holdingSettled.emit(result["code"])
+        self.holdingChanged.emit()
+
     # ------------------------------------------------------------ properties
+    @Property(bool, notify=changed)
+    def canSettleFromHolding(self):
+        actor = self._session.current_actor()
+        return bool(actor and {"INTERMEDIARY_HOLDING_MANAGE", "SUPPLIER_GOLD_SETTLE"} <= set(actor.permissions))
+
+    @Property(bool, notify=changed)
+    def settlingFromHolding(self):
+        return "hsettle" in self._busy
+
+    @Property(str, constant=True)
+    def holdingSettleConfirmationText(self):
+        return SETTLE_CONFIRMATION_TEXT
+
+    @Property("QVariantMap", notify=changed)
+    def holdingSettlementContext(self):
+        """The holding settlement dialog's data (empty while it loads)."""
+        context = self._hs_context
+        if not context:
+            return {}
+        lot = context["pool_kind"] == POOL_LOT
+        facts = context["facts"]
+        return {"poolKind": context["pool_kind"], "poolId": context["pool_id"], "holderId": context["holder"]["id"], "holderName": context["holder"]["name"],
+                "holderActive": context["holder"]["active"], "isLot": lot,
+                "sourceText": (f"سبكة • العيار الفعلي {number(facts['fineness'], 1)} بالألف • الوزن الأصلي {grams(facts['weight'])} جرام" if lot
+                               else f"لوجو عيار {facts['karat_value']} • سُلِّم {grams(facts['weight'])} جرام"),
+                "availableText": f"{grams(context['balance'])} جرام",
+                "allocated": bool(context["allocated"]),
+                "wholeText": SETTLE_CONFIRMATION_TEXT,
+                "declarationText": {k: v for k, v in DECLARATION_TEXT.items()},
+                "recipients": [{"id": r["id"], "text": f"{r['code']} • {r['name']} • عيار {r['karat_value']}" + ("" if r["active"] else " • موقوف")
+                                + (" • هو نفسه المسوقجي" if r["self"] else ""), "isSelf": r["self"]} for r in context["recipients"]]}
+
     @Property(bool, notify=changed)
     def canViewHoldings(self):
         actor = self._session.current_actor()
@@ -523,7 +639,8 @@ class SupplierViewModel(QObject):
         pools = [{"poolId": p["pool_id"], "source": p["source"], "weight": grams(p["balance"]), "fineness": f"{ltr(number(p['fineness'], 1))} في الألف",
                   "pure": "غير معلومة" if p["pure"] is None else number(p["pure"], 6), "document": ltr(p["document"]),
                   "custodyEntry": ltr(p["custody_entry"]), "tripCode": ltr(p["trip_code"]), "date": date_text(p["date"]),
-                  "returnable": bool(data["can_manage"] and p["returnable"]), "reason": p["reason"]} for p in data["pools"]]
+                  "returnable": bool(data["can_manage"] and p["returnable"]), "reason": p["reason"],
+                  "settleable": bool(data.get("can_settle") and p["settleable"]), "historyNote": p.get("history_note", "")} for p in data["pools"]]
         history = [{"id": h["document_id"], "code": ltr(h["code"]),
                     "kindText": "تسليم" if h["kind"] == "HANDOVER" else "رجوع",
                     "text": f"{h['source']} • {grams(h['weight'])} جرام • {ltr(h['custody_entry'])} • {date_text(h['date'])}"
@@ -531,7 +648,18 @@ class SupplierViewModel(QObject):
                     "reversed": h["reversed"], "state": f"معكوس بالعملية {h['reversed_by']}" if h["reversed"] else ""} for h in data["history"]]
         logo_pools = [{"poolId": p["pool_id"], "karat": f"عيار {p['karat_value']}", "outstanding": grams(p["balance"]), "initial": grams(p["weight"]),
                        "document": ltr(p["document"]), "custodyEntry": ltr(p["custody_entry"]), "tripCode": ltr(p["trip_code"]), "date": date_text(p["date"]),
-                       "returnable": bool(data["can_manage"] and p["returnable"]), "reason": p["reason"]} for p in data.get("logo_pools", [])]
+                       "returnable": bool(data["can_manage"] and p["returnable"]), "reason": p["reason"],
+                       "settleable": bool(data.get("can_settle") and p["settleable"])} for p in data.get("logo_pools", [])]
+        settlements = [{"id": s["id"], "code": ltr(s["code"]), "poolKind": s["pool_kind"],
+                        "text": (f"{s['supplier_name']} • سُلِّم {grams(s['delivered'])} جرام"
+                                 + (f" من سبكة وزنها الأصلي {grams(s['lot_weight'])} جرام • العيار الفعلي {number(s['fineness'], 1)} بالألف"
+                                    if s["pool_kind"] == POOL_LOT else f" لوجو عيار {s['delivered_karat']}")
+                                 + f" ← احتُسب {grams(s['credited'])} جرام عيار {s['target_karat']}"
+                                 + f" • القيمة التحليلية {number(s['analytical'], 6)} • فرق التقريب {number(s['rounding_difference'], 6, signed=True)}"
+                                 + (f" • {s['declaration_text']}" if s["declaration_text"] else "")
+                                 + (" • المورد هو نفسه المسوقجي (حسابان منفصلان)" if s["self"] else "")),
+                        "reversed": s["reversed"], "state": f"معكوسة بالعملية {s['reversed_by']}" if s["reversed"] else "",
+                        "canReverse": bool(data.get("can_reverse")) and not s["reversed"]} for s in data.get("settlements", [])]
         logo_history = [{"id": h["document_id"], "code": ltr(h["code"]), "kindText": "تسليم" if h["kind"] == "HANDOVER" else "رجوع",
                          "text": f"لوجو عيار {h['karat_value']} • {grams(h['weight'])} جرام • {ltr(h['custody_entry'])} • {date_text(h['date'])}",
                          "reversed": h["reversed"], "state": f"معكوس بالعملية {h['reversed_by']}" if h["reversed"] else ""} for h in data.get("logo_history", [])]
@@ -540,7 +668,7 @@ class SupplierViewModel(QObject):
             by_karat[p["karat_value"]] = by_karat.get(p["karat_value"], Decimal("0")) + p["balance"]
         logo_summary = (" • ".join(f"لوجو عيار {k}: {grams(v)} جرام" for k, v in sorted(by_karat.items(), reverse=True)) if by_karat else "")
         return {"visible": True, "note": HOLDING_NOTE, "logoPools": logo_pools, "logoHistory": logo_history, "logoSummary": logo_summary,
-                "logoNote": LOGO_NOTE,
+                "logoNote": LOGO_NOTE, "settlements": settlements,
                 "summary": (f"الإجمالي لدى المسوقجي {grams(data['total'])} جرام • الذهب الصافي المعروف {number(data['pure'], 6)} جرام" if pools
                             else "" if logo_pools else "لا يوجد ذهب للمحل لدى هذا المسوقجي الآن."),
                 "pools": pools, "history": history, "canManage": bool(data["can_manage"])}
@@ -701,9 +829,12 @@ class SupplierViewModel(QObject):
                 "detail": (((f"سُلِّم {grams(r['delivered_weight'])} جرام • {'رواسب' if r.get('lot_kind') == 'RESIDUE' else 'الناتج الرئيسي'} • {r.get('lot_origin')} • شحنة {r.get('lot_no')} • العيار الفعلي {r.get('lot_fineness')} بالألف" if r.get("lot_id") else f"سُلِّم {grams(r['delivered_weight'])} جرام عيار {r['delivered_karat']}")
                             + (f" ({GOLD_SOURCE_TEXT[r['custody_designation']]})" if r.get("custody_designation") in GOLD_SOURCE_TEXT else "")
                             + f" ← احتُسب {grams(abs(r['weight_delta']))} جرام عيار {r['karat_value']}"
-                            + (f" • من عهدة السوق {r['custody_reference']} (تُعكس من صفحة العهدة)" if r.get("custody_reference") else ""))
+                            + (f" • من عهدة السوق {r['custody_reference']} (تُعكس من صفحة العهدة)" if r.get("custody_reference") else "")
+                            + (f" • من رصيد المسوقجي {r['holding_party']}" + (f" (الوزن الأصلي {grams(r['lot_weight'])} جرام)" if r.get("lot_weight") is not None else "")
+                               + (f" • {DECLARATION_TEXT[r['declaration']]}" if r.get("declaration") in DECLARATION_TEXT else "")
+                               if r.get("holding_party") else ""))
                            if r.get("settlement_id") else ""),
-                "custodyReference": r.get("custody_reference") or "",
+                "custodyReference": r.get("custody_reference") or "", "fromHolding": bool(r.get("holding_party")),
                 "state": (f"معكوسة بالعملية {r['reversed_by']}" if r.get("reversed_by")
                           else f"عكس التسوية {r['reverses_reference']}" if r.get("reverses_reference") else ""),
                 "settlementId": r.get("settlement_id") or "", "reversed": bool(r.get("reversed_by")),
