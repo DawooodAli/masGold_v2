@@ -19,10 +19,10 @@ def ledger_row(code, name, delta, **extra):
 
 
 class LedgerLabelTests(unittest.TestCase):
-    def test_the_two_settlement_types_have_arabic_labels_and_other_types_keep_their_stored_name(self):
+    def test_purchase_and_settlement_types_have_arabic_labels_and_unknown_types_keep_their_stored_name(self):
+        self.assertEqual(rules.gold_movement_text("PURCHASE_INVOICE", "Supplier Purchase Invoice"), "فاتورة شراء")
         self.assertEqual(rules.gold_movement_text("SETTLEMENT", "Supplier Gold Settlement"), "تسوية ذهب مورد")
         self.assertEqual(rules.gold_movement_text("SETTLEMENT_REVERSAL", "Supplier Gold Settlement Reversal"), "عكس تسوية ذهب مورد")
-        self.assertEqual(rules.gold_movement_text("PURCHASE_INVOICE", "Supplier Purchase Invoice"), "Supplier Purchase Invoice")   # not changed here
         self.assertEqual(rules.gold_movement_text(None, "Anything"), "Anything")                                                    # an old row without a code
 
     def test_the_supplier_detail_and_the_view_model_show_the_translated_labels_while_the_stored_name_is_untouched(self):
@@ -34,7 +34,7 @@ class LedgerLabelTests(unittest.TestCase):
                 ledger_row("PURCHASE_INVOICE", "Supplier Purchase Invoice", "100.000", id=3)]
         with patch.object(supplier_fakes.SupplierRepo, "gold_ledger", lambda self, supplier_id, limit=200: rows):
             detail = suppliers.supplier_detail(supplier)
-        self.assertEqual([r["movement"] for r in detail["gold_ledger"]], ["عكس تسوية ذهب مورد", "تسوية ذهب مورد", "Supplier Purchase Invoice"])
+        self.assertEqual([r["movement"] for r in detail["gold_ledger"]], ["عكس تسوية ذهب مورد", "تسوية ذهب مورد", "فاتورة شراء"])
         self.assertEqual([r["movement_name"] for r in rows], ["Supplier Gold Settlement Reversal", "Supplier Gold Settlement", "Supplier Purchase Invoice"])
         vm = SupplierViewModel(session, suppliers)
         vm._detail = detail

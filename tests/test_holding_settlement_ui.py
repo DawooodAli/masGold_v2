@@ -96,7 +96,10 @@ class SettlementPageTests(ui.HoldingPartyPageTests):
         self.wait_until(lambda: "6.000" in self.text("holdingFigures"), "remaining grams shown")
         self.assertIn("SG000001", " ".join(self.visible_texts("holdingSettlementRow")))
         self.assertFalse(self.item("holdingReturnButton").property("enabled"))               # allocation history blocks the whole-bar return
-        self.assertIn("SG000001", self.text("holdingReason"))
+        self.assertEqual(self.text("holdingReason"), "الرجوع كسبكة كاملة غير متاح؛ استخدم استلام ذهب بالمحل")
+        self.assertNotIn("SG000001", self.text("holdingReason"))
+        self.assertIn("SG000001", self.text("holdingRefs"))                                     # ... its reference is under Details
+        self.assertIn("لا يُسجَّل رجوعها كاملة ولا يُعكس تسليمها", self.text("holdingRefs"))
         self.assertEqual(self.warnings, [])
 
     def test_the_full_original_quantity_offers_the_three_declarations_and_none_is_preselected(self):

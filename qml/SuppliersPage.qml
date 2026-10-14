@@ -17,6 +17,16 @@ Item {
     readonly property var detail: vm ? vm.detail : ({})
     readonly property bool hasSelection: !!vm && vm.selectedSupplierId !== "" && !!detail && detail.id !== undefined
     property int tab: 0
+    readonly property bool goldTabVisible: page.detail.hasAccount !== false || (!!vm && vm.holdingsPanel.visible === true)
+    property bool holdDetails: false          // the party's Details section (codes, history) is collapsed by default
+    // which holding rows have their «المزيد» row open, keyed by source (kind + pool id): kept here, not in the row, so a refresh that rebuilds the rows does not collapse it
+    property var moreOpen: ({})
+    function toggleMore(key) {
+        var next = {}
+        for (var k in moreOpen) next[k] = moreOpen[k]
+        next[key] = next[key] !== true
+        moreOpen = next
+    }
 
     Theme { id: theme }
 
@@ -41,6 +51,8 @@ Item {
         function onSelectionChanged(supplierId) {
             if (supplierId === "" || !page.pvm) return
             page.tab = 0
+            page.holdDetails = false
+            page.moreOpen = ({})
             page.pvm.showSupplier(supplierId)
         }
         function onPaymentPosted(code) { payDialog.close() }
@@ -91,15 +103,15 @@ Item {
         property color accent: theme.gold
         font.family: "Cairo"
         font.pixelSize: theme.fontBody
-        implicitHeight: 34
+        implicitHeight: 30
         topInset: 0
         bottomInset: 0
         leftInset: 0
         rightInset: 0
         topPadding: 0
         bottomPadding: 0
-        leftPadding: 16
-        rightPadding: 16
+        leftPadding: 12
+        rightPadding: 12
         hoverEnabled: true
         contentItem: Label {
             text: btn.text
@@ -495,14 +507,30 @@ Item {
                     color: theme.textMuted
                 }
 
-                ColumnLayout {
+                // ONE scroll for the whole selected-party content: the sections flow at their natural height (no nested scrolling, no overlapping panels).
+                // Supplier account first; intermediary-only parties have no supplier account section.
+                Flickable {
+                    id: partyScroll
+                    objectName: "partyScroll"
                     visible: page.hasSelection
                     anchors.fill: parent
                     anchors.margins: 12
-                    spacing: 10
+                    clip: true
+                    contentWidth: width
+                    contentHeight: partyBody.implicitHeight
+                    boundsBehavior: Flickable.StopAtBounds
+                    flickableDirection: Flickable.VerticalFlick
+                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-                    // name + code, then the supplier's actions (side by side when wide, stacked when narrow)
                     GridLayout {
+                        id: partyBody
+                        width: partyScroll.width - 14
+                        columns: 1
+                        rowSpacing: 12
+
+                    // name + code, then the party's actions (side by side when wide, stacked when narrow)
+                    GridLayout {
+                        Layout.row: 0
                         Layout.fillWidth: true
                         columns: width >= 720 ? 2 : 1
                         layoutDirection: Qt.RightToLeft
@@ -584,512 +612,716 @@ Item {
                         }
                     }
 
-                    Card {
-                        objectName: "intermediaryOnlyNote"
+                    // ============================================================ the supplier account: gold and making are two separate positions
+                    ColumnLayout {
+                        id: accountGroup
+                        objectName: "accountGroup"
+                        Layout.row: 1
                         Layout.fillWidth: true
-                        visible: page.detail.hasAccount === false
-                        title: "مسوقجي"
-                        accent: theme.gold
-                        Txt { Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textSecondary
-                              text: "هذا الطرف مسوقجي فقط: لا يوجد له حساب مورد (ذهب أو مصنعيات) ولا فواتير شراء. ما يخص المحل لديه يظهر في «ذهب المحل لدى المسوقجي» أدناه." }
-                    }
-
-                    // Shop-owned whole lots physically at this intermediary (048). Independent of the supplier account of a dual-role party.
-                    Card {
-                        objectName: "holdingsPanel"
-                        Layout.fillWidth: true
-                        visible: !!page.vm && page.vm.holdingsPanel.visible === true
-                        title: "ذهب المحل لدى المسوقجي"
-                        accent: theme.amber
-                        Txt { objectName: "holdingsNote"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textMuted
-                              font.pixelSize: theme.fontTableHeader; text: page.vm ? (page.vm.holdingsPanel.note || "") : "" }
-                        Txt { objectName: "holdingsSummary"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.gold; font.bold: true
-                              text: page.vm ? (page.vm.holdingsPanel.summary || "") : "" }
-                        Repeater {
-                            model: page.vm ? (page.vm.holdingsPanel.pools || []) : []
-                            delegate: Rectangle {
-                                Layout.fillWidth: true
-                                implicitHeight: holdRow.implicitHeight + 12
-                                radius: theme.radiusSmall
-                                color: theme.bgTertiary
-                                border.color: theme.border
-                                RowLayout {
-                                    id: holdRow
-                                    anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                                    anchors.leftMargin: 10; anchors.rightMargin: 10
-                                    layoutDirection: Qt.RightToLeft
-                                    spacing: 10
-                                    ColumnLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 2
-                                        Txt { objectName: "holdingSource"; Layout.fillWidth: true; text: modelData.source; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                        Txt { objectName: "holdingFigures"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textSecondary
-                                              text: modelData.weight + " جرام • العيار الفعلي " + modelData.fineness + " • الذهب الصافي " + page.ltr(modelData.pure) }
-                                        Txt { objectName: "holdingRefs"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textMuted
-                                              font.pixelSize: theme.fontTableHeader
-                                              text: modelData.document + " • " + modelData.custodyEntry + " • العهدة الأصلية " + modelData.tripCode + " • " + modelData.date }
-                                        Txt { objectName: "holdingReason"; Layout.fillWidth: true; visible: modelData.reason !== ""; text: modelData.reason; color: theme.amber
-                                              font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                        Txt { objectName: "holdingHistoryNote"; Layout.fillWidth: true; visible: modelData.historyNote !== ""; text: modelData.historyNote
-                                              color: theme.textSecondary; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                    }
-                                    Btn {
-                                        objectName: "holdingSettleButton"
-                                        visible: !!page.vm && page.vm.canSettleFromHolding
-                                        enabled: modelData.settleable === true && !page.vm.settlingFromHolding
-                                        text: "تسوية لمورد"
-                                        onClicked: holdingSettleDialog.openFor("LOT", modelData)
-                                    }
-                                    Btn {
-                                        objectName: "holdingReceiveButton"
-                                        visible: !!page.vm && page.vm.canReceiveFromHolding && modelData.receivable === true
-                                        enabled: !page.vm.receivingFromHolding
-                                        text: "استلام فعلي"
-                                        onClicked: receiptDialog.openFor(modelData)
-                                    }
-                                    Btn {
-                                        objectName: "holdingReturnButton"
-                                        visible: !!page.vm && page.vm.canManageHoldings
-                                        enabled: modelData.returnable && !page.vm.returningHolding
-                                        text: "تسجيل رجوع"
-                                        primary: true
-                                        onClicked: holdingReturnDialog.openFor(modelData)
-                                    }
-                                }
-                            }
-                        }
-                        // Pooled master-karat LOGO grams: a different kind of source from the assayed bars above.
-                        Txt { objectName: "logoSectionTitle"; Layout.fillWidth: true; text: "ذهب لوجو بالجرام (عيار واحد لكل مصدر)"; color: theme.gold; font.bold: true
-                              visible: (page.vm ? (page.vm.holdingsPanel.logoPools || []) : []).length > 0 }
-                        Txt { objectName: "logoSummary"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.gold
-                              visible: !!(page.vm && page.vm.holdingsPanel.logoSummary); text: page.vm ? (page.vm.holdingsPanel.logoSummary || "") : "" }
-                        Repeater {
-                            model: page.vm ? (page.vm.holdingsPanel.logoPools || []) : []
-                            delegate: Rectangle {
-                                Layout.fillWidth: true
-                                implicitHeight: logoRow.implicitHeight + 12
-                                radius: theme.radiusSmall
-                                color: theme.bgTertiary
-                                border.color: theme.border
-                                RowLayout {
-                                    id: logoRow
-                                    anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                                    anchors.leftMargin: 10; anchors.rightMargin: 10
-                                    layoutDirection: Qt.RightToLeft
-                                    spacing: 10
-                                    ColumnLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 2
-                                        Txt { objectName: "logoSource"; Layout.fillWidth: true; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                                              text: "لوجو " + modelData.karat + " • " + modelData.document }
-                                        Txt { objectName: "logoFigures"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textSecondary
-                                              text: "المتبقي لدى المسوقجي " + modelData.outstanding + " جرام من " + modelData.initial + " جرام مُسلَّمة" }
-                                        Txt { objectName: "logoRefs"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textMuted
-                                              font.pixelSize: theme.fontTableHeader
-                                              text: modelData.custodyEntry + " • العهدة الأصلية " + modelData.tripCode + " • " + modelData.date }
-                                        Txt { objectName: "logoReason"; Layout.fillWidth: true; visible: modelData.reason !== ""; text: modelData.reason; color: theme.amber
-                                              font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                    }
-                                    Btn {
-                                        objectName: "logoReturnButton"
-                                        visible: !!page.vm && page.vm.canManageHoldings
-                                        enabled: modelData.returnable && !page.vm.returningHolding
-                                        text: "تسجيل رجوع"
-                                        primary: true
-                                        onClicked: logoReturnDialog.openFor(modelData)
-                                    }
-                                    Btn {
-                                        objectName: "logoSettleButton"
-                                        visible: !!page.vm && page.vm.canSettleFromHolding
-                                        enabled: modelData.settleable === true && !page.vm.settlingFromHolding
-                                        text: "تسوية لمورد"
-                                        onClicked: holdingSettleDialog.openFor("LOGO", modelData)
-                                    }
-                                }
-                            }
-                        }
-                        Repeater {
-                            model: page.vm ? (page.vm.holdingsPanel.logoHistory || []) : []
-                            delegate: Txt { objectName: "logoHistoryRow"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                                            color: modelData.reversed ? theme.textMuted : theme.textSecondary; font.pixelSize: theme.fontTableHeader
-                                            text: modelData.kindText + " " + modelData.code + " • " + modelData.text + (modelData.state !== "" ? " • " + modelData.state : "") }
-                        }
-                        Txt { objectName: "holdingSettlementsTitle"; Layout.fillWidth: true; text: "تسويات الذهب لموردين من رصيد المسوقجي"; color: theme.gold; font.bold: true
-                              visible: (page.vm ? (page.vm.holdingsPanel.settlements || []) : []).length > 0 }
-                        Repeater {
-                            model: page.vm ? (page.vm.holdingsPanel.settlements || []) : []
-                            delegate: RowLayout {
-                                Layout.fillWidth: true
-                                layoutDirection: Qt.RightToLeft
-                                spacing: 8
-                                Txt { objectName: "holdingSettlementRow"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                                      color: modelData.reversed ? theme.textMuted : theme.textSecondary; font.pixelSize: theme.fontTableHeader
-                                      text: modelData.code + " • " + modelData.text + (modelData.state !== "" ? " • " + modelData.state : "") }
-                                Btn {
-                                    objectName: "holdingSettlementReverseButton"
-                                    visible: !!page.vm && page.vm.canReverseSettlement && modelData.canReverse === true
-                                    text: "عكس"
-                                    accent: theme.red
-                                    onClicked: reverseSettlementDialog.openFor({ settlementId: modelData.id, reference: modelData.code, detail: modelData.text, fromHolding: true })
-                                }
-                            }
-                        }
-                        Txt { objectName: "receiptSectionTitle"; Layout.fillWidth: true; text: "مخزون الاستلام في المحل (قطع مستلمة فعليًا من المسوقجي)"; color: theme.gold; font.bold: true
-                              visible: (page.vm ? (page.vm.holdingsPanel.receipts || []) : []).length > 0 }
-                        Txt { objectName: "receiptSectionNote"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
-                              visible: (page.vm ? (page.vm.holdingsPanel.receipts || []) : []).length > 0; text: page.vm ? (page.vm.holdingsPanel.receiptNote || "") : "" }
-                        Repeater {
-                            model: page.vm ? (page.vm.holdingsPanel.receipts || []) : []
-                            delegate: RowLayout {
-                                Layout.fillWidth: true
-                                layoutDirection: Qt.RightToLeft
-                                spacing: 8
-                                Txt { objectName: "receiptRow"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                                      color: modelData.reversed ? theme.textMuted : theme.textSecondary; font.pixelSize: theme.fontTableHeader
-                                      text: modelData.code + " ← " + modelData.piece + " • " + modelData.text + " • " + modelData.stockText + (modelData.state !== "" ? " • " + modelData.state : "") }
-                                Btn {
-                                    objectName: "receiptReverseButton"
-                                    visible: !!page.vm && modelData.canReverse === true
-                                    text: "عكس"
-                                    accent: theme.red
-                                    onClicked: reverseReceiptDialog.openFor(modelData)
-                                }
-                            }
-                        }
-                        Txt { Layout.fillWidth: true; text: "سجل التسليم والرجوع"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
-                              visible: (page.vm ? (page.vm.holdingsPanel.history || []) : []).length > 0 }
-                        Repeater {
-                            model: page.vm ? (page.vm.holdingsPanel.history || []) : []
-                            delegate: Txt { objectName: "holdingHistoryRow"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                                            color: modelData.reversed ? theme.textMuted : theme.textSecondary; font.pixelSize: theme.fontTableHeader
-                                            text: modelData.kindText + " " + modelData.code + " • " + modelData.text + (modelData.state !== "" ? " • " + modelData.state : "") }
-                        }
-                    }
-
-                    // The two independent positions: gold (physical grams of the supplier's karat) and making (EGP). Equal cards, equal height.
-                    RowLayout {
-                        visible: page.detail.hasAccount !== false
-                        Layout.fillWidth: true
-                        Layout.fillHeight: false          // natural height: the cards' own fillHeight only equalises the pair
-                        layoutDirection: Qt.RightToLeft
                         spacing: 10
-                        Card {
-                            Layout.preferredWidth: 1
-                            title: "موقف الذهب"
-                            accent: page.toneColor(page.detail.goldTone)
-                            PositionLine { objectName: "goldPosition"; parts: page.detail.goldParts || ({})
-                                           numberColor: theme.balanceKarat21 }
-                            Repeater {
-                                model: page.detail.goldBreakdown || []
-                                delegate: Txt { Layout.fillWidth: true; text: modelData.text; color: page.toneColor(modelData.tone)
-                                                font.pixelSize: theme.fontTableHeader }
+
+                        Txt { objectName: "accountTitle"; Layout.fillWidth: true; visible: page.detail.hasAccount !== false; text: "حساب المورد"; color: theme.gold; font.bold: true
+                              font.pixelSize: theme.fontSection }
+
+                        // The two independent positions: gold (physical grams of the supplier's karat) and making (EGP). Equal cards, equal height.
+                        RowLayout {
+                            objectName: "accountPositions"
+                            visible: page.detail.hasAccount !== false
+                                     || (!!page.vm && page.vm.holdingsPanel.goldPositionVisible === true)
+                            Layout.fillWidth: true
+                            Layout.fillHeight: false
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 10
+                            Card {
+                                Layout.preferredWidth: 1
+                                title: "موقف الذهب"
+                                accent: page.toneColor(page.detail.goldTone)
+                                Txt { objectName: "goldAccountBalanceLabel"; Layout.fillWidth: true
+                                      visible: page.detail.hasAccount !== false; text: "حساب المورد"
+                                      color: theme.textSecondary; font.pixelSize: theme.fontTableHeader }
+                                PositionLine { objectName: "goldPosition"; visible: page.detail.hasAccount !== false
+                                               parts: page.detail.goldParts || ({})
+                                               numberColor: theme.balanceKarat21 }
+                                Repeater {
+                                    visible: page.detail.hasAccount !== false
+                                    model: page.detail.goldBreakdown || []
+                                    delegate: Txt { Layout.fillWidth: true; text: modelData.text; color: page.toneColor(modelData.tone)
+                                                    font.pixelSize: theme.fontTableHeader }
+                                }
+                                Txt { objectName: "goldNote"; Layout.fillWidth: true
+                                      visible: page.detail.hasAccount !== false && !!page.detail.goldNote
+                                      text: page.detail.goldNote || ""; color: theme.amber; font.pixelSize: theme.fontTableHeader
+                                      wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                Txt { objectName: "goldHeldPosition"; Layout.fillWidth: true
+                                      visible: !!page.vm && page.vm.holdingsPanel.goldPositionVisible === true
+                                      text: page.vm ? page.vm.holdingsPanel.goldPositionText || "" : ""
+                                      color: theme.balanceKarat21; font.bold: true; font.pixelSize: theme.fontBodyStrong
+                                      wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                Btn {
+                                    objectName: "settleGoldButton"
+                                    Layout.alignment: Qt.AlignRight
+                                    visible: !!page.vm && page.vm.canSettleGold && page.detail.isSupplier !== false
+                                    enabled: page.hasSelection && !page.vm.busy && page.detail.karatResolved === true      // an inactive supplier can still receive it
+                                    text: "تسوية ذهب"
+                                    primary: true
+                                    onClicked: goldSettleDialog.openFor()
+                                }
                             }
-                            Txt { objectName: "goldNote"; Layout.fillWidth: true; visible: !!page.detail.goldNote
-                                  text: page.detail.goldNote || ""; color: theme.amber; font.pixelSize: theme.fontTableHeader
-                                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                            Btn {
-                                objectName: "settleGoldButton"
-                                Layout.alignment: Qt.AlignRight
-                                visible: !!page.vm && page.vm.canSettleGold && page.detail.isSupplier !== false
-                                enabled: page.hasSelection && !page.vm.busy && page.detail.karatResolved === true      // an inactive supplier can still receive it
-                                text: "تسوية ذهب"
-                                primary: true
-                                onClicked: goldSettleDialog.openFor()
+                            Card {
+                                objectName: "makingPositionCard"
+                                visible: page.detail.hasAccount !== false
+                                Layout.preferredWidth: 1
+                                title: "موقف مصنعيات المورد"
+                                accent: page.toneColor(page.detail.makingTone)
+                                PositionLine { objectName: "makingPosition"; parts: page.detail.makingParts || ({})
+                                               numberColor: theme.gold }
+                                Btn {
+                                    objectName: "payMakingButton"
+                                    Layout.alignment: Qt.AlignRight
+                                    visible: !!page.vm && page.vm.canPayMaking
+                                    enabled: page.hasSelection && !page.vm.busy          // an inactive supplier can still be paid
+                                    text: "دفع مصنعيات"
+                                    primary: true
+                                    onClicked: payDialog.openFor()
+                                }
                             }
                         }
-                        Card {
-                            Layout.preferredWidth: 1
-                            title: "موقف المصنعيات"
-                            accent: page.toneColor(page.detail.makingTone)
-                            PositionLine { objectName: "makingPosition"; parts: page.detail.makingParts || ({})
-                                           numberColor: theme.gold }
-                            Btn {
-                                objectName: "payMakingButton"
-                                Layout.alignment: Qt.AlignRight
-                                visible: !!page.vm && page.vm.canPayMaking
-                                enabled: page.hasSelection && !page.vm.busy          // an inactive supplier can still be paid
-                                text: "دفع مصنعيات"
-                                primary: true
-                                onClicked: payDialog.openFor()
-                            }
-                        }
-                    }
 
-                    // Tab bar + its content as one connected card.
-                    Rectangle {
-                        visible: page.detail.hasAccount !== false
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        color: theme.bgPrimary
-                        radius: theme.radiusSmall
-                        border.color: theme.border
-                        clip: true
+                        // Tab bar + its content as one connected card, at the content's natural height (the page scrolls, the lists do not).
+                        Rectangle {
+                            id: tabFrame
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: tabFrameColumn.implicitHeight + 2
+                            color: theme.bgPrimary
+                            radius: theme.radiusSmall
+                            border.color: theme.border
+                            clip: true
 
-                        ColumnLayout {
-                            anchors.fill: parent
-                            anchors.margins: 1
-                            spacing: 0
+                            ColumnLayout {
+                                id: tabFrameColumn
+                                anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                                anchors.margins: 1
+                                spacing: 0
 
-                            Rectangle {
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 42
-                                color: theme.bgTertiary
-                                Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.border }
-                                RowLayout {
-                                    anchors.fill: parent
-                                    layoutDirection: Qt.RightToLeft
-                                    spacing: 0
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 42
+                                    color: theme.bgTertiary
+                                    Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: theme.border }
                                     RowLayout {
-                                        Layout.fillHeight: true
+                                        anchors.fill: parent
                                         layoutDirection: Qt.RightToLeft
                                         spacing: 0
-                                        uniformCellSizes: true
-                                        SegTab { objectName: "tabInvoices"; text: "نظرة عامة"; on: page.tab === 0; onClicked: page.tab = 0 }
-                                        SegTab { objectName: "tabGold"; text: "سجل الذهب"; on: page.tab === 1; onClicked: page.tab = 1 }
-                                        SegTab { objectName: "tabMaking"; text: "سجل المصنعيات"; on: page.tab === 2; onClicked: page.tab = 2 }
-                                    }
-                                    Item { Layout.fillWidth: true }
-                                }
-                            }
-
-                            Item {
-                                Layout.fillWidth: true
-                                Layout.fillHeight: true
-
-                                // ---- overview: purchase invoices
-                                ColumnLayout {
-                                    visible: page.tab === 0
-                                    anchors.fill: parent
-                                    anchors.margins: 10
-                                    spacing: 6
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        layoutDirection: Qt.RightToLeft
-                                        Txt { text: "فواتير الشراء"; color: theme.gold; font.bold: true }
+                                        RowLayout {
+                                            Layout.fillHeight: true
+                                            layoutDirection: Qt.RightToLeft
+                                            spacing: 0
+                                            uniformCellSizes: true
+                                            SegTab { objectName: "tabInvoices"; text: "نظرة عامة"; on: page.tab === 0; onClicked: page.tab = 0 }
+                                            SegTab { objectName: "tabGold"; visible: page.goldTabVisible; text: "سجل الذهب"; on: page.tab === 1; onClicked: page.tab = 1 }
+                                            SegTab { objectName: "tabMaking"; visible: page.detail.hasAccount !== false; text: "سجل المصنعيات"; on: page.tab === 2; onClicked: page.tab = 2 }
+                                        }
                                         Item { Layout.fillWidth: true }
-                                        Txt { text: !!page.pvm && page.pvm.invoicesState === "loaded" ? invoiceList.count + " فاتورة" : "…"
-                                              color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
                                     }
-                                    RowLayout {
-                                        visible: invoiceList.count > 0
-                                        Layout.fillWidth: true
-                                        Layout.leftMargin: 12
-                                        Layout.rightMargin: 14
-                                        layoutDirection: Qt.RightToLeft
-                                        spacing: 12
-                                        ColHead { Layout.preferredWidth: page.colInvoiceWidth; text: "الفاتورة والتاريخ" }
-                                        ColHead { Layout.preferredWidth: page.colFiguresWidth; text: "العيار والوزن والمصنعيات" }
-                                        ColHead { Layout.fillWidth: true; text: "الحالة والإدخال" }
-                                        Item { Layout.preferredWidth: page.colActionWidth }
-                                    }
-                                    ListView {
-                                        id: invoiceList
-                                        objectName: "supplierInvoiceList"
-                                        Layout.fillWidth: true
-                                        Layout.fillHeight: true
-                                        clip: true
+                                }
+
+                                Item {
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: page.tab === 0 ? (page.detail.hasAccount === false ? overviewHolding.implicitHeight : overviewColumn.implicitHeight) + 20
+                                                          : page.tab === 1 ? Math.max(70, goldTab.implicitHeight + 20) : Math.max(70, makingList.contentHeight + 20)
+
+                                    // ---- overview: purchase invoices
+                                    ColumnLayout {
+                                        id: overviewHolding
+                                        objectName: "overviewHolding"
+                                        visible: page.tab === 0 && page.detail.hasAccount === false
+                                        anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                                        anchors.margins: 10
                                         spacing: 6
-                                        model: page.pvm ? page.pvm.invoices : []
+                                        Txt { objectName: "intermediaryOnlyNote"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textSecondary
+                                              text: "هذا الطرف مسوقجي فقط؛ لا توجد فواتير شراء." }
+                                    }
+                                    ColumnLayout {
+                                        id: overviewColumn
+                                        visible: page.tab === 0 && page.detail.hasAccount !== false
+                                        anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                                        anchors.margins: 10
+                                        spacing: 6
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            layoutDirection: Qt.RightToLeft
+                                            Txt { text: "فواتير الشراء"; color: theme.gold; font.bold: true }
+                                            Item { Layout.fillWidth: true }
+                                            Txt { text: !!page.pvm && page.pvm.invoicesState === "loaded" ? invoiceList.count + " فاتورة" : "…"
+                                                  color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+                                        }
+                                        RowLayout {
+                                            visible: invoiceList.count > 0
+                                            Layout.fillWidth: true
+                                            Layout.leftMargin: 12
+                                            Layout.rightMargin: 14
+                                            layoutDirection: Qt.RightToLeft
+                                            spacing: 12
+                                            ColHead { Layout.preferredWidth: page.colInvoiceWidth; text: "الفاتورة والتاريخ" }
+                                            ColHead { Layout.preferredWidth: page.colFiguresWidth; text: "العيار والوزن والمصنعيات" }
+                                            ColHead { Layout.fillWidth: true; text: "الحالة والإدخال" }
+                                            Item { Layout.preferredWidth: page.colActionWidth }
+                                        }
+                                        ListView {
+                                            id: invoiceList
+                                            objectName: "supplierInvoiceList"
+                                            Layout.fillWidth: true
+                                            Layout.preferredHeight: Math.max(invoiceList.count === 0 ? 50 : 0, contentHeight)
+                                            interactive: false
+                                            spacing: 6
+                                            model: page.pvm ? page.pvm.invoices : []
+                                            delegate: Rectangle {
+                                                width: invoiceList.width
+                                                height: page.compactInvoices ? 84 : 64
+                                                radius: theme.radiusSmall
+                                                color: theme.panel
+                                                border.color: theme.border
+                                                RowLayout {
+                                                    anchors.fill: parent
+                                                    anchors.leftMargin: 12; anchors.rightMargin: 14
+                                                    layoutDirection: Qt.RightToLeft
+                                                    spacing: 12
+                                                    ColumnLayout {
+                                                        Layout.preferredWidth: page.colInvoiceWidth
+                                                        Layout.maximumWidth: page.colInvoiceWidth
+                                                        Layout.fillWidth: false
+                                                        spacing: 1
+                                                        Txt { Layout.fillWidth: true; text: page.ltr(modelData.code); font.bold: true
+                                                              color: theme.gold; font.pixelSize: theme.fontBodyStrong }
+                                                        Txt { Layout.fillWidth: true; text: page.ltr(modelData.reference) + "  •  " + modelData.date
+                                                              color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                                                              wrapMode: page.compactInvoices ? Text.WordWrap : Text.NoWrap
+                                                              elide: page.compactInvoices ? Text.ElideNone : Text.ElideLeft }
+                                                    }
+                                                    ColumnLayout {
+                                                        Layout.preferredWidth: page.colFiguresWidth
+                                                        Layout.maximumWidth: page.colFiguresWidth
+                                                        Layout.fillWidth: false
+                                                        spacing: 1
+                                                        Txt { Layout.fillWidth: true; text: "عيار " + modelData.karat + "  •  " + modelData.weightText + " جرام"
+                                                              font.bold: true }
+                                                        Txt { Layout.fillWidth: true; text: "المصنعيات: " + page.ltr(modelData.makingText)
+                                                              color: theme.textSecondary; font.pixelSize: theme.fontTableHeader
+                                                              wrapMode: page.compactInvoices ? Text.WordWrap : Text.NoWrap
+                                                              elide: page.compactInvoices ? Text.ElideNone : Text.ElideLeft }
+                                                    }
+                                                    ColumnLayout {
+                                                        Layout.fillWidth: true
+                                                        spacing: 1
+                                                        Txt { Layout.fillWidth: true; text: modelData.statusText; font.bold: true
+                                                              color: modelData.status === "POSTED" ? theme.green : theme.textSecondary }
+                                                        Txt { Layout.fillWidth: true; visible: modelData.status === "POSTED"
+                                                              text: "القطع: " + modelData.pieceCount + "  •  " + modelData.varianceText
+                                                              color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                                                              wrapMode: page.compactInvoices ? Text.WordWrap : Text.NoWrap
+                                                              elide: page.compactInvoices ? Text.ElideNone : Text.ElideLeft }
+                                                    }
+                                                    Btn {
+                                                        Layout.preferredWidth: page.colActionWidth
+                                                        text: modelData.status === "POSTED" ? "إدخال القطع" : "فتح"
+                                                        onClicked: intakeDialog.openFor(modelData.id)
+                                                    }
+                                                }
+                                            }
+                                            Txt { objectName: "invoiceListState"; anchors.centerIn: parent
+                                                  width: parent.width - 40; horizontalAlignment: Text.AlignHCenter
+                                                  visible: invoiceList.count === 0
+                                                  text: !page.pvm ? "" : page.pvm.invoicesState === "failed" ? "تعذر تحميل الفواتير. " + page.pvm.errorMessage
+                                                        : page.pvm.invoicesState === "loaded" ? "لا توجد فواتير" : "جار تحميل الفواتير..."
+                                                  color: !!page.pvm && page.pvm.invoicesState === "failed" ? theme.red : theme.textMuted
+                                                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                        }
+                                    }
+
+                                    // ---- gold tab: the supplier account ledger and, apart from it, the shop-owned gold at the intermediary (never combined)
+                                    ColumnLayout {
+                                        id: goldTab
+                                        objectName: "goldTab"
+                                        visible: page.tab === 1
+                                        anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                                        anchors.margins: 10
+                                        spacing: 12
+                                        ColumnLayout {
+                                            id: goldAccountSection
+                                            objectName: "goldAccountSection"
+                                            visible: page.detail.hasAccount !== false
+                                            Layout.fillWidth: true
+                                            spacing: 6
+                                            Txt { objectName: "goldAccountTitle"; Layout.fillWidth: true; text: "حساب المورد"; color: theme.gold; font.bold: true
+                                                  visible: !!page.vm && page.vm.holdingsPanel.visible === true }
+                                    ListView {
+                                        id: goldList
+                                        objectName: "supplierGoldLedger"
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: Math.max(goldList.count === 0 ? 28 : 0, contentHeight)
+                                        interactive: false
+                                        spacing: 5
+                                        model: page.detail.goldLedger || []
                                         delegate: Rectangle {
-                                            width: invoiceList.width
-                                            height: page.compactInvoices ? 84 : 64
+                                            width: goldList.width
+                                            height: Math.max(50, goldLedgerRow.implicitHeight + 14)       // grows with wrapped text
                                             radius: theme.radiusSmall
                                             color: theme.panel
                                             border.color: theme.border
                                             RowLayout {
-                                                anchors.fill: parent
+                                                id: goldLedgerRow
+                                                anchors.left: parent.left; anchors.right: parent.right
+                                                anchors.verticalCenter: parent.verticalCenter
                                                 anchors.leftMargin: 12; anchors.rightMargin: 14
                                                 layoutDirection: Qt.RightToLeft
                                                 spacing: 12
+                                                // movement description (wraps), then date/time and reference, each kept as a left-to-right unit
                                                 ColumnLayout {
-                                                    Layout.preferredWidth: page.colInvoiceWidth
-                                                    Layout.maximumWidth: page.colInvoiceWidth
+                                                    Layout.preferredWidth: page.colLedgerWidth
+                                                    Layout.maximumWidth: page.colLedgerWidth
                                                     Layout.fillWidth: false
-                                                    spacing: 1
-                                                    Txt { Layout.fillWidth: true; text: page.ltr(modelData.code); font.bold: true
-                                                          color: theme.gold; font.pixelSize: theme.fontBodyStrong }
-                                                    Txt { Layout.fillWidth: true; text: page.ltr(modelData.reference) + "  •  " + modelData.date
+                                                    spacing: 2
+                                                    Txt { Layout.fillWidth: true; text: modelData.movement; font.bold: true
+                                                          wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                                    Txt { Layout.fillWidth: true; text: modelData.time + "  •  " + page.ltr(modelData.reference)
                                                           color: theme.textMuted; font.pixelSize: theme.fontTableHeader
-                                                          wrapMode: page.compactInvoices ? Text.WordWrap : Text.NoWrap
-                                                          elide: page.compactInvoices ? Text.ElideNone : Text.ElideLeft }
+                                                          wrapMode: Text.WordWrap; elide: Text.ElideNone }
                                                 }
+                                                // the movement value; in the narrowest window the running balance sits under it
                                                 ColumnLayout {
-                                                    Layout.preferredWidth: page.colFiguresWidth
-                                                    Layout.maximumWidth: page.colFiguresWidth
-                                                    Layout.fillWidth: false
-                                                    spacing: 1
-                                                    Txt { Layout.fillWidth: true; text: "عيار " + modelData.karat + "  •  " + modelData.weightText + " جرام"
-                                                          font.bold: true }
-                                                    Txt { Layout.fillWidth: true; text: "المصنعيات: " + page.ltr(modelData.makingText)
-                                                          color: theme.textSecondary; font.pixelSize: theme.fontTableHeader
-                                                          wrapMode: page.compactInvoices ? Text.WordWrap : Text.NoWrap
-                                                          elide: page.compactInvoices ? Text.ElideNone : Text.ElideLeft }
+                                                    Layout.fillWidth: page.compactInvoices
+                                                    Layout.preferredWidth: page.compactInvoices ? 1 : page.colLedgerValueWidth
+                                                    Layout.maximumWidth: page.compactInvoices ? 100000 : page.colLedgerValueWidth
+                                                    spacing: 2
+                                                    Txt { Layout.fillWidth: true; text: modelData.side + " " + modelData.weight + " جرام عيار " + modelData.karat
+                                                          color: page.toneColor(modelData.tone); wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                                    Txt { objectName: "settlementDetail"; Layout.fillWidth: true; visible: modelData.detail !== ""; text: modelData.detail
+                                                          color: theme.textSecondary; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                                    Txt { objectName: "settlementState"; Layout.fillWidth: true; visible: modelData.state !== ""; text: modelData.state
+                                                          color: theme.amber; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                                    Txt { Layout.fillWidth: true; visible: page.compactInvoices
+                                                          text: "الرصيد: " + modelData.balance; color: theme.textSecondary
+                                                          font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                                                 }
-                                                ColumnLayout {
-                                                    Layout.fillWidth: true
-                                                    spacing: 1
-                                                    Txt { Layout.fillWidth: true; text: modelData.statusText; font.bold: true
-                                                          color: modelData.status === "POSTED" ? theme.green : theme.textSecondary }
-                                                    Txt { Layout.fillWidth: true; visible: modelData.status === "POSTED"
-                                                          text: "القطع: " + modelData.pieceCount + "  •  " + modelData.varianceText
-                                                          color: theme.textMuted; font.pixelSize: theme.fontTableHeader
-                                                          wrapMode: page.compactInvoices ? Text.WordWrap : Text.NoWrap
-                                                          elide: page.compactInvoices ? Text.ElideNone : Text.ElideLeft }
+                                                Txt { Layout.fillWidth: true; visible: !page.compactInvoices
+                                                      text: "الرصيد: " + modelData.balance; color: theme.textSecondary
+                                                      font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                                Btn {
+                                                    objectName: "reverseSettlementButton"
+                                                    visible: !!page.vm && page.vm.canReverseSettlement && modelData.canReverse === true
+                                                    text: "عكس"
+                                                    accent: theme.red
+                                                    onClicked: reverseSettlementDialog.openFor(modelData)
+                                                }
+                                            }
+                                        }
+                                        Txt { anchors.centerIn: parent; visible: goldList.count === 0; text: "لا توجد حركات ذهب"
+                                              color: theme.textMuted }
+                                    }
+                                        }
+                                        ColumnLayout {
+                                            id: holdingsGroup
+                                            objectName: "holdingsGroup"
+                                            visible: !!page.vm && page.vm.holdingsPanel.visible === true
+                                            Layout.fillWidth: true
+                                            spacing: 10
+                        // Shop-owned gold physically at this intermediary (048 bars, 049 LOGO). Independent of the supplier account of a dual-role party.
+                        Card {
+                            objectName: "holdingsPanel"
+                            Layout.fillHeight: false
+                            title: "ذهب المحل عند المسوقجي"
+                            accent: theme.amber
+                            // one summary line per SOURCE KIND and karat / fineness (never merged across distinct sources)
+                            Repeater {
+                                model: page.vm ? (page.vm.holdingsPanel.holdGroups || []) : []
+                                delegate: Txt { objectName: "holdingGroupRow"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                                color: theme.gold; font.bold: true; text: modelData.text }
+                            }
+                            Txt { objectName: "holdingsSummary"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textSecondary
+                                  visible: !!page.vm && page.vm.holdingsPanel.empty === true; text: page.vm ? (page.vm.holdingsPanel.summary || "") : "" }
+                            Repeater {
+                                model: page.vm ? (page.vm.holdingsPanel.pools || []) : []
+                                delegate: Rectangle {
+                                    id: poolRow
+                                    readonly property bool more: page.moreOpen["lot" + modelData.poolId] === true
+                                    // the primary action follows ELIGIBILITY: the intact custody return when allowed, else the physical receipt for an allocation-history pool when
+                                    // permitted; every other action stays under «المزيد»
+                                    readonly property bool showReturn: !!page.vm && page.vm.canManageHoldings
+                                    readonly property bool showReceive: !!page.vm && page.vm.canReceiveFromHolding && modelData.receivable === true
+                                    readonly property bool showSettle: !!page.vm && page.vm.canSettleFromHolding
+                                    readonly property string primaryAction: (showReturn && modelData.returnable) ? "return" : showReceive ? "receive" : ""
+                                    Layout.fillWidth: true
+                                    implicitHeight: holdRow.implicitHeight + 12
+                                    radius: theme.radiusSmall
+                                    color: theme.bgSecondary
+                                    border.color: theme.border
+                                    RowLayout {
+                                        id: holdRow
+                                        anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                        anchors.leftMargin: 10; anchors.rightMargin: 10
+                                        layoutDirection: Qt.RightToLeft
+                                        spacing: 10
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            Layout.alignment: Qt.AlignTop
+                                            spacing: 2
+                                            Txt { objectName: "holdingSource"; Layout.fillWidth: true; text: modelData.title; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                            Txt { objectName: "holdingFigures"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textSecondary
+                                                  text: modelData.weight + " جرام • العيار الفعلي " + modelData.fineness }
+                                            Txt { objectName: "holdingReason"; Layout.fillWidth: true; visible: modelData.reason !== ""; text: modelData.reason; color: theme.amber
+                                                  font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                            Txt { objectName: "holdingHistoryNote"; Layout.fillWidth: true; visible: modelData.historyNote !== ""; text: modelData.historyNote
+                                                  color: theme.textSecondary; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                            RowLayout {
+                                                id: holdingMoreRow
+                                                objectName: "holdingMoreRow"
+                                                visible: poolRow.more
+                                                Layout.fillWidth: true
+                                                layoutDirection: Qt.RightToLeft
+                                                spacing: 8
+                                                Btn {
+                                                    objectName: "holdingSettleButton"
+                                                    Layout.preferredHeight: 30                    // compact action buttons, one height
+                                                    visible: poolRow.showSettle
+                                                    enabled: modelData.settleable === true && !page.vm.settlingFromHolding
+                                                    text: "تسوية لمورد"
+                                                    onClicked: holdingSettleDialog.openFor("LOT", modelData)
                                                 }
                                                 Btn {
-                                                    Layout.preferredWidth: page.colActionWidth
-                                                    text: modelData.status === "POSTED" ? "إدخال القطع" : "فتح"
-                                                    onClicked: intakeDialog.openFor(modelData.id)
+                                                    objectName: "holdingReceiveButton"
+                                                    Layout.preferredHeight: 30                    // compact action buttons, one height
+                                                    parent: poolRow.primaryAction === "receive" ? poolPrimary : holdingMoreRow
+                                                    Layout.fillWidth: poolRow.primaryAction === "receive"
+                                                    primary: poolRow.primaryAction === "receive"
+                                                    visible: poolRow.showReceive
+                                                    enabled: !page.vm.receivingFromHolding
+                                                    text: "استلام ذهب بالمحل"
+                                                    onClicked: receiptDialog.openFor(modelData)
                                                 }
+                                                Btn {
+                                                    objectName: "holdingReturnButton"
+                                                    Layout.preferredHeight: 30                    // compact action buttons, one height
+                                                    parent: poolRow.primaryAction === "return" ? poolPrimary : holdingMoreRow
+                                                    Layout.fillWidth: poolRow.primaryAction === "return"
+                                                    primary: poolRow.primaryAction === "return"
+                                                    visible: poolRow.showReturn
+                                                    enabled: modelData.returnable && !page.vm.returningHolding
+                                                    text: "إرجاع السبكة كاملة للعهدة"
+                                                    onClicked: holdingReturnDialog.openFor(modelData)
+                                                }
+                                                Item { Layout.fillWidth: true }
                                             }
                                         }
-                                        Txt { objectName: "invoiceListState"; anchors.centerIn: parent
-                                              width: parent.width - 40; horizontalAlignment: Text.AlignHCenter
-                                              visible: invoiceList.count === 0
-                                              text: !page.pvm ? "" : page.pvm.invoicesState === "failed" ? "تعذر تحميل الفواتير. " + page.pvm.errorMessage
-                                                    : page.pvm.invoicesState === "loaded" ? "لا توجد فواتير" : "جار تحميل الفواتير..."
-                                              color: !!page.pvm && page.pvm.invoicesState === "failed" ? theme.red : theme.textMuted
-                                              wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                        ColumnLayout {
+                                            Layout.alignment: Qt.AlignTop
+                                            Layout.preferredWidth: 210
+                                            Layout.minimumWidth: 210
+                                            spacing: 6
+                                            ColumnLayout { id: poolPrimary; Layout.fillWidth: true; spacing: 0 }      // the primary action always sits above «المزيد»
+                                            Btn {
+                                                objectName: "holdingMoreButton"
+                                                Layout.preferredHeight: 30                    // compact action buttons, one height
+                                                Layout.fillWidth: true
+                                                visible: poolRow.showSettle || (poolRow.showReturn && poolRow.primaryAction !== "return") || (poolRow.showReceive && poolRow.primaryAction !== "receive")
+                                                text: poolRow.more ? "إخفاء" : "المزيد"
+                                                accent: theme.textSecondary
+                                                onClicked: page.toggleMore("lot" + modelData.poolId)
+                                            }
+                                        }
                                     }
                                 }
-
-                                // ---- gold ledger
-                                ListView {
-                                    id: goldList
-                                    objectName: "supplierGoldLedger"
-                                    visible: page.tab === 1
-                                    anchors.fill: parent
-                                    anchors.margins: 10
-                                    clip: true
-                                    spacing: 5
-                                    model: page.detail.goldLedger || []
-                                    delegate: Rectangle {
-                                        width: goldList.width
-                                        height: Math.max(50, goldLedgerRow.implicitHeight + 14)       // grows with wrapped text
-                                        radius: theme.radiusSmall
-                                        color: theme.panel
-                                        border.color: theme.border
-                                        RowLayout {
-                                            id: goldLedgerRow
-                                            anchors.left: parent.left; anchors.right: parent.right
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            anchors.leftMargin: 12; anchors.rightMargin: 14
-                                            layoutDirection: Qt.RightToLeft
-                                            spacing: 12
-                                            // movement description (wraps), then date/time and reference, each kept as a left-to-right unit
-                                            ColumnLayout {
-                                                Layout.preferredWidth: page.colLedgerWidth
-                                                Layout.maximumWidth: page.colLedgerWidth
-                                                Layout.fillWidth: false
-                                                spacing: 2
-                                                Txt { Layout.fillWidth: true; text: modelData.movement; font.bold: true
-                                                      wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                                Txt { Layout.fillWidth: true; text: modelData.time + "  •  " + page.ltr(modelData.reference)
-                                                      color: theme.textMuted; font.pixelSize: theme.fontTableHeader
-                                                      wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                            }
-                                            // the movement value; in the narrowest window the running balance sits under it
-                                            ColumnLayout {
-                                                Layout.fillWidth: page.compactInvoices
-                                                Layout.preferredWidth: page.compactInvoices ? 1 : page.colLedgerValueWidth
-                                                Layout.maximumWidth: page.compactInvoices ? 100000 : page.colLedgerValueWidth
-                                                spacing: 2
-                                                Txt { Layout.fillWidth: true; text: modelData.side + " " + modelData.weight + " جرام عيار " + modelData.karat
-                                                      color: page.toneColor(modelData.tone); wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                                Txt { objectName: "settlementDetail"; Layout.fillWidth: true; visible: modelData.detail !== ""; text: modelData.detail
-                                                      color: theme.textSecondary; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                                Txt { objectName: "settlementState"; Layout.fillWidth: true; visible: modelData.state !== ""; text: modelData.state
-                                                      color: theme.amber; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                                Txt { Layout.fillWidth: true; visible: page.compactInvoices
-                                                      text: "الرصيد: " + modelData.balance; color: theme.textSecondary
-                                                      font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                            }
-                                            Txt { Layout.fillWidth: true; visible: !page.compactInvoices
-                                                  text: "الرصيد: " + modelData.balance; color: theme.textSecondary
+                            }
+                            // pooled master-karat LOGO grams: a different kind of source from the assayed bars above
+                            Repeater {
+                                model: page.vm ? (page.vm.holdingsPanel.logoPools || []) : []
+                                delegate: Rectangle {
+                                    id: logoPoolRow
+                                    readonly property bool more: page.moreOpen["logo" + modelData.poolId] === true
+                                    readonly property bool showReturn: !!page.vm && page.vm.canManageHoldings
+                                    readonly property bool showSettle: !!page.vm && page.vm.canSettleFromHolding
+                                    readonly property string primaryAction: showReturn && modelData.returnable ? "return" : ""
+                                    Layout.fillWidth: true
+                                    implicitHeight: logoRow.implicitHeight + 12
+                                    radius: theme.radiusSmall
+                                    color: theme.bgSecondary
+                                    border.color: theme.border
+                                    RowLayout {
+                                        id: logoRow
+                                        anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                        anchors.leftMargin: 10; anchors.rightMargin: 10
+                                        layoutDirection: Qt.RightToLeft
+                                        spacing: 10
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            Layout.alignment: Qt.AlignTop
+                                            spacing: 2
+                                            Txt { objectName: "logoSource"; Layout.fillWidth: true; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                                  text: "لوجو " + modelData.karat }
+                                            Txt { objectName: "logoFigures"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textSecondary
+                                                  text: "المتبقي لدى المسوقجي " + modelData.outstanding + " جرام من " + modelData.initial + " جرام مُسلَّمة" }
+                                            Txt { objectName: "logoReason"; Layout.fillWidth: true; visible: modelData.reason !== ""; text: modelData.reason; color: theme.amber
                                                   font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                            RowLayout {
+                                                objectName: "logoMoreRow"
+                                                visible: logoPoolRow.more
+                                                Layout.fillWidth: true
+                                                layoutDirection: Qt.RightToLeft
+                                                spacing: 8
+                                                Btn {
+                                                    objectName: "logoSettleButton"
+                                                    Layout.preferredHeight: 30                    // compact action buttons, one height
+                                                    visible: logoPoolRow.showSettle
+                                                    enabled: modelData.settleable === true && !page.vm.settlingFromHolding
+                                                    text: "تسوية لمورد"
+                                                    onClicked: holdingSettleDialog.openFor("LOGO", modelData)
+                                                }
+                                                Btn {
+                                                    objectName: "logoReturnButton"
+                                                    Layout.preferredHeight: 30
+                                                    parent: logoPoolRow.primaryAction === "return" ? logoPrimary : logoMoreRow
+                                                    Layout.fillWidth: logoPoolRow.primaryAction === "return"
+                                                    visible: logoPoolRow.showReturn
+                                                    enabled: modelData.returnable && !page.vm.returningHolding
+                                                    text: "إرجاع ذهب للعهدة"
+                                                    primary: logoPoolRow.primaryAction === "return"
+                                                    onClicked: logoReturnDialog.openFor(modelData)
+                                                }
+                                                Item { Layout.fillWidth: true }
+                                            }
+                                        }
+                                        ColumnLayout {
+                                            Layout.alignment: Qt.AlignTop
+                                            Layout.preferredWidth: 210
+                                            Layout.minimumWidth: 210
+                                            spacing: 6
+                                            ColumnLayout { id: logoPrimary; Layout.fillWidth: true; spacing: 0 }
                                             Btn {
-                                                objectName: "reverseSettlementButton"
-                                                visible: !!page.vm && page.vm.canReverseSettlement && modelData.canReverse === true
-                                                text: "عكس"
-                                                accent: theme.red
-                                                onClicked: reverseSettlementDialog.openFor(modelData)
+                                                objectName: "logoMoreButton"
+                                                Layout.preferredHeight: 30                    // compact action buttons, one height
+                                                Layout.fillWidth: true
+                                                visible: logoPoolRow.showSettle || (logoPoolRow.showReturn && logoPoolRow.primaryAction !== "return")
+                                                text: logoPoolRow.more ? "إخفاء" : "المزيد"
+                                                accent: theme.textSecondary
+                                                onClicked: page.toggleMore("logo" + modelData.poolId)
                                             }
                                         }
                                     }
-                                    Txt { anchors.centerIn: parent; visible: goldList.count === 0; text: "لا توجد حركات ذهب"
-                                          color: theme.textMuted }
-                                }
-
-                                // ---- making ledger
-                                ListView {
-                                    id: makingList
-                                    objectName: "supplierMakingLedger"
-                                    visible: page.tab === 2
-                                    anchors.fill: parent
-                                    anchors.margins: 10
-                                    clip: true
-                                    spacing: 5
-                                    model: page.detail.makingLedger || []
-                                    delegate: Rectangle {
-                                        width: makingList.width
-                                        height: Math.max(50, makingLedgerRow.implicitHeight + 14)       // grows with wrapped text
-                                        radius: theme.radiusSmall
-                                        color: theme.panel
-                                        border.color: theme.border
-                                        RowLayout {
-                                            id: makingLedgerRow
-                                            anchors.left: parent.left; anchors.right: parent.right
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            anchors.leftMargin: 12; anchors.rightMargin: 14
-                                            layoutDirection: Qt.RightToLeft
-                                            spacing: 12
-                                            // movement description (wraps), then date/time and reference, each kept as a left-to-right unit
-                                            ColumnLayout {
-                                                Layout.preferredWidth: page.colLedgerWidth
-                                                Layout.maximumWidth: page.colLedgerWidth
-                                                Layout.fillWidth: false
-                                                spacing: 2
-                                                Txt { Layout.fillWidth: true; text: modelData.movement; font.bold: true
-                                                      wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                                Txt { Layout.fillWidth: true; text: modelData.time + "  •  " + page.ltr(modelData.reference)
-                                                      color: theme.textMuted; font.pixelSize: theme.fontTableHeader
-                                                      wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                                Txt { objectName: "makingPaymentDetail"; Layout.fillWidth: true; visible: modelData.detail !== ""
-                                                      text: modelData.detail; color: theme.textSecondary
-                                                      font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                                Txt { objectName: "makingPaymentState"; Layout.fillWidth: true; visible: modelData.state !== ""
-                                                      text: modelData.state; color: modelData.reversed ? theme.amber : theme.textMuted
-                                                      font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                            }
-                                            // the movement value; in the narrowest window the running balance sits under it
-                                            ColumnLayout {
-                                                Layout.fillWidth: page.compactInvoices
-                                                Layout.preferredWidth: page.compactInvoices ? 1 : page.colLedgerValueWidth
-                                                Layout.maximumWidth: page.compactInvoices ? 100000 : page.colLedgerValueWidth
-                                                spacing: 2
-                                                Txt { Layout.fillWidth: true; text: modelData.side + " " + modelData.amount + " مصنعيات"
-                                                      color: page.toneColor(modelData.tone); wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                                Txt { Layout.fillWidth: true; visible: page.compactInvoices
-                                                      text: "الرصيد: " + modelData.balance; color: theme.textSecondary
-                                                      font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                            }
-                                            Txt { Layout.fillWidth: true; visible: !page.compactInvoices
-                                                  text: "الرصيد: " + modelData.balance; color: theme.textSecondary
-                                                  font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                            Btn {
-                                                objectName: "reversePaymentButton"
-                                                visible: !!page.vm && page.vm.canReversePayment && modelData.canReverse === true
-                                                text: "عكس"
-                                                accent: theme.red
-                                                onClicked: reverseDialog.openFor(modelData)
-                                            }
-                                        }
-                                    }
-                                    Txt { anchors.centerIn: parent; visible: makingList.count === 0; text: "لا توجد حركات مصنعيات"
-                                          color: theme.textMuted }
                                 }
                             }
                         }
+
+                        // Pieces physically received at the shop (051): shop stock, assay UNKNOWN, restricted use. Their current stock stays visible; only history is under Details.
+                        Card {
+                            objectName: "receivedPiecesCard"
+                            Layout.fillHeight: false
+                            visible: (page.vm ? (page.vm.holdingsPanel.pieces || []) : []).length > 0
+                            title: "ذهب مستلم بالمحل"
+                            accent: theme.green
+                            Txt { objectName: "receivedGroupRow"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.gold; font.bold: true
+                                  text: page.vm ? ((page.vm.holdingsPanel.receivedGroup || {}).text || "") + " • " + ((page.vm.holdingsPanel.receivedGroup || {}).assayText || "") : "" }
+                            Txt { objectName: "receivedRestriction"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.amber; font.pixelSize: theme.fontTableHeader
+                                  text: page.vm ? ((page.vm.holdingsPanel.receivedGroup || {}).restriction || "") : "" }
+                            Repeater {
+                                model: page.vm ? (page.vm.holdingsPanel.pieces || []) : []
+                                delegate: RowLayout {
+                                    Layout.fillWidth: true
+                                    layoutDirection: Qt.RightToLeft
+                                    spacing: 8
+                                    Txt { objectName: "receiptRow"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textSecondary
+                                          text: modelData.essential + " • " + modelData.stockText }
+                                    ColumnLayout {
+                                        Layout.preferredWidth: 180
+                                        Layout.minimumWidth: 180
+                                        spacing: 6
+                                        Btn {
+                                            objectName: "receiptMoreButton"
+                                            Layout.preferredHeight: 30
+                                            Layout.fillWidth: true
+                                            visible: !!page.vm && modelData.canReverse === true
+                                            text: page.moreOpen["receipt" + modelData.id] === true ? "إخفاء" : "المزيد"
+                                            accent: theme.textSecondary
+                                            onClicked: page.toggleMore("receipt" + modelData.id)
+                                        }
+                                        RowLayout {
+                                            id: receiptMoreRow
+                                            objectName: "receiptMoreRow"
+                                            visible: page.moreOpen["receipt" + modelData.id] === true
+                                            Layout.fillWidth: true
+                                            layoutDirection: Qt.RightToLeft
+                                            Btn {
+                                                objectName: "receiptReverseButton"
+                                                Layout.preferredHeight: 30
+                                                visible: !!page.vm && modelData.canReverse === true
+                                                text: "تصحيح تسجيل"
+                                                accent: theme.red
+                                                onClicked: reverseReceiptDialog.openFor(modelData)
+                                            }
+                                            Item { Layout.fillWidth: true }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Details: codes, original weights, pure grams, rounding and the whole history. Collapsed by default; no permission is bypassed.
+                        Btn {
+                            objectName: "holdingDetailsToggle"
+                            Layout.preferredHeight: 30                    // compact action buttons, one height
+                            Layout.alignment: Qt.AlignRight
+                            text: page.holdDetails ? "إخفاء التفاصيل" : "التفاصيل والمراجع"
+                            accent: theme.textSecondary
+                            onClicked: page.holdDetails = !page.holdDetails
+                        }
+                        Card {
+                            objectName: "holdingDetailsCard"
+                            Layout.fillHeight: false
+                            visible: page.holdDetails
+                            title: "تفاصيل ذهب المسوقجي ومراجعه"
+                            accent: theme.textSecondary
+                            Txt { objectName: "holdingsDetailsNote"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                  color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                                  text: page.vm ? (page.vm.holdingsPanel.note || "") : "" }
+                            Txt { objectName: "receiptDetailsNote"; Layout.fillWidth: true; visible: (page.vm ? (page.vm.holdingsPanel.receipts || []) : []).length > 0
+                                  wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                                  text: page.vm ? (page.vm.holdingsPanel.receiptNote || "") : "" }
+                            Repeater {
+                                model: page.vm ? (page.vm.holdingsPanel.pools || []) : []
+                                delegate: Txt { objectName: "holdingRefs"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textMuted
+                                                font.pixelSize: theme.fontTableHeader
+                                                text: modelData.source + " • الوزن الأصلي " + modelData.original + " جرام • الذهب الصافي " + page.ltr(modelData.pure) + " • " + modelData.document
+                                                      + " • " + modelData.custodyEntry + " • العهدة الأصلية " + modelData.tripCode + " • " + modelData.date
+                                                      + (modelData.detailsNote !== "" ? " • " + modelData.detailsNote : "")
+                                                      + (modelData.allocationRefs !== "" ? " • مرجع التخصيص السابق " + modelData.allocationRefs : "") }
+                            }
+                            Repeater {
+                                model: page.vm ? (page.vm.holdingsPanel.logoPools || []) : []
+                                delegate: Txt { objectName: "logoRefs"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textMuted
+                                                font.pixelSize: theme.fontTableHeader
+                                                text: "لوجو " + modelData.karat + " • " + modelData.document + " • " + modelData.custodyEntry + " • العهدة الأصلية " + modelData.tripCode + " • " + modelData.date
+                                                      + (modelData.detailsNote !== "" ? " • " + modelData.detailsNote : "") }
+                            }
+                            Repeater {
+                                model: page.vm ? (page.vm.holdingsPanel.logoHistory || []) : []
+                                delegate: Txt { objectName: "logoHistoryRow"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                                color: modelData.reversed ? theme.textMuted : theme.textSecondary; font.pixelSize: theme.fontTableHeader
+                                                text: modelData.kindText + " " + modelData.code + " • " + modelData.text + (modelData.state !== "" ? " • " + modelData.state : "") }
+                            }
+                            Txt { objectName: "holdingSettlementsTitle"; Layout.fillWidth: true; text: "تسويات الذهب لموردين من رصيد المسوقجي"; color: theme.gold; font.bold: true
+                                  visible: (page.vm ? (page.vm.holdingsPanel.settlements || []) : []).length > 0 }
+                            Repeater {
+                                model: page.vm ? (page.vm.holdingsPanel.settlements || []) : []
+                                delegate: RowLayout {
+                                    Layout.fillWidth: true
+                                    layoutDirection: Qt.RightToLeft
+                                    spacing: 8
+                                    Txt { objectName: "holdingSettlementRow"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                          color: modelData.reversed ? theme.textMuted : theme.textSecondary; font.pixelSize: theme.fontTableHeader
+                                          text: modelData.code + " • " + modelData.text + (modelData.state !== "" ? " • " + modelData.state : "") }
+                                    Btn {
+                                        objectName: "holdingSettlementReverseButton"
+                                        Layout.preferredHeight: 30                    // compact action buttons, one height
+                                        visible: !!page.vm && page.vm.canReverseSettlement && modelData.canReverse === true
+                                        text: "تصحيح تسجيل"
+                                        accent: theme.red
+                                        onClicked: reverseSettlementDialog.openFor({ settlementId: modelData.id, reference: modelData.code, detail: modelData.text,
+                                                                                     effect: modelData.effectText, fromHolding: true })
+                                    }
+                                }
+                            }
+                            Txt { objectName: "receiptHistoryTitle"; Layout.fillWidth: true; text: "سجل الاستلام الفعلي"; color: theme.gold; font.bold: true
+                                  visible: (page.vm ? (page.vm.holdingsPanel.receipts || []) : []).length > 0 }
+                            Repeater {
+                                model: page.vm ? (page.vm.holdingsPanel.receipts || []) : []
+                                delegate: Txt { objectName: "receiptHistoryRow"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                                color: modelData.reversed ? theme.textMuted : theme.textSecondary; font.pixelSize: theme.fontTableHeader
+                                                text: modelData.code + " ← " + modelData.piece + " • " + modelData.text + " • " + modelData.stockText
+                                                      + (modelData.state !== "" ? " • " + modelData.state : "") }
+                            }
+                            Txt { Layout.fillWidth: true; text: "سجل التسليم والرجوع"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                                  visible: (page.vm ? (page.vm.holdingsPanel.history || []) : []).length > 0 }
+                            Repeater {
+                                model: page.vm ? (page.vm.holdingsPanel.history || []) : []
+                                delegate: Txt { objectName: "holdingHistoryRow"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                                color: modelData.reversed ? theme.textMuted : theme.textSecondary; font.pixelSize: theme.fontTableHeader
+                                                text: modelData.kindText + " " + modelData.code + " • " + modelData.text + (modelData.state !== "" ? " • " + modelData.state : "") }
+                            }
+                        }
+                                        }
+                                    }
+
+                                    // ---- making ledger
+                                    ListView {
+                                        id: makingList
+                                        objectName: "supplierMakingLedger"
+                                        visible: page.tab === 2
+                                        anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                                        anchors.margins: 10
+                                        height: contentHeight
+                                        interactive: false
+                                        spacing: 5
+                                        model: page.detail.makingLedger || []
+                                        delegate: Rectangle {
+                                            width: makingList.width
+                                            height: Math.max(50, makingLedgerRow.implicitHeight + 14)       // grows with wrapped text
+                                            radius: theme.radiusSmall
+                                            color: theme.panel
+                                            border.color: theme.border
+                                            RowLayout {
+                                                id: makingLedgerRow
+                                                anchors.left: parent.left; anchors.right: parent.right
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                anchors.leftMargin: 12; anchors.rightMargin: 14
+                                                layoutDirection: Qt.RightToLeft
+                                                spacing: 12
+                                                // movement description (wraps), then date/time and reference, each kept as a left-to-right unit
+                                                ColumnLayout {
+                                                    Layout.preferredWidth: page.colLedgerWidth
+                                                    Layout.maximumWidth: page.colLedgerWidth
+                                                    Layout.fillWidth: false
+                                                    spacing: 2
+                                                    Txt { Layout.fillWidth: true; text: modelData.movement; font.bold: true
+                                                          wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                                    Txt { Layout.fillWidth: true; text: modelData.time + "  •  " + page.ltr(modelData.reference)
+                                                          color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                                                          wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                                    Txt { objectName: "makingPaymentDetail"; Layout.fillWidth: true; visible: modelData.detail !== ""
+                                                          text: modelData.detail; color: theme.textSecondary
+                                                          font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                                    Txt { objectName: "makingPaymentState"; Layout.fillWidth: true; visible: modelData.state !== ""
+                                                          text: modelData.state; color: modelData.reversed ? theme.amber : theme.textMuted
+                                                          font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                                }
+                                                // the movement value; in the narrowest window the running balance sits under it
+                                                ColumnLayout {
+                                                    Layout.fillWidth: page.compactInvoices
+                                                    Layout.preferredWidth: page.compactInvoices ? 1 : page.colLedgerValueWidth
+                                                    Layout.maximumWidth: page.compactInvoices ? 100000 : page.colLedgerValueWidth
+                                                    spacing: 2
+                                                    Txt { Layout.fillWidth: true; text: modelData.side + " " + modelData.amount + " مصنعيات"
+                                                          color: page.toneColor(modelData.tone); wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                                    Txt { Layout.fillWidth: true; visible: page.compactInvoices
+                                                          text: "الرصيد: " + modelData.balance; color: theme.textSecondary
+                                                          font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                                }
+                                                Txt { Layout.fillWidth: true; visible: !page.compactInvoices
+                                                      text: "الرصيد: " + modelData.balance; color: theme.textSecondary
+                                                      font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                                Btn {
+                                                    objectName: "reversePaymentButton"
+                                                    visible: !!page.vm && page.vm.canReversePayment && modelData.canReverse === true
+                                                    text: "عكس"
+                                                    accent: theme.red
+                                                    onClicked: reverseDialog.openFor(modelData)
+                                                }
+                                            }
+                                        }
+                                        Txt { anchors.horizontalCenter: parent.horizontalCenter; y: 20; visible: makingList.count === 0; text: "لا توجد حركات مصنعيات"
+                                              color: theme.textMuted }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     }
                 }
             }
@@ -1611,7 +1843,7 @@ Item {
         background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
         contentItem: ColumnLayout {
             spacing: 6
-            Txt { Layout.fillWidth: true; text: "تسجيل رجوع سبكة من المسوقجي"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
+            Txt { Layout.fillWidth: true; text: "إرجاع السبكة كاملة للعهدة"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
             Txt { objectName: "holdingReturnSource"; Layout.fillWidth: true; text: holdingReturnDialog.sourceText; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
             Txt { objectName: "holdingReturnFigures"; Layout.fillWidth: true; text: holdingReturnDialog.figuresText; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textSecondary }
             Txt { objectName: "holdingReturnRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
@@ -1691,7 +1923,7 @@ Item {
         background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
         contentItem: ColumnLayout {
             spacing: 6
-            Txt { Layout.fillWidth: true; text: "تسجيل رجوع لوجو من المسوقجي"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
+            Txt { Layout.fillWidth: true; text: "إرجاع ذهب للعهدة"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
             Txt { objectName: "logoReturnSource"; Layout.fillWidth: true; text: logoReturnDialog.sourceText; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
             Txt { objectName: "logoReturnFigures"; Layout.fillWidth: true; text: logoReturnDialog.figuresText; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textSecondary }
             Txt { objectName: "logoReturnRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
@@ -1949,7 +2181,7 @@ Item {
         background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
         contentItem: ColumnLayout {
             spacing: 6
-            Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; text: "استلام فعلي من المسوقجي" }
+            Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; text: "استلام ذهب بالمحل" }
             Txt { objectName: "receiptSource"; Layout.fillWidth: true; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
                   text: receiptDialog.context.sourceText ? receiptDialog.context.sourceText : "" }
             Txt { objectName: "receiptAvailable"; Layout.fillWidth: true; color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone
@@ -2023,10 +2255,12 @@ Item {
         property string receiptId: ""
         property string code: ""
         property string detailText: ""
+        property string effectText: ""
         function openFor(row) {
             receiptId = row.id
             code = row.code
             detailText = row.text
+            effectText = row.effectText || ""
             reverseReceiptReason.text = ""
             if (page.vm) page.vm.clearMessage()
             open()
@@ -2040,10 +2274,10 @@ Item {
         background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.red }
         contentItem: ColumnLayout {
             spacing: 8
-            Txt { Layout.fillWidth: true; text: "عكس استلام " + page.ltr(reverseReceiptDialog.code); color: theme.red; font.bold: true; font.pixelSize: theme.fontSection }
+            Txt { Layout.fillWidth: true; text: "تصحيح تسجيل استلام " + page.ltr(reverseReceiptDialog.code); color: theme.red; font.bold: true; font.pixelSize: theme.fontSection }
             Txt { Layout.fillWidth: true; text: reverseReceiptDialog.detailText; wrapMode: Text.WordWrap; elide: Text.ElideNone }
             Txt { objectName: "reverseReceiptNote"; Layout.fillWidth: true; color: theme.amber; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                  text: "تخرج القطعة المستلمة كاملة من مخزون الاستلام وتعود الجرامات المخزَّنة نفسها إلى رصيد المسوقجي، معًا في عملية واحدة. لا يُثبت العكس سلامة السبكة الأصلية ولا يفتح رجوعها كاملة. يبقى الاستلام الأصلي في السجل ولا يُعدّل." }
+                  text: "أثر التصحيح على الأرصدة: " + reverseReceiptDialog.effectText + " يتم ذلك معًا في عملية واحدة. لا يُثبت التصحيح سلامة السبكة الأصلية ولا يفتح رجوعها كاملة. يبقى الاستلام الأصلي في السجل ولا يُعدّل." }
             Txt { Layout.fillWidth: true; text: "سبب العكس *" }
             Field { id: reverseReceiptReason; objectName: "reverseReceiptReason"; Layout.fillWidth: true }
             Txt { objectName: "reverseReceiptError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
@@ -2054,7 +2288,7 @@ Item {
                 spacing: 8
                 Btn {
                     objectName: "confirmReverseReceiptButton"
-                    text: !!page.vm && page.vm.receiptReversing ? "جارٍ العكس…" : "عكس الاستلام"
+                    text: !!page.vm && page.vm.receiptReversing ? "جارٍ التصحيح…" : "تأكيد التصحيح"
                     accent: theme.red
                     primary: true
                     enabled: reverseReceiptReason.text.trim().length > 0 && !!page.vm && !page.vm.receiptReversing
@@ -2074,7 +2308,9 @@ Item {
         property string code: ""
         property string detailText: ""
         property bool fromHolding: false
+        property string effectText: ""
         function openFor(row) {
+            effectText = row.effect || ""
             settlementId = row.settlementId
             code = row.reference
             detailText = row.detail
@@ -2092,13 +2328,13 @@ Item {
         background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.red }
         contentItem: ColumnLayout {
             spacing: 8
-            Txt { Layout.fillWidth: true; text: "عكس تسوية ذهب " + page.ltr(reverseSettlementDialog.code); color: theme.red
+            Txt { Layout.fillWidth: true; text: (reverseSettlementDialog.fromHolding ? "تصحيح تسجيل تسوية ذهب " : "عكس تسوية ذهب ") + page.ltr(reverseSettlementDialog.code); color: theme.red
                   font.bold: true; font.pixelSize: theme.fontSection }
             Txt { Layout.fillWidth: true; text: reverseSettlementDialog.detailText; wrapMode: Text.WordWrap; elide: Text.ElideNone }
             Txt { objectName: "reverseSettlementNote"; Layout.fillWidth: true; color: theme.amber; font.pixelSize: theme.fontTableHeader
                   wrapMode: Text.WordWrap; elide: Text.ElideNone
                   text: reverseSettlementDialog.fromHolding
-                        ? "يعود الذهب المُسلَّم إلى رصيد المسوقجي بنفس الوزن (كرصيد جرامات فقط: لا يثبت هذا العكس سلامة السبكة الفعلية)، ويعود رصيد المورد كما كان قبل التسوية بنفس الكمية المحتسبة المخزَّنة. لا يتحرك شيء في الكسر أو العهدة. تبقى التسوية الأصلية في السجل ولا تُعدّل."
+                        ? "أثر التصحيح على الأرصدة: " + reverseSettlementDialog.effectText + " (كرصيد جرامات فقط: لا يثبت هذا التصحيح سلامة السبكة الفعلية). لا يتحرك شيء في الكسر أو العهدة. تبقى التسوية الأصلية في السجل ولا تُعدّل."
                         : "يُسجَّل أن الذهب المُسلَّم استُرد فعليًا: يعود إلى كسر المحل بنفس الوزن والعيار المُسلَّمين، ويعود رصيد المورد كما كان قبل التسوية بنفس الكمية المحتسبة المخزَّنة. تبقى التسوية الأصلية في السجل ولا تُعدّل." }
             Txt { Layout.fillWidth: true; text: "سبب العكس *" }
             Field { id: reverseSettlementReason; objectName: "reverseSettlementReason"; Layout.fillWidth: true }
@@ -2110,7 +2346,7 @@ Item {
                 spacing: 8
                 Btn {
                     objectName: "confirmReverseSettlementButton"
-                    text: !!page.vm && page.vm.settlementReversing ? "جارٍ العكس…" : "عكس التسوية"
+                    text: !!page.vm && page.vm.settlementReversing ? "جارٍ العكس…" : (reverseSettlementDialog.fromHolding ? "تأكيد التصحيح" : "عكس التسوية")
                     accent: theme.red
                     primary: true
                     enabled: reverseSettlementReason.text.trim().length > 0 && !!page.vm && !page.vm.settlementReversing

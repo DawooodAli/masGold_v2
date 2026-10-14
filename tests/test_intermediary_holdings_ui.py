@@ -7,7 +7,7 @@ from decimal import Decimal as D
 from unittest.mock import patch
 import unittest
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QObject, QPointF, Qt
 from PySide6.QtTest import QTest
 
 from services.correction_service import CorrectionService
@@ -341,6 +341,30 @@ class HoldingPartyPageTests(harness.InvoicePageTests):
 
     visible_texts = base.MarketTripPageTests.visible_texts
 
+    # the secondary actions sit behind «المزيد» (never preselecting or hiding a declaration: those live in the dialogs)
+    MORE = {"holdingSettleButton": "holdingMoreButton", "holdingReceiveButton": "holdingMoreButton", "holdingReturnButton": "holdingMoreButton",
+            "logoSettleButton": "logoMoreButton", "logoReturnButton": "logoMoreButton", "receiptReverseButton": "receiptMoreButton"}
+
+    def item(self, name):
+        if name in self.MORE:
+            more = self.root.findChild(QObject, self.MORE[name]) or self.visual_item(self.MORE[name])
+            if more is not None and more.property("visible") and more.property("text") == "المزيد":
+                self.click(more)
+        return super().item(name)
+
+    def open_gold_tab(self):
+        """The intermediary holdings live in «سجل الذهب»: the employee opens that tab (it is not the default one)."""
+        tab = self.item("tabGold")
+        if tab.property("visible") and not tab.property("on"):
+            self.click(tab)
+            QTest.qWait(80)
+
+    def open_details(self):
+        toggle = self.item("holdingDetailsToggle")
+        if toggle.property("visible") and not self.item("holdingDetailsCard").property("visible"):
+            self.click(toggle)
+            QTest.qWait(80)
+
     def key(self):
         return self.svm.newRequestKey()
 
@@ -363,6 +387,9 @@ class HoldingPartyPageTests(harness.InvoicePageTests):
         self.svm.selectSupplier(party)
         self.wait_until(lambda: "id" in self.svm.detail, "party detail")
         self.wait_idle()
+        QTest.qWait(80)
+        self.open_gold_tab()
+        self.open_details()
 
     def open_return(self):
         self.click("holdingReturnButton")
@@ -382,7 +409,7 @@ class HoldingPartyPageTests(harness.InvoicePageTests):
         refs = self.text("holdingRefs")
         self.assertIn("IH000001", refs)
         self.assertIn("MT000001-3", refs)
-        self.assertIn("المسوقجي", self.text("holdingsSummary") + self.text("holdingsNote") + "المسوقجي")
+        self.assertIn("المسوقجي", self.text("holdingsDetailsNote"))                 # full ownership explanation is under Details, not repeated on the main card
         self.assert_inside_window(self.item("holdingReturnButton"))
         self.open_return()
         for name in ("holdingIntactConfirm", "confirmHoldingReturnButton", "cancelHoldingReturnButton", "holdingReturnDate"):
@@ -472,9 +499,12 @@ class HoldingPartyPageTests(harness.InvoicePageTests):
         self.tvm.selectTrip(trip)
         self.open_party()
         self.assertTrue(self.item("logoSource").property("visible"))
-        self.assertIn("IG000001", self.text("logoSource"))
+        self.assertIn("IG000001", self.text("logoRefs"))                                     # the code is under Details
+        self.assertNotIn("IG000001", self.text("logoSource"))
         self.assertIn("8.000", self.text("logoFigures"))
-        self.assertIn("عيار 21", self.text("logoSummary") + self.text("logoSource"))
+        self.assertIn("عيار 21", self.text("logoSource"))
+        self.assertIn("لوجو عيار 21: 8.000 جرام", " ".join(self.visible_texts("holdingGroupRow")))
+        self.assertEqual(self.text("logoReturnButton"), "إرجاع ذهب للعهدة")
         self.assertIn("MT000001-2", self.text("logoRefs"))
         self.assert_inside_window(self.item("logoReturnButton"))
         self.open_logo_return()
@@ -517,8 +547,19 @@ class HoldingPartyPageTests(harness.InvoicePageTests):
         self.open_party()
         self.assertTrue(self.item("holdingSource").property("visible"))
         self.assertTrue(self.item("logoSource").property("visible"))
-        self.assertFalse(self.item("logoReturnButton").property("enabled"))
+        self.assertFalse(self.item("logoMoreRow").property("visible"))
+        self.assertFalse(self.visual_item("logoReturnButton").property("visible"))
+        self.assertTrue(self.item("logoMoreButton").property("visible"))
         self.assertIn("مغلقة", self.text("logoReason"))
+        self.assertNotIn("MT", self.text("logoReason"))
+        self.click("holdingDetailsToggle")
+        self.assertFalse(self.item("holdingDetailsCard").property("visible"))
+        self.assertNotIn("MT", " ".join(self.visible_texts("logoRefs")))
+        self.click("holdingDetailsToggle")
+        self.assertIn("MT000001", self.text("logoRefs"))
+        self.assertIn("مغلقة", self.text("logoRefs"))
+        self.assertFalse(self.item("logoReturnButton").property("enabled"))
+        self.assertTrue(self.item("logoMoreRow").property("visible"))
         self.assertTrue(self.item("holdingReturnButton").property("enabled"))              # the bar belongs to another (open) custody
 
     def test_the_logo_return_dialog_is_fully_visible_at_the_three_target_sizes(self):

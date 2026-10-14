@@ -183,6 +183,7 @@ def receipt_row(r):
     reversed_by = None if r["reversal_id"] is None else correction_code("FULL_REVERSAL", r["reversal_id"])
     stock = Decimal(str(r["stock_grams"]))
     return {"receipt_id": str(r["id"]), "code": receipt_code(r["id"]), "piece_id": str(r["piece_id"]), "piece_code": piece_code(r["piece_id"]),
+            "kind_text": LOT_TEXT[r["lot_kind"]],
             "pool_id": str(r["pool_id"]), "grams": Decimal(str(r["grams"])), "stock": stock, "date": r["receipt_date"], "at": r["occurred_at"],
             "actor": r.get("actor_name") or "", "reference": r.get("reference") or "", "notes": r.get("notes") or "",
             "source": source_text(r["lot_kind"], r["origin_trip_id"], r["origin_entry_no"], r["lot_no"]),

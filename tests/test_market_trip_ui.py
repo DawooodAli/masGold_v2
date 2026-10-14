@@ -132,7 +132,7 @@ class MarketTripPageTests(harness.InvoicePageTests):
     def visible_texts(self, name, parent=None):
         parent = parent or self.root.contentItem()
         found = [str(parent.property("text"))] if parent.objectName() == name and parent.property("visible") else []
-        for child in parent.childItems():
+        for child in self.child_items(parent):
             found += self.visible_texts(name, child)
         return found
 

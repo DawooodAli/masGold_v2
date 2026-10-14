@@ -41,6 +41,24 @@ class FailingChildren(QQuickItem):
         raise RuntimeError("a genuine failure")
 
 
+class UnrepresentableChild:
+    def __init__(self):
+        self.repr_called = False
+
+    def __repr__(self):
+        self.repr_called = True
+        raise RuntimeError("unexpected child repr must not be called")
+
+
+class UnrepresentableChildren(QQuickItem):
+    def __init__(self):
+        super().__init__()
+        self.unexpected_child = UnrepresentableChild()
+
+    def childItems(self):
+        return [item("genuine"), self.unexpected_child]
+
+
 class TreeWalkTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -60,6 +78,18 @@ class TreeWalkTests(unittest.TestCase):
         for part in ("QMetaObject", "child 1 of 2", "StrangeChildren", "parentRow", "page"):
             self.assertIn(part, message)
         self.assertNotIsInstance(context.exception, AttributeError)
+
+    def test_an_unrepresentable_non_item_reports_type_identity_and_position(self):
+        row = UnrepresentableChildren()
+        row.setObjectName("row")
+        with self.assertRaises(AssertionError) as context:
+            list(Walker.child_items(row))
+        message = str(context.exception)
+        self.assertIn("non-QQuickItem", message)
+        self.assertIn("UnrepresentableChild", message)
+        self.assertIn(f"id=0x{id(row.unexpected_child):x}", message)
+        self.assertIn("child 1 of 2", message)
+        self.assertFalse(row.unexpected_child.repr_called)
 
     def test_the_named_walks_also_fail_instead_of_skipping_the_object(self):
         row = StrangeChildren()

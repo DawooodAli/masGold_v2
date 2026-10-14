@@ -27,6 +27,7 @@ from app.viewmodels.operational_balance_viewmodel import OperationalBalanceViewM
 from main import ApplicationController, create_operational_viewmodels
 from services.authentication_service import AuthenticationError, AuthenticationResult, GENERIC_ERROR, _VERIFIED
 from services.invoice_service import InvoiceService
+from tests import click_diagnostics
 from tests import test_authentication_qml as authentication_fixture
 from tests.test_invoice_service import (
     Authorization, Connection, CustomerRepo, DeadCashRepo, InvoiceRepo, Prices, Store,
@@ -264,6 +265,8 @@ class InvoicePageTests(unittest.TestCase):
         for engine in (self.controller.login_engine, self.controller.setup_engine, self.controller.operational_engine):
             for root in (engine.rootObjects() if engine is not None else []):
                 root.hide()
+        self.root = None
+        root = None
         self.controller.authentication.shutdown()
         self.controller.gold_prices.shutdown()
         self.controller.gold_settings.shutdown()          # a Settings visit starts its load worker
@@ -286,7 +289,7 @@ class InvoicePageTests(unittest.TestCase):
 
         The tree walkers twice met a PySide QMetaObject wrapper where a child item was expected (an AttributeError on objectName in
         two different full runs, never reproducible in isolation). The cause is NOT established; the failure stays a failure, but it now
-        names the type, the object and where in the tree it was met, so the next sighting carries the evidence."""
+        reports Python type, identity and tree position without asking the wrapper to format itself."""
         children = list(parent.childItems())
         for index, child in enumerate(children):
             if not isinstance(child, QQuickItem):
@@ -294,9 +297,12 @@ class InvoicePageTests(unittest.TestCase):
                 while node is not None and len(ancestors) < 25:
                     ancestors.append(f"{type(node).__name__}:{node.objectName() or '-'}")
                     node = node.parentItem()
+                child_type = type(child)
                 raise AssertionError(
-                    f"UI tree walk met {type(child).__module__}.{type(child).__qualname__} ({child!r}) as child {index} of {len(children)} of "
-                    f"{type(parent).__name__} {parent.objectName()!r}; ancestors (nearest first): {' < '.join(ancestors)}")
+                    f"UI tree walk met non-QQuickItem {child_type.__module__}.{child_type.__qualname__} "
+                    f"id=0x{id(child):x} at child {index} of {len(children)} of "
+                    f"{type(parent).__name__} id=0x{id(parent):x} {parent.objectName()!r}; "
+                    f"ancestors (nearest first): {' < '.join(ancestors)}")
             yield child
 
     def visual_item(self, name, parent=None):
@@ -328,11 +334,26 @@ class InvoicePageTests(unittest.TestCase):
             QTest.qWait(20)
         self.fail(f"{name} not found")
 
+    def reveal(self, item):
+        """The supplier party page has ONE scroll (`partyScroll`): scroll it as the employee does until the item is inside its viewport."""
+        flick = item.parentItem()
+        while flick is not None and flick.objectName() != "partyScroll":
+            flick = flick.parentItem()
+        if flick is None:
+            return
+        pos = item.mapToItem(flick.property("contentItem"), QPointF(0, 0))
+        top, view = flick.property("contentY"), flick.height()
+        if pos.y() < top + 4 or pos.y() + item.height() > top + view - 4:
+            limit = max(0.0, flick.property("contentHeight") - view)
+            flick.setProperty("contentY", float(max(0.0, min(pos.y() - 8, limit))))
+            QTest.qWait(40)
+
     def click(self, item, button=Qt.LeftButton):
         if isinstance(item, str):
             item = self.item(item)
         self.assertTrue(item.property("visible"), item.objectName())
         self.assertTrue(item.property("enabled"), item.objectName())
+        self.reveal(item)
         for _ in range(25):                                  # a row that just appeared may still be laid out
             point = item.mapToScene(QPointF(item.width() / 2, item.height() / 2)).toPoint()
             if 0 <= point.x() <= self.root.width() and 0 <= point.y() <= self.root.height():
@@ -340,10 +361,22 @@ class InvoicePageTests(unittest.TestCase):
             QTest.qWait(20)
         self.assertTrue(0 <= point.x() <= self.root.width() and 0 <= point.y() <= self.root.height(),
                         f"{item.objectName()} is outside the window")
+        record = click_diagnostics.begin(self, item, point)
         QTest.mouseClick(self.root, button, Qt.NoModifier, point)
         QTest.qWait(30)
+        click_diagnostics.finish(self, record)
+
+    def run(self, result=None):
+        """Unchanged behaviour; a FAILED test additionally prints the click diagnostics (lost clicks, overlay and scroll state) so an intermittent failure carries evidence."""
+        before = len(getattr(result, "failures", ())) + len(getattr(result, "errors", ()))
+        outcome = super().run(result)
+        outcome = result if result is not None else outcome
+        if len(outcome.failures) + len(outcome.errors) > before:
+            click_diagnostics.report(self)
+        return outcome
 
     def assert_inside_window(self, item):
+        self.reveal(item)
         point = item.mapToScene(QPointF(0, 0))
         width, height = self.root.width(), self.root.height()
         name = f"{item.objectName()} at {width}x{height}"

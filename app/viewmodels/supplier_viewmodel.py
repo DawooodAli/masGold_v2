@@ -7,14 +7,15 @@ Positions are never shown as an ambiguous signed number: the Arabic wording carr
 (علينا للمورد = the shop owes the supplier, لنا عند المورد = the supplier owes the shop) and gold and making
 (مصنعيات) are always separate lines. Weights use the project unit جرام.
 """
-from decimal import Decimal
+import re
+from decimal import Decimal, localcontext
 from uuid import uuid4
 
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
 from app.formatting import date_text, datetime_text, grams, ltr, money, number
 from services import supplier_rules as rules
-from services.intermediary_holding_rules import (CONFIRMATION_TEXT, DECLARATION_TEXT, HOLDING_NOTE, LOGO_NOTE, POOL_LOGO, POOL_LOT, RECEIPT_NOTE,
+from services.intermediary_holding_rules import (CONFIRMATION_TEXT, DECLARATION_TEXT, HOLDING_NOTE, LOGO_NOTE, LOT_TEXT, POOL_LOGO, POOL_LOT, RECEIPT_NOTE,
                                                  SETTLE_CONFIRMATION_TEXT, holding_preview)
 
 SHOP_OWES_TEXT, SUPPLIER_OWES_TEXT, SETTLED_TEXT = "علينا للمورد", "لنا عند المورد", "الحساب متوازن"
@@ -94,6 +95,40 @@ def making_row(r):
             "paymentId": r.get("payment_id") or "", "detail": detail, "state": state,
             "reversed": bool(reversed_by),
             "canReverse": is_payment and not reversed_by and r.get("payment_method") != "CUSTODY"}
+
+
+_SG_REF = re.compile(r"\s*\((SG\d{6})\)")
+_ALLOCATION_GUIDANCE = "الرجوع كسبكة كاملة غير متاح؛ استخدم استلام ذهب بالمحل"
+
+
+def plain_guidance(text):
+    """Display only: a service message as plain Arabic with its SG references moved out (they are shown under Details); the service text itself is unchanged."""
+    text = str(text or "")
+    return _SG_REF.sub("", text), _SG_REF.findall(text)
+
+
+def held_gold_21k_equivalent(pools, logo_pools):
+    """Return a complete 21K equivalent for current holding balances, or None if a held source lacks its basis."""
+    with localcontext() as context:
+        context.prec = 50
+        total = Decimal("0")
+        for pool in pools:
+            balance = Decimal(str(pool["balance"]))
+            if balance <= 0:
+                continue
+            fineness = pool.get("fineness")
+            if fineness is None:
+                return None
+            total += balance * Decimal(str(fineness)) / Decimal("875")
+        for pool in logo_pools:
+            balance = Decimal(str(pool["balance"]))
+            if balance <= 0:
+                continue
+            karat = pool.get("karat_value")
+            if karat is None:
+                return None
+            total += balance * Decimal(str(karat)) / Decimal("21")
+        return total
 
 
 class SupplierViewModel(QObject):
@@ -735,17 +770,23 @@ class SupplierViewModel(QObject):
 
     @Property("QVariantMap", notify=changed)
     def holdingsPanel(self):
-        """«ذهب المحل لدى المسوقجي»: shop-owned whole lots at this party (physical grams and exact assay per source), their references and the
-        whole document history (reversed documents stay listed). Independent of the supplier account of a dual-role party."""
+        """The party's holdings, as the simplified page shows them: shop-owned gold physically at this intermediary (grouped by SOURCE KIND and karat / fineness, never
+        merged across distinct sources and never labelled unknown because received pieces are), the received shop pieces apart, and the details (codes, pure grams,
+        formulas, rounding, whole history) for the Details section. Independent of the supplier account of a dual-role party. Display only."""
         data = (self._detail or {}).get("holdings")
         supplier = (self._detail or {}).get("supplier", {})
-        if not data or not (supplier.get("is_intermediary") or data["history"] or data.get("logo_history")):
+        if not data or not (supplier.get("is_intermediary") or data["history"] or data.get("logo_history") or data.get("receipts")):
             return {"visible": False}
-        pools = [{"poolId": p["pool_id"], "source": p["source"], "weight": grams(p["balance"]), "fineness": f"{ltr(number(p['fineness'], 1))} في الألف",
+        pools = [{"poolId": p["pool_id"], "source": p["source"], "kindText": LOT_TEXT[p["kind"]], "title": f"{LOT_TEXT[p['kind']]} • شحنة {p['lot_no']}", "weight": grams(p["balance"]), "original": grams(p["weight"]),
+                  "fineness": f"{ltr(number(p['fineness'], 1))} في الألف", "finenessValue": number(p["fineness"], 1),
                   "pure": "غير معلومة" if p["pure"] is None else number(p["pure"], 6), "document": ltr(p["document"]),
                   "custodyEntry": ltr(p["custody_entry"]), "tripCode": ltr(p["trip_code"]), "date": date_text(p["date"]),
-                  "returnable": bool(data["can_manage"] and p["returnable"]), "reason": p["reason"],
-                  "settleable": bool(data.get("can_settle") and p["settleable"]), "historyNote": p.get("history_note", ""),
+                  "returnable": bool(data["can_manage"] and p["returnable"]),
+                  "reason": _ALLOCATION_GUIDANCE if p.get("allocated") else plain_guidance(p["reason"])[0],
+                  "detailsNote": " • ".join(plain_guidance(note)[0] for note in
+                                            (p.get("reason", ""), p.get("history_note", "")) if note),
+                  "settleable": bool(data.get("can_settle") and p["settleable"]), "historyNote": plain_guidance(p.get("history_note", ""))[0],
+                  "allocationRefs": " ".join(plain_guidance(p["reason"])[1] or plain_guidance(p.get("history_note", ""))[1]),
                   "receivable": bool(data.get("can_receive") and p.get("receivable"))} for p in data["pools"]]
         history = [{"id": h["document_id"], "code": ltr(h["code"]),
                     "kindText": "تسليم" if h["kind"] == "HANDOVER" else "رجوع",
@@ -754,7 +795,9 @@ class SupplierViewModel(QObject):
                     "reversed": h["reversed"], "state": f"معكوس بالعملية {h['reversed_by']}" if h["reversed"] else ""} for h in data["history"]]
         logo_pools = [{"poolId": p["pool_id"], "karat": f"عيار {p['karat_value']}", "outstanding": grams(p["balance"]), "initial": grams(p["weight"]),
                        "document": ltr(p["document"]), "custodyEntry": ltr(p["custody_entry"]), "tripCode": ltr(p["trip_code"]), "date": date_text(p["date"]),
-                       "returnable": bool(data["can_manage"] and p["returnable"]), "reason": p["reason"],
+                       "returnable": bool(data["can_manage"] and p["returnable"]),
+                       "reason": "" if p["returnable"] else "العهدة الأصلية مغلقة؛ أعد فتحها صراحةً قبل تسجيل الرجوع.",
+                       "detailsNote": p["reason"],
                        "settleable": bool(data.get("can_settle") and p["settleable"])} for p in data.get("logo_pools", [])]
         settlements = [{"id": s["id"], "code": ltr(s["code"]), "poolKind": s["pool_kind"],
                         "text": (f"{s['supplier_name']} • سُلِّم {grams(s['delivered'])} جرام"
@@ -764,25 +807,57 @@ class SupplierViewModel(QObject):
                                  + f" • القيمة التحليلية {number(s['analytical'], 6)} • فرق التقريب {number(s['rounding_difference'], 6, signed=True)}"
                                  + (f" • {s['declaration_text']}" if s["declaration_text"] else "")
                                  + (" • المورد هو نفسه المسوقجي (حسابان منفصلان)" if s["self"] else "")),
+                        # the exact balances a correction restores / removes (shown in the confirmation: a correction DOES change balances)
+                        "effectText": (f"يعود {grams(s['delivered'])} جرام إلى رصيد المسوقجي، ويُخصم من حساب المورد {s['supplier_name']} الذهب الذي احتُسب له "
+                                       f"({grams(s['credited'])} جرام عيار {s['target_karat']}) فيعود رصيده كما كان قبل التسوية."),
                         "reversed": s["reversed"], "state": f"معكوسة بالعملية {s['reversed_by']}" if s["reversed"] else "",
                         "canReverse": bool(data.get("can_reverse")) and not s["reversed"]} for s in data.get("settlements", [])]
         logo_history = [{"id": h["document_id"], "code": ltr(h["code"]), "kindText": "تسليم" if h["kind"] == "HANDOVER" else "رجوع",
                          "text": f"لوجو عيار {h['karat_value']} • {grams(h['weight'])} جرام • {ltr(h['custody_entry'])} • {date_text(h['date'])}",
                          "reversed": h["reversed"], "state": f"معكوس بالعملية {h['reversed_by']}" if h["reversed"] else ""} for h in data.get("logo_history", [])]
-        receipts = [{"id": r["receipt_id"], "code": ltr(r["code"]), "piece": ltr(r["piece_code"]),
+        receipts = [{"id": r["receipt_id"], "code": ltr(r["code"]), "piece": ltr(r["piece_code"]), "kindText": r["kind_text"],
                      "text": (f"{grams(r['grams'])} جرام مقاسة فعليًا • {r['source']} • عيار القطعة غير معلوم • {date_text(r['date'])}"
                               + (f" • مرجع: {r['reference']}" if r["reference"] else "")),
+                     "essential": f"{grams(r['grams'])} جرام • {r['kind_text']} • عيار القطعة غير معلوم • {date_text(r['date'])}",
                      "stockText": f"المخزون {grams(r['stock'])} جرام", "inStock": r["in_stock"], "reversed": r["reversed"],
                      "state": f"معكوس بالعملية {r['reversed_by']}" if r["reversed"] else "",
+                     "effectText": (f"تخرج القطعة المستلمة ({grams(r['grams'])} جرام) من مخزون الاستلام، وتعود {grams(r['grams'])} جرام إلى رصيد المسوقجي "
+                                    "كما كانت قبل الاستلام."),
                      "canReverse": bool(data.get("can_reverse_receipt")) and not r["reversed"] and r["in_stock"]} for r in data.get("receipts", [])]
+        pieces = [r for r in receipts if r["inStock"] and not r["reversed"]]
+        # summaries: one row per SOURCE KIND and karat / fineness; a bar's assay is its own (known), LOGO is a master karat (known), received pieces are UNKNOWN
+        bar_groups, logo_groups = {}, {}
+        for p in data["pools"]:
+            key = number(p["fineness"], 1)
+            bar_groups[key] = bar_groups.get(key, Decimal("0")) + p["balance"]
+        for p in data.get("logo_pools", []):
+            logo_groups[p["karat_value"]] = logo_groups.get(p["karat_value"], Decimal("0")) + p["balance"]
+        hold_groups = ([{"text": f"سبائك • العيار الفعلي {k} بالألف: {grams(v)} جرام", "assayText": f"عيار فعلي {k} بالألف (معروف)", "known": True}
+                        for k, v in sorted(bar_groups.items(), reverse=True)]
+                       + [{"text": f"لوجو عيار {k}: {grams(v)} جرام", "assayText": f"عيار {k} (معروف)", "known": True}
+                          for k, v in sorted(logo_groups.items(), reverse=True)])
+        piece_total = sum((Decimal(str(r["grams"])) for r in data.get("receipts", []) if r["in_stock"] and not r["reversed"]), Decimal("0"))
         by_karat = {}
         for p in data.get("logo_pools", []):
             by_karat[p["karat_value"]] = by_karat.get(p["karat_value"], Decimal("0")) + p["balance"]
         logo_summary = (" • ".join(f"لوجو عيار {k}: {grams(v)} جرام" for k, v in sorted(by_karat.items(), reverse=True)) if by_karat else "")
+        held_gold = bool(data["pools"] or data.get("logo_pools", []))
+        equivalent = held_gold_21k_equivalent(data["pools"], data.get("logo_pools", [])) if held_gold else None
+        gold_position_text = ""
+        if held_gold:
+            gold_position_text = (
+                f"ذهب المحل عنده: يعادل {grams(equivalent)} جرام عيار 21"
+                if equivalent is not None
+                else "ذهب المحل عنده: مكافئ عيار 21 غير مكتمل؛ بيانات عيار إحدى السبائك غير متاحة"
+            )
         return {"visible": True, "note": HOLDING_NOTE, "logoPools": logo_pools, "logoHistory": logo_history, "logoSummary": logo_summary,
                 "logoNote": LOGO_NOTE, "settlements": settlements, "receipts": receipts, "receiptNote": RECEIPT_NOTE,
-                "summary": (f"الإجمالي لدى المسوقجي {grams(data['total'])} جرام • الذهب الصافي المعروف {number(data['pure'], 6)} جرام" if pools
-                            else "" if logo_pools else "لا يوجد ذهب للمحل لدى هذا المسوقجي الآن."),
+                "pieces": pieces, "holdGroups": hold_groups,
+                "goldPositionVisible": held_gold, "goldPositionText": gold_position_text,
+                "receivedGroup": ({"text": f"ذهب مستلم بالمحل: {grams(piece_total)} جرام", "assayText": "العيار غير معلوم",
+                                   "restriction": "غير متاحة للبيع أو التسوية أو الإصدار أو السبك"} if pieces else {}),
+                "summary": " • ".join(g["text"] for g in hold_groups) if hold_groups else "لا يوجد ذهب للمحل عند هذا المسوقجي الآن.",
+                "empty": not hold_groups,
                 "pools": pools, "history": history, "canManage": bool(data["can_manage"])}
 
     @Property(bool, notify=changed)

@@ -71,11 +71,14 @@ class ReceiptPageTests(base.SettlementPageTests):
         self.assertEqual(self.untouched(), before)                                               # no custody, Scrap, cash, making or shop-lot movement
         self.assertEqual((self.pool_grams(pool), HoldingRepo(self.db).piece_stock(1)), (D("9.000"), D("1.000")))
         self.wait_until(lambda: self.stub.reloads > reloads, "party reloaded after the commit")
-        self.wait_until(lambda: any("RP000001" in t for t in self.visible_texts("receiptRow")), "receipt listed")
-        row = " ".join(self.visible_texts("receiptRow"))
+        self.wait_until(lambda: any("المخزون 1.000" in t for t in self.visible_texts("receiptRow")), "received piece listed")
+        piece = " ".join(self.visible_texts("receiptRow"))
+        self.assertIn("عيار القطعة غير معلوم", piece)                                                # the current stock and the UNKNOWN assay stay on the main page
+        self.assertNotIn("RP000001", piece)                                                         # codes live under Details
+        row = " ".join(self.visible_texts("receiptHistoryRow"))
+        self.assertIn("RP000001", row)
         self.assertIn("HR000001", row)
         self.assertIn("عيار القطعة غير معلوم", row)
-        self.assertIn("المخزون 1.000", row)
         self.assertFalse(self.item("holdingReturnButton").property("enabled"))                   # allocation guards unchanged
         self.assertEqual(self.warnings, [])
 
@@ -141,6 +144,8 @@ class ReceiptPageTests(base.SettlementPageTests):
         self.wait_until(lambda: self.item("reverseReceiptDialog").property("opened"), "reverse dialog")
         self.assertIn("مخزون الاستلام", self.text("reverseReceiptNote"))
         self.assertIn("لا يفتح رجوعها كاملة", self.text("reverseReceiptNote"))
+        self.assertIn("أثر التصحيح على الأرصدة", self.text("reverseReceiptNote"))                  # states the balances it restores / removes
+        self.assertIn("1.000 جرام إلى رصيد المسوقجي", self.text("reverseReceiptNote"))
         self.type_in("reverseReceiptReason", "خطأ في الوزن")
         self.click("confirmReverseReceiptButton")
         self.wait_until(lambda: any(c["source_type"] == "HOLDING_RECEIPT" for c in self.db.corrections), "reversed")
@@ -148,7 +153,8 @@ class ReceiptPageTests(base.SettlementPageTests):
         self.wait_idle()
         self.assertEqual((self.pool_grams(pool), HoldingRepo(self.db).piece_stock(int(done["piece_id"]))), (D("10.000"), D("0.000")))
         self.assertIn("RV", " ".join(self.svm.message.split()) or "RV")
-        self.wait_until(lambda: any("معكوس" in t for t in self.visible_texts("receiptRow")), "reversed state listed")
+        self.wait_until(lambda: any("معكوس" in t for t in self.visible_texts("receiptHistoryRow")), "reversed state listed in Details")
+        self.assertEqual(self.visible_texts("receiptRow"), [])                                      # a reversed receipt is no longer shop stock on the main page
         self.assertFalse(self.item("holdingReturnButton").property("enabled"))                   # the whole-bar return stays blocked after the reversal
         self.assertEqual(self.warnings, [])
 

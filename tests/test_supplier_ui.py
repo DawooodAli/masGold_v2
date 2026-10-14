@@ -588,7 +588,7 @@ class SupplierPageTests(harness.InvoicePageTests):
 
     def gold_card_texts(self):
         body = self.item("goldPosition").parentItem()
-        return [str(c.property("text")) for c in body.childItems() if c.property("text") and c.objectName() != "settleGoldButton"]   # the balance lines, not the action button
+        return [str(c.property("text")) for c in body.childItems() if c.property("text") and c.objectName() != "settleGoldButton"]
 
     def test_the_gold_card_states_the_balance_once_in_grams_of_the_suppliers_karat(self):
         self.seed_supplier("A-supplier", [(1, "100.5"), (1, "50")])               # a 21K supplier
@@ -598,17 +598,19 @@ class SupplierPageTests(harness.InvoicePageTests):
         self.click_supplier("A-supplier")
         self.wait_idle()
         QTest.qWait(150)
-        self.assertEqual(self.gold_card_texts(), ["علينا للمورد 150.500 جرام عيار 21"])
+        self.assertEqual(self.text("goldAccountBalanceLabel"), "حساب المورد")
+        self.assertEqual(self.gold_card_texts(), ["حساب المورد", "علينا للمورد 150.500 جرام عيار 21"])
+        self.assertFalse(self.item("goldHeldPosition").property("visible"))
         self.assertTrue(self.item("supplierKaratChip").property("visible"))
         self.click_supplier("B-supplier")
         self.wait_idle()
         QTest.qWait(150)
-        self.assertEqual(self.gold_card_texts(), ["علينا للمورد 7.000 جرام عيار 18"])     # not 6 g Eq21, no second line
+        self.assertEqual(self.gold_card_texts(), ["حساب المورد", "علينا للمورد 7.000 جرام عيار 18"])     # not 6 g Eq21; exactly one supplier-balance line
         self.assertEqual(self.text("goldPosition"), "علينا للمورد 7.000 جرام عيار 18")
         self.click_supplier("C-supplier")
         self.wait_idle()
         QTest.qWait(150)
-        self.assertEqual(self.gold_card_texts(), ["الحساب متوازن"])
+        self.assertEqual(self.gold_card_texts(), ["حساب المورد", "الحساب متوازن"])
         self.assertEqual(self.warnings, [])
 
     def test_the_selected_group_shows_its_allowance_and_a_known_excess_blocks_submission_without_losing_input(self):
