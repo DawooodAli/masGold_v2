@@ -17,6 +17,28 @@ Item {
 
     Theme { id: theme }
 
+    // The archive (history + corrections) is closed whenever another trip is shown.
+    property bool archiveOpen: false
+    readonly property string archiveKey: detail && detail.id !== undefined ? String(detail.id) : ""
+    onArchiveKeyChanged: archiveOpen = false
+
+    // One short line per holding: what was handed over and to whom (no batch codes, assays or document numbers).
+    function holdingSummary(row) {
+        var party = row.party || ""
+        var source = row.source || ""
+        var text = row.text || ""
+        var grams = ""
+        var remaining = /المتبقي ([0-9.,]+) من/.exec(text)
+        if (remaining) grams = remaining[1]
+        else {
+            var plain = /• ([0-9.,]+) جرام/.exec(text)
+            if (plain) grams = plain[1]
+        }
+        var what = source.indexOf("لوجو") === 0 ? source : "سبيكة"
+        return what + (grams !== "" ? " — " + grams + " جرام" : "") + " ← " + party
+    }
+
+
     onVisibleChanged: if (visible && vm && vm.canManage) { vm.clearMessage(); vm.refresh() }
     Component.onCompleted: if (visible && vm && vm.canManage) vm.refresh()
 
@@ -319,6 +341,43 @@ Item {
                               font.bold: true; elide: Text.ElideNone }
                         Item { Layout.fillWidth: true }
                     }
+                    // THE primary panel of the page: what is outside the shop now (cash and every karat / designation), right under the title.
+                    Section {
+                        title: "في العهدة (خارج المحل)"
+                        accent: theme.amber
+                        RowLayout {
+                            Layout.fillWidth: true
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 8
+                            Item { Layout.preferredWidth: 150 }
+                            Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: "أُخرج"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+                            Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: "رجع"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+                            Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: "سُبك / مدفوع"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+                            Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: "المتبقي"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+                        }
+                        FigureRow {
+                            objectName: "custodyCashRow"
+                            label: "النقدية"
+                            issued: page.detail.cash ? page.detail.cash.issued : ""
+                            returned: page.detail.cash ? page.detail.cash.returned : ""
+                            melted: page.detail.cash && page.detail.cash.hasPaid ? page.detail.cash.paid : "—"
+                            outstanding: page.detail.cash ? page.detail.cash.outstanding : ""
+                            zero: page.detail.cash ? page.detail.cash.zero : true
+                        }
+                        Repeater {
+                            model: page.detail.gold || []
+                            delegate: FigureRow {
+                                objectName: "custodyGoldRow_" + modelData.karat + "_" + modelData.designation
+                                label: "ذهب " + modelData.label
+                                issued: modelData.issued + " جرام"
+                                returned: modelData.returned + " جرام"
+                                melted: (modelData.heated !== "" ? "حمّية " + modelData.heated + " جرام" : modelData.melted + " جرام")
+                                        + (modelData.settled !== "" ? " • سُلِّم لمورد " + modelData.settled + " جرام" : "")
+                                outstanding: modelData.outstanding + " جرام"
+                                zero: modelData.zero
+                            }
+                        }
+                    }
                     Flow {
                         Layout.fillWidth: true
                         layoutDirection: Qt.RightToLeft
@@ -367,43 +426,6 @@ Item {
                           text: page.detail.closeHint || ""; color: page.detail.closable ? theme.green : theme.amber
                           wrapMode: Text.WordWrap; elide: Text.ElideNone }
 
-                    // CUSTODY (outside the shop) and SHOP balances are two different things: never mixed.
-                    Section {
-                        title: "في العهدة (خارج المحل)"
-                        accent: theme.amber
-                        RowLayout {
-                            Layout.fillWidth: true
-                            layoutDirection: Qt.RightToLeft
-                            spacing: 8
-                            Item { Layout.preferredWidth: 150 }
-                            Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: "أُخرج"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
-                            Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: "رجع"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
-                            Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: "سُبك / مدفوع"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
-                            Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: "المتبقي"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
-                        }
-                        FigureRow {
-                            objectName: "custodyCashRow"
-                            label: "النقدية"
-                            issued: page.detail.cash ? page.detail.cash.issued : ""
-                            returned: page.detail.cash ? page.detail.cash.returned : ""
-                            melted: page.detail.cash && page.detail.cash.hasPaid ? page.detail.cash.paid : "—"
-                            outstanding: page.detail.cash ? page.detail.cash.outstanding : ""
-                            zero: page.detail.cash ? page.detail.cash.zero : true
-                        }
-                        Repeater {
-                            model: page.detail.gold || []
-                            delegate: FigureRow {
-                                objectName: "custodyGoldRow_" + modelData.karat + "_" + modelData.designation
-                                label: "ذهب " + modelData.label
-                                issued: modelData.issued + " جرام"
-                                returned: modelData.returned + " جرام"
-                                melted: (modelData.heated !== "" ? "حمّية " + modelData.heated + " جرام" : modelData.melted + " جرام")
-                                        + (modelData.settled !== "" ? " • سُلِّم لمورد " + modelData.settled + " جرام" : "")
-                                outstanding: modelData.outstanding + " جرام"
-                                zero: modelData.zero
-                            }
-                        }
-                    }
                     // Assayed lots made by melting: never mixed with master-karat custody.
                     Section {
                         objectName: "assayedLotsSection"
@@ -434,183 +456,187 @@ Item {
                         Txt { objectName: "lotNote"; Layout.fillWidth: true; text: page.detail.lotNote || ""; color: theme.amber
                               font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                     }
-                    // Shop-owned gold that left this custody for an intermediary (مسوقجي): still outstanding although the custody's own figures are zero.
+                    // Shop-owned gold that left this custody for an intermediary (مسوقجي): ONE read-only line per holding (what and to whom).
                     Section {
                         objectName: "externalHoldingsSection"
-                        title: "ذهب خارج المحل لدى المسوقجي (من هذه العهدة)"
+                        title: "ذهب لدى المسوقجي (ملك المحل)"
                         accent: theme.amber
                         visible: (page.detail.externalHoldings || []).length > 0
                         Repeater {
                             model: page.detail.externalHoldings || []
-                            delegate: Txt { objectName: "externalHoldingRow"; Layout.fillWidth: true; text: modelData.text; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                                            color: theme.textSecondary }
-                        }
-                        Txt { objectName: "externalHoldingNote"; Layout.fillWidth: true; text: page.detail.externalNote || ""; color: theme.amber
-                              font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                    }
-                    Section {
-                        title: "رصيد المحل (لا يشمل العهدة)"
-                        Txt { objectName: "shopCash"; Layout.fillWidth: true
-                              text: "الخزنة الرئيسية: " + (page.ctx.safeBalanceText || "—"); elide: Text.ElideNone }
-                        Repeater {
-                            model: page.ctx.shop || []
-                            delegate: Txt { Layout.fillWidth: true; text: modelData.text; color: theme.textSecondary; elide: Text.ElideNone }
+                            delegate: Txt { objectName: "externalHoldingRow"; Layout.fillWidth: true; text: page.holdingSummary(modelData)
+                                            wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textSecondary }
                         }
                     }
-                    Txt { objectName: "tripLimitation"; Layout.fillWidth: true; text: page.vm ? page.vm.limitation : ""
-                          color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
 
-                    Section {
-                        title: "سجل الحركات"
-                        Repeater {
-                            model: page.detail.entries || []
-                            delegate: Rectangle {
-                                Layout.fillWidth: true
-                                implicitHeight: Math.max(52, entryRow.implicitHeight + 14)
-                                radius: theme.radiusSmall
-                                color: theme.bgTertiary
-                                border.color: theme.border
-                                RowLayout {
-                                    id: entryRow
-                                    anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                                    anchors.leftMargin: 10; anchors.rightMargin: 10
-                                    layoutDirection: Qt.RightToLeft
-                                    spacing: 10
-                                    ColumnLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 2
-                                        Txt { Layout.fillWidth: true; text: modelData.kindText + "  " + page.ltr(modelData.code); font.bold: true
-                                              color: modelData.kind === "ISSUE" || modelData.kind === "LOT_ISSUE" ? theme.amber : modelData.kind === "MELT" ? theme.gold : theme.green
-                                              elide: Text.ElideNone }
-                                        Txt { objectName: "entryWhat"; Layout.fillWidth: true; text: modelData.what; wrapMode: Text.WordWrap
-                                              elide: Text.ElideNone }
-                                        Txt { Layout.fillWidth: true; text: modelData.date + "  •  " + modelData.time + "  •  " + modelData.actor
-                                              color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                        Txt { objectName: "entryState"; Layout.fillWidth: true; visible: modelData.state !== ""
-                                              text: modelData.state; color: theme.amber; font.pixelSize: theme.fontTableHeader
-                                              wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                    }
-                                    Btn {
-                                        objectName: "reverseEntryButton"
-                                        visible: !!page.vm && modelData.canReverse === true
-                                        text: "عكس"
-                                        accent: theme.red
-                                        onClicked: reasonDialog.openFor("REVERSE", modelData.id, modelData.code, modelData.reverseNote)
-                                    }
-                                }
-                            }
-                        }
-                        Repeater {
-                            model: page.detail.events || []
-                            delegate: Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
-                                            text: modelData.text + "  •  " + modelData.time + (modelData.actor ? "  •  " + modelData.actor : "")
-                                                  + (modelData.reason ? "  •  " + modelData.reason : "")
-                                            wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                        }
+                    // ---- archive: the history and its corrections (the reverse actions live here); closed until it is asked for
+                    Btn {
+                        objectName: "archiveToggle"
+                        Layout.fillWidth: true
+                        accent: theme.textSecondary
+                        text: (page.archiveOpen ? "إخفاء الأرشيف / السجل" : "الأرشيف / السجل (عرض الحركات وعكس عملية)")
+                              + "  •  " + ((page.detail.entries || []).length + (page.detail.heats || []).length + (page.detail.melts || []).length)
+                        onClicked: page.archiveOpen = !page.archiveOpen
                     }
-                    Section {
-                        objectName: "heatsSection"
-                        title: "سجل حمّية اللوجو والفروق (دائم)"
-                        accent: theme.gold
-                        visible: (page.detail.heats || []).length > 0
-                        Txt { objectName: "heatTotals"; Layout.fillWidth: true; visible: (page.detail.heatTotals || []).length > 0
-                              text: "الفرق التراكمي للحمّيات الفعّالة — " + (page.detail.heatTotals || []).map(function (t) { return t.text }).join(" | ")
-                              color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                        Repeater {
-                            model: page.detail.heats || []
-                            delegate: Rectangle {
-                                Layout.fillWidth: true
-                                id: heatCard
-                                readonly property bool dead: modelData.reversed === true
-                                implicitHeight: heatColumn.implicitHeight + 14
-                                radius: theme.radiusSmall
-                                // A reversed heat is history only: a neutral card whose measurements stay readable.
-                                color: heatCard.dead ? theme.bgSecondary : theme.bgTertiary
-                                border.color: theme.border
-                                ColumnLayout {
-                                    id: heatColumn
-                                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-                                    anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.topMargin: 7
-                                    spacing: 3
-                                    Txt { objectName: "heatTitle"; Layout.fillWidth: true; font.bold: true; elide: Text.ElideNone
-                                          color: heatCard.dead ? theme.textSecondary : theme.textPrimary
-                                          text: "حمّية اللوجو " + page.ltr(modelData.code) + "  •  " + modelData.workshop + "  •  " + modelData.date }
-                                    Txt { objectName: "heatReversedNotice"; Layout.fillWidth: true; visible: modelData.notice !== ""; text: modelData.notice
-                                          color: theme.textPrimary; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                    Txt { objectName: "heatState"; Layout.fillWidth: true; visible: modelData.state !== ""
-                                          text: modelData.state + (modelData.reason !== "" ? "  •  السبب: " + modelData.reason : "")
-                                          color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                    Repeater {
-                                        model: modelData.lines
-                                        delegate: Txt { objectName: "heatLine"; Layout.fillWidth: true; text: modelData.text
-                                                        color: heatCard.dead ? theme.textSecondary : theme.textPrimary; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                    }
-                                    Txt { objectName: "heatTotal"; Layout.fillWidth: true; text: modelData.total; font.bold: true
-                                          color: heatCard.dead ? theme.textSecondary : theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                    Txt { Layout.fillWidth: true; visible: modelData.reference !== ""; text: "المرجع: " + modelData.reference
-                                          color: theme.textMuted; font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
-                                    Txt { Layout.fillWidth: true; visible: modelData.gainExplanation !== ""; text: "سبب زيادة الوزن: " + modelData.gainExplanation
-                                          color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                    Item { Layout.preferredHeight: 4 }
-                                }
-                            }
-                        }
-                    }
-                    Section {
-                        objectName: "meltsSection"
-                        title: "سجل السبك والتحليل (دائم)"
-                        accent: theme.gold
-                        visible: (page.detail.melts || []).length > 0
-                        Repeater {
-                            model: page.detail.melts || []
-                            delegate: Rectangle {
-                                Layout.fillWidth: true
-                                id: meltCard
-                                readonly property bool dead: modelData.reversed === true
-                                implicitHeight: meltColumn.implicitHeight + 14
-                                radius: theme.radiusSmall
-                                // A reversed melt is history only: a neutral card (no accent colours) whose text stays readable.
-                                color: meltCard.dead ? theme.bgSecondary : theme.bgTertiary
-                                border.color: theme.border
-                                ColumnLayout {
-                                    id: meltColumn
-                                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-                                    anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.topMargin: 7
-                                    spacing: 3
-                                    Txt { objectName: "meltTitle"; Layout.fillWidth: true; font.bold: true; elide: Text.ElideNone
-                                          color: meltCard.dead ? theme.textSecondary : theme.textPrimary
-                                          text: "سبك " + page.ltr(modelData.code) + "  •  " + modelData.workshop + "  •  " + modelData.date }
-                                    Txt { objectName: "meltReversedNotice"; Layout.fillWidth: true; visible: modelData.notice !== ""; text: modelData.notice
-                                          color: theme.textPrimary; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                    Txt { objectName: "meltState"; Layout.fillWidth: true; visible: modelData.state !== ""
-                                          text: modelData.state + (modelData.reason !== "" ? "  •  السبب: " + modelData.reason : "")
-                                          color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                    Txt { objectName: "meltInputs"; Layout.fillWidth: true; text: "المدخلات: " + modelData.inputsText
-                                          wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                    Repeater {
-                                        model: modelData.lots
-                                        delegate: Txt { objectName: "meltLot"; Layout.fillWidth: true; text: modelData.title + ": " + modelData.text
-                                                        color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                    }
-                                    Txt { Layout.fillWidth: true; visible: modelData.assay !== ""; text: "مرجع المعايرة: " + modelData.assay
-                                          color: theme.textMuted; font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
-                                    Txt { Layout.fillWidth: true; visible: modelData.gainExplanation !== ""; text: "سبب زيادة الوزن: " + modelData.gainExplanation
-                                          color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                    Repeater {
-                                        model: modelData.analysis
-                                        delegate: RowLayout {
+                    ColumnLayout {
+                        id: archivePanel
+                        objectName: "archivePanel"
+                        Layout.fillWidth: true
+                        visible: page.archiveOpen
+                        spacing: 8
+
+                        Section {
+                            title: "سجل الحركات"
+                            Repeater {
+                                model: page.detail.entries || []
+                                delegate: Rectangle {
+                                    Layout.fillWidth: true
+                                    implicitHeight: Math.max(52, entryRow.implicitHeight + 14)
+                                    radius: theme.radiusSmall
+                                    color: theme.bgTertiary
+                                    border.color: theme.border
+                                    RowLayout {
+                                        id: entryRow
+                                        anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                        anchors.leftMargin: 10; anchors.rightMargin: 10
+                                        layoutDirection: Qt.RightToLeft
+                                        spacing: 10
+                                        ColumnLayout {
                                             Layout.fillWidth: true
-                                            layoutDirection: Qt.RightToLeft
-                                            spacing: 8
-                                            Txt { Layout.preferredWidth: 250; text: modelData.label; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                                            spacing: 2
+                                            Txt { Layout.fillWidth: true; text: modelData.kindText + "  " + page.ltr(modelData.code); font.bold: true
+                                                  color: modelData.kind === "ISSUE" || modelData.kind === "LOT_ISSUE" ? theme.amber : modelData.kind === "MELT" ? theme.gold : theme.green
                                                   elide: Text.ElideNone }
-                                            Txt { objectName: "meltAnalysisValue"; Layout.fillWidth: true; text: modelData.value; wrapMode: Text.WordWrap
-                                                  color: meltCard.dead ? theme.textSecondary
-                                                         : modelData.value.indexOf("غير مكتمل") === 0 ? theme.amber : theme.textPrimary
+                                            Txt { objectName: "entryWhat"; Layout.fillWidth: true; text: modelData.what; wrapMode: Text.WordWrap
                                                   elide: Text.ElideNone }
+                                            Txt { Layout.fillWidth: true; text: modelData.date + "  •  " + modelData.time + "  •  " + modelData.actor
+                                                  color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                            Txt { objectName: "entryState"; Layout.fillWidth: true; visible: modelData.state !== ""
+                                                  text: modelData.state; color: theme.amber; font.pixelSize: theme.fontTableHeader
+                                                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                        }
+                                        Btn {
+                                            objectName: "reverseEntryButton"
+                                            visible: !!page.vm && modelData.canReverse === true
+                                            text: "عكس"
+                                            accent: theme.red
+                                            onClicked: reasonDialog.openFor("REVERSE", modelData.id, modelData.code, modelData.reverseNote)
                                         }
                                     }
-                                    Item { Layout.preferredHeight: 4 }
+                                }
+                            }
+                            Repeater {
+                                model: page.detail.events || []
+                                delegate: Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                                                text: modelData.text + "  •  " + modelData.time + (modelData.actor ? "  •  " + modelData.actor : "")
+                                                      + (modelData.reason ? "  •  " + modelData.reason : "")
+                                                wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            }
+                        }
+                        Section {
+                            objectName: "heatsSection"
+                            title: "سجل حمّية اللوجو والفروق (دائم)"
+                            accent: theme.gold
+                            visible: (page.detail.heats || []).length > 0
+                            Txt { objectName: "heatTotals"; Layout.fillWidth: true; visible: (page.detail.heatTotals || []).length > 0
+                                  text: "الفرق التراكمي للحمّيات الفعّالة — " + (page.detail.heatTotals || []).map(function (t) { return t.text }).join(" | ")
+                                  color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Repeater {
+                                model: page.detail.heats || []
+                                delegate: Rectangle {
+                                    Layout.fillWidth: true
+                                    id: heatCard
+                                    readonly property bool dead: modelData.reversed === true
+                                    implicitHeight: heatColumn.implicitHeight + 14
+                                    radius: theme.radiusSmall
+                                    // A reversed heat is history only: a neutral card whose measurements stay readable.
+                                    color: heatCard.dead ? theme.bgSecondary : theme.bgTertiary
+                                    border.color: theme.border
+                                    ColumnLayout {
+                                        id: heatColumn
+                                        anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                                        anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.topMargin: 7
+                                        spacing: 3
+                                        Txt { objectName: "heatTitle"; Layout.fillWidth: true; font.bold: true; elide: Text.ElideNone
+                                              color: heatCard.dead ? theme.textSecondary : theme.textPrimary
+                                              text: "حمّية اللوجو " + page.ltr(modelData.code) + "  •  " + modelData.workshop + "  •  " + modelData.date }
+                                        Txt { objectName: "heatReversedNotice"; Layout.fillWidth: true; visible: modelData.notice !== ""; text: modelData.notice
+                                              color: theme.textPrimary; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                        Txt { objectName: "heatState"; Layout.fillWidth: true; visible: modelData.state !== ""
+                                              text: modelData.state + (modelData.reason !== "" ? "  •  السبب: " + modelData.reason : "")
+                                              color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                        Repeater {
+                                            model: modelData.lines
+                                            delegate: Txt { objectName: "heatLine"; Layout.fillWidth: true; text: modelData.text
+                                                            color: heatCard.dead ? theme.textSecondary : theme.textPrimary; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                        }
+                                        Txt { objectName: "heatTotal"; Layout.fillWidth: true; text: modelData.total; font.bold: true
+                                              color: heatCard.dead ? theme.textSecondary : theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                        Txt { Layout.fillWidth: true; visible: modelData.reference !== ""; text: "المرجع: " + modelData.reference
+                                              color: theme.textMuted; font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
+                                        Txt { Layout.fillWidth: true; visible: modelData.gainExplanation !== ""; text: "سبب زيادة الوزن: " + modelData.gainExplanation
+                                              color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                        Item { Layout.preferredHeight: 4 }
+                                    }
+                                }
+                            }
+                        }
+                        Section {
+                            objectName: "meltsSection"
+                            title: "سجل السبك والتحليل (دائم)"
+                            accent: theme.gold
+                            visible: (page.detail.melts || []).length > 0
+                            Repeater {
+                                model: page.detail.melts || []
+                                delegate: Rectangle {
+                                    Layout.fillWidth: true
+                                    id: meltCard
+                                    readonly property bool dead: modelData.reversed === true
+                                    implicitHeight: meltColumn.implicitHeight + 14
+                                    radius: theme.radiusSmall
+                                    // A reversed melt is history only: a neutral card (no accent colours) whose text stays readable.
+                                    color: meltCard.dead ? theme.bgSecondary : theme.bgTertiary
+                                    border.color: theme.border
+                                    ColumnLayout {
+                                        id: meltColumn
+                                        anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                                        anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.topMargin: 7
+                                        spacing: 3
+                                        Txt { objectName: "meltTitle"; Layout.fillWidth: true; font.bold: true; elide: Text.ElideNone
+                                              color: meltCard.dead ? theme.textSecondary : theme.textPrimary
+                                              text: "سبك " + page.ltr(modelData.code) + "  •  " + modelData.workshop + "  •  " + modelData.date }
+                                        Txt { objectName: "meltReversedNotice"; Layout.fillWidth: true; visible: modelData.notice !== ""; text: modelData.notice
+                                              color: theme.textPrimary; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                        Txt { objectName: "meltState"; Layout.fillWidth: true; visible: modelData.state !== ""
+                                              text: modelData.state + (modelData.reason !== "" ? "  •  السبب: " + modelData.reason : "")
+                                              color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                        Txt { objectName: "meltInputs"; Layout.fillWidth: true; text: "المدخلات: " + modelData.inputsText
+                                              wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                        Repeater {
+                                            model: modelData.lots
+                                            delegate: Txt { objectName: "meltLot"; Layout.fillWidth: true; text: modelData.title + ": " + modelData.text
+                                                            color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                        }
+                                        Txt { Layout.fillWidth: true; visible: modelData.assay !== ""; text: "مرجع المعايرة: " + modelData.assay
+                                              color: theme.textMuted; font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
+                                        Txt { Layout.fillWidth: true; visible: modelData.gainExplanation !== ""; text: "سبب زيادة الوزن: " + modelData.gainExplanation
+                                              color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                        Repeater {
+                                            model: modelData.analysis
+                                            delegate: RowLayout {
+                                                Layout.fillWidth: true
+                                                layoutDirection: Qt.RightToLeft
+                                                spacing: 8
+                                                Txt { Layout.preferredWidth: 250; text: modelData.label; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                                                      elide: Text.ElideNone }
+                                                Txt { objectName: "meltAnalysisValue"; Layout.fillWidth: true; text: modelData.value; wrapMode: Text.WordWrap
+                                                      color: meltCard.dead ? theme.textSecondary
+                                                             : modelData.value.indexOf("غير مكتمل") === 0 ? theme.amber : theme.textPrimary
+                                                      elide: Text.ElideNone }
+                                            }
+                                        }
+                                        Item { Layout.preferredHeight: 4 }
+                                    }
                                 }
                             }
                         }

@@ -49,7 +49,32 @@ class Ledgers:
         return []
 
 
+ARCHIVE_NAMES = frozenset(("archivePanel", "entryState", "entryWhat", "heatLine", "heatReversedNotice", "heatState", "heatTitle", "heatTotal", "heatTotals",
+                           "heatsSection", "meltAnalysisValue", "meltInputs", "meltLot", "meltReversedNotice", "meltState", "meltTitle", "meltsSection",
+                           "reverseEntryButton"))
+
+
 class MarketTripPageTests(harness.InvoicePageTests):
+    # ---- the history and its reverse actions live in the archive, closed by default: a test that touches them opens it with a REAL click first
+    def open_archive(self):
+        panel = self.root.findChild(QObject, "archivePanel") or self.visual_item("archivePanel")
+        if panel is None or panel.property("visible"):
+            return
+        toggle = super().item("archiveToggle")
+        self.click(toggle)
+        self.wait_until(lambda: panel.property("visible"), "archive open")
+        QTest.qWait(60)
+
+    def item(self, name):
+        if name in ARCHIVE_NAMES and name != "archivePanel":
+            self.open_archive()
+        return super().item(name)
+
+    def visible_item(self, name, parent=None):
+        if name in ARCHIVE_NAMES and name != "archivePanel" and parent is None:
+            self.open_archive()
+        return super().visible_item(name, parent)
+
     def setUp(self):
         super().setUp()
         vms = self.controller.operational_viewmodels
@@ -130,6 +155,8 @@ class MarketTripPageTests(harness.InvoicePageTests):
         self.wait_idle()
 
     def visible_texts(self, name, parent=None):
+        if name in ARCHIVE_NAMES and parent is None:
+            self.open_archive()
         parent = parent or self.root.contentItem()
         found = [str(parent.property("text"))] if parent.objectName() == name and parent.property("visible") else []
         for child in self.child_items(parent):
@@ -159,14 +186,16 @@ class MarketTripPageTests(harness.InvoicePageTests):
         self.assertEqual((self.db.cash(), self.db.physical(1), self.db.physical(2)), (D("40000.00"), D("80.000"), D("44.500")))
         self.wait_until(lambda: self.tvm.detail.get("id"), "trip selected")
         self.assertEqual(self.text("tripTitle").replace("⁦", "").replace("⁩", ""), "عهدة MT000001")
-        self.assertIn("إرجاع كل النقدية وكل الذهب", self.text("tripLimitation"))                  # the limitation is explained
+        self.assertIsNone(self.visible_item("tripLimitation"))                                    # the long explanatory block is gone
+        self.assertIsNone(self.visible_item("shopCash"))                                          # and so is the shop balance
+        self.assertFalse(self.item("archivePanel").property("visible"))                           # the history is closed until asked for
+        self.assertIsNotNone(self.visible_item("archiveToggle"))
         outstanding = " | ".join(self.visible_texts("figureOutstanding"))
         for part in ("10,000.00 ج", "20.000 جرام", "5.500 جرام"):                                 # custody per karat, apart from the shop
             self.assertIn(part, outstanding)
         self.assertFalse(self.item("closeTripButton").property("enabled"))                        # outstanding custody
         self.assertIn("لا يمكن الإغلاق", self.text("closeHint"))
         self.assertIn("10,000.00", self.text("closeHint"))
-        self.assertTrue(self.text("shopCash").startswith("الخزنة الرئيسية: "))                    # shop balance apart from custody
         self.assertEqual(self.text("tripMessage"), "تم إخراج العهدة MT000001-1")
         # ---- a partial return
         self.click("returnButton")
@@ -242,6 +271,7 @@ class MarketTripPageTests(harness.InvoicePageTests):
         self.wait_idle()
         self.assertIsNotNone(self.visible_item("reverseEntryButton"))
         before = self.counts()
+        self.open_archive()
         buttons = []
 
         def collect(node):
@@ -445,6 +475,7 @@ class MarketTripMeltingPageTests(MarketTripPageTests):
         self.wait_until(lambda: len(self.db.melts) == 1, "melt posted")
         self.closed("tripMeltDialog")
         self.wait_idle()
+        self.open_archive()
         buttons = []
 
         def collect(node):
@@ -597,6 +628,7 @@ class MarketTripLotReturnPageTests(MarketTripMeltingPageTests):
         self.wait_until(lambda: len(self.db.lot_returns) == 1, "lot returned")
         self.closed("tripLotReturnDialog")
         self.wait_idle()
+        self.open_archive()
         buttons = []
 
         def collect(node):
@@ -832,6 +864,7 @@ class MarketTripLotIssuePageTests(MarketTripLotReturnPageTests):
         self.wait_until(lambda: len(self.db.lot_issues) == 1, "bar issued")
         self.closed("tripLotIssueDialog")
         self.wait_idle()
+        self.open_archive()
         buttons = []
 
         def collect(node):
@@ -973,6 +1006,7 @@ class MarketTripHeatPageTests(MarketTripMeltingPageTests):
         self.wait_until(lambda: len(self.db.heats) == 1, "heat posted")
         self.closed("tripHeatDialog")
         self.wait_idle()
+        self.open_archive()
         buttons = []
 
         def collect(node):
@@ -1128,6 +1162,7 @@ class MarketTripSupplierPayPageTests(MarketTripMeltingPageTests):
         self.closed("tripSupplierPayDialog")
         self.wait_idle()
         reloads, safe = self.stub.reloads, self.db.cash()
+        self.open_archive()
         buttons = []
 
         def collect(node):

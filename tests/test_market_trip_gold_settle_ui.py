@@ -60,6 +60,7 @@ class GoldSettlePageTests(base.MarketTripHeatPageTests):
         return next(g for g in custody["gold"] if g["designation"] == "LOGO")["outstanding"]
 
     def reverse_buttons(self):
+        self.open_archive()
         found = []
 
         def collect(node):
