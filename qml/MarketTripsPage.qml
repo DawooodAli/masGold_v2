@@ -473,7 +473,7 @@ Item {
                     Btn {
                         objectName: "archiveToggle"
                         Layout.fillWidth: true
-                        accent: theme.textSecondary
+                        accent: theme.gold
                         text: (page.archiveOpen ? "إخفاء الأرشيف / السجل" : "الأرشيف / السجل (عرض الحركات وعكس عملية)")
                               + "  •  " + ((page.detail.entries || []).length + (page.detail.heats || []).length + (page.detail.melts || []).length)
                         onClicked: page.archiveOpen = !page.archiveOpen
