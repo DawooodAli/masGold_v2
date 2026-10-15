@@ -746,9 +746,9 @@ using Git (`git branch --show-current`, `git log --oneline -10`, `git status`); 
 report unexpected files or commits. Do not treat any commit hash in this document as the
 current HEAD. Read both `AGENTS.md` and `CLAUDE.md`.
 
-- Schema chain: migrations `001–051` in `database/schema`; next migration is `052`
+- Schema chain: migrations `001–052` in `database/schema`; next migration is `053`
   unless later repository state proves otherwise. Already-applied migrations are
-  immutable, including 019–050. `database/migrations/*.sql` are historical prototypes
+  immutable, including 019–052. `database/migrations/*.sql` are historical prototypes
   (see its README) and are never applied. Future schema work needs the next forward migration,
   guarded rollback, `SHA256SUMS`, chain tooling and appropriate migration/rehearsal tests.
 - Normal DEV database: `masgold_v2`. Never mutate `golddb`. Rehearsal/prod databases
@@ -832,6 +832,7 @@ current HEAD. Read both `AGENTS.md` and `CLAUDE.md`.
   is never derived at read time, and a 22K row that is not exactly the derivation of its own group's 24K row is ignored (22K then
   has no price: `PRICE_MISSING`; another karat's price is never substituted). A legacy three-karat active set stays usable; AUTO
   republishes unchanged provider prices once if the set lacks 22K; MANUAL gains 22K at the next normal OWNER activation.
+- **Supplier purchase invoice reversal (migration 052, `RVxxxxxx`, source `SUPPLIER_PURCHASE_INVOICE`, «عكس فاتورة مورد مرحّلة»):** a POSTED supplier purchase invoice with NO intaken piece is fully reversed through `CorrectionService` (full reversal only, reason mandatory). OWNER only: `SUPPLIER_INVOICE_REVERSE` plus `TRANSACTION_CORRECT`, both rechecked in the transaction (the actor is the session user). One transaction posts the exact opposite of the STORED posting movements (never recomputed): one GOLD movement in the invoice's supplier karat (physical grams, the Eq21 compatibility field negated) and, when the invoice had making, one MAKING movement, both under the new movement type `PURCHASE_INVOICE_REVERSAL`, plus the correction row and its audit event. The invoice, its groups and its original ledger movements are never touched; the stored status stays POSTED and the reversed state is DERIVED from the correction record (list, detail, ledger labels «عكس فاتورة شراء»). Any intaken piece (a real inventory item with its own identity and barcode) refuses the reversal with `INVOICE_HAS_INTAKE` (no cascade); intake on a reversed invoice is refused (`INVOICE_REVERSED`). Lock order invoice -> supplier -> pieces (a CURRENT read under the invoice lock, the same invoice-first order as posting and intake). A second reversal is `ALREADY_REVERSED` (`uq_correction_one_reversal`); the supplier balance may cross zero into supplier credit; no inventory, Scrap, cash, bank, making-payment or other-supplier effect exists. Editing a posted invoice, partial reversal, reversing intaken pieces and supplier returns / debit notes are NOT implemented.
 - **Line endings:** do not mass-convert files and never normalize migrations (checksums). No
   `.gitattributes` is added; with `core.autocrlf=true` a policy file would cause churn. Deferred.
 

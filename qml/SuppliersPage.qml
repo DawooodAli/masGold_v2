@@ -67,6 +67,7 @@ Item {
         target: page.pvm
         function onInvoicePosted(invoiceId) { newInvoiceDialog.close(); intakeDialog.openFor(invoiceId) }
         function onDraftSaved(invoiceId) { newInvoiceDialog.close() }
+        function onInvoiceReversed(invoiceId) { reverseInvoiceDialog.close(); if (page.vm) page.vm.refresh() }
     }
 
     Rectangle { anchors.fill: parent; color: theme.bgPrimary }
@@ -816,8 +817,8 @@ Item {
                                                     ColumnLayout {
                                                         Layout.fillWidth: true
                                                         spacing: 1
-                                                        Txt { Layout.fillWidth: true; text: modelData.statusText; font.bold: true
-                                                              color: modelData.status === "POSTED" ? theme.green : theme.textSecondary }
+                                                        Txt { objectName: "invoiceRowStatus"; Layout.fillWidth: true; text: modelData.statusText; font.bold: true
+                                                              color: modelData.reversed ? theme.red : modelData.status === "POSTED" ? theme.green : theme.textSecondary }
                                                         Txt { Layout.fillWidth: true; visible: modelData.status === "POSTED"
                                                               text: "القطع: " + modelData.pieceCount + "  •  " + modelData.varianceText
                                                               color: theme.textMuted; font.pixelSize: theme.fontTableHeader
@@ -826,7 +827,7 @@ Item {
                                                     }
                                                     Btn {
                                                         Layout.preferredWidth: page.colActionWidth
-                                                        text: modelData.status === "POSTED" ? "إدخال القطع" : "فتح"
+                                                        text: modelData.status === "POSTED" && !modelData.reversed ? "إدخال القطع" : "فتح"
                                                         onClicked: intakeDialog.openFor(modelData.id)
                                                     }
                                                 }
@@ -1667,6 +1668,113 @@ Item {
                 }
                 Btn { text: "إلغاء"; accent: theme.textSecondary; enabled: !!page.vm && !page.vm.reversing
                       onClicked: reverseDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- reverse a posted supplier purchase invoice (OWNER only, 052)
+    // The preview comes from the service (the exact opposite entries and the supplier's balances before / after); QML does no arithmetic.
+    Popup {
+        id: reverseInvoiceDialog
+        objectName: "reverseInvoiceDialog"
+        property string invoiceId: ""
+        property string code: ""
+        readonly property var preview: page.pvm ? page.pvm.reversal : ({})
+        readonly property bool loaded: !!preview && preview.id === invoiceId
+        function openFor(inv) {
+            invoiceId = inv.id
+            code = inv.code
+            reverseInvoiceReason.text = ""
+            if (page.pvm) { page.pvm.clearMessage(); page.pvm.loadReversal(inv.id) }
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(560, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 600, 600)
+        modal: true
+        padding: 16
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.red }
+        contentItem: ColumnLayout {
+            spacing: 8
+            Txt { Layout.fillWidth: true; text: "عكس فاتورة المورد " + page.ltr(reverseInvoiceDialog.code); color: theme.red
+                  font.bold: true; font.pixelSize: theme.fontSection }
+            Flickable {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentHeight: reverseInvoiceBody.implicitHeight
+                clip: true
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: reverseInvoiceBody
+                    width: parent.width - 12
+                    spacing: 6
+                    Txt { objectName: "reverseInvoiceLoading"; Layout.fillWidth: true; visible: !reverseInvoiceDialog.loaded && (!page.pvm || page.pvm.errorMessage === "")
+                          text: "جارٍ تحميل أثر العكس…"; color: theme.textMuted }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        visible: reverseInvoiceDialog.loaded
+                        spacing: 6
+                        Txt { Layout.fillWidth: true; font.bold: true
+                              text: reverseInvoiceDialog.loaded ? "المورد: " + reverseInvoiceDialog.preview.supplierName : "" }
+                        Txt { Layout.fillWidth: true; color: theme.textSecondary; font.pixelSize: theme.fontTableHeader
+                              text: "يُسجَّل عكس كامل بالقيم المخزنة للفاتورة الأصلية، وتبقى الفاتورة وقيودها في السجل دون تعديل." }
+                        Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: effectColumn.implicitHeight + 14
+                            radius: theme.radiusSmall
+                            color: theme.panel
+                            border.color: theme.border
+                            ColumnLayout {
+                                id: effectColumn
+                                anchors.fill: parent; anchors.margins: 7
+                                spacing: 3
+                                Txt { objectName: "reverseInvoiceGoldEffect"; Layout.fillWidth: true; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                      text: reverseInvoiceDialog.loaded ? reverseInvoiceDialog.preview.goldEntryText : "" }
+                                Txt { Layout.fillWidth: true; color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                      text: reverseInvoiceDialog.loaded ? "قبل: " + reverseInvoiceDialog.preview.goldBeforeText : "" }
+                                Txt { objectName: "reverseInvoiceGoldAfter"; Layout.fillWidth: true; color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                      text: reverseInvoiceDialog.loaded ? "بعد: " + reverseInvoiceDialog.preview.goldAfterText : "" }
+                                Txt { objectName: "reverseInvoiceMakingEffect"; Layout.fillWidth: true; Layout.topMargin: 4; font.bold: true
+                                      wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                      text: reverseInvoiceDialog.loaded ? reverseInvoiceDialog.preview.makingEntryText : "" }
+                                Txt { Layout.fillWidth: true; color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                      text: reverseInvoiceDialog.loaded ? "قبل: " + reverseInvoiceDialog.preview.makingBeforeText : "" }
+                                Txt { objectName: "reverseInvoiceMakingAfter"; Layout.fillWidth: true; color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                      text: reverseInvoiceDialog.loaded ? "بعد: " + reverseInvoiceDialog.preview.makingAfterText : "" }
+                            }
+                        }
+                        Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                              text: "لا يمسّ هذا العكس المخزون أو الكسر أو الخزينة أو البنوك أو دفعات المصنعيات أو أي مورد آخر." }
+                        Repeater {
+                            model: reverseInvoiceDialog.loaded ? reverseInvoiceDialog.preview.blockers : []
+                            delegate: Txt { objectName: "reverseInvoiceBlocker"; Layout.fillWidth: true; color: theme.red; font.bold: true
+                                            wrapMode: Text.WordWrap; elide: Text.ElideNone; text: modelData }
+                        }
+                    }
+                    Txt { Layout.fillWidth: true; text: "سبب العكس *" }
+                    Field { id: reverseInvoiceReason; objectName: "reverseInvoiceReason"; Layout.fillWidth: true }
+                }
+            }
+            Txt { objectName: "reverseInvoiceError"; Layout.fillWidth: true; visible: !!page.pvm && page.pvm.errorMessage !== ""
+                  text: page.pvm ? page.pvm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmReverseInvoiceButton"
+                    text: !!page.pvm && page.pvm.reversing ? "جارٍ العكس…" : "تأكيد عكس الفاتورة"
+                    accent: theme.red
+                    primary: true
+                    enabled: reverseInvoiceDialog.loaded && reverseInvoiceDialog.preview.canReverse === true
+                             && reverseInvoiceReason.text.trim().length > 0 && !!page.pvm && !page.pvm.reversing
+                    onClicked: page.pvm.reverseInvoice(reverseInvoiceDialog.invoiceId, reverseInvoiceReason.text)
+                }
+                Btn { objectName: "cancelReverseInvoiceButton"; text: "إلغاء"; accent: theme.textSecondary
+                      enabled: !!page.pvm && !page.pvm.reversing; onClicked: reverseInvoiceDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }
@@ -2601,7 +2709,8 @@ Item {
                                 implicitWidth: statusLabel.implicitWidth + 22
                                 implicitHeight: 24
                                 radius: 12
-                                readonly property color tone: intakeDialog.ready && intakeDialog.inv.posted ? theme.green : theme.textSecondary
+                                readonly property color tone: intakeDialog.ready && intakeDialog.inv.reversed ? theme.red
+                                                              : intakeDialog.ready && intakeDialog.inv.posted ? theme.green : theme.textSecondary
                                 color: Qt.rgba(tone.r, tone.g, tone.b, 0.14)
                                 border.color: tone
                                 Txt { id: statusLabel; anchors.centerIn: parent; text: intakeDialog.ready ? intakeDialog.inv.statusText : ""
@@ -2629,6 +2738,10 @@ Item {
                     Btn { visible: intakeDialog.ready && intakeDialog.inv.draft && !!page.pvm && page.pvm.canEdit
                           text: "إلغاء المسودة"; accent: theme.red; enabled: !page.pvm.busy
                           onClicked: { page.pvm.cancelDraft(intakeDialog.inv.id); intakeDialog.close() } }
+                    Btn { objectName: "reverseInvoiceButton"
+                          visible: intakeDialog.ready && intakeDialog.inv.canReverse === true && !!page.pvm && page.pvm.canReverse
+                          text: "عكس الفاتورة"; accent: theme.red; enabled: !page.pvm.busy
+                          onClicked: reverseInvoiceDialog.openFor(intakeDialog.inv) }
                     Btn { objectName: "intakeCloseButton"; text: "إغلاق"; accent: theme.textSecondary; onClicked: intakeDialog.close() }
                 }
             }
@@ -2668,6 +2781,28 @@ Item {
                     width: intakeScroll.width - 14
                     spacing: 12
                     visible: intakeDialog.ready
+
+                    // ---- reversed state: derived from the correction record; the original invoice and its entries are never changed
+                    Rectangle {
+                        objectName: "invoiceReversedBanner"
+                        Layout.fillWidth: true
+                        visible: intakeDialog.ready && intakeDialog.inv.reversed === true
+                        implicitHeight: reversedColumn.implicitHeight + 16
+                        radius: theme.radiusSmall
+                        color: Qt.rgba(theme.red.r, theme.red.g, theme.red.b, 0.10)
+                        border.color: theme.red
+                        ColumnLayout {
+                            id: reversedColumn
+                            anchors.fill: parent; anchors.margins: 8
+                            spacing: 2
+                            Txt { objectName: "invoiceReversedTitle"; Layout.fillWidth: true; color: theme.red; font.bold: true
+                                  text: intakeDialog.ready ? "هذه الفاتورة معكوسة بالعملية " + page.ltr(intakeDialog.inv.reversalCode) : "" }
+                            Txt { Layout.fillWidth: true; color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                  text: intakeDialog.ready ? "السبب: " + intakeDialog.inv.reversalReason + "  •  " + intakeDialog.inv.reversedAt : "" }
+                            Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                  text: "بقيت الفاتورة الأصلية وقيودها في السجل دون تعديل، وسُجّل قيد عكسي بنفس القيم. لا يمكن إدخال قطع منها." }
+                        }
+                    }
 
                     // ---- 2. invoice summary: contractual figures (row 1) and shop-scale intake figures (row 2)
                     Section {

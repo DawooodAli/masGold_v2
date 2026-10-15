@@ -398,13 +398,13 @@ class RepositoryHygieneTests(unittest.TestCase):
         readme = (folder / "README.md").read_text(encoding="utf-8")
         self.assertIn("NOT a migration chain", readme)
         self.assertIn("Do **not** apply", readme)
-        self.assertEqual(len(list((ROOT / "database" / "schema").glob("0[0-9][0-9]_*.sql"))), 51)   # the one chain
+        self.assertEqual(len(list((ROOT / "database" / "schema").glob("0[0-9][0-9]_*.sql"))), 52)   # the one chain
 
     def test_documentation_states_the_current_schema_and_rules(self):
         for name in ("AGENTS.md", "CLAUDE.md"):
             text = (ROOT / name).read_text(encoding="utf-8")
-            self.assertIn("001–051", text, name)
-            self.assertIn("next migration is `052`", text, name)
+            self.assertIn("001–052", text, name)
+            self.assertIn("next migration is `053`", text, name)
             self.assertNotIn("001–024", text, name)
             for rule in ("1.25%–5.00%", "حفظ فقط", "MASGOLD_DEV_AUTO_LOGIN", "USERS_MANAGE"):
                 self.assertIn(rule, text, f"{name}: {rule}")
@@ -421,7 +421,7 @@ class SchemaVersionExpectationTests(unittest.TestCase):
 
     def test_the_repository_chain_ends_at_033(self):
         chain = sorted(p.name for p in (ROOT / "database" / "schema").glob("0[0-9][0-9]_*.sql"))
-        self.assertEqual([int(n[:3]) for n in chain], list(range(1, 52)))
+        self.assertEqual([int(n[:3]) for n in chain], list(range(1, 53)))
 
 
 if __name__ == "__main__":

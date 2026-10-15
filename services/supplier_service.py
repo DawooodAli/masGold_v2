@@ -178,7 +178,11 @@ class SupplierService:
                                  "reverses_reference": (None if r.get("reversed_settlement_id") is None
                                                         else _settlement_code(r["reversed_settlement_id"])
                                                         + ("" if r.get("reversed_custody_entry_no") is None else
-                                                           f" • {_custody_code(r['reversed_custody_trip_id'], r['reversed_custody_entry_no'])}"))}
+                                                           f" • {_custody_code(r['reversed_custody_trip_id'], r['reversed_custody_entry_no'])}")),
+                                 # a purchase-invoice row and its reversal (052): the RV that reversed the invoice / the invoice a reversal row undoes
+                                 "invoice_reversed_by": (None if r.get("invoice_reversal_id") is None
+                                                         else correction_code("FULL_REVERSAL", r["invoice_reversal_id"])),
+                                 "reverses_invoice": (None if r.get("reversed_invoice_id") is None else rules.invoice_code(r["reversed_invoice_id"]))}
                                 for r in gold],
                 "making_ledger": [self._making_row(r) for r in making]}
 
@@ -232,7 +236,10 @@ class SupplierService:
                 "custody_reference": custody,
                 "reversed_by": (None if r.get("reversal_id") is None
                                 else correction_code("FULL_REVERSAL", r["reversal_id"])),
-                "reverses_reference": reverses}
+                "reverses_reference": reverses,
+                "invoice_reversed_by": (None if r.get("invoice_reversal_id") is None
+                                        else correction_code("FULL_REVERSAL", r["invoice_reversal_id"])),
+                "reverses_invoice": (None if r.get("reversed_invoice_id") is None else rules.invoice_code(r["reversed_invoice_id"]))}
 
     # ------------------------------------------------------------------ master writes
     @staticmethod

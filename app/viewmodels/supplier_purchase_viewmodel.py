@@ -14,6 +14,29 @@ from app.formatting import date_text, datetime_text, grams, money, percent
 from services import supplier_rules as rules
 
 STATUS_TEXT = {"DRAFT": "مسودة", "POSTED": "مرحّلة", "CANCELLED": "ملغاة"}
+REVERSED_TEXT = "معكوسة"                      # a reversed invoice keeps the stored status POSTED: its reversed state is its correction record
+
+
+def _signed(value, formatter):
+    value = Decimal(str(value))
+    return ("−" if value < 0 else "+") + formatter(abs(value))
+
+
+def reversal_fields(preview):
+    """The exact effect of reversing an invoice, in words: the opposite entries and the supplier's balances before and after (display only)."""
+    from app.viewmodels.supplier_viewmodel import gold_position_text, making_position_text
+    karat = preview["karat_value"]
+    return {"id": preview["id"], "code": preview["code"], "supplierName": preview["supplier_name"], "karat": karat,
+            "reversed": bool(preview["reversed"]), "reversalCode": preview["reversal_code"] or "",
+            "canReverse": bool(preview["can_reverse"]),
+            "blockers": [b["message"] for b in preview["blockers"]],
+            "goldEntryText": f"حركة الذهب العكسية: {_signed(preview['gold_delta'], grams)} جرام عيار {karat}",
+            "makingEntryText": (f"حركة المصنعيات العكسية: {_signed(preview['making_delta'], money)} ج"
+                                if Decimal(str(preview["making_delta"])) != 0 else "لا توجد مصنعيات على هذه الفاتورة"),
+            "goldBeforeText": gold_position_text(rules.direction(preview["gold_before"]), preview["gold_before"], karat),
+            "goldAfterText": gold_position_text(rules.direction(preview["gold_after"]), preview["gold_after"], karat),
+            "makingBeforeText": making_position_text(rules.direction(preview["making_before"]), preview["making_before"]),
+            "makingAfterText": making_position_text(rules.direction(preview["making_after"]), preview["making_after"])}
 ITEM_STATUS_TEXT = {"IN_STOCK": "بالمخزون", "SOLD": "مباعة", "RETURNED_PENDING": "مرتجعة — قيد الفحص",
                     "CONVERTED_TO_OLD_GOLD": "محولة إلى كسر", "SCRAPPED": "مستبعدة", "REMOVED": "مستبعدة"}
 
@@ -56,6 +79,7 @@ class SupplierPurchaseViewModel(QObject):
     invoicePosted = Signal(str)          # invoice id: supplier balances changed
     stockChanged = Signal()              # a piece (and its barcode) was added to inventory
     draftSaved = Signal(str)             # a draft invoice was saved (the dialog can close)
+    invoiceReversed = Signal(str)        # a posted invoice was fully reversed (052): the confirmation dialog can close
 
     def __init__(self, session, service=None, parent=None):
         super().__init__(parent)
@@ -68,6 +92,7 @@ class SupplierPurchaseViewModel(QObject):
         self._error, self._message, self._done_text = "", "", ""
         self._error_from_write = False         # a rejected write's message is not cleared by a later successful read
         self._last_piece = {}
+        self._reversal = {}
 
     # ------------------------------------------------------------ plumbing
     def _service_instance(self):
@@ -226,6 +251,10 @@ class SupplierPurchaseViewModel(QObject):
         if result.get("kind") == "piece":
             self._last_piece = result
             self.stockChanged.emit()
+        if result.get("reversed"):
+            self._message = f"{self._done_text} ({result['code']})"
+            self._reversal = {}
+            self.invoiceReversed.emit(result["id"])
         if result.get("posted"):
             self.invoicePosted.emit(result["id"])
         elif result.get("status") == "DRAFT" and result.get("id"):
@@ -281,6 +310,28 @@ class SupplierPurchaseViewModel(QObject):
             return {"id": invoice_id}
         self._write("تم إلغاء المسودة.", call)
 
+    @Slot(str)
+    def loadReversal(self, invoice_id):
+        """The exact effect of reversing this invoice (read-only), for the confirmation dialog."""
+        service = self._service_instance()
+        self._reversal, self._error, self._message, self._error_from_write = {}, "", "", False
+        self._start("revprev", lambda _expected_actor: service.reversal_preview(invoice_id, _expected_actor=_expected_actor))
+        self.changed.emit()
+
+    def _on_revprev(self, result, error):
+        if error:
+            self._error = error
+            return
+        self._reversal = result
+
+    @Slot(str, str)
+    def reverseInvoice(self, invoice_id, reason):
+        """Full reversal through the ONE canonical correction; the service re-checks the owner right, the eligibility and the reason in its transaction."""
+        def call(service, expected):
+            done = service.reverse_invoice(invoice_id, reason, _expected_actor=expected)
+            return {"id": str(invoice_id), "reversed": True, "code": done["code"]}
+        self._write("تم عكس فاتورة المورد.", call)
+
     @Slot(str, str, int, str, str, int, str, str, str, str)
     def addPiece(self, invoice_id, group_id, item_type_id, weight, request_key, factory_id, size,
                  barcode_mode, barcode, notes):
@@ -312,6 +363,18 @@ class SupplierPurchaseViewModel(QObject):
     @Property(bool, notify=changed)
     def canIntake(self):
         return self._can("SUPPLIER_INTAKE")
+
+    @Property(bool, notify=changed)
+    def canReverse(self):
+        return self._can("SUPPLIER_INVOICE_REVERSE") and self._can("TRANSACTION_CORRECT")
+
+    @Property(bool, notify=changed)
+    def reversing(self):
+        return "write" in self._busy
+
+    @Property("QVariantMap", notify=changed)
+    def reversal(self):
+        return reversal_fields(self._reversal) if self._reversal else {}
 
     @Property(bool, notify=changed)
     def busy(self):
@@ -349,7 +412,9 @@ class SupplierPurchaseViewModel(QObject):
                  "reference": i["supplier_reference"] or "—", "date": date_text(i["invoice_date"]),
                  "karat": i["karat_value"], "weightText": grams(i["supplier_weight"]),
                  "makingText": money(i["gross_making"]), "status": i["status"],
-                 "statusText": STATUS_TEXT.get(i["status"], i["status"]), "pieceCount": i["piece_count"],
+                 "reversed": bool(i.get("reversed")), "reversalCode": i.get("reversal_code") or "",
+                 "statusText": REVERSED_TEXT if i.get("reversed") else STATUS_TEXT.get(i["status"], i["status"]),
+                 "pieceCount": i["piece_count"],
                  "actualText": grams(i["intake_actual_weight"]),
                  "varianceText": variance_text(i["intake_variance"]) if i["piece_count"] else "—",
                  "percentText": percent(i["intake_percent"], 1)}
@@ -363,8 +428,14 @@ class SupplierPurchaseViewModel(QObject):
         return {
             "id": d["id"], "code": d["code"], "supplierId": d["supplier_id"], "supplierName": d["supplier_name"],
             "reference": d["supplier_reference"] or "—", "date": date_text(d["invoice_date"]),
-            "karat": d["karat_value"], "status": d["status"], "statusText": STATUS_TEXT.get(d["status"], d["status"]),
-            "posted": d["status"] == "POSTED", "draft": d["status"] == "DRAFT",
+            "karat": d["karat_value"], "status": d["status"],
+            "statusText": REVERSED_TEXT if d.get("reversed") else STATUS_TEXT.get(d["status"], d["status"]),
+            "reversed": bool(d.get("reversed")), "reversalCode": d.get("reversal_code") or "",
+            "reversalReason": d.get("reversal_reason") or "",
+            "reversedAt": datetime_text(d["reversed_at"]) if d.get("reversed_at") else "",
+            # a reversed invoice keeps the stored status POSTED but accepts no intake and no second reversal
+            "posted": d["status"] == "POSTED" and not d.get("reversed"), "draft": d["status"] == "DRAFT",
+            "canReverse": d["status"] == "POSTED" and not d.get("reversed"),
             "weightText": grams(d["supplier_weight"]),
             "makingText": money(d["gross_making"]), "notes": d["notes"],
             "postedAt": datetime_text(d["posted_at"]) if d["posted_at"] else "",

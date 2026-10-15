@@ -164,7 +164,8 @@ class SupplierRepository(BaseRepository):
                        le.trip_id AS custody_trip_id, le.entry_no AS custody_entry_no,
                        COALESCE(gc.id, gcc.id) AS settlement_reversal_id,
                        IF(grc.source_type = 'SUPPLIER_GOLD_SETTLEMENT', grc.source_id, COALESCE(rlk.settlement_id, rll.settlement_id)) AS reversed_settlement_id,
-                       rle.trip_id AS reversed_custody_trip_id, rle.entry_no AS reversed_custody_entry_no
+                       rle.trip_id AS reversed_custody_trip_id, rle.entry_no AS reversed_custody_entry_no,
+                       ivc.id AS invoice_reversal_id, IF(irc.source_type = 'SUPPLIER_PURCHASE_INVOICE', irc.source_id, NULL) AS reversed_invoice_id
                 FROM supplier_gold_movements m
                 JOIN supplier_gold_movement_types t ON t.id = m.movement_type_id
                 JOIN karats k ON k.id = m.karat_id
@@ -185,6 +186,10 @@ class SupplierRepository(BaseRepository):
                 LEFT JOIN market_trip_gold_settlements rlk ON grc.source_type = 'MARKET_TRIP_ENTRY' AND rlk.entry_id = grc.source_id
                 LEFT JOIN market_trip_lot_settlements rll ON grc.source_type = 'MARKET_TRIP_ENTRY' AND rll.entry_id = grc.source_id
                 LEFT JOIN market_trip_entries rle ON rle.id = COALESCE(rlk.entry_id, rll.entry_id)
+                LEFT JOIN transaction_corrections ivc ON t.code = 'PURCHASE_INVOICE' AND m.source_type = 'SUPPLIER_PURCHASE_INVOICE'
+                     AND ivc.source_type = 'SUPPLIER_PURCHASE_INVOICE' AND ivc.source_id = m.source_id AND ivc.correction_type = 'FULL_REVERSAL'
+                LEFT JOIN transaction_corrections irc ON t.code = 'PURCHASE_INVOICE_REVERSAL' AND m.source_type = 'TRANSACTION_CORRECTION'
+                     AND irc.id = m.source_id
                 WHERE m.supplier_id = %s
             ) x ORDER BY x.occurred_at DESC, x.id DESC LIMIT %s
             """, (_id(supplier_id), int(limit)))
@@ -203,7 +208,8 @@ class SupplierRepository(BaseRepository):
                        c.id AS reversal_id, te.trip_id AS custody_trip_id, te.entry_no AS custody_entry_no,
                        IF(rc.source_type = 'SUPPLIER_MAKING_PAYMENT', rc.source_id, rl.payment_id) AS reversed_payment_id,
                        IF(rc.source_type = 'SUPPLIER_MAKING_PAYMENT', rc.source_reference, NULL) AS reversed_reference,
-                       re.trip_id AS reversed_custody_trip_id, re.entry_no AS reversed_custody_entry_no
+                       re.trip_id AS reversed_custody_trip_id, re.entry_no AS reversed_custody_entry_no,
+                       ivc.id AS invoice_reversal_id, IF(irc.source_type = 'SUPPLIER_PURCHASE_INVOICE', irc.source_id, NULL) AS reversed_invoice_id
                 FROM supplier_making_movements m
                 JOIN supplier_making_movement_types t ON t.id = m.movement_type_id
                 LEFT JOIN users u ON u.id = m.created_by_user_id
@@ -220,6 +226,10 @@ class SupplierRepository(BaseRepository):
                      AND rc.id = m.source_id
                 LEFT JOIN market_trip_supplier_payments rl ON rc.source_type = 'MARKET_TRIP_ENTRY' AND rl.entry_id = rc.source_id
                 LEFT JOIN market_trip_entries re ON re.id = rl.entry_id
+                LEFT JOIN transaction_corrections ivc ON t.code = 'PURCHASE_INVOICE' AND m.source_type = 'SUPPLIER_PURCHASE_INVOICE'
+                     AND ivc.source_type = 'SUPPLIER_PURCHASE_INVOICE' AND ivc.source_id = m.source_id AND ivc.correction_type = 'FULL_REVERSAL'
+                LEFT JOIN transaction_corrections irc ON t.code = 'PURCHASE_INVOICE_REVERSAL' AND m.source_type = 'TRANSACTION_CORRECTION'
+                     AND irc.id = m.source_id
                 WHERE m.supplier_id = %s
             ) x ORDER BY x.occurred_at DESC, x.id DESC LIMIT %s
             """, (_id(supplier_id), int(limit)))

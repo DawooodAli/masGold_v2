@@ -60,9 +60,12 @@ SGS = "SUPPLIER_GOLD_SETTLEMENT"      # direct supplier gold settlement from sho
 SGS_REVERSE_PERMISSION = "SUPPLIER_GOLD_SETTLE_REVERSE"
 HOLDING_REVERSE_PERMISSION = "INTERMEDIARY_HOLDING_REVERSE"
 HRC = "HOLDING_RECEIPT"              # physical receipt from an intermediary holding (051): full reversal only, OWNER only
-SOURCE_RIGHTS = {SMP: SMP_REVERSE_PERMISSION, MTE: MTE_PERMISSION, SGS: SGS_REVERSE_PERMISSION}   # a right ON TOP of TRANSACTION_CORRECT
-SOURCES = ("INVOICE", "EXCHANGE", "RETURN", CS, FO, CD, SMP, MTE, SGS, HRC)
-STANDALONE = (CS, FO, CD, SMP, MTE, SGS, HRC)    # sources without an invoice (never a fabricated one)
+SPI = "SUPPLIER_PURCHASE_INVOICE"     # posted supplier purchase invoice (052): full reversal only, OWNER only, no intaken piece
+SPI_REVERSE_PERMISSION = "SUPPLIER_INVOICE_REVERSE"
+SOURCE_RIGHTS = {SMP: SMP_REVERSE_PERMISSION, MTE: MTE_PERMISSION, SGS: SGS_REVERSE_PERMISSION,
+                 SPI: SPI_REVERSE_PERMISSION}   # a right ON TOP of TRANSACTION_CORRECT
+SOURCES = ("INVOICE", "EXCHANGE", "RETURN", CS, FO, CD, SMP, MTE, SGS, HRC, SPI)
+STANDALONE = (CS, FO, CD, SMP, MTE, SGS, HRC, SPI)    # sources without an invoice (never a fabricated one)
 MONEY = Decimal("0.01")
 ZERO, ZERO_GRAMS = Decimal("0.00"), Decimal("0.000")
 METHOD_TEXT = {"PHYSICAL_CASH": "نقدي", "MOBILE_WALLET": "محفظة", "INSTAPAY": "InstaPay", "BANK_TRANSFER": "تحويل بنكي"}
@@ -76,6 +79,7 @@ SOURCE_TEXT[SMP] = "دفعة المصنعيات"
 SOURCE_TEXT[MTE] = "حركة عهدة السوق"
 SOURCE_TEXT[SGS] = "تسوية ذهب المورد"
 SOURCE_TEXT[HRC] = "استلام ذهب من المسوقجي"
+SOURCE_TEXT[SPI] = "فاتورة شراء مورد"
 
 
 def correction_source_text(source_type, direction=None, *, definite=True):
@@ -330,6 +334,21 @@ class CorrectionService:
             reference = receipt_code(source_id)
             context = {"invoice_id": None, "invoice_number": reference, "customer_name_snapshot": None, "customer_id": None,
                        "finalized_at": source["occurred_at"], "net_amount": source["grams"]}
+            return context, source, reference
+        if source_type == SPI:
+            from repositories.supplier_purchase_repository import SupplierPurchaseRepository
+            from services import supplier_rules
+            repo = SupplierPurchaseRepository(connection)
+            source = repo.get_invoice(source_id)
+            if source is None:
+                raise CorrectionError("SOURCE_NOT_FOUND", "فاتورة المورد غير موجودة.")
+            if lock:                                            # the invoice's own order (posting and intake use it too): invoice row -> supplier row
+                source = repo.get_invoice(source_id, lock=True)
+                repo.get_supplier(source["supplier_id"], lock=True)
+            reference = supplier_rules.invoice_code(source_id)
+            context = {"invoice_id": None, "invoice_number": reference, "customer_name_snapshot": None, "customer_id": None,
+                       "finalized_at": source["posted_at"] or source.get("created_at"), "net_amount": source["supplier_weight_grams"],
+                       "supplier_id": str(source["supplier_id"]), "supplier_name": source.get("supplier_name")}
             return context, source, reference
         if source_type == SMP:
             from repositories.financial_account_repository import FinancialAccountRepository
@@ -629,6 +648,8 @@ class CorrectionService:
                                            -Decimal(str(gold_leg["equivalent_21_delta_grams"])), GOLD_REVERSAL))
         if source_type == HRC:
             self._plan_receipt(connection, plan, source, lock)
+        if source_type == SPI:
+            self._plan_supplier_invoice(connection, plan, source, source_id, lock)
         if source_type == SMP and source["payment_method"] == "CUSTODY":
             # Paid with market-custody cash: the custody entry is the only reversal path (it also restores the custody cash).
             from repositories.market_trip_repository import MarketTripRepository, entry_code
@@ -667,6 +688,29 @@ class CorrectionService:
                                       + (f" يوجد {held:,.3f} جرام محجوز لمراجعة المدير ولا يمكن استخدامه حتى اعتماد القرار."
                                          if held > 0 else "")))
         return plan
+
+    def _plan_supplier_invoice(self, connection, plan, source, source_id, lock):
+        """052: the exact STORED purchase movements are negated (never recomputed). A piece intaken from the invoice is real inventory with its own
+        identity, so any intake refuses the reversal (no cascade); the pieces are read CURRENT under the invoice lock when a decision is taken."""
+        from repositories.supplier_purchase_repository import (REVERSAL_MOVEMENT, SupplierPurchaseRepository)
+        from services import supplier_rules
+        repo = SupplierPurchaseRepository(connection)
+        if source["status"] != supplier_rules.POSTED:
+            plan.blockers.append(("INVOICE_NOT_POSTED", "يمكن عكس فاتورة مورد مرحّلة فقط؛ المسودة تُلغى من شاشة الفواتير."))
+            return
+        pieces = repo.intaken_pieces(source_id, lock=lock)
+        if pieces:
+            plan.blockers.append(("INVOICE_HAS_INTAKE",
+                                  f"لا يمكن عكس الفاتورة لأن {len(pieces)} قطعة أُدخلت منها إلى المخزون. "
+                                  "القطع المُدخلة لها هوية وباركود في المخزون ولا تُعكس تلقائيًا."))
+        gold, making = repo.posted_gold_movement(source_id), repo.posted_making_movement(source_id)
+        if gold is None:
+            plan.blockers.append(("INVOICE_MOVEMENT_MISSING", "حركة الذهب الأصلية للفاتورة غير موجودة."))
+            return
+        plan.supplier_gold.append((int(gold["supplier_id"]), int(gold["karat_id"]), -Decimal(str(gold["weight_delta_grams"])),
+                                   -Decimal(str(gold["equivalent_21_delta_grams"])), REVERSAL_MOVEMENT))
+        if making is not None:
+            plan.making.append((str(making["supplier_id"]), -Decimal(str(making["amount_delta"])), REVERSAL_MOVEMENT))
 
     def _plan_invoice(self, connection, plan, _source, lock):
         corrections = self._corrections(connection)
@@ -1128,7 +1172,7 @@ class CorrectionService:
     def _settlement_state(self, connection, source_type, source_id, lock):
         """The current EFFECTIVE settlement of a source: direction, legs, account part, total, chain."""
         corrections = self._corrections(connection)
-        if source_type in (FO, CD, SMP, MTE, SGS, HRC):
+        if source_type in (FO, CD, SMP, MTE, SGS, HRC, SPI):
             raise CorrectionError("SETTLEMENT_NOT_SUPPORTED",
                                   "هذه العملية تُصحح بالعكس الكامل ثم إعادة إدخالها صحيحة.")
         invoice, source, reference = self._load(connection, source_type, source_id, lock)

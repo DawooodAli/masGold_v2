@@ -21,7 +21,7 @@ PERMISSION_TEXT = {
     "INVOICE_SETTLEMENT_APPROVE": "الموافقة على تسوية الفاتورة", "CUSTOMER_ACCOUNT_SETTLE": "تسوية حساب العميل",
     "SUPPLIER_VIEW": "عرض الموردين", "SUPPLIER_MANAGE": "إدارة الموردين",
     "SUPPLIER_INVOICE_EDIT": "تحرير فواتير الموردين", "SUPPLIER_INVOICE_POST": "ترحيل فواتير الموردين",
-    "SUPPLIER_INTAKE": "إدخال قطع فواتير الموردين",
+    "SUPPLIER_INTAKE": "إدخال قطع فواتير الموردين", "SUPPLIER_INVOICE_REVERSE": "عكس فاتورة مورد مرحّلة",
     "SUPPLIER_MAKING_PAY": "دفع مصنعيات الموردين", "SUPPLIER_MAKING_PAY_REVERSE": "عكس دفعة مصنعيات المورد",
     "MARKET_TRIP_MANAGE": "عهدة السوق (نقدية وذهب)",
 }

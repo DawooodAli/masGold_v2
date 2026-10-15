@@ -27,12 +27,14 @@ from repositories.barcode_repository import BarcodeRepository
 from repositories.supplier_purchase_repository import SupplierPurchaseRepository
 from services import supplier_rules as rules
 from services.authorization_service import AuthorizationService
+from services.correction_rules import correction_code
 from services.inventory_service import InventoryService
 from services.invoice_service import invoice_transaction
 from services.number_text import normalize_digits
 from services.supplier_service import VIEW, authenticated_actor, clean_text
 
 EDIT, POST, INTAKE = "SUPPLIER_INVOICE_EDIT", "SUPPLIER_INVOICE_POST", "SUPPLIER_INTAKE"
+REVERSE, CORRECT = "SUPPLIER_INVOICE_REVERSE", "TRANSACTION_CORRECT"      # full reversal of a posted invoice (052): OWNER only, plus the generic correction right
 REFERENCE_MAX, NOTES_MAX = 100, 1000
 INTAKE_SOURCE = "SUPPLIER_PURCHASE"          # توريد مورد: never MARKET_PURCHASE (gold bought on the market)
 
@@ -83,11 +85,12 @@ def _date(value):
 
 class SupplierPurchaseService:
     def __init__(self, session, *, transaction_factory=invoice_transaction, repository=SupplierPurchaseRepository,
-                 barcodes=BarcodeRepository, inventory=None, authorization=None):
+                 barcodes=BarcodeRepository, inventory=None, authorization=None, corrections=None):
         self._session, self._transaction, self._repository = session, transaction_factory, repository
         self._barcodes = barcodes
         self._inventory = inventory or InventoryService()
         self._authorization = authorization or AuthorizationService(session)
+        self._corrections = corrections
 
     # ------------------------------------------------------------------ UI hints (never the authority)
     def _can(self, permission):
@@ -105,6 +108,9 @@ class SupplierPurchaseService:
 
     def can_intake(self):
         return self._can(INTAKE)
+
+    def can_reverse(self):
+        return self._can(REVERSE) and self._can(CORRECT)
 
     # ------------------------------------------------------------------ authorization paths
     def _read_verified(self, connection, actor):
@@ -326,6 +332,8 @@ class SupplierPurchaseService:
                 raise rules.SupplierRuleError("INVOICE_NOT_FOUND", "فاتورة المورد غير موجودة.")
             if invoice["status"] != rules.POSTED:
                 raise rules.SupplierRuleError("INVOICE_NOT_POSTED", "يمكن إدخال القطع من فاتورة مرحّلة فقط.")
+            if repository.reversal(invoice_id, lock=True) is not None:        # CURRENT read under the invoice lock (052)
+                raise rules.SupplierRuleError("INVOICE_REVERSED", "الفاتورة معكوسة ولا يمكن إدخال قطع منها.")
             group = repository.lock_group(group_id)
             if group is None or int(group["invoice_id"]) != invoice_id:
                 raise rules.SupplierRuleError("GROUP_NOT_FOUND", "مجموعة الفاتورة غير موجودة.")
@@ -402,6 +410,7 @@ class SupplierPurchaseService:
             invoice = repository.get_invoice(invoice_id)
             if invoice is None:
                 raise rules.SupplierRuleError("INVOICE_NOT_FOUND", "فاتورة المورد غير موجودة.")
+            reversal = repository.reversal(invoice_id)
             groups = repository.groups(invoice_id)
             progress = {int(r["group_id"]): r for r in repository.group_progress(invoice_id)}
             pieces = repository.pieces(invoice_id)
@@ -432,6 +441,10 @@ class SupplierPurchaseService:
         weight = Decimal(str(invoice["supplier_weight_grams"]))
         return {**self._header_result(invoice),
                 "supplier_name": invoice["supplier_name"], "karat_value": int(invoice["karat_value"]),
+                "reversed": reversal is not None,
+                "reversal_code": None if reversal is None else correction_code("FULL_REVERSAL", reversal["correction_id"]),
+                "reversal_reason": None if reversal is None else reversal["reason"],
+                "reversed_at": None if reversal is None else reversal["occurred_at"],
                 "posted_at": invoice["posted_at"], "groups": group_rows, "piece_count": total_count,
                 "intake": rules.progress(total_actual, weight),
                 "pieces": [{"id": str(p["id"]), "inventory_item_id": str(p["inventory_item_id"]),
@@ -439,6 +452,46 @@ class SupplierPurchaseService:
                             "making_per_gram": Decimal(str(p["making_per_gram"])), "item_type": p["item_type_name"],
                             "size": p["size"] or "", "status": p["inventory_status"],
                             "barcode": p["barcode_value"] or ""} for p in pieces]}
+
+    # ------------------------------------------------------------------ full reversal of a posted invoice (052)
+    def _correction_service(self):
+        if self._corrections is None:
+            from services.correction_service import CorrectionService
+            self._corrections = CorrectionService(self._session)
+        return self._corrections
+
+    def reversal_preview(self, invoice_id, *, _expected_actor=None):
+        """What reversing the invoice would do (read-only): the exact opposite entries and the supplier's balances before and after, or what blocks it."""
+        actor = authenticated_actor(self._session, REVERSE, "عكس فاتورة المورد للمالك فقط.", _expected_actor)
+        invoice_id = _id(invoice_id, "INVOICE_NOT_FOUND", "فاتورة المورد غير موجودة.")
+        plan = self._correction_service().preview_reversal(rules.PURCHASE_SOURCE, str(invoice_id), _expected_actor=_expected_actor)
+        with self._transaction() as connection:
+            self._read_verified(connection, actor)
+            repository = self._repository(connection)
+            invoice = repository.get_invoice(invoice_id)
+            if invoice is None:
+                raise rules.SupplierRuleError("INVOICE_NOT_FOUND", "فاتورة المورد غير موجودة.")
+            gold = {int(r["karat_id"]): Decimal(str(r["weight_balance"])) for r in repository.gold_balances(invoice["supplier_id"])}
+            making = Decimal(str(repository.making_balance(invoice["supplier_id"])))
+            reversal = repository.reversal(invoice_id)
+        gold_delta = sum((Decimal(row["delta"]) for row in plan["supplier_gold"]), Decimal("0.000"))
+        making_delta = sum((Decimal(row["delta"]) for row in plan["making"]), Decimal("0.00"))
+        gold_before = gold.get(int(invoice["karat_id"]), Decimal("0.000"))
+        return {"id": str(invoice_id), "code": rules.invoice_code(invoice_id), "supplier_id": str(invoice["supplier_id"]),
+                "supplier_name": invoice["supplier_name"], "karat_value": int(invoice["karat_value"]), "status": invoice["status"],
+                "reversed": reversal is not None,
+                "reversal_code": None if reversal is None else correction_code("FULL_REVERSAL", reversal["correction_id"]),
+                "can_reverse": bool(plan["can_reverse"]), "blockers": plan["blockers"],
+                "gold_delta": gold_delta, "making_delta": making_delta,
+                "gold_before": gold_before, "gold_after": gold_before + gold_delta,
+                "making_before": making, "making_after": making + making_delta}
+
+    def reverse_invoice(self, invoice_id, reason, *, _expected_actor=None):
+        """Full reversal of a posted invoice with no intaken piece, through the ONE canonical correction (OWNER only, reason mandatory). The rights are
+        rechecked inside its transaction; the invoice and its original ledger movements are never changed."""
+        authenticated_actor(self._session, REVERSE, "عكس فاتورة المورد للمالك فقط.", _expected_actor)
+        invoice_id = _id(invoice_id, "INVOICE_NOT_FOUND", "فاتورة المورد غير موجودة.")
+        return self._correction_service().reverse(rules.PURCHASE_SOURCE, str(invoice_id), reason, _expected_actor=_expected_actor)
 
     def piece_origin(self, inventory_item_id, *, _expected_actor=None):
         """Reverse traceability of a piece: its supplier invoice and group (None for stock from elsewhere)."""
@@ -477,4 +530,6 @@ class SupplierPurchaseService:
                 "supplier_reference": row["supplier_reference"] or "", "invoice_date": row["invoice_date"],
                 "supplier_weight": weight, "gross_making": Decimal(str(row["gross_making_total"])),
                 "status": row["status"], "piece_count": int(row["piece_count"]),
+                "reversed": row.get("reversal_id") is not None,
+                "reversal_code": None if row.get("reversal_id") is None else correction_code("FULL_REVERSAL", row["reversal_id"]),
                 **{f"intake_{k}": v for k, v in rules.progress(row["actual_weight"], weight).items()}}

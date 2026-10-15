@@ -446,7 +446,8 @@ class RightsTests(SettleCase):
         for name, rights in expected.items():
             self.assertEqual(needs[name], rights, name)
         from services import correction_service as module
-        self.assertEqual(module.SOURCE_RIGHTS, {module.SMP: module.SMP_REVERSE_PERMISSION, module.MTE: module.MTE_PERMISSION, module.SGS: module.SGS_REVERSE_PERMISSION})
+        self.assertEqual(module.SOURCE_RIGHTS, {module.SMP: module.SMP_REVERSE_PERMISSION, module.MTE: module.MTE_PERMISSION, module.SGS: module.SGS_REVERSE_PERMISSION,
+                                                module.SPI: module.SPI_REVERSE_PERMISSION})                    # 052: the supplier invoice reversal right is additive
 
     def test_a_direct_shop_scrap_settlement_still_needs_only_its_own_rights(self):
         from services.supplier_gold_settlement_service import SupplierGoldSettlementService

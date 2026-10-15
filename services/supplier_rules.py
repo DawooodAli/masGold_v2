@@ -217,6 +217,7 @@ def check_supplier_karat_change(current_karat_id, wanted_karat_id, history):
 
 # Supplier gold ledger: the display label of a movement TYPE by its stable code (the stored English type names are history and are never rewritten).
 GOLD_MOVEMENT_TEXT = {"PURCHASE_INVOICE": "فاتورة شراء",
+                      "PURCHASE_INVOICE_REVERSAL": "عكس فاتورة شراء",
                       "SETTLEMENT": "تسوية ذهب مورد",
                       "SETTLEMENT_REVERSAL": "عكس تسوية ذهب مورد"}
 

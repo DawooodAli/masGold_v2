@@ -251,9 +251,10 @@ class SupplierRepo:
         for m in sorted((m for m in self.db.gold if m["supplier_id"] == int(supplier_id)),
                         key=lambda r: (r["occurred_at"], r["id"])):
             running[m["karat_id"]] = running.get(m["karat_id"], D("0")) + m["weight_delta_grams"]   # per karat, as the SQL window
-            rows.append({**m, "movement_code": "PURCHASE_INVOICE", "movement_name": "Supplier Purchase Invoice",
+            code, name = GOLD_TYPES[m["movement_type_id"]]
+            rows.append({**m, "movement_code": code, "movement_name": name,
                          "karat_value": self.db.karats[m["karat_id"]]["karat_value"], "actor_name": "المدير",
-                         "weight_balance_after": running[m["karat_id"]]})
+                         "weight_balance_after": running[m["karat_id"]], **self._invoice_reversal_keys(code, m)})
         return rows[::-1][:limit]
 
     def making_ledger(self, supplier_id, limit=200):
@@ -275,8 +276,17 @@ class SupplierRepo:
                          "cash_account_name": cash and cash["name"], "bank_account_name": bank and bank["name"],
                          "reversal_id": reversal and int(reversal["correction_id"]),
                          "reversed_payment_id": undone and int(undone["source_id"]),
-                         "reversed_reference": undone and undone["source_reference"]})
+                         "reversed_reference": undone and undone["source_reference"], **self._invoice_reversal_keys(code, m)})
         return rows[::-1][:limit]
+
+    def _invoice_reversal_keys(self, code, movement):
+        """The 052 ledger keys: the RV that reversed a purchase-invoice row / the invoice a reversal row undoes (as the SQL joins)."""
+        reversal = next((c for c in self.db.corrections if code == "PURCHASE_INVOICE" and c["source_type"] == "SUPPLIER_PURCHASE_INVOICE"
+                         and c["source_id"] == str(movement["source_id"]) and c["correction_type"] == "FULL_REVERSAL"), None)
+        undone = next((c for c in self.db.corrections if code == "PURCHASE_INVOICE_REVERSAL" and movement["source_type"] == "TRANSACTION_CORRECTION"
+                       and c["correction_id"] == str(movement["source_id"]) and c["source_type"] == "SUPPLIER_PURCHASE_INVOICE"), None)
+        return {"invoice_reversal_id": reversal and int(reversal["correction_id"]),
+                "reversed_invoice_id": undone and int(undone["source_id"])}
 
     def audit(self, *, actor, event_type, entity_id, reference, description, metadata, now, entity_type="SUPPLIER"):
         self.db.audit_rows.append({"user_id": actor.user_id, "event_type": event_type, "entity_type": entity_type,
@@ -360,17 +370,39 @@ class PurchaseRepo(SupplierRepo):
             if status and invoice["status"] != status:
                 continue
             links = [link for link in self.db.links if link["invoice_id"] == invoice["id"]]
+            reversal = self.reversal(invoice["id"])
             rows.append({**self._joined(invoice), "piece_count": len(links),
+                         "reversal_id": None if reversal is None else reversal["correction_id"],
                          "actual_weight": sum((self.db.items[link["inventory_item_id"]]["weight_grams"]
                                                for link in links), D("0"))})
         return rows[:limit]
 
+    # ------------------------------------------------------------ reversal (052): the reversed state is the correction record
+    def reversal(self, invoice_id, lock=False):
+        found = next((c for c in self.db.corrections if c["source_type"] == "SUPPLIER_PURCHASE_INVOICE"
+                      and c["source_id"] == str(int(invoice_id)) and c["correction_type"] == "FULL_REVERSAL"), None)
+        return None if found is None else {"correction_id": int(found["correction_id"]), "occurred_at": found["occurred_at"],
+                                           "reason": found["reason"]}
+
+    def intaken_pieces(self, invoice_id, lock=False):
+        return [dict(link) for link in self.db.links if link["invoice_id"] == int(invoice_id)]
+
+    def posted_gold_movement(self, invoice_id):
+        found = next((m for m in self.db.gold if (m["source_type"], m["source_id"], m["movement_type_id"])
+                      == ("SUPPLIER_PURCHASE_INVOICE", int(invoice_id), 1)), None)
+        return None if found is None else dict(found)
+
+    def posted_making_movement(self, invoice_id):
+        found = next((m for m in self.db.making if (m["source_type"], m["source_id"], m["movement_type_id"])
+                      == ("SUPPLIER_PURCHASE_INVOICE", int(invoice_id), 1)), None)
+        return None if found is None else dict(found)
+
     # ------------------------------------------------------------ ledgers (insert only)
     def gold_type_id(self, code):
-        return 1 if code == "PURCHASE_INVOICE" else None
+        return {"PURCHASE_INVOICE": 1, "PURCHASE_INVOICE_REVERSAL": 2}.get(code)
 
     def making_type_id(self, code):
-        return 1 if code == "PURCHASE_INVOICE" else None
+        return {"PURCHASE_INVOICE": 1, "PURCHASE_INVOICE_REVERSAL": 4}.get(code)
 
     def insert_gold_movement(self, *, supplier_id, type_id, karat_id, weight_delta, eq21_delta, source_type,
                              source_id, reference, description, now, user_id):
@@ -567,11 +599,13 @@ def build(permissions=ALL, user_id=7, employee_id=None, granted=None, session=No
 # ------------------------------------------------------------------------------------------ supplier making payments (036)
 # The money ledgers, the payment document and the corrections are fake tables of the same Db, so one transaction
 # snapshot/rollback covers the payment, its money movement, its making movement and a reversal together (atomicity).
-OWNER_RIGHTS = frozenset(ALL | {"SUPPLIER_MAKING_PAY", "SUPPLIER_MAKING_PAY_REVERSE", "TRANSACTION_CORRECT"})
+OWNER_RIGHTS = frozenset(ALL | {"SUPPLIER_MAKING_PAY", "SUPPLIER_MAKING_PAY_REVERSE", "TRANSACTION_CORRECT", "SUPPLIER_INVOICE_REVERSE"})
 MANAGER_RIGHTS = frozenset(ALL | {"SUPPLIER_MAKING_PAY", "TRANSACTION_CORRECT"})
 CASHIER_RIGHTS = frozenset({"APP_LOGIN", "SUPPLIER_VIEW"})
 MAKING_TYPES = {1: ("PURCHASE_INVOICE", "Supplier Purchase Invoice Making"), 2: ("PAYMENT", "Supplier Making Payment"),
-                3: ("PAYMENT_REVERSAL", "Supplier Making Payment Reversal")}
+                3: ("PAYMENT_REVERSAL", "Supplier Making Payment Reversal"),
+                4: ("PURCHASE_INVOICE_REVERSAL", "Supplier Purchase Invoice Making Reversal")}
+GOLD_TYPES = {1: ("PURCHASE_INVOICE", "Supplier Purchase Invoice"), 2: ("PURCHASE_INVOICE_REVERSAL", "Supplier Purchase Invoice Reversal")}
 MAKING_TYPE_ID = {code: type_id for type_id, (code, _) in MAKING_TYPES.items()}
 
 
@@ -625,6 +659,13 @@ class PaymentRepo(PurchaseRepo):
 
     def making_type_id(self, code):
         return MAKING_TYPE_ID.get(code)
+
+    def insert_gold_movement(self, *, supplier_id, type_id, karat_id, weight_delta, eq21_delta, source_type,
+                             source_id, reference, description, now, user_id):
+        self._fail("gold")
+        return super().insert_gold_movement(supplier_id=supplier_id, type_id=type_id, karat_id=karat_id, weight_delta=weight_delta,
+                                            eq21_delta=eq21_delta, source_type=source_type, source_id=source_id, reference=reference,
+                                            description=description, now=now, user_id=user_id)
 
     def insert_making_movement(self, *, supplier_id, type_id, amount_delta, source_type, source_id, reference,
                                description, now, user_id):

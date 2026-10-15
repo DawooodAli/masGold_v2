@@ -7,6 +7,9 @@ from repositories.supplier_repository import SupplierRepository, _id
 
 ACTIVE_BARCODE_JOIN = ("LEFT JOIN inventory_barcodes ib ON ib.inventory_item_id = ii.id "
                        "AND ib.barcode_status = 'ACTIVE'")
+PURCHASE_SOURCE = "SUPPLIER_PURCHASE_INVOICE"     # the movement source of a posted invoice AND the correction source of its reversal (052)
+PURCHASE_MOVEMENT = "PURCHASE_INVOICE"
+REVERSAL_MOVEMENT = "PURCHASE_INVOICE_REVERSAL"   # the movement type (both ledgers) of the exact opposite entry posted by a full reversal
 
 
 class SupplierPurchaseRepository(SupplierRepository):
@@ -106,10 +109,13 @@ class SupplierPurchaseRepository(SupplierRepository):
             f"""
             SELECT i.id, i.supplier_id, s.name AS supplier_name, i.karat_id, k.karat_value, i.supplier_reference,
                    i.invoice_date, i.supplier_weight_grams, i.gross_making_total, i.status, i.created_at, i.posted_at,
-                   COALESCE(p.piece_count, 0) AS piece_count, COALESCE(p.actual_weight, 0) AS actual_weight
+                   COALESCE(p.piece_count, 0) AS piece_count, COALESCE(p.actual_weight, 0) AS actual_weight,
+                   rv.id AS reversal_id
             FROM supplier_purchase_invoices i
             JOIN suppliers s ON s.id = i.supplier_id
             JOIN karats k ON k.id = i.karat_id
+            LEFT JOIN transaction_corrections rv ON rv.source_type = 'SUPPLIER_PURCHASE_INVOICE' AND rv.source_id = i.id
+                 AND rv.correction_type = 'FULL_REVERSAL'
             LEFT JOIN (SELECT sp.invoice_id, COUNT(*) AS piece_count, SUM(ii.weight_grams) AS actual_weight
                        FROM supplier_invoice_pieces sp JOIN inventory_items ii ON ii.id = sp.inventory_item_id
                        GROUP BY sp.invoice_id) p ON p.invoice_id = i.id
@@ -117,6 +123,36 @@ class SupplierPurchaseRepository(SupplierRepository):
             ORDER BY i.invoice_date DESC, i.id DESC
             LIMIT %s
             """, tuple(params))
+
+    # ------------------------------------------------------------------ reversal (052): the reversed state is DERIVED from the correction record
+    def reversal(self, invoice_id, lock=False):
+        """The FULL_REVERSAL correction of an invoice, or None. `lock=True` is a locking CURRENT read, for decisions: under REPEATABLE READ a plain read
+        could return a snapshot older than a reversal committed while this transaction waited for the invoice lock."""
+        return self._fetch_one(
+            "SELECT id AS correction_id, occurred_at, reason FROM transaction_corrections "
+            "WHERE source_type = %s AND source_id = %s AND correction_type = 'FULL_REVERSAL'" + (" FOR SHARE" if lock else ""),
+            (PURCHASE_SOURCE, _id(invoice_id)))
+
+    def intaken_pieces(self, invoice_id, lock=False):
+        """The pieces linked to the invoice (any later status). A decision reads them CURRENT under the invoice lock."""
+        return self._fetch_all("SELECT id, inventory_item_id FROM supplier_invoice_pieces WHERE invoice_id = %s ORDER BY id"
+                               + (" FOR SHARE" if lock else ""), (_id(invoice_id),))
+
+    def posted_gold_movement(self, invoice_id):
+        """The GOLD movement the posting wrote (its stored values are what a reversal negates)."""
+        return self._fetch_one(
+            "SELECT m.id, m.supplier_id, m.karat_id, m.weight_delta_grams, m.equivalent_21_delta_grams "
+            "FROM supplier_gold_movements m JOIN supplier_gold_movement_types t ON t.id = m.movement_type_id "
+            "WHERE m.source_type = %s AND m.source_id = %s AND t.code = %s",
+            (PURCHASE_SOURCE, _id(invoice_id), PURCHASE_MOVEMENT))
+
+    def posted_making_movement(self, invoice_id):
+        """The MAKING movement the posting wrote (None for an invoice without making)."""
+        return self._fetch_one(
+            "SELECT m.id, m.supplier_id, m.amount_delta "
+            "FROM supplier_making_movements m JOIN supplier_making_movement_types t ON t.id = m.movement_type_id "
+            "WHERE m.source_type = %s AND m.source_id = %s AND t.code = %s",
+            (PURCHASE_SOURCE, _id(invoice_id), PURCHASE_MOVEMENT))
 
     # ------------------------------------------------------------------ ledgers (insert only)
     def gold_type_id(self, code):
