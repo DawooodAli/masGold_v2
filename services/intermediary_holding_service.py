@@ -13,15 +13,15 @@ import json
 
 from mysql.connector import IntegrityError
 
-from repositories.intermediary_holding_repository import (CONFIRMATION_CODE, HANDOVER, HOLD_BACK, HOLD_IN, HOLD_OUT, HOLD_RETURN, LOGO_HOLD, LOT_HOLD,
+from repositories.intermediary_holding_repository import (CONFIRMATION_CODE, PHYSICAL_EVENTS_DECLARATION_CODE, HANDOVER, HOLD_BACK, HOLD_IN, HOLD_OUT, HOLD_RETURN, LOGO_HOLD, LOT_HOLD,
                                                           MOVE_HANDOVER, MOVE_RETURN, RETURN, IntermediaryHoldingRepository, holding_code,
                                                           logo_holding_code)
 from repositories.market_trip_repository import OPEN, MarketTripRepository, entry_code, trip_code
 from repositories.supplier_gold_settlement_repository import SupplierGoldSettlementRepository
 from services.authorization_service import AuthorizationService
 from services.intermediary_holding_rules import (ALLOCATING, CONFIRMATION_TEXT, MANAGE_PERMISSION, TRIP_PERMISSION, VIEW_PERMISSION,
-                                                 allocation_note, document_row, holding_settlement_row, logo_document_row, logo_pool_row,
-                                                 pool_row, pure_grams, receipt_row)
+                                                 DIVIDED, document_row, holding_settlement_row, logo_document_row, logo_pool_row,
+                                                 pool_row, pure_grams, receipt_row, return_review as build_return_review, reviewed_pool_row)
 from services.invoice_service import invoice_transaction
 from services.market_trip_service import (NOTES_MAX, PAYMENT_REFERENCE_MAX, TripError, ZERO_WEIGHT, _entry_date, _key, _text, _trip_id,
                                           custody_view, parse_weight)
@@ -81,7 +81,8 @@ class IntermediaryHoldingService:
         with self._transaction() as connection:
             self._authorization.require_permission_read(connection, actor, VIEW_PERMISSION)
             holdings = self._holdings(connection)
-            pools = [pool_row(r) for r in holdings.open_pools(party_id=party_id)]
+            pools = [reviewed_pool_row(row, holdings.pool_return_events(row["pool_id"]))
+                     for row in holdings.open_pools(party_id=party_id)]
             history = [document_row(r) for r in holdings.party_documents(party_id)]
             logo_pools = [logo_pool_row(r) for r in holdings.logo_open_pools(party_id=party_id)]
             logo_history = [logo_document_row(r) for r in holdings.logo_party_documents(party_id)]
@@ -91,11 +92,27 @@ class IntermediaryHoldingService:
         pure = sum((p["pure"] for p in pools if p["pure"] is not None), Decimal("0"))
         return {"party_id": str(party_id), "pools": pools, "history": history, "total": total, "pure": pure,
                 "logo_pools": logo_pools, "logo_history": logo_history, "settlements": settlements, "receipts": receipts,
-                "can_receive": MANAGE_PERMISSION in actor.permissions,
+                "can_receive": False,
                 "can_reverse_receipt": {"TRANSACTION_CORRECT", "INTERMEDIARY_HOLDING_REVERSE"} <= set(actor.permissions),
                 "can_manage": MANAGE_PERMISSION in actor.permissions and TRIP_PERMISSION in actor.permissions,
                 "can_settle": MANAGE_PERMISSION in actor.permissions and "SUPPLIER_GOLD_SETTLE" in actor.permissions,
                 "can_reverse": "SUPPLIER_GOLD_SETTLE_REVERSE" in actor.permissions and "INTERMEDIARY_HOLDING_REVERSE" in actor.permissions}
+
+    def return_review(self, pool_id, *, _expected_actor=None):
+        """Return a read-only, server-derived event snapshot for the owner to review before confirming a whole-bar return."""
+        actor = self._session.require_authenticated()
+        if _expected_actor is not None and not self._session.is_current(_expected_actor):
+            raise PermissionError("انتهت جلسة الدخول.")
+        if not {MANAGE_PERMISSION, TRIP_PERMISSION} <= set(actor.permissions):
+            raise PermissionError("مراجعة رجوع السبكة للمالك فقط.")
+        pool_id = _pool_id(pool_id)
+        with self._transaction() as connection:
+            self._authorization.require_permission_read(connection, actor, MANAGE_PERMISSION)
+            self._authorization.require_permission_read(connection, actor, TRIP_PERMISSION)
+            holdings = self._holdings(connection)
+            if holdings.pool(pool_id) is None:
+                raise TripError("HOLDING_NOT_FOUND", "مصدر الذهب لدى المسوقجي غير موجود.")
+            return build_return_review(holdings.pool_return_events(pool_id))
 
     # ------------------------------------------------------------------ shared checks
     @staticmethod
@@ -119,23 +136,28 @@ class IntermediaryHoldingService:
                 "party_id": str(document["party_id"]), "lot_id": str(document["lot_id"]), "weight": str(document["weight_grams"]),
                 "fineness": str(document["fineness_permille"])}
 
-    def _prior(self, repository, holdings, settlements, key, digest, actor, kind):
+    def _prior(self, repository, holdings, settlements, key, digest, actor, kind, legacy_digest=None):
         """The original linked records of an already-recorded key, decided BEFORE any availability is derived. Any other use of the key
-        (another operation, another payload, another actor, a supplier settlement) is a conflict."""
+        (another operation, another payload, another actor, a supplier settlement) is a conflict.
+
+        `legacy_digest` is ONLY the pre-review-token digest of a HOLD_RETURN (same business payload): a successful return recorded before the
+        review token existed stored that hash. It matches such records exactly and never any record written by the current format."""
+        accepted = {digest} if legacy_digest is None else {digest, legacy_digest}
         entry, document, header = repository.by_request(key), holdings.by_request(key), settlements.by_request(key)
         if entry is None and document is None and header is None and holdings.logo_by_request(key) is None and holdings.receipt_by_request(key) is None:
             return None
         link = None if entry is None else holdings.link_by_entry(entry["id"])
         if (entry is None or document is None or header is not None or link is None or entry["entry_kind"] != kind
-                or int(link["document_id"]) != int(document["id"]) or entry["request_hash"] != digest or document["request_hash"] != digest
+                or int(link["document_id"]) != int(document["id"]) or entry["request_hash"] not in accepted or document["request_hash"] not in accepted
                 or int(entry["performed_by_user_id"]) != int(actor.user_id)):
             raise TripError("REQUEST_CONFLICT", "طلب العملية مستخدم لعملية مختلفة.")
         return self._result(entry, document, kind, True)
 
-    def _replay_after_twin(self, session_actor, key, digest, kind, original):
+    def _replay_after_twin(self, session_actor, key, digest, kind, original, legacy_digest=None):
         with self._transaction() as connection:
             actor = self._verified(connection, session_actor)
-            result = self._prior(self._repository(connection), self._holdings(connection), self._parties(connection), key, digest, actor, kind)
+            result = self._prior(self._repository(connection), self._holdings(connection), self._parties(connection), key, digest, actor, kind,
+                                 legacy_digest)
             if result is None:
                 raise original
             return result
@@ -217,7 +239,8 @@ class IntermediaryHoldingService:
         return result
 
     # ------------------------------------------------------------------ normal intact return to the original custody
-    def return_holding(self, pool_id, intact_confirmed, return_date, reference, notes, request_key, *, _expected_actor=None):
+    def return_holding(self, pool_id, intact_confirmed, review_token, physical_events_confirmed,
+                       return_date, reference, notes, request_key, *, _expected_actor=None):
         """Take ONE whole source back into the ORIGINAL OPEN custody. Needs the OWNER's explicit intact confirmation; nothing else
         (a full balance alone) certifies the same, whole, undivided bar."""
         session_actor = self._writer(_expected_actor)
@@ -225,16 +248,24 @@ class IntermediaryHoldingService:
         returned_on = _entry_date(return_date)
         reference, notes, key = _text(reference, PAYMENT_REFERENCE_MAX, "المرجع"), _text(notes, NOTES_MAX, "الملاحظات"), _key(request_key)
         confirmed = intact_confirmed is True or str(intact_confirmed).strip().lower() == "true"
-        digest = hashlib.sha256(json.dumps([HOLD_RETURN, pool_id, returned_on.isoformat(), reference, notes, confirmed],
+        physical_confirmed = physical_events_confirmed is True or str(physical_events_confirmed).strip().lower() == "true"
+        review_token = str(review_token or "").strip()
+        digest = hashlib.sha256(json.dumps([HOLD_RETURN, pool_id, returned_on.isoformat(), reference, notes, confirmed,
+                                            review_token, physical_confirmed],
                                            ensure_ascii=False).encode()).hexdigest()
+        # the digest format of a return recorded before the review token existed (same business payload; compared on replay only)
+        legacy_digest = hashlib.sha256(json.dumps([HOLD_RETURN, pool_id, returned_on.isoformat(), reference, notes, confirmed],
+                                                  ensure_ascii=False).encode()).hexdigest()
         try:
-            return self._post_return(session_actor, pool_id, confirmed, returned_on, reference, notes, key, digest)
+            return self._post_return(session_actor, pool_id, confirmed, review_token, physical_confirmed,
+                                     returned_on, reference, notes, key, digest, legacy_digest)
         except IntegrityError as exc:
             if getattr(exc, "errno", None) != 1062 or not any(k in str(exc) for k in KEY_CONSTRAINTS):
                 raise
-            return self._replay_after_twin(session_actor, key, digest, HOLD_RETURN, exc)
+            return self._replay_after_twin(session_actor, key, digest, HOLD_RETURN, exc, legacy_digest)
 
-    def _post_return(self, session_actor, pool_id, confirmed, returned_on, reference, notes, key, digest):
+    def _post_return(self, session_actor, pool_id, confirmed, review_token, physical_confirmed,
+                     returned_on, reference, notes, key, digest, legacy_digest=None):
         with self._transaction() as connection:
             actor = self._verified(connection, session_actor)
             repository, holdings, parties = self._repository(connection), self._holdings(connection), self._parties(connection)
@@ -243,7 +274,7 @@ class IntermediaryHoldingService:
                 raise TripError("HOLDING_NOT_FOUND", "مصدر الذهب لدى المسوقجي غير موجود.")
             trip_id, lot_id, party_id = int(handover["trip_id"]), int(handover["lot_id"]), int(handover["party_id"])
             trip = repository.trip(trip_id, lock=True)                           # trip -> lot -> party -> pool
-            replay = self._prior(repository, holdings, parties, key, digest, actor, HOLD_RETURN)
+            replay = self._prior(repository, holdings, parties, key, digest, actor, HOLD_RETURN, legacy_digest)
             if replay is not None:
                 return replay
             if not confirmed:
@@ -261,11 +292,31 @@ class IntermediaryHoldingService:
             balance = Decimal(str(holdings.pool_balance(pool_id)))                # CURRENT, compensations included
             if balance == 0:
                 raise TripError("HOLDING_NOT_AVAILABLE", "لا يوجد رصيد من هذه السبكة لدى المسوقجي (رُجعت أو عُكس تسليمها).")
-            allocated = [r for r in holdings.pool_settlement_history(pool_id) if r["physical_declaration"] in ALLOCATING]     # CURRENT, reversed ones included
-            if allocated:                                                       # a full balance after a reversal never certifies an intact bar
-                raise TripError("ALLOCATION_HISTORY_BLOCKS_RETURN", allocation_note(allocated[0]["id"]))
             if balance != full:
                 raise TripError("HOLDING_PARTIAL", "رصيد المصدر لا يطابق وزن السبكة كاملة: لا يُسجَّل الرجوع حتى تُراجع الأرصدة.")
+            events = holdings.pool_return_events(pool_id, lock=True)              # CURRENT, exact event list under trip -> lot -> party -> pool locks
+            review = build_return_review(events)
+            if not review_token or review_token != review["token"]:
+                raise TripError("RETURN_REVIEW_CHANGED", "تغيّر سجل التسويات أو الاستلامات منذ مراجعته؛ حدّث الصفحة وافتح تأكيد الرجوع من جديد.")
+            if review["requires_physical_declaration"] and not physical_confirmed:
+                raise TripError("PHYSICAL_EVENT_DECLARATION_REQUIRED",
+                                "أقرّ بالخطأ وبأن القسمة أو الاستلام المادي المدرج لم يقع فعليًا، مع بقاء السبكة الأصلية نفسها سليمة وكاملة.")
+            physical_declared = bool(physical_confirmed) and review["requires_physical_declaration"]
+            active_settlements = [event for event in events
+                                  if event["kind"] == "SUPPLIER_SETTLEMENT" and event["reversal_id"] is None]
+            if active_settlements:
+                from repositories.supplier_gold_settlement_repository import settlement_code
+                codes = "، ".join(settlement_code(event["id"]) for event in active_settlements)
+                raise TripError("SETTLEMENT_NOT_REVERSED", f"تسويات المورد التالية ما زالت فعالة: {codes}؛ اعكسها أولًا.")
+            invalid_receipts = [
+                event for event in events if event["kind"] == "PHYSICAL_RECEIPT"
+                and (event["reversal_id"] is None or event["stock_grams"] != "0.000"
+                     or any(move["type"] not in ("RECEIVE", "RECEIVE_REVERSAL") for move in event["stock_movements"]))
+            ]
+            if invalid_receipts:
+                from repositories.intermediary_holding_repository import piece_code, receipt_code
+                codes = "، ".join(f"{receipt_code(event['id'])}/{piece_code(event['piece_id'])}" for event in invalid_receipts)
+                raise TripError("RECEIPT_NOT_REVERSED", f"استلامات مادية أو مخزون/استخدام تابع ما زال قائمًا: {codes}؛ صحّحها أولًا.")
             current = next(iter(repository.custody_lots(trip_id, lot_id=lot_id)), None)
             in_custody = Decimal("0") if current is None else Decimal(str(current["outstanding_grams"]))
             if (in_custody != 0 or Decimal(str(repository.shop_lot_balance(lot_id))) != 0
@@ -285,10 +336,32 @@ class IntermediaryHoldingService:
                                  pool_id=pool_id, lot_id=lot_id, weight=full, custody_movement_id=custody_id, movement_type=HOLD_IN, delta=full)
             label = (f"رجوع سبكة من المسوقجي {ih} إلى عهدة السوق {code}: {full:,.3f} جرام • العيار الفعلي {pool['fineness_permille']} بالألف "
                      f"• تأكيد المالك: {CONFIRMATION_TEXT}")
+            from repositories.intermediary_holding_repository import piece_code, receipt_code
+            from repositories.supplier_gold_settlement_repository import settlement_code
+            settlements_ref = [e for e in review["events"] if e["kind"] == "SUPPLIER_SETTLEMENT"]
+            receipts_ref = [e for e in review["events"] if e["kind"] == "PHYSICAL_RECEIPT"]
+            event_review = {
+                "snapshot_sha256": review["token"],
+                "events": review["events"],
+                "same_original_bar_intact_and_undivided": True,
+                "same_original_bar_confirmation_code": CONFIRMATION_CODE,
+                "physical_events_recorded_in_error_and_did_not_occur": physical_declared,
+                # the declaration code exists ONLY when physical events were listed and declared; a cancelled GRAM_ENTITLEMENT is never labelled erroneous
+                "physical_event_declaration_code": PHYSICAL_EVENTS_DECLARATION_CODE if physical_declared else None,
+                "physical_event_ids": review["physical_event_ids"],
+                "references": {
+                    "settlements": [settlement_code(e["id"]) for e in settlements_ref],
+                    "receipts": [receipt_code(e["id"]) for e in receipts_ref],
+                    "pieces": [piece_code(e["piece_id"]) for e in receipts_ref],
+                    "correction_ids": [str(e["reversal_id"]) for e in review["events"] if e.get("reversal_id") is not None],
+                },
+                "confirmed_by_user_id": actor.user_id,
+                "confirmed_at": now.isoformat(sep=" "),
+            }
             metadata = {"trip_id": trip_id, "party_id": party_id, "pool_id": pool_id, "lot_id": str(lot_id), "origin_melt_entry_id": str(lot["entry_id"]),
                         "document": ih, "custody_entry": code, "weight": str(full), "fineness": str(pool["fineness_permille"]),
                         "intact_confirmation": CONFIRMATION_CODE, "confirmed_by_user_id": actor.user_id, "confirmed_at": now.isoformat(sep=" "),
-                        "date": returned_on.isoformat(), "employee_id": actor.employee_id}
+                        "physical_event_review": event_review, "date": returned_on.isoformat(), "employee_id": actor.employee_id}
             repository.audit(actor=actor, event_type="MARKET_TRIP_HOLD_RETURN", entity_id=entry_id, reference=code, description=label,
                              metadata=metadata, now=now)
             holdings.audit(actor=actor, event_type="INTERMEDIARY_HOLDING_RETURN", entity_id=document_id, reference=ih, description=label,

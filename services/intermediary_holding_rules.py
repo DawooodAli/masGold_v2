@@ -1,6 +1,8 @@
 """Shared, side-effect free facts of the intermediary (مسوقجي) lot holdings (048): rights, the owner's confirmation text and the display
 shape of a holding pool / document. No database, no authorization: the services decide, this module only names and formats."""
 from decimal import ROUND_HALF_UP, Decimal, localcontext
+import hashlib
+import json
 
 from repositories.intermediary_holding_repository import CONFIRMATION_CODE, holding_code, logo_holding_code, piece_code, receipt_code
 from repositories.market_trip_repository import entry_code, trip_code
@@ -43,7 +45,7 @@ def source_text(kind, origin_trip_id, origin_entry_no, lot_no, label=None):
             + (f" • {label}" if label else ""))
 
 
-def pool_row(r):
+def pool_row(r, return_events=None):
     """One pool that still has grams at a party (the Arabic panel «ذهب المحل لدى المسوقجي»)."""
     trip_open = r["trip_status"] == "OPEN"
     balance = Decimal(str(r["balance"]))
@@ -51,22 +53,81 @@ def pool_row(r):
     allocated = int(r.get("allocation_count") or 0) > 0                  # a GRAM_ENTITLEMENT / PHYSICALLY_DIVIDED settlement ever existed (050)
     settled_before = int(r.get("settlement_count") or 0) > 0
     reason = ""
+    if return_events is None:
+        effective_settlement = allocated
+        receipt_clear = True
+        settlement_events = []
+    else:
+        settlement_events = [event for event in return_events if event["kind"] == "SUPPLIER_SETTLEMENT"]
+        effective_settlement = any(
+            event["kind"] == "SUPPLIER_SETTLEMENT" and event["reversal_id"] is None
+            for event in return_events
+        )
+        receipt_clear = all(
+            event["reversal_id"] is not None
+            and event["stock_grams"] == "0.000"
+            and all(movement["type"] in ("RECEIVE", "RECEIVE_REVERSAL") for movement in event["stock_movements"])
+            for event in return_events if event["kind"] == "PHYSICAL_RECEIPT"
+        )
     if not trip_open:
         reason = f"العهدة الأصلية {trip_code(r['trip_id'])} مغلقة: أعد فتحها صراحةً قبل تسجيل الرجوع."
-    elif allocated:
-        reason = allocation_note(r["first_allocation_id"])
+    elif effective_settlement:
+        reason = "توجد تسوية ذهب لمورد لم تُعكس؛ اعكس كل التسويات أولًا."
+    elif not receipt_clear:
+        reason = "يوجد استلام مادي غير معكوس أو مخزون/استخدام تابع؛ صحّح كل الاستلامات أولًا."
     elif not whole:
         reason = "رصيد المصدر جزئي: لا يُسجَّل الرجوع إلا لسبكة كاملة."
+    history_note = allocation_note(settlement_events[0]["id"]) if settlement_events else (
+        "سبق تسليم هذه السبكة كاملة لمورد وعُكس: يبقى رجوعها بتأكيد المالك الصريح."
+        if settled_before and not allocated and whole else ""
+    )
     return {"pool_id": str(r["pool_id"]), "party_id": str(r["party_id"]), "party_name": r["party_name"], "party_active": bool(r["party_active"]),
             "lot_id": str(r["lot_id"]), "kind": r["lot_kind"], "lot_no": int(r["lot_no"]), "label": r.get("label") or "",
             "source": source_text(r["lot_kind"], r["origin_trip_id"], r["origin_entry_no"], r["lot_no"], r.get("label")),
             "weight": Decimal(str(r["weight_grams"])), "balance": balance, "fineness": Decimal(str(r["fineness_permille"])),
             "pure": pure_grams(balance, r["fineness_permille"]), "document": holding_code(r["handover_id"]),
             "custody_entry": entry_code(r["trip_id"], r["handover_entry_no"]), "trip_id": str(r["trip_id"]), "trip_code": trip_code(r["trip_id"]),
-            "trip_open": trip_open, "date": r["document_date"], "returnable": trip_open and whole and not allocated, "reason": reason,
-            "allocated": allocated, "settleable": balance > 0, "receivable": allocated and balance > 0,
-            "history_note": ("سبق تسليم هذه السبكة كاملة لمورد وعُكس: يبقى رجوعها بتأكيد المالك الصريح."
-                             if settled_before and not allocated and whole else "")}
+            "trip_open": trip_open, "date": r["document_date"],
+            "returnable": trip_open and whole and not effective_settlement and receipt_clear, "reason": reason,
+            "allocated": allocated, "settleable": balance > 0, "receivable": False,
+            "history_note": history_note}
+
+
+def reviewed_pool_row(r, return_events):
+    """A pool row together with its server-derived whole-bar return review (shared by the party page and the supplier detail)."""
+    review = return_review(return_events)
+    return {**pool_row(r, return_events=return_events),
+            "return_review_token": review["token"],
+            "return_review_events": review["display"],
+            "return_review_requires_physical_declaration": review["requires_physical_declaration"]}
+
+
+def return_review(return_events):
+    """Display the exact server-derived event list whose digest the owner confirms for a whole-bar return."""
+    encoded = json.dumps(return_events, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    token = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    rows, physical_event_ids = [], []
+    for event in return_events:
+        if event["kind"] == "SUPPLIER_SETTLEMENT":
+            from repositories.supplier_gold_settlement_repository import settlement_code
+            code = settlement_code(event["id"])
+            declaration = event["physical_declaration"]
+            state = f"معكوسة بالتصحيح {correction_code('FULL_REVERSAL', event['reversal_id'])}" if event["reversal_id"] else "تحتاج إلى عكس"
+            rows.append(f"{code} • {DECLARATION_TEXT.get(declaration, declaration)} • {state}")
+            if declaration == DIVIDED:
+                physical_event_ids.append(f"SG:{event['id']}")
+        else:
+            code, piece = receipt_code(event["id"]), piece_code(event["piece_id"])
+            state = f"معكوس بالتصحيح {correction_code('FULL_REVERSAL', event['reversal_id'])}" if event["reversal_id"] else "يحتاج إلى عكس"
+            rows.append(f"{code} / {piece} • {event['grams']} جرام • رصيد القطعة {event['stock_grams']} • {state}")
+            physical_event_ids.append(f"HR:{event['id']}/RP:{event['piece_id']}")
+    return {
+        "token": token,
+        "events": list(return_events),
+        "display": rows or ["لا توجد تسويات مورد أو استلامات مادية سابقة لهذا المصدر."],
+        "physical_event_ids": physical_event_ids,
+        "requires_physical_declaration": bool(physical_event_ids),
+    }
 
 
 LOGO_NOTE = ("ذهب لوجو بالجرام الفعلي لعيار واحد (غير محدد الهوية ولا العيار الفعلي): كل تسليم مصدر مستقل ولو كان لنفس المسوقجي والعيار والعهدة، "
@@ -119,11 +180,12 @@ def declaration_choices(options):
     return [{"code": code, "text": DECLARATION_TEXT[code]} for code in options]
 
 
-def allocation_note(first_allocation_id):
-    """Why a pool can no longer be returned whole (names the SG)."""
+def allocation_note(settlement_id):
+    """Explain why supplier settlement history keeps a handover itself irreversible (names the SG)."""
     from repositories.supplier_gold_settlement_repository import settlement_code
-    return (f"سبق تخصيص جرامات من هذه السبكة لمورد ({settlement_code(first_allocation_id)}): لا يُسجَّل رجوعها كاملة ولا يُعكس تسليمها "
-            "قبل عملية استلام فعلي مستقبلية، ولو عاد الرصيد كاملًا.")
+    return (f"سبق تسوية ذهب من هذه السبكة لمورد ({settlement_code(settlement_id)}): لا يُعكس تسليمها حتى بعد عكس التسوية. "
+            "إذا عادت كل التسويات والجرامات، يمكن طلب الرجوع العادي إلى العهدة الأصلية بعد تأكيد المالك أن السبكة نفسها سليمة كاملة؛ "
+            "وسجلات القسمة أو الاستلام المادي المعكوسة تحتاج إلى إقرار المالك بأنها سُجلت بالخطأ ولم تقع فعليًا.")
 
 
 def holding_settlement_row(r):
@@ -173,7 +235,7 @@ def holding_preview(context, supplier_id, quantity):
     return {**result, "valid": True, "credited": credited, "analytical": analytical, "rounding_difference": difference}
 
 
-RECEIPT_NOTE = ("استلام فعلي من المسوقجي: يُنقل الوزن المقاس فعليًا إلى مخزون استلام في المحل بهوية جديدة (RP) دون استعادة هوية السبكة الأصلية، "
+RECEIPT_NOTE = ("سجل استلام فعلي قديم من المسوقجي (لا تُسجَّل استلامات جديدة): نُقل الوزن المقاس فعليًا إلى مخزون استلام في المحل بهوية جديدة (RP) دون استعادة هوية السبكة الأصلية، "
                 "ويساوي ما يُخصم من رصيد المسوقجي. العيار غير معلوم؛ الاستلام لا يثبت تكافؤ العيار ولا يُسقط أي فرق عيار غير مقاس. "
                 "المخزون المستلم ظاهر لكنه غير متاح للبيع أو التسوية أو الإصدار أو السبك.")
 

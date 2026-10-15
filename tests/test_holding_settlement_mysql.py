@@ -182,13 +182,10 @@ class SettleMySqlTests(LogoMySqlTests):
         entitlement = self.settle('LOT', pool, self.s21, '10', ENTITLEMENT)                   # the full quantity, but only an entitlement
         self.reverse(entitlement['id'])
         self.assertEqual(self.lot_balance(pool), D('10'))
-        with self.assertRaises(TripError) as blocked:
-            self.back(pool)                                                                    # a full balance never certifies the intact bar after allocation history
-        self.assertEqual(blocked.exception.code, 'ALLOCATION_HISTORY_BLOCKS_RETURN')
-        self.assertIn(f"SG{int(entitlement['id']):06d}", str(blocked.exception))
         with self.assertRaises(TripError) as whole:
             self.settle('LOT', pool, self.s21, '10', WHOLE)
         self.assertEqual(whole.exception.code, 'WHOLE_NOT_ELIGIBLE')
+        self.assertEqual(self.back(pool)['kind'], 'HOLD_RETURN')                              # a cancelled entitlement needs no false error declaration
         with self.assertRaises(CorrectionError) as handover:
             self.correct.reverse('MARKET_TRIP_ENTRY', self.entry_of(handed['document_id']), '050')
         self.assertEqual(handover.exception.code, 'DEPENDENT_HOLDING_SETTLEMENT_EXISTS')
@@ -222,7 +219,8 @@ class SettleMySqlTests(LogoMySqlTests):
         self.assertEqual(self.lot_balance(pool), D('10'))
         with self.assertRaises(TripError) as blocked:
             self.back(pool)
-        self.assertEqual(blocked.exception.code, 'ALLOCATION_HISTORY_BLOCKS_RETURN')
+        self.assertEqual(blocked.exception.code, 'PHYSICAL_EVENT_DECLARATION_REQUIRED')
+        self.assertEqual(self.back(pool, physical_confirmed=True)['kind'], 'HOLD_RETURN')
         moves = self.query('SELECT movement_type, weight_delta, correction_id, document_id FROM intermediary_holding_movements WHERE pool_id=%s AND settlement_id IS NOT NULL ORDER BY id', (pool,))
         self.assertEqual(sorted(m['movement_type'] for m in moves), ['SETTLEMENT', 'SETTLEMENT', 'SETTLEMENT_REVERSAL', 'SETTLEMENT_REVERSAL'])
         self.assertTrue(all(m['document_id'] is None for m in moves))

@@ -1,9 +1,7 @@
-"""Physical receipts from an intermediary's holdings (051, «استلام ذهب من المسوقجي»).
+"""Legacy physical-receipt history and corrections for intermediary holdings (051).
 
-A receipt consumes MEASURED physical grams of ONE assayed-lot pool's holding entitlement and creates ONE new shop-held receipt piece (identity RP, under an HR
-document). It exists for pools with PERMANENT allocation history (a GRAM_ENTITLEMENT / PHYSICALLY_DIVIDED settlement ever, reversed ones included): there the
-original bar can no longer be certified, so the gold arrives as a NEW piece and never regains the original-bar identity. A pool without allocation history keeps the
-048 intact return (USE_NORMAL_RETURN). Sequential partial receipts are allowed; unreceived grams stay in holdings (never cleared, never written off).
+New LOT physical receipts are disabled. Existing HR/RP records remain immutable, readable, and correctable through the one canonical full reversal below.
+Exact replay of an already-successful receipt request still returns its original records and never creates another receipt.
 
 Measured grams must equal the consumed holding grams: one weight column, so a mismatch is refused atomically and no discrepancy record exists. The first slice
 records an UNKNOWN assay only: no fineness, no pure-gold figure, no inherited source assay and no claim of purity equivalence; an unmeasured purity discrepancy
@@ -22,7 +20,7 @@ from uuid import UUID
 
 from mysql.connector import IntegrityError
 
-from repositories.intermediary_holding_repository import (IntermediaryHoldingRepository, MOVE_RECEIPT, RECEIVE, piece_code, receipt_code)
+from repositories.intermediary_holding_repository import IntermediaryHoldingRepository, piece_code, receipt_code
 from repositories.market_trip_repository import MarketTripRepository
 from repositories.supplier_gold_settlement_repository import SupplierGoldSettlementRepository
 from services import supplier_rules as rules
@@ -71,8 +69,7 @@ class HoldingReceiptService:
 
     # ------------------------------------------------------------------ rights (UI hints; the transaction re-checks every one)
     def can_receive(self):
-        actor = self._session.current_actor()
-        return actor is not None and MANAGE_PERMISSION in actor.permissions
+        return False
 
     def can_reverse(self):
         actor = self._session.current_actor()
@@ -104,7 +101,7 @@ class HoldingReceiptService:
             allocated = any(r["physical_declaration"] in ALLOCATING for r in holdings.display_pool_history(pool_number))
         return {"pool_id": str(pool_number), "holder": {"id": str(holder["id"]), "name": holder["name"], "active": bool(holder["is_active"])},
                 "weight": Decimal(str(pool["weight_grams"])), "source_fineness": Decimal(str(pool["fineness_permille"])), "balance": balance,
-                "allocated": allocated, "receivable": allocated and balance > 0}
+                "allocated": allocated, "receivable": False}
 
     # ------------------------------------------------------------------ results and replay
     @staticmethod
@@ -170,33 +167,8 @@ class HoldingReceiptService:
             replay = self._prior(holdings, parties, key, digest, actor)
             if replay is not None:
                 return replay                                       # the original records, before any availability is derived
-            history = holdings.pool_settlement_history(pool_id)     # CURRENT, reversed ones included
-            if not any(r["physical_declaration"] in ALLOCATING for r in history):
-                raise TripError("USE_NORMAL_RETURN", "لا يوجد تخصيص جرامات سابق لهذه السبكة: استخدم الرجوع العادي بتأكيد المالك الصريح لا الاستلام الفعلي.")
-            balance = Decimal(str(holdings.pool_balance(pool_id)))  # CURRENT, compensations included
-            if balance <= 0:
-                raise TripError("HOLDING_NOT_AVAILABLE", "لا يوجد رصيد من هذا المصدر لدى المسوقجي.")
-            if grams > balance:
-                raise TripError("HOLDING_EXCEEDED", f"المتبقي من هذا المصدر لدى المسوقجي {balance:,.3f} جرام فقط.")
-            now = market.db_now()
-            receipt_id = holdings.insert_receipt(pool=pool, grams=grams, receipt_date=received_on, reference=reference, notes=notes, key=key, digest=digest,
-                                                 actor=actor, now=now)
-            piece_id = holdings.insert_piece(receipt_id=receipt_id, pool=pool, grams=grams)
-            holdings.insert_stock_movement(piece_id=piece_id, receipt_id=receipt_id, movement_type=RECEIVE, weight=grams, delta=grams)
-            holdings.insert_receipt_movement(pool_id=pool_id, receipt_id=receipt_id, movement_type=MOVE_RECEIPT, weight=grams, delta=-grams)
-            code, rp = receipt_code(receipt_id), piece_code(piece_id)
-            label = (f"استلام فعلي {code} من المسوقجي: {grams:,.3f} جرام مقاسة فعليًا ← قطعة استلام {rp} في المحل (عيار غير معلوم) "
-                     f"• المتبقي لدى المسوقجي {balance - grams:,.3f} جرام")
-            holdings.audit(actor=actor, event_type="INTERMEDIARY_HOLDING_RECEIPT", entity_id=receipt_id, reference=code, description=label,
-                           metadata={"receipt": code, "piece": rp, "pool_id": pool_id, "party_id": int(pool["party_id"]), "lot_id": str(pool["lot_id"]),
-                                     "origin_melt_entry_id": str(pool["origin_melt_entry_id"]), "grams": str(grams), "remaining": str(balance - grams),
-                                     "assay": "UNKNOWN", "date": received_on.isoformat(), "reference": reference, "employee_id": actor.employee_id}, now=now)
-            if Decimal(str(holdings.piece_stock(piece_id))) != grams:        # conservation: the piece holds exactly what the pool released
-                raise RuntimeError("receipt stock differs from the consumed holding grams")
-            result = self._result(holdings.receipt(receipt_id), balance - grams, False)
-            if not self._session.is_current(session_actor):
-                raise PermissionError("انتهت جلسة الدخول.")
-        return result
+            raise TripError("LOT_RECEIPTS_DISABLED",
+                            "الاستلام المادي الجزئي للسبائك لدى المسوقجي غير متاح؛ استخدم الرجوع الكامل للسبكة الأصلية بعد مراجعة سجلها.")
 
     # ------------------------------------------------------------------ reversal: the ONE canonical correction on the HR document
     def reverse(self, receipt_id, reason, *, _expected_actor=None):

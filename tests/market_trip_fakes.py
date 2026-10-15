@@ -657,7 +657,7 @@ class TripRepo:
     def audit(self, *, actor, event_type, entity_id, reference, description, metadata, now):
         self._fail("audit")
         self.db.audit_rows.append({"user_id": actor.user_id, "event_type": event_type, "entity_type": "MARKET_TRIP",
-                                   "entity_id": int(entity_id), "reference": reference})
+                                   "entity_id": int(entity_id), "reference": reference, "metadata": copy.deepcopy(metadata)})
 
 
 class ScrapRepo:
@@ -875,7 +875,7 @@ class HoldingRepo:
     def audit(self, *, actor, event_type, entity_id, reference, description, metadata, now):
         self._fail("holding_audit")
         self.db.audit_rows.append({"user_id": actor.user_id, "event_type": event_type, "entity_type": "INTERMEDIARY_HOLDING",
-                                   "entity_id": int(entity_id), "reference": reference})
+                                   "entity_id": int(entity_id), "reference": reference, "metadata": copy.deepcopy(metadata)})
 
     def by_request(self, key):
         row = next((d for d in self.db.holding_docs.values() if d["request_key"] == key), None)
@@ -892,6 +892,43 @@ class HoldingRepo:
 
     def pool_balance(self, pool_id):
         return sum((m["weight_delta"] for m in self.db.holding_moves if m["pool_id"] == int(pool_id)), D("0.000"))
+
+    def pool_return_events(self, pool_id, *, lock=False):
+        settlements = []
+        for settlement in sorted(self.db.settlements.values(), key=lambda row: row["id"]):
+            if settlement.get("lot_pool_id") != int(pool_id):
+                continue
+            reversal = next((correction for correction in self.db.corrections
+                            if correction["correction_type"] == "FULL_REVERSAL"
+                            and correction["source_type"] == "SUPPLIER_GOLD_SETTLEMENT"
+                            and correction["source_id"] == str(settlement["id"])), None)
+            settlements.append({"kind": "SUPPLIER_SETTLEMENT", "id": str(settlement["id"]),
+                                "physical_declaration": settlement["physical_declaration"],
+                                "reversal_id": None if reversal is None else str(reversal["correction_id"])})
+        receipts = []
+        for receipt in sorted(self.db.receipts.values(), key=lambda row: row["id"]):
+            if receipt["pool_id"] != int(pool_id):
+                continue
+            piece = next(piece for piece in self.db.pieces.values() if piece["receipt_id"] == receipt["id"])
+            reversal = next((correction for correction in self.db.corrections
+                            if correction["correction_type"] == "FULL_REVERSAL"
+                            and correction["source_type"] == "HOLDING_RECEIPT"
+                            and correction["source_id"] == str(receipt["id"])), None)
+            movements = sorted((movement for movement in self.db.stock_moves if movement["piece_id"] == piece["id"]),
+                               key=lambda movement: movement["id"])
+            receipts.append({
+                "kind": "PHYSICAL_RECEIPT", "id": str(receipt["id"]), "piece_id": str(piece["id"]),
+                "grams": format(receipt["grams"], ".3f"),
+                "reversal_id": None if reversal is None else str(reversal["correction_id"]),
+                "stock_grams": format(self.piece_stock(piece["id"]), ".3f"),
+                "stock_movements": [
+                    {"id": str(movement["id"]), "type": movement["movement_type"],
+                     "delta": format(movement["weight_delta"], ".3f"),
+                     "correction_id": None if movement["correction_id"] is None else str(movement["correction_id"])}
+                    for movement in movements
+                ],
+            })
+        return [*settlements, *receipts]
 
     def lot_held_total(self, lot_id):
         pools = {p["id"] for p in self.db.holding_pools.values() if p["lot_id"] == int(lot_id)}

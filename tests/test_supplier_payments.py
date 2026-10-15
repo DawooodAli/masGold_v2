@@ -771,7 +771,7 @@ class ViewModelTests(PaymentCase):
         preview = self.vm.previewPayment("1000")
         self.assertEqual((preview["valid"], preview["afterText"], preview["afterTone"], preview["note"]),
                          (True, "علينا للمورد 4,000.00 ج مصنعيات", "shopOwes", ""))
-        self.assertEqual(self.vm.previewPayment("5000")["afterText"], "الحساب متوازن")
+        self.assertEqual(self.vm.previewPayment("5000")["afterText"], "لا توجد مستحقات مصنعية")
         credit = self.vm.previewPayment("6000")
         self.assertEqual((credit["afterText"], credit["afterTone"]), ("لنا عند المورد 1,000.00 ج مصنعيات", "supplierOwes"))
         self.assertIn("رصيد دائن", credit["note"])

@@ -96,10 +96,11 @@ class SettlementPageTests(ui.HoldingPartyPageTests):
         self.wait_until(lambda: "6.000" in self.text("holdingFigures"), "remaining grams shown")
         self.assertIn("SG000001", " ".join(self.visible_texts("holdingSettlementRow")))
         self.assertFalse(self.item("holdingReturnButton").property("enabled"))               # allocation history blocks the whole-bar return
-        self.assertEqual(self.text("holdingReason"), "الرجوع كسبكة كاملة غير متاح؛ استخدم استلام ذهب بالمحل")
+        self.assertIn("تسوية ذهب لمورد لم تُعكس", self.text("holdingReason"))
         self.assertNotIn("SG000001", self.text("holdingReason"))
+        self.open_details()
         self.assertIn("SG000001", self.text("holdingRefs"))                                     # ... its reference is under Details
-        self.assertIn("لا يُسجَّل رجوعها كاملة ولا يُعكس تسليمها", self.text("holdingRefs"))
+        self.assertIn("لا يُعكس تسليمها حتى بعد عكس التسوية", self.text("holdingRefs"))
         self.assertEqual(self.warnings, [])
 
     def test_the_full_original_quantity_offers_the_three_declarations_and_none_is_preselected(self):
@@ -229,7 +230,14 @@ class SettlementPageTests(ui.HoldingPartyPageTests):
         self.assertIn("رصيد المسوقجي", self.svm.message)
         self.assertNotIn("كسر المحل", self.svm.message)
         self.wait_until(lambda: any("معكوسة" in t for t in self.visible_texts("holdingSettlementRow")), "reversed state listed")
-        self.assertFalse(self.item("holdingReturnButton").property("enabled"))               # allocation history survives the reversal
+        self.assertTrue(self.item("holdingReturnButton").property("enabled"))                # restored entitlement permits the distinct intact-return path
+        self.click("holdingReturnButton")
+        self.wait_until(lambda: self.item("holdingReturnDialog").property("opened"), "whole-return review dialog")
+        self.assertIn("SG000001", self.text("holdingReturnEventReview"))
+        self.assertTrue(self.item("holdingIntactConfirm").property("visible"))               # a single confirmation covers the original bar
+        self.assertFalse(self.exists("holdingPhysicalEventsConfirm"))
+        self.click("cancelHoldingReturnButton")
+        self.closed("holdingReturnDialog")
         self.assertEqual(self.warnings, [])
 
     def test_the_buttons_follow_the_rights_and_the_service_still_refuses_without_them(self):

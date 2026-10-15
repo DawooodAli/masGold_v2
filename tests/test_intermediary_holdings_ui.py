@@ -342,7 +342,7 @@ class HoldingPartyPageTests(harness.InvoicePageTests):
     visible_texts = base.MarketTripPageTests.visible_texts
 
     # the secondary actions sit behind «المزيد» (never preselecting or hiding a declaration: those live in the dialogs)
-    MORE = {"holdingSettleButton": "holdingMoreButton", "holdingReceiveButton": "holdingMoreButton", "holdingReturnButton": "holdingMoreButton",
+    MORE = {"holdingSettleButton": "holdingMoreButton", "holdingReturnButton": "holdingMoreButton",
             "logoSettleButton": "logoMoreButton", "logoReturnButton": "logoMoreButton", "receiptReverseButton": "receiptMoreButton"}
 
     def item(self, name):

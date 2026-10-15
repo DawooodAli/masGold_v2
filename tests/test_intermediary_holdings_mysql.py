@@ -28,6 +28,7 @@ from repositories.market_trip_repository import MarketTripRepository
 from repositories.supplier_gold_settlement_repository import SupplierGoldSettlementRepository
 from services.authentication_service import AuthenticationResult, _VERIFIED
 from services.correction_service import CorrectionError, CorrectionService
+from services.holding_settlement_service import HoldingSettlementService
 from services.intermediary_holding_service import IntermediaryHoldingService
 from services.market_trip_service import MarketTripService, TripError
 from services.supplier_rules import SupplierRuleError
@@ -134,8 +135,10 @@ class HoldingsMySqlTests(unittest.TestCase):
     def hand(self, trip, lot, party=None, key=None, service=None, **kw):
         return (service or self.holding).hand_over_lot(trip['trip_id'], party or self.party, str(lot['id']), DATE, '048 ref', '048 notes', key or str(uuid4()), **kw)
 
-    def back(self, pool, confirmed=True, key=None, service=None):
-        return (service or self.holding).return_holding(str(pool), confirmed, DATE, '', '', key or str(uuid4()))
+    def back(self, pool, confirmed=True, key=None, service=None, physical_confirmed=False):
+        service = service or self.holding
+        review = service.return_review(str(pool))
+        return service.return_holding(str(pool), confirmed, review['token'], physical_confirmed, DATE, '', '', key or str(uuid4()))
 
     def pool_of(self, document_id):
         return int(self.query('SELECT pool_id FROM intermediary_holding_documents WHERE id=%s', (document_id,))[0]['pool_id'])
@@ -357,6 +360,44 @@ class HoldingsMySqlTests(unittest.TestCase):
             self.assertEqual(refusal.exception.code, code)
         self.assertEqual(self.places(main), (D('0'), D('0'), D('10')))
 
+    def test_changed_return_review_event_list_refuses_without_writes(self):
+        trip, melt, lots = self.lots()
+        main = lots[0]
+        handed = self.hand(trip, main)
+        pool = self.pool_of(handed['document_id'])
+        stale_review = self.holding.return_review(str(pool))
+
+        settlement = HoldingSettlementService(self.session, transaction_factory=self.tx, corrections=self.correct)
+        allocated = settlement.settle('LOT', str(pool), str(self.supplier), '1', 'GRAM_ENTITLEMENT', False,
+                                      DATE, '048 changed event', '', str(uuid4()))
+        self.correct.reverse('SUPPLIER_GOLD_SETTLEMENT', allocated['id'], '048 changed event')
+        before = self.snapshot()
+        with self.assertRaises(TripError) as changed:
+            self.holding.return_holding(str(pool), True, stale_review['token'], False, DATE, '', '', str(uuid4()))
+        self.assertEqual(changed.exception.code, 'RETURN_REVIEW_CHANGED')
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.places(main), (D('0'), D('0'), D('10')))
+
+    def test_return_audit_failure_rolls_back_every_persisted_return_effect(self):
+        trip, melt, lots = self.lots()
+        main = lots[0]
+        handed = self.hand(trip, main)
+        pool = self.pool_of(handed['document_id'])
+        review = self.holding.return_review(str(pool))
+        before = self.snapshot()
+        original_audit = IntermediaryHoldingRepository.audit
+
+        def fail_after_audit(instance, *args, **kwargs):
+            original_audit(instance, *args, **kwargs)
+            raise RuntimeError('048 return audit injected')
+
+        with patch.object(IntermediaryHoldingRepository, 'audit', fail_after_audit):
+            with self.assertRaisesRegex(RuntimeError, '048 return audit injected'):
+                self.holding.return_holding(str(pool), True, review['token'], False, DATE, '', '', str(uuid4()))
+
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.places(main), (D('0'), D('0'), D('10')))
+
     def test_posting_and_reversal_rollback_after_each_persistent_stage(self):
         trip, melt, lots = self.lots()
         main = lots[0]
@@ -438,8 +479,9 @@ class HoldingsMySqlTests(unittest.TestCase):
             q.close()
             self.assertEqual(IntermediaryHoldingRepository(reader).pool_balance(pool), D('0'))          # a CURRENT read sees the compensation
             service = IntermediaryHoldingService(self.session, transaction_factory=lambda: self.on_connection(reader))
+            review = service.return_review(str(pool))
             with self.assertRaises(TripError) as refusal:
-                service.return_holding(str(pool), True, DATE, '', '', str(uuid4()))
+                service.return_holding(str(pool), True, review['token'], False, DATE, '', '', str(uuid4()))
             self.assertEqual(refusal.exception.code, 'HOLDING_NOT_AVAILABLE')
 
     # ------------------------------------------------------------------ resource order and contention (no production authorization locks)
@@ -527,7 +569,8 @@ class HoldingsMySqlTests(unittest.TestCase):
 
         def give_back():
             barrier.wait(timeout=10)
-            return returner.return_holding(str(pool), True, DATE, '', '', str(uuid4()))
+            review = returner.return_review(str(pool))
+            return returner.return_holding(str(pool), True, review['token'], False, DATE, '', '', str(uuid4()))
 
         def undo():
             barrier.wait(timeout=10)

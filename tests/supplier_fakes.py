@@ -533,6 +533,9 @@ class HoldingHistoryRepo:
     def open_pools(self, *, party_id=None, trip_id=None):
         return []
 
+    def pool_return_events(self, pool_id, *, lock=False):
+        return []
+
     def party_documents(self, party_id):
         return []
 

@@ -28,9 +28,9 @@ class TextTests(unittest.TestCase):
         self.assertEqual(making_position_text(rules.SUPPLIER_OWES, D("-1500")), "لنا عند المورد 1,500.00 ج مصنعيات")
         self.assertEqual(gold_position_text(rules.SHOP_OWES, D("7"), 18), "علينا للمورد 7.000 جرام عيار 18")   # physical grams
         self.assertEqual(gold_position_text(rules.SUPPLIER_OWES, D("-7"), 18), "لنا عند المورد 7.000 جرام عيار 18")
-        for settled in (gold_position_text(rules.SETTLED, 0), gold_position_text(rules.SETTLED, 0, 18),
-                        making_position_text(rules.SETTLED, 0)):
-            self.assertEqual(settled, "الحساب متوازن")
+        for settled in (gold_position_text(rules.SETTLED, 0), gold_position_text(rules.SETTLED, 0, 18)):
+            self.assertEqual(settled, "حساب المورد: لا توجد مستحقات ذهب")                                # names the account: it is NOT the gold held as an intermediary
+        self.assertEqual(making_position_text(rules.SETTLED, 0), "لا توجد مستحقات مصنعية")
 
     def test_position_parts_rebuild_the_exact_sentences_so_only_the_figure_is_emphasised(self):
         from app.viewmodels.supplier_viewmodel import position_parts
@@ -44,7 +44,8 @@ class TextTests(unittest.TestCase):
         self.assertEqual(position_parts(rules.SHOP_OWES, D("254.360"), "gold", 18),
                          {"lead": "علينا للمورد", "number": "254.360", "tail": "جرام عيار 18"})
         self.assertEqual(position_parts(rules.SUPPLIER_OWES, D("-1500"), "making")["lead"], "لنا عند المورد")   # direction kept
-        self.assertEqual(position_parts(rules.SETTLED, 0, "making"), {"lead": "الحساب متوازن", "number": "", "tail": ""})
+        self.assertEqual(position_parts(rules.SETTLED, 0, "making"), {"lead": "لا توجد مستحقات مصنعية", "number": "", "tail": ""})
+        self.assertEqual(position_parts(rules.SETTLED, 0, "gold", 21), {"lead": "حساب المورد: لا توجد مستحقات ذهب", "number": "", "tail": ""})
 
     def test_no_text_shows_a_bare_minus_or_plus_sign(self):
         for text in (gold_position_text(rules.SUPPLIER_OWES, D("-9.950")),
@@ -201,7 +202,7 @@ class SupplierPageTests(harness.InvoicePageTests):
         self.wait_until(lambda: not self.item("supplierDialog").property("visible"), "dialog closed")   # exit transition
         self.wait_idle()
         self.wait_until(lambda: self.svm.selectedSupplierId != "" and "id" in self.svm.detail, "supplier selected")
-        self.assertEqual(self.text("goldPosition"), "الحساب متوازن")
+        self.assertEqual(self.text("goldPosition"), "حساب المورد: لا توجد مستحقات ذهب")
         # ---- invoice with two making groups: totals come from the rules module
         self.click("newInvoiceButton")
         QTest.qWait(200)
@@ -610,7 +611,7 @@ class SupplierPageTests(harness.InvoicePageTests):
         self.click_supplier("C-supplier")
         self.wait_idle()
         QTest.qWait(150)
-        self.assertEqual(self.gold_card_texts(), ["حساب المورد", "الحساب متوازن"])
+        self.assertEqual(self.gold_card_texts(), ["حساب المورد", "حساب المورد: لا توجد مستحقات ذهب"])
         self.assertEqual(self.warnings, [])
 
     def test_the_selected_group_shows_its_allowance_and_a_known_excess_blocks_submission_without_losing_input(self):

@@ -21,7 +21,7 @@ from services import supplier_rules as rules
 from services.authorization_service import AuthorizationService
 from services.correction_rules import correction_code
 from services.intermediary_holding_rules import (MANAGE_PERMISSION as MANAGE_HOLDINGS, TRIP_PERMISSION as TRIP_MANAGE, VIEW_PERMISSION as VIEW_HOLDINGS,
-                                                 document_row, holding_settlement_row, logo_document_row, logo_pool_row, pool_row, receipt_row)
+                                                 document_row, holding_settlement_row, logo_document_row, logo_pool_row, receipt_row, reviewed_pool_row)
 from services.invoice_service import invoice_transaction
 from services.number_text import normalize_digits
 
@@ -192,7 +192,7 @@ class SupplierService:
         except PermissionError:
             return None
         ledger = self._holdings(connection)
-        pools = [pool_row(r) for r in ledger.open_pools(party_id=supplier_id)]
+        pools = [reviewed_pool_row(r, ledger.pool_return_events(r["pool_id"])) for r in ledger.open_pools(party_id=supplier_id)]
         logo_pools = [logo_pool_row(r) for r in ledger.logo_open_pools(party_id=supplier_id)]
         return {"settlements": [holding_settlement_row(r) for r in ledger.holding_settlements(supplier_id)],
                 "receipts": [receipt_row(r) for r in ledger.party_receipts(supplier_id)],

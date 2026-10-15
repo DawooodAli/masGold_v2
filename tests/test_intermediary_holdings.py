@@ -54,10 +54,14 @@ class HoldingCase(TripCase):
         return (service or self.holding).hand_over_lot(trip or self.trip, party, self.main if lot is None else lot, when, reference, notes,
                                                        request or hkey(self.h), weight=weight)
 
-    def back(self, pool=None, confirmed=True, request=None, service=None, when=TODAY):
+    def back(self, pool=None, confirmed=True, request=None, service=None, when=TODAY,
+             physical_confirmed=False, review_token=None):
         self.h += 1
         pool = pool or max(self.db.holding_pools)
-        return (service or self.holding).return_holding(pool, confirmed, when, "", "", request or hkey(1000 + self.h))
+        service = service or self.holding
+        review = service.return_review(pool)
+        return service.return_holding(pool, confirmed, review_token or review["token"], physical_confirmed,
+                                     when, "", "", request or hkey(1000 + self.h))
 
     def held_by(self, party=OWNER_PARTY):
         return sum((self.holding_repo().pool_balance(p["id"]) for p in self.db.holding_pools.values() if p["party_id"] == int(party)), D("0.000"))
@@ -184,6 +188,47 @@ class HandoverTests(HoldingCase):
             self.assertEqual(self.state(), before, f"a failure at {step} left a trace")
         self.hand()
         self.assertEqual(self.places(), (D("0"), D("0"), D("10.000")))
+
+
+class SupplierDetailHoldingsTests(HoldingCase):
+    """The Suppliers page reads its holdings through SupplierService.supplier_detail, not through party_holdings: both paths must carry the whole-bar
+    return review the panel reads (a missing key used to drop the whole panel)."""
+
+    def test_supplier_detail_pools_carry_the_return_review_and_the_panel_shows_them(self):
+        from app.viewmodels.supplier_viewmodel import SupplierViewModel
+        from services.supplier_service import SupplierService
+        handed = self.hand()
+        suppliers = SupplierService(self.session, transaction_factory=self.db.transaction, authorization=self.authorization, holdings=HoldingRepo)
+        with self.db.transaction() as connection:
+            view = suppliers._holdings_view(connection, self.session.require_authenticated(), OWNER_PARTY)
+        self.assertEqual(len(view["pools"]), 1)
+        pool = view["pools"][0]
+        self.assertEqual(pool["return_review_token"], self.holding.return_review(pool["pool_id"])["token"])
+        self.assertTrue(pool["returnable"])
+        self.assertEqual(pool["return_review_events"], ["لا توجد تسويات مورد أو استلامات مادية سابقة لهذا المصدر."])
+        vm = SupplierViewModel(self.session, None)
+        vm._detail = {"supplier": {"is_intermediary": True}, "holdings": view}
+        panel = vm.holdingsPanel
+        self.assertTrue(panel["visible"])
+        self.assertEqual([p["poolId"] for p in panel["pools"]], [pool["pool_id"]])
+        self.assertEqual(panel["pools"][0]["returnReviewToken"], pool["return_review_token"])
+        self.assertTrue(panel["pools"][0]["returnable"])
+
+
+    def test_the_panel_survives_a_pool_without_review_keys_and_never_offers_a_return(self):
+        from app.viewmodels.supplier_viewmodel import SupplierViewModel
+        from services.intermediary_holding_rules import pool_row
+        self.hand()
+        raw = pool_row(HoldingRepo(self.db).open_pools(party_id=int(OWNER_PARTY))[0])
+        vm = SupplierViewModel(self.session, None)
+        vm._detail = {"supplier": {"is_intermediary": True}, "holdings": {
+            "pools": [raw], "history": [], "logo_pools": [], "logo_history": [], "settlements": [], "receipts": [],
+            "can_manage": True, "can_settle": True, "can_reverse": True, "can_reverse_receipt": True}}
+        panel = vm.holdingsPanel
+        self.assertTrue(panel["visible"])
+        self.assertEqual(len(panel["pools"]), 1)
+        self.assertFalse(panel["pools"][0]["returnable"])
+        self.assertEqual(panel["pools"][0]["returnReviewToken"], "")
 
 
 class ReplayTests(HoldingCase):

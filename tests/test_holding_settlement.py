@@ -207,15 +207,19 @@ class DeclarationTests(SettleCase):
         self.refuse("DECLARATION_NOT_APPLICABLE", lambda: self.sett("LOGO", logo, S21, "1", WHOLE))
         self.refuse("DECLARATION_NOT_APPLICABLE", lambda: self.sett("LOGO", logo, S21, "1", ENTITLEMENT))
 
-    def test_full_quantity_gram_entitlement_is_not_a_whole_bar_delivery_and_creates_permanent_allocation_history(self):
+    def test_cancelled_gram_entitlement_restores_return_eligibility_but_not_handover_reversal(self):
         pool = self.lot_pool()
         done = self.sett("LOT", pool, S21, "10", ENTITLEMENT)                                  # the full quantity, but only an entitlement
         self.assertEqual(self.lot_balance(pool), D("0.000"))
         self.reverse(done["id"])
         self.assertEqual(self.lot_balance(pool), D("10.000"))                                   # the entitlement is back ...
-        self.refuse("ALLOCATION_HISTORY_BLOCKS_RETURN", lambda: self.back(pool))                # ... but the intact bar is NOT certified by a full balance
         self.refuse("WHOLE_NOT_ELIGIBLE", lambda: self.sett("LOT", pool, S21, "10", WHOLE))
-        self.sett("LOT", pool, S21, "10", ENTITLEMENT)                                          # it can still be settled again as an entitlement
+        returned = self.back(pool, physical_confirmed=True)                                    # a client checkbox cannot declare a non-physical event
+        self.assertEqual(returned["kind"], "HOLD_RETURN")
+        audit = next(row for row in self.db.audit_rows if row["event_type"] == "MARKET_TRIP_HOLD_RETURN")
+        review = audit["metadata"]["physical_event_review"]
+        self.assertFalse(review["physical_events_recorded_in_error_and_did_not_occur"])
+        self.assertEqual(review["physical_event_ids"], [])
 
     def test_whole_delivery_reversal_confirmed_normal_return_and_a_repeat_delivery(self):
         pool = self.lot_pool(self.residue)
@@ -256,16 +260,15 @@ class DeclarationTests(SettleCase):
         self.assertIn("رجوعها العادي بتأكيد المالك الصريح", str(advice_whole))                       # whole-delivery history only: the confirmed return is advised
         self.assertNotIn("محجوبًا", str(advice_whole))
         self.assertIn("SG000002", str(advice_allocated))
-        self.assertIn("رجوعها كاملة محجوبًا أيضًا", str(advice_allocated))                          # allocation history: the whole return stays blocked
-        self.assertNotIn("بتأكيد المالك الصريح", str(advice_allocated))                              # and no confirmed return is suggested
+        self.assertIn("الرجوع العادي", str(advice_allocated))                                    # separate from reversing the handover
+        self.assertIn("تأكيد المالك", str(advice_allocated))
         self.assertEqual(self.lot_balance(whole_pool), D("1.000"))                                  # the guards themselves are unchanged
         self.back(whole_pool)
-        self.refuse("ALLOCATION_HISTORY_BLOCKS_RETURN", lambda: self.back(allocated_pool))
+        self.back(allocated_pool)
 
-    def test_partial_allocation_blocks_whole_return_and_handover_reversal_permanently_in_every_order(self):
+    def test_physical_division_requires_error_declaration_after_all_allocations_reverse(self):
         pool = self.lot_pool()
         first = self.sett("LOT", pool, S21, "4", ENTITLEMENT)
-        self.refuse("ALLOCATION_HISTORY_BLOCKS_RETURN", lambda: self.back(pool))
         # the full REMAINING balance is not an intact original bar: WHOLE is refused, an entitlement or a confirmed division is accepted
         self.refuse("WHOLE_NOT_ELIGIBLE", lambda: self.sett("LOT", pool, S21, "6", WHOLE))
         second = self.sett("LOT", pool, S18_INACTIVE, "6", DIVIDED)
@@ -273,21 +276,33 @@ class DeclarationTests(SettleCase):
         self.reverse(second["id"])
         self.reverse(first["id"])
         self.assertEqual(self.lot_balance(pool), D("10.000"))
-        self.refuse("ALLOCATION_HISTORY_BLOCKS_RETURN", lambda: self.back(pool))                # a full balance never reopens the whole-bar return
+        self.refuse("PHYSICAL_EVENT_DECLARATION_REQUIRED", lambda: self.back(pool))              # reversal alone does not prove the physical division was erroneous
+        self.assertEqual(self.back(pool, physical_confirmed=True)["kind"], "HOLD_RETURN")
+        audit = next(row for row in self.db.audit_rows if row["event_type"] == "MARKET_TRIP_HOLD_RETURN")
+        review = audit["metadata"]["physical_event_review"]
+        self.assertTrue(review["physical_events_recorded_in_error_and_did_not_occur"])
+        self.assertTrue(review["physical_event_ids"])
         entry = min(self.db.holding_links)
         error = self.refuse("DEPENDENT_HOLDING_SETTLEMENT_EXISTS", lambda: self.corrections.reverse("MARKET_TRIP_ENTRY", str(entry), "x"), CorrectionError)
         self.assertTrue(all(code in str(error) for code in ("SG000001", "SG000002")))
         self.assertEqual(len([m for m in self.db.holding_moves if m.get("settlement_id")]), 4)  # two originals + two compensations, nothing deleted
 
-    def test_the_panel_explains_why_a_pool_cannot_return_whole_and_notes_a_reversed_whole_delivery(self):
+    def test_the_panel_reflects_current_settlement_eligibility_and_notes_reversed_whole_delivery(self):
         allocated, whole = self.lot_pool(), self.lot_pool(self.residue)
-        self.sett("LOT", allocated, S21, "4", ENTITLEMENT)
+        active = self.sett("LOT", allocated, S21, "4", ENTITLEMENT)
         self.reverse(self.sett("LOT", whole, S21, "1", WHOLE)["id"])
         panel = {p["pool_id"]: p for p in self.holding.party_holdings(OWNER_PARTY)["pools"]}
         self.assertEqual((panel[str(allocated)]["returnable"], panel[str(allocated)]["allocated"]), (False, True))
-        self.assertIn("SG000001", panel[str(allocated)]["reason"])
+        self.assertIn(f"SG{int(active['id']):06d}", panel[str(allocated)]["history_note"])
         self.assertEqual((panel[str(whole)]["returnable"], panel[str(whole)]["allocated"]), (True, False))
         self.assertTrue(panel[str(whole)]["history_note"])
+        self.reverse(active["id"])
+        holdings = self.holding.party_holdings(OWNER_PARTY)
+        panel = {p["pool_id"]: p for p in holdings["pools"]}
+        self.assertEqual((panel[str(allocated)]["returnable"], panel[str(allocated)]["allocated"]), (True, True))
+        self.assertEqual(panel[str(allocated)]["reason"], "")
+        self.assertIn(f"SG{int(active['id']):06d}", panel[str(allocated)]["history_note"])
+        self.assertTrue(any(s["code"] == f"SG{int(active['id']):06d}" and s["reversed"] for s in holdings["settlements"]))
 
 
 # ====================================================================================================================== reversal

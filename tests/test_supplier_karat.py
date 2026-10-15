@@ -145,7 +145,7 @@ class AccountTests(SupplierKaratCase):
         sid = self.supplier("مورد 18", K18)
         self.posted(supplier_id=sid, karat_id=K18, rows=ROWS)
         self.assertEqual(gold_position_text(rules.SUPPLIER_OWES, D("-7"), 18), "لنا عند المورد 7.000 جرام عيار 18")
-        self.assertEqual(gold_position_text(rules.SETTLED, 0, 18), "الحساب متوازن")
+        self.assertEqual(gold_position_text(rules.SETTLED, 0, 18), "حساب المورد: لا توجد مستحقات ذهب")
         self.db.gold.append({**self.db.gold[0], "id": 50, "weight_delta_grams": D("-10.000"), "equivalent_21_delta_grams": D("-8.571429"),
                              "source_id": 50, "occurred_at": self.db.now.replace(hour=11)})
         detail = self.suppliers.supplier_detail(sid)

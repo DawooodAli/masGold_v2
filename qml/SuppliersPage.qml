@@ -61,7 +61,6 @@ Item {
         function onSettlementReversed(code) { reverseSettlementDialog.close() }
         function onHoldingReturned(code) { holdingReturnDialog.close(); logoReturnDialog.close() }
         function onHoldingSettled(code) { holdingSettleDialog.close() }
-        function onReceiptPosted(code) { receiptDialog.close() }
         function onReceiptReversed(code) { reverseReceiptDialog.close() }
     }
     Connections {
@@ -652,7 +651,11 @@ Item {
                                       visible: page.detail.hasAccount !== false && !!page.detail.goldNote
                                       text: page.detail.goldNote || ""; color: theme.amber; font.pixelSize: theme.fontTableHeader
                                       wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                Txt { objectName: "goldHeldPosition"; Layout.fillWidth: true
+                                // the gold the shop holds at this party as an INTERMEDIARY is a separate subsection, never netted with the supplier account above
+                                Rectangle { objectName: "goldHeldDivider"; Layout.fillWidth: true; Layout.topMargin: 6; Layout.preferredHeight: 1
+                                            visible: !!page.vm && page.vm.holdingsPanel.goldPositionVisible === true
+                                            color: theme.border }
+                                Txt { objectName: "goldHeldPosition"; Layout.fillWidth: true; Layout.topMargin: 2
                                       visible: !!page.vm && page.vm.holdingsPanel.goldPositionVisible === true
                                       text: page.vm ? page.vm.holdingsPanel.goldPositionText || "" : ""
                                       color: theme.balanceKarat21; font.bold: true; font.pixelSize: theme.fontBodyStrong
@@ -944,12 +947,10 @@ Item {
                                 delegate: Rectangle {
                                     id: poolRow
                                     readonly property bool more: page.moreOpen["lot" + modelData.poolId] === true
-                                    // the primary action follows ELIGIBILITY: the intact custody return when allowed, else the physical receipt for an allocation-history pool when
-                                    // permitted; every other action stays under «المزيد»
+                                    // A whole-bar return is primary only when current ledger eligibility permits it; settlement stays under «المزيد».
                                     readonly property bool showReturn: !!page.vm && page.vm.canManageHoldings
-                                    readonly property bool showReceive: !!page.vm && page.vm.canReceiveFromHolding && modelData.receivable === true
                                     readonly property bool showSettle: !!page.vm && page.vm.canSettleFromHolding
-                                    readonly property string primaryAction: (showReturn && modelData.returnable) ? "return" : showReceive ? "receive" : ""
+                                    readonly property string primaryAction: (showReturn && modelData.returnable) ? "return" : ""
                                     Layout.fillWidth: true
                                     implicitHeight: holdRow.implicitHeight + 12
                                     radius: theme.radiusSmall
@@ -988,17 +989,6 @@ Item {
                                                     onClicked: holdingSettleDialog.openFor("LOT", modelData)
                                                 }
                                                 Btn {
-                                                    objectName: "holdingReceiveButton"
-                                                    Layout.preferredHeight: 30                    // compact action buttons, one height
-                                                    parent: poolRow.primaryAction === "receive" ? poolPrimary : holdingMoreRow
-                                                    Layout.fillWidth: poolRow.primaryAction === "receive"
-                                                    primary: poolRow.primaryAction === "receive"
-                                                    visible: poolRow.showReceive
-                                                    enabled: !page.vm.receivingFromHolding
-                                                    text: "استلام ذهب بالمحل"
-                                                    onClicked: receiptDialog.openFor(modelData)
-                                                }
-                                                Btn {
                                                     objectName: "holdingReturnButton"
                                                     Layout.preferredHeight: 30                    // compact action buttons, one height
                                                     parent: poolRow.primaryAction === "return" ? poolPrimary : holdingMoreRow
@@ -1022,7 +1012,7 @@ Item {
                                                 objectName: "holdingMoreButton"
                                                 Layout.preferredHeight: 30                    // compact action buttons, one height
                                                 Layout.fillWidth: true
-                                                visible: poolRow.showSettle || (poolRow.showReturn && poolRow.primaryAction !== "return") || (poolRow.showReceive && poolRow.primaryAction !== "receive")
+                                                visible: poolRow.showSettle || (poolRow.showReturn && poolRow.primaryAction !== "return")
                                                 text: poolRow.more ? "إخفاء" : "المزيد"
                                                 accent: theme.textSecondary
                                                 onClicked: page.toggleMore("lot" + modelData.poolId)
@@ -1819,12 +1809,18 @@ Item {
         property string poolId: ""
         property string sourceText: ""
         property string figuresText: ""
+        property string reviewToken: ""
+        property string reviewText: ""
+        property bool requiresPhysicalDeclaration: false
         property string requestKey: ""
         function openFor(row) {
             if (!page.vm) return
             poolId = row.poolId
             sourceText = row.source
             figuresText = row.weight + " جرام • العيار الفعلي " + row.fineness + " • العهدة الأصلية " + row.tripCode
+            reviewToken = row.returnReviewToken
+            reviewText = row.returnReviewText
+            requiresPhysicalDeclaration = row.returnReviewRequiresPhysicalDeclaration
             requestKey = page.vm.newRequestKey()
             holdingIntact.checked = false
             holdingReturnDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
@@ -1855,13 +1851,18 @@ Item {
                 ColumnLayout {
                     id: holdingReturnForm
                     width: parent.width - 12; spacing: 6
+                    Txt { objectName: "holdingReturnEventReview"; Layout.fillWidth: true; visible: holdingReturnDialog.reviewText !== ""
+                          text: "التسويات والاستلامات المسجلة التي راجعتها:\n" + holdingReturnDialog.reviewText
+                          color: theme.textSecondary; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                     RowLayout {
                         Layout.fillWidth: true
                         layoutDirection: Qt.RightToLeft
                         spacing: 8
                         CheckBox { id: holdingIntact; objectName: "holdingIntactConfirm"; enabled: !!page.vm && !page.vm.returningHolding }
                         Txt { objectName: "holdingIntactText"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; font.bold: true
-                              text: page.vm ? page.vm.holdingConfirmationText : "" }
+                              text: holdingReturnDialog.requiresPhysicalDeclaration
+                                    ? "أقرّ بأن سجلات القسمة أو الاستلام المادي المعروضة سُجلت بالخطأ ولم تقع فعليًا، وأن هذه السبكة الأصلية نفسها ما زالت سليمة وكاملة وغير مقسمة لدى المسوقجي."
+                                    : (page.vm ? page.vm.holdingConfirmationText : "") }
                     }
                     Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
                     Field { id: holdingReturnDate; objectName: "holdingReturnDate"; Layout.fillWidth: true }
@@ -1882,8 +1883,10 @@ Item {
                     text: !!page.vm && page.vm.returningHolding ? "جارٍ الحفظ…" : "تسجيل الرجوع"
                     primary: true
                     enabled: holdingIntact.checked && holdingReturnDate.text.trim().length > 0 && !!page.vm && !page.vm.returningHolding
-                    onClicked: page.vm.returnHolding(holdingReturnDialog.poolId, holdingIntact.checked, holdingReturnDate.text,
-                                                     holdingReturnReference.text, holdingReturnNotes.text, holdingReturnDialog.requestKey)
+                    onClicked: page.vm.returnHolding(holdingReturnDialog.poolId, holdingIntact.checked, holdingReturnDialog.reviewToken,
+                                                     holdingReturnDialog.requiresPhysicalDeclaration && holdingIntact.checked,
+                                                     holdingReturnDate.text, holdingReturnReference.text,
+                                                     holdingReturnNotes.text, holdingReturnDialog.requestKey)
                 }
                 Btn { objectName: "cancelHoldingReturnButton"; text: "إلغاء"; accent: theme.textSecondary
                       enabled: !!page.vm && !page.vm.returningHolding; onClicked: holdingReturnDialog.close() }
@@ -2146,108 +2149,6 @@ Item {
         }
     }
 
-    // ---------------------------------------------------------------- physical receipt from a lot pool with allocation history (051, OWNER only)
-    // The measured grams equal the grams taken off the intermediary's balance; the gold becomes a NEW shop receipt piece (never the original bar), assay unknown.
-    Popup {
-        id: receiptDialog
-        objectName: "receiptDialog"
-        property string poolId: ""
-        property string requestKey: ""
-        readonly property var context: page.vm ? page.vm.receiptContext : ({})
-        readonly property var preview: {
-            var c = page.vm ? page.vm.receiptContext : ({})                              // read, so the check follows the loaded context
-            return page.vm && c.poolId !== undefined ? page.vm.previewReceipt(receiptConsumed.text, receiptMeasured.text) : ({})
-        }
-        function openFor(row) {
-            if (!page.vm) return
-            poolId = row.poolId
-            requestKey = page.vm.newRequestKey()
-            receiptConsumed.text = ""
-            receiptMeasured.text = ""
-            receiptDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
-            receiptReference.text = ""
-            receiptNotes.text = ""
-            page.vm.clearMessage()
-            page.vm.loadReceiptContext(row.poolId)
-            open()
-        }
-        parent: Overlay.overlay
-        anchors.centerIn: parent
-        width: Math.min(560, page.width - 24)
-        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 640, 640)
-        modal: true
-        padding: 14
-        closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
-        contentItem: ColumnLayout {
-            spacing: 6
-            Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; text: "استلام ذهب بالمحل" }
-            Txt { objectName: "receiptSource"; Layout.fillWidth: true; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                  text: receiptDialog.context.sourceText ? receiptDialog.context.sourceText : "" }
-            Txt { objectName: "receiptAvailable"; Layout.fillWidth: true; color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                  visible: !!receiptDialog.context.availableText
-                  text: "المسوقجي: " + (receiptDialog.context.holderName ? receiptDialog.context.holderName : "") + " • المتبقي لديه: "
-                        + (receiptDialog.context.availableText ? receiptDialog.context.availableText : "") }
-            Txt { objectName: "receiptRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                  text: page.vm ? page.vm.receiptNote : "" }
-            Flickable {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                contentHeight: receiptForm.implicitHeight
-                clip: true
-                ScrollBar.vertical: ScrollBar {}
-                ColumnLayout {
-                    id: receiptForm
-                    width: parent.width - 12
-                    spacing: 6
-                    RowLayout {
-                        Layout.fillWidth: true
-                        layoutDirection: Qt.RightToLeft
-                        spacing: 8
-                        ColumnLayout {
-                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
-                            Txt { Layout.fillWidth: true; text: "الجرامات المخصومة من رصيد المسوقجي *" }
-                            Field { id: receiptConsumed; objectName: "receiptConsumed"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
-                        }
-                        ColumnLayout {
-                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
-                            Txt { Layout.fillWidth: true; text: "الوزن المقاس فعليًا (جرام) *" }
-                            Field { id: receiptMeasured; objectName: "receiptMeasured"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
-                        }
-                    }
-                    Txt { objectName: "receiptCheck"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                          visible: !!receiptDialog.preview.error || !!receiptDialog.preview.remainingText
-                          color: receiptDialog.preview.error ? theme.amber : theme.textSecondary
-                          text: receiptDialog.preview.error ? receiptDialog.preview.error : ("المتبقي لدى المسوقجي بعد الاستلام: " + receiptDialog.preview.remainingText) }
-                    Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
-                    Field { id: receiptDate; objectName: "receiptDate"; Layout.fillWidth: true }
-                    Txt { Layout.fillWidth: true; text: "المرجع (اختياري)" }
-                    Field { id: receiptReference; objectName: "receiptReference"; Layout.fillWidth: true }
-                    Txt { Layout.fillWidth: true; text: "ملاحظات" }
-                    Field { id: receiptNotes; objectName: "receiptNotes"; Layout.fillWidth: true }
-                }
-            }
-            Txt { objectName: "receiptError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
-                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-            RowLayout {
-                Layout.fillWidth: true
-                layoutDirection: Qt.RightToLeft
-                spacing: 8
-                Btn {
-                    objectName: "confirmReceiptButton"
-                    text: !!page.vm && page.vm.receivingFromHolding ? "جارٍ الحفظ…" : "تسجيل الاستلام"
-                    primary: true
-                    enabled: receiptDialog.preview.valid === true && receiptDate.text.trim().length > 0 && !!page.vm && !page.vm.receivingFromHolding
-                    onClicked: page.vm.postReceipt(receiptDialog.poolId, receiptConsumed.text, receiptMeasured.text, receiptDate.text, receiptReference.text,
-                                                   receiptNotes.text, receiptDialog.requestKey)
-                }
-                Btn { objectName: "cancelReceiptButton"; text: "إلغاء"; accent: theme.textSecondary
-                      enabled: !!page.vm && !page.vm.receivingFromHolding; onClicked: receiptDialog.close() }
-                Item { Layout.fillWidth: true }
-            }
-        }
-    }
-
     // ---------------------------------------------------------------- reverse a physical receipt (OWNER only)
     Popup {
         id: reverseReceiptDialog
@@ -2277,7 +2178,7 @@ Item {
             Txt { Layout.fillWidth: true; text: "تصحيح تسجيل استلام " + page.ltr(reverseReceiptDialog.code); color: theme.red; font.bold: true; font.pixelSize: theme.fontSection }
             Txt { Layout.fillWidth: true; text: reverseReceiptDialog.detailText; wrapMode: Text.WordWrap; elide: Text.ElideNone }
             Txt { objectName: "reverseReceiptNote"; Layout.fillWidth: true; color: theme.amber; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                  text: "أثر التصحيح على الأرصدة: " + reverseReceiptDialog.effectText + " يتم ذلك معًا في عملية واحدة. لا يُثبت التصحيح سلامة السبكة الأصلية ولا يفتح رجوعها كاملة. يبقى الاستلام الأصلي في السجل ولا يُعدّل." }
+                  text: "أثر التصحيح على الأرصدة: " + reverseReceiptDialog.effectText + " يتم ذلك معًا في عملية واحدة. لا يُثبت التصحيح وحده سلامة السبكة الأصلية؛ بعد عكس كل التسويات والاستلامات واستعادة كامل الرصيد يمكن طلب الرجوع العادي بتأكيد المالك أن السبكة نفسها سليمة كاملة، مع إقراره بأن الاستلام المسجَّل لم يقع فعليًا. يبقى الاستلام الأصلي في السجل ولا يُعدّل." }
             Txt { Layout.fillWidth: true; text: "سبب العكس *" }
             Field { id: reverseReceiptReason; objectName: "reverseReceiptReason"; Layout.fillWidth: true }
             Txt { objectName: "reverseReceiptError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""

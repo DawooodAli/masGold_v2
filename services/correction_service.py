@@ -522,9 +522,9 @@ class CorrectionService:
                             from repositories.supplier_gold_settlement_repository import settlement_code
                             codes = "، ".join(settlement_code(r["id"]) for r in settled)
                             if any(r["physical_declaration"] in ("GRAM_ENTITLEMENT", "PHYSICALLY_DIVIDED") for r in settled):
-                                # allocation history: the whole-bar return is blocked as well, so no confirmed return is suggested
-                                advice = ("وقد سبق تخصيص جرامات منها لمورد (دون إثبات سلامتها الفعلية)، فيبقى رجوعها كاملة محجوبًا أيضًا "
-                                          "إلى حين تنفيذ عملية الاستلام الفعلي المستقبلية.")
+                                # Settlement history protects the handover reversal; the distinct normal return rechecks restored balance and physical evidence.
+                                advice = ("وسجل التسوية يمنع عكس هذا التسليم. بعد عكس كل التسويات واستعادة كامل الرصيد، يمكن طلب الرجوع العادي "
+                                          "بتأكيد المالك أن السبكة الأصلية نفسها سليمة كاملة؛ وتحتاج سجلات القسمة أو الاستلام المادي المعكوسة إلى إقرار المالك بأنها سُجلت بالخطأ ولم تقع فعليًا.")
                             else:
                                 advice = "ولا يُعاد الاعتماد على سلامتها الفعلية بعكس التسليم؛ سجّل رجوعها العادي بتأكيد المالك الصريح."
                             plan.blockers.append(("DEPENDENT_HOLDING_SETTLEMENT_EXISTS",

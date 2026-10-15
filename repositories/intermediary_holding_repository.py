@@ -5,6 +5,7 @@ uses explicit signed compensation: balance(pool) = SUM(weight_delta) over ALL of
 excludes an original one. The custody side keeps its own convention (a reversed custody entry stops counting) in MarketTripRepository.
 Every locking read is a CURRENT read (FOR SHARE / FOR UPDATE) and none has a nested lookup that could use an older snapshot."""
 import json
+from decimal import Decimal
 
 from repositories.base_repository import BaseRepository
 from repositories.invoice_repository import _id
@@ -17,6 +18,7 @@ RECEIVE, RECEIVE_REVERSAL = "RECEIVE", "RECEIVE_REVERSAL"                       
 MOVE_SETTLEMENT, MOVE_SETTLEMENT_REVERSAL = "SETTLEMENT", "SETTLEMENT_REVERSAL"           # 050: a supplier settlement from a holding and its compensation
 LOT_HOLD, HOLD_RETURN = "LOT_HOLD", "HOLD_RETURN"             # custody entry kinds
 HOLD_OUT, HOLD_IN = "HOLD_OUT", "HOLD_IN"                     # custody lot movement types
+PHYSICAL_EVENTS_DECLARATION_CODE = "PHYSICAL_EVENTS_RECORDED_IN_ERROR_DID_NOT_OCCUR"   # audit code: the listed physical events were recorded in error and did not occur
 CONFIRMATION_CODE = "SAME_BAR_WHOLE_UNDIVIDED"                # the stored code of the owner's «same bar, whole, undivided» confirmation
 SOURCE = "INTERMEDIARY_HOLDING"
 LOGO_HOLD, HOLD_BACK = "LOGO_HOLD", "HOLD_BACK"               # 049 custody entry kinds (master-karat LOGO grams)
@@ -107,6 +109,54 @@ class IntermediaryHoldingRepository(BaseRepository):
         """Grams the party holds from this source NOW (a CURRENT read of every movement, compensations included)."""
         return self._fetch_one("SELECT COALESCE(SUM(weight_delta), 0) AS grams FROM intermediary_holding_movements WHERE pool_id = %s FOR SHARE",
                                (_id(pool_id),))["grams"]
+
+    def pool_return_events(self, pool_id, *, lock=False):
+        """The exact supplier-allocation and receipt history relevant to whole-bar return review.
+
+        A decision uses current locking reads, including each receipt piece's complete stock-movement history.
+        """
+        suffix = " FOR SHARE" if lock else ""
+        settlements = self._fetch_all(
+            "SELECT g.id, g.physical_declaration, c.id AS reversal_id "
+            "FROM supplier_gold_settlements g "
+            "LEFT JOIN transaction_corrections c ON c.source_type = 'SUPPLIER_GOLD_SETTLEMENT' "
+            "AND c.source_id = g.id AND c.correction_type = 'FULL_REVERSAL' "
+            f"WHERE g.lot_pool_id = %s ORDER BY g.id{suffix}",
+            (_id(pool_id),))
+        receipts = self._fetch_all(
+            "SELECT r.id, r.grams, p.id AS piece_id, c.id AS reversal_id "
+            "FROM holding_receipts r JOIN receipt_pieces p ON p.receipt_id = r.id "
+            "LEFT JOIN transaction_corrections c ON c.source_type = 'HOLDING_RECEIPT' "
+            "AND c.source_id = r.id AND c.correction_type = 'FULL_REVERSAL' "
+            f"WHERE r.pool_id = %s ORDER BY r.id{suffix}",
+            (_id(pool_id),))
+        events = [
+            {"kind": "SUPPLIER_SETTLEMENT", "id": str(row["id"]),
+             "physical_declaration": row["physical_declaration"],
+             "reversal_id": None if row["reversal_id"] is None else str(row["reversal_id"])}
+            for row in settlements
+        ]
+        for receipt in receipts:
+            movements = self._fetch_all(
+                "SELECT id, movement_type, weight_delta, correction_id FROM receipt_stock_movements "
+                f"WHERE piece_id = %s ORDER BY id{suffix}",
+                (_id(receipt["piece_id"]),))
+            stock = sum((Decimal(str(movement["weight_delta"])) for movement in movements), Decimal("0.000"))
+            events.append({
+                "kind": "PHYSICAL_RECEIPT",
+                "id": str(receipt["id"]),
+                "piece_id": str(receipt["piece_id"]),
+                "grams": format(Decimal(str(receipt["grams"])), ".3f"),
+                "reversal_id": None if receipt["reversal_id"] is None else str(receipt["reversal_id"]),
+                "stock_grams": format(stock, ".3f"),
+                "stock_movements": [
+                    {"id": str(movement["id"]), "type": movement["movement_type"],
+                     "delta": format(Decimal(str(movement["weight_delta"])), ".3f"),
+                     "correction_id": None if movement["correction_id"] is None else str(movement["correction_id"])}
+                    for movement in movements
+                ],
+            })
+        return events
 
     def display_balance(self, *, logo, pool_id):
         """Display only (a plain read, no lock): what a preview shows; a decision always uses pool_balance / logo_pool_balance."""

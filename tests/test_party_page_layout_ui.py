@@ -67,8 +67,8 @@ class PartyPageLayoutTests(base.ReceiptPageTests):
         self.settle_service.reverse(first["id"], "تصحيح")
         keys = self.key
         self.settle_service.settle("LOT", pool, "10", "2", "GRAM_ENTITLEMENT", False, "2026-10-10", "", "", keys())
-        live = self.svm._holding_receipts.receive(pool, "1", "1", "2026-10-10", "", "", keys())
-        gone = self.svm._holding_receipts.receive(pool, "0.5", "0.5", "2026-10-10", "", "", keys())
+        live = self.seed_legacy_receipt(pool, "1")
+        gone = self.seed_legacy_receipt(pool, "0.5")
         self.svm._holding_receipts.reverse(gone["receipt_id"], "تصحيح")
         self.logo_hand_over("8", party=party)
         return pool, live, gone
@@ -144,7 +144,7 @@ class PartyPageLayoutTests(base.ReceiptPageTests):
                 self.assertFalse(self.item("goldAccountSection").property("visible"))
                 self.assertTrue(self.item("tabGold").property("visible"))                      # available under the holding-view right alone
                 self.assertTrue(self.item("holdingsGroup").property("visible"))
-                for name in ("holdingReceiveButton", "holdingMoreButton", "logoReturnButton", "logoMoreButton", "holdingDetailsToggle"):
+                for name in ("holdingMoreButton", "logoReturnButton", "logoMoreButton", "holdingDetailsToggle"):
                     self.assert_inside_window(self.item(name))                                  # reachable by the one scroll, nothing clipped
         self.assertEqual(self.warnings, [])
 
@@ -196,7 +196,7 @@ class PartyPageLayoutTests(base.ReceiptPageTests):
                 self.assertIn("علينا للمورد", making)
                 self.assertEqual(self.item("makingPositionCard").property("title"), "موقف مصنعيات المورد")
                 self.assertNotIn("علينا للمورد", gold)
-                self.assertEqual(self.text("goldHeldPosition"), "ذهب المحل عنده: يعادل 15.000 جرام عيار 21")
+                self.assertEqual(self.text("goldHeldPosition"), "ذهب المحل لديه بصفته مسوقجي: ما يعادل 15.000 جرام عيار 21")
                 self.assertEqual(self.text("goldAccountBalanceLabel"), "حساب المورد")
                 self.assertTrue(self.item("goldAccountSection").property("visible"))
                 self.assertTrue(self.item("goldAccountTitle").property("visible"))             # both sections are labelled
@@ -219,31 +219,74 @@ class PartyPageLayoutTests(base.ReceiptPageTests):
                     self.capture_review_view("mixed-party-gold", width, height, collapse_details=True)
         self.assertEqual(self.warnings, [])
 
+    def test_zero_supplier_accounts_name_the_account_and_stay_apart_from_the_held_gold_summary(self):
+        """The owner's observation: «الحساب متوازن» above «ذهب المحل عنده» made two separate balances look contradictory."""
+        class ZeroAccounts(DualRoleStub):
+            def supplier_detail(self, supplier_id, *, _expected_actor=None):
+                detail = super().supplier_detail(supplier_id, _expected_actor=_expected_actor)
+                if int(supplier_id) == 21:
+                    detail["balances"] = {"gold_status": "RESOLVED", "gold_karat_value": 21, "gold_karat_id": 1,
+                                          "gold_by_karat": [], "gold_direction": rules.SETTLED, "gold_balance": D("0.000"),
+                                          "making_direction": rules.SETTLED, "making": D("0.00")}
+                return detail
+
+        self.svm._service = ZeroAccounts(self.db, self.holding)
+        self.mixed_party(DUAL)
+        self.open_party(DUAL)
+        for width, height in SIZES:
+            with self.subTest(size=f"{width}x{height}"):
+                self.root.setWidth(width)
+                self.root.setHeight(height)
+                QTest_wait(200)
+                self.assertEqual(self.text("goldPosition"), "حساب المورد: لا توجد مستحقات ذهب")
+                self.assertEqual(self.text("makingPosition"), "لا توجد مستحقات مصنعية")
+                self.assertNotIn("الحساب متوازن", self.text("goldPosition") + self.text("makingPosition"))
+                held = self.text("goldHeldPosition")
+                self.assertEqual(held, "ذهب المحل لديه بصفته مسوقجي: ما يعادل 15.000 جرام عيار 21")   # value / formatting unchanged
+                self.assertTrue(self.item("goldHeldDivider").property("visible"))
+                # the summary is a separate subsection BELOW the supplier account position and its divider, inside the same card
+                self.assertLess(self.y_of("goldPosition"), self.y_of("goldHeldDivider"))
+                self.assertLess(self.y_of("goldHeldDivider"), self.y_of("goldHeldPosition"))
+                self.assertGreaterEqual(self.item("goldHeldDivider").height(), 1)
+                self.assertEqual(self.item("goldHeldDivider").width(), self.item("goldHeldPosition").width())      # the divider spans the same card width
+                self.assert_inside_window(self.item("goldHeldPosition"))
+                if (width, height) in ((1440, 900), (1080, 680)) and os.getenv("MASGOLD_UI_REVIEW_DIR"):
+                    self.capture_review_view("zero-account-held-gold", width, height)
+        self.assertEqual(self.warnings, [])
+
+    def test_the_held_gold_summary_is_hidden_with_its_divider_for_a_party_without_holdings(self):
+        self.svm._service = SupplierOnlyStub(self.db, self.holding)
+        self.db.suppliers[30] = {"id": 30, "name": "مورد فقط", "is_active": 1, "is_supplier": True, "is_intermediary": False, "karat_id": 1}
+        self.open_party("30")
+        self.assertFalse(self.item("goldHeldPosition").property("visible"))
+        self.assertFalse(self.item("goldHeldDivider").property("visible"))
+        self.assertEqual(self.warnings, [])
+
     def test_effective_holding_balance_updates_for_partial_settlement_return_and_reversal_without_counting_receipts_twice(self):
         pool, _, _ = self.mixed_party(DUAL)
         self.open_party(DUAL)
-        self.assertEqual(self.text("goldHeldPosition"), "ذهب المحل عنده: يعادل 15.000 جرام عيار 21")
+        self.assertEqual(self.text("goldHeldPosition"), "ذهب المحل لديه بصفته مسوقجي: ما يعادل 15.000 جرام عيار 21")
         self.assertIn("المخزون 1.000", self.text("receiptRow"))
 
         posted = self.settle_service.settle("LOT", pool, "10", "1", "GRAM_ENTITLEMENT", False,
                                             "2026-10-10", "", "", self.key())
         self.svm.selectSupplier(DUAL)
         self.wait_until(lambda: self.svm.detail.get("id") == DUAL, "party detail after partial settlement")
-        self.assertEqual(self.text("goldHeldPosition"), "ذهب المحل عنده: يعادل 14.000 جرام عيار 21")
+        self.assertEqual(self.text("goldHeldPosition"), "ذهب المحل لديه بصفته مسوقجي: ما يعادل 14.000 جرام عيار 21")
         self.settle_service.reverse(posted["id"], "تصحيح")
         self.svm.selectSupplier(DUAL)
         self.wait_until(lambda: self.svm.detail.get("id") == DUAL, "party detail after settlement reversal")
-        self.assertEqual(self.text("goldHeldPosition"), "ذهب المحل عنده: يعادل 15.000 جرام عيار 21")
+        self.assertEqual(self.text("goldHeldPosition"), "ذهب المحل لديه بصفته مسوقجي: ما يعادل 15.000 جرام عيار 21")
 
         logo_pool = str(max(self.db.logo_pools))
         returned = self.holding.return_logo(logo_pool, "2", "2026-10-10", "", "", self.key())
         self.svm.selectSupplier(DUAL)
         self.wait_until(lambda: self.svm.detail.get("id") == DUAL, "party detail after partial return")
-        self.assertEqual(self.text("goldHeldPosition"), "ذهب المحل عنده: يعادل 13.000 جرام عيار 21")
+        self.assertEqual(self.text("goldHeldPosition"), "ذهب المحل لديه بصفته مسوقجي: ما يعادل 13.000 جرام عيار 21")
         self.corrections.reverse("MARKET_TRIP_ENTRY", returned["entry_id"], "تصحيح")
         self.svm.selectSupplier(DUAL)
         self.wait_until(lambda: self.svm.detail.get("id") == DUAL, "party detail after return reversal")
-        self.assertEqual(self.text("goldHeldPosition"), "ذهب المحل عنده: يعادل 15.000 جرام عيار 21")
+        self.assertEqual(self.text("goldHeldPosition"), "ذهب المحل لديه بصفته مسوقجي: ما يعادل 15.000 جرام عيار 21")
         self.assertIn("لنا عند المورد", self.text("goldPosition"))                              # held gold never nets against supplier-account credit
 
     def test_summaries_are_grouped_by_source_and_never_labelled_unknown_because_of_received_pieces(self):
@@ -260,7 +303,7 @@ class PartyPageLayoutTests(base.ReceiptPageTests):
         self.assertIn("غير متاحة", " ".join(self.visible_texts("receivedRestriction")))        # usage restrictions stay visible
         self.assertEqual(len(self.visible_texts("receiptRow")), 1)                               # the live piece with its current stock stays on the page
         self.assertIn("المخزون 1.000", self.text("receiptRow"))
-        self.assertEqual(self.text("holdingReceiveButton"), "استلام ذهب بالمحل")
+        self.assertFalse(self.exists("holdingReceiveButton"))                                  # new LOT receipts are disabled
         self.assertEqual(self.text("holdingReturnButton"), "إرجاع السبكة كاملة للعهدة")
         self.assertEqual(self.text("receiptReverseButton"), "تصحيح تسجيل")
 
@@ -302,20 +345,20 @@ class PartyPageLayoutTests(base.ReceiptPageTests):
         self.hand_over()
         self.open_party("20")
         self.assertTrue(self.item("holdingReturnButton").property("primary"))
-        self.assertFalse(self.item("holdingReceiveButton").property("visible"))                  # no receipt without allocation history
+        self.assertFalse(self.exists("holdingReceiveButton"))                                  # no new LOT receipt action
 
-    def test_allocation_history_makes_the_shop_receipt_primary_with_plain_guidance(self):
+    def test_allocation_history_keeps_receipts_as_stock_and_does_not_offer_new_receipt_action(self):
         self.mixed_party()
         self.open_party("20")
         self.assertFalse(self.item("holdingReturnButton").property("primary"))                   # the return waits under More
-        self.assertTrue(self.item("holdingReceiveButton").property("primary"))
-        self.assertEqual(self.text("holdingReceiveButton"), "استلام ذهب بالمحل")
-        self.assertEqual(self.text("holdingReason"), "الرجوع كسبكة كاملة غير متاح؛ استخدم استلام ذهب بالمحل")
+        self.assertFalse(self.exists("holdingReceiveButton"))
+        self.assertIn("تسوية ذهب", self.text("holdingReason"))
         self.assertNotIn("SG0", self.text("holdingReason"))
+        self.open_details()
         self.assertIn("SG0", self.text("holdingRefs"))                                          # its reference lives under Details
         details = self.text("holdingRefs")
-        self.assertIn("لا يُسجَّل رجوعها كاملة ولا يُعكس تسليمها", details)
-        self.assertIn("قبل عملية استلام فعلي مستقبلية", details)
+        self.assertIn("يمكن طلب الرجوع العادي", details)
+        self.assertIn("سُجلت بالخطأ", details)
 
     # ------------------------------------------------------------ refresh versus selecting another party
     def mark_rows(self):
@@ -348,7 +391,7 @@ class PartyPageLayoutTests(base.ReceiptPageTests):
         self.click("holdingMoreButton")
         self.mark_rows()
         figures = self.text("holdingFigures")
-        self.svm._holding_receipts.receive(pool, "0.5", "0.5", "2026-10-10", "", "", self.key())      # a committed receipt changes the pool balance and the receipts
+        self.seed_legacy_receipt(pool, "0.5")                                                    # legacy receipt history changes the displayed balance
         self.reload_party()
         self.assertTrue(self.rows_were_rebuilt())                                               # the underlying rows were really rebuilt ...
         self.wait_until(lambda: self.text("holdingFigures") != figures, "new balance shown")

@@ -1,5 +1,11 @@
 # CLAUDE.md — masGold_v2
 
+## Current owner-approved intermediary LOT return policy
+
+- Migration 051's HR/RP schema and historical records remain in place, but new LOT physical-receipt postings are disabled. Exact replay of an already successful request returns its original HR/RP records; legacy receipt history remains readable and valid canonical reversals remain available.
+- A normal whole-bar return requires the original pool identity, full restored balance, no effective allocation/receipt or dependent use, the existing OPEN-custody check, and the owner's confirmation that this is the same intact original bar. Reversed `GRAM_ENTITLEMENT` and `WHOLE_ORIGINAL_BAR` settlements need no declaration that they were erroneous. Reversed physical-division and physical-receipt events require one owner declaration that the listed physical events were recorded in error and did not occur, while the same original bar remains intact.
+- One confirmation checkbox is bound to the exact server-derived event list and review token and revalidated under transaction locks; its audit metadata is written atomically with the return. `LOT_HOLD` correction guards and LOGO behavior remain unchanged.
+
 This file is the operating contract for Claude Code when working in this repository.
 
 Project root:

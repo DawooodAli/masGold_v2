@@ -1,12 +1,15 @@
-"""Physical receipt from an intermediary holding (051, «استلام فعلي من المسوقجي») on the real Main.qml with real mouse clicks at the three target sizes. The services are
-the real ones over the in-memory database of tests/market_trip_fakes.py; the supplier READ service is the small stub of tests/test_intermediary_holdings_ui.py (the real
-SQL was exercised on the masgold_rehearsal sandbox). NOT real-MySQL tests."""
+"""Legacy HR/RP history remains visible and reversible; new LOT receipts have no UI posting surface."""
+import hashlib
+import json
+from datetime import date, datetime
 from decimal import Decimal as D
 import unittest
 
 from PySide6.QtTest import QTest
 
-from services.holding_receipt_service import HoldingReceiptService
+from repositories.intermediary_holding_repository import MOVE_RECEIPT, RECEIVE
+from services.holding_receipt_service import SOURCE, HoldingReceiptService
+from services.market_trip_service import TripError
 from tests import test_holding_settlement_ui as base
 from tests.market_trip_fakes import HoldingRepo, SettlementRepo, TripRepo
 
@@ -15,170 +18,124 @@ ENTITLEMENT = "GRAM_ENTITLEMENT"
 
 
 class ReceiptPageTests(base.SettlementPageTests):
-    """Party page: the receipt dialog for a pool with allocation history (the SG000006 shape), refusals, the stock list and the reversal."""
+    """The owner can correct legacy receipts but cannot create new LOT receipt records."""
 
     def setUp(self):
         super().setUp()
-        self.svm._holding_receipts = HoldingReceiptService(self.controller.session, transaction_factory=self.db.transaction, repository=TripRepo, holdings=HoldingRepo,
-                                                           parties=SettlementRepo, authorization=self.authorization, corrections=self.corrections)
+        self.svm._holding_receipts = HoldingReceiptService(self.controller.session, transaction_factory=self.db.transaction,
+                                                            repository=TripRepo, holdings=HoldingRepo, parties=SettlementRepo,
+                                                            authorization=self.authorization, corrections=self.corrections)
 
-    # ------------------------------------------------------------ helpers
     def allocated_pool(self):
-        """A pool whose allocation (1.000 g, GRAM_ENTITLEMENT) was reversed: the balance is whole again but the intact bar can never be certified."""
-        trip, lot, done = self.hand_over()
+        trip, lot, _ = self.hand_over()
         pool = str(max(self.db.holding_pools))
         sg = self.settle_service.settle("LOT", pool, "10", "1", ENTITLEMENT, False, TODAY, "", "", self.key())
         self.settle_service.reverse(sg["id"], "تصحيح")
         return trip, pool
 
-    def open_receipt(self):
-        self.click("holdingReceiveButton")
-        self.wait_until(lambda: self.item("receiptDialog").property("opened"), "receipt dialog")
-        self.wait_until(lambda: self.svm.receiptContext.get("poolId"), "receipt context")
-        QTest.qWait(150)
+    def seed_legacy_receipt(self, pool, grams="1"):
+        pool_id = int(pool)
+        weight = D(grams).quantize(D("0.001"))
+        request = self.key()
+        receipt_date = date.fromisoformat(TODAY)
+        digest = hashlib.sha256(json.dumps(
+            [SOURCE, pool_id, str(weight), receipt_date.isoformat(), None, None], ensure_ascii=False,
+        ).encode()).hexdigest()
+        repository = HoldingRepo(self.db)
+        actor = self.controller.session.require_authenticated()
+        pool_row = repository.pool(pool_id)
+        receipt_id = repository.insert_receipt(pool=pool_row, grams=weight, receipt_date=receipt_date, reference=None, notes=None,
+                                               key=request, digest=digest, actor=actor, now=datetime.now())
+        piece_id = repository.insert_piece(receipt_id=receipt_id, pool=pool_row, grams=weight)
+        repository.insert_stock_movement(piece_id=piece_id, receipt_id=receipt_id, movement_type=RECEIVE, weight=weight, delta=weight)
+        repository.insert_receipt_movement(pool_id=pool_id, receipt_id=receipt_id, movement_type=MOVE_RECEIPT,
+                                            weight=weight, delta=-weight)
+        return {"receipt_id": str(receipt_id), "piece_id": str(piece_id)}
 
-    def pool_grams(self, pool):
-        return HoldingRepo(self.db).pool_balance(int(pool))
-
-    # ------------------------------------------------------------ tests
-    def test_receipt_with_real_clicks_at_1080_posts_one_piece_and_refreshes_the_party(self):
-        self.root.setWidth(1080)
-        self.root.setHeight(680)
-        trip, pool = self.allocated_pool()
+    def test_new_lot_receipt_has_no_posting_ui_and_service_refuses_without_writes(self):
+        _, pool = self.allocated_pool()
         self.open_party()
-        before, reloads = self.untouched(), self.stub.reloads
-        self.assertTrue(self.item("holdingReceiveButton").property("visible"))
-        self.assert_inside_window(self.item("holdingReceiveButton"))
-        self.open_receipt()
-        for name in ("receiptConsumed", "receiptMeasured", "receiptDate", "confirmReceiptButton", "cancelReceiptButton"):
-            self.assert_inside_window(self.item(name))
-        self.assertIn("غير معلوم", self.text("receiptRule"))
-        self.assertIn("لا يثبت تكافؤ العيار", self.text("receiptRule"))                         # no purity-equivalence claim
-        self.assertFalse(self.item("confirmReceiptButton").property("enabled"))
-        self.type_in("receiptConsumed", "1")
-        self.type_in("receiptMeasured", "0.999")
-        QTest.qWait(150)
-        self.assertIn("يساوي", self.text("receiptCheck"))                                        # a mismatch is explained and cannot be submitted
-        self.assertFalse(self.item("confirmReceiptButton").property("enabled"))
-        self.type_replace("receiptMeasured", "1")
-        QTest.qWait(150)
-        self.assertIn("9.000", self.text("receiptCheck"))
-        self.assertTrue(self.item("confirmReceiptButton").property("enabled"))
-        self.click("confirmReceiptButton")
-        self.wait_until(lambda: len(self.db.receipts) == 1, "receipt posted")
-        self.closed("receiptDialog")
-        self.wait_idle()
-        self.assertEqual(self.untouched(), before)                                               # no custody, Scrap, cash, making or shop-lot movement
-        self.assertEqual((self.pool_grams(pool), HoldingRepo(self.db).piece_stock(1)), (D("9.000"), D("1.000")))
-        self.wait_until(lambda: self.stub.reloads > reloads, "party reloaded after the commit")
-        self.wait_until(lambda: any("المخزون 1.000" in t for t in self.visible_texts("receiptRow")), "received piece listed")
-        piece = " ".join(self.visible_texts("receiptRow"))
-        self.assertIn("عيار القطعة غير معلوم", piece)                                                # the current stock and the UNKNOWN assay stay on the main page
-        self.assertNotIn("RP000001", piece)                                                         # codes live under Details
-        row = " ".join(self.visible_texts("receiptHistoryRow"))
-        self.assertIn("RP000001", row)
-        self.assertIn("HR000001", row)
-        self.assertIn("عيار القطعة غير معلوم", row)
-        self.assertFalse(self.item("holdingReturnButton").property("enabled"))                   # allocation guards unchanged
+        self.assertFalse(self.exists("holdingReceiveButton"))
+        self.assertFalse(self.exists("receiptDialog"))
+        self.assertFalse(self.svm.canReceiveFromHolding)
+        before = (len(self.db.receipts), len(self.db.pieces), len(self.db.stock_moves), len(self.db.holding_moves))
+        with self.assertRaises(TripError) as refused:
+            self.svm._holding_receipts.receive(pool, "1", "1", TODAY, "", "", self.key())
+        self.assertEqual(refused.exception.code, "LOT_RECEIPTS_DISABLED")
+        self.assertEqual((len(self.db.receipts), len(self.db.pieces), len(self.db.stock_moves), len(self.db.holding_moves)), before)
         self.assertEqual(self.warnings, [])
 
-    def test_the_button_is_hidden_without_allocation_history(self):
-        self.hand_over()
+    def test_legacy_receipt_history_stays_reversible_and_then_uses_the_event_reviewed_return(self):
+        _, pool = self.allocated_pool()
+        receipt = self.seed_legacy_receipt(pool)
         self.open_party()
-        self.assertFalse(self.item("holdingReceiveButton").property("visible"))                  # USE_NORMAL_RETURN: the intact return stays the only path
+        self.assertEqual(len(self.visible_texts("receiptRow")), 1)
+        self.assertFalse(self.item("holdingReturnButton").property("enabled"))  # outstanding legacy receipt stock is not returned as the bar
 
-    def test_a_refusal_after_opening_keeps_the_dialog_and_every_field_then_succeeds(self):
-        trip, pool = self.allocated_pool()
-        self.open_party()
-        self.open_receipt()
-        self.type_in("receiptConsumed", "4")
-        self.type_in("receiptMeasured", "4")
-        self.type_in("receiptReference", "مرجع")
-        self.receipt_other = HoldingReceiptService(self.controller.session, transaction_factory=self.db.transaction, repository=TripRepo, holdings=HoldingRepo,
-                                                   parties=SettlementRepo, authorization=self.authorization, corrections=self.corrections)
-        self.receipt_other.receive(pool, "8", "8", TODAY, "", "", self.key())                    # another employee receives 8 g meanwhile: 2 g left
-        self.click("confirmReceiptButton")
-        self.wait_idle()
-        self.assertTrue(self.item("receiptDialog").property("opened"))
-        self.assertIn("2.000", self.text("receiptError"))
-        self.assertEqual((self.text("receiptConsumed"), self.text("receiptMeasured"), self.text("receiptReference")), ("4", "4", "مرجع"))
-        self.assertEqual(len(self.db.receipts), 1)
-        self.type_replace("receiptConsumed", "2")
-        self.type_replace("receiptMeasured", "2")
-        QTest.qWait(150)
-        self.click("confirmReceiptButton")
-        self.wait_until(lambda: len(self.db.receipts) == 2, "retry posted")
-        self.closed("receiptDialog")
-
-    def test_a_second_submission_while_the_first_is_running_is_ignored(self):
-        trip, pool = self.allocated_pool()
-        self.open_party()
-        args = (pool, "1", "1", TODAY, "", "", "77777777-7777-4777-8777-777777777778")
-        self.svm.postReceipt(*args)
-        self.svm.postReceipt(*args)
-        self.wait_idle()
-        self.assertEqual(len(self.db.receipts), 1)
-
-    def test_the_receipt_dialog_is_fully_visible_at_the_three_target_sizes(self):
-        self.allocated_pool()
-        self.open_party()
-        for width, height in ((1440, 900), (1280, 800), (1080, 680)):
-            with self.subTest(size=f"{width}x{height}"):
-                self.root.setWidth(width)
-                self.root.setHeight(height)
-                QTest.qWait(200)
-                self.assert_inside_window(self.item("holdingReceiveButton"))
-                self.open_receipt()
-                self.type_replace("receiptConsumed", "1")
-                self.type_replace("receiptMeasured", "1")
-                for name in ("receiptConsumed", "receiptMeasured", "receiptDate", "confirmReceiptButton", "cancelReceiptButton"):
-                    self.assert_inside_window(self.item(name))
-                self.click("cancelReceiptButton")
-                self.closed("receiptDialog")
-
-    def test_the_holder_page_reverses_a_receipt_and_says_what_happens_to_stock_and_holdings(self):
-        trip, pool = self.allocated_pool()
-        done = self.receiver_service().receive(pool, "1", "1", TODAY, "", "", self.key())
-        self.open_party()
+        self.click("receiptMoreButton")
         self.click("receiptReverseButton")
-        self.wait_until(lambda: self.item("reverseReceiptDialog").property("opened"), "reverse dialog")
-        self.assertIn("مخزون الاستلام", self.text("reverseReceiptNote"))
-        self.assertIn("لا يفتح رجوعها كاملة", self.text("reverseReceiptNote"))
-        self.assertIn("أثر التصحيح على الأرصدة", self.text("reverseReceiptNote"))                  # states the balances it restores / removes
-        self.assertIn("1.000 جرام إلى رصيد المسوقجي", self.text("reverseReceiptNote"))
-        self.type_in("reverseReceiptReason", "خطأ في الوزن")
+        self.wait_until(lambda: self.item("reverseReceiptDialog").property("opened"), "legacy receipt correction dialog")
+        self.type_in("reverseReceiptReason", "تصحيح سجل مادي")
         self.click("confirmReverseReceiptButton")
-        self.wait_until(lambda: any(c["source_type"] == "HOLDING_RECEIPT" for c in self.db.corrections), "reversed")
+        self.wait_until(lambda: any(c["source_type"] == "HOLDING_RECEIPT" for c in self.db.corrections), "legacy receipt reversed")
         self.closed("reverseReceiptDialog")
         self.wait_idle()
-        self.assertEqual((self.pool_grams(pool), HoldingRepo(self.db).piece_stock(int(done["piece_id"]))), (D("10.000"), D("0.000")))
-        self.assertIn("RV", " ".join(self.svm.message.split()) or "RV")
-        self.wait_until(lambda: any("معكوس" in t for t in self.visible_texts("receiptHistoryRow")), "reversed state listed in Details")
-        self.assertEqual(self.visible_texts("receiptRow"), [])                                      # a reversed receipt is no longer shop stock on the main page
-        self.assertFalse(self.item("holdingReturnButton").property("enabled"))                   # the whole-bar return stays blocked after the reversal
+
+        self.assertEqual((HoldingRepo(self.db).pool_balance(int(pool)),
+                          HoldingRepo(self.db).piece_stock(int(receipt["piece_id"]))), (D("10.000"), D("0.000")))
+        self.assertEqual(len(self.db.receipts), 1)  # receipt and RP identity remain historical
+        self.assertEqual(len(self.visible_texts("receiptRow")), 0)
+        self.assertIn("HR000001", " ".join(self.visible_texts("receiptHistoryRow")))
+        self.assertIn("RP000001", " ".join(self.visible_texts("receiptHistoryRow")))
+        self.assertTrue(self.item("holdingReturnButton").property("enabled"))
+        self.click("holdingReturnButton")
+        self.wait_until(lambda: self.item("holdingReturnDialog").property("opened"), "return event review")
+        self.assertIn("HR000001 / RP000001", self.text("holdingReturnEventReview"))
+        self.assertFalse(self.exists("holdingPhysicalEventsConfirm"))
+        self.assertTrue(self.item("holdingIntactConfirm").property("visible"))
+        self.assertIn("سجلات القسمة أو الاستلام المادي المعروضة", self.text("holdingIntactText"))
+        self.click("cancelHoldingReturnButton")
+        self.closed("holdingReturnDialog")
         self.assertEqual(self.warnings, [])
 
-    def receiver_service(self):
-        return self.svm._holding_receipts
-
-    def test_the_buttons_follow_the_rights_and_the_service_still_refuses_without_them(self):
-        trip, pool = self.allocated_pool()
+    def test_legacy_receipt_reversal_action_follows_permissions_and_service_refuses_without_them(self):
+        _, pool = self.allocated_pool()
+        receipt = self.seed_legacy_receipt(pool)
         self.open_party()
-        self.assertTrue(self.svm.canReceiveFromHolding)
-        self.grant(revoke=("INTERMEDIARY_HOLDING_MANAGE",))
-        self.svm.changed.emit()
-        QTest.qWait(80)
-        self.assertFalse(self.svm.canReceiveFromHolding)
-        self.assertFalse(self.item("holdingReceiveButton").property("visible"))
-        self.svm.postReceipt(pool, "1", "1", TODAY, "", "", self.key())
+        self.assertTrue(self.item("receiptMoreButton").property("visible"))
+
+        self.grant(revoke=("INTERMEDIARY_HOLDING_REVERSE",))
+        self.svm.refresh()
         self.wait_idle()
-        self.assertEqual(self.db.receipts, {})
+        self.assertFalse(self.item("receiptMoreButton").property("visible"))
+        before = (len(self.db.corrections), HoldingRepo(self.db).pool_balance(int(pool)),
+                  HoldingRepo(self.db).piece_stock(int(receipt["piece_id"])))
+        with self.assertRaises(PermissionError):
+            self.svm._holding_receipts.reverse(receipt["receipt_id"], "تصحيح مادي")
+        self.assertEqual((len(self.db.corrections), HoldingRepo(self.db).pool_balance(int(pool)),
+                          HoldingRepo(self.db).piece_stock(int(receipt["piece_id"]))), before)
+        self.assertEqual(self.warnings, [])
+
+    def test_receipt_reversal_dialog_explains_stock_and_holding_balance_effects(self):
+        _, pool = self.allocated_pool()
+        self.seed_legacy_receipt(pool)
+        self.open_party()
+        self.click("receiptMoreButton")
+        self.click("receiptReverseButton")
+        self.wait_until(lambda: self.item("reverseReceiptDialog").property("opened"), "legacy receipt correction dialog")
+        note = self.text("reverseReceiptNote")
+        self.assertIn("مخزون الاستلام", note)
+        self.assertIn("تخرج القطعة المستلمة", note)
+        self.assertIn("تعود 1.000 جرام إلى رصيد المسوقجي", note)
+        self.assertIn("أثر التصحيح على الأرصدة", note)
+        self.assertEqual(self.warnings, [])
 
 
 def load_tests(loader, tests, pattern):
-    """Only the tests defined here: the page class inherits the whole harness (and the 048 / 049 / 050 party tests), which other modules already run."""
+    """Run only this module's page-specific checks; inherited settlement tests run in their own module."""
     suite = unittest.TestSuite()
-    suite.addTests(ReceiptPageTests(name) for name in loader.getTestCaseNames(ReceiptPageTests) if name in ReceiptPageTests.__dict__)
+    suite.addTests(ReceiptPageTests(name) for name in loader.getTestCaseNames(ReceiptPageTests)
+                   if name in ReceiptPageTests.__dict__)
     return suite
 
 

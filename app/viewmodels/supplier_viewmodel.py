@@ -19,6 +19,9 @@ from services.intermediary_holding_rules import (CONFIRMATION_TEXT, DECLARATION_
                                                  SETTLE_CONFIRMATION_TEXT, holding_preview)
 
 SHOP_OWES_TEXT, SUPPLIER_OWES_TEXT, SETTLED_TEXT = "علينا للمورد", "لنا عند المورد", "الحساب متوازن"
+# A zero supplier account says WHICH account is empty, so it cannot be read against the (separate) gold the shop holds at the party as an intermediary.
+GOLD_SETTLED_TEXT, MAKING_SETTLED_TEXT = "حساب المورد: لا توجد مستحقات ذهب", "لا توجد مستحقات مصنعية"
+HELD_GOLD_LABEL = "ذهب المحل لديه بصفته مسوقجي"
 ACCOUNT_TYPE_TEXT = {"BANK": "حساب بنكي", "MOBILE_WALLET": "محفظة"}
 PAYMENT_METHOD_TEXT = {"CASH": "نقدًا من", "BANK": "تحويل من", "CUSTODY": "من عهدة السوق"}
 TONES = {rules.SHOP_OWES: "shopOwes", rules.SUPPLIER_OWES: "supplierOwes", rules.SETTLED: "settled"}
@@ -27,7 +30,7 @@ TONES = {rules.SHOP_OWES: "shopOwes", rules.SUPPLIER_OWES: "supplierOwes", rules
 def gold_position_text(direction, amount, karat=None):
     """'علينا للمورد 40.050 جرام' / 'لنا عند المورد 9.950 جرام عيار 21' (the magnitude only; the words give the sign)."""
     if direction == rules.SETTLED:
-        return SETTLED_TEXT
+        return GOLD_SETTLED_TEXT
     lead = SHOP_OWES_TEXT if direction == rules.SHOP_OWES else SUPPLIER_OWES_TEXT
     suffix = f" عيار {karat}" if karat else ""
     return f"{lead} {grams(abs(Decimal(str(amount))))} جرام{suffix}"
@@ -36,7 +39,7 @@ def gold_position_text(direction, amount, karat=None):
 def making_position_text(direction, amount):
     """'علينا للمورد 6,500.00 ج مصنعيات' / 'لنا عند المورد 1,500.00 ج مصنعيات'."""
     if direction == rules.SETTLED:
-        return SETTLED_TEXT
+        return MAKING_SETTLED_TEXT
     lead = SHOP_OWES_TEXT if direction == rules.SHOP_OWES else SUPPLIER_OWES_TEXT
     return f"{lead} {money(abs(Decimal(str(amount))))} مصنعيات"
 
@@ -46,7 +49,7 @@ def position_parts(direction, amount, kind, karat=None):
     {lead: direction words, number: the magnitude (money keeps its 'ج'), tail: unit / basis}. Joined with spaces the
     parts equal the full text exactly; a settled position is only a lead."""
     if direction == rules.SETTLED:
-        return {"lead": SETTLED_TEXT, "number": "", "tail": ""}
+        return {"lead": MAKING_SETTLED_TEXT if kind == "making" else GOLD_SETTLED_TEXT, "number": "", "tail": ""}
     lead = SHOP_OWES_TEXT if direction == rules.SHOP_OWES else SUPPLIER_OWES_TEXT
     value = abs(Decimal(str(amount)))
     if kind == "making":
@@ -98,7 +101,6 @@ def making_row(r):
 
 
 _SG_REF = re.compile(r"\s*\((SG\d{6})\)")
-_ALLOCATION_GUIDANCE = "الرجوع كسبكة كاملة غير متاح؛ استخدم استلام ذهب بالمحل"
 
 
 def plain_guidance(text):
@@ -142,14 +144,13 @@ class SupplierViewModel(QObject):
     holdingReturned = Signal(str)        # a whole lot came back from the intermediary (its IH code): the dialog can close
     holdingChanged = Signal()            # custody entries changed by a holding return (after commit): the custody views reload
     holdingSettled = Signal(str)         # a supplier was settled from a holding (its SG code): the dialog can close
-    receiptPosted = Signal(str)          # a physical receipt was posted (its HR code): the dialog can close
     receiptReversed = Signal(str)        # a physical receipt was reversed (the RV code): the dialog can close
 
     def __init__(self, session, service=None, parent=None, payments=None, holdings=None, holding_settlements=None):
         super().__init__(parent)
         self._session, self._service, self._payments, self._holdings = session, service, payments, holdings
         self._holding_settlements, self._hs_context = holding_settlements, {}
-        self._holding_receipts, self._hr_context = None, {}
+        self._holding_receipts = None
         self._pay_context = {}
         self._settlements, self._set_context = None, {}
         self._workers, self._request, self._latest, self._busy = set(), 0, {}, set()
@@ -510,16 +511,16 @@ class SupplierViewModel(QObject):
         self.settlementReversed.emit(result["code"])
 
     # ------------------------------------------------------------ whole-lot holdings (048): the normal intact return
-    @Slot(str, bool, str, str, str, str)
-    def returnHolding(self, pool_id, intact_confirmed, return_date, reference, notes, request_key):
-        """Take one whole source back into its ORIGINAL custody. The OWNER's explicit confirmation travels with the request; the service re-checks
-        every right, the open custody and the exact balance, and refuses without moving anything otherwise."""
+    @Slot(str, bool, str, bool, str, str, str, str)
+    def returnHolding(self, pool_id, intact_confirmed, review_token, physical_events_confirmed, return_date, reference, notes, request_key):
+        """Return one whole source only after the owner confirms the reviewed event snapshot and the service rechecks all facts under lock."""
         if "holdret" in self._busy:
             return                                                     # a double click never submits twice
         self._message = self._error = ""
         service = self._holding_service()
         self._start("holdret", lambda _expected_actor: service.return_holding(
-            pool_id, intact_confirmed, return_date, reference, notes, request_key, _expected_actor=_expected_actor))
+            pool_id, intact_confirmed, review_token, physical_events_confirmed,
+            return_date, reference, notes, request_key, _expected_actor=_expected_actor))
         self.changed.emit()
 
     def _on_holdret(self, result, error):
@@ -621,58 +622,7 @@ class SupplierViewModel(QObject):
         self.holdingSettled.emit(result["code"])
         self.holdingChanged.emit()
 
-    # ------------------------------------------------------------ physical receipts from a holding (051)
-    @Slot(str)
-    def loadReceiptContext(self, pool_id):
-        self._hr_context = {}
-        self._error = self._message = ""
-        service = self._holding_receipt_service()
-        self._start("hrctx", lambda _expected_actor: service.context(pool_id, _expected_actor=_expected_actor))
-        self.changed.emit()
-
-    def _on_hrctx(self, result, error):
-        if error:
-            self._error = error
-            return
-        self._hr_context = result
-
-    @Slot(str, str, result="QVariantMap")
-    def previewReceipt(self, entitlement, measured):
-        """The pre-submit check of the two weights, by the SAME parser the service uses (never QML arithmetic): positive, at most three decimals and equal."""
-        context = self._hr_context
-        empty = {"valid": False, "error": "", "remainingText": ""}
-        if not context or not str(entitlement or "").strip() or not str(measured or "").strip():
-            return empty
-        try:
-            consumed, weighed = rules.parse_delivered_weight(entitlement), rules.parse_delivered_weight(measured)
-        except rules.SupplierRuleError as exc:
-            return {**empty, "error": str(exc)}
-        if consumed != weighed:
-            return {**empty, "error": "الوزن المقاس فعليًا يجب أن يساوي الجرامات المخصومة من رصيد المسوقجي."}
-        if consumed > context["balance"]:
-            return {**empty, "error": f"المتبقي من هذا المصدر لدى المسوقجي {grams(context['balance'])} جرام فقط."}
-        return {"valid": True, "error": "", "remainingText": f"{grams(context['balance'] - consumed)} جرام"}
-
-    @Slot(str, str, str, str, str, str, str)
-    def postReceipt(self, pool_id, entitlement, measured, receipt_date, reference, notes, request_key):
-        if "hrpost" in self._busy:
-            return                                                     # a double click never submits twice
-        self._message = self._error = ""
-        service = self._holding_receipt_service()
-        self._start("hrpost", lambda _expected_actor: service.receive(
-            pool_id, entitlement, measured, receipt_date, reference, notes, request_key, _expected_actor=_expected_actor))
-        self.changed.emit()
-
-    def _on_hrpost(self, result, error):
-        if error:
-            self._error = error                                        # the dialog stays open with every field kept
-            return
-        self._message = (f"الاستلام {result['code']} مسجل من قبل (لم يُسجل مرة ثانية)." if result.get("duplicate")
-                         else f"تم تسجيل الاستلام {result['code']}: {grams(Decimal(result['grams']))} جرام مقاسة فعليًا ← قطعة {result['piece_code']} في مخزون الاستلام "
-                              f"(المتبقي لدى المسوقجي {grams(Decimal(result['remaining']))} جرام).")
-        self.refresh()
-        self.receiptPosted.emit(result["code"])
-
+    # ------------------------------------------------------------ legacy receipt corrections (051)
     @Slot(str, str)
     def reverseReceipt(self, receipt_id, reason):
         if "hrrev" in self._busy:
@@ -694,29 +644,11 @@ class SupplierViewModel(QObject):
     # ------------------------------------------------------------ properties
     @Property(bool, notify=changed)
     def canReceiveFromHolding(self):
-        actor = self._session.current_actor()
-        return bool(actor and "INTERMEDIARY_HOLDING_MANAGE" in actor.permissions)
-
-    @Property(bool, notify=changed)
-    def receivingFromHolding(self):
-        return "hrpost" in self._busy
+        return False
 
     @Property(bool, notify=changed)
     def receiptReversing(self):
         return "hrrev" in self._busy
-
-    @Property("QVariantMap", notify=changed)
-    def receiptContext(self):
-        context = self._hr_context
-        if not context:
-            return {}
-        return {"poolId": context["pool_id"], "holderName": context["holder"]["name"], "availableText": f"{grams(context['balance'])} جرام",
-                "sourceText": f"سبكة وزنها الأصلي {grams(context['weight'])} جرام • العيار المسجل للمصدر {number(context['source_fineness'], 1)} بالألف (للمرجع فقط، لا يُنسب للقطعة المستلمة)",
-                "receivable": bool(context["receivable"])}
-
-    @Property(str, constant=True)
-    def receiptNote(self):
-        return RECEIPT_NOTE
 
     @Property(bool, notify=changed)
     def canSettleFromHolding(self):
@@ -781,13 +713,15 @@ class SupplierViewModel(QObject):
                   "fineness": f"{ltr(number(p['fineness'], 1))} في الألف", "finenessValue": number(p["fineness"], 1),
                   "pure": "غير معلومة" if p["pure"] is None else number(p["pure"], 6), "document": ltr(p["document"]),
                   "custodyEntry": ltr(p["custody_entry"]), "tripCode": ltr(p["trip_code"]), "date": date_text(p["date"]),
-                  "returnable": bool(data["can_manage"] and p["returnable"]),
-                  "reason": _ALLOCATION_GUIDANCE if p.get("allocated") else plain_guidance(p["reason"])[0],
+                  "returnable": bool(data["can_manage"] and p["returnable"] and p.get("return_review_token")),
+                  "reason": plain_guidance(p["reason"])[0],
                   "detailsNote": " • ".join(plain_guidance(note)[0] for note in
                                             (p.get("reason", ""), p.get("history_note", "")) if note),
                   "settleable": bool(data.get("can_settle") and p["settleable"]), "historyNote": plain_guidance(p.get("history_note", ""))[0],
                   "allocationRefs": " ".join(plain_guidance(p["reason"])[1] or plain_guidance(p.get("history_note", ""))[1]),
-                  "receivable": bool(data.get("can_receive") and p.get("receivable"))} for p in data["pools"]]
+                  "returnReviewToken": p.get("return_review_token", ""),
+                  "returnReviewText": "\n".join(p.get("return_review_events", [])),
+                  "returnReviewRequiresPhysicalDeclaration": bool(p.get("return_review_requires_physical_declaration", False))} for p in data["pools"]]
         history = [{"id": h["document_id"], "code": ltr(h["code"]),
                     "kindText": "تسليم" if h["kind"] == "HANDOVER" else "رجوع",
                     "text": f"{h['source']} • {grams(h['weight'])} جرام • {ltr(h['custody_entry'])} • {date_text(h['date'])}"
@@ -846,9 +780,9 @@ class SupplierViewModel(QObject):
         gold_position_text = ""
         if held_gold:
             gold_position_text = (
-                f"ذهب المحل عنده: يعادل {grams(equivalent)} جرام عيار 21"
+                f"{HELD_GOLD_LABEL}: ما يعادل {grams(equivalent)} جرام عيار 21"
                 if equivalent is not None
-                else "ذهب المحل عنده: مكافئ عيار 21 غير مكتمل؛ بيانات عيار إحدى السبائك غير متاحة"
+                else f"{HELD_GOLD_LABEL}: مكافئ عيار 21 غير مكتمل؛ بيانات عيار إحدى السبائك غير متاحة"
             )
         return {"visible": True, "note": HOLDING_NOTE, "logoPools": logo_pools, "logoHistory": logo_history, "logoSummary": logo_summary,
                 "logoNote": LOGO_NOTE, "settlements": settlements, "receipts": receipts, "receiptNote": RECEIPT_NOTE,
