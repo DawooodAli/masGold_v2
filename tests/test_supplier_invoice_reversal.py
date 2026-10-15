@@ -18,6 +18,9 @@ REASON = "وزن مدخل بالخطأ"
 class InvoiceCorrections(base.Corrections):
     """The correction repository double of the payment tests, accepting the 052 source (invoice-less, full reversal only)."""
 
+    def corrections_for_source(self, source_type, source_id, current=False):             # the 052 decision is a CURRENT read (a plain double has one view)
+        return super().corrections_for_source(source_type, source_id)
+
     def insert_correction(self, **kw):
         self._fail("correction")
         assert kw["reason"].strip()                                                    # chk_correction_reason

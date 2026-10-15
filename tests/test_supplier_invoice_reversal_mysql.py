@@ -27,7 +27,11 @@ from tests.test_market_trip_hardening_mysql import UnlockedAuthorization
 
 SOURCE = "SUPPLIER_PURCHASE_INVOICE"
 REASON = "052 وزن مدخل بالخطأ"
-GROUPS = [{"weight": "30", "making_per_gram": "100"}, {"weight": "20", "making_per_gram": "120"}]      # 50.000 g, making 5,400.00
+# The rates fall inside the purchase-making range of the DUMMY category T052 created below (the only configured category of the rehearsal database, so the
+# category resolves to exactly one grade): 30 g x 9000.25 + 20 g x 9000.50 = 450,017.50
+GROUPS = [{"weight": "30", "making_per_gram": "9000.25"}, {"weight": "20", "making_per_gram": "9000.50"}]
+MAKING = D("450017.50")
+FIXTURE = "T052"                                                                                   # code of the dummy item type and category
 
 
 class SupplierInvoiceReversalMySqlTests(HoldingsMySqlTests):
@@ -46,6 +50,24 @@ class SupplierInvoiceReversalMySqlTests(HoldingsMySqlTests):
             q.close()
         cls.session, cls.user = cls.make_session('owner-052', 'OWNER')
         cls.suppliers = SupplierService(cls.session, transaction_factory=cls.tx)
+        # Dummy master data of THIS test (repeatable, never cleaned): one item type and one category whose purchase-making range matches only the test rates,
+        # so the intake-dependent tests run instead of being skipped. Existing master rows are never modified.
+        with cls.tx() as c:
+            q = c.cursor()
+            q.execute("INSERT INTO item_types(code,name) SELECT %s,%s FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM item_types WHERE code=%s)",
+                      (FIXTURE, '052 test item type', FIXTURE))
+            q.execute("INSERT INTO item_categories(code,name,purchase_making_min_per_gram,purchase_making_max_per_gram) "
+                      "SELECT %s,%s,9000.00,9000.99 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM item_categories WHERE code=%s)",
+                      (FIXTURE, '052 test grade', FIXTURE))
+            q.close()
+        with cls.tx() as c:
+            q = c.cursor(dictionary=True)
+            q.execute("SELECT id FROM item_types WHERE code=%s", (FIXTURE,))
+            cls.item_type_id = int(q.fetchone()['id'])
+            q.execute("SELECT id,is_active,purchase_making_min_per_gram AS lo,purchase_making_max_per_gram AS hi FROM item_categories WHERE code=%s", (FIXTURE,))
+            category = q.fetchone()
+            assert category['is_active'] == 1 and (category['lo'], category['hi']) == (D('9000.00'), D('9000.99')), category
+            q.close()
 
     def setUp(self):
         self.correct = CorrectionService(self.session, transaction_factory=self.tx)
@@ -89,15 +111,9 @@ class SupplierInvoiceReversalMySqlTests(HoldingsMySqlTests):
         return SupplierPurchaseService(session, transaction_factory=self.tx, corrections=correction)
 
     def intake(self, invoice, service=None, weight='5'):
-        """One real intaken piece; the test is SKIPPED (never silently green) when the rehearsal master data cannot take an intake."""
-        item_type = self.query("SELECT id FROM item_types WHERE is_active=1 ORDER BY id LIMIT 1")
-        if not item_type:
-            self.skipTest('the rehearsal database has no active item type for a supplier intake')
+        """One real intaken piece through the canonical intake path (the dummy item type / category of setUpClass; a refusal is a real failure)."""
         group = self.query("SELECT id FROM supplier_invoice_groups WHERE invoice_id=%s ORDER BY group_no LIMIT 1", (invoice,))[0]['id']
-        try:
-            return (service or self.purchases).add_piece(invoice, str(group), int(item_type[0]['id']), weight, str(uuid4()), barcode_mode='NONE')
-        except SupplierRuleError as error:
-            self.skipTest(f'the rehearsal master data cannot take a supplier intake: {error.code}')
+        return (service or self.purchases).add_piece(invoice, str(group), self.item_type_id, weight, str(uuid4()), barcode_mode='NONE')
 
     # ------------------------------------------------------------------ functional
     def test_exact_opposite_entries_derived_state_labels_and_untouched_history(self):
@@ -105,7 +121,7 @@ class SupplierInvoiceReversalMySqlTests(HoldingsMySqlTests):
         gold, making = self.stored(invoice)
         header = self.invoice_row(invoice)
         before_foreign = self.foreign_counts()
-        self.assertEqual((len(gold), len(making), gold[0]['weight_delta_grams'], making[0]['amount_delta']), (1, 1, D('50.000'), D('5400.00')))
+        self.assertEqual((len(gold), len(making), gold[0]['weight_delta_grams'], making[0]['amount_delta']), (1, 1, D('50.000'), MAKING))
         done = self.purchases.reverse_invoice(invoice, REASON)
         correction = self.query("SELECT * FROM transaction_corrections WHERE id=%s", (done['correction_id'],))[0]
         self.assertEqual((correction['source_type'], int(correction['source_id']), correction['correction_type'], correction['invoice_id'], correction['reason']),
@@ -159,6 +175,7 @@ class SupplierInvoiceReversalMySqlTests(HoldingsMySqlTests):
         self.assertEqual(again.exception.code, 'ALREADY_REVERSED')
         self.assertEqual(self.reversal_counts(), before)
         draft = self.purchases.create_draft(supplier, self.karats[21], 'DRAFT-' + uuid4().hex[:6], '2026-10-09', GROUPS, '', str(uuid4()))
+        before = self.reversal_counts()                                                            # AFTER the draft: creating it writes its own audit row
         with self.assertRaises(CorrectionError) as not_posted:
             self.purchases.reverse_invoice(draft['id'], REASON)
         self.assertEqual(not_posted.exception.code, 'INVOICE_NOT_POSTED')
@@ -192,7 +209,7 @@ class SupplierInvoiceReversalMySqlTests(HoldingsMySqlTests):
         self.purchases.reverse_invoice(second, REASON)
         group = self.query("SELECT id FROM supplier_invoice_groups WHERE invoice_id=%s ORDER BY group_no LIMIT 1", (second,))[0]['id']
         with self.assertRaises(SupplierRuleError) as reversed_invoice:
-            self.purchases.add_piece(second, str(group), 1, '5', str(uuid4()), barcode_mode='NONE')
+            self.purchases.add_piece(second, str(group), self.item_type_id, '5', str(uuid4()), barcode_mode='NONE')
         self.assertEqual(reversed_invoice.exception.code, 'INVOICE_REVERSED')
 
     # ------------------------------------------------------------------ rollback at every persistent stage
@@ -224,7 +241,7 @@ class SupplierInvoiceReversalMySqlTests(HoldingsMySqlTests):
             with self.assertRaisesRegex(RuntimeError, '052 reversal audit injected'):
                 self.purchases.reverse_invoice(invoice, REASON)
         self.assertEqual(self.reversal_counts(), before, 'audit')
-        self.assertEqual(self.balances(supplier), (D('50.000'), D('5400.00')))
+        self.assertEqual(self.balances(supplier), (D('50.000'), MAKING))
         self.purchases.reverse_invoice(invoice, REASON)                                           # the untouched state is still reversible
         self.assertEqual(self.balances(supplier), (D('0.000'), D('0.00')))
 
@@ -296,7 +313,7 @@ class SupplierInvoiceReversalMySqlTests(HoldingsMySqlTests):
 
     def test_an_intake_and_a_reversal_racing_never_both_succeed(self):
         supplier, invoice = self.posted()
-        self.intake(invoice)                                                                       # skips when the rehearsal data cannot take an intake
+        self.intake(invoice)
         other, second = self.posted()
         sessions = [self.make_session(f'invoice-race-{i}', 'OWNER')[0] for i in range(2)]
         taker, undoer = self.service_for(sessions[0], UnlockedAuthorization(sessions[0])), self.service_for(sessions[1], UnlockedAuthorization(sessions[1]))

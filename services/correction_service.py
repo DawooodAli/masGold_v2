@@ -421,8 +421,10 @@ class CorrectionService:
     def _plan(self, connection, source_type, source_id, lock):
         corrections, invoices = self._corrections(connection), self._invoices(connection)
         invoice, source, reference = self._load(connection, source_type, source_id, lock)
-        holding_decision = bool(lock and (source_type == HRC or (source_type == SGS and (source or {}).get("source_kind") in ("HOLDING_LOT", "HOLDING_LOGO"))))
-        # a settlement from a holding: a CURRENT read decides ALREADY_REVERSED (every other source keeps its established call)
+        holding_decision = bool(lock and (source_type in (HRC, SPI) or (source_type == SGS and (source or {}).get("source_kind") in ("HOLDING_LOT", "HOLDING_LOGO"))))
+        # a settlement from a holding, a receipt and a supplier invoice (052): a CURRENT read decides ALREADY_REVERSED, so a reversal committed while this
+        # transaction waited for the invoice lock is reported as ALREADY_REVERSED instead of surfacing as a raw duplicate-key error
+        # (every other source keeps its established call)
         reversal, chain = (self._history(corrections, source_type, source_id, True) if holding_decision
                            else self._history(corrections, source_type, source_id))
         plan = _Plan(source_type, str(source_id), reference, invoice,
