@@ -36,11 +36,12 @@ Item {
         id: section
         property string title: ""
         property int count: 0
+        property bool showCount: true
         Layout.fillWidth: true
         spacing: 4
         Label {
             Layout.fillWidth: true
-            text: section.title + "  •  " + section.count
+            text: section.showCount ? section.title + "  •  " + section.count : section.title
             color: section.count > 0 ? theme.amber : theme.textMuted
             font.family: "Cairo"
             font.pixelSize: 14
@@ -65,6 +66,10 @@ Item {
     }
 
     property string newAccountType: ""
+    property bool newAccountOpen: false
+    property bool goldDetailsOpen: false
+    readonly property var goldPos: reviewsVM.goldPosition
+    readonly property bool goldLoaded: goldPos !== undefined && goldPos.summary !== undefined
 
     // One real account: balance, money in / out, latest movements, and (manager only)
     // activation plus a one-time opening balance while the account has never moved.
@@ -706,7 +711,7 @@ Item {
                     required property int index
                     objectName: "reviewCard_" + modelData.code
                     width: 150
-                    height: 62
+                    height: 50
                     radius: theme.radiusSmall
                     color: cardArea.containsMouse ? theme.panelHover : theme.bgSecondary
                     border.width: modelData.selected ? 2 : 1
@@ -714,14 +719,15 @@ Item {
                     Rectangle {
                         anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom
                         anchors.margins: 1; width: 3; radius: 2
-                        color: modelData.pending ? theme.gold : modelData.code === "ACCOUNTS" ? theme.priceBuy : theme.green
+                        color: modelData.pending ? theme.gold : modelData.code === "ACCOUNTS" ? theme.priceBuy
+                               : modelData.code === "GOLD_POSITION" ? theme.goldBright : theme.green
                     }
                     ColumnLayout {
                         anchors.fill: parent
                         anchors.rightMargin: 12
                         anchors.leftMargin: 8
-                        anchors.topMargin: 5
-                        anchors.bottomMargin: 5
+                        anchors.topMargin: 3
+                        anchors.bottomMargin: 3
                         spacing: 0
                         Label {
                             Layout.fillWidth: true
@@ -738,18 +744,20 @@ Item {
                             spacing: 6
                             Label {
                                 objectName: "reviewCardCount_" + summaryCard.modelData.code
-                                text: summaryCard.modelData.count
+                                text: summaryCard.modelData.code === "GOLD_POSITION" ? "21K" : summaryCard.modelData.count
                                 color: summaryCard.modelData.pending ? theme.goldBright : theme.textPrimary
                                 font.family: "Cairo"
-                                font.pixelSize: 22
+                                font.pixelSize: 18
                                 font.bold: true
                             }
                             Label {
                                 Layout.fillWidth: true
                                 text: summaryCard.modelData.code === "ACCOUNTS" ? "حساب"
-                                      : summaryCard.modelData.pending ? "بانتظار المراجعة" : "✓ لا يوجد"
+                                      : summaryCard.modelData.code === "GOLD_POSITION" ? "للاطلاع"
+                                      : summaryCard.modelData.pending ? "بانتظار المراجعة" : "✓"
                                 color: summaryCard.modelData.pending ? theme.gold
-                                       : summaryCard.modelData.code === "ACCOUNTS" ? theme.textMuted : theme.green
+                                       : summaryCard.modelData.code === "ACCOUNTS" || summaryCard.modelData.code === "GOLD_POSITION"
+                                         ? theme.textMuted : theme.green
                                 font.family: "Cairo"
                                 font.pixelSize: 11
                                 horizontalAlignment: Text.AlignRight
@@ -799,6 +807,172 @@ Item {
                 width: parent.width
                 spacing: 12
 
+                Label {
+                    objectName: "noPendingReviews"
+                    Layout.fillWidth: true
+                    visible: reviewsVM.selectedCategory === "" && reviewsVM.totalCount === 0
+                    text: "✓ لا توجد مراجعات معلّقة"
+                    color: theme.green
+                    font.family: "Cairo"
+                    font.pixelSize: 13
+                    horizontalAlignment: Text.AlignRight
+                }
+
+                // موضع الذهب: where ALL shop-owned gold is, in 21K equivalent. Read only; never netted against supplier balances.
+                Section {
+                    objectName: "goldPositionSection"
+                    visible: reviewsVM.canViewGoldPosition && (reviewsVM.selectedCategory === "" || reviewsVM.selectedCategory === "GOLD_POSITION")
+                    title: "موضع الذهب — مكافئ عيار 21"
+                    showCount: false
+                    Label {
+                        objectName: "goldPositionError"
+                        Layout.fillWidth: true
+                        visible: reviewsVM.goldPositionError.length > 0
+                        text: reviewsVM.goldPositionError
+                        color: theme.red
+                        font.family: "Cairo"
+                        font.pixelSize: 12
+                        horizontalAlignment: Text.AlignRight
+                        wrapMode: Text.WordWrap
+                    }
+                    Flow {
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: 1
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        visible: reviewPage.goldLoaded
+                        Rectangle {
+                            objectName: "goldPositionTotal"
+                            width: 190; height: 64; radius: theme.radiusSmall
+                            color: theme.bgSecondary; border.width: 1; border.color: theme.goldDark
+                            Rectangle { anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom
+                                        anchors.margins: 1; width: 3; radius: 2; color: theme.goldBright }
+                            ColumnLayout {
+                                anchors.fill: parent; anchors.rightMargin: 12; anchors.leftMargin: 8; spacing: 0
+                                Label { Layout.fillWidth: true; text: "إجمالي ذهب المحل (21K)"; color: theme.textSecondary
+                                        font.family: "Cairo"; font.pixelSize: 12; horizontalAlignment: Text.AlignRight }
+                                Label { objectName: "goldTotalValue"; Layout.fillWidth: true
+                                        text: reviewPage.goldLoaded ? reviewPage.goldPos.total + " جرام" : ""
+                                        color: theme.goldBright; font.family: "Cairo"; font.pixelSize: 20; font.bold: true
+                                        horizontalAlignment: Text.AlignRight }
+                            }
+                        }
+                        Repeater {
+                            model: reviewPage.goldLoaded ? reviewPage.goldPos.summary : []
+                            Rectangle {
+                                id: goldBox
+                                required property var modelData
+                                objectName: "goldSummary_" + modelData.key
+                                width: 170; height: 64; radius: theme.radiusSmall
+                                color: theme.bgSecondary; border.width: 1; border.color: theme.border
+                                Rectangle { anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom
+                                            anchors.margins: 1; width: 3; radius: 2; color: theme.gold }
+                                ColumnLayout {
+                                    anchors.fill: parent; anchors.rightMargin: 12; anchors.leftMargin: 8; spacing: 0
+                                    Label { Layout.fillWidth: true; text: goldBox.modelData.label; color: theme.textSecondary
+                                            font.family: "Cairo"; font.pixelSize: 12; horizontalAlignment: Text.AlignRight }
+                                    Label { Layout.fillWidth: true; text: goldBox.modelData.eq21 + " جرام (21K)"; color: theme.textPrimary
+                                            font.family: "Cairo"; font.pixelSize: 15; font.bold: true; horizontalAlignment: Text.AlignRight }
+                                    Label { Layout.fillWidth: true; text: "فعلي " + goldBox.modelData.grams + " جرام"; color: theme.textMuted
+                                            font.family: "Cairo"; font.pixelSize: 11; horizontalAlignment: Text.AlignRight }
+                                }
+                            }
+                        }
+                    }
+                    Label {
+                        objectName: "goldUnknownNote"
+                        Layout.fillWidth: true
+                        visible: reviewPage.goldLoaded && reviewPage.goldPos.hasUnknown
+                        text: reviewPage.goldLoaded ? "عيار غير معلوم: " + reviewPage.goldPos.unknown
+                                                   + " جرام فعلي — غير داخل في الإجمالي (لا يُستنتج العيار)." : ""
+                        color: theme.amber
+                        font.family: "Cairo"
+                        font.pixelSize: 12
+                        horizontalAlignment: Text.AlignRight
+                        wrapMode: Text.WordWrap
+                    }
+                    Repeater {
+                        model: reviewPage.goldLoaded ? reviewPage.goldPos.warnings : []
+                        Label {
+                            required property var modelData
+                            objectName: "goldWarning"
+                            Layout.fillWidth: true
+                            text: "⚠ " + modelData
+                            color: theme.red
+                            font.family: "Cairo"
+                            font.pixelSize: 12
+                            horizontalAlignment: Text.AlignRight
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        ActionButton {
+                            objectName: "goldDetailsToggle"
+                            text: reviewPage.goldDetailsOpen ? "إخفاء التفاصيل" : "عرض التفاصيل"
+                            accent: theme.gold
+                            onClicked: reviewPage.goldDetailsOpen = !reviewPage.goldDetailsOpen
+                        }
+                        ActionButton {
+                            objectName: "goldRefreshButton"
+                            text: "تحديث"
+                            accent: theme.textSecondary
+                            enabled: !reviewsVM.goldPositionBusy
+                            onClicked: reviewsVM.loadGoldPosition()
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: "للاطلاع فقط — لا يشمل أرصدة الموردين ولا يُخصم منها."
+                            color: theme.textMuted
+                            font.family: "Cairo"
+                            font.pixelSize: 11
+                            horizontalAlignment: Text.AlignRight
+                        }
+                    }
+                    ColumnLayout {
+                        id: goldDetails
+                        objectName: "goldDetailsPanel"
+                        Layout.fillWidth: true
+                        visible: reviewPage.goldDetailsOpen && reviewPage.goldLoaded
+                        spacing: 4
+                        Repeater {
+                            model: goldDetails.visible ? [
+                                {"title": "في المحل", "rows": reviewPage.goldPos.shop},
+                                {"title": "في عهدة السوق", "rows": reviewPage.goldPos.custody},
+                                {"title": "لدى المسوقجي (ملك المحل)", "rows": reviewPage.goldPos.intermediary}] : []
+                            ColumnLayout {
+                                id: goldGroup
+                                required property var modelData
+                                Layout.fillWidth: true
+                                spacing: 2
+                                Label { Layout.fillWidth: true; text: goldGroup.modelData.title; color: theme.gold; font.family: "Cairo"
+                                        font.pixelSize: 13; font.bold: true; horizontalAlignment: Text.AlignRight }
+                                Repeater {
+                                    model: goldGroup.modelData.rows
+                                    Label {
+                                        required property var modelData
+                                        objectName: "goldDetailRow"
+                                        Layout.fillWidth: true
+                                        text: modelData.label + (modelData.text ? "  —  " + modelData.text : "")
+                                              + (modelData.grams ? "  —  " + modelData.grams + " جرام" : "")
+                                              + "  —  21K: " + modelData.eq21
+                                        color: theme.textSecondary
+                                        font.family: "Cairo"
+                                        font.pixelSize: 12
+                                        horizontalAlignment: Text.AlignRight
+                                        wrapMode: Text.WordWrap
+                                    }
+                                }
+                                Label { Layout.fillWidth: true; visible: goldGroup.modelData.rows.length === 0; text: "لا يوجد"
+                                        color: theme.textMuted; font.family: "Cairo"; font.pixelSize: 11
+                                        horizontalAlignment: Text.AlignRight }
+                            }
+                        }
+                    }
+                }
+
                 // Wallet / InstaPay / bank balances live here, never in the MainWindow strip.
                 Section {
                     objectName: "financialAccountsSection"
@@ -814,9 +988,16 @@ Item {
                         }
                     }
                     // New real bank / wallet account (BANK_MANAGE; the service re-checks and audits).
+                    ActionButton {
+                        objectName: "newAccountToggle"
+                        visible: reviewsVM.canSetupAccounts
+                        text: reviewPage.newAccountOpen ? "إخفاء إضافة حساب" : "＋ حساب جديد"
+                        accent: theme.textSecondary
+                        onClicked: reviewPage.newAccountOpen = !reviewPage.newAccountOpen
+                    }
                     Rectangle {
                         objectName: "newAccountForm"
-                        visible: reviewsVM.canSetupAccounts
+                        visible: reviewsVM.canSetupAccounts && reviewPage.newAccountOpen
                         Layout.fillWidth: true
                         implicitHeight: newAccountRow.implicitHeight + 12
                         color: theme.bgSecondary
@@ -904,7 +1085,7 @@ Item {
                 // exact selected goods / grams; no reason is required. It never extends the deadline.
                 Section {
                     objectName: "reviewReturnApprovalSection"
-                    visible: (reviewsVM.selectedCategory === "" || reviewsVM.selectedCategory === "RETURN_APPROVAL")
+                    visible: (reviewsVM.selectedCategory === "" && count > 0) || reviewsVM.selectedCategory === "RETURN_APPROVAL"
                     title: "موافقة مرتجع بعد 72 ساعة"
                     count: reviewsVM.returnApprovals.length
                     Repeater {
@@ -1004,7 +1185,7 @@ Item {
                 // the piece is identified by its exchange line and inventory item, shown by its stored barcode).
                 Section {
                     objectName: "reviewInspectionSection"
-                    visible: (reviewsVM.selectedCategory === "" || reviewsVM.selectedCategory === "RETURNED_ITEM_INSPECTION")
+                    visible: (reviewsVM.selectedCategory === "" && count > 0) || reviewsVM.selectedCategory === "RETURNED_ITEM_INSPECTION"
                     title: "فحص قطع مرتجعة"
                     count: reviewsVM.inspections.length
                     Label {
@@ -1029,7 +1210,7 @@ Item {
                 }
                 Section {
                     objectName: "reviewInventorySection"
-                    visible: (reviewsVM.selectedCategory === "" || reviewsVM.selectedCategory === "INVENTORY_MATCH")
+                    visible: (reviewsVM.selectedCategory === "" && count > 0) || reviewsVM.selectedCategory === "INVENTORY_MATCH"
                     title: "مراجعة مخزون — مبيعات يدوية"
                     count: reviewsVM.inventoryCases.length
                     Repeater {
@@ -1045,7 +1226,7 @@ Item {
                 }
                 Section {
                     objectName: "reviewMakingSection"
-                    visible: (reviewsVM.selectedCategory === "" || reviewsVM.selectedCategory === "MAKING_PRICE")
+                    visible: (reviewsVM.selectedCategory === "" && count > 0) || reviewsVM.selectedCategory === "MAKING_PRICE"
                     title: "مراجعة تسعير / مصنعية"
                     count: reviewsVM.makingReviews.length
                     Repeater {
@@ -1055,7 +1236,7 @@ Item {
                 }
                 Section {
                     objectName: "reviewSettlementSection"
-                    visible: (reviewsVM.selectedCategory === "" || reviewsVM.selectedCategory === "CASH_SETTLEMENT")
+                    visible: (reviewsVM.selectedCategory === "" && count > 0) || reviewsVM.selectedCategory === "CASH_SETTLEMENT"
                     title: "مراجعة تسوية نقدية"
                     count: reviewsVM.settlementReviews.length
                     Repeater {
@@ -1065,7 +1246,7 @@ Item {
                 }
                 Section {
                     objectName: "reviewDiscountSection"
-                    visible: (reviewsVM.selectedCategory === "" || reviewsVM.selectedCategory === "OLD_GOLD_DISCOUNT")
+                    visible: (reviewsVM.selectedCategory === "" && count > 0) || reviewsVM.selectedCategory === "OLD_GOLD_DISCOUNT"
                     title: "تعديل نسبة خصم الكسر"
                     count: reviewsVM.discountReviews.length
                     Repeater {

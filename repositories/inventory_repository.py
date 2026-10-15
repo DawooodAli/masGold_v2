@@ -313,6 +313,18 @@ class InventoryRepository(BaseRepository):
             """
         )
 
+    def get_returned_pending_weight_by_karat(self) -> list[dict]:
+        """Returned pieces physically back in the shop but awaiting inspection (not CURRENT_STOCK until a manager decides); read only."""
+        return self._fetch_all(
+            """
+            SELECT k.karat_value, SUM(ii.weight_grams) AS weight_grams
+            FROM inventory_items ii
+            INNER JOIN karats k ON k.id = ii.karat_id
+            WHERE ii.inventory_status = 'RETURNED_PENDING'
+            GROUP BY k.karat_value
+            """
+        )
+
     # ========================================================
     # EXACT IDENTITY — any status (traceability, never "current stock")
     # ========================================================

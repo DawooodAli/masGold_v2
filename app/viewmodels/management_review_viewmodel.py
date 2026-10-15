@@ -26,7 +26,8 @@ CARD_ORDER = ("MAKING_PRICE", "RETURNED_ITEM_INSPECTION", "RETURN_APPROVAL", "IN
 CARD_TITLE = {"MAKING_PRICE": "تسعير / مصنعية", "RETURNED_ITEM_INSPECTION": "قطع مرتجعة بانتظار القرار",
               "RETURN_APPROVAL": "موافقة مرتجع", "INVENTORY_MATCH": "مراجعة مخزون",
               "CASH_SETTLEMENT": "تسوية نقدية", "OLD_GOLD_DISCOUNT": "خصم الكسر",
-              "ACCOUNTS": "الحسابات المالية"}
+              "ACCOUNTS": "الحسابات المالية", "GOLD_POSITION": "موضع الذهب"}
+GOLD_POSITION_PERMISSIONS = ("MANAGEMENT_REVIEW", "MARKET_TRIP_MANAGE", "INTERMEDIARY_HOLDING_VIEW")
 ACCOUNT_TYPE_TEXT = {"CASH": "نقدية", "BANK": "بنك / InstaPay", "MOBILE_WALLET": "محفظة"}
 MAKING_STATUS_TEXT = {"WITHIN_RANGE": "داخل النطاق", "OUT_OF_RANGE": "خارج النطاق",
                       "NOT_CONFIGURED": "غير محدد النطاق"}
@@ -100,6 +101,47 @@ def review_details(code, details):
     return ""
 
 
+def _g(value):
+    return f"{Decimal(str(value)):,.3f}"
+
+
+def gold_position_view(position):
+    """Presentation strings of the consolidated gold position (the service owns every figure; QML only shows these)."""
+    s, shop, custody, inter = position["summary"], position["shop"], position["custody"], position["intermediary"]
+    unknown = Decimal(str(s["unknown_grams"]))
+    summary = [
+        {"key": "shop", "label": "في المحل", "grams": _g(shop["grams"]), "eq21": _g(s["shop_eq21"])},
+        {"key": "custody", "label": "في عهدة السوق", "grams": _g(custody["grams"]), "eq21": _g(s["custody_eq21"])},
+        {"key": "intermediary", "label": "لدى المسوقجي", "grams": _g(inter["grams"]), "eq21": _g(s["intermediary_eq21"])},
+    ]
+    shop_lines = []
+    parts = shop["parts"]
+    for name, label in (("scrap", "كسر"), ("lots", "سبائك في المحل"), ("inventory", "مخزون (قطع جاهزة)"),
+                        ("returned", "مرتجع بانتظار الفحص"), ("receipts", "استلام فعلي قديم (عيار غير معلوم)")):
+        part = parts[name]
+        if Decimal(str(part["grams"])) != 0:
+            shop_lines.append({"label": label, "grams": _g(part["grams"]),
+                               "eq21": "غير محسوب" if name == "receipts" else _g(part["eq21"])})
+    custody_lines = []
+    for trip in custody["trips"]:
+        bits = [f"{'عيار %d %s' % (g['karat'], g['designation_text'])}: {_g(g['grams'])} جرام" for g in trip["gold"]]
+        bits += [f"سبيكة {l['code']}: {_g(l['grams'])} جرام" for l in trip["lots"]]
+        custody_lines.append({"label": trip["code"], "text": " • ".join(bits),
+                              "eq21": _g(sum((Decimal(str(g["eq21"])) for g in trip["gold"]), Decimal(0))
+                                         + sum((Decimal(str(l["eq21"] or 0)) for l in trip["lots"]), Decimal(0)))})
+    holder_lines = []
+    for party in inter["parties"]:
+        bits = [f"لوجو عيار {l['karat']}: {_g(l['grams'])} جرام" for l in party["logo"]]
+        bits += [f"سبيكة {_g(l['grams'])} جرام" + (f" (عيار فعلي {Decimal(str(l['fineness'])):.1f}‰)" if l["fineness"] is not None else "")
+                 for l in party["lots"]]
+        eq = sum((Decimal(str(l["eq21"])) for l in party["logo"]), Decimal(0))             + sum((Decimal(str(l["eq21"] or 0)) for l in party["lots"]), Decimal(0))
+        holder_lines.append({"label": party["party_name"], "text": " • ".join(bits), "eq21": _g(eq)})
+    return {"summary": summary, "total": _g(s["total_eq21"]), "totalGrams": _g(s["total_grams"]),
+            "unknown": _g(unknown), "hasUnknown": unknown != 0,
+            "shop": shop_lines, "custody": custody_lines, "intermediary": holder_lines,
+            "warnings": [f"السبيكة {w['lot_id']} ظاهرة في أكثر من مكان: {' / '.join(w['places'])}" for w in position["warnings"]]}
+
+
 class ManagementReviewViewModel(QObject):
     changed = Signal()
     inspectionResolved = Signal()
@@ -115,6 +157,7 @@ class ManagementReviewViewModel(QObject):
         self._balance_service = balance_service
         self._resolving, self._inspection_message, self._inspection_error = "", "", ""
         self._selected_category = ""
+        self._position, self._position_error, self._gold_service = None, "", None
         self._history = AccountHistoryViewModel(session, parent=self)
         self._history.invoiceRequested.connect(self.invoiceRequested)
         self._timer = QTimer(self)
@@ -173,7 +216,43 @@ class ManagementReviewViewModel(QObject):
         self._start("reviews", lambda _expected_actor: service.open_reviews(_expected_actor=_expected_actor))
         balances = self._balances()
         self._start("accounts", lambda _expected_actor: balances.financial_accounts(_expected_actor=_expected_actor))
+        self.loadGoldPosition()
         self.refresh()
+
+    # ---- موضع الذهب: a read-only consolidated view (never netted against supplier balances)
+    def _gold(self):
+        if self._gold_service is None:
+            from services.gold_position_service import GoldPositionService
+            self._gold_service = GoldPositionService(self._session)
+        return self._gold_service
+
+    @Property(bool, notify=changed)
+    def canViewGoldPosition(self):
+        actor = self._session.current_actor()
+        return bool(actor and set(GOLD_POSITION_PERMISSIONS) <= set(actor.permissions))
+
+    @Slot()
+    def loadGoldPosition(self):
+        if not self.canViewGoldPosition:
+            self._position, self._position_error = None, ""
+            return
+        service = self._gold()
+        self._start("gold_position", lambda _expected_actor: service.position(_expected_actor=_expected_actor))
+
+    def _on_gold_position(self, result, error):
+        self._position, self._position_error = (None, error) if error else (result, "")
+
+    @Property(bool, notify=changed)
+    def goldPositionBusy(self):
+        return "gold_position" in self._busy
+
+    @Property(str, notify=changed)
+    def goldPositionError(self):
+        return self._position_error
+
+    @Property("QVariantMap", notify=changed)
+    def goldPosition(self):
+        return gold_position_view(self._position) if self._position else {}
 
     @Slot()
     @Slot(str)
@@ -256,6 +335,9 @@ class ManagementReviewViewModel(QObject):
                  for code in CARD_ORDER]
         cards.append({"code": "ACCOUNTS", "title": CARD_TITLE["ACCOUNTS"], "count": len(self._accounts),
                       "pending": False, "selected": self._selected_category == "ACCOUNTS"})
+        if self.canViewGoldPosition:
+            cards.append({"code": "GOLD_POSITION", "title": CARD_TITLE["GOLD_POSITION"], "count": 0, "pending": False,
+                          "selected": self._selected_category == "GOLD_POSITION"})
         return cards
 
     @Property(str, notify=changed)

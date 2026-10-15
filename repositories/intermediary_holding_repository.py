@@ -230,6 +230,19 @@ class IntermediaryHoldingRepository(BaseRepository):
     def receipt_movement(self, receipt_id):
         return self._fetch_one("SELECT * FROM intermediary_holding_movements WHERE receipt_id = %s AND movement_type = 'RECEIPT'", (_id(receipt_id),))
 
+    def receipt_stock(self):
+        """Display only: every legacy receipt piece that still has grams in SHOP receipt stock (all parties). Assay is UNKNOWN by design."""
+        return self._fetch_all(
+            """
+            SELECT p.id AS piece_id, p.receipt_id, r.party_id, s.name AS party_name, SUM(m.weight_delta) AS stock_grams
+            FROM receipt_pieces p
+            JOIN holding_receipts r ON r.id = p.receipt_id
+            JOIN suppliers s ON s.id = r.party_id
+            JOIN receipt_stock_movements m ON m.piece_id = p.id
+            GROUP BY p.id, p.receipt_id, r.party_id, s.name
+            HAVING SUM(m.weight_delta) > 0 ORDER BY p.id
+            """)
+
     def party_receipts(self, party_id):
         """Display only: every receipt of the party (newest first) with its piece, the piece's CURRENT stock and the reversal of the receipt, if any."""
         return self._fetch_all(
