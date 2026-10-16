@@ -44,7 +44,7 @@ Item {
 
     Connections {
         target: page.vm
-        function onEntryPosted(code) { entryDialog.close(); meltDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close(); payDialog.close(); goldSettleDialog.close(); lotSettleDialog.close(); lotHoldDialog.close(); logoHoldDialog.close() }
+        function onEntryPosted(code) { entryDialog.close(); meltDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close(); payDialog.close(); goldSettleDialog.close(); goldSaleDialog.close(); lotSettleDialog.close(); lotHoldDialog.close(); logoHoldDialog.close() }
         function onActionDone(operation) { reasonDialog.close() }
     }
 
@@ -185,7 +185,7 @@ Item {
         Txt { Layout.preferredWidth: 150; text: parent.label; font.bold: true; elide: Text.ElideNone }
         Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: parent.issued; elide: Text.ElideNone }
         Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: parent.returned; elide: Text.ElideNone }
-        Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: parent.melted; elide: Text.ElideNone }
+        Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: parent.melted; elide: Text.ElideNone; wrapMode: Text.WordWrap }
         Txt { objectName: "figureOutstanding"; Layout.fillWidth: true; Layout.preferredWidth: 1; text: parent.outstanding
               font.bold: true; color: parent.zero ? theme.textMuted : theme.amber; elide: Text.ElideNone }
     }
@@ -360,7 +360,10 @@ Item {
                             label: "النقدية"
                             issued: page.detail.cash ? page.detail.cash.issued : ""
                             returned: page.detail.cash ? page.detail.cash.returned : ""
-                            melted: page.detail.cash && page.detail.cash.hasPaid ? page.detail.cash.paid : "—"
+                            melted: page.detail.cash && (page.detail.cash.hasPaid || page.detail.cash.hasReceived)
+                                    ? [page.detail.cash.hasPaid ? "مدفوع " + page.detail.cash.paid : "",
+                                       page.detail.cash.hasReceived ? "من البيع +" + page.detail.cash.received : ""].filter(function(t) { return t !== "" }).join(" • ")
+                                    : "—"
                             outstanding: page.detail.cash ? page.detail.cash.outstanding : ""
                             zero: page.detail.cash ? page.detail.cash.zero : true
                         }
@@ -373,6 +376,7 @@ Item {
                                 returned: modelData.returned + " جرام"
                                 melted: (modelData.heated !== "" ? "حمّية " + modelData.heated + " جرام" : modelData.melted + " جرام")
                                         + (modelData.settled !== "" ? " • سُلِّم لمورد " + modelData.settled + " جرام" : "")
+                                        + (modelData.sold !== "" ? " • بيع " + modelData.sold + " جرام" : "")
                                 outstanding: modelData.outstanding + " جرام"
                                 zero: modelData.zero
                             }
@@ -403,6 +407,9 @@ Item {
                         Btn { objectName: "custodyLogoHoldButton"; text: "تسليم لوجو لمسوقجي"; visible: !!page.detail.holdVisible
                               enabled: !!page.detail.logoHoldAvailable && !!page.vm && !page.vm.writing
                               onClicked: logoHoldDialog.openFor(page.detail.id) }
+                        Btn { objectName: "custodySaleButton"; text: "بيع ذهب من العهدة"; visible: !!page.detail.open
+                              enabled: !!page.detail.saleAvailable && !!page.vm && !page.vm.writing
+                              onClicked: goldSaleDialog.openFor(page.detail.id) }
                         Btn { objectName: "custodyPayButton"; text: "دفع مصنعيات من العهدة"; visible: !!page.detail.open
                               enabled: !!page.detail.payAvailable && !!page.vm && !page.vm.writing
                               onClicked: payDialog.openFor(page.detail.id) }
@@ -1385,6 +1392,165 @@ Item {
                 }
                 Btn { objectName: "cancelCustodyGoldSettleButton"; text: "إلغاء"; accent: theme.textSecondary
                       enabled: !!page.vm && !page.vm.writing; onClicked: goldSettleDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- sell custody gold for cash (بيع ذهب العهدة)
+    // The sold grams leave the custody and the agreed price ENTERS the custody cash: nothing moves in the Main Safe, a bank, the shop Scrap or any
+    // supplier account. Every figure below is computed by the service rules through marketTripVM; a price far from the reference needs confirmation.
+    Popup {
+        id: goldSaleDialog
+        objectName: "tripGoldSaleDialog"
+        property string tripId: ""
+        property string requestKey: ""
+        readonly property var sourceChoices: [{ key: "", kind: "", karatId: "", designation: "", lotId: "", text: "اختر الذهب المباع من العهدة" }].concat(page.detail.saleSources || [])
+        readonly property var buyerChoices: [{ id: "", text: "طرف آخر غير مسجل (اكتب اسمه)" }].concat(page.detail.saleBuyers || [])
+        readonly property var modeChoices: [{ mode: "TOTAL", text: "إجمالي الصفقة (ج)" }, { mode: "PER_GRAM", text: "سعر الجرام (ج)" }]
+        readonly property var source: sourceChoices[goldSaleSource.currentIndex] ? sourceChoices[goldSaleSource.currentIndex] : ({})
+        readonly property string buyerId: buyerChoices[goldSaleBuyer.currentIndex] ? buyerChoices[goldSaleBuyer.currentIndex].id : ""
+        readonly property string mode: modeChoices[goldSaleMode.currentIndex].mode
+        readonly property bool isLot: source.kind === "CUSTODY_LOT"
+        readonly property bool needsConfirmation: !!page.vm && page.vm.errorCode === "PRICE_DEVIATION"
+        readonly property var preview: {
+            var known = page.detail.id !== undefined && page.ctx.safeName !== undefined              // read, so the preview follows the loaded custody and context
+            return known && page.vm && source.kind ? page.vm.previewSale(source.kind, source.karatId || "", source.designation || "", source.lotId || "",
+                                                                         goldSaleWeight.text, mode, goldSalePrice.text) : ({})
+        }
+        function openFor(trip) {
+            if (!page.vm) return
+            tripId = trip
+            requestKey = page.vm.newRequestKey()
+            goldSaleSource.currentIndex = 0
+            goldSaleBuyer.currentIndex = 0
+            goldSaleMode.currentIndex = 0
+            goldSaleWeight.text = ""
+            goldSalePrice.text = ""
+            goldSaleName.text = ""
+            goldSaleDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            goldSaleReference.text = ""
+            goldSaleNotes.text = ""
+            page.vm.clearMessage()
+            page.vm.refresh()
+            page.vm.loadReferencePrices()
+            open()
+        }
+        function submit(acknowledged) {
+            page.vm.sellGold(tripId, source.kind, source.karatId || "", source.designation || "", source.lotId || "", goldSaleWeight.text, mode,
+                             goldSalePrice.text, buyerId, goldSaleName.text, goldSaleDate.text, goldSaleReference.text, goldSaleNotes.text,
+                             requestKey, acknowledged)
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(560, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 660, 660)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; text: "بيع ذهب من العهدة" }
+            Txt { objectName: "custodyGoldSaleRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "يُباع ذهب موجود فعلًا في هذه العهدة بالسعر الذي اتفقت عليه، ويدخل الثمن في نقدية العهدة (لا في الخزنة ولا في حساب أي مورد). السبيكة تُباع كاملة." }
+            Flickable {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentHeight: goldSaleForm.implicitHeight
+                clip: true
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: goldSaleForm
+                    width: parent.width - 12
+                    spacing: 6
+                    Txt { Layout.fillWidth: true; text: "الذهب المباع *" }
+                    Combo { id: goldSaleSource; objectName: "custodyGoldSaleSourceCombo"; Layout.fillWidth: true; model: goldSaleDialog.sourceChoices; textRole: "text" }
+                    Txt { Layout.fillWidth: true; visible: !goldSaleDialog.isLot; text: "الوزن المباع الفعلي (جرام) *" }
+                    Field { id: goldSaleWeight; objectName: "custodyGoldSaleWeightField"; Layout.fillWidth: true; visible: !goldSaleDialog.isLot
+                            inputMethodHints: Qt.ImhFormattedNumbersOnly }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "طريقة التسعير *" }
+                            Combo { id: goldSaleMode; objectName: "custodyGoldSaleModeCombo"; Layout.fillWidth: true; model: goldSaleDialog.modeChoices; textRole: "text" }
+                        }
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "السعر المتفق عليه *" }
+                            Field { id: goldSalePrice; objectName: "custodyGoldSalePriceField"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+                        }
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: goldSalePreview.implicitHeight + 14
+                        radius: theme.radiusSmall
+                        color: theme.bgTertiary
+                        border.color: goldSaleDialog.preview.warning ? theme.amber : theme.border
+                        ColumnLayout {
+                            id: goldSalePreview
+                            anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                            anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.topMargin: 7
+                            spacing: 3
+                            Txt { objectName: "custodyGoldSaleAvailable"; Layout.fillWidth: true; visible: !!goldSaleDialog.preview.availableText
+                                  text: goldSaleDialog.preview.availableText || ""; color: theme.amber; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "custodyGoldSaleTotal"; Layout.fillWidth: true; visible: !!goldSaleDialog.preview.totalText
+                                  text: "إجمالي الصفقة: " + (goldSaleDialog.preview.totalText || "") + " • سعر الجرام: " + (goldSaleDialog.preview.perGramText || "")
+                                  color: theme.gold; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "custodyGoldSaleReference"; Layout.fillWidth: true; visible: !!goldSaleDialog.preview.referenceText
+                                  text: (goldSaleDialog.preview.referenceText || "") + (goldSaleDialog.preview.deviationText ? " • الفرق " + goldSaleDialog.preview.deviationText : "")
+                                  color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "custodyGoldSaleWarning"; Layout.fillWidth: true; visible: goldSaleDialog.preview.warning === true
+                                  text: goldSaleDialog.preview.warningText || ""; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "custodyGoldSalePreviewError"; Layout.fillWidth: true; visible: !!goldSaleDialog.preview.error
+                                  text: goldSaleDialog.preview.error || ""; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Item { Layout.preferredHeight: 2 }
+                        }
+                    }
+                    Txt { Layout.fillWidth: true; text: "المشتري *" }
+                    Combo { id: goldSaleBuyer; objectName: "custodyGoldSaleBuyerCombo"; Layout.fillWidth: true; model: goldSaleDialog.buyerChoices; textRole: "text" }
+                    Txt { Layout.fillWidth: true; visible: goldSaleDialog.buyerId === ""; text: "اسم المشتري *" }
+                    Field { id: goldSaleName; objectName: "custodyGoldSaleNameField"; Layout.fillWidth: true; visible: goldSaleDialog.buyerId === "" }
+                    Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
+                    Field { id: goldSaleDate; objectName: "custodyGoldSaleDateField"; Layout.fillWidth: true }
+                    Txt { Layout.fillWidth: true; text: "المرجع (اختياري)" }
+                    Field { id: goldSaleReference; objectName: "custodyGoldSaleReferenceField"; Layout.fillWidth: true }
+                    Txt { Layout.fillWidth: true; text: "ملاحظات" }
+                    Field { id: goldSaleNotes; objectName: "custodyGoldSaleNotesField"; Layout.fillWidth: true }
+                }
+            }
+            Txt { objectName: "custodyGoldSaleError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: goldSaleDialog.needsConfirmation ? theme.amber : theme.red
+                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmCustodyGoldSaleButton"
+                    visible: !goldSaleDialog.needsConfirmation
+                    text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "تسجيل البيع"
+                    primary: true
+                    enabled: !!goldSaleDialog.source.kind && goldSalePrice.text.trim().length > 0 && goldSaleDate.text.trim().length > 0
+                             && (goldSaleDialog.isLot || goldSaleWeight.text.trim().length > 0)
+                             && (goldSaleDialog.buyerId !== "" || goldSaleName.text.trim().length > 0)
+                             && !!page.vm && !page.vm.writing && !goldSaleDialog.preview.error
+                    onClicked: goldSaleDialog.submit(false)
+                }
+                Btn {
+                    objectName: "acknowledgeCustodyGoldSalePriceButton"
+                    visible: goldSaleDialog.needsConfirmation
+                    text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "أؤكد السعر وأسجّل البيع"
+                    primary: true
+                    accent: theme.amber
+                    enabled: !!page.vm && !page.vm.writing
+                    onClicked: goldSaleDialog.submit(true)
+                }
+                Btn { objectName: "cancelCustodyGoldSaleButton"; text: "إلغاء"; accent: theme.textSecondary
+                      enabled: !!page.vm && !page.vm.writing; onClicked: goldSaleDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }

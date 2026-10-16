@@ -33,7 +33,7 @@ class WholeLotMySqlTests(unittest.TestCase):
         with cls.tx() as c:
             q=c.cursor(dictionary=True)
             q.execute('SELECT DATABASE() AS db, MAX(version) AS v FROM schema_migrations')
-            row=q.fetchone();assert row['db']==TARGET and row['v'] in (47,48,49,50,51,52),row;cls.version=row['v']   # an explicit pair: the code is 048-aware, so only the guard test can run at 47
+            row=q.fetchone();assert row['db']==TARGET and row['v'] in (47,48,49,50,51,52, 53),row;cls.version=row['v']   # an explicit pair: the code is 048-aware, so only the guard test can run at 47
             q.execute("SELECT target_database FROM masgold_rehearsal_marker WHERE marker_key='MASGOLD_SCHEMA_REHEARSAL'")
             assert q.fetchone()['target_database']==TARGET
             q.execute("INSERT INTO employees(name) VALUES('047 rehearsal owner')");emp=q.lastrowid

@@ -110,6 +110,7 @@ class CallSiteAuditTests(unittest.TestCase):
                   ("services/market_trip_service.py", "trips"),                    # MARKET_TRIP_MANAGE (trip list)
                   ("services/market_trip_service.py", "trip_detail"),              # MARKET_TRIP_MANAGE (custody and history)
                   ("services/market_trip_service.py", "shop_lots"),                # MARKET_TRIP_MANAGE (shop-side lot stock)
+                  ("services/market_trip_service.py", "sale_price_check"),         # MARKET_TRIP_MANAGE (read-only sale price preview)
                   ("services/customer_account_service.py", "statement"),           # CUSTOMERS_VIEW or settle
                   ("services/customer_deposit_service.py", "refund_status"),       # CUSTOMER_ACCOUNT_SETTLE; available delegates here
                   ("services/gold_price_settings_service.py", "load"),             # SETTINGS_MANAGE

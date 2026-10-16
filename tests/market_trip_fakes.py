@@ -55,6 +55,7 @@ class Db:
         self.receipts, self.pieces, self.stock_moves = {}, {}, []                                          # 051: HR documents, RP pieces, shop receipt stock
         self.logo_pools, self.logo_docs, self.logo_moves, self.logo_links = {}, {}, [], {}                  # 049
         self.gold_settle_links = {}                                                              # 046: entry id -> the SG document it made
+        self.gold_sales = {}                                                                     # 053: entry id -> its sale document
         self.sm_payments, self.sm_making, self.sm_legs, self.supplier_links = {}, [], [], {}
         self.shop_moves, self.lot_returns, self.lot_issues = [], [], []                      # 040/041: shop-side lot ledger, return / issue links
         self.corrections, self.audit_rows = [], []
@@ -197,7 +198,7 @@ class TripRepo:
 
     def insert_entry(self, *, trip_id, entry_no, kind, entry_date, notes, key, digest, actor, now):
         self._fail("entry")
-        assert kind in ("ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT", "SUPPLIER_PAY", "GOLD_SETTLE", "LOT_SETTLE", "LOT_HOLD", "HOLD_RETURN", "LOGO_HOLD", "HOLD_BACK")                # chk_mte_kind
+        assert kind in ("ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT", "SUPPLIER_PAY", "GOLD_SETTLE", "LOT_SETTLE", "LOT_HOLD", "HOLD_RETURN", "LOGO_HOLD", "HOLD_BACK", "GOLD_SALE")                # chk_mte_kind
         if any(e["request_key"] == key for e in self.db.entries.values()):
             raise _dup("uq_mte_request")
         if any((e["trip_id"], e["entry_no"]) == (int(trip_id), entry_no) for e in self.db.entries.values()):
@@ -280,7 +281,8 @@ class TripRepo:
 
     def insert_lot_movement(self, *, lot_id, entry_id, movement_type, weight_delta):
         self._fail("lot_movement")
-        assert movement_type in (CREATE_MOVEMENT, SHOP_RETURN_MOVEMENT, SHOP_ISSUE_MOVEMENT, "SUPPLIER_SETTLE", "HOLD_OUT", "HOLD_IN")  # chk_mtlm_type
+        assert movement_type in (CREATE_MOVEMENT, SHOP_RETURN_MOVEMENT, SHOP_ISSUE_MOVEMENT, "SUPPLIER_SETTLE", "HOLD_OUT", "HOLD_IN", "SALE_OUT")  # chk_mtlm_type
+        assert movement_type != "SALE_OUT" or weight_delta < 0                                # chk_mtlm_delta (053)
         assert movement_type != "HOLD_OUT" or weight_delta < 0                               # chk_mtlm_delta (048)
         assert movement_type != "HOLD_IN" or weight_delta > 0
         assert weight_delta != 0 and (movement_type != CREATE_MOVEMENT or weight_delta > 0)  # chk_mtlm_delta
@@ -371,13 +373,15 @@ class TripRepo:
                 if e["trip_id"] == int(trip_id) and e["id"] not in reversed_ids and e["id"] != int(exclude or 0)]
 
     def custody_cash(self, trip_id, exclude_entry_id=None, *, current=False):
-        issued = returned = paid = D("0.00")
+        issued = returned = paid = proceeds = D("0.00")
         for e in self._live(trip_id, exclude_entry_id):
             for leg in (l for l in self.db.cash_legs if l["entry_id"] == e["id"]):
                 issued, returned = (issued + leg["amount"], returned) if e["entry_kind"] == "ISSUE" else (issued, returned + leg["amount"])
             if e["id"] in self.db.supplier_links:
                 paid += self.db.supplier_links[e["id"]]["amount"]
-        return issued, returned, paid
+            if e["id"] in self.db.gold_sales:
+                proceeds += self.db.gold_sales[e["id"]]["total_price"]
+        return issued, returned, paid, proceeds
 
     def custody_gold(self, trip_id, exclude_entry_id=None, *, current=False):
         out = {}
@@ -415,6 +419,13 @@ class TripRepo:
                     "designation": link["designation"], "issued": D("0.000"), "returned": D("0.000"), "melted": D("0.000"),
                     "heat_delta": D("0.000"), "supplier_settled": D("0.000")})
                 row["supplier_settled"] += link["weight_grams"]
+            sale = self.db.gold_sales.get(e["id"])
+            if sale is not None and sale["source_kind"] == "CUSTODY_GOLD":                         # 053: sold for cash from custody
+                row = out.setdefault((sale["karat_id"], sale["designation"]), {
+                    "karat_id": sale["karat_id"], "karat_value": self.db.karats[sale["karat_id"]]["karat_value"],
+                    "designation": sale["designation"], "issued": D("0.000"), "returned": D("0.000"), "melted": D("0.000"),
+                    "heat_delta": D("0.000"), "supplier_settled": D("0.000")})
+                row["sold"] = row.get("sold", D("0.000")) + sale["weight_grams"]
         order = {"MELT": 0, "LOGO": 1, "UNCLASSIFIED": 2}
         return sorted(out.values(), key=lambda r: (-r["karat_value"], order[r["designation"]]))
 
@@ -548,6 +559,7 @@ class TripRepo:
                                          for r in self.db.lot_returns if r["entry_id"] == e["id"]],
                          "supplier_payment": self.entry_supplier_payment(e["id"]),
                          "gold_settlement": self.entry_gold_settlement(e["id"]),
+                         "gold_sale": self.entry_gold_sale(e["id"]),
                          "lot_settlement": self.entry_lot_settlement(e["id"]),
                          "holding": self.entry_holding(e["id"]),
                          "logo_holding": self.entry_logo_holding(e["id"]),
@@ -591,6 +603,52 @@ class TripRepo:
             raise _dup("uq_mtgs_settlement")
         self.db.gold_settle_links[int(entry_id)] = {"entry_id": int(entry_id), "settlement_id": int(settlement_id), "supplier_id": int(supplier_id),
                                                     "karat_id": int(karat_id), "designation": designation, "weight_grams": weight}
+
+    # ---- sale of custody gold (053): the CHECK / FK constraints of market_trip_gold_sales are mirrored as asserts
+    def buyers(self):
+        return [{"id": r["id"], "name": r["name"], "is_active": r["is_active"], "is_supplier": r.get("is_supplier", True),
+                 "is_intermediary": r.get("is_intermediary", False)}
+                for r in sorted(self.db.suppliers.values(), key=lambda r: (-r["is_active"], r["name"], r["id"]))]
+
+    def party(self, party_id, lock=False):
+        row = self.db.suppliers.get(int(party_id))
+        return None if row is None else {"id": row["id"], "name": row["name"], "is_active": row["is_active"],
+                                         "is_supplier": row.get("is_supplier", True), "is_intermediary": row.get("is_intermediary", False)}
+
+    def insert_gold_sale(self, *, entry_id, source_kind, karat_id, designation, lot, weight, movement_id, total, per_gram, basis, buyer_kind,
+                         buyer_party_id, buyer_name, reference_price, deviation, acknowledged, sale_date, reference):
+        self._fail("gold_sale")
+        assert int(entry_id) in self.db.entries and self.db.entries[int(entry_id)]["entry_kind"] == "GOLD_SALE"      # fk_mtgsale_entry
+        assert weight > 0 and total > 0                                                                       # chk_mtgsale_price
+        assert (basis == "TOTAL" and per_gram is None) or (basis == "PER_GRAM" and per_gram is not None and per_gram > 0)
+        assert (buyer_kind == "REGISTERED_PARTY" and buyer_party_id is not None) or (buyer_kind == "THIRD_PARTY" and buyer_party_id is None)
+        assert buyer_party_id is None or int(buyer_party_id) in self.db.suppliers                             # fk_mtgsale_party
+        assert (reference_price is None) == (deviation is None)                                               # chk_mtgsale_warning
+        if source_kind == "CUSTODY_GOLD":                                                                      # chk_mtgsale_source
+            assert karat_id is not None and designation in ("MELT", "LOGO", "UNCLASSIFIED") and lot is None and movement_id is None
+        else:
+            assert source_kind == "CUSTODY_LOT" and lot is not None and lot["fineness_permille"] is not None
+            assert karat_id is None and designation is None
+            move = next(m for m in self.db.lot_moves if m["id"] == movement_id)                               # fk_mtgsale_movement
+            assert (move["entry_id"], move["lot_id"], move["movement_type"], move["weight_delta"]) == (int(entry_id), lot["id"], "SALE_OUT", -weight)
+        if int(entry_id) in self.db.gold_sales:
+            raise _dup("PRIMARY")
+        self.db.gold_sales[int(entry_id)] = {
+            "entry_id": int(entry_id), "source_kind": source_kind, "karat_id": karat_id, "designation": designation,
+            "lot_id": None if lot is None else lot["id"], "fineness_permille": None if lot is None else lot["fineness_permille"],
+            "custody_movement_id": movement_id, "weight_grams": weight, "total_price": total, "price_per_gram": per_gram, "price_basis": basis,
+            "buyer_kind": buyer_kind, "buyer_party_id": buyer_party_id, "buyer_name": buyer_name, "reference_price_per_gram": reference_price,
+            "deviation_percent": deviation, "price_warning_acknowledged": 1 if acknowledged else 0, "sale_date": sale_date, "reference": reference}
+
+    def entry_gold_sale(self, entry_id):
+        sale = self.db.gold_sales.get(int(entry_id))
+        if sale is None:
+            return None
+        lot = None if sale["lot_id"] is None else self.db.lots[sale["lot_id"]]
+        origin = None if lot is None else self.db.entries[lot["entry_id"]]
+        return {**sale, "karat_value": None if sale["karat_id"] is None else self.db.karats[sale["karat_id"]]["karat_value"],
+                "lot_no": None if lot is None else lot["lot_no"], "lot_kind": None if lot is None else lot["lot_kind"],
+                "origin_trip_id": None if origin is None else origin["trip_id"], "origin_entry_no": None if origin is None else origin["entry_no"]}
 
     def melt_lot_ids(self, entry_id):
         return sorted(l["id"] for l in self.db.lots.values() if l["entry_id"] == int(entry_id))

@@ -14,6 +14,7 @@ ISSUE, RETURN, MELT, LOT_RETURN, LOT_ISSUE, HEAT = "ISSUE", "RETURN", "MELT", "L
 SUPPLIER_PAY = "SUPPLIER_PAY"          # a supplier making payment made with custody cash (043)
 GOLD_SETTLE = "GOLD_SETTLE"            # custody gold delivered to a supplier against its gold account (046, LOGO only in this slice)
 LOT_SETTLE, LOT_SETTLE_MOVEMENT = "LOT_SETTLE", "SUPPLIER_SETTLE"
+GOLD_SALE, SALE_MOVEMENT = "GOLD_SALE", "SALE_OUT"      # 053: custody gold sold for cash (aggregate line or a whole lot); the lot ledger movement
 LOT_HOLD, HOLD_RETURN = "LOT_HOLD", "HOLD_RETURN"          # 048: a whole lot handed to / taken back from an intermediary (holding links)
 MELT_DESIGNATION, LOGO_DESIGNATION, UNCLASSIFIED = "MELT", "LOGO", "UNCLASSIFIED"     # the owner's decision on an issued gold line
 DESIGNATIONS = (MELT_DESIGNATION, LOGO_DESIGNATION, UNCLASSIFIED)
@@ -438,7 +439,13 @@ class MarketTripRepository(BaseRepository):
             FROM market_trip_entries e JOIN market_trip_supplier_payments p ON p.entry_id = e.id
             WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed} FOR SHARE OF e, p
             """, (_id(trip_id), int(exclude_entry_id or 0)))
-        return row["issued"], row["returned"], paid["paid"]
+        sold = self._fetch_one(
+            f"""
+            SELECT COALESCE(SUM(s.total_price), 0) AS proceeds
+            FROM market_trip_entries e JOIN market_trip_gold_sales s ON s.entry_id = e.id
+            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed} FOR SHARE OF e, s
+            """, (_id(trip_id), int(exclude_entry_id or 0)))
+        return row["issued"], row["returned"], paid["paid"], sold["proceeds"]
 
     # ------------------------------------------------------------------ supplier payments from custody (043)
     def suppliers(self):
@@ -469,6 +476,37 @@ class MarketTripRepository(BaseRepository):
             "SELECT l.entry_id, l.supplier_id, l.amount, e.trip_id, e.entry_no, e.request_hash, e.performed_by_user_id "
             "FROM market_trip_supplier_payments l JOIN market_trip_entries e ON e.id = l.entry_id WHERE l.payment_id = %s",
             (_id(payment_id),))
+
+    # ------------------------------------------------------------------ sale of custody gold (053)
+    def buyers(self):
+        """Every party that may be named as a buyer (a supplier and / or an intermediary), active ones first. The sale needs no role."""
+        return self._fetch_all("SELECT id, name, is_active, is_supplier, is_intermediary FROM suppliers ORDER BY is_active DESC, name, id")
+
+    def party(self, party_id, lock=False):
+        return self._fetch_one("SELECT id, name, is_active, is_supplier, is_intermediary FROM suppliers WHERE id = %s"
+                               + (" FOR SHARE" if lock else ""), (int(party_id),))
+
+    def insert_gold_sale(self, *, entry_id, source_kind, karat_id, designation, lot, weight, movement_id, total, per_gram, basis, buyer_kind,
+                         buyer_party_id, buyer_name, reference_price, deviation, acknowledged, sale_date, reference):
+        """The immutable sale document. An aggregate line states (karat, designation); a whole lot states the lot, its stored assay and
+        the exact SALE_OUT movement (the database ties them together)."""
+        self._execute(
+            """INSERT INTO market_trip_gold_sales
+               (entry_id, source_kind, karat_id, designation, lot_id, fineness_permille, custody_movement_id, movement_type, weight_grams,
+                weight_delta, total_price, price_per_gram, price_basis, buyer_kind, buyer_party_id, buyer_name, reference_price_per_gram,
+                deviation_percent, price_warning_acknowledged, sale_date, reference)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (_id(entry_id), source_kind, karat_id, designation, None if lot is None else int(lot["id"]),
+             None if lot is None else lot["fineness_permille"], None if movement_id is None else int(movement_id),
+             None if lot is None else SALE_MOVEMENT, weight, None if lot is None else -weight, total, per_gram, basis, buyer_kind,
+             buyer_party_id, buyer_name, reference_price, deviation, 1 if acknowledged else 0, sale_date, reference or None))
+
+    def entry_gold_sale(self, entry_id):
+        """The sale a GOLD_SALE entry made (None for any other entry), with the source facts and the buyer."""
+        return self._fetch_one(
+            """SELECT g.*, k.karat_value, l.lot_no, l.lot_kind, oe.trip_id AS origin_trip_id, oe.entry_no AS origin_entry_no
+               FROM market_trip_gold_sales g LEFT JOIN karats k ON k.id = g.karat_id LEFT JOIN market_trip_lots l ON l.id = g.lot_id
+               LEFT JOIN market_trip_entries oe ON oe.id = l.entry_id WHERE g.entry_id = %s""", (_id(entry_id),))
 
     # ------------------------------------------------------------------ supplier gold settlements from custody (046)
     def insert_gold_settlement_link(self, *, entry_id, settlement_id, supplier_id, karat_id, designation, weight):
@@ -547,6 +585,13 @@ class MarketTripRepository(BaseRepository):
             WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}
             GROUP BY l.karat_id, k.karat_value, l.designation FOR SHARE OF e, l
             """, (_id(trip_id), int(exclude_entry_id or 0)))
+        sold = self._fetch_all(
+            f"""
+            SELECT s.karat_id, k.karat_value, s.designation, COALESCE(SUM(s.weight_grams), 0) AS sold
+            FROM market_trip_entries e JOIN market_trip_gold_sales s ON s.entry_id = e.id JOIN karats k ON k.id = s.karat_id
+            WHERE e.trip_id = %s AND e.id <> %s AND s.source_kind = 'CUSTODY_GOLD' AND {not_reversed}
+            GROUP BY s.karat_id, k.karat_value, s.designation FOR SHARE OF e, s
+            """, (_id(trip_id), int(exclude_entry_id or 0)))
         rows = {(int(r["karat_id"]), r["designation"]): {**r, "melted": 0, "heat_delta": 0, "supplier_settled": 0} for r in legs}
         for h in held:
             key = (int(h["karat_id"]), h["designation"])
@@ -568,6 +613,11 @@ class MarketTripRepository(BaseRepository):
             row = rows.setdefault(key, {"karat_id": s["karat_id"], "karat_value": s["karat_value"], "designation": s["designation"],
                                         "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0, "supplier_settled": 0})
             row["supplier_settled"] = s["supplier_settled"]
+        for s in sold:                                                           # 053: sold for cash (an aggregate line only; a lot sale is a lot movement)
+            key = (int(s["karat_id"]), s["designation"])
+            row = rows.setdefault(key, {"karat_id": s["karat_id"], "karat_value": s["karat_value"], "designation": s["designation"],
+                                        "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0, "supplier_settled": 0})
+            row["sold"] = s["sold"]
         order = {MELT_DESIGNATION: 0, LOGO_DESIGNATION: 1, UNCLASSIFIED: 2}
         return sorted(rows.values(), key=lambda r: (-int(r["karat_value"]), order[r["designation"]]))
 
@@ -597,6 +647,7 @@ class MarketTripRepository(BaseRepository):
                 "JOIN market_trip_entries me ON me.id = l.entry_id WHERE li.entry_id = %s ORDER BY li.lot_id", (int(row["id"]),))
             row["supplier_payment"] = self.entry_supplier_payment(row["id"])
             row["gold_settlement"] = self.entry_gold_settlement(row["id"])
+            row["gold_sale"] = self.entry_gold_sale(row["id"])
             row["lot_settlement"] = self.entry_lot_settlement(row["id"])
             row["holding"] = self.entry_holding(row["id"])
             row["logo_holding"] = self.entry_logo_holding(row["id"])

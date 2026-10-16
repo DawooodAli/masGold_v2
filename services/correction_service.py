@@ -469,7 +469,7 @@ class CorrectionService:
                 # (services.custody_rules), the same one posting, return checks and closure use.
                 if custody_rules.any_negative(cash, gold):
                     plan.blockers.append(("DEPENDENT_RETURN_EXISTS",
-                                          "لا يمكن عكس الإخراج لأن رجوعًا أو سبكًا أو حمّية أو تسوية ذهب مسجلة بعده يعتمد عليه — اعكسها أولاً."))
+                                          "لا يمكن عكس الإخراج لأن رجوعًا أو سبكًا أو حمّية أو تسوية ذهب أو بيعًا مسجلًا بعده يعتمد عليه — اعكسها أولاً."))
                 # Logo is pooled per karat: a later effective heating of an issued LOGO karat depends on this issue (newest first), even
                 # when the balance would stay non-negative.
                 logo_karats = [int(leg["karat_id"]) for leg in trips.entry_gold_legs(source_id) if leg["designation"] == "LOGO"]
@@ -507,6 +507,15 @@ class CorrectionService:
                 else:
                     plan.making.append((str(movement["supplier_id"]), -Decimal(str(movement["amount_delta"])), REVERSAL_MOVEMENT))
                 plan.extra_permissions.append(SMP_REVERSE_PERMISSION)
+            if source["entry_kind"] == "GOLD_SALE":
+                # 053. The sale document is never rewritten: the entry stops counting, so the exact stored grams are back in custody (an aggregate
+                # line, or the whole lot through its SALE_OUT movement) and the stored proceeds leave the custody cash. No supplier, making,
+                # settlement, Scrap, cash or bank movement is posted (there was none). Decided by arithmetic only: if the proceeds were already
+                # returned to Main Safe or paid to a supplier from custody, the custody cash without this sale would be negative.
+                cash = trips.custody_cash(source["trip_id"], exclude_entry_id=source_id, current=True)
+                if custody_rules.cash_rows_outstanding(cash) < 0:
+                    plan.blockers.append(("DEPENDENT_CASH_USE_EXISTS",
+                                          "لا يمكن عكس البيع لأن ثمنه استُخدم بعد تسجيله (رجوع نقدية إلى الخزنة أو دفع لمورد من العهدة) — اعكس ما يعتمد عليه أولًا."))
             if source["entry_kind"] in ("GOLD_SETTLE", "LOT_SETTLE"):
                 # The stored supplier gold movement is restored (never a recomputed amount) and the entry stops consuming custody gold, so the
                 # stored delivered grams are back in custody. No Scrap, cash, making, bank or lot movement is posted. The supplier-side

@@ -48,7 +48,7 @@ from uuid import UUID, uuid5
 from mysql.connector import IntegrityError
 
 from repositories.financial_account_repository import FinancialAccountRepository
-from repositories.market_trip_repository import (CLOSED, CREATE_MOVEMENT, GOLD_SETTLE, LOT_SETTLE, LOT_SETTLE_MOVEMENT, HEAT, ISSUE, LOGO_DESIGNATION, SUPPLIER_PAY, LOT_ISSUE, LOT_RETURN, MAIN_LOT, MELT,
+from repositories.market_trip_repository import (CLOSED, CREATE_MOVEMENT, GOLD_SALE, SALE_MOVEMENT, GOLD_SETTLE, LOT_SETTLE, LOT_SETTLE_MOVEMENT, HEAT, ISSUE, LOGO_DESIGNATION, SUPPLIER_PAY, LOT_ISSUE, LOT_RETURN, MAIN_LOT, MELT,
                                                  MELT_DESIGNATION, OPEN, RESIDUE_LOT, RETURN, SHOP_ISSUE_MOVEMENT, SHOP_ISSUE_OUT,
                                                  SHOP_RETURN_IN, SHOP_RETURN_MOVEMENT, SOURCE, UNCLASSIFIED, MarketTripRepository,
                                                  entry_code, trip_code)
@@ -68,6 +68,12 @@ from services import custody_rules, supplier_rules as rules
 PERMISSION = "MARKET_TRIP_MANAGE"
 SUPPLIER_PAY_PERMISSION = "SUPPLIER_MAKING_PAY"      # a supplier payment made from custody needs this right too (043)
 GOLD_SETTLE_PERMISSION = "SUPPLIER_GOLD_SETTLE"      # a gold settlement made from custody needs this right too (046)
+SALE_SOURCE_GOLD, SALE_SOURCE_LOT = "CUSTODY_GOLD", "CUSTODY_LOT"             # 053: what a sale consumes (an aggregate line / one whole lot)
+SALE_BASIS_TOTAL, SALE_BASIS_PER_GRAM = "TOTAL", "PER_GRAM"
+BUYER_REGISTERED, BUYER_THIRD_PARTY = "REGISTERED_PARTY", "THIRD_PARTY"
+BUYER_NAME_MAX = 150
+SALE_PER_GRAM_STEP = Decimal("0.0001")
+PRICE_WARNING_PERCENT = Decimal("10")                # a sale price farther than this from the SHOP_BUY reference needs the owner's acknowledgement
 SETTLEABLE_DESIGNATIONS = (LOGO_DESIGNATION,)        # 046: only Logo gold settles a supplier (this is a scope of the slice, not a business rule)
 CUSTODY_METHOD = "CUSTODY"
 PAYMENT_REFERENCE_MAX = 100
@@ -77,7 +83,7 @@ NOTES_MAX, REASON_MAX, WORKSHOP_MAX, ASSAY_MAX, LABEL_MAX, MAX_RESIDUES = 1000, 
 ZERO_MONEY, ZERO_WEIGHT = Decimal("0.00"), Decimal("0.000")
 KIND_TEXT = {ISSUE: "إخراج عهدة", RETURN: "رجوع من العهدة", MELT: "سبك", LOT_RETURN: "رجوع ناتج السبك", LOT_ISSUE: "إخراج سبكة من المحل",
              HEAT: "حمّية اللوجو", SUPPLIER_PAY: "دفع مصنعيات من العهدة", GOLD_SETTLE: "تسوية ذهب من العهدة", LOT_SETTLE: "تسوية سبكة من العهدة",
-             "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي", "LOGO_HOLD": "تسليم لوجو لمسوقجي", "HOLD_BACK": "رجوع لوجو من مسوقجي"}
+             GOLD_SALE: "بيع ذهب من العهدة", "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي", "LOGO_HOLD": "تسليم لوجو لمسوقجي", "HOLD_BACK": "رجوع لوجو من مسوقجي"}
 DESIGNATION_TEXT = {MELT_DESIGNATION: "للسبك", LOGO_DESIGNATION: "لوجو", UNCLASSIFIED: "غير مصنف (قبل التصنيف)"}
 _DESIGNATION_INPUT = {"MELT": MELT_DESIGNATION, "للسبك": MELT_DESIGNATION, "LOGO": LOGO_DESIGNATION, "لوجو": LOGO_DESIGNATION,
                       "UNCLASSIFIED": UNCLASSIFIED, "غير مصنف": UNCLASSIFIED}
@@ -207,15 +213,17 @@ def custody_view(cash_rows, gold_rows, lot_rows=(), trip_id=None):
     the repository's derived sums. A trip is settled only when all of them are exactly zero."""
     issued, returned = (Decimal(str(cash_rows[0])), Decimal(str(cash_rows[1])))
     paid = Decimal(str(cash_rows[2])) if len(cash_rows) > 2 else Decimal("0.00")          # paid to suppliers from custody (043)
+    received = Decimal(str(cash_rows[3])) if len(cash_rows) > 3 else Decimal("0.00")      # proceeds of custody gold sold for cash (053)
     gold = []
     for r in gold_rows:
         g_issued, g_returned = Decimal(str(r["issued"])), Decimal(str(r["returned"]))
         g_melted, g_heat = Decimal(str(r.get("melted", 0) or 0)), Decimal(str(r.get("heat_delta", 0) or 0))
         g_settled = Decimal(str(r.get("supplier_settled", 0) or 0))                       # delivered to suppliers from custody (046)
+        g_sold = Decimal(str(r.get("sold", 0) or 0))                                      # sold for cash from custody (053)
         g_held_out, g_held_back = Decimal(str(r.get("held_out", 0) or 0)), Decimal(str(r.get("held_back", 0) or 0))   # at / back from an intermediary (049)
         gold.append({"karat_id": int(r["karat_id"]), "karat_value": int(r["karat_value"]),
                      "designation": r.get("designation", UNCLASSIFIED), "issued": g_issued, "returned": g_returned,
-                     "melted": g_melted, "heat_delta": g_heat, "supplier_settled": g_settled,
+                     "melted": g_melted, "heat_delta": g_heat, "supplier_settled": g_settled, "sold": g_sold,
                      "held_out": g_held_out, "held_back": g_held_back,
                      "outstanding": custody_rules.gold_outstanding(r)})
     lots = [{"lot_id": str(r["id"]), "entry_id": str(r["entry_id"]), "lot_no": int(r["lot_no"]), "kind": r["lot_kind"],
@@ -226,8 +234,8 @@ def custody_view(cash_rows, gold_rows, lot_rows=(), trip_id=None):
              "origin_trip_id": int(r.get("origin_trip_id") or trip_id or 0) or None,
              "code": None if not (r.get("origin_trip_id") or trip_id) else entry_code(r.get("origin_trip_id") or trip_id, r["entry_no"])}
             for r in lot_rows if Decimal(str(r["outstanding_grams"])) != 0]
-    cash_left = custody_rules.cash_outstanding(issued, returned, paid)
-    return {"cash": {"issued": issued, "returned": returned, "paid": paid, "outstanding": cash_left}, "gold": gold,
+    cash_left = custody_rules.cash_outstanding(issued, returned, paid, received)
+    return {"cash": {"issued": issued, "returned": returned, "paid": paid, "received": received, "outstanding": cash_left}, "gold": gold,
             "lots": lots,
             "settled": cash_left == 0 and all(g["outstanding"] == 0 for g in gold) and not lots}
 
@@ -296,13 +304,23 @@ class MarketTripService:
     def __init__(self, session, *, transaction_factory=invoice_transaction, repository=MarketTripRepository,
                  accounts=FinancialAccountRepository, scrap=OldGoldConversionRepository, authorization=None, corrections=None,
                  supplier_payments=SupplierPaymentRepository, gold_settlements=SupplierGoldSettlementRepository,
-                 holdings=IntermediaryHoldingRepository):
+                 holdings=IntermediaryHoldingRepository, price_reference=None):
+        self._price_reference = price_reference if price_reference is not None else self._default_price_reference(session)
         self._session, self._transaction, self._repository = session, transaction_factory, repository
         self._accounts, self._scrap, self._supplier_payments = accounts, scrap, supplier_payments
         self._gold_settlements = gold_settlements
         self._holdings = holdings
         self._authorization = authorization or AuthorizationService(session)
         self._corrections = corrections
+
+    @staticmethod
+    def _default_price_reference(session):
+        """SHOP_BUY per gram of the active price set, by karat (the reference of the sale-price warning). Read lazily and never required."""
+        def reference():
+            from services.gold_price_service import GoldPriceService
+            snapshot = GoldPriceService(session).snapshot()
+            return {int(p["karat"]): Decimal(str(p["shop_buy_price_per_gram"])) for p in snapshot.get("prices", [])}
+        return reference
 
     # ------------------------------------------------------------------ UI hint (never the authority)
     def can_manage(self):
@@ -336,8 +354,11 @@ class MarketTripService:
             scrap = repository.shop_scrap()
             cash = None if safe is None else Decimal(str(repository.cash_balance(safe["id"])))
             suppliers = repository.suppliers()
+            buyers = repository.buyers()
             intermediaries = repository.intermediaries() if {VIEW_HOLDINGS, MANAGE_HOLDINGS} <= set(actor.permissions) else []
-        return {"intermediaries": [{"id": str(r["id"]), "name": r["name"], "active": bool(r["is_active"])} for r in intermediaries],
+        return {"buyers": [{"id": str(r["id"]), "name": r["name"], "active": bool(r["is_active"]),
+                            "supplier": bool(r["is_supplier"]), "intermediary": bool(r["is_intermediary"])} for r in buyers],
+                "intermediaries": [{"id": str(r["id"]), "name": r["name"], "active": bool(r["is_active"])} for r in intermediaries],
                 "safe": None if safe is None else {"id": str(safe["id"]), "name": safe["name"], "active": bool(safe["is_active"]),
                                                    "balance": cash},
                 "karats": [{"id": int(k["id"]), "karat_value": int(k["karat_value"]), "name": k["name"]} for k in karats],
@@ -429,6 +450,7 @@ class MarketTripService:
                     "credited_weight": Decimal(str(e["gold_settlement"]["credited_weight_grams"])),
                     "analytical": Decimal(str(e["gold_settlement"]["credited_analytical_grams"])),
                     "rounding_difference": Decimal(str(e["gold_settlement"]["rounding_difference_grams"]))},
+                "gold_sale": None if not e.get("gold_sale") else MarketTripService._gold_sale_result(e, e["gold_sale"], False),
                 "lot_settlement": None if not e.get("lot_settlement") else {
                     **MarketTripService._lot_settle_result(e, e["lot_settlement"], False),
                     "supplier_name": e["lot_settlement"]["supplier_name"]},
@@ -1291,6 +1313,283 @@ class MarketTripService:
             if not self._session.is_current(session_actor):
                 raise PermissionError("انتهت جلسة الدخول.")
         return result
+
+    # ------------------------------------------------------------------ sale of custody gold for cash (053, بيع ذهب العهدة)
+    @staticmethod
+    def _sale_price(grams, price_mode, price):
+        """The AGREED price. TOTAL: the exact amount (two decimals at most). PER_GRAM: grams x the per-gram price (up to four decimals),
+        rounded ONCE to the piaster (ROUND_HALF_UP). The total is the authoritative figure; it must be positive."""
+        mode = str(price_mode or "").strip().upper()
+        if mode not in (SALE_BASIS_TOTAL, SALE_BASIS_PER_GRAM):
+            raise TripError("PRICE_BASIS_REQUIRED", "اختر طريقة التسعير: إجمالي الصفقة أو سعر الجرام.")
+        number = _decimal(price, "السعر", "PRICE_INVALID")
+        if number is None or number <= 0 or number >= MAX_MONEY:
+            raise TripError("PRICE_INVALID", "أدخل السعر المتفق عليه بقيمة موجبة.")
+        if mode == SALE_BASIS_TOTAL:
+            if number != number.quantize(MONEY_STEP):
+                raise TripError("PRICE_INVALID", "الإجمالي بخانتين عشريتين على الأكثر.")
+            return mode, number.quantize(MONEY_STEP), None
+        if number != number.quantize(SALE_PER_GRAM_STEP):
+            raise TripError("PRICE_INVALID", "سعر الجرام بأربع خانات عشرية على الأكثر.")
+        with localcontext() as context:
+            context.prec = 50
+            total = (grams * number).quantize(MONEY_STEP, rounding=ROUND_HALF_UP)
+        if total <= 0:
+            raise TripError("PRICE_INVALID", "إجمالي الصفقة يساوي صفرًا: راجع سعر الجرام والوزن.")
+        return mode, total, number.quantize(SALE_PER_GRAM_STEP)
+
+    def _reference_prices(self):
+        """{karat: SHOP_BUY per gram} of the active price set, or {} when none is available (then no reference warning exists)."""
+        try:
+            prices = self._price_reference() if self._price_reference is not None else {}
+        except Exception:                                               # a price-engine problem must never block a sale
+            return {}
+        return {int(k): Decimal(str(v)) for k, v in (prices or {}).items()}
+
+    def reference_prices(self, *, _expected_actor=None):
+        """{karat: SHOP_BUY per gram} of the active price set for the sale dialog's reference (empty when none is available). Read only; a
+        price-engine problem never raises: the sale then simply has no reference warning."""
+        self._actor(_expected_actor)
+        return {str(k): str(v) for k, v in self._reference_prices().items()}
+
+    def _sale_reference(self, grams, karat_value, fineness, total):
+        return self.sale_reference(self._reference_prices(), grams, karat_value, fineness, total)
+
+    @staticmethod
+    def sale_reference(prices, grams, karat_value, fineness, total):
+        """(reference total, reference per gram, deviation %) against the shop's SHOP_BUY reference, or (None, None, None).
+        A master karat uses that karat's price; an assayed lot uses its pure grams x the 24K price (never a mapped master karat)."""
+        with localcontext() as context:
+            context.prec = 50
+            if fineness is None:
+                price = prices.get(int(karat_value))
+                reference = None if price is None else grams * price
+            else:
+                price = prices.get(24)
+                reference = None if price is None else grams * Decimal(str(fineness)) / Decimal(1000) * price
+            if not reference or reference <= 0:
+                return None, None, None
+            deviation = ((total - reference) / reference * Decimal(100)).quantize(MONEY_STEP, rounding=ROUND_HALF_UP)
+            return reference.quantize(MONEY_STEP, rounding=ROUND_HALF_UP), (reference / grams).quantize(SALE_PER_GRAM_STEP, rounding=ROUND_HALF_UP), deviation
+
+    @staticmethod
+    def _price_warning_text(deviation, reference_total):
+        direction = "أقل من" if deviation < 0 else "أعلى من"
+        return (f"السعر المتفق عليه {direction} سعر شراء المحل المرجعي بنسبة {abs(deviation):,.2f}% "
+                f"(المرجع {reference_total:,.2f} ج). تأكد من السعر قبل التسجيل.")
+
+    def _sale_buyer(self, repository, party_id, name):
+        """The buyer: a registered party (any role, must be ACTIVE) or a third-party name. The name is a snapshot kept with the sale."""
+        text = str(party_id if party_id is not None else "").strip()
+        if text:
+            try:
+                number = int(text)
+            except ValueError:
+                raise TripError("BUYER_NOT_FOUND", "الطرف المشتري غير موجود.") from None
+            party = repository.party(number, lock=True)
+            if party is None:
+                raise TripError("BUYER_NOT_FOUND", "الطرف المشتري غير موجود.")
+            if not party["is_active"]:
+                raise TripError("BUYER_INACTIVE", "هذا الطرف موقوف: لا يمكن البيع له. فعّله أولًا أو اختر مشتريًا آخر.")
+            return BUYER_REGISTERED, number, str(party["name"])
+        label = _text(name, BUYER_NAME_MAX, "اسم المشتري", required=False)
+        if not label:
+            raise TripError("BUYER_REQUIRED", "اختر المشتري من الأطراف المسجلة أو اكتب اسمه.")
+        return BUYER_THIRD_PARTY, None, label
+
+    def sell_gold(self, trip_id, source_kind, karat_id, designation, lot_id, weight, price_mode, price, buyer_party_id, buyer_name,
+                  sale_date, reference, notes, request_key, acknowledge_price=False, *, _expected_actor=None):
+        """SELL custody gold for cash to a buyer at a price agreed by hand (بيع ذهب العهدة).
+
+        ONE transaction posts the GOLD_SALE custody entry and its immutable sale document (the source, the agreed total, the buyer and the
+        price-warning evidence). The sold grams leave the custody (an aggregate line, or one WHOLE known-assay lot through a SALE_OUT custody
+        movement) and the proceeds ENTER the custody cash: no cash, bank, Scrap, supplier, making, settlement or inventory movement is
+        posted (the money stays in custody until a normal return or a supplier payment from custody). Right: MARKET_TRIP_MANAGE only, the
+        buyer needs no role. A price farther than the warning threshold from the shop's SHOP_BUY reference is refused until the owner
+        acknowledges it (a soft warning, never a hard block)."""
+        session_actor = self._actor(_expected_actor)
+        if str(trip_id or "").strip() == "":
+            raise TripError("TRIP_NOT_FOUND", "اختر العهدة.")
+        trip_number = _trip_id(trip_id)
+        kind = str(source_kind or "").strip().upper()
+        if kind not in (SALE_SOURCE_GOLD, SALE_SOURCE_LOT):
+            raise TripError("SOURCE_REQUIRED", "اختر ما تبيعه: ذهبًا من سطر عيار أو سبيكة معروفة العيار.")
+        karat_number, source, lot_number = None, None, None
+        if kind == SALE_SOURCE_GOLD:
+            try:
+                karat_number = int(str(karat_id).strip())
+            except (TypeError, ValueError):
+                raise TripError("KARAT_REQUIRED", "اختر عيار الذهب المباع.") from None
+            if karat_number <= 0:
+                raise TripError("KARAT_REQUIRED", "اختر عيار الذهب المباع.")
+            source = parse_designation(designation, GOLD_SALE)
+        else:
+            try:
+                lot_number = int(str(lot_id).strip())
+            except (TypeError, ValueError):
+                raise TripError("LOT_NOT_FOUND", "اختر السبيكة.") from None
+            if lot_number <= 0:
+                raise TripError("LOT_NOT_FOUND", "اختر السبيكة.")
+        grams = parse_weight(weight)
+        if kind == SALE_SOURCE_GOLD and grams == 0:
+            raise TripError("WEIGHT_REQUIRED", "أدخل وزن الذهب المباع الفعلي بقيمة موجبة.")
+        if kind == SALE_SOURCE_LOT and grams == 0:
+            grams = None                                                      # a whole lot: the weight is derived under the locks
+        sold_on = _entry_date(sale_date)
+        reference_text, notes_text = _text(reference, PAYMENT_REFERENCE_MAX, "المرجع"), _text(notes, NOTES_MAX, "الملاحظات")
+        key = _key(request_key)
+        party_text = str(buyer_party_id if buyer_party_id is not None else "").strip()
+        digest = hashlib.sha256(json.dumps(
+            [GOLD_SALE, trip_number, kind, karat_number, source, lot_number, None if grams is None else str(grams),
+             str(price_mode or "").strip().upper(), normalize_digits(str(price or "")).strip().replace(",", ""), party_text,
+             "" if party_text else str(buyer_name or "").strip(), sold_on.isoformat(), reference_text, notes_text],
+            ensure_ascii=False).encode()).hexdigest()
+        try:
+            return self._post_gold_sale(session_actor, trip_number, kind, karat_number, source, lot_number, grams, price_mode, price, party_text,
+                                        buyer_name, sold_on, reference_text, notes_text, key, digest, bool(acknowledge_price))
+        except IntegrityError as exc:
+            if not _is_request_key_violation(exc):
+                raise
+            with self._transaction() as connection:                          # a twin committed first: decide from a FRESH read
+                actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+                replay = self._gold_sale_prior(self._repository(connection), key, digest, actor)
+                if replay is None:
+                    raise
+                return replay
+
+    @staticmethod
+    def _gold_sale_result(entry, sale, duplicate):
+        lot = sale["source_kind"] == SALE_SOURCE_LOT
+        return {"entry_id": str(entry["id"]), "trip_id": str(entry["trip_id"]), "trip_code": trip_code(entry["trip_id"]),
+                "code": entry_code(entry["trip_id"], entry["entry_no"]), "kind": GOLD_SALE, "created": False, "duplicate": duplicate,
+                "source_kind": sale["source_kind"], "karat_value": None if sale.get("karat_value") is None else int(sale["karat_value"]),
+                "designation": sale.get("designation"), "lot_id": None if sale.get("lot_id") is None else str(sale["lot_id"]),
+                "weight": str(sale["weight_grams"]), "total_price": str(sale["total_price"]), "price_basis": sale["price_basis"],
+                "price_per_gram": None if sale.get("price_per_gram") is None else str(sale["price_per_gram"]),
+                "buyer_kind": sale["buyer_kind"], "buyer_party_id": None if sale.get("buyer_party_id") is None else str(sale["buyer_party_id"]),
+                "buyer_name": sale["buyer_name"],
+                "reference_price_per_gram": None if sale.get("reference_price_per_gram") is None else str(sale["reference_price_per_gram"]),
+                "deviation_percent": None if sale.get("deviation_percent") is None else str(sale["deviation_percent"]),
+                "price_warning_acknowledged": bool(sale.get("price_warning_acknowledged")), "is_lot": lot}
+
+    @classmethod
+    def _gold_sale_prior(cls, repository, key, digest, actor):
+        """The replay of an already-recorded request (None when the key is unused). It needs the entry AND its sale document with the SAME
+        payload by the SAME user; anything else is a conflict and writes nothing. A replay is decided before any availability is derived."""
+        entry = repository.by_request(key)
+        if entry is None:
+            return None
+        sale = repository.entry_gold_sale(entry["id"])
+        if sale is None or entry["request_hash"] != digest or int(entry["performed_by_user_id"]) != int(actor.user_id):
+            raise TripError("REQUEST_CONFLICT", "طلب العملية مستخدم لعملية مختلفة.")
+        return cls._gold_sale_result(entry, sale, True)
+
+    def _post_gold_sale(self, session_actor, trip_id, kind, karat_id, designation, lot_id, grams, price_mode, price, party_text, buyer_name,
+                        sold_on, reference, notes, key, digest, acknowledged):
+        with self._transaction() as connection:
+            actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+            repository = self._repository(connection)
+            trip = repository.trip(trip_id, lock=True)                          # lock order: trip -> lot -> buyer party
+            if trip is None:
+                raise TripError("TRIP_NOT_FOUND", "العهدة غير موجودة.")
+            replay = self._gold_sale_prior(repository, key, digest, actor)
+            if replay is not None:
+                return replay
+            if trip["status"] != OPEN:
+                raise TripError("TRIP_CLOSED", "العهدة مغلقة: أعد فتحها أولاً لبيع ذهب منها.")
+            lot, movement_id, karat_value, fineness = None, None, None, None
+            if kind == SALE_SOURCE_GOLD:
+                karat = repository.karat(karat_id)
+                if karat is None or not karat["is_active"]:
+                    raise TripError("KARAT_NOT_FOUND", "العيار غير موجود أو غير نشط.")
+                karat_value = int(karat["karat_value"])
+                custody = self._custody(repository, trip_id, current=True)         # read under the trip lock: the effective outstanding
+                line = next((g for g in custody["gold"] if g["karat_id"] == karat_id and g["designation"] == designation), None)
+                outstanding = ZERO_WEIGHT if line is None else line["outstanding"]
+                if grams > outstanding:
+                    raise TripError("SALE_EXCEEDS_CUSTODY",
+                                    f"المتبقي في العهدة من عيار {karat_value} ({DESIGNATION_TEXT[designation]}) هو "
+                                    f"{outstanding:,.3f} جرام فقط: لا يمكن بيع {grams:,.3f} جرام.")
+            else:
+                locked = repository.lock_lots([lot_id])
+                if not locked:
+                    raise TripError("LOT_NOT_FOUND", "السبيكة غير موجودة.")
+                lot = locked[0]
+                if lot["fineness_permille"] is None:
+                    raise TripError("LOT_ASSAY_UNKNOWN", "عيار هذه السبيكة الفعلي غير معلوم: لا تُباع قبل معرفة عيارها (لا يُستنتج العيار).")
+                full = Decimal(str(lot["weight_grams"]))
+                current = next(iter(repository.custody_lots(trip_id, lot_id=lot_id)), None)
+                if current is None or Decimal(str(current["outstanding_grams"])) == 0:
+                    raise TripError("LOT_NOT_IN_CUSTODY", "السبيكة ليست في هذه العهدة أو سبق بيعها أو تسويتها أو عُكس سبكها.")
+                if Decimal(str(current["outstanding_grams"])) != full:
+                    raise TripError("LOT_PARTIAL_NOT_ALLOWED", "رصيد السبيكة في العهدة جزئي: اعكس الرجوع الجزئي أولًا؛ تُباع السبيكة كاملة فقط.")
+                if grams is not None and grams != full:
+                    raise TripError("LOT_PARTIAL_NOT_ALLOWED", "تُباع السبيكة كاملة فقط؛ الكمية المرسلة لا تطابق وزنها الكامل.")
+                grams, fineness = full, Decimal(str(lot["fineness_permille"]))
+            buyer_kind, buyer_id, buyer_label = self._sale_buyer(repository, party_text, buyer_name)
+            basis, total, per_gram = self._sale_price(grams, price_mode, price)
+            reference_total, reference_per_gram, deviation = self._sale_reference(grams, karat_value, fineness, total)
+            warned = deviation is not None and abs(deviation) > PRICE_WARNING_PERCENT
+            if warned and not acknowledged:
+                raise TripError("PRICE_DEVIATION", self._price_warning_text(deviation, reference_total))
+            now = repository.db_now()
+            entry_no = repository.next_entry_no(trip_id)
+            entry_id = repository.insert_entry(trip_id=trip_id, entry_no=entry_no, kind=GOLD_SALE, entry_date=sold_on, notes=notes, key=key,
+                                               digest=digest, actor=actor, now=now)
+            code = entry_code(trip_id, entry_no)
+            if kind == SALE_SOURCE_LOT:
+                movement_id = repository.insert_lot_movement(lot_id=lot_id, entry_id=entry_id, movement_type=SALE_MOVEMENT, weight_delta=-grams)
+            repository.insert_gold_sale(
+                entry_id=entry_id, source_kind=kind, karat_id=karat_id, designation=designation, lot=lot, weight=grams, movement_id=movement_id,
+                total=total, per_gram=per_gram, basis=basis, buyer_kind=buyer_kind, buyer_party_id=buyer_id, buyer_name=buyer_label,
+                reference_price=reference_per_gram, deviation=deviation, acknowledged=warned and acknowledged, sale_date=sold_on, reference=reference)
+            what = (f"سبيكة {grams:,.3f} جرام (عيار فعلي {fineness} بالألف)" if lot is not None
+                    else f"{grams:,.3f} جرام عيار {karat_value} ({DESIGNATION_TEXT[designation]})")
+            label = f"{KIND_TEXT[GOLD_SALE]} {code} — {trip_code(trip_id)}: {what} إلى {buyer_label} بمبلغ {total:,.2f} ج"
+            repository.audit(actor=actor, event_type="MARKET_TRIP_GOLD_SALE", entity_id=entry_id, reference=code, description=label,
+                             metadata={"trip_id": trip_id, "kind": GOLD_SALE, "source_kind": kind, "karat": karat_value, "designation": designation,
+                                       "lot_id": None if lot is None else str(lot_id), "weight": str(grams), "total_price": str(total),
+                                       "price_basis": basis, "price_per_gram": None if per_gram is None else str(per_gram),
+                                       "buyer_kind": buyer_kind, "buyer_party_id": buyer_id, "buyer_name": buyer_label,
+                                       "reference_price_per_gram": None if reference_per_gram is None else str(reference_per_gram),
+                                       "deviation_percent": None if deviation is None else str(deviation),
+                                       "price_warning_acknowledged": bool(warned and acknowledged), "date": sold_on.isoformat(),
+                                       "employee_id": actor.employee_id}, now=now)
+            entry = repository.by_request(key)
+            result = self._gold_sale_result(entry, repository.entry_gold_sale(entry_id), False)
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        return result
+
+    def sale_price_check(self, trip_id, source_kind, karat_id, designation, lot_id, weight, price_mode, price, *, _expected_actor=None):
+        """READ ONLY preview for the dialog: the agreed total, the per-gram price, the SHOP_BUY reference and the deviation. It never
+        writes and never reserves anything; the posting repeats every check under the locks."""
+        self._actor(_expected_actor)
+        kind = str(source_kind or "").strip().upper()
+        with self._transaction() as connection:
+            self._authorization.require_permission_read(connection, self._session.require_authenticated(), PERMISSION)
+            repository = self._repository(connection)
+            fineness, karat_value = None, None
+            if kind == SALE_SOURCE_LOT:
+                lot = repository.lot_by_id(int(str(lot_id).strip()))
+                if lot is None or lot["fineness_permille"] is None:
+                    raise TripError("LOT_ASSAY_UNKNOWN", "عيار هذه السبيكة الفعلي غير معلوم.")
+                grams, fineness = Decimal(str(lot["weight_grams"])), Decimal(str(lot["fineness_permille"]))
+            else:
+                karat = repository.karat(int(str(karat_id).strip()))
+                if karat is None:
+                    raise TripError("KARAT_REQUIRED", "اختر عيار الذهب المباع.")
+                karat_value, grams = int(karat["karat_value"]), parse_weight(weight)
+                if grams == 0:
+                    raise TripError("WEIGHT_REQUIRED", "أدخل وزن الذهب المباع.")
+        basis, total, per_gram = self._sale_price(grams, price_mode, price)
+        reference_total, reference_per_gram, deviation = self._sale_reference(grams, karat_value, fineness, total)
+        warned = deviation is not None and abs(deviation) > PRICE_WARNING_PERCENT
+        return {"basis": basis, "total": str(total), "per_gram": str(per_gram if per_gram is not None else (total / grams).quantize(SALE_PER_GRAM_STEP, rounding=ROUND_HALF_UP)),
+                "weight": str(grams), "reference_total": None if reference_total is None else str(reference_total),
+                "reference_per_gram": None if reference_per_gram is None else str(reference_per_gram),
+                "deviation_percent": None if deviation is None else str(deviation), "warning": warned,
+                "message": self._price_warning_text(deviation, reference_total) if warned else ""}
 
     # ------------------------------------------------------------------ lot returns to the shop (M2)
     def shop_lots(self, *, _expected_actor=None):
