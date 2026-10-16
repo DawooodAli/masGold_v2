@@ -66,14 +66,14 @@ class MarketerSchemaTests(unittest.TestCase):
 
     def test_the_supplier_settlement_gains_the_marketer_source_in_21k_only_and_the_old_shape_is_kept_verbatim(self):
         sources = re.findall(r"'(\w+)'", re.search(r"ADD CONSTRAINT chk_sgs_source CHECK \(source_kind IN \(([^)]*)\)\)", self.forward).group(1))
-        self.assertEqual(sources, list(EARLIER_SG_SOURCES) + ["HOLDING_MARKETER"])
+        self.assertEqual(sources, list(EARLIER_SG_SOURCES) + ["HOLDING_MKT"])
         legs = re.findall(r"'(\w+)'", re.search(r"ADD CONSTRAINT chk_sgsl_source CHECK \(source_kind IN \(([^)]*)\)\)", self.forward).group(1))
-        self.assertEqual(legs, list(EARLIER_SG_SOURCES) + ["HOLDING_MARKETER"])
+        self.assertEqual(legs, list(EARLIER_SG_SOURCES) + ["HOLDING_MKT"])
         old = re.search(r"ADD CONSTRAINT chk_sgs_shape CHECK \((.*?)\)\", 'DO 0'\);", self.f050, re.S).group(1)
         new = re.search(r"ADD CONSTRAINT chk_sgs_shape CHECK \((.*?)\)\", 'DO 0'\);", self.forward, re.S).group(1)
         self.assertTrue(new.startswith(old))                                                          # every earlier branch, unchanged
         branch = new[len(old):]
-        for needle in ("source_kind='HOLDING_MARKETER'", "delivered_karat_value=21", "holding_party_id IS NOT NULL", "lot_pool_id IS NULL", "logo_pool_id IS NULL",
+        for needle in ("source_kind='HOLDING_MKT'", "delivered_karat_value=21", "holding_party_id IS NOT NULL", "lot_pool_id IS NULL", "logo_pool_id IS NULL",
                        "physical_declaration IS NULL", "holding_weight_grams=delivered_weight_grams"):
             self.assertIn(needle, branch)
         restored = re.search(r"ADD CONSTRAINT chk_sgs_shape CHECK \((.*?)\);", self.rollback, re.S).group(1)
@@ -128,7 +128,7 @@ class MarketerSchemaTests(unittest.TestCase):
 
     def test_the_rollback_refuses_on_any_marketer_history_or_a_later_migration_and_drops_children_first(self):
         self.assertIn("ROLLBACK_055_REFUSED_history_or_later_migration", self.rollback)
-        for needle in ("FROM marketer_documents", "FROM marketer_cash_movements", "FROM marketer_gold_movements", "source_kind='HOLDING_MARKETER'",
+        for needle in ("FROM marketer_documents", "FROM marketer_cash_movements", "FROM marketer_gold_movements", "source_kind='HOLDING_MKT'",
                        "source_type='MARKETER_DOCUMENT'", "version>55"):
             self.assertIn(needle, self.rollback)
         order = ["ROLLBACK_055_REFUSED", "DROP TABLE IF EXISTS marketer_gold_movements", "DROP TABLE IF EXISTS marketer_cash_movements",

@@ -191,7 +191,7 @@ class MarketerRepo:
             raise _dup("uq_sgs_request")
         settlement_id = self.db.next("settlement")
         self.db.settlements[settlement_id] = {
-            "id": settlement_id, "supplier_id": int(supplier_id), "source_kind": "HOLDING_MARKETER", "delivered_karat_id": int(karat["id"]),
+            "id": settlement_id, "supplier_id": int(supplier_id), "source_kind": "HOLDING_MKT", "delivered_karat_id": int(karat["id"]),
             "delivered_karat_value": int(karat["karat_value"]), "target_karat_id": int(target_karat["id"]), "target_karat_value": int(target_karat["karat_value"]),
             "delivered_weight_grams": quantity, "credited_weight_grams": credited, "credited_analytical_grams": analytical,
             "rounding_difference_grams": difference, "settlement_date": settlement_date, "reference": reference, "notes": notes, "request_key": key,
@@ -226,7 +226,7 @@ class MarketerRepo:
 
     def settlements(self, party_id, limit=300):
         rows = []
-        for header in sorted((g for g in self.db.settlements.values() if g.get("holding_party_id") == int(party_id) and g["source_kind"] == "HOLDING_MARKETER"),
+        for header in sorted((g for g in self.db.settlements.values() if g.get("holding_party_id") == int(party_id) and g["source_kind"] == "HOLDING_MKT"),
                              key=lambda g: -g["id"]):
             reversal = self._reversal("SUPPLIER_GOLD_SETTLEMENT", header["id"])
             rows.append({**header, "supplier_name": self.db.suppliers[header["supplier_id"]]["name"], "actor_name": "المالك",

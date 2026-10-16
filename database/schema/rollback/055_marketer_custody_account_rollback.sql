@@ -2,8 +2,8 @@
 SET @masgold_sql=IF(EXISTS(SELECT 1 FROM marketer_documents)
  OR EXISTS(SELECT 1 FROM marketer_cash_movements)
  OR EXISTS(SELECT 1 FROM marketer_gold_movements)
- OR EXISTS(SELECT 1 FROM supplier_gold_settlements WHERE source_kind='HOLDING_MARKETER')
- OR EXISTS(SELECT 1 FROM supplier_gold_settlement_legs WHERE source_kind='HOLDING_MARKETER')
+ OR EXISTS(SELECT 1 FROM supplier_gold_settlements WHERE source_kind='HOLDING_MKT')
+ OR EXISTS(SELECT 1 FROM supplier_gold_settlement_legs WHERE source_kind='HOLDING_MKT')
  OR EXISTS(SELECT 1 FROM transaction_corrections WHERE source_type='MARKETER_DOCUMENT')
  OR EXISTS(SELECT 1 FROM schema_migrations WHERE version>55),
  'SELECT * FROM ROLLBACK_055_REFUSED_history_or_later_migration','DO 0');

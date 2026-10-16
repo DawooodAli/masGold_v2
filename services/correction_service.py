@@ -296,7 +296,7 @@ class CorrectionService:
             source = repo.source(source_id)
             if source is None:
                 raise CorrectionError("SOURCE_NOT_FOUND", "تسوية ذهب المورد غير موجودة.")
-            if lock and source.get("source_kind") in ("HOLDING_LOT", "HOLDING_LOGO", "HOLDING_MARKETER"):
+            if lock and source.get("source_kind") in ("HOLDING_LOT", "HOLDING_LOGO", "HOLDING_MKT"):
                 # 050: lot (lot pools) -> holder and recipient in ASCENDING party id -> holding source pool. No trip is locked or reopened.
                 from repositories.intermediary_holding_repository import IntermediaryHoldingRepository
                 from repositories.market_trip_repository import MarketTripRepository
@@ -447,7 +447,7 @@ class CorrectionService:
     def _plan(self, connection, source_type, source_id, lock):
         corrections, invoices = self._corrections(connection), self._invoices(connection)
         invoice, source, reference = self._load(connection, source_type, source_id, lock)
-        holding_decision = bool(lock and (source_type in (HRC, SPI, MKD) or (source_type == SGS and (source or {}).get("source_kind") in ("HOLDING_LOT", "HOLDING_LOGO", "HOLDING_MARKETER"))))
+        holding_decision = bool(lock and (source_type in (HRC, SPI, MKD) or (source_type == SGS and (source or {}).get("source_kind") in ("HOLDING_LOT", "HOLDING_LOGO", "HOLDING_MKT"))))
         # a settlement from a holding, a receipt and a supplier invoice (052): a CURRENT read decides ALREADY_REVERSED, so a reversal committed while this
         # transaction waited for the invoice lock is reported as ALREADY_REVERSED instead of surfacing as a raw duplicate-key error
         # (every other source keeps its established call)
@@ -674,12 +674,12 @@ class CorrectionService:
             # The STORED movements are what is undone (never a recomputed amount): the delivered grams return to Scrap and the credit is restored.
             from repositories.supplier_gold_settlement_repository import GOLD_REVERSAL, SCRAP_REVERSAL_IN, SupplierGoldSettlementRepository
             settlements = SupplierGoldSettlementRepository(connection)
-            holding_source = source.get("source_kind") in ("HOLDING_LOT", "HOLDING_LOGO", "HOLDING_MARKETER")
+            holding_source = source.get("source_kind") in ("HOLDING_LOT", "HOLDING_LOGO", "HOLDING_MKT")
             custody = None if holding_source or source.get("source_kind", "SHOP_SCRAP") == "SHOP_SCRAP" else settlements.custody_entry(source_id)
             scrap_leg, gold_leg = settlements.scrap_movement(source_id), settlements.gold_movement(source_id)
             if holding_source:
                 # 050: ONE canonical correction on the SG, from either page. The stored supplier credit and the stored delivered grams are restored.
-                if source.get("source_kind") == "HOLDING_MARKETER":
+                if source.get("source_kind") == "HOLDING_MKT":
                     self._plan_marketer_settlement(connection, plan, source, source_id, settlements, lock)
                 else:
                     self._plan_holding_settlement(connection, plan, source, source_id, settlements, lock)

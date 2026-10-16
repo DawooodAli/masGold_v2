@@ -323,9 +323,9 @@ class DepositReversalTests(fixture.CorrectionTestCase):
             self.assertEqual(vm.reversal['title'],f"{label} {target['invoice_number']}")
 
     def test_supported_source_label_mapping_preserves_customer_settlement(self):
-        from services.correction_service import correction_source_text, CS, FO, SMP, MTE, SGS, HRC, SPI, SOURCES
+        from services.correction_service import correction_source_text, CS, FO, SMP, MTE, SGS, HRC, SPI, SOURCES, MKD
         expected={'INVOICE':'الفاتورة','EXCHANGE':'الاستبدال','RETURN':'المرتجع',
-                  CS:'تسوية حساب',FO:'العملية المالية',CD:'العربون',SMP:'دفعة المصنعيات',MTE:'حركة عهدة السوق',SGS:'تسوية ذهب المورد',HRC:'استلام ذهب من المسوقجي',SPI:'فاتورة شراء مورد'}
+                  CS:'تسوية حساب',FO:'العملية المالية',CD:'العربون',SMP:'دفعة المصنعيات',MTE:'حركة عهدة السوق',SGS:'تسوية ذهب المورد',HRC:'استلام ذهب من المسوقجي',MKD:'مستند عهدة المسوقجي',SPI:'فاتورة شراء مورد'}
         self.assertEqual({s:correction_source_text(s) for s in SOURCES},expected)
         from app.viewmodels.correction_viewmodel import CorrectionViewModel
         vm=CorrectionViewModel(self.service._session,self.service)

@@ -6,7 +6,7 @@ Documents (all immutable; the codes are MH cash handover, MR cash / gold return,
   gold return     marketer 21K grams -> the counted shop Scrap (physical 21K grams, never converted), capped at the marketer's gold balance
   purchase        marketer cash -> 21K gold: the cash is spent (never above the balance), the grams are added; the VENDOR (a registered party or a typed name) is mandatory
   sale            21K gold -> marketer cash: the grams leave (never above the balance), the agreed total is added; the BUYER is mandatory
-  supplier settlement   the existing SG document with the source HOLDING_MARKETER: 21K grams are delivered to a supplier and credited by the existing rule
+  supplier settlement   the existing SG document with the source HOLDING_MKT: 21K grams are delivered to a supplier and credited by the existing rule
                   (grams x 21 / supplier karat); ONE negative marketer gold movement and ONE supplier gold movement, tied by composite keys.
 
 Scope: gold is 21K ONLY (no other karat, no lots). Rights are the intermediary-holding ones (INTERMEDIARY_HOLDING_MANAGE / _VIEW / _REVERSE); a settlement also needs
@@ -24,7 +24,7 @@ import json
 from mysql.connector import IntegrityError
 
 from repositories.financial_account_repository import FinancialAccountRepository
-from repositories.marketer_custody_repository import (CASH_HANDOVER, CASH_MOVEMENT, CASH_RETURN, GOLD_MOVEMENT as MARKETER_GOLD, GOLD_RETURN, HOLDING_MARKETER,
+from repositories.marketer_custody_repository import (CASH_HANDOVER, CASH_MOVEMENT, CASH_RETURN, GOLD_MOVEMENT as MARKETER_GOLD, GOLD_RETURN, HOLDING_MKT,
                                                       KARAT_VALUE, MOVE_SETTLEMENT, PURCHASE, SALE, SOURCE, MarketerCustodyRepository, document_code)
 from repositories.old_gold_conversion_repository import OldGoldConversionRepository
 from repositories.supplier_gold_settlement_repository import GOLD_MOVEMENT as SUPPLIER_GOLD_MOVEMENT, SupplierGoldSettlementRepository, settlement_code
@@ -468,7 +468,7 @@ class MarketerCustodyService:
 
     # ------------------------------------------------------------------ settlement: 21K grams -> a supplier (the ONE bridge)
     def settle_supplier(self, party_id, supplier_id, weight, self_confirmed, settlement_date, reference, notes, request_key, *, _expected_actor=None):
-        """Deliver 21K grams of the marketer's gold to a SUPPLIER against its gold account (the existing SG document, source HOLDING_MARKETER). The credited grams
+        """Deliver 21K grams of the marketer's gold to a SUPPLIER against its gold account (the existing SG document, source HOLDING_MKT). The credited grams
         follow the existing rule (grams x 21 / supplier karat); the marketer gold and the supplier account change together and nowhere else. A recipient that
         is the marketer himself needs the owner's explicit confirmation."""
         session_actor = self._writer(_expected_actor)
@@ -483,7 +483,7 @@ class MarketerCustodyService:
         confirmed = self_confirmed is True or str(self_confirmed).strip().lower() in ("1", "true")
         settled_on = _entry_date(settlement_date)
         reference, notes, key = _text(reference, PAYMENT_REFERENCE_MAX, "المرجع"), _text(notes, NOTES_MAX, "الملاحظات"), _key(request_key)
-        digest = self._digest(HOLDING_MARKETER, party_number, supplier_number, str(grams), confirmed, settled_on.isoformat(), reference, notes)
+        digest = self._digest(HOLDING_MKT, party_number, supplier_number, str(grams), confirmed, settled_on.isoformat(), reference, notes)
         try:
             return self._settle_once(session_actor, party_number, supplier_number, grams, confirmed, settled_on, reference, notes, key, digest)
         except IntegrityError as exc:
@@ -509,7 +509,7 @@ class MarketerCustodyService:
             if repo.by_request(key) is not None or repo.key_used_elsewhere(key):
                 raise TripError("REQUEST_CONFLICT", "طلب العملية مستخدم لعملية مختلفة.")
             return None
-        if (header["source_kind"] != HOLDING_MARKETER or header["request_hash"] != digest or int(header["performed_by_user_id"]) != int(actor.user_id)):
+        if (header["source_kind"] != HOLDING_MKT or header["request_hash"] != digest or int(header["performed_by_user_id"]) != int(actor.user_id)):
             raise TripError("REQUEST_CONFLICT", "طلب العملية مستخدم لعملية مختلفة.")
         return self._settlement_result(header, True)
 
@@ -560,9 +560,9 @@ class MarketerCustodyService:
                 supplier_id=supplier_number, type_id=type_id, karat_id=target["id"], weight_delta=-credited,
                 eq21_delta=-rules.equivalent_21(credited, target["karat_value"]), source_type="SUPPLIER_GOLD_SETTLEMENT", source_id=settlement_id,
                 reference=code, description=label, now=now, user_id=actor.user_id)
-            parties.insert_leg(settlement_id=settlement_id, kind="GOLD", source_kind=HOLDING_MARKETER, supplier_gold_movement_id=gold_id)
+            parties.insert_leg(settlement_id=settlement_id, kind="GOLD", source_kind=HOLDING_MKT, supplier_gold_movement_id=gold_id)
             repo.insert_gold_movement(party_id=party_number, settlement_id=settlement_id, movement_type=MOVE_SETTLEMENT, weight=grams, delta=-grams)
-            metadata = {"settlement": code, "source_kind": HOLDING_MARKETER, "holder_id": party_number, "supplier_id": supplier_number, "delivered": str(grams),
+            metadata = {"settlement": code, "source_kind": HOLDING_MKT, "holder_id": party_number, "supplier_id": supplier_number, "delivered": str(grams),
                         "karat": KARAT_VALUE, "target_karat": int(target["karat_value"]), "credited": str(credited), "analytical": str(analytical),
                         "rounding_difference": str(difference), "remaining": str(held - grams), "self_settlement": self_settlement,
                         "date": settled_on.isoformat(), "reference": reference, "employee_id": actor.employee_id}

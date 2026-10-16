@@ -1591,7 +1591,7 @@ class SettlementRepo:
 
     def insert_leg(self, *, settlement_id, kind, source_kind, old_gold_movement_id=None, supplier_gold_movement_id=None):
         self._fail("sg_leg")
-        assert source_kind in ("SHOP_SCRAP", "CUSTODY_GOLD", "CUSTODY_LOT", "HOLDING_LOT", "HOLDING_LOGO", "HOLDING_MARKETER")   # chk_sgsl_source
+        assert source_kind in ("SHOP_SCRAP", "CUSTODY_GOLD", "CUSTODY_LOT", "HOLDING_LOT", "HOLDING_LOGO", "HOLDING_MKT")   # chk_sgsl_source
         assert kind != "SCRAP" or source_kind == "SHOP_SCRAP"                                 # chk_sgsl_scrap_only: no second Scrap deduction
         assert self.db.settlements[int(settlement_id)]["source_kind"] == source_kind          # fk_sgsl_source (the composite foreign key)
         assert (kind == "SCRAP" and old_gold_movement_id is not None and supplier_gold_movement_id is None) or \

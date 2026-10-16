@@ -227,8 +227,8 @@ class SettlementTests(MarketerCase):
         self.assertEqual((movement["supplier_id"], movement["weight_delta"]), (23, D("-9.188")))
         header = next(iter(self.db.settlements.values()))
         self.assertEqual((header["source_kind"], header["delivered_karat_value"], header["holding_party_id"], header["lot_pool_id"], header["logo_pool_id"]),
-                         ("HOLDING_MARKETER", 21, 20, None, None))
-        self.assertEqual(self.db.settlement_legs[0]["source_kind"], "HOLDING_MARKETER")
+                         ("HOLDING_MKT", 21, 20, None, None))
+        self.assertEqual(self.db.settlement_legs[0]["source_kind"], "HOLDING_MKT")
         self.assertEqual((self.db.sm_making, self.db.sm_payments), ([], {}))                  # no making ledger, no cash
         self.assertEqual(before[0], [])
         again = self.settle("10.500", SUPPLIER24, key=header["request_key"])

@@ -95,7 +95,9 @@ class AuthorizationPathTests(unittest.TestCase):
 
 class CallSiteAuditTests(unittest.TestCase):
     """The non-locking path is used only by the confirmed read-only flows; every mutation stays strict."""
-    READ_SITES = {("services/gold_position_service.py", "position"),                # MANAGEMENT_REVIEW + MARKET_TRIP_MANAGE + INTERMEDIARY_HOLDING_VIEW (read-only)
+    READ_SITES = {("services/marketer_custody_service.py", "account"),                  # INTERMEDIARY_HOLDING_VIEW (marketer account, read-only)
+                  ("services/marketer_custody_service.py", "marketers"),                # INTERMEDIARY_HOLDING_VIEW (marketer list, read-only)
+                  ("services/gold_position_service.py", "position"),                # MANAGEMENT_REVIEW + MARKET_TRIP_MANAGE + INTERMEDIARY_HOLDING_VIEW (read-only)
                   ("services/financial_account_service.py", "_read"),              # Cash: any view permission
                   ("services/supplier_payment_service.py", "payment_context"),      # SUPPLIER_MAKING_PAY (payment dialog)
                   ("services/supplier_payment_service.py", "payment_detail"),       # SUPPLIER_VIEW (payment document)

@@ -3,14 +3,14 @@
 Persistence only. Every write uses the caller's transaction and only INSERTs documents / movements (nothing here is ever updated or deleted). The two ledgers
 are signed and insert-only: a balance is the SUM of EVERY movement and a reversal adds an explicit compensation (the original stays counted). The gold ledger is
 ALWAYS 21K physical grams. No query here touches a supplier ledger (supplier_gold_movements / supplier_making_movements): the party is an identity reference only;
-the single bridge is a supplier gold settlement (SG, source HOLDING_MARKETER) that ties ONE marketer gold movement to ONE supplier gold movement."""
+the single bridge is a supplier gold settlement (SG, source HOLDING_MKT) that ties ONE marketer gold movement to ONE supplier gold movement."""
 import json
 
 from repositories.base_repository import BaseRepository
 from repositories.invoice_repository import _id
 
 SOURCE = "MARKETER_DOCUMENT"                 # the correction source type and the reference type of the shop-side cash / Scrap rows
-HOLDING_MARKETER = "HOLDING_MARKETER"        # the SG source kind (050 widened by 055)
+HOLDING_MKT = "HOLDING_MKT"        # the SG source kind (050 widened by 055)
 KARAT_VALUE = 21
 MAIN_SAFE = "MAIN_SAFE"
 
@@ -173,13 +173,13 @@ class MarketerCustodyRepository(BaseRepository):
     # ------------------------------------------------------------------ the supplier settlement (the ONE bridge)
     def insert_settlement_header(self, *, supplier_id, party_id, karat, target_karat, quantity, credited, analytical, difference, self_confirmed,
                                  settlement_date, reference, notes, key, digest, actor, now):
-        """The SG header of a settlement from the marketer account: source HOLDING_MARKETER, 21K delivered grams, no pool or lot (the database refuses one)."""
+        """The SG header of a settlement from the marketer account: source HOLDING_MKT, 21K delivered grams, no pool or lot (the database refuses one)."""
         settlement_id, _ = self._execute(
             """INSERT INTO supplier_gold_settlements (supplier_id, source_kind, delivered_karat_id, delivered_karat_value, target_karat_id, target_karat_value,
                delivered_weight_grams, credited_weight_grams, credited_analytical_grams, rounding_difference_grams, settlement_date, reference, notes,
                request_key, request_hash, performed_by_user_id, performed_by_employee_id, occurred_at, holding_party_id, holding_weight_grams,
                self_settlement_confirmed) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-            (_id(supplier_id), HOLDING_MARKETER, int(karat["id"]), int(karat["karat_value"]), int(target_karat["id"]), int(target_karat["karat_value"]),
+            (_id(supplier_id), HOLDING_MKT, int(karat["id"]), int(karat["karat_value"]), int(target_karat["id"]), int(target_karat["karat_value"]),
              quantity, credited, analytical, difference, settlement_date, reference or None, notes or None, key, digest, actor.user_id, actor.employee_id,
              now, _id(party_id), quantity, 1 if self_confirmed else 0))
         return int(settlement_id)
@@ -214,7 +214,7 @@ class MarketerCustodyRepository(BaseRepository):
                       g.occurred_at, u.display_name AS actor_name, c.id AS reversal_id, c.reason AS reversal_reason
                FROM supplier_gold_settlements g JOIN suppliers s ON s.id = g.supplier_id LEFT JOIN users u ON u.id = g.performed_by_user_id
                LEFT JOIN transaction_corrections c ON c.source_type = 'SUPPLIER_GOLD_SETTLEMENT' AND c.source_id = g.id AND c.correction_type = 'FULL_REVERSAL'
-               WHERE g.holding_party_id = %s AND g.source_kind = %s ORDER BY g.id DESC LIMIT %s""", (_id(party_id), HOLDING_MARKETER, int(limit)))
+               WHERE g.holding_party_id = %s AND g.source_kind = %s ORDER BY g.id DESC LIMIT %s""", (_id(party_id), HOLDING_MKT, int(limit)))
 
     def settlement_gold_movement(self, settlement_id):
         """The marketer gold movement of a settlement (its stored delivered grams)."""
