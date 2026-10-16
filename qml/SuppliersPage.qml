@@ -17,6 +17,7 @@ Item {
     readonly property var detail: vm ? vm.detail : ({})
     readonly property bool hasSelection: !!vm && vm.selectedSupplierId !== "" && !!detail && detail.id !== undefined
     property int tab: 0
+    readonly property var mvm: vm ? vm.marketer : null                    // 055: the marketer custody account (apart from the supplier account)
     readonly property bool goldTabVisible: page.detail.hasAccount !== false || (!!vm && vm.holdingsPanel.visible === true)
     property bool holdDetails: false          // the party's Details section (codes, history) is collapsed by default
     // which holding rows have their «المزيد» row open, keyed by source (kind + pool id): kept here, not in the row, so a refresh that rebuilds the rows does not collapse it
@@ -1238,6 +1239,130 @@ Item {
                             }
                         }
                                         }
+
+                                        // ---- marketer custody (055): the shop's CASH and 21K GOLD held in trust: apart from the supplier account, never combined with it
+                                        ColumnLayout {
+                                            id: marketerGroup
+                                            objectName: "marketerGroup"
+                                            visible: !!page.mvm && page.mvm.visible === true
+                                            Layout.fillWidth: true
+                                            spacing: 10
+                                            Card {
+                                                objectName: "marketerPanel"
+                                                Layout.fillHeight: false
+                                                title: "عهدة المسوقجي (أمانة للمحل)"
+                                                accent: theme.amber
+                                                Txt { objectName: "marketerIsolationNote"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                                                      wrapMode: Text.WordWrap; elide: Text.ElideNone; text: page.mvm ? (page.mvm.account.isolationNote || "") : "" }
+                                                RowLayout {
+                                                    Layout.fillWidth: true
+                                                    layoutDirection: Qt.RightToLeft
+                                                    spacing: 10
+                                                    Rectangle {
+                                                        Layout.preferredWidth: 1; Layout.fillWidth: true; implicitHeight: cashFigure.implicitHeight + 14
+                                                        radius: theme.radiusSmall; color: theme.panel; border.color: theme.border
+                                                        ColumnLayout {
+                                                            id: cashFigure
+                                                            anchors.fill: parent; anchors.margins: 8; spacing: 0
+                                                            Txt { Layout.fillWidth: true; text: "النقدية لدى المسوقجي"; color: theme.textSecondary; font.pixelSize: theme.fontTableHeader }
+                                                            Txt { objectName: "marketerCashValue"; Layout.fillWidth: true; font.bold: true; font.pixelSize: theme.fontSection
+                                                                  color: !!page.mvm && page.mvm.account.cashZero ? theme.textMuted : theme.amber
+                                                                  text: page.mvm ? (page.mvm.account.cashText || "") : ""; elide: Text.ElideNone }
+                                                        }
+                                                    }
+                                                    Rectangle {
+                                                        Layout.preferredWidth: 1; Layout.fillWidth: true; implicitHeight: goldFigure.implicitHeight + 14
+                                                        radius: theme.radiusSmall; color: theme.panel; border.color: theme.border
+                                                        ColumnLayout {
+                                                            id: goldFigure
+                                                            anchors.fill: parent; anchors.margins: 8; spacing: 0
+                                                            Txt { Layout.fillWidth: true; text: "ذهب لدى المسوقجي (وزنة عيار 21)"; color: theme.textSecondary; font.pixelSize: theme.fontTableHeader }
+                                                            Txt { objectName: "marketerGoldValue"; Layout.fillWidth: true; font.bold: true; font.pixelSize: theme.fontSection
+                                                                  color: !!page.mvm && page.mvm.account.goldZero ? theme.textMuted : theme.gold
+                                                                  text: page.mvm ? (page.mvm.account.goldText || "") : ""; elide: Text.ElideNone }
+                                                        }
+                                                    }
+                                                }
+                                                Flow {
+                                                    Layout.fillWidth: true
+                                                    layoutDirection: Qt.RightToLeft
+                                                    spacing: 8
+                                                    visible: !!page.mvm && page.mvm.canManage
+                                                    Btn { objectName: "marketerCashHandoverButton"; text: "تسليم نقدية"; enabled: !!page.mvm && !page.mvm.writing
+                                                          onClicked: marketerDialog.openFor("CASH_HANDOVER") }
+                                                    Btn { objectName: "marketerCashReturnButton"; text: "استرجاع نقدية"; enabled: !!page.mvm && !page.mvm.writing
+                                                          onClicked: marketerDialog.openFor("CASH_RETURN") }
+                                                    Btn { objectName: "marketerPurchaseButton"; text: "شراء ذهب نقدي"; enabled: !!page.mvm && !page.mvm.writing
+                                                          onClicked: marketerDialog.openFor("PURCHASE") }
+                                                    Btn { objectName: "marketerSaleButton"; text: "بيع ذهب"; enabled: !!page.mvm && !page.mvm.writing
+                                                          onClicked: marketerDialog.openFor("SALE") }
+                                                    Btn { objectName: "marketerGoldReturnButton"; text: "استرجاع ذهب 21 للمحل"; enabled: !!page.mvm && !page.mvm.writing
+                                                          onClicked: marketerDialog.openFor("GOLD_RETURN") }
+                                                    Btn { objectName: "marketerSettleButton"; text: "تسليم ذهب لمورد"; visible: !!page.mvm && page.mvm.canSettle
+                                                          enabled: !!page.mvm && !page.mvm.writing; onClicked: marketerDialog.openFor("SETTLE") }
+                                                }
+                                                Txt { objectName: "marketerMessage"; Layout.fillWidth: true; visible: !!page.mvm && page.mvm.message !== ""; color: theme.green
+                                                      wrapMode: Text.WordWrap; elide: Text.ElideNone; text: page.mvm ? page.mvm.message : "" }
+                                                Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                                                      visible: (page.mvm ? (page.mvm.account.documents || []) : []).length > 0; text: "سجل مستندات عهدة المسوقجي" }
+                                                Repeater {
+                                                    model: page.mvm ? (page.mvm.account.documents || []) : []
+                                                    delegate: Rectangle {
+                                                        id: marketerDocRow
+                                                        required property var modelData
+                                                        objectName: "marketerDocumentRow"
+                                                        Layout.fillWidth: true
+                                                        implicitHeight: marketerDocLine.implicitHeight + 12
+                                                        radius: theme.radiusSmall; color: theme.panel; border.color: theme.border
+                                                        opacity: modelData.reversed ? 0.6 : 1
+                                                        RowLayout {
+                                                            id: marketerDocLine
+                                                            anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                                            anchors.leftMargin: 10; anchors.rightMargin: 12
+                                                            layoutDirection: Qt.RightToLeft
+                                                            spacing: 8
+                                                            ColumnLayout {
+                                                                Layout.fillWidth: true; spacing: 1
+                                                                Txt { Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; font.bold: true
+                                                                      text: marketerDocRow.modelData.kindText + "  " + page.ltr(marketerDocRow.modelData.code) }
+                                                                Txt { objectName: "marketerDocumentText"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                                                      color: theme.textSecondary; text: marketerDocRow.modelData.text }
+                                                                Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                                                                      text: marketerDocRow.modelData.date + (marketerDocRow.modelData.state !== "" ? " • " + marketerDocRow.modelData.state : "") }
+                                                            }
+                                                            Btn { objectName: "marketerReverseButton"; visible: marketerDocRow.modelData.canReverse === true; text: "عكس"; accent: theme.red
+                                                                  onClicked: marketerReverseDialog.openFor(marketerDocRow.modelData, false) }
+                                                        }
+                                                    }
+                                                }
+                                                Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                                                      visible: (page.mvm ? (page.mvm.account.settlements || []) : []).length > 0; text: "تسويات الذهب للموردين من عهدة المسوقجي" }
+                                                Repeater {
+                                                    model: page.mvm ? (page.mvm.account.settlements || []) : []
+                                                    delegate: Rectangle {
+                                                        id: marketerSettlementRow
+                                                        required property var modelData
+                                                        objectName: "marketerSettlementRow"
+                                                        Layout.fillWidth: true
+                                                        implicitHeight: marketerSettlementLine.implicitHeight + 12
+                                                        radius: theme.radiusSmall; color: theme.panel; border.color: theme.border
+                                                        opacity: modelData.reversed ? 0.6 : 1
+                                                        RowLayout {
+                                                            id: marketerSettlementLine
+                                                            anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                                            anchors.leftMargin: 10; anchors.rightMargin: 12
+                                                            layoutDirection: Qt.RightToLeft
+                                                            spacing: 8
+                                                            Txt { Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textSecondary
+                                                                  text: page.ltr(marketerSettlementRow.modelData.code) + " — " + marketerSettlementRow.modelData.text
+                                                                        + (marketerSettlementRow.modelData.state !== "" ? " • " + marketerSettlementRow.modelData.state : "") }
+                                                            Btn { objectName: "marketerReverseSettlementButton"; visible: marketerSettlementRow.modelData.canReverse === true; text: "عكس"
+                                                                  accent: theme.red; onClicked: marketerReverseDialog.openFor(marketerSettlementRow.modelData, true) }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
 
                                     // ---- making ledger
@@ -2363,6 +2488,312 @@ Item {
                 }
                 Btn { text: "إلغاء"; accent: theme.textSecondary; enabled: !!page.vm && !page.vm.settlementReversing
                       onClicked: reverseSettlementDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+
+    // ---------------------------------------------------------------- marketer custody (055): one dialog for every action of the cycle
+    // The cash is the shop's money held in trust and the gold is 21K only; nothing here touches the supplier ledger except the explicit settlement.
+    Popup {
+        id: marketerDialog
+        objectName: "marketerDialog"
+        property string mode: "CASH_HANDOVER"
+        property string requestKey: ""
+        property var lineRows: []
+        readonly property bool isCash: mode === "CASH_HANDOVER" || mode === "CASH_RETURN"
+        readonly property bool hasWeight: mode === "GOLD_RETURN" || mode === "SALE" || mode === "SETTLE"
+        readonly property var priceModes: [{ mode: "TOTAL", text: "إجمالي الصفقة (ج)" }, { mode: "PER_GRAM", text: "سعر الجرام (ج)" }]
+        readonly property var counterpartyChoices: [{ id: "", text: mode === "SALE" ? "مشترٍ غير مسجل (اكتب اسمه)" : "بائع غير مسجل (اكتب اسمه)" }]
+                                                    .concat(page.mvm ? (page.mvm.account.parties || []) : [])
+        readonly property var supplierChoices: [{ id: "", text: "اختر المورد المستلم", self: false }].concat(page.mvm ? (page.mvm.account.recipients || []) : [])
+        readonly property string counterpartyId: counterpartyChoices[marketerCounterparty.currentIndex] ? counterpartyChoices[marketerCounterparty.currentIndex].id : ""
+        readonly property string supplierId: supplierChoices[marketerSupplier.currentIndex] ? supplierChoices[marketerSupplier.currentIndex].id : ""
+        readonly property string priceMode: priceModes[marketerPriceMode.currentIndex].mode
+        readonly property bool needsConfirmation: !!page.mvm && page.mvm.errorCode === "PRICE_DEVIATION"
+        readonly property var preview: {
+            var known = !!page.mvm && page.mvm.visible === true
+            if (!known) return ({})
+            if (mode === "SALE") return page.mvm.previewSale(marketerWeight.text, priceMode, marketerPrice.text)
+            if (mode === "PURCHASE") return page.mvm.previewPurchase(lineRows)
+            if (mode === "SETTLE") return page.mvm.previewSettlement(supplierId, marketerWeight.text)
+            return ({})
+        }
+        readonly property string title: mode === "CASH_HANDOVER" ? "تسليم نقدية من الخزنة الرئيسية للمسوقجي"
+                                        : mode === "CASH_RETURN" ? "استرجاع نقدية من المسوقجي إلى الخزنة الرئيسية"
+                                        : mode === "GOLD_RETURN" ? "استرجاع ذهب عيار 21 من المسوقجي إلى كسر المحل"
+                                        : mode === "SALE" ? "بيع ذهب المسوقجي (عيار 21)"
+                                        : mode === "PURCHASE" ? "شراء ذهب نقدي بنقدية المسوقجي" : "تسليم ذهب المسوقجي لمورد (تسوية)"
+        function collect() {
+            var rows = []
+            for (var i = 0; i < marketerLines.count; ++i) rows.push({ weight: marketerLines.get(i).weight, price: marketerLines.get(i).price })
+            return rows
+        }
+        function refreshLines() { lineRows = collect() }
+        function openFor(kind) {
+            if (!page.mvm) return
+            mode = kind
+            requestKey = page.mvm.newRequestKey()
+            marketerAmount.text = ""
+            marketerWeight.text = ""
+            marketerPrice.text = ""
+            marketerPriceMode.currentIndex = 0
+            marketerCounterparty.currentIndex = 0
+            marketerCounterpartyName.text = ""
+            marketerSupplier.currentIndex = 0
+            marketerSelfConfirm.checked = false
+            marketerDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            marketerReference.text = ""
+            marketerNotes.text = ""
+            marketerLines.clear()
+            marketerLines.append({ weight: "", price: "" })
+            refreshLines()
+            page.mvm.clearMessage()
+            page.mvm.loadReferencePrices()
+            open()
+        }
+        function complete() {
+            if (marketerDate.text.trim().length === 0) return false
+            if (isCash) return marketerAmount.text.trim().length > 0
+            if (mode === "GOLD_RETURN") return marketerWeight.text.trim().length > 0
+            if (mode === "SALE") return marketerWeight.text.trim().length > 0 && marketerPrice.text.trim().length > 0
+                                         && (counterpartyId !== "" || marketerCounterpartyName.text.trim().length > 0)
+            if (mode === "SETTLE") return marketerWeight.text.trim().length > 0 && supplierId !== ""
+                                          && (!(supplierChoices[marketerSupplier.currentIndex] || {}).self || marketerSelfConfirm.checked)
+            if (counterpartyId === "" && marketerCounterpartyName.text.trim().length === 0) return false
+            for (var i = 0; i < marketerLines.count; ++i)
+                if (marketerLines.get(i).weight.trim().length > 0 && marketerLines.get(i).price.trim().length > 0) return true
+            return false
+        }
+        function submit(acknowledged) {
+            var key = requestKey, date = marketerDate.text, ref = marketerReference.text, notes = marketerNotes.text
+            if (mode === "CASH_HANDOVER") page.mvm.cashHandover(marketerAmount.text, date, ref, notes, key)
+            else if (mode === "CASH_RETURN") page.mvm.cashReturn(marketerAmount.text, date, ref, notes, key)
+            else if (mode === "GOLD_RETURN") page.mvm.goldReturn(marketerWeight.text, date, ref, notes, key)
+            else if (mode === "SALE") page.mvm.sell(marketerWeight.text, priceMode, marketerPrice.text, counterpartyId, marketerCounterpartyName.text, date, ref, notes, key, acknowledged)
+            else if (mode === "PURCHASE") page.mvm.purchase(collect(), counterpartyId, marketerCounterpartyName.text, date, ref, notes, key, acknowledged)
+            else page.mvm.settle(supplierId, marketerWeight.text, marketerSelfConfirm.checked, date, ref, notes, key)
+        }
+        Connections {
+            target: page.mvm
+            function onPosted(code) { marketerDialog.close() }
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(600, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 680, 680)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.amber }
+        ListModel { id: marketerLines }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { objectName: "marketerDialogTitle"; Layout.fillWidth: true; color: theme.amber; font.bold: true; font.pixelSize: theme.fontSection
+                  wrapMode: Text.WordWrap; elide: Text.ElideNone; text: marketerDialog.title }
+            Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "عهدة المسوقجي أمانة للمحل: وزنة عيار 21 فقط، منفصلة تمامًا عن حساب المورد." }
+            Flickable {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentHeight: marketerForm.implicitHeight
+                clip: true
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: marketerForm
+                    width: parent.width - 12
+                    spacing: 6
+                    Txt { Layout.fillWidth: true; visible: marketerDialog.isCash; text: "المبلغ (ج) *" }
+                    Field { id: marketerAmount; objectName: "marketerAmountField"; Layout.fillWidth: true; visible: marketerDialog.isCash; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+                    Txt { Layout.fillWidth: true; visible: marketerDialog.hasWeight; text: "الوزن بالجرام (وزنة عيار 21) *" }
+                    Field { id: marketerWeight; objectName: "marketerWeightField"; Layout.fillWidth: true; visible: marketerDialog.hasWeight; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: marketerDialog.mode === "SALE"
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "طريقة التسعير *" }
+                            Combo { id: marketerPriceMode; objectName: "marketerPriceModeCombo"; Layout.fillWidth: true; model: marketerDialog.priceModes; textRole: "text" }
+                        }
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "السعر المتفق عليه *" }
+                            Field { id: marketerPrice; objectName: "marketerPriceField"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+                        }
+                    }
+                    Txt { Layout.fillWidth: true; visible: marketerDialog.mode === "SALE" || marketerDialog.mode === "PURCHASE"
+                          text: marketerDialog.mode === "SALE" ? "المشتري *" : "البائع *" }
+                    Combo { id: marketerCounterparty; objectName: "marketerCounterpartyCombo"; Layout.fillWidth: true
+                            visible: marketerDialog.mode === "SALE" || marketerDialog.mode === "PURCHASE"; model: marketerDialog.counterpartyChoices; textRole: "text" }
+                    Txt { Layout.fillWidth: true; visible: (marketerDialog.mode === "SALE" || marketerDialog.mode === "PURCHASE") && marketerDialog.counterpartyId === ""
+                          text: marketerDialog.mode === "SALE" ? "اسم المشتري *" : "اسم البائع *" }
+                    Field { id: marketerCounterpartyName; objectName: "marketerCounterpartyNameField"; Layout.fillWidth: true
+                            visible: (marketerDialog.mode === "SALE" || marketerDialog.mode === "PURCHASE") && marketerDialog.counterpartyId === "" }
+                    Txt { Layout.fillWidth: true; visible: marketerDialog.mode === "SETTLE"; text: "المورد المستلم *" }
+                    Combo { id: marketerSupplier; objectName: "marketerSupplierCombo"; Layout.fillWidth: true; visible: marketerDialog.mode === "SETTLE"
+                            model: marketerDialog.supplierChoices; textRole: "text" }
+                    CheckBox {
+                        id: marketerSelfConfirm
+                        objectName: "marketerSelfConfirmBox"
+                        Layout.fillWidth: true
+                        visible: marketerDialog.mode === "SETTLE" && !!(marketerDialog.supplierChoices[marketerSupplier.currentIndex] || {}).self
+                        text: "أؤكد أن المسوقجي هو نفسه المورد المستلم، وأن ذهب المحل لديه (أمانة) ينتقل بهذه التسوية إلى حسابه كمورد."
+                    }
+                    Txt { Layout.fillWidth: true; visible: marketerDialog.mode === "PURCHASE"; color: theme.gold; font.bold: true
+                          text: "الذهب المشترى (وزنة عيار 21): الوزن الفعلي وثمن السطر" }
+                    Repeater {
+                        model: marketerDialog.mode === "PURCHASE" ? marketerLines : null
+                        delegate: RowLayout {
+                            Layout.fillWidth: true
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 6
+                            Field {
+                                objectName: "marketerLineWeight_" + index
+                                Layout.fillWidth: true
+                                placeholderText: "الوزن (جرام)"
+                                text: weight
+                                inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                onTextEdited: { marketerLines.setProperty(index, "weight", text); marketerDialog.refreshLines() }
+                            }
+                            Field {
+                                objectName: "marketerLinePrice_" + index
+                                Layout.fillWidth: true
+                                placeholderText: "الثمن (ج)"
+                                text: price
+                                inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                onTextEdited: { marketerLines.setProperty(index, "price", text); marketerDialog.refreshLines() }
+                            }
+                        }
+                    }
+                    Btn { objectName: "marketerAddLineButton"; visible: marketerDialog.mode === "PURCHASE"; text: "＋ سطر ذهب آخر"; accent: theme.textSecondary
+                          enabled: marketerLines.count < 8
+                          onClicked: { marketerLines.append({ weight: "", price: "" }); marketerDialog.refreshLines() } }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        visible: !marketerDialog.isCash && marketerDialog.mode !== "GOLD_RETURN"
+                        implicitHeight: marketerPreview.implicitHeight + 14
+                        radius: theme.radiusSmall
+                        color: theme.bgTertiary
+                        border.color: marketerDialog.preview.warning ? theme.amber : theme.border
+                        ColumnLayout {
+                            id: marketerPreview
+                            anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                            anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.topMargin: 7
+                            spacing: 3
+                            Txt { objectName: "marketerAvailable"; Layout.fillWidth: true; visible: !!marketerDialog.preview.availableText
+                                  text: marketerDialog.preview.availableText || ""; color: theme.amber; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "marketerTotal"; Layout.fillWidth: true; visible: !!marketerDialog.preview.totalText
+                                  text: "إجمالي الصفقة: " + (marketerDialog.preview.totalText || "") + (marketerDialog.preview.perGramText ? " • سعر الجرام: " + marketerDialog.preview.perGramText : "")
+                                  color: theme.gold; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "marketerCredited"; Layout.fillWidth: true; visible: !!marketerDialog.preview.creditedText
+                                  text: "يُحتسب للمورد: " + (marketerDialog.preview.creditedText || "") + " (" + (marketerDialog.preview.formulaText || "") + ")"
+                                  color: theme.gold; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "marketerReference"; Layout.fillWidth: true; visible: !!marketerDialog.preview.referenceText
+                                  text: (marketerDialog.preview.referenceText || "") + (marketerDialog.preview.deviationText ? " • الفرق " + marketerDialog.preview.deviationText : "")
+                                  color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "marketerWarning"; Layout.fillWidth: true; visible: marketerDialog.preview.warning === true
+                                  text: marketerDialog.preview.warningText || ""; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "marketerPreviewError"; Layout.fillWidth: true; visible: !!marketerDialog.preview.error
+                                  text: marketerDialog.preview.error || ""; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Item { Layout.preferredHeight: 2 }
+                        }
+                    }
+                    Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
+                    Field { id: marketerDate; objectName: "marketerDateField"; Layout.fillWidth: true }
+                    Txt { Layout.fillWidth: true; text: "المرجع (اختياري)" }
+                    Field { id: marketerReference; objectName: "marketerReferenceField"; Layout.fillWidth: true }
+                    Txt { Layout.fillWidth: true; text: "ملاحظات" }
+                    Field { id: marketerNotes; objectName: "marketerNotesField"; Layout.fillWidth: true }
+                }
+            }
+            Txt { objectName: "marketerError"; Layout.fillWidth: true; visible: !!page.mvm && page.mvm.errorMessage !== ""
+                  text: page.mvm ? page.mvm.errorMessage : ""; color: marketerDialog.needsConfirmation ? theme.amber : theme.red
+                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmMarketerButton"
+                    visible: !marketerDialog.needsConfirmation
+                    text: !!page.mvm && page.mvm.writing ? "جارٍ الحفظ…" : "تسجيل"
+                    primary: true
+                    enabled: marketerDialog.complete() && !!page.mvm && !page.mvm.writing && !marketerDialog.preview.error
+                    onClicked: marketerDialog.submit(false)
+                }
+                Btn {
+                    objectName: "acknowledgeMarketerPriceButton"
+                    visible: marketerDialog.needsConfirmation
+                    text: !!page.mvm && page.mvm.writing ? "جارٍ الحفظ…" : "أؤكد السعر وأسجّل"
+                    primary: true
+                    accent: theme.amber
+                    enabled: !!page.mvm && !page.mvm.writing
+                    onClicked: marketerDialog.submit(true)
+                }
+                Btn { objectName: "cancelMarketerButton"; text: "إلغاء"; accent: theme.textSecondary
+                      enabled: !!page.mvm && !page.mvm.writing; onClicked: marketerDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- marketer custody: reverse a document or a settlement (OWNER only)
+    Popup {
+        id: marketerReverseDialog
+        objectName: "marketerReverseDialog"
+        property string targetId: ""
+        property bool isSettlement: false
+        property bool shopSide: false
+        property string detailText: ""
+        function openFor(row, settlement) {
+            targetId = row.id
+            isSettlement = settlement
+            shopSide = row.shopSide === true
+            detailText = (row.kindText ? row.kindText + " " : "") + row.code + " — " + row.text
+            marketerReverseReason.text = ""
+            if (page.mvm) page.mvm.clearMessage()
+            open()
+        }
+        Connections {
+            target: page.mvm
+            function onReversedDone() { marketerReverseDialog.close() }
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(500, page.width - 24)
+        modal: true
+        padding: 16
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.red }
+        contentItem: ColumnLayout {
+            spacing: 8
+            Txt { Layout.fillWidth: true; text: marketerReverseDialog.isSettlement ? "عكس تسوية ذهب من عهدة المسوقجي" : "عكس مستند عهدة المسوقجي"
+                  font.bold: true; font.pixelSize: theme.fontSection }
+            Txt { Layout.fillWidth: true; text: marketerReverseDialog.detailText; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            Txt { Layout.fillWidth: true; color: theme.amber; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "يُسجَّل عكس صريح بنفس الأرقام المخزّنة (يبقى المستند الأصلي كما هو). يُرفض العكس إذا كان رصيد النقدية أو الذهب لا يكفي بعده؛ اعكس ما يعتمد عليه أولًا." }
+            Txt { Layout.fillWidth: true; text: "سبب العكس *" }
+            Field { id: marketerReverseReason; objectName: "marketerReverseReason"; Layout.fillWidth: true }
+            Txt { objectName: "marketerReverseError"; Layout.fillWidth: true; visible: !!page.mvm && page.mvm.errorMessage !== ""
+                  text: page.mvm ? page.mvm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmMarketerReverseButton"
+                    text: !!page.mvm && page.mvm.writing ? "جارٍ العكس…" : "تأكيد العكس"
+                    accent: theme.red
+                    primary: true
+                    enabled: marketerReverseReason.text.trim().length > 0 && !!page.mvm && !page.mvm.writing
+                    onClicked: marketerReverseDialog.isSettlement ? page.mvm.reverseSettlement(marketerReverseDialog.targetId, marketerReverseReason.text)
+                                                                   : page.mvm.reverseDocument(marketerReverseDialog.targetId, marketerReverseReason.text, marketerReverseDialog.shopSide)
+                }
+                Btn { objectName: "cancelMarketerReverseButton"; text: "إلغاء"; accent: theme.textSecondary; enabled: !!page.mvm && !page.mvm.writing
+                      onClicked: marketerReverseDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }

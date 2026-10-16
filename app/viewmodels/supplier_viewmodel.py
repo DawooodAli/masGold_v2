@@ -162,6 +162,10 @@ class SupplierViewModel(QObject):
         self._suppliers, self._detail = [], {}
         self._selected, self._search, self._active_only = "", "", False
         self._role = ""                                  # the list filter: "" (all) / SUPPLIER / INTERMEDIARY
+        from app.viewmodels.marketer_custody_viewmodel import MarketerCustodyViewModel
+        self._marketer = MarketerCustodyViewModel(session, parent=self)         # 055: the marketer's cash / 21K gold in trust, apart from the supplier account
+        self._marketer.changed.connect(self.changed)
+        self._marketer.supplierChanged.connect(self._reload_selected)
         self._error, self._message, self._done_text = "", "", ""
 
     # ------------------------------------------------------------ plumbing
@@ -227,9 +231,18 @@ class SupplierViewModel(QObject):
         getattr(self, f"_on_{operation}")(result, error)
         self.changed.emit()
 
+    def _reload_selected(self):
+        if self._selected:
+            self._load_detail()
+
+    @Property(QObject, constant=True)
+    def marketer(self):
+        return self._marketer
+
     @Slot()
     def shutdown(self):
         self._shutdown = True
+        self._marketer.shutdown()
         for worker in list(self._workers):
             worker.wait(5000)
 
@@ -273,6 +286,7 @@ class SupplierViewModel(QObject):
     def selectSupplier(self, supplier_id):
         self._selected = str(supplier_id or "")
         self._detail = {}
+        self._marketer.clear()
         self.changed.emit()
         if self._selected:
             self._load_detail()
@@ -289,6 +303,7 @@ class SupplierViewModel(QObject):
             return
         if result["supplier"]["id"] == self._selected:
             self._detail, self._error = result, ""
+            self._marketer.consider(result["supplier"])
 
     @Slot()
     def clearMessage(self):
