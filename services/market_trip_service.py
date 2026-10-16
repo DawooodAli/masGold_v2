@@ -1409,7 +1409,7 @@ class MarketTripService:
         registry = self._vendor_registry() if self._vendor_registry is not None else None
         if registry is None:
             from services.supplier_service import SupplierService
-            registry = SupplierService(self._session)
+            registry = SupplierService(self._session, transaction_factory=self._transaction)       # the SAME database as this service
         party_id = registry.create_supplier(label, karat_id=karat_id)
         return {"id": str(party_id), "name": label}
 
