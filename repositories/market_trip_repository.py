@@ -14,6 +14,7 @@ ISSUE, RETURN, MELT, LOT_RETURN, LOT_ISSUE, HEAT = "ISSUE", "RETURN", "MELT", "L
 SUPPLIER_PAY = "SUPPLIER_PAY"          # a supplier making payment made with custody cash (043)
 GOLD_SETTLE = "GOLD_SETTLE"            # custody gold delivered to a supplier against its gold account (046, LOGO only in this slice)
 LOT_SETTLE, LOT_SETTLE_MOVEMENT = "LOT_SETTLE", "SUPPLIER_SETTLE"
+GOLD_BUY = "GOLD_BUY"          # 054: cash spent in custody on scrap bought in the market
 GOLD_SALE, SALE_MOVEMENT = "GOLD_SALE", "SALE_OUT"      # 053: custody gold sold for cash (aggregate line or a whole lot); the lot ledger movement
 LOT_HOLD, HOLD_RETURN = "LOT_HOLD", "HOLD_RETURN"          # 048: a whole lot handed to / taken back from an intermediary (holding links)
 MELT_DESIGNATION, LOGO_DESIGNATION, UNCLASSIFIED = "MELT", "LOGO", "UNCLASSIFIED"     # the owner's decision on an issued gold line
@@ -445,7 +446,13 @@ class MarketTripRepository(BaseRepository):
             FROM market_trip_entries e JOIN market_trip_gold_sales s ON s.entry_id = e.id
             WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed} FOR SHARE OF e, s
             """, (_id(trip_id), int(exclude_entry_id or 0)))
-        return row["issued"], row["returned"], paid["paid"], sold["proceeds"]
+        bought = self._fetch_one(
+            f"""
+            SELECT COALESCE(SUM(b.total_price), 0) AS spent
+            FROM market_trip_entries e JOIN market_trip_gold_buys b ON b.entry_id = e.id
+            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed} FOR SHARE OF e, b
+            """, (_id(trip_id), int(exclude_entry_id or 0)))
+        return row["issued"], row["returned"], paid["paid"], sold["proceeds"], bought["spent"]
 
     # ------------------------------------------------------------------ supplier payments from custody (043)
     def suppliers(self):
@@ -476,6 +483,30 @@ class MarketTripRepository(BaseRepository):
             "SELECT l.entry_id, l.supplier_id, l.amount, e.trip_id, e.entry_no, e.request_hash, e.performed_by_user_id "
             "FROM market_trip_supplier_payments l JOIN market_trip_entries e ON e.id = l.entry_id WHERE l.payment_id = %s",
             (_id(payment_id),))
+
+    # ------------------------------------------------------------------ cash gold purchase (054)
+    def insert_gold_buy(self, *, entry_id, vendor_kind, vendor_party_id, vendor_name, vendor_key, total, reference_total, deviation, acknowledged,
+                        buy_date, reference):
+        """The immutable purchase document: the vendor identity (mandatory), the authoritative total and the price-warning evidence."""
+        self._execute(
+            """INSERT INTO market_trip_gold_buys (entry_id, vendor_kind, vendor_party_id, vendor_name, vendor_name_key, total_price, reference_total,
+               deviation_percent, price_warning_acknowledged, buy_date, reference) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (_id(entry_id), vendor_kind, vendor_party_id, vendor_name, vendor_key, total, reference_total, deviation, 1 if acknowledged else 0,
+             buy_date, reference or None))
+
+    def insert_gold_buy_line(self, *, entry_id, line_no, karat_id, designation, weight, price):
+        self._execute("INSERT INTO market_trip_gold_buy_lines (entry_id, line_no, karat_id, designation, weight_grams, line_price) "
+                      "VALUES (%s, %s, %s, %s, %s, %s)", (_id(entry_id), int(line_no), int(karat_id), designation, weight, price))
+
+    def entry_gold_buy(self, entry_id):
+        """The purchase a GOLD_BUY entry made (None for any other entry): the document and its lines."""
+        head = self._fetch_one("SELECT * FROM market_trip_gold_buys WHERE entry_id = %s", (_id(entry_id),))
+        if head is None:
+            return None
+        head["lines"] = self._fetch_all(
+            "SELECT l.line_no, l.karat_id, k.karat_value, l.designation, l.weight_grams, l.line_price FROM market_trip_gold_buy_lines l "
+            "JOIN karats k ON k.id = l.karat_id WHERE l.entry_id = %s ORDER BY l.line_no", (_id(entry_id),))
+        return head
 
     # ------------------------------------------------------------------ sale of custody gold (053)
     def buyers(self):
@@ -592,6 +623,13 @@ class MarketTripRepository(BaseRepository):
             WHERE e.trip_id = %s AND e.id <> %s AND s.source_kind = 'CUSTODY_GOLD' AND {not_reversed}
             GROUP BY s.karat_id, k.karat_value, s.designation FOR SHARE OF e, s
             """, (_id(trip_id), int(exclude_entry_id or 0)))
+        bought = self._fetch_all(
+            f"""
+            SELECT l.karat_id, k.karat_value, l.designation, COALESCE(SUM(l.weight_grams), 0) AS purchased
+            FROM market_trip_entries e JOIN market_trip_gold_buy_lines l ON l.entry_id = e.id JOIN karats k ON k.id = l.karat_id
+            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}
+            GROUP BY l.karat_id, k.karat_value, l.designation FOR SHARE OF e, l
+            """, (_id(trip_id), int(exclude_entry_id or 0)))
         rows = {(int(r["karat_id"]), r["designation"]): {**r, "melted": 0, "heat_delta": 0, "supplier_settled": 0} for r in legs}
         for h in held:
             key = (int(h["karat_id"]), h["designation"])
@@ -618,6 +656,11 @@ class MarketTripRepository(BaseRepository):
             row = rows.setdefault(key, {"karat_id": s["karat_id"], "karat_value": s["karat_value"], "designation": s["designation"],
                                         "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0, "supplier_settled": 0})
             row["sold"] = s["sold"]
+        for b in bought:                                                         # 054: bought for cash (scrap lines of GOLD_BUY entries)
+            key = (int(b["karat_id"]), b["designation"])
+            row = rows.setdefault(key, {"karat_id": b["karat_id"], "karat_value": b["karat_value"], "designation": b["designation"],
+                                        "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0, "supplier_settled": 0})
+            row["purchased"] = b["purchased"]
         order = {MELT_DESIGNATION: 0, LOGO_DESIGNATION: 1, UNCLASSIFIED: 2}
         return sorted(rows.values(), key=lambda r: (-int(r["karat_value"]), order[r["designation"]]))
 
@@ -648,6 +691,7 @@ class MarketTripRepository(BaseRepository):
             row["supplier_payment"] = self.entry_supplier_payment(row["id"])
             row["gold_settlement"] = self.entry_gold_settlement(row["id"])
             row["gold_sale"] = self.entry_gold_sale(row["id"])
+            row["gold_buy"] = self.entry_gold_buy(row["id"])
             row["lot_settlement"] = self.entry_lot_settlement(row["id"])
             row["holding"] = self.entry_holding(row["id"])
             row["logo_holding"] = self.entry_logo_holding(row["id"])

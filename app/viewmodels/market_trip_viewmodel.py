@@ -25,7 +25,7 @@ GOLD_SETTLE_REVERSAL_NOTE = ("عكس تسوية الذهب يسجّل أن ال�
 PAYMENT_REVERSAL_NOTE = ("عكس دفع المصنعيات يسجّل أن المبلغ عاد فعلًا إلى عهدة السوق (بالمبلغ المخزّن في الدفعة) ويعيد مستحقات المورد بنفس المبلغ. "
                          "لا يُعاد المبلغ تلقائيًا إلى الخزنة الرئيسية: سجّل «تسجيل رجوع» من العهدة عند إرجاعه فعلًا.")
 KIND_TEXT = {"ISSUE": "إخراج عهدة", "RETURN": "رجوع من العهدة", "MELT": "سبك", "LOT_RETURN": "رجوع ناتج السبك", "LOT_ISSUE": "إخراج سبكة من المحل",
-             "GOLD_SALE": "بيع ذهب من العهدة", "HEAT": "حمّية اللوجو", "SUPPLIER_PAY": "دفع مصنعيات من العهدة", "GOLD_SETTLE": "تسوية ذهب من العهدة", "LOT_SETTLE": "تسوية سبكة من العهدة",
+             "GOLD_BUY": "شراء ذهب نقدي", "GOLD_SALE": "بيع ذهب من العهدة", "HEAT": "حمّية اللوجو", "SUPPLIER_PAY": "دفع مصنعيات من العهدة", "GOLD_SETTLE": "تسوية ذهب من العهدة", "LOT_SETTLE": "تسوية سبكة من العهدة",
              "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي", "LOGO_HOLD": "تسليم لوجو لمسوقجي", "HOLD_BACK": "رجوع لوجو من مسوقجي"}
 HOLD_REVERSE_NOTE = ("عكس التسليم يعيد الشحنة الأصلية كاملة إلى هذه العهدة ويسجّل حركة تعويض بالوزن المخزّن في ذهب المحل لدى المسوقجي؛ "
                      "تبقى حركة التسليم الأصلية في السجل. لا نقدية ولا كسر ولا مورد.")
@@ -63,6 +63,7 @@ class MarketTripViewModel(QObject):
     changed = Signal()
     entryPosted = Signal(str)            # the entry code: the entry dialog can close
     actionDone = Signal(str)             # close / reopen / reversal finished (the dialogs can close)
+    vendorRegistered = Signal(str)       # a typed vendor was registered as a new party: the purchase dialog selects it
     supplierPaymentChanged = Signal()    # a supplier payment OR gold settlement from custody was posted or reversed: the supplier views reload from the database
     custodyChanged = Signal()            # cash / Scrap really moved: every balance view reloads from the database
 
@@ -226,7 +227,7 @@ class MarketTripViewModel(QObject):
             self.supplierPaymentChanged.emit()
         self._reversing_payment = False
         if self._operation in ("issue", "create", "return", "melt", "lotreturn", "lotissue", "heat", "paysupplier", "goldsettle", "lotsettle", "lothold", "logohold",
-                               "goldsale"):
+                               "goldsale", "goldbuy"):
             self.entryPosted.emit(result["code"])
         else:
             self.actionDone.emit(self._operation)
@@ -410,6 +411,63 @@ class MarketTripViewModel(QObject):
                 "referenceText": "" if reference_total is None else f"المرجع (سعر شراء المحل): {money(reference_total)}",
                 "deviationText": "" if deviation is None else f"{number(deviation, 2, signed=True)}%", "warning": warned,
                 "warningText": ("السعر المتفق عليه بعيد عن سعر شراء المحل المرجعي بنسبة " + number(abs(deviation), 2) + "%: ستُطلب منك الموافقة عليه.") if warned else ""}
+
+    @staticmethod
+    def _buy_lines(lines):
+        return [{"karat_id": str(line.get("karatId", "")), "designation": str(line.get("designation", "")), "weight": str(line.get("weight", "")),
+                 "price": str(line.get("price", ""))} for line in (lines or [])]
+
+    @Slot(str, "QVariantList", str, str, str, str, str, str, bool)
+    def buyGold(self, trip_id, lines, vendor_party_id, vendor_name, buy_date, reference, notes, request_key, acknowledge_price):
+        """Buy scrap gold with custody cash (شراء ذهب نقدي). Only ids and typed text are sent: the service derives the available cash, the total,
+        the reference deviation, re-checks every right and posts atomically. The vendor is MANDATORY. No supplier, Scrap or bank movement exists."""
+        rows = self._buy_lines(lines)
+        self._write("goldbuy", "تم تسجيل شراء الذهب النقدي", lambda s, a: s.buy_gold(
+            trip_id, rows, vendor_party_id, vendor_name, buy_date, reference, notes, request_key, acknowledge_price, _expected_actor=a), False)
+
+    @Slot(str, str)
+    def registerVendor(self, name, karat_id):
+        """Register the typed vendor as a NEW ACTIVE party (a supplier with the dedicated karat the owner names); the dialog then selects it."""
+        service = self._service_instance()
+        self._error = self._message = ""
+        self._start("vendor", lambda _expected_actor: service.register_vendor(name, karat_id, _expected_actor=_expected_actor))
+        self.changed.emit()
+
+    def _on_vendor(self, result, error):
+        if error:
+            self._error = error
+            return
+        self._message = f"تم تسجيل {result['name']} طرفًا جديدًا"
+        self.refresh()
+        self.vendorRegistered.emit(result["id"])
+
+    @Slot("QVariantList", result="QVariantMap")
+    def previewBuy(self, lines):
+        """The total, the available cash and the reference deviation BEFORE submitting, from the service's own functions on the loaded context
+        (never QML arithmetic, no database read). The service recomputes and re-checks everything when it posts."""
+        from services.market_trip_service import MarketTripService, TripError, PRICE_WARNING_PERCENT
+        empty = {"valid": False, "error": "", "availableText": "", "totalText": "", "referenceText": "", "deviationText": "", "warning": False,
+                 "warningText": ""}
+        if not self._detail:
+            return empty
+        available = self._detail["custody"]["cash"]["outstanding"]
+        base = {**empty, "availableText": f"المتاح من نقدية العهدة: {money(available)}"}
+        try:
+            parsed = MarketTripService.parse_buy_lines(self._buy_lines(lines))
+        except TripError as exc:
+            started = any(str(l.get("karatId", "")).strip() or str(l.get("weight", "")).strip() or str(l.get("price", "")).strip() for l in (lines or []))
+            return {**base, "error": str(exc) if started else ""}
+        total = sum((l["price"] for l in parsed), Decimal("0.00"))
+        if total > available:
+            return {**base, "totalText": money(total), "error": f"الإجمالي أكبر من المتاح من نقدية العهدة ({money(available)})."}
+        karat_values = {int(k["id"]): int(str(k["text"]).replace("عيار", "").strip()) for k in self.context.get("karats", [])}
+        prices = {int(k): Decimal(v) for k, v in self._reference_prices.items()}
+        reference_total, deviation = MarketTripService.buy_reference(prices, parsed, karat_values, total)
+        warned = deviation is not None and abs(deviation) > PRICE_WARNING_PERCENT
+        return {**base, "valid": True, "totalText": money(total),
+                "referenceText": "" if reference_total is None else f"المرجع (سعر شراء المحل لنفس العيارات): {money(reference_total)}",
+                "deviationText": "" if deviation is None else f"{number(deviation, 2, signed=True)}%", "warning": warned,
+                "warningText": ("إجمالي الشراء بعيد عن المرجع بنسبة " + number(abs(deviation), 2) + "%: ستُطلب منك الموافقة عليه.") if warned else ""}
 
     @Property(str, notify=changed)
     def errorCode(self):
@@ -626,6 +684,7 @@ class MarketTripViewModel(QObject):
             "cash": {"issued": money(custody["cash"]["issued"]), "returned": money(custody["cash"]["returned"]),
                      "paid": money(custody["cash"]["paid"]), "hasPaid": custody["cash"]["paid"] != 0,
                      "received": money(custody["cash"].get("received", 0)), "hasReceived": custody["cash"].get("received", 0) != 0,
+                     "spent": money(custody["cash"].get("spent", 0)), "hasSpent": custody["cash"].get("spent", 0) != 0,
                      "outstanding": money(custody["cash"]["outstanding"]), "zero": custody["cash"]["outstanding"] == 0,
                      "outstandingValue": f"{custody['cash']['outstanding']:.2f}"},
             "gold": [{"karat": g["karat_value"], "karatId": str(g["karat_id"]), "designation": g["designation"],
@@ -634,6 +693,7 @@ class MarketTripViewModel(QObject):
                       "heated": grams(g["heat_delta"], signed=True) if g["designation"] == "LOGO" and g.get("heat_delta") else "",
                       "settled": grams(g["supplier_settled"]) if g.get("supplier_settled") else "",
                       "sold": grams(g["sold"]) if g.get("sold") else "",
+                      "purchased": grams(g["purchased"]) if g.get("purchased") else "",
                       "held": grams(g["held_out"] - g["held_back"]) if g.get("held_out") or g.get("held_back") else "",
                       "zero": g["outstanding"] == 0} for g in gold],
             "lots": [{"lotId": l["lot_id"], "title": f"{LOT_TEXT[l['kind']]} — الحركة {l['entry_no']}"
@@ -655,6 +715,7 @@ class MarketTripViewModel(QObject):
             "heatStock": heat_stock, "heatAvailable": is_open and bool(heat_stock),
             "goldSettleSources": settle_sources, "goldSettleAvailable": is_open and bool(settle_sources),
             "payAvailable": is_open and custody["cash"]["outstanding"] > 0,
+            "buyAvailable": is_open and custody["cash"]["outstanding"] > 0,
             "saleSources": [{"key": f"{g['karat_id']}:{g['designation']}", "kind": "CUSTODY_GOLD", "karatId": str(g["karat_id"]),
                              "designation": g["designation"], "text": f"{_gold_label(g)} — المتاح {grams(g['outstanding'])} جرام"}
                             for g in gold if g["outstanding"] > 0]
@@ -688,6 +749,12 @@ class MarketTripViewModel(QObject):
                                f"{settlement['karat_value']} ({DESIGNATION_TEXT[settlement['designation']]}) ← احتُسب {grams(settlement['credited_weight'])} جرام "
                                f"عيار {settlement['target_karat']} • القيمة التحليلية {number(settlement['analytical'], 6)} • فرق التقريب "
                                f"{number(settlement['rounding_difference'], 6, signed=True)}")
+        buy = e.get("gold_buy")
+        if buy:
+            parts.append(f"من {buy['vendor_name']} • " + " • ".join(
+                f"{grams(Decimal(l['weight']))} جرام عيار {l['karat_value']} ({DESIGNATION_TEXT[l['designation']]}) بـ {money(Decimal(l['price']))}" for l in buy["lines"])
+                         + f" • الإجمالي {money(Decimal(buy['total_price']))}"
+                         + (" • السعر مُقرّ رغم بعده عن المرجع" if buy["price_warning_acknowledged"] else ""))
         sale = e.get("gold_sale")
         if sale:
             source = (f"سبيكة {grams(sale['weight'])} جرام" if sale["is_lot"]

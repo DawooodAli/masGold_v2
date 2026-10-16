@@ -42,7 +42,7 @@ class SupplierInvoiceReversalMySqlTests(HoldingsMySqlTests):
             q = c.cursor(dictionary=True)
             q.execute('SELECT DATABASE() AS db, MAX(version) AS v FROM schema_migrations')
             row = q.fetchone()
-            assert row['db'] == TARGET and int(row['v']) in (52, 53), row
+            assert row['db'] == TARGET and int(row['v']) in (52, 53, 54), row
             q.execute("SELECT target_database FROM masgold_rehearsal_marker WHERE marker_key='MASGOLD_SCHEMA_REHEARSAL'")
             assert q.fetchone()['target_database'] == TARGET
             q.execute('SELECT id,karat_value FROM karats')

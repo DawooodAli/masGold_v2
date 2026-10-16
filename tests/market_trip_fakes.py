@@ -56,6 +56,7 @@ class Db:
         self.logo_pools, self.logo_docs, self.logo_moves, self.logo_links = {}, {}, [], {}                  # 049
         self.gold_settle_links = {}                                                              # 046: entry id -> the SG document it made
         self.gold_sales = {}                                                                     # 053: entry id -> its sale document
+        self.gold_buys, self.gold_buy_lines = {}, []                                             # 054: entry id -> purchase document, and its scrap lines
         self.sm_payments, self.sm_making, self.sm_legs, self.supplier_links = {}, [], [], {}
         self.shop_moves, self.lot_returns, self.lot_issues = [], [], []                      # 040/041: shop-side lot ledger, return / issue links
         self.corrections, self.audit_rows = [], []
@@ -198,7 +199,7 @@ class TripRepo:
 
     def insert_entry(self, *, trip_id, entry_no, kind, entry_date, notes, key, digest, actor, now):
         self._fail("entry")
-        assert kind in ("ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT", "SUPPLIER_PAY", "GOLD_SETTLE", "LOT_SETTLE", "LOT_HOLD", "HOLD_RETURN", "LOGO_HOLD", "HOLD_BACK", "GOLD_SALE")                # chk_mte_kind
+        assert kind in ("ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT", "SUPPLIER_PAY", "GOLD_SETTLE", "LOT_SETTLE", "LOT_HOLD", "HOLD_RETURN", "LOGO_HOLD", "HOLD_BACK", "GOLD_SALE", "GOLD_BUY")                # chk_mte_kind
         if any(e["request_key"] == key for e in self.db.entries.values()):
             raise _dup("uq_mte_request")
         if any((e["trip_id"], e["entry_no"]) == (int(trip_id), entry_no) for e in self.db.entries.values()):
@@ -373,7 +374,7 @@ class TripRepo:
                 if e["trip_id"] == int(trip_id) and e["id"] not in reversed_ids and e["id"] != int(exclude or 0)]
 
     def custody_cash(self, trip_id, exclude_entry_id=None, *, current=False):
-        issued = returned = paid = proceeds = D("0.00")
+        issued = returned = paid = proceeds = spent = D("0.00")
         for e in self._live(trip_id, exclude_entry_id):
             for leg in (l for l in self.db.cash_legs if l["entry_id"] == e["id"]):
                 issued, returned = (issued + leg["amount"], returned) if e["entry_kind"] == "ISSUE" else (issued, returned + leg["amount"])
@@ -381,7 +382,9 @@ class TripRepo:
                 paid += self.db.supplier_links[e["id"]]["amount"]
             if e["id"] in self.db.gold_sales:
                 proceeds += self.db.gold_sales[e["id"]]["total_price"]
-        return issued, returned, paid, proceeds
+            if e["id"] in self.db.gold_buys:
+                spent += self.db.gold_buys[e["id"]]["total_price"]
+        return issued, returned, paid, proceeds, spent
 
     def custody_gold(self, trip_id, exclude_entry_id=None, *, current=False):
         out = {}
@@ -426,6 +429,12 @@ class TripRepo:
                     "designation": sale["designation"], "issued": D("0.000"), "returned": D("0.000"), "melted": D("0.000"),
                     "heat_delta": D("0.000"), "supplier_settled": D("0.000")})
                 row["sold"] = row.get("sold", D("0.000")) + sale["weight_grams"]
+            for line in (l for l in self.db.gold_buy_lines if l["entry_id"] == e["id"]):             # 054: bought for cash
+                row = out.setdefault((line["karat_id"], line["designation"]), {
+                    "karat_id": line["karat_id"], "karat_value": self.db.karats[line["karat_id"]]["karat_value"],
+                    "designation": line["designation"], "issued": D("0.000"), "returned": D("0.000"), "melted": D("0.000"),
+                    "heat_delta": D("0.000"), "supplier_settled": D("0.000")})
+                row["purchased"] = row.get("purchased", D("0.000")) + line["weight_grams"]
         order = {"MELT": 0, "LOGO": 1, "UNCLASSIFIED": 2}
         return sorted(out.values(), key=lambda r: (-r["karat_value"], order[r["designation"]]))
 
@@ -560,6 +569,7 @@ class TripRepo:
                          "supplier_payment": self.entry_supplier_payment(e["id"]),
                          "gold_settlement": self.entry_gold_settlement(e["id"]),
                          "gold_sale": self.entry_gold_sale(e["id"]),
+                         "gold_buy": self.entry_gold_buy(e["id"]),
                          "lot_settlement": self.entry_lot_settlement(e["id"]),
                          "holding": self.entry_holding(e["id"]),
                          "logo_holding": self.entry_logo_holding(e["id"]),
@@ -603,6 +613,40 @@ class TripRepo:
             raise _dup("uq_mtgs_settlement")
         self.db.gold_settle_links[int(entry_id)] = {"entry_id": int(entry_id), "settlement_id": int(settlement_id), "supplier_id": int(supplier_id),
                                                     "karat_id": int(karat_id), "designation": designation, "weight_grams": weight}
+
+    # ---- cash gold purchase (054): the CHECK / FK constraints of the purchase tables are mirrored as asserts
+    def insert_gold_buy(self, *, entry_id, vendor_kind, vendor_party_id, vendor_name, vendor_key, total, reference_total, deviation, acknowledged,
+                        buy_date, reference):
+        self._fail("gold_buy")
+        assert int(entry_id) in self.db.entries and self.db.entries[int(entry_id)]["entry_kind"] == "GOLD_BUY"       # fk_mtgb_entry
+        assert total > 0                                                                                       # chk_mtgb_total
+        assert (vendor_kind == "REGISTERED_PARTY" and vendor_party_id is not None) or (vendor_kind == "THIRD_PARTY" and vendor_party_id is None)
+        assert vendor_name.strip() and vendor_key.strip()                                                      # chk_mtgb_vendor: the vendor is MANDATORY
+        assert vendor_party_id is None or int(vendor_party_id) in self.db.suppliers                           # fk_mtgb_party
+        assert (reference_total is None) == (deviation is None)                                                # chk_mtgb_warning
+        if int(entry_id) in self.db.gold_buys:
+            raise _dup("PRIMARY")
+        self.db.gold_buys[int(entry_id)] = {
+            "entry_id": int(entry_id), "vendor_kind": vendor_kind, "vendor_party_id": vendor_party_id, "vendor_name": vendor_name,
+            "vendor_name_key": vendor_key, "total_price": total, "reference_total": reference_total, "deviation_percent": deviation,
+            "price_warning_acknowledged": 1 if acknowledged else 0, "buy_date": buy_date, "reference": reference}
+
+    def insert_gold_buy_line(self, *, entry_id, line_no, karat_id, designation, weight, price):
+        self._fail("gold_buy_line")
+        assert int(entry_id) in self.db.gold_buys                                                              # fk_mtgbl_buy
+        assert designation in ("MELT", "LOGO") and weight > 0 and price > 0                                    # chk_mtgbl_*
+        assert int(karat_id) in self.db.karats                                                                 # fk_mtgbl_karat
+        assert not any((l["entry_id"], l["line_no"]) == (int(entry_id), int(line_no)) for l in self.db.gold_buy_lines)
+        self.db.gold_buy_lines.append({"entry_id": int(entry_id), "line_no": int(line_no), "karat_id": int(karat_id), "designation": designation,
+                                       "weight_grams": weight, "line_price": price})
+
+    def entry_gold_buy(self, entry_id):
+        head = self.db.gold_buys.get(int(entry_id))
+        if head is None:
+            return None
+        lines = [{**l, "karat_value": self.db.karats[l["karat_id"]]["karat_value"]}
+                 for l in sorted((l for l in self.db.gold_buy_lines if l["entry_id"] == int(entry_id)), key=lambda l: l["line_no"])]
+        return {**head, "lines": lines}
 
     # ---- sale of custody gold (053): the CHECK / FK constraints of market_trip_gold_sales are mirrored as asserts
     def buyers(self):

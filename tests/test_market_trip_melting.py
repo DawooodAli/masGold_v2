@@ -539,7 +539,8 @@ class RepositoryMergeTests(unittest.TestCase):
                         [],                                                               # no Logo heating (042)
                         [],                                                               # no supplier settlements (046)
                         [],                                                               # no intermediary holdings (049)
-                        []])                                                              # no custody gold sales (053)
+                        [],                                                               # no custody gold sales (053)
+                        []])                                                              # no cash gold purchases (054)
         repo._fetch_all = lambda *args, **kwargs: next(answers)
         rows = repo.custody_gold(1)
         self.assertEqual([(r["karat_value"], r["designation"], r["melted"]) for r in rows],
@@ -561,7 +562,8 @@ class RepositoryMergeTests(unittest.TestCase):
                         [{"karat_id": 1, "karat_value": 21, "designation": "LOGO", "supplier_settled": D("6.250")},
                          {"karat_id": 3, "karat_value": 24, "designation": "LOGO", "supplier_settled": D("1")}],
                         [],                                                               # no intermediary holdings (049)
-                        []])                                                              # no custody gold sales (053)
+                        [],                                                               # no custody gold sales (053)
+                        []])                                                              # no cash gold purchases (054)
         repo._fetch_all = lambda *args, **kwargs: next(answers)
         rows = repo.custody_gold(1)
         by_key = {(r["karat_value"], r["designation"]): r for r in rows}
@@ -582,7 +584,7 @@ class HeldTermTests(unittest.TestCase):
         from services import custody_rules
         repo = MarketTripRepository.__new__(MarketTripRepository)
         answers = iter([[{"karat_id": 1, "karat_value": 21, "designation": "LOGO", "issued": D("20"), "returned": D("2")}], [], [], [],
-                        [{"karat_id": 1, "karat_value": 21, "designation": "LOGO", "held_out": D("9"), "held_back": D("4")}], []])
+                        [{"karat_id": 1, "karat_value": 21, "designation": "LOGO", "held_out": D("9"), "held_back": D("4")}], [], []])
         repo._fetch_all = lambda *args, **kwargs: next(answers)
         row = repo.custody_gold(1)[0]
         self.assertEqual((row["held_out"], row["held_back"]), (D("9"), D("4")))

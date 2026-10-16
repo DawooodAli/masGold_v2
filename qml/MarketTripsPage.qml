@@ -44,7 +44,7 @@ Item {
 
     Connections {
         target: page.vm
-        function onEntryPosted(code) { entryDialog.close(); meltDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close(); payDialog.close(); goldSettleDialog.close(); goldSaleDialog.close(); lotSettleDialog.close(); lotHoldDialog.close(); logoHoldDialog.close() }
+        function onEntryPosted(code) { entryDialog.close(); meltDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close(); payDialog.close(); goldSettleDialog.close(); goldSaleDialog.close(); goldBuyDialog.close(); lotSettleDialog.close(); lotHoldDialog.close(); logoHoldDialog.close() }
         function onActionDone(operation) { reasonDialog.close() }
     }
 
@@ -360,9 +360,10 @@ Item {
                             label: "النقدية"
                             issued: page.detail.cash ? page.detail.cash.issued : ""
                             returned: page.detail.cash ? page.detail.cash.returned : ""
-                            melted: page.detail.cash && (page.detail.cash.hasPaid || page.detail.cash.hasReceived)
+                            melted: page.detail.cash && (page.detail.cash.hasPaid || page.detail.cash.hasReceived || page.detail.cash.hasSpent)
                                     ? [page.detail.cash.hasPaid ? "مدفوع " + page.detail.cash.paid : "",
-                                       page.detail.cash.hasReceived ? "من البيع +" + page.detail.cash.received : ""].filter(function(t) { return t !== "" }).join(" • ")
+                                       page.detail.cash.hasReceived ? "من البيع +" + page.detail.cash.received : "",
+                                       page.detail.cash.hasSpent ? "مشتريات −" + page.detail.cash.spent : ""].filter(function(t) { return t !== "" }).join(" • ")
                                     : "—"
                             outstanding: page.detail.cash ? page.detail.cash.outstanding : ""
                             zero: page.detail.cash ? page.detail.cash.zero : true
@@ -377,6 +378,7 @@ Item {
                                 melted: (modelData.heated !== "" ? "حمّية " + modelData.heated + " جرام" : modelData.melted + " جرام")
                                         + (modelData.settled !== "" ? " • سُلِّم لمورد " + modelData.settled + " جرام" : "")
                                         + (modelData.sold !== "" ? " • بيع " + modelData.sold + " جرام" : "")
+                                        + (modelData.purchased !== "" ? " • مشترى +" + modelData.purchased + " جرام" : "")
                                 outstanding: modelData.outstanding + " جرام"
                                 zero: modelData.zero
                             }
@@ -407,6 +409,9 @@ Item {
                         Btn { objectName: "custodyLogoHoldButton"; text: "تسليم لوجو لمسوقجي"; visible: !!page.detail.holdVisible
                               enabled: !!page.detail.logoHoldAvailable && !!page.vm && !page.vm.writing
                               onClicked: logoHoldDialog.openFor(page.detail.id) }
+                        Btn { objectName: "custodyGoldBuyButton"; text: "شراء ذهب نقدي"; visible: !!page.detail.open
+                              enabled: !!page.detail.buyAvailable && !!page.vm && !page.vm.writing
+                              onClicked: goldBuyDialog.openFor(page.detail.id) }
                         Btn { objectName: "custodySaleButton"; text: "بيع ذهب من العهدة"; visible: !!page.detail.open
                               enabled: !!page.detail.saleAvailable && !!page.vm && !page.vm.writing
                               onClicked: goldSaleDialog.openFor(page.detail.id) }
@@ -1392,6 +1397,244 @@ Item {
                 }
                 Btn { objectName: "cancelCustodyGoldSettleButton"; text: "إلغاء"; accent: theme.textSecondary
                       enabled: !!page.vm && !page.vm.writing; onClicked: goldSettleDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- cash gold purchase (شراء ذهب نقدي)
+    // Custody CASH becomes custody GOLD: nothing moves in the Main Safe, a bank, the shop Scrap or any supplier account. The vendor is mandatory.
+    // Every figure below is computed by the service rules through marketTripVM; a total far from the reference needs confirmation.
+    Popup {
+        id: goldBuyDialog
+        objectName: "tripGoldBuyDialog"
+        property string tripId: ""
+        property string requestKey: ""
+        property string pendingVendor: ""
+        readonly property var karatChoices: [{ id: "", text: "اختر العيار" }].concat(page.ctx.karats || [])
+        readonly property var designationChoices: page.ctx.designations || []
+        readonly property var vendorChoices: [{ id: "", text: "بائع غير مسجل (اكتب اسمه)" }].concat(page.detail.saleBuyers || [])
+        readonly property string vendorId: vendorChoices[goldBuyVendor.currentIndex] ? vendorChoices[goldBuyVendor.currentIndex].id : ""
+        readonly property bool needsConfirmation: !!page.vm && page.vm.errorCode === "PRICE_DEVIATION"
+        property var lineRows: []
+        readonly property var preview: {
+            var known = page.detail.id !== undefined && page.ctx.safeName !== undefined
+            return known && page.vm ? page.vm.previewBuy(lineRows) : ({})
+        }
+        function defaultDesignation() {
+            for (var i = 0; i < designationChoices.length; ++i)
+                if (designationChoices[i].id === "LOGO") return i
+            return 0
+        }
+        function collect() {
+            var rows = []
+            for (var i = 0; i < buyModel.count; ++i) {
+                var g = buyModel.get(i)
+                rows.push({ karatId: g.karatIndex > 0 ? karatChoices[g.karatIndex].id : "",
+                            designation: designationChoices[g.designationIndex] ? designationChoices[g.designationIndex].id : "",
+                            weight: g.weight, price: g.price })
+            }
+            return rows
+        }
+        function refreshLines() { lineRows = collect() }
+        function openFor(trip) {
+            if (!page.vm) return
+            tripId = trip
+            requestKey = page.vm.newRequestKey()
+            pendingVendor = ""
+            goldBuyVendor.currentIndex = 0
+            goldBuyName.text = ""
+            goldBuyRegisterKarat.currentIndex = 0
+            goldBuyDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            goldBuyReference.text = ""
+            goldBuyNotes.text = ""
+            buyModel.clear()
+            buyModel.append({ karatIndex: 0, designationIndex: defaultDesignation(), weight: "", price: "" })
+            refreshLines()
+            page.vm.clearMessage()
+            page.vm.refresh()
+            page.vm.loadReferencePrices()
+            open()
+        }
+        function submit(acknowledged) {
+            page.vm.buyGold(tripId, collect(), vendorId, goldBuyName.text, goldBuyDate.text, goldBuyReference.text, goldBuyNotes.text,
+                            requestKey, acknowledged)
+        }
+        function complete() {
+            if (!(vendorId !== "" || goldBuyName.text.trim().length > 0) || goldBuyDate.text.trim().length === 0) return false
+            for (var i = 0; i < buyModel.count; ++i) {
+                var g = buyModel.get(i)
+                if (g.karatIndex > 0 && g.weight.trim().length > 0 && g.price.trim().length > 0) return true
+            }
+            return false
+        }
+        function selectPendingVendor() {
+            if (pendingVendor === "") return
+            for (var i = 0; i < vendorChoices.length; ++i)
+                if (vendorChoices[i].id === pendingVendor) { goldBuyVendor.currentIndex = i; pendingVendor = ""; return }
+        }
+        // after the combo has taken the new model (it resets its index when the model changes)
+        onVendorChoicesChanged: Qt.callLater(selectPendingVendor)
+        onPendingVendorChanged: Qt.callLater(selectPendingVendor)
+        Connections {
+            target: page.vm
+            function onVendorRegistered(id) { goldBuyDialog.pendingVendor = id }
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(600, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 680, 680)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        ListModel { id: buyModel }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; text: "شراء ذهب نقدي" }
+            Txt { objectName: "custodyGoldBuyRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "تُدفع قيمة الذهب من نقدية هذه العهدة (لا من الخزنة) ويدخل الذهب العهدة بنفس العيار والوزن الفعلي. اسم البائع إجباري. لا يتأثر حساب أي مورد." }
+            Flickable {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentHeight: goldBuyForm.implicitHeight
+                clip: true
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: goldBuyForm
+                    width: parent.width - 12
+                    spacing: 6
+                    Txt { Layout.fillWidth: true; text: "البائع *" }
+                    Combo { id: goldBuyVendor; objectName: "custodyGoldBuyVendorCombo"; Layout.fillWidth: true; model: goldBuyDialog.vendorChoices; textRole: "text" }
+                    Txt { Layout.fillWidth: true; visible: goldBuyDialog.vendorId === ""; text: "اسم البائع *" }
+                    Field { id: goldBuyName; objectName: "custodyGoldBuyNameField"; Layout.fillWidth: true; visible: goldBuyDialog.vendorId === "" }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: goldBuyDialog.vendorId === "" && goldBuyName.text.trim().length > 0
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        Txt { text: "تسجيله طرفًا جديدًا (مورد) بعيار حساب:"; color: theme.textSecondary; font.pixelSize: theme.fontTableHeader }
+                        Combo { id: goldBuyRegisterKarat; objectName: "custodyGoldBuyRegisterKaratCombo"; Layout.preferredWidth: 130
+                                model: goldBuyDialog.karatChoices; textRole: "text" }
+                        Btn { objectName: "registerGoldBuyVendorButton"; text: "تسجيل كطرف جديد"; accent: theme.textSecondary
+                              enabled: goldBuyRegisterKarat.currentIndex > 0 && !!page.vm && !page.vm.writing
+                              onClicked: page.vm.registerVendor(goldBuyName.text, goldBuyDialog.karatChoices[goldBuyRegisterKarat.currentIndex].id) }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
+                            Field { id: goldBuyDate; objectName: "custodyGoldBuyDateField"; Layout.fillWidth: true }
+                        }
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "المرجع (اختياري)" }
+                            Field { id: goldBuyReference; objectName: "custodyGoldBuyReferenceField"; Layout.fillWidth: true }
+                        }
+                    }
+                    Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; text: "الذهب المشترى: العيار والوجهة والوزن الفعلي وثمن السطر" }
+                    Repeater {
+                        model: buyModel
+                        delegate: RowLayout {
+                            Layout.fillWidth: true
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 6
+                            Combo {
+                                objectName: "custodyGoldBuyKarat_" + index
+                                Layout.preferredWidth: 110
+                                model: goldBuyDialog.karatChoices
+                                textRole: "text"
+                                currentIndex: karatIndex
+                                onActivated: function (i) { buyModel.setProperty(index, "karatIndex", i); goldBuyDialog.refreshLines() }
+                            }
+                            Combo {
+                                objectName: "custodyGoldBuyDesignation_" + index
+                                Layout.preferredWidth: 100
+                                model: goldBuyDialog.designationChoices
+                                textRole: "text"
+                                currentIndex: designationIndex
+                                onActivated: function (i) { buyModel.setProperty(index, "designationIndex", i); goldBuyDialog.refreshLines() }
+                            }
+                            Field {
+                                objectName: "custodyGoldBuyWeight_" + index
+                                Layout.fillWidth: true
+                                placeholderText: "الوزن (جرام)"
+                                text: weight
+                                inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                onTextEdited: { buyModel.setProperty(index, "weight", text); goldBuyDialog.refreshLines() }
+                            }
+                            Field {
+                                objectName: "custodyGoldBuyPrice_" + index
+                                Layout.fillWidth: true
+                                placeholderText: "الثمن (ج)"
+                                text: price
+                                inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                onTextEdited: { buyModel.setProperty(index, "price", text); goldBuyDialog.refreshLines() }
+                            }
+                        }
+                    }
+                    Btn { objectName: "addGoldBuyLineButton"; text: "＋ سطر ذهب آخر"; accent: theme.textSecondary
+                          enabled: buyModel.count < 8
+                          onClicked: { buyModel.append({ karatIndex: 0, designationIndex: goldBuyDialog.defaultDesignation(), weight: "", price: "" }); goldBuyDialog.refreshLines() } }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: goldBuyPreview.implicitHeight + 14
+                        radius: theme.radiusSmall
+                        color: theme.bgTertiary
+                        border.color: goldBuyDialog.preview.warning ? theme.amber : theme.border
+                        ColumnLayout {
+                            id: goldBuyPreview
+                            anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                            anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.topMargin: 7
+                            spacing: 3
+                            Txt { objectName: "custodyGoldBuyAvailable"; Layout.fillWidth: true; visible: !!goldBuyDialog.preview.availableText
+                                  text: goldBuyDialog.preview.availableText || ""; color: theme.amber; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "custodyGoldBuyTotal"; Layout.fillWidth: true; visible: !!goldBuyDialog.preview.totalText
+                                  text: "إجمالي الشراء: " + (goldBuyDialog.preview.totalText || ""); color: theme.gold; font.bold: true
+                                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "custodyGoldBuyReference"; Layout.fillWidth: true; visible: !!goldBuyDialog.preview.referenceText
+                                  text: (goldBuyDialog.preview.referenceText || "") + (goldBuyDialog.preview.deviationText ? " • الفرق " + goldBuyDialog.preview.deviationText : "")
+                                  color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "custodyGoldBuyWarning"; Layout.fillWidth: true; visible: goldBuyDialog.preview.warning === true
+                                  text: goldBuyDialog.preview.warningText || ""; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "custodyGoldBuyPreviewError"; Layout.fillWidth: true; visible: !!goldBuyDialog.preview.error
+                                  text: goldBuyDialog.preview.error || ""; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Item { Layout.preferredHeight: 2 }
+                        }
+                    }
+                    Txt { Layout.fillWidth: true; text: "ملاحظات" }
+                    Field { id: goldBuyNotes; objectName: "custodyGoldBuyNotesField"; Layout.fillWidth: true }
+                }
+            }
+            Txt { objectName: "custodyGoldBuyError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: goldBuyDialog.needsConfirmation ? theme.amber : theme.red
+                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmCustodyGoldBuyButton"
+                    visible: !goldBuyDialog.needsConfirmation
+                    text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "تسجيل الشراء"
+                    primary: true
+                    enabled: goldBuyDialog.complete() && !!page.vm && !page.vm.writing && !goldBuyDialog.preview.error
+                    onClicked: goldBuyDialog.submit(false)
+                }
+                Btn {
+                    objectName: "acknowledgeCustodyGoldBuyPriceButton"
+                    visible: goldBuyDialog.needsConfirmation
+                    text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "أؤكد الأسعار وأسجّل الشراء"
+                    primary: true
+                    accent: theme.amber
+                    enabled: !!page.vm && !page.vm.writing
+                    onClicked: goldBuyDialog.submit(true)
+                }
+                Btn { objectName: "cancelCustodyGoldBuyButton"; text: "إلغاء"; accent: theme.textSecondary
+                      enabled: !!page.vm && !page.vm.writing; onClicked: goldBuyDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }

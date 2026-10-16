@@ -182,7 +182,7 @@ class Capture:
                 return []
 
             def fetchone(self):
-                return {"issued": 0, "returned": 0, "paid": 0, "proceeds": 0}
+                return {"issued": 0, "returned": 0, "paid": 0, "proceeds": 0, "spent": 0}
 
             def close(self):
                 pass
@@ -206,7 +206,7 @@ class RepositorySqlTests(unittest.TestCase):
 
     def test_the_current_form_of_custody_cash_and_gold_locks_every_nested_lookup(self):
         statements = self.run_all(current=True)
-        self.assertEqual(len(statements), 9)                                       # 3 cash reads + 6 gold reads (legs, melts, heats, settlements, holdings, sales)
+        self.assertEqual(len(statements), 11)                                      # 4 cash reads + 7 gold reads (legs, melts, heats, settlements, holdings, sales, purchases)
         for sql in statements:
             self.assertEqual(len(NESTED_CURRENT.findall(sql)), 1, sql)
             self.assertNotRegex(sql, NESTED_SNAPSHOT.pattern)

@@ -516,6 +516,17 @@ class CorrectionService:
                 if custody_rules.cash_rows_outstanding(cash) < 0:
                     plan.blockers.append(("DEPENDENT_CASH_USE_EXISTS",
                                           "لا يمكن عكس البيع لأن ثمنه استُخدم بعد تسجيله (رجوع نقدية إلى الخزنة أو دفع لمورد من العهدة) — اعكس ما يعتمد عليه أولًا."))
+            if source["entry_kind"] == "GOLD_BUY":
+                # 054. The purchase document is never rewritten: the entry stops counting, so the stored cash is back in custody and the stored scrap
+                # grams leave it. Nothing else was posted (no supplier, Scrap, cash or bank movement), so nothing else is reversed. Decided by
+                # arithmetic only: if any purchased (karat, designation) was used after the purchase (returned, melted, heated, sold, delivered or
+                # handed over), the custody gold without this purchase would be negative.
+                cash = trips.custody_cash(source["trip_id"], exclude_entry_id=source_id, current=True)
+                gold = trips.custody_gold(source["trip_id"], exclude_entry_id=source_id, current=True)
+                if custody_rules.any_negative(cash, gold):
+                    plan.blockers.append(("DEPENDENT_GOLD_USE_EXISTS",
+                                          "لا يمكن عكس الشراء لأن الذهب المشترى استُخدم بعد تسجيله (رجوع للمحل أو سبك أو حمّية أو بيع أو تسوية أو تسليم) — "
+                                          "اعكس ما يعتمد عليه أولًا."))
             if source["entry_kind"] in ("GOLD_SETTLE", "LOT_SETTLE"):
                 # The stored supplier gold movement is restored (never a recomputed amount) and the entry stops consuming custody gold, so the
                 # stored delivered grams are back in custody. No Scrap, cash, making, bank or lot movement is posted. The supplier-side
