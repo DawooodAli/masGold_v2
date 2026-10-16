@@ -909,7 +909,7 @@ current HEAD. Read both `AGENTS.md` and `CLAUDE.md`.
 
 ### Official test baseline
 
-Accepted baseline after the Final Stabilization Pack: **1546 total = 1473 passed + 73 skipped**,
+Accepted baseline after the Gold Position (21K) view: **2751 total = 2575 passed + 176 skipped**,
 **0 failures, 0 errors**. Skipped tests are the opt-in MySQL/integration tests, which
 stay opt-in and are never run against persistent DEV data casually.
 
