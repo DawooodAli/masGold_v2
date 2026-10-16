@@ -840,7 +840,7 @@ current HEAD. Read both `AGENTS.md` and `CLAUDE.md`.
 
 ### Official test baseline
 
-Accepted baseline after the sale of custody gold: **2814 total = 2638 passed + 176 skipped**,
+Accepted baseline after the sale of custody gold: **2823 total = 2638 passed + 185 skipped**,
 **0 failures, 0 errors**. Skipped tests are the opt-in MySQL/integration tests, which
 stay opt-in and are never run against persistent DEV data casually.
 
