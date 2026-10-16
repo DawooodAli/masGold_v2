@@ -40,10 +40,21 @@ class InvoiceWorker(QThread):
         except Exception as exc:
             self._report(exc)
             error, kind = self._failure_message(), type(exc).__name__
+            behind = self._schema_message(exc)
+            if behind:
+                error, code, kind = behind, "SCHEMA_OUTDATED", "SchemaOutdated"
         finally:
             self._call = None
         self.completed.emit(self._request, str(self._actor.generation), self._operation,
                             result, error, code, kind)
+
+    @staticmethod
+    def _schema_message(exc):
+        """A missing table / column means the database may be behind this build: name the levels instead of the generic failure."""
+        from services import schema_level
+        if getattr(exc, "errno", None) not in schema_level.SCHEMA_ERRNOS:
+            return ""
+        return schema_level.schema_problem() or ""
 
     def _failure_message(self):
         if self._operation == "finalize":
