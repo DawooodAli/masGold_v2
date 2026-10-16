@@ -49,8 +49,9 @@ class SchemaLevelTests(unittest.TestCase):
         self.assertEqual(schema_level.outdated_message(51), schema_level.outdated_message(51, schema_level.REQUIRED_SCHEMA_LEVEL))
 
     def test_only_a_database_behind_the_required_level_is_reported(self):
-        for level, expected in ((51, schema_level.outdated_message(51)), (53, schema_level.outdated_message(53)),
-                                (54, None), (55, None), (None, None)):
+        required = schema_level.REQUIRED_SCHEMA_LEVEL
+        for level, expected in ((51, schema_level.outdated_message(51)), (required - 1, schema_level.outdated_message(required - 1)),
+                                (required, None), (required + 1, None), (None, None)):
             connection = FakeConnection(level)
             self.assertEqual(schema_level.schema_problem(lambda c=connection: c), expected, level)
             self.assertTrue(connection.closed and connection.rolled_back)

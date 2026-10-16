@@ -62,10 +62,11 @@ HOLDING_REVERSE_PERMISSION = "INTERMEDIARY_HOLDING_REVERSE"
 HRC = "HOLDING_RECEIPT"              # physical receipt from an intermediary holding (051): full reversal only, OWNER only
 SPI = "SUPPLIER_PURCHASE_INVOICE"     # posted supplier purchase invoice (052): full reversal only, OWNER only, no intaken piece
 SPI_REVERSE_PERMISSION = "SUPPLIER_INVOICE_REVERSE"
+MKD = "MARKETER_DOCUMENT"             # marketer custody document (055): MH / MR / MB / MS, full reversal only, OWNER only
 SOURCE_RIGHTS = {SMP: SMP_REVERSE_PERMISSION, MTE: MTE_PERMISSION, SGS: SGS_REVERSE_PERMISSION,
-                 SPI: SPI_REVERSE_PERMISSION}   # a right ON TOP of TRANSACTION_CORRECT
-SOURCES = ("INVOICE", "EXCHANGE", "RETURN", CS, FO, CD, SMP, MTE, SGS, HRC, SPI)
-STANDALONE = (CS, FO, CD, SMP, MTE, SGS, HRC, SPI)    # sources without an invoice (never a fabricated one)
+                 SPI: SPI_REVERSE_PERMISSION, MKD: HOLDING_REVERSE_PERMISSION}   # a right ON TOP of TRANSACTION_CORRECT
+SOURCES = ("INVOICE", "EXCHANGE", "RETURN", CS, FO, CD, SMP, MTE, SGS, HRC, SPI, MKD)
+STANDALONE = (CS, FO, CD, SMP, MTE, SGS, HRC, SPI, MKD)    # sources without an invoice (never a fabricated one)
 MONEY = Decimal("0.01")
 ZERO, ZERO_GRAMS = Decimal("0.00"), Decimal("0.000")
 METHOD_TEXT = {"PHYSICAL_CASH": "نقدي", "MOBILE_WALLET": "محفظة", "INSTAPAY": "InstaPay", "BANK_TRANSFER": "تحويل بنكي"}
@@ -80,6 +81,7 @@ SOURCE_TEXT[MTE] = "حركة عهدة السوق"
 SOURCE_TEXT[SGS] = "تسوية ذهب المورد"
 SOURCE_TEXT[HRC] = "استلام ذهب من المسوقجي"
 SOURCE_TEXT[SPI] = "فاتورة شراء مورد"
+SOURCE_TEXT[MKD] = "مستند عهدة المسوقجي"
 
 
 def correction_source_text(source_type, direction=None, *, definite=True):
@@ -134,6 +136,7 @@ class _Plan:
     logo_holdings: list = field(default_factory=list)    # the same for master-karat LOGO pools (049)
     holding_settlements: list = field(default_factory=list)   # (is LOGO pool, pool id, settlement id, grams) the compensation of a settlement from a holding (050)
     receipts: list = field(default_factory=list)         # (pool id, receipt id, piece id, grams) a physical receipt reversal: stock out, holding grams back (051)
+    marketer: list = field(default_factory=list)         # (ledger CASH/GOLD, party id, document id, doc kind, settlement id, movement type, magnitude, signed delta) marketer compensations (055)
 
 
 def _reason(text):
@@ -293,7 +296,7 @@ class CorrectionService:
             source = repo.source(source_id)
             if source is None:
                 raise CorrectionError("SOURCE_NOT_FOUND", "تسوية ذهب المورد غير موجودة.")
-            if lock and source.get("source_kind") in ("HOLDING_LOT", "HOLDING_LOGO"):
+            if lock and source.get("source_kind") in ("HOLDING_LOT", "HOLDING_LOGO", "HOLDING_MARKETER"):
                 # 050: lot (lot pools) -> holder and recipient in ASCENDING party id -> holding source pool. No trip is locked or reopened.
                 from repositories.intermediary_holding_repository import IntermediaryHoldingRepository
                 from repositories.market_trip_repository import MarketTripRepository
@@ -304,8 +307,8 @@ class CorrectionService:
                     repo.get_supplier(party, lock=True)
                 if source["lot_pool_id"] is not None:
                     holdings.lock_pool(source["lot_pool_id"])
-                else:
-                    holdings.lock_logo_pool(source["logo_pool_id"])
+                elif source["logo_pool_id"] is not None:
+                    holdings.lock_logo_pool(source["logo_pool_id"])             # a marketer-account settlement has no pool: the parties above are its locks
                 source = repo.source(source_id, lock=True)
             elif lock:                                          # the settlement's own lock order: supplier -> Scrap karat
                 repo.get_supplier(source["supplier_id"], lock=True)
@@ -316,6 +319,29 @@ class CorrectionService:
             context = {"invoice_id": None, "invoice_number": reference, "customer_name_snapshot": None, "customer_id": None,
                        "finalized_at": source["occurred_at"], "net_amount": source["credited_weight_grams"],
                        "supplier_id": str(source["supplier_id"]), "supplier_name": source.get("supplier_name")}
+            return context, source, reference
+        if source_type == MKD:
+            from repositories.financial_account_repository import FinancialAccountRepository as MarketerAccounts
+            from repositories.marketer_custody_repository import MarketerCustodyRepository, document_code
+            repo = MarketerCustodyRepository(connection)
+            source = repo.document(source_id)
+            if source is None:
+                raise CorrectionError("SOURCE_NOT_FOUND", "مستند عهدة المسوقجي غير موجود.")
+            if lock:                                            # the account (party row) -> Main Safe (cash documents) / Scrap karat (a gold return)
+                repo.party(source["party_id"], lock=True)
+                if source["doc_kind"] in ("CASH_HANDOVER", "CASH_RETURN"):
+                    safe = repo.main_safe()
+                    if safe is not None:
+                        MarketerAccounts(connection).account("CASH", safe["id"], lock=True)
+                elif source["doc_kind"] == "GOLD_RETURN":
+                    karat = repo.karat21()
+                    if karat is not None:
+                        corrections.lock_old_gold_balance(karat["id"])
+                source = repo.document(source_id, lock=True)
+            reference = document_code(source["doc_kind"], source_id)
+            context = {"invoice_id": None, "invoice_number": reference, "customer_name_snapshot": None, "customer_id": None,
+                       "finalized_at": source["occurred_at"], "net_amount": source["cash_amount"] if source["cash_amount"] is not None else source["weight_grams"],
+                       "source_direction": source["doc_kind"]}
             return context, source, reference
         if source_type == HRC:
             from repositories.intermediary_holding_repository import IntermediaryHoldingRepository, receipt_code
@@ -421,7 +447,7 @@ class CorrectionService:
     def _plan(self, connection, source_type, source_id, lock):
         corrections, invoices = self._corrections(connection), self._invoices(connection)
         invoice, source, reference = self._load(connection, source_type, source_id, lock)
-        holding_decision = bool(lock and (source_type in (HRC, SPI) or (source_type == SGS and (source or {}).get("source_kind") in ("HOLDING_LOT", "HOLDING_LOGO"))))
+        holding_decision = bool(lock and (source_type in (HRC, SPI, MKD) or (source_type == SGS and (source or {}).get("source_kind") in ("HOLDING_LOT", "HOLDING_LOGO", "HOLDING_MARKETER"))))
         # a settlement from a holding, a receipt and a supplier invoice (052): a CURRENT read decides ALREADY_REVERSED, so a reversal committed while this
         # transaction waited for the invoice lock is reported as ALREADY_REVERSED instead of surfacing as a raw duplicate-key error
         # (every other source keeps its established call)
@@ -648,12 +674,15 @@ class CorrectionService:
             # The STORED movements are what is undone (never a recomputed amount): the delivered grams return to Scrap and the credit is restored.
             from repositories.supplier_gold_settlement_repository import GOLD_REVERSAL, SCRAP_REVERSAL_IN, SupplierGoldSettlementRepository
             settlements = SupplierGoldSettlementRepository(connection)
-            holding_source = source.get("source_kind") in ("HOLDING_LOT", "HOLDING_LOGO")
+            holding_source = source.get("source_kind") in ("HOLDING_LOT", "HOLDING_LOGO", "HOLDING_MARKETER")
             custody = None if holding_source or source.get("source_kind", "SHOP_SCRAP") == "SHOP_SCRAP" else settlements.custody_entry(source_id)
             scrap_leg, gold_leg = settlements.scrap_movement(source_id), settlements.gold_movement(source_id)
             if holding_source:
                 # 050: ONE canonical correction on the SG, from either page. The stored supplier credit and the stored delivered grams are restored.
-                self._plan_holding_settlement(connection, plan, source, source_id, settlements, lock)
+                if source.get("source_kind") == "HOLDING_MARKETER":
+                    self._plan_marketer_settlement(connection, plan, source, source_id, settlements, lock)
+                else:
+                    self._plan_holding_settlement(connection, plan, source, source_id, settlements, lock)
             elif source.get("source_kind", "SHOP_SCRAP") != "SHOP_SCRAP":
                 # Delivered from market custody (046): the custody entry is the only reversal path (it also restores the custody gold).
                 from repositories.market_trip_repository import entry_code as _entry_code
@@ -668,6 +697,8 @@ class CorrectionService:
                                       -Decimal(str(scrap_leg["weight_delta_grams"])), SCRAP_REVERSAL_IN))
                 plan.supplier_gold.append((int(gold_leg["supplier_id"]), int(gold_leg["karat_id"]), -Decimal(str(gold_leg["weight_delta_grams"])),
                                            -Decimal(str(gold_leg["equivalent_21_delta_grams"])), GOLD_REVERSAL))
+        if source_type == MKD:
+            self._plan_marketer_document(connection, plan, source, lock)
         if source_type == HRC:
             self._plan_receipt(connection, plan, source, lock)
         if source_type == SPI:
@@ -893,6 +924,55 @@ class CorrectionService:
         plan.receipts.append((pool_id, int(source["id"]), piece_id, grams))
 
     @staticmethod
+    def _plan_marketer_document(connection, plan, source, lock):
+        """055. The document's own movements are undone by explicit compensations (the originals stay counted). The shop-side Main Safe cash is undone by the
+        generic money reversal (the document is the reference of that movement); a gold return also takes the 21K grams back out of the counted Scrap. Decided by
+        arithmetic only (CURRENT reads under the account lock): neither the marketer's cash nor his gold may be negative after the reversal."""
+        from repositories.marketer_custody_repository import (CASH_MOVEMENT, GOLD_MOVEMENT as MARKETER_GOLD, KARAT_VALUE, SHOP_SCRAP_REVERSAL,
+                                                              MarketerCustodyRepository)
+        repo = MarketerCustodyRepository(connection)
+        kind, party, document_id = source["doc_kind"], int(source["party_id"]), int(source["id"])
+        if kind in CASH_MOVEMENT:
+            original, compensation, sign = CASH_MOVEMENT[kind]
+            amount = Decimal(str(source["cash_amount"]))
+            delta = -sign * amount
+            held = Decimal(str(repo.cash_balance(party) if lock else repo.display_cash_balance(party)))
+            plan.marketer.append(("CASH", party, document_id, kind, None, compensation, amount, delta))
+            if held + delta < 0:
+                plan.blockers.append(("DEPENDENT_CASH_USE_EXISTS",
+                                      "لا يمكن عكس هذا المستند لأن نقدية المسوقجي بعده لا تكفي (اُستخدمت أو استُرجعت بعد تسجيله) — اعكس ما يعتمد عليها أولًا."))
+        if kind in MARKETER_GOLD:
+            original, compensation, sign = MARKETER_GOLD[kind]
+            weight = Decimal(str(source["weight_grams"]))
+            delta = -sign * weight
+            held = Decimal(str(repo.gold_balance(party) if lock else repo.display_gold_balance(party)))
+            plan.marketer.append(("GOLD", party, document_id, kind, None, compensation, weight, delta))
+            if held + delta < 0:
+                plan.blockers.append(("DEPENDENT_GOLD_USE_EXISTS",
+                                      "لا يمكن عكس هذا المستند لأن ذهب المسوقجي (عيار 21) بعده لا يكفي (بيع أو سُلِّم لمورد أو استُرجع بعد تسجيله) — "
+                                      "اعكس ما يعتمد عليه أولًا."))
+            if kind == "GOLD_RETURN":                          # the grams the shop received leave the counted Scrap again
+                karat = repo.karat21()
+                plan.old_gold.append((int(karat["id"]), KARAT_VALUE, -weight, SHOP_SCRAP_REVERSAL))
+
+    @staticmethod
+    def _plan_marketer_settlement(connection, plan, source, source_id, settlements, lock):
+        """055. A settlement from the marketer account: the STORED supplier credit is restored and the STORED delivered grams return to the marketer (an
+        explicit SETTLEMENT_REVERSAL beside the original); nothing is recalculated and no cash, Scrap or other ledger moves."""
+        from repositories.marketer_custody_repository import MOVE_SETTLEMENT_REVERSAL, MarketerCustodyRepository
+        from repositories.supplier_gold_settlement_repository import GOLD_REVERSAL
+        repo = MarketerCustodyRepository(connection)
+        gold_leg, movement = settlements.gold_movement(source_id), repo.settlement_gold_movement(source_id)
+        if gold_leg is None or movement is None:
+            plan.blockers.append(("SETTLEMENT_MOVEMENT_MISSING", "حركات التسوية الأصلية غير موجودة."))
+            return
+        plan.supplier_gold.append((int(gold_leg["supplier_id"]), int(gold_leg["karat_id"]), -Decimal(str(gold_leg["weight_delta_grams"])),
+                                   -Decimal(str(gold_leg["equivalent_21_delta_grams"])), GOLD_REVERSAL))
+        plan.extra_permissions.append(HOLDING_REVERSE_PERMISSION)
+        quantity = Decimal(str(movement["weight_grams"]))
+        plan.marketer.append(("GOLD", int(movement["party_id"]), None, None, int(source_id), MOVE_SETTLEMENT_REVERSAL, quantity, quantity))
+
+    @staticmethod
     def _plan_holding_settlement(connection, plan, source, source_id, settlements, lock):
         from repositories.intermediary_holding_repository import IntermediaryHoldingRepository
         from repositories.supplier_gold_settlement_repository import GOLD_REVERSAL
@@ -939,6 +1019,8 @@ class CorrectionService:
             "logo_holdings": [{"pool_id": p, "document_id": d, "movement": m, "delta": str(delta)} for p, d, _, m, _, delta in plan.logo_holdings],
             "holding_settlements": [{"pool_id": p, "settlement_id": s, "logo": logo, "delta": str(g)} for logo, p, s, g in plan.holding_settlements],
             "receipts": [{"pool_id": p, "receipt_id": r, "piece_id": i, "grams": str(g)} for p, r, i, g in plan.receipts],
+            "marketer": [{"ledger": k, "party_id": p, "document_id": d, "settlement_id": s, "movement": m, "delta": str(delta)}
+                         for k, p, d, _, s, m, _, delta in plan.marketer],
             "inventory": [{"inventory_item_id": i, "from": f, "to": t} for i, f, t, _ in plan.inventory],
             "old_gold": [{"karat": k, "grams": str(g)} for _, k, g, _ in plan.old_gold]
                         + [{"karat": k, "grams": str(-g)} for _, _, k, g, _, _ in plan.holds],
@@ -1115,6 +1197,22 @@ class CorrectionService:
                 for pool_id, document_id, doc_kind, movement_type, grams, delta in sorted(plan.logo_holdings):
                     logo_ledger.insert_logo_movement(pool_id=pool_id, document_id=document_id, doc_kind=doc_kind, movement_type=movement_type,
                                                      weight=grams, delta=delta, correction_id=correction_id)
+            if plan.marketer:
+                from repositories.marketer_custody_repository import MarketerCustodyRepository as MarketerLedger
+                marketer_ledger = MarketerLedger(connection)
+                parties = set()
+                for ledger_kind, party_id, document_id, doc_kind, settlement_id, movement_type, magnitude, delta in sorted(
+                        plan.marketer, key=lambda row: (row[0], row[1], row[2] or 0, row[4] or 0)):
+                    parties.add(party_id)
+                    if ledger_kind == "CASH":
+                        marketer_ledger.insert_cash_movement(party_id=party_id, document_id=document_id, doc_kind=doc_kind, movement_type=movement_type,
+                                                             amount=magnitude, delta=delta, correction_id=correction_id)
+                    else:
+                        marketer_ledger.insert_gold_movement(party_id=party_id, document_id=document_id, doc_kind=doc_kind, settlement_id=settlement_id,
+                                                             movement_type=movement_type, weight=magnitude, delta=delta, correction_id=correction_id)
+                for party_id in sorted(parties):                 # explicit check of the resulting balances (never negative)
+                    if Decimal(str(marketer_ledger.cash_balance(party_id))) < 0 or Decimal(str(marketer_ledger.gold_balance(party_id))) < 0:
+                        raise RuntimeError("marketer balance out of range after the reversal")
             if plan.holding_settlements:
                 from repositories.intermediary_holding_repository import IntermediaryHoldingRepository as SettlementLedger, MOVE_SETTLEMENT_REVERSAL
                 settlement_ledger = SettlementLedger(connection)
@@ -1194,7 +1292,7 @@ class CorrectionService:
     def _settlement_state(self, connection, source_type, source_id, lock):
         """The current EFFECTIVE settlement of a source: direction, legs, account part, total, chain."""
         corrections = self._corrections(connection)
-        if source_type in (FO, CD, SMP, MTE, SGS, HRC, SPI):
+        if source_type in (FO, CD, SMP, MTE, SGS, HRC, SPI, MKD):
             raise CorrectionError("SETTLEMENT_NOT_SUPPORTED",
                                   "هذه العملية تُصحح بالعكس الكامل ثم إعادة إدخالها صحيحة.")
         invoice, source, reference = self._load(connection, source_type, source_id, lock)

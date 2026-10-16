@@ -176,6 +176,9 @@ class IntermediaryHoldingRepository(BaseRepository):
             total += int(self._fetch_one(f"SELECT COUNT(*) AS n FROM {table} WHERE party_id = %s FOR SHARE", (_id(party_id),))["n"])
         total += int(self._fetch_one("SELECT COUNT(*) AS n FROM supplier_gold_settlements WHERE holding_party_id = %s FOR SHARE", (_id(party_id),))["n"])
         total += int(self._fetch_one("SELECT COUNT(*) AS n FROM holding_receipts WHERE party_id = %s FOR SHARE", (_id(party_id),))["n"])
+        exists = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'marketer_documents'")["n"]
+        if int(exists):                                                       # 055: a marketer custody document (cash, gold, sale, purchase) is holding history too
+            total += int(self._fetch_one("SELECT COUNT(*) AS n FROM marketer_documents WHERE party_id = %s FOR SHARE", (_id(party_id),))["n"])
         return total
 
     # ------------------------------------------------------------------ physical receipts (051): insert-only writes

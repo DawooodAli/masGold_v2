@@ -822,7 +822,7 @@ class Corrections:
     def insert_correction(self, **kw):
         self._fail("correction")
         assert kw["reason"].strip()
-        assert kw["source_type"] in (SOURCE, "SUPPLIER_GOLD_SETTLEMENT", "HOLDING_RECEIPT") and kw["invoice_id"] is None and kw["correction_type"] == "FULL_REVERSAL"
+        assert kw["source_type"] in (SOURCE, "SUPPLIER_GOLD_SETTLEMENT", "HOLDING_RECEIPT", "MARKETER_DOCUMENT") and kw["invoice_id"] is None and kw["correction_type"] == "FULL_REVERSAL"
         if any((c["source_type"], c["source_id"], c["correction_type"]) == (kw["source_type"], str(kw["source_id"]), "FULL_REVERSAL")
                for c in self.db.corrections):
             raise RuntimeError("Duplicate entry for key uq_correction_one_reversal")
@@ -852,7 +852,7 @@ class Corrections:
 
     def add_old_gold(self, *, karat_id, weight_delta, movement_code, correction_id, **kw):
         self._fail("reversal_scrap")
-        assert movement_code in ("REVERSAL_TRIP_ISSUE_IN", "REVERSAL_TRIP_RETURN_OUT", "REVERSAL_SUPPLIER_GOLD_SETTLEMENT_IN")
+        assert movement_code in ("REVERSAL_TRIP_ISSUE_IN", "REVERSAL_TRIP_RETURN_OUT", "REVERSAL_SUPPLIER_GOLD_SETTLEMENT_IN", "REVERSAL_MARKETER_GOLD_RETURN_OUT")
         move_id = self.db.next("scrap")
         self.db.scrap.append({"id": move_id, "karat_id": int(karat_id), "weight_delta": weight_delta,
                               "reference_type": "TRANSACTION_CORRECTION", "reference_id": str(correction_id), "type_code": movement_code})
@@ -1591,7 +1591,7 @@ class SettlementRepo:
 
     def insert_leg(self, *, settlement_id, kind, source_kind, old_gold_movement_id=None, supplier_gold_movement_id=None):
         self._fail("sg_leg")
-        assert source_kind in ("SHOP_SCRAP", "CUSTODY_GOLD", "CUSTODY_LOT", "HOLDING_LOT", "HOLDING_LOGO")   # chk_sgsl_source
+        assert source_kind in ("SHOP_SCRAP", "CUSTODY_GOLD", "CUSTODY_LOT", "HOLDING_LOT", "HOLDING_LOGO", "HOLDING_MARKETER")   # chk_sgsl_source
         assert kind != "SCRAP" or source_kind == "SHOP_SCRAP"                                 # chk_sgsl_scrap_only: no second Scrap deduction
         assert self.db.settlements[int(settlement_id)]["source_kind"] == source_kind          # fk_sgsl_source (the composite foreign key)
         assert (kind == "SCRAP" and old_gold_movement_id is not None and supplier_gold_movement_id is None) or \
