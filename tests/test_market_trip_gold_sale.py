@@ -263,7 +263,7 @@ class ReversalTests(SaleCase):
         self.assertEqual(self.gold(), D("0.000"))
 
     def test_the_issue_cannot_be_reversed_while_a_sale_depends_on_its_gold(self):
-        first = self.service.trip_detail(self.trip)["entries"][0]
+        first = self.service.trip_detail(self.trip)["entries"][-1]  # the detail is newest first: the first issue is the last row
         self.sell(grams="20", total="1", designation="LOGO", ack=True)
         self.refused("DEPENDENT_RETURN_EXISTS", lambda: self.service.reverse(first["id"], "تصحيح"), CorrectionError)
 

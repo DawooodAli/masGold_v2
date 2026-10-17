@@ -194,8 +194,8 @@ class MeltTests(MeltCase):
                                                                   residues=[("0.001", "", "")], gain="   "))
         self.melt(melt_inputs((K21, "1")), main=("1.000", "800"))                         # equal weight needs none
         self.melt(melt_inputs((K21, "1")), main=("1.001", "800"), gain="شوائب أخف من المتوقع")
-        self.assertEqual(self.detail()["melts"][1]["gain_explanation"], "شوائب أخف من المتوقع")
-        self.assertEqual(self.detail()["melts"][1]["analysis"]["weight_difference"], D("0.001"))
+        self.assertEqual(self.detail()["melts"][0]["gain_explanation"], "شوائب أخف من المتوقع")                  # the detail is newest first: the gain melt is the latest
+        self.assertEqual(self.detail()["melts"][0]["analysis"]["weight_difference"], D("0.001"))
 
     def test_the_inputs_are_limited_by_the_melt_designated_custody_of_each_karat(self):
         before = self.state()
@@ -357,7 +357,7 @@ class ReversalTests(MeltCase):
         self.assertTrue(melt["reversed"])
         self.assertEqual(melt["analysis"], analysis_before)                               # the processing difference is permanent
         self.assertEqual(self.db.melts[self.melt_entry]["workshop"], "ورشة النور")
-        self.assertTrue(self.detail()["entries"][1]["reversed"])
+        self.assertTrue(self.detail()["entries"][0]["reversed"])                                  # newest first: the melt entry (the latest) is the first row
 
     def test_a_blank_reason_and_the_missing_rights_are_refused(self):
         before = self.state()

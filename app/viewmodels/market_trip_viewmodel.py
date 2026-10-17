@@ -59,6 +59,10 @@ def outstanding_text(custody):
     return " • ".join(parts) if parts else "لا شيء متبقٍ"
 
 
+TAB_STATUS = {"ACTIVE": "OPEN", "ARCHIVE": "CLOSED"}      # the active tab shows OPEN trips, the archive tab CLOSED ones (the existing status, nothing else)
+TRIP_PAGE_SIZE = 50
+
+
 class MarketTripViewModel(QObject):
     changed = Signal()
     entryPosted = Signal(str)            # the entry code: the entry dialog can close
@@ -73,6 +77,7 @@ class MarketTripViewModel(QObject):
         self._workers, self._request, self._latest, self._busy = set(), 0, {}, set()
         self._shutdown = False
         self._trips, self._detail, self._context, self._shop_lots = [], {}, {}, []
+        self._tab, self._page, self._has_more = "ACTIVE", 1, False          # which list is shown, its page and whether a next page exists
         self._reference_prices = {}                                      # SHOP_BUY per gram by karat: loaded when the sale dialog opens
         self._selected, self._error, self._message = "", "", ""
         self._reversing_payment = False
@@ -127,23 +132,62 @@ class MarketTripViewModel(QObject):
     # ------------------------------------------------------------ reads
     @Slot()
     def refresh(self, _reason=""):
-        """Trips, the open trip's detail and the entry-dialog context: always from the database."""
+        """The shown page of trips, the selected trip's detail and the entry-dialog context: always from the database."""
         if not self.canManage:
             return
         service = self._service_instance()
-        self._start("list", lambda _expected_actor: service.trips(_expected_actor=_expected_actor))
+        self._load_list()
         self._start("context", lambda _expected_actor: service.context(_expected_actor=_expected_actor))
         self._start("shoplots", lambda _expected_actor: service.shop_lots(_expected_actor=_expected_actor))
         if self._selected:
             self._load_detail()
 
+    def _load_list(self):
+        """Ask for the CURRENT tab / page. The request carries both, so an answer that no longer matches (the user switched tab or page meanwhile) is ignored."""
+        service, status, page = self._service_instance(), TAB_STATUS[self._tab], self._page
+        self._start("list", lambda _expected_actor: service.trip_page(status, page, TRIP_PAGE_SIZE, _expected_actor=_expected_actor))
+
     def _on_list(self, result, error):
         if error:
             self._error = error
             return
-        self._trips, self._error = result, ""
-        if self._selected and not any(t["id"] == self._selected for t in result):
-            self._selected, self._detail = "", {}
+        if result["status"] != TAB_STATUS[self._tab] or result["page"] != self._page:
+            return                                                           # a late answer for another tab / page: never shown
+        if not result["rows"] and self._page > 1:
+            self._page -= 1                                                  # the last row of the last page moved away (closed / reopened): go back one page
+            self._load_list()
+            return
+        self._trips, self._has_more, self._error = result["rows"], bool(result["has_more"]), ""
+        # A selected trip that is not in this list is NOT cleared: it may live in the other tab or on another page. Only a missing trip clears it (_on_detail).
+
+    @Slot(str)
+    def showTripTab(self, tab):
+        """Switch between «النشطة» (OPEN) and «الأرشيف» (CLOSED). The selection belongs to the tab it was made in, so it is cleared; page 1 is shown."""
+        tab = "ARCHIVE" if tab == "ARCHIVE" else "ACTIVE"
+        if tab == self._tab:
+            return
+        self._tab, self._page, self._has_more = tab, 1, False
+        self._trips, self._selected, self._detail = [], "", {}
+        self._error = self._message = ""
+        self.changed.emit()
+        if self.canManage:
+            self._load_list()
+
+    @Slot()
+    def nextTripPage(self):
+        if self._has_more and self.canManage:
+            self._page += 1
+            self._trips, self._has_more = [], False
+            self.changed.emit()
+            self._load_list()
+
+    @Slot()
+    def previousTripPage(self):
+        if self._page > 1 and self.canManage:
+            self._page -= 1
+            self._trips, self._has_more = [], False
+            self.changed.emit()
+            self._load_list()
 
     @Slot()
     def loadReferencePrices(self):
@@ -181,6 +225,8 @@ class MarketTripViewModel(QObject):
     def _on_detail(self, result, error):
         if error:
             self._error = error
+            if self._last_code == "TRIP_NOT_FOUND":                         # only a trip that no longer exists clears the selection
+                self._selected, self._detail = "", {}
             return
         if result["trip"]["id"] == self._selected:
             self._detail, self._error = result, ""
@@ -217,8 +263,14 @@ class MarketTripViewModel(QObject):
             if result.get("duplicate"):
                 text = f"{self._done_text} {result['code']} (مسجلة من قبل)"
         self._message = text
-        if isinstance(result, dict) and result.get("trip_id") and not self._selected:
-            self._selected = result["trip_id"]
+        if isinstance(result, dict) and result.get("trip_id"):
+            if self._operation == "create":
+                # A NEW custody (createCustody only) is OPEN: show it where it lives - Active, page 1, selected - whatever tab, page or trip was shown.
+                # The refresh below issues newer list / detail requests, so a late answer for the previous view is dropped by the request ids.
+                self._tab, self._page, self._has_more, self._trips = "ACTIVE", 1, False, []
+                self._selected, self._detail = result["trip_id"], {}
+            elif not self._selected:
+                self._selected = result["trip_id"]                          # an operation on an existing trip never navigates
         self.refresh()
         # Notified only after the transaction succeeded; a failing refresh belongs to the view that failed, never to this write.
         if self._moved:
@@ -592,8 +644,29 @@ class MarketTripViewModel(QObject):
                  "outstandingText": outstanding_text(t["custody"]) + (
                      " • ذهب خارج المحل لدى مسوقجي: " + grams(sum((p["balance"] for p in t.get("external_holdings", [])), Decimal("0"))) + " جرام"
                      if t.get("external_holdings") else ""), "settled": t["custody"]["settled"],
-                 "entryCount": t["entry_count"], "date": date_text(t["created_at"]), "selected": t["id"] == self._selected}
+                 "entryCount": t["entry_count"], "date": date_text(t["created_at"]), "closedDate": date_text(t["status_changed_at"]) if t["status"] == "CLOSED" else "",
+                 "selected": t["id"] == self._selected}
                 for t in self._trips]
+
+    @Property(str, notify=changed)
+    def tripTab(self):
+        return self._tab
+
+    @Property(int, notify=changed)
+    def tripPage(self):
+        return self._page
+
+    @Property(bool, notify=changed)
+    def tripHasNext(self):
+        return self._has_more
+
+    @Property(bool, notify=changed)
+    def tripHasPrevious(self):
+        return self._page > 1
+
+    @Property(int, constant=True)
+    def tripPageSize(self):
+        return TRIP_PAGE_SIZE
 
     @Property("QVariantList", notify=changed)
     def shopLots(self):

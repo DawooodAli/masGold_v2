@@ -217,6 +217,28 @@ Item {
                     primary: true
                     onClicked: entryDialog.openFor("ISSUE", "")
                 }
+                // «النشطة» = OPEN trips (default), «الأرشيف» = CLOSED trips: the same status, filtered; nothing is moved or deleted
+                RowLayout {
+                    Layout.fillWidth: true
+                    layoutDirection: Qt.RightToLeft
+                    spacing: 6
+                    Btn {
+                        objectName: "tripTabActive"
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: 1
+                        text: "النشطة"
+                        primary: !!page.vm && page.vm.tripTab === "ACTIVE"
+                        onClicked: page.vm.showTripTab("ACTIVE")
+                    }
+                    Btn {
+                        objectName: "tripTabArchive"
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: 1
+                        text: "الأرشيف"
+                        primary: !!page.vm && page.vm.tripTab === "ARCHIVE"
+                        onClicked: page.vm.showTripTab("ARCHIVE")
+                    }
+                }
                 ListView {
                     id: tripList
                     objectName: "tripList"
@@ -226,6 +248,7 @@ Item {
                     spacing: 5
                     model: page.vm ? page.vm.trips : []
                     delegate: Rectangle {
+                        objectName: "tripRowItem"
                         width: tripList.width
                         height: Math.max(58, tripRow.implicitHeight + 14)
                         radius: theme.radiusSmall
@@ -247,9 +270,25 @@ Item {
                             }
                             Txt { Layout.fillWidth: true; text: modelData.outstandingText; color: theme.textSecondary
                                   font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "tripClosedDate"; Layout.fillWidth: true; visible: modelData.closedDate !== ""; text: "أُغلقت: " + modelData.closedDate
+                                  color: theme.textMuted; font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
                         }
                     }
-                    Txt { anchors.centerIn: parent; visible: tripList.count === 0; text: "لا توجد عهدة سوق مسجلة بعد"; color: theme.textMuted }
+                    Txt { objectName: "tripListEmpty"; anchors.centerIn: parent; visible: tripList.count === 0
+                          text: !!page.vm && page.vm.tripTab === "ARCHIVE" ? "لا توجد عهدة مغلقة في الأرشيف" : "لا توجد عهدة نشطة"; color: theme.textMuted }
+                }
+                // pages of the shown tab (the filter and the order are applied before the page is cut)
+                RowLayout {
+                    objectName: "tripPager"
+                    Layout.fillWidth: true
+                    visible: !!page.vm && (page.vm.tripHasNext || page.vm.tripHasPrevious)
+                    layoutDirection: Qt.RightToLeft
+                    spacing: 6
+                    Btn { objectName: "tripPagePrevious"; Layout.fillWidth: true; Layout.preferredWidth: 1; text: "السابقة"; enabled: !!page.vm && page.vm.tripHasPrevious
+                          onClicked: page.vm.previousTripPage() }
+                    Txt { objectName: "tripPageLabel"; text: "صفحة " + (page.vm ? page.vm.tripPage : 1); color: theme.textSecondary; elide: Text.ElideNone }
+                    Btn { objectName: "tripPageNext"; Layout.fillWidth: true; Layout.preferredWidth: 1; text: "التالية"; enabled: !!page.vm && page.vm.tripHasNext
+                          onClicked: page.vm.nextTripPage() }
                 }
                 // ناتج السبك بالمحل: lots the shop holds after a return from the market. Apart from the Scrap strip, the karat totals and custody.
                 Rectangle {
@@ -486,7 +525,7 @@ Item {
                         objectName: "archiveToggle"
                         Layout.fillWidth: true
                         accent: theme.gold
-                        text: (page.archiveOpen ? "إخفاء الأرشيف / السجل" : "الأرشيف / السجل (عرض الحركات وعكس عملية)")
+                        text: (page.archiveOpen ? "إخفاء سجل الحركات" : "سجل الحركات (عرض الحركات وعكس عملية)")
                               + "  •  " + ((page.detail.entries || []).length + (page.detail.heats || []).length + (page.detail.melts || []).length)
                         onClicked: page.archiveOpen = !page.archiveOpen
                     }

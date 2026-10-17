@@ -251,7 +251,7 @@ class ReversalTests(BuyCase):
 
     def test_the_issue_cannot_be_reversed_while_a_purchase_depends_on_its_cash(self):
         self.buy([line(weight="10", price="100000")], ack=True)
-        first = self.service.trip_detail(self.trip)["entries"][0]
+        first = self.service.trip_detail(self.trip)["entries"][-1]  # the detail is newest first: the first issue is the last row
         self.refused("DEPENDENT_RETURN_EXISTS", lambda: self.service.reverse(first["id"], "تصحيح"), CorrectionError)
 
 

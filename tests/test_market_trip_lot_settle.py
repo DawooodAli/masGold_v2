@@ -33,7 +33,7 @@ class LotSettleTests(GoldSettleCase):
         self.assertEqual((h["delivered_karat_id"],h["delivered_karat_value"],h["delivered_lot_id"]),(None,None,lot["id"]))
         self.assertEqual(self.db.lot_moves[-1]["weight_delta"],-lot["weight_grams"])
         self.assertEqual(self.db.sup_gold[-1]["weight_delta"],D("-11.667"))
-        detail=self.service.trip_detail(trip)["entries"][-1]["lot_settlement"]
+        detail=self.service.trip_detail(trip)["entries"][0]["lot_settlement"]  # the detail is newest first
         self.assertEqual(detail["lot_id"],str(lot["id"]))
         self.assertEqual(detail["origin"],melt["code"])
 

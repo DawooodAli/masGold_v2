@@ -174,9 +174,9 @@ class GoldSaleUiTests(base.MarketTripHeatPageTests):
                 collect(child)
         collect(self.root.contentItem())
         self.assertEqual(len(buttons), 2)                                                         # the issue and the sale
-        self.reveal(buttons[-1])
-        self.assert_inside_window(buttons[-1])
-        self.click(buttons[-1])
+        self.reveal(buttons[0])
+        self.assert_inside_window(buttons[0])
+        self.click(buttons[0])
         self.wait_until(lambda: self.item("tripReasonDialog").property("opened"), "reversal dialog")
         self.assertFalse(self.item("confirmTripReasonButton").property("enabled"))                # a reason is mandatory
         self.type_in("tripReasonField", "خطأ في الصفقة")

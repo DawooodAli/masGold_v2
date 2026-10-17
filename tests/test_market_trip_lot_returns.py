@@ -347,7 +347,7 @@ class ViewModelTests(LotCase):
         (row,) = self.vm.shopLots
         self.assertEqual((row["ref"], row["weight"], row["pure"]), ("MT000001-2 • شحنة 1", "2.950", "2.743500"))
         self.assertIn("930.0", row["fineness"])
-        entry = self.vm.detail["entries"][-1]
+        entry = self.vm.detail["entries"][0]  # the detail is newest first: the latest entry is the first row
         self.assertEqual(entry["kindText"], "رجوع ناتج السبك")
         self.assertIn("شحنة 1 من MT000001-2: 2.950 جرام", entry["what"])
         self.assertTrue(entry["canReverse"])
@@ -378,7 +378,7 @@ class ViewModelTests(LotCase):
         self.assertIn("مسجلة من قبل", self.vm.message)
         self.assertEqual(len([r for r in self.db.lot_returns if r["weight_grams"] == D("2.950")]), 1)
         self.vm.reverseEntry(str(max(self.db.entries)), "خطأ")
-        self.assertTrue(self.vm.detail["entries"][-1]["reversed"])
+        self.assertTrue(self.vm.detail["entries"][0]["reversed"])  # the detail is newest first
         self.assertEqual(self.vm.shopLots, [])
         self.assertEqual(self.vm.detail["returnableLots"][0]["available"], "2.950")
 

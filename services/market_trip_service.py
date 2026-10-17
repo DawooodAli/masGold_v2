@@ -93,6 +93,9 @@ _DESIGNATION_INPUT = {"MELT": MELT_DESIGNATION, "للسبك": MELT_DESIGNATION, 
 LOT_RETURN_NOTE = "صفِّ السبائك المتبقية برجوع ناتج السبك إلى المحل أو بتسوية سبكة معلومة العيار من العهدة قبل الإغلاق."
 
 
+TRIP_PAGE_SIZE, MAX_TRIP_PAGE_SIZE = 50, 100          # trips per page of the custody list (the page filter/order is SQL, never a cap on the data)
+
+
 class TripError(ValueError):
     """A refused trip operation. `code` is a stable machine reason; the message is Arabic, ready to show."""
 
@@ -376,7 +379,29 @@ class MarketTripService:
                                 "physical": Decimal(str(r["physical_grams"])), "held": Decimal(str(r["held_grams"])),
                                 "available": Decimal(str(r["available_grams"]))} for r in scrap]}
 
+    def trip_page(self, status=OPEN, page=1, page_size=TRIP_PAGE_SIZE, *, _expected_actor=None):
+        """ONE page of the OPEN (active) or CLOSED (archive) trips, newest first (see `MarketTripRepository.trip_page`). The status filter and the order are
+        applied before the limit; `has_more` says whether another page exists. Closed trips stay fully readable through `trip_detail`."""
+        actor = self._actor(_expected_actor)
+        if status not in (OPEN, CLOSED):
+            raise TripError("STATUS_INVALID", "حالة العهدة غير صحيحة.")
+        try:
+            page, page_size = int(page), int(page_size)
+        except (TypeError, ValueError):
+            raise TripError("PAGE_INVALID", "رقم الصفحة غير صحيح.") from None
+        if page < 1 or not 1 <= page_size <= MAX_TRIP_PAGE_SIZE:
+            raise TripError("PAGE_INVALID", "رقم الصفحة غير صحيح.")
+        with self._transaction() as connection:
+            self._authorization.require_permission_read(connection, actor, PERMISSION)
+            repository = self._repository(connection)
+            rows = repository.trip_page(status, page, page_size)
+            has_more, rows = len(rows) > page_size, rows[:page_size]
+            external = self._external_holdings(connection, actor)
+            result = [self._trip_row(row, self._custody(repository, row["id"]), external.get(int(row["id"]), [])) for row in rows]
+        return {"status": status, "page": page, "page_size": page_size, "has_more": has_more, "rows": result}
+
     def trips(self, *, _expected_actor=None):
+        """The unpaged legacy list (the 100 newest, every status). The custody screen uses `trip_page`; this stays for existing callers."""
         actor = self._actor(_expected_actor)
         with self._transaction() as connection:
             self._authorization.require_permission_read(connection, actor, PERMISSION)
@@ -410,8 +435,8 @@ class MarketTripService:
             if trip is None:
                 raise TripError("TRIP_NOT_FOUND", "العهدة غير موجودة.")
             custody = self._custody(repository, trip_id)
-            entries, events, melts = repository.entries(trip_id), repository.events(trip_id), repository.melts(trip_id)
-            heats = repository.heats(trip_id)
+            entries, events = repository.entries(trip_id, newest_first=True), repository.events(trip_id, newest_first=True)
+            melts, heats = repository.melts(trip_id, newest_first=True), repository.heats(trip_id, newest_first=True)
             external = self._external_holdings(connection, actor).get(trip_id, [])
         return {"trip": self._trip_row(trip, custody, external), "custody": custody, "external_holdings": external,
                 "entries": [self._entry_row(e) for e in entries],

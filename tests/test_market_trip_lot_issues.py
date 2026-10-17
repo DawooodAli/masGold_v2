@@ -354,7 +354,7 @@ class ViewModelTests(BarCase):
         self.assertIn("MT000001-2", lot["title"])
         (returnable,) = self.vm.detail["returnableLots"]
         self.assertEqual((returnable["ref"], returnable["returnable"]), ("MT000001-2 • شحنة 1", True))
-        entry = self.vm.detail["entries"][-1]
+        entry = self.vm.detail["entries"][0]  # the detail is newest first: the latest entry is the first row
         self.assertEqual(entry["kindText"], "إخراج سبكة من المحل")
         self.assertIn("شحنة 1 من MT000001-2: 2.950 جرام", entry["what"])
         self.vm.returnLots(self.second, [{"lotId": str(self.lot)}], TODAY, "", self.vm.newRequestKey())

@@ -170,9 +170,9 @@ class GoldSettlePageTests(base.MarketTripHeatPageTests):
         reloads, scrap = self.stub.reloads, len(self.db.scrap)
         buttons = self.reverse_buttons()
         self.assertEqual(len(buttons), 2)                                                         # the issue and the settlement
-        self.reveal(buttons[-1])
-        self.assert_inside_window(buttons[-1])
-        self.click(buttons[-1])
+        self.reveal(buttons[0])
+        self.assert_inside_window(buttons[0])
+        self.click(buttons[0])
         self.wait_until(lambda: self.item("tripReasonDialog").property("opened"), "reversal dialog")
         self.assertIn("عاد فعلًا إلى عهدة السوق", self.text("tripReasonNote"))                      # the gold was actually recovered into custody
         self.assertFalse(self.item("confirmTripReasonButton").property("enabled"))                # a reason is mandatory

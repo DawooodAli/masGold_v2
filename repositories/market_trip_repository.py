@@ -141,10 +141,12 @@ class MarketTripRepository(BaseRepository):
         self._execute("INSERT INTO market_trip_status_events (trip_id, event_type, reason, performed_by_user_id, occurred_at) "
                       "VALUES (%s, %s, %s, %s, %s)", (_id(trip_id), event_type, reason, actor.user_id, now))
 
-    def events(self, trip_id):
+    def events(self, trip_id, *, newest_first=False):
+        """The trip's status events. `newest_first` is the DISPLAY order (`occurred_at DESC, id DESC`); the default keeps the chronological one."""
+        order = "e.occurred_at DESC, e.id DESC" if newest_first else "e.id"
         return self._fetch_all(
-            "SELECT e.event_type, e.reason, e.occurred_at, u.display_name AS actor_name FROM market_trip_status_events e "
-            "LEFT JOIN users u ON u.id = e.performed_by_user_id WHERE e.trip_id = %s ORDER BY e.id", (_id(trip_id),))
+            "SELECT e.id, e.event_type, e.reason, e.occurred_at, u.display_name AS actor_name FROM market_trip_status_events e "
+            "LEFT JOIN users u ON u.id = e.performed_by_user_id WHERE e.trip_id = %s ORDER BY " + order, (_id(trip_id),))
 
     def trips(self, limit=100):
         return self._fetch_all(
@@ -153,6 +155,18 @@ class MarketTripRepository(BaseRepository):
                    (SELECT COUNT(*) FROM market_trip_entries e WHERE e.trip_id = t.id) AS entry_count
             FROM market_trips t ORDER BY t.id DESC LIMIT %s
             """, (int(limit),))
+
+    def trip_page(self, status, page, page_size):
+        """ONE page of the trips of a status. The filter (status) and the order are applied in SQL BEFORE the limit, so no trip is ever hidden behind a cap:
+        OPEN: `created_at DESC, id DESC`; CLOSED (the archive): `status_changed_at DESC, id DESC` (the closing time; a reopened trip is OPEN again and
+        returns to its `created_at` position). One extra row is read so the caller knows whether a next page exists (it is returned, not hidden)."""
+        order = "t.status_changed_at DESC, t.id DESC" if status == "CLOSED" else "t.created_at DESC, t.id DESC"
+        return self._fetch_all(
+            f"""
+            SELECT t.id, t.status, t.notes, t.created_at, t.status_changed_at,
+                   (SELECT COUNT(*) FROM market_trip_entries e WHERE e.trip_id = t.id) AS entry_count
+            FROM market_trips t WHERE t.status = %s ORDER BY {order} LIMIT %s OFFSET %s
+            """, (status, int(page_size) + 1, (int(page) - 1) * int(page_size)))
 
     def all_trip_ids(self):
         """EVERY trip (id, status), oldest first, with no limit and no per-trip document history: the consolidated gold position derives each trip's
@@ -380,8 +394,9 @@ class MarketTripRepository(BaseRepository):
             ORDER BY me.id FOR SHARE OF m, me
             """, (_id(entry_id),))
 
-    def melts(self, trip_id):
+    def melts(self, trip_id, *, newest_first=False):
         """Every melt of the trip - reversed ones too: the analysis is permanent - with inputs and lots."""
+        order = "e.occurred_at DESC, e.id DESC" if newest_first else "e.entry_no"
         rows = self._fetch_all(
             """
             SELECT mt.*, e.trip_id, e.entry_no, e.entry_date, e.notes, e.occurred_at, u.display_name AS actor_name,
@@ -390,7 +405,7 @@ class MarketTripRepository(BaseRepository):
             LEFT JOIN users u ON u.id = e.performed_by_user_id
             LEFT JOIN transaction_corrections r ON r.source_type = '""" + SOURCE + """' AND r.source_id = e.id
                  AND r.correction_type = 'FULL_REVERSAL'
-            WHERE e.trip_id = %s ORDER BY e.entry_no
+            WHERE e.trip_id = %s ORDER BY """ + order + """
             """, (_id(trip_id),))
         for row in rows:
             row["inputs"] = self._fetch_all(
@@ -415,8 +430,9 @@ class MarketTripRepository(BaseRepository):
             "VALUES (%s, %s, 'LOGO', %s, %s, %s)",
             (_id(entry_id), int(karat_id), input_weight, output_weight, output_weight - input_weight))
 
-    def heats(self, trip_id):
+    def heats(self, trip_id, *, newest_first=False):
         """Every heating document of the trip - reversed ones too: the measurements are permanent - with its lines."""
+        order = "e.occurred_at DESC, e.id DESC" if newest_first else "e.entry_no"
         rows = self._fetch_all(
             """
             SELECT ht.*, e.trip_id, e.entry_no, e.entry_date, e.notes, e.occurred_at, u.display_name AS actor_name,
@@ -425,7 +441,7 @@ class MarketTripRepository(BaseRepository):
             LEFT JOIN users u ON u.id = e.performed_by_user_id
             LEFT JOIN transaction_corrections r ON r.source_type = '""" + SOURCE + """' AND r.source_id = e.id
                  AND r.correction_type = 'FULL_REVERSAL'
-            WHERE e.trip_id = %s ORDER BY e.entry_no
+            WHERE e.trip_id = %s ORDER BY """ + order + """
             """, (_id(trip_id),))
         for row in rows:
             row["lines"] = self._fetch_all(
@@ -770,7 +786,10 @@ class MarketTripRepository(BaseRepository):
         return grouped
 
     # ------------------------------------------------------------------ history
-    def entries(self, trip_id):
+    def entries(self, trip_id, *, newest_first=False):
+        """The trip's documents with their reference numbers (`entry_no` is a stable reference, never the display order): `newest_first` orders by
+        `occurred_at DESC, id DESC`."""
+        order = "e.occurred_at DESC, e.id DESC" if newest_first else "e.entry_no"
         rows = self._fetch_all(
             """
             SELECT e.id, e.trip_id, e.entry_no, e.entry_kind, e.entry_date, e.notes, e.occurred_at, u.display_name AS actor_name,
@@ -782,7 +801,7 @@ class MarketTripRepository(BaseRepository):
             LEFT JOIN cash_accounts ca ON ca.id = c.cash_account_id
             LEFT JOIN transaction_corrections r ON r.source_type = '""" + SOURCE + """' AND r.source_id = e.id
                  AND r.correction_type = 'FULL_REVERSAL'
-            WHERE e.trip_id = %s ORDER BY e.entry_no
+            WHERE e.trip_id = %s ORDER BY """ + order + """
             """, (_id(trip_id),))
         for row in rows:
             row["lot_returns"] = self._fetch_all(

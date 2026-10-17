@@ -66,7 +66,7 @@ class LotSettlePageTests(GoldSettlePageTests):
         self.click('confirmCustodyLotSettleButton');self.wait_until(lambda:len(self.db.settlements)==1,'posted')
         self.closed('tripLotSettleDialog');self.wait_idle();reloads=self.stub.reloads
         buttons=self.reverse_buttons();self.assertEqual(len(buttons),3)
-        self.reveal(buttons[-1]);self.click(buttons[-1])
+        self.reveal(buttons[0]);self.click(buttons[0])
         self.wait_until(lambda:self.item('tripReasonDialog').property('opened'),'reversal dialog')
         self.assertIn('الشحنة الأصلية',self.text('tripReasonNote'))
         self.assertFalse(self.item('confirmTripReasonButton').property('enabled'))

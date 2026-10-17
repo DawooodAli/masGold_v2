@@ -187,11 +187,19 @@ class TripRepo:
         self._fail("event")
         assert event_type in ("OPENED", "CLOSED", "REOPENED")                                # chk_mtse_type
         assert event_type != "REOPENED" or (reason or "").strip()                            # chk_mtse_reason
-        self.db.events.append({"trip_id": int(trip_id), "event_type": event_type, "reason": reason,
+        self.db.events.append({"id": len(self.db.events) + 1, "trip_id": int(trip_id), "event_type": event_type, "reason": reason,
                                "actor_name": "المالك", "occurred_at": now})
 
-    def events(self, trip_id):
-        return [dict(e) for e in self.db.events if e["trip_id"] == int(trip_id)]
+    def events(self, trip_id, *, newest_first=False):
+        rows = [dict(e) for e in self.db.events if e["trip_id"] == int(trip_id)]
+        return sorted(rows, key=lambda e: (e["occurred_at"], e["id"]), reverse=True) if newest_first else rows
+
+    def trip_page(self, status, page, page_size):
+        """Mirrors MarketTripRepository.trip_page: filter, then order, THEN the page (one extra row says whether a next page exists)."""
+        rows = [t for t in self.db.trips.values() if t["status"] == status]
+        rows.sort(key=(lambda t: (t["status_changed_at"], t["id"])) if status == "CLOSED" else (lambda t: (t["created_at"], t["id"])), reverse=True)
+        start = (int(page) - 1) * int(page_size)
+        return [{**t, "entry_count": sum(1 for e in self.db.entries.values() if e["trip_id"] == t["id"])} for t in rows[start:start + int(page_size) + 1]]
 
     def trips(self, limit=100):
         return [{**t, "entry_count": sum(1 for e in self.db.entries.values() if e["trip_id"] == t["id"])}
@@ -472,10 +480,10 @@ class TripRepo:
                 seen[e["id"]] = {"entry_id": e["id"], "trip_id": e["trip_id"], "entry_no": e["entry_no"]}
         return list(seen.values())
 
-    def melts(self, trip_id):
+    def melts(self, trip_id, *, newest_first=False):
         rows = []
         for e in sorted((e for e in self.db.entries.values() if e["trip_id"] == int(trip_id) and e["id"] in self.db.melts),
-                        key=lambda e: e["entry_no"]):
+                        key=(lambda e: (e["occurred_at"], e["id"])) if newest_first else (lambda e: e["entry_no"]), reverse=newest_first):
             reversal = next((c for c in self.db.corrections if c["source_type"] == SOURCE and c["source_id"] == str(e["id"])
                              and c["correction_type"] == "FULL_REVERSAL"), None)
             m = self.db.melts[e["id"]]
@@ -519,10 +527,10 @@ class TripRepo:
     def entry_heat_lines(self, entry_id):
         return [dict(l) for l in sorted((l for l in self.db.heat_lines if l["entry_id"] == int(entry_id)), key=lambda l: l["karat_id"])]
 
-    def heats(self, trip_id):
+    def heats(self, trip_id, *, newest_first=False):
         rows = []
         for e in sorted((e for e in self.db.entries.values() if e["trip_id"] == int(trip_id) and e["id"] in self.db.heats),
-                        key=lambda e: e["entry_no"]):
+                        key=(lambda e: (e["occurred_at"], e["id"])) if newest_first else (lambda e: e["entry_no"]), reverse=newest_first):
             reversal = next((c for c in self.db.corrections if c["source_type"] == SOURCE and c["source_id"] == str(e["id"])
                              and c["correction_type"] == "FULL_REVERSAL"), None)
             rows.append({**self.db.heats[e["id"]], "trip_id": e["trip_id"], "entry_no": e["entry_no"], "entry_date": e["entry_date"],
@@ -555,9 +563,10 @@ class TripRepo:
                 if e["entry_kind"] == "RETURN" and e["entry_no"] > int(after_entry_no)
                 and any(g["entry_id"] == e["id"] and g["designation"] == "LOGO" and g["karat_id"] in wanted for g in self.db.gold_legs)]
 
-    def entries(self, trip_id):
+    def entries(self, trip_id, *, newest_first=False):
         rows = []
-        for e in sorted((e for e in self.db.entries.values() if e["trip_id"] == int(trip_id)), key=lambda e: e["entry_no"]):
+        for e in sorted((e for e in self.db.entries.values() if e["trip_id"] == int(trip_id)),
+                        key=(lambda e: (e["occurred_at"], e["id"])) if newest_first else (lambda e: e["entry_no"]), reverse=newest_first):
             cash = next((l for l in self.db.cash_legs if l["entry_id"] == e["id"]), None)
             reversal = next((c for c in self.db.corrections if c["source_type"] == SOURCE and c["source_id"] == str(e["id"])
                              and c["correction_type"] == "FULL_REVERSAL"), None)
