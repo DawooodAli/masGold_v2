@@ -562,6 +562,10 @@ class HoldingHistoryRepo:
     def history_count(self, party_id):
         return getattr(self.db, "holding_history", {}).get(int(party_id), 0)
 
+    def marketer_gold_balance(self, party_id):
+        """Mirrors IntermediaryHoldingRepository.marketer_gold_balance: the signed 21K ledger of the marketer account (055), 0 when there is none."""
+        return sum((m["weight_delta"] for m in getattr(self.db, "mk_gold", []) if m["party_id"] == int(party_id)), D("0.000"))
+
     def open_pools(self, *, party_id=None, trip_id=None):
         return []
 

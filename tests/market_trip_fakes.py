@@ -13,6 +13,7 @@ from app.session import AppSession
 from repositories.market_trip_repository import (CASH_TYPE, CREATE_MOVEMENT, DESIGNATIONS, ISSUE, MELT_DESIGNATION, SCRAP_TYPE,
                                                  SHOP_ISSUE_MOVEMENT, SHOP_ISSUE_OUT, SHOP_ISSUE_REVERSAL, SHOP_RETURN_IN, SHOP_RETURN_MOVEMENT,
                                                  SHOP_RETURN_REVERSAL, SOURCE, UNCLASSIFIED)
+from repositories.request_keys import RequestKeyInUse
 from services.authentication_service import AuthenticationResult, _VERIFIED
 from tests.auth_fakes import FakeAuthorization
 
@@ -21,6 +22,13 @@ OWNER = frozenset({"APP_LOGIN", "MARKET_TRIP_MANAGE", "TRANSACTION_CORRECT", "SU
                    "INTERMEDIARY_HOLDING_VIEW", "INTERMEDIARY_HOLDING_MANAGE", "INTERMEDIARY_HOLDING_REVERSE"})
 OWNER_NO_CORRECT = frozenset({"APP_LOGIN", "MARKET_TRIP_MANAGE"})
 MANAGER = frozenset({"APP_LOGIN", "TRANSACTION_CORRECT", "SUPPLIER_MAKING_PAY"})
+
+
+def marketer_key_guard(db, key):
+    """Mirrors repositories.request_keys.require_no_marketer_key: a key a marketer document owns is refused by every older flow's INSERT (the SQL itself is
+    NOT exercised here; there is no cross-table unique constraint, so this is a service/repository check, not proof of concurrency safety)."""
+    if any(d["request_key"] == key for d in getattr(db, "mk_docs", {}).values()):
+        raise RequestKeyInUse()
 
 
 def session_for(permissions=OWNER, user_id=7):
@@ -199,6 +207,7 @@ class TripRepo:
 
     def insert_entry(self, *, trip_id, entry_no, kind, entry_date, notes, key, digest, actor, now):
         self._fail("entry")
+        marketer_key_guard(self.db, key)
         assert kind in ("ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT", "SUPPLIER_PAY", "GOLD_SETTLE", "LOT_SETTLE", "LOT_HOLD", "HOLD_RETURN", "LOGO_HOLD", "HOLD_BACK", "GOLD_SALE", "GOLD_BUY")                # chk_mte_kind
         if any(e["request_key"] == key for e in self.db.entries.values()):
             raise _dup("uq_mte_request")
@@ -916,6 +925,7 @@ class HoldingRepo:
     def insert_document(self, *, kind, pool, trip_id, document_date, reference, notes, confirmation_code, confirmed_by, confirmed_at, key, digest,
                         actor, now):
         self._fail("document")
+        marketer_key_guard(self.db, key)
         assert kind in ("HANDOVER", "RETURN")                                                  # chk_ihd_kind
         stored = self.db.holding_pools[int(pool["id"])]
         assert (stored["party_id"], stored["lot_id"], stored["weight_grams"], stored["fineness_permille"]) == (
@@ -1047,6 +1057,7 @@ class HoldingRepo:
     # ---- 051: physical receipts (the constraints of migration 051 mirrored as asserts)
     def insert_receipt(self, *, pool, grams, receipt_date, reference, notes, key, digest, actor, now):
         self._fail("receipt")
+        marketer_key_guard(self.db, key)
         stored = self.db.holding_pools[int(pool["id"])]                                          # fk_hr_pool
         assert (stored["party_id"], stored["lot_id"], stored["origin_melt_entry_id"]) == (int(pool["party_id"]), int(pool["lot_id"]), int(pool["origin_melt_entry_id"]))
         assert grams > 0                                                                         # chk_hr_grams
@@ -1208,6 +1219,7 @@ class HoldingRepo:
 
     def insert_logo_document(self, *, kind, pool, weight, document_date, reference, notes, key, digest, actor, now):
         self._fail("logo_document")
+        marketer_key_guard(self.db, key)
         stored = self.db.logo_pools[int(pool["id"])]
         assert (stored["party_id"], stored["karat_id"], stored["trip_id"]) == (int(pool["party_id"]), int(pool["karat_id"]), int(pool["trip_id"]))   # fk_lhd_pool
         assert kind in ("HANDOVER", "RETURN") and weight > 0
@@ -1357,6 +1369,10 @@ class HoldingRepo:
                          "reversal_id": reversal and int(reversal["correction_id"]), "reversal_reason": reversal and reversal["reason"]})
         return rows
 
+    def marketer_gold_balance(self, party_id):
+        """Mirrors IntermediaryHoldingRepository.marketer_gold_balance: the signed 21K ledger of the marketer account (055), 0 when there is none."""
+        return sum((m["weight_delta"] for m in getattr(self.db, "mk_gold", []) if m["party_id"] == int(party_id)), D("0.000"))
+
     def open_pools(self, *, party_id=None, trip_id=None):
         rows = []
         for p in sorted(self.db.holding_pools.values(), key=lambda p: -p["id"]):
@@ -1412,6 +1428,7 @@ class SupplierPayRepo:
     def insert_header(self, *, supplier_id, method, cash_account_id, bank_account_id, amount, payment_date, reference, notes, before, after,
                       key, digest, actor, now):
         self._fail("sm_header")
+        marketer_key_guard(self.db, key)
         assert amount > 0 and after == before - amount                                       # chk_smp_amount / chk_smp_balance
         assert (method == "CUSTODY" and cash_account_id is None and bank_account_id is None) or method in ("CASH", "BANK")   # chk_smp_method
         if any(p["request_key"] == key for p in self.db.sm_payments.values()):
@@ -1506,11 +1523,13 @@ class SettlementRepo:
         return (any(e["request_key"] == key for e in self.db.entries.values())
                 or any(d["request_key"] == key for d in self.db.holding_docs.values())
                 or any(d["request_key"] == key for d in self.db.logo_docs.values())
-                or any(r["request_key"] == key for r in self.db.receipts.values()))
+                or any(r["request_key"] == key for r in self.db.receipts.values())
+                or any(d["request_key"] == key for d in getattr(self.db, "mk_docs", {}).values()))
 
     def insert_header(self, *, supplier_id, delivered_karat, target_karat, delivered_weight, credited, analytical, difference, settlement_date,
                       reference, notes, key, digest, actor, now, source_kind="SHOP_SCRAP"):
         self._fail("sg_header")
+        marketer_key_guard(self.db, key)
         assert source_kind in ("SHOP_SCRAP", "CUSTODY_GOLD", "CUSTODY_LOT")                                  # chk_sgs_source (046)
         assert delivered_weight > 0 and credited > 0 and analytical > 0                       # chk_sgs_weights
         assert difference == credited - analytical                                            # chk_sgs_rounding
@@ -1528,6 +1547,7 @@ class SettlementRepo:
 
     def insert_lot_header(self, *, supplier_id, lot, target_karat, credited, analytical, difference, settlement_date, reference, notes, key, digest, actor, now):
         self._fail("sg_header")
+        marketer_key_guard(self.db, key)
         assert lot["fineness_permille"] is not None and credited>0
         if any(h["request_key"]==key for h in self.db.settlements.values()): raise _dup("uq_sgs_request")
         sid=self.db.next("settlement")
@@ -1537,6 +1557,7 @@ class SettlementRepo:
     def insert_holding_header(self, *, kind, supplier_id, pool, target_karat, quantity, credited, analytical, difference, declaration, self_confirmed,
                               settlement_date, reference, notes, key, digest, actor, now):
         self._fail("sg_header")
+        marketer_key_guard(self.db, key)
         lot = kind == "HOLDING_LOT"
         assert kind in ("HOLDING_LOT", "HOLDING_LOGO")                                                       # chk_sgs_source
         assert quantity > 0 and credited > 0 and analytical > 0 and difference == credited - analytical     # chk_sgs_weights / chk_sgs_rounding

@@ -9,6 +9,7 @@ from decimal import Decimal
 
 from repositories.base_repository import BaseRepository
 from repositories.invoice_repository import _id
+from repositories.request_keys import require_no_marketer_key
 
 HANDOVER, RETURN = "HANDOVER", "RETURN"                       # document kinds
 MOVE_HANDOVER, MOVE_RETURN = "HANDOVER", "RETURN"             # original movements
@@ -64,6 +65,7 @@ class IntermediaryHoldingRepository(BaseRepository):
 
     def insert_document(self, *, kind, pool, trip_id, document_date, reference, notes, confirmation_code, confirmed_by, confirmed_at,
                         key, digest, actor, now):
+        require_no_marketer_key(self._fetch_one, key)                    # 055: a marketer document owns this key -> REQUEST_CONFLICT, nothing is written
         document_id, _ = self._execute(
             """
             INSERT INTO intermediary_holding_documents (doc_kind, pool_id, party_id, lot_id, weight_grams, fineness_permille, trip_id,
@@ -181,8 +183,18 @@ class IntermediaryHoldingRepository(BaseRepository):
             total += int(self._fetch_one("SELECT COUNT(*) AS n FROM marketer_documents WHERE party_id = %s FOR SHARE", (_id(party_id),))["n"])
         return total
 
+    def marketer_gold_balance(self, party_id):
+        """Display only: the 21K grams this party holds in its marketer account (055), the SUM of its signed ledger (compensations included), read in the
+        caller's own snapshot. 0 when the ledger does not exist yet (a database still on migration 054)."""
+        exists = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'marketer_gold_movements'")
+        if not exists or not int(exists["n"]):
+            return Decimal("0.000")
+        row = self._fetch_one("SELECT COALESCE(SUM(weight_delta), 0) AS balance FROM marketer_gold_movements WHERE party_id = %s", (_id(party_id),))
+        return Decimal(str(row["balance"]))
+
     # ------------------------------------------------------------------ physical receipts (051): insert-only writes
     def insert_receipt(self, *, pool, grams, receipt_date, reference, notes, key, digest, actor, now):
+        require_no_marketer_key(self._fetch_one, key)                    # 055: a marketer document owns this key -> REQUEST_CONFLICT, nothing is written
         receipt_id, _ = self._execute(
             "INSERT INTO holding_receipts (pool_id, party_id, lot_id, origin_melt_entry_id, grams, receipt_date, reference, notes, request_key, request_hash, "
             "performed_by_user_id, performed_by_employee_id, occurred_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
@@ -317,6 +329,7 @@ class IntermediaryHoldingRepository(BaseRepository):
         return int(pool_id)
 
     def insert_logo_document(self, *, kind, pool, weight, document_date, reference, notes, key, digest, actor, now):
+        require_no_marketer_key(self._fetch_one, key)                    # 055: a marketer document owns this key -> REQUEST_CONFLICT, nothing is written
         pool_ref, pool_weight = (int(pool["id"]), weight) if kind == HANDOVER else (None, None)
         document_id, _ = self._execute(
             """

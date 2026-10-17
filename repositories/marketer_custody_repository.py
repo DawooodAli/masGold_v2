@@ -84,7 +84,8 @@ class MarketerCustodyRepository(BaseRepository):
             "+ (SELECT COUNT(*) FROM intermediary_holding_documents WHERE request_key = %s FOR SHARE) "
             "+ (SELECT COUNT(*) FROM logo_holding_documents WHERE request_key = %s FOR SHARE) "
             "+ (SELECT COUNT(*) FROM holding_receipts WHERE request_key = %s FOR SHARE) "
-            "+ (SELECT COUNT(*) FROM supplier_gold_settlements WHERE request_key = %s FOR SHARE) AS used", (key, key, key, key, key))
+            "+ (SELECT COUNT(*) FROM supplier_gold_settlements WHERE request_key = %s FOR SHARE) "
+            "+ (SELECT COUNT(*) FROM supplier_making_payments WHERE request_key = %s FOR SHARE) AS used", (key, key, key, key, key, key))
         return int(row["used"]) > 0
 
     # ------------------------------------------------------------------ documents and ledgers (insert-only)
@@ -137,6 +138,18 @@ class MarketerCustodyRepository(BaseRepository):
         """21K grams held by the marketer: the SUM of every movement, compensations included (a CURRENT locking read)."""
         return self._fetch_one("SELECT COALESCE(SUM(weight_delta), 0) AS balance FROM marketer_gold_movements WHERE party_id = %s FOR SHARE",
                                (_id(party_id),))["balance"]
+
+    def party_gold_balances(self, party_id=None):
+        """Display only: the 21K grams every marketer holds (or one party), from the signed ledger - every movement, compensations included. Parties with a
+        zero balance are omitted. A database still on migration 054 has no ledger: nothing is held there."""
+        exists = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'marketer_gold_movements'")
+        if not exists or not int(exists["n"]):
+            return []
+        where, params = ("", ()) if party_id is None else ("WHERE m.party_id = %s", (_id(party_id),))
+        return self._fetch_all(
+            f"""SELECT m.party_id, s.name AS party_name, COALESCE(SUM(m.weight_delta), 0) AS balance
+                FROM marketer_gold_movements m JOIN suppliers s ON s.id = m.party_id {where}
+                GROUP BY m.party_id, s.name HAVING SUM(m.weight_delta) <> 0 ORDER BY s.name, m.party_id""", params)
 
     def display_cash_balance(self, party_id):
         return self._fetch_one("SELECT COALESCE(SUM(amount_delta), 0) AS balance FROM marketer_cash_movements WHERE party_id = %s", (_id(party_id),))["balance"]

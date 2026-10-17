@@ -134,12 +134,17 @@ def gold_position_view(position):
         bits = [f"لوجو عيار {l['karat']}: {_g(l['grams'])} جرام" for l in party["logo"]]
         bits += [f"سبيكة {_g(l['grams'])} جرام" + (f" (عيار فعلي {Decimal(str(l['fineness'])):.1f}‰)" if l["fineness"] is not None else "")
                  for l in party["lots"]]
-        eq = sum((Decimal(str(l["eq21"])) for l in party["logo"]), Decimal(0))             + sum((Decimal(str(l["eq21"] or 0)) for l in party["lots"]), Decimal(0))
+        marketer = party.get("marketer")                                       # the marketer account (055): 21K physical grams, a source of its own
+        if marketer:
+            bits.append(f"عهدة المسوقجي (عيار 21): {_g(marketer['grams'])} جرام")
+        eq = (sum((Decimal(str(l["eq21"])) for l in party["logo"]), Decimal(0)) + sum((Decimal(str(l["eq21"] or 0)) for l in party["lots"]), Decimal(0))
+              + (Decimal(str(marketer["eq21"])) if marketer else Decimal(0)))
         holder_lines.append({"label": party["party_name"], "text": " • ".join(bits), "eq21": _g(eq)})
     return {"summary": summary, "total": _g(s["total_eq21"]), "totalGrams": _g(s["total_grams"]),
             "unknown": _g(unknown), "hasUnknown": unknown != 0,
             "shop": shop_lines, "custody": custody_lines, "intermediary": holder_lines,
-            "warnings": [f"السبيكة {w['lot_id']} ظاهرة في أكثر من مكان: {' / '.join(w['places'])}" for w in position["warnings"]]}
+            "warnings": [(f"رصيد ذهب المسوقجي {w['party_name']} سالب ({_g(w['grams'])}) ولا يُضم إلى الإجمالي" if w["code"] == "MARKETER_GOLD_NEGATIVE"
+                          else f"السبيكة {w['lot_id']} ظاهرة في أكثر من مكان: {' / '.join(w['places'])}") for w in position["warnings"]]}
 
 
 class ManagementReviewViewModel(QObject):

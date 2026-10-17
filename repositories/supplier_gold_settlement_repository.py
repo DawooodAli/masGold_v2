@@ -4,6 +4,7 @@ All writes use the caller's transaction and only ever INSERT: a settlement, its 
 mistake is corrected by a full reversal through transaction_corrections). The settlement's Scrap movement lands on the canonical
 old_gold_movements ledger (the actual physical grams of the DELIVERED karat); its gold movement on the supplier gold ledger in the supplier's
 DEDICATED karat. Nothing here touches cash, bank or the supplier making ledger."""
+from repositories.request_keys import marketer_key_in_use, require_no_marketer_key
 from repositories.supplier_repository import SupplierRepository, _id
 
 SOURCE = "SUPPLIER_GOLD_SETTLEMENT"          # transaction_corrections.source_type, Scrap reference_type, supplier gold source_type
@@ -38,18 +39,19 @@ class SupplierGoldSettlementRepository(SupplierRepository):
         return self._fetch_one("SELECT * FROM supplier_gold_settlements WHERE request_key = %s FOR UPDATE", (key,))
 
     def request_key_used_elsewhere(self, key):
-        """True when a custody entry or an intermediary holding document (048) already carries this key (a CURRENT read): a direct
-        settlement must not reuse it. Custody-sourced settlements carry their own SG header and are found by `by_request`."""
+        """True when a custody entry, an intermediary holding document (048), a receipt or a marketer document (055) already carries this key (a CURRENT
+        read): a settlement / receipt must not reuse it. Custody-sourced settlements carry their own SG header and are found by `by_request`."""
         row = self._fetch_one(
             "SELECT (SELECT COUNT(*) FROM market_trip_entries WHERE request_key = %s FOR SHARE) "
             "+ (SELECT COUNT(*) FROM intermediary_holding_documents WHERE request_key = %s FOR SHARE) "
             "+ (SELECT COUNT(*) FROM logo_holding_documents WHERE request_key = %s FOR SHARE) "
             "+ (SELECT COUNT(*) FROM holding_receipts WHERE request_key = %s FOR SHARE) AS used", (key, key, key, key))
-        return int(row["used"]) > 0
+        return int(row["used"]) > 0 or marketer_key_in_use(self._fetch_one, key)
 
     # ------------------------------------------------------------------ the settlement
     def insert_header(self, *, supplier_id, delivered_karat, target_karat, delivered_weight, credited, analytical, difference,
                       settlement_date, reference, notes, key, digest, actor, now, source_kind=SOURCE_KIND):
+        require_no_marketer_key(self._fetch_one, key)                    # 055: a marketer document owns this key -> REQUEST_CONFLICT, nothing is written
         settlement_id, _ = self._execute(
             """
             INSERT INTO supplier_gold_settlements (supplier_id, source_kind, delivered_karat_id, delivered_karat_value, target_karat_id,
@@ -64,6 +66,7 @@ class SupplierGoldSettlementRepository(SupplierRepository):
 
     def insert_lot_header(self, *, supplier_id, lot, target_karat, credited, analytical, difference,
                           settlement_date, reference, notes, key, digest, actor, now):
+        require_no_marketer_key(self._fetch_one, key)                    # 055: a marketer document owns this key -> REQUEST_CONFLICT, nothing is written
         settlement_id, _ = self._execute("""INSERT INTO supplier_gold_settlements
             (supplier_id, source_kind, delivered_lot_id, origin_melt_entry_id, delivered_fineness_permille, delivered_lot_weight_grams,
              target_karat_id, target_karat_value, delivered_weight_grams, credited_weight_grams,
@@ -79,6 +82,7 @@ class SupplierGoldSettlementRepository(SupplierRepository):
                               settlement_date, reference, notes, key, digest, actor, now):
         """The SG header of a settlement from a holding. LOT keeps the ORIGINAL full-lot facts (weight, assay, melt) apart from the delivered
         grams; LOGO keeps the master karat. The holder, the pool and the quantity tie the header to its holding ledger (composite keys)."""
+        require_no_marketer_key(self._fetch_one, key)                    # 055: a marketer document owns this key -> REQUEST_CONFLICT, nothing is written
         lot = kind == HOLDING_LOT_KIND
         settlement_id, _ = self._execute(
             """

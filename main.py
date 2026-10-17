@@ -364,6 +364,17 @@ class ApplicationController(QObject):
                                      (self.operational_viewmodels.get("oldGoldConversionVM"), "refreshBalances")):
                     if target is not None and hasattr(target, slot):
                         trips.custodyChanged.connect(getattr(target, slot))
+            # Marketer custody account (055): the signals are emitted only after the transaction committed, and every target keeps its latest
+            # request, so a refresh asked while another read is running still ends with a read that includes the committed write.
+            marketer = getattr(suppliers, "marketer", None)
+            if marketer is not None:
+                # cash moved through Main Safe / Scrap moved: the top-bar balances, wallet / bank balances, الحسابات المالية and the Scrap consumers
+                for target, slot in ((balances, "refresh"), (reviews, "reloadAccounts"), (accounts, "refresh"), (invoice_vm, "refreshReference"),
+                                     (self.operational_viewmodels.get("oldGoldConversionVM"), "refreshBalances")):
+                    if target is not None and hasattr(target, slot):
+                        marketer.balancesChanged.connect(getattr(target, slot))
+                if hasattr(reviews, "loadGoldPosition"):
+                    marketer.positionChanged.connect(reviews.loadGoldPosition)      # shop-owned gold moved / changed place
             if hasattr(invoice_vm, "attach_price_source"):
                 invoice_vm.attach_price_source(self.gold_prices)
             # Barcode fields map physical scan codes (independent of the Windows keyboard layout).

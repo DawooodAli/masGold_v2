@@ -4,6 +4,7 @@ All writes use the caller's transaction and only ever INSERT: a payment, its leg
 updated or deleted (a mistake is corrected by a full reversal through transaction_corrections). The payment's money
 movement lands on the canonical cash_movements / bank_movements ledgers; its making movement on the supplier-making
 ledger. Nothing here touches the supplier GOLD ledger."""
+from repositories.request_keys import require_no_marketer_key
 from repositories.supplier_repository import SupplierRepository, _id
 
 SOURCE = "SUPPLIER_MAKING_PAYMENT"          # transaction_corrections.source_type, cash/bank reference_type, making source_type
@@ -44,6 +45,7 @@ class SupplierPaymentRepository(SupplierRepository):
     # ------------------------------------------------------------------ the payment
     def insert_header(self, *, supplier_id, method, cash_account_id, bank_account_id, amount, payment_date, reference,
                       notes, before, after, key, digest, actor, now):
+        require_no_marketer_key(self._fetch_one, key)                    # 055: a marketer document owns this key -> REQUEST_CONFLICT, nothing is written
         payment_id, _ = self._execute(
             """
             INSERT INTO supplier_making_payments (supplier_id, payment_method, cash_account_id, bank_account_id, amount,

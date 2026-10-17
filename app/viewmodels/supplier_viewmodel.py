@@ -113,11 +113,15 @@ def plain_guidance(text):
     return _SG_REF.sub("", text), _SG_REF.findall(text)
 
 
-def held_gold_21k_equivalent(pools, logo_pools):
-    """Return a complete 21K equivalent for current holding balances, or None if a held source lacks its basis."""
+def held_gold_21k_equivalent(pools, logo_pools, marketer_gold=0):
+    """Return a complete 21K equivalent for current holding balances, or None if a held source lacks its basis.
+    `marketer_gold` is the 21K physical grams of the marketer account (055): 21K grams are their own 21K equivalent, counted once beside the LOT / LOGO pools."""
     with localcontext() as context:
         context.prec = 50
         total = Decimal("0")
+        marketer = Decimal(str(marketer_gold or 0))
+        if marketer > 0:
+            total += marketer
         for pool in pools:
             balance = Decimal(str(pool["balance"]))
             if balance <= 0:
@@ -165,7 +169,8 @@ class SupplierViewModel(QObject):
         from app.viewmodels.marketer_custody_viewmodel import MarketerCustodyViewModel
         self._marketer = MarketerCustodyViewModel(session, parent=self)         # 055: the marketer's cash / 21K gold in trust, apart from the supplier account
         self._marketer.changed.connect(self.changed)
-        self._marketer.supplierChanged.connect(self._reload_selected)
+        self._marketer.partyChanged.connect(self._reload_selected)               # this party's summary (the detail read includes the marketer gold)
+        self._marketer.supplierChanged.connect(self._reload_after_settlement)    # a settlement / reversal: the list balances and the detail
         self._error, self._message, self._done_text = "", "", ""
 
     # ------------------------------------------------------------ plumbing
@@ -234,6 +239,10 @@ class SupplierViewModel(QObject):
     def _reload_selected(self):
         if self._selected:
             self._load_detail()
+
+    def _reload_after_settlement(self):
+        self.refresh()
+        self._reload_selected()
 
     @Property(QObject, constant=True)
     def marketer(self):
@@ -794,8 +803,11 @@ class SupplierViewModel(QObject):
         for p in data.get("logo_pools", []):
             by_karat[p["karat_value"]] = by_karat.get(p["karat_value"], Decimal("0")) + p["balance"]
         logo_summary = (" • ".join(f"لوجو عيار {k}: {grams(v)} جرام" for k, v in sorted(by_karat.items(), reverse=True)) if by_karat else "")
-        held_gold = bool(data["pools"] or data.get("logo_pools", []))
-        equivalent = held_gold_21k_equivalent(data["pools"], data.get("logo_pools", [])) if held_gold else None
+        marketer_gold = Decimal(str(data.get("marketer_gold") or 0))
+        if marketer_gold > 0:                                       # the marketer account is a source of its own (055), listed beside the pools
+            hold_groups.append({"text": f"عهدة المسوقجي (عيار 21): {grams(marketer_gold)} جرام", "assayText": "عيار 21 (معروف)", "known": True})
+        held_gold = bool(data["pools"] or data.get("logo_pools", []) or marketer_gold > 0)
+        equivalent = held_gold_21k_equivalent(data["pools"], data.get("logo_pools", []), marketer_gold) if held_gold else None
         gold_position_text = ""
         if held_gold:
             gold_position_text = (

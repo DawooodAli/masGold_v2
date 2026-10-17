@@ -7,6 +7,7 @@ import json
 
 from repositories.base_repository import BaseRepository
 from repositories.invoice_repository import _id
+from repositories.request_keys import require_no_marketer_key
 
 SOURCE = "MARKET_TRIP_ENTRY"            # transaction_corrections.source_type and the cash / Scrap reference_type
 MAIN_SAFE = "MAIN_SAFE"
@@ -47,6 +48,45 @@ def trip_code(trip_id):
 def entry_code(trip_id, entry_no):
     """The reference of one entry: its trip code and its number inside the trip (MT000001-2)."""
     return f"{trip_code(trip_id)}-{int(entry_no)}"
+
+
+def _gold_rows(legs, held, heated, melted, settled, sold, bought):
+    """The per-(karat, designation) custody rows of ONE trip from the derived sums of its entries that were not reversed. Pure Python, shared by the locking
+    decision read `custody_gold` and the display aggregation `custody_gold_by_trip`, so both always combine the terms identically (the arithmetic itself lives in
+    services.custody_rules)."""
+    rows = {(int(r["karat_id"]), r["designation"]): {**r, "melted": 0, "heat_delta": 0, "supplier_settled": 0} for r in legs}
+    for h in held:
+        key = (int(h["karat_id"]), h["designation"])
+        row = rows.setdefault(key, {"karat_id": h["karat_id"], "karat_value": h["karat_value"], "designation": h["designation"],
+                                    "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0, "supplier_settled": 0})
+        row["held_out"], row["held_back"] = h["held_out"], h["held_back"]
+    for h in heated:
+        key = (int(h["karat_id"]), LOGO_DESIGNATION)
+        row = rows.setdefault(key, {"karat_id": h["karat_id"], "karat_value": h["karat_value"], "designation": LOGO_DESIGNATION,
+                                    "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0, "supplier_settled": 0})
+        row["heat_delta"] = h["heat_delta"]
+    for m in melted:
+        key = (int(m["karat_id"]), MELT_DESIGNATION)
+        row = rows.setdefault(key, {"karat_id": m["karat_id"], "karat_value": m["karat_value"], "designation": MELT_DESIGNATION,
+                                    "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0, "supplier_settled": 0})
+        row["melted"] = m["melted"]
+    for s in settled:
+        key = (int(s["karat_id"]), s["designation"])
+        row = rows.setdefault(key, {"karat_id": s["karat_id"], "karat_value": s["karat_value"], "designation": s["designation"],
+                                    "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0, "supplier_settled": 0})
+        row["supplier_settled"] = s["supplier_settled"]
+    for s in sold:                                                           # 053: sold for cash (an aggregate line only; a lot sale is a lot movement)
+        key = (int(s["karat_id"]), s["designation"])
+        row = rows.setdefault(key, {"karat_id": s["karat_id"], "karat_value": s["karat_value"], "designation": s["designation"],
+                                    "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0, "supplier_settled": 0})
+        row["sold"] = s["sold"]
+    for b in bought:                                                         # 054: bought for cash (scrap lines of GOLD_BUY entries)
+        key = (int(b["karat_id"]), b["designation"])
+        row = rows.setdefault(key, {"karat_id": b["karat_id"], "karat_value": b["karat_value"], "designation": b["designation"],
+                                    "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0, "supplier_settled": 0})
+        row["purchased"] = b["purchased"]
+    order = {MELT_DESIGNATION: 0, LOGO_DESIGNATION: 1, UNCLASSIFIED: 2}
+    return sorted(rows.values(), key=lambda r: (-int(r["karat_value"]), order[r["designation"]]))
 
 
 class MarketTripRepository(BaseRepository):
@@ -114,6 +154,11 @@ class MarketTripRepository(BaseRepository):
             FROM market_trips t ORDER BY t.id DESC LIMIT %s
             """, (int(limit),))
 
+    def all_trip_ids(self):
+        """EVERY trip (id, status), oldest first, with no limit and no per-trip document history: the consolidated gold position derives each trip's
+        outstanding custody from the ledger and must never silently drop an older trip (`trips()` is the paged list of the custody screens)."""
+        return self._fetch_all("SELECT t.id, t.status FROM market_trips t ORDER BY t.id")
+
     # ------------------------------------------------------------------ entries
     def by_request(self, key):
         return self._fetch_one("SELECT * FROM market_trip_entries WHERE request_key = %s FOR UPDATE", (key,))
@@ -125,6 +170,7 @@ class MarketTripRepository(BaseRepository):
         return int(row["n"])
 
     def insert_entry(self, *, trip_id, entry_no, kind, entry_date, notes, key, digest, actor, now):
+        require_no_marketer_key(self._fetch_one, key)                    # 055: a marketer document owns this key -> REQUEST_CONFLICT, nothing is written
         entry_id, _ = self._execute(
             """
             INSERT INTO market_trip_entries (trip_id, entry_no, entry_kind, entry_date, notes, request_key, request_hash,
@@ -630,39 +676,98 @@ class MarketTripRepository(BaseRepository):
             WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}
             GROUP BY l.karat_id, k.karat_value, l.designation FOR SHARE OF e, l
             """, (_id(trip_id), int(exclude_entry_id or 0)))
-        rows = {(int(r["karat_id"]), r["designation"]): {**r, "melted": 0, "heat_delta": 0, "supplier_settled": 0} for r in legs}
-        for h in held:
-            key = (int(h["karat_id"]), h["designation"])
-            row = rows.setdefault(key, {"karat_id": h["karat_id"], "karat_value": h["karat_value"], "designation": h["designation"],
-                                        "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0, "supplier_settled": 0})
-            row["held_out"], row["held_back"] = h["held_out"], h["held_back"]
-        for h in heated:
-            key = (int(h["karat_id"]), LOGO_DESIGNATION)
-            row = rows.setdefault(key, {"karat_id": h["karat_id"], "karat_value": h["karat_value"], "designation": LOGO_DESIGNATION,
-                                        "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0, "supplier_settled": 0})
-            row["heat_delta"] = h["heat_delta"]
-        for m in melted:
-            key = (int(m["karat_id"]), MELT_DESIGNATION)
-            row = rows.setdefault(key, {"karat_id": m["karat_id"], "karat_value": m["karat_value"], "designation": MELT_DESIGNATION,
-                                        "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0, "supplier_settled": 0})
-            row["melted"] = m["melted"]
-        for s in settled:
-            key = (int(s["karat_id"]), s["designation"])
-            row = rows.setdefault(key, {"karat_id": s["karat_id"], "karat_value": s["karat_value"], "designation": s["designation"],
-                                        "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0, "supplier_settled": 0})
-            row["supplier_settled"] = s["supplier_settled"]
-        for s in sold:                                                           # 053: sold for cash (an aggregate line only; a lot sale is a lot movement)
-            key = (int(s["karat_id"]), s["designation"])
-            row = rows.setdefault(key, {"karat_id": s["karat_id"], "karat_value": s["karat_value"], "designation": s["designation"],
-                                        "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0, "supplier_settled": 0})
-            row["sold"] = s["sold"]
-        for b in bought:                                                         # 054: bought for cash (scrap lines of GOLD_BUY entries)
-            key = (int(b["karat_id"]), b["designation"])
-            row = rows.setdefault(key, {"karat_id": b["karat_id"], "karat_value": b["karat_value"], "designation": b["designation"],
-                                        "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0, "supplier_settled": 0})
-            row["purchased"] = b["purchased"]
-        order = {MELT_DESIGNATION: 0, LOGO_DESIGNATION: 1, UNCLASSIFIED: 2}
-        return sorted(rows.values(), key=lambda r: (-int(r["karat_value"]), order[r["designation"]]))
+        return _gold_rows(legs, held, heated, melted, settled, sold, bought)
+
+    # ------------------------------------------------------------------ display aggregation (Gold Position): NO locks, a fixed number of queries
+    def custody_gold_by_trip(self):
+        """DISPLAY ONLY. The same per-(karat, designation) custody rows as `custody_gold`, for EVERY trip at once: seven aggregate queries (issued / returned, melted,
+        heating differences, supplier settlements, intermediary handovers, sales, purchases), each GROUPed BY trip, whatever the number of trips. Plain
+        non-locking reads (no FOR SHARE) with the snapshot form of the reversal lookup, so inside one REPEATABLE READ transaction every figure comes from the SAME
+        snapshot; the locking `custody_gold` stays the only read of a decision. Returns {trip_id: rows}."""
+        nr = _not_reversed("e")
+        legs = self._fetch_all(
+            f"""
+            SELECT e.trip_id, g.karat_id, k.karat_value, g.designation,
+                   COALESCE(SUM(IF(e.entry_kind = 'ISSUE', g.weight_grams, 0)), 0) AS issued,
+                   COALESCE(SUM(IF(e.entry_kind = 'RETURN', g.weight_grams, 0)), 0) AS returned
+            FROM market_trip_entries e JOIN market_trip_entry_gold g ON g.entry_id = e.id JOIN karats k ON k.id = g.karat_id
+            WHERE {nr}
+            GROUP BY e.trip_id, g.karat_id, k.karat_value, g.designation
+            """)
+        melted = self._fetch_all(
+            f"""
+            SELECT e.trip_id, i.karat_id, k.karat_value, COALESCE(SUM(i.weight_grams), 0) AS melted
+            FROM market_trip_entries e JOIN market_trip_melt_inputs i ON i.entry_id = e.id JOIN karats k ON k.id = i.karat_id
+            WHERE {nr}
+            GROUP BY e.trip_id, i.karat_id, k.karat_value
+            """)
+        heated = self._fetch_all(
+            f"""
+            SELECT e.trip_id, h.karat_id, k.karat_value, COALESCE(SUM(h.output_weight_grams - h.input_weight_grams), 0) AS heat_delta
+            FROM market_trip_entries e JOIN market_trip_heat_lines h ON h.entry_id = e.id JOIN karats k ON k.id = h.karat_id
+            WHERE {nr}
+            GROUP BY e.trip_id, h.karat_id, k.karat_value
+            """)
+        settled = self._fetch_all(
+            f"""
+            SELECT e.trip_id, l.karat_id, k.karat_value, l.designation, COALESCE(SUM(l.weight_grams), 0) AS supplier_settled
+            FROM market_trip_entries e JOIN market_trip_gold_settlements l ON l.entry_id = e.id JOIN karats k ON k.id = l.karat_id
+            WHERE {nr}
+            GROUP BY e.trip_id, l.karat_id, k.karat_value, l.designation
+            """)
+        held = self._fetch_all(
+            f"""
+            SELECT e.trip_id, l.karat_id, k.karat_value, l.designation,
+                   COALESCE(SUM(IF(e.entry_kind = 'LOGO_HOLD', l.weight_grams, 0)), 0) AS held_out,
+                   COALESCE(SUM(IF(e.entry_kind = 'HOLD_BACK', l.weight_grams, 0)), 0) AS held_back
+            FROM market_trip_entries e JOIN market_trip_logo_hold_links l ON l.entry_id = e.id JOIN karats k ON k.id = l.karat_id
+            WHERE {nr}
+            GROUP BY e.trip_id, l.karat_id, k.karat_value, l.designation
+            """)
+        sold = self._fetch_all(
+            f"""
+            SELECT e.trip_id, s.karat_id, k.karat_value, s.designation, COALESCE(SUM(s.weight_grams), 0) AS sold
+            FROM market_trip_entries e JOIN market_trip_gold_sales s ON s.entry_id = e.id JOIN karats k ON k.id = s.karat_id
+            WHERE s.source_kind = 'CUSTODY_GOLD' AND {nr}
+            GROUP BY e.trip_id, s.karat_id, k.karat_value, s.designation
+            """)
+        bought = self._fetch_all(
+            f"""
+            SELECT e.trip_id, l.karat_id, k.karat_value, l.designation, COALESCE(SUM(l.weight_grams), 0) AS purchased
+            FROM market_trip_entries e JOIN market_trip_gold_buy_lines l ON l.entry_id = e.id JOIN karats k ON k.id = l.karat_id
+            WHERE {nr}
+            GROUP BY e.trip_id, l.karat_id, k.karat_value, l.designation
+            """)
+
+        def by_trip(rows):
+            grouped = {}
+            for row in rows:
+                grouped.setdefault(int(row["trip_id"]), []).append(row)
+            return grouped
+        terms = [by_trip(rows) for rows in (legs, held, heated, melted, settled, sold, bought)]
+        trips = sorted(set().union(*[set(t) for t in terms]))
+        return {trip: _gold_rows(*[t.get(trip, []) for t in terms]) for trip in trips}
+
+    def custody_lots_by_trip(self):
+        """DISPLAY ONLY. The assayed lots every custody CURRENTLY holds, with their outstanding grams, in ONE aggregate query (no trip filter, no locks, snapshot
+        reversal lookup): the same derivation as `custody_lots` (location = the effective movements of the custody's own entries). Returns {custody trip id: rows}."""
+        rows = self._fetch_all(
+            f"""
+            SELECT me.trip_id AS custody_trip_id, l.id, l.entry_id, l.lot_no, l.lot_kind, l.label, l.weight_grams, l.fineness_permille, l.pure_grams, oe.entry_no,
+                   oe.trip_id AS origin_trip_id, COALESCE(SUM(m.weight_delta), 0) AS outstanding_grams
+            FROM market_trip_lots l
+            JOIN market_trip_entries oe ON oe.id = l.entry_id
+            JOIN market_trip_lot_movements m ON m.lot_id = l.id
+            JOIN market_trip_entries me ON me.id = m.entry_id
+            WHERE {_not_reversed('me')}
+            GROUP BY me.trip_id, l.id, l.entry_id, l.lot_no, l.lot_kind, l.label, l.weight_grams, l.fineness_permille, l.pure_grams, oe.entry_no, oe.trip_id
+            HAVING SUM(m.weight_delta) <> 0
+            ORDER BY me.trip_id, l.id
+            """)
+        grouped = {}
+        for row in rows:
+            grouped.setdefault(int(row["custody_trip_id"]), []).append(row)
+        return grouped
 
     # ------------------------------------------------------------------ history
     def entries(self, trip_id):

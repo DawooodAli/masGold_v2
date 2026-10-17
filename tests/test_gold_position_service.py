@@ -103,6 +103,54 @@ class Aggregation(unittest.TestCase):
         self.assertEqual(position["intermediary"]["parties"], [])
         self.assertEqual(position["summary"]["total_eq21"], D("0.000"))
 
+    # ------------------------------------------------------------ the marketer account (055): 21K physical grams, counted once
+    def test_a_marketer_only_party_is_in_the_intermediary_location_and_the_total(self):
+        position = build(marketer_gold=[{"party_id": 20, "party_name": "مسوقجي أول", "balance": D("10.000")}])
+        (party,) = position["intermediary"]["parties"]
+        self.assertEqual((party["party_name"], party["lots"], party["logo"], party["marketer"]), ("مسوقجي أول", [], [], {"grams": D("10.000"), "eq21": D("10.000")}))
+        self.assertEqual((position["intermediary"]["grams"], position["intermediary"]["eq21"]), (D("10.000"), D("10.000")))
+        self.assertEqual((position["summary"]["total_grams"], position["summary"]["total_eq21"], position["summary"]["unknown_grams"]), (D("10.000"), D("10.000"), D("0.000")))
+        self.assertEqual(position["intermediary"]["parts"]["marketer"]["grams"], D("10.000"))
+        self.assertEqual(position["intermediary"]["parts"]["holdings"]["grams"], D("0.000"))
+
+    def test_a_mixed_party_counts_each_legacy_and_marketer_source_exactly_once(self):
+        position = build(
+            pools=[pool(1, 11, "مسوقجي ومورد", "8.000", "875.0", party_id=21)],
+            logo_pools=[{"pool_id": 5, "party_id": 21, "party_name": "مسوقجي ومورد", "karat_value": 18, "balance": D("6.300")}],
+            marketer_gold=[{"party_id": 21, "party_name": "مسوقجي ومورد", "balance": D("4.000")}])
+        (party,) = position["intermediary"]["parties"]                          # ONE row for the party: three sources, none merged or repeated
+        self.assertEqual((len(party["lots"]), len(party["logo"]), party["marketer"]["grams"]), (1, 1, D("4.000")))
+        lot_eq, logo_eq = eq21_lot("8", D("875.0")), eq21_karat("6.3", 18)
+        self.assertEqual(position["intermediary"]["grams"], D("18.300"))         # 8 + 6.3 + 4: each exactly once
+        self.assertEqual(position["intermediary"]["eq21"], (lot_eq + logo_eq + D("4")).quantize(D("0.001")))
+        self.assertEqual(position["intermediary"]["parts"]["holdings"]["grams"], D("14.300"))
+        self.assertEqual(position["intermediary"]["parts"]["marketer"]["grams"], D("4.000"))
+
+    def test_unknown_assay_legacy_gold_stays_unknown_beside_known_marketer_gold(self):
+        position = build(receipt_stock=[{"piece_id": 1, "receipt_id": 1, "party_name": "مسوقجي أول", "stock_grams": D("3.000")}],
+                         pools=[pool(1, 11, "مسوقجي أول", "2.000", None, party_id=20)],
+                         marketer_gold=[{"party_id": 20, "party_name": "مسوقجي أول", "balance": D("10.000")}])
+        summary = position["summary"]
+        self.assertEqual(summary["unknown_grams"], D("5.000"))                   # the receipt piece (shop) + the unassayed pool (intermediary): never inferred
+        self.assertEqual(summary["unknown_in_shop"], D("3.000"))
+        self.assertEqual(summary["unknown_with_intermediary"], D("2.000"))
+        self.assertEqual(summary["total_grams"], D("15.000"))
+        self.assertEqual(summary["total_eq21"], D("10.000"))                     # only the KNOWN 21K grams: the unknown ones are not folded in
+        self.assertEqual(summary["intermediary_eq21"], D("10.000"))
+
+    def test_a_zero_balance_is_omitted_and_a_negative_one_is_a_warning_never_netted(self):
+        position = build(marketer_gold=[{"party_id": 20, "party_name": "صفر", "balance": D("0.000")},
+                                        {"party_id": 21, "party_name": "سالب", "balance": D("-1.000")},
+                                        {"party_id": 22, "party_name": "موجب", "balance": D("2.000")}])
+        self.assertEqual([p["party_name"] for p in position["intermediary"]["parties"]], ["موجب"])
+        self.assertEqual(position["summary"]["total_grams"], D("2.000"))
+        self.assertEqual([(w["code"], w["party_name"]) for w in position["warnings"]], [("MARKETER_GOLD_NEGATIVE", "سالب")])
+
+    def test_marketer_cash_is_never_part_of_a_gold_total(self):
+        position = build(marketer_gold=[{"party_id": 20, "party_name": "مسوقجي", "balance": D("1.000"), "cash": D("999999")}])
+        self.assertEqual(position["summary"]["total_grams"], D("1.000"))
+        self.assertNotIn("999999", repr(position))
+
     def test_a_supplier_figure_never_appears_in_the_result(self):
         position = build(scrap=[scrap_row(21, "1")])
         text = repr(position).lower()
@@ -111,22 +159,46 @@ class Aggregation(unittest.TestCase):
 
 
 class Fake:
+    connection = object()
+
     def __init__(self, **tables):
         self.__dict__.update(tables)
-        self.calls = []
+        self.calls, self.cash_reads, self.connections = [], 0, []
+        self.trip_rows = tables.get("trip_rows", [{"id": 2, "status": "OPEN"}, {"id": 3, "status": "CLOSED"}])
+        self.gold_trips = tables.get("gold_trips", {2: "5"})
+        self.marketer_rows = tables.get("marketer_rows", [])
 
     def trips(self, limit=100):
-        self.calls.append("trips")
-        return [{"id": 2, "status": "OPEN"}, {"id": 3, "status": "CLOSED"}]
+        self.calls.append("trips")                                       # the paged list: a position must never be derived from it
+        return self.trip_rows[-limit:]
+
+    def all_trip_ids(self):
+        self.calls.append("all_trip_ids")
+        return list(self.trip_rows)
+
+    def party_gold_balances(self, party_id=None):
+        self.calls.append("party_gold_balances")
+        return list(self.marketer_rows)
 
     def custody_cash(self, trip_id, exclude_entry_id=None, *, current=False):
+        self.cash_reads += 1
         return (D("0"), D("0"), D("0"))
 
     def custody_gold(self, trip_id, exclude_entry_id=None, *, current=False):
-        return [{"karat_id": 21, "karat_value": 21, "designation": "LOGO", "issued": D("5"), "returned": D("0")}] if trip_id == 2 else []
+        self.calls.append("custody_gold")                                # the LOCKING per-trip decision read: a position must never use it
+        raise AssertionError("the gold position called the per-trip locking read custody_gold")
 
     def custody_lots(self, trip_id, exclude_entry_id=None, *, lot_id=None):
-        return []
+        self.calls.append("custody_lots")
+        raise AssertionError("the gold position called the per-trip locking read custody_lots")
+
+    def custody_gold_by_trip(self):
+        self.calls.append("custody_gold_by_trip")
+        return {trip: [{"karat_id": 21, "karat_value": 21, "designation": "LOGO", "issued": D(grams), "returned": D("0")}] for trip, grams in self.gold_trips.items()}
+
+    def custody_lots_by_trip(self):
+        self.calls.append("custody_lots_by_trip")
+        return {}
 
     def shop_scrap(self):
         return [scrap_row(21, "10")]
@@ -175,7 +247,7 @@ class Authorization:
 
 
 class ServiceTests(unittest.TestCase):
-    def service(self, permissions=OWNER):
+    def service(self, permissions=OWNER, marketer=(), trips=None, gold_trips=None):
         self.opened, self.rolled_back = 0, 0
         outer = self
 
@@ -183,13 +255,22 @@ class ServiceTests(unittest.TestCase):
         def transaction():
             outer.opened += 1
             try:
-                yield object()
+                yield Fake.connection
             finally:
                 outer.rolled_back += 1
-        self.authorization, self.fake = Authorization(), Fake()
+        extra = {}
+        if trips is not None:
+            extra["trip_rows"] = trips
+        if gold_trips is not None:
+            extra["gold_trips"] = gold_trips
+        self.authorization, self.fake = Authorization(), Fake(marketer_rows=list(marketer), **extra)
+
+        def repository(connection):
+            self.fake.connections.append(connection)
+            return self.fake
         return GoldPositionService(Session(permissions), transaction_factory=transaction, authorization=self.authorization,
-                                   trip_repository=lambda c: self.fake, holding_repository=lambda c: self.fake,
-                                   inventory_repository=lambda c: self.fake)
+                                   trip_repository=repository, holding_repository=repository, inventory_repository=repository,
+                                   marketer_repository=repository)
 
     def test_one_transaction_all_rights_checked_in_it_and_the_totals(self):
         service = self.service()
@@ -200,6 +281,25 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(position["summary"]["custody_eq21"], D("5.000"))
         self.assertEqual(position["summary"]["total_eq21"], D("19.000"))
         self.assertEqual([t["code"] for t in position["custody"]["trips"]], ["MT000002"])
+
+    def test_the_marketer_ledger_is_read_in_the_same_transaction_as_every_other_source(self):
+        service = self.service(marketer=[{"party_id": 20, "party_name": "مسوقجي أول", "balance": D("10.000")}])
+        position = service.position()
+        self.assertEqual(self.opened, 1)                                          # no separately opened service transaction
+        self.assertEqual(self.fake.connections, [self.fake.connection] * len(self.fake.connections))   # every repository got the SAME connection
+        self.assertEqual(position["summary"]["intermediary_eq21"], D("10.000"))
+        self.assertEqual(position["summary"]["total_eq21"], D("29.000"))          # 10 scrap + 4 inventory + 5 custody + 10 marketer
+
+    def test_an_older_trip_beyond_the_former_list_limit_is_still_in_the_total(self):
+        service = self.service(trips=[{"id": i, "status": "CLOSED"} for i in range(1, 6001)] + [{"id": 6001, "status": "OPEN"}], gold_trips={1: "7"})
+        position = service.position()
+        self.assertEqual(position["custody"]["grams"], D("7.000"))                # trip 1 (the oldest of 6001) is NOT dropped
+        self.assertEqual([t["code"] for t in position["custody"]["trips"]], ["MT000001"])
+        self.assertNotIn("trips", self.fake.calls)                                 # the paged list of the custody screens is never the source of a total
+        self.assertEqual((self.fake.calls.count("all_trip_ids"), self.fake.calls.count("custody_gold_by_trip"), self.fake.calls.count("custody_lots_by_trip")), (1, 1, 1))
+        self.assertNotIn("custody_gold", self.fake.calls)                          # no per-trip query loop and no locking decision read
+        self.assertNotIn("custody_lots", self.fake.calls)
+        self.assertEqual(self.fake.cash_reads, 0)                                  # no cash and no document history is loaded to derive a gold total
 
     def test_a_missing_right_refuses_the_whole_read(self):
         for missing in REQUIRED_PERMISSIONS:
@@ -216,7 +316,7 @@ class ServiceTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             service.position()
         self.assertEqual((self.opened, self.rolled_back), (1, 1))
-        self.assertNotIn("trips", self.fake.calls)                               # no source was read
+        self.assertNotIn("all_trip_ids", self.fake.calls)                         # no source was read
 
 
 if __name__ == "__main__":

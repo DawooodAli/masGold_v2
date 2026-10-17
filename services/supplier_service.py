@@ -202,6 +202,7 @@ class SupplierService:
                 "receipts": [receipt_row(r) for r in ledger.party_receipts(supplier_id)],
                 "can_receive": MANAGE_HOLDINGS in actor.permissions,
                 "can_reverse_receipt": {"TRANSACTION_CORRECT", "INTERMEDIARY_HOLDING_REVERSE"} <= set(actor.permissions),
+                "marketer_gold": ledger.marketer_gold_balance(supplier_id),                 # 055: the marketer account's 21K grams, same read transaction
                 "pools": pools, "history": [document_row(r) for r in ledger.party_documents(supplier_id)],
                 "logo_pools": logo_pools, "logo_history": [logo_document_row(r) for r in ledger.logo_party_documents(supplier_id)],
                 "total": sum((p["balance"] for p in pools), Decimal("0.000")),

@@ -4,7 +4,7 @@ Sources (each a derived balance of the ledger that owns it; nothing here writes 
   SHOP        Scrap (vw_old_gold_available: physical / held / available), whole lots in the shop, legacy receipt stock,
               finished jewelry in stock (IN_STOCK) and returned pieces awaiting inspection (RETURNED_PENDING)
   CUSTODY     every market trip's outstanding gold per (karat, designation) and the assayed lots currently in it
-  INTERMEDIARY  shop-owned gold held by a مسوقجي: assayed lot pools and master-karat LOGO pools
+  INTERMEDIARY  shop-owned gold held by a مسوقجي: assayed lot pools, master-karat LOGO pools and the marketer account's 21K gold (055)
 
 No double counting: a gram has exactly one location because each ledger posts an explicit OUT where the gram leaves and an IN where it
 arrives. Lots are additionally checked to appear in ONE place only (a conflict becomes a visible warning, never a silent sum).
@@ -13,7 +13,10 @@ arrives. Lots are additionally checked to appear in ONE place only (a conflict b
 same Eq21 definition as a melt analysis). A gram whose assay is unknown (a legacy receipt piece, an unassayed residue) is NEVER
 inferred: it is listed in physical grams and reported apart as «غير محسوب» and is not in any 21K figure.
 
-Strict separation: supplier payables / receivables are never read, shown or netted here. Cash is out of scope (gold only).
+Strict separation: supplier payables / receivables are never read, shown or netted here. Cash (including the marketer's cash) is out of scope (gold only).
+Every custody balance of EVERY trip is derived (no list limit): a total is never silently truncated. The custody gold / lots come from two display-only aggregations
+(`custody_gold_by_trip`, `custody_lots_by_trip`: fixed number of queries, NO locking reads) so the whole read is ONE snapshot; the locking `custody_gold` / `custody_lots`
+stay the reads of posting and correction decisions.
 Every figure is computed in exact Decimal; each displayed figure is quantized once (0.001 g, ROUND_HALF_UP) from the exact sums.
 One REPEATABLE READ transaction, read only, always rolled back. Rights (re-checked in the transaction against the database):
 MANAGEMENT_REVIEW + MARKET_TRIP_MANAGE + INTERMEDIARY_HOLDING_VIEW: a partial total would mislead, so a missing right refuses the whole read.
@@ -24,14 +27,14 @@ from decimal import ROUND_HALF_UP, Decimal, localcontext
 from repositories.inventory_repository import InventoryRepository
 from repositories.intermediary_holding_repository import IntermediaryHoldingRepository
 from repositories.market_trip_repository import MarketTripRepository
+from repositories.marketer_custody_repository import MarketerCustodyRepository
 from services.authorization_service import AuthorizationService
-from services.market_trip_service import MarketTripService
+from services.market_trip_service import custody_view
 
 REQUIRED_PERMISSIONS = ("MANAGEMENT_REVIEW", "MARKET_TRIP_MANAGE", "INTERMEDIARY_HOLDING_VIEW")
 BASE_KARAT = Decimal(21)
 STEP = Decimal("0.001")
 ZERO = Decimal("0")
-MAX_TRIPS = 5000
 DESIGNATION_TEXT = {"MELT": "للسبك", "LOGO": "لوجو", "UNCLASSIFIED": "غير مصنّف"}
 
 
@@ -106,7 +109,7 @@ class _Bucket:
         return {"grams": _q(self.grams), "eq21": _q(self.eq21), "unknown_grams": _q(self.unknown)}
 
 
-def build_position(*, scrap, shop_lots, receipt_stock, inventory, returned_pending, trips, pools, logo_pools):
+def build_position(*, scrap, shop_lots, receipt_stock, inventory, returned_pending, trips, pools, logo_pools, marketer_gold=()):
     """Pure aggregation of already-fetched rows (the service reads, this derives; it is unit-tested with plain rows).
 
     scrap              rows of vw_old_gold_available (karat_value, physical_grams, held_grams, available_grams)
@@ -116,8 +119,10 @@ def build_position(*, scrap, shop_lots, receipt_stock, inventory, returned_pendi
     returned_pending   [{karat_value, weight_grams}] RETURNED_PENDING pieces (physically back in the shop)
     trips              [{"code", "status", "custody": custody_view(...)}] (only gold / lots are read)
     pools / logo_pools open holding pools (balance > 0)
+    marketer_gold      [{party_id, party_name, balance}] the 21K physical grams of each marketer account (055), from its signed ledger
     """
     shop, custody, intermediary = _Bucket(), _Bucket(), _Bucket()
+    holding_part, marketer_part = _Bucket(), _Bucket()
     parts = {"scrap": _Bucket(), "lots": _Bucket(), "receipts": _Bucket(), "inventory": _Bucket(), "returned": _Bucket()}
     lot_places, warnings = {}, []
 
@@ -202,21 +207,37 @@ def build_position(*, scrap, shop_lots, receipt_stock, inventory, returned_pendi
         if balance <= 0:
             continue
         eq = eq21_lot(balance, r.get("fineness_permille"))
-        row = parties.setdefault(str(r["party_id"]), {"party_id": str(r["party_id"]), "party_name": r["party_name"], "lots": [], "logo": []})
+        row = parties.setdefault(str(r["party_id"]), {"party_id": str(r["party_id"]), "party_name": r["party_name"], "lots": [], "logo": [], "marketer": None})
         row["lots"].append({"pool_id": str(r["pool_id"]), "lot_id": str(r["lot_id"]), "kind": r["lot_kind"], "grams": _grams(balance),
                             "original": _grams(r["weight_grams"]), "fineness": None if r.get("fineness_permille") is None else _dec(r["fineness_permille"]),
                             "eq21": _q(eq)})
         intermediary.add(balance, eq)
+        holding_part.add(balance, eq)
         place(r["lot_id"], f"INTERMEDIARY:{r['party_name']}")
     for r in logo_pools:
         balance = _dec(r["balance"])
         if balance <= 0:
             continue
         eq = eq21_karat(balance, r["karat_value"])
-        row = parties.setdefault(str(r["party_id"]), {"party_id": str(r["party_id"]), "party_name": r["party_name"], "lots": [], "logo": []})
+        row = parties.setdefault(str(r["party_id"]), {"party_id": str(r["party_id"]), "party_name": r["party_name"], "lots": [], "logo": [], "marketer": None})
         row["logo"].append({"pool_id": str(r["pool_id"]), "karat": int(r["karat_value"]), "grams": _grams(balance), "eq21": _q(eq)})
         intermediary.add(balance, eq)
-    out["intermediary"] = {"parties": sorted(parties.values(), key=lambda p: p["party_name"]), **intermediary.as_row()}
+        holding_part.add(balance, eq)
+    # the marketer account (055): 21K physical grams = 21K equivalent, counted once per party from its own ledger (never from the LOT / LOGO pools above)
+    for r in marketer_gold:
+        balance = _dec(r["balance"])
+        if balance == 0:
+            continue
+        if balance < 0:                                    # the ledger forbids it: show it, never net it against another holding
+            warnings.append({"code": "MARKETER_GOLD_NEGATIVE", "party_id": str(r["party_id"]), "party_name": r["party_name"], "grams": _grams(balance)})
+            continue
+        eq = eq21_karat(balance, 21)
+        row = parties.setdefault(str(r["party_id"]), {"party_id": str(r["party_id"]), "party_name": r["party_name"], "lots": [], "logo": [], "marketer": None})
+        row["marketer"] = {"grams": _grams(balance), "eq21": _q(eq)}
+        intermediary.add(balance, eq)
+        marketer_part.add(balance, eq)
+    out["intermediary"] = {"parties": sorted(parties.values(), key=lambda p: p["party_name"]), **intermediary.as_row(),
+                           "parts": {"holdings": holding_part.as_row(), "marketer": marketer_part.as_row()}}
 
     # ---- one place per lot: a conflict is shown, never summed silently
     for lot_id, where in lot_places.items():
@@ -236,11 +257,12 @@ def build_position(*, scrap, shop_lots, receipt_stock, inventory, returned_pendi
 class GoldPositionService:
     def __init__(self, session, *, transaction_factory=read_transaction, authorization=None,
                  trip_repository=MarketTripRepository, holding_repository=IntermediaryHoldingRepository,
-                 inventory_repository=InventoryRepository):
+                 inventory_repository=InventoryRepository, marketer_repository=MarketerCustodyRepository):
         self._session = session
         self._transaction = transaction_factory
         self._authorization = authorization or AuthorizationService(session)
         self._trips, self._holdings, self._inventory = trip_repository, holding_repository, inventory_repository
+        self._marketers = marketer_repository
 
     def can_view(self):
         actor = self._session.current_actor()
@@ -257,15 +279,18 @@ class GoldPositionService:
                 for code in REQUIRED_PERMISSIONS:
                     self._authorization.require_permission_read(connection, actor, code)
                 trips_repo, holdings, inventory = self._trips(connection), self._holdings(connection), self._inventory(connection)
+                marketers = self._marketers(connection)                    # the SAME connection / snapshot as every other source
+                # ONE snapshot, no locks: eight aggregate queries whatever the number of trips (never a query per trip, never the cash or a document history)
+                gold_by_trip, lots_by_trip = trips_repo.custody_gold_by_trip(), trips_repo.custody_lots_by_trip()
                 trips = []
-                for row in trips_repo.trips(limit=MAX_TRIPS):
-                    custody = MarketTripService._custody(trips_repo, row["id"])
+                for row in trips_repo.all_trip_ids():                       # EVERY trip: no list limit on a physical total
+                    custody = custody_view(("0.00", "0.00"), gold_by_trip.get(int(row["id"]), []), lots_by_trip.get(int(row["id"]), []), trip_id=row["id"])
                     if any(_dec(g["outstanding"]) != 0 for g in custody["gold"]) or custody["lots"]:
                         trips.append({"id": row["id"], "code": f"MT{int(row['id']):06d}", "status": row["status"], "custody": custody})
                 result = build_position(
                     scrap=trips_repo.shop_scrap(), shop_lots=trips_repo.shop_lots(), receipt_stock=holdings.receipt_stock(),
                     inventory=inventory.get_stock_weight_by_karat(), returned_pending=inventory.get_returned_pending_weight_by_karat(),
-                    trips=trips, pools=holdings.open_pools(), logo_pools=holdings.logo_open_pools())
+                    trips=trips, pools=holdings.open_pools(), logo_pools=holdings.logo_open_pools(), marketer_gold=marketers.party_gold_balances())
                 raise _Discard(result)
         except _Discard as done:
             return done.args[0]

@@ -49,6 +49,14 @@ class MarketerRepo:
         return [{"id": r["id"], "name": r["name"], "is_active": r["is_active"], "karat_id": r["karat_id"], "karat_value": self.db.karats[r["karat_id"]]["karat_value"]}
                 for r in sorted(self.db.suppliers.values(), key=lambda r: (-r["is_active"], r["name"], r["id"])) if r.get("is_supplier", True) and r.get("karat_id")]
 
+    def party_gold_balances(self, party_id=None):
+        """Mirrors MarketerCustodyRepository.party_gold_balances: the signed 21K ledger per party (compensations included), zero balances omitted."""
+        sums = {}
+        for m in self.db.mk_gold:
+            sums[m["party_id"]] = sums.get(m["party_id"], D("0")) + m["weight_delta"]
+        return [{"party_id": p, "party_name": self.db.suppliers[p]["name"], "balance": b} for p, b in sorted(sums.items())
+                if b != 0 and (party_id is None or p == int(party_id))]
+
     def counterparties(self):
         return [{"id": r["id"], "name": r["name"], "is_active": r["is_active"], "is_supplier": r.get("is_supplier", True),
                  "is_intermediary": r.get("is_intermediary", False)} for r in sorted(self.db.suppliers.values(), key=lambda r: (-r["is_active"], r["name"], r["id"]))]
@@ -65,7 +73,7 @@ class MarketerRepo:
     def key_used_elsewhere(self, key):
         return (any(e["request_key"] == key for e in self.db.entries.values()) or any(d["request_key"] == key for d in self.db.holding_docs.values())
                 or any(d["request_key"] == key for d in self.db.logo_docs.values()) or any(r["request_key"] == key for r in self.db.receipts.values())
-                or any(g["request_key"] == key for g in self.db.settlements.values()))
+                or any(g["request_key"] == key for g in self.db.settlements.values()) or any(p["request_key"] == key for p in self.db.sm_payments.values()))
 
     # ---- documents and ledgers
     def insert_document(self, *, kind, party_id, cash_amount, weight, counterparty, reference_total, deviation, acknowledged, document_date, reference,

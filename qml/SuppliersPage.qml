@@ -2746,12 +2746,10 @@ Item {
         objectName: "marketerReverseDialog"
         property string targetId: ""
         property bool isSettlement: false
-        property bool shopSide: false
         property string detailText: ""
         function openFor(row, settlement) {
             targetId = row.id
             isSettlement = settlement
-            shopSide = row.shopSide === true
             detailText = (row.kindText ? row.kindText + " " : "") + row.code + " — " + row.text
             marketerReverseReason.text = ""
             if (page.mvm) page.mvm.clearMessage()
@@ -2790,7 +2788,7 @@ Item {
                     primary: true
                     enabled: marketerReverseReason.text.trim().length > 0 && !!page.mvm && !page.mvm.writing
                     onClicked: marketerReverseDialog.isSettlement ? page.mvm.reverseSettlement(marketerReverseDialog.targetId, marketerReverseReason.text)
-                                                                   : page.mvm.reverseDocument(marketerReverseDialog.targetId, marketerReverseReason.text, marketerReverseDialog.shopSide)
+                                                                   : page.mvm.reverseDocument(marketerReverseDialog.targetId, marketerReverseReason.text)
                 }
                 Btn { objectName: "cancelMarketerReverseButton"; text: "إلغاء"; accent: theme.textSecondary; enabled: !!page.mvm && !page.mvm.writing
                       onClicked: marketerReverseDialog.close() }

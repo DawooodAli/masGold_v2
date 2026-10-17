@@ -20,8 +20,9 @@ document before any availability is derived; one request key and hash cover each
 from decimal import Decimal
 import hashlib
 import json
+import logging
 
-from mysql.connector import IntegrityError
+from mysql.connector import Error as MySqlError, IntegrityError
 
 from repositories.financial_account_repository import FinancialAccountRepository
 from repositories.marketer_custody_repository import (CASH_HANDOVER, CASH_MOVEMENT, CASH_RETURN, GOLD_MOVEMENT as MARKETER_GOLD, GOLD_RETURN, HOLDING_MKT,
@@ -80,6 +81,31 @@ def parse_purchase_lines(lines):
 
 def _is_request_key_violation(exc):
     return getattr(exc, "errno", None) == 1062 and any(k in str(exc) for k in ("uq_mkd_request", "uq_sgs_request"))
+
+
+DEADLOCK_ERRNO = 1213            # ER_LOCK_DEADLOCK: InnoDB chose this transaction as the victim and ALREADY rolled it back
+RETRY_MESSAGE = "تعذّر إتمام العملية بسبب تعارض لحظي مع عملية أخرى، ولم يُسجَّل أي شيء. أعد المحاولة بنفس الطلب."
+logger = logging.getLogger(__name__)
+
+
+def is_deadlock(exc):
+    """Only MySQL 1213 is handled. 1205 (lock wait timeout) is deliberately NOT: a wait can time out for reasons unrelated to a request key (Main Safe, Scrap,
+    a slow writer), so it is not evidence of key contention and keeps its established generic handling."""
+    return isinstance(exc, MySqlError) and getattr(exc, "errno", None) == DEADLOCK_ERRNO
+
+
+def note_deadlock(original, key):
+    """Diagnostics for the underlying database error (errno / sqlstate and the first 8 characters of the request key only: nothing else, no secret)."""
+    logger.warning("marketer request %s: this transaction was chosen as the deadlock victim (errno=%s sqlstate=%s) and is already rolled back; recovering from a fresh transaction",
+                   str(key)[:8], getattr(original, "errno", None), getattr(original, "sqlstate", None))
+
+
+def retryable(original, key):
+    """A deadlock with NO committed owner of the key: a retryable BUSINESS error (never REQUEST_CONFLICT). The request key stays valid for the user's retry; the
+    database error stays available as `__cause__` / `database_errno`."""
+    error = TripError("CONCURRENT_RETRY", RETRY_MESSAGE)
+    error.database_errno = getattr(original, "errno", None)
+    return error
 
 
 class MarketerCustodyService:
@@ -238,6 +264,23 @@ class MarketerCustodyService:
                 if replay is None:
                     raise
                 return replay
+        except MySqlError as exc:
+            if not is_deadlock(exc):
+                raise
+            return self._recover_after_deadlock(session_actor, key, digest, kind, exc)
+
+    def _recover_after_deadlock(self, session_actor, key, digest, kind, original):
+        """The transaction of `_transact_once` is already ROLLED BACK and closed (its `with` block ended with the exception), so nothing of it is left to repeat or
+        partially keep. Recovery is a brand-new transaction: authentication / authorization are re-checked, then the existing ownership rules decide from a
+        FRESH current read: a committed incompatible owner -> REQUEST_CONFLICT; an exact compatible request (same kind, payload and actor) -> its original result;
+        no owner at all -> a retryable business error, NOT REQUEST_CONFLICT. No INSERT is retried here."""
+        note_deadlock(original, key)
+        with self._transaction() as connection:
+            actor = self._authorization.require_permission_for_write(connection, session_actor, MANAGE_PERMISSION)
+            replay = self._prior(self._repository(connection), key, digest, actor, kind)       # raises REQUEST_CONFLICT for another owner / payload / actor
+            if replay is not None:
+                return replay
+        raise retryable(original, key) from original
 
     def _transact_once(self, session_actor, party_number, key, digest, kind, work, active_required):
         with self._transaction() as connection:
@@ -490,11 +533,23 @@ class MarketerCustodyService:
             if not _is_request_key_violation(exc):
                 raise
             with self._transaction() as connection:
-                actor = self._authorization.require_permission_for_write(connection, session_actor, MANAGE_PERMISSION)
+                self._authorization.require_permission_for_write(connection, session_actor, MANAGE_PERMISSION)
+                actor = self._authorization.require_permission_for_write(connection, session_actor, SETTLE_PERMISSION)      # both rights, as `_settle_once` does
                 replay = self._settlement_prior(self._repository(connection), self._settlements(connection), key, digest, actor)
                 if replay is None:
                     raise
                 return replay
+        except MySqlError as exc:
+            if not is_deadlock(exc):
+                raise
+            note_deadlock(exc, key)
+            with self._transaction() as connection:                          # the victim was rolled back; recover from a FRESH transaction (see `_recover_after_deadlock`)
+                self._authorization.require_permission_for_write(connection, session_actor, MANAGE_PERMISSION)
+                actor = self._authorization.require_permission_for_write(connection, session_actor, SETTLE_PERMISSION)      # both rights, as `_settle_once` does
+                replay = self._settlement_prior(self._repository(connection), self._settlements(connection), key, digest, actor)
+                if replay is not None:
+                    return replay
+            raise retryable(exc, key) from exc
 
     def _settlement_result(self, header, duplicate, remaining=None):
         return {"id": str(header["id"]), "code": settlement_code(header["id"]), "party_id": str(header["holding_party_id"]),

@@ -15,6 +15,15 @@ from services import supplier_rules as rules
 KIND_TEXT = {"CASH_HANDOVER": "تسليم نقدية", "CASH_RETURN": "استرجاع نقدية", "GOLD_RETURN": "استرجاع ذهب", "PURCHASE": "شراء ذهب نقدي", "SALE": "بيع ذهب"}
 WRITE_TEXT = {"cashhandover": "تم تسليم النقدية للمسوقجي", "cashreturn": "تم استرجاع النقدية إلى الخزنة الرئيسية", "goldreturn": "تم استرجاع الذهب إلى كسر المحل",
               "sale": "تم تسجيل بيع الذهب", "purchase": "تم تسجيل شراء الذهب", "settle": "تمت تسوية الذهب للمورد", "reverse": "تم العكس"}
+# What each SUCCESSFUL write changed elsewhere (decided here by the operation, never by a hint from the page). Emitted only after the commit:
+#   balances  Main Safe (cash) or counted Scrap moved: top-bar / bank / wallet / financial-account / Scrap consumers reload
+#   position  shop-owned gold moved or changed place: the consolidated gold position reloads
+#   party     this party's marketer figures changed: its page summary (the supplier detail) reloads
+#   supplier  a settlement posted / reversed: the supplier ledger and the supplier list balances reload
+# A reversal does not know which kind of document it undoes on the client, so it refreshes every target.
+EFFECTS = {"cashhandover": ("balances",), "cashreturn": ("balances",), "goldreturn": ("balances", "position", "party"),
+           "purchase": ("position", "party"), "sale": ("position", "party"), "settle": ("position", "party", "supplier"),
+           "reverse": ("balances", "position", "party", "supplier")}
 ISOLATION_NOTE = "أمانة للمحل لدى المسوقجي: تُحسب وزنة عيار 21 فقط، ولا تدخل حساب المورد ولا تُقاصّ به. الجسر الوحيد هو «تسليم ذهب لمورد» وهو مستند صريح."
 
 
@@ -40,7 +49,9 @@ class MarketerCustodyViewModel(QObject):
     posted = Signal(str)                 # a document / settlement was posted (its code): the dialog can close
     reversedDone = Signal()              # a reversal finished: the reason dialog can close
     balancesChanged = Signal()           # the Main Safe or the counted Scrap moved (after commit): the balance views reload
-    supplierChanged = Signal()           # a settlement posted / reversed: the supplier ledger of the recipient changed
+    positionChanged = Signal()           # shop-owned gold moved or changed place (after commit): the consolidated gold position reloads
+    partyChanged = Signal()              # this party's marketer figures changed (after commit): the party page summary (supplier detail) reloads
+    supplierChanged = Signal()           # a settlement posted / reversed: the supplier ledger of the recipient and the supplier list balances changed
 
     def __init__(self, session, service=None, parent=None):
         super().__init__(parent)
@@ -50,7 +61,7 @@ class MarketerCustodyViewModel(QObject):
         self._party, self._account = None, None
         self._error, self._message, self._last_code, self._done_text, self._operation = "", "", "", "", ""
         self._reference_prices = {}
-        self._balances = self._supplier = False
+        self._effects = ()
 
     # ------------------------------------------------------------ plumbing
     def _service_instance(self):
@@ -146,11 +157,11 @@ class MarketerCustodyViewModel(QObject):
             self.changed.emit()
 
     # ------------------------------------------------------------ writes (each re-checked by the service)
-    def _write(self, operation, call, *, balances=False, supplier=False):
+    def _write(self, operation, call):
         if "write" in self._busy or self._party is None:
             return                                                     # a double click never submits twice
         self._message = self._error = ""
-        self._operation, self._balances, self._supplier = operation, balances, supplier
+        self._operation, self._effects = operation, EFFECTS.get(operation, ())
         service = self._service_instance()
         self._start("write", lambda _expected_actor: call(service, _expected_actor))
         self.changed.emit()
@@ -167,25 +178,25 @@ class MarketerCustodyViewModel(QObject):
             self.reversedDone.emit()
         else:
             self.posted.emit(code)
-        if self._balances:
-            self.balancesChanged.emit()
-        if self._supplier:
-            self.supplierChanged.emit()
+        for effect, signal in (("balances", self.balancesChanged), ("position", self.positionChanged), ("party", self.partyChanged),
+                               ("supplier", self.supplierChanged)):
+            if effect in self._effects:
+                signal.emit()
 
     @Slot(str, str, str, str, str)
     def cashHandover(self, amount, document_date, reference, notes, request_key):
         party = self._party
-        self._write("cashhandover", lambda s, a: s.cash_handover(party, amount, document_date, reference, notes, request_key, _expected_actor=a), balances=True)
+        self._write("cashhandover", lambda s, a: s.cash_handover(party, amount, document_date, reference, notes, request_key, _expected_actor=a))
 
     @Slot(str, str, str, str, str)
     def cashReturn(self, amount, document_date, reference, notes, request_key):
         party = self._party
-        self._write("cashreturn", lambda s, a: s.cash_return(party, amount, document_date, reference, notes, request_key, _expected_actor=a), balances=True)
+        self._write("cashreturn", lambda s, a: s.cash_return(party, amount, document_date, reference, notes, request_key, _expected_actor=a))
 
     @Slot(str, str, str, str, str)
     def goldReturn(self, weight, document_date, reference, notes, request_key):
         party = self._party
-        self._write("goldreturn", lambda s, a: s.gold_return(party, weight, document_date, reference, notes, request_key, _expected_actor=a), balances=True)
+        self._write("goldreturn", lambda s, a: s.gold_return(party, weight, document_date, reference, notes, request_key, _expected_actor=a))
 
     @Slot(str, str, str, str, str, str, str, str, str, bool)
     def sell(self, weight, price_mode, price, buyer_party_id, buyer_name, document_date, reference, notes, request_key, acknowledge_price):
@@ -204,15 +215,15 @@ class MarketerCustodyViewModel(QObject):
     def settle(self, supplier_id, weight, self_confirmed, settlement_date, reference, notes, request_key):
         party = self._party
         self._write("settle", lambda s, a: s.settle_supplier(party, supplier_id, weight, self_confirmed, settlement_date, reference, notes, request_key,
-                                                             _expected_actor=a), supplier=True)
+                                                             _expected_actor=a))
 
-    @Slot(str, str, bool)
-    def reverseDocument(self, document_id, reason, shop_side):
-        self._write("reverse", lambda s, a: s.reverse(document_id, reason, _expected_actor=a), balances=bool(shop_side))
+    @Slot(str, str)
+    def reverseDocument(self, document_id, reason):
+        self._write("reverse", lambda s, a: s.reverse(document_id, reason, _expected_actor=a))
 
     @Slot(str, str)
     def reverseSettlement(self, settlement_id, reason):
-        self._write("reverse", lambda s, a: s.reverse_settlement(settlement_id, reason, _expected_actor=a), supplier=True)
+        self._write("reverse", lambda s, a: s.reverse_settlement(settlement_id, reason, _expected_actor=a))
 
     # ------------------------------------------------------------ previews (service functions on loaded data; no database read)
     @Slot(str, str, str, result="QVariantMap")
@@ -339,7 +350,6 @@ class MarketerCustodyViewModel(QObject):
         documents = [{"id": d["id"], "code": d["code"], "kindText": KIND_TEXT[d["kind"]], "kind": d["kind"], "text": _doc_text(d),
                       "date": date_text(d["date"]), "time": datetime_text(d["at"]), "reference": d["reference"], "reversed": d["reversed"],
                       "state": ("معكوس • " + d["reversal_reason"]) if d["reversed"] else "",
-                      "shopSide": d["kind"] in ("CASH_HANDOVER", "CASH_RETURN", "GOLD_RETURN"),
                       "canReverse": bool(a["can_reverse"] and not d["reversed"])} for d in a["documents"]]
         settlements = [{"id": s["id"], "code": s["code"], "text": f"{s['supplier_name']}: سُلِّم {grams(s['delivered'])} جرام وزنة عيار 21 ← احتُسب "
                                                                    f"{grams(s['credited'])} جرام عيار {s['target_karat']}"
