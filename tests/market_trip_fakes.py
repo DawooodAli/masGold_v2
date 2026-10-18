@@ -824,7 +824,7 @@ class TripRepo:
                                    "eq21_posted", "signed_eq21_posted")}
                 for l in sorted(self.db.book_lines, key=lambda l: (l["entry_id"], l["line_no"])) if l["entry_id"] in live]
 
-    def reconciliation_source(self, trip_id):
+    def reconciliation_source(self, trip_id, *, approval=False):
         """The fake of MarketTripRepository.reconciliation_source (R1 preview): the same five sections, plain reads (no lock is recorded), each section can be made to fail
         with `db.unreadable = {"lines", ...}` and then lands in `incomplete` exactly like a failing query does."""
         trip = int(trip_id)
@@ -856,9 +856,13 @@ class TripRepo:
         if "trades" not in unreadable:
             result["trades"] = [{"entry_id": i, "entry_kind": tr["entry_kind"], "total_price": tr["total_price"]} for i, tr in sorted(self.db.book_trades.items()) if i in ids]
         if "stock" not in unreadable:
-            result["stock"] = [{"item_entry_id": m["item_entry_id"], "item_line_no": m["item_line_no"], "movement_type": m["movement_type"], "grams_delta": m["grams_delta"],
+            result["stock"] = [{**({"id": m["id"]} if approval else {}), "item_entry_id": m["item_entry_id"], "item_line_no": m["item_line_no"], "movement_type": m["movement_type"], "grams_delta": m["grams_delta"],
                                 "eq21_posted_delta": m["eq21_posted_delta"]}
                                for m in self.db.assayed_moves if m["item_entry_id"] in ids and m["movement_type"] in ("RECEIVE", "RECEIVE_REVERSAL")]
+        if approval:
+            for row in result["entries"]:
+                row["entry_date"] = self.db.entries[row["id"]]["entry_date"]
+                row["correction_type"] = "FULL_REVERSAL" if row["correction_id"] is not None else None
         return result
 
     # ---- BOOK reconciliation document (057): the DECISION reads and the insert; the chk_mtr_* rules are mirrored as asserts (NOT proof of the SQL expressions)

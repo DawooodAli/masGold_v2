@@ -27,7 +27,7 @@ PAYMENT_REVERSAL_NOTE = ("عكس دفع المصنعيات يسجّل أن ال�
 KIND_TEXT = {"ISSUE": "إخراج عهدة", "RETURN": "رجوع من العهدة", "MELT": "سبك", "LOT_RETURN": "رجوع ناتج السبك", "LOT_ISSUE": "إخراج سبكة من المحل",
              "GOLD_BUY": "شراء ذهب نقدي", "GOLD_SALE": "بيع ذهب من العهدة", "HEAT": "حمّية اللوجو", "SUPPLIER_PAY": "دفع مصنعيات من العهدة", "GOLD_SETTLE": "تسوية ذهب من العهدة", "LOT_SETTLE": "تسوية سبكة من العهدة",
              "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي", "LOGO_HOLD": "تسليم لوجو لمسوقجي", "HOLD_BACK": "رجوع لوجو من مسوقجي",
-             "BK_ISSUE": "إخراج ذهب (دفتري)", "BK_BUY": "شراء ذهب (دفتري)", "BK_SELL": "بيع ذهب (دفتري)", "BK_RETURN": "رجوع ذهب للمحل (دفتري)"}
+             "BK_ISSUE": "إخراج ذهب (دفتري)", "BK_BUY": "شراء ذهب (دفتري)", "BK_SELL": "بيع ذهب (دفتري)", "BK_RETURN": "رجوع ذهب للمحل (دفتري)", "BK_RECON": "تسوية العهدة الدفترية"}
 BOOK_NOTE = "الرصيد الدفتري ليس مخزونًا فعليًا: هو رصيد محاسبي بمكافئ عيار 21 يُحسب من وقائع كل سطر. فرق التقريب ليس خسارة ولا زيادة."
 BOOK_CLOSE_HINT = "إغلاق العهدة الدفترية غير متاح بعد: يحتاج تسوية الرصيد الدفتري المعتمدة (مرحلة لاحقة)."
 BOOK_REVERSE_NOTES = {"BK_ISSUE": "عكس الإخراج يعيد أوزان الكسر المخزَّنة كما خرجت ويُنقص الرصيد الدفتري بالمكافئ المرحَّل المخزَّن؛ يُمنع إن استُخدم الذهب بعده.",
@@ -156,6 +156,13 @@ class MarketTripViewModel(QObject):
         self._selected, self._error, self._message = "", "", ""
         self._reversing_payment = False
         self._last_code = ""
+        self._approval, self._last_reconciliation = {}, {}
+        self._session.changed.connect(self._approval_session_changed)
+
+    def _approval_session_changed(self):
+        self._cancel("approval")
+        self._approval, self._last_reconciliation = {}, {}
+        self.changed.emit()
 
     # ------------------------------------------------------------ plumbing
     def _service_instance(self):
@@ -288,6 +295,7 @@ class MarketTripViewModel(QObject):
     @Slot(str)
     def selectTrip(self, trip_id):
         self._selected, self._detail = str(trip_id or ""), {}
+        self._last_reconciliation = {}
         self._drop_recon()                                                                      # nothing of the previous trip stays on screen, and its answer can no longer arrive
         self._error = self._message = ""
         self.changed.emit()
@@ -303,6 +311,8 @@ class MarketTripViewModel(QObject):
     def _drop_recon(self, error=""):
         """The preview on screen is no longer current (selection, tab or refresh changed): cancel its request and clear it; `error` shows a plain failure state instead."""
         self._cancel("recon")
+        self._cancel("approval")
+        self._approval = {}
         self._recon_for = ""
         self._recon = {"tripId": self._selected, "error": error} if error and self._selected else {}
 
@@ -364,8 +374,12 @@ class MarketTripViewModel(QObject):
 
     def _on_write(self, result, error):
         if error:
+            if self._operation == "reconcile" and self._last_code in ("RECONCILIATION_STALE", "RECONCILIATION_NOT_READY", "RECONCILIATION_EXISTS", "TRIP_CLOSED"):
+                self._approval = {"tripId": self._selected, "error": error}
             self._error = error                                        # the dialog stays open with every field kept
             return
+        if self._operation == "reconcile":
+            self._last_reconciliation = dict(result)
         text = self._done_text
         if isinstance(result, dict) and result.get("code"):
             reference = result.get("payment_code") or result.get("settlement_code") or result.get("document_code")
@@ -795,6 +809,47 @@ class MarketTripViewModel(QObject):
         return {**empty, "valid": True, "facts": facts,
                 "credit": f"يُحتسب للمورد {grams(posted)} جرام عيار {supplier['karat_value']}",
                 "analysis": f"القيمة التحليلية {number(analytical, 6)} • فرق التقريب {number(difference, 6, signed=True)}"}
+
+    @Property(bool, notify=changed)
+    def reconciliationEnabled(self):
+        return self.canManage and bool(getattr(self._service_instance(), "reconciliation_enabled", False))
+
+    @Property("QVariantMap", notify=changed)
+    def reconciliationApproval(self):
+        return self._approval
+
+    @Property("QVariantMap", notify=changed)
+    def lastReconciliation(self):
+        return self._last_reconciliation
+
+    @Slot()
+    def prepareReconciliation(self):
+        if not self.reconciliationEnabled or not self._selected or self.writing:
+            return
+        trip_id = self._selected
+        self._approval = {"tripId": trip_id, "loading": True}
+        self._error = ""
+        service = self._service_instance()
+        self._start("approval", lambda _expected_actor: service.reconciliation_approval_preview(trip_id, _expected_actor=_expected_actor))
+
+    def _on_approval(self, result, error):
+        if self._approval.get("tripId") != self._selected:
+            return
+        if error:
+            self._approval = {"tripId": self._selected, "error": error}
+        elif result.get("tripId") == self._selected:
+            self._approval = result
+
+    @Slot(str, str, str, str, "QVariantMap", str)
+    def approveReconciliation(self, trip_id, reason, note, effective_date, confirmations, request_key):
+        preview = self._approval
+        if not self.reconciliationEnabled or self.writing or trip_id != self._selected or preview.get("tripId") != trip_id or not preview.get("sourceDigest"):
+            return
+        digest, versions = preview["sourceDigest"], dict(preview["contractVersions"])
+        # IDs, amounts, date floor, digest and contract versions are server-derived.
+        self._write("reconcile", "تم اعتماد تسوية العهدة", lambda service, actor: service.reconcile(
+            trip_id, digest, effective_date.strip() or None, reason or None, note, dict(confirmations), versions,
+            request_key, _expected_actor=actor), False)
 
     # ------------------------------------------------------------ properties
     @Property(bool, notify=changed)

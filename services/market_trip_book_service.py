@@ -221,6 +221,56 @@ class MarketTripBookService(MarketTripService):
         return view
 
     # ------------------------------------------------------------------ reconciliation SETTLEMENT (R2-S1, migration 057) - DISABLED unless `reconciliation_enabled`
+    @property
+    def reconciliation_enabled(self):
+        """Presentation hint only; reconcile rechecks this gate before any transaction."""
+        return self._reconciliation_enabled
+
+    def reconciliation_approval_preview(self, trip_id, *, _expected_actor=None):
+        """One read-only snapshot for the approval dialog; posting revalidates under locks."""
+        actor = self._actor(_expected_actor)
+        if not self._reconciliation_enabled:
+            raise TripError("RECONCILIATION_NOT_ACTIVE", "اعتماد التسوية غير مفعّل.")
+        trip_number = _trip_id(trip_id)
+        with self._transaction() as connection:
+            self._authorization.require_permission_read(connection, actor, PERMISSION)
+            repository = self._repository(connection)
+            trip = repository.trip(trip_number)
+            if trip is None:
+                raise TripError("TRIP_NOT_FOUND", "العهدة غير موجودة.")
+            book_rules.require_book_trip(trip)
+            if trip["status"] != OPEN:
+                raise TripError("TRIP_CLOSED", "العهدة مغلقة.")
+            source = repository.reconciliation_source(trip_number, approval=True)
+            if any(e["entry_kind"] == book_rules.BK_RECON and e.get("correction_id") is None for e in source["entries"]):
+                raise TripError("RECONCILIATION_EXISTS", "للعهدة تسوية معتمدة بالفعل؛ راجع مستندها في السجل.")
+            try:
+                preview = book_reconciliation.reconcile_preview(source)
+                problems = book_settlement.readiness_problems(preview)
+                if problems:
+                    raise self._not_ready(problems)
+                floor, floor_source = book_settlement.date_window(source, trip.get("created_at"))
+                _, _, settlement, digest, _, _ = book_settlement.build(source)
+                book_settlement.check_capacity(settlement)
+            except (book_settlement.SettlementDataError, book_settlement.CanonicalError, InvalidOperation) as exc:
+                raise self._not_ready([("SNAPSHOT_SOURCE_INVALID", "تعذّر إعداد معاينة الاعتماد؛ راجع بيانات المصدر.")]) from exc
+            now = repository.db_now()
+            a = format(book_settlement.a_star_evidence(settlement), "f")
+            loss = book_settlement.milli_text(settlement.loss_milli)
+            result = {"tripId": str(trip_number), "sourceDigest": digest,
+                      "contractVersions": dict(book_settlement.CONTRACT_VERSIONS),
+                      "a": a, "aUnits": str(settlement.a_star_units), "b": book_settlement.milli_text(settlement.b_star_milli),
+                      "loss": loss, "rounding": book_settlement.milli_text(settlement.rounding_milli),
+                      "reasonRequired": settlement.loss_milli != 0, "dateFloor": floor.isoformat(),
+                      "dateFloorSource": floor_source, "defaultDate": now.date().isoformat(),
+                      "reasons": [{"id": "", "text": "اختر السبب" if settlement.loss_milli else "بدون سبب", "noteRequired": False}]
+                                 + [{"id": key, "text": text, "noteRequired": key in ("OTHER", "UNEXPLAINED")}
+                                    for key, text in book_settlement.REASONS.items()],
+                      "confirmations": book_settlement.confirmation_texts(a, loss, settlement.a_star_units)}
+            if not self._session.is_current(actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        return result
+
     def reconcile(self, trip_id, source_digest, effective_date, reason_code, note, confirmations, contract_versions, request_key, *, _expected_actor=None):
         """Approve the reconciliation of a BOOK trip: the owner recognises the unsettled analytical balance A, the posted loss L = round3(A) and the rounding settlement
         r = B - L (never a gain), and the document is recorded with its canonical snapshot. Nothing else moves: no cash, Scrap, stock, supplier or inventory effect, and the

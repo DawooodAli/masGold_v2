@@ -47,7 +47,10 @@ Item {
     Connections {
         target: page.vm
         function onEntryPosted(code) { entryDialog.close(); bookDialog.close(); meltDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close(); payDialog.close(); goldSettleDialog.close(); goldSaleDialog.close(); goldBuyDialog.close(); lotSettleDialog.close(); lotHoldDialog.close(); logoHoldDialog.close() }
-        function onActionDone(operation) { reasonDialog.close() }
+        function onActionDone(operation) { reasonDialog.close(); if (operation === "reconcile") reconApprovalDialog.close() }
+        function onChanged() {
+            if (reconApprovalDialog.opened && (page.vm.selectedTripId !== reconApprovalDialog.tripId || !page.vm.reconciliationEnabled)) reconApprovalDialog.close()
+        }
     }
 
     Rectangle { anchors.fill: parent; color: theme.bgPrimary }
@@ -446,6 +449,16 @@ Item {
                             }
                             Txt { objectName: "bookReconClosureNote"; Layout.fillWidth: true; text: page.recon.closureNote || ""; color: theme.amber
                                   font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Btn { objectName: "openReconciliationApproval"; Layout.fillWidth: true; text: "مراجعة واعتماد التسوية"; primary: true
+                                  visible: !!page.vm && page.vm.reconciliationEnabled
+                                  enabled: !!page.vm && !page.vm.busy && !!page.detail.open && !!page.recon.trustworthy && !!page.recon.lossAvailable
+                                  onClicked: reconApprovalDialog.openFor() }
+                            Txt { objectName: "reconciliationReceipt"; Layout.fillWidth: true; visible: !!page.vm && page.vm.lastReconciliation.trip_id === page.vm.selectedTripId
+                                  text: page.vm && page.vm.lastReconciliation.code ? "المستند " + page.ltr(page.vm.lastReconciliation.code) + " • التاريخ " + page.ltr(page.vm.lastReconciliation.effective_date) + "\nالرصيد التحليلي " + page.ltr(page.vm.lastReconciliation.a_star) + " • المرحّل " + page.ltr(page.vm.lastReconciliation.b_star)
+                                       + " • الفاقد " + page.ltr(page.vm.lastReconciliation.loss_posted) + " • فرق التقريب " + page.ltr(page.vm.lastReconciliation.rounding_settlement)
+                                       + " جرام مكافئ عيار 21\nالسبب: " + (page.vm.lastReconciliation.reason || "بدون سبب")
+                                       + (page.vm.lastReconciliation.note ? " — " + page.vm.lastReconciliation.note : "") : ""
+                                  color: theme.green; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                             Btn { objectName: "bookReconMoreToggle"; Layout.fillWidth: true; accent: theme.textMuted
                                   text: page.reconMore ? "إخفاء التفاصيل الحسابية" : "تفاصيل حسابية وحدود الفحص"; onClicked: page.reconMore = !page.reconMore }
                             ColumnLayout {
@@ -2753,6 +2766,102 @@ Item {
     }
 
     // ---------------------------------------------------------------- reason (reopen a closed trip / reverse an entry)
+    Dialog {
+        id: reconApprovalDialog
+        objectName: "reconciliationApprovalDialog"
+        property string tripId: ""
+        property string requestKey: ""
+        readonly property var approval: page.vm ? page.vm.reconciliationApproval : ({})
+        readonly property bool ready: !!approval.sourceDigest && approval.tripId === tripId && tripId === page.vm.selectedTripId
+        readonly property var reason: approval.reasons ? approval.reasons[reconReason.currentIndex] : null
+        function openFor() {
+            tripId = page.vm.selectedTripId
+            requestKey = page.vm.newRequestKey()
+            reconReason.currentIndex = 0
+            reconNote.text = ""
+            reconDate.text = ""
+            reconComplete.checked = false
+            reconLoss.checked = false
+            reconRounding.checked = false
+            page.vm.clearMessage()
+            page.vm.prepareReconciliation()
+            open()
+        }
+        onReadyChanged: {
+            reconComplete.checked = false; reconLoss.checked = false; reconRounding.checked = false
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(660, page.width - 24)
+        height: Math.min(620, page.height - 36)
+        modal: true
+        padding: 16
+        closePolicy: page.vm && page.vm.writing ? Popup.NoAutoClose : Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 8
+            Txt { objectName: "reconciliationApprovalTitle"; Layout.fillWidth: true; text: "اعتماد تسوية العهدة"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
+            Flickable {
+                id: approvalScroll
+                objectName: "approvalScroll"
+                Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+                contentWidth: width; contentHeight: approvalForm.implicitHeight
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: ScrollBar { }
+                ColumnLayout {
+                    id: approvalForm
+                    width: approvalScroll.width
+                    spacing: 8
+                    Txt { Layout.fillWidth: true; text: "راجع اكتمال تسجيل الحركات قبل الاعتماد. الاعتماد يسجّل الفاقد المعترف به وفرق التقريب؛ لا يغلق العهدة ولا ينقل ذهبًا أو نقدية."; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                    Txt { objectName: "reconciliationApprovalError"; visible: text.length > 0; Layout.fillWidth: true; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                          text: reconApprovalDialog.approval.error || (page.vm ? page.vm.errorMessage : "") }
+                    Txt { Layout.fillWidth: true; visible: !!reconApprovalDialog.approval.loading; text: reconApprovalDialog.approval.loading ? "جارٍ إعداد المعاينة…" : ""; color: theme.textMuted }
+                    ColumnLayout {
+                        Layout.fillWidth: true; visible: reconApprovalDialog.ready; spacing: 8
+                        Txt { objectName: "approvalFigures"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.gold
+                              text: "الرصيد التحليلي: " + page.ltr(reconApprovalDialog.approval.a || "") + "\nالرصيد المرحّل: " + page.ltr(reconApprovalDialog.approval.b || "") + "\nالفاقد المرحّل: " + page.ltr(reconApprovalDialog.approval.loss || "") + "\nفرق التقريب (ليس فاقدًا ولا زيادة): " + page.ltr(reconApprovalDialog.approval.rounding || "") + "\nجميع القيم بجرام مكافئ عيار 21" }
+                        Txt { Layout.fillWidth: true; text: reconApprovalDialog.approval.reasonRequired ? "سبب التسوية (إلزامي)" : "سبب التسوية (اختياري)" }
+                        Combo { id: reconReason; objectName: "approvalReason"; Layout.fillWidth: true; model: reconApprovalDialog.approval.reasons || []; textRole: "text"; enabled: !page.vm.writing }
+                        Txt { Layout.fillWidth: true; text: reconApprovalDialog.reason && reconApprovalDialog.reason.noteRequired ? "ملاحظة توضيحية (إلزامية)" : "ملاحظة توضيحية (اختيارية)" }
+                        Field { id: reconNote; objectName: "approvalNote"; Layout.fillWidth: true; maximumLength: 1000; enabled: !page.vm.writing }
+                        Txt { Layout.fillWidth: true; text: "التاريخ الفعلي — اتركه فارغًا لاعتماد يوم الخادم" }
+                        Field { id: reconDate; objectName: "approvalDate"; Layout.fillWidth: true; placeholderText: reconApprovalDialog.approval.defaultDate || "YYYY-MM-DD"; maximumLength: 10; enabled: !page.vm.writing }
+                        Txt { Layout.fillWidth: true; text: "أقدم تاريخ مسموح: " + page.ltr(reconApprovalDialog.approval.dateFloor || "") + " • اليوم: " + page.ltr(reconApprovalDialog.approval.defaultDate || ""); color: theme.textMuted; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                        CheckBox { id: reconComplete; objectName: "approvalRecordingComplete"; Layout.fillWidth: true; enabled: !page.vm.writing; font.family: "Cairo"
+                                   indicator: Rectangle { implicitWidth: 18; implicitHeight: 18; x: reconComplete.width - width; y: (reconComplete.height - height) / 2; radius: 3
+                                               border.color: theme.gold; color: reconComplete.checked ? theme.gold : theme.bgPrimary
+                                               Canvas { anchors.fill: parent; property bool checked: reconComplete.checked; onCheckedChanged: requestPaint()
+                                                        onPaint: { var c = getContext("2d"); c.clearRect(0, 0, width, height); if (checked) { c.strokeStyle = theme.bgPrimary; c.lineWidth = 2; c.beginPath(); c.moveTo(4, 9); c.lineTo(8, 13); c.lineTo(14, 5); c.stroke(); } } } }
+                                   text: (reconApprovalDialog.approval.confirmations || {}).recording_complete || ""; contentItem: Txt { text: reconComplete.text; wrapMode: Text.WordWrap; elide: Text.ElideNone; rightPadding: reconComplete.indicator.width + 8; leftPadding: 0 } }
+                        CheckBox { id: reconLoss; objectName: "approvalLossRecognised"; Layout.fillWidth: true; enabled: !page.vm.writing; font.family: "Cairo"
+                                   indicator: Rectangle { implicitWidth: 18; implicitHeight: 18; x: reconLoss.width - width; y: (reconLoss.height - height) / 2; radius: 3
+                                               border.color: theme.gold; color: reconLoss.checked ? theme.gold : theme.bgPrimary
+                                               Canvas { anchors.fill: parent; property bool checked: reconLoss.checked; onCheckedChanged: requestPaint()
+                                                        onPaint: { var c = getContext("2d"); c.clearRect(0, 0, width, height); if (checked) { c.strokeStyle = theme.bgPrimary; c.lineWidth = 2; c.beginPath(); c.moveTo(4, 9); c.lineTo(8, 13); c.lineTo(14, 5); c.stroke(); } } } }
+                                   text: (reconApprovalDialog.approval.confirmations || {}).loss_recognised_as_posted || ""; contentItem: Txt { text: reconLoss.text; wrapMode: Text.WordWrap; elide: Text.ElideNone; rightPadding: reconLoss.indicator.width + 8; leftPadding: 0 } }
+                        CheckBox { id: reconRounding; objectName: "approvalRoundingSeparate"; Layout.fillWidth: true; enabled: !page.vm.writing; font.family: "Cairo"
+                                   indicator: Rectangle { implicitWidth: 18; implicitHeight: 18; x: reconRounding.width - width; y: (reconRounding.height - height) / 2; radius: 3
+                                               border.color: theme.gold; color: reconRounding.checked ? theme.gold : theme.bgPrimary
+                                               Canvas { anchors.fill: parent; property bool checked: reconRounding.checked; onCheckedChanged: requestPaint()
+                                                        onPaint: { var c = getContext("2d"); c.clearRect(0, 0, width, height); if (checked) { c.strokeStyle = theme.bgPrimary; c.lineWidth = 2; c.beginPath(); c.moveTo(4, 9); c.lineTo(8, 13); c.lineTo(14, 5); c.stroke(); } } } }
+                                   text: (reconApprovalDialog.approval.confirmations || {}).rounding_separate || ""; contentItem: Txt { text: reconRounding.text; wrapMode: Text.WordWrap; elide: Text.ElideNone; rightPadding: reconRounding.indicator.width + 8; leftPadding: 0 } }
+                    }
+                }
+            }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                Btn { objectName: "refreshApprovalPreview"; text: "إعادة قراءة المعاينة"; visible: !reconApprovalDialog.ready && !reconApprovalDialog.approval.loading; enabled: !page.vm.writing; onClicked: page.vm.prepareReconciliation() }
+                Btn { objectName: "confirmReconciliationApproval"; text: page.vm && page.vm.writing ? "جارٍ الاعتماد…" : "اعتماد التسوية"; primary: true
+                      enabled: reconApprovalDialog.ready && !page.vm.writing && reconComplete.checked && reconLoss.checked && reconRounding.checked
+                               && (!reconApprovalDialog.approval.reasonRequired || !!(reconApprovalDialog.reason && reconApprovalDialog.reason.id !== ""))
+                               && (!(reconApprovalDialog.reason && reconApprovalDialog.reason.noteRequired) || reconNote.text.trim().length > 0)
+                      onClicked: page.vm.approveReconciliation(reconApprovalDialog.tripId, reconApprovalDialog.reason ? reconApprovalDialog.reason.id : "", reconNote.text, reconDate.text,
+                                {recording_complete: reconComplete.checked, loss_recognised_as_posted: reconLoss.checked, rounding_separate: reconRounding.checked}, reconApprovalDialog.requestKey) }
+                Btn { objectName: "cancelReconciliationApproval"; text: "إلغاء"; enabled: !page.vm.writing; onClicked: reconApprovalDialog.close() }
+            }
+        }
+    }
+
     Popup {
         id: reasonDialog
         objectName: "tripReasonDialog"

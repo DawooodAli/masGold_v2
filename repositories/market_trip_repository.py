@@ -890,7 +890,7 @@ class MarketTripRepository(BaseRepository):
             ORDER BY l.entry_id, l.line_no{" FOR SHARE OF e, l" if current else ""}
             """, (_id(trip_id), int(exclude_entry_id or 0)))
 
-    def reconciliation_source(self, trip_id):
+    def reconciliation_source(self, trip_id, *, approval=False):
         """DISPLAY ONLY (R1 reconciliation preview). Everything the pure preview compares, from ONE trip and a fixed number of queries (five), every one a plain
         snapshot read: NO locking clause anywhere (outer queries, subqueries or reversal lookups) and no write. Run inside the caller's single read transaction so all five
         come from the same snapshot. The rows are the STORED facts: nothing is aggregated away and no list limit exists.
@@ -938,6 +938,10 @@ class MarketTripRepository(BaseRepository):
              """),
         )
         for name, code, sql in queries:
+            if approval and name == "entries":
+                sql = sql.replace("e.entry_kind, c.id AS correction_id", "e.entry_kind, e.entry_date, c.id AS correction_id, c.correction_type")
+            if approval and name == "stock":
+                sql = sql.replace("SELECT s.item_entry_id", "SELECT s.id, s.item_entry_id")
             try:
                 result[name] = self._fetch_all(sql, (trip,))
             except MySqlError as exc:

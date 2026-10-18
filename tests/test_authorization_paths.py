@@ -112,6 +112,7 @@ class CallSiteAuditTests(unittest.TestCase):
                   ("services/market_trip_service.py", "trips"),                    # MARKET_TRIP_MANAGE (trip list)
                   ("services/market_trip_service.py", "trip_page"),                # MARKET_TRIP_MANAGE (paginated active / archived trip list, read-only)
                   ("services/market_trip_book_service.py", "book_preview"),        # MARKET_TRIP_MANAGE (BOOK dialog preview, read-only)
+                  ("services/market_trip_book_service.py", "reconciliation_approval_preview"), # approval dialog, read-only
                   ("services/market_trip_book_service.py", "reconciliation_preview"),   # MARKET_TRIP_MANAGE (R1 read-only reconciliation preview of a BOOK trip: snapshot reads, no write)
                   ("services/market_trip_service.py", "trip_detail"),              # MARKET_TRIP_MANAGE (custody and history)
                   ("services/market_trip_service.py", "shop_lots"),                # MARKET_TRIP_MANAGE (shop-side lot stock)
