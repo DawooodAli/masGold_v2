@@ -11,7 +11,7 @@ from tools.schema_rehearsal.guards import RehearsalRefused, prepare_sql
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_DIR = REPO_ROOT / "database" / "schema"
 MANIFEST = SCHEMA_DIR / "SHA256SUMS"
-FIRST, LAST = 1, 55
+FIRST, LAST = 1, 57
 
 
 @dataclass(frozen=True)

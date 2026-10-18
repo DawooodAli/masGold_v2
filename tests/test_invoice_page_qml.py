@@ -58,6 +58,23 @@ class Approvers:
         return frozenset({"APP_LOGIN", "INVOICE_SETTLEMENT_APPROVE"})
 
 
+class UiProviderSettings:
+    """Provider settings beside the printer controls, with no DB, HTTP or keyring.
+
+    These page tests exercise printing and navigation. Provider configuration
+    operations have their own service/worker tests and are not faked as successful
+    writes here: this fixture deliberately implements only the load they need.
+    """
+
+    def __init__(self):
+        self.load_calls = 0
+
+    def load(self, actor):
+        self.load_calls += 1
+        return {"base_url": "https://goldtimo.com/api/v1", "timeout": "10",
+                "refresh": "60", "stale": "300", "stored": False, "configured": False}
+
+
 class UiPrinter:
     """InvoicePrintService stand-in: records each print job (never a real printer)."""
 
@@ -214,6 +231,9 @@ class InvoicePageTests(unittest.TestCase):
             balance_factory=lambda session: OperationalBalanceViewModel(session, service=Balances(self.store)),
             dashboard_factory=lambda session: DashboardViewModel(session, service=self.dashboard),
             history_factory=lambda session: InvoiceHistoryViewModel(session, service=self.history, debounce_ms=20))
+        # Inject before opening operational QML can start a provider load worker.
+        self.provider_settings = UiProviderSettings()
+        self.controller.gold_settings.service = self.provider_settings
         self.wait_until(lambda: self.controller.state == "LOGIN")
         session = self.controller.session
         session._establish(AuthenticationResult(17, 7, "موظف", PERMISSIONS, _VERIFIED), int(session.generation))
@@ -228,6 +248,14 @@ class InvoicePageTests(unittest.TestCase):
         self.root.setProperty("currentPage", 1)
         self.wait_until(lambda: len(self.vm.priceRows) == 3 and len(self.vm.salespeople) == 1
                         and len(self.vm.itemTypes) == 3 and not self.vm.busy)
+
+    def assert_provider_settings_loaded(self):
+        settings = self.controller.gold_settings
+        self.wait_until(lambda: not settings.busy and bool(settings.data), "offline provider settings not loaded")
+        self.assertIs(settings.service, self.provider_settings)
+        self.assertGreater(self.provider_settings.load_calls, 0)
+        self.assertFalse(settings.isError, settings.message)
+        self.assertEqual((settings.data["stored"], settings.data["configured"]), (False, False))
 
     def grant(self, *codes, revoke=()):
         """Change the signed-in actor's permission set (UI gating reads it) and notify the gated view models."""
@@ -337,7 +365,7 @@ class InvoicePageTests(unittest.TestCase):
     def reveal(self, item):
         """The supplier party page has ONE scroll (`partyScroll`): scroll it as the employee does until the item is inside its viewport."""
         flick = item.parentItem()
-        while flick is not None and flick.objectName() != "partyScroll":
+        while flick is not None and flick.objectName() not in ("partyScroll", "tripDetailScroll"):      # the market-trip detail scrolls the same way
             flick = flick.parentItem()
         if flick is None:
             return
@@ -1330,6 +1358,7 @@ class InvoicePageTests(unittest.TestCase):
         self.click("openPrintingSettings")
         self.wait_until(lambda: self.root.property("currentPage") == 6)
         self.wait_until(lambda: not dialog.property("visible"))
+        self.assert_provider_settings_loaded()
         self.assertEqual(self.store.invoices, [])
         self.root.setProperty("currentPage", 1)
         self.wait_until(lambda: self.item("finalizeInvoice").property("visible"))
@@ -1344,6 +1373,7 @@ class InvoicePageTests(unittest.TestCase):
         printing = self.controller.operational_viewmodels["printerSettingsVM"]
         self.root.setProperty("currentPage", 6)
         self.wait_until(lambda: self.visual_item("billPrinterCombo") is not None)
+        self.assert_provider_settings_loaded()
         self.scroll_settings_to("billPrinterCombo")
         self.choose("billPrinterCombo", 0)
         self.wait_until(lambda: printing.billPrinter["name"] == "Brother HL-L2360D series")

@@ -8,8 +8,10 @@ from tools.schema_rehearsal.chain import load_chain
 ROOT=Path(__file__).resolve().parents[1]
 class WholeLotSchemaTests(unittest.TestCase):
     def test_manifest_and_earlier_migrations_are_unchanged(self):
-        files=load_chain(require_committed=False);self.assertEqual(len(files),55)
+        files=load_chain(require_committed=False);self.assertEqual(len(files),57)
         for f in files[:-1]:
+            if subprocess.run(['git','cat-file','-e','HEAD:database/schema/'+f.name],cwd=ROOT,capture_output=True).returncode!=0:
+                continue  # a prepared, not yet committed migration (056 before its commit) has no committed original to compare with; every committed one is still compared
             original=subprocess.check_output(['git','show','HEAD:database/schema/'+f.name],cwd=ROOT)
             self.assertEqual(original.replace(b'\r\n',b'\n'),f.path.read_bytes().replace(b'\r\n',b'\n'),f.name)
 

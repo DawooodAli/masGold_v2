@@ -94,7 +94,7 @@ class HardeningMySqlTests(unittest.TestCase):
             q = c.cursor(dictionary=True)
             q.execute('SELECT DATABASE() AS db, MAX(version) AS v FROM schema_migrations')
             row = q.fetchone()
-            assert row['db'] == TARGET and row['v'] in (47, 48, 49, 50, 51, 52, 53, 54, 55)
+            assert row['db'] == TARGET and row['v'] in (47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57)
             q.execute("SELECT target_database FROM masgold_rehearsal_marker WHERE marker_key='MASGOLD_SCHEMA_REHEARSAL'")
             assert q.fetchone()['target_database'] == TARGET
             q.execute('SELECT id,karat_value FROM karats')
@@ -282,9 +282,9 @@ class HardeningMySqlTests(unittest.TestCase):
             legacy = MarketTripRepository(legacy_connection)
             # --- cash: issued / returned / paid to suppliers
             stale = legacy.custody_cash(cash_trip, current=True)
-            self.assertEqual(tuple(D(str(v)) for v in stale), (D('100'), D('0'), D('30')))        # control: the reversed entries still count
-            self.assertEqual(tuple(D(str(v)) for v in current.custody_cash(cash_trip)), (D('100'), D('0'), D('30')))   # display form: unchanged
-            self.assertEqual(tuple(D(str(v)) for v in current.custody_cash(cash_trip, current=True)), (D('0'), D('0'), D('0')))
+            self.assertEqual(tuple(D(str(v)) for v in stale[:3]), (D('100'), D('0'), D('30')))     # control: the reversed entries still count (issued, returned, paid; then sales / purchases terms)
+            self.assertEqual(tuple(D(str(v)) for v in current.custody_cash(cash_trip, current=False)[:3]), (D('100'), D('0'), D('30')))   # DISPLAY form: the snapshot, unchanged
+            self.assertEqual(tuple(D(str(v)) for v in current.custody_cash(cash_trip, current=True)[:3]), (D('0'), D('0'), D('0')))
             # --- gold: legs, melts, heats and supplier settlements
             def table(rows):
                 return {(int(r['karat_id']), r['designation']): {k: D(str(r[k])) for k in ('issued', 'returned', 'melted', 'heat_delta', 'supplier_settled')}
@@ -296,7 +296,7 @@ class HardeningMySqlTests(unittest.TestCase):
             fresh_gold = table(current.custody_gold(gold_trip, current=True))
             self.assertEqual(fresh_gold[(k21, 'LOGO')], {'issued': D('10'), 'returned': D('0'), 'melted': D('0'), 'heat_delta': D('0'), 'supplier_settled': D('0')})
             self.assertEqual(fresh_gold[(k21, 'MELT')], {'issued': D('5'), 'returned': D('0'), 'melted': D('0'), 'heat_delta': D('0'), 'supplier_settled': D('0')})
-            self.assertEqual(table(current.custody_gold(gold_trip)), stale_gold)                  # display form: unchanged
+            self.assertEqual(table(current.custody_gold(gold_trip, current=False)), stale_gold)   # DISPLAY form: the snapshot, unchanged
             # --- the reversal-guard lookups
             ids = {kind: entry_id for entry_id, kind in gold_entries}
             for name, kind in (('later_heat_entries', 'HEAT'), ('later_logo_returns', 'RETURN'), ('later_gold_settlements', 'GOLD_SETTLE')):

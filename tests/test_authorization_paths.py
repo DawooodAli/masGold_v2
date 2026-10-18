@@ -110,6 +110,9 @@ class CallSiteAuditTests(unittest.TestCase):
                  ("services/supplier_service.py", "_holdings_view"),                    # INTERMEDIARY_HOLDING_VIEW (holdings inside the supplier detail)
                   ("services/market_trip_service.py", "context"),                  # MARKET_TRIP_MANAGE (entry dialog data)
                   ("services/market_trip_service.py", "trips"),                    # MARKET_TRIP_MANAGE (trip list)
+                  ("services/market_trip_service.py", "trip_page"),                # MARKET_TRIP_MANAGE (paginated active / archived trip list, read-only)
+                  ("services/market_trip_book_service.py", "book_preview"),        # MARKET_TRIP_MANAGE (BOOK dialog preview, read-only)
+                  ("services/market_trip_book_service.py", "reconciliation_preview"),   # MARKET_TRIP_MANAGE (R1 read-only reconciliation preview of a BOOK trip: snapshot reads, no write)
                   ("services/market_trip_service.py", "trip_detail"),              # MARKET_TRIP_MANAGE (custody and history)
                   ("services/market_trip_service.py", "shop_lots"),                # MARKET_TRIP_MANAGE (shop-side lot stock)
                   ("services/market_trip_service.py", "sale_price_check"),         # MARKET_TRIP_MANAGE (read-only sale price preview)
@@ -146,6 +149,21 @@ class CallSiteAuditTests(unittest.TestCase):
     def test_read_path_call_sites_are_exactly_the_audited_reads(self):
         self.assertEqual(self.sites("require_permission_read") | self.sites("require_any_permission_read"),
                          self.READ_SITES)
+
+    def test_the_two_added_trip_read_sites_require_the_permission_and_call_no_writer(self):
+        """trip_page and book_preview use the non-locking read path ONLY after reviewing them: each asks for MARKET_TRIP_MANAGE and calls no repository writer."""
+        import ast
+        writers = ("insert", "update_", "delete", "post", "lock", "write", "record", "reverse", "close", "reopen", "commit")
+        for path, name in (("services/market_trip_service.py", "trip_page"), ("services/market_trip_book_service.py", "book_preview"),
+                           ("services/market_trip_book_service.py", "reconciliation_preview")):
+            tree = ast.parse(Path(path).read_text(encoding="utf-8"))
+            function = next(f for f in ast.walk(tree) if isinstance(f, ast.FunctionDef) and f.name == name)
+            calls = [n for n in ast.walk(function) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
+            permission = [c for c in calls if c.func.attr == "require_permission_read"]
+            self.assertEqual(len(permission), 1, name)
+            self.assertEqual(ast.unparse(permission[0].args[2]), "PERMISSION", name)
+            self.assertFalse([c.func.attr for c in calls if c.func.attr.startswith(writers)], name)
+            self.assertFalse([c for c in calls if c.func.attr in ("require_permission", "require_permission_for_write")], name)
 
     def test_every_mutation_keeps_the_locking_path(self):
         writes = self.sites("require_permission") | self.sites("require_permission_for_write")

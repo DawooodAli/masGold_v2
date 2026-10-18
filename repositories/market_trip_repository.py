@@ -5,9 +5,12 @@ of it is an insert-only event). Custody is never stored: it is derived from the 
 A reversed entry is one that has a FULL_REVERSAL row in transaction_corrections (source_type MARKET_TRIP_ENTRY)."""
 import json
 
+from mysql.connector import Error as MySqlError
+
 from repositories.base_repository import BaseRepository
 from repositories.invoice_repository import _id
 from repositories.request_keys import require_no_marketer_key
+from services import book_rules
 
 SOURCE = "MARKET_TRIP_ENTRY"            # transaction_corrections.source_type and the cash / Scrap reference_type
 MAIN_SAFE = "MAIN_SAFE"
@@ -25,6 +28,8 @@ SHOP_RETURN_MOVEMENT = "SHOP_RETURN"                      # custody-side lot mov
 SHOP_RETURN_IN, SHOP_RETURN_REVERSAL = "TRIP_RETURN", "RETURN_REVERSAL"      # shop-side lot ledger movement types
 SHOP_ISSUE_MOVEMENT = "SHOP_ISSUE"                                 # custody-side lot movement of a LOT_ISSUE (positive grams)
 SHOP_ISSUE_OUT, SHOP_ISSUE_REVERSAL = "TRIP_ISSUE", "ISSUE_REVERSAL"         # shop-side movements of a reissue and of its reversal
+BK_ISSUE, BK_BUY, BK_SELL, BK_RETURN = book_rules.BK_ISSUE, book_rules.BK_BUY, book_rules.BK_SELL, book_rules.BK_RETURN     # Phase 1 BOOK entry kinds
+LEGACY, BOOK = book_rules.LEGACY, book_rules.BOOK
 OPEN, CLOSED = "OPEN", "CLOSED"
 CASH_TYPE = {ISSUE: "TRIP_CASH_ISSUE", RETURN: "TRIP_CASH_RETURN"}
 SCRAP_TYPE = {ISSUE: "TRIP_CUSTODY_OUT", RETURN: "TRIP_CUSTODY_RETURN_IN"}
@@ -38,6 +43,13 @@ def _not_reversed(alias="e", *, current=False):
 
 
 _NOT_REVERSED = _not_reversed("e")
+
+
+def _share(current, of=""):
+    """The locking clause of a custody read: a DECISION (`current=True`) locks its rows; a DISPLAY read (`current=False`) takes NO lock at all, outer query or nested lookup."""
+    if not current:
+        return ""
+    return f" FOR SHARE OF {of}" if of else " FOR SHARE"
 
 
 def trip_code(trip_id):
@@ -123,9 +135,14 @@ class MarketTripRepository(BaseRepository):
                                "FROM vw_old_gold_available ORDER BY karat_value DESC")
 
     # ------------------------------------------------------------------ trips
-    def insert_trip(self, *, notes, actor, now):
-        trip_id, _ = self._execute("INSERT INTO market_trips (status, notes, created_by_user_id, created_at, status_changed_at) "
-                                   "VALUES ('OPEN', %s, %s, %s, %s)", (notes, actor.user_id, now, now))
+    def insert_trip(self, *, notes, actor, now, mode=LEGACY):
+        """A new OPEN trip. The mode is written ONLY for BOOK (a LEGACY trip takes the column DEFAULT, so the statement of every normal creation is the one it always was)."""
+        if mode == BOOK:
+            trip_id, _ = self._execute("INSERT INTO market_trips (status, accounting_mode, notes, created_by_user_id, created_at, status_changed_at) "
+                                       "VALUES ('OPEN', 'BOOK', %s, %s, %s, %s)", (notes, actor.user_id, now, now))
+        else:
+            trip_id, _ = self._execute("INSERT INTO market_trips (status, notes, created_by_user_id, created_at, status_changed_at) "
+                                       "VALUES ('OPEN', %s, %s, %s, %s)", (notes, actor.user_id, now, now))
         return int(trip_id)
 
     def trip(self, trip_id, lock=False):
@@ -151,7 +168,7 @@ class MarketTripRepository(BaseRepository):
     def trips(self, limit=100):
         return self._fetch_all(
             """
-            SELECT t.id, t.status, t.notes, t.created_at, t.status_changed_at,
+            SELECT t.id, t.status, t.accounting_mode, t.notes, t.created_at, t.status_changed_at,
                    (SELECT COUNT(*) FROM market_trip_entries e WHERE e.trip_id = t.id) AS entry_count
             FROM market_trips t ORDER BY t.id DESC LIMIT %s
             """, (int(limit),))
@@ -163,7 +180,7 @@ class MarketTripRepository(BaseRepository):
         order = "t.status_changed_at DESC, t.id DESC" if status == "CLOSED" else "t.created_at DESC, t.id DESC"
         return self._fetch_all(
             f"""
-            SELECT t.id, t.status, t.notes, t.created_at, t.status_changed_at,
+            SELECT t.id, t.status, t.accounting_mode, t.notes, t.created_at, t.status_changed_at,
                    (SELECT COUNT(*) FROM market_trip_entries e WHERE e.trip_id = t.id) AS entry_count
             FROM market_trips t WHERE t.status = %s ORDER BY {order} LIMIT %s OFFSET %s
             """, (status, int(page_size) + 1, (int(page) - 1) * int(page_size)))
@@ -185,12 +202,19 @@ class MarketTripRepository(BaseRepository):
 
     def insert_entry(self, *, trip_id, entry_no, kind, entry_date, notes, key, digest, actor, now):
         require_no_marketer_key(self._fetch_one, key)                    # 055: a marketer document owns this key -> REQUEST_CONFLICT, nothing is written
+        # 056: the ONE insert path of every entry kind checks the kind against the TRIP's mode (the caller holds the trip lock); the database repeats the rule
+        # (chk_mte_mode_kind + the composite foreign key), so a BOOK trip can never receive a legacy-only entry nor a LEGACY trip a book entry.
+        mode = book_rules.trip_mode(self.trip(trip_id))
+        book_rules.require_kind_in_mode(kind, mode)
+        columns, marks, values = "", "", ()
+        if mode == BOOK:
+            columns, marks, values = ", trip_mode", ", %s", (BOOK,)
         entry_id, _ = self._execute(
-            """
+            f"""
             INSERT INTO market_trip_entries (trip_id, entry_no, entry_kind, entry_date, notes, request_key, request_hash,
-                performed_by_user_id, performed_by_employee_id, occurred_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (_id(trip_id), entry_no, kind, entry_date, notes, key, digest, actor.user_id, actor.employee_id, now))
+                performed_by_user_id, performed_by_employee_id, occurred_at{columns})
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s{marks})
+            """, (_id(trip_id), entry_no, kind, entry_date, notes, key, digest, actor.user_id, actor.employee_id, now, *values))
         return int(entry_id)
 
     def post_cash(self, *, kind, account_id, entry_id, code, amount, description, actor, now):
@@ -360,12 +384,12 @@ class MarketTripRepository(BaseRepository):
             HAVING SUM(s.weight_delta) > 0 ORDER BY e.trip_id, e.entry_no, l.lot_no
             """)
 
-    def custody_lots(self, trip_id, exclude_entry_id=None, *, lot_id=None):
+    def custody_lots(self, trip_id, exclude_entry_id=None, *, lot_id=None, current=True):
         """The assayed lots CURRENTLY held by this trip's custody, with their OUTSTANDING grams. The location is derived from the effective
         movements of this trip's entries (a CREATE of its own melt, a SHOP_ISSUE of a reissued bar, a SHOP_RETURN out), never from the
         lot's origin: a bar reissued into this custody is listed here and not in its origin's. Movements of reversed entries do not count."""
         # Write callers lock the current trip and affected lot facts explicitly. Locking unrelated lot facts or the immutable
-        # origin entry here would invert the ascending lot order of origin-melt reversal. Movement reads remain current/locking.
+        # origin entry here would invert the ascending lot order of origin-melt reversal. Movement reads are current/locking in the DECISION form (`current=True`, the default) and plain snapshot reads in the DISPLAY form.
         return self._fetch_all(
             f"""
             SELECT l.id, l.entry_id, l.lot_no, l.lot_kind, l.label, l.weight_grams, l.fineness_permille, l.pure_grams, oe.entry_no,
@@ -374,9 +398,9 @@ class MarketTripRepository(BaseRepository):
             JOIN market_trip_entries oe ON oe.id = l.entry_id
             JOIN market_trip_lot_movements m ON m.lot_id = l.id
             JOIN market_trip_entries me ON me.id = m.entry_id
-            WHERE me.trip_id = %s AND me.id <> %s AND (%s IS NULL OR l.id = %s) AND {_not_reversed('me', current=True)}
+            WHERE me.trip_id = %s AND me.id <> %s AND (%s IS NULL OR l.id = %s) AND {_not_reversed('me', current=current)}
             GROUP BY l.id, l.entry_id, l.lot_no, l.lot_kind, l.label, l.weight_grams, l.fineness_permille, l.pure_grams, oe.entry_no, oe.trip_id
-            ORDER BY l.id FOR SHARE OF m, me
+            ORDER BY l.id{_share(current, 'm, me')}
             """, (_id(trip_id), int(exclude_entry_id or 0), lot_id, lot_id))
 
     def lot_downstream(self, entry_id):
@@ -483,38 +507,44 @@ class MarketTripRepository(BaseRepository):
             """, (_id(trip_id), int(after_entry_no), *ids))
 
     # ------------------------------------------------------------------ custody (derived, read under the trip lock)
-    def custody_cash(self, trip_id, exclude_entry_id=None, *, current=False):
+    def custody_cash(self, trip_id, exclude_entry_id=None, *, current=True):
         """(issued, returned, paid to suppliers) cash of the entries that were not reversed. A supplier payment made from custody
-        consumes custody cash without any Main Safe movement. The entry and leg rows are locking (current) reads; the nested
-        reversal lookup is a snapshot read unless `current=True`, which every DECISION made under the trip lock passes (a display
-        read does not, so it takes no locks on correction rows)."""
+        consumes custody cash without any Main Safe movement. `current=True` (the default, so a caller that forgets stays safe) is the DECISION form: the entry
+        and leg rows are locking reads and so is the nested reversal lookup. `current=False` is the DISPLAY form: plain snapshot reads, no locking clause anywhere."""
         not_reversed = _not_reversed("e", current=current)
         row = self._fetch_one(
             f"""
             SELECT COALESCE(SUM(IF(e.entry_kind = 'ISSUE', c.amount, 0)), 0) AS issued,
                    COALESCE(SUM(IF(e.entry_kind = 'RETURN', c.amount, 0)), 0) AS returned
             FROM market_trip_entries e JOIN market_trip_entry_cash c ON c.entry_id = e.id
-            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed} FOR SHARE
+            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}{_share(current)}
             """, (_id(trip_id), int(exclude_entry_id or 0)))
         paid = self._fetch_one(
             f"""
             SELECT COALESCE(SUM(p.amount), 0) AS paid
             FROM market_trip_entries e JOIN market_trip_supplier_payments p ON p.entry_id = e.id
-            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed} FOR SHARE OF e, p
+            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}{_share(current, 'e, p')}
             """, (_id(trip_id), int(exclude_entry_id or 0)))
         sold = self._fetch_one(
             f"""
             SELECT COALESCE(SUM(s.total_price), 0) AS proceeds
             FROM market_trip_entries e JOIN market_trip_gold_sales s ON s.entry_id = e.id
-            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed} FOR SHARE OF e, s
+            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}{_share(current, 'e, s')}
             """, (_id(trip_id), int(exclude_entry_id or 0)))
         bought = self._fetch_one(
             f"""
             SELECT COALESCE(SUM(b.total_price), 0) AS spent
             FROM market_trip_entries e JOIN market_trip_gold_buys b ON b.entry_id = e.id
-            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed} FOR SHARE OF e, b
+            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}{_share(current, 'e, b')}
             """, (_id(trip_id), int(exclude_entry_id or 0)))
-        return row["issued"], row["returned"], paid["paid"], sold["proceeds"], bought["spent"]
+        trades = self._fetch_one(                                          # 056: BOOK purchases spend and BOOK sales add custody cash (the same two terms)
+            f"""
+            SELECT COALESCE(SUM(IF(t.entry_kind = 'BK_SELL', t.total_price, 0)), 0) AS proceeds,
+                   COALESCE(SUM(IF(t.entry_kind = 'BK_BUY', t.total_price, 0)), 0) AS spent
+            FROM market_trip_entries e JOIN market_trip_book_trades t ON t.entry_id = e.id
+            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}{_share(current, 'e, t')}
+            """, (_id(trip_id), int(exclude_entry_id or 0)))
+        return (row["issued"], row["returned"], paid["paid"], sold["proceeds"] + trades["proceeds"], bought["spent"] + trades["spent"])
 
     # ------------------------------------------------------------------ supplier payments from custody (043)
     def suppliers(self):
@@ -631,13 +661,13 @@ class MarketTripRepository(BaseRepository):
             ORDER BY e.entry_no FOR SHARE OF e, l
             """, (_id(trip_id), int(after_entry_no), *ids))
 
-    def custody_gold(self, trip_id, exclude_entry_id=None, *, current=False):
+    def custody_gold(self, trip_id, exclude_entry_id=None, *, current=True):
         """Per (karat, designation): grams issued, returned and consumed by melts, over the entries that were not reversed, plus the
         signed effective Logo heating differences (output - input) and the grams delivered to suppliers (046). A melt consumes
         MELT-designated custody only (`melted` is non-zero only on MELT), a heat changes LOGO custody only (`heat_delta` is non-zero only
         on LOGO) and a supplier settlement consumes LOGO custody only in this slice (`supplier_settled`). The arithmetic that combines
         these terms lives in services.custody_rules, the single definition every caller uses. The nested reversal lookup is a snapshot
-        read unless `current=True`, which every DECISION made under the trip lock passes (see `custody_cash`)."""
+        read unless `current=True` (the default: DECISION form, outer rows and nested lookup locked); `current=False` is the lock-free DISPLAY form (see `custody_cash`)."""
         not_reversed = _not_reversed("e", current=current)
         legs = self._fetch_all(
             f"""
@@ -646,28 +676,28 @@ class MarketTripRepository(BaseRepository):
                    COALESCE(SUM(IF(e.entry_kind = 'RETURN', g.weight_grams, 0)), 0) AS returned
             FROM market_trip_entries e JOIN market_trip_entry_gold g ON g.entry_id = e.id JOIN karats k ON k.id = g.karat_id
             WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}
-            GROUP BY g.karat_id, k.karat_value, g.designation FOR SHARE OF e, g
+            GROUP BY g.karat_id, k.karat_value, g.designation{_share(current, 'e, g')}
             """, (_id(trip_id), int(exclude_entry_id or 0)))
         melted = self._fetch_all(
             f"""
             SELECT i.karat_id, k.karat_value, COALESCE(SUM(i.weight_grams), 0) AS melted
             FROM market_trip_entries e JOIN market_trip_melt_inputs i ON i.entry_id = e.id JOIN karats k ON k.id = i.karat_id
             WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}
-            GROUP BY i.karat_id, k.karat_value FOR SHARE OF e, i
+            GROUP BY i.karat_id, k.karat_value{_share(current, 'e, i')}
             """, (_id(trip_id), int(exclude_entry_id or 0)))
         heated = self._fetch_all(
             f"""
             SELECT h.karat_id, k.karat_value, COALESCE(SUM(h.output_weight_grams - h.input_weight_grams), 0) AS heat_delta
             FROM market_trip_entries e JOIN market_trip_heat_lines h ON h.entry_id = e.id JOIN karats k ON k.id = h.karat_id
             WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}
-            GROUP BY h.karat_id, k.karat_value FOR SHARE OF e, h
+            GROUP BY h.karat_id, k.karat_value{_share(current, 'e, h')}
             """, (_id(trip_id), int(exclude_entry_id or 0)))
         settled = self._fetch_all(
             f"""
             SELECT l.karat_id, k.karat_value, l.designation, COALESCE(SUM(l.weight_grams), 0) AS supplier_settled
             FROM market_trip_entries e JOIN market_trip_gold_settlements l ON l.entry_id = e.id JOIN karats k ON k.id = l.karat_id
             WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}
-            GROUP BY l.karat_id, k.karat_value, l.designation FOR SHARE OF e, l
+            GROUP BY l.karat_id, k.karat_value, l.designation{_share(current, 'e, l')}
             """, (_id(trip_id), int(exclude_entry_id or 0)))
         held = self._fetch_all(
             f"""
@@ -676,21 +706,21 @@ class MarketTripRepository(BaseRepository):
                    COALESCE(SUM(IF(e.entry_kind = 'HOLD_BACK', l.weight_grams, 0)), 0) AS held_back
             FROM market_trip_entries e JOIN market_trip_logo_hold_links l ON l.entry_id = e.id JOIN karats k ON k.id = l.karat_id
             WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}
-            GROUP BY l.karat_id, k.karat_value, l.designation FOR SHARE OF e, l
+            GROUP BY l.karat_id, k.karat_value, l.designation{_share(current, 'e, l')}
             """, (_id(trip_id), int(exclude_entry_id or 0)))
         sold = self._fetch_all(
             f"""
             SELECT s.karat_id, k.karat_value, s.designation, COALESCE(SUM(s.weight_grams), 0) AS sold
             FROM market_trip_entries e JOIN market_trip_gold_sales s ON s.entry_id = e.id JOIN karats k ON k.id = s.karat_id
             WHERE e.trip_id = %s AND e.id <> %s AND s.source_kind = 'CUSTODY_GOLD' AND {not_reversed}
-            GROUP BY s.karat_id, k.karat_value, s.designation FOR SHARE OF e, s
+            GROUP BY s.karat_id, k.karat_value, s.designation{_share(current, 'e, s')}
             """, (_id(trip_id), int(exclude_entry_id or 0)))
         bought = self._fetch_all(
             f"""
             SELECT l.karat_id, k.karat_value, l.designation, COALESCE(SUM(l.weight_grams), 0) AS purchased
             FROM market_trip_entries e JOIN market_trip_gold_buy_lines l ON l.entry_id = e.id JOIN karats k ON k.id = l.karat_id
             WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}
-            GROUP BY l.karat_id, k.karat_value, l.designation FOR SHARE OF e, l
+            GROUP BY l.karat_id, k.karat_value, l.designation{_share(current, 'e, l')}
             """, (_id(trip_id), int(exclude_entry_id or 0)))
         return _gold_rows(legs, held, heated, melted, settled, sold, bought)
 
@@ -817,12 +847,265 @@ class MarketTripRepository(BaseRepository):
             row["gold_sale"] = self.entry_gold_sale(row["id"])
             row["gold_buy"] = self.entry_gold_buy(row["id"])
             row["lot_settlement"] = self.entry_lot_settlement(row["id"])
+            if str(row["entry_kind"]).startswith("BK_"):                       # 056: only BOOK entries carry book lines / a trade
+                row["book_lines"] = self.entry_book_lines(row["id"])
+                row["book_trade"] = self.entry_book_trade(row["id"])
             row["holding"] = self.entry_holding(row["id"])
             row["logo_holding"] = self.entry_logo_holding(row["id"])
             row["gold"] = self._fetch_all(
                 "SELECT g.karat_id, k.karat_value, g.designation, g.weight_grams FROM market_trip_entry_gold g "
                 "JOIN karats k ON k.id = g.karat_id WHERE g.entry_id = %s ORDER BY k.karat_value DESC, g.designation", (int(row["id"]),))
         return rows
+
+    # ------------------------------------------------------------------ BOOK core (056): book lines, trade documents, assayed return stock
+    def insert_book_line(self, *, entry_id, line_no, trip_id, kind, line, line_price=None, scrap_movement_id=None):
+        """One stored line of a BOOK entry: the physical facts, the six-decimal analytical evidence, the POSTED equivalent and its signed form
+        (`line` is a services.book_rules.Line, computed once from the facts)."""
+        self._execute(
+            """INSERT INTO market_trip_book_lines (entry_id, line_no, trip_id, trip_mode, entry_kind, direction, weight_grams, basis, karat_id, karat_value,
+               fineness_permille, eq21_analytical, eq21_posted, posting_difference, signed_eq21_posted, line_price, scrap_movement_id)
+               VALUES (%s, %s, %s, 'BOOK', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (_id(entry_id), int(line_no), _id(trip_id), kind, line.direction, line.weight, line.basis, line.karat_id, line.karat_value, line.fineness,
+             line.analytical_evidence, line.posted, line.difference, line.signed, line_price, None if scrap_movement_id is None else int(scrap_movement_id)))
+
+    def insert_book_trade(self, *, entry_id, kind, counterparty_kind, party_id, name, name_key, total, reference_total, deviation, acknowledged, trade_date, reference):
+        """The immutable purchase / sale document: the counterparty identity (mandatory), the authoritative total and the price-warning evidence."""
+        self._execute(
+            """INSERT INTO market_trip_book_trades (entry_id, entry_kind, counterparty_kind, party_id, counterparty_name, counterparty_name_key, total_price,
+               reference_total, deviation_percent, price_warning_acknowledged, trade_date, reference) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (_id(entry_id), kind, counterparty_kind, party_id, name, name_key, total, reference_total, deviation, 1 if acknowledged else 0, trade_date,
+             reference or None))
+
+    def book_lines(self, trip_id, exclude_entry_id=None, *, current=False):
+        """The EFFECTIVE book lines of one trip (the entries that were not reversed): the input of the exact balance.
+        `current=True` is for DECISIONS made under the trip lock: the entry and line rows are locking reads AND the nested reversal lookup is a current read.
+        `current=False` is the DISPLAY form: a plain snapshot read throughout (no locking clause anywhere, the reversal lookup is the connection's snapshot too), so the
+        balance, the entry history and the stock items read in one REPEATABLE READ transaction always come from the same state."""
+        return self._fetch_all(
+            f"""
+            SELECT l.entry_id, l.line_no, l.entry_kind, l.direction, l.weight_grams, l.basis, l.karat_id, l.karat_value, l.fineness_permille,
+                   l.eq21_posted, l.signed_eq21_posted
+            FROM market_trip_entries e JOIN market_trip_book_lines l ON l.entry_id = e.id
+            WHERE e.trip_id = %s AND e.id <> %s AND {_not_reversed('e', current=current)}
+            ORDER BY l.entry_id, l.line_no{" FOR SHARE OF e, l" if current else ""}
+            """, (_id(trip_id), int(exclude_entry_id or 0)))
+
+    def reconciliation_source(self, trip_id):
+        """DISPLAY ONLY (R1 reconciliation preview). Everything the pure preview compares, from ONE trip and a fixed number of queries (five), every one a plain
+        snapshot read: NO locking clause anywhere (outer queries, subqueries or reversal lookups) and no write. Run inside the caller's single read transaction so all five
+        come from the same snapshot. The rows are the STORED facts: nothing is aggregated away and no list limit exists.
+
+          entries  every entry of the trip (cash kinds and unknown kinds included, so the preview can classify them) with the correction that reversed it, if any
+          lines    every book line whose OWN trip_id is the trip (selected independently of the entries, so a line of a missing entry is visible as an orphan)
+          scrap    the ORIGINAL Scrap legs that reference an entry of the trip (reverse direction: a leg that no line claims is visible)
+          trades   the trade headers of the trip's entries
+          stock    the RECEIVE / RECEIVE_REVERSAL stock records of the trip's entries
+
+        A section whose read fails is NOT turned into an empty list: its name is returned in `incomplete` and the preview refuses to trust itself."""
+        trip = _id(trip_id)
+        result = {"trip_id": int(trip), "entries": [], "lines": [], "scrap": [], "trades": [], "stock": [], "incomplete": []}
+        queries = (
+            ("entries", "SOURCE_ENTRIES_UNREADABLE",
+             """
+             SELECT e.id, e.trip_id, e.trip_mode, e.entry_no, e.entry_kind, c.id AS correction_id
+             FROM market_trip_entries e
+             LEFT JOIN transaction_corrections c ON c.source_type = '""" + SOURCE + """' AND c.source_id = e.id AND c.correction_type = 'FULL_REVERSAL'
+             WHERE e.trip_id = %s ORDER BY e.id
+             """),
+            ("lines", "SOURCE_LINES_UNREADABLE",
+             """
+             SELECT l.entry_id, l.line_no, l.trip_id, l.trip_mode, l.entry_kind, l.direction, l.weight_grams, l.basis, l.karat_id, l.karat_value, l.fineness_permille,
+                    l.eq21_analytical, l.eq21_posted, l.posting_difference, l.signed_eq21_posted, l.line_price, l.scrap_movement_id
+             FROM market_trip_book_lines l WHERE l.trip_id = %s ORDER BY l.entry_id, l.line_no
+             """),
+            ("scrap", "SOURCE_LEGS_UNREADABLE",
+             """
+             SELECT m.id, m.karat_id, m.weight_delta_grams, m.movement_code, m.reference_id
+             FROM old_gold_movements m JOIN market_trip_entries e ON e.id = m.reference_id
+             WHERE m.reference_type = '""" + SOURCE + """' AND e.trip_id = %s AND m.movement_code IN ('TRIP_CUSTODY_OUT', 'TRIP_CUSTODY_RETURN_IN')
+             ORDER BY m.id
+             """),
+            ("trades", "SOURCE_TRADES_UNREADABLE",
+             """
+             SELECT t.entry_id, t.entry_kind, t.total_price
+             FROM market_trip_book_trades t JOIN market_trip_entries e ON e.id = t.entry_id WHERE e.trip_id = %s ORDER BY t.entry_id
+             """),
+            ("stock", "SOURCE_STOCK_UNREADABLE",
+             """
+             SELECT s.item_entry_id, s.item_line_no, s.movement_type, s.grams_delta, s.eq21_posted_delta
+             FROM shop_assayed_stock_movements s JOIN market_trip_entries e ON e.id = s.item_entry_id
+             WHERE e.trip_id = %s AND s.movement_type IN ('RECEIVE', 'RECEIVE_REVERSAL') ORDER BY s.id
+             """),
+        )
+        for name, code, sql in queries:
+            try:
+                result[name] = self._fetch_all(sql, (trip,))
+            except MySqlError as exc:
+                result["incomplete"].append((code, f"{type(exc).__name__}"))
+        return result
+
+    # ------------------------------------------------------------------ BOOK reconciliation document (057): DECISION reads and the immutable insert
+    def reconciliation_source_current(self, trip_id):
+        """DECISION form of `reconciliation_source` (R2-S1 settlement): the SAME five sections, but every one a LOCKING read taken under the trip lock (FOR SHARE), so a
+        reconciliation is built from CURRENT committed rows and never from a snapshot that an earlier plain read of this transaction pinned. Differences from the display
+        form, all deliberate: the entries carry `entry_date` and the type of the reversing correction (the date window and the reversal state of the digest) and the stock
+        records carry their `s.id` (the identity of a stock record inside the snapshot). A failing read is NOT turned into an incomplete section: the error propagates and the
+        transaction rolls back (a deadlock or lock timeout must never be swallowed). The locks taken here are a starting point that still needs a concurrent-transaction test on
+        a real engine; nothing in this method proves their effect."""
+        trip = _id(trip_id)
+        result = {"trip_id": int(trip), "entries": [], "lines": [], "scrap": [], "trades": [], "stock": [], "incomplete": []}
+        result["entries"] = self._fetch_all(
+            """
+            SELECT e.id, e.trip_id, e.trip_mode, e.entry_no, e.entry_kind, e.entry_date, c.id AS correction_id, c.correction_type AS correction_type
+            FROM market_trip_entries e
+            LEFT JOIN transaction_corrections c ON c.source_type = '""" + SOURCE + """' AND c.source_id = e.id AND c.correction_type = 'FULL_REVERSAL'
+            WHERE e.trip_id = %s ORDER BY e.id FOR SHARE OF e, c
+            """, (trip,))
+        result["lines"] = self._fetch_all(
+            """
+            SELECT l.entry_id, l.line_no, l.trip_id, l.trip_mode, l.entry_kind, l.direction, l.weight_grams, l.basis, l.karat_id, l.karat_value, l.fineness_permille,
+                   l.eq21_analytical, l.eq21_posted, l.posting_difference, l.signed_eq21_posted, l.line_price, l.scrap_movement_id
+            FROM market_trip_book_lines l WHERE l.trip_id = %s ORDER BY l.entry_id, l.line_no FOR SHARE
+            """, (trip,))
+        result["scrap"] = self._fetch_all(
+            """
+            SELECT m.id, m.karat_id, m.weight_delta_grams, m.movement_code, m.reference_id
+            FROM old_gold_movements m JOIN market_trip_entries e ON e.id = m.reference_id
+            WHERE m.reference_type = '""" + SOURCE + """' AND e.trip_id = %s AND m.movement_code IN ('TRIP_CUSTODY_OUT', 'TRIP_CUSTODY_RETURN_IN')
+            ORDER BY m.id FOR SHARE OF m
+            """, (trip,))
+        result["trades"] = self._fetch_all(
+            """
+            SELECT t.entry_id, t.entry_kind, t.total_price
+            FROM market_trip_book_trades t JOIN market_trip_entries e ON e.id = t.entry_id WHERE e.trip_id = %s ORDER BY t.entry_id FOR SHARE OF t
+            """, (trip,))
+        result["stock"] = self._fetch_all(
+            """
+            SELECT s.id, s.item_entry_id, s.item_line_no, s.movement_type, s.grams_delta, s.eq21_posted_delta
+            FROM shop_assayed_stock_movements s JOIN market_trip_entries e ON e.id = s.item_entry_id
+            WHERE e.trip_id = %s AND s.movement_type IN ('RECEIVE', 'RECEIVE_REVERSAL') ORDER BY s.id FOR SHARE OF s
+            """, (trip,))
+        return result
+
+    def effective_reconciliation_entries(self, trip_id):
+        """The reconciliation documents (BK_RECON entries) of the trip that were NOT reversed: a CURRENT locking read (the entry rows and the nested reversal lookup). It reads
+        `market_trip_entries` and `transaction_corrections` ONLY - never the 057 table - so it is safe on a database that has not applied migration 057 (it finds nothing)."""
+        return self._fetch_all(
+            f"""
+            SELECT e.id, e.entry_no FROM market_trip_entries e
+            WHERE e.trip_id = %s AND e.entry_kind = 'BK_RECON' AND {_not_reversed('e', current=True)} ORDER BY e.id FOR SHARE
+            """, (_id(trip_id),))
+
+    def next_reconciliation_generation(self, trip_id):
+        """1 + the highest generation ever recorded for the trip (a reversed reconciliation still holds its generation). A locking read; the caller holds the trip lock."""
+        row = self._fetch_one("SELECT COALESCE(MAX(generation), 0) + 1 AS n FROM market_trip_reconciliations WHERE trip_id = %s FOR SHARE", (_id(trip_id),))
+        return int(row["n"])
+
+    def insert_reconciliation(self, *, entry_id, trip_id, generation, effective_date, date_floor, date_floor_source, a_star_units, a_star, b_star, loss_posted,
+                              rounding_settlement, delta_units, rho_units, sum_abs_units, entry_count, line_count, reversed_count, source_digest, snapshot_digest,
+                              snapshot_text, reason_code, note, user_id, confirmed_at, algorithm, source_algorithm, snapshot_format, unit_denominator):
+        """The immutable reconciliation record. Every figure is passed exactly as computed (integers for the lattice columns, Decimal for the posted ones): nothing is rounded,
+        cut or defaulted here."""
+        self._execute(
+            """INSERT INTO market_trip_reconciliations (entry_id, entry_kind, trip_id, trip_mode, generation, algorithm, source_algorithm, snapshot_format, effective_date,
+               date_floor, date_floor_source, unit_denominator, a_star_units, a_star, b_star, loss_posted, rounding_settlement, delta_units, rho_units, sum_abs_units,
+               entry_count, line_count, reversed_count, source_digest, snapshot_digest, snapshot, reason_code, note, confirmed_by_user_id, confirmed_at)
+               VALUES (%s, 'BK_RECON', %s, 'BOOK', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (_id(entry_id), _id(trip_id), int(generation), algorithm, source_algorithm, snapshot_format, effective_date, date_floor, date_floor_source, int(unit_denominator),
+             a_star_units, a_star, b_star, loss_posted, rounding_settlement, delta_units, rho_units, sum_abs_units, entry_count, line_count, reversed_count,
+             source_digest, snapshot_digest, snapshot_text, reason_code, note, user_id, confirmed_at))
+
+    def reconciliation_of_entry(self, entry_id):
+        """The stored reconciliation of a BK_RECON entry with its entry number (a locking read: a replay must see the row that the first request committed)."""
+        return self._fetch_one(
+            "SELECT r.*, e.entry_no FROM market_trip_reconciliations r JOIN market_trip_entries e ON e.id = r.entry_id WHERE r.entry_id = %s FOR SHARE OF r", (_id(entry_id),))
+
+    def entry_reversal_id(self, entry_id):
+        """The FULL_REVERSAL correction of an entry, or None (a locking read)."""
+        row = self._fetch_one("SELECT c.id FROM transaction_corrections c WHERE c.source_type = '" + SOURCE + "' AND c.source_id = %s AND c.correction_type = 'FULL_REVERSAL' FOR SHARE",
+                              (_id(entry_id),))
+        return None if row is None else row["id"]
+
+    def book_groups_by_trip(self):
+        """DISPLAY ONLY (Gold Position). The effective book lines of EVERY trip grouped by (trip, direction, basis, karat / assay): the factor is identical inside a
+        group, so the exact analytical value follows from SUM(weight). One aggregate query, no locks, snapshot reversal lookup. Returns {trip_id: rows}."""
+        rows = self._fetch_all(
+            f"""
+            SELECT e.trip_id, l.direction, l.basis, l.karat_value, l.fineness_permille, COALESCE(SUM(l.weight_grams), 0) AS weight_grams,
+                   COALESCE(SUM(l.eq21_posted), 0) AS eq21_posted, COUNT(*) AS `lines`
+            FROM market_trip_entries e JOIN market_trip_book_lines l ON l.entry_id = e.id
+            WHERE {_not_reversed('e')}
+            GROUP BY e.trip_id, l.direction, l.basis, l.karat_value, l.fineness_permille
+            """)
+        grouped = {}
+        for row in rows:
+            grouped.setdefault(int(row["trip_id"]), []).append(row)
+        return grouped
+
+    def entry_book_lines(self, entry_id):
+        """The stored lines of a BOOK entry with the signed grams of their Scrap movement (what a reversal negates: the exact stored figures)."""
+        return self._fetch_all(
+            "SELECT l.line_no, l.entry_kind, l.direction, l.weight_grams, l.basis, l.karat_id, l.karat_value, l.fineness_permille, l.eq21_analytical, l.eq21_posted, "
+            "l.posting_difference, l.signed_eq21_posted, l.line_price, l.scrap_movement_id, m.weight_delta_grams "
+            "FROM market_trip_book_lines l LEFT JOIN old_gold_movements m ON m.id = l.scrap_movement_id WHERE l.entry_id = %s ORDER BY l.line_no", (_id(entry_id),))
+
+    def entry_book_trade(self, entry_id):
+        """The purchase / sale document a BK_BUY / BK_SELL entry made (None for any other entry)."""
+        return self._fetch_one("SELECT * FROM market_trip_book_trades WHERE entry_id = %s", (_id(entry_id),))
+
+    def insert_stock_movement(self, *, item_entry_id, item_line_no, movement_type, grams_delta, posted_delta, analytical, difference, independent, posting_basis,
+                              source_entry_id, correction_id, user_id):
+        """One row of the assayed return stock ledger (insert-only). The grams and the posted equivalent travel together; the figures are STORED, never recomputed."""
+        movement_id, _ = self._execute(
+            """INSERT INTO shop_assayed_stock_movements (item_entry_id, item_line_no, movement_type, grams_delta, eq21_posted_delta, eq21_analytical,
+               posting_difference, eq21_independent, posting_basis, source_entry_id, correction_id, created_by_user_id)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (_id(item_entry_id), int(item_line_no), movement_type, grams_delta, posted_delta, analytical, difference, independent, posting_basis,
+             _id(source_entry_id), None if correction_id is None else _id(correction_id), user_id))
+        return int(movement_id)
+
+    def stock_item(self, entry_id, line_no, lock=False):
+        """One assayed-stock item (a BK_RETURN FINENESS line) with its physical facts, posted amount and origin. lock=True takes the item row FIRST
+        (the stock lock order: trip -> item rows ascending -> Scrap / cash)."""
+        return self._fetch_one(
+            "SELECT l.entry_id, l.line_no, l.trip_id, e.entry_no, l.weight_grams, l.fineness_permille, l.eq21_analytical, l.eq21_posted, l.posting_difference "
+            "FROM market_trip_book_lines l JOIN market_trip_entries e ON e.id = l.entry_id "
+            "WHERE l.entry_id = %s AND l.line_no = %s AND l.entry_kind = 'BK_RETURN' AND l.basis = 'FINENESS'" + (" FOR UPDATE OF l" if lock else ""),
+            (_id(entry_id), int(line_no)))
+
+    def stock_balance(self, entry_id, line_no):
+        """(grams, posted equivalent) CURRENTLY in the shop for one item: the SUM of every movement (a locking read for a decision)."""
+        row = self._fetch_one(
+            "SELECT COALESCE(SUM(grams_delta), 0) AS grams, COALESCE(SUM(eq21_posted_delta), 0) AS posted FROM shop_assayed_stock_movements "
+            "WHERE item_entry_id = %s AND item_line_no = %s FOR SHARE", (_id(entry_id), int(line_no)))
+        return row["grams"], row["posted"]
+
+    def entry_stock_items(self, entry_id):
+        """The assayed-stock items a BK_RETURN entry created (its FINENESS lines)."""
+        return self._fetch_all(
+            "SELECT l.line_no, l.weight_grams, l.fineness_permille, l.eq21_analytical, l.eq21_posted, l.posting_difference FROM market_trip_book_lines l "
+            "WHERE l.entry_id = %s AND l.entry_kind = 'BK_RETURN' AND l.basis = 'FINENESS' ORDER BY l.line_no", (_id(entry_id),))
+
+    def stock_movements_of_entry(self, entry_id):
+        """Every stock movement that REFERS to an item of this entry other than its own receive / receive-reversal (an issue from the item): what depends on it."""
+        return self._fetch_all(
+            "SELECT m.id, m.item_line_no, m.movement_type, m.grams_delta, m.eq21_posted_delta, m.source_entry_id FROM shop_assayed_stock_movements m "
+            "WHERE m.item_entry_id = %s AND m.movement_type NOT IN ('RECEIVE', 'RECEIVE_REVERSAL') ORDER BY m.id FOR SHARE", (_id(entry_id),))
+
+    def assayed_stock_items(self):
+        """DISPLAY ONLY (Gold Position and the trip screens): every assayed-stock item with grams or posted equivalent still in the shop, with its facts
+        and origin, in ONE aggregate query without locks."""
+        return self._fetch_all(
+            """
+            SELECT l.entry_id, l.line_no, e.trip_id, e.entry_no, l.fineness_permille, l.weight_grams AS original_weight, l.eq21_posted AS original_posted,
+                   COALESCE(SUM(m.grams_delta), 0) AS grams, COALESCE(SUM(m.eq21_posted_delta), 0) AS posted
+            FROM shop_assayed_stock_movements m
+            JOIN market_trip_book_lines l ON l.entry_id = m.item_entry_id AND l.line_no = m.item_line_no
+            JOIN market_trip_entries e ON e.id = l.entry_id
+            GROUP BY l.entry_id, l.line_no, e.trip_id, e.entry_no, l.fineness_permille, l.weight_grams, l.eq21_posted
+            HAVING SUM(m.grams_delta) <> 0 OR SUM(m.eq21_posted_delta) <> 0
+            ORDER BY e.trip_id, e.entry_no, l.line_no
+            """)
 
     # ------------------------------------------------------------------ as a correction source
     def entry_source(self, entry_id, lock=False):

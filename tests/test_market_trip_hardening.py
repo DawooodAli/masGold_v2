@@ -206,15 +206,22 @@ class RepositorySqlTests(unittest.TestCase):
 
     def test_the_current_form_of_custody_cash_and_gold_locks_every_nested_lookup(self):
         statements = self.run_all(current=True)
-        self.assertEqual(len(statements), 11)                                      # 4 cash reads + 7 gold reads (legs, melts, heats, settlements, holdings, sales, purchases)
+        self.assertEqual(len(statements), 12)                                      # 5 cash reads (incl. the BOOK trades, 056) + 7 gold reads (legs, melts, heats, settlements, holdings, sales, purchases)
         for sql in statements:
             self.assertEqual(len(NESTED_CURRENT.findall(sql)), 1, sql)
             self.assertNotRegex(sql, NESTED_SNAPSHOT.pattern)
 
-    def test_the_default_form_stays_a_snapshot_lookup(self):
-        for sql in self.run_all():
+    def test_the_default_form_is_the_locking_decision_form(self):
+        """A caller that forgets `current` must stay a DECISION (outer rows and nested lookup locked); only an explicit `current=False` is the display form."""
+        self.assertEqual(self.run_all(), self.run_all(current=True))
+
+    def test_the_display_form_is_a_snapshot_lookup_with_no_locking_clause_at_all(self):
+        statements = self.run_all(current=False)
+        self.assertEqual(len(statements), 12)
+        for sql in statements:
             self.assertRegex(sql, NESTED_SNAPSHOT.pattern)
             self.assertNotRegex(sql, NESTED_CURRENT.pattern)
+            self.assertNotIn("FOR SHARE", sql)                                      # neither the nested lookup nor the outer rows are locked
 
     def test_the_reversal_guard_queries_always_use_the_current_form(self):
         capture = Capture()

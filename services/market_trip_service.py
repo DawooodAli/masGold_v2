@@ -58,11 +58,13 @@ from repositories.supplier_gold_settlement_repository import (CUSTODY_SOURCE_KIN
                                                               settlement_code)
 from repositories.supplier_payment_repository import PAYMENT_MOVEMENT, SOURCE as SMP_SOURCE, SupplierPaymentRepository, payment_code
 from services.authorization_service import AuthorizationService
+from services import book_rules
 from services.correction_rules import correction_code
 from services.intermediary_holding_rules import (MANAGE_PERMISSION as MANAGE_HOLDINGS, VIEW_PERMISSION as VIEW_HOLDINGS, logo_pool_row, pool_row)
 from services.invoice_service import invoice_transaction
 from services.number_text import normalize_digits
 from services.old_gold_availability import held_grams, shortage_message
+from services.trip_errors import TripError
 from services import custody_rules, supplier_rules as rules
 
 PERMISSION = "MARKET_TRIP_MANAGE"
@@ -86,7 +88,8 @@ NOTES_MAX, REASON_MAX, WORKSHOP_MAX, ASSAY_MAX, LABEL_MAX, MAX_RESIDUES = 1000, 
 ZERO_MONEY, ZERO_WEIGHT = Decimal("0.00"), Decimal("0.000")
 KIND_TEXT = {ISSUE: "إخراج عهدة", RETURN: "رجوع من العهدة", MELT: "سبك", LOT_RETURN: "رجوع ناتج السبك", LOT_ISSUE: "إخراج سبكة من المحل",
              HEAT: "حمّية اللوجو", SUPPLIER_PAY: "دفع مصنعيات من العهدة", GOLD_SETTLE: "تسوية ذهب من العهدة", LOT_SETTLE: "تسوية سبكة من العهدة",
-             GOLD_SALE: "بيع ذهب من العهدة", GOLD_BUY: "شراء ذهب نقدي", "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي", "LOGO_HOLD": "تسليم لوجو لمسوقجي", "HOLD_BACK": "رجوع لوجو من مسوقجي"}
+             GOLD_SALE: "بيع ذهب من العهدة", GOLD_BUY: "شراء ذهب نقدي", "BK_ISSUE": "إخراج ذهب (دفتري)", "BK_BUY": "شراء ذهب (دفتري)",
+             "BK_SELL": "بيع ذهب (دفتري)", "BK_RETURN": "رجوع ذهب للمحل (دفتري)", "BK_RECON": "تسوية الرصيد الدفتري", "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي", "LOGO_HOLD": "تسليم لوجو لمسوقجي", "HOLD_BACK": "رجوع لوجو من مسوقجي"}
 DESIGNATION_TEXT = {MELT_DESIGNATION: "للسبك", LOGO_DESIGNATION: "لوجو", UNCLASSIFIED: "غير مصنف (قبل التصنيف)"}
 _DESIGNATION_INPUT = {"MELT": MELT_DESIGNATION, "للسبك": MELT_DESIGNATION, "LOGO": LOGO_DESIGNATION, "لوجو": LOGO_DESIGNATION,
                       "UNCLASSIFIED": UNCLASSIFIED, "غير مصنف": UNCLASSIFIED}
@@ -94,14 +97,6 @@ LOT_RETURN_NOTE = "صفِّ السبائك المتبقية برجوع ناتج 
 
 
 TRIP_PAGE_SIZE, MAX_TRIP_PAGE_SIZE = 50, 100          # trips per page of the custody list (the page filter/order is SQL, never a cap on the data)
-
-
-class TripError(ValueError):
-    """A refused trip operation. `code` is a stable machine reason; the message is Arabic, ready to show."""
-
-    def __init__(self, code, message):
-        super().__init__(message)
-        self.code = code
 
 
 def _is_request_key_violation(exc):
@@ -346,10 +341,10 @@ class MarketTripService:
 
     @staticmethod
     def _custody(repository, trip_id, *, current=False):
-        """The derived custody. `current=True` is for DECISIONS made under the trip lock: the nested reversal lookups of the cash and
-        gold reads are then current reads too, not the connection's REPEATABLE READ snapshot (a display read keeps the cheaper form)."""
+        """The derived custody. `current=True` is for DECISIONS made under the trip lock: the cash, gold and lot reads lock their rows and their nested reversal
+        lookups (current reads). The default `current=False` is the DISPLAY form: plain snapshot reads of the connection's transaction, no locking clause at all."""
         return custody_view(repository.custody_cash(trip_id, current=current), repository.custody_gold(trip_id, current=current),
-                            repository.custody_lots(trip_id), trip_id=trip_id)
+                            repository.custody_lots(trip_id, current=current), trip_id=trip_id)
 
     # ------------------------------------------------------------------ reads
     def context(self, *, _expected_actor=None):
@@ -397,7 +392,8 @@ class MarketTripService:
             rows = repository.trip_page(status, page, page_size)
             has_more, rows = len(rows) > page_size, rows[:page_size]
             external = self._external_holdings(connection, actor)
-            result = [self._trip_row(row, self._custody(repository, row["id"]), external.get(int(row["id"]), [])) for row in rows]
+            result = [self._trip_row(row, self._custody(repository, row["id"]), external.get(int(row["id"]), []), self._book_summary(repository, row))
+                      for row in rows]
         return {"status": status, "page": page, "page_size": page_size, "has_more": has_more, "rows": result}
 
     def trips(self, *, _expected_actor=None):
@@ -410,7 +406,8 @@ class MarketTripService:
             external = self._external_holdings(connection, actor)
             result = []
             for row in rows:
-                result.append(self._trip_row(row, self._custody(repository, row["id"]), external.get(int(row["id"]), [])))
+                result.append(self._trip_row(row, self._custody(repository, row["id"]), external.get(int(row["id"]), []),
+                                             self._book_summary(repository, row)))
         return result
 
     def _external_holdings(self, connection, actor):
@@ -438,7 +435,9 @@ class MarketTripService:
             entries, events = repository.entries(trip_id, newest_first=True), repository.events(trip_id, newest_first=True)
             melts, heats = repository.melts(trip_id, newest_first=True), repository.heats(trip_id, newest_first=True)
             external = self._external_holdings(connection, actor).get(trip_id, [])
-        return {"trip": self._trip_row(trip, custody, external), "custody": custody, "external_holdings": external,
+            book = self._book_view(repository, trip)
+        return {"trip": self._trip_row(trip, custody, external, None if book is None else book["balance"]), "custody": custody, "external_holdings": external,
+                "mode": book_rules.trip_mode(trip), "book": book,
                 "entries": [self._entry_row(e) for e in entries],
                 "melts": [self._melt_row(m) for m in melts],
                 "heats": [self._heat_row(h) for h in heats], "heat_totals": self._heat_totals(heats),
@@ -446,10 +445,31 @@ class MarketTripService:
                             "actor": e["actor_name"] or ""} for e in events]}
 
     @staticmethod
-    def _trip_row(row, custody, external=()):
+    def _trip_row(row, custody, external=(), book=None):
         return {"id": str(row["id"]), "code": trip_code(row["id"]), "status": row["status"], "notes": row["notes"] or "",
+                "mode": book_rules.trip_mode(row), "book": book,
                 "created_at": row["created_at"], "status_changed_at": row["status_changed_at"],
                 "entry_count": int(row.get("entry_count", 0) or 0), "custody": custody, "external_holdings": list(external)}
+
+    @staticmethod
+    def _book_summary(repository, row):
+        """The book balance view of a BOOK trip (None for a LEGACY trip: no query is made for it)."""
+        if book_rules.trip_mode(row) != book_rules.BOOK:
+            return None
+        return book_rules.balance_of_rows(repository.book_lines(row["id"])).view()
+
+    @staticmethod
+    def _book_view(repository, trip):
+        """The BOOK part of a trip detail: the balance (posted, analytical, drift), and the assayed return-stock items this trip created with what is left
+        of each in the shop. None for a LEGACY trip."""
+        if book_rules.trip_mode(trip) != book_rules.BOOK:
+            return None
+        balance = book_rules.balance_of_rows(repository.book_lines(trip["id"]))
+        items = [{"entry_id": str(i["entry_id"]), "line_no": int(i["line_no"]), "code": entry_code(i["trip_id"], i["entry_no"]),
+                  "fineness": Decimal(str(i["fineness_permille"])), "original_weight": Decimal(str(i["original_weight"])),
+                  "original_posted": Decimal(str(i["original_posted"])), "grams": Decimal(str(i["grams"])), "posted": Decimal(str(i["posted"]))}
+                 for i in repository.assayed_stock_items() if int(i["trip_id"]) == int(trip["id"])]
+        return {"balance": balance.view(), "balance_exact": balance, "stock_items": items}
 
     @staticmethod
     def _entry_row(e):
@@ -496,6 +516,20 @@ class MarketTripService:
                     "lot_id": str(e["holding"]["lot_id"]), "lot_no": int(e["holding"]["lot_no"]), "lot_kind": e["holding"]["lot_kind"],
                     "origin": entry_code(e["holding"]["origin_trip_id"], e["holding"]["origin_entry_no"]),
                     "weight": Decimal(str(e["holding"]["weight_grams"])), "fineness": Decimal(str(e["holding"]["fineness_permille"]))},
+                "book_lines": [{"line_no": int(l["line_no"]), "direction": l["direction"], "weight": Decimal(str(l["weight_grams"])), "basis": l["basis"],
+                                "karat_value": None if l["karat_value"] is None else int(l["karat_value"]),
+                                "fineness": None if l["fineness_permille"] is None else Decimal(str(l["fineness_permille"])),
+                                "analytical": Decimal(str(l["eq21_analytical"])), "posted": Decimal(str(l["eq21_posted"])),
+                                "difference": Decimal(str(l["posting_difference"])),
+                                "price": None if l["line_price"] is None else Decimal(str(l["line_price"])),
+                                "scrap": l["scrap_movement_id"] is not None} for l in e.get("book_lines", [])],
+                "book_trade": None if not e.get("book_trade") else {
+                    "kind": e["book_trade"]["entry_kind"], "counterparty_kind": e["book_trade"]["counterparty_kind"],
+                    "party_id": None if e["book_trade"]["party_id"] is None else str(e["book_trade"]["party_id"]),
+                    "name": e["book_trade"]["counterparty_name"], "total": Decimal(str(e["book_trade"]["total_price"])),
+                    "reference_total": None if e["book_trade"]["reference_total"] is None else Decimal(str(e["book_trade"]["reference_total"])),
+                    "deviation": None if e["book_trade"]["deviation_percent"] is None else Decimal(str(e["book_trade"]["deviation_percent"])),
+                    "acknowledged": bool(e["book_trade"]["price_warning_acknowledged"])},
                 "reversed": e["reversal_id"] is not None,
                 "reversal_code": None if e["reversal_id"] is None else correction_code("FULL_REVERSAL", e["reversal_id"]),
                 "reversal_reason": e["reversal_reason"], "reversal_at": e["reversal_at"]}
@@ -571,14 +605,17 @@ class MarketTripService:
                 raise                                              # any other integrity error is a real defect
             return self._replay(session_actor, key, digest, exc)   # a twin committed first: decide from a FRESH read
 
-    def _open_trip(self, repository, trip_number, key, digest, actor):
-        """The locked OPEN trip for an entry, or the replay of an already-recorded request (returned as the second item)."""
+    def _open_trip(self, repository, trip_number, key, digest, actor, *, legacy_only=True):
+        """The locked OPEN trip for an entry, or the replay of an already-recorded request (returned as the second item). A legacy-only operation refuses a
+        BOOK trip (the cash entries pass legacy_only=False and refuse gold themselves)."""
         trip = repository.trip(trip_number, lock=True)
         if trip is None:
             raise TripError("TRIP_NOT_FOUND", "العهدة غير موجودة.")
         prior = repository.by_request(key)
         if prior is not None:
             return None, self._same_request(prior, digest, actor)
+        if legacy_only:
+            book_rules.require_legacy_trip(trip)
         if trip["status"] != OPEN:
             raise TripError("TRIP_CLOSED", "العهدة مغلقة: أعد فتحها أولاً لإخراج عهدة أو تسجيل رجوع أو سبك.")
         return trip, None
@@ -594,9 +631,11 @@ class MarketTripService:
                     return self._same_request(prior, digest, actor)
                 trip_id = repository.insert_trip(notes=notes_text, actor=actor, now=repository.db_now())
             else:
-                trip, replay = self._open_trip(repository, trip_number, key, digest, actor)
+                trip, replay = self._open_trip(repository, trip_number, key, digest, actor, legacy_only=False)
                 if replay is not None:
                     return replay
+                if grams and book_rules.trip_mode(trip) == book_rules.BOOK:
+                    raise TripError("BOOK_GOLD_PATH", "العهدة الدفترية لا تقبل سطور ذهب بالنمط القديم: استخدم حركات الذهب الدفترية (إخراج / شراء / بيع / رجوع).")
                 trip_id = trip_number
             account, karats = self._issue_resources(connection, repository, kind, trip_id, amount, grams)
             entry_id, code = self._write_entry(repository, kind=kind, trip_id=trip_id, paid_on=paid_on, notes_text=notes_text, key=key,
@@ -1155,6 +1194,7 @@ class MarketTripService:
             replay = self._gold_settle_prior(repository, settlements, key, digest, actor)
             if replay is not None:
                 return replay
+            book_rules.require_legacy_trip(trip)                               # 056: a BOOK trip has no legacy gold path
             if trip["status"] != OPEN:
                 raise TripError("TRIP_CLOSED", "العهدة مغلقة: أعد فتحها أولاً لتسوية ذهب من العهدة.")
             supplier = settlements.get_supplier(supplier_id, lock=True)         # an INACTIVE supplier may still receive it
@@ -1288,6 +1328,7 @@ class MarketTripService:
             replay = self._lot_settle_prior(repository, settlements, key, digest, actor)
             if replay is not None:
                 return replay                                             # even after reversal: no new weight derivation
+            book_rules.require_legacy_trip(trip)                               # 056: a BOOK trip has no legacy gold path
             if trip["status"] != OPEN:
                 raise TripError("TRIP_CLOSED", "العهدة مغلقة: أعد فتحها أولًا.")
             locked = repository.lock_lots([lot_id])
@@ -1503,6 +1544,7 @@ class MarketTripService:
             replay = self._gold_buy_prior(repository, key, digest, actor)
             if replay is not None:
                 return replay
+            book_rules.require_legacy_trip(trip)                               # 056: a BOOK trip has no legacy gold path
             if trip["status"] != OPEN:
                 raise TripError("TRIP_CLOSED", "العهدة مغلقة: أعد فتحها أولاً لشراء ذهب منها.")
             karat_values = {}
@@ -1740,6 +1782,7 @@ class MarketTripService:
             replay = self._gold_sale_prior(repository, key, digest, actor)
             if replay is not None:
                 return replay
+            book_rules.require_legacy_trip(trip)                               # 056: a BOOK trip has no legacy gold path
             if trip["status"] != OPEN:
                 raise TripError("TRIP_CLOSED", "العهدة مغلقة: أعد فتحها أولاً لبيع ذهب منها.")
             lot, movement_id, karat_value, fineness = None, None, None, None
@@ -1909,7 +1952,7 @@ class MarketTripService:
             for lot_id in sorted(selected):
                 if lot_id not in locked:
                     raise TripError("LOT_NOT_FOUND", "الشحنة غير موجودة.")
-            outstanding = {int(l["lot_id"]): l for l in self._custody(repository, trip_id)["lots"]}   # read under the locks
+            outstanding = {int(l["lot_id"]): l for l in self._custody(repository, trip_id, current=True)["lots"]}   # a DECISION read under the locks
             grams = {}
             for lot_id in sorted(selected):
                 row = locked[lot_id]
@@ -2109,6 +2152,10 @@ class MarketTripService:
                 raise TripError("TRIP_NOT_FOUND", "العهدة غير موجودة.")
             if trip["status"] != OPEN:
                 raise TripError("TRIP_ALREADY_CLOSED", "العهدة مغلقة بالفعل.")
+            if book_rules.trip_mode(trip) == book_rules.BOOK:
+                # Phase 1 has no reconciliation: closing a BOOK trip would need the canonical reconciliation and closure rules (Phase 3). A zero-balance close is
+                # deliberately NOT offered as a shortcut.
+                raise TripError("BOOK_CLOSURE_NOT_AVAILABLE", "إغلاق العهدة الدفترية غير متاح بعد: يحتاج تسوية الرصيد الدفتري المعتمدة (مرحلة لاحقة).")
             custody = self._custody(repository, trip_id, current=True)
             if not custody["settled"]:
                 raise TripError("OUTSTANDING_CUSTODY", self.outstanding_text(custody))

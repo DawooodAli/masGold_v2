@@ -221,6 +221,7 @@ class UserAdminPageTests(harness.InvoicePageTests):
         self.vm_users._service = self.fake
         self.vm_users.changed.emit()
         self.root.setProperty("currentPage", 6)
+        self.assert_provider_settings_loaded()
         QTest.qWait(200)
 
     def go_to_page(self):

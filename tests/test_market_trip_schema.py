@@ -45,7 +45,7 @@ class MarketTripSchemaTests(unittest.TestCase):
         for name, expected in FROZEN.items():
             self.assertEqual(digest(name), expected, name)
         files = {f.name: f for f in load_chain(require_committed=False)}
-        self.assertEqual(len(files), 55)
+        self.assertEqual(len(files), 57)
         self.assertEqual(files[FORWARD].sha256, digest(FORWARD))
         self.assertIn(f"{digest(FORWARD)}  {FORWARD}", (ROOT / "database" / "schema" / "SHA256SUMS").read_text(encoding="utf-8"))
 
@@ -98,7 +98,10 @@ class MarketTripSchemaTests(unittest.TestCase):
         self.assertEqual({self.model.tables["market_trip_entry_gold"]["fks"][n]["ref"] for n in self.model.tables["market_trip_entry_gold"]["fks"]},
                          {"market_trip_entries", "karats", "old_gold_movements"})
         trips = self.model.tables["market_trips"]["columns"]
-        self.assertEqual(set(trips) - {"id", "notes", "created_by_user_id", "created_at"}, {"status", "status_changed_at"})   # one mutable column
+        # accounting_mode (056) is creation-time metadata, not a mutable field: the status columns stay the only mutable ones. The database protects it only through the
+        # composite FK (trip_id, trip_mode) -> (id, accounting_mode) ON UPDATE RESTRICT once a trip has entries (no trigger; see test_market_trip_book_schema).
+        self.assertEqual(set(trips) - {"id", "notes", "created_by_user_id", "created_at", "accounting_mode"}, {"status", "status_changed_at"})
+        self.assertEqual(trips["accounting_mode"], {"type": "varchar(8)", "nullable": False})
 
     def test_the_correction_source_is_a_standalone_full_reversal_and_keeps_every_earlier_source(self):
         rule = self.forward.split("ADD CONSTRAINT chk_correction_source CHECK (")[1].split(";")[0]

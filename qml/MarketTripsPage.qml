@@ -12,6 +12,8 @@ Item {
 
     readonly property var vm: typeof marketTripVM !== "undefined" ? marketTripVM : null
     readonly property var detail: vm ? vm.detail : ({})
+    readonly property var recon: vm ? vm.reconciliation : ({})                       // R1: the READ-ONLY reconciliation preview of the selected BOOK trip
+    property bool reconMore: false
     readonly property var ctx: vm ? vm.context : ({})
     readonly property bool hasSelection: !!vm && vm.selectedTripId !== "" && !!detail && detail.id !== undefined
 
@@ -44,7 +46,7 @@ Item {
 
     Connections {
         target: page.vm
-        function onEntryPosted(code) { entryDialog.close(); meltDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close(); payDialog.close(); goldSettleDialog.close(); goldSaleDialog.close(); goldBuyDialog.close(); lotSettleDialog.close(); lotHoldDialog.close(); logoHoldDialog.close() }
+        function onEntryPosted(code) { entryDialog.close(); bookDialog.close(); meltDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close(); payDialog.close(); goldSettleDialog.close(); goldSaleDialog.close(); goldBuyDialog.close(); lotSettleDialog.close(); lotHoldDialog.close(); logoHoldDialog.close() }
         function onActionDone(operation) { reasonDialog.close() }
     }
 
@@ -264,6 +266,8 @@ Item {
                                 Layout.fillWidth: true
                                 layoutDirection: Qt.RightToLeft
                                 Txt { text: page.ltr(modelData.code); font.bold: true; elide: Text.ElideNone }
+                                Txt { objectName: "tripModeBadge"; visible: modelData.modeText !== ""; text: modelData.modeText; color: theme.gold
+                                      font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
                                 Item { Layout.fillWidth: true }
                                 Txt { text: modelData.statusText; color: modelData.status === "OPEN" ? theme.green : theme.textMuted
                                       elide: Text.ElideNone }
@@ -348,7 +352,7 @@ Item {
             Txt { objectName: "tripMessage"; Layout.fillWidth: true; visible: !!page.vm && page.vm.message !== ""
                   text: page.vm ? page.vm.message : ""; color: theme.green; wrapMode: Text.WordWrap; elide: Text.ElideNone }
             Txt { objectName: "tripError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== "" && !entryDialog.visible && !reasonDialog.visible && !meltDialog.visible
-                           && !lotReturnDialog.visible && !lotIssueDialog.visible && !heatDialog.visible && !payDialog.visible && !goldSettleDialog.visible && !lotSettleDialog.visible && !lotHoldDialog.visible && !logoHoldDialog.visible
+                           && !lotReturnDialog.visible && !lotIssueDialog.visible && !heatDialog.visible && !payDialog.visible && !goldSettleDialog.visible && !lotSettleDialog.visible && !lotHoldDialog.visible && !logoHoldDialog.visible && !bookDialog.visible
                   text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
 
             Txt {
@@ -359,6 +363,7 @@ Item {
             }
 
             Flickable {
+                objectName: "tripDetailScroll"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 visible: page.hasSelection
@@ -378,7 +383,88 @@ Item {
                               font.pixelSize: theme.fontSection; elide: Text.ElideNone }
                         Txt { objectName: "tripStatus"; text: page.detail.statusText || ""; color: page.detail.open ? theme.green : theme.textMuted
                               font.bold: true; elide: Text.ElideNone }
+                        Txt { objectName: "tripMode"; visible: !!page.detail.isBook; text: "دفتري"; color: theme.gold; font.bold: true; elide: Text.ElideNone }
                         Item { Layout.fillWidth: true }
+                    }
+                    // A BOOK trip: ONE gold number, the book balance in 21K equivalent (an accounting figure, not physical stock)
+                    Section {
+                        objectName: "bookBalanceSection"
+                        title: "رصيد دفتري (مكافئ عيار 21)"
+                        accent: theme.gold
+                        visible: !!page.detail.isBook
+                        Txt { objectName: "bookBalancePosted"; Layout.fillWidth: true; text: (page.detail.book && page.detail.book.balanceText) || ""
+                              color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; elide: Text.ElideNone }
+                        Txt { objectName: "bookBalanceAnalytical"; Layout.fillWidth: true
+                              text: "القيمة التحليلية الدقيقة: " + page.ltr((page.detail.book && page.detail.book.analytical) || "") + " • المتاح للحركة: " + ((page.detail.book && page.detail.book.available) || "")
+                              color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                        Txt { objectName: "bookBalanceDrift"; Layout.fillWidth: true; text: (page.detail.book && page.detail.book.driftText) || ""
+                              color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                        Txt { objectName: "bookBalanceNote"; Layout.fillWidth: true; text: (page.detail.book && page.detail.book.note) || ""
+                              color: theme.amber; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                        Repeater {
+                            model: (page.detail.book && page.detail.book.stockItems) || []
+                            delegate: Txt { objectName: "bookStockItem"; Layout.fillWidth: true; text: "مخزون مرتجع بعيار فعلي: " + modelData.text
+                                            color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                        }
+                    }
+                    // R1: the READ-ONLY reconciliation preview (مطابقة العهدة). It records, approves, saves and closes nothing; the trip closure stays unavailable.
+                    Section {
+                        objectName: "bookReconSection"
+                        title: "مطابقة العهدة (معاينة فقط)"
+                        accent: theme.gold
+                        visible: !!page.detail.isBook
+                        Txt { objectName: "bookReconLoading"; Layout.fillWidth: true; visible: !!page.recon.loading
+                              text: "جارٍ تحميل المطابقة…"; color: theme.textMuted; elide: Text.ElideNone }
+                        Txt { objectName: "bookReconError"; Layout.fillWidth: true; visible: !!page.recon.error; text: page.recon.error || ""
+                              color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 4
+                            visible: !!page.recon.tripId && !page.recon.error && !page.recon.loading
+                            Txt { Layout.fillWidth: true; text: "الرصيد التحليلي غير المسوّى"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
+                            Txt { objectName: "bookReconA"; Layout.fillWidth: true; text: page.ltr(page.recon.aText || ""); color: theme.gold; font.bold: true
+                                  font.pixelSize: theme.fontSection; elide: Text.ElideNone }
+                            Txt { objectName: "bookReconANote"; Layout.fillWidth: true; text: page.recon.aNote || ""; color: theme.textSecondary
+                                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { Layout.fillWidth: true; text: "الرصيد المرحّل"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
+                            Txt { objectName: "bookReconB"; Layout.fillWidth: true; text: page.ltr(page.recon.bText || ""); color: theme.textPrimary; elide: Text.ElideNone }
+                            Txt { Layout.fillWidth: true; text: "قيمة الفاقد المقترحة عند الاعتماد"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
+                            Txt { objectName: "bookReconLoss"; Layout.fillWidth: true; text: page.ltr(page.recon.lossText || ""); color: theme.amber; font.bold: true; elide: Text.ElideNone }
+                            Txt { objectName: "bookReconLossNote"; Layout.fillWidth: true; text: page.recon.lossNote || ""; color: theme.textMuted
+                                  font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { Layout.fillWidth: true; text: "فرق تقريب الترحيل"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
+                            Txt { objectName: "bookReconRounding"; Layout.fillWidth: true; text: page.ltr(page.recon.roundingText || "") + "  —  " + (page.recon.roundingNote || "")
+                                  color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "bookReconEffect"; Layout.fillWidth: true; visible: !!page.recon.effectText; text: page.recon.effectText || ""; color: theme.amber
+                                  font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "bookReconStatus"; Layout.fillWidth: true; text: page.recon.statusText || ""
+                                  color: page.recon.trustworthy ? theme.green : theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Repeater {
+                                model: page.recon.diagnostics || []
+                                delegate: Txt { objectName: "bookReconDiagnostic"; Layout.fillWidth: true; text: modelData.text; color: theme.red
+                                                font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            }
+                            Txt { objectName: "bookReconClosureNote"; Layout.fillWidth: true; text: page.recon.closureNote || ""; color: theme.amber
+                                  font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Btn { objectName: "bookReconMoreToggle"; Layout.fillWidth: true; accent: theme.textMuted
+                                  text: page.reconMore ? "إخفاء التفاصيل الحسابية" : "تفاصيل حسابية وحدود الفحص"; onClicked: page.reconMore = !page.reconMore }
+                            ColumnLayout {
+                                objectName: "bookReconMore"
+                                Layout.fillWidth: true
+                                spacing: 3
+                                visible: page.reconMore
+                                Txt { objectName: "bookReconDetails"; Layout.fillWidth: true; text: page.ltr(page.recon.detailsText || ""); color: theme.textSecondary
+                                      font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                Txt { Layout.fillWidth: true; text: page.recon.countsText || ""; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
+                                Txt { Layout.fillWidth: true; visible: !!page.recon.cashText; text: page.recon.cashText || ""; color: theme.textMuted
+                                      font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
+                                Repeater {
+                                    model: page.recon.coverage || []
+                                    delegate: Txt { objectName: "bookReconCoverage"; Layout.fillWidth: true; text: "• " + modelData; color: theme.textMuted
+                                                    font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                }
+                            }
+                        }
                     }
                     // THE primary panel of the page: what is outside the shop now (cash and every karat / designation), right under the title.
                     Section {
@@ -427,43 +513,55 @@ Item {
                         Layout.fillWidth: true
                         layoutDirection: Qt.RightToLeft
                         spacing: 8
-                        Btn { objectName: "issueMoreButton"; text: "إخراج عهدة"; visible: !!page.detail.open
+                        Btn { objectName: "bookIssueButton"; text: "إخراج ذهب من الكسر (دفتري)"; visible: !!page.detail.open && !!page.detail.isBook
+                              enabled: !!page.vm && !page.vm.writing
+                              onClicked: bookDialog.openFor("BK_ISSUE", page.detail.id) }
+                        Btn { objectName: "bookBuyButton"; text: "شراء ذهب (دفتري)"; visible: !!page.detail.open && !!page.detail.isBook
+                              enabled: !!page.vm && !page.vm.writing
+                              onClicked: bookDialog.openFor("BK_BUY", page.detail.id) }
+                        Btn { objectName: "bookSellButton"; text: "بيع ذهب (دفتري)"; visible: !!page.detail.open && !!page.detail.isBook
+                              enabled: !!page.vm && !page.vm.writing
+                              onClicked: bookDialog.openFor("BK_SELL", page.detail.id) }
+                        Btn { objectName: "bookReturnButton"; text: "رجوع ذهب للمحل (دفتري)"; visible: !!page.detail.open && !!page.detail.isBook
+                              enabled: !!page.vm && !page.vm.writing
+                              onClicked: bookDialog.openFor("BK_RETURN", page.detail.id) }
+                        Btn { objectName: "issueMoreButton"; text: page.detail.isBook ? "تحويل نقدية من الخزنة للعهدة" : "إخراج عهدة"; visible: !!page.detail.open
                               enabled: !!page.vm && !page.vm.writing
                               onClicked: entryDialog.openFor("ISSUE", page.detail.id) }
-                        Btn { objectName: "returnButton"; text: "تسجيل رجوع"; visible: !!page.detail.open
+                        Btn { objectName: "returnButton"; text: page.detail.isBook ? "إرجاع نقدية إلى الخزنة" : "تسجيل رجوع"; visible: !!page.detail.open
                               enabled: !!page.vm && !page.vm.writing
                               onClicked: entryDialog.openFor("RETURN", page.detail.id) }
-                        Btn { objectName: "lotIssueButton"; text: "إخراج سبكة من المحل"; visible: !!page.detail.open
+                        Btn { objectName: "lotIssueButton"; text: "إخراج سبكة من المحل"; visible: !!page.detail.open && !page.detail.isBook
                               enabled: !!page.vm && !page.vm.writing && page.vm.shopLots.length > 0
                               onClicked: lotIssueDialog.openFor(page.detail.id) }
-                        Btn { objectName: "lotReturnButton"; text: "رجوع ناتج السبك"; visible: !!page.detail.open
+                        Btn { objectName: "lotReturnButton"; text: "رجوع ناتج السبك"; visible: !!page.detail.open && !page.detail.isBook
                               enabled: !!page.detail.lotReturnAvailable && !!page.vm && !page.vm.writing
                               onClicked: lotReturnDialog.openFor(page.detail.id) }
-                        Btn { objectName: "custodyLotSettleButton"; text: "تسوية سبكة من العهدة"; visible: !!page.detail.open
+                        Btn { objectName: "custodyLotSettleButton"; text: "تسوية سبكة من العهدة"; visible: !!page.detail.open && !page.detail.isBook
                               enabled: !!page.detail.lotSettleAvailable && !!page.vm && !page.vm.writing
                               onClicked: lotSettleDialog.openFor(page.detail.id) }
-                        Btn { objectName: "custodyLotHoldButton"; text: "تسليم ذهب لمسوقجي"; visible: !!page.detail.holdVisible
+                        Btn { objectName: "custodyLotHoldButton"; text: "تسليم ذهب لمسوقجي"; visible: !!page.detail.holdVisible && !page.detail.isBook
                               enabled: !!page.detail.holdAvailable && !!page.vm && !page.vm.writing
                               onClicked: lotHoldDialog.openFor(page.detail.id) }
-                        Btn { objectName: "custodyLogoHoldButton"; text: "تسليم لوجو لمسوقجي"; visible: !!page.detail.holdVisible
+                        Btn { objectName: "custodyLogoHoldButton"; text: "تسليم لوجو لمسوقجي"; visible: !!page.detail.holdVisible && !page.detail.isBook
                               enabled: !!page.detail.logoHoldAvailable && !!page.vm && !page.vm.writing
                               onClicked: logoHoldDialog.openFor(page.detail.id) }
-                        Btn { objectName: "custodyGoldBuyButton"; text: "شراء ذهب نقدي"; visible: !!page.detail.open
+                        Btn { objectName: "custodyGoldBuyButton"; text: "شراء ذهب نقدي"; visible: !!page.detail.open && !page.detail.isBook
                               enabled: !!page.detail.buyAvailable && !!page.vm && !page.vm.writing
                               onClicked: goldBuyDialog.openFor(page.detail.id) }
-                        Btn { objectName: "custodySaleButton"; text: "بيع ذهب من العهدة"; visible: !!page.detail.open
+                        Btn { objectName: "custodySaleButton"; text: "بيع ذهب من العهدة"; visible: !!page.detail.open && !page.detail.isBook
                               enabled: !!page.detail.saleAvailable && !!page.vm && !page.vm.writing
                               onClicked: goldSaleDialog.openFor(page.detail.id) }
                         Btn { objectName: "custodyPayButton"; text: "دفع مصنعيات من العهدة"; visible: !!page.detail.open
                               enabled: !!page.detail.payAvailable && !!page.vm && !page.vm.writing
                               onClicked: payDialog.openFor(page.detail.id) }
-                        Btn { objectName: "custodyGoldSettleButton"; text: "تسوية ذهب من العهدة"; visible: !!page.detail.open
+                        Btn { objectName: "custodyGoldSettleButton"; text: "تسوية ذهب من العهدة"; visible: !!page.detail.open && !page.detail.isBook
                               enabled: !!page.detail.goldSettleAvailable && !!page.vm && !page.vm.writing
                               onClicked: goldSettleDialog.openFor(page.detail.id) }
-                        Btn { objectName: "heatButton"; text: "حمّية اللوجو"; visible: !!page.detail.open
+                        Btn { objectName: "heatButton"; text: "حمّية اللوجو"; visible: !!page.detail.open && !page.detail.isBook
                               enabled: !!page.detail.heatAvailable && !!page.vm && !page.vm.writing
                               onClicked: heatDialog.openFor(page.detail.id) }
-                        Btn { objectName: "meltButton"; text: "سبك"; visible: !!page.detail.open
+                        Btn { objectName: "meltButton"; text: "سبك"; visible: !!page.detail.open && !page.detail.isBook
                               enabled: !!page.detail.meltAvailable && !!page.vm && !page.vm.writing
                               onClicked: meltDialog.openFor(page.detail.id) }
                         Btn { objectName: "closeTripButton"; text: "إغلاق العهدة"; visible: !!page.detail.open; accent: theme.green
@@ -716,6 +814,7 @@ Item {
         readonly property var designationChoices: [{ id: "", text: "اختر الوجهة" }].concat(page.ctx.designations || [])
         readonly property var lineChoices: [{ key: "", text: "اختر من العهدة" }].concat(page.detail.returnLines || [])
         readonly property bool withLots: !isReturn && tripId === ""        // only a NEW custody can start with existing shop bars
+        readonly property bool cashOnly: tripId !== "" && !!page.detail.isBook   // a BOOK trip takes and returns CASH here; its gold has its own dialog
         readonly property bool hasQuantity: cashField.text.trim().length > 0 || hasGold() || (withLots && lotLines().length > 0)
         function lotLines() {
             var rows = []
@@ -812,10 +911,10 @@ Item {
                             Field { id: dateField; objectName: "tripDateField"; Layout.fillWidth: true }
                         }
                     }
-                    Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true
+                    Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; visible: !entryDialog.cashOnly
                           text: entryDialog.isReturn ? "الذهب المُرجَع (اختر السطر من العهدة ثم الوزن)" : "الذهب (كسر): العيار والوجهة والوزن الفعلي بالجرام" }
                     Repeater {
-                        model: goldModel
+                        model: entryDialog.cashOnly ? null : goldModel
                         delegate: RowLayout {
                             Layout.fillWidth: true
                             layoutDirection: Qt.RightToLeft
@@ -857,7 +956,7 @@ Item {
                             }
                         }
                     }
-                    Btn { objectName: "addGoldRowButton"; text: "＋ سطر ذهب آخر"; accent: theme.textSecondary
+                    Btn { objectName: "addGoldRowButton"; text: "＋ سطر ذهب آخر"; accent: theme.textSecondary; visible: !entryDialog.cashOnly
                           enabled: goldModel.count < 8
                           onClicked: goldModel.append({ karatIndex: 0, designationIndex: 0, lineIndex: 0, weight: "" }) }
                     // ---- existing shop bars (a separate source from the Scrap karat lines): whole, read-only weight and assay
@@ -927,6 +1026,246 @@ Item {
                 }
                 Btn { objectName: "cancelTripEntryButton"; text: "إلغاء"; accent: theme.textSecondary
                       enabled: !!page.vm && !page.vm.writing; onClicked: entryDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- BOOK operations (056): issue from Scrap / buy / sell / return to the shop
+    // A BOOK trip keeps ONE gold number, the book balance in 21K equivalent. Every line states its physical facts (weight and a master karat OR an assay in
+    // permille); every figure below is computed by the service rules through marketTripVM (never QML arithmetic). Normal use never reaches this dialog: no
+    // production path creates a BOOK trip, so its buttons exist only on a BOOK trip.
+    Popup {
+        id: bookDialog
+        objectName: "tripBookDialog"
+        property string kind: "BK_ISSUE"
+        property string tripId: ""
+        property string requestKey: ""
+        readonly property bool priced: kind === "BK_BUY" || kind === "BK_SELL"
+        readonly property bool hasCounterparty: priced
+        readonly property var karatChoices: [{ id: "", text: "اختر العيار" }].concat(page.ctx.karats || [])
+        readonly property var basisChoices: kind === "BK_ISSUE" ? [{ id: "MASTER_KARAT", text: "عيار معياري" }]
+                                                                   : [{ id: "MASTER_KARAT", text: "عيار معياري" }, { id: "FINENESS", text: "عيار فعلي (بالألف)" }]
+        readonly property var partyChoices: [{ id: "", text: kind === "BK_BUY" ? "بائع غير مسجل (اكتب اسمه)" : "طرف آخر غير مسجل (اكتب اسمه)" }].concat(page.detail.saleBuyers || [])
+        readonly property string partyId: partyChoices[bookParty.currentIndex] ? partyChoices[bookParty.currentIndex].id : ""
+        readonly property bool needsConfirmation: !!page.vm && page.vm.errorCode === "PRICE_DEVIATION"
+        property var lineRows: []
+        readonly property var preview: {
+            var known = page.detail.id !== undefined && page.detail.isBook === true
+            return known && page.vm ? page.vm.previewBook(kind, lineRows) : ({})
+        }
+        readonly property string title: kind === "BK_ISSUE" ? "إخراج ذهب من كسر المحل (دفتري)" : kind === "BK_BUY" ? "شراء ذهب (دفتري)"
+                                      : kind === "BK_SELL" ? "بيع ذهب (دفتري)" : "رجوع ذهب للمحل (دفتري)"
+        readonly property string rule: kind === "BK_ISSUE" ? "يخرج الذهب من كسر المحل المتاح بنفس العيار المعياري (دون المحجوز لمراجعة المدير) ويدخل الرصيد الدفتري بمكافئ عيار 21."
+                                     : kind === "BK_BUY" ? "تُدفع قيمة الذهب من نقدية هذه العهدة (لا من الخزنة) ويدخل الرصيد الدفتري بمكافئ عيار 21. اسم البائع إجباري."
+                                     : kind === "BK_SELL" ? "يُباع الذهب بحد أقصى الرصيد الدفتري ويدخل ثمنه نقدية هذه العهدة. اسم المشتري إجباري."
+                                     : "العيار المعياري يعود إلى كسر المحل بنفس العيار؛ أي عيار فعلي آخر يصبح بند مخزون مرتجع محدد الهوية بوزنه وعياره وأصله."
+        function collect() {
+            var rows = []
+            for (var i = 0; i < bookModel.count; ++i) {
+                var g = bookModel.get(i)
+                var basis = basisChoices[g.basisIndex] ? basisChoices[g.basisIndex].id : "MASTER_KARAT"
+                rows.push({ basis: basis, karatId: basis === "MASTER_KARAT" && g.karatIndex > 0 ? karatChoices[g.karatIndex].id : "",
+                            fineness: basis === "FINENESS" ? g.fineness : "", weight: g.weight, price: priced ? g.price : "" })
+            }
+            return rows
+        }
+        function refreshLines() { lineRows = collect() }
+        function openFor(what, trip) {
+            if (!page.vm) return
+            kind = what
+            tripId = trip
+            requestKey = page.vm.newRequestKey()
+            bookParty.currentIndex = 0
+            bookName.text = ""
+            bookDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            bookReference.text = ""
+            bookNotes.text = ""
+            bookModel.clear()
+            bookModel.append({ basisIndex: 0, karatIndex: 0, fineness: "", weight: "", price: "" })
+            refreshLines()
+            page.vm.clearMessage()
+            page.vm.refresh()
+            if (priced) page.vm.loadReferencePrices()
+            open()
+        }
+        function complete() {
+            if (bookDate.text.trim().length === 0) return false
+            if (hasCounterparty && !(partyId !== "" || bookName.text.trim().length > 0)) return false
+            for (var i = 0; i < bookModel.count; ++i) {
+                var g = bookModel.get(i)
+                var basis = basisChoices[g.basisIndex] ? basisChoices[g.basisIndex].id : "MASTER_KARAT"
+                if (g.weight.trim().length > 0 && (basis === "FINENESS" ? g.fineness.trim().length > 0 : g.karatIndex > 0) && (!priced || g.price.trim().length > 0))
+                    return true
+            }
+            return false
+        }
+        function submit(acknowledged) {
+            if (kind === "BK_ISSUE") page.vm.bookIssue(tripId, collect(), bookDate.text, bookNotes.text, requestKey)
+            else if (kind === "BK_BUY") page.vm.bookBuy(tripId, collect(), partyId, bookName.text, bookDate.text, bookReference.text, bookNotes.text, requestKey, acknowledged)
+            else if (kind === "BK_SELL") page.vm.bookSell(tripId, collect(), partyId, bookName.text, bookDate.text, bookReference.text, bookNotes.text, requestKey, acknowledged)
+            else page.vm.bookReturn(tripId, collect(), bookDate.text, bookNotes.text, requestKey)
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(640, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 680, 680)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        ListModel { id: bookModel }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { objectName: "bookDialogTitle"; Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; text: bookDialog.title }
+            Txt { objectName: "bookDialogRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: bookDialog.rule }
+            Flickable {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentHeight: bookForm.implicitHeight
+                clip: true
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: bookForm
+                    width: parent.width - 12
+                    spacing: 6
+                    Txt { Layout.fillWidth: true; visible: bookDialog.hasCounterparty; text: bookDialog.kind === "BK_BUY" ? "البائع *" : "المشتري *" }
+                    Combo { id: bookParty; objectName: "bookCounterpartyCombo"; Layout.fillWidth: true; visible: bookDialog.hasCounterparty
+                            model: bookDialog.partyChoices; textRole: "text" }
+                    Txt { Layout.fillWidth: true; visible: bookDialog.hasCounterparty && bookDialog.partyId === ""; text: "الاسم *" }
+                    Field { id: bookName; objectName: "bookNameField"; Layout.fillWidth: true; visible: bookDialog.hasCounterparty && bookDialog.partyId === "" }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
+                            Field { id: bookDate; objectName: "bookDateField"; Layout.fillWidth: true }
+                        }
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2; visible: bookDialog.hasCounterparty
+                            Txt { Layout.fillWidth: true; text: "المرجع (اختياري)" }
+                            Field { id: bookReference; objectName: "bookReferenceField"; Layout.fillWidth: true }
+                        }
+                    }
+                    Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true
+                          text: bookDialog.priced ? "الذهب: أسلوب العيار والعيار والوزن الفعلي وثمن السطر" : "الذهب: أسلوب العيار والعيار والوزن الفعلي" }
+                    Repeater {
+                        model: bookModel
+                        delegate: RowLayout {
+                            Layout.fillWidth: true
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 6
+                            Combo {
+                                objectName: "bookBasis_" + index
+                                Layout.preferredWidth: 150
+                                model: bookDialog.basisChoices
+                                textRole: "text"
+                                currentIndex: basisIndex
+                                onActivated: function (i) { bookModel.setProperty(index, "basisIndex", i); bookDialog.refreshLines() }
+                            }
+                            Combo {
+                                objectName: "bookKarat_" + index
+                                Layout.preferredWidth: 110
+                                visible: bookDialog.basisChoices[basisIndex] && bookDialog.basisChoices[basisIndex].id === "MASTER_KARAT"
+                                model: bookDialog.karatChoices
+                                textRole: "text"
+                                currentIndex: karatIndex
+                                onActivated: function (i) { bookModel.setProperty(index, "karatIndex", i); bookDialog.refreshLines() }
+                            }
+                            Field {
+                                objectName: "bookFineness_" + index
+                                Layout.preferredWidth: 110
+                                visible: bookDialog.basisChoices[basisIndex] && bookDialog.basisChoices[basisIndex].id === "FINENESS"
+                                placeholderText: "العيار (‰)"
+                                text: fineness
+                                inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                onTextEdited: { bookModel.setProperty(index, "fineness", text); bookDialog.refreshLines() }
+                            }
+                            Field {
+                                objectName: "bookWeight_" + index
+                                Layout.fillWidth: true
+                                placeholderText: "الوزن (جرام)"
+                                text: weight
+                                inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                onTextEdited: { bookModel.setProperty(index, "weight", text); bookDialog.refreshLines() }
+                            }
+                            Field {
+                                objectName: "bookPrice_" + index
+                                Layout.fillWidth: true
+                                visible: bookDialog.priced
+                                placeholderText: "الثمن (ج)"
+                                text: price
+                                inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                onTextEdited: { bookModel.setProperty(index, "price", text); bookDialog.refreshLines() }
+                            }
+                        }
+                    }
+                    Btn { objectName: "addBookLineButton"; text: "＋ سطر آخر"; accent: theme.textSecondary
+                          enabled: bookModel.count < 8
+                          onClicked: { bookModel.append({ basisIndex: 0, karatIndex: 0, fineness: "", weight: "", price: "" }); bookDialog.refreshLines() } }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: bookPreviewColumn.implicitHeight + 14
+                        radius: theme.radiusSmall
+                        color: theme.bgTertiary
+                        border.color: bookDialog.preview.warning ? theme.amber : theme.border
+                        ColumnLayout {
+                            id: bookPreviewColumn
+                            anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                            anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.topMargin: 7
+                            spacing: 3
+                            Txt { objectName: "bookPreviewBalance"; Layout.fillWidth: true; visible: !!bookDialog.preview.balanceText
+                                  text: bookDialog.preview.balanceText || ""; color: theme.amber; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Repeater {
+                                model: bookDialog.preview.lines || []
+                                delegate: Txt { objectName: "bookPreviewLine_" + index; Layout.fillWidth: true; text: modelData; color: theme.textSecondary
+                                                font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            }
+                            Txt { objectName: "bookPreviewTotal"; Layout.fillWidth: true; visible: !!bookDialog.preview.totalPosted
+                                  text: bookDialog.preview.totalPosted || ""; color: theme.gold; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "bookPreviewPrice"; Layout.fillWidth: true; visible: !!bookDialog.preview.totalText
+                                  text: "إجمالي الثمن: " + (bookDialog.preview.totalText || "") + (bookDialog.preview.referenceText ? " • " + bookDialog.preview.referenceText : "")
+                                        + (bookDialog.preview.deviationText ? " • الفرق " + bookDialog.preview.deviationText : "")
+                                  color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "bookPreviewWarning"; Layout.fillWidth: true; visible: bookDialog.preview.warning === true
+                                  text: bookDialog.preview.warningText || ""; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "bookPreviewError"; Layout.fillWidth: true; visible: !!bookDialog.preview.error
+                                  text: bookDialog.preview.error || ""; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Item { Layout.preferredHeight: 2 }
+                        }
+                    }
+                    Txt { Layout.fillWidth: true; text: "ملاحظات" }
+                    Field { id: bookNotes; objectName: "bookNotesField"; Layout.fillWidth: true }
+                }
+            }
+            Txt { objectName: "bookDialogError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: bookDialog.needsConfirmation ? theme.amber : theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmBookButton"
+                    visible: !bookDialog.needsConfirmation
+                    text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "تسجيل"
+                    primary: true
+                    enabled: bookDialog.complete() && !!page.vm && !page.vm.writing && !bookDialog.preview.error
+                    onClicked: bookDialog.submit(false)
+                }
+                Btn {
+                    objectName: "acknowledgeBookPriceButton"
+                    visible: bookDialog.needsConfirmation
+                    text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "أؤكد الأسعار وأسجّل"
+                    primary: true
+                    accent: theme.amber
+                    enabled: !!page.vm && !page.vm.writing
+                    onClicked: bookDialog.submit(true)
+                }
+                Btn { objectName: "cancelBookButton"; text: "إلغاء"; accent: theme.textSecondary
+                      enabled: !!page.vm && !page.vm.writing; onClicked: bookDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }
