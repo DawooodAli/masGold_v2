@@ -73,10 +73,10 @@ class DecisionReadTests(unittest.TestCase):
             self.assertIn(field, lines)
         self.assertIn("m.reference_type = 'MARKET_TRIP_ENTRY'", legs)
         self.assertIn("'TRIP_CUSTODY_OUT', 'TRIP_CUSTODY_RETURN_IN'", legs)
-        self.assertIn("FOR SHARE OF m", legs)
-        self.assertIn("FOR SHARE OF t", trades)
+        self.assertIn("FOR SHARE OF m, e", legs)
+        self.assertIn("FOR SHARE OF t, e", trades)
         self.assertIn("SELECT s.id, s.item_entry_id", stock)                                  # the stock record identity the snapshot carries (R1 ordered by s.id without selecting it)
-        self.assertIn("ORDER BY s.id FOR SHARE OF s", stock)
+        self.assertIn("ORDER BY s.id FOR SHARE OF s, e", stock)
         self.assertIn("s.movement_type IN ('RECEIVE', 'RECEIVE_REVERSAL')", stock)
 
     def test_a_failing_decision_read_is_not_turned_into_an_empty_section(self):

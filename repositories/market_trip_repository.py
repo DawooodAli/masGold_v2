@@ -952,6 +952,8 @@ class MarketTripRepository(BaseRepository):
         records carry their `s.id` (the identity of a stock record inside the snapshot). A failing read is NOT turned into an incomplete section: the error propagates and the
         transaction rolls back (a deadlock or lock timeout must never be swallowed). The locks taken here are a starting point that still needs a concurrent-transaction test on
         a real engine; nothing in this method proves their effect."""
+        # Joined entries must also use CURRENT reads after waiting for the trip lock.
+        # Leaving e outside OF can mix current legs with a pinned entry snapshot.
         trip = _id(trip_id)
         result = {"trip_id": int(trip), "entries": [], "lines": [], "scrap": [], "trades": [], "stock": [], "incomplete": []}
         result["entries"] = self._fetch_all(
@@ -972,18 +974,18 @@ class MarketTripRepository(BaseRepository):
             SELECT m.id, m.karat_id, m.weight_delta_grams, m.movement_code, m.reference_id
             FROM old_gold_movements m JOIN market_trip_entries e ON e.id = m.reference_id
             WHERE m.reference_type = '""" + SOURCE + """' AND e.trip_id = %s AND m.movement_code IN ('TRIP_CUSTODY_OUT', 'TRIP_CUSTODY_RETURN_IN')
-            ORDER BY m.id FOR SHARE OF m
+            ORDER BY m.id FOR SHARE OF m, e
             """, (trip,))
         result["trades"] = self._fetch_all(
             """
             SELECT t.entry_id, t.entry_kind, t.total_price
-            FROM market_trip_book_trades t JOIN market_trip_entries e ON e.id = t.entry_id WHERE e.trip_id = %s ORDER BY t.entry_id FOR SHARE OF t
+            FROM market_trip_book_trades t JOIN market_trip_entries e ON e.id = t.entry_id WHERE e.trip_id = %s ORDER BY t.entry_id FOR SHARE OF t, e
             """, (trip,))
         result["stock"] = self._fetch_all(
             """
             SELECT s.id, s.item_entry_id, s.item_line_no, s.movement_type, s.grams_delta, s.eq21_posted_delta
             FROM shop_assayed_stock_movements s JOIN market_trip_entries e ON e.id = s.item_entry_id
-            WHERE e.trip_id = %s AND s.movement_type IN ('RECEIVE', 'RECEIVE_REVERSAL') ORDER BY s.id FOR SHARE OF s
+            WHERE e.trip_id = %s AND s.movement_type IN ('RECEIVE', 'RECEIVE_REVERSAL') ORDER BY s.id FOR SHARE OF s, e
             """, (trip,))
         return result
 
