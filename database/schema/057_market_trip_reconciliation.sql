@@ -98,5 +98,5 @@ CREATE TABLE IF NOT EXISTS market_trip_reconciliations (
   OR (reason_code IS NOT NULL AND reason_code IN ('OTHER','UNEXPLAINED') AND note IS NOT NULL AND CHAR_LENGTH(TRIM(note)) > 0))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-INSERT INTO schema_migrations(version,name) VALUES (57,'Market-trip BOOK reconciliation document: BK_RECON entry kind (BOOK only) and the immutable market_trip_reconciliations record (exact lattice figures, digests, canonical snapshot, owner decision)')
+INSERT INTO schema_migrations(version,name) VALUES (57,'Market-trip BOOK reconciliation: immutable BK_RECON, exact figures, digests, snapshot and owner decision')
  ON DUPLICATE KEY UPDATE name=VALUES(name);
