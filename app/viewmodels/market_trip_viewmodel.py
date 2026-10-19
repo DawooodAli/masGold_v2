@@ -27,9 +27,20 @@ PAYMENT_REVERSAL_NOTE = ("عكس دفع المصنعيات يسجّل أن ال�
 KIND_TEXT = {"ISSUE": "إخراج عهدة", "RETURN": "رجوع من العهدة", "MELT": "سبك", "LOT_RETURN": "رجوع ناتج السبك", "LOT_ISSUE": "إخراج سبكة من المحل",
              "GOLD_BUY": "شراء ذهب نقدي", "GOLD_SALE": "بيع ذهب من العهدة", "HEAT": "حمّية اللوجو", "SUPPLIER_PAY": "دفع مصنعيات من العهدة", "GOLD_SETTLE": "تسوية ذهب من العهدة", "LOT_SETTLE": "تسوية سبكة من العهدة",
              "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي", "LOGO_HOLD": "تسليم لوجو لمسوقجي", "HOLD_BACK": "رجوع لوجو من مسوقجي",
-             "BK_ISSUE": "إخراج ذهب (دفتري)", "BK_BUY": "شراء ذهب (دفتري)", "BK_SELL": "بيع ذهب (دفتري)", "BK_RETURN": "رجوع ذهب للمحل (دفتري)", "BK_RECON": "تسوية العهدة الدفترية"}
+             "BK_ISSUE": "إخراج ذهب (دفتري)", "BK_BUY": "شراء ذهب (دفتري)", "BK_SELL": "بيع ذهب (دفتري)", "BK_RETURN": "رجوع ذهب للمحل (دفتري)", "BK_RECON": "تسوية العهدة الدفترية",
+             "BK_ISS_STK": "إخراج مخزون مرتجع إلى العهدة (دفتري)", "BK_DLV_SUP": "تسليم ذهب لمورد (دفتري)", "BK_DLV_MKT": "تسليم ذهب لمسوقجي (دفتري)",
+             "BK_RECEIVE": "استلام ذهب من مسوقجي (دفتري)", "BK_GAIN": "زيادة مثبتة (دفتري)"}
 BOOK_NOTE = "الرصيد الدفتري ليس مخزونًا فعليًا: هو رصيد محاسبي بمكافئ عيار 21 يُحسب من وقائع كل سطر. فرق التقريب ليس خسارة ولا زيادة."
-BOOK_CLOSE_HINT = "إغلاق العهدة الدفترية غير متاح بعد: يحتاج تسوية الرصيد الدفتري المعتمدة (مرحلة لاحقة)."
+BOOK_CLOSE_HINT = "لا تُغلق العهدة الدفترية إلا بعد اعتماد تسوية رصيدها الدفتري (مطابقة العهدة)، ونقدية العهدة صفر."
+BOOK_CLOSE_READY = "التسوية معتمدة ونقدية العهدة صفر: يمكن الإغلاق، ويُعاد التحقق من سجل التسوية ومطابقته للمستندات عند الضغط."
+BOOK_REVERSE_NOTES_PHASE2 = {
+    "BK_GAIN": "عكس الزيادة المثبتة يُخرجها من مدخلات الرصيد الدفتري؛ يُمنع إن استُهلك ذهبها بعد تسجيلها أو كانت للعهدة تسوية معتمدة. يبقى المستند وشرحه في السجل.",
+    "BK_RECON": "عكس التسوية يعيد للرصيد الدفتري مفتوحًا ما سوّته (الفاقد المرحّل وفرق التقريب) ويسمح بتصحيح المستندات ثم اعتماد تسوية جديدة؛ العهدة المغلقة تُعاد فتحها أولًا. يبقى مستند التسوية الأصلي ظاهرًا كمعكوس.",
+    "BK_ISS_STK": "عكس الإخراج يعيد الأوزان والحصة المرحَّلة المخزَّنة إلى بند المخزون المرتجع نفسه ويُنقص الرصيد الدفتري؛ يُمنع إن استُخدم الذهب بعده.",
+    "BK_DLV_SUP": "عكس التسليم يعيد للمورد الكمية المحتسبة المخزَّنة بعياره ويعيد المكافئ المرحَّل إلى الرصيد الدفتري؛ لا حركة خزنة أو كسر.",
+    "BK_DLV_MKT": "عكس التسليم يُخرج المكافئ المخزَّن من استحقاق المسوقجي ويعيده للرصيد الدفتري؛ يُمنع إن لم يعد المسوقجي يحمله.",
+    "BK_RECEIVE": "عكس الاستلام يعيد المكافئ المخزَّن إلى استحقاق المسوقجي ويُنقصه من الرصيد الدفتري؛ يُمنع إن استُخدم الذهب بعده."}
+RECON_REASON_TEXT = {"OPERATING_LOSS": "فاقد تشغيل (سبك/تنظيف)", "PURITY_DIFFERENCE": "فرق نقاوة", "TRADING_LOSS": "فاقد تداول", "OTHER": "أخرى", "UNEXPLAINED": "غير مفسَّر"}
 BOOK_REVERSE_NOTES = {"BK_ISSUE": "عكس الإخراج يعيد أوزان الكسر المخزَّنة كما خرجت ويُنقص الرصيد الدفتري بالمكافئ المرحَّل المخزَّن؛ يُمنع إن استُخدم الذهب بعده.",
                       "BK_BUY": "عكس الشراء يعيد الثمن المخزَّن إلى نقدية العهدة ويُنقص الرصيد الدفتري بالمكافئ المرحَّل المخزَّن؛ يُمنع إن استُخدم الذهب بعده.",
                       "BK_SELL": "عكس البيع يُخرج الثمن المخزَّن من نقدية العهدة ويعيد المكافئ المرحَّل المخزَّن إلى الرصيد الدفتري؛ يُمنع إن استُخدم الثمن بعده.",
@@ -131,6 +142,30 @@ def reconciliation_view(r):
     }
 
 
+def report_view(r):
+    """The display form of `MarketTripBookService.book_report`: nothing is computed here, every figure is formatted from the service answer. The totals are PROVISIONAL
+    (effective documents only, by effective date): how a reversal is attributed to a period is an open owner decision and is not presented as final."""
+    def when(value):
+        return datetime_text(value) if value else ""
+    reconciliations = [{"code": x["code"], "tripCode": x["trip_code"], "date": date_text(x["effective_date"]), "recorded": when(x["recorded_at"]),
+                        "text": (f"تسوية رقم {x['generation']} • الرصيد التحليلي غير المسوّى {number(x['analytical'], 6)} • الرصيد المرحّل {grams(x['posted'], signed=x['posted'] < 0)} • "
+                                 f"الفاقد المرحّل {grams(x['loss'])} • فرق تقريب الترحيل {grams(x['rounding'], signed=True)} (ليس فاقدًا ولا زيادة) • السبب: "
+                                 f"{x['reason'] or 'بدون سبب'}" + (f" • {x['note']}" if x["note"] else "") + (f" • اعتمدها {x['confirmed_by']}" if x["confirmed_by"] else "")),
+                        "reversed": x["reversed"],
+                        "state": f"معكوسة • {x['reversal_reason']} • {when(x['reversal_at'])}" if x["reversed"] else ""} for x in r["reconciliations"]]
+    gains = [{"code": x["code"], "tripCode": x["trip_code"], "date": date_text(x["effective_date"]), "recorded": when(x["recorded_at"]),
+              "text": (f"{grams(x['weight'])} جرام {x['what']} ← مكافئ عيار 21 مرحَّل {grams(x['posted'])} • الشرح: {x['explanation']} • الدليل: {x['evidence_reference']}"
+                       + (f" • أكّدها {x['confirmed_by']}" if x["confirmed_by"] else "")),
+              "reversed": x["reversed"],
+              "state": f"معكوسة • {x['reversal_reason']} • {when(x['reversal_at'])}" if x["reversed"] else ""} for x in r["gains"]]
+    t = r["provisional_totals"]
+    totals = (f"إجمالي مبدئي (غير نهائي — المستندات الفعّالة فقط حسب التاريخ الفعلي): فاقد مرحّل {grams(t['loss_posted'])} • فرق تقريب الترحيل {grams(t['rounding_settlement'], signed=True)} "
+              f"• زيادة مثبتة {grams(t['gain_posted'])} جرام مكافئ عيار 21. الفاقد والتقريب والزيادة أرقام منفصلة لا يُصافَى بعضها ببعض. "
+              f"المستندات المعكوسة ({t['reversed_listed']}) تظهر في التفصيل ولا تدخل هذا المجموع؛ وإسناد العكس إلى الفترات قرار لم يُحسم بعد.")
+    return {"from": r["from"], "to": r["to"], "reconciliations": reconciliations, "gains": gains, "totalsText": totals,
+            "empty": not reconciliations and not gains, "error": ""}
+
+
 TAB_STATUS = {"ACTIVE": "OPEN", "ARCHIVE": "CLOSED"}      # the active tab shows OPEN trips, the archive tab CLOSED ones (the existing status, nothing else)
 TRIP_PAGE_SIZE = 50
 
@@ -157,11 +192,13 @@ class MarketTripViewModel(QObject):
         self._reversing_payment = False
         self._last_code = ""
         self._approval, self._last_reconciliation = {}, {}
+        self._report = {}                                                # the read-only gain / reconciliation report (059): replaced by each answer, cleared with the session
         self._session.changed.connect(self._approval_session_changed)
 
     def _approval_session_changed(self):
         self._cancel("approval")
-        self._approval, self._last_reconciliation = {}, {}
+        self._cancel("report")
+        self._approval, self._last_reconciliation, self._report = {}, {}, {}
         self.changed.emit()
 
     # ------------------------------------------------------------ plumbing
@@ -351,6 +388,20 @@ class MarketTripViewModel(QObject):
         if result.get("tripId") == self._recon_for:                         # an answer carrying another trip is never shown
             self._recon = result
 
+    @Slot(str, str)
+    def loadReport(self, date_from, date_to):
+        """The detail report of reconciliations and evidenced gains by effective date (read only). A newer request replaces an older one; a stale answer is dropped."""
+        service = self._service_instance()
+        self._report = {"loading": True}
+        self._start("report", lambda _expected_actor: service.book_report(date_from, date_to, _expected_actor=_expected_actor))
+
+    def _on_report(self, result, error):
+        self._report = {"error": "تعذّر تحميل التقرير: " + error} if error else report_view(result)
+
+    @Property("QVariantMap", notify=changed)
+    def report(self):
+        return {**self._report, "loading": "report" in self._busy}
+
     @Slot()
     def clearMessage(self):
         if self._message or self._error:
@@ -399,11 +450,13 @@ class MarketTripViewModel(QObject):
         # Notified only after the transaction succeeded; a failing refresh belongs to the view that failed, never to this write.
         if self._moved:
             self.custodyChanged.emit()
-        if self._operation in ("paysupplier", "goldsettle", "lotsettle", "lothold", "logohold") or (self._operation == "reverse" and self._reversing_payment):
+        if self._operation in ("paysupplier", "goldsettle", "lotsettle", "lothold", "logohold", "bookdeliversupplier", "bookdelivermarketer",
+                               "bookreceivemarketer") or (self._operation == "reverse" and self._reversing_payment):
             self.supplierPaymentChanged.emit()
         self._reversing_payment = False
         if self._operation in ("issue", "create", "return", "melt", "lotreturn", "lotissue", "heat", "paysupplier", "goldsettle", "lotsettle", "lothold", "logohold",
-                               "goldsale", "goldbuy", "bookissue", "bookbuy", "booksell", "bookreturn"):
+                               "goldsale", "goldbuy", "bookissue", "bookbuy", "booksell", "bookreturn",
+                               "bookissuestock", "bookdeliversupplier", "bookdelivermarketer", "bookreceivemarketer", "bookgain"):
             self.entryPosted.emit(result["code"])
         else:
             self.actionDone.emit(self._operation)
@@ -622,6 +675,65 @@ class MarketTripViewModel(QObject):
     def bookReturn(self, trip_id, lines, entry_date, notes, request_key):
         rows = self._book_rows(lines)
         self._write("bookreturn", "تم تسجيل رجوع الذهب للمحل (دفتري)", lambda s, a: s.book_return(trip_id, rows, entry_date, notes, request_key, _expected_actor=a), True)
+
+    # ------------------------------------------------------------ BOOK Phase 2 (058): the market cycle dialogs
+    @Slot(str, "QVariantList", str, str, str)
+    def bookIssueStock(self, trip_id, items, entry_date, notes, request_key):
+        """Assayed-return stock of the shop -> this BOOK trip. Only the item ids and the typed grams are sent; the service locks the items, allocates the posted share
+        from their stored figures and posts atomically."""
+        rows = [{"entry_id": str(i.get("entryId", "")), "line_no": str(i.get("lineNo", "")), "grams": str(i.get("grams", ""))} for i in (items or [])]
+        self._write("bookissuestock", "تم إخراج المخزون المرتجع إلى العهدة (دفتري)",
+                    lambda s, a: s.book_issue_stock(trip_id, rows, entry_date, notes, request_key, _expected_actor=a), True)
+
+    @Slot(str, str, "QVariantList", str, str, str, str)
+    def bookDeliverSupplier(self, trip_id, supplier_id, lines, entry_date, reference, notes, request_key):
+        rows = self._book_rows(lines)
+        self._write("bookdeliversupplier", "تم تسليم الذهب للمورد (دفتري)",
+                    lambda s, a: s.book_deliver_supplier(trip_id, supplier_id, rows, entry_date, reference, notes, request_key, _expected_actor=a), False)
+
+    @Slot(str, str, "QVariantList", str, str, str)
+    def bookDeliverMarketer(self, trip_id, party_id, lines, entry_date, notes, request_key):
+        rows = self._book_rows(lines)
+        self._write("bookdelivermarketer", "تم تسليم الذهب للمسوقجي (دفتري)",
+                    lambda s, a: s.book_deliver_marketer(trip_id, party_id, rows, entry_date, notes, request_key, _expected_actor=a), False)
+
+    @Slot(str, str, "QVariantList", str, str, str)
+    def bookReceiveMarketer(self, trip_id, party_id, lines, entry_date, notes, request_key):
+        rows = self._book_rows(lines)
+        self._write("bookreceivemarketer", "تم استلام الذهب من المسوقجي (دفتري)",
+                    lambda s, a: s.book_receive_marketer(trip_id, party_id, rows, entry_date, notes, request_key, _expected_actor=a), False)
+
+    @Slot(str, "QVariantList", str, str, bool, str, str, str)
+    def bookGain(self, trip_id, lines, explanation, evidence_reference, confirmed, entry_date, notes, request_key):
+        """059: an evidenced gain (the owner's explanation, evidence reference and explicit confirmation; the service re-checks every right and fact)."""
+        rows = self._book_rows(lines)
+        row = rows[0] if len(rows) == 1 else rows
+        self._write("bookgain", "تم تسجيل الزيادة المثبتة (دفتري)",
+                    lambda s, a: s.book_gain(trip_id, row, explanation, evidence_reference, confirmed, entry_date, notes, request_key, _expected_actor=a), False)
+
+    @Slot(str, "QVariantList", result=str)
+    def previewSupplierCredit(self, supplier_id, lines):
+        """What the supplier's account would be credited, in ITS OWN karat, by the same rule as the posting (services.supplier_rules); empty when incomplete."""
+        from services import supplier_rules
+        from services.market_trip_book_service import MarketTripBookService
+        supplier = next((s for s in self._context.get("suppliers", []) if s["id"] == str(supplier_id) and s.get("karat_value")), None)
+        if supplier is None:
+            return ""
+        try:
+            parsed = MarketTripBookService.parse_book_lines(self._book_rows(lines), "BK_DLV_SUP")
+        except TripError:
+            return ""
+        if len(parsed) != 1:
+            return "سطر واحد فقط لكل تسليم."
+        line = parsed[0]
+        if line["basis"] == "FINENESS":
+            credited, _, _ = supplier_rules.lot_settlement_credit(line["weight"], line["fineness"], supplier["karat_value"])
+        else:
+            karat = next((int(k["karat_value"]) for k in self._context.get("karats", []) if int(k["id"]) == int(line["karat_id"])), None)
+            if karat is None:
+                return ""
+            credited, _, _ = supplier_rules.settlement_credit(line["weight"], karat, supplier["karat_value"])
+        return f"يُحتسب للمورد {grams(credited)} جرام بعيار حسابه {supplier['karat_value']} (حساب المورد بعياره، لا مكافئ 21)"
 
     @Slot(str, "QVariantList", result="QVariantMap")
     def previewBook(self, kind, lines):
@@ -983,6 +1095,8 @@ class MarketTripViewModel(QObject):
                          "text": f"{_gold_label(g)} — المتبقي {grams(g['outstanding'])}"}
                         for g in gold if g["outstanding"] > 0]
         is_book = d.get("mode") == "BOOK"
+        book_reconciled = any(e["kind"] == "BK_RECON" and not e["reversed"] for e in d["entries"])        # an effective (not reversed) reconciliation document
+        book_cash_zero = custody["cash"]["outstanding"] == 0
         book = d.get("book") or {}
         view = book.get("balance") or {}
         return {
@@ -994,9 +1108,19 @@ class MarketTripViewModel(QObject):
                 "balanceText": f"{grams(view['posted'])} جرام مكافئ عيار 21",
                 "driftText": f"فرق التقريب (للعرض): {ltr(number(view['drift'], 6, signed=True))} — ليس خسارة ولا زيادة",
                 "stockItems": [{"text": f"{i['code']} سطر {i['line_no']} • العيار الفعلي {fineness_text(i['fineness'])} • المتبقي {grams(i['grams'])} من {grams(i['original_weight'])} جرام "
-                                        f"• المكافئ المرحَّل المتبقي {grams(i['posted'])}"} for i in book.get("stock_items", [])]},
-            "closable": is_open and settled and not is_book,
-            "closeHint": BOOK_CLOSE_HINT if (is_book and is_open) else "" if not is_open else (("لا متبقي في العهدة: يمكن إغلاق العهدة." + ((" " + CLOSURE_NOTE) if d.get("external_holdings") else "")) if settled
+                                        f"• المكافئ المرحَّل المتبقي {grams(i['posted'])}"} for i in book.get("stock_items", [])],
+                # 058: the Phase 2 dialog sources (ids are strings; the service re-derives every balance and figure under its locks)
+                "shopStock": [{"entryId": i["entry_id"], "lineNo": str(i["line_no"]), "grams": f"{i['grams']:.3f}",
+                               "text": f"{i['code']} سطر {i['line_no']} • {fineness_text(i['fineness'])} • المتاح {grams(i['grams'])} جرام • مرحَّل {grams(i['posted'])}"}
+                              for i in book.get("shop_stock", [])],
+                "suppliers": [{"id": s["id"], "text": f"{s['name']} — حسابه بعيار {s['karat_value']}" + ("" if s["active"] else " (متوقف)")}
+                              for s in self._context.get("suppliers", []) if s.get("karat_value")],
+                "marketers": [{"id": m["id"], "text": m["name"] + ("" if m["active"] else " (متوقف)"), "active": m["active"]}
+                              for m in self._context.get("intermediaries", [])]},
+            "closable": is_open and ((settled and not is_book) or (is_book and book_reconciled and book_cash_zero)),
+            "reconciled": bool(is_book and book_reconciled),
+            "closeHint": ("" if not is_open else BOOK_CLOSE_READY if (book_reconciled and book_cash_zero) else
+                          BOOK_CLOSE_HINT + (f" نقدية العهدة المتبقية {money(custody['cash']['outstanding'])} ج." if book_reconciled else "")) if is_book else "" if not is_open else (("لا متبقي في العهدة: يمكن إغلاق العهدة." + ((" " + CLOSURE_NOTE) if d.get("external_holdings") else "")) if settled
                                                   else "لا يمكن الإغلاق قبل تصفية المتبقي: " + outstanding_text(custody)),
             "lotSettleSources": [{"id": l["lot_id"], "text": f"{LOT_TEXT[l['kind']]} • {l['code']} • شحنة {l['lot_no']} • {grams(l['weight'])} جرام",
                                   "known": l["fineness"] is not None} for l in custody["lots"] if l["outstanding"] > 0],
@@ -1097,6 +1221,16 @@ class MarketTripViewModel(QObject):
             parts.append(f"سطر {l['line_no']}: {grams(l['weight'])} جرام {what}" + (f" ({where})" if where else "")
                          + f" ← مكافئ عيار 21 مرحَّل {grams(l['posted'])} (تحليلي {ltr(number(l['analytical'], 6))} • فرق {ltr(number(l['difference'], 6, signed=True))})"
                          + ("" if l["price"] is None else f" • {money(l['price'])}"))
+        gain = e.get("gain")
+        if gain:
+            parts.append(f"زيادة مثبتة — الشرح: {gain['explanation']} • الدليل: {gain['evidence_reference']}" + (f" • أكّدها {gain['confirmed_by']}" if gain["confirmed_by"] else ""))
+        recon = e.get("recon")
+        if recon:
+            reason = RECON_REASON_TEXT.get(recon["reason_code"], "بدون سبب") if recon["reason_code"] else "بدون سبب"
+            parts.append(f"تسوية رقم {recon['generation']} • التاريخ الفعلي {date_text(recon['effective_date'])} • الرصيد التحليلي غير المسوّى {number(recon['a'], 6)} • "
+                         f"الرصيد المرحّل {grams(recon['b'], signed=recon['b'] < 0)} • الفاقد المرحّل {grams(recon['loss'])} • فرق تقريب الترحيل "
+                         f"{grams(recon['rounding'], signed=True)} (ليس فاقدًا ولا زيادة) • السبب: {reason}" + (f" • {recon['note']}" if recon["note"] else "")
+                         + (f" • اعتمدها {recon['confirmed_by']}" if recon["confirmed_by"] else ""))
         trade = e.get("book_trade")
         if trade:
             parts.append(f"{'من' if trade['kind'] == 'BK_BUY' else 'إلى'} {trade['name']} • الإجمالي {money(trade['total'])}"
@@ -1130,7 +1264,7 @@ class MarketTripViewModel(QObject):
                 "date": date_text(e["date"]), "time": datetime_text(e["at"]), "actor": e["actor"],
                 "notes": e["notes"], "reversed": e["reversed"],
                 "state": f"معكوسة بالعملية {e['reversal_code']}" if e["reversed"] else "",
-                "reverseNote": BOOK_REVERSE_NOTES[e["kind"]] if e["kind"] in BOOK_REVERSE_NOTES else HOLD_REVERSE_NOTE if e["kind"] == "LOT_HOLD" else RETURN_REVERSE_NOTE if e["kind"] == "HOLD_RETURN" else "عكس التسوية يعيد الشحنة الأصلية كاملة إلى نفس العهدة ويعيد رصيد المورد بالكمية المخزّنة؛ لا حركة بالمحل." if e["kind"] == "LOT_SETTLE" else PAYMENT_REVERSAL_NOTE if e["kind"] == "SUPPLIER_PAY" else GOLD_SETTLE_REVERSAL_NOTE if e["kind"] == "GOLD_SETTLE" else "",
+                "reverseNote": BOOK_REVERSE_NOTES_PHASE2[e["kind"]] if e["kind"] in BOOK_REVERSE_NOTES_PHASE2 else BOOK_REVERSE_NOTES[e["kind"]] if e["kind"] in BOOK_REVERSE_NOTES else HOLD_REVERSE_NOTE if e["kind"] == "LOT_HOLD" else RETURN_REVERSE_NOTE if e["kind"] == "HOLD_RETURN" else "عكس التسوية يعيد الشحنة الأصلية كاملة إلى نفس العهدة ويعيد رصيد المورد بالكمية المخزّنة؛ لا حركة بالمحل." if e["kind"] == "LOT_SETTLE" else PAYMENT_REVERSAL_NOTE if e["kind"] == "SUPPLIER_PAY" else GOLD_SETTLE_REVERSAL_NOTE if e["kind"] == "GOLD_SETTLE" else "",
                 "reason": e["reversal_reason"] or "", "canReverse": trip_open and not e["reversed"]}
 
     @staticmethod

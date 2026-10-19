@@ -125,10 +125,23 @@ class MarketerRepo:
                                 "movement_type": movement_type, "amount": amount, "amount_delta": delta, "correction_id": correction_id})
         return movement_id
 
-    def insert_gold_movement(self, *, party_id, document_id=None, doc_kind=None, settlement_id=None, movement_type, weight, delta, correction_id=None):
+    def insert_gold_movement(self, *, party_id, document_id=None, doc_kind=None, settlement_id=None, movement_type, weight, delta, correction_id=None,
+                             trip_entry_id=None, trip_entry_kind=None):
         self._fail("mk_gold")
         assert weight > 0
         base = movement_type.removesuffix("_REVERSAL")
+        if trip_entry_id is not None:                                                                     # chk_mkgm_shape, trip-entry branch (058)
+            assert document_id is None and settlement_id is None and doc_kind is None
+            entry = self.db.entries[int(trip_entry_id)]                                                   # fk_mkgm_trip_entry
+            sign, kind = {"TRIP_BOOK_IN": (1, "BK_DLV_MKT"), "TRIP_BOOK_OUT": (-1, "BK_RECEIVE")}[base]
+            assert entry["entry_kind"] == trip_entry_kind == kind
+            assert (delta == sign * weight and correction_id is None) if base == movement_type else (delta == -sign * weight and correction_id is not None)
+            assert not any((m.get("trip_entry_id"), m["movement_type"]) == (int(trip_entry_id), movement_type) for m in self.db.mk_gold)   # uq_mkgm_trip_entry_type
+            movement_id = self.db.next("mk_gold")
+            self.db.mk_gold.append({"id": movement_id, "party_id": int(party_id), "document_id": None, "doc_kind": None, "settlement_id": None,
+                                    "trip_entry_id": int(trip_entry_id), "trip_entry_kind": trip_entry_kind, "movement_type": movement_type,
+                                    "weight_grams": weight, "weight_delta": delta, "correction_id": correction_id})
+            return movement_id
         if document_id is not None:                                                                       # chk_mkgm_shape, document branch
             assert settlement_id is None and base in GOLD_SHAPE
             sign, kind = GOLD_SHAPE[base]
@@ -239,6 +252,16 @@ class MarketerRepo:
             reversal = self._reversal("SUPPLIER_GOLD_SETTLEMENT", header["id"])
             rows.append({**header, "supplier_name": self.db.suppliers[header["supplier_id"]]["name"], "actor_name": "المالك",
                          "reversal_id": reversal and int(reversal["correction_id"]), "reversal_reason": reversal and reversal["reason"]})
+        return rows
+
+    def trip_movements(self, party_id, limit=300):
+        """The fake of MarketerCustodyRepository.trip_movements (058 legs of BOOK trip entries, newest first)."""
+        rows = []
+        for m in sorted((m for m in self.db.mk_gold if m.get("trip_entry_id") and m["party_id"] == int(party_id)), key=lambda m: -m["id"]):
+            entry = self.db.entries[m["trip_entry_id"]]
+            rows.append({"id": m["id"], "trip_entry_id": m["trip_entry_id"], "trip_entry_kind": m["trip_entry_kind"], "movement_type": m["movement_type"],
+                         "weight_grams": m["weight_grams"], "weight_delta": m["weight_delta"], "created_at": entry.get("occurred_at"), "trip_id": entry["trip_id"],
+                         "entry_no": entry["entry_no"], "entry_date": entry["entry_date"]})
         return rows
 
     def settlement_gold_movement(self, settlement_id):

@@ -941,7 +941,8 @@ Item {
                             model: goldDetails.visible ? [
                                 {"title": "في المحل", "rows": reviewPage.goldPos.shop},
                                 {"title": "في عهدة السوق", "rows": reviewPage.goldPos.custody},
-                                {"title": "لدى المسوقجي (ملك المحل)", "rows": reviewPage.goldPos.intermediary}] : []
+                                {"title": "لدى المسوقجي (ملك المحل)", "rows": reviewPage.goldPos.intermediary}].concat(
+                                reviewPage.goldPos.book.length > 0 ? [{"title": "عهد بالنمط الدفتري — الرصيد بعد احتساب التسويات المعتمدة", "rows": reviewPage.goldPos.book}] : []) : []
                             ColumnLayout {
                                 id: goldGroup
                                 required property var modelData

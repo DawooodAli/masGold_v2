@@ -365,7 +365,7 @@ class InvoicePageTests(unittest.TestCase):
     def reveal(self, item):
         """The supplier party page has ONE scroll (`partyScroll`): scroll it as the employee does until the item is inside its viewport."""
         flick = item.parentItem()
-        while flick is not None and flick.objectName() not in ("partyScroll", "tripDetailScroll"):      # the market-trip detail scrolls the same way
+        while flick is not None and flick.objectName() not in ("partyScroll", "tripDetailScroll", "reportsScroller"):      # the market-trip detail scrolls the same way
             flick = flick.parentItem()
         if flick is None:
             return

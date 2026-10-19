@@ -188,7 +188,7 @@ class Fake:
         self.calls.append("custody_gold")                                # the LOCKING per-trip decision read: a position must never use it
         raise AssertionError("the gold position called the per-trip locking read custody_gold")
 
-    def custody_lots(self, trip_id, exclude_entry_id=None, *, lot_id=None):
+    def custody_lots(self, trip_id, exclude_entry_id=None, *, lot_id=None, current=True):
         self.calls.append("custody_lots")
         raise AssertionError("the gold position called the per-trip locking read custody_lots")
 
@@ -199,6 +199,18 @@ class Fake:
     def custody_lots_by_trip(self):
         self.calls.append("custody_lots_by_trip")
         return {}
+
+    def book_groups_by_trip(self):                                       # 056: BOOK balances (aggregated, no locks)
+        self.calls.append("book_groups_by_trip")
+        return {}
+
+    def effective_reconciliations_display(self):                         # 057: effective BOOK reconciliations (display, no locks)
+        self.calls.append("effective_reconciliations_display")
+        return []
+
+    def assayed_stock_items(self):
+        self.calls.append("assayed_stock_items")
+        return []
 
     def shop_scrap(self):
         return [scrap_row(21, "10")]

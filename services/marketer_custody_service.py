@@ -194,12 +194,14 @@ class MarketerCustodyService:
                 raise TripError("PARTY_NOT_FOUND", "هذا الطرف ليس مسوقجيًا.")
             cash, gold = Decimal(str(repo.display_cash_balance(party_number))), Decimal(str(repo.display_gold_balance(party_number)))
             documents, settlements = repo.documents(party_number), repo.settlements(party_number)
+            trip_legs = repo.trip_movements(party_number)
             counterparties = repo.counterparties()
             recipients = repo.recipients()
         return {"party": {"id": str(party["id"]), "name": party["name"], "active": bool(party["is_active"]), "is_supplier": bool(party["is_supplier"]),
                           "is_intermediary": True},
                 "cash": cash.quantize(MONEY_STEP), "gold": gold.quantize(Decimal("0.001")), "karat": KARAT_VALUE,
                 "documents": [self._document_row(d) for d in documents], "settlements": [self._settlement_row(s) for s in settlements],
+                "trip_legs": [self._trip_leg_row(m) for m in trip_legs],
                 "counterparties": [{"id": str(r["id"]), "name": r["name"], "active": bool(r["is_active"]), "supplier": bool(r["is_supplier"]),
                                     "intermediary": bool(r["is_intermediary"])} for r in counterparties],
                 "recipients": [{"id": str(r["id"]), "name": r["name"], "active": bool(r["is_active"]), "karat_value": int(r["karat_value"]),
@@ -220,6 +222,16 @@ class MarketerCustodyService:
                 "lines": [{"weight": Decimal(str(l["weight_grams"])), "price": Decimal(str(l["line_price"]))} for l in d.get("lines", [])],
                 "date": d["document_date"], "reference": d.get("reference") or "", "notes": d.get("notes") or "", "at": d["occurred_at"],
                 "actor": d.get("actor_name") or "", "reversed": reversed_by is not None, "reversal_reason": d.get("reversal_reason") or ""}
+
+    @staticmethod
+    def _trip_leg_row(m):
+        """058: a 21K leg created by a BOOK trip entry (delivery to / receipt from the marketer) or its compensation. The balance already includes it; the row explains it
+        and names the trip entry that is its source (reversed ONLY from that trip's custody page)."""
+        from repositories.market_trip_repository import entry_code, trip_code
+        kind = str(m["movement_type"])
+        return {"id": str(m["id"]), "movement_type": kind, "reversal": kind.endswith("_REVERSAL"), "entry_id": str(m["trip_entry_id"]), "entry_kind": m["trip_entry_kind"],
+                "entry_code": entry_code(m["trip_id"], m["entry_no"]), "trip_id": str(m["trip_id"]), "trip_code": trip_code(m["trip_id"]),
+                "weight": Decimal(str(m["weight_grams"])), "delta": Decimal(str(m["weight_delta"])), "date": m["entry_date"], "at": m["created_at"]}
 
     @staticmethod
     def _settlement_row(s):

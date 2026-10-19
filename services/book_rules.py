@@ -27,10 +27,18 @@ MASTER_KARAT, FINENESS = "MASTER_KARAT", "FINENESS"
 BASES = (MASTER_KARAT, FINENESS)
 LEGACY, BOOK = "LEGACY", "BOOK"
 BK_ISSUE, BK_BUY, BK_SELL, BK_RETURN = "BK_ISSUE", "BK_BUY", "BK_SELL", "BK_RETURN"
-BOOK_KINDS = (BK_ISSUE, BK_BUY, BK_SELL, BK_RETURN)                      # the kinds Phase 1 posts (later phases add BK_ISS_STK, BK_RECEIVE, ...)
+PHASE1_KINDS = (BK_ISSUE, BK_BUY, BK_SELL, BK_RETURN)                    # the kinds Phase 1 posts
+# 058 (Phase 2, the market cycle): stock of the SHOP -> trip, a marketer's 21K entitlement -> trip, trip -> a SUPPLIER's gold account, trip -> a marketer
+BK_ISS_STK, BK_RECEIVE, BK_DLV_SUP, BK_DLV_MKT = "BK_ISS_STK", "BK_RECEIVE", "BK_DLV_SUP", "BK_DLV_MKT"
+PHASE2_KINDS = (BK_ISS_STK, BK_RECEIVE, BK_DLV_SUP, BK_DLV_MKT)
+# 059 (Phase 3): the evidenced gain - ONE incoming line computed from the surplus's own physical facts, with the owner's explanation and evidence; never automatic
+BK_GAIN = "BK_GAIN"
+GAIN_KINDS = (BK_GAIN,)
+BOOK_KINDS = PHASE1_KINDS + PHASE2_KINDS + GAIN_KINDS                    # every BOOK gold kind (each has book lines)
 BK_RECON = "BK_RECON"                                                    # 057: the reconciliation document of a BOOK trip. NOT a gold kind: it has no book line, leg or stock row
 RECON_KINDS = (BK_RECON,)
-INCOMING_KINDS, OUTGOING_KINDS = (BK_ISSUE, BK_BUY), (BK_SELL, BK_RETURN)
+INCOMING_KINDS, OUTGOING_KINDS = (BK_ISSUE, BK_BUY, BK_ISS_STK, BK_RECEIVE, BK_GAIN), (BK_SELL, BK_RETURN, BK_DLV_SUP, BK_DLV_MKT)
+INDEPENDENT_BASIS, ALLOCATED_BASIS = "INDEPENDENT", "ALLOCATED"          # a line's posted figure: round3 of its own exact value, or an allocated share of stored stock
 IN, OUT = "IN", "OUT"
 SHARED_CASH_KINDS = ("ISSUE", "RETURN", "SUPPLIER_PAY")                 # cash-only entries, valid in both modes (the cash ledger is shared, never duplicated)
 LEGACY_ONLY_KINDS = ("MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT", "GOLD_SETTLE", "LOT_SETTLE", "LOT_HOLD", "HOLD_RETURN", "LOGO_HOLD", "HOLD_BACK",
@@ -273,3 +281,26 @@ def line_row(line, *, line_price=None):
     return {"direction": line.direction, "weight": line.weight, "basis": line.basis, "karat_id": line.karat_id, "karat_value": line.karat_value,
             "fineness": line.fineness, "analytical_evidence": line.analytical_evidence, "posted": line.posted, "difference": line.difference,
             "signed": line.signed, "line_price": line_price}
+
+
+def allocate_stock(grams, fineness, held_grams, held_posted):
+    """(Line, independent posted p, posting basis) for `grams` x taken out of an identified assayed-stock item that still holds `held_grams` g and `held_posted` P
+    (its STORED posted amount). a = the exact analytical value of x, p = round3(a); the posting policy (plan v3, addendum 2):
+      x == g             q = P   ALLOCATED    (the item ends at exactly zero grams AND zero posted)
+      x <  g and p <= P  q = p   INDEPENDENT  (|q - a| <= 0.0005, like any other line)
+      x <  g and p >  P  q = P   ALLOCATED    (capped: never more than what is left)
+    so the sum of every share equals the item's posted amount exactly. An ALLOCATED difference q - a may exceed 0.0005 and a positive weight may carry q = 0.
+    p is returned apart from q (it is the stored `eq21_independent` evidence). The line is an IN line of the receiving trip (basis FINENESS, the item's own assay)."""
+    grams, held_grams, held_posted = Decimal(str(grams)), Decimal(str(held_grams)), Decimal(str(held_posted))
+    if grams <= 0 or grams > held_grams:
+        raise BookError("STOCK_EXCEEDS_BALANCE", f"المتبقي من بند المخزون {held_grams:,.3f} جرام فقط: لا يمكن إخراج {grams:,.3f} جرام.")
+    exact = analytical(grams, FINENESS, None, fineness)
+    independent = post(exact)
+    if grams == held_grams:
+        share, basis = held_posted, ALLOCATED_BASIS
+    elif independent <= held_posted:
+        share, basis = independent, INDEPENDENT_BASIS
+    else:
+        share, basis = held_posted, ALLOCATED_BASIS
+    line = Line(IN, grams, FINENESS, None, None, Decimal(str(fineness)), exact, share, evidence(exact), round_half_up(Fraction(share) - exact, EVIDENCE_PLACES))
+    return line, independent, basis

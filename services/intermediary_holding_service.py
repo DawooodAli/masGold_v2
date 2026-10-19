@@ -18,6 +18,7 @@ from repositories.intermediary_holding_repository import (CONFIRMATION_CODE, PHY
                                                           logo_holding_code)
 from repositories.market_trip_repository import OPEN, MarketTripRepository, entry_code, trip_code
 from repositories.supplier_gold_settlement_repository import SupplierGoldSettlementRepository
+from services import book_rules
 from services.authorization_service import AuthorizationService
 from services.intermediary_holding_rules import (ALLOCATING, CONFIRMATION_TEXT, MANAGE_PERMISSION, TRIP_PERMISSION, VIEW_PERMISSION,
                                                  DIVIDED, document_row, holding_settlement_row, logo_document_row, logo_pool_row,
@@ -189,6 +190,7 @@ class IntermediaryHoldingService:
             replay = self._prior(repository, holdings, parties, key, digest, actor, LOT_HOLD)
             if replay is not None:
                 return replay                                                 # the original records, before any availability is derived
+            book_rules.require_legacy_trip(trip)                              # 056: legacy holdings belong to LEGACY custody only
             if trip["status"] != OPEN:
                 raise TripError("TRIP_CLOSED", "العهدة مغلقة: أعد فتحها أولًا.")
             locked = repository.lock_lots([lot_id])
@@ -437,6 +439,7 @@ class IntermediaryHoldingService:
             replay = self._prior_logo(repository, holdings, parties, key, digest, actor, LOGO_HOLD)
             if replay is not None:
                 return replay
+            book_rules.require_legacy_trip(trip)                              # 056: legacy holdings belong to LEGACY custody only
             if trip["status"] != OPEN:
                 raise TripError("TRIP_CLOSED", "العهدة مغلقة: أعد فتحها أولًا.")
             party = parties.get_supplier(party_id, lock=True)

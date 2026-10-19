@@ -244,7 +244,7 @@ class BookCoreMySqlTests(unittest.TestCase):
                            (lambda: self.service.book_sell(trip, [karat(self.karats[21], "1", "600000")], "", "x", DATE, "", "", self.key(), False), "PRICE_DEVIATION"),
                            (lambda: self.service.book_buy(trip, [assay("916.7", "1", "5000")], "", "", DATE, "", "", self.key(), False), "VENDOR_REQUIRED"),
                            (lambda: self.service.book_issue(trip, [assay("875", "1")], DATE, "", self.key()), "SCRAP_BASIS"),
-                           (lambda: self.service.close(trip), "BOOK_CLOSURE_NOT_AVAILABLE")):
+                           (lambda: self.service.close(trip), "RECONCILIATION_REQUIRED")):                 # Phase 3: closure exists and needs an effective reconciliation
             with self.assertRaises(TripError) as refused:
                 call()
             self.assertEqual(refused.exception.code, code)

@@ -35,9 +35,11 @@ from services.old_gold_availability import held_grams, shortage_message
 
 _BASIS_INPUT = {"MASTER_KARAT": book_rules.MASTER_KARAT, "KARAT": book_rules.MASTER_KARAT, "FINENESS": book_rules.FINENESS, "ASSAY": book_rules.FINENESS}
 KIND_AUDIT = {BK_ISSUE: "MARKET_TRIP_BK_ISSUE", BK_BUY: "MARKET_TRIP_BK_BUY", BK_SELL: "MARKET_TRIP_BK_SELL", BK_RETURN: "MARKET_TRIP_BK_RETURN",
-              book_rules.BK_RECON: "MARKET_TRIP_BK_RECON"}
+              book_rules.BK_RECON: "MARKET_TRIP_BK_RECON", book_rules.BK_ISS_STK: "MARKET_TRIP_BK_ISS_STK", book_rules.BK_DLV_SUP: "MARKET_TRIP_BK_DLV_SUP",
+              book_rules.BK_DLV_MKT: "MARKET_TRIP_BK_DLV_MKT", book_rules.BK_RECEIVE: "MARKET_TRIP_BK_RECEIVE", book_rules.BK_GAIN: "MARKET_TRIP_BK_GAIN"}
 CLOSED_TEXT = {BK_ISSUE: "لإخراج ذهب منها", BK_BUY: "لشراء ذهب منها", BK_SELL: "لبيع ذهب منها", BK_RETURN: "لتسجيل رجوع ذهب منها"}
 MAX_LINES = 20
+GAIN_EXPLANATION_MAX, GAIN_EVIDENCE_MAX = 500, 120                     # the widths of market_trip_gains (059)
 
 
 def _plain(value):
@@ -47,8 +49,9 @@ def _plain(value):
 class MarketTripBookService(MarketTripService):
     """MarketTripService plus the BOOK operations. Everything the legacy service does is inherited unchanged."""
 
-    def __init__(self, *args, book_creation_enabled=False, reconciliation_enabled=False, **kwargs):
+    def __init__(self, *args, book_creation_enabled=False, reconciliation_enabled=False, marketers=None, **kwargs):
         super().__init__(*args, **kwargs)
+        self._marketers = marketers                                          # the marketer account repository (058 legs); the real one when None
         self._book_creation_enabled = bool(book_creation_enabled)
         self._reconciliation_enabled = bool(reconciliation_enabled)         # R2-S1: OFF in production construction; tests / the future release step turn it on
 
@@ -220,6 +223,319 @@ class MarketTripBookService(MarketTripService):
         view["status"] = trip["status"]
         return view
 
+    # ------------------------------------------------------------------ Phase 2 (058): the market cycle of a BOOK trip
+    # Every operation: ONE transaction - permissions re-checked (MARKET_TRIP_MANAGE + the counterparty right) -> trip row lock -> exact replay -> BOOK / OPEN / not
+    # reconciled -> the counterparty or the stock items (ascending), each a CURRENT locking read -> availability -> the entry, its line(s), the counterparty leg,
+    # the audit -> the session check. Lock order: trip -> party / supplier -> stock items ascending (no Scrap, cash, Main Safe or bank is touched).
+    def book_issue_stock(self, trip_id, items, entry_date, notes, request_key, *, _expected_actor=None):
+        """BK_ISS_STK: identified assayed-return stock of the SHOP goes to this BOOK trip, whole or partial. `items` = [{entry_id, line_no, grams}] (the item is a
+        BK_RETURN FINENESS line, of any trip). The posted share and its basis follow `book_rules.allocate_stock` (INDEPENDENT for a part whose own round3 fits, ALLOCATED
+        from the item's stored posted amount for the whole remainder or a capped part); the line and the stock ISSUE row carry the SAME basis."""
+        parsed = self.parse_stock_items(items)
+        payload = [[p["entry_id"], p["line_no"], str(p["grams"])] for p in parsed]
+
+        def work(connection, repository, trip, actor, now, key, digest, on_date, notes_text):
+            planned = []
+            for item in sorted(parsed, key=lambda p: (p["entry_id"], p["line_no"])):                      # stock items locked in ascending order
+                row = repository.stock_item(item["entry_id"], item["line_no"], lock=True)
+                if row is None:
+                    raise TripError("STOCK_ITEM_NOT_FOUND", "بند المخزون المرتجع غير موجود.")
+                held, held_posted = (Decimal(str(v)) for v in repository.stock_balance(item["entry_id"], item["line_no"]))
+                if held <= 0:
+                    raise TripError("STOCK_ITEM_EMPTY", f"بند المخزون {entry_code(row['trip_id'], row['entry_no'])}/{item['line_no']} لم يعد في المحل.")
+                line, independent, basis = book_rules.allocate_stock(item["grams"], row["fineness_permille"], held, held_posted)
+                planned.append((item, row, line, independent, basis))
+            entry_id, code = self._phase2_entry(repository, trip, book_rules.BK_ISS_STK, on_date, notes_text, key, digest, actor, now)
+            for number, (item, row, line, independent, basis) in enumerate(planned, 1):
+                repository.insert_book_line(entry_id=entry_id, line_no=number, trip_id=trip["id"], kind=book_rules.BK_ISS_STK, line=line,
+                                            posting_basis=basis, stock_item=(item["entry_id"], item["line_no"]))
+                repository.insert_stock_movement(item_entry_id=item["entry_id"], item_line_no=item["line_no"], movement_type=book_rules.ISSUE_STOCK,
+                                                 grams_delta=-line.weight, posted_delta=-line.posted, analytical=line.analytical_evidence,
+                                                 difference=line.difference, independent=independent, posting_basis=basis,
+                                                 source_entry_id=entry_id, correction_id=None, user_id=actor.user_id)
+            self._phase2_audit(repository, actor, entry_id, code, trip, book_rules.BK_ISS_STK, now, [p for _, _, p, _, _ in planned],
+                               {"items": [{"item": f"{i['entry_id']}/{i['line_no']}", "grams": str(l.weight), "posted": str(l.posted), "posting_basis": b,
+                                           "independent_posted": str(ind)} for i, _, l, ind, b in planned]})
+            return entry_id, {}
+        return self._phase2_call(book_rules.BK_ISS_STK, trip_id, payload, entry_date, notes, request_key, _expected_actor, work)
+
+    def book_deliver_supplier(self, trip_id, supplier_id, line, entry_date, reference, notes, request_key, *, _expected_actor=None):
+        """BK_DLV_SUP: gold of this BOOK trip is delivered to a SUPPLIER against its gold account. ONE line of physical facts (master karat or assay); the book
+        loses the line's posted equivalent; the supplier is credited in ITS OWN karat (master: grams x K / supplier K; assay: grams x permille / 1000 x 24 / supplier K;
+        0.001 g HALF_UP from the exact value) through an SG document with source TRIP_BOOK. No Scrap, cash or Main Safe movement."""
+        parsed = self._single_line(line, book_rules.BK_DLV_SUP)
+        supplier_text = str(supplier_id or "").strip()
+        reference_text = _text(reference, PAYMENT_REFERENCE_MAX, "المرجع")
+        payload = [supplier_text, parsed["basis"], parsed["karat_id"], None if parsed["fineness"] is None else str(parsed["fineness"]), str(parsed["weight"]),
+                   reference_text]
+
+        def work(connection, repository, trip, actor, now, key, digest, on_date, notes_text):
+            from services import supplier_rules as rules
+            from repositories.supplier_gold_settlement_repository import GOLD_MOVEMENT, settlement_code
+            settlements = self._gold_settlements(connection)
+            try:
+                supplier = settlements.get_supplier(int(supplier_text), lock=True)                  # trip -> supplier
+            except ValueError:
+                supplier = None
+            if supplier is None:
+                raise TripError("SUPPLIER_NOT_FOUND", "اختر المورد.")
+            if not rules.has_supplier_role(supplier):
+                raise TripError("SUPPLIER_ROLE_REQUIRED", "هذا الطرف مسوقجي فقط وليس مورِّدًا: لا حساب ذهب له.")
+            if supplier["karat_id"] is None:
+                raise TripError("SUPPLIER_KARAT_MISSING", "عيار هذا المورد غير محدد. حدّد عياره من تعديل المورد أولًا.")
+            target = settlements.get_karat(supplier["karat_id"])
+            delivered = None
+            if parsed["basis"] == book_rules.MASTER_KARAT:
+                delivered = settlements.get_karat(parsed["karat_id"])
+                if delivered is None or not delivered["is_active"]:
+                    raise TripError("KARAT_NOT_FOUND", "العيار غير موجود أو غير نشط.")
+            planned = book_rules.plan_line(book_rules.OUT, parsed["weight"], parsed["basis"], parsed["karat_id"],
+                                           None if delivered is None else int(delivered["karat_value"]), parsed["fineness"])
+            book_rules.check_outgoing(book_rules.balance_of_rows(repository.book_lines(trip["id"], current=True)), [planned])
+            if delivered is not None:
+                credited, analytical, difference = rules.settlement_credit(parsed["weight"], delivered["karat_value"], target["karat_value"])
+            else:
+                credited, analytical, difference = rules.lot_settlement_credit(parsed["weight"], parsed["fineness"], target["karat_value"])
+            if credited <= 0:
+                raise TripError("CREDIT_ZERO", "قيمة الاعتماد للمورد تصير صفرًا بعد التقريب: لا يُسجَّل تسليم بلا أثر.")
+            type_id = settlements.gold_type_id(GOLD_MOVEMENT)
+            if type_id is None:
+                raise RuntimeError("supplier gold movement type SETTLEMENT is missing (migration 045)")
+            settlement_id = settlements.insert_book_header(
+                supplier_id=supplier["id"], delivered_karat=delivered, fineness=parsed["fineness"], target_karat=target, delivered_weight=parsed["weight"],
+                credited=credited, analytical=analytical, difference=difference, settlement_date=on_date, reference=reference_text, notes=notes_text, key=key,
+                digest=digest, actor=actor, now=now)
+            sg_code = settlement_code(settlement_id)
+            entry_id, code = self._phase2_entry(repository, trip, book_rules.BK_DLV_SUP, on_date, notes_text, key, digest, actor, now)
+            repository.insert_book_line(entry_id=entry_id, line_no=1, trip_id=trip["id"], kind=book_rules.BK_DLV_SUP, line=planned)
+            label = (f"تسليم ذهب لمورد {sg_code} من العهدة الدفترية {code}: {planned.weight:,.3f} جرام "
+                     f"{'عيار ' + str(int(delivered['karat_value'])) if delivered is not None else 'بعيار فعلي ' + str(parsed['fineness']) + '‰'} "
+                     f"← يُحتسب للمورد {credited:,.3f} جرام عيار {int(target['karat_value'])}")
+            gold_id = settlements.insert_gold_movement(
+                supplier_id=supplier["id"], type_id=type_id, karat_id=target["id"], weight_delta=-credited,
+                eq21_delta=-rules.equivalent_21(credited, target["karat_value"]), source_type="SUPPLIER_GOLD_SETTLEMENT", source_id=settlement_id,
+                reference=sg_code, description=label, now=now, user_id=actor.user_id)
+            settlements.insert_leg(settlement_id=settlement_id, kind="GOLD", source_kind="TRIP_BOOK", supplier_gold_movement_id=gold_id)
+            repository.insert_book_supplier_link(entry_id=entry_id, trip_id=trip["id"], settlement_id=settlement_id, supplier_id=supplier["id"], weight=planned.weight)
+            settlements.audit(actor=actor, event_type="SUPPLIER_GOLD_SETTLEMENT", entity_id=settlement_id, entity_type="SUPPLIER_GOLD_SETTLEMENT",
+                              reference=sg_code, description=label,
+                              metadata={"supplier_id": supplier["id"], "source": "TRIP_BOOK", "trip_entry": code, "delivered_weight": str(planned.weight),
+                                        "delivered_karat": None if delivered is None else int(delivered["karat_value"]),
+                                        "delivered_fineness": _plain(parsed["fineness"]), "target_karat": int(target["karat_value"]), "credited": str(credited),
+                                        "analytical": str(analytical), "rounding_difference": str(difference), "employee_id": actor.employee_id}, now=now)
+            self._phase2_audit(repository, actor, entry_id, code, trip, book_rules.BK_DLV_SUP, now, [planned],
+                               {"supplier_id": supplier["id"], "settlement": sg_code, "credited": str(credited), "target_karat": int(target["karat_value"])})
+            return entry_id, {"settlement_id": str(settlement_id), "settlement_code": sg_code, "supplier_id": str(supplier["id"]), "supplier_name": supplier.get("name"),
+                              "credited_weight": str(credited), "target_karat": int(target["karat_value"]), "analytical": str(analytical),
+                              "rounding_difference": str(difference)}
+        return self._phase2_call(book_rules.BK_DLV_SUP, trip_id, payload, entry_date, notes, request_key, _expected_actor, work,
+                                 extra_permissions=("SUPPLIER_GOLD_SETTLE",))
+
+    def book_deliver_marketer(self, trip_id, party_id, line, entry_date, notes, request_key, *, _expected_actor=None):
+        """BK_DLV_MKT: gold of this BOOK trip goes to an (ACTIVE) intermediary-role party: the book loses the line's posted equivalent p and the marketer's 21K
+        entitlement (055 account) gains exactly p. No physical weight or karat of the marketer is assumed beyond that entitlement; no cash or Scrap moves."""
+        return self._marketer_call(book_rules.BK_DLV_MKT, trip_id, party_id, line, entry_date, notes, request_key, _expected_actor)
+
+    def book_receive_marketer(self, trip_id, party_id, line, entry_date, notes, request_key, *, _expected_actor=None):
+        """BK_RECEIVE: gold comes from a marketer's 21K entitlement into this BOOK trip: the book gains the line's posted equivalent p and the entitlement loses
+        exactly p (never below zero; an inactive party may still return what it holds)."""
+        return self._marketer_call(book_rules.BK_RECEIVE, trip_id, party_id, line, entry_date, notes, request_key, _expected_actor)
+
+    def _marketer_call(self, kind, trip_id, party_id, line, entry_date, notes, request_key, expected_actor):
+        parsed = self._single_line(line, kind)
+        party_text = str(party_id or "").strip()
+        payload = [party_text, parsed["basis"], parsed["karat_id"], None if parsed["fineness"] is None else str(parsed["fineness"]), str(parsed["weight"])]
+
+        def work(connection, repository, trip, actor, now, key, digest, on_date, notes_text):
+            from repositories.marketer_custody_repository import MarketerCustodyRepository
+            marketers = self._marketers(connection) if self._marketers is not None else MarketerCustodyRepository(connection)
+            try:
+                party = marketers.party(int(party_text), lock=True)                                  # trip -> party (the marketer account lock)
+            except ValueError:
+                party = None
+            if party is None or not party["is_intermediary"]:
+                raise TripError("MARKETER_NOT_FOUND", "اختر مسوقجيًا مسجلًا.")
+            if kind == book_rules.BK_DLV_MKT and not party["is_active"]:
+                raise TripError("MARKETER_INACTIVE", "هذا المسوقجي غير نشط: لا يُسلَّم له ذهب جديد.")
+            karat_value = None
+            if parsed["basis"] == book_rules.MASTER_KARAT:
+                karat = repository.karat(parsed["karat_id"])
+                if karat is None or not karat["is_active"]:
+                    raise TripError("KARAT_NOT_FOUND", "العيار غير موجود أو غير نشط.")
+                karat_value = int(karat["karat_value"])
+            direction = book_rules.OUT if kind == book_rules.BK_DLV_MKT else book_rules.IN
+            planned = book_rules.plan_line(direction, parsed["weight"], parsed["basis"], parsed["karat_id"], karat_value, parsed["fineness"])
+            if planned.posted <= 0:
+                raise TripError("MARKETER_ZERO_EQUIVALENT", "مكافئ عيار 21 المرحَّل لهذا الوزن صفر: لا يُسجَّل استحقاق للمسوقجي بلا أثر.")
+            if kind == book_rules.BK_DLV_MKT:
+                book_rules.check_outgoing(book_rules.balance_of_rows(repository.book_lines(trip["id"], current=True)), [planned])
+            else:
+                held = Decimal(str(marketers.gold_balance(party["id"])))                               # CURRENT, every movement counted
+                if planned.posted > held:
+                    raise TripError("MARKETER_BALANCE_SHORT", f"استحقاق المسوقجي من ذهب المحل {held:,.3f} جرام عيار 21 فقط: لا يمكن استلام {planned.posted:,.3f}.")
+            entry_id, code = self._phase2_entry(repository, trip, kind, on_date, notes_text, key, digest, actor, now)
+            repository.insert_book_line(entry_id=entry_id, line_no=1, trip_id=trip["id"], kind=kind, line=planned)
+            movement = "TRIP_BOOK_IN" if kind == book_rules.BK_DLV_MKT else "TRIP_BOOK_OUT"
+            marketers.insert_gold_movement(party_id=party["id"], movement_type=movement, weight=planned.posted,
+                                           delta=planned.posted if kind == book_rules.BK_DLV_MKT else -planned.posted, trip_entry_id=entry_id, trip_entry_kind=kind)
+            if Decimal(str(marketers.gold_balance(party["id"]))) < 0:
+                raise RuntimeError("marketer gold balance below zero after a BOOK receipt")
+            self._phase2_audit(repository, actor, entry_id, code, trip, kind, now, [planned], {"party_id": party["id"], "marketer_grams": str(planned.posted)})
+            return entry_id, {"party_id": str(party["id"]), "party_name": party["name"], "marketer_grams": str(planned.posted)}
+        return self._phase2_call(kind, trip_id, payload, entry_date, notes, request_key, expected_actor, work, extra_permissions=("INTERMEDIARY_HOLDING_MANAGE",))
+
+    # ------------------------------------------------------------------ Phase 3 (059): the evidenced gain
+    def _require_sound_source(self, repository, trip_id):
+        """Inside the transaction, after the trip lock: the CURRENT source of the trip must be readable and free of blocking diagnostics, and A must not be negative. A gain is
+        the owner's proof of surplus gold, never a way to cover a defective record or an analytical deficit of the data itself; no tolerance. An ordinary shortfall that only
+        means 'the requested outgoing line exceeds the book' is NOT a defect (the book of a sound record is never negative) and is not refused here."""
+        source = repository.reconciliation_source_current(trip_id)
+        try:
+            preview = book_reconciliation.reconcile_preview(source)
+        except InvalidOperation:
+            raise TripError("GAIN_SOURCE_NOT_SOUND", "رقم مخزّن في سجل العهدة خارج نطاق التمثيل الدقيق: لا تُسجَّل زيادة على سجل غير سليم.") from None
+        problems = [(d.code, d.message) for d in preview.diagnostics if d.category in book_reconciliation.BLOCKING]
+        if preview.balance_status != book_reconciliation.FULL:
+            problems.append(("BALANCE_NOT_FULL", "الرصيد غير كامل القراءة."))
+        if preview.a_state == book_reconciliation.NEGATIVE:
+            problems.append(("A_NEGATIVE", "الرصيد التحليلي سالب: عجز في بيانات الدفتر نفسها لا تغطّيه زيادة."))
+        if problems:
+            shown = "؛ ".join(message for _, message in problems[:3])
+            error = TripError("GAIN_SOURCE_NOT_SOUND", f"لا تُسجَّل زيادة قبل معالجة سجل العهدة: {shown}")
+            error.diagnostics = [{"code": code, "message": message} for code, message in problems]
+            raise error
+
+    def book_gain(self, trip_id, line, explanation, evidence_reference, confirmed, entry_date, notes, request_key, *, _expected_actor=None):
+        """BK_GAIN «زيادة رحلة السوق — مكافئ عيار21»: the owner holds MORE gold than the trip recorded and proves it. ONE line of the surplus's OWN physical facts
+        (weight + master karat or assay in permille); its analytical equivalent is computed from those facts (never typed, never derived from the book's shortfall),
+        posted once (INDEPENDENT) and enters the trip's INPUTS. A mandatory explanation, an evidence reference (weighing / assay slip) and the owner's explicit
+        confirmation are stored in the gain record. It is never automatic, never nets a loss, moves no Scrap / cash / stock / supplier / marketer ledger, and is refused
+        after an effective reconciliation (RECONCILIATION_FINAL). Its only correction is the full reversal of the entry (CorrectionService), allowed while the
+        book stays analytically consistent and the trip is not reconciled."""
+        parsed = self._single_line(line, book_rules.BK_GAIN)
+        explanation_text = _text(explanation, GAIN_EXPLANATION_MAX, "شرح الزيادة")
+        evidence_text = _text(evidence_reference, GAIN_EVIDENCE_MAX, "مرجع الدليل")
+        if not explanation_text:
+            raise TripError("GAIN_EXPLANATION_REQUIRED", "اكتب شرح الزيادة: من أين جاء الذهب الزائد وكيف ثبت.")
+        if not evidence_text:
+            raise TripError("GAIN_EVIDENCE_REQUIRED", "اكتب مرجع الدليل (إيصال الوزن أو شهادة الفحص).")
+        if confirmed is not True:
+            raise TripError("GAIN_CONFIRM_REQUIRED", "أكّد أن الزيادة ثابتة بالوزن/الفحص المذكور وليست تغطية لعجز في الدفتر.")
+        payload = [parsed["basis"], parsed["karat_id"], _plain(parsed["fineness"]), str(parsed["weight"]), explanation_text, evidence_text]
+
+        def work(connection, repository, trip, actor, now, key, digest, on_date, notes_text):
+            self._require_sound_source(repository, trip["id"])                                   # BEFORE anything is written: a gain never covers a corrupt record
+            karat_value = None
+            if parsed["karat_id"] is not None:
+                karat = repository.karat(parsed["karat_id"])
+                if karat is None or not karat["is_active"]:
+                    raise TripError("KARAT_NOT_FOUND", "العيار غير موجود أو غير نشط.")
+                karat_value = int(karat["karat_value"])
+            planned = book_rules.plan_line(book_rules.IN, parsed["weight"], parsed["basis"], parsed["karat_id"], karat_value, parsed["fineness"])
+            entry_id, code = self._phase2_entry(repository, trip, book_rules.BK_GAIN, on_date, notes_text, key, digest, actor, now)
+            repository.insert_book_line(entry_id=entry_id, line_no=1, trip_id=trip["id"], kind=book_rules.BK_GAIN, line=planned)
+            repository.insert_gain(entry_id=entry_id, trip_id=trip["id"], explanation=explanation_text, evidence_reference=evidence_text, user_id=actor.user_id,
+                                   confirmed_at=now)
+            self._phase2_audit(repository, actor, entry_id, code, trip, book_rules.BK_GAIN, now, [planned],
+                               {"explanation": explanation_text, "evidence_reference": evidence_text, "confirmed": True})
+            return entry_id, {"gain": {"explanation": explanation_text, "evidence_reference": evidence_text}}
+        return self._phase2_call(book_rules.BK_GAIN, trip_id, payload, entry_date, notes, request_key, _expected_actor, work)
+
+    @staticmethod
+    def parse_stock_items(items):
+        """[{entry_id, line_no, grams}] of the stock items to issue: ids are integers, grams positive with three decimals at most, every item once."""
+        parsed, seen = [], set()
+        for index, item in enumerate(items or [], 1):
+            grams_text = str(item.get("grams", "") or "").strip()
+            if not grams_text:
+                continue
+            try:
+                entry_id, line_no = int(str(item.get("entry_id", "")).strip()), int(str(item.get("line_no", "")).strip())
+            except ValueError:
+                raise TripError("STOCK_ITEM_NOT_FOUND", f"البند {index}: اختر بند المخزون.") from None
+            grams = parse_weight(grams_text)
+            if grams == 0:
+                raise TripError("WEIGHT_REQUIRED", f"البند {index}: أدخل الوزن المُخرج بقيمة موجبة.")
+            if (entry_id, line_no) in seen:
+                raise TripError("STOCK_ITEM_DUPLICATE", "البند مكرر في نفس المستند.")
+            seen.add((entry_id, line_no))
+            parsed.append({"entry_id": entry_id, "line_no": line_no, "grams": grams})
+        if not parsed:
+            raise TripError("LINES_REQUIRED", "اختر بند مخزون واحدًا على الأقل والوزن المُخرج منه.")
+        if len(parsed) > MAX_LINES:
+            raise TripError("LINES_TOO_MANY", f"الحد الأقصى {MAX_LINES} بندًا في المستند الواحد.")
+        return parsed
+
+    def _single_line(self, line, kind):
+        parsed = self.parse_book_lines([line] if isinstance(line, dict) else line, kind)
+        if len(parsed) != 1:
+            raise TripError("LINE_SINGLE", "سطر ذهب واحد فقط في هذا المستند (سجّل تسليمًا آخر لسطر آخر).")
+        return parsed[0]
+
+    def _phase2_call(self, kind, trip_id, payload, entry_date, notes, request_key, expected_actor, work, extra_permissions=()):
+        session_actor = self._actor(expected_actor)
+        for right in extra_permissions:
+            if right not in session_actor.permissions:
+                raise PermissionError("لا توجد صلاحية لتنفيذ العملية.")
+        trip_number = _trip_id(trip_id)
+        on_date, notes_text, key = _entry_date(entry_date), _text(notes, NOTES_MAX, "الملاحظات"), _key(request_key)
+        digest = hashlib.sha256(json.dumps([kind, trip_number, payload, on_date.isoformat(), notes_text], ensure_ascii=False).encode()).hexdigest()
+        try:
+            return self._phase2_post(kind, session_actor, trip_number, on_date, notes_text, key, digest, work, extra_permissions)
+        except IntegrityError as exc:
+            if not _is_request_key_violation(exc):
+                raise
+            with self._transaction() as connection:                           # a twin committed first: decide from a FRESH read
+                actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+                repository = self._repository(connection)
+                prior = repository.by_request(key)
+                if prior is None:
+                    raise
+                return self._book_prior(repository, prior, kind, digest, actor)
+
+    def _phase2_post(self, kind, session_actor, trip_number, on_date, notes_text, key, digest, work, extra_permissions):
+        with self._transaction() as connection:
+            actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+            for right in extra_permissions:
+                actor = self._authorization.require_permission_for_write(connection, session_actor, right)
+            repository = self._repository(connection)
+            trip = repository.trip(trip_number, lock=True)
+            if trip is None:
+                raise TripError("TRIP_NOT_FOUND", "العهدة غير موجودة.")
+            prior = repository.by_request(key)
+            if prior is not None:
+                return self._book_prior(repository, prior, kind, digest, actor)          # the original document, before any availability is derived
+            book_rules.require_book_trip(trip)
+            if trip["status"] != OPEN:
+                raise TripError("TRIP_CLOSED", "العهدة مغلقة: أعد فتحها أولاً.")
+            reconciled = repository.effective_reconciliation_entries(trip_number)
+            if reconciled:
+                raise TripError("RECONCILIATION_FINAL", f"للعهدة تسوية معتمدة ({entry_code(trip_number, reconciled[0]['entry_no'])}): اعكسها أولًا قبل تسجيل حركة ذهب.")
+            now = repository.db_now()
+            entry_id, extra = work(connection, repository, trip, actor, now, key, digest, on_date, notes_text)
+            entry = repository.by_request(key)
+            result = {**self._book_result(repository, entry, False), **extra}
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        return result
+
+    @staticmethod
+    def _phase2_entry(repository, trip, kind, on_date, notes, key, digest, actor, now):
+        entry_no = repository.next_entry_no(trip["id"])
+        entry_id = repository.insert_entry(trip_id=trip["id"], entry_no=entry_no, kind=kind, entry_date=on_date, notes=notes, key=key, digest=digest,
+                                           actor=actor, now=now)
+        return entry_id, entry_code(trip["id"], entry_no)
+
+    @staticmethod
+    def _phase2_audit(repository, actor, entry_id, code, trip, kind, now, lines, extra):
+        posted_total = sum((l.posted for l in lines), Decimal("0.000"))
+        repository.audit(actor=actor, event_type=KIND_AUDIT[kind], entity_id=entry_id, reference=code,
+                         description=f"{KIND_TEXT[kind]} {code} — {trip_code(trip['id'])}: المكافئ المرحَّل {posted_total:,.3f} جرام عيار 21",
+                         metadata={"trip_id": trip["id"], "kind": kind, "mode": BOOK, "employee_id": actor.employee_id, "document_posted": str(posted_total),
+                                   "lines": [{"basis": l.basis, "karat": l.karat_value, "fineness": _plain(l.fineness), "weight": str(l.weight),
+                                              "analytical": str(l.analytical_evidence), "posted": str(l.posted), "difference": str(l.difference)} for l in lines],
+                                   **extra}, now=now)
+
     # ------------------------------------------------------------------ reconciliation SETTLEMENT (R2-S1, migration 057) - DISABLED unless `reconciliation_enabled`
     @property
     def reconciliation_enabled(self):
@@ -250,7 +566,7 @@ class MarketTripBookService(MarketTripService):
                 if problems:
                     raise self._not_ready(problems)
                 floor, floor_source = book_settlement.date_window(source, trip.get("created_at"))
-                _, _, settlement, digest, _, _ = book_settlement.build(source)
+                _, built_entries, settlement, digest, _, _ = book_settlement.build(source)
                 book_settlement.check_capacity(settlement)
             except (book_settlement.SettlementDataError, book_settlement.CanonicalError, InvalidOperation) as exc:
                 raise self._not_ready([("SNAPSHOT_SOURCE_INVALID", "تعذّر إعداد معاينة الاعتماد؛ راجع بيانات المصدر.")]) from exc
@@ -258,7 +574,7 @@ class MarketTripBookService(MarketTripService):
             a = format(book_settlement.a_star_evidence(settlement), "f")
             loss = book_settlement.milli_text(settlement.loss_milli)
             result = {"tripId": str(trip_number), "sourceDigest": digest,
-                      "contractVersions": dict(book_settlement.CONTRACT_VERSIONS),
+                      "contractVersions": book_settlement.versions_for(built_entries),
                       "a": a, "aUnits": str(settlement.a_star_units), "b": book_settlement.milli_text(settlement.b_star_milli),
                       "loss": loss, "rounding": book_settlement.milli_text(settlement.rounding_milli),
                       "reasonRequired": settlement.loss_milli != 0, "dateFloor": floor.isoformat(),
@@ -288,14 +604,14 @@ class MarketTripBookService(MarketTripService):
         digest_text = str(source_digest or "")
         if not book_settlement.is_digest(digest_text):
             raise TripError("DIGEST_INVALID", "بصمة المصدر غير صالحة: أعد فتح معاينة التسوية.")
-        book_settlement.clean_versions(contract_versions)
+        versions = book_settlement.clean_versions(contract_versions)
         confirmed = book_settlement.clean_confirmations(confirmations)
         reason, note_text = book_settlement.clean_reason(reason_code, note)
         marker = book_settlement.clean_date_input(effective_date)
         key = _key(request_key)
-        request_digest = book_settlement.request_hash(trip_number, digest_text, marker, reason, note_text, confirmed)
+        request_digest = book_settlement.request_hash(trip_number, digest_text, marker, reason, note_text, confirmed, versions)
         try:
-            return self._post_reconciliation(session_actor, trip_number, digest_text, marker, reason, note_text, confirmed, key, request_digest)
+            return self._post_reconciliation(session_actor, trip_number, digest_text, marker, reason, note_text, confirmed, key, request_digest, versions)
         except IntegrityError as exc:
             if not _is_request_key_violation(exc):
                 raise
@@ -338,6 +654,126 @@ class MarketTripBookService(MarketTripService):
                 "source_digest": row["source_digest"], "snapshot_digest": row["snapshot_digest"], "entry_count": int(row["entry_count"]), "line_count": int(row["line_count"]),
                 "reversed_count": int(row["reversed_count"])}
 
+    # ------------------------------------------------------------------ Phase 3: closure of a BOOK trip (called by `close` inside its transaction, trip row locked)
+    def _book_closure(self, repository, trip):
+        """R2 contract §1.5 / §6: the trip closes only on an effective reconciliation whose record still matches the LIVE source, re-verified here under the trip lock
+        with CURRENT locking reads (never trusted from a screen or from the digest alone), and with the trip's cash at exactly zero. The reconciliation itself
+        settles the book (B* - L - r = 0): the historical source lines are neither required to be zero nor touched. Independent balances (a marketer's
+        entitlement, stock returned to the shop, a supplier's credit) are NOT closure conditions. Refusals: RECONCILIATION_REQUIRED (none effective),
+        RECONCILIATION_MISMATCH (more than one, a record that fails its own verification, or a live source that differs from the record), OUTSTANDING_CUSTODY
+        (cash). Returns the audit metadata of the closure."""
+        trip_id = int(trip["id"])
+        effective = repository.effective_reconciliation_entries(trip_id)
+        if not effective:
+            raise TripError("RECONCILIATION_REQUIRED", "لا تُغلق العهدة الدفترية قبل اعتماد تسوية رصيدها الدفتري (مطابقة العهدة ← اعتماد التسوية).")
+        if len(effective) != 1:
+            raise self._mismatch(["MORE_THAN_ONE_EFFECTIVE"], "للعهدة أكثر من تسوية فعّالة: لا يمكن الإغلاق قبل مراجعة السجل.")
+        entry_id = int(effective[0]["id"])
+        row = repository.reconciliation_of_entry(entry_id)
+        if row is None:
+            raise self._mismatch(["RECORD_MISSING"], "مستند التسوية بلا سجل محفوظ: لا يمكن الإغلاق.")
+        problems = list(book_settlement.verify_record(row))
+        source = repository.reconciliation_source_current(trip_id)
+        try:
+            preview = book_reconciliation.reconcile_preview(source)
+            blocking = book_settlement.readiness_problems(preview)
+            _, entries, settlement, live_digest, live_snapshot, _ = book_settlement.build(source)
+        except (book_settlement.SettlementDataError, book_settlement.SettlementIntegrityError, book_settlement.CanonicalError, InvalidOperation):
+            raise self._mismatch(problems + ["LIVE_SOURCE_INVALID"], "تعذّر إعادة بناء مصدر التسوية من السجلات الحالية: لا يمكن الإغلاق.") from None
+        if blocking:
+            problems += [code for code, _ in blocking]
+        if live_digest != row["source_digest"]:
+            problems.append("SOURCE_DIGEST_CHANGED")
+        columns = {"a_star_units": str(settlement.a_star_units), "b_star": book_settlement.milli_text(settlement.b_star_milli),
+                   "loss_posted": book_settlement.milli_text(settlement.loss_milli), "rounding_settlement": book_settlement.milli_text(settlement.rounding_milli),
+                   "entry_count": str(settlement.entry_count), "line_count": str(settlement.line_count), "reversed_count": str(settlement.reversed_count)}
+        for column, value in columns.items():
+            if Decimal(str(row[column])) != Decimal(value):
+                problems.append(f"LIVE_{column.upper()}_CHANGED")
+        try:
+            stored = book_settlement.parse_snapshot(row["snapshot"])
+            if stored.get("entries") != live_snapshot["entries"] or stored.get("source_algorithm") != live_snapshot["source_algorithm"]:
+                problems.append("SNAPSHOT_DIFFERS_FROM_LIVE")
+        except (ValueError, TypeError, AttributeError):
+            problems.append("SNAPSHOT_UNREADABLE")
+        if problems:
+            raise self._mismatch(problems, "سجل التسوية لا يطابق مستندات العهدة الحالية: اعكس التسوية وراجع المستندات ثم اعتمد تسوية جديدة قبل الإغلاق.")
+        cash = custody_rules.cash_rows_outstanding(repository.custody_cash(trip_id, current=True))
+        if cash != 0:
+            raise TripError("OUTSTANDING_CUSTODY", f"نقدية العهدة {cash:,.2f} ج: أرجعها إلى الخزنة أو سوِّها قبل الإغلاق (الإغلاق يحتاج نقدية صفر).")
+        return {"mode": BOOK, "reconciliation_entry_id": entry_id, "reconciliation_code": entry_code(trip_id, effective[0]["entry_no"]),
+                "generation": int(row["generation"]), "source_digest": row["source_digest"], "snapshot_digest": row["snapshot_digest"],
+                "loss_posted": str(row["loss_posted"]), "rounding_settlement": str(row["rounding_settlement"])}
+
+    def book_report(self, date_from, date_to, *, _expected_actor=None):
+        """READ ONLY detail report of reconciliations (analytical and posted loss, rounding settlement, reason) and evidenced gains inside an inclusive range of EFFECTIVE
+        dates, each row with its recording time, trip, document reference and - when reversed - the reversal state. Reversed documents stay listed with their state.
+        The provisional totals count EFFECTIVE (not reversed) rows only, by effective date, and are labelled provisional: whether a reversal moves a row between
+        periods is an OPEN owner decision, so nothing here rewrites any period."""
+        actor = self._actor(_expected_actor)
+        low, high = _entry_date(date_from), _entry_date(date_to)
+        if low > high:
+            raise TripError("RANGE_INVALID", "تاريخ البداية بعد تاريخ النهاية.")
+        with self._transaction() as connection:
+            self._authorization.require_permission_read(connection, actor, PERMISSION)
+            raw = self._repository(connection).book_report_rows(low.isoformat(), high.isoformat())
+            if not self._session.is_current(actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        zero = Decimal("0.000")
+
+        def what(row):
+            return f"عيار {row['karat_value']}" if row["basis"] == book_rules.MASTER_KARAT else f"عيار فعلي {row['fineness_permille']}"
+        reconciliations = [{"entry_id": str(r["entry_id"]), "trip_id": str(r["trip_id"]), "trip_code": trip_code(r["trip_id"]), "code": entry_code(r["trip_id"], r["entry_no"]),
+                            "effective_date": r["entry_date"], "recorded_at": r["confirmed_at"], "generation": int(r["generation"]), "analytical": Decimal(str(r["a_star"])),
+                            "posted": Decimal(str(r["b_star"])), "loss": Decimal(str(r["loss_posted"])), "rounding": Decimal(str(r["rounding_settlement"])),
+                            "reason_code": r["reason_code"], "reason": book_settlement.REASONS.get(r["reason_code"], ""), "note": r["note"] or "",
+                            "confirmed_by": r.get("confirmed_by") or "", "reversed": r["reversal_id"] is not None,
+                            "reversal_reason": r.get("reversal_reason") or "", "reversal_at": r.get("reversal_at")} for r in raw["reconciliations"]]
+        gains = [{"entry_id": str(g["entry_id"]), "trip_id": str(g["trip_id"]), "trip_code": trip_code(g["trip_id"]), "code": entry_code(g["trip_id"], g["entry_no"]),
+                  "effective_date": g["entry_date"], "recorded_at": g["confirmed_at"], "weight": Decimal(str(g["weight_grams"])), "what": what(g),
+                  "posted": Decimal(str(g["eq21_posted"])), "analytical": Decimal(str(g["eq21_analytical"])), "explanation": g["explanation"],
+                  "evidence_reference": g["evidence_reference"], "confirmed_by": g.get("confirmed_by") or "", "reversed": g["reversal_id"] is not None,
+                  "reversal_reason": g.get("reversal_reason") or "", "reversal_at": g.get("reversal_at")} for g in raw["gains"]]
+        effective_r, effective_g = [r for r in reconciliations if not r["reversed"]], [g for g in gains if not g["reversed"]]
+        return {"from": low.isoformat(), "to": high.isoformat(), "reconciliations": reconciliations, "gains": gains,
+                "provisional_totals": {"loss_posted": sum((r["loss"] for r in effective_r), zero), "rounding_settlement": sum((r["rounding"] for r in effective_r), zero),
+                                       "analytical": sum((r["analytical"] for r in effective_r), zero), "gain_posted": sum((g["posted"] for g in effective_g), zero),
+                                       "effective_reconciliations": len(effective_r), "effective_gains": len(effective_g),
+                                       "reversed_listed": len(reconciliations) - len(effective_r) + len(gains) - len(effective_g)}}
+
+    @staticmethod
+    def _mismatch(problems, message):
+        error = TripError("RECONCILIATION_MISMATCH", message)
+        error.diagnostics = sorted(set(problems))
+        return error
+
+    def closure_preview(self, trip_id, *, _expected_actor=None):
+        """READ ONLY: whether «إغلاق العهدة» would pass now, and why not, in plain Arabic (plain snapshot reads, nothing locked or written). The posting re-checks
+        everything under the trip lock; this answer is only guidance for the screen."""
+        actor = self._actor(_expected_actor)
+        trip_number = _trip_id(trip_id)
+        with self._transaction() as connection:
+            self._authorization.require_permission_read(connection, actor, PERMISSION)
+            repository = self._repository(connection)
+            trip = repository.trip(trip_number)
+            if trip is None:
+                raise TripError("TRIP_NOT_FOUND", "العهدة غير موجودة.")
+            book_rules.require_book_trip(trip)
+            blockers = []
+            if trip["status"] != OPEN:
+                blockers.append({"code": "TRIP_ALREADY_CLOSED", "message": "العهدة مغلقة بالفعل."})
+            effective = [e for e in repository.reconciliation_source(trip_number)["entries"]
+                         if e["entry_kind"] == book_rules.BK_RECON and e.get("correction_id") is None]
+            if not effective:
+                blockers.append({"code": "RECONCILIATION_REQUIRED", "message": "لم تُعتمد تسوية للرصيد الدفتري بعد."})
+            cash = custody_rules.cash_rows_outstanding(repository.custody_cash(trip_number, current=False))
+            if cash != 0:
+                blockers.append({"code": "OUTSTANDING_CUSTODY", "message": f"نقدية العهدة {cash:,.2f} ج يجب أن تصبح صفرًا (رجوع إلى الخزنة)."})
+            if not self._session.is_current(actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        return {"tripId": str(trip_number), "status": trip["status"], "ready": not blockers, "blockers": blockers,
+                "note": "عند الإغلاق يُعاد التحقق من سجل التسوية ومطابقته للمستندات الحالية تحت القفل."}
+
     @staticmethod
     def _not_ready(problems):
         shown = "؛ ".join(message for _, message in problems[:3])
@@ -345,7 +781,7 @@ class MarketTripBookService(MarketTripService):
         error.diagnostics = [{"code": code, "message": message} for code, message in problems]
         return error
 
-    def _post_reconciliation(self, session_actor, trip_number, digest_text, marker, reason, note_text, confirmed, key, request_digest):
+    def _post_reconciliation(self, session_actor, trip_number, digest_text, marker, reason, note_text, confirmed, key, request_digest, versions=None):
         """ONE transaction: permission (re-checked, current session) -> trip row lock -> replay -> mode / status / effectiveness -> generation -> the five CURRENT locked reads ->
         readiness, digest, evidence, capacity and policy -> the entry, the record and the audit row -> the session check. Any failure rolls everything back."""
         with self._transaction() as connection:
@@ -379,7 +815,10 @@ class MarketTripBookService(MarketTripService):
                 raise self._not_ready([("SNAPSHOT_SOURCE_INVALID", f"تعذّر بناء لقطة التسوية من بيانات المصدر ({exc}).")]) from None
             except (book_settlement.CanonicalError, InvalidOperation):
                 raise self._not_ready([("SNAPSHOT_SOURCE_INVALID", "المصدر يحتوي قيمة لا يمكن حفظها بدقة في لقطة التسوية.")]) from None
-            book_settlement.match_preview(settlement, preview)                              # the integer computation must agree with R1 (a mismatch is a defect: it raises)
+            book_settlement.match_preview(settlement, preview)
+            versions = dict(versions or book_settlement.CONTRACT_VERSIONS)
+            if book_settlement.versions_for(entries) != versions:                          # the trip's content demands the other format: the preview is stale
+                raise TripError("RECONCILIATION_CONTRACT_MISMATCH", "تغيّر نوع مستندات العهدة منذ عرض المعاينة (إصدار عقد التسوية): أعد فتح المعاينة.")                              # the integer computation must agree with R1 (a mismatch is a defect: it raises)
             if source_digest != digest_text:
                 raise TripError("RECONCILIATION_STALE", "تغيّرت مستندات العهدة منذ عرض المعاينة: أعد فتح المعاينة وراجع الأرقام قبل الاعتماد.")
             book_settlement.check_capacity(settlement, generation)
@@ -401,7 +840,7 @@ class MarketTripBookService(MarketTripService):
                 delta_units=settlement.delta_units, rho_units=settlement.rho_units, sum_abs_units=settlement.sum_abs_units, entry_count=settlement.entry_count,
                 line_count=settlement.line_count, reversed_count=settlement.reversed_count, source_digest=source_digest, snapshot_digest=snapshot_digest,
                 snapshot_text=snapshot_text, reason_code=reason, note=note_text, user_id=actor.user_id, confirmed_at=now, algorithm=book_settlement.RECON_ALGORITHM,
-                source_algorithm=book_settlement.SOURCE_ALGORITHM, snapshot_format=book_settlement.SNAPSHOT_FORMAT, unit_denominator=book_settlement.UNITS_PER_GRAM)
+                source_algorithm=versions["source_algorithm"], snapshot_format=versions["snapshot_format"], unit_denominator=book_settlement.UNITS_PER_GRAM)
             code = entry_code(trip_number, entry_no)
             a_text, loss_text = format(a_star, "f"), book_settlement.milli_text(settlement.loss_milli)
             repository.audit(actor=actor, event_type=KIND_AUDIT[book_rules.BK_RECON], entity_id=entry_id, reference=code,
@@ -412,7 +851,7 @@ class MarketTripBookService(MarketTripService):
                                        "b_star": book_settlement.milli_text(settlement.b_star_milli), "loss_posted": loss_text,
                                        "rounding_settlement": book_settlement.milli_text(settlement.rounding_milli), "delta_units": str(settlement.delta_units),
                                        "rho_units": str(settlement.rho_units), "source_digest": source_digest, "snapshot_digest": snapshot_digest,
-                                       "contract_versions": dict(book_settlement.CONTRACT_VERSIONS), "reason_code": reason, "note": note_text,
+                                       "contract_versions": dict(versions), "reason_code": reason, "note": note_text,
                                        "confirmations": dict(confirmed), "confirmation_texts": book_settlement.confirmation_texts(a_text, loss_text, settlement.a_star_units),
                                        "entry_count": settlement.entry_count, "line_count": settlement.line_count, "reversed_count": settlement.reversed_count}, now=now)
             entry = repository.by_request(key)

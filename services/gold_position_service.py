@@ -13,6 +13,13 @@ arrives. Lots are additionally checked to appear in ONE place only (a conflict b
 same Eq21 definition as a melt analysis). A gram whose assay is unknown (a legacy receipt piece, an unassayed residue) is NEVER
 inferred: it is listed in physical grams and reported apart as «غير محسوب» and is not in any 21K figure.
 
+BOOK trips (056): an open BOOK trip's gold is ONE number, its book balance, counted ONCE here as «رصيد دفتري - قبل التسوية النهائية»: the POSTED balance (the sum of the stored posted
+amounts, which may differ from the analytical balance by the posting drift, shown apart as rounding evidence, never as loss or gain) is in the 21K total, its physical grams are
+«غير محدد» and are NOT in any physical-grams total. With an EFFECTIVE reconciliation document (BK_RECON, 057) the trip counts B - b_star (stored record values; zero while the source
+still matches it); the effect -b_star = -L - r is reported split into its loss and rounding parts; a reversed reconciliation simply stops counting; an inconsistent one refuses the
+whole read (`GoldPositionError`), never a zero. Assayed gold that returned to the shop from a BOOK trip is a shop part of its own (physical grams + its stored posted amount, with the
+analytical value of what remains beside it); the gram left the book exactly when it entered that stock, so nothing is counted twice.
+
 Strict separation: supplier payables / receivables are never read, shown or netted here. Cash (including the marketer's cash) is out of scope (gold only).
 Every custody balance of EVERY trip is derived (no list limit): a total is never silently truncated. The custody gold / lots come from two display-only aggregations
 (`custody_gold_by_trip`, `custody_lots_by_trip`: fixed number of queries, NO locking reads) so the whole read is ONE snapshot; the locking `custody_gold` / `custody_lots`
@@ -23,11 +30,13 @@ MANAGEMENT_REVIEW + MARKET_TRIP_MANAGE + INTERMEDIARY_HOLDING_VIEW: a partial to
 """
 from contextlib import contextmanager
 from decimal import ROUND_HALF_UP, Decimal, localcontext
+from fractions import Fraction
 
 from repositories.inventory_repository import InventoryRepository
 from repositories.intermediary_holding_repository import IntermediaryHoldingRepository
 from repositories.market_trip_repository import MarketTripRepository
 from repositories.marketer_custody_repository import MarketerCustodyRepository
+from services import book_rules
 from services.authorization_service import AuthorizationService
 from services.market_trip_service import custody_view
 
@@ -40,6 +49,59 @@ DESIGNATION_TEXT = {"MELT": "للسبك", "LOGO": "لوجو", "UNCLASSIFIED": "�
 
 class _Discard(Exception):
     pass
+
+
+class GoldPositionError(ValueError):
+    """The position cannot be shown as a trustworthy total (an inconsistent BOOK reconciliation): the whole read is refused with an Arabic reason, never a zeroed figure."""
+
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
+UNITS_PER_GRAM = 26_250_000                                 # the exact lattice of the reconciliation record (057): a_star_units are whole numbers of 1/26,250,000 g
+
+
+def merge_reconciliations(book_groups, reconciliations):
+    """The BOOK trips of the position with their EFFECTIVE reconciliation (057), checked before anything is summed.
+
+    book_groups      {trip_id: grouped effective source lines} (`book_groups_by_trip`)
+    reconciliations  the effective BK_RECON entries with their stored record (`effective_reconciliations_display`)
+
+    A trip contributes its posted source balance B; with an effective reconciliation it contributes B - b_star (STORED in the record, never re-derived). Refused with
+    GoldPositionError (never shown as a zero): a missing / invalid record, a record that does not belong to its entry, trip or mode, two effective reconciliations of one trip,
+    loss + rounding != b_star, and a source balance that no longer matches the record exactly (posted B != b_star, or analytical A != a_star_units on the lattice).
+    Limits: the record's snapshot is not re-verified here (only its stored figures against the live aggregated source)."""
+    by_trip = {}
+    for r in reconciliations:
+        code = f"MT{int(r['trip_id']):06d}-{int(r['entry_no'])}"
+        if r.get("record_entry_id") is None:
+            raise GoldPositionError("RECONCILIATION_RECORD_MISSING", f"مستند التسوية {code} بلا سجل تسوية مكتمل: لا يُعرض إجمالي موثوق لموضع الذهب.")
+        if (int(r["record_entry_id"]) != int(r["entry_id"]) or r.get("entry_kind") != book_rules.BK_RECON or r.get("record_kind") != book_rules.BK_RECON
+                or r.get("trip_mode") != book_rules.BOOK or r.get("record_mode") != book_rules.BOOK or int(r["record_trip_id"]) != int(r["trip_id"])):
+            raise GoldPositionError("RECONCILIATION_RECORD_INVALID", f"سجل التسوية {code} لا يطابق قيده أو رحلته أو نمطها: لا يُعرض إجمالي موثوق.")
+        try:
+            b_star, loss, rounding = _dec(r["b_star"]), _dec(r["loss_posted"]), _dec(r["rounding_settlement"])
+            units = int(_dec(r["a_star_units"]))
+            if r["b_star"] is None or r["loss_posted"] is None or r["rounding_settlement"] is None or r["a_star_units"] is None or _dec(r["a_star_units"]) != units:
+                raise ValueError
+        except (ValueError, ArithmeticError):
+            raise GoldPositionError("RECONCILIATION_RECORD_INVALID", f"أرقام سجل التسوية {code} ناقصة أو غير صالحة: لا يُعرض إجمالي موثوق.") from None
+        if loss + rounding != b_star:
+            raise GoldPositionError("RECONCILIATION_RECORD_INVALID", f"سجل التسوية {code}: الفاقد المرحّل + فرق التقريب لا يساوي الرصيد المرحّل المسوّى.")
+        trip = int(r["trip_id"])
+        if trip in by_trip:
+            raise GoldPositionError("RECONCILIATION_DUPLICATE", f"للرحلة MT{trip:06d} أكثر من تسوية فعّالة ({by_trip[trip]['code']} و{code}): لا يُعرض إجمالي موثوق.")
+        by_trip[trip] = {"entry_id": str(r["entry_id"]), "code": code, "generation": int(r["generation"]), "b_star": b_star, "loss": loss, "rounding": rounding,
+                         "a_star_units": units}
+    out = []
+    for trip in sorted(set(book_groups) | set(by_trip)):
+        balance = book_rules.balance_of_groups(book_groups.get(trip, []))
+        recon = by_trip.get(trip)
+        if recon is not None and (balance.posted != recon["b_star"] or balance.analytical_open * UNITS_PER_GRAM != recon["a_star_units"]):
+            raise GoldPositionError("RECONCILIATION_SOURCE_MISMATCH", f"رصيد مصدر الرحلة MT{trip:06d} لا يطابق تسويتها الفعّالة {recon['code']}: لا يُعرض إجمالي موثوق.")
+        out.append({"id": trip, "code": f"MT{trip:06d}", "balance": balance, "reconciliation": recon})
+    return out
 
 
 @contextmanager
@@ -109,7 +171,7 @@ class _Bucket:
         return {"grams": _q(self.grams), "eq21": _q(self.eq21), "unknown_grams": _q(self.unknown)}
 
 
-def build_position(*, scrap, shop_lots, receipt_stock, inventory, returned_pending, trips, pools, logo_pools, marketer_gold=()):
+def build_position(*, scrap, shop_lots, receipt_stock, inventory, returned_pending, trips, pools, logo_pools, marketer_gold=(), book_trips=(), assayed_stock=()):
     """Pure aggregation of already-fetched rows (the service reads, this derives; it is unit-tested with plain rows).
 
     scrap              rows of vw_old_gold_available (karat_value, physical_grams, held_grams, available_grams)
@@ -120,10 +182,12 @@ def build_position(*, scrap, shop_lots, receipt_stock, inventory, returned_pendi
     trips              [{"code", "status", "custody": custody_view(...)}] (only gold / lots are read)
     pools / logo_pools open holding pools (balance > 0)
     marketer_gold      [{party_id, party_name, balance}] the 21K physical grams of each marketer account (055), from its signed ledger
+    book_trips         [{"id", "code", "status", "balance": book_rules.Balance}] the open BOOK trips' book balances (056); counted once, physical grams unspecified
+    assayed_stock      assayed return stock items (entry_id, line_no, code, trip_id, fineness_permille, grams, posted) still in the shop (056)
     """
     shop, custody, intermediary = _Bucket(), _Bucket(), _Bucket()
     holding_part, marketer_part = _Bucket(), _Bucket()
-    parts = {"scrap": _Bucket(), "lots": _Bucket(), "receipts": _Bucket(), "inventory": _Bucket(), "returned": _Bucket()}
+    parts = {"scrap": _Bucket(), "lots": _Bucket(), "receipts": _Bucket(), "inventory": _Bucket(), "returned": _Bucket(), "assayed": _Bucket()}
     lot_places, warnings = {}, []
 
     def place(lot_id, where):
@@ -166,11 +230,24 @@ def build_position(*, scrap, shop_lots, receipt_stock, inventory, returned_pendi
             eq = eq21_karat(weight, r["karat_value"])
             inventory_rows.append({"status": kind, "karat": int(r["karat_value"]), "grams": _grams(weight), "eq21": _q(eq)})
             bucket.add(weight, eq)
+    assayed_rows = []
+    for r in assayed_stock:                                                    # 056: physical grams + the STORED posted amount; the analytical value of what remains is beside it
+        grams, posted = _dec(r["grams"]), _dec(r["posted"])
+        if grams == 0 and posted == 0:
+            continue
+        if grams == 0:                                                          # a posted amount without gold would break the ledger's own invariant: shown, never netted
+            warnings.append({"code": "STOCK_POSTED_WITHOUT_GRAMS", "item": f"{r['entry_id']}:{r['line_no']}", "posted": _q(posted)})
+            continue
+        analytical = book_rules.analytical(grams, book_rules.FINENESS, None, _dec(r["fineness_permille"]))
+        assayed_rows.append({"item": f"{r['entry_id']}:{r['line_no']}", "code": r.get("code") or "", "trip_id": str(r.get("trip_id") or ""),
+                             "fineness": _dec(r["fineness_permille"]), "grams": _grams(grams), "eq21": _q(posted),
+                             "analytical": book_rules.evidence(analytical), "rounding": book_rules.evidence(Fraction(posted) - analytical)})
+        parts["assayed"].add(grams, posted)
     for bucket in parts.values():
         shop.grams += bucket.grams
         shop.eq21 += bucket.eq21
         shop.unknown += bucket.unknown
-    out["shop"] = {"scrap": scrap_rows, "lots": lot_rows, "receipts": receipt_rows, "inventory": inventory_rows,
+    out["shop"] = {"scrap": scrap_rows, "lots": lot_rows, "receipts": receipt_rows, "inventory": inventory_rows, "assayed": assayed_rows,
                    "parts": {name: bucket.as_row() for name, bucket in parts.items()}, **shop.as_row()}
 
     # ---- CUSTODY (outstanding only; a settled trip has nothing to show)
@@ -199,6 +276,28 @@ def build_position(*, scrap, shop_lots, receipt_stock, inventory, returned_pendi
         if gold_rows or lots:
             trip_rows.append({"trip_id": str(t["id"]), "code": t["code"], "status": t["status"], "gold": gold_rows, "lots": lots})
     out["custody"] = {"trips": trip_rows, **custody.as_row()}
+
+    # ---- BOOK trips (056): ONE number per trip, counted once; the physical grams are unspecified and in no physical total
+    # With an EFFECTIVE reconciliation (057) a trip contributes B - b_star (the stored record): the approval's effect on the position is -b_star = -L - r, split below
+    # into the posted loss part and the rounding-settlement part (r is neither loss nor gain). Its status (OPEN / CLOSED) never removes anything by itself.
+    book_eq21, book_rows, settled, loss_effect, rounding_effect = ZERO, [], [], ZERO, ZERO
+    for t in book_trips:
+        balance, recon = t["balance"], t.get("reconciliation")
+        if recon is not None:
+            loss_effect -= recon["loss"]
+            rounding_effect -= recon["rounding"]
+            settled.append({"trip_id": str(t["id"]), "code": recon["code"], "generation": recon["generation"], "source_eq21": _q(balance.posted),
+                            "a_star": book_rules.evidence(Fraction(recon["a_star_units"], UNITS_PER_GRAM)), "b_star": _q(recon["b_star"]), "loss_effect": _q(ZERO - recon["loss"]), "rounding_effect": _q(ZERO - recon["rounding"])})
+        contribution = balance.posted - (recon["b_star"] if recon is not None else ZERO)
+        remaining_analytical = balance.analytical_open - (Fraction(recon["a_star_units"], UNITS_PER_GRAM) if recon is not None else 0)
+        if contribution == 0 and remaining_analytical == 0:
+            continue
+        book_eq21 += contribution
+        book_rows.append({"trip_id": str(t["id"]), "code": t["code"], "status": t["status"], "eq21": _q(contribution),
+                          "analytical": book_rules.evidence(remaining_analytical), "drift": book_rules.evidence(Fraction(contribution) - remaining_analytical),
+                          "label": "رصيد دفتري — قبل التسوية النهائية" if recon is None else "رصيد دفتري — بعد التسوية المعتمدة"})
+    out["book"] = {"trips": book_rows, "eq21": _q(book_eq21), "physical": "غير محدد",
+                   "reconciliations": settled, "reconciliation_effect": {"loss": _q(loss_effect), "rounding": _q(rounding_effect), "total": _q(loss_effect + rounding_effect)}}
 
     # ---- INTERMEDIARY holdings (still shop-owned)
     parties = {}
@@ -244,9 +343,9 @@ def build_position(*, scrap, shop_lots, receipt_stock, inventory, returned_pendi
         if len(where) > 1:
             warnings.append({"code": "LOT_IN_SEVERAL_PLACES", "lot_id": lot_id, "places": where})
 
-    total = {"grams": shop.grams + custody.grams + intermediary.grams, "eq21": shop.eq21 + custody.eq21 + intermediary.eq21,
+    total = {"grams": shop.grams + custody.grams + intermediary.grams, "eq21": shop.eq21 + custody.eq21 + intermediary.eq21 + book_eq21,
              "unknown": shop.unknown + custody.unknown + intermediary.unknown}
-    out["summary"] = {"shop_eq21": _q(shop.eq21), "custody_eq21": _q(custody.eq21), "intermediary_eq21": _q(intermediary.eq21),
+    out["summary"] = {"shop_eq21": _q(shop.eq21), "custody_eq21": _q(custody.eq21), "intermediary_eq21": _q(intermediary.eq21), "book_eq21": _q(book_eq21),
                       "total_eq21": _q(total["eq21"]), "total_grams": _q(total["grams"]), "unknown_grams": _q(total["unknown"]),
                       "unknown_in_shop": _q(shop.unknown), "unknown_in_custody": _q(custody.unknown),
                       "unknown_with_intermediary": _q(intermediary.unknown)}
@@ -282,15 +381,20 @@ class GoldPositionService:
                 marketers = self._marketers(connection)                    # the SAME connection / snapshot as every other source
                 # ONE snapshot, no locks: eight aggregate queries whatever the number of trips (never a query per trip, never the cash or a document history)
                 gold_by_trip, lots_by_trip = trips_repo.custody_gold_by_trip(), trips_repo.custody_lots_by_trip()
-                trips = []
-                for row in trips_repo.all_trip_ids():                       # EVERY trip: no list limit on a physical total
+                trips, trip_rows = [], trips_repo.all_trip_ids()
+                for row in trip_rows:                                       # EVERY trip: no list limit on a physical total
                     custody = custody_view(("0.00", "0.00"), gold_by_trip.get(int(row["id"]), []), lots_by_trip.get(int(row["id"]), []), trip_id=row["id"])
                     if any(_dec(g["outstanding"]) != 0 for g in custody["gold"]) or custody["lots"]:
                         trips.append({"id": row["id"], "code": f"MT{int(row['id']):06d}", "status": row["status"], "custody": custody})
+                book_groups, statuses = trips_repo.book_groups_by_trip(), {int(r["id"]): r["status"] for r in trip_rows}
+                # the effective reconciliations come from the SAME snapshot as the source lines; an inconsistency refuses the whole read (GoldPositionError)
+                book_trips = [{**t, "status": statuses.get(t["id"], "OPEN")} for t in merge_reconciliations(book_groups, trips_repo.effective_reconciliations_display())]
+                stock = [{**i, "code": f"MT{int(i['trip_id']):06d}-{int(i['entry_no'])}"} for i in trips_repo.assayed_stock_items()]
                 result = build_position(
                     scrap=trips_repo.shop_scrap(), shop_lots=trips_repo.shop_lots(), receipt_stock=holdings.receipt_stock(),
                     inventory=inventory.get_stock_weight_by_karat(), returned_pending=inventory.get_returned_pending_weight_by_karat(),
-                    trips=trips, pools=holdings.open_pools(), logo_pools=holdings.logo_open_pools(), marketer_gold=marketers.party_gold_balances())
+                    trips=trips, pools=holdings.open_pools(), logo_pools=holdings.logo_open_pools(), marketer_gold=marketers.party_gold_balances(),
+                    book_trips=book_trips, assayed_stock=stock)
                 raise _Discard(result)
         except _Discard as done:
             return done.args[0]

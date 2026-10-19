@@ -197,6 +197,34 @@ class HoldingCustodyPageTests(GoldSettlePageTests):
                 self.click("cancelCustodyLogoHoldButton")
                 self.closed("tripLogoHoldDialog")
 
+    def reverse_button_of(self, kind):
+        """The reverse button of the ONE entry of `kind` (LOT_HOLD / LOGO_HOLD). The entries are listed newest-first (since e7922e2), so the position is derived from the
+        view model's own entry list - never from a fixed index - and the button is checked to belong to that entry (its reference is printed beside the button)
+        before anything is clicked. Returns (button, entry)."""
+        entries = [e for e in self.tvm.detail["entries"] if e.get("canReverse") is True]
+        targets = [e for e in entries if e["kind"] == kind]
+        self.assertEqual(len(targets), 1, f"exactly one reversible {kind} entry expected")
+        entry = targets[0]
+        buttons = self.reverse_buttons()
+        self.assertEqual(len(buttons), len(entries))                              # one button per reversible entry, in the same (newest-first) order
+        button = buttons[entries.index(entry)]
+        texts = []
+
+        def collect(node):
+            if str(node.property("text") or "") != "" and node.objectName() != "reverseEntryButton":
+                texts.append(str(node.property("text")))
+            for child in self.child_items(node):
+                collect(child)
+        collect(button.parentItem())                                              # the delegate row of the button: its labels carry the entry reference
+        label = " ".join(texts).replace("⁦", "").replace("⁩", "")
+        self.assertIn(entry["code"], label, "the selected button belongs to another entry")
+        self.assertIn(entry["kindText"], label)
+        return button, entry
+
+    def assert_reason_dialog_targets(self, entry):
+        dialog = self.item("tripReasonDialog")
+        self.assertEqual((dialog.property("targetId"), dialog.property("targetCode")), (entry["id"], entry["code"]))
+
     def test_reversing_a_logo_handover_from_the_custody_page_restores_the_stored_grams(self):
         trip = self.prepare_logo()
         self.open_logo_hold()
@@ -205,10 +233,11 @@ class HoldingCustodyPageTests(GoldSettlePageTests):
         self.wait_until(lambda: len(self.db.logo_docs) == 1, "posted")
         self.closed("tripLogoHoldDialog")
         self.wait_idle()
-        buttons = self.reverse_buttons()
-        self.reveal(buttons[-1])
-        self.click(buttons[-1])
+        button, entry = self.reverse_button_of("LOGO_HOLD")
+        self.reveal(button)
+        self.click(button)
         self.wait_until(lambda: self.item("tripReasonDialog").property("opened"), "reversal dialog")
+        self.assert_reason_dialog_targets(entry)
         self.type_in("tripReasonField", "تسليم بالخطأ")
         self.click("confirmTripReasonButton")
         self.wait_until(lambda: len(self.db.corrections) == 1, "reversed")
@@ -258,11 +287,12 @@ class HoldingCustodyPageTests(GoldSettlePageTests):
         self.closed("tripLotHoldDialog")
         self.wait_idle()
         reloads = self.stub.reloads
-        buttons = self.reverse_buttons()
-        self.assertEqual(len(buttons), 3)                                         # issue, melt and the handover
-        self.reveal(buttons[-1])
-        self.click(buttons[-1])
+        self.assertEqual(len(self.reverse_buttons()), 3)                          # issue, melt and the handover
+        button, entry = self.reverse_button_of("LOT_HOLD")
+        self.reveal(button)
+        self.click(button)
         self.wait_until(lambda: self.item("tripReasonDialog").property("opened"), "reversal dialog")
+        self.assert_reason_dialog_targets(entry)
         self.assertIn("تعويض", self.text("tripReasonNote"))
         self.assertFalse(self.item("confirmTripReasonButton").property("enabled"))
         self.type_in("tripReasonField", "تسليم بالخطأ")

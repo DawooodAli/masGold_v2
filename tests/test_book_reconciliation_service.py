@@ -57,9 +57,9 @@ class ServiceTests(PreviewCase):
         self.assertTrue(view["complete"] and view["trustworthy"])
         self.assertEqual((view["entryCount"], view["lineCount"], view["status"]), (2, 2, "OPEN"))
         self.assertEqual(view["cashOutstanding"], "0.00")
-        with self.assertRaises(TripError) as closing:                                         # a good preview never opens the closure
+        with self.assertRaises(TripError) as closing:                                         # a good preview never closes: closure needs the approved reconciliation (059 era)
             self.service.close(trip)
-        self.assertEqual(closing.exception.code, "BOOK_CLOSURE_NOT_AVAILABLE")
+        self.assertEqual(closing.exception.code, "RECONCILIATION_REQUIRED")
 
     def test_nothing_is_written_and_no_lock_is_recorded(self):
         trip = self.trip()
@@ -150,7 +150,7 @@ class ServiceTests(PreviewCase):
         self.db.assayed_moves.clear()
         self.assertIn("STOCK_RECORD_MISSING", [d["code"] for d in self.service.reconciliation_preview(trip)["diagnostics"]])
         entry = next(e for e in self.db.entries.values())
-        self.db.entries[999] = {**entry, "id": 999, "entry_no": 99, "entry_kind": "BK_GAIN", "request_key": "x"}
+        self.db.entries[999] = {**entry, "id": 999, "entry_no": 99, "entry_kind": "BK_NEXT_KIND", "request_key": "x"}
         self.assertIn("UNSUPPORTED_KIND", [d["code"] for d in self.service.reconciliation_preview(trip)["diagnostics"]])
 
 
@@ -194,7 +194,7 @@ class QueryTests(unittest.TestCase):
     def test_the_preview_read_is_five_plain_snapshot_statements(self):
         connection = Recorder()
         source = MarketTripRepository(connection).reconciliation_source(5)
-        self.assertEqual(len(connection.statements), 5)                                      # a fixed number, whatever the trip holds (no N+1)
+        self.assertEqual(len(connection.statements), 6)                                      # a fixed number (the 058 capability check + five), whatever the trip holds
         for sql in connection.statements:
             self.assertIsNone(LOCKING.search(sql), sql)                                      # outer queries, subqueries and the reversal lookup alike
         joined = " ".join(connection.statements)
@@ -209,7 +209,7 @@ class QueryTests(unittest.TestCase):
         connection = Recorder(fail_on="FROM market_trip_book_trades")
         source = MarketTripRepository(connection).reconciliation_source(5)
         self.assertEqual([code for code, _ in source["incomplete"]], ["SOURCE_TRADES_UNREADABLE"])
-        self.assertEqual(len(connection.statements), 5)                                      # the other sections still ran
+        self.assertEqual(len(connection.statements), 6)                                      # the capability check and the other sections still ran
 
     def test_the_financial_decision_reads_still_lock(self):
         """The R1 work added a lock-free read; it did not turn the decision methods into non-locking ones."""

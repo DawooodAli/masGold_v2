@@ -310,7 +310,7 @@ class IntegrityTests(unittest.TestCase):
         self.assertEqual(s.codes(), [])                                                     # a later ISSUE (Phase 2) is not this preview's business: the RECEIVE record is what is verified
 
     def test_unknown_unsupported_orphan_and_duplicate_are_never_dropped(self):
-        for kind in ("BK_GAIN", "BK_ISS_STK", "MELT", "NOT_A_KIND"):
+        for kind in ("BK_NEXT_KIND", "MELT", "NOT_A_KIND"):                          # BK_ISS_STK (058) and BK_GAIN (059) are supported kinds
             with self.subTest(kind=kind):
                 s = self.healthy()
                 s.entries.append({"id": 50, "trip_id": TRIP, "trip_mode": "BOOK", "entry_no": 50, "entry_kind": kind, "correction_id": None})
@@ -429,14 +429,14 @@ class TokenContractTests(unittest.TestCase):
     def test_unknown_kinds_are_not_hashed_but_are_diagnosed(self):
         s = self.source()
         base = self.token(s)
-        s.entries.append({"id": 50, "trip_id": TRIP, "trip_mode": "BOOK", "entry_no": 50, "entry_kind": "BK_GAIN", "correction_id": None})
+        s.entries.append({"id": 50, "trip_id": TRIP, "trip_mode": "BOOK", "entry_no": 50, "entry_kind": "BK_NEXT_KIND", "correction_id": None})
         self.assertEqual(self.token(s), base)
         self.assertIn("UNSUPPORTED_KIND", s.codes())
 
     def test_it_is_a_source_token_not_a_snapshot_hash(self):
         self.assertEqual(rec.ALGORITHM, "book-source-v1")
         self.assertEqual(self.source().preview().view()["sourceToken"], self.token(self.source()))
-        self.assertEqual(rec.SOURCE_KINDS, (br.BK_ISSUE, br.BK_BUY, br.BK_SELL, br.BK_RETURN))        # explicit list, never a prefix search
+        self.assertEqual(rec.SOURCE_KINDS, (br.BK_ISSUE, br.BK_BUY, br.BK_SELL, br.BK_RETURN, br.BK_ISS_STK, br.BK_RECEIVE, br.BK_DLV_SUP, br.BK_DLV_MKT, br.BK_GAIN))   # explicit, never a prefix
 
 
 class ConstantsPinnedTests(unittest.TestCase):

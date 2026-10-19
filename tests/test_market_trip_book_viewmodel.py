@@ -141,9 +141,9 @@ class SlotAndPresentationTests(BookViewModelCase):
         self.vm.selectTrip(trip)
         detail = self.vm.detail
         self.assertEqual((detail["closable"], detail["isBook"]), (False, True))
-        self.assertIn("غير متاح بعد", detail["closeHint"])
+        self.assertIn("اعتماد تسوية", detail["closeHint"])
         self.vm.closeTrip(trip)
-        self.assertEqual(self.vm.errorCode, "BOOK_CLOSURE_NOT_AVAILABLE")
+        self.assertEqual(self.vm.errorCode, "RECONCILIATION_REQUIRED")
         self.assertEqual(self.db.trips[int(trip)]["status"], "OPEN")
 
     def test_the_list_marks_a_book_trip_and_shows_its_balance(self):

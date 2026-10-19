@@ -60,13 +60,13 @@ class BookCoreSchemaTests(unittest.TestCase):
         for name, expected in FROZEN.items():
             self.assertEqual(digest(name), expected, name)
         files = {f.name: f for f in load_chain(require_committed=False)}
-        self.assertEqual(len(files), 57)
+        self.assertEqual(len(files), 59)
         self.assertEqual(files[FORWARD].sha256, digest(FORWARD))
         self.assertIn(f"{digest(FORWARD)}  {FORWARD}", (ROOT / "database" / "schema" / "SHA256SUMS").read_text(encoding="utf-8"))
 
     def test_the_schema_level_follows_the_chain(self):
         from services.schema_level import REQUIRED_SCHEMA_LEVEL
-        self.assertEqual(REQUIRED_SCHEMA_LEVEL, 57)
+        self.assertEqual(REQUIRED_SCHEMA_LEVEL, 59)
 
     def test_every_alter_is_guarded_so_a_rerun_changes_nothing(self):
         for statement in re.findall(r"\"(ALTER TABLE [^\"]*)\"", self.forward):
@@ -92,11 +92,11 @@ class BookCoreSchemaTests(unittest.TestCase):
 
     def test_the_kind_rule_adds_the_four_book_kinds_and_keeps_every_earlier_kind(self):
         vocabulary = re.search(r"ADD CONSTRAINT chk_mte_kind CHECK \(entry_kind IN \(([^)]*)\)\)", self.forward).group(1)
-        self.assertEqual(re.findall(r"'(\w+)'", vocabulary), list(EARLIER_KINDS) + list(book_rules.BOOK_KINDS))
+        self.assertEqual(re.findall(r"'(\w+)'", vocabulary), list(EARLIER_KINDS) + list(book_rules.PHASE1_KINDS))     # 056 added the four Phase 1 kinds (058 adds Phase 2)
         rule = re.search(r"ADD CONSTRAINT chk_mte_mode_kind CHECK \((.*?)\)\", 'DO 0'\)", self.forward, re.S).group(1)
         legacy, book = re.search(r"trip_mode = 'LEGACY' AND entry_kind IN \(([^)]*)\)", rule).group(1), re.search(r"trip_mode = 'BOOK' AND entry_kind IN \(([^)]*)\)", rule).group(1)
         self.assertEqual(re.findall(r"'(\w+)'", legacy), list(EARLIER_KINDS))
-        self.assertEqual(re.findall(r"'(\w+)'", book), list(book_rules.SHARED_CASH_KINDS) + list(book_rules.BOOK_KINDS))
+        self.assertEqual(re.findall(r"'(\w+)'", book), list(book_rules.SHARED_CASH_KINDS) + list(book_rules.PHASE1_KINDS))
         for kind in book_rules.LEGACY_ONLY_KINDS:                                                         # the pure rule and the database rule say the same thing
             self.assertIn(kind, EARLIER_KINDS)
             self.assertNotIn(f"'{kind}'", book)
@@ -177,7 +177,8 @@ class BookCoreSchemaTests(unittest.TestCase):
         for column, constants in values.items():
             for value in constants:
                 self.assertLessEqual(len(value), widths[column], f"{value!r} does not fit {column} VARCHAR({widths[column]})")
-        self.assertEqual(max(len(k) for k in book_rules.BOOK_KINDS), 9)                                       # BK_RETURN
+        self.assertEqual(max(len(k) for k in book_rules.PHASE1_KINDS), 9)                                     # BK_RETURN
+        self.assertEqual(max(len(k) for k in book_rules.BOOK_KINDS), 10)                                      # 058: BK_ISS_STK ... still fit VARCHAR(12)
 
     def test_the_columns_agree_with_the_tables_they_reference(self):
         karats = self.model.tables["karats"]["columns"]["id"]["type"]

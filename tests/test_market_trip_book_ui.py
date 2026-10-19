@@ -122,7 +122,7 @@ class BookPageTests(base.MarketTripPageTests):
         self.tvm._service.book_return(str(trip), [{"basis": "MASTER_KARAT", "karat_id": "1", "weight": "20"}], TODAY, "", self.k())
         self.show(trip)
         self.assertFalse(self.item("closeTripButton").property("enabled"))
-        self.assertIn("غير متاح بعد", self.text("closeHint"))
+        self.assertIn("اعتماد تسوية", self.text("closeHint"))
         self.tvm.closeTrip(str(trip))                                                                    # even a forced call is refused by the service
         self.wait_idle()
         self.assertEqual(self.db.trips[trip]["status"], "OPEN")

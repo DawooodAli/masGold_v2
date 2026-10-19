@@ -165,7 +165,7 @@ class ViewModelTests(unittest.TestCase):
         self.assertIs(self.vm.detail["closable"], False)
         self.assertEqual(self.vm.detail["closeHint"], BOOK_CLOSE_HINT)
         self.vm.closeTrip(trip)
-        self.assertEqual(self.vm.errorCode, "BOOK_CLOSURE_NOT_AVAILABLE")
+        self.assertEqual(self.vm.errorCode, "RECONCILIATION_REQUIRED")
 
     def test_a_failing_preview_shows_a_message_not_stale_numbers(self):
         trip = self.book_trip("5")

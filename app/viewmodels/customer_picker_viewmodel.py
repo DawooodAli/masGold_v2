@@ -4,6 +4,7 @@ from PySide6.QtCore import QObject, Property, Signal, Slot
 
 from app.viewmodels.customer_presentation import customer_row, error_text
 from services.customer_service import CustomerService
+import app.viewmodels.reports_viewmodel  # noqa: F401  (registers MasGold.Reports for QML: the entry point is not edited)
 
 
 class CustomerPickerViewModel(QObject):

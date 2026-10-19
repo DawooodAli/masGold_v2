@@ -64,6 +64,22 @@ class SupplierGoldSettlementRepository(SupplierRepository):
              digest, actor.user_id, actor.employee_id, now))
         return int(settlement_id)
 
+    def insert_book_header(self, *, supplier_id, delivered_karat, fineness, target_karat, delivered_weight, credited, analytical, difference,
+                           settlement_date, reference, notes, key, digest, actor, now):
+        """The SG header of a delivery from a BOOK trip (058, source TRIP_BOOK): the delivered physical facts are a master karat OR an assay (never both)."""
+        require_no_marketer_key(self._fetch_one, key)
+        settlement_id, _ = self._execute(
+            """
+            INSERT INTO supplier_gold_settlements (supplier_id, source_kind, delivered_karat_id, delivered_karat_value, delivered_fineness_permille, target_karat_id,
+                target_karat_value, delivered_weight_grams, credited_weight_grams, credited_analytical_grams, rounding_difference_grams,
+                settlement_date, reference, notes, request_key, request_hash, performed_by_user_id, performed_by_employee_id, occurred_at)
+            VALUES (%s, 'TRIP_BOOK', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (_id(supplier_id), None if delivered_karat is None else int(delivered_karat["id"]), None if delivered_karat is None else int(delivered_karat["karat_value"]),
+             fineness, int(target_karat["id"]), int(target_karat["karat_value"]), delivered_weight, credited, analytical, difference, settlement_date, reference,
+             notes, key, digest, actor.user_id, actor.employee_id, now))
+        return int(settlement_id)
+
     def insert_lot_header(self, *, supplier_id, lot, target_karat, credited, analytical, difference,
                           settlement_date, reference, notes, key, digest, actor, now):
         require_no_marketer_key(self._fetch_one, key)                    # 055: a marketer document owns this key -> REQUEST_CONFLICT, nothing is written
@@ -161,8 +177,18 @@ class SupplierGoldSettlementRepository(SupplierRepository):
         LEFT JOIN users cu ON cu.id = COALESCE(c.performed_by_user_id, cc.performed_by_user_id)
     """
 
+    def _select(self):
+        """The settlement read; from 058 a TRIP_BOOK document takes its custody entry (and so its reversed state) from the BOOK supplier link."""
+        if not hasattr(self, "_book_links"):
+            row = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'market_trip_book_supplier_links'")
+            self._book_links = bool(row and int(row["n"]))
+        if not self._book_links:
+            return self._SELECT
+        return (self._SELECT.replace("COALESCE(lk.entry_id, ll.entry_id)", "COALESCE(lk.entry_id, ll.entry_id, bk.entry_id)")
+                .replace("LEFT JOIN market_trip_lots ml", "LEFT JOIN market_trip_book_supplier_links bk ON bk.settlement_id = g.id LEFT JOIN market_trip_lots ml"))
+
     def settlement(self, settlement_id):
-        return self._fetch_one(self._SELECT + " WHERE g.id = %s", (_id(settlement_id),))
+        return self._fetch_one(self._select() + " WHERE g.id = %s", (_id(settlement_id),))
 
     def source(self, settlement_id, lock=False):
         """The settlement as a correction source. With lock=True its row is locked (the caller holds the supplier lock first)."""
@@ -170,7 +196,7 @@ class SupplierGoldSettlementRepository(SupplierRepository):
                                "WHERE g.id = %s" + (" FOR UPDATE OF g" if lock else ""), (_id(settlement_id),))
 
     def settlements_of(self, supplier_id, limit=200):
-        return self._fetch_all(self._SELECT + " WHERE g.supplier_id = %s ORDER BY g.id DESC LIMIT %s", (_id(supplier_id), int(limit)))
+        return self._fetch_all(self._select() + " WHERE g.supplier_id = %s ORDER BY g.id DESC LIMIT %s", (_id(supplier_id), int(limit)))
 
     def custody_entry(self, settlement_id):
         """The custody entry a CUSTODY_GOLD settlement was made from (None for a direct settlement): where its reversal belongs."""
@@ -178,7 +204,13 @@ class SupplierGoldSettlementRepository(SupplierRepository):
             "SELECT l.entry_id, l.designation, e.trip_id, e.entry_no FROM market_trip_gold_settlements l "
             "JOIN market_trip_entries e ON e.id = l.entry_id WHERE l.settlement_id = %s "
             "UNION ALL SELECT l.entry_id, NULL AS designation, e.trip_id, e.entry_no FROM market_trip_lot_settlements l "
-            "JOIN market_trip_entries e ON e.id = l.entry_id WHERE l.settlement_id = %s", (_id(settlement_id), _id(settlement_id)))
+            "JOIN market_trip_entries e ON e.id = l.entry_id WHERE l.settlement_id = %s", (_id(settlement_id), _id(settlement_id))) or self._book_entry(settlement_id)
+
+    def _book_entry(self, settlement_id):
+        if "market_trip_book_supplier_links" not in self._select():
+            return None
+        return self._fetch_one("SELECT l.entry_id, NULL AS designation, e.trip_id, e.entry_no FROM market_trip_book_supplier_links l "
+                               "JOIN market_trip_entries e ON e.id = l.entry_id WHERE l.settlement_id = %s", (_id(settlement_id),))
 
     def scrap_movement(self, settlement_id):
         """The STORED Scrap movement of the settlement (its delivered karat and signed grams: what a reversal negates)."""

@@ -42,9 +42,12 @@ class DecisionReadTests(unittest.TestCase):
     def test_the_five_source_sections_are_locking_reads_in_a_fixed_order(self):
         connection = ParamRecorder()
         source = MarketTripRepository(connection).reconciliation_source_current(7)
+        self.assertIn("information_schema", connection.statements[0])                         # 058: the capability check first (ZeroRow: no Phase 2 schema)
+        connection.statements, connection.params = connection.statements[1:], connection.params[1:]
         self.assertEqual(len(connection.statements), 5)                                      # a fixed number, whatever the trip holds
         self.assertEqual(source["incomplete"], [])
-        self.assertEqual(set(source), {"trip_id", "entries", "lines", "scrap", "trades", "stock", "incomplete"})
+        self.assertEqual(set(source), {"trip_id", "entries", "lines", "scrap", "trades", "stock", "incomplete", "stock_issues", "suppliers", "marketer",
+                                       "stock_origins", "stock_history"})                      # 058 sections (empty before 058)
         for sql in connection.statements:
             self.assertTrue(SHARE.search(sql), sql)                                           # every section is a CURRENT (locking) read
             self.assertFalse(UPDATE.search(sql), sql)
@@ -57,7 +60,7 @@ class DecisionReadTests(unittest.TestCase):
     def test_the_entries_read_locks_the_reversal_rows_too_and_carries_the_date_and_the_correction_type(self):
         connection = ParamRecorder()
         MarketTripRepository(connection).reconciliation_source_current(7)
-        entries = connection.statements[0]
+        entries = connection.statements[1]                                                    # [0] is the 058 capability check
         self.assertIn("LEFT JOIN transaction_corrections c ON c.source_type = 'MARKET_TRIP_ENTRY' AND c.source_id = e.id AND c.correction_type = 'FULL_REVERSAL'", entries)
         self.assertIn("FOR SHARE OF e, c", entries)                                          # the correction rows (and the absence of one) are part of the decision read
         for field in ("e.entry_date", "c.correction_type AS correction_type", "c.id AS correction_id", "e.trip_mode"):
@@ -67,7 +70,7 @@ class DecisionReadTests(unittest.TestCase):
     def test_the_other_sections_select_what_the_snapshot_needs(self):
         connection = ParamRecorder()
         MarketTripRepository(connection).reconciliation_source_current(7)
-        lines, legs, trades, stock = connection.statements[1:]
+        lines, legs, trades, stock = connection.statements[2:]
         self.assertIn("WHERE l.trip_id = %s", lines)                                          # the line's OWN trip, independently of the entries (orphans stay visible)
         for field in ("l.eq21_analytical", "l.posting_difference", "l.signed_eq21_posted", "l.scrap_movement_id", "l.line_price", "l.trip_mode"):
             self.assertIn(field, lines)
@@ -84,12 +87,12 @@ class DecisionReadTests(unittest.TestCase):
         with self.assertRaises(Exception) as raised:
             MarketTripRepository(connection).reconciliation_source_current(7)
         self.assertIn("simulated read failure", str(raised.exception))                      # it propagates: the transaction rolls back (a deadlock must never be swallowed)
-        self.assertEqual(len(connection.statements), 4)                                      # and nothing is read after the failure
+        self.assertEqual(len(connection.statements), 5)                                      # the capability check + 4 sections, nothing after the failure
 
     def test_the_display_read_of_r1_is_untouched(self):
         connection = ParamRecorder()
         MarketTripRepository(connection).reconciliation_source(7)
-        self.assertEqual(len(connection.statements), 5)
+        self.assertEqual(len(connection.statements), 6)                                      # 058: the capability check + the five sections (no Phase 2 schema here)
         for sql in connection.statements:
             self.assertIsNone(SHARE.search(sql), sql)                                         # still plain snapshot reads
             self.assertNotIn("market_trip_reconciliations", sql)
@@ -148,7 +151,8 @@ class SourceHygieneTests(unittest.TestCase):
             end = text.find("\n    def ", match.end())
             if "market_trip_reconciliations" in text[match.start():end if end > 0 else len(text)]:
                 owners.add(match.group(1))
-        self.assertEqual(owners, {"next_reconciliation_generation", "insert_reconciliation", "reconciliation_of_entry"})
+        self.assertEqual(owners, {"next_reconciliation_generation", "insert_reconciliation", "reconciliation_of_entry",
+                                  "effective_reconciliations_display", "reconciliation_display", "book_report_rows"})      # the Gold Position display read names the table only after its capability check
 
     def test_only_the_reconcile_transaction_calls_them_in_the_services(self):
         from pathlib import Path

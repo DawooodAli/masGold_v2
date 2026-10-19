@@ -38,9 +38,9 @@ class ApprovalServiceTests(ReconCase):
         from tests.test_book_settlement_repository import ParamRecorder
         recorder = ParamRecorder()
         RecordingRepository(recorder).reconciliation_source('7', approval=True)
-        self.assertEqual(len(recorder.statements), 5)
-        self.assertIn('e.entry_date', recorder.statements[0])
-        self.assertIn('c.correction_type', recorder.statements[0])
+        self.assertEqual(len(recorder.statements), 6)                                       # 058: the capability check + the five sections
+        self.assertIn('e.entry_date', recorder.statements[1])                                   # [0] is the 058 capability check
+        self.assertIn('c.correction_type', recorder.statements[1])
         self.assertIn('SELECT s.id,', recorder.statements[-1])
         self.assertFalse(any('FOR SHARE' in sql or 'FOR UPDATE' in sql for sql in recorder.statements))
 

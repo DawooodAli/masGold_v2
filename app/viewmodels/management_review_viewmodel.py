@@ -114,6 +114,9 @@ def gold_position_view(position):
         {"key": "custody", "label": "في عهدة السوق", "grams": _g(custody["grams"]), "eq21": _g(s["custody_eq21"])},
         {"key": "intermediary", "label": "لدى المسوقجي", "grams": _g(inter["grams"]), "eq21": _g(s["intermediary_eq21"])},
     ]
+    book = position.get("book") or {"trips": [], "eq21": Decimal(0)}
+    if book["trips"]:                                                           # 056: BOOK balances, counted once, the physical grams are not specified
+        summary.append({"key": "book", "label": "رصيد BOOK بعد احتساب التسويات المعتمدة", "grams": "غير محدد", "eq21": _g(s["book_eq21"])})
     shop_lines = []
     parts = shop["parts"]
     for name, label in (("scrap", "كسر"), ("lots", "سبائك في المحل"), ("inventory", "مخزون (قطع جاهزة)"),
@@ -122,6 +125,14 @@ def gold_position_view(position):
         if Decimal(str(part["grams"])) != 0:
             shop_lines.append({"label": label, "grams": _g(part["grams"]),
                                "eq21": "غير محسوب" if name == "receipts" else _g(part["eq21"])})
+    for item in shop.get("assayed") or []:                                       # 056: assayed gold returned from a BOOK trip: physical grams + its stored posted amount
+        shop_lines.append({"label": f"ذهب مرتجع بعيار فعلي — {item['code']}",
+                           "text": f"العيار الفعلي {Decimal(str(item['fineness'])):.1f}‰ • القيمة التحليلية {Decimal(str(item['analytical'])):,.6f} • "
+                                   f"فرق التقريب (للعرض) {ltr(format(Decimal(str(item['rounding'])), '+,.6f'))}",
+                           "grams": _g(item["grams"]), "eq21": _g(item["eq21"])})
+    book_lines = [{"label": t["code"], "text": f"الرصيد المرحَّل {_g(t['eq21'])} • التحليلي {Decimal(str(t['analytical'])):,.6f} • "
+                                                f"فرق التقريب (للعرض) {ltr(format(Decimal(str(t['drift'])), '+,.6f'))} • الوزن الفعلي غير محدد",
+                   "eq21": _g(t["eq21"])} for t in book["trips"]]
     custody_lines = []
     for trip in custody["trips"]:
         bits = [f"{'عيار %d %s' % (g['karat'], g['designation_text'])}: {_g(g['grams'])} جرام" for g in trip["gold"]]
@@ -142,9 +153,10 @@ def gold_position_view(position):
         holder_lines.append({"label": party["party_name"], "text": " • ".join(bits), "eq21": _g(eq)})
     return {"summary": summary, "total": _g(s["total_eq21"]), "totalGrams": _g(s["total_grams"]),
             "unknown": _g(unknown), "hasUnknown": unknown != 0,
-            "shop": shop_lines, "custody": custody_lines, "intermediary": holder_lines,
+            "shop": shop_lines, "custody": custody_lines, "intermediary": holder_lines, "book": book_lines,
             "warnings": [(f"رصيد ذهب المسوقجي {w['party_name']} سالب ({_g(w['grams'])}) ولا يُضم إلى الإجمالي" if w["code"] == "MARKETER_GOLD_NEGATIVE"
-                          else f"السبيكة {w['lot_id']} ظاهرة في أكثر من مكان: {' / '.join(w['places'])}") for w in position["warnings"]]}
+                          else (f"بند المخزون المرتجع {w['item']} له قيمة مرحَّلة بلا وزن ({_g(w['posted'])}) ولا يُضم إلى الإجمالي" if w["code"] == "STOCK_POSTED_WITHOUT_GRAMS"
+                                else f"السبيكة {w['lot_id']} ظاهرة في أكثر من مكان: {' / '.join(w['places'])}")) for w in position["warnings"]]}
 
 
 class ManagementReviewViewModel(QObject):

@@ -356,6 +356,12 @@ class MarketerCustodyViewModel(QObject):
                                                                    + (" • تسوية للطرف نفسه (بتأكيد المالك)" if s["self_settlement"] else ""),
                         "date": date_text(s["date"]), "reversed": s["reversed"], "state": ("معكوسة • " + s["reversal_reason"]) if s["reversed"] else "",
                         "canReverse": bool(a["can_reverse"] and not s["reversed"])} for s in a["settlements"]]
+        trip_legs = [{"id": t["id"], "entryCode": t["entry_code"], "tripCode": t["trip_code"], "tripId": t["trip_id"], "entryId": t["entry_id"], "reversal": t["reversal"],
+                      "delta": f"{t['delta']:+.3f}",
+                      "text": (("عكس " if t["reversal"] else "") + ("تسليم من عهدة رحلة السوق إلى استحقاقه" if t["entry_kind"] == "BK_DLV_MKT" else "استلام من استحقاقه إلى عهدة رحلة السوق")
+                               + f" • {t['trip_code']} • المستند {t['entry_code']} • الأثر على استحقاقه {t['delta']:+.3f} جرام مكافئ عيار 21"),
+                      "date": date_text(t["date"]),
+                      "note": "يُعكس من صفحة عهدة الرحلة ولا يُعدَّل من هنا"} for t in a.get("trip_legs", [])]
         parties = [{"id": c["id"], "text": c["name"] + (" (مورد)" if c["supplier"] else "") + (" (مسوقجي)" if c["intermediary"] else "")}
                    for c in a["counterparties"] if c["active"] and c["id"] != party["id"]]
         recipients = [{"id": r["id"], "text": r["name"] + ("" if r["active"] else " (متوقف)") + f" — عيار حساب الذهب {r['karat_value']}"
@@ -363,4 +369,4 @@ class MarketerCustodyViewModel(QObject):
         return {"partyId": party["id"], "partyName": party["name"], "partyActive": party["active"], "isDual": party["is_supplier"],
                 "cashText": money(a["cash"]), "goldText": f"{grams(a['gold'])} جرام", "cashZero": a["cash"] == 0, "goldZero": a["gold"] == 0,
                 "cashValue": f"{a['cash']:.2f}", "goldValue": f"{a['gold']:.3f}",
-                "isolationNote": ISOLATION_NOTE, "documents": documents, "settlements": settlements, "parties": parties, "recipients": recipients}
+                "isolationNote": ISOLATION_NOTE, "documents": documents, "settlements": settlements, "tripLegs": trip_legs, "parties": parties, "recipients": recipients}

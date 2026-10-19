@@ -46,7 +46,7 @@ Item {
 
     Connections {
         target: page.vm
-        function onEntryPosted(code) { entryDialog.close(); bookDialog.close(); meltDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close(); payDialog.close(); goldSettleDialog.close(); goldSaleDialog.close(); goldBuyDialog.close(); lotSettleDialog.close(); lotHoldDialog.close(); logoHoldDialog.close() }
+        function onEntryPosted(code) { entryDialog.close(); bookDialog.close(); stockDialog.close(); meltDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close(); payDialog.close(); goldSettleDialog.close(); goldSaleDialog.close(); goldBuyDialog.close(); lotSettleDialog.close(); lotHoldDialog.close(); logoHoldDialog.close() }
         function onActionDone(operation) { reasonDialog.close(); if (operation === "reconcile") reconApprovalDialog.close() }
         function onChanged() {
             if (reconApprovalDialog.opened && (page.vm.selectedTripId !== reconApprovalDialog.tripId || !page.vm.reconciliationEnabled)) reconApprovalDialog.close()
@@ -244,6 +244,8 @@ Item {
                         onClicked: page.vm.showTripTab("ARCHIVE")
                     }
                 }
+                Btn { objectName: "bookReportButton"; Layout.fillWidth: true; text: "تقرير الفاقد والزيادة المثبتة"; accent: theme.textSecondary
+                      enabled: !!page.vm; onClicked: reportDialog.openFor() }
                 ListView {
                     id: tripList
                     objectName: "tripList"
@@ -538,6 +540,21 @@ Item {
                         Btn { objectName: "bookReturnButton"; text: "رجوع ذهب للمحل (دفتري)"; visible: !!page.detail.open && !!page.detail.isBook
                               enabled: !!page.vm && !page.vm.writing
                               onClicked: bookDialog.openFor("BK_RETURN", page.detail.id) }
+                        Btn { objectName: "bookIssueStockButton"; text: "إخراج مخزون مرتجع للعهدة"; visible: !!page.detail.open && !!page.detail.isBook
+                              enabled: !!page.vm && !page.vm.writing && !!page.detail.book && (page.detail.book.shopStock || []).length > 0
+                              onClicked: stockDialog.openFor(page.detail.id) }
+                        Btn { objectName: "bookDeliverSupplierButton"; text: "تسليم ذهب لمورد (دفتري)"; visible: !!page.detail.open && !!page.detail.isBook
+                              enabled: !!page.vm && !page.vm.writing
+                              onClicked: bookDialog.openFor("BK_DLV_SUP", page.detail.id) }
+                        Btn { objectName: "bookDeliverMarketerButton"; text: "تسليم ذهب لمسوقجي (دفتري)"; visible: !!page.detail.open && !!page.detail.isBook
+                              enabled: !!page.vm && !page.vm.writing
+                              onClicked: bookDialog.openFor("BK_DLV_MKT", page.detail.id) }
+                        Btn { objectName: "bookReceiveMarketerButton"; text: "استلام ذهب من مسوقجي (دفتري)"; visible: !!page.detail.open && !!page.detail.isBook
+                              enabled: !!page.vm && !page.vm.writing
+                              onClicked: bookDialog.openFor("BK_RECEIVE", page.detail.id) }
+                        Btn { objectName: "bookGainButton"; text: "تسجيل زيادة مثبتة"; visible: !!page.detail.open && !!page.detail.isBook
+                              enabled: !!page.vm && !page.vm.writing && !page.detail.reconciled
+                              onClicked: bookDialog.openFor("BK_GAIN", page.detail.id) }
                         Btn { objectName: "issueMoreButton"; text: page.detail.isBook ? "تحويل نقدية من الخزنة للعهدة" : "إخراج عهدة"; visible: !!page.detail.open
                               enabled: !!page.vm && !page.vm.writing
                               onClicked: entryDialog.openFor("ISSUE", page.detail.id) }
@@ -1049,6 +1066,118 @@ Item {
     // permille); every figure below is computed by the service rules through marketTripVM (never QML arithmetic). Normal use never reaches this dialog: no
     // production path creates a BOOK trip, so its buttons exist only on a BOOK trip.
     Popup {
+        id: stockDialog
+        objectName: "tripStockDialog"
+        property string tripId: ""
+        property string requestKey: ""
+        readonly property var itemChoices: [{ entryId: "", lineNo: "", grams: "", text: "اختر بند المخزون" }].concat(page.detail.book ? (page.detail.book.shopStock || []) : [])
+        function collect() {
+            var rows = []
+            for (var i = 0; i < stockModel.count; ++i) {
+                var r = stockModel.get(i)
+                var c = itemChoices[r.itemIndex]
+                if (c && c.entryId !== "") rows.push({ entryId: c.entryId, lineNo: c.lineNo, grams: r.grams })
+            }
+            return rows
+        }
+        function complete() {
+            if (stockDate.text.trim().length === 0) return false
+            for (var i = 0; i < stockModel.count; ++i) {
+                var r = stockModel.get(i)
+                if (r.itemIndex > 0 && r.grams.trim().length > 0) return true
+            }
+            return false
+        }
+        function openFor(trip) {
+            if (!page.vm) return
+            tripId = trip
+            requestKey = page.vm.newRequestKey()
+            stockDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            stockNotes.text = ""
+            stockModel.clear()
+            stockModel.append({ itemIndex: 0, grams: "" })
+            page.vm.clearMessage()
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(620, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 560, 560)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        ListModel { id: stockModel }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { objectName: "stockDialogTitle"; Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection
+                  text: "إخراج مخزون مرتجع بعيار فعلي إلى العهدة (دفتري)" }
+            Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "يخرج الوزن المختار من بند المخزون بنفس عياره الفعلي ويدخل الرصيد الدفتري بحصته من المكافئ المرحَّل المخزَّن للبند (تخصيص، دون تقريب جديد للبند كله). الإخراج الجزئي مسموح؛ إخراج الباقي كله يأخذ المتبقي المرحَّل بالضبط." }
+            Flickable {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentHeight: stockForm.implicitHeight
+                clip: true
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: stockForm
+                    width: parent.width - 12
+                    spacing: 6
+                    Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
+                    Field { id: stockDate; objectName: "stockDateField"; Layout.fillWidth: true }
+                    Repeater {
+                        model: stockModel
+                        delegate: RowLayout {
+                            Layout.fillWidth: true
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 6
+                            Combo {
+                                objectName: "stockItem_" + index
+                                Layout.fillWidth: true
+                                model: stockDialog.itemChoices
+                                textRole: "text"
+                                currentIndex: itemIndex
+                                onActivated: function (i) { stockModel.setProperty(index, "itemIndex", i) }
+                            }
+                            Field {
+                                objectName: "stockGrams_" + index
+                                Layout.preferredWidth: 120
+                                placeholderText: "الوزن (جرام)"
+                                text: grams
+                                inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                onTextEdited: stockModel.setProperty(index, "grams", text)
+                            }
+                            Btn {
+                                objectName: "stockAll_" + index
+                                text: "الكل"
+                                accent: theme.textSecondary
+                                enabled: itemIndex > 0
+                                onClicked: stockModel.setProperty(index, "grams", stockDialog.itemChoices[itemIndex].grams)
+                            }
+                        }
+                    }
+                    Btn { objectName: "addStockLineButton"; text: "＋ بند آخر"; accent: theme.textSecondary; enabled: stockModel.count < 8
+                          onClicked: stockModel.append({ itemIndex: 0, grams: "" }) }
+                    Txt { Layout.fillWidth: true; text: "ملاحظات" }
+                    Field { id: stockNotes; objectName: "stockNotesField"; Layout.fillWidth: true }
+                }
+            }
+            Txt { objectName: "stockDialogError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn { objectName: "confirmStockButton"; text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "تسجيل"; primary: true
+                      enabled: stockDialog.complete() && !!page.vm && !page.vm.writing
+                      onClicked: page.vm.bookIssueStock(stockDialog.tripId, stockDialog.collect(), stockDate.text, stockNotes.text, stockDialog.requestKey) }
+                Btn { objectName: "cancelStockButton"; text: "إغلاق"; onClicked: stockDialog.close() }
+            }
+        }
+    }
+
+    Popup {
         id: bookDialog
         objectName: "tripBookDialog"
         property string kind: "BK_ISSUE"
@@ -1056,6 +1185,15 @@ Item {
         property string requestKey: ""
         readonly property bool priced: kind === "BK_BUY" || kind === "BK_SELL"
         readonly property bool hasCounterparty: priced
+        readonly property bool toSupplier: kind === "BK_DLV_SUP"
+        readonly property bool toMarketer: kind === "BK_DLV_MKT" || kind === "BK_RECEIVE"
+        readonly property bool isGain: kind === "BK_GAIN"
+        readonly property bool singleLine: toSupplier || toMarketer || isGain
+        readonly property var targetChoices: [{ id: "", text: toSupplier ? "اختر المورد" : "اختر المسوقجي" }].concat(
+                                                 !page.detail.book ? [] : toSupplier ? (page.detail.book.suppliers || [])
+                                                 : (page.detail.book.marketers || []).filter(function (m) { return kind === "BK_RECEIVE" || m.active }))
+        readonly property string targetId: targetChoices[bookTarget.currentIndex] ? targetChoices[bookTarget.currentIndex].id : ""
+        readonly property string creditText: toSupplier && page.vm ? page.vm.previewSupplierCredit(targetId, lineRows) : ""
         readonly property var karatChoices: [{ id: "", text: "اختر العيار" }].concat(page.ctx.karats || [])
         readonly property var basisChoices: kind === "BK_ISSUE" ? [{ id: "MASTER_KARAT", text: "عيار معياري" }]
                                                                    : [{ id: "MASTER_KARAT", text: "عيار معياري" }, { id: "FINENESS", text: "عيار فعلي (بالألف)" }]
@@ -1068,10 +1206,16 @@ Item {
             return known && page.vm ? page.vm.previewBook(kind, lineRows) : ({})
         }
         readonly property string title: kind === "BK_ISSUE" ? "إخراج ذهب من كسر المحل (دفتري)" : kind === "BK_BUY" ? "شراء ذهب (دفتري)"
-                                      : kind === "BK_SELL" ? "بيع ذهب (دفتري)" : "رجوع ذهب للمحل (دفتري)"
+                                      : kind === "BK_SELL" ? "بيع ذهب (دفتري)" : kind === "BK_DLV_SUP" ? "تسليم ذهب لمورد (دفتري)"
+                                      : kind === "BK_DLV_MKT" ? "تسليم ذهب لمسوقجي (دفتري)" : kind === "BK_RECEIVE" ? "استلام ذهب من مسوقجي (دفتري)"
+                                      : kind === "BK_GAIN" ? "تسجيل زيادة مثبتة (دفتري)" : "رجوع ذهب للمحل (دفتري)"
         readonly property string rule: kind === "BK_ISSUE" ? "يخرج الذهب من كسر المحل المتاح بنفس العيار المعياري (دون المحجوز لمراجعة المدير) ويدخل الرصيد الدفتري بمكافئ عيار 21."
                                      : kind === "BK_BUY" ? "تُدفع قيمة الذهب من نقدية هذه العهدة (لا من الخزنة) ويدخل الرصيد الدفتري بمكافئ عيار 21. اسم البائع إجباري."
                                      : kind === "BK_SELL" ? "يُباع الذهب بحد أقصى الرصيد الدفتري ويدخل ثمنه نقدية هذه العهدة. اسم المشتري إجباري."
+                                     : kind === "BK_DLV_SUP" ? "يخرج الذهب من الرصيد الدفتري ويُحتسب للمورد في حسابه بعياره هو (لا مكافئ 21). لا حركة خزنة أو كسر. سطر واحد لكل تسليم."
+                                     : kind === "BK_DLV_MKT" ? "يخرج الذهب من الرصيد الدفتري ويُضاف مكافئه المرحَّل (عيار 21) إلى استحقاق المسوقجي من ذهب المحل. سطر واحد لكل تسليم."
+                                     : kind === "BK_RECEIVE" ? "يدخل الذهب الرصيد الدفتري ويُخصم مكافئه المرحَّل (عيار 21) من استحقاق المسوقجي، بحد أقصى ما يحمله. سطر واحد لكل استلام."
+                                     : kind === "BK_GAIN" ? "لذهب زائد ثابت فعلًا بالوزن أو الفحص: يُحسب مكافئه من وزنه وعياره هو (لا يُكتب رقم ولا يُستنتج من عجز الدفتر) ويدخل مدخلات الرصيد الدفتري. شرح الزيادة ومرجع الدليل وتأكيدك إجباريان. لا حركة خزنة أو كسر أو مخزون، ولا يُخصم من فاقد."
                                      : "العيار المعياري يعود إلى كسر المحل بنفس العيار؛ أي عيار فعلي آخر يصبح بند مخزون مرتجع محدد الهوية بوزنه وعياره وأصله."
         function collect() {
             var rows = []
@@ -1090,9 +1234,12 @@ Item {
             tripId = trip
             requestKey = page.vm.newRequestKey()
             bookParty.currentIndex = 0
+            bookTarget.currentIndex = 0
             bookName.text = ""
             bookDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
             bookReference.text = ""
+            gainExplanation.text = ""
+            gainConfirmed.checked = false
             bookNotes.text = ""
             bookModel.clear()
             bookModel.append({ basisIndex: 0, karatIndex: 0, fineness: "", weight: "", price: "" })
@@ -1105,6 +1252,8 @@ Item {
         function complete() {
             if (bookDate.text.trim().length === 0) return false
             if (hasCounterparty && !(partyId !== "" || bookName.text.trim().length > 0)) return false
+            if ((toSupplier || toMarketer) && targetId === "") return false
+            if (isGain && (gainExplanation.text.trim().length === 0 || bookReference.text.trim().length === 0 || !gainConfirmed.checked)) return false
             for (var i = 0; i < bookModel.count; ++i) {
                 var g = bookModel.get(i)
                 var basis = basisChoices[g.basisIndex] ? basisChoices[g.basisIndex].id : "MASTER_KARAT"
@@ -1117,6 +1266,10 @@ Item {
             if (kind === "BK_ISSUE") page.vm.bookIssue(tripId, collect(), bookDate.text, bookNotes.text, requestKey)
             else if (kind === "BK_BUY") page.vm.bookBuy(tripId, collect(), partyId, bookName.text, bookDate.text, bookReference.text, bookNotes.text, requestKey, acknowledged)
             else if (kind === "BK_SELL") page.vm.bookSell(tripId, collect(), partyId, bookName.text, bookDate.text, bookReference.text, bookNotes.text, requestKey, acknowledged)
+            else if (kind === "BK_DLV_SUP") page.vm.bookDeliverSupplier(tripId, targetId, collect(), bookDate.text, bookReference.text, bookNotes.text, requestKey)
+            else if (kind === "BK_DLV_MKT") page.vm.bookDeliverMarketer(tripId, targetId, collect(), bookDate.text, bookNotes.text, requestKey)
+            else if (kind === "BK_RECEIVE") page.vm.bookReceiveMarketer(tripId, targetId, collect(), bookDate.text, bookNotes.text, requestKey)
+            else if (kind === "BK_GAIN") page.vm.bookGain(tripId, collect(), gainExplanation.text, bookReference.text, gainConfirmed.checked, bookDate.text, bookNotes.text, requestKey)
             else page.vm.bookReturn(tripId, collect(), bookDate.text, bookNotes.text, requestKey)
         }
         parent: Overlay.overlay
@@ -1146,6 +1299,9 @@ Item {
                     Txt { Layout.fillWidth: true; visible: bookDialog.hasCounterparty; text: bookDialog.kind === "BK_BUY" ? "البائع *" : "المشتري *" }
                     Combo { id: bookParty; objectName: "bookCounterpartyCombo"; Layout.fillWidth: true; visible: bookDialog.hasCounterparty
                             model: bookDialog.partyChoices; textRole: "text" }
+                    Txt { Layout.fillWidth: true; visible: bookDialog.toSupplier || bookDialog.toMarketer; text: bookDialog.toSupplier ? "المورد *" : "المسوقجي *" }
+                    Combo { id: bookTarget; objectName: "bookTargetCombo"; Layout.fillWidth: true; visible: bookDialog.toSupplier || bookDialog.toMarketer
+                            model: bookDialog.targetChoices; textRole: "text"; onActivated: bookDialog.refreshLines() }
                     Txt { Layout.fillWidth: true; visible: bookDialog.hasCounterparty && bookDialog.partyId === ""; text: "الاسم *" }
                     Field { id: bookName; objectName: "bookNameField"; Layout.fillWidth: true; visible: bookDialog.hasCounterparty && bookDialog.partyId === "" }
                     RowLayout {
@@ -1158,8 +1314,8 @@ Item {
                             Field { id: bookDate; objectName: "bookDateField"; Layout.fillWidth: true }
                         }
                         ColumnLayout {
-                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2; visible: bookDialog.hasCounterparty
-                            Txt { Layout.fillWidth: true; text: "المرجع (اختياري)" }
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2; visible: bookDialog.hasCounterparty || bookDialog.toSupplier || bookDialog.isGain
+                            Txt { Layout.fillWidth: true; text: bookDialog.isGain ? "مرجع الدليل (إيصال وزن / شهادة فحص) *" : "المرجع (اختياري)" }
                             Field { id: bookReference; objectName: "bookReferenceField"; Layout.fillWidth: true }
                         }
                     }
@@ -1218,6 +1374,7 @@ Item {
                     }
                     Btn { objectName: "addBookLineButton"; text: "＋ سطر آخر"; accent: theme.textSecondary
                           enabled: bookModel.count < 8
+                          visible: !bookDialog.singleLine
                           onClicked: { bookModel.append({ basisIndex: 0, karatIndex: 0, fineness: "", weight: "", price: "" }); bookDialog.refreshLines() } }
                     Rectangle {
                         Layout.fillWidth: true
@@ -1243,6 +1400,8 @@ Item {
                                   text: "إجمالي الثمن: " + (bookDialog.preview.totalText || "") + (bookDialog.preview.referenceText ? " • " + bookDialog.preview.referenceText : "")
                                         + (bookDialog.preview.deviationText ? " • الفرق " + bookDialog.preview.deviationText : "")
                                   color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "bookPreviewCredit"; Layout.fillWidth: true; visible: bookDialog.creditText !== ""
+                                  text: bookDialog.creditText; color: theme.gold; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                             Txt { objectName: "bookPreviewWarning"; Layout.fillWidth: true; visible: bookDialog.preview.warning === true
                                   text: bookDialog.preview.warningText || ""; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                             Txt { objectName: "bookPreviewError"; Layout.fillWidth: true; visible: !!bookDialog.preview.error
@@ -1250,6 +1409,15 @@ Item {
                             Item { Layout.preferredHeight: 2 }
                         }
                     }
+                    Txt { Layout.fillWidth: true; visible: bookDialog.isGain; text: "شرح الزيادة *" }
+                    Field { id: gainExplanation; objectName: "gainExplanationField"; Layout.fillWidth: true; visible: bookDialog.isGain; maximumLength: 500 }
+                    CheckBox { id: gainConfirmed; objectName: "gainConfirmedCheck"; Layout.fillWidth: true; visible: bookDialog.isGain; enabled: !!page.vm && !page.vm.writing; font.family: "Cairo"
+                               indicator: Rectangle { implicitWidth: 18; implicitHeight: 18; x: gainConfirmed.width - width; y: (gainConfirmed.height - height) / 2; radius: 3
+                                           border.color: theme.gold; color: gainConfirmed.checked ? theme.gold : theme.bgPrimary
+                                           Canvas { anchors.fill: parent; property bool checked: gainConfirmed.checked; onCheckedChanged: requestPaint()
+                                                    onPaint: { var c = getContext("2d"); c.clearRect(0, 0, width, height); if (checked) { c.strokeStyle = theme.bgPrimary; c.lineWidth = 2; c.beginPath(); c.moveTo(4, 9); c.lineTo(8, 13); c.lineTo(14, 5); c.stroke(); } } } }
+                               text: "أؤكد أن هذه الزيادة ثابتة بالوزن أو الفحص المذكور، وليست تغطية لعجز في الدفتر"
+                               contentItem: Txt { text: gainConfirmed.text; wrapMode: Text.WordWrap; elide: Text.ElideNone; rightPadding: gainConfirmed.indicator.width + 8; leftPadding: 0 } }
                     Txt { Layout.fillWidth: true; text: "ملاحظات" }
                     Field { id: bookNotes; objectName: "bookNotesField"; Layout.fillWidth: true }
                 }
@@ -2858,6 +3026,113 @@ Item {
                       onClicked: page.vm.approveReconciliation(reconApprovalDialog.tripId, reconApprovalDialog.reason ? reconApprovalDialog.reason.id : "", reconNote.text, reconDate.text,
                                 {recording_complete: reconComplete.checked, loss_recognised_as_posted: reconLoss.checked, rounding_separate: reconRounding.checked}, reconApprovalDialog.requestKey) }
                 Btn { objectName: "cancelReconciliationApproval"; text: "إلغاء"; enabled: !page.vm.writing; onClicked: reconApprovalDialog.close() }
+            }
+        }
+    }
+
+    // ---- the detail report of reconciliations and evidenced gains (read only; the totals are provisional and never final)
+    Popup {
+        id: reportDialog
+        objectName: "bookReportDialog"
+        function openFor() {
+            if (!page.vm) return
+            var today = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            reportTo.text = today
+            reportFrom.text = Qt.formatDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1), "yyyy-MM-dd")
+            page.vm.loadReport(reportFrom.text, reportTo.text)
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(760, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 640, 640)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { objectName: "reportTitle"; Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection
+                  text: "تقرير الفاقد والزيادة المثبتة — العهد الدفترية" }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Txt { text: "من" }
+                Field { id: reportFrom; objectName: "reportFromField"; Layout.preferredWidth: 140; maximumLength: 10 }
+                Txt { text: "إلى" }
+                Field { id: reportTo; objectName: "reportToField"; Layout.preferredWidth: 140; maximumLength: 10 }
+                Btn { objectName: "reportApplyButton"; text: "عرض"; primary: true; enabled: !!page.vm && !page.vm.report.loading
+                      onClicked: page.vm.loadReport(reportFrom.text, reportTo.text) }
+                Item { Layout.fillWidth: true }
+                Btn { objectName: "reportCloseButton"; text: "إغلاق"; accent: theme.textSecondary; onClicked: reportDialog.close() }
+            }
+            Txt { objectName: "reportLoading"; Layout.fillWidth: true; visible: !!page.vm && !!page.vm.report.loading; color: theme.textMuted; text: "جارٍ التحميل…" }
+            Txt { objectName: "reportError"; Layout.fillWidth: true; visible: !!page.vm && !!page.vm.report.error; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: page.vm ? (page.vm.report.error || "") : "" }
+            Txt { objectName: "reportEmpty"; Layout.fillWidth: true; visible: !!page.vm && page.vm.report.empty === true && !page.vm.report.loading; color: theme.textMuted
+                  text: "لا توجد تسويات أو زيادات مثبتة في هذه الفترة." }
+            Txt { objectName: "reportTotals"; Layout.fillWidth: true; visible: !!page.vm && !!page.vm.report.totalsText; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: page.vm ? (page.vm.report.totalsText || "") : "" }
+            Flickable {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentHeight: reportColumn.implicitHeight
+                clip: true
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: reportColumn
+                    width: parent.width - 12
+                    spacing: 5
+                    Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; visible: !!page.vm && (page.vm.report.reconciliations || []).length > 0; text: "التسويات" }
+                    Repeater {
+                        model: page.vm ? (page.vm.report.reconciliations || []) : []
+                        delegate: Rectangle {
+                            id: reportReconRow
+                            required property var modelData
+                            objectName: "reportReconciliationRow"
+                            Layout.fillWidth: true
+                            implicitHeight: reportReconColumn.implicitHeight + 12
+                            radius: theme.radiusSmall; color: theme.panel; border.color: theme.border
+                            opacity: modelData.reversed ? 0.6 : 1
+                            ColumnLayout {
+                                id: reportReconColumn
+                                anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                anchors.leftMargin: 10; anchors.rightMargin: 12
+                                spacing: 1
+                                Txt { Layout.fillWidth: true; font.bold: true; text: page.ltr(reportReconRow.modelData.tripCode) + " • " + page.ltr(reportReconRow.modelData.code) }
+                                Txt { Layout.fillWidth: true; color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone; text: reportReconRow.modelData.text }
+                                Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                      text: "التاريخ الفعلي " + reportReconRow.modelData.date + " • سُجّلت " + reportReconRow.modelData.recorded
+                                            + (reportReconRow.modelData.state !== "" ? " • " + reportReconRow.modelData.state : "") }
+                            }
+                        }
+                    }
+                    Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; visible: !!page.vm && (page.vm.report.gains || []).length > 0; text: "الزيادات المثبتة" }
+                    Repeater {
+                        model: page.vm ? (page.vm.report.gains || []) : []
+                        delegate: Rectangle {
+                            id: reportGainRow
+                            required property var modelData
+                            objectName: "reportGainRow"
+                            Layout.fillWidth: true
+                            implicitHeight: reportGainColumn.implicitHeight + 12
+                            radius: theme.radiusSmall; color: theme.panel; border.color: theme.border
+                            opacity: modelData.reversed ? 0.6 : 1
+                            ColumnLayout {
+                                id: reportGainColumn
+                                anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                anchors.leftMargin: 10; anchors.rightMargin: 12
+                                spacing: 1
+                                Txt { Layout.fillWidth: true; font.bold: true; text: page.ltr(reportGainRow.modelData.tripCode) + " • " + page.ltr(reportGainRow.modelData.code) }
+                                Txt { Layout.fillWidth: true; color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone; text: reportGainRow.modelData.text }
+                                Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                      text: "التاريخ الفعلي " + reportGainRow.modelData.date + " • سُجّلت " + reportGainRow.modelData.recorded
+                                            + (reportGainRow.modelData.state !== "" ? " • " + reportGainRow.modelData.state : "") }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

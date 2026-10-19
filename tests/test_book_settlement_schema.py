@@ -75,11 +75,11 @@ def row_of(settlement):
 class ForwardMigrationTests(unittest.TestCase):
     def test_it_is_the_next_file_of_the_chain_and_the_manifest_matches(self):
         files = load_chain(require_committed=False)
-        self.assertEqual((len(files), LAST, files[-1].name), (57, 57, "057_market_trip_reconciliation.sql"))
-        self.assertEqual(files[-1].sha256, sha256_of((SCHEMA_DIR / files[-1].name).read_bytes()))
+        self.assertEqual((len(files), LAST, files[56].name), (59, 59, "057_market_trip_reconciliation.sql"))      # 058 and 059 follow it (Phase 2)
+        self.assertEqual(files[56].sha256, sha256_of((SCHEMA_DIR / files[56].name).read_bytes()))
         manifest = (SCHEMA_DIR / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
-        self.assertEqual(manifest[-1], f"{hashlib.sha256(FORWARD.replace(chr(13) + chr(10), chr(10)).encode()).hexdigest()}  057_market_trip_reconciliation.sql")
-        self.assertEqual(REQUIRED_SCHEMA_LEVEL, 57)
+        self.assertEqual(manifest[56], f"{hashlib.sha256(FORWARD.replace(chr(13) + chr(10), chr(10)).encode()).hexdigest()}  057_market_trip_reconciliation.sql")
+        self.assertEqual(REQUIRED_SCHEMA_LEVEL, 59)
 
     def test_it_refuses_without_056_and_every_step_is_guarded(self):
         self.assertIn("version=56", FORWARD)
@@ -109,7 +109,8 @@ class ForwardMigrationTests(unittest.TestCase):
         self.assertEqual(len(re.findall(r"CHECK_CLAUSE NOT LIKE '%BK_RECON%'", FORWARD)), 2)
 
     def test_the_book_kinds_set_of_the_rules_stays_the_four_gold_kinds(self):
-        self.assertEqual(br.BOOK_KINDS, (br.BK_ISSUE, br.BK_BUY, br.BK_SELL, br.BK_RETURN))        # BK_RECON is no gold kind: no line, leg, trade or stock row
+        self.assertEqual(br.PHASE1_KINDS, (br.BK_ISSUE, br.BK_BUY, br.BK_SELL, br.BK_RETURN))      # BK_RECON is no gold kind: no line, leg, trade or stock row
+        self.assertNotIn(br.BK_RECON, br.BOOK_KINDS)
         self.assertTrue(br.kind_allowed_in_mode(br.BK_RECON, br.BOOK))
         self.assertFalse(br.kind_allowed_in_mode(br.BK_RECON, br.LEGACY))
         with self.assertRaises(br.BookError):

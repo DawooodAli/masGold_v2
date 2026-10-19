@@ -30,7 +30,7 @@ def _overlay(window):
 
 def _flick(item):
     parent = item.parentItem()
-    while parent is not None and parent.objectName() != "partyScroll":
+    while parent is not None and parent.objectName() not in ("partyScroll", "tripDetailScroll"):
         parent = parent.parentItem()
     if parent is None:
         return None

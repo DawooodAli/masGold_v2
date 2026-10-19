@@ -40,7 +40,15 @@ RECON_ALGORITHM = "book-recon-v1"
 SOURCE_ALGORITHM = "book-recon-source-v1"
 SNAPSHOT_FORMAT = "book-recon-snapshot-v1"
 CONTRACT_VERSIONS = {"recon_algorithm": RECON_ALGORITHM, "source_algorithm": SOURCE_ALGORITHM, "snapshot_format": SNAPSHOT_FORMAT}
-SOURCE_KINDS = rec.SOURCE_KINDS
+# 058: a trip that contains a Phase 2 kind is digested and snapshotted in the v2 formats (eight source kinds, the posting basis / stock item of an allocated line and
+# the counterparty legs); a trip without one keeps the v1 formats BYTE FOR BYTE, so every v1 record stays verifiable unchanged.
+SOURCE_ALGORITHM_V2, SNAPSHOT_FORMAT_V2 = "book-recon-source-v2", "book-recon-snapshot-v2"
+CONTRACT_VERSIONS_V2 = {"recon_algorithm": RECON_ALGORITHM, "source_algorithm": SOURCE_ALGORITHM_V2, "snapshot_format": SNAPSHOT_FORMAT_V2}
+SOURCE_ALGORITHM_V3, SNAPSHOT_FORMAT_V3 = "book-recon-source-v3", "book-recon-snapshot-v3"     # 059: trips that contain an evidenced gain (BK_GAIN)
+CONTRACT_VERSIONS_V3 = {"recon_algorithm": RECON_ALGORITHM, "source_algorithm": SOURCE_ALGORITHM_V3, "snapshot_format": SNAPSHOT_FORMAT_V3}
+V1_KINDS, V2_KINDS, V3_KINDS = br.PHASE1_KINDS, br.PHASE1_KINDS + br.PHASE2_KINDS, br.PHASE1_KINDS + br.PHASE2_KINDS + br.GAIN_KINDS
+ALL_VERSIONS = (CONTRACT_VERSIONS, CONTRACT_VERSIONS_V2, CONTRACT_VERSIONS_V3)
+SOURCE_KINDS = rec.SOURCE_KINDS                                           # every gold kind the reads classify (= V2_KINDS)
 BK_RECON = br.BK_RECON
 REVERSAL = "FULL_REVERSAL"
 
@@ -209,7 +217,8 @@ def _validated_lines(entry, rows, code):
             raise SettlementDataError(f"{code}: duplicate line {line['line_no']}")
         numbers.add(line["line_no"])
         exact = br.analytical(line["weight_grams"], line["basis"], line["karat_value"], line["fineness_permille"])
-        if (line["eq21_posted"] != br.post(exact) or line["eq21_analytical"] != br.evidence(exact)
+        allocated = line.get("posting_basis") == br.ALLOCATED_BASIS
+        if ((not allocated and line["eq21_posted"] != br.post(exact)) or line["eq21_analytical"] != br.evidence(exact)
                 or line["posting_difference"] != br.round_half_up(Fraction(line["eq21_posted"]) - exact, br.EVIDENCE_PLACES)
                 or line["signed_eq21_posted"] != (line["eq21_posted"] if line["direction"] == br.IN else -line["eq21_posted"])):
             raise SettlementDataError(f"{code}: line {line['line_no']} posted / evidence figures do not match its physical facts")
@@ -249,6 +258,34 @@ def source_entries(source):
             raise SettlementDataError("invalid stock record row (identity, item, grams or posted figure missing)")
         stock.setdefault(item, []).append({"id": istr(stock_id), "item_entry_id": istr(item), "item_line_no": istr(number), "movement_type": row["movement_type"],
                                            "grams_delta": fixed(grams, 3), "eq21_posted_delta": fixed(posted, 3), "_order": stock_id})
+    issues, suppliers, marketer, gains = {}, {}, {}, {}
+    for row in source.get("stock_issues") or []:
+        if row.get("movement_type") == br.ISSUE_STOCK:
+            if (_id(row.get("id")) is None or rec._num(row.get("grams_delta")) is None or rec._num(row.get("eq21_posted_delta")) is None
+                    or rec._num(row.get("eq21_independent")) is None or row.get("posting_basis") not in (br.INDEPENDENT_BASIS, br.ALLOCATED_BASIS)):
+                raise SettlementDataError("invalid stock issue row")
+            issues.setdefault(_id(row.get("source_entry_id")), []).append(
+                {"id": istr(_id(row["id"])), "item_entry_id": istr(_id(row["item_entry_id"])), "item_line_no": istr(_id(row["item_line_no"])),
+                 "grams_delta": fixed(rec._num(row["grams_delta"]), 3), "eq21_posted_delta": fixed(rec._num(row["eq21_posted_delta"]), 3),
+                 "posting_basis": row["posting_basis"], "eq21_independent": fixed(rec._num(row["eq21_independent"]), 3)})
+    for row in source.get("suppliers") or []:
+        if _id(row.get("settlement_id")) is None or rec._num(row.get("credited_weight_grams")) is None:
+            raise SettlementDataError("invalid supplier link row")
+        suppliers[_id(row.get("entry_id"))] = {"settlement_id": istr(_id(row["settlement_id"])), "supplier_id": istr(_id(row["supplier_id"])),
+                                               "weight_grams": fixed(rec._num(row["weight_grams"]), 3), "target_karat_value": istr(int(row["target_karat_value"])),
+                                               "credited_weight_grams": fixed(rec._num(row["credited_weight_grams"]), 3)}
+    for row in source.get("marketer") or []:
+        if row.get("movement_type") in ("TRIP_BOOK_IN", "TRIP_BOOK_OUT"):
+            if _id(row.get("id")) is None or rec._num(row.get("weight_delta")) is None:
+                raise SettlementDataError("invalid marketer leg row")
+            marketer[_id(row.get("trip_entry_id"))] = {"id": istr(_id(row["id"])), "party_id": istr(_id(row["party_id"])), "movement_type": row["movement_type"],
+                                                       "weight_delta": fixed(rec._num(row["weight_delta"]), 3)}
+    for row in source.get("gains") or []:
+        if not isinstance(row, dict) or _id(row.get("entry_id")) is None or not rec._text(row.get("explanation")) or not rec._text(row.get("evidence_reference")) \
+                or _id(row.get("confirmed_by_user_id")) is None:
+            raise SettlementDataError("invalid gain record row")
+        gains[_id(row["entry_id"])] = {"explanation": row["explanation"].strip(), "evidence_reference": row["evidence_reference"].strip(),
+                                       "confirmed_by_user_id": istr(_id(row["confirmed_by_user_id"]))}
     entries, seen = [], set()
     rows = [r for r in source.get("entries") or []]
     for row in rows:
@@ -283,11 +320,24 @@ def source_entries(source):
                           "line_price": None if line["line_price"] is None else fixed(line["line_price"], 2),
                           "scrap_movement_id": None if line["scrap_movement_id"] is None else istr(line["scrap_movement_id"]),
                           "a_units": istr(line_units(line))})
+            if kind == br.BK_ISS_STK:                                        # v2-only keys: never present on a v1 line
+                lines[-1].update(posting_basis=line["posting_basis"], stock_item=f"{line['stock_item'][0]}/{line['stock_item'][1]}")
             leg_id = line["scrap_movement_id"]
             if leg_id is not None and leg_id in legs:
                 entry_legs.append(legs[leg_id])
         trade = trades.get(entry_id)
-        entries.append({"id": istr(entry_id), "entry_no": istr(number), "kind": kind, "entry_date": entry_date.isoformat(),
+        evidence = {}
+        if kind == br.BK_ISS_STK:
+            evidence["stock_issues"] = sorted(issues.get(entry_id, []), key=lambda r: int(r["id"]))
+        elif kind == br.BK_DLV_SUP:
+            evidence["supplier"] = suppliers.get(entry_id)
+        elif kind in (br.BK_DLV_MKT, br.BK_RECEIVE):
+            evidence["marketer"] = marketer.get(entry_id)
+        elif kind == br.BK_GAIN:                                             # v3-only evidence: the owner's explanation, evidence reference and confirming user
+            if entry_id not in gains:
+                raise SettlementDataError(f"{code}: gain document has no gain record")
+            evidence["gain"] = gains[entry_id]
+        entries.append({**evidence, "id": istr(entry_id), "entry_no": istr(number), "kind": kind, "entry_date": entry_date.isoformat(),
                         "state": "EFFECTIVE" if correction_id is None else "REVERSED",
                         "correction_id": None if correction_id is None else istr(correction_id),
                         "correction_type": None if correction_id is None else REVERSAL,
@@ -298,14 +348,30 @@ def source_entries(source):
 
 # ------------------------------------------------------------------ the source digest
 _DIGEST_LINE_KEYS = ("line_no", "direction", "basis", "karat_id", "karat_value", "fineness_permille", "weight_grams", "eq21_posted")
+_DIGEST_LINE_KEYS_V2 = ("posting_basis", "stock_item")                   # present only on an allocated (BK_ISS_STK) line
+
+
+def versions_for(entries):
+    """The contract versions a trip's content demands, the LOWEST that covers it: v3 as soon as one BK_GAIN is present (059), else v2 as soon as one Phase 2 kind is
+    present (058), else v1. A version's kind list, line keys and evidence never change once defined, so every older record keeps its exact bytes and digests."""
+    kinds = {e["kind"] for e in entries}
+    if kinds & set(br.GAIN_KINDS):
+        return dict(CONTRACT_VERSIONS_V3)
+    return dict(CONTRACT_VERSIONS_V2 if kinds & set(br.PHASE2_KINDS) else CONTRACT_VERSIONS)
+
+
+def _kinds_of(source_algorithm):
+    return list({SOURCE_ALGORITHM_V2: V2_KINDS, SOURCE_ALGORITHM_V3: V3_KINDS}.get(source_algorithm, V1_KINDS))
 
 
 def source_payload(trip_id, entries):
     """The facts the source digest fingerprints, projected from snapshot-shaped entries (so the live rows and a stored snapshot produce the SAME bytes)."""
-    return {"algorithm": SOURCE_ALGORITHM, "trip_id": istr(trip_id), "accounting_mode": br.BOOK, "source_kinds": list(SOURCE_KINDS),
+    algorithm = versions_for(entries)["source_algorithm"]
+    return {"algorithm": algorithm, "trip_id": istr(trip_id), "accounting_mode": br.BOOK, "source_kinds": _kinds_of(algorithm),
             "entries": [{"id": e["id"], "entry_no": e["entry_no"], "kind": e["kind"], "state": e["state"], "correction_id": e["correction_id"],
                          "correction_type": e["correction_type"],
-                         "lines": [{k: l[k] for k in _DIGEST_LINE_KEYS} for l in sorted(e["lines"], key=lambda l: int(l["line_no"]))]}
+                         "lines": [{k: l[k] for k in _DIGEST_LINE_KEYS + _DIGEST_LINE_KEYS_V2 if k in l}
+                                   for l in sorted(e["lines"], key=lambda l: int(l["line_no"]))]}
                         for e in sorted(entries, key=lambda e: int(e["id"]))]}
 
 
@@ -432,7 +498,9 @@ def check_capacity(settlement, generation=None):
 # ------------------------------------------------------------------ the stored snapshot
 def snapshot_object(trip_id, entries, settlement):
     """The full snapshot (facts, evidence, identities, totals, versions): an object of strings, None and bools only."""
-    return {"snapshot_version": SNAPSHOT_FORMAT, "recon_algorithm": RECON_ALGORITHM, "source_algorithm": SOURCE_ALGORITHM, "source_kinds": list(SOURCE_KINDS),
+    versions = versions_for(entries)
+    return {"snapshot_version": versions["snapshot_format"], "recon_algorithm": RECON_ALGORITHM, "source_algorithm": versions["source_algorithm"],
+            "source_kinds": _kinds_of(versions["source_algorithm"]),
             "trip": {"id": istr(trip_id), "mode": br.BOOK, "code": f"MT{trip_id:06d}"}, "units": {"denominator": istr(UNITS_PER_GRAM)},
             "entries": sorted(entries, key=lambda e: int(e["id"])), "totals": settlement.totals()}
 
@@ -461,8 +529,9 @@ def verify_snapshot(snapshot):
     problems = []
     try:
         _check_leaves(snapshot)
-        if (snapshot.get("snapshot_version") != SNAPSHOT_FORMAT or snapshot.get("recon_algorithm") != RECON_ALGORITHM or snapshot.get("source_algorithm") != SOURCE_ALGORITHM
-                or snapshot.get("source_kinds") != list(SOURCE_KINDS)):
+        versions = versions_for(snapshot["entries"])
+        if (snapshot.get("snapshot_version") != versions["snapshot_format"] or snapshot.get("recon_algorithm") != RECON_ALGORITHM
+                or snapshot.get("source_algorithm") != versions["source_algorithm"] or snapshot.get("source_kinds") != _kinds_of(versions["source_algorithm"])):
             return ["VERSION_MISMATCH"]
         trip_id = int(snapshot["trip"]["id"])
         entries = snapshot["entries"]
@@ -474,7 +543,7 @@ def verify_snapshot(snapshot):
                 posted = Decimal(line["eq21_posted"])
                 if line["a_units"] != istr(exact_units(exact)):
                     problems.append("LINE_UNITS_MISMATCH")
-                if posted != br.post(exact) or line["eq21_analytical"] != fixed(br.evidence(exact), 6):
+                if (line.get("posting_basis") != br.ALLOCATED_BASIS and posted != br.post(exact)) or line["eq21_analytical"] != fixed(br.evidence(exact), 6):
                     problems.append("LINE_EVIDENCE_MISMATCH")
                 if line["posting_difference"] != fixed(br.round_half_up(Fraction(posted) - exact, br.EVIDENCE_PLACES), 6):
                     problems.append("LINE_DIFFERENCE_MISMATCH")
@@ -510,9 +579,10 @@ def verify_record(row):
     try:
         if row.get("algorithm") != RECON_ALGORITHM:
             problems.append("ALGORITHM_MISMATCH")
-        if row.get("source_algorithm") != SOURCE_ALGORITHM:
+        expected = versions_for(snapshot["entries"])                       # v1 for a trip without a Phase 2 kind, v2 otherwise (058)
+        if row.get("source_algorithm") != expected["source_algorithm"]:
             problems.append("SOURCE_ALGORITHM_MISMATCH")
-        if row.get("snapshot_format") != SNAPSHOT_FORMAT:
+        if row.get("snapshot_format") != expected["snapshot_format"]:
             problems.append("SNAPSHOT_FORMAT_MISMATCH")
         if (_id(row.get("trip_id")) != _id(snapshot["trip"]["id"])
                 or row.get("trip_mode") != snapshot["trip"]["mode"] or row.get("entry_kind") != BK_RECON):
@@ -552,9 +622,10 @@ def clean_confirmations(confirmations):
 
 
 def clean_versions(versions):
-    if versions != CONTRACT_VERSIONS:
+    """The versions the owner's preview was shown in: v1, v2 or v3 (which one the trip's content demands is checked under the locks)."""
+    if versions not in ALL_VERSIONS:
         raise br.BookError("RECONCILIATION_CONTRACT_MISMATCH", "إصدار عقد التسوية الذي عُرضت به الأرقام لا يطابق إصدار النظام: أعد فتح المعاينة.")
-    return dict(CONTRACT_VERSIONS)
+    return dict(versions)
 
 
 def clean_reason(reason_code, note):
@@ -617,13 +688,13 @@ def resolve_effective_date(marker, floor, today):
     return chosen
 
 
-def request_payload(trip_id, source_digest_text, date_marker, reason_code, note, confirmations):
+def request_payload(trip_id, source_digest_text, date_marker, reason_code, note, confirmations, versions=None):
     return {"kind": BK_RECON, "trip_id": istr(trip_id), "source_digest": source_digest_text, "effective_date": date_marker, "reason_code": reason_code, "note": note,
-            "confirmations": dict(confirmations), "contract_versions": dict(CONTRACT_VERSIONS)}
+            "confirmations": dict(confirmations), "contract_versions": dict(versions or CONTRACT_VERSIONS)}
 
 
-def request_hash(trip_id, source_digest_text, date_marker, reason_code, note, confirmations):
-    return digest_of(request_payload(trip_id, source_digest_text, date_marker, reason_code, note, confirmations))
+def request_hash(trip_id, source_digest_text, date_marker, reason_code, note, confirmations, versions=None):
+    return digest_of(request_payload(trip_id, source_digest_text, date_marker, reason_code, note, confirmations, versions))
 
 
 def confirmation_texts(a_text, loss_text, a_units=None):

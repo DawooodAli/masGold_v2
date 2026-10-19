@@ -138,6 +138,8 @@ class _Plan:
     receipts: list = field(default_factory=list)         # (pool id, receipt id, piece id, grams) a physical receipt reversal: stock out, holding grams back (051)
     marketer: list = field(default_factory=list)         # (ledger CASH/GOLD, party id, document id, doc kind, settlement id, movement type, magnitude, signed delta) marketer compensations (055)
     book_stock: list = field(default_factory=list)       # (entry id, line no, grams, posted, analytical evidence, difference) a BK_RETURN reversal: the assayed stock item leaves (056)
+    stock_issue_reversals: list = field(default_factory=list)   # (item entry, item line, grams, posted, analytical, difference, independent, basis) a BK_ISS_STK reversal (058)
+    marketer_trip: list = field(default_factory=list)    # (party id, entry id, entry kind, movement type, grams, signed delta) a BK_DLV_MKT / BK_RECEIVE reversal (058)
 
 
 def _reason(text):
@@ -264,6 +266,19 @@ class CorrectionService:
                 if source["entry_kind"] == "BK_RETURN":          # 056: trip -> stock item rows (ascending) -> Scrap karats; a later consumer of an item locks the same way
                     for item in repo.entry_stock_items(source_id):
                         repo.stock_item(source_id, item["line_no"], lock=True)
+                if source["entry_kind"] == "BK_ISS_STK":         # 058: trip -> the consumed stock items (ascending), the same order as the issue
+                    for item in repo.entry_stock_issues(source_id):
+                        repo.stock_item(item["item_entry_id"], item["item_line_no"], lock=True)
+                if source["entry_kind"] == "BK_DLV_SUP":         # 058: trip -> supplier (the delivery's own order)
+                    delivery = repo.entry_book_supplier(source_id)
+                    if delivery is not None:
+                        from repositories.supplier_gold_settlement_repository import SupplierGoldSettlementRepository as _BookSuppliers
+                        _BookSuppliers(connection).get_supplier(delivery["supplier_id"], lock=True)
+                if source["entry_kind"] in ("BK_DLV_MKT", "BK_RECEIVE"):     # 058: trip -> the marketer account
+                    marketer_leg = repo.entry_marketer_leg(source_id)
+                    if marketer_leg is not None:
+                        from repositories.marketer_custody_repository import MarketerCustodyRepository as _BookMarketers
+                        _BookMarketers(connection).party(marketer_leg["party_id"], lock=True)
                 logo_link = holdings.logo_link_by_entry(source_id)             # 049: trip -> party -> LOGO pool (no lots)
                 if hold_link is not None:
                     from repositories.supplier_gold_settlement_repository import SupplierGoldSettlementRepository as _Parties
@@ -789,6 +804,38 @@ class CorrectionService:
                                           f"لا يمكن عكس الرجوع لأن جزءًا من الذهب العائد بعيار فعلي (سطر {int(item['line_no'])}) استُخدم بعد تسجيله: المتبقي "
                                           f"{held:,.3f} من {grams:,.3f} جرام — اعكس الحركة التي استخدمته أولًا."))
                 plan.book_stock.append((int(source_id), int(item["line_no"]), grams, posted, Decimal(str(item["eq21_analytical"])), Decimal(str(item["posting_difference"]))))
+        if kind == book_rules.BK_ISS_STK:
+            # 058: the STORED issue rows are compensated (grams and allocated share back to each item); the book side stops counting with the entry
+            issues = trips.entry_stock_issues(source_id)
+            if not issues:
+                plan.blockers.append(("BOOK_STOCK_LEG_MISSING", "حركات إخراج المخزون الأصلية غير موجودة."))
+            for item in issues:
+                plan.stock_issue_reversals.append((int(item["item_entry_id"]), int(item["item_line_no"]), -Decimal(str(item["grams_delta"])),
+                                                   -Decimal(str(item["eq21_posted_delta"])), Decimal(str(item["eq21_analytical"])),
+                                                   Decimal(str(item["posting_difference"])), Decimal(str(item["eq21_independent"])), item["posting_basis"]))
+        if kind == book_rules.BK_DLV_SUP:
+            # 058: the STORED supplier gold movement is negated (the credit is restored in the supplier's own karat, never recomputed)
+            from repositories.supplier_gold_settlement_repository import GOLD_REVERSAL
+            delivery = trips.entry_book_supplier(source_id)
+            if delivery is None or delivery["gold_movement_id"] is None:
+                plan.blockers.append(("SUPPLIER_LEG_MISSING", "حركة حساب المورد الأصلية لهذا التسليم غير موجودة."))
+            else:
+                plan.supplier_gold.append((int(delivery["supplier_id"]), int(delivery["gold_karat_id"]), -Decimal(str(delivery["weight_delta_grams"])),
+                                           -Decimal(str(delivery["equivalent_21_delta_grams"])), GOLD_REVERSAL))
+        if kind in (book_rules.BK_DLV_MKT, book_rules.BK_RECEIVE):
+            # 058: the STORED marketer leg gets its explicit compensation; a delivery whose grams the marketer no longer holds cannot be undone
+            leg = trips.entry_marketer_leg(source_id)
+            if leg is None:
+                plan.blockers.append(("MARKETER_LEG_MISSING", "حركة حساب المسوقجي الأصلية لهذا المستند غير موجودة."))
+            else:
+                grams, delta = Decimal(str(leg["weight_grams"])), Decimal(str(leg["weight_delta"]))
+                if kind == book_rules.BK_DLV_MKT:
+                    from repositories.marketer_custody_repository import MarketerCustodyRepository as _Held
+                    held = Decimal(str(_Held(trips.connection).gold_balance(leg["party_id"])))
+                    if held - grams < 0:
+                        plan.blockers.append(("DEPENDENT_MARKETER_USE_EXISTS",
+                                              f"لا يمكن عكس التسليم لأن المسوقجي لم يعد يحمل {grams:,.3f} جرام من استحقاقه (المتبقي {held:,.3f}) — اعكس ما استخدمه أولًا."))
+                plan.marketer_trip.append((int(leg["party_id"]), int(source_id), kind, leg["movement_type"] + "_REVERSAL", grams, -delta))
 
     def _plan_supplier_invoice(self, connection, plan, source, source_id, lock):
         """052: the exact STORED purchase movements are negated (never recomputed). A piece intaken from the invoice is real inventory with its own
@@ -1068,6 +1115,8 @@ class CorrectionService:
             "holding_settlements": [{"pool_id": p, "settlement_id": s, "logo": logo, "delta": str(g)} for logo, p, s, g in plan.holding_settlements],
             "receipts": [{"pool_id": p, "receipt_id": r, "piece_id": i, "grams": str(g)} for p, r, i, g in plan.receipts],
             "book_stock": [{"entry_id": e, "line_no": n, "grams": str(g), "posted": str(p)} for e, n, g, p, _, _ in plan.book_stock],
+            "stock_issue_reversals": [{"item": f"{e}/{n}", "grams": str(g), "posted": str(p), "posting_basis": b} for e, n, g, p, _, _, _, b in plan.stock_issue_reversals],
+            "marketer_trip": [{"party_id": p, "movement": m, "delta": str(d)} for p, _, _, m, _, d in plan.marketer_trip],
             "marketer": [{"ledger": k, "party_id": p, "document_id": d, "settlement_id": s, "movement": m, "delta": str(delta)}
                          for k, p, d, _, s, m, _, delta in plan.marketer],
             "inventory": [{"inventory_item_id": i, "from": f, "to": t} for i, f, t, _ in plan.inventory],
@@ -1297,6 +1346,22 @@ class CorrectionService:
                                                        user_id=actor.user_id)
                     if tuple(Decimal(str(v)) for v in stock_ledger.stock_balance(entry_id, line_no)) != (Decimal("0.000"), Decimal("0.000")):
                         raise RuntimeError("assayed stock item is not empty after the return reversal")
+            if plan.stock_issue_reversals:
+                from repositories.market_trip_repository import MarketTripRepository as IssueStock
+                stock_ledger = IssueStock(connection)
+                for item_entry, item_line, grams, posted, analytical, difference, independent, basis in sorted(plan.stock_issue_reversals):
+                    stock_ledger.insert_stock_movement(item_entry_id=item_entry, item_line_no=item_line, movement_type=book_rules.ISSUE_REVERSAL, grams_delta=grams,
+                                                       posted_delta=posted, analytical=analytical, difference=difference, independent=independent,
+                                                       posting_basis=basis, source_entry_id=int(source_id), correction_id=correction_id,
+                                                       user_id=actor.user_id)
+            if plan.marketer_trip:
+                from repositories.marketer_custody_repository import MarketerCustodyRepository as TripMarketers
+                trip_marketers = TripMarketers(connection)
+                for party_id, entry_id, entry_kind, movement_type, grams, delta in plan.marketer_trip:
+                    trip_marketers.insert_gold_movement(party_id=party_id, movement_type=movement_type, weight=grams, delta=delta, correction_id=correction_id,
+                                                        trip_entry_id=entry_id, trip_entry_kind=entry_kind)
+                    if Decimal(str(trip_marketers.gold_balance(party_id))) < 0:
+                        raise RuntimeError("marketer gold balance below zero after the reversal")
             if plan.lot_issues:
                 from repositories.market_trip_repository import SHOP_ISSUE_REVERSAL, MarketTripRepository as IssueLedger
                 for lot_id, grams in sorted(plan.lot_issues):

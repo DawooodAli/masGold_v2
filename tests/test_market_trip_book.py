@@ -451,7 +451,7 @@ class ModeIsolationTests(BookCase):
         trip = self.issue([karat(K21, "5")])["trip_id"]
         self.ret(trip, [karat(K21, "5")])
         self.assertEqual((self.balance(trip)["posted"], self.custody_cash(trip)["outstanding"]), (D("0.000"), D("0.00")))
-        self.refused("BOOK_CLOSURE_NOT_AVAILABLE", lambda: self.service.close(trip))
+        self.refused("RECONCILIATION_REQUIRED", lambda: self.service.close(trip))               # no zero-balance shortcut: an approved reconciliation is required
         self.assertEqual(self.db.trips[int(trip)]["status"], "OPEN")
 
     def test_the_legacy_trip_still_closes_the_old_way(self):

@@ -31,6 +31,15 @@ class PositionReads:
     def custody_lots_by_trip(self):
         return {t["id"]: self.trips.custody_lots(t["id"]) for t in self.db.trips.values()}
 
+    def book_groups_by_trip(self):
+        return self.trips.book_groups_by_trip()
+
+    def effective_reconciliations_display(self):
+        return self.trips.effective_reconciliations_display()
+
+    def assayed_stock_items(self):
+        return self.trips.assayed_stock_items()
+
     def shop_scrap(self):
         return self.trips.shop_scrap()
 

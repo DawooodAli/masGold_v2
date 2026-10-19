@@ -238,7 +238,7 @@ class DigestTests(unittest.TestCase):
         _, entries, *_ = s.built()
         self.assertNotEqual(bs.source_digest(TRIP, entries), bs.source_digest(TRIP + 1, entries))
         payload = bs.source_payload(TRIP, entries)
-        self.assertEqual((payload["algorithm"], payload["accounting_mode"], payload["source_kinds"]), (bs.SOURCE_ALGORITHM, "BOOK", list(rec.SOURCE_KINDS)))
+        self.assertEqual((payload["algorithm"], payload["accounting_mode"], payload["source_kinds"]), (bs.SOURCE_ALGORITHM, "BOOK", list(bs.V1_KINDS)))        # a trip without a Phase 2 kind keeps the v1 payload
         changed = copy.deepcopy(payload)
         changed["algorithm"] = "book-recon-source-v2"
         self.assertNotEqual(bs.digest_of(payload), bs.digest_of(changed))
@@ -590,7 +590,7 @@ class SourceValidationTests(unittest.TestCase):
         self.assertIn("BALANCE_NOT_FULL", [c for c, _ in bs.readiness_problems(unreadable.preview())])
         unsupported = DatedSrc()
         unsupported.add(br.BK_ISSUE, [("5.000", K, 21)])
-        unsupported.entries.append({"id": 99, "trip_id": TRIP, "trip_mode": "BOOK", "entry_no": 99, "entry_kind": "BK_ISS_STK", "correction_id": None})
+        unsupported.entries.append({"id": 99, "trip_id": TRIP, "trip_mode": "BOOK", "entry_no": 99, "entry_kind": "BK_NEXT_KIND", "correction_id": None})
         self.assertIn("UNSUPPORTED_KIND", [c for c, _ in bs.readiness_problems(unsupported.preview())])
 
 

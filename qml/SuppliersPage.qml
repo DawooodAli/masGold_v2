@@ -10,6 +10,7 @@ import QtQuick.Layouts
 Item {
     id: page
     objectName: "suppliersPage"
+    signal tripRequested(string tripId)                                    // the marketer statement opens the market-trip custody page on the source trip
     property string pageTitle: ""
 
     readonly property var vm: typeof supplierVM !== "undefined" ? supplierVM : null
@@ -1358,6 +1359,36 @@ Item {
                                                                         + (marketerSettlementRow.modelData.state !== "" ? " • " + marketerSettlementRow.modelData.state : "") }
                                                             Btn { objectName: "marketerReverseSettlementButton"; visible: marketerSettlementRow.modelData.canReverse === true; text: "عكس"
                                                                   accent: theme.red; onClicked: marketerReverseDialog.openFor(marketerSettlementRow.modelData, true) }
+                                                        }
+                                                    }
+                                                }
+                                                Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                                                      visible: (page.mvm ? (page.mvm.account.tripLegs || []) : []).length > 0; text: "حركات استحقاقه من رحلات السوق الدفترية (مفسِّرة لتغيّر الرصيد)" }
+                                                Repeater {
+                                                    model: page.mvm ? (page.mvm.account.tripLegs || []) : []
+                                                    delegate: Rectangle {
+                                                        id: marketerTripLegRow
+                                                        required property var modelData
+                                                        objectName: "marketerTripLegRow"
+                                                        Layout.fillWidth: true
+                                                        implicitHeight: marketerTripLegLine.implicitHeight + 12
+                                                        radius: theme.radiusSmall; color: theme.panel; border.color: theme.border
+                                                        opacity: modelData.reversal ? 0.6 : 1
+                                                        ColumnLayout {
+                                                            id: marketerTripLegLine
+                                                            anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                                            anchors.leftMargin: 10; anchors.rightMargin: 12
+                                                            spacing: 1
+                                                            Txt { Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textSecondary; text: marketerTripLegRow.modelData.text }
+                                                            RowLayout {
+                                                                Layout.fillWidth: true
+                                                                layoutDirection: Qt.RightToLeft
+                                                                spacing: 8
+                                                                Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                                                                      text: marketerTripLegRow.modelData.date + " • " + marketerTripLegRow.modelData.note }
+                                                                Btn { objectName: "marketerTripLegOpen"; text: "فتح الرحلة"; accent: theme.textSecondary; implicitHeight: 26
+                                                                      onClicked: page.tripRequested(marketerTripLegRow.modelData.tripId) }
+                                                            }
                                                         }
                                                     }
                                                 }

@@ -282,6 +282,7 @@ class ApplicationController(QObject):
             stock_balance = self.operational_viewmodels.get("stockBalanceVM")
             # A Return (033) also puts its identified pieces into Scrap (held).
             finalized_signals = [getattr(exchange, "finalized", None), getattr(returned, "finalized", None)]
+            finalized_signals = [getattr(exchange, "finalized", None), getattr(returned, "finalized", None)]
             for source in (getattr(reviews, "inspectionResolved", None), *finalized_signals):
                 if source is None:
                     continue

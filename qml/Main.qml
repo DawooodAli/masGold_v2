@@ -3121,9 +3121,20 @@ ApplicationWindow {
                 }
 
 
-                PlaceholderPage {
+                // index 5: التقارير — the basic reports (read only): sales, stock, gold, customers, suppliers, treasury
+                ReportsPage {
+                    id: reportsPage
                     pageTitle: "📊 التقارير"
-                    description: "التحليل والرسوم البيانية والتوقعات"
+                    onInvoiceRequested: function(invoiceId) {
+                        root.currentPage = 1
+                        billingWorkspace.currentTab = 1
+                        invoiceHistoryVM.openInvoice(invoiceId)
+                    }
+                    onCustomerRequested: function(customerId) { root.openCustomerDetails(customerId) }
+                    onTripRequested: function(tripId) {
+                        root.currentPage = 15
+                        if (typeof marketTripVM !== "undefined") marketTripVM.selectTrip(tripId)
+                    }
                 }
 
 
@@ -3181,6 +3192,10 @@ ApplicationWindow {
                 SuppliersPage {
                     objectName: "suppliersPage"
                     pageTitle: "🤝 الموردون"
+                    onTripRequested: function(tripId) {
+                        root.currentPage = 15
+                        if (typeof marketTripVM !== "undefined") marketTripVM.selectTrip(tripId)
+                    }
                 }
 
                 // index 15: عهدة السوق — custody of cash and Scrap taken to the market (OWNER only)
@@ -3318,8 +3333,8 @@ ApplicationWindow {
 
                 NavButton {
                     objectName: "reportsNavButton"
-                    // Placeholder page kept for later; hidden until it has real content.
-                    visible: false
+                    // Shown when the user may open at least one report (each report re-checks its own rights in the service).
+                    visible: reportsPage.canView
                     text: "📊  التقارير"
                     selected: root.currentPage === 5
 

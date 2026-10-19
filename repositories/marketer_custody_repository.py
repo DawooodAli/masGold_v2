@@ -121,7 +121,14 @@ class MarketerCustodyRepository(BaseRepository):
             (_id(party_id), _id(document_id), doc_kind, movement_type, amount, delta, None if correction_id is None else _id(correction_id)))
         return int(movement_id)
 
-    def insert_gold_movement(self, *, party_id, document_id=None, doc_kind=None, settlement_id=None, movement_type, weight, delta, correction_id=None):
+    def insert_gold_movement(self, *, party_id, document_id=None, doc_kind=None, settlement_id=None, movement_type, weight, delta, correction_id=None,
+                             trip_entry_id=None, trip_entry_kind=None):
+        if trip_entry_id is not None:                                     # 058: a leg of a BOOK trip entry (BK_DLV_MKT / BK_RECEIVE); never a document or settlement
+            movement_id, _ = self._execute(
+                "INSERT INTO marketer_gold_movements (party_id, karat_value, trip_entry_id, trip_entry_kind, movement_type, weight_grams, weight_delta, correction_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (_id(party_id), KARAT_VALUE, _id(trip_entry_id), trip_entry_kind, movement_type, weight, delta, None if correction_id is None else _id(correction_id)))
+            return int(movement_id)
         movement_id, _ = self._execute(
             "INSERT INTO marketer_gold_movements (party_id, karat_value, document_id, doc_kind, settlement_id, movement_type, weight_grams, weight_delta, "
             "correction_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
@@ -232,6 +239,17 @@ class MarketerCustodyRepository(BaseRepository):
     def settlement_gold_movement(self, settlement_id):
         """The marketer gold movement of a settlement (its stored delivered grams)."""
         return self._fetch_one("SELECT * FROM marketer_gold_movements WHERE settlement_id = %s AND movement_type = %s", (_id(settlement_id), MOVE_SETTLEMENT))
+
+    def trip_movements(self, party_id, limit=300):
+        """DISPLAY: the 21K legs of BOOK trip entries for this marketer (058; none before it): delivered from / received into a BOOK trip, with reversals."""
+        exists = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'marketer_gold_movements' "
+                                 "AND COLUMN_NAME = 'trip_entry_id'")
+        if not exists or not int(exists["n"]):
+            return []
+        return self._fetch_all(
+            """SELECT m.id, m.trip_entry_id, m.trip_entry_kind, m.movement_type, m.weight_grams, m.weight_delta, m.created_at, e.trip_id, e.entry_no, e.entry_date
+               FROM marketer_gold_movements m JOIN market_trip_entries e ON e.id = m.trip_entry_id
+               WHERE m.party_id = %s ORDER BY m.id DESC LIMIT %s""", (_id(party_id), int(limit)))
 
     def history_count(self, party_id):
         """Every marketer document of the party, reversed ones included (a CURRENT read): it keeps the intermediary role and the party row."""

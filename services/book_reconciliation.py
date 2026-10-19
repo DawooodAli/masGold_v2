@@ -23,9 +23,10 @@ validation is excluded from the numbers and from the source token. Therefore:
                   "unavailable"  the entries or the lines could not be read: no balance figure exists (it is NEVER presented as «no unsettled balance»)
 Only the failures the validators expect are handled (bad number, missing key, wrong type); an unexpected programming error is not caught here.
 
-SOURCE documents are an explicit list (`SOURCE_KINDS`: the four BOOK kinds that exist today), never "every kind that starts with BK_". Cash-only kinds and the future
+SOURCE documents are an explicit list (`SOURCE_KINDS`: the nine BOOK kinds that exist today), never "every kind that starts with BK_". Cash-only kinds and the future
 reconciliation document (`BK_RECON`) are KNOWN and EXCLUDED; any other kind is an `UNSUPPORTED_KIND` diagnostic and makes the preview untrustworthy (it is never silently
-ignored). Phase 2 kinds and ALLOCATED stock rules are NOT implemented here: they are unsupported by design.
+ignored). 058: the Phase 2 kinds are source kinds; each has its leg check, and a BK_ISS_STK line is also re-derived from the full stored history of its stock item
+(`_stock_allocation_checks`: origin facts, then every movement in id order through `book_rules.allocate_stock`).
 
 `source_token` is a fingerprint of the SOURCE documents only (their facts, stored posted values and effective / reversed state). It is NOT a hash of a stored
 snapshot (none exists in R1) and it stores nothing. It does not change when a cash entry, an event, a leg or a future `BK_RECON` is added; it changes when a source
@@ -44,7 +45,9 @@ from services import book_rules as br
 
 ALGORITHM = "book-source-v1"
 BK_RECON = "BK_RECON"                                                       # the future reconciliation document: known, excluded from the source, not implemented
-SOURCE_KINDS = (br.BK_ISSUE, br.BK_BUY, br.BK_SELL, br.BK_RETURN)           # explicit; NOT derived from a prefix
+SOURCE_KINDS = (br.BK_ISSUE, br.BK_BUY, br.BK_SELL, br.BK_RETURN,          # explicit; NOT derived from a prefix
+                br.BK_ISS_STK, br.BK_RECEIVE, br.BK_DLV_SUP, br.BK_DLV_MKT,    # 058: the Phase 2 market-cycle kinds, each with its own leg check below
+                br.BK_GAIN)                                                 # 059: the evidenced gain (an input; its record is checked below)
 EXCLUDED_KNOWN_KINDS = tuple(br.SHARED_CASH_KINDS) + (BK_RECON,)
 SCRAP_LEG_CODE = {br.BK_ISSUE: "TRIP_CUSTODY_OUT", br.BK_RETURN: "TRIP_CUSTODY_RETURN_IN"}          # movement_code of the ORIGINAL Scrap leg (tests pin it to the repository)
 PRICED_KINDS = (br.BK_BUY, br.BK_SELL)
@@ -61,7 +64,7 @@ COVERAGE_NOTES = (
     ("COVERAGE_LINE_DELETION", "حذف سطر مستند مع ساقه المرتبطة معًا لا يترك مرجعًا مستقلًا في المخطط الحالي، فلا يمكن كشفه من البيانات المتاحة."),
     ("COVERAGE_MULTI_LINE", "حذف سطر واحد من مستند متعدد الأسطر لا يُكشف إلا إذا تركت له الساق أو مجموع الصفقة أثرًا مستقلًا (ساق كسر يتيمة أو مجموع صفقة لا يطابق)."),
     ("COVERAGE_NUMBERING", "ترقيم الأسطر المتتابع وحده لا يُستخدم دليلًا على حذف سطر."),
-    ("COVERAGE_SCOPE", "الفحوص محصورة في الأنواع الأربعة الحالية؛ قواعد التخصيص (ALLOCATED) وأنواع المرحلة الثانية خارج هذه المعاينة."),
+    ("COVERAGE_SCOPE", "الفحوص تشمل الأنواع التسعة الحالية (ومنها الزيادة المثبتة وسجلها)؛ تخصيص إخراج المخزون يُعاد اشتقاقه من أصل البند وسجل حركاته المخزّن بترتيبه، ولا يكشف تعديلًا متسقًا لأصل البند وكل حركاته معًا."),
 )
 
 
@@ -190,6 +193,18 @@ def _normalize_line(row, entry, code, diagnostics):
             bad("LINE_PRICE_INVALID", "سطر الصفقة بلا ثمن موجب.")
     elif price_raw is not None:
         bad("LINE_PRICE_INVALID", "هذا النوع من المستندات بلا ثمن للسطر.")
+    basis_raw = row.get("posting_basis") or br.INDEPENDENT_BASIS
+    out["posting_basis"] = basis_raw if basis_raw in (br.INDEPENDENT_BASIS, br.ALLOCATED_BASIS) else None
+    out["stock_item"] = (_int(row.get("stock_item_entry_id")), _int(row.get("stock_item_line_no")))
+    if out["posting_basis"] is None:
+        bad("LINE_FIELD_INVALID", "أساس الترحيل غير صالح.")
+        usable = False
+    elif kind == br.BK_ISS_STK and (None in out["stock_item"] or out["basis"] != br.FINENESS):          # both bases are legitimate here (allocation policy)
+        bad("LINE_FACTS_INVALID", "سطر إخراج المخزون بلا بند مخزون أو بغير أساس النقاوة.")
+        usable = False
+    elif kind != br.BK_ISS_STK and (out["posting_basis"] != br.INDEPENDENT_BASIS or row.get("stock_item_entry_id") is not None):
+        bad("LINE_FACTS_INVALID", "أساس التخصيص أو بند المخزون لا يكون إلا لسطر إخراج مخزون.")
+        usable = False
     leg_raw = row.get("scrap_movement_id")
     out["scrap_movement_id"] = _int(leg_raw)
     if leg_raw is not None and out["scrap_movement_id"] is None:
@@ -210,12 +225,184 @@ def _line_checks(entry, line, code, diagnostics):
     expected_signed = posted if line["direction"] == br.IN else -posted
     if line["signed_eq21_posted"] is not None and line["signed_eq21_posted"] != expected_signed:
         bad("LINE_SIGN_MISMATCH", "القيمة الموقّعة لا تطابق القيمة المرحَّلة واتجاه السطر.")
-    if posted != br.post(exact):
+    if line.get("posting_basis", br.INDEPENDENT_BASIS) == br.INDEPENDENT_BASIS and posted != br.post(exact):
         bad("LINE_POSTED_MISMATCH", f"القيمة المرحَّلة {posted:,.3f} لا تساوي ترحيل القيمة التحليلية الدقيقة {br.post(exact):,.3f}.")
     if line["eq21_analytical"] is not None and line["eq21_analytical"] != br.evidence(exact):                  # the evidence field and the difference field are DIFFERENT equations
         bad("LINE_EVIDENCE_MISMATCH", "حقل الدليل التحليلي لا يطابق القيمة المعاد اشتقاقها من الحقائق.")
     if line["posting_difference"] is not None and line["posting_difference"] != br.round_half_up(Fraction(posted) - exact, br.EVIDENCE_PLACES):
         bad("LINE_DIFFERENCE_MISMATCH", "حقل فرق الترحيل المخزّن لا يطابق (المرحَّل − التحليلي الدقيق).")
+
+
+_HISTORY_NUMBERS = ("grams_delta", "eq21_posted_delta", "eq21_analytical", "posting_difference", "eq21_independent")
+
+
+def _stock_allocation_checks(source, stock_lines, diagnostics):
+    """058: every BK_ISS_STK line is re-derived, not merely compared with its own leg. For each stock item that an effective usable line of this trip names, the
+    item's ORIGIN (its BK_RETURN FINENESS line) and its WHOLE stored movement history (every trip, id order: the item lock serialises the movements of one item)
+    are replayed: the receipt must equal the origin; each ISSUE must be exactly `book_rules.allocate_stock(x, origin fineness, held grams, held posted)` at the state
+    the earlier movements left (share, basis, independent p, evidence, difference); each compensation must negate its own original. The first defect of an item
+    stops its replay (the later states are not trustworthy) and is reported on every line of this trip that names the item. Two consistent copies of a wrong
+    figure therefore no longer pass; a consistent rewrite of the origin AND of every movement of the item together stays undetectable (COVERAGE_SCOPE)."""
+    claimants = {}
+    for entry, line in stock_lines:
+        claimants.setdefault(tuple(line["stock_item"]), []).append((entry, line))
+    if not claimants:
+        return                                                                # a trip that uses no stock needs no stock history
+
+    def report_all(c, message):
+        for key in sorted(claimants):
+            for entry, line in claimants[key]:
+                code = _entry_code(entry)
+                diagnostics.append(Diagnostic(c, INTEGRITY, f"{code} سطر {line['line_no']}: بند المخزون {key[0]}/{key[1]}: {message}", int(entry["id"]), code,
+                                              line["line_no"]))
+    # packet25: the two sections are EVIDENCE. Missing, not a list, a non-dict row or a duplicate id is a blocking defect (never a silent drop / an empty history).
+    origins_raw, history_raw = source.get("stock_origins"), source.get("stock_history")
+    if not isinstance(origins_raw, list) or not isinstance(history_raw, list):
+        report_all("STOCK_HISTORY_INVALID", "قسم أصول البنود أو سجل حركاتها غير مقروء: لا يمكن التحقق من التخصيص.")
+        return
+    bad_items, origins, history, seen_ids = set(), {}, {}, set()
+    shape_broken = False
+    for r in origins_raw:
+        key = (_int(r.get("entry_id")), _int(r.get("line_no"))) if isinstance(r, dict) else None
+        if key is None or None in key or key in origins:
+            shape_broken = True
+            continue
+        origins[key] = r
+    for r in history_raw:
+        key = (_int(r.get("item_entry_id")), _int(r.get("item_line_no"))) if isinstance(r, dict) else None
+        rid = _int(r.get("id")) if isinstance(r, dict) else None
+        if key is None or None in key or rid is None or rid in seen_ids:
+            if key is not None and None not in key:
+                bad_items.add(key)
+            else:
+                shape_broken = True                                           # a row that names no item could belong to any item: nothing can be trusted
+            continue
+        seen_ids.add(rid)
+        history.setdefault(key, []).append(r)
+    if shape_broken:
+        report_all("STOCK_HISTORY_INVALID", "صف غير صالح أو مكرر في أصول البنود أو سجل حركاتها: لا يمكن التحقق من التخصيص.")
+        return
+    for key in sorted(claimants):
+        def report(c, message, key=key):
+            for entry, line in claimants[key]:
+                code = _entry_code(entry)
+                diagnostics.append(Diagnostic(c, INTEGRITY, f"{code} سطر {line['line_no']}: بند المخزون {key[0]}/{key[1]}: {message}", int(entry["id"]), code,
+                                              line["line_no"]))
+        origin = origins.get(key) or {}
+        fineness, weight, posted = (_num(origin.get(k)) for k in ("fineness_permille", "weight_grams", "eq21_posted"))
+        if origin.get("entry_kind") != br.BK_RETURN or origin.get("basis") != br.FINENESS or None in (fineness, weight, posted):
+            report("STOCK_ORIGIN_MISSING", "أصل البند (سطر الرجوع بعيار فعلي) غير موجود أو غير صالح: لا يمكن التحقق من التخصيص.")
+            continue
+        if any(line["fineness_permille"] != fineness for _, line in claimants[key]):
+            report("STOCK_ORIGIN_MISMATCH", f"نقاوة السطر لا تطابق نقاوة أصل البند {fineness}‰.")
+            continue
+        parsed = [] if key not in bad_items else None
+        for r in sorted(history.get(key, []), key=lambda r: _int(r["id"])) if parsed is not None else ():
+            values = {name: _num(r.get(name)) for name in _HISTORY_NUMBERS}
+            if (_int(r.get("source_entry_id")) is None or None in values.values() or r.get("posting_basis") not in (br.INDEPENDENT_BASIS, br.ALLOCATED_BASIS)
+                    or r.get("movement_type") not in (br.RECEIVE, br.RECEIVE_REVERSAL, br.ISSUE_STOCK, br.ISSUE_REVERSAL)):
+                parsed = None
+                break
+            parsed.append({**values, "id": _int(r["id"]), "type": r["movement_type"], "source": _int(r["source_entry_id"]), "basis": r["posting_basis"],
+                           "correction": r.get("correction_id")})
+        if parsed is None:
+            report("STOCK_HISTORY_INVALID", "سجل حركات البند ناقص أو غير صالح: لا يمكن التحقق من التخصيص.")
+            continue
+        if not parsed or parsed[0]["type"] != br.RECEIVE:
+            report("STOCK_HISTORY_INVALID", "سجل حركات البند لا يبدأ بالاستلام الأصلي: لا يمكن التحقق من التخصيص.")
+            continue
+        problem, held_g, held_p, receipt, issues = None, Decimal("0.000"), Decimal("0.000"), None, {}
+        for m in parsed:
+            g, q = m["grams_delta"], m["eq21_posted_delta"]
+            if m["type"] == br.RECEIVE:
+                if receipt is not None or parsed[0] is not m or g != weight or q != posted or m["basis"] != br.INDEPENDENT_BASIS or m["eq21_independent"] != q:
+                    problem = "سجل الاستلام لا يطابق أصل البند (الوزن أو القيمة المرحَّلة أو الأساس) أو ليس الحركة الأولى."
+                receipt = m
+            elif m["type"] == br.RECEIVE_REVERSAL:
+                if receipt is None or g != -receipt["grams_delta"] or q != -receipt["eq21_posted_delta"]:
+                    problem = "تعويض الاستلام لا يساوي عكس الاستلام الأصلي."
+            elif m["type"] == br.ISSUE_STOCK:
+                x = -g
+                if receipt is None or m["source"] in issues or x <= 0:
+                    problem = f"حركة إخراج (#{m['id']}) بلا استلام سابق أو مكررة أو بوزن غير صالح."
+                else:
+                    try:
+                        line, independent, basis = br.allocate_stock(x, fineness, held_g, held_p)
+                    except br.BookError:
+                        line = independent = basis = None
+                    if line is None:
+                        problem = f"حركة إخراج (#{m['id']}) تتجاوز المتبقي من البند وقت تسجيلها."
+                    elif (-q != line.posted or m["basis"] != basis or m["eq21_independent"] != independent or m["eq21_analytical"] != line.analytical_evidence
+                          or m["posting_difference"] != line.difference):
+                        problem = (f"حركة إخراج (#{m['id']}) لا تطابق سياسة التخصيص: المتوقع {line.posted:,.3f} ({basis}) من المتبقي "
+                                   f"{held_g:,.3f} جرام / {held_p:,.3f} مرحَّل، والمخزّن {-q:,.3f} ({m['basis']}).")
+                    issues[m["source"]] = m
+            else:                                                             # ISSUE_REVERSAL
+                original = issues.pop(m["source"], None)
+                if (original is None or m["correction"] is None or g != -original["grams_delta"] or q != -original["eq21_posted_delta"]
+                        or m["basis"] != original["basis"] or m["eq21_independent"] != original["eq21_independent"]
+                        or m["eq21_analytical"] != original["eq21_analytical"] or m["posting_difference"] != original["posting_difference"]):
+                    problem = f"تعويض الإخراج (#{m['id']}) لا يساوي عكس حركة الإخراج الأصلية بقيمها وأساسها المخزّنة."
+            if problem is None:
+                held_g, held_p = held_g + g, held_p + q
+                if held_g < 0 or held_p < 0 or (held_g == 0 and held_p != 0):
+                    problem = f"رصيد البند صار غير صالح بعد الحركة #{m['id']}: {held_g:,.3f} جرام / {held_p:,.3f} مرحَّل."
+            if problem is not None:
+                break
+        if problem is not None:
+            report("STOCK_ALLOCATION_MISMATCH", problem)
+            continue
+        # every effective line of THIS trip must be bound to exactly one replayed, still effective ISSUE of its own entry, carrying the line's own figures
+        for entry, line in claimants[key]:
+            issue = issues.get(int(entry["id"]))
+            if (issue is None or -issue["grams_delta"] != line["weight_grams"] or -issue["eq21_posted_delta"] != line["eq21_posted"]
+                    or issue["basis"] != line["posting_basis"] or issue["eq21_analytical"] != line["eq21_analytical"]
+                    or issue["posting_difference"] != line["posting_difference"]):
+                code = _entry_code(entry)
+                diagnostics.append(Diagnostic("STOCK_ALLOCATION_MISMATCH", INTEGRITY,
+                                              f"{code} سطر {line['line_no']}: بند المخزون {key[0]}/{key[1]}: حركة إخراج هذا السطر غير موجودة فعّالة في سجل البند "
+                                              "المفحوص أو لا تحمل أرقامه.", int(entry["id"]), code, line["line_no"]))
+
+
+def _phase2_line_checks(kind, eid, code, line, issue_of, claimed_issues, supplier_of, marketer_of, diagnostics, gain_of=None):
+    """058: the counterparty leg of an effective Phase 2 line must exist and carry the line's own figures (a missing / different leg is an integrity defect)."""
+    no = line["line_no"]
+
+    def bad(c, message):
+        diagnostics.append(Diagnostic(c, INTEGRITY, f"{code} سطر {no}: {message}", eid, code, no))
+    if kind == br.BK_ISS_STK:
+        key = (eid, *line["stock_item"])
+        issue = issue_of.get(key)
+        claimed_issues.add(key)
+        if issue is None:
+            bad("STOCK_ISSUE_MISSING", "حركة إخراج بند المخزون غير موجودة.")
+        elif (_num(issue.get("grams_delta")) != -line["weight_grams"] or _num(issue.get("eq21_posted_delta")) != -line["eq21_posted"]
+              or issue.get("posting_basis") != line["posting_basis"] or _num(issue.get("eq21_analytical")) != line["eq21_analytical"]
+              or _num(issue.get("posting_difference")) != line["posting_difference"]):
+            bad("STOCK_ISSUE_MISMATCH", "حركة إخراج المخزون لا تطابق وزن السطر وحصته المرحَّلة وأساس ترحيلها وحقول دليلها.")
+    elif kind == br.BK_DLV_SUP:
+        link = supplier_of.get(eid)
+        if link is None:
+            bad("SUPPLIER_LINK_MISSING", "مستند المورد المرتبط بالتسليم غير موجود.")
+        elif (_num(link.get("weight_grams")) != line["weight_grams"]
+              or (line["basis"] == br.MASTER_KARAT and _int(link.get("delivered_karat_value")) != line["karat_value"])
+              or (line["basis"] == br.FINENESS and _num(link.get("delivered_fineness_permille")) != line["fineness_permille"])):
+            bad("SUPPLIER_LINK_MISMATCH", "مستند المورد لا يطابق وزن السطر وعياره.")
+    elif kind == br.BK_GAIN:
+        if gain_of is not None:
+            record = gain_of.get(eid)
+            if record is None:
+                bad("GAIN_RECORD_MISSING", "سجل الزيادة المثبتة (الشرح والدليل والتأكيد) غير موجود.")
+            elif not _text(record.get("explanation")) or not _text(record.get("evidence_reference")) or _int(record.get("confirmed_by_user_id")) is None:
+                bad("GAIN_RECORD_INVALID", "سجل الزيادة المثبتة بلا شرح أو دليل أو تأكيد صالح.")
+    elif kind in (br.BK_DLV_MKT, br.BK_RECEIVE):
+        leg = marketer_of.get(eid)
+        wanted, sign = ("TRIP_BOOK_IN", 1) if kind == br.BK_DLV_MKT else ("TRIP_BOOK_OUT", -1)
+        if leg is None:
+            bad("MARKETER_LEG_MISSING", "حركة حساب المسوقجي المرتبطة غير موجودة.")
+        elif (leg.get("movement_type") != wanted or leg.get("trip_entry_kind") != kind or _num(leg.get("weight_grams")) != line["eq21_posted"]
+              or _num(leg.get("weight_delta")) != sign * line["eq21_posted"]):
+            bad("MARKETER_LEG_MISMATCH", "حركة حساب المسوقجي لا تطابق المكافئ المرحَّل للسطر.")
 
 
 # ------------------------------------------------------------------ the source token
@@ -453,7 +640,22 @@ def reconcile_preview(source):
         if s["movement_type"] == br.RECEIVE:
             receive_of[(sid, sno)] = {"grams_delta": grams, "eq21_posted_delta": posted}
 
+    phase2_ok = "SOURCE_PHASE2_UNREADABLE" not in incomplete_codes
+    issue_of, claimed_issues = {}, set()
+    for r in (source.get("stock_issues") or []):
+        if isinstance(r, dict) and r.get("movement_type") == br.ISSUE_STOCK:
+            issue_of[(_int(r.get("source_entry_id")), _int(r.get("item_entry_id")), _int(r.get("item_line_no")))] = r
+    supplier_of = {_int(r.get("entry_id")): r for r in (source.get("suppliers") or []) if isinstance(r, dict)}
+    gains_raw = source.get("gains")                                           # 059: None = no gain section (a database before 059 cannot hold a gain)
+    gain_of = None if gains_raw is None else {_int(r.get("entry_id")): r for r in gains_raw if isinstance(r, dict)}
+    if gain_of is None and any(e.get("entry_kind") == br.BK_GAIN for e in by_id.values()):
+        diagnostics.append(Diagnostic("SOURCE_GAINS_UNREADABLE", INCOMPLETE, "سجلات الزيادة المثبتة غير مقروءة: لا يمكن الحكم على مستندات الزيادة."))
+    marketer_of = {}
+    for r in (source.get("marketer") or []):
+        if isinstance(r, dict) and r.get("movement_type") in ("TRIP_BOOK_IN", "TRIP_BOOK_OUT"):
+            marketer_of[_int(r.get("trip_entry_id"))] = r
     usable_lines = []                                                         # (entry, normalized line): the ONLY lines that reach the numbers
+    stock_lines = []                                                          # 058: the effective usable BK_ISS_STK lines (allocation re-derivation)
     claimed_scrap = set()
     for eid in sorted(by_id):
         entry = by_id[eid]
@@ -514,6 +716,10 @@ def reconcile_preview(source):
                         diagnostics.append(Diagnostic("LEG_MISMATCH", INTEGRITY, f"{code} سطر {no}: ساق الكسر لا تطابق عيار السطر ووزنه واتجاهه ومرجعه.", eid, code, no))
             elif leg is not None:
                 diagnostics.append(Diagnostic("LEG_UNEXPECTED", INTEGRITY, f"{code} سطر {no}: ساق كسر لسطر لا يحتاجها.", eid, code, no))
+            if phase2_ok:
+                _phase2_line_checks(kind, eid, code, line, issue_of, claimed_issues, supplier_of, marketer_of, diagnostics, gain_of)
+                if kind == br.BK_ISS_STK:
+                    stock_lines.append((entry, line))
             if stock_ok and kind == br.BK_RETURN and line["basis"] == br.FINENESS and (eid, no) not in bad_stock_items:        # the ORIGINAL stock record exists (not "the item is still whole")
                 record = receive_of.get((eid, no))
                 if record is None:
@@ -541,6 +747,13 @@ def reconcile_preview(source):
         owner = by_id.get(move["reference_id"])
         if owner is not None:
             diagnostics.append(Diagnostic("LEG_ORPHAN", INTEGRITY, f"{_entry_code(owner)}: ساق كسر لا يطالب بها أي سطر (سطر محذوف أو غير مربوط).", owner["id"], _entry_code(owner)))
+    if phase2_ok:
+        _stock_allocation_checks(source, stock_lines, diagnostics)
+    reversed_ids = {eid for eid, e in by_id.items() if e["correction_id"] is not None}
+    for key in (issue_of if phase2_ok else ()):                              # a stock issue of an effective entry that no line claims
+        if key not in claimed_issues and key[0] in by_id and key[0] not in reversed_ids:
+            owner = by_id[key[0]]
+            diagnostics.append(Diagnostic("STOCK_ISSUE_ORPHAN", INTEGRITY, f"{_entry_code(owner)}: إخراج مخزون لا يطالب به أي سطر.", owner["id"], _entry_code(owner)))
     all_line_keys = {(_int(l.get("entry_id")), _int(l.get("line_no"))) for l in lines}
     for (entry_id, line_no) in (receive_of if stock_ok else ()):
         if (entry_id, line_no) not in all_line_keys:

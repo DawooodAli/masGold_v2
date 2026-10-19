@@ -89,7 +89,7 @@ ZERO_MONEY, ZERO_WEIGHT = Decimal("0.00"), Decimal("0.000")
 KIND_TEXT = {ISSUE: "إخراج عهدة", RETURN: "رجوع من العهدة", MELT: "سبك", LOT_RETURN: "رجوع ناتج السبك", LOT_ISSUE: "إخراج سبكة من المحل",
              HEAT: "حمّية اللوجو", SUPPLIER_PAY: "دفع مصنعيات من العهدة", GOLD_SETTLE: "تسوية ذهب من العهدة", LOT_SETTLE: "تسوية سبكة من العهدة",
              GOLD_SALE: "بيع ذهب من العهدة", GOLD_BUY: "شراء ذهب نقدي", "BK_ISSUE": "إخراج ذهب (دفتري)", "BK_BUY": "شراء ذهب (دفتري)",
-             "BK_SELL": "بيع ذهب (دفتري)", "BK_RETURN": "رجوع ذهب للمحل (دفتري)", "BK_RECON": "تسوية الرصيد الدفتري", "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي", "LOGO_HOLD": "تسليم لوجو لمسوقجي", "HOLD_BACK": "رجوع لوجو من مسوقجي"}
+             "BK_SELL": "بيع ذهب (دفتري)", "BK_RETURN": "رجوع ذهب للمحل (دفتري)", "BK_RECON": "تسوية الرصيد الدفتري", "BK_ISS_STK": "إخراج مخزون مرتجع إلى العهدة (دفتري)", "BK_DLV_SUP": "تسليم ذهب لمورد (دفتري)", "BK_DLV_MKT": "تسليم ذهب لمسوقجي (دفتري)", "BK_RECEIVE": "استلام ذهب من مسوقجي (دفتري)", "BK_GAIN": "زيادة مثبتة (دفتري)", "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي", "LOGO_HOLD": "تسليم لوجو لمسوقجي", "HOLD_BACK": "رجوع لوجو من مسوقجي"}
 DESIGNATION_TEXT = {MELT_DESIGNATION: "للسبك", LOGO_DESIGNATION: "لوجو", UNCLASSIFIED: "غير مصنف (قبل التصنيف)"}
 _DESIGNATION_INPUT = {"MELT": MELT_DESIGNATION, "للسبك": MELT_DESIGNATION, "LOGO": LOGO_DESIGNATION, "لوجو": LOGO_DESIGNATION,
                       "UNCLASSIFIED": UNCLASSIFIED, "غير مصنف": UNCLASSIFIED}
@@ -469,7 +469,10 @@ class MarketTripService:
                   "fineness": Decimal(str(i["fineness_permille"])), "original_weight": Decimal(str(i["original_weight"])),
                   "original_posted": Decimal(str(i["original_posted"])), "grams": Decimal(str(i["grams"])), "posted": Decimal(str(i["posted"]))}
                  for i in repository.assayed_stock_items() if int(i["trip_id"]) == int(trip["id"])]
-        return {"balance": balance.view(), "balance_exact": balance, "stock_items": items}
+        shop_stock = [{"entry_id": str(i["entry_id"]), "line_no": int(i["line_no"]), "code": entry_code(i["trip_id"], i["entry_no"]),
+                       "fineness": Decimal(str(i["fineness_permille"])), "grams": Decimal(str(i["grams"])), "posted": Decimal(str(i["posted"]))}
+                      for i in repository.assayed_stock_items() if Decimal(str(i["grams"])) > 0]       # 058: what the SHOP holds, any origin trip (the stock reissue source)
+        return {"balance": balance.view(), "balance_exact": balance, "stock_items": items, "shop_stock": shop_stock}
 
     @staticmethod
     def _entry_row(e):
@@ -530,6 +533,13 @@ class MarketTripService:
                     "reference_total": None if e["book_trade"]["reference_total"] is None else Decimal(str(e["book_trade"]["reference_total"])),
                     "deviation": None if e["book_trade"]["deviation_percent"] is None else Decimal(str(e["book_trade"]["deviation_percent"])),
                     "acknowledged": bool(e["book_trade"]["price_warning_acknowledged"])},
+                "gain": None if not e.get("gain") else {"explanation": e["gain"]["explanation"], "evidence_reference": e["gain"]["evidence_reference"],
+                                                        "confirmed_by": e["gain"].get("confirmed_by") or ""},
+                "recon": None if not e.get("recon") else {
+                    "generation": int(e["recon"]["generation"]), "effective_date": e["recon"]["effective_date"], "a": Decimal(str(e["recon"]["a_star"])),
+                    "b": Decimal(str(e["recon"]["b_star"])), "loss": Decimal(str(e["recon"]["loss_posted"])),
+                    "rounding": Decimal(str(e["recon"]["rounding_settlement"])), "reason_code": e["recon"]["reason_code"], "note": e["recon"]["note"] or "",
+                    "confirmed_at": e["recon"]["confirmed_at"], "confirmed_by": e["recon"].get("confirmed_by") or ""},
                 "reversed": e["reversal_id"] is not None,
                 "reversal_code": None if e["reversal_id"] is None else correction_code("FULL_REVERSAL", e["reversal_id"]),
                 "reversal_reason": e["reversal_reason"], "reversal_at": e["reversal_at"]}
@@ -2152,21 +2162,25 @@ class MarketTripService:
                 raise TripError("TRIP_NOT_FOUND", "العهدة غير موجودة.")
             if trip["status"] != OPEN:
                 raise TripError("TRIP_ALREADY_CLOSED", "العهدة مغلقة بالفعل.")
+            closure = None
             if book_rules.trip_mode(trip) == book_rules.BOOK:
-                # Phase 1 has no reconciliation: closing a BOOK trip would need the canonical reconciliation and closure rules (Phase 3). A zero-balance close is
-                # deliberately NOT offered as a shortcut.
-                raise TripError("BOOK_CLOSURE_NOT_AVAILABLE", "إغلاق العهدة الدفترية غير متاح بعد: يحتاج تسوية الرصيد الدفتري المعتمدة (مرحلة لاحقة).")
-            custody = self._custody(repository, trip_id, current=True)
-            if not custody["settled"]:
-                raise TripError("OUTSTANDING_CUSTODY", self.outstanding_text(custody))
+                closure = self._book_closure(repository, trip)                       # the BOOK rules (MarketTripBookService); never a zero-balance shortcut
+            else:
+                custody = self._custody(repository, trip_id, current=True)
+                if not custody["settled"]:
+                    raise TripError("OUTSTANDING_CUSTODY", self.outstanding_text(custody))
             now = repository.db_now()
             repository.set_status(trip_id=trip_id, status=CLOSED, now=now)
             repository.insert_event(trip_id=trip_id, event_type="CLOSED", reason=None, actor=actor, now=now)
             repository.audit(actor=actor, event_type="MARKET_TRIP_CLOSED", entity_id=trip_id, reference=trip_code(trip_id),
-                             description=f"إغلاق العهدة {trip_code(trip_id)}", metadata={"trip_id": trip_id}, now=now)
+                             description=f"إغلاق العهدة {trip_code(trip_id)}", metadata={"trip_id": trip_id, **(closure or {})}, now=now)
             if not self._session.is_current(session_actor):
                 raise PermissionError("انتهت جلسة الدخول.")
         return {"trip_id": str(trip_id), "trip_code": trip_code(trip_id), "status": CLOSED}
+
+    def _book_closure(self, repository, trip):
+        """The closure rules of a BOOK trip live in MarketTripBookService; this service alone never closes one."""
+        raise TripError("BOOK_CLOSURE_NOT_AVAILABLE", "إغلاق العهدة الدفترية غير متاح في هذه الخدمة.")
 
     @staticmethod
     def outstanding_text(custody):

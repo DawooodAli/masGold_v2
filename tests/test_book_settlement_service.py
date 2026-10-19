@@ -147,7 +147,8 @@ class DisabledByDefaultTests(unittest.TestCase):
         for match in re.finditer(r"\n    def (\w+)\(", text):
             name = match.group(1)
             end = text.find("\n    def ", match.end())
-            if "market_trip_reconciliations" in text[match.start():end if end > 0 else len(text)] and name not in ("next_reconciliation_generation", "insert_reconciliation", "reconciliation_of_entry"):
+            if "market_trip_reconciliations" in text[match.start():end if end > 0 else len(text)] and name not in ("next_reconciliation_generation", "insert_reconciliation", "reconciliation_of_entry",
+                                                                                                                       "effective_reconciliations_display", "reconciliation_display", "book_report_rows"):   # display reads (Gold Position, documents list, report), each behind its own capability check
                 offenders.append(name)
         self.assertEqual(offenders, [])
 
@@ -192,10 +193,10 @@ class PostingTests(ReconCase):
         self.assertNotIn("snapshot", meta)                                                     # the audit carries the digests, never the snapshot body
         self.assertIn("حتى لو كان L صفرًا", meta["confirmation_texts"]["loss_recognised_as_posted"])
 
-    def test_closing_stays_unavailable_after_a_reconciliation(self):
+    def test_a_reconciled_trip_with_zero_cash_closes(self):
         trip = self.healthy_trip()
         self.reconcile(trip)
-        self.refused("BOOK_CLOSURE_NOT_AVAILABLE", lambda: self.service.close(trip))
+        self.assertEqual(self.service.close(trip)["status"], "CLOSED")
 
     def test_the_documents_a_trip_shows_include_the_reconciliation_without_failing(self):
         trip = self.healthy_trip()
@@ -354,7 +355,7 @@ class ReadinessTests(ReconCase):
     def test_defective_sources_are_refused_with_diagnostics_and_leave_no_trace(self):
         defects = {
             "missing Scrap leg": lambda: self.db.scrap.__delitem__(-1),
-            "unsupported kind": lambda: self.db.entries.__setitem__(99, {"id": 99, "trip_id": int(self.trip), "trip_mode": "BOOK", "entry_no": 99, "entry_kind": "BK_ISS_STK",
+            "unsupported kind": lambda: self.db.entries.__setitem__(99, {"id": 99, "trip_id": int(self.trip), "trip_mode": "BOOK", "entry_no": 99, "entry_kind": "BK_NEXT_KIND",
                                                                          "entry_date": date(2026, 10, 10), "request_key": key(99), "request_hash": "", "performed_by_user_id": 7,
                                                                          "occurred_at": self.db.now}),
             "line weight changed": lambda: self.db.book_lines[0].__setitem__("weight_grams", D("10.001")),
@@ -507,7 +508,7 @@ class ReplayAndAuthorityTests(ReconCase):
         self.assertEqual(log[0], ("trip",))                                                       # the trip row first
         recon = [i for i, entry in enumerate(log) if entry[0] in ("recon_effective", "recon_read")]
         self.assertEqual([log[i] for i in recon], [("recon_effective",), ("recon_read", "entries"), ("recon_read", "lines"), ("recon_read", "scrap"),
-                                                   ("recon_read", "trades"), ("recon_read", "stock")])
+                                                   ("recon_read", "trades"), ("recon_read", "stock"), ("recon_read", "phase2"), ("recon_read", "gains")])   # 058 legs, then the 059 gain records, locked last
         self.assertGreater(recon[0], 0)
 
 

@@ -164,7 +164,11 @@ class IssueTests(TripCase):
         source = "".join((ROOT / p).read_text(encoding="utf-8") for p in ("services/market_trip_service.py", "repositories/market_trip_repository.py"))
         # 043: only the making payment; 046: gold goes to a supplier only THROUGH the settlement repository, so the trip modules never touch the
         # supplier gold ledger tables themselves (and the Eq21 compatibility column is filled by the settlement code, never read here)
-        for forbidden in ("supplier_gold_movements", "supplier_gold_movement_types", "supplier_purchase", "supplier_invoice", "equivalent_21_delta",
+        # 058 (BOOK Phase 2): `entry_book_supplier` READS the stored supplier gold movement of a TRIP_BOOK delivery (the exact figure a reversal restores); no trip module ever
+        # WRITES the ledger, so the table name is forbidden only in a write statement (the same read also selects the stored Eq21 compatibility column, which no trip module fills or uses)
+        for write in ("INSERT INTO supplier_gold_movements", "UPDATE supplier_gold_movements", "DELETE FROM supplier_gold_movements"):
+            self.assertNotIn(write, source, write)
+        for forbidden in ("supplier_gold_movement_types", "supplier_purchase", "supplier_invoice",
                           "financial_operations", "golddb", "float("):
             self.assertNotIn(forbidden, source, forbidden)
         self.assertEqual([m for m in self.db.cash_moves if m["type_code"].startswith("SUPPLIER")], [])

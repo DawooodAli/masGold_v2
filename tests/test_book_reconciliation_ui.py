@@ -47,7 +47,7 @@ class ReconCardTests(book_ui.BookPageTests):
                 self.assertIn("لم تُكتشف مشكلة ضمن الفحوص المتاحة", self.text("bookReconStatus"))
                 self.assertIn("ليس ضمانًا", self.text("bookReconStatus"))
                 self.assertIn("معاينة فقط", self.text("bookReconEffect"))
-                self.assertIn("غير متاح بعد", self.text("bookReconClosureNote"))
+                self.assertIn("اعتماد تسوية", self.text("bookReconClosureNote"))
                 for name in CARD_ITEMS:
                     self.assert_inside_window(self.item(name))
                 self.assertFalse(self.item("bookReconMore").property("visible"))

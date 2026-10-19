@@ -70,6 +70,8 @@ class Db:
         self.gold_buys, self.gold_buy_lines = {}, []                                             # 054: entry id -> purchase document, and its scrap lines
         self.book_lines, self.book_trades, self.assayed_moves = [], {}, []                        # 056: BOOK lines, trade documents, the assayed return stock ledger
         self.reconciliations = {}                                                                 # 057: entry id -> the immutable reconciliation record
+        self.book_sup_links = {}                                                                  # 058: BK_DLV_SUP entry id -> its TRIP_BOOK SG link
+        self.mk_gold = getattr(self, "mk_gold", [])                                               # 055/058: marketer 21K ledger (tests/marketer_fakes adds the rest)
         self.sm_payments, self.sm_making, self.sm_legs, self.supplier_links = {}, [], [], {}
         self.shop_moves, self.lot_returns, self.lot_issues = [], [], []                      # 040/041: shop-side lot ledger, return / issue links
         self.corrections, self.audit_rows = [], []
@@ -132,6 +134,7 @@ class TripRepo:
 
     def __init__(self, db):
         self.db = db
+        self.connection = db                                     # the correction plan builds sibling repositories from it
 
     def _fail(self, step):
         if self.db.fail_at == step:
@@ -222,7 +225,7 @@ class TripRepo:
     def insert_entry(self, *, trip_id, entry_no, kind, entry_date, notes, key, digest, actor, now):
         self._fail("entry")
         marketer_key_guard(self.db, key)
-        assert kind in ("ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT", "SUPPLIER_PAY", "GOLD_SETTLE", "LOT_SETTLE", "LOT_HOLD", "HOLD_RETURN", "LOGO_HOLD", "HOLD_BACK", "GOLD_SALE", "GOLD_BUY", "BK_ISSUE", "BK_BUY", "BK_SELL", "BK_RETURN", "BK_RECON")                # chk_mte_kind
+        assert kind in ("ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT", "SUPPLIER_PAY", "GOLD_SETTLE", "LOT_SETTLE", "LOT_HOLD", "HOLD_RETURN", "LOGO_HOLD", "HOLD_BACK", "GOLD_SALE", "GOLD_BUY", "BK_ISSUE", "BK_BUY", "BK_SELL", "BK_RETURN", "BK_RECON", "BK_ISS_STK", "BK_DLV_SUP", "BK_DLV_MKT", "BK_RECEIVE", "BK_GAIN")      # chk_mte_kind (059: BK_GAIN)
         mode = book_rules.trip_mode(self.db.trips[int(trip_id)])
         book_rules.require_kind_in_mode(kind, mode)                                          # the repository check (the database repeats it: chk_mte_mode_kind + fk_mte_trip_mode)
         if any(e["request_key"] == key for e in self.db.entries.values()):
@@ -605,6 +608,8 @@ class TripRepo:
                          "lot_settlement": self.entry_lot_settlement(e["id"]),
                          "book_lines": self.entry_book_lines(e["id"]) if e["entry_kind"].startswith("BK_") else [],
                          "book_trade": self.entry_book_trade(e["id"]) if e["entry_kind"].startswith("BK_") else None,
+                         "gain": self.gain_of_entry(e["id"]) if e["entry_kind"] == "BK_GAIN" else None,
+                         "recon": self.reconciliation_display(e["id"]) if e["entry_kind"] == "BK_RECON" else None,
                          "holding": self.entry_holding(e["id"]),
                          "logo_holding": self.entry_logo_holding(e["id"]),
                          "gold": [{"karat_id": g["karat_id"], "karat_value": self.db.karats[g["karat_id"]]["karat_value"],
@@ -774,11 +779,18 @@ class TripRepo:
                 "rounding_difference_grams": header["rounding_difference_grams"], "target_karat_value": header["target_karat_value"]}
 
     # ---- BOOK core (056): the CHECK / unique / composite-foreign-key constraints of the new tables are mirrored as asserts
-    def insert_book_line(self, *, entry_id, line_no, trip_id, kind, line, line_price=None, scrap_movement_id=None):
+    def insert_book_line(self, *, entry_id, line_no, trip_id, kind, line, line_price=None, scrap_movement_id=None, posting_basis=None, stock_item=None):
         self._fail("book_line")
         entry = self.db.entries[int(entry_id)]
         assert entry["entry_kind"] == kind and entry["trip_id"] == int(trip_id) and entry["trip_mode"] == "BOOK"          # fk_mtbl_entry / fk_mtbl_mode / chk_mtbl_mode
-        assert (kind in ("BK_ISSUE", "BK_BUY") and line.direction == "IN") or (kind in ("BK_SELL", "BK_RETURN") and line.direction == "OUT")   # chk_mtbl_kind
+        assert ((kind in ("BK_ISSUE", "BK_BUY", "BK_ISS_STK", "BK_RECEIVE", "BK_GAIN") and line.direction == "IN")
+                or (kind in ("BK_SELL", "BK_RETURN", "BK_DLV_SUP", "BK_DLV_MKT") and line.direction == "OUT"))            # chk_mtbl_kind (058)
+        basis = posting_basis or "INDEPENDENT"
+        assert basis in ("INDEPENDENT", "ALLOCATED")                                                                       # chk_mtbl_basis_kind
+        assert ((kind == "BK_ISS_STK" and line.basis == "FINENESS" and stock_item is not None)
+                or (kind != "BK_ISS_STK" and stock_item is None and basis == "INDEPENDENT"))                               # chk_mtbl_stock
+        if stock_item is not None:                                                                                         # fk_mtbl_stock_item
+            assert any((l["entry_id"], l["line_no"]) == (int(stock_item[0]), int(stock_item[1])) for l in self.db.book_lines)
         assert line.weight > 0                                                                                            # chk_mtbl_weight
         if line.basis == "MASTER_KARAT":                                                                                  # chk_mtbl_basis
             assert line.karat_id is not None and line.karat_value and line.fineness is None
@@ -786,13 +798,14 @@ class TripRepo:
         else:
             assert line.basis == "FINENESS" and line.karat_id is None and line.karat_value is None and line.fineness is not None and 0 < line.fineness <= 1000
             assert abs(line.analytical_evidence * 875 - line.weight * line.fineness) <= D("0.0004375")
-        assert line.posted >= 0 and line.analytical_evidence >= 0 and abs(line.difference) <= D("0.0005")                 # chk_mtbl_posted
+        assert line.posted >= 0 and line.analytical_evidence >= 0 and (abs(line.difference) <= D("0.0005") or (basis == "ALLOCATED" and kind == "BK_ISS_STK"))   # chk_mtbl_posted
         assert abs((line.posted - line.analytical_evidence) - line.difference) <= D("0.000001")
         assert line.signed == (line.posted if line.direction == "IN" else -line.posted)
         priced = line_price is not None
         assert ((kind in ("BK_ISSUE", "BK_RETURN") and line.basis == "MASTER_KARAT" and scrap_movement_id is not None and not priced)       # chk_mtbl_leg
                 or (kind == "BK_RETURN" and line.basis == "FINENESS" and scrap_movement_id is None and not priced)
-                or (kind in ("BK_BUY", "BK_SELL") and scrap_movement_id is None and priced and line_price > 0)), "chk_mtbl_leg"
+                or (kind in ("BK_BUY", "BK_SELL") and scrap_movement_id is None and priced and line_price > 0)
+                or (kind in ("BK_ISS_STK", "BK_DLV_SUP", "BK_DLV_MKT", "BK_RECEIVE", "BK_GAIN") and scrap_movement_id is None and not priced)), "chk_mtbl_leg"
         assert kind != "BK_ISSUE" or line.basis == "MASTER_KARAT"
         if any((l["entry_id"], l["line_no"]) == (int(entry_id), int(line_no)) for l in self.db.book_lines):
             raise _dup("PRIMARY")
@@ -802,7 +815,9 @@ class TripRepo:
                                    "weight_grams": line.weight, "basis": line.basis, "karat_id": line.karat_id, "karat_value": line.karat_value,
                                    "fineness_permille": line.fineness, "eq21_analytical": line.analytical_evidence, "eq21_posted": line.posted,
                                    "posting_difference": line.difference, "signed_eq21_posted": line.signed, "line_price": line_price,
-                                   "scrap_movement_id": scrap_movement_id})
+                                   "scrap_movement_id": scrap_movement_id, "posting_basis": basis,
+                                   "stock_item_entry_id": None if stock_item is None else int(stock_item[0]),
+                                   "stock_item_line_no": None if stock_item is None else int(stock_item[1])})
 
     def insert_book_trade(self, *, entry_id, kind, counterparty_kind, party_id, name, name_key, total, reference_total, deviation, acknowledged, trade_date, reference):
         self._fail("book_trade")
@@ -846,7 +861,7 @@ class TripRepo:
         if "lines" not in unreadable:
             result["lines"] = [{**{k: l[k] for k in ("entry_id", "line_no", "trip_id", "entry_kind", "direction", "weight_grams", "basis", "karat_id", "karat_value",
                                                       "fineness_permille", "eq21_analytical", "eq21_posted", "posting_difference", "signed_eq21_posted", "line_price",
-                                                      "scrap_movement_id")}, "trip_mode": "BOOK"}
+                                                      "scrap_movement_id")}, "trip_mode": "BOOK", **self._line_extra_fake(l)}
                                for l in sorted(self.db.book_lines, key=lambda l: (l["entry_id"], l["line_no"])) if l["trip_id"] == trip]
         if "scrap" not in unreadable:
             result["scrap"] = [{"id": m["id"], "karat_id": m["karat_id"], "weight_delta_grams": m["weight_delta"], "movement_code": m["type_code"],
@@ -863,6 +878,10 @@ class TripRepo:
             for row in result["entries"]:
                 row["entry_date"] = self.db.entries[row["id"]]["entry_date"]
                 row["correction_type"] = "FULL_REVERSAL" if row["correction_id"] is not None else None
+        if "phase2" in unreadable:
+            result["incomplete"].append(("SOURCE_PHASE2_UNREADABLE", "OperationalError"))
+        else:
+            result.update(self.phase2_source(trip, current=False))
         return result
 
     # ---- BOOK reconciliation document (057): the DECISION reads and the insert; the chk_mtr_* rules are mirrored as asserts (NOT proof of the SQL expressions)
@@ -882,7 +901,7 @@ class TripRepo:
                              "correction_type": "FULL_REVERSAL" if e["id"] in reversed_by else None} for e in mine],
                 "lines": [{**{k: l[k] for k in ("entry_id", "line_no", "trip_id", "entry_kind", "direction", "weight_grams", "basis", "karat_id", "karat_value",
                                                 "fineness_permille", "eq21_analytical", "eq21_posted", "posting_difference", "signed_eq21_posted", "line_price",
-                                                "scrap_movement_id")}, "trip_mode": "BOOK"}
+                                                "scrap_movement_id")}, "trip_mode": "BOOK", **self._line_extra_fake(l)}
                           for l in sorted(self.db.book_lines, key=lambda l: (l["entry_id"], l["line_no"])) if l["trip_id"] == trip],
                 "scrap": [{"id": m["id"], "karat_id": m["karat_id"], "weight_delta_grams": m["weight_delta"], "movement_code": m["type_code"], "reference_id": int(m["reference_id"])}
                           for m in self.db.scrap if m.get("reference_type") == SOURCE and str(m.get("reference_id", "")).isdigit() and int(m["reference_id"]) in ids
@@ -891,7 +910,12 @@ class TripRepo:
                 "stock": [{"id": m["id"], "item_entry_id": m["item_entry_id"], "item_line_no": m["item_line_no"], "movement_type": m["movement_type"],
                            "grams_delta": m["grams_delta"], "eq21_posted_delta": m["eq21_posted_delta"]}
                           for m in sorted(self.db.assayed_moves, key=lambda m: m["id"]) if m["item_entry_id"] in ids and m["movement_type"] in ("RECEIVE", "RECEIVE_REVERSAL")],
-                "incomplete": []}
+                "incomplete": [], **self.phase2_source(trip, current=True)}
+
+    def _line_extra_fake(self, l):
+        if not self.has_phase2_schema():
+            return {"posting_basis": "INDEPENDENT", "stock_item_entry_id": None, "stock_item_line_no": None}
+        return {"posting_basis": l.get("posting_basis", "INDEPENDENT"), "stock_item_entry_id": l.get("stock_item_entry_id"), "stock_item_line_no": l.get("stock_item_line_no")}
 
     def effective_reconciliation_entries(self, trip_id):
         """The BK_RECON entries of the trip that were not reversed (reads the ENTRY table only - never the 057 table). Logged as a locking read."""
@@ -910,7 +934,7 @@ class TripRepo:
         self._fail("reconciliation")
         entry = self.db.entries[int(entry_id)]
         assert entry["entry_kind"] == "BK_RECON" and entry["trip_id"] == int(trip_id) and entry["trip_mode"] == "BOOK"          # fk_mtr_entry / fk_mtr_mode / chk_mtr_head
-        assert generation >= 1 and algorithm == "book-recon-v1" and source_algorithm == "book-recon-source-v1" and snapshot_format == "book-recon-snapshot-v1"
+        assert generation >= 1 and algorithm == "book-recon-v1" and (source_algorithm, snapshot_format) in (("book-recon-source-v1", "book-recon-snapshot-v1"), ("book-recon-source-v2", "book-recon-snapshot-v2"), ("book-recon-source-v3", "book-recon-snapshot-v3"))   # chk_mtr_head (058)
         assert unit_denominator == 26_250_000
         assert isinstance(json.loads(snapshot_text), dict)                                                                        # JSON_TYPE(snapshot) = 'OBJECT'
         for digest in (source_digest, snapshot_digest):                                                                           # chk_mtr_digests (ascii_bin, case sensitive)
@@ -946,6 +970,39 @@ class TripRepo:
             "entry_count": entry_count, "line_count": line_count, "reversed_count": reversed_count, "source_digest": source_digest, "snapshot_digest": snapshot_digest,
             "snapshot": snapshot_text, "reason_code": reason_code, "note": note, "confirmed_by_user_id": user_id, "confirmed_at": confirmed_at}
 
+    def book_report_rows(self, date_from, date_to):
+        from datetime import date as _date
+        low, high = _date.fromisoformat(str(date_from)), _date.fromisoformat(str(date_to))
+
+        def rev(entry_id):
+            c = next((c for c in self.db.corrections if c["source_type"] == SOURCE and c["source_id"] == str(entry_id) and c["correction_type"] == "FULL_REVERSAL"), None)
+            return (None, None, None) if c is None else (int(c["correction_id"]), c.get("reason"), c.get("occurred_at"))
+
+        def day(entry):
+            value = entry["entry_date"]
+            return value if isinstance(value, _date) else _date.fromisoformat(str(value))
+        out = {"reconciliations": [], "gains": []}
+        for entry_id, r in sorted(self.db.reconciliations.items(), key=lambda kv: -kv[0]):
+            e = self.db.entries[entry_id]
+            if low <= day(e) <= high:
+                out["reconciliations"].append({"entry_id": entry_id, "trip_id": e["trip_id"], "entry_no": e["entry_no"], "entry_date": day(e), **{k: r.get(k) for k in (
+                    "generation", "a_star", "b_star", "loss_posted", "rounding_settlement", "reason_code", "note", "confirmed_at")}, "confirmed_by": "owner",
+                    **dict(zip(("reversal_id", "reversal_reason", "reversal_at"), rev(entry_id)))})
+        if self.has_gain_schema():
+            for entry_id, g in sorted(getattr(self.db, "gains", {}).items(), key=lambda kv: -kv[0]):
+                e, l = self.db.entries[entry_id], next(l for l in self.db.book_lines if l["entry_id"] == entry_id)
+                if low <= day(e) <= high:
+                    out["gains"].append({"entry_id": entry_id, "trip_id": e["trip_id"], "entry_no": e["entry_no"], "entry_date": day(e), "explanation": g["explanation"],
+                                         "evidence_reference": g["evidence_reference"], "confirmed_at": g["confirmed_at"], "confirmed_by": "owner",
+                                         **{k: l[k] for k in ("weight_grams", "basis", "karat_value", "fineness_permille", "eq21_posted", "eq21_analytical")},
+                                         **dict(zip(("reversal_id", "reversal_reason", "reversal_at"), rev(entry_id)))})
+        return out
+
+    def reconciliation_display(self, entry_id):
+        row = self.db.reconciliations.get(int(entry_id))
+        return None if row is None else {**{k: row.get(k) for k in ("generation", "effective_date", "a_star", "b_star", "loss_posted", "rounding_settlement", "reason_code",
+                                                                    "note", "confirmed_at", "source_algorithm")}, "confirmed_by": "owner"}
+
     def reconciliation_of_entry(self, entry_id):
         row = self.db.reconciliations.get(int(entry_id))
         return None if row is None else {**row, "entry_no": self.db.entries[int(entry_id)]["entry_no"]}
@@ -953,6 +1010,109 @@ class TripRepo:
     def entry_reversal_id(self, entry_id):
         row = next((c for c in self.db.corrections if c["source_type"] == SOURCE and c["source_id"] == str(entry_id) and c["correction_type"] == "FULL_REVERSAL"), None)
         return None if row is None else int(row["correction_id"])
+
+    # ---- BOOK Phase 2 (058)
+    def has_phase2_schema(self):
+        return not getattr(self.db, "pre058", False)
+
+    def has_gain_schema(self):
+        return not getattr(self.db, "pre059", False) and not getattr(self.db, "pre058", False)
+
+    def insert_gain(self, *, entry_id, trip_id, explanation, evidence_reference, user_id, confirmed_at):
+        self._fail("gain")
+        entry = self.db.entries[int(entry_id)]
+        assert entry["entry_kind"] == "BK_GAIN" and entry["trip_id"] == int(trip_id) and entry["trip_mode"] == "BOOK"         # fk_mtg_entry / fk_mtg_mode / chk_mtg_head
+        assert str(explanation).strip() and str(evidence_reference).strip() and len(explanation) <= 500 and len(evidence_reference) <= 120   # chk_mtg_text
+        if int(entry_id) in self.db.__dict__.setdefault("gains", {}):
+            raise _dup("PRIMARY")
+        self.db.gains[int(entry_id)] = {"entry_id": int(entry_id), "trip_id": int(trip_id), "explanation": explanation, "evidence_reference": evidence_reference,
+                                        "confirmed_by_user_id": int(user_id), "confirmed_at": confirmed_at}
+
+    def gain_of_entry(self, entry_id):
+        if not self.has_gain_schema():
+            return None
+        g = getattr(self.db, "gains", {}).get(int(entry_id))
+        return None if g is None else {**g, "confirmed_by": "owner"}
+
+    def insert_book_supplier_link(self, *, entry_id, trip_id, settlement_id, supplier_id, weight):
+        self._fail("book_sup_link")
+        entry, header = self.db.entries[int(entry_id)], self.db.settlements[int(settlement_id)]
+        assert entry["entry_kind"] == "BK_DLV_SUP" and entry["trip_id"] == int(trip_id)                                    # fk_mtbsl_entry / chk_mtbsl_kind
+        assert (header["source_kind"], header["supplier_id"], header["delivered_weight_grams"]) == ("TRIP_BOOK", int(supplier_id), weight)   # fk_mtbsl_settlement
+        assert int(entry_id) not in self.db.book_sup_links and all(l["settlement_id"] != int(settlement_id) for l in self.db.book_sup_links.values())
+        self.db.book_sup_links[int(entry_id)] = {"entry_id": int(entry_id), "trip_id": int(trip_id), "settlement_id": int(settlement_id),
+                                                 "supplier_id": int(supplier_id), "weight_grams": weight}
+
+    def entry_book_supplier(self, entry_id):
+        link = self.db.book_sup_links.get(int(entry_id))
+        if link is None:
+            return None
+        header = self.db.settlements[link["settlement_id"]]
+        legs = [l for l in self.db.settlement_legs if l["settlement_id"] == link["settlement_id"] and l["leg_kind"] == "GOLD"]
+        move = next((m for m in self.db.sup_gold if legs and m["id"] == legs[0]["supplier_gold_movement_id"]), None)
+        return {**link, "supplier_name": self.db.suppliers[link["supplier_id"]]["name"], "delivered_karat_id": header["delivered_karat_id"],
+                "delivered_karat_value": header["delivered_karat_value"], "delivered_fineness_permille": header["delivered_fineness_permille"],
+                "target_karat_id": header["target_karat_id"], "target_karat_value": header["target_karat_value"], "credited_weight_grams": header["credited_weight_grams"],
+                "credited_analytical_grams": header["credited_analytical_grams"], "rounding_difference_grams": header["rounding_difference_grams"],
+                "gold_movement_id": None if move is None else move["id"], "gold_karat_id": None if move is None else move["karat_id"],
+                "weight_delta_grams": None if move is None else move["weight_delta"], "equivalent_21_delta_grams": None if move is None else move["eq21"]}
+
+    def entry_stock_issues(self, entry_id):
+        return [{k: m[k] for k in ("item_entry_id", "item_line_no", "grams_delta", "eq21_posted_delta", "eq21_analytical", "posting_difference", "eq21_independent",
+                                   "posting_basis")}
+                for m in sorted(self.db.assayed_moves, key=lambda m: (m["item_entry_id"], m["item_line_no"]))
+                if m["source_entry_id"] == int(entry_id) and m["movement_type"] == "ISSUE"]
+
+    def entry_marketer_leg(self, entry_id):
+        m = next((m for m in getattr(self.db, "mk_gold", []) if m.get("trip_entry_id") == int(entry_id) and m["movement_type"] in ("TRIP_BOOK_IN", "TRIP_BOOK_OUT")), None)
+        return None if m is None else {**m, "party_name": self.db.suppliers[m["party_id"]]["name"]}
+
+    def phase2_source(self, trip_id, *, current):
+        out = {"stock_issues": [], "suppliers": [], "marketer": [], "stock_origins": [], "stock_history": []}
+        if not self.has_phase2_schema():
+            return out
+        ids = {e["id"] for e in self.db.entries.values() if e["trip_id"] == int(trip_id)}
+        if current:
+            self.db.lock_log.append(("recon_read", "phase2"))
+        out["stock_issues"] = [{k: m[k] for k in ("id", "item_entry_id", "item_line_no", "source_entry_id", "movement_type", "grams_delta", "eq21_posted_delta",
+                                                  "posting_basis", "eq21_analytical", "posting_difference", "eq21_independent")}
+                               for m in sorted(self.db.assayed_moves, key=lambda m: m["id"]) if m["source_entry_id"] in ids and m["movement_type"] in ("ISSUE", "ISSUE_REVERSAL")]
+        items = {(l["stock_item_entry_id"], l["stock_item_line_no"]) for l in self.db.book_lines
+                 if l["trip_id"] == int(trip_id) and l["entry_kind"] == "BK_ISS_STK" and l.get("stock_item_entry_id") is not None}
+        out["stock_origins"] = [{k: l[k] for k in ("entry_id", "line_no", "entry_kind", "basis", "weight_grams", "fineness_permille", "eq21_posted")}
+                                for l in sorted(self.db.book_lines, key=lambda l: (l["entry_id"], l["line_no"])) if (l["entry_id"], l["line_no"]) in items]
+        out["stock_history"] = [{k: m[k] for k in ("id", "item_entry_id", "item_line_no", "movement_type", "source_entry_id", "correction_id", "grams_delta",
+                                                   "eq21_posted_delta", "eq21_analytical", "posting_difference", "eq21_independent", "posting_basis")}
+                                for m in sorted(self.db.assayed_moves, key=lambda m: m["id"]) if (m["item_entry_id"], m["item_line_no"]) in items]
+        for link in sorted(self.db.book_sup_links.values(), key=lambda l: l["entry_id"]):
+            if link["trip_id"] == int(trip_id):
+                header = self.db.settlements[link["settlement_id"]]
+                out["suppliers"].append({**link, "delivered_karat_id": header["delivered_karat_id"], "delivered_karat_value": header["delivered_karat_value"],
+                                         "delivered_fineness_permille": header["delivered_fineness_permille"], "target_karat_value": header["target_karat_value"],
+                                         "credited_weight_grams": header["credited_weight_grams"]})
+        out["marketer"] = [{k: m.get(k) for k in ("id", "party_id", "trip_entry_id", "trip_entry_kind", "movement_type", "weight_grams", "weight_delta")}
+                           for m in getattr(self.db, "mk_gold", []) if m.get("trip_entry_id") in ids]
+        if self.has_gain_schema():
+            if current:
+                self.db.lock_log.append(("recon_read", "gains"))
+            out["gains"] = [dict(g) for _, g in sorted(getattr(self.db, "gains", {}).items()) if g["trip_id"] == int(trip_id)]
+        return out
+
+    def effective_reconciliations_display(self):
+        """Fake of MarketTripRepository.effective_reconciliations_display: non-reversed BK_RECON entries with their record (or NULL record fields; `db.no_recon_table`
+        simulates a database before 057, where no record can exist)."""
+        self.db.display_reads = getattr(self.db, "display_reads", 0) + 1
+        reversed_ids = {int(c["source_id"]) for c in self.db.corrections if c["source_type"] == SOURCE and c["correction_type"] == "FULL_REVERSAL"}
+        out = []
+        for e in sorted(self.db.entries.values(), key=lambda e: (e["trip_id"], e["id"])):
+            if e["entry_kind"] != "BK_RECON" or e["id"] in reversed_ids:
+                continue
+            r = None if getattr(self.db, "no_recon_table", False) else self.db.reconciliations.get(e["id"])
+            out.append({"entry_id": e["id"], "trip_id": e["trip_id"], "trip_mode": e["trip_mode"], "entry_kind": e["entry_kind"], "entry_no": e["entry_no"],
+                        "record_entry_id": None if r is None else r["entry_id"], "record_kind": None if r is None else r["entry_kind"],
+                        "record_trip_id": None if r is None else r["trip_id"], "record_mode": None if r is None else r["trip_mode"],
+                        **{k: None if r is None else r[k] for k in ("generation", "a_star_units", "b_star", "loss_posted", "rounding_settlement")}})
+        return out
 
     def book_groups_by_trip(self):
         reversed_ids = {int(c["source_id"]) for c in self.db.corrections if c["source_type"] == SOURCE and c["correction_type"] == "FULL_REVERSAL"}
@@ -1845,6 +2005,23 @@ class SettlementRepo:
             "occurred_at": now}
         return settlement_id
 
+    def insert_book_header(self, *, supplier_id, delivered_karat, fineness, target_karat, delivered_weight, credited, analytical, difference, settlement_date,
+                           reference, notes, key, digest, actor, now):
+        self._fail("sg_header")
+        marketer_key_guard(self.db, key)
+        assert (delivered_karat is None) != (fineness is None)                                                   # chk_sgs_shape TRIP_BOOK: karat OR assay
+        assert delivered_weight > 0 and credited > 0 and analytical > 0 and difference == credited - analytical
+        if any(g["request_key"] == key for g in self.db.settlements.values()):
+            raise _dup("uq_sgs_request")
+        sid = self.db.next("settlement")
+        self.db.settlements[sid] = {
+            "id": sid, "supplier_id": int(supplier_id), "source_kind": "TRIP_BOOK", "delivered_karat_id": None if delivered_karat is None else int(delivered_karat["id"]),
+            "delivered_karat_value": None if delivered_karat is None else int(delivered_karat["karat_value"]), "delivered_fineness_permille": fineness,
+            "target_karat_id": int(target_karat["id"]), "target_karat_value": int(target_karat["karat_value"]), "delivered_weight_grams": delivered_weight,
+            "credited_weight_grams": credited, "credited_analytical_grams": analytical, "rounding_difference_grams": difference, "settlement_date": settlement_date,
+            "reference": reference, "notes": notes, "request_key": key, "request_hash": digest, "performed_by_user_id": actor.user_id, "occurred_at": now}
+        return sid
+
     def insert_lot_header(self, *, supplier_id, lot, target_karat, credited, analytical, difference, settlement_date, reference, notes, key, digest, actor, now):
         self._fail("sg_header")
         marketer_key_guard(self.db, key)
@@ -1912,7 +2089,7 @@ class SettlementRepo:
 
     def insert_leg(self, *, settlement_id, kind, source_kind, old_gold_movement_id=None, supplier_gold_movement_id=None):
         self._fail("sg_leg")
-        assert source_kind in ("SHOP_SCRAP", "CUSTODY_GOLD", "CUSTODY_LOT", "HOLDING_LOT", "HOLDING_LOGO", "HOLDING_MKT")   # chk_sgsl_source
+        assert source_kind in ("SHOP_SCRAP", "CUSTODY_GOLD", "CUSTODY_LOT", "HOLDING_LOT", "HOLDING_LOGO", "HOLDING_MKT", "TRIP_BOOK")   # chk_sgsl_source (058)
         assert kind != "SCRAP" or source_kind == "SHOP_SCRAP"                                 # chk_sgsl_scrap_only: no second Scrap deduction
         assert self.db.settlements[int(settlement_id)]["source_kind"] == source_kind          # fk_sgsl_source (the composite foreign key)
         assert (kind == "SCRAP" and old_gold_movement_id is not None and supplier_gold_movement_id is None) or \
@@ -1932,13 +2109,15 @@ class SettlementRepo:
         return self.db.now
 
     def _reversal(self, settlement_id):
-        link = next((l for l in list(self.db.gold_settle_links.values()) + list(self.db.lot_settle_links.values()) if l["settlement_id"] == int(settlement_id)), None)
+        link = next((l for l in list(self.db.gold_settle_links.values()) + list(self.db.lot_settle_links.values()) + list(self.db.book_sup_links.values())
+                     if l["settlement_id"] == int(settlement_id)), None)
         return next((c for c in self.db.corrections if c["correction_type"] == "FULL_REVERSAL"
                      and ((c["source_type"] == "SUPPLIER_GOLD_SETTLEMENT" and c["source_id"] == str(settlement_id))
                           or (link is not None and c["source_type"] == "MARKET_TRIP_ENTRY" and c["source_id"] == str(link["entry_id"])))), None)
 
     def custody_entry(self, settlement_id):
-        link = next((l for l in list(self.db.gold_settle_links.values()) + list(self.db.lot_settle_links.values()) if l["settlement_id"] == int(settlement_id)), None)
+        link = next((l for l in list(self.db.gold_settle_links.values()) + list(self.db.lot_settle_links.values()) + list(self.db.book_sup_links.values())
+                     if l["settlement_id"] == int(settlement_id)), None)
         if link is None:
             return None
         entry = self.db.entries[link["entry_id"]]
