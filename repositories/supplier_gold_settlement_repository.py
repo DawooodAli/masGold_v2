@@ -178,14 +178,25 @@ class SupplierGoldSettlementRepository(SupplierRepository):
     """
 
     def _select(self):
-        """The settlement read; from 058 a TRIP_BOOK document takes its custody entry (and so its reversed state) from the BOOK supplier link."""
-        if not hasattr(self, "_book_links"):
-            row = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'market_trip_book_supplier_links'")
-            self._book_links = bool(row and int(row["n"]))
-        if not self._book_links:
+        """The settlement read; from 058 a TRIP_BOOK document takes its custody entry (and so its reversed state) from the BOOK supplier link, and from 061 a TRIP_BAR
+        document from the bar supplier link."""
+        if not hasattr(self, "_links"):
+            rows = self._fetch_all("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() "
+                                   "AND TABLE_NAME IN ('market_trip_book_supplier_links', 'market_trip_bar_supplier_links')")
+            names = {r["TABLE_NAME"] for r in (rows or [])}
+            self._links = ("market_trip_book_supplier_links" in names, "market_trip_bar_supplier_links" in names)
+        book, bar = self._links
+        if not book and not bar:
             return self._SELECT
-        return (self._SELECT.replace("COALESCE(lk.entry_id, ll.entry_id)", "COALESCE(lk.entry_id, ll.entry_id, bk.entry_id)")
-                .replace("LEFT JOIN market_trip_lots ml", "LEFT JOIN market_trip_book_supplier_links bk ON bk.settlement_id = g.id LEFT JOIN market_trip_lots ml"))
+        parts, joins = ["lk.entry_id", "ll.entry_id"], ""
+        if book:
+            parts.append("bk.entry_id")
+            joins += "LEFT JOIN market_trip_book_supplier_links bk ON bk.settlement_id = g.id "
+        if bar:
+            parts.append("br.entry_id")
+            joins += "LEFT JOIN market_trip_bar_supplier_links br ON br.settlement_id = g.id "
+        return (self._SELECT.replace("COALESCE(lk.entry_id, ll.entry_id)", "COALESCE(" + ", ".join(parts) + ")")
+                .replace("LEFT JOIN market_trip_lots ml", joins + "LEFT JOIN market_trip_lots ml"))
 
     def settlement(self, settlement_id):
         return self._fetch_one(self._select() + " WHERE g.id = %s", (_id(settlement_id),))
@@ -204,7 +215,14 @@ class SupplierGoldSettlementRepository(SupplierRepository):
             "SELECT l.entry_id, l.designation, e.trip_id, e.entry_no FROM market_trip_gold_settlements l "
             "JOIN market_trip_entries e ON e.id = l.entry_id WHERE l.settlement_id = %s "
             "UNION ALL SELECT l.entry_id, NULL AS designation, e.trip_id, e.entry_no FROM market_trip_lot_settlements l "
-            "JOIN market_trip_entries e ON e.id = l.entry_id WHERE l.settlement_id = %s", (_id(settlement_id), _id(settlement_id))) or self._book_entry(settlement_id)
+            "JOIN market_trip_entries e ON e.id = l.entry_id WHERE l.settlement_id = %s", (_id(settlement_id), _id(settlement_id))) or self._book_entry(settlement_id) or self._bar_entry(settlement_id)
+
+    def _bar_entry(self, settlement_id):
+        """061: the custody entry of a TRIP_BAR delivery (None before 061)."""
+        if "market_trip_bar_supplier_links" not in self._select():
+            return None
+        return self._fetch_one("SELECT l.entry_id, NULL AS designation, e.trip_id, e.entry_no FROM market_trip_bar_supplier_links l "
+                               "JOIN market_trip_entries e ON e.id = l.entry_id WHERE l.settlement_id = %s", (_id(settlement_id),))
 
     def _book_entry(self, settlement_id):
         if "market_trip_book_supplier_links" not in self._select():

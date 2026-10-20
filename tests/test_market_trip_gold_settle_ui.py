@@ -209,7 +209,7 @@ class GoldSettlePageTests(base.MarketTripHeatPageTests):
 
     def test_melt_designated_gold_cannot_be_settled_so_the_action_is_not_available(self):
         self.open_page()
-        self.new_trip("", [(2, "30.000")])                                                        # 21K, MELT
+        self.new_trip("", [(2, "30.000")], designation="MELT")                                 # 21K, MELT (the issue dialog has no designation: created through the view model)
         self.wait_until(lambda: self.tvm.detail.get("meltAvailable"), "melting available")
         self.assertFalse(self.tvm.detail["goldSettleAvailable"])
         self.reveal(self.item("custodyGoldSettleButton"))
@@ -228,10 +228,265 @@ class GoldSettlePageTests(base.MarketTripHeatPageTests):
         self.assertFalse(self.item("custodyGoldSettleButton").property("enabled"))                 # nothing left to deliver
 
 
+class DistributionPageTests(GoldSettlePageTests):
+    """Settlement step 2b on the real page (owner, 2026-10-20): the SAME «تسوية ذهب من العهدة» dialog also offers the unmelted gold (its OWN karat) and the melted bar (21K
+    equivalent) as sources. Real clicks at 1080x680; the services are the real ones over the in-memory database."""
+
+    def melted_trip(self):
+        self.open_page()
+        self.new_trip("", [(2, "50.000"), (3, "10.000")])                                          # 21K 50 g and 18K 10 g, NO designation (the stage 1 dialog)
+        trip = self.tvm.selectedTripId
+        self.tvm._service.settle_melt(trip, [{"karat_id": "1", "weight": "40"}, {"karat_id": "2", "weight": "5"}], "44.8", "850", "ورشة", TODAY, "",
+                                      self.tvm.newRequestKey())                                  # bar 43.520 (21K eq); raw left 21K 10 g, 18K 5 g
+        self.tvm.refresh()
+        self.wait_until(lambda: self.tvm.detail.get("barVisible"), "bar pool shown")
+        self.wait_until(lambda: self.tvm.detail.get("goldSettleAvailable"), "delivery available")
+
+    def test_the_bar_and_the_unmelted_gold_are_delivered_with_real_clicks_at_1080(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.melted_trip()
+        scrap, cash = len(self.db.scrap), self.db.cash()
+        self.open_settle()
+        for name in ("custodyGoldSettleSupplierCombo", "custodyGoldSettleSourceCombo", "custodyGoldSettleWeightField", "confirmCustodyGoldSettleButton"):
+            self.assert_inside_window(self.item(name))
+        sources = [s["text"] for s in self.tvm.detail["goldSettleSources"]]
+        self.assertEqual(len(sources), 3)                                                          # 21K raw, 18K raw, the bar
+        self.assertIn("السبيكة", sources[2])
+        self.fill_settle(supplier_index=1, weight="18.8")                                          # supplier 10 (21K); source index 1 = 21K raw: change to the BAR
+        self.pick("custodyGoldSettleSourceCombo", 3)
+        QTest.qWait(150)
+        self.click("confirmCustodyGoldSettleButton")
+        self.wait_until(lambda: len(self.db.settlements) == 1, "bar delivered")
+        self.closed("tripGoldSettleDialog")
+        self.wait_idle()
+        header = next(iter(self.db.settlements.values()))
+        self.assertEqual((header["source_kind"], header["delivered_weight_grams"], header["credited_weight_grams"]), ("TRIP_BAR", D("18.800"), D("18.800")))
+        self.wait_until(lambda: "24.720" in self.tvm.detail["bar"], "bar pool reduced")
+        self.assertEqual((len(self.db.scrap), self.db.cash()), (scrap, cash))                       # no Scrap and no cash movement
+        self.open_settle()                                                                         # the unmelted 21K gold to the 18K supplier, in its own karat
+        self.pick("custodyGoldSettleSupplierCombo", 2)
+        self.pick("custodyGoldSettleSourceCombo", 1)
+        self.type_in("custodyGoldSettleWeightField", "10")
+        QTest.qWait(150)
+        self.click("confirmCustodyGoldSettleButton")
+        self.wait_until(lambda: len(self.db.settlements) == 2, "unmelted gold delivered")
+        self.closed("tripGoldSettleDialog")
+        second = sorted(self.db.settlements.values(), key=lambda h: h["id"])[1]
+        self.assertEqual((second["source_kind"], second["delivered_karat_value"], second["credited_weight_grams"]), ("CUSTODY_GOLD", 21, D("11.667")))
+        self.assertEqual(self.warnings, [])
+
+
+    def test_the_bar_is_handed_to_a_marketer_with_real_clicks_at_1080(self):
+        from tests.marketer_fakes import MarketerRepo, prepare
+        prepare(self.db)
+        started = patch("repositories.marketer_custody_repository.MarketerCustodyRepository", MarketerRepo)
+        started.start()
+        self.addCleanup(started.stop)
+        self.grant("INTERMEDIARY_HOLDING_VIEW", "INTERMEDIARY_HOLDING_MANAGE", "INTERMEDIARY_HOLDING_REVERSE")
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.melted_trip()
+        self.tvm.refresh()
+        self.wait_until(lambda: self.tvm.detail.get("barMarketerAvailable"), "bar hand-over available")
+        scrap, cash, settlements = len(self.db.scrap), self.db.cash(), len(self.db.settlements)
+        self.reveal(self.item("barMarketerButton"))
+        self.click("barMarketerButton")
+        self.wait_until(lambda: self.item("tripBarMarketerDialog").property("opened"), "bar marketer dialog")
+        self.wait_until(lambda: len(self.tvm.context.get("holdParties", [])) >= 1, "marketers loaded")
+        QTest.qWait(120)
+        for name in ("barMarketerPartyCombo", "barMarketerWeightField", "barMarketerDateField", "confirmBarMarketerButton", "cancelBarMarketerButton"):
+            self.assert_inside_window(self.item(name))
+        self.assertFalse(self.item("confirmBarMarketerButton").property("enabled"))                  # nothing chosen yet
+        self.pick("barMarketerPartyCombo", 1)
+        self.type_in("barMarketerWeightField", "20")
+        QTest.qWait(150)
+        self.assertIn("43.520", self.plain(self.text("barMarketerFacts")))                  # the pool shown before the hand-over
+        self.click("confirmBarMarketerButton")
+        self.wait_until(lambda: len(self.db.mk_gold) == 1, "handed over")
+        self.closed("tripBarMarketerDialog")
+        self.wait_idle()
+        leg = self.db.mk_gold[0]
+        self.assertEqual((leg["movement_type"], leg["trip_entry_kind"], leg["weight_delta"]), ("TRIP_BOOK_IN", "ST_BAR_MKT", D("20.000")))
+        self.wait_until(lambda: "23.520" in self.tvm.detail["bar"], "bar pool reduced")
+        self.assertEqual((len(self.db.scrap), self.db.cash(), len(self.db.settlements)), (scrap, cash, settlements))        # no Scrap, cash or supplier movement
+        self.assertEqual(self.warnings, [])
+
+
+    def test_the_remainder_is_classified_as_logo_with_real_clicks_and_the_logo_flows_open(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.melted_trip()
+        self.wait_until(lambda: self.tvm.detail.get("classifyLogoAvailable"), "classification available")
+        self.reveal(self.item("classifyLogoButton"))
+        self.click("classifyLogoButton")
+        self.wait_until(lambda: self.item("tripClassifyLogoDialog").property("opened"), "classify dialog")
+        QTest.qWait(120)
+        for name in ("classifyLogoDateField", "classifyLogoNotesField", "confirmClassifyLogoButton", "cancelClassifyLogoButton"):
+            self.assert_inside_window(self.item(name))
+        self.assertIn("عيار 21: 10.000", self.plain(self.text("classifyLogoLines")))
+        scrap, cash, settlements = len(self.db.scrap), self.db.cash(), len(self.db.settlements)
+        self.click("confirmClassifyLogoButton")
+        self.wait_until(lambda: any(e["entry_kind"] == "ST_LOGO" for e in self.db.entries.values()), "classified")
+        self.closed("tripClassifyLogoDialog")
+        self.wait_idle()
+        gold = {(g["karat"], g["designation"]): g for g in self.tvm.detail["gold"]}
+        self.assertEqual((gold[(21, "LOGO")]["outstanding"], gold[(21, "UNCLASSIFIED")]["outstanding"]), ("10.000", "0.000"))
+        self.assertFalse(self.tvm.detail["classifyLogoAvailable"])                                   # nothing left to classify
+        self.assertEqual((len(self.db.scrap), self.db.cash(), len(self.db.settlements)), (scrap, cash, settlements))
+        self.assertEqual(self.warnings, [])
+
+
+    def test_the_bar_is_sold_with_real_clicks_and_the_proceeds_enter_the_custody_cash(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.melted_trip()
+        self.tvm._service._price_reference = lambda: {21: D("6000.0000")}
+        scrap, cash_moves = len(self.db.scrap), len(self.db.cash_moves)
+        self.reveal(self.item("custodySaleButton"))
+        self.click("custodySaleButton")
+        self.wait_until(lambda: self.item("tripGoldSaleDialog").property("opened"), "sale dialog")
+        self.wait_until(lambda: "buyers" in self.tvm._context and self.tvm._reference_prices, "context and price reference loaded")
+        QTest.qWait(120)
+        sources = [s["text"] for s in self.tvm.detail["saleSources"]]
+        self.assertTrue(any("سبيكة السبك" in t for t in sources))
+        self.pick("custodyGoldSaleSourceCombo", len(sources))                                      # the bar is the last gold source (index 0 is the placeholder)
+        self.type_in("custodyGoldSaleWeightField", "10")
+        self.type_in("custodyGoldSalePriceField", "60000")
+        self.type_in("custodyGoldSaleNameField", "تاجر الصاغة")
+        QTest.qWait(150)
+        for name in ("custodyGoldSaleSourceCombo", "custodyGoldSaleWeightField", "custodyGoldSalePriceField", "confirmCustodyGoldSaleButton"):
+            self.assert_inside_window(self.item(name))
+        self.click("confirmCustodyGoldSaleButton")
+        self.wait_until(lambda: len(self.db.gold_sales) == 1, "bar sale posted")
+        self.closed("tripGoldSaleDialog")
+        self.wait_idle()
+        sale = next(iter(self.db.gold_sales.values()))
+        self.assertEqual((sale["source_kind"], sale["weight_grams"], sale["total_price"]), ("TRIP_BAR", D("10.000"), D("60000.00")))
+        self.wait_until(lambda: "33.520" in self.tvm.detail["bar"], "bar pool reduced")
+        self.assertEqual((len(self.db.scrap), len(self.db.cash_moves)), (scrap, cash_moves))       # nothing in Scrap, Main Safe or a bank
+        self.assertEqual(self.warnings, [])
+
+
+    def open_cash_settle(self):
+        self.reveal(self.item("custodyCashSettleButton"))
+        self.click("custodyCashSettleButton")
+        self.wait_until(lambda: self.item("tripCashSettleDialog").property("opened"), "cash settlement dialog")
+        QTest.qWait(120)
+
+    def test_the_custody_cash_is_settled_with_real_clicks_expense_bank_and_write_off(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.melted_trip()
+        self.tvm._service.issue(self.tvm.selectedTripId, "10000", [], TODAY, "", self.tvm.newRequestKey())
+        self.tvm.refresh()
+        self.wait_until(lambda: self.tvm.detail.get("cashSettleAvailable"), "cash settlement available")
+        safe = self.db.cash()
+        # 1) a free-text expense
+        self.open_cash_settle()
+        for name in ("cashSettleKindCombo", "cashSettleAmountField", "cashSettleTextField", "confirmCashSettleButton"):
+            self.assert_inside_window(self.item(name))
+        self.type_in("cashSettleAmountField", "1500")
+        self.type_in("cashSettleTextField", "أجرة نقل")
+        QTest.qWait(100)
+        self.click("confirmCashSettleButton")
+        self.wait_until(lambda: len(self.db.settle_cash) == 1, "expense posted")
+        self.closed("tripCashSettleDialog")
+        self.wait_idle()
+        # 2) a deposit into the bank account
+        self.open_cash_settle()
+        self.pick("cashSettleKindCombo", 1)
+        QTest.qWait(100)
+        self.assertIsNone(self.visible_item("cashSettleTextField"))                                # a deposit has no free text
+        self.type_in("cashSettleAmountField", "5000")
+        self.pick("cashSettleBankCombo", 1)
+        QTest.qWait(100)
+        self.click("confirmCashSettleButton")
+        self.wait_until(lambda: len(self.db.settle_cash) == 2, "deposit posted")
+        self.closed("tripCashSettleDialog")
+        self.wait_idle()
+        self.assertEqual([(m["account_id"], m["amount_delta"]) for m in self.db.bank_moves], [(1, D("5000.00"))])
+        # 3) the write-off of the rest needs a reason
+        self.open_cash_settle()
+        self.pick("cashSettleKindCombo", 2)
+        self.type_in("cashSettleAmountField", "3500")
+        QTest.qWait(100)
+        self.assertFalse(self.item("confirmCashSettleButton").property("enabled"))                  # no reason yet
+        self.type_in("cashSettleTextField", "فرق عد")
+        QTest.qWait(100)
+        self.click("confirmCashSettleButton")
+        self.wait_until(lambda: len(self.db.settle_cash) == 3, "write-off posted")
+        self.closed("tripCashSettleDialog")
+        self.wait_idle()
+        self.assertEqual(self.db.cash(), safe)                                                     # Main Safe never moved
+        self.wait_until(lambda: self.tvm.detail["cash"]["zero"], "custody cash settled to zero")
+        self.assertEqual(self.warnings, [])
+
+
+    def test_the_remainder_is_returned_lost_and_the_issue_weight_corrected_with_real_clicks(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.melted_trip()
+        s21 = self.db.physical(1)
+        # 1) market return of part of the bar: it enters Scrap as 21K
+        self.reveal(self.item("custodyDisposeButton"))
+        self.click("custodyDisposeButton")
+        self.wait_until(lambda: self.item("tripDisposeDialog").property("opened"), "dispose dialog")
+        QTest.qWait(120)
+        sources = [x["text"] for x in self.tvm.detail["disposeSources"]]
+        self.assertEqual(len(sources), 3)                                                          # 21K raw, 18K raw, the bar
+        for name in ("disposeActionCombo", "disposeSourceCombo", "disposeWeightField", "confirmDisposeButton"):
+            self.assert_inside_window(self.item(name))
+        self.pick("disposeSourceCombo", 3)
+        self.type_in("disposeWeightField", "20")
+        QTest.qWait(100)
+        self.click("confirmDisposeButton")
+        self.wait_until(lambda: len(self.db.settle_lines) == 1, "market return posted")
+        self.closed("tripDisposeDialog")
+        self.wait_idle()
+        self.assertEqual(self.db.physical(1), s21 + D("20.000"))
+        self.wait_until(lambda: "23.520" in self.tvm.detail["bar"], "bar pool reduced")
+        # 2) a crucible loss from the bar
+        self.click("custodyDisposeButton")
+        self.wait_until(lambda: self.item("tripDisposeDialog").property("opened"), "dispose dialog again")
+        QTest.qWait(120)
+        self.pick("disposeActionCombo", 1)
+        self.pick("disposeSourceCombo", 3)
+        self.type_in("disposeWeightField", "0.5")
+        QTest.qWait(100)
+        self.click("confirmDisposeButton")
+        self.wait_until(lambda: len(self.db.settle_lines) == 2, "loss posted")
+        self.closed("tripDisposeDialog")
+        self.wait_idle()
+        self.assertEqual([l["classification"] for l in self.db.settle_lines], [None, "CRUCIBLE"])
+        # 3) the issue weight was higher than recorded: Scrap pays the difference; the reason is mandatory
+        self.reveal(self.item("custodyAdjustButton"))
+        self.click("custodyAdjustButton")
+        self.wait_until(lambda: self.item("tripAdjustDialog").property("opened"), "adjust dialog")
+        QTest.qWait(120)
+        for name in ("adjustKaratCombo", "adjustDirectionCombo", "adjustWeightField", "adjustReasonField", "confirmAdjustButton"):
+            self.assert_inside_window(self.item(name))
+        s21 = self.db.physical(1)
+        self.pick("adjustKaratCombo", 1)
+        self.type_in("adjustWeightField", "2")
+        QTest.qWait(100)
+        self.assertFalse(self.item("confirmAdjustButton").property("enabled"))                     # no reason yet
+        self.type_in("adjustReasonField", "وزن غلط")
+        QTest.qWait(100)
+        self.click("confirmAdjustButton")
+        self.wait_until(lambda: len(self.db.settle_adjusts) == 1, "correction posted")
+        self.closed("tripAdjustDialog")
+        self.wait_idle()
+        self.assertEqual(self.db.physical(1), s21 - D("2.000"))
+        self.assertEqual(self.warnings, [])
+
+
 # The base classes carry their own tests: only this module's tests are collected here.
 for _inherited in [n for n in dir(harness.InvoicePageTests) if n.startswith("test_")] + \
                   [n for n in dir(base.MarketTripHeatPageTests) if n.startswith("test_") and n not in vars(GoldSettlePageTests)]:
     setattr(GoldSettlePageTests, _inherited, None)
+for _gold in [n for n in dir(GoldSettlePageTests) if n.startswith("test_") and getattr(GoldSettlePageTests, n) is not None]:
+    setattr(DistributionPageTests, _gold, None)                                          # the distribution class runs only its own tests
 
 
 if __name__ == "__main__":

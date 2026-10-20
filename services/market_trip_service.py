@@ -65,12 +65,19 @@ from services.invoice_service import invoice_transaction
 from services.number_text import normalize_digits
 from services.old_gold_availability import held_grams, shortage_message
 from services.trip_errors import TripError
-from services import custody_rules, supplier_rules as rules
+from services import custody_rules, settlement_rules, supplier_rules as rules
 
 PERMISSION = "MARKET_TRIP_MANAGE"
+ST_MELT = "ST_MELT"                                # 060: the melt recorded AFTER the owner returns from the market (settlement step 2a)
+ST_BAR_SUP, BAR_SOURCE_KIND = "ST_BAR_SUP", "TRIP_BAR"      # 061: the melted bar (21K-equivalent grams) delivered to a supplier (settlement step 2b)
+ST_RET_MKT, ST_LOSS, ST_ADJUST = "ST_RET_MKT", "ST_LOSS", "ST_ADJUST"      # 065: remainder returned to the shop / lost, issue-weight correction
+ST_EXPENSE, ST_CASH_BANK, ST_CASH_OFF = "ST_EXPENSE", "ST_CASH_BANK", "ST_CASH_OFF"      # 064: the custody cash settled after the trip
+ST_LOGO = "ST_LOGO"                                # 062: the unmelted remainder classified as LOGO (the owner rule: what was not melted is logo)
+ST_BAR_MKT = "ST_BAR_MKT"                          # 062: the melted bar handed to a marketer: his 21K entitlement gains the grams (settlement step 2c)
+BASE_KARAT_VALUE = 21                                  # the bar is delivered as N grams of the 21K master karat (its equivalent)
 SUPPLIER_PAY_PERMISSION = "SUPPLIER_MAKING_PAY"      # a supplier payment made from custody needs this right too (043)
 GOLD_SETTLE_PERMISSION = "SUPPLIER_GOLD_SETTLE"      # a gold settlement made from custody needs this right too (046)
-SALE_SOURCE_GOLD, SALE_SOURCE_LOT = "CUSTODY_GOLD", "CUSTODY_LOT"             # 053: what a sale consumes (an aggregate line / one whole lot)
+SALE_SOURCE_GOLD, SALE_SOURCE_LOT, SALE_SOURCE_BAR = "CUSTODY_GOLD", "CUSTODY_LOT", "TRIP_BAR"             # 053: what a sale consumes (an aggregate line / one whole lot)
 SALE_BASIS_TOTAL, SALE_BASIS_PER_GRAM = "TOTAL", "PER_GRAM"
 BUYER_REGISTERED, BUYER_THIRD_PARTY = "REGISTERED_PARTY", "THIRD_PARTY"
 BUYER_NAME_MAX = 150
@@ -79,9 +86,10 @@ _VENDOR_MAP.update({ord("ى"): "ي", ord("ة"): "ه", ord("ؤ"): "و", ord("ئ")
 _VENDOR_MAP.update({ord(c): None for c in "\u064b\u064c\u064d\u064e\u064f\u0650\u0651\u0652\u0640"})            # diacritics and tatweel
 SALE_PER_GRAM_STEP = Decimal("0.0001")
 PRICE_WARNING_PERCENT = Decimal("10")                # a sale price farther than this from the SHOP_BUY reference needs the owner's acknowledgement
-SETTLEABLE_DESIGNATIONS = (LOGO_DESIGNATION,)        # 046: only Logo gold settles a supplier (this is a scope of the slice, not a business rule)
+SETTLEABLE_DESIGNATIONS = (LOGO_DESIGNATION, UNCLASSIFIED)   # 046: Logo gold; 061: also gold that left WITHOUT a destination and was not melted (it stays in its OWN karat)
 CUSTODY_METHOD = "CUSTODY"
 PAYMENT_REFERENCE_MAX = 100
+SETTLE_TEXT_MAX = 300
 MONEY_STEP, WEIGHT_STEP, FINENESS_STEP, ANALYSIS_STEP = Decimal("0.01"), Decimal("0.001"), Decimal("0.1"), Decimal("0.000001")
 MAX_MONEY, MAX_WEIGHT = Decimal("100000000000000"), Decimal("1000000000")
 NOTES_MAX, REASON_MAX, WORKSHOP_MAX, ASSAY_MAX, LABEL_MAX, MAX_RESIDUES = 1000, 1000, 120, 120, 120, 10
@@ -89,8 +97,8 @@ ZERO_MONEY, ZERO_WEIGHT = Decimal("0.00"), Decimal("0.000")
 KIND_TEXT = {ISSUE: "إخراج عهدة", RETURN: "رجوع من العهدة", MELT: "سبك", LOT_RETURN: "رجوع ناتج السبك", LOT_ISSUE: "إخراج سبكة من المحل",
              HEAT: "حمّية اللوجو", SUPPLIER_PAY: "دفع مصنعيات من العهدة", GOLD_SETTLE: "تسوية ذهب من العهدة", LOT_SETTLE: "تسوية سبكة من العهدة",
              GOLD_SALE: "بيع ذهب من العهدة", GOLD_BUY: "شراء ذهب نقدي", "BK_ISSUE": "إخراج ذهب (دفتري)", "BK_BUY": "شراء ذهب (دفتري)",
-             "BK_SELL": "بيع ذهب (دفتري)", "BK_RETURN": "رجوع ذهب للمحل (دفتري)", "BK_RECON": "تسوية الرصيد الدفتري", "BK_ISS_STK": "إخراج مخزون مرتجع إلى العهدة (دفتري)", "BK_DLV_SUP": "تسليم ذهب لمورد (دفتري)", "BK_DLV_MKT": "تسليم ذهب لمسوقجي (دفتري)", "BK_RECEIVE": "استلام ذهب من مسوقجي (دفتري)", "BK_GAIN": "زيادة مثبتة (دفتري)", "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي", "LOGO_HOLD": "تسليم لوجو لمسوقجي", "HOLD_BACK": "رجوع لوجو من مسوقجي"}
-DESIGNATION_TEXT = {MELT_DESIGNATION: "للسبك", LOGO_DESIGNATION: "لوجو", UNCLASSIFIED: "غير مصنف (قبل التصنيف)"}
+             "BK_SELL": "بيع ذهب (دفتري)", "BK_RETURN": "رجوع ذهب للمحل (دفتري)", "BK_RECON": "تسوية الرصيد الدفتري", "BK_ISS_STK": "إخراج مخزون مرتجع إلى العهدة (دفتري)", "BK_DLV_SUP": "تسليم ذهب لمورد (دفتري)", "BK_DLV_MKT": "تسليم ذهب لمسوقجي (دفتري)", "BK_RECEIVE": "استلام ذهب من مسوقجي (دفتري)", "BK_GAIN": "زيادة مثبتة (دفتري)", "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي", "LOGO_HOLD": "تسليم لوجو لمسوقجي", "HOLD_BACK": "رجوع لوجو من مسوقجي", "ST_MELT": "تسجيل سبك (بعد الرجوع)", "ST_BAR_SUP": "تسليم سبيكة لمورد (بعد الرجوع)", "ST_BAR_MKT": "تسليم سبيكة لمسوقجي (بعد الرجوع)", "ST_LOGO": "اعتبار المتبقي لوجو", "ST_EXPENSE": "مصروف من العهدة", "ST_CASH_BANK": "إيداع باقي النقدية في حساب", "ST_CASH_OFF": "إعدام باقي النقدية", "ST_RET_MKT": "مرتجع سوق للمحل", "ST_LOSS": "خسية", "ST_ADJUST": "تصحيح وزن الإخراج"}
+DESIGNATION_TEXT = {MELT_DESIGNATION: "للسبك", LOGO_DESIGNATION: "لوجو", UNCLASSIFIED: "بدون وجهة"}
 _DESIGNATION_INPUT = {"MELT": MELT_DESIGNATION, "للسبك": MELT_DESIGNATION, "LOGO": LOGO_DESIGNATION, "لوجو": LOGO_DESIGNATION,
                       "UNCLASSIFIED": UNCLASSIFIED, "غير مصنف": UNCLASSIFIED}
 LOT_RETURN_NOTE = "صفِّ السبائك المتبقية برجوع ناتج السبك إلى المحل أو بتسوية سبكة معلومة العيار من العهدة قبل الإغلاق."
@@ -157,14 +165,16 @@ def parse_fineness(value, label="العيار الفعلي", required=True):
     return number.quantize(FINENESS_STEP)
 
 
-def parse_designation(value, kind):
-    """The OWNER's decision on a gold line. An ISSUE must choose MELT or LOGO; a RETURN preserves the line's own designation (which
-    may be UNCLASSIFIED for custody written before designations existed). Nothing is ever guessed."""
+def parse_designation(value, kind, allow_blank=False):
+    """The OWNER's decision on a gold line. A market-custody ISSUE (stage 1) carries NO designation (`allow_blank`: stored UNCLASSIFIED, shown «بدون وجهة»); every other
+    caller that issues gold (the cash gold purchase) must choose MELT or LOGO; a RETURN preserves the line's own designation. Nothing is ever guessed."""
     text = str(value or "").strip()
+    if allow_blank and not text:
+        return UNCLASSIFIED                                      # market custody stage 1: gold leaves by weight and karat only; its fate is decided at settlement
     designation = _DESIGNATION_INPUT.get(text.upper() if text.isascii() else text)
     if designation is None:
         raise TripError("DESIGNATION_REQUIRED", "اختر وجهة الذهب لكل سطر: للسبك أو لوجو.")
-    if kind == ISSUE and designation == UNCLASSIFIED:
+    if kind == ISSUE and designation == UNCLASSIFIED and not allow_blank:
         raise TripError("DESIGNATION_REQUIRED", "اختر وجهة الذهب لكل سطر: للسبك أو لوجو.")
     return designation
 
@@ -209,13 +219,14 @@ def _trip_id(value):
     return number
 
 
-def custody_view(cash_rows, gold_rows, lot_rows=(), trip_id=None):
+def custody_view(cash_rows, gold_rows, lot_rows=(), trip_id=None, bar=0):
     """Issued / returned / melted / OUTSTANDING for cash and for every (karat, designation), plus the outstanding assayed lots, from
     the repository's derived sums. A trip is settled only when all of them are exactly zero."""
     issued, returned = (Decimal(str(cash_rows[0])), Decimal(str(cash_rows[1])))
     paid = Decimal(str(cash_rows[2])) if len(cash_rows) > 2 else Decimal("0.00")          # paid to suppliers from custody (043)
     spent = Decimal(str(cash_rows[4])) if len(cash_rows) > 4 else Decimal("0.00")         # spent on gold bought in the market (054)
     received = Decimal(str(cash_rows[3])) if len(cash_rows) > 3 else Decimal("0.00")      # proceeds of custody gold sold for cash (053)
+    settled = Decimal(str(cash_rows[5])) if len(cash_rows) > 5 else Decimal("0.00")       # expense / bank deposit / write-off after the trip (064)
     gold = []
     for r in gold_rows:
         g_issued, g_returned = Decimal(str(r["issued"])), Decimal(str(r["returned"]))
@@ -227,7 +238,7 @@ def custody_view(cash_rows, gold_rows, lot_rows=(), trip_id=None):
         gold.append({"karat_id": int(r["karat_id"]), "karat_value": int(r["karat_value"]),
                      "designation": r.get("designation", UNCLASSIFIED), "issued": g_issued, "returned": g_returned,
                      "melted": g_melted, "heat_delta": g_heat, "supplier_settled": g_settled, "sold": g_sold, "purchased": g_bought,
-                     "held_out": g_held_out, "held_back": g_held_back,
+                     "held_out": g_held_out, "held_back": g_held_back, "settle_out": Decimal(str(r.get("settle_out", 0) or 0)),
                      "outstanding": custody_rules.gold_outstanding(r)})
     lots = [{"lot_id": str(r["id"]), "entry_id": str(r["entry_id"]), "lot_no": int(r["lot_no"]), "kind": r["lot_kind"],
              "label": r.get("label") or "", "weight": Decimal(str(r["weight_grams"])),
@@ -237,10 +248,11 @@ def custody_view(cash_rows, gold_rows, lot_rows=(), trip_id=None):
              "origin_trip_id": int(r.get("origin_trip_id") or trip_id or 0) or None,
              "code": None if not (r.get("origin_trip_id") or trip_id) else entry_code(r.get("origin_trip_id") or trip_id, r["entry_no"])}
             for r in lot_rows if Decimal(str(r["outstanding_grams"])) != 0]
-    cash_left = custody_rules.cash_outstanding(issued, returned, paid, received, spent)
-    return {"cash": {"issued": issued, "returned": returned, "paid": paid, "received": received, "spent": spent, "outstanding": cash_left}, "gold": gold,
-            "lots": lots,
-            "settled": cash_left == 0 and all(g["outstanding"] == 0 for g in gold) and not lots}
+    cash_left = custody_rules.cash_outstanding(issued, returned, paid, received, spent, settled)
+    bar_left = Decimal(str(bar or 0))                                                       # 060: Eq21 grams of the melted bars not yet distributed
+    return {"cash": {"issued": issued, "returned": returned, "paid": paid, "received": received, "spent": spent, "settled": settled, "outstanding": cash_left}, "gold": gold,
+            "lots": lots, "bar": bar_left,
+            "settled": cash_left == 0 and all(g["outstanding"] == 0 for g in gold) and not lots and bar_left == 0}
 
 
 def analyse(inputs, main, residues):
@@ -295,6 +307,8 @@ def outstanding_text(custody):
     parts += [f"عيار {g['karat_value']} ({DESIGNATION_TEXT[g['designation']]}): {g['outstanding']:,.3f} جرام"
               for g in custody["gold"] if g["outstanding"] != 0]
     parts += [f"شحنة سبك {l['lot_no']} من {entry_label(l)}: {l['outstanding']:,.3f} جرام" for l in custody["lots"]]
+    if custody.get("bar", 0) != 0:
+        parts.append(f"رصيد السبيكة (مكافئ عيار 21): {custody['bar']:,.3f} جرام")
     return ("لا يمكن إغلاق العهدة قبل إرجاع كل ما أُخرج منها. المتبقي في العهدة: " + "، ".join(parts) + "."
             + (" " + LOT_RETURN_NOTE if custody["lots"] else ""))
 
@@ -344,7 +358,8 @@ class MarketTripService:
         """The derived custody. `current=True` is for DECISIONS made under the trip lock: the cash, gold and lot reads lock their rows and their nested reversal
         lookups (current reads). The default `current=False` is the DISPLAY form: plain snapshot reads of the connection's transaction, no locking clause at all."""
         return custody_view(repository.custody_cash(trip_id, current=current), repository.custody_gold(trip_id, current=current),
-                            repository.custody_lots(trip_id, current=current), trip_id=trip_id)
+                            repository.custody_lots(trip_id, current=current), trip_id=trip_id,
+                            bar=repository.settle_bar_balance(trip_id, current=current))
 
     # ------------------------------------------------------------------ reads
     def context(self, *, _expected_actor=None):
@@ -360,7 +375,9 @@ class MarketTripService:
             suppliers = repository.suppliers()
             buyers = repository.buyers()
             intermediaries = repository.intermediaries() if {VIEW_HOLDINGS, MANAGE_HOLDINGS} <= set(actor.permissions) else []
-        return {"buyers": [{"id": str(r["id"]), "name": r["name"], "active": bool(r["is_active"]),
+            banks = repository.active_bank_accounts()
+        return {"banks": [{"id": str(b["id"]), "name": b["name"]} for b in banks],
+                "buyers": [{"id": str(r["id"]), "name": r["name"], "active": bool(r["is_active"]),
                             "supplier": bool(r["is_supplier"]), "intermediary": bool(r["is_intermediary"])} for r in buyers],
                 "intermediaries": [{"id": str(r["id"]), "name": r["name"], "active": bool(r["is_active"])} for r in intermediaries],
                 "safe": None if safe is None else {"id": str(safe["id"]), "name": safe["name"], "active": bool(safe["is_active"]),
@@ -535,6 +552,29 @@ class MarketTripService:
                     "acknowledged": bool(e["book_trade"]["price_warning_acknowledged"])},
                 "gain": None if not e.get("gain") else {"explanation": e["gain"]["explanation"], "evidence_reference": e["gain"]["evidence_reference"],
                                                         "confirmed_by": e["gain"].get("confirmed_by") or ""},
+                "bar_supplier": None if not e.get("bar_supplier") else {
+                    "settlement_id": str(e["bar_supplier"]["settlement_id"]), "code": settlement_code(e["bar_supplier"]["settlement_id"]),
+                    "supplier_id": str(e["bar_supplier"]["supplier_id"]), "supplier_name": e["bar_supplier"]["supplier_name"],
+                    "delivered_weight": Decimal(str(e["bar_supplier"]["weight_grams"])), "target_karat": int(e["bar_supplier"]["target_karat_value"]),
+                    "credited_weight": Decimal(str(e["bar_supplier"]["credited_weight_grams"])),
+                    "analytical": Decimal(str(e["bar_supplier"]["credited_analytical_grams"])),
+                    "rounding_difference": Decimal(str(e["bar_supplier"]["rounding_difference_grams"]))},
+                "settle_logo": [{"karat_value": int(g["karat_value"]), "weight": Decimal(str(g["weight_grams"]))} for g in (e.get("settle_logo") or [])],
+                "settle_lines": [{"source": l["source"], "karat_value": None if l.get("karat_value") is None else int(l["karat_value"]),
+                                  "weight": Decimal(str(l["weight_grams"])), "classification": l.get("classification")} for l in (e.get("settle_lines") or [])],
+                "settle_adjust": None if not e.get("settle_adjust") else {"karat_value": int(e["settle_adjust"]["karat_value"]), "direction": e["settle_adjust"]["direction"],
+                                                                          "weight": Decimal(str(e["settle_adjust"]["weight_grams"])), "reason": e["settle_adjust"]["reason"]},
+                "settle_cash": None if not e.get("settle_cash") else {"amount": Decimal(str(e["settle_cash"]["amount"])), "description": e["settle_cash"].get("description") or "",
+                                                                      "reference": e["settle_cash"].get("reference") or "", "bank_account": e["settle_cash"].get("bank_account_name") or ""},
+                "bar_marketer": None if not e.get("bar_marketer") else {
+                    "party_id": str(e["bar_marketer"]["party_id"]), "party_name": e["bar_marketer"]["party_name"], "grams": Decimal(str(e["bar_marketer"]["weight_grams"]))},
+                "settle_melt": None if not e.get("settle_melt") else {
+                    "workshop": e["settle_melt"]["workshop"], "date": e["settle_melt"]["melt_date"],
+                    "input_weight": Decimal(str(e["settle_melt"]["input_weight_grams"])), "output_weight": Decimal(str(e["settle_melt"]["output_weight_grams"])),
+                    "fineness": int(e["settle_melt"]["fineness_permille"]), "theoretical": Decimal(str(e["settle_melt"]["theoretical_eq21"])),
+                    "actual": Decimal(str(e["settle_melt"]["actual_eq21"])), "loss": Decimal(str(e["settle_melt"]["loss_eq21"])),
+                    "weight_loss": Decimal(str(e["settle_melt"]["weight_loss_eq21"])), "fineness_loss": Decimal(str(e["settle_melt"]["fineness_loss_eq21"])),
+                    "inputs": [{"karat_value": int(i["karat_value"]), "weight": Decimal(str(i["weight_grams"]))} for i in e["settle_melt"]["inputs"]]},
                 "recon": None if not e.get("recon") else {
                     "generation": int(e["recon"]["generation"]), "effective_date": e["recon"]["effective_date"], "a": Decimal(str(e["recon"]["a_star"])),
                     "b": Decimal(str(e["recon"]["b_star"])), "loss": Decimal(str(e["recon"]["loss_posted"])),
@@ -583,7 +623,7 @@ class MarketTripService:
             if weight == 0:
                 continue
             raw = line.get("designation") if isinstance(line, dict) else (line[2] if len(line) > 2 else None)
-            key = (karat_id, parse_designation(raw, kind))
+            key = (karat_id, parse_designation(raw, kind, allow_blank=(kind == ISSUE)))
             grams[key] = grams.get(key, ZERO_WEIGHT) + weight
         if amount == 0 and not grams and not allow_empty:
             raise TripError("NOTHING_TO_RECORD", "أدخل مبلغًا نقديًا أو وزن ذهب موجبًا واحدًا على الأقل.")
@@ -669,6 +709,10 @@ class MarketTripService:
                 raise TripError("ACCOUNT_NOT_FOUND", "الخزنة الرئيسية غير موجودة.")
             if not account["is_active"]:
                 raise TripError("ACCOUNT_INACTIVE", f"الحساب «{account['name']}» غير نشط.")
+            if kind == ISSUE:                                            # the safe may never go negative (read under the account lock)
+                balance = Decimal(str(repository.cash_balance(account["id"])))
+                if amount > balance:
+                    raise TripError("SAFE_SHORTAGE", f"رصيد الخزنة الرئيسية غير كافٍ: المطلوب {amount:,.2f} والمتاح {balance:,.2f} جنيه.")
         karats = {}
         for karat_id in sorted({k for k, _ in grams}):
             karat = repository.karat(karat_id)
@@ -1144,7 +1188,7 @@ class MarketTripService:
         source = parse_designation(designation, GOLD_SETTLE)
         if source not in SETTLEABLE_DESIGNATIONS:
             raise TripError("DESIGNATION_NOT_SETTLEABLE",
-                            f"في هذه المرحلة تُسوّى للمورد من العهدة ذهب «لوجو» فقط؛ ذهب ({DESIGNATION_TEXT[source]}) غير متاح للتسوية.")
+                            f"في هذه المرحلة تُسوّى للمورد من العهدة ذهب «لوجو» أو الذهب الذي خرج بدون وجهة؛ ذهب ({DESIGNATION_TEXT[source]}) غير متاح للتسوية.")
         grams = parse_weight(weight)
         if grams == 0:
             raise TripError("WEIGHT_REQUIRED", "أدخل وزن الذهب المُسلَّم الفعلي بقيمة موجبة.")
@@ -1420,7 +1464,7 @@ class MarketTripService:
                 raise TripError("KARAT_REQUIRED", f"السطر {index}: اختر العيار.") from None
             if karat_number <= 0:
                 raise TripError("KARAT_REQUIRED", f"السطر {index}: اختر العيار.")
-            designation = parse_designation(line.get("designation"), ISSUE)
+            designation = parse_designation(line.get("designation"), ISSUE, allow_blank=True)         # 064: bought gold has no melt / logo decision until the settlement
             grams = parse_weight(weight_text)
             if grams == 0:
                 raise TripError("WEIGHT_REQUIRED", f"السطر {index}: أدخل الوزن الفعلي بقيمة موجبة.")
@@ -1709,8 +1753,8 @@ class MarketTripService:
             raise TripError("TRIP_NOT_FOUND", "اختر العهدة.")
         trip_number = _trip_id(trip_id)
         kind = str(source_kind or "").strip().upper()
-        if kind not in (SALE_SOURCE_GOLD, SALE_SOURCE_LOT):
-            raise TripError("SOURCE_REQUIRED", "اختر ما تبيعه: ذهبًا من سطر عيار أو سبيكة معروفة العيار.")
+        if kind not in (SALE_SOURCE_GOLD, SALE_SOURCE_LOT, SALE_SOURCE_BAR):
+            raise TripError("SOURCE_REQUIRED", "اختر ما تبيعه: ذهبًا من سطر عيار أو سبيكة السبك أو سبيكة معروفة العيار.")
         karat_number, source, lot_number = None, None, None
         if kind == SALE_SOURCE_GOLD:
             try:
@@ -1720,7 +1764,7 @@ class MarketTripService:
             if karat_number <= 0:
                 raise TripError("KARAT_REQUIRED", "اختر عيار الذهب المباع.")
             source = parse_designation(designation, GOLD_SALE)
-        else:
+        elif kind == SALE_SOURCE_LOT:
             try:
                 lot_number = int(str(lot_id).strip())
             except (TypeError, ValueError):
@@ -1728,7 +1772,7 @@ class MarketTripService:
             if lot_number <= 0:
                 raise TripError("LOT_NOT_FOUND", "اختر السبيكة.")
         grams = parse_weight(weight)
-        if kind == SALE_SOURCE_GOLD and grams == 0:
+        if kind in (SALE_SOURCE_GOLD, SALE_SOURCE_BAR) and grams == 0:
             raise TripError("WEIGHT_REQUIRED", "أدخل وزن الذهب المباع الفعلي بقيمة موجبة.")
         if kind == SALE_SOURCE_LOT and grams == 0:
             grams = None                                                      # a whole lot: the weight is derived under the locks
@@ -1796,7 +1840,12 @@ class MarketTripService:
             if trip["status"] != OPEN:
                 raise TripError("TRIP_CLOSED", "العهدة مغلقة: أعد فتحها أولاً لبيع ذهب منها.")
             lot, movement_id, karat_value, fineness = None, None, None, None
-            if kind == SALE_SOURCE_GOLD:
+            if kind == SALE_SOURCE_BAR:
+                pool = self._custody(repository, trip_id, current=True)["bar"]          # 063: the melted bar (Eq21 grams) read under the trip lock
+                if grams > pool:
+                    raise TripError("BAR_EXCEEDS_POOL", f"رصيد السبيكة المتاح للبيع {pool:,.3f} جرام (مكافئ عيار 21) فقط: لا يمكن بيع {grams:,.3f} جرام.")
+                karat_value = BASE_KARAT_VALUE
+            elif kind == SALE_SOURCE_GOLD:
                 karat = repository.karat(karat_id)
                 if karat is None or not karat["is_active"]:
                     raise TripError("KARAT_NOT_FOUND", "العيار غير موجود أو غير نشط.")
@@ -1837,11 +1886,14 @@ class MarketTripService:
             code = entry_code(trip_id, entry_no)
             if kind == SALE_SOURCE_LOT:
                 movement_id = repository.insert_lot_movement(lot_id=lot_id, entry_id=entry_id, movement_type=SALE_MOVEMENT, weight_delta=-grams)
+            if kind == SALE_SOURCE_BAR:
+                repository.insert_settle_move(entry_id=entry_id, trip_id=trip_id, kind=GOLD_SALE, pool="BAR", karat_id=None, delta=-grams)
             repository.insert_gold_sale(
                 entry_id=entry_id, source_kind=kind, karat_id=karat_id, designation=designation, lot=lot, weight=grams, movement_id=movement_id,
                 total=total, per_gram=per_gram, basis=basis, buyer_kind=buyer_kind, buyer_party_id=buyer_id, buyer_name=buyer_label,
                 reference_price=reference_per_gram, deviation=deviation, acknowledged=warned and acknowledged, sale_date=sold_on, reference=reference)
             what = (f"سبيكة {grams:,.3f} جرام (عيار فعلي {fineness} بالألف)" if lot is not None
+                    else f"سبيكة السبك {grams:,.3f} جرام (مكافئ عيار 21)" if kind == SALE_SOURCE_BAR
                     else f"{grams:,.3f} جرام عيار {karat_value} ({DESIGNATION_TEXT[designation]})")
             label = f"{KIND_TEXT[GOLD_SALE]} {code} — {trip_code(trip_id)}: {what} إلى {buyer_label} بمبلغ {total:,.2f} ج"
             repository.audit(actor=actor, event_type="MARKET_TRIP_GOLD_SALE", entity_id=entry_id, reference=code, description=label,
@@ -1859,6 +1911,367 @@ class MarketTripService:
                 raise PermissionError("انتهت جلسة الدخول.")
         return result
 
+    # ------------------------------------------------------------------ settlement step 2f: the remainder after the trip and the issue-weight correction (065)
+    LOSS_CLASSES = ("CRUCIBLE", "MARKET")
+
+    @classmethod
+    def _disposal_lines(cls, lines, kind):
+        """Validated, merged lines [(source, karat_id|None, grams, classification|None)]: source RAW (unmelted gold of a karat), LOGO (logo of a karat) or BAR (21K-equivalent
+        grams of the melted bar). A loss line carries CRUCIBLE or MARKET; a return line carries none. An untouched row is ignored; the same source twice is summed."""
+        merged = {}
+        for index, line in enumerate(lines or [], 1):
+            source = str(line.get("source", "") or "").strip().upper()
+            weight_text, karat_text = str(line.get("weight", "") or "").strip(), str(line.get("karat_id", "") or "").strip()
+            classification = str(line.get("classification", "") or "").strip().upper()
+            if not (source or weight_text or karat_text):
+                continue
+            if source not in ("RAW", "LOGO", "BAR"):
+                raise TripError("SOURCE_REQUIRED", f"السطر {index}: اختر المصدر (ذهب غير مسبوك أو لوجو أو سبيكة).")
+            karat_number = None
+            if source != "BAR":
+                try:
+                    karat_number = int(karat_text)
+                except ValueError:
+                    raise TripError("KARAT_REQUIRED", f"السطر {index}: اختر العيار.") from None
+                if karat_number <= 0:
+                    raise TripError("KARAT_REQUIRED", f"السطر {index}: اختر العيار.")
+            grams = parse_weight(weight_text)
+            if grams == 0:
+                raise TripError("WEIGHT_REQUIRED", f"السطر {index}: أدخل وزنًا موجبًا.")
+            if kind == ST_LOSS:
+                if classification not in cls.LOSS_CLASSES:
+                    raise TripError("CLASSIFICATION_REQUIRED", f"السطر {index}: اختر تصنيف الخسية (خسية بوتقة أو خسية سوق).")
+            else:
+                classification = ""
+            key = (source, karat_number, classification or None)
+            merged[key] = merged.get(key, ZERO_WEIGHT) + grams
+        if not merged:
+            raise TripError("LINES_REQUIRED", "أضف سطرًا واحدًا على الأقل.")
+        return [(src, kn, g, cl) for (src, kn, cl), g in sorted(merged.items(), key=lambda kv: (kv[0][0], kv[0][1] or 0, kv[0][2] or ""))]
+
+    def return_to_shop(self, trip_id, lines, entry_date, notes, request_key, *, _expected_actor=None):
+        """RETURN what is left after the trip to the shop (مرتجع سوق): unmelted gold and logo go back to counted Scrap in their OWN karat, the melted bar as 21K-equivalent
+        grams. One Scrap IN movement per target karat; the sources lose the grams; no cash, supplier or lot movement."""
+        return self._dispose(ST_RET_MKT, trip_id, lines, entry_date, notes, request_key, _expected_actor)
+
+    def record_loss(self, trip_id, lines, entry_date, notes, request_key, *, _expected_actor=None):
+        """Record a LOSS (خسية) of custody gold: the grams leave the sources with a classification (crucible / market). Nothing else moves."""
+        return self._dispose(ST_LOSS, trip_id, lines, entry_date, notes, request_key, _expected_actor)
+
+    def _dispose(self, kind, trip_id, lines, entry_date, notes, request_key, expected_actor):
+        session_actor = self._actor(expected_actor)
+        if str(trip_id or "").strip() == "":
+            raise TripError("TRIP_NOT_FOUND", "اختر العهدة.")
+        trip_number = _trip_id(trip_id)
+        parsed = self._disposal_lines(lines, kind)
+        on_date, notes_text, key = _entry_date(entry_date), _text(notes, NOTES_MAX, "الملاحظات"), _key(request_key)
+        digest = hashlib.sha256(json.dumps([kind, trip_number, [[s, k, str(g), c] for s, k, g, c in parsed], on_date.isoformat(), notes_text], ensure_ascii=False).encode()).hexdigest()
+        try:
+            return self._post_dispose(session_actor, kind, trip_number, parsed, on_date, notes_text, key, digest)
+        except IntegrityError as exc:
+            if not _is_request_key_violation(exc):
+                raise
+            with self._transaction() as connection:
+                actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+                replay = self._dispose_prior(self._repository(connection), key, digest, actor)
+                if replay is None:
+                    raise
+                return replay
+
+    @staticmethod
+    def _dispose_result(entry, lines, duplicate):
+        return {"entry_id": str(entry["id"]), "trip_id": str(entry["trip_id"]), "trip_code": trip_code(entry["trip_id"]),
+                "code": entry_code(entry["trip_id"], entry["entry_no"]), "kind": entry["entry_kind"], "created": False, "duplicate": duplicate,
+                "lines": [{"source": l["source"], "karat_value": None if l.get("karat_value") is None else int(l["karat_value"]),
+                           "weight": str(l["weight_grams"]), "classification": l.get("classification")} for l in lines]}
+
+    @classmethod
+    def _dispose_prior(cls, repository, key, digest, actor):
+        entry = repository.by_request(key)
+        if entry is None:
+            return None
+        lines = repository.entry_settle_lines(entry["id"])
+        if not lines or entry["request_hash"] != digest or int(entry["performed_by_user_id"]) != int(actor.user_id):
+            raise TripError("REQUEST_CONFLICT", "طلب العملية مستخدم لعملية مختلفة.")
+        return cls._dispose_result(entry, lines, True)
+
+    def _post_dispose(self, session_actor, kind, trip_id, parsed, on_date, notes, key, digest):
+        with self._transaction() as connection:
+            actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+            repository = self._repository(connection)
+            trip = repository.trip(trip_id, lock=True)
+            if trip is None:
+                raise TripError("TRIP_NOT_FOUND", "العهدة غير موجودة.")
+            replay = self._dispose_prior(repository, key, digest, actor)
+            if replay is not None:
+                return replay
+            book_rules.require_legacy_trip(trip)
+            if trip["status"] != OPEN:
+                raise TripError("TRIP_CLOSED", "العهدة مغلقة: أعد فتحها أولاً.")
+            custody = self._custody(repository, trip_id, current=True)
+            rows = {(g["karat_id"], g["designation"]): g for g in custody["gold"]}
+            needed = {}
+            for source, karat_id, grams, _ in parsed:
+                needed[(source, karat_id)] = needed.get((source, karat_id), ZERO_WEIGHT) + grams
+            karats = {}
+            for (source, karat_id), grams in sorted(needed.items(), key=lambda kv: (kv[0][0], kv[0][1] or 0)):
+                if source == "BAR":
+                    left, label = custody["bar"], "رصيد السبيكة (مكافئ عيار 21)"
+                else:
+                    karat = repository.karat(karat_id)
+                    if karat is None or not karat["is_active"]:
+                        raise TripError("KARAT_NOT_FOUND", "العيار غير موجود أو غير نشط.")
+                    karats[karat_id] = karat
+                    row = rows.get((karat_id, UNCLASSIFIED if source == "RAW" else LOGO_DESIGNATION))
+                    left = ZERO_WEIGHT if row is None else row["outstanding"]
+                    label = f"المتبقي من عيار {karat['karat_value']} ({'بدون وجهة' if source == 'RAW' else 'لوجو'})"
+                if grams > left:
+                    raise TripError("DISPOSE_EXCEEDS_CUSTODY", f"{label} هو {left:,.3f} جرام فقط: لا يمكن التصرف في {grams:,.3f} جرام.")
+            targets = {}
+            if kind == ST_RET_MKT:
+                for source, karat_id, grams, _ in parsed:
+                    if source == "BAR":
+                        if BASE_KARAT_VALUE not in targets:
+                            base = next((k for k in repository.active_karats() if int(k["karat_value"]) == BASE_KARAT_VALUE), None)
+                            if base is None:
+                                raise TripError("KARAT_NOT_FOUND", "عيار 21 غير موجود أو غير نشط.")
+                            targets[BASE_KARAT_VALUE] = [base, ZERO_WEIGHT]
+                        targets[BASE_KARAT_VALUE][1] += grams
+                    else:
+                        entry_for = targets.setdefault(int(karats[karat_id]["karat_value"]), [karats[karat_id], ZERO_WEIGHT])
+                        entry_for[1] += grams
+            now = repository.db_now()
+            entry_no = repository.next_entry_no(trip_id)
+            entry_id = repository.insert_entry(trip_id=trip_id, entry_no=entry_no, kind=kind, entry_date=on_date, notes=notes, key=key, digest=digest, actor=actor, now=now)
+            code = entry_code(trip_id, entry_no)
+            for number, (source, karat_id, grams, classification) in enumerate(parsed, 1):
+                repository.insert_settle_line(entry_id=entry_id, kind=kind, line_no=number, source=source, karat_id=karat_id, weight=grams, classification=classification)
+                repository.insert_settle_move(entry_id=entry_id, trip_id=trip_id, kind=kind, pool=source, karat_id=karat_id, delta=-grams)
+            for value in sorted(targets):
+                karat, grams = targets[value]
+                movement = repository.post_scrap(kind=RETURN, karat_id=karat["id"], weight=grams, entry_id=entry_id, code=code, notes=notes, actor=actor, now=now)
+                repository.insert_gold_leg(entry_id=entry_id, karat_id=karat["id"], designation=UNCLASSIFIED, weight=grams, scrap_movement_id=movement)
+            text = "، ".join(self._disposal_text(source, karats.get(karat_id), grams, classification) for source, karat_id, grams, classification in parsed)
+            repository.audit(actor=actor, event_type="MARKET_TRIP_" + kind, entity_id=entry_id, reference=code, description=f"{KIND_TEXT[kind]} {code} — {trip_code(trip_id)}: {text}",
+                             metadata={"trip_id": trip_id, "kind": kind, "date": on_date.isoformat(),
+                                       "lines": [{"source": s_, "karat_id": k_, "weight": str(g_), "classification": c_} for s_, k_, g_, c_ in parsed], "employee_id": actor.employee_id}, now=now)
+            entry = repository.by_request(key)
+            result = self._dispose_result(entry, repository.entry_settle_lines(entry_id), False)
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        return result
+
+    @staticmethod
+    def _disposal_text(source, karat, grams, classification):
+        what = "سبيكة (مكافئ عيار 21)" if source == "BAR" else f"عيار {karat['karat_value']} ({'بدون وجهة' if source == 'RAW' else 'لوجو'})"
+        return f"{what} {grams:,.3f} جرام" + {"CRUCIBLE": " — خسية بوتقة", "MARKET": " — خسية سوق"}.get(classification or "", "")
+
+    def correct_issue_weight(self, trip_id, karat_id, direction, weight, reason, entry_date, request_key, *, _expected_actor=None):
+        """Correct the weight of gold issued without a destination (تصحيح وزن الإخراج), both ways, reason mandatory. INCREASE: the real issued weight was HIGHER, so the
+        difference leaves Scrap and enters the custody (refused when Scrap would go negative). DECREASE: it was LOWER, so the difference returns to Scrap and leaves the
+        custody (refused when the unmelted custody gold of that karat is smaller). Nothing else moves."""
+        session_actor = self._actor(_expected_actor)
+        if str(trip_id or "").strip() == "":
+            raise TripError("TRIP_NOT_FOUND", "اختر العهدة.")
+        trip_number = _trip_id(trip_id)
+        way = str(direction or "").strip().upper()
+        if way not in ("INCREASE", "DECREASE"):
+            raise TripError("DIRECTION_REQUIRED", "اختر اتجاه التصحيح: الوزن الفعلي أكبر أو أقل من المسجّل.")
+        try:
+            karat_number = int(str(karat_id).strip())
+        except (TypeError, ValueError):
+            raise TripError("KARAT_REQUIRED", "اختر العيار.") from None
+        if karat_number <= 0:
+            raise TripError("KARAT_REQUIRED", "اختر العيار.")
+        grams = parse_weight(weight)
+        if grams == 0:
+            raise TripError("WEIGHT_REQUIRED", "أدخل فرق الوزن بقيمة موجبة.")
+        reason_text = _text(reason, SETTLE_TEXT_MAX, "السبب", required=True)
+        on_date, key = _entry_date(entry_date), _key(request_key)
+        digest = hashlib.sha256(json.dumps([ST_ADJUST, trip_number, karat_number, way, str(grams), reason_text, on_date.isoformat()], ensure_ascii=False).encode()).hexdigest()
+        try:
+            return self._post_adjust(session_actor, trip_number, karat_number, way, grams, reason_text, on_date, key, digest)
+        except IntegrityError as exc:
+            if not _is_request_key_violation(exc):
+                raise
+            with self._transaction() as connection:
+                actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+                replay = self._adjust_prior(self._repository(connection), key, digest, actor)
+                if replay is None:
+                    raise
+                return replay
+
+    @staticmethod
+    def _adjust_result(entry, adjust, duplicate):
+        return {"entry_id": str(entry["id"]), "trip_id": str(entry["trip_id"]), "trip_code": trip_code(entry["trip_id"]),
+                "code": entry_code(entry["trip_id"], entry["entry_no"]), "kind": ST_ADJUST, "created": False, "duplicate": duplicate,
+                "karat_value": int(adjust["karat_value"]), "direction": adjust["direction"], "weight": str(adjust["weight_grams"]), "reason": adjust["reason"]}
+
+    @classmethod
+    def _adjust_prior(cls, repository, key, digest, actor):
+        entry = repository.by_request(key)
+        if entry is None:
+            return None
+        adjust = repository.entry_settle_adjust(entry["id"])
+        if adjust is None or entry["request_hash"] != digest or int(entry["performed_by_user_id"]) != int(actor.user_id):
+            raise TripError("REQUEST_CONFLICT", "طلب العملية مستخدم لعملية مختلفة.")
+        return cls._adjust_result(entry, adjust, True)
+
+    def _post_adjust(self, session_actor, trip_id, karat_id, way, grams, reason, on_date, key, digest):
+        with self._transaction() as connection:
+            actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+            repository = self._repository(connection)
+            trip = repository.trip(trip_id, lock=True)
+            if trip is None:
+                raise TripError("TRIP_NOT_FOUND", "العهدة غير موجودة.")
+            replay = self._adjust_prior(repository, key, digest, actor)
+            if replay is not None:
+                return replay
+            book_rules.require_legacy_trip(trip)
+            if trip["status"] != OPEN:
+                raise TripError("TRIP_CLOSED", "العهدة مغلقة: أعد فتحها أولاً.")
+            karat = repository.karat(karat_id)
+            if karat is None or not karat["is_active"]:
+                raise TripError("KARAT_NOT_FOUND", "العيار غير موجود أو غير نشط.")
+            if way == "INCREASE":
+                scrap = self._scrap(connection)
+                available = sum((Decimal(str(r["weight_delta_grams"])) for r in scrap.lock_old_gold_balance(karat_id)), ZERO_WEIGHT)
+                if grams > available:
+                    raise TripError("SCRAP_SHORTAGE", shortage_message(karat["karat_value"], grams, available, held_grams(scrap, karat_id)))
+            else:
+                custody = self._custody(repository, trip_id, current=True)
+                row = next((g for g in custody["gold"] if g["karat_id"] == karat_id and g["designation"] == UNCLASSIFIED), None)
+                left = ZERO_WEIGHT if row is None else row["outstanding"]
+                if grams > left:
+                    raise TripError("ADJUST_EXCEEDS_CUSTODY", f"المتبقي في العهدة من عيار {karat['karat_value']} (بدون وجهة) هو {left:,.3f} جرام فقط: لا يمكن إنقاص {grams:,.3f} جرام.")
+            now = repository.db_now()
+            entry_no = repository.next_entry_no(trip_id)
+            entry_id = repository.insert_entry(trip_id=trip_id, entry_no=entry_no, kind=ST_ADJUST, entry_date=on_date, notes=reason, key=key, digest=digest, actor=actor, now=now)
+            code = entry_code(trip_id, entry_no)
+            movement = repository.post_scrap(kind=ISSUE if way == "INCREASE" else RETURN, karat_id=karat_id, weight=grams, entry_id=entry_id, code=code, notes=reason, actor=actor, now=now)
+            repository.insert_gold_leg(entry_id=entry_id, karat_id=karat_id, designation=UNCLASSIFIED, weight=grams, scrap_movement_id=movement)
+            repository.insert_settle_move(entry_id=entry_id, trip_id=trip_id, kind=ST_ADJUST, pool="RAW", karat_id=karat_id, delta=grams if way == "INCREASE" else -grams)
+            repository.insert_settle_adjust(entry_id=entry_id, karat_id=karat_id, direction=way, weight=grams, reason=reason)
+            label = f"{KIND_TEXT[ST_ADJUST]} {code} — {trip_code(trip_id)}: عيار {karat['karat_value']} {'+' if way == 'INCREASE' else '−'}{grams:,.3f} جرام • {reason}"
+            repository.audit(actor=actor, event_type="MARKET_TRIP_ST_ADJUST", entity_id=entry_id, reference=code, description=label,
+                             metadata={"trip_id": trip_id, "kind": ST_ADJUST, "karat": karat["karat_value"], "direction": way, "weight": str(grams), "reason": reason,
+                                       "date": on_date.isoformat(), "employee_id": actor.employee_id}, now=now)
+            entry = repository.by_request(key)
+            result = self._adjust_result(entry, repository.entry_settle_adjust(entry_id), False)
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        return result
+
+    # ------------------------------------------------------------------ settlement step 2e: the custody cash settled after the trip (064)
+    @staticmethod
+    def _settle_amount(value):
+        number = _decimal(value, "المبلغ", "AMOUNT_INVALID")
+        if number is None or number <= 0 or number >= MAX_MONEY:
+            raise TripError("AMOUNT_INVALID", "أدخل مبلغًا موجبًا.")
+        if number != number.quantize(MONEY_STEP):
+            raise TripError("AMOUNT_INVALID", "المبلغ بخانتين عشريتين على الأكثر.")
+        return number.quantize(MONEY_STEP)
+
+    def record_custody_expense(self, trip_id, amount, description, entry_date, reference, notes, request_key, *, _expected_actor=None):
+        """A free-text EXPENSE paid from the custody cash after the trip (مصروف من العهدة). The description is mandatory. The amount leaves the custody cash;
+        no cash, bank, Scrap or supplier movement exists. Right: MARKET_TRIP_MANAGE (rechecked in the transaction)."""
+        return self._settle_cash(ST_EXPENSE, trip_id, amount, description, None, entry_date, reference, notes, request_key, _expected_actor)
+
+    def deposit_custody_cash(self, trip_id, amount, bank_account_id, entry_date, reference, notes, request_key, *, _expected_actor=None):
+        """Deposit remaining custody cash into an ACTIVE bank / wallet account (إيداع باقي النقدية في حساب): the amount leaves the custody cash and ONE bank
+        movement enters the account."""
+        return self._settle_cash(ST_CASH_BANK, trip_id, amount, "", bank_account_id, entry_date, reference, notes, request_key, _expected_actor)
+
+    def write_off_custody_cash(self, trip_id, amount, reason, entry_date, notes, request_key, *, _expected_actor=None):
+        """Write off remaining custody cash (إعدام): the amount leaves the custody cash; a reason is mandatory; no other movement."""
+        return self._settle_cash(ST_CASH_OFF, trip_id, amount, reason, None, entry_date, "", notes, request_key, _expected_actor)
+
+    def _settle_cash(self, kind, trip_id, amount, description, bank_account_id, entry_date, reference, notes, request_key, expected_actor):
+        session_actor = self._actor(expected_actor)
+        if str(trip_id or "").strip() == "":
+            raise TripError("TRIP_NOT_FOUND", "اختر العهدة.")
+        trip_number = _trip_id(trip_id)
+        total = self._settle_amount(amount)
+        text = _text(description, SETTLE_TEXT_MAX, "البيان" if kind == ST_EXPENSE else "السبب", required=kind != ST_CASH_BANK)
+        account_number = None
+        if kind == ST_CASH_BANK:
+            try:
+                account_number = int(str(bank_account_id).strip())
+            except (TypeError, ValueError):
+                raise TripError("BANK_ACCOUNT_REQUIRED", "اختر حساب البنك أو المحفظة.") from None
+            if account_number <= 0:
+                raise TripError("BANK_ACCOUNT_REQUIRED", "اختر حساب البنك أو المحفظة.")
+        on_date, reference_text, notes_text, key = _entry_date(entry_date), _text(reference, PAYMENT_REFERENCE_MAX, "المرجع"), _text(notes, NOTES_MAX, "الملاحظات"), _key(request_key)
+        digest = hashlib.sha256(json.dumps([kind, trip_number, str(total), text, account_number, on_date.isoformat(), reference_text, notes_text], ensure_ascii=False).encode()).hexdigest()
+        try:
+            return self._post_settle_cash(session_actor, kind, trip_number, total, text, account_number, on_date, reference_text, notes_text, key, digest)
+        except IntegrityError as exc:
+            if not _is_request_key_violation(exc):
+                raise
+            with self._transaction() as connection:
+                actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+                replay = self._settle_cash_prior(self._repository(connection), key, digest, actor)
+                if replay is None:
+                    raise
+                return replay
+
+    @staticmethod
+    def _settle_cash_result(entry, document, duplicate):
+        return {"entry_id": str(entry["id"]), "trip_id": str(entry["trip_id"]), "trip_code": trip_code(entry["trip_id"]),
+                "code": entry_code(entry["trip_id"], entry["entry_no"]), "kind": entry["entry_kind"], "created": False, "duplicate": duplicate,
+                "amount": str(document["amount"]), "description": document.get("description") or "",
+                "bank_account_id": None if document.get("bank_account_id") is None else str(document["bank_account_id"])}
+
+    @classmethod
+    def _settle_cash_prior(cls, repository, key, digest, actor):
+        entry = repository.by_request(key)
+        if entry is None:
+            return None
+        document = repository.entry_settle_cash(entry["id"])
+        if document is None or entry["request_hash"] != digest or int(entry["performed_by_user_id"]) != int(actor.user_id):
+            raise TripError("REQUEST_CONFLICT", "طلب العملية مستخدم لعملية مختلفة.")
+        return cls._settle_cash_result(entry, document, True)
+
+    def _post_settle_cash(self, session_actor, kind, trip_id, total, text, account_id, on_date, reference, notes, key, digest):
+        with self._transaction() as connection:
+            actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+            repository = self._repository(connection)
+            trip = repository.trip(trip_id, lock=True)                          # lock order: trip -> bank account
+            if trip is None:
+                raise TripError("TRIP_NOT_FOUND", "العهدة غير موجودة.")
+            replay = self._settle_cash_prior(repository, key, digest, actor)
+            if replay is not None:
+                return replay
+            book_rules.require_legacy_trip(trip)
+            if trip["status"] != OPEN:
+                raise TripError("TRIP_CLOSED", "العهدة مغلقة: أعد فتحها أولاً.")
+            outstanding = custody_rules.cash_rows_outstanding(repository.custody_cash(trip_id, current=True))
+            if total > outstanding:
+                raise TripError("CASH_EXCEEDS_CUSTODY", f"المتبقي في نقدية العهدة {outstanding:,.2f} ج فقط: لا يمكن تسوية {total:,.2f} ج.")
+            bank = None
+            if kind == ST_CASH_BANK:
+                bank = repository.bank_account(account_id, lock=True)
+                if bank is None or not bank["is_active"]:
+                    raise TripError("BANK_ACCOUNT_NOT_FOUND", "حساب البنك أو المحفظة غير موجود أو غير نشط.")
+            now = repository.db_now()
+            entry_no = repository.next_entry_no(trip_id)
+            entry_id = repository.insert_entry(trip_id=trip_id, entry_no=entry_no, kind=kind, entry_date=on_date, notes=notes, key=key, digest=digest, actor=actor, now=now)
+            code = entry_code(trip_id, entry_no)
+            movement_id = None
+            if kind == ST_CASH_BANK:
+                movement_id = repository.post_bank_in(account_id=account_id, entry_id=entry_id, code=code, amount=total,
+                                                      description=f"{KIND_TEXT[kind]} {code} — {trip_code(trip_id)}", actor=actor, now=now)
+            repository.insert_settle_cash(entry_id=entry_id, kind=kind, amount=total, description=text, reference=reference, bank_account_id=account_id, bank_movement_id=movement_id)
+            label = f"{KIND_TEXT[kind]} {code} — {trip_code(trip_id)}: {total:,.2f} ج" + (f" ← {bank['name']}" if bank else f" • {text}")
+            repository.audit(actor=actor, event_type="MARKET_TRIP_" + kind, entity_id=entry_id, reference=code, description=label,
+                             metadata={"trip_id": trip_id, "kind": kind, "amount": str(total), "description": text, "bank_account_id": account_id,
+                                       "date": on_date.isoformat(), "employee_id": actor.employee_id}, now=now)
+            entry = repository.by_request(key)
+            result = self._settle_cash_result(entry, repository.entry_settle_cash(entry_id), False)
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        return result
+
     def sale_price_check(self, trip_id, source_kind, karat_id, designation, lot_id, weight, price_mode, price, *, _expected_actor=None):
         """READ ONLY preview for the dialog: the agreed total, the per-gram price, the SHOP_BUY reference and the deviation. It never
         writes and never reserves anything; the posting repeats every check under the locks."""
@@ -1868,7 +2281,11 @@ class MarketTripService:
             self._authorization.require_permission_read(connection, self._session.require_authenticated(), PERMISSION)
             repository = self._repository(connection)
             fineness, karat_value = None, None
-            if kind == SALE_SOURCE_LOT:
+            if kind == SALE_SOURCE_BAR:
+                karat_value, grams = BASE_KARAT_VALUE, parse_weight(weight)
+                if grams == 0:
+                    raise TripError("WEIGHT_REQUIRED", "أدخل وزن الذهب المباع.")
+            elif kind == SALE_SOURCE_LOT:
                 lot = repository.lot_by_id(int(str(lot_id).strip()))
                 if lot is None or lot["fineness_permille"] is None:
                     raise TripError("LOT_ASSAY_UNKNOWN", "عيار هذه السبيكة الفعلي غير معلوم.")
@@ -2148,6 +2565,356 @@ class MarketTripService:
                 raise PermissionError("انتهت جلسة الدخول.")
         return {"entry_id": str(entry_id), "trip_id": str(trip_id), "trip_code": trip_code(trip_id), "code": code, "kind": LOT_ISSUE,
                 "created": False, "duplicate": False}
+
+    # ------------------------------------------------------------------ settlement (060): the melt recorded AFTER the owner returns from the market
+    @staticmethod
+    def _settle_melt_plan(lines):
+        """{karat_id: grams} of the gold the owner melted (a karat twice is summed; a zero row is ignored). Nothing is rounded."""
+        grams = {}
+        for line in lines or []:
+            try:
+                karat_id = int(str(line.get("karat_id") if isinstance(line, dict) else line[0]).strip())
+            except (TypeError, ValueError, AttributeError, IndexError):
+                raise TripError("KARAT_REQUIRED", "اختر عيار كل سطر من الذهب المسبوك.") from None
+            weight = parse_weight(line.get("weight") if isinstance(line, dict) else line[1])
+            if weight == 0:
+                continue
+            grams[karat_id] = grams.get(karat_id, ZERO_WEIGHT) + weight
+        if not grams:
+            raise TripError("MELT_INPUT_REQUIRED", "أدخل وزنًا موجبًا واحدًا على الأقل من الذهب المسبوك.")
+        return grams
+
+    @staticmethod
+    def _settle_melt_check(repository, custody, grams):
+        """The active karats of the melted lines and the melted grams checked against the UNCLASSIFIED custody of each karat. `custody` is read by the CALLER: the locking
+        form under the trip lock for the posting, the display form for the preview."""
+        karats = {}
+        for karat_id in sorted(grams):
+            karat = repository.karat(karat_id)
+            if karat is None or not karat["is_active"]:
+                raise TripError("KARAT_NOT_FOUND", "العيار غير موجود أو غير نشط.")
+            karats[karat_id] = karat
+        by_key = {(g["karat_id"], g["designation"]): g["outstanding"] for g in custody["gold"]}
+        for karat_id in sorted(grams):
+            available = by_key.get((karat_id, UNCLASSIFIED), ZERO_WEIGHT)
+            if grams[karat_id] > available:
+                raise TripError("SETTLE_MELT_EXCEEDS_CUSTODY",
+                                f"المتاح للسبك في العهدة من عيار {karats[karat_id]['karat_value']} هو {available:,.3f} جرام فقط (الذهب الذي خرج بدون وجهة).")
+        return karats
+
+    def preview_settle_melt(self, trip_id, lines, output_weight, fineness, *, _expected_actor=None):
+        """READ ONLY: the exact figures of a melt before it is recorded (theoretical / actual Eq21, weight loss, fineness loss). The same validation as the posting; raises
+        the posting's refusal when the facts are invalid or exceed the custody. Nothing is locked or written."""
+        actor = self._actor(_expected_actor)
+        if str(trip_id or "").strip() == "":
+            raise TripError("TRIP_NOT_FOUND", "اختر العهدة.")
+        trip_number = _trip_id(trip_id)
+        grams = self._settle_melt_plan(lines)
+        weight = parse_weight(output_weight)
+        if weight == 0:
+            raise TripError("OUTPUT_WEIGHT_REQUIRED", "وزن السبك الفعلي مطلوب بقيمة موجبة.")
+        permille = settlement_rules.parse_fineness(fineness)
+        with self._transaction() as connection:
+            self._authorization.require_permission_read(connection, actor, PERMISSION)
+            repository = self._repository(connection)
+            if repository.trip(trip_number) is None:
+                raise TripError("TRIP_NOT_FOUND", "العهدة غير موجودة.")
+            karats = self._settle_melt_check(repository, self._custody(repository, trip_number), grams)
+        return settlement_rules.melt_figures([(int(karats[k]["karat_value"]), w) for k, w in sorted(grams.items())], weight, permille)
+
+    def settle_melt(self, trip_id, lines, output_weight, fineness, workshop, entry_date, notes, request_key, *, _expected_actor=None):
+        """Record a melt of gold that left WITHOUT a destination (UNCLASSIFIED custody) of an OPEN legacy trip: the melted grams leave the RAW pool of their karats and the
+        bar enters the BAR pool by its 21K equivalent. The bar's weight and integer fineness are kept in the document for the reports; the loss is split in weight loss and
+        fineness loss (negative = gain). No cash, Scrap, supplier or lot movement."""
+        session_actor = self._actor(_expected_actor)
+        if str(trip_id or "").strip() == "":
+            raise TripError("TRIP_NOT_FOUND", "اختر العهدة.")
+        trip_number = _trip_id(trip_id)
+        grams = self._settle_melt_plan(lines)
+        weight = parse_weight(output_weight)
+        if weight == 0:
+            raise TripError("OUTPUT_WEIGHT_REQUIRED", "وزن السبك الفعلي مطلوب بقيمة موجبة.")
+        permille = settlement_rules.parse_fineness(fineness)
+        melted_on = _entry_date(entry_date)
+        workshop_text = _text(workshop, WORKSHOP_MAX, "اسم الورشة أو المسؤول", required=True)
+        notes_text, key = _text(notes, NOTES_MAX, "الملاحظات"), _key(request_key)
+        digest = hashlib.sha256(json.dumps(
+            [ST_MELT, trip_number, sorted((k, str(w)) for k, w in grams.items()), str(weight), permille, melted_on.isoformat(), workshop_text, notes_text],
+            ensure_ascii=False).encode()).hexdigest()
+        try:
+            return self._post_settle_melt(session_actor, trip_number, grams, weight, permille, melted_on, workshop_text, notes_text, key, digest)
+        except IntegrityError as exc:
+            if not _is_request_key_violation(exc):
+                raise
+            return self._replay(session_actor, key, digest, exc)
+
+    def _post_settle_melt(self, session_actor, trip_id, grams, weight, permille, melted_on, workshop, notes, key, digest):
+        with self._transaction() as connection:
+            actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+            repository = self._repository(connection)
+            trip, replay = self._open_trip(repository, trip_id, key, digest, actor)
+            if replay is not None:
+                return replay
+            if not repository.has_settlement_schema():
+                raise TripError("SCHEMA_OUTDATED", "قاعدة البيانات تحتاج التحديث رقم 60 قبل تسجيل السبك بعد الرجوع.")
+            karats = self._settle_melt_check(repository, self._custody(repository, trip_id, current=True), grams)     # read under the trip lock
+            figures = settlement_rules.melt_figures([(int(karats[k]["karat_value"]), w) for k, w in sorted(grams.items())], weight, permille)
+            if figures["actual_eq21"] <= 0:
+                raise TripError("MELT_RESULT_TOO_SMALL", "مكافئ السبيكة بعيار 21 يساوي صفرًا: راجع وزن السبيكة وعيارها.")
+            now = repository.db_now()
+            entry_no = repository.next_entry_no(trip_id)
+            entry_id = repository.insert_entry(trip_id=trip_id, entry_no=entry_no, kind=ST_MELT, entry_date=melted_on, notes=notes, key=key, digest=digest, actor=actor, now=now)
+            code = entry_code(trip_id, entry_no)
+            repository.insert_settle_melt(entry_id=entry_id, workshop=workshop, melt_date=melted_on, figures=figures)
+            for karat_id, grams_in in sorted(grams.items()):
+                repository.insert_settle_melt_input(entry_id=entry_id, karat_id=karat_id, weight=grams_in)
+                repository.insert_settle_move(entry_id=entry_id, trip_id=trip_id, kind=ST_MELT, pool="RAW", karat_id=karat_id, delta=-grams_in)
+            repository.insert_settle_move(entry_id=entry_id, trip_id=trip_id, kind=ST_MELT, pool="BAR", karat_id=None, delta=figures["actual_eq21"])
+            repository.audit(actor=actor, event_type="MARKET_TRIP_ST_MELT", entity_id=entry_id, reference=code,
+                             description=f"{KIND_TEXT[ST_MELT]} {code} — {trip_code(trip_id)}",
+                             metadata={"trip_id": trip_id, "kind": ST_MELT, "date": melted_on.isoformat(), "workshop": workshop,
+                                       "inputs": {str(karats[k]["karat_value"]): str(w) for k, w in grams.items()},
+                                       "figures": {k: str(v) for k, v in figures.items()}, "employee_id": actor.employee_id}, now=now)
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        return {"entry_id": str(entry_id), "trip_id": str(trip_id), "trip_code": trip_code(trip_id), "code": code, "kind": ST_MELT, "created": False,
+                "duplicate": False, "figures": {k: str(v) for k, v in figures.items()}}
+
+    def settle_supplier_bar(self, trip_id, supplier_id, weight, settlement_date, reference, notes, request_key, *, _expected_actor=None):
+        """DELIVER part of the melted bar (BAR pool, 21K-equivalent grams) to a supplier against its gold account (settlement step 2b). One transaction posts the ST_BAR_SUP
+        custody entry, the immutable SG document (source TRIP_BAR: the delivered amount is `weight` grams of the 21K master karat), the supplier's negative gold movement in
+        ITS dedicated karat (credit = weight x 21 / supplier karat, derived once like 045/046), its GOLD leg, the entry <-> SG link, the BAR move and both audit rows. No Scrap,
+        cash, making, bank or lot movement. Capped at the BAR pool; an inactive supplier and a crossing into supplier credit are allowed."""
+        session_actor = self._actor(_expected_actor)
+        if GOLD_SETTLE_PERMISSION not in session_actor.permissions:
+            raise PermissionError("تسوية ذهب الموردين غير متاحة لك.")
+        if str(trip_id or "").strip() == "":
+            raise TripError("TRIP_NOT_FOUND", "اختر العهدة.")
+        trip_number = _trip_id(trip_id)
+        try:
+            supplier_number = int(str(supplier_id).strip())
+        except (TypeError, ValueError):
+            raise TripError("SUPPLIER_NOT_FOUND", "اختر المورد.") from None
+        if supplier_number <= 0:
+            raise TripError("SUPPLIER_NOT_FOUND", "اختر المورد.")
+        grams = parse_weight(weight)
+        if grams == 0:
+            raise TripError("WEIGHT_REQUIRED", "أدخل وزن السبيكة المُسلَّم (مكافئ عيار 21) بقيمة موجبة.")
+        settled_on = _entry_date(settlement_date)
+        reference_text, notes_text = _text(reference, PAYMENT_REFERENCE_MAX, "المرجع"), _text(notes, NOTES_MAX, "الملاحظات")
+        key = _key(request_key)
+        digest = hashlib.sha256(json.dumps([ST_BAR_SUP, trip_number, supplier_number, str(grams), settled_on.isoformat(), reference_text, notes_text],
+                                           ensure_ascii=False).encode()).hexdigest()
+        try:
+            return self._post_bar_settle(session_actor, trip_number, supplier_number, grams, settled_on, reference_text, notes_text, key, digest)
+        except IntegrityError as exc:
+            if getattr(exc, "errno", None) != 1062 or not ("uq_sgs_request" in str(exc) or "uq_mte_request" in str(exc)):
+                raise
+            with self._transaction() as connection:                       # a twin committed first: decide from a FRESH read
+                actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+                replay = self._bar_settle_prior(self._repository(connection), self._gold_settlements(connection), key, digest, actor)
+                if replay is None:
+                    raise
+                return replay
+
+    @staticmethod
+    def _bar_settle_result(entry, link, duplicate):
+        return {"entry_id": str(entry["id"]), "trip_id": str(entry["trip_id"]), "trip_code": trip_code(entry["trip_id"]),
+                "code": entry_code(entry["trip_id"], entry["entry_no"]), "kind": ST_BAR_SUP, "created": False, "duplicate": duplicate,
+                "settlement_id": str(link["settlement_id"]), "settlement_code": settlement_code(link["settlement_id"]), "supplier_id": str(link["supplier_id"]),
+                "delivered_weight": str(link["weight_grams"]), "target_karat": int(link["target_karat_value"]), "credited_weight": str(link["credited_weight_grams"]),
+                "analytical": str(link["credited_analytical_grams"]), "rounding_difference": str(link["rounding_difference_grams"])}
+
+    @classmethod
+    def _bar_settle_prior(cls, repository, settlements, key, digest, actor):
+        """The replay of an already-recorded request (None when the key is unused): the entry AND the SG document must exist, be linked to each other and carry the SAME
+        payload by the SAME user; anything else is a conflict and writes nothing."""
+        entry, header = repository.by_request(key), settlements.by_request(key)
+        if entry is None and header is None:
+            return None
+        link = None if entry is None else repository.entry_bar_supplier(entry["id"])
+        if (entry is None or header is None or link is None or int(link["settlement_id"]) != int(header["id"])
+                or entry["request_hash"] != digest or header["request_hash"] != digest or int(entry["performed_by_user_id"]) != int(actor.user_id)):
+            raise TripError("REQUEST_CONFLICT", "طلب العملية مستخدم لعملية مختلفة.")
+        return cls._bar_settle_result(entry, link, True)
+
+    def _post_bar_settle(self, session_actor, trip_id, supplier_id, grams, settled_on, reference, notes, key, digest):
+        with self._transaction() as connection:
+            self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+            actor = self._authorization.require_permission_for_write(connection, session_actor, GOLD_SETTLE_PERMISSION)
+            repository, settlements = self._repository(connection), self._gold_settlements(connection)
+            trip = repository.trip(trip_id, lock=True)                           # lock order: trip -> supplier
+            if trip is None:
+                raise TripError("TRIP_NOT_FOUND", "العهدة غير موجودة.")
+            replay = self._bar_settle_prior(repository, settlements, key, digest, actor)
+            if replay is not None:
+                return replay
+            book_rules.require_legacy_trip(trip)
+            if trip["status"] != OPEN:
+                raise TripError("TRIP_CLOSED", "العهدة مغلقة: أعد فتحها أولاً لتسليم السبيكة لمورد.")
+            if not repository.has_distribution_schema():
+                raise TripError("SCHEMA_OUTDATED", "قاعدة البيانات تحتاج التحديث رقم 61 قبل تسليم السبيكة لمورد.")
+            supplier = settlements.get_supplier(supplier_id, lock=True)         # an INACTIVE supplier may still receive it
+            if supplier is None:
+                raise TripError("SUPPLIER_NOT_FOUND", "المورد غير موجود.")
+            if not rules.has_supplier_role(supplier):
+                raise TripError("SUPPLIER_ROLE_REQUIRED", "هذا الطرف مسوقجي فقط وليس مورِّدًا: لا حساب ذهب له لتسوية الذهب.")
+            if supplier["karat_id"] is None:
+                raise TripError("SUPPLIER_KARAT_MISSING", "عيار هذا المورد غير محدد. حدّد عياره من تعديل المورد قبل تسوية الذهب له.")
+            base = next((k for k in repository.active_karats() if int(k["karat_value"]) == BASE_KARAT_VALUE), None)
+            if base is None:
+                raise TripError("KARAT_NOT_FOUND", "عيار 21 غير موجود أو غير نشط.")
+            delivered = settlements.get_karat(base["id"])
+            target = settlements.get_karat(supplier["karat_id"])
+            pool = self._custody(repository, trip_id, current=True)["bar"]       # read under the trip lock
+            if grams > pool:
+                raise TripError("BAR_EXCEEDS_POOL", f"رصيد السبيكة في العهدة هو {pool:,.3f} جرام (مكافئ عيار 21) فقط: لا يمكن تسليم {grams:,.3f} جرام.")
+            credited, analytical, difference = rules.settlement_credit(grams, delivered["karat_value"], target["karat_value"])
+            type_id = settlements.gold_type_id(GOLD_MOVEMENT)
+            if type_id is None:
+                raise RuntimeError("supplier gold movement type SETTLEMENT is missing (migration 045)")
+            now = repository.db_now()
+            settlement_id = settlements.insert_header(
+                supplier_id=supplier_id, delivered_karat=delivered, target_karat=target, delivered_weight=grams, credited=credited, analytical=analytical,
+                difference=difference, settlement_date=settled_on, reference=reference, notes=notes, key=key, digest=digest, actor=actor, now=now,
+                source_kind=BAR_SOURCE_KIND)
+            sg_code = settlement_code(settlement_id)
+            entry_no = repository.next_entry_no(trip_id)
+            entry_id = repository.insert_entry(trip_id=trip_id, entry_no=entry_no, kind=ST_BAR_SUP, entry_date=settled_on, notes=notes, key=key, digest=digest,
+                                               actor=actor, now=now)
+            code = entry_code(trip_id, entry_no)
+            label = (f"تسليم سبيكة للمورد {sg_code} من عهدة السوق {code}: سُلِّم {grams:,.3f} جرام (مكافئ عيار 21) ← احتُسب {credited:,.3f} جرام "
+                     f"عيار {int(target['karat_value'])}")
+            gold_id = settlements.insert_gold_movement(
+                supplier_id=supplier_id, type_id=type_id, karat_id=target["id"], weight_delta=-credited,
+                eq21_delta=-rules.equivalent_21(credited, target["karat_value"]), source_type="SUPPLIER_GOLD_SETTLEMENT", source_id=settlement_id,
+                reference=sg_code, description=label, now=now, user_id=actor.user_id)
+            settlements.insert_leg(settlement_id=settlement_id, kind="GOLD", source_kind=BAR_SOURCE_KIND, supplier_gold_movement_id=gold_id)
+            repository.insert_bar_supplier_link(entry_id=entry_id, trip_id=trip_id, settlement_id=settlement_id, supplier_id=supplier_id, weight=grams)
+            repository.insert_settle_move(entry_id=entry_id, trip_id=trip_id, kind=ST_BAR_SUP, pool="BAR", karat_id=None, delta=-grams)
+            settlements.audit(actor=actor, event_type="SUPPLIER_GOLD_SETTLEMENT", entity_id=settlement_id, entity_type="SUPPLIER_GOLD_SETTLEMENT",
+                              reference=sg_code, description=label,
+                              metadata={"supplier_id": supplier_id, "source": BAR_SOURCE_KIND, "custody_entry": code, "delivered_karat": BASE_KARAT_VALUE,
+                                        "delivered_weight": str(grams), "target_karat": int(target["karat_value"]), "credited": str(credited),
+                                        "analytical": str(analytical), "rounding_difference": str(difference), "settlement_date": settled_on.isoformat(),
+                                        "reference": reference, "employee_id": actor.employee_id}, now=now)
+            repository.audit(actor=actor, event_type="MARKET_TRIP_ST_BAR_SUP", entity_id=entry_id, reference=code,
+                             description=f"{KIND_TEXT[ST_BAR_SUP]} {code} — {trip_code(trip_id)} — {sg_code}",
+                             metadata={"trip_id": trip_id, "kind": ST_BAR_SUP, "supplier_id": supplier_id, "settlement": sg_code, "delivered_weight": str(grams),
+                                       "credited": str(credited), "date": settled_on.isoformat(), "employee_id": actor.employee_id}, now=now)
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        return {"entry_id": str(entry_id), "trip_id": str(trip_id), "trip_code": trip_code(trip_id), "code": code, "kind": ST_BAR_SUP, "created": False,
+                "duplicate": False, "settlement_id": str(settlement_id), "settlement_code": sg_code, "supplier_id": str(supplier_id), "delivered_weight": str(grams),
+                "target_karat": int(target["karat_value"]), "credited_weight": str(credited), "analytical": str(analytical), "rounding_difference": str(difference)}
+
+    def classify_remaining_as_logo(self, trip_id, entry_date, notes, request_key, *, _expected_actor=None):
+        """Classify EVERY remaining gram that left WITHOUT a destination and was not melted as LOGO of its own karat (the owner rule: what was not melted is logo). The grams are
+        derived under the trip lock from the custody (never typed); after it every LOGO flow applies (heating, supplier settlement, marketer hand-over, sale, return) unchanged.
+        Nothing but the settlement ledger moves: no Scrap, cash, supplier or lot movement. Reversible only through the ordinary full reversal."""
+        session_actor = self._actor(_expected_actor)
+        if str(trip_id or "").strip() == "":
+            raise TripError("TRIP_NOT_FOUND", "اختر العهدة.")
+        trip_number = _trip_id(trip_id)
+        on_date, notes_text, key = _entry_date(entry_date), _text(notes, NOTES_MAX, "الملاحظات"), _key(request_key)
+        digest = hashlib.sha256(json.dumps([ST_LOGO, trip_number, on_date.isoformat(), notes_text], ensure_ascii=False).encode()).hexdigest()
+        try:
+            return self._post_classify_logo(session_actor, trip_number, on_date, notes_text, key, digest)
+        except IntegrityError as exc:
+            if not _is_request_key_violation(exc):
+                raise
+            return self._replay(session_actor, key, digest, exc)
+
+    def _post_classify_logo(self, session_actor, trip_id, on_date, notes, key, digest):
+        with self._transaction() as connection:
+            actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+            repository = self._repository(connection)
+            trip, replay = self._open_trip(repository, trip_id, key, digest, actor)
+            if replay is not None:
+                return replay
+            if not repository.has_settlement_schema():
+                raise TripError("SCHEMA_OUTDATED", "قاعدة البيانات تحتاج التحديث رقم 62 قبل اعتبار المتبقي لوجو.")
+            custody = self._custody(repository, trip_id, current=True)                         # read under the trip lock
+            lines = [(g["karat_id"], g["karat_value"], g["outstanding"]) for g in custody["gold"] if g["designation"] == UNCLASSIFIED and g["outstanding"] > 0]
+            if not lines:
+                raise TripError("NOTHING_TO_CLASSIFY", "لا يوجد ذهب خرج بدون وجهة ولم يُسبك أو يُسلَّم: لا شيء يُعتبر لوجو.")
+            now = repository.db_now()
+            entry_no = repository.next_entry_no(trip_id)
+            entry_id = repository.insert_entry(trip_id=trip_id, entry_no=entry_no, kind=ST_LOGO, entry_date=on_date, notes=notes, key=key, digest=digest, actor=actor, now=now)
+            code = entry_code(trip_id, entry_no)
+            for karat_id, _, grams_left in sorted(lines):
+                repository.insert_settle_move(entry_id=entry_id, trip_id=trip_id, kind=ST_LOGO, pool="RAW", karat_id=karat_id, delta=-grams_left)
+                repository.insert_settle_move(entry_id=entry_id, trip_id=trip_id, kind=ST_LOGO, pool="LOGO", karat_id=karat_id, delta=grams_left)
+            repository.audit(actor=actor, event_type="MARKET_TRIP_ST_LOGO", entity_id=entry_id, reference=code,
+                             description=f"{KIND_TEXT[ST_LOGO]} {code} — {trip_code(trip_id)}: " + "، ".join(f"عيار {v} {g:,.3f} جرام" for _, v, g in sorted(lines)),
+                             metadata={"trip_id": trip_id, "kind": ST_LOGO, "date": on_date.isoformat(), "lines": {str(v): str(g) for _, v, g in lines},
+                                       "employee_id": actor.employee_id}, now=now)
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        return {"entry_id": str(entry_id), "trip_id": str(trip_id), "trip_code": trip_code(trip_id), "code": code, "kind": ST_LOGO, "created": False, "duplicate": False,
+                "lines": [{"karat": int(v), "grams": str(g)} for _, v, g in sorted(lines)]}
+
+    def settle_bar_to_marketer(self, trip_id, party_id, weight, entry_date, notes, request_key, *, _expected_actor=None):
+        """HAND part of the melted bar (BAR pool, 21K-equivalent grams) to a marketer (settlement step 2c): the marketer's 21K entitlement (055 account) gains exactly the grams,
+        the BAR pool loses them. The gold stays SHOP-OWNED at the marketer (a trust entitlement, not a sale): what he does next (settles a supplier from it, returns it) is the
+        existing 055 flow. One transaction posts the ST_BAR_MKT custody entry, the marketer's TRIP_BOOK_IN movement tied to it, the negative BAR move and the audit row; no Scrap,
+        cash, supplier or lot movement. Capped at the BAR pool; the marketer must be an ACTIVE intermediary-role party. Rights: MARKET_TRIP_MANAGE + INTERMEDIARY_HOLDING_MANAGE."""
+        session_actor = self._actor(_expected_actor)
+        if MANAGE_HOLDINGS not in session_actor.permissions:
+            raise PermissionError("تسليم الذهب للمسوقجي غير متاح لك.")
+        if str(trip_id or "").strip() == "":
+            raise TripError("TRIP_NOT_FOUND", "اختر العهدة.")
+        trip_number = _trip_id(trip_id)
+        try:
+            party_number = int(str(party_id).strip())
+        except (TypeError, ValueError):
+            raise TripError("MARKETER_NOT_FOUND", "اختر مسوقجيًا مسجلًا.") from None
+        if party_number <= 0:
+            raise TripError("MARKETER_NOT_FOUND", "اختر مسوقجيًا مسجلًا.")
+        grams = parse_weight(weight)
+        if grams == 0:
+            raise TripError("WEIGHT_REQUIRED", "أدخل وزن السبيكة المُسلَّم (مكافئ عيار 21) بقيمة موجبة.")
+        given_on, notes_text, key = _entry_date(entry_date), _text(notes, NOTES_MAX, "الملاحظات"), _key(request_key)
+        digest = hashlib.sha256(json.dumps([ST_BAR_MKT, trip_number, party_number, str(grams), given_on.isoformat(), notes_text], ensure_ascii=False).encode()).hexdigest()
+        try:
+            return self._post_bar_marketer(session_actor, trip_number, party_number, grams, given_on, notes_text, key, digest)
+        except IntegrityError as exc:
+            if not _is_request_key_violation(exc):
+                raise
+            return self._replay(session_actor, key, digest, exc)
+
+    def _post_bar_marketer(self, session_actor, trip_id, party_id, grams, given_on, notes, key, digest):
+        from repositories.marketer_custody_repository import MarketerCustodyRepository
+        with self._transaction() as connection:
+            self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+            actor = self._authorization.require_permission_for_write(connection, session_actor, MANAGE_HOLDINGS)
+            repository = self._repository(connection)
+            trip, replay = self._open_trip(repository, trip_id, key, digest, actor)           # trip lock first, then the replay, then the open check
+            if replay is not None:
+                return replay
+            marketers = MarketerCustodyRepository(connection)
+            party = marketers.party(party_id, lock=True)                                       # trip -> the marketer account lock
+            if party is None or not party["is_intermediary"]:
+                raise TripError("MARKETER_NOT_FOUND", "اختر مسوقجيًا مسجلًا.")
+            if not party["is_active"]:
+                raise TripError("MARKETER_INACTIVE", "هذا المسوقجي غير نشط: لا يُسلَّم له ذهب جديد.")
+            pool = self._custody(repository, trip_id, current=True)["bar"]                     # read under the trip lock
+            if grams > pool:
+                raise TripError("BAR_EXCEEDS_POOL", f"رصيد السبيكة في العهدة هو {pool:,.3f} جرام (مكافئ عيار 21) فقط: لا يمكن تسليم {grams:,.3f} جرام.")
+            now = repository.db_now()
+            entry_no = repository.next_entry_no(trip_id)
+            entry_id = repository.insert_entry(trip_id=trip_id, entry_no=entry_no, kind=ST_BAR_MKT, entry_date=given_on, notes=notes, key=key, digest=digest, actor=actor, now=now)
+            code = entry_code(trip_id, entry_no)
+            marketers.insert_gold_movement(party_id=party_id, movement_type="TRIP_BOOK_IN", weight=grams, delta=grams, trip_entry_id=entry_id, trip_entry_kind=ST_BAR_MKT)
+            repository.insert_settle_move(entry_id=entry_id, trip_id=trip_id, kind=ST_BAR_MKT, pool="BAR", karat_id=None, delta=-grams)
+            repository.audit(actor=actor, event_type="MARKET_TRIP_ST_BAR_MKT", entity_id=entry_id, reference=code,
+                             description=f"{KIND_TEXT[ST_BAR_MKT]} {code} — {trip_code(trip_id)} — {party['name']}: {grams:,.3f} جرام (مكافئ عيار 21)",
+                             metadata={"trip_id": trip_id, "kind": ST_BAR_MKT, "party_id": party_id, "grams": str(grams), "date": given_on.isoformat(),
+                                       "employee_id": actor.employee_id}, now=now)
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        return {"entry_id": str(entry_id), "trip_id": str(trip_id), "trip_code": trip_code(trip_id), "code": code, "kind": ST_BAR_MKT, "created": False, "duplicate": False,
+                "party_id": str(party_id), "party_name": party["name"], "marketer_grams": str(grams)}
 
     # ------------------------------------------------------------------ closure and reopening
     def close(self, trip_id, *, _expected_actor=None):

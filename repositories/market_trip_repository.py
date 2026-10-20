@@ -4,6 +4,7 @@ All writes use the caller's transaction and only INSERT (the trip header's `stat
 of it is an insert-only event). Custody is never stored: it is derived from the entries that were not reversed.
 A reversed entry is one that has a FULL_REVERSAL row in transaction_corrections (source_type MARKET_TRIP_ENTRY)."""
 import json
+from decimal import Decimal
 
 from mysql.connector import Error as MySqlError
 
@@ -62,7 +63,7 @@ def entry_code(trip_id, entry_no):
     return f"{trip_code(trip_id)}-{int(entry_no)}"
 
 
-def _gold_rows(legs, held, heated, melted, settled, sold, bought):
+def _gold_rows(legs, held, heated, melted, settled, sold, bought, settle=(), settle_in=()):
     """The per-(karat, designation) custody rows of ONE trip from the derived sums of its entries that were not reversed. Pure Python, shared by the locking
     decision read `custody_gold` and the display aggregation `custody_gold_by_trip`, so both always combine the terms identically (the arithmetic itself lives in
     services.custody_rules)."""
@@ -97,6 +98,16 @@ def _gold_rows(legs, held, heated, melted, settled, sold, bought):
         row = rows.setdefault(key, {"karat_id": b["karat_id"], "karat_value": b["karat_value"], "designation": b["designation"],
                                     "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0, "supplier_settled": 0})
         row["purchased"] = b["purchased"]
+    for r in settle:                                                         # 060: grams that left the RAW pool of the settlement (UNCLASSIFIED gold only)
+        key = (int(r["karat_id"]), UNCLASSIFIED)
+        row = rows.setdefault(key, {"karat_id": r["karat_id"], "karat_value": r["karat_value"], "designation": UNCLASSIFIED,
+                                    "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0, "supplier_settled": 0})
+        row["settle_out"] = r["settle_out"]
+    for r in settle_in:                                                      # 062: grams classified as LOGO (the unmelted remainder), LOGO rows only
+        key = (int(r["karat_id"]), LOGO_DESIGNATION)
+        row = rows.setdefault(key, {"karat_id": r["karat_id"], "karat_value": r["karat_value"], "designation": LOGO_DESIGNATION,
+                                    "issued": 0, "returned": 0, "melted": 0, "heat_delta": 0, "supplier_settled": 0})
+        row["settle_in"] = r["settle_in"]
     order = {MELT_DESIGNATION: 0, LOGO_DESIGNATION: 1, UNCLASSIFIED: 2}
     return sorted(rows.values(), key=lambda r: (-int(r["karat_value"]), order[r["designation"]]))
 
@@ -544,7 +555,16 @@ class MarketTripRepository(BaseRepository):
             FROM market_trip_entries e JOIN market_trip_book_trades t ON t.entry_id = e.id
             WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}{_share(current, 'e, t')}
             """, (_id(trip_id), int(exclude_entry_id or 0)))
-        return (row["issued"], row["returned"], paid["paid"], sold["proceeds"] + trades["proceeds"], bought["spent"] + trades["spent"])
+        base = (row["issued"], row["returned"], paid["paid"], sold["proceeds"] + trades["proceeds"], bought["spent"] + trades["spent"])
+        if not self.has_cash_settle_schema():
+            return base
+        settled = self._fetch_one(                                          # 064: expense, bank deposit and write-off consume custody cash (no Main Safe movement)
+            f"""
+            SELECT COALESCE(SUM(s.amount), 0) AS settled
+            FROM market_trip_entries e JOIN market_trip_settle_cash s ON s.entry_id = e.id
+            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}{_share(current, 'e, s')}
+            """, (_id(trip_id), int(exclude_entry_id or 0)))
+        return base + (settled["settled"],)
 
     # ------------------------------------------------------------------ supplier payments from custody (043)
     def suppliers(self):
@@ -722,7 +742,8 @@ class MarketTripRepository(BaseRepository):
             WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}
             GROUP BY l.karat_id, k.karat_value, l.designation{_share(current, 'e, l')}
             """, (_id(trip_id), int(exclude_entry_id or 0)))
-        return _gold_rows(legs, held, heated, melted, settled, sold, bought)
+        return _gold_rows(legs, held, heated, melted, settled, sold, bought, self.settle_raw_out(trip_id, exclude_entry_id, current=current),
+                          self.settle_logo_in(trip_id, exclude_entry_id, current=current))
 
     # ------------------------------------------------------------------ display aggregation (Gold Position): NO locks, a fixed number of queries
     def custody_gold_by_trip(self):
@@ -790,7 +811,25 @@ class MarketTripRepository(BaseRepository):
             for row in rows:
                 grouped.setdefault(int(row["trip_id"]), []).append(row)
             return grouped
-        terms = [by_trip(rows) for rows in (legs, held, heated, melted, settled, sold, bought)]
+        settle = []
+        if self.has_settlement_schema():                                    # 060: the RAW pool moves of every trip (grams that left UNCLASSIFIED custody)
+            settle = self._fetch_all(
+                f"""
+                SELECT e.trip_id, m.karat_id, k.karat_value, COALESCE(SUM(-m.delta), 0) AS settle_out
+                FROM market_trip_entries e JOIN market_trip_settle_moves m ON m.entry_id = e.id JOIN karats k ON k.id = m.karat_id
+                WHERE m.pool = 'RAW' AND {nr}
+                GROUP BY e.trip_id, m.karat_id, k.karat_value
+                """)
+        settle_in = []
+        if self.has_settlement_schema():                                    # 062: the LOGO pool moves of every trip
+            settle_in = self._fetch_all(
+                f"""
+                SELECT e.trip_id, m.karat_id, k.karat_value, COALESCE(SUM(m.delta), 0) AS settle_in
+                FROM market_trip_entries e JOIN market_trip_settle_moves m ON m.entry_id = e.id JOIN karats k ON k.id = m.karat_id
+                WHERE m.pool = 'LOGO' AND {nr}
+                GROUP BY e.trip_id, m.karat_id, k.karat_value
+                """)
+        terms = [by_trip(rows) for rows in (legs, held, heated, melted, settled, sold, bought, settle, settle_in)]
         trips = sorted(set().union(*[set(t) for t in terms]))
         return {trip: _gold_rows(*[t.get(trip, []) for t in terms]) for trip in trips}
 
@@ -847,6 +886,13 @@ class MarketTripRepository(BaseRepository):
             row["gold_sale"] = self.entry_gold_sale(row["id"])
             row["gold_buy"] = self.entry_gold_buy(row["id"])
             row["lot_settlement"] = self.entry_lot_settlement(row["id"])
+            row["settle_melt"] = self.entry_settle_melt(row["id"]) if row["entry_kind"] == "ST_MELT" else None
+            row["bar_supplier"] = self.entry_bar_supplier(row["id"]) if row["entry_kind"] == "ST_BAR_SUP" else None
+            row["bar_marketer"] = self.entry_marketer_leg(row["id"]) if row["entry_kind"] == "ST_BAR_MKT" else None
+            row["settle_logo"] = self.entry_settle_logo(row["id"]) if row["entry_kind"] == "ST_LOGO" else []
+            row["settle_cash"] = self.entry_settle_cash(row["id"]) if row["entry_kind"] in ("ST_EXPENSE", "ST_CASH_BANK", "ST_CASH_OFF") else None
+            row["settle_lines"] = self.entry_settle_lines(row["id"]) if row["entry_kind"] in ("ST_RET_MKT", "ST_LOSS") else []
+            row["settle_adjust"] = self.entry_settle_adjust(row["id"]) if row["entry_kind"] == "ST_ADJUST" else None
             if str(row["entry_kind"]).startswith("BK_"):                       # 056: only BOOK entries carry book lines / a trade
                 row["book_lines"] = self.entry_book_lines(row["id"])
                 row["book_trade"] = self.entry_book_trade(row["id"])
@@ -1136,6 +1182,190 @@ class MarketTripRepository(BaseRepository):
             return None
         return self._fetch_one("SELECT g.entry_id, g.trip_id, g.explanation, g.evidence_reference, g.confirmed_by_user_id, g.confirmed_at, u.username AS confirmed_by "
                                "FROM market_trip_gains g LEFT JOIN users u ON u.id = g.confirmed_by_user_id WHERE g.entry_id = %s", (_id(entry_id),))
+
+    # ------------------------------------------------------------------ settlement (060): melt recorded after the owner returns
+    def has_settlement_schema(self):
+        """True when migration 060 is present (the settlement move ledger exists). Asked once per repository object; every settlement read is guarded by it so a
+        database before 060 keeps every existing path working (it cannot hold a settlement row)."""
+        if not hasattr(self, "_settlement"):
+            row = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'market_trip_settle_moves'")
+            self._settlement = bool(row and int(row["n"]))
+        return self._settlement
+
+    def has_cash_settle_schema(self):
+        """True when migration 064 is present (the custody cash settlement document exists). Asked once per repository object."""
+        if not hasattr(self, "_cash_settle"):
+            row = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'market_trip_settle_cash'")
+            self._cash_settle = bool(row and int(row["n"]))
+        return self._cash_settle
+
+    def active_bank_accounts(self):
+        return self._fetch_all("SELECT id, name, account_type, bank_name, account_label FROM bank_accounts WHERE is_active = TRUE ORDER BY account_type, name, id")
+
+    def bank_account(self, account_id, *, lock=False):
+        return self._fetch_one("SELECT id, name, is_active FROM bank_accounts WHERE id = %s" + (" FOR UPDATE" if lock else ""), (int(account_id),))
+
+    def post_bank_in(self, *, account_id, entry_id, code, amount, description, actor, now):
+        """The real money IN of a custody cash deposit (ST_CASH_BANK). Returns the bank movement id."""
+        movement_id, count = self._execute(
+            """
+            INSERT INTO bank_movements (bank_account_id, movement_type_id, amount_delta, reference_type, reference_id, reference_code, description, occurred_at, created_by_user_id)
+            SELECT %s, t.id, %s, %s, %s, %s, %s, %s, %s FROM bank_movement_types t WHERE t.code = 'TRIP_CUSTODY_BANK_IN' AND t.is_active = TRUE
+            """, (int(account_id), amount, SOURCE, _id(entry_id), code, description, now, actor.user_id))
+        if count != 1:
+            raise RuntimeError("bank_movement_types TRIP_CUSTODY_BANK_IN is missing (migration 064)")
+        return int(movement_id)
+
+    def insert_settle_cash(self, *, entry_id, kind, amount, description, reference, bank_account_id, bank_movement_id):
+        """The immutable cash settlement document (1:1 with its ST_EXPENSE / ST_CASH_BANK / ST_CASH_OFF entry)."""
+        self._execute(
+            "INSERT INTO market_trip_settle_cash (entry_id, entry_kind, amount, description, reference, bank_account_id, bank_movement_id) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (_id(entry_id), kind, amount, description or None, reference or None, None if bank_account_id is None else int(bank_account_id),
+             None if bank_movement_id is None else int(bank_movement_id)))
+
+    def entry_settle_cash(self, entry_id):
+        """The cash settlement an entry made (None for any other entry or before 064)."""
+        if not self.has_cash_settle_schema():
+            return None
+        return self._fetch_one(
+            "SELECT s.*, b.name AS bank_account_name FROM market_trip_settle_cash s LEFT JOIN bank_accounts b ON b.id = s.bank_account_id WHERE s.entry_id = %s", (_id(entry_id),))
+
+    def has_disposal_schema(self):
+        """True when migration 065 is present (the disposal lines / adjustment documents exist). Asked once per repository object."""
+        if not hasattr(self, "_disposal"):
+            row = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'market_trip_settle_lines'")
+            self._disposal = bool(row and int(row["n"]))
+        return self._disposal
+
+    def insert_settle_line(self, *, entry_id, kind, line_no, source, karat_id, weight, classification):
+        """One stored line of an ST_RET_MKT / ST_LOSS entry: the source pool (RAW / LOGO of a karat, or BAR in 21K-equivalent grams), the grams and the loss classification."""
+        self._execute("INSERT INTO market_trip_settle_lines (entry_id, entry_kind, line_no, source, karat_id, weight_grams, classification) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                      (_id(entry_id), kind, int(line_no), source, None if karat_id is None else int(karat_id), weight, classification))
+
+    def entry_settle_lines(self, entry_id):
+        if not self.has_disposal_schema():
+            return []
+        return self._fetch_all(
+            "SELECT l.line_no, l.source, l.karat_id, k.karat_value, l.weight_grams, l.classification FROM market_trip_settle_lines l LEFT JOIN karats k ON k.id = l.karat_id "
+            "WHERE l.entry_id = %s ORDER BY l.line_no", (_id(entry_id),))
+
+    def insert_settle_adjust(self, *, entry_id, karat_id, direction, weight, reason):
+        self._execute("INSERT INTO market_trip_settle_adjust (entry_id, entry_kind, karat_id, direction, weight_grams, reason) VALUES (%s, 'ST_ADJUST', %s, %s, %s, %s)",
+                      (_id(entry_id), int(karat_id), direction, weight, reason))
+
+    def entry_settle_adjust(self, entry_id):
+        if not self.has_disposal_schema():
+            return None
+        return self._fetch_one("SELECT a.*, k.karat_value FROM market_trip_settle_adjust a JOIN karats k ON k.id = a.karat_id WHERE a.entry_id = %s", (_id(entry_id),))
+
+    def insert_settle_melt(self, *, entry_id, workshop, melt_date, figures):
+        """The immutable melt document (1:1 with its ST_MELT entry): melted grams, bar weight and integer fineness, theoretical / actual Eq21 and the loss split."""
+        self._execute(
+            "INSERT INTO market_trip_settle_melts (entry_id, entry_kind, workshop, melt_date, input_weight_grams, output_weight_grams, fineness_permille, theoretical_eq21, "
+            "actual_eq21, loss_eq21, weight_loss_eq21, fineness_loss_eq21) VALUES (%s, 'ST_MELT', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (_id(entry_id), workshop, melt_date, figures["input_weight"], figures["output_weight"], int(figures["fineness"]), figures["theoretical_eq21"],
+             figures["actual_eq21"], figures["loss_eq21"], figures["weight_loss_eq21"], figures["fineness_loss_eq21"]))
+
+    def insert_settle_melt_input(self, *, entry_id, karat_id, weight):
+        self._execute("INSERT INTO market_trip_settle_melt_inputs (entry_id, karat_id, weight_grams) VALUES (%s, %s, %s)", (_id(entry_id), int(karat_id), weight))
+
+    def insert_settle_move(self, *, entry_id, trip_id, kind, pool, karat_id, delta):
+        """One signed move of the settlement pools: RAW (grams of `karat_id`) or BAR (Eq21 grams, no karat). Insert-only; a reversed entry's moves stop counting."""
+        self._execute("INSERT INTO market_trip_settle_moves (entry_id, entry_kind, trip_id, pool, karat_id, delta) VALUES (%s, %s, %s, %s, %s, %s)",
+                      (_id(entry_id), kind, _id(trip_id), pool, None if karat_id is None else int(karat_id), delta))
+
+    def settle_raw_out(self, trip_id, exclude_entry_id=None, *, current=True):
+        """Per karat: grams that left the RAW pool through entries that were not reversed (a positive number = consumed)."""
+        if not self.has_settlement_schema():
+            return []
+        return self._fetch_all(
+            f"""
+            SELECT m.karat_id, k.karat_value, COALESCE(SUM(-m.delta), 0) AS settle_out
+            FROM market_trip_entries e JOIN market_trip_settle_moves m ON m.entry_id = e.id JOIN karats k ON k.id = m.karat_id
+            WHERE e.trip_id = %s AND e.id <> %s AND m.pool = 'RAW' AND {_not_reversed('e', current=current)}
+            GROUP BY m.karat_id, k.karat_value{_share(current, 'e, m')}
+            """, (_id(trip_id), int(exclude_entry_id or 0)))
+
+    def settle_logo_in(self, trip_id, exclude_entry_id=None, *, current=True):
+        """Per karat: grams classified as LOGO through entries that were not reversed (062)."""
+        if not self.has_settlement_schema():
+            return []
+        return self._fetch_all(
+            f"""
+            SELECT m.karat_id, k.karat_value, COALESCE(SUM(m.delta), 0) AS settle_in
+            FROM market_trip_entries e JOIN market_trip_settle_moves m ON m.entry_id = e.id JOIN karats k ON k.id = m.karat_id
+            WHERE e.trip_id = %s AND e.id <> %s AND m.pool = 'LOGO' AND {_not_reversed('e', current=current)}
+            GROUP BY m.karat_id, k.karat_value{_share(current, 'e, m')}
+            """, (_id(trip_id), int(exclude_entry_id or 0)))
+
+    def entry_settle_logo(self, entry_id):
+        """The grams a ST_LOGO entry classified, per karat (empty for any other entry or before 062)."""
+        if not self.has_settlement_schema():
+            return []
+        return self._fetch_all(
+            "SELECT m.karat_id, k.karat_value, m.delta AS weight_grams FROM market_trip_settle_moves m JOIN karats k ON k.id = m.karat_id "
+            "WHERE m.entry_id = %s AND m.pool = 'LOGO' ORDER BY k.karat_value DESC", (_id(entry_id),))
+
+    def settle_bar_balance(self, trip_id, exclude_entry_id=None, *, current=True):
+        """The BAR pool of a trip (Eq21 grams): the sum of its BAR moves over the entries that were not reversed. 0.000 before 060."""
+        if not self.has_settlement_schema():
+            return Decimal("0.000")
+        row = self._fetch_one(
+            f"""
+            SELECT COALESCE(SUM(m.delta), 0) AS balance
+            FROM market_trip_entries e JOIN market_trip_settle_moves m ON m.entry_id = e.id
+            WHERE e.trip_id = %s AND e.id <> %s AND m.pool = 'BAR' AND {_not_reversed('e', current=current)}{_share(current, 'e, m')}
+            """, (_id(trip_id), int(exclude_entry_id or 0)))
+        return Decimal(str(row["balance"] if row else 0))
+
+    def settle_bar_by_trip(self):
+        """DISPLAY ONLY: the BAR pool of EVERY trip in one aggregate query (no locks, snapshot reversal lookup). Returns {trip_id: Eq21 grams} for non-zero pools."""
+        if not self.has_settlement_schema():
+            return {}
+        rows = self._fetch_all(
+            f"""
+            SELECT e.trip_id, COALESCE(SUM(m.delta), 0) AS balance
+            FROM market_trip_entries e JOIN market_trip_settle_moves m ON m.entry_id = e.id
+            WHERE m.pool = 'BAR' AND {_not_reversed('e')}
+            GROUP BY e.trip_id HAVING SUM(m.delta) <> 0
+            """)
+        return {int(r["trip_id"]): Decimal(str(r["balance"])) for r in rows}
+
+    def entry_settle_melt(self, entry_id):
+        """The melt document of one ST_MELT entry with its melted grams per karat (None for any other entry or before 060)."""
+        if not self.has_settlement_schema():
+            return None
+        doc = self._fetch_one(
+            "SELECT m.entry_id, m.workshop, m.melt_date, m.input_weight_grams, m.output_weight_grams, m.fineness_permille, m.theoretical_eq21, m.actual_eq21, m.loss_eq21, "
+            "m.weight_loss_eq21, m.fineness_loss_eq21 FROM market_trip_settle_melts m WHERE m.entry_id = %s", (_id(entry_id),))
+        if doc is None:
+            return None
+        doc["inputs"] = self._fetch_all(
+            "SELECT i.karat_id, k.karat_value, i.weight_grams FROM market_trip_settle_melt_inputs i JOIN karats k ON k.id = i.karat_id WHERE i.entry_id = %s "
+            "ORDER BY k.karat_value DESC", (_id(entry_id),))
+        return doc
+
+    # ------------------------------------------------------------------ settlement step 2b (061): the melted bar delivered to a supplier
+    def has_distribution_schema(self):
+        """True when migration 061 is present (the bar supplier link table exists). Asked once per repository object; a database before 061 cannot hold a bar delivery."""
+        if not hasattr(self, "_distribution"):
+            row = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'market_trip_bar_supplier_links'")
+            self._distribution = bool(row and int(row["n"]))
+        return self._distribution
+
+    def insert_bar_supplier_link(self, *, entry_id, trip_id, settlement_id, supplier_id, weight):
+        self._execute("INSERT INTO market_trip_bar_supplier_links (entry_id, entry_kind, trip_id, settlement_id, source_kind, supplier_id, weight_grams) "
+                      "VALUES (%s, 'ST_BAR_SUP', %s, %s, 'TRIP_BAR', %s, %s)", (_id(entry_id), _id(trip_id), _id(settlement_id), _id(supplier_id), weight))
+
+    def entry_bar_supplier(self, entry_id):
+        """The supplier delivery a ST_BAR_SUP entry made, with the SG document's stored figures (None for any other entry or before 061)."""
+        if not self.has_distribution_schema():
+            return None
+        return self._fetch_one(
+            "SELECT l.entry_id, l.settlement_id, l.supplier_id, l.weight_grams, s.name AS supplier_name, g.delivered_karat_value, g.credited_weight_grams, "
+            "g.credited_analytical_grams, g.rounding_difference_grams, g.target_karat_value "
+            "FROM market_trip_bar_supplier_links l JOIN suppliers s ON s.id = l.supplier_id JOIN supplier_gold_settlements g ON g.id = l.settlement_id "
+            "WHERE l.entry_id = %s", (_id(entry_id),))
 
     def insert_book_supplier_link(self, *, entry_id, trip_id, settlement_id, supplier_id, weight):
         self._execute("INSERT INTO market_trip_book_supplier_links (entry_id, entry_kind, trip_id, settlement_id, source_kind, supplier_id, weight_grams) "

@@ -18,6 +18,46 @@ class ReportRepository(BaseRepository):
         row = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s", (name,))
         return bool(row and int(row["n"]))
 
+    # ------------------------------------------------------------------ market custody after the trip (settlement steps 2a-2f; read only)
+    _TRIP_REVERSAL = "LEFT JOIN transaction_corrections c ON c.source_type = 'MARKET_TRIP_ENTRY' AND c.source_id = e.id AND c.correction_type = 'FULL_REVERSAL'"
+
+    def trip_melts(self, start, end_exclusive):
+        """The melts (ST_MELT documents) by their own melt date, with the stored analytical figures and the full-reversal correction of the entry, if any."""
+        return self._fetch_all(
+            f"""
+            SELECT e.id AS entry_id, e.trip_id, e.entry_no, m.melt_date AS doc_date, m.workshop, m.input_weight_grams, m.output_weight_grams, m.fineness_permille,
+                   m.theoretical_eq21, m.actual_eq21, m.loss_eq21, m.weight_loss_eq21, m.fineness_loss_eq21, c.id AS reversal_id
+            FROM market_trip_settle_melts m JOIN market_trip_entries e ON e.id = m.entry_id {self._TRIP_REVERSAL}
+            WHERE m.melt_date >= %s AND m.melt_date < %s ORDER BY m.melt_date, e.id
+            """, (start, end_exclusive))
+
+    def trip_settle_lines(self, start, end_exclusive):
+        """The lines of the market returns and losses (ST_RET_MKT / ST_LOSS) by the entry date."""
+        return self._fetch_all(
+            f"""
+            SELECT e.id AS entry_id, e.trip_id, e.entry_no, e.entry_kind, e.entry_date AS doc_date, l.line_no, l.source, k.karat_value, l.weight_grams, l.classification, c.id AS reversal_id
+            FROM market_trip_settle_lines l JOIN market_trip_entries e ON e.id = l.entry_id LEFT JOIN karats k ON k.id = l.karat_id {self._TRIP_REVERSAL}
+            WHERE e.entry_date >= %s AND e.entry_date < %s ORDER BY e.entry_date, e.id, l.line_no
+            """, (start, end_exclusive))
+
+    def trip_settle_adjusts(self, start, end_exclusive):
+        """The issue-weight corrections (ST_ADJUST) by the entry date."""
+        return self._fetch_all(
+            f"""
+            SELECT e.id AS entry_id, e.trip_id, e.entry_no, e.entry_date AS doc_date, k.karat_value, a.direction, a.weight_grams, a.reason, c.id AS reversal_id
+            FROM market_trip_settle_adjust a JOIN market_trip_entries e ON e.id = a.entry_id JOIN karats k ON k.id = a.karat_id {self._TRIP_REVERSAL}
+            WHERE e.entry_date >= %s AND e.entry_date < %s ORDER BY e.entry_date, e.id
+            """, (start, end_exclusive))
+
+    def trip_settle_cash(self, start, end_exclusive):
+        """The custody cash settlements (expense / bank deposit / write-off) by the entry date."""
+        return self._fetch_all(
+            f"""
+            SELECT e.id AS entry_id, e.trip_id, e.entry_no, e.entry_kind, e.entry_date AS doc_date, s.amount, s.description, s.reference, b.name AS bank_name, c.id AS reversal_id
+            FROM market_trip_settle_cash s JOIN market_trip_entries e ON e.id = s.entry_id LEFT JOIN bank_accounts b ON b.id = s.bank_account_id {self._TRIP_REVERSAL}
+            WHERE e.entry_date >= %s AND e.entry_date < %s ORDER BY e.entry_date, e.id
+            """, (start, end_exclusive))
+
     # ------------------------------------------------------------------ sales and returns (documents by their own effective date)
     def sales_invoices(self, start, end_exclusive):
         """Finalized / voided invoices by `invoice_date`. money_in / money_out are the stored payments exactly as Invoice History sums them; account_delta is what the invoice

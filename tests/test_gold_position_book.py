@@ -104,6 +104,9 @@ class Reads:
     def custody_gold_by_trip(self):
         return {t["id"]: self.trips.custody_gold(t["id"]) for t in self.db.trips.values()}
 
+    def settle_bar_by_trip(self):
+        return {}                                                           # 060: no melted bar in these fixtures
+
     def custody_lots_by_trip(self):
         return {}
 

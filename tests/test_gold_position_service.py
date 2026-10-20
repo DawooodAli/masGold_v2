@@ -196,6 +196,9 @@ class Fake:
         self.calls.append("custody_gold_by_trip")
         return {trip: [{"karat_id": 21, "karat_value": 21, "designation": "LOGO", "issued": D(grams), "returned": D("0")}] for trip, grams in self.gold_trips.items()}
 
+    def settle_bar_by_trip(self):
+        return {}                                                           # 060: no melted bar in these fixtures
+
     def custody_lots_by_trip(self):
         self.calls.append("custody_lots_by_trip")
         return {}

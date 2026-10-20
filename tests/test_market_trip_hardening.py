@@ -200,6 +200,8 @@ class RepositorySqlTests(unittest.TestCase):
     def run_all(self, **flags):
         capture = Capture()
         repo = MarketTripRepository(capture)
+        repo._settlement = False                                              # 060: the capability probe is not the subject of this test
+        repo._cash_settle = False                                                      # 064: the capability probe is not the subject of this test
         repo.custody_cash(1, 2, **flags)
         repo.custody_gold(1, 2, **flags)
         return capture.sql
@@ -226,6 +228,8 @@ class RepositorySqlTests(unittest.TestCase):
     def test_the_reversal_guard_queries_always_use_the_current_form(self):
         capture = Capture()
         repo = MarketTripRepository(capture)
+        repo._settlement = False                                              # 060: the capability probe is not the subject of this test
+        repo._cash_settle = False                                                      # 064: the capability probe is not the subject of this test
         repo.later_heat_entries(1, 1, [1])
         repo.later_logo_returns(1, 1, [1])
         repo.later_gold_settlements(1, 1, [1])
@@ -236,6 +240,8 @@ class RepositorySqlTests(unittest.TestCase):
     def test_empty_karat_ranges_run_no_query(self):
         capture = Capture()
         repo = MarketTripRepository(capture)
+        repo._settlement = False                                              # 060: the capability probe is not the subject of this test
+        repo._cash_settle = False                                                      # 064: the capability probe is not the subject of this test
         self.assertEqual((repo.later_heat_entries(1, 1, []), repo.later_logo_returns(1, 1, []), repo.later_gold_settlements(1, 1, [])), ([], [], []))
         self.assertEqual(capture.sql, [])
 

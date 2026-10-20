@@ -70,6 +70,10 @@ class BookCoreMySqlTests(unittest.TestCase):
         cls.session, cls.user = cls.make_session("main")
         with cls.tx() as c:
             q = c.cursor()
+            q.execute("INSERT INTO cash_movements(cash_account_id, movement_type_id, amount_delta, description, occurred_at, created_by_user_id) "      # the safe never goes
+                      "SELECT a.id, t.id, 1000000000, 'rehearsal funding', NOW(), %s FROM cash_accounts a JOIN cash_movement_types t ON t.code='OPENING_BALANCE' "     # negative (stage 1):
+                      "WHERE a.code='MAIN_SAFE'", (cls.user,))                                                                                                    # fund it once per run
+            assert q.rowcount == 1
             for value in (21, 18, 24):                                  # test-owned counted Scrap, the way the established harness provides it
                 q.execute("INSERT INTO old_gold_movements(movement_type_id,karat_id,weight_delta_grams,created_by_user_id) "
                           "SELECT id,%s,5000,%s FROM old_gold_movement_types WHERE code='OPENING_BALANCE'", (cls.karats[value], cls.user))

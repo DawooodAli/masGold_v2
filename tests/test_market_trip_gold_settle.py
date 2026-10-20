@@ -140,9 +140,9 @@ class PostingTests(GoldSettleCase):
         self.assertEqual(self.logo(K18), D("5.000"))                                                 # the other karat is a separate balance
         self.refused("SETTLEMENT_EXCEEDS_CUSTODY", lambda: self.settle(karat=K24, weight="1"))       # no custody gold of that karat at all
 
-    def test_only_logo_gold_is_settleable_in_this_slice_and_melt_and_unclassified_are_refused_without_trace(self):
+    def test_only_logo_and_unclassified_gold_is_settleable_and_melt_gold_is_refused_without_trace(self):
         self.refused("DESIGNATION_NOT_SETTLEABLE", lambda: self.settle(designation="MELT", weight="1"))
-        self.refused("DESIGNATION_NOT_SETTLEABLE", lambda: self.settle(designation="UNCLASSIFIED", weight="1"))
+        self.refused("SETTLEMENT_EXCEEDS_CUSTODY", lambda: self.settle(designation="UNCLASSIFIED", weight="1"))     # 061: accepted as a source, but this trip holds none
         self.refused("DESIGNATION_REQUIRED", lambda: self.settle(designation="", weight="1"))
         self.refused("DESIGNATION_REQUIRED", lambda: self.settle(designation="xx", weight="1"))
         self.assertEqual(self.row(K21, "MELT")["outstanding"], D("3.000"))                           # the MELT gold is untouched

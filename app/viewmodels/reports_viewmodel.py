@@ -32,6 +32,7 @@ FILTER_SPECS = {
                   {"key": "inactive", "label": "العملاء المتوقفون", "options": [("", "غير معروضين"), ("1", "معروضون")]}],
     "suppliers": [],
     "treasury": [],
+    "market": [],
 }
 KIND_FORMAT = {"money": lambda v: money(v, signed=v < 0), "grams": lambda v: grams(v, signed=v < 0), "eq21": lambda v: grams(v, signed=v < 0)}
 

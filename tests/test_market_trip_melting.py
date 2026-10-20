@@ -54,17 +54,21 @@ class MeltCase(TripCase):
 
 
 class DesignationTests(MeltCase):
-    def test_every_issued_gold_line_needs_melt_or_logo(self):
-        for bad in ("", None, "UNCLASSIFIED", "غير مصنف", "SALE"):
-            with self.subTest(designation=bad):
-                self.refused("DESIGNATION_REQUIRED", lambda b=bad: self.service.issue("", "", raw((K21, "1", b)), TODAY, "", key(70)))
+    def test_a_market_custody_issue_needs_no_designation_and_only_a_known_one_is_accepted(self):
+        """Stage 1 (owner, 2026-10-20): gold leaves by weight and karat only (stored UNCLASSIFIED, shown «بدون وجهة»); an unknown designation text is still refused."""
+        self.refused("DESIGNATION_REQUIRED", lambda: self.service.issue("", "", raw((K21, "1", "SALE")), TODAY, "", key(70)))
         for good, expected in (("للسبك", "MELT"), ("لوجو", "LOGO"), ("MELT", "MELT"), ("LOGO", "LOGO")):
             self.assertEqual(parse_designation(good, "ISSUE"), expected)
+        self.assertEqual(parse_designation("", "ISSUE", allow_blank=True), "UNCLASSIFIED")
+        self.refused("DESIGNATION_REQUIRED", lambda: parse_designation("", "ISSUE"))                      # the cash gold purchase still needs MELT or LOGO
 
-    def test_a_missing_designation_is_refused_without_a_trace(self):
-        before = self.state()
-        self.refused("DESIGNATION_REQUIRED", lambda: self.service.issue(self.trip, "", raw((K21, "1", None)), TODAY, "", key(71)))
-        self.assertEqual(self.state(), before)
+    def test_a_missing_designation_issues_the_gold_without_a_destination(self):
+        before = len(self.db.gold_legs)
+        done = self.service.issue(self.trip, "", raw((K21, "1", None)), TODAY, "", key(71))
+        legs = self.db.gold_legs[before:]
+        self.assertEqual([(l["karat_id"], l["designation"]) for l in legs], [(1, "UNCLASSIFIED")])
+        self.assertEqual(self.custody_gold()[(21, "UNCLASSIFIED")]["outstanding"], D("1.000"))
+        self.assertFalse(done["duplicate"])
 
     def test_custody_is_tracked_per_karat_and_designation_and_both_may_share_a_karat(self):
         rows = self.custody_gold()
@@ -115,7 +119,7 @@ class DesignationTests(MeltCase):
         message = self.refused("MELT_EXCEEDS_CUSTODY", lambda: self.melt(melt_inputs((K18, "1")), main=("0.5", "900"), trip=legacy,
                                                                       gain="لا"), ).args[0]
         self.assertIn("المتاح للسبك", message)
-        self.assertIn("غير مصنف", message)                                                # explained: legacy gold is return-only
+        self.assertIn("بدون وجهة", message)                                                # explained: gold without a destination is return-only until the settlement stage
         self.ret(legacy, "", [(K18, "5", "UNCLASSIFIED")])
         self.assertEqual(self.custody_gold(legacy)[(18, "UNCLASSIFIED")]["outstanding"], D("0.000"))
         self.assertEqual([l["designation"] for l in self.db.gold_legs if l["entry_id"] == max(self.db.entries) - 1], ["UNCLASSIFIED"])
@@ -532,6 +536,8 @@ class RepositoryMergeTests(unittest.TestCase):
     def test_melt_consumption_lands_on_the_melt_designation_only_and_rows_are_ordered(self):
         from repositories.market_trip_repository import MarketTripRepository
         repo = MarketTripRepository.__new__(MarketTripRepository)
+        repo._settlement = False                                              # 060: the capability probe is not the subject of this test
+        repo._cash_settle = False                                                      # 064: the capability probe is not the subject of this test
         answers = iter([[{"karat_id": 1, "karat_value": 21, "designation": "LOGO", "issued": D("20"), "returned": D("0")},
                          {"karat_id": 1, "karat_value": 21, "designation": "MELT", "issued": D("40"), "returned": D("5")},
                          {"karat_id": 3, "karat_value": 24, "designation": "UNCLASSIFIED", "issued": D("2"), "returned": D("0")}],
@@ -556,6 +562,8 @@ class RepositoryMergeTests(unittest.TestCase):
         from repositories.market_trip_repository import MarketTripRepository
         from services import custody_rules
         repo = MarketTripRepository.__new__(MarketTripRepository)
+        repo._settlement = False                                              # 060: the capability probe is not the subject of this test
+        repo._cash_settle = False                                                      # 064: the capability probe is not the subject of this test
         answers = iter([[{"karat_id": 1, "karat_value": 21, "designation": "LOGO", "issued": D("20"), "returned": D("2")}],
                         [],
                         [{"karat_id": 1, "karat_value": 21, "heat_delta": D("-0.500")}],
@@ -583,6 +591,8 @@ class HeldTermTests(unittest.TestCase):
         from repositories.market_trip_repository import MarketTripRepository
         from services import custody_rules
         repo = MarketTripRepository.__new__(MarketTripRepository)
+        repo._settlement = False                                              # 060: the capability probe is not the subject of this test
+        repo._cash_settle = False                                                      # 064: the capability probe is not the subject of this test
         answers = iter([[{"karat_id": 1, "karat_value": 21, "designation": "LOGO", "issued": D("20"), "returned": D("2")}], [], [], [],
                         [{"karat_id": 1, "karat_value": 21, "designation": "LOGO", "held_out": D("9"), "held_back": D("4")}], [], []])
         repo._fetch_all = lambda *args, **kwargs: next(answers)

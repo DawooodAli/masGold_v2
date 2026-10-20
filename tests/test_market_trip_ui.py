@@ -137,8 +137,16 @@ class MarketTripPageTests(harness.InvoicePageTests):
     def counts(self):
         return (self.ledgers.strip_calls, self.ledgers.account_calls, self.ledgers.scrap_calls)
 
-    def new_trip(self, cash="10000", gold=None):
-        """Create a trip through the dialog with real clicks; gold is [(combo index, weight)]."""
+    def new_trip(self, cash="10000", gold=None, designation=""):
+        """Create a trip through the dialog with real clicks; gold is [(combo index, weight)]. The issue dialog has NO designation (stage 1); a test of the OLD melt / heat
+        flows that needs MELT or LOGO custody passes `designation` and creates the trip through the view model instead (the page then selects it)."""
+        if designation:
+            karats = self.tvm.context.get("karats") or []
+            self.tvm.issue("", cash, [{"karatId": str(karats[index - 1]["id"]), "weight": weight, "designation": designation} for index, weight in (gold or [])],
+                           TODAY, "", self.tvm.newRequestKey())
+            self.wait_until(lambda: len(self.db.trips) >= 1, "trip created")
+            self.wait_idle()
+            return
         self.click("newTripButton")
         self.wait_until(lambda: self.item("tripEntryDialog").property("opened"), "entry dialog")
         self.wait_until(lambda: self.tvm.context.get("karats"), "context")
@@ -147,7 +155,6 @@ class MarketTripPageTests(harness.InvoicePageTests):
             if i:
                 self.click("addGoldRowButton")
             self.pick(f"tripGoldKarat_{i}", index)
-            self.pick(f"tripGoldDesignation_{i}", 1)                                    # للسبك: every gold line needs its designation
             self.type_in(f"tripGoldWeight_{i}", weight)
         self.click("confirmTripEntryButton")
         self.wait_until(lambda: len(self.db.trips) >= 1, "trip created")
@@ -211,6 +218,52 @@ class MarketTripPageTests(harness.InvoicePageTests):
         self.assertEqual(self.balances.cashText, money(D("43000.00")))
         self.assertEqual(self.warnings, [])
 
+    def test_stage_one_issue_has_no_designation_and_the_safe_is_never_overdrawn(self):
+        """Market custody stage 1 (owner, 2026-10-20), real clicks: the issue dialog offers only cash, karat and weight (no designation, at every size); cash above the
+        safe balance is refused with every field kept; the exact balance posts; the gold is stored without a destination."""
+        self.db.safe_allowance = D("0.00")                                                 # the seeded 50,000 is the REAL safe balance
+        self.open_page()
+        for width, height in harness.SIZES:
+            with self.subTest(size=(width, height)):
+                self.root.setWidth(width)
+                self.root.setHeight(height)
+                QTest.qWait(150)
+                self.click("newTripButton")
+                self.wait_until(lambda: self.item("tripEntryDialog").property("opened"), "entry dialog")
+                self.wait_until(lambda: self.tvm.context.get("karats"), "context")
+                self.assertIsNone(self.visible_item("tripGoldDesignation_0"))
+                for name in ("tripCashField", "tripGoldKarat_0", "tripGoldWeight_0", "confirmTripEntryButton"):
+                    self.assert_inside_window(self.item(name))
+                self.item("tripEntryDialog").close()
+                self.closed("tripEntryDialog")
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        QTest.qWait(150)
+        self.click("newTripButton")
+        self.wait_until(lambda: self.item("tripEntryDialog").property("opened"), "entry dialog")
+        self.wait_until(lambda: self.tvm.context.get("karats"), "context")
+        self.type_in("tripCashField", "60000")
+        self.pick("tripGoldKarat_0", 2)                                                    # 21K
+        self.type_in("tripGoldWeight_0", "5")
+        self.click("confirmTripEntryButton")
+        self.wait_until(lambda: self.tvm.errorMessage != "", "safe refusal")
+        QTest.qWait(100)
+        self.assertTrue(self.item("tripEntryDialog").property("visible"))
+        self.assertIn("رصيد الخزنة الرئيسية غير كافٍ", self.text("tripEntryError"))
+        self.assertEqual((self.text("tripCashField"), self.text("tripGoldWeight_0")), ("60000", "5"))
+        self.assertEqual((self.db.trips, self.db.entries, self.db.cash()), ({}, {}, D("50000.00")))
+        self.click("tripCashField")
+        QTest.keyClick(self.root, Qt.Key_A, Qt.ControlModifier)
+        self.type_text("50000")
+        QTest.qWait(50)
+        self.click("confirmTripEntryButton")
+        self.wait_until(lambda: len(self.db.entries) >= 1, "entry posted")
+        self.closed("tripEntryDialog")
+        self.wait_idle()
+        self.assertEqual(self.db.cash(), D("0.00"))
+        self.assertEqual([l["designation"] for l in self.db.gold_legs], ["UNCLASSIFIED"])
+        self.assertEqual(self.warnings, [])
+
     def test_a_refusal_keeps_every_field_and_a_double_click_posts_once(self):
         self.open_page()
         self.click("newTripButton")
@@ -218,10 +271,6 @@ class MarketTripPageTests(harness.InvoicePageTests):
         self.wait_until(lambda: self.tvm.context.get("karats"), "context")
         self.pick("tripGoldKarat_0", 1)                                                    # 24K: no Scrap at all
         self.type_in("tripGoldWeight_0", "5")
-        self.click("confirmTripEntryButton")                                              # no designation chosen yet
-        self.wait_until(lambda: self.tvm.errorMessage != "", "designation refusal")
-        self.assertIn("وجهة الذهب", self.text("tripEntryError"))
-        self.pick("tripGoldDesignation_0", 2)                                              # لوجو
         self.type_in("tripCashField", "100")
         self.type_in("tripNotesField", "ملاحظة")
         self.click("confirmTripEntryButton")
@@ -230,7 +279,7 @@ class MarketTripPageTests(harness.InvoicePageTests):
         self.assertTrue(self.item("tripEntryDialog").property("visible"))
         self.assertIn("غير كافٍ", self.text("tripEntryError"))
         self.assertEqual((self.text("tripCashField"), self.text("tripGoldWeight_0"), self.text("tripNotesField")), ("100", "5", "ملاحظة"))
-        self.assertEqual(self.item("tripGoldDesignation_0").property("currentIndex"), 2)       # the choice is kept too
+        self.assertIsNone(self.visible_item("tripGoldDesignation_0"))                          # stage 1: the issue dialog has NO designation choice
         self.assertEqual((self.db.trips, self.db.entries), ({}, {}))
         self.pick("tripGoldKarat_0", 2)                                                    # 21K has grams: the corrected retry
         button = self.item("confirmTripEntryButton")
@@ -342,7 +391,7 @@ class MarketTripPageTests(harness.InvoicePageTests):
                 self.click("newTripButton")
                 self.wait_until(lambda: self.item("tripEntryDialog").property("opened"), "entry dialog")
                 self.wait_until(lambda: self.tvm.context.get("karats"), "context")
-                for name in ("tripCashField", "tripDateField", "tripGoldKarat_0", "tripGoldDesignation_0", "tripGoldWeight_0", "addGoldRowButton", "tripNotesField",
+                for name in ("tripCashField", "tripDateField", "tripGoldKarat_0", "tripGoldWeight_0", "addGoldRowButton", "tripNotesField",
                              "confirmTripEntryButton", "cancelTripEntryButton"):
                     self.assert_inside_window(self.item(name))
                 self.item("tripEntryDialog").close()
@@ -355,7 +404,7 @@ class MarketTripMeltingPageTests(MarketTripPageTests):
 
     def start_trip(self):
         self.open_page()
-        self.new_trip("", [(2, "30.000")])                                              # 21K 30 g, MELT
+        self.new_trip("", [(2, "30.000")], designation="MELT")                          # 21K 30 g, MELT (created through the view model: the dialog has no designation)
         self.wait_until(lambda: self.tvm.detail.get("meltAvailable"), "melting available")
 
     def reveal(self, item):
@@ -775,7 +824,6 @@ class MarketTripLotIssuePageTests(MarketTripLotReturnPageTests):
         self.open_new_custody()
         self.type_in("tripCashField", "100")
         self.pick("tripGoldKarat_0", 2)
-        self.pick("tripGoldDesignation_0", 1)
         self.type_in("tripGoldWeight_0", "1")
         self.click("createLotSelect_0")
         self.click("confirmTripEntryButton")
@@ -791,7 +839,6 @@ class MarketTripLotIssuePageTests(MarketTripLotReturnPageTests):
         self.open_new_custody()
         self.type_in("tripCashField", "100")
         self.pick("tripGoldKarat_0", 2)
-        self.pick("tripGoldDesignation_0", 1)
         self.type_in("tripGoldWeight_0", "99999")                                         # more Scrap than the shop holds
         self.click("createLotSelect_0")
         self.click("confirmTripEntryButton")
@@ -892,16 +939,8 @@ class MarketTripHeatPageTests(MarketTripMeltingPageTests):
 
     def logo_trip(self):
         self.open_page()
-        self.click("newTripButton")
-        self.wait_until(lambda: self.item("tripEntryDialog").property("opened"), "entry dialog")
         self.wait_until(lambda: self.tvm.context.get("karats"), "context")
-        self.pick("tripGoldKarat_0", 2)                                                  # 21K
-        self.pick("tripGoldDesignation_0", 2)                                            # لوجو
-        self.type_in("tripGoldWeight_0", "10.000")
-        self.click("confirmTripEntryButton")
-        self.wait_until(lambda: len(self.db.trips) == 1, "trip created")
-        self.closed("tripEntryDialog")
-        self.wait_idle()
+        self.new_trip("", [(2, "10.000")], designation="LOGO")                           # 21K LOGO (the dialog has no designation any more)
         self.wait_until(lambda: self.tvm.detail.get("heatAvailable"), "heating available")
 
     def open_heat(self):
@@ -1029,6 +1068,82 @@ class MarketTripHeatPageTests(MarketTripMeltingPageTests):
         self.assertIn("قبل الحمّية", " ".join(self.visible_texts("heatLine")))            # the measurements stay readable
         self.assertEqual(self.tvm.detail["gold"][0]["outstanding"], "10.000")
         self.assertEqual(len(self.db.heat_lines), 1)
+
+
+class MarketTripSettleMeltPageTests(MarketTripMeltingPageTests):
+    """Settlement step 2a on the real page (owner, 2026-10-20): gold issued WITHOUT a destination is melted AFTER the owner returns. Real clicks at the three sizes: the
+    button and every control stay on screen, the preview shows the exact figures of the owner's worked example, and the bar enters the custody."""
+
+    def issue_without_destination(self):
+        self.open_page()
+        self.new_trip("", [(2, "50.000"), (3, "10.000")])                                          # 21K 50 g and 18K 10 g, NO designation (the stage 1 dialog)
+        self.wait_until(lambda: self.tvm.detail.get("settleMeltAvailable"), "settlement melt available")
+
+    def open_settle(self):
+        self.reveal(self.item("settleMeltButton"))
+        self.click("settleMeltButton")
+        self.wait_until(lambda: self.item("tripSettleMeltDialog").property("opened"), "settle dialog")
+
+    def fill_settle(self, weight_21="40", weight_18="5", output="44.8", fineness="850", workshop="ورشة النور"):
+        self.type_in("settleMeltWorkshopField", workshop)
+        self.pick("settleMeltKarat_0", 1)                                                          # 21K (the first available line)
+        self.type_in("settleMeltWeight_0", weight_21)
+        self.click("addSettleMeltLineButton")
+        QTest.qWait(80)
+        self.pick("settleMeltKarat_1", 2)                                                          # 18K
+        self.type_in("settleMeltWeight_1", weight_18)
+        self.type_in("settleMeltOutputField", output)
+        self.type_in("settleMeltFinenessField", fineness)
+        QTest.qWait(150)
+
+    def test_the_owners_worked_example_with_real_clicks_at_every_size(self):
+        self.issue_without_destination()
+        self.assertTrue(self.item("settleMeltButton").property("visible"))
+        self.assertIsNone(self.visible_item("meltButton") if self.item("meltButton").property("enabled") else None)         # the OLD melt needs MELT gold: not offered here
+        self.open_settle()
+        self.fill_settle()
+        for width, height in harness.SIZES:
+            with self.subTest(size=(width, height)):
+                self.root.setWidth(width)
+                self.root.setHeight(height)
+                QTest.qWait(150)
+                for name in ("settleMeltDateField", "settleMeltWorkshopField", "settleMeltKarat_0", "settleMeltWeight_0", "settleMeltOutputField", "settleMeltFinenessField",
+                             "confirmSettleMeltButton", "cancelSettleMeltButton"):
+                    self.assert_inside_window(self.item(name))
+        texts = {n: self.text(n) for n in ("settleMeltTheoretical", "settleMeltActual", "settleMeltWeightLoss", "settleMeltFinenessLoss", "settleMeltLoss")}
+        self.assertIn("44.286", texts["settleMeltTheoretical"])
+        self.assertIn("43.520", texts["settleMeltActual"])
+        self.assertIn("0.197", texts["settleMeltWeightLoss"])
+        self.assertIn("0.569", texts["settleMeltFinenessLoss"])
+        self.assertIn("0.766", texts["settleMeltLoss"])
+        self.click("confirmSettleMeltButton")
+        self.wait_until(lambda: len(self.db.settle_melts) == 1, "melt recorded")
+        self.closed("tripSettleMeltDialog")
+        self.wait_idle()
+        self.assertEqual(self.tvm.errorCode, "")
+        self.wait_until(lambda: self.tvm.detail.get("barVisible"), "bar pool shown")
+        self.assertIn("43.520", self.tvm.detail["bar"])
+        self.assertTrue(self.item("custodyBarRow").property("visible"))
+        melt = next(iter(self.db.settle_melts.values()))
+        self.assertEqual((melt["output_weight_grams"], melt["fineness_permille"]), (D("44.800"), 850))
+        self.assertFalse(self.tvm.detail["closable"])                                              # the undistributed bar blocks the closure
+        self.assertEqual(self.warnings, [])
+
+    def test_a_refusal_keeps_every_field_and_an_integer_fineness_is_required(self):
+        self.issue_without_destination()
+        self.open_settle()
+        self.fill_settle(weight_21="60", output="44.8", fineness="850")                            # more 21K than the custody holds
+        self.assertTrue(self.item("settleMeltPreviewError").property("visible"))
+        self.click("confirmSettleMeltButton")
+        self.wait_until(lambda: self.tvm.errorMessage != "", "refusal")
+        QTest.qWait(100)
+        self.assertTrue(self.item("tripSettleMeltDialog").property("visible"))
+        self.assertIn("المتاح للسبك", self.text("settleMeltError"))
+        self.assertEqual((self.text("settleMeltWeight_0"), self.text("settleMeltOutputField"), self.text("settleMeltFinenessField")), ("60", "44.8", "850"))
+        self.assertEqual(self.db.settle_melts, {})
+        self.type_in("settleMeltFinenessField", "850.5")
+        QTest.qWait(100)
+        self.assertTrue(self.item("settleMeltPreviewError").property("visible"))                   # a decimal fineness is refused before saving
 
 
 class SupplierViewStub:
@@ -1201,6 +1316,7 @@ for _returns in [n for n in dir(MarketTripLotReturnPageTests) if n.startswith("t
 for _melting in [n for n in dir(MarketTripMeltingPageTests) if n.startswith("test_") and getattr(MarketTripMeltingPageTests, n) is not None]:
     setattr(MarketTripHeatPageTests, _melting, None)                                   # the heating class runs only its own tests
     setattr(MarketTripSupplierPayPageTests, _melting, None)                            # the supplier-payment class runs only its own tests
+    setattr(MarketTripSettleMeltPageTests, _melting, None)                             # the settlement-melt class runs only its own tests
 
 
 if __name__ == "__main__":

@@ -215,7 +215,10 @@ class QueryTests(unittest.TestCase):
         """The R1 work added a lock-free read; it did not turn the decision methods into non-locking ones."""
         for call in (lambda r: r.book_lines(5, current=True), lambda r: r.custody_cash(5), lambda r: r.custody_gold(5, current=True), lambda r: r.custody_lots(5)):
             connection = Recorder()
-            call(MarketTripRepository(connection))
+            repo = MarketTripRepository(connection)
+            repo._settlement = False                                                         # 060: the capability probe and the settlement reads have their own tests
+            repo._cash_settle = False                                                      # 064: the capability probe is not the subject of this test
+            call(repo)
             self.assertTrue(connection.statements)
             for sql in connection.statements:
                 self.assertEqual(len(re.findall(r"FOR SHARE", sql)), 2, sql)                 # outer rows + the nested current reversal lookup

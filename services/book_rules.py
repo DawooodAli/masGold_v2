@@ -42,7 +42,7 @@ INDEPENDENT_BASIS, ALLOCATED_BASIS = "INDEPENDENT", "ALLOCATED"          # a lin
 IN, OUT = "IN", "OUT"
 SHARED_CASH_KINDS = ("ISSUE", "RETURN", "SUPPLIER_PAY")                 # cash-only entries, valid in both modes (the cash ledger is shared, never duplicated)
 LEGACY_ONLY_KINDS = ("MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT", "GOLD_SETTLE", "LOT_SETTLE", "LOT_HOLD", "HOLD_RETURN", "LOGO_HOLD", "HOLD_BACK",
-                     "GOLD_SALE", "GOLD_BUY")
+                     "GOLD_SALE", "GOLD_BUY", "ST_MELT")
 BASE_KARAT = 21
 FINENESS_DIVISOR = 875                                                  # permille / 875 = permille / 1000 x 24 / 21
 POST_PLACES, EVIDENCE_PLACES = 3, 6

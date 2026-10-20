@@ -12,7 +12,7 @@ from PySide6.QtCore import QObject, Property, Signal, Slot
 
 from app.formatting import date_text, datetime_text, grams, ltr, money, number
 from app.viewmodels.supplier_viewmodel import making_position_text
-from services import supplier_rules as rules
+from services import settlement_rules, supplier_rules as rules
 from services.intermediary_holding_rules import CLOSURE_NOTE
 from services.market_trip_service import TripError
 
@@ -24,7 +24,7 @@ GOLD_SETTLE_REVERSAL_NOTE = ("عكس تسوية الذهب يسجّل أن ال�
                              "لا يتحرك كسر المحل ولا النقدية؛ أرجع الذهب إلى المحل بـ«تسجيل رجوع» عند إرجاعه فعلًا.")
 PAYMENT_REVERSAL_NOTE = ("عكس دفع المصنعيات يسجّل أن المبلغ عاد فعلًا إلى عهدة السوق (بالمبلغ المخزّن في الدفعة) ويعيد مستحقات المورد بنفس المبلغ. "
                          "لا يُعاد المبلغ تلقائيًا إلى الخزنة الرئيسية: سجّل «تسجيل رجوع» من العهدة عند إرجاعه فعلًا.")
-KIND_TEXT = {"ISSUE": "إخراج عهدة", "RETURN": "رجوع من العهدة", "MELT": "سبك", "LOT_RETURN": "رجوع ناتج السبك", "LOT_ISSUE": "إخراج سبكة من المحل",
+KIND_TEXT = {"ST_MELT": "تسجيل سبك (بعد الرجوع)", "ST_BAR_SUP": "تسليم سبيكة لمورد (بعد الرجوع)", "ST_BAR_MKT": "تسليم سبيكة لمسوقجي (بعد الرجوع)", "ST_LOGO": "اعتبار المتبقي لوجو", "ST_EXPENSE": "مصروف من العهدة", "ST_RET_MKT": "مرتجع سوق للمحل", "ST_LOSS": "خسية", "ST_ADJUST": "تصحيح وزن الإخراج", "ST_CASH_BANK": "إيداع باقي النقدية في حساب", "ST_CASH_OFF": "إعدام باقي النقدية","ISSUE": "إخراج عهدة", "RETURN": "رجوع من العهدة", "MELT": "سبك", "LOT_RETURN": "رجوع ناتج السبك", "LOT_ISSUE": "إخراج سبكة من المحل",
              "GOLD_BUY": "شراء ذهب نقدي", "GOLD_SALE": "بيع ذهب من العهدة", "HEAT": "حمّية اللوجو", "SUPPLIER_PAY": "دفع مصنعيات من العهدة", "GOLD_SETTLE": "تسوية ذهب من العهدة", "LOT_SETTLE": "تسوية سبكة من العهدة",
              "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي", "LOGO_HOLD": "تسليم لوجو لمسوقجي", "HOLD_BACK": "رجوع لوجو من مسوقجي",
              "BK_ISSUE": "إخراج ذهب (دفتري)", "BK_BUY": "شراء ذهب (دفتري)", "BK_SELL": "بيع ذهب (دفتري)", "BK_RETURN": "رجوع ذهب للمحل (دفتري)", "BK_RECON": "تسوية العهدة الدفترية",
@@ -49,7 +49,7 @@ HOLD_REVERSE_NOTE = ("عكس التسليم يعيد الشحنة الأصلية
                      "تبقى حركة التسليم الأصلية في السجل. لا نقدية ولا كسر ولا مورد.")
 RETURN_REVERSE_NOTE = ("عكس الرجوع يُخرج الشحنة من هذه العهدة ويعيدها إلى ذهب المحل لدى المسوقجي بالوزن المخزّن بحركة تعويض؛ "
                        "تبقى حركة الرجوع الأصلية وتأكيد المالك في السجل.")
-DESIGNATION_TEXT = {"MELT": "للسبك", "LOGO": "لوجو", "UNCLASSIFIED": "غير مصنف (قبل التصنيف)"}
+DESIGNATION_TEXT = {"MELT": "للسبك", "LOGO": "لوجو", "UNCLASSIFIED": "بدون وجهة", "BAR": "سبيكة (مكافئ عيار 21)"}
 DESIGNATION_CHOICES = [{"id": "MELT", "text": "للسبك"}, {"id": "LOGO", "text": "لوجو"}]
 LOT_TEXT = {"MAIN": "الناتج الرئيسي", "RESIDUE": "رواسب"}
 REVERSED_NOTICE = "عملية معكوسة — الأرقام للتاريخ فقط ولا تؤثر على الرصيد الحالي"
@@ -451,10 +451,10 @@ class MarketTripViewModel(QObject):
         if self._moved:
             self.custodyChanged.emit()
         if self._operation in ("paysupplier", "goldsettle", "lotsettle", "lothold", "logohold", "bookdeliversupplier", "bookdelivermarketer",
-                               "bookreceivemarketer") or (self._operation == "reverse" and self._reversing_payment):
+                               "bookreceivemarketer", "barmarketer") or (self._operation == "reverse" and self._reversing_payment):
             self.supplierPaymentChanged.emit()
         self._reversing_payment = False
-        if self._operation in ("issue", "create", "return", "melt", "lotreturn", "lotissue", "heat", "paysupplier", "goldsettle", "lotsettle", "lothold", "logohold",
+        if self._operation in ("issue", "create", "return", "melt", "settlemelt", "barmarketer", "classifylogo", "cashsettle", "dispose", "lotreturn", "lotissue", "heat", "paysupplier", "goldsettle", "lotsettle", "lothold", "logohold",
                                "goldsale", "goldbuy", "bookissue", "bookbuy", "booksell", "bookreturn",
                                "bookissuestock", "bookdeliversupplier", "bookdelivermarketer", "bookreceivemarketer", "bookgain"):
             self.entryPosted.emit(result["code"])
@@ -497,6 +497,113 @@ class MarketTripViewModel(QObject):
         self._write("melt", "تم تسجيل السبك", lambda s, a: s.melt(
             trip_id, inputs, entry_date, workshop, output, residues, assay_reference, gain_explanation, notes, request_key,
             _expected_actor=a), False)
+
+    @Slot(str, "QVariantList", str, str, str, str, str, str)
+    def settleMelt(self, trip_id, input_lines, output_weight, fineness, workshop, entry_date, notes, request_key):
+        """Record a melt AFTER the owner returns (settlement step 2a): gold that left without a destination becomes ONE bar of its 21K equivalent. The bar's weight and
+        integer fineness are kept for the reports; the loss is split in weight loss and fineness loss. No cash, Scrap, supplier or lot moves."""
+        lines = [{"karat_id": str(line.get("karatId", "")), "weight": str(line.get("weight", ""))} for line in (input_lines or [])]
+        self._write("settlemelt", "تم تسجيل السبك", lambda s, a: s.settle_melt(
+            trip_id, lines, output_weight, fineness, workshop, entry_date, notes, request_key, _expected_actor=a), False)
+
+    @Slot(str, str, str, str, str, str, str, str)
+    def disposeGold(self, trip_id, action, source_line, entry_date, notes, request_key, unused_a, unused_b):
+        """Return to the shop or record a loss. `source_line` is "SOURCE|karatId|grams"; `action` is RETURN, CRUCIBLE or MARKET (the loss classification)."""
+        source, karat_id, weight = (source_line.split("|") + ["", "", ""])[:3]
+        line = {"source": source, "karat_id": karat_id, "weight": weight, "classification": "" if action == "RETURN" else action}
+        if action == "RETURN":
+            self._write("dispose", "تم إرجاع الذهب للمحل", lambda s, a: s.return_to_shop(trip_id, [line], entry_date, notes, request_key, _expected_actor=a), False)
+        else:
+            self._write("dispose", "تم تسجيل الخسية", lambda s, a: s.record_loss(trip_id, [line], entry_date, notes, request_key, _expected_actor=a), False)
+
+    @Slot(str, str, str, str, str, str, str)
+    def correctIssueWeight(self, trip_id, karat_id, direction, weight, reason, entry_date, request_key):
+        """Correct the issued weight of gold issued without a destination, both ways; the reason is mandatory (the service enforces it)."""
+        self._write("dispose", "تم تصحيح وزن الإخراج", lambda s, a: s.correct_issue_weight(
+            trip_id, karat_id, direction, weight, reason, entry_date, request_key, _expected_actor=a), False)
+
+    @Slot(str, str, str, str, str, str, str, str)
+    def settleCash(self, trip_id, kind, amount, text, bank_account_id, entry_date, notes, request_key):
+        """Settle custody cash after the trip: EXPENSE (free-text), BANK (deposit into an account) or WRITEOFF (reason). Only ids and typed text are sent."""
+        if kind == "BANK":
+            self._write("cashsettle", "تم إيداع باقي النقدية", lambda s, a: s.deposit_custody_cash(
+                trip_id, amount, bank_account_id, entry_date, text, notes, request_key, _expected_actor=a), False)
+        elif kind == "WRITEOFF":
+            self._write("cashsettle", "تم إعدام المبلغ من نقدية العهدة", lambda s, a: s.write_off_custody_cash(
+                trip_id, amount, text, entry_date, notes, request_key, _expected_actor=a), False)
+        else:
+            self._write("cashsettle", "تم تسجيل المصروف من العهدة", lambda s, a: s.record_custody_expense(
+                trip_id, amount, text, entry_date, "", notes, request_key, _expected_actor=a), False)
+
+    @Slot(str, str, str, str)
+    def classifyAsLogo(self, trip_id, entry_date, notes, request_key):
+        """Classify EVERY remaining unmelted gram as LOGO of its own karat (the owner rule). The grams are derived by the service under the trip lock."""
+        self._write("classifylogo", "تم اعتبار المتبقي لوجو", lambda s, a: s.classify_remaining_as_logo(trip_id, entry_date, notes, request_key, _expected_actor=a), False)
+
+    @Slot(str, str, str, str, str, str)
+    def settleBarToMarketer(self, trip_id, party_id, weight, entry_date, notes, request_key):
+        """Hand part of the melted bar (21K-equivalent grams) to a marketer: his 21K entitlement gains the grams. Only ids and typed text are sent."""
+        self._write("barmarketer", "تم تسليم السبيكة للمسوقجي", lambda s, a: s.settle_bar_to_marketer(
+            trip_id, party_id, weight, entry_date, notes, request_key, _expected_actor=a), False)
+
+    @Slot(str, str, result="QVariantMap")
+    def previewBarToMarketer(self, party_id, weight):
+        empty = {"valid": False, "error": "", "facts": ""}
+        if not self._detail or not self._context or not str(party_id or "").strip():
+            return empty
+        party = next((p for p in self._context.get("intermediaries", []) if p["id"] == str(party_id)), None)
+        if party is None:
+            return {**empty, "error": "اختر المسوقجي."}
+        pool = self._detail["custody"].get("bar", Decimal(0))
+        facts = f"رصيد السبيكة في العهدة {grams(pool)} جرام (مكافئ عيار 21)"
+        if not str(weight or "").strip():
+            return {**empty, "facts": facts}
+        from services.market_trip_service import parse_weight
+        try:
+            quantity = parse_weight(weight)
+        except TripError as exc:
+            return {**empty, "facts": facts, "error": str(exc)}
+        if quantity == 0:
+            return {**empty, "facts": facts, "error": "أدخل وزنًا موجبًا."}
+        if not party["active"]:
+            return {**empty, "facts": facts, "error": "هذا المسوقجي غير نشط: لا يُسلَّم له ذهب جديد."}
+        if quantity > pool:
+            return {**empty, "facts": facts, "error": f"رصيد السبيكة {grams(pool)} جرام فقط."}
+        return {**empty, "valid": True, "facts": facts + f" • يُسلَّم {grams(quantity)} جرام ويصير استحقاقًا للمسوقجي من ذهب المحل بعيار 21"}
+
+    @Slot("QVariantList", str, str, result="QVariantMap")
+    def previewSettleMelt(self, input_lines, output_weight, fineness):
+        """The exact figures of a melt BEFORE it is recorded, from services.settlement_rules (the function the service uses), never from QML arithmetic. The service
+        recomputes and re-checks the custody when it posts."""
+        empty = {"valid": False, "error": "", "short": False, "inputText": "", "theoreticalText": "", "actualText": "", "lossText": "", "weightLossText": "",
+                 "finenessLossText": "", "gainText": ""}
+        if not self._detail or not self._context:
+            return empty
+        values = {str(k["id"]): int(k["karat_value"]) for k in self._context.get("karats", [])}
+        outstanding = {str(g["karat_id"]): g["outstanding"] for g in self._detail["custody"]["gold"] if g["designation"] == "UNCLASSIFIED"}
+        melted = {}
+        try:
+            for line in input_lines or []:
+                karat_id, weight = str(line.get("karatId", "")), str(line.get("weight", "")).strip()
+                if karat_id and weight:
+                    melted[karat_id] = melted.get(karat_id, Decimal(0)) + Decimal(weight.replace(",", ""))
+            if not melted or not str(output_weight or "").strip() or not str(fineness or "").strip():
+                return empty
+            if any(w <= 0 or k not in values for k, w in melted.items()):
+                return {**empty, "error": "اختر عيارًا ووزنًا موجبًا لكل سطر."}
+            output = Decimal(str(output_weight).replace(",", ""))
+            figures = settlement_rules.melt_figures([(values[k], w) for k, w in sorted(melted.items())], output, settlement_rules.parse_fineness(fineness))
+        except (ArithmeticError, ValueError):
+            return {**empty, "error": "اكتب الأوزان بالأرقام."}
+        except TripError as exc:
+            return {**empty, "error": str(exc)}
+        short = any(w > outstanding.get(k, Decimal(0)) for k, w in melted.items())
+        loss = figures["loss_eq21"]
+        return {**empty, "valid": not short, "short": short, "error": "وزن السبك أكبر من المتاح من هذا العيار في العهدة." if short else "",
+                "inputText": f"{grams(figures['input_weight'])} جرام مسبوك", "theoreticalText": f"{grams(figures['theoretical_eq21'])} جرام عيار 21",
+                "actualText": f"{grams(figures['actual_eq21'])} جرام عيار 21", "lossText": grams(loss, signed=True),
+                "weightLossText": grams(figures["weight_loss_eq21"], signed=True), "finenessLossText": grams(figures["fineness_loss_eq21"], signed=True),
+                "gainText": "زيادة: السبيكة أعلى من المتوقع نظريًا" if loss < 0 else ""}
 
     @Slot(str, "QVariantList", str, str, str, str, str, str)
     def heatCustody(self, trip_id, lines, entry_date, workshop, reference, gain_explanation, notes, request_key):
@@ -551,6 +658,10 @@ class MarketTripViewModel(QObject):
     def settleGold(self, trip_id, supplier_id, karat_id, designation, weight, settlement_date, reference, notes, request_key):
         """Deliver LOGO custody gold to a supplier against its gold account (تسوية ذهب من العهدة). Only ids and the typed text are sent: the
         service derives the source balance, the credit and the rounding, re-checks every right and posts atomically. No Scrap, cash or lot moves."""
+        if designation == "BAR":                                                       # 061: the melted bar (21K-equivalent grams), no karat line
+            self._write("goldsettle", "تم تسليم السبيكة للمورد", lambda s, a: s.settle_supplier_bar(
+                trip_id, supplier_id, weight, settlement_date, reference, notes, request_key, _expected_actor=a), False)
+            return
         self._write("goldsettle", "تمت تسوية الذهب من العهدة", lambda s, a: s.settle_supplier_gold(
             trip_id, supplier_id, karat_id, designation, weight, settlement_date, reference, notes, request_key, _expected_actor=a), False)
 
@@ -560,10 +671,13 @@ class MarketTripViewModel(QObject):
         arithmetic. The service recomputes and re-checks the effective outstanding when it posts."""
         empty = {"valid": False, "error": "", "short": False, "availableText": "", "supplierKaratText": "", "deliveredText": "", "formulaText": "",
                  "creditedText": "", "analyticalText": "", "differenceText": ""}
-        if not self._detail or not self._context or not str(supplier_id or "").strip() or not str(karat_id or "").strip() \
-                or not str(designation or "").strip():
+        if not self._detail or not self._context or not str(supplier_id or "").strip() or not str(designation or "").strip() \
+                or (designation != "BAR" and not str(karat_id or "").strip()):                  # the melted bar has no karat line
             return empty
-        line = next((g for g in self._detail["custody"]["gold"] if str(g["karat_id"]) == str(karat_id) and g["designation"] == designation), None)
+        if designation == "BAR":                                                       # the melted bar: N grams of the 21K master karat (its equivalent)
+            line = {"karat_value": 21, "outstanding": self._detail["custody"].get("bar", Decimal(0))}
+        else:
+            line = next((g for g in self._detail["custody"]["gold"] if str(g["karat_id"]) == str(karat_id) and g["designation"] == designation), None)
         supplier = next((s for s in self._context.get("suppliers", []) if s["id"] == str(supplier_id)), None)
         if line is None or supplier is None:
             return {**empty, "error": "اختر المورد ومصدر الذهب من العهدة."}
@@ -614,6 +728,19 @@ class MarketTripViewModel(QObject):
                     return {**empty, "error": "اختر سبيكة معروفة العيار وكاملة في العهدة."}
                 grams_value, fineness = lot["weight"], lot["fineness"]
                 available = f"{grams(grams_value)} جرام (عيار فعلي {fineness_text(fineness)})"
+            elif source_kind == "TRIP_BAR":
+                pool = custody.get("bar", 0)
+                if pool <= 0:
+                    return {**empty, "error": "لا يوجد رصيد سبيكة للبيع."}
+                karat_value = 21
+                available = f"المتاح {grams(pool)} جرام (مكافئ عيار 21)"
+                if not str(weight or "").strip():
+                    return {**empty, "availableText": available}
+                grams_value = parse_weight(weight)
+                if grams_value == 0:
+                    return {**empty, "availableText": available, "error": "أدخل وزنًا موجبًا."}
+                if grams_value > pool:
+                    return {**empty, "availableText": available, "error": f"المتاح {grams(pool)} جرام فقط."}
             else:
                 line = next((g for g in custody["gold"] if str(g["karat_id"]) == str(karat_id) and g["designation"] == designation), None)
                 if line is None or line["outstanding"] <= 0:
@@ -1064,6 +1191,7 @@ class MarketTripViewModel(QObject):
                 "safeBalanceText": "" if safe is None else money(safe["balance"]),
                 "karats": [{"id": str(k["id"]), "text": f"عيار {k['karat_value']}"} for k in c["karats"]],
                 "designations": DESIGNATION_CHOICES,
+                "banks": [{"id": b["id"], "text": b["name"]} for b in c.get("banks", [])],
                 "holdParties": [{"id": r["id"], "text": r["name"] + ("" if r["active"] else " (متوقف)")} for r in c.get("intermediaries", [])],
                 "suppliers": [{"id": r["id"], "text": r["name"] + ("" if r["active"] else " (متوقف)") + " — "
                                + making_position_text(rules.direction(r["making_balance"]), r["making_balance"])} for r in c.get("suppliers", [])],
@@ -1090,7 +1218,9 @@ class MarketTripViewModel(QObject):
                       for g in gold if g["designation"] == "LOGO" and g["outstanding"] > 0]
         settle_sources = [{"key": f"{g['karat_id']}:{g['designation']}", "karatId": str(g["karat_id"]), "designation": g["designation"],
                            "text": f"{_gold_label(g)} — المتاح {grams(g['outstanding'])} جرام"}
-                          for g in gold if g["designation"] == "LOGO" and g["outstanding"] > 0]
+                          for g in gold if g["designation"] in ("LOGO", "UNCLASSIFIED") and g["outstanding"] > 0]
+        if custody.get("bar", 0) > 0:                                                  # 061: the melted bar, delivered by its 21K equivalent
+            settle_sources.append({"key": "BAR", "karatId": "", "designation": "BAR", "text": f"السبيكة (مكافئ عيار 21) — المتاح {grams(custody['bar'])} جرام"})
         return_lines = [{"key": f"{g['karat_id']}:{g['designation']}", "karatId": str(g["karat_id"]), "designation": g["designation"],
                          "text": f"{_gold_label(g)} — المتبقي {grams(g['outstanding'])}"}
                         for g in gold if g["outstanding"] > 0]
@@ -1145,6 +1275,7 @@ class MarketTripViewModel(QObject):
                      "paid": money(custody["cash"]["paid"]), "hasPaid": custody["cash"]["paid"] != 0,
                      "received": money(custody["cash"].get("received", 0)), "hasReceived": custody["cash"].get("received", 0) != 0,
                      "spent": money(custody["cash"].get("spent", 0)), "hasSpent": custody["cash"].get("spent", 0) != 0,
+                     "settled": money(custody["cash"].get("settled", 0)), "hasSettled": custody["cash"].get("settled", 0) != 0,
                      "outstanding": money(custody["cash"]["outstanding"]), "zero": custody["cash"]["outstanding"] == 0,
                      "outstandingValue": f"{custody['cash']['outstanding']:.2f}"},
             "gold": [{"karat": g["karat_value"], "karatId": str(g["karat_id"]), "designation": g["designation"],
@@ -1152,6 +1283,7 @@ class MarketTripViewModel(QObject):
                       "returned": grams(g["returned"]), "melted": grams(g["melted"]), "outstanding": grams(g["outstanding"]),
                       "heated": grams(g["heat_delta"], signed=True) if g["designation"] == "LOGO" and g.get("heat_delta") else "",
                       "settled": grams(g["supplier_settled"]) if g.get("supplier_settled") else "",
+                      "settleMelted": grams(g["settle_out"]) if g.get("settle_out") else "",
                       "sold": grams(g["sold"]) if g.get("sold") else "",
                       "purchased": grams(g["purchased"]) if g.get("purchased") else "",
                       "held": grams(g["held_out"] - g["held_back"]) if g.get("held_out") or g.get("held_back") else "",
@@ -1172,17 +1304,40 @@ class MarketTripViewModel(QObject):
             "lotReturnAvailable": is_open and bool(custody["lots"]),
             "lotNote": LOT_NOTE if custody["lots"] else "",
             "meltStock": melt_stock, "meltAvailable": is_open and bool(melt_stock), "returnLines": return_lines,
+            "settleMeltLines": [{"karatId": str(g["karat_id"]), "text": f"عيار {g['karat_value']} — المتاح للسبك {grams(g['outstanding'])} جرام"}
+                                for g in gold if g["designation"] == "UNCLASSIFIED" and g["outstanding"] > 0],
+            "settleMeltAvailable": is_open and not is_book and any(g["designation"] == "UNCLASSIFIED" and g["outstanding"] > 0 for g in gold),
+            "bar": grams(custody.get("bar", 0)), "barVisible": custody.get("bar", 0) != 0,
+            "classifyLogoLines": [{"text": f"عيار {g['karat_value']}: {grams(g['outstanding'])} جرام"} for g in gold if g["designation"] == "UNCLASSIFIED" and g["outstanding"] > 0],
+            "classifyLogoAvailable": is_open and not is_book and any(g["designation"] == "UNCLASSIFIED" and g["outstanding"] > 0 for g in gold),
+            "barMarketerVisible": is_open and not is_book and self._holding_service().can_manage(),
+            "barMarketerAvailable": is_open and not is_book and custody.get("bar", 0) > 0 and any(p["active"] for p in self._context.get("intermediaries", [])),
+            "barText": f"رصيد السبيكة (مكافئ عيار 21): {grams(custody.get('bar', 0))} جرام",
             "heatStock": heat_stock, "heatAvailable": is_open and bool(heat_stock),
             "goldSettleSources": settle_sources, "goldSettleAvailable": is_open and bool(settle_sources),
             "payAvailable": is_open and custody["cash"]["outstanding"] > 0,
+            "cashSettleAvailable": is_open and not is_book and custody["cash"]["outstanding"] > 0,
+            "disposeSources": [{"key": f"raw:{g['karat_id']}", "source": "RAW", "karatId": str(g["karat_id"]),
+                                "text": f"عيار {g['karat_value']} (بدون وجهة) — المتاح {grams(g['outstanding'])} جرام"}
+                               for g in gold if g["designation"] == "UNCLASSIFIED" and g["outstanding"] > 0]
+                              + [{"key": f"logo:{g['karat_id']}", "source": "LOGO", "karatId": str(g["karat_id"]),
+                                  "text": f"عيار {g['karat_value']} (لوجو) — المتاح {grams(g['outstanding'])} جرام"}
+                                 for g in gold if g["designation"] == "LOGO" and g["outstanding"] > 0]
+                              + ([{"key": "bar", "source": "BAR", "karatId": "", "text": f"سبيكة السبك — المتاح {grams(custody.get('bar', 0))} جرام (مكافئ عيار 21)"}]
+                                 if custody.get("bar", 0) > 0 else []),
+            "disposeAvailable": is_open and not is_book and (custody.get("bar", 0) > 0 or any(g["outstanding"] > 0 and g["designation"] in ("UNCLASSIFIED", "LOGO") for g in gold)),
+            "adjustKarats": [{"id": str(g["karat_id"]), "text": f"عيار {g['karat_value']}"} for g in gold if g["designation"] == "UNCLASSIFIED"],
+            "adjustAvailable": is_open and not is_book and any(g["designation"] == "UNCLASSIFIED" for g in gold),
             "buyAvailable": is_open and custody["cash"]["outstanding"] > 0,
             "saleSources": [{"key": f"{g['karat_id']}:{g['designation']}", "kind": "CUSTODY_GOLD", "karatId": str(g["karat_id"]),
                              "designation": g["designation"], "text": f"{_gold_label(g)} — المتاح {grams(g['outstanding'])} جرام"}
                             for g in gold if g["outstanding"] > 0]
+                           + ([{"key": "bar", "kind": "TRIP_BAR", "text": f"سبيكة السبك — المتاح {grams(custody.get('bar', 0))} جرام (مكافئ عيار 21)"}]
+                              if custody.get("bar", 0) > 0 else [])
                            + [{"key": f"lot:{l['lot_id']}", "kind": "CUSTODY_LOT", "lotId": l["lot_id"],
                                "text": f"{LOT_TEXT[l['kind']]} • {l['code'] or ''} • شحنة {l['lot_no']} • {grams(l['weight'])} جرام • {fineness_text(l['fineness'])}"}
                               for l in custody["lots"] if l["outstanding"] == l["weight"] and l["fineness"] is not None],
-            "saleAvailable": is_open and (any(g["outstanding"] > 0 for g in gold)
+            "saleAvailable": is_open and (any(g["outstanding"] > 0 for g in gold) or custody.get("bar", 0) > 0
                                           or any(l["outstanding"] == l["weight"] and l["fineness"] is not None for l in custody["lots"])),
             "saleBuyers": [{"id": b["id"], "text": b["name"] + (" (مورد)" if b["supplier"] else "") + (" (مسوقجي)" if b["intermediary"] else "")}
                            for b in self._context.get("buyers", []) if b["active"]],
@@ -1231,6 +1386,32 @@ class MarketTripViewModel(QObject):
                          f"الرصيد المرحّل {grams(recon['b'], signed=recon['b'] < 0)} • الفاقد المرحّل {grams(recon['loss'])} • فرق تقريب الترحيل "
                          f"{grams(recon['rounding'], signed=True)} (ليس فاقدًا ولا زيادة) • السبب: {reason}" + (f" • {recon['note']}" if recon["note"] else "")
                          + (f" • اعتمدها {recon['confirmed_by']}" if recon["confirmed_by"] else ""))
+        for line in e.get("settle_lines") or []:
+            what = "سبيكة (مكافئ عيار 21)" if line["source"] == "BAR" else f"عيار {line['karat_value']} ({'بدون وجهة' if line['source'] == 'RAW' else 'لوجو'})"
+            parts.append(f"{what}: {grams(line['weight'])} جرام" + {"CRUCIBLE": " • خسية بوتقة", "MARKET": " • خسية سوق"}.get(line.get("classification") or "", ""))
+        adjust = e.get("settle_adjust")
+        if adjust:
+            parts.append(f"عيار {adjust['karat_value']}: {'زيادة' if adjust['direction'] == 'INCREASE' else 'إنقاص'} {grams(adjust['weight'])} جرام • {adjust['reason']}")
+        cash_doc = e.get("settle_cash")
+        if cash_doc:
+            parts.append(f"{money(cash_doc['amount'])}" + (f" ← {cash_doc['bank_account']}" if cash_doc["bank_account"] else f" • {cash_doc['description']}")
+                         + (f" • مرجع {cash_doc['reference']}" if cash_doc["reference"] else ""))
+        if e.get("settle_logo"):
+            parts.append("اعتُبر لوجو: " + " + ".join(f"عيار {g['karat_value']}: {grams(g['weight'])} جرام" for g in e["settle_logo"]))
+        mkt = e.get("bar_marketer")
+        if mkt:
+            parts.append(f"{mkt['party_name']}: {grams(mkt['grams'])} جرام (مكافئ عيار 21) ← استحقاقه من ذهب المحل (أمانة)")
+        bar = e.get("bar_supplier")
+        if bar:
+            parts.append(f"{bar['code']} — المورد {bar['supplier_name']}: سُلِّم {grams(bar['delivered_weight'])} جرام (مكافئ عيار 21) ← احتُسب "
+                         f"{grams(bar['credited_weight'])} جرام عيار {bar['target_karat']} • القيمة التحليلية {number(bar['analytical'], 6)} • فرق التقريب "
+                         f"{number(bar['rounding_difference'], 6, signed=True)}")
+        settle = e.get("settle_melt")
+        if settle:
+            parts.append(" + ".join(f"عيار {i['karat_value']}: {grams(i['weight'])} جرام" for i in settle["inputs"])
+                         + f" ← سبيكة {grams(settle['output_weight'])} جرام عيار {settle['fineness']} بالألف • مكافئ عيار 21: نظري {grams(settle['theoretical'])} ← فعلي "
+                         f"{grams(settle['actual'])} • خسية الوزن {grams(settle['weight_loss'], signed=True)} • خسية العيار {grams(settle['fineness_loss'], signed=True)}"
+                         f" (الإجمالي {grams(settle['loss'], signed=True)}) • {settle['workshop']}")
         trade = e.get("book_trade")
         if trade:
             parts.append(f"{'من' if trade['kind'] == 'BK_BUY' else 'إلى'} {trade['name']} • الإجمالي {money(trade['total'])}"
@@ -1238,6 +1419,7 @@ class MarketTripViewModel(QObject):
         sale = e.get("gold_sale")
         if sale:
             source = (f"سبيكة {grams(sale['weight'])} جرام" if sale["is_lot"]
+                      else f"سبيكة السبك {grams(sale['weight'])} جرام (مكافئ عيار 21)" if sale.get("source_kind") == "TRIP_BAR"
                       else f"عيار {sale['karat_value']} ({DESIGNATION_TEXT[sale['designation']]}): {grams(sale['weight'])} جرام")
             parts.append(f"{source} ← {sale['buyer_name']} • {money(Decimal(sale['total_price']))}"
                          + (" • السعر مُقرّ رغم بعده عن المرجع" if sale["price_warning_acknowledged"] else ""))

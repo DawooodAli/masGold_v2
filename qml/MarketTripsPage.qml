@@ -46,7 +46,7 @@ Item {
 
     Connections {
         target: page.vm
-        function onEntryPosted(code) { entryDialog.close(); bookDialog.close(); stockDialog.close(); meltDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close(); payDialog.close(); goldSettleDialog.close(); goldSaleDialog.close(); goldBuyDialog.close(); lotSettleDialog.close(); lotHoldDialog.close(); logoHoldDialog.close() }
+        function onEntryPosted(code) { entryDialog.close(); bookDialog.close(); stockDialog.close(); meltDialog.close(); settleMeltDialog.close(); barMarketerDialog.close(); classifyLogoDialog.close(); cashSettleDialog.close(); disposeDialog.close(); adjustDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close(); payDialog.close(); goldSettleDialog.close(); goldSaleDialog.close(); goldBuyDialog.close(); lotSettleDialog.close(); lotHoldDialog.close(); logoHoldDialog.close() }
         function onActionDone(operation) { reasonDialog.close(); if (operation === "reconcile") reconApprovalDialog.close() }
         function onChanged() {
             if (reconApprovalDialog.opened && (page.vm.selectedTripId !== reconApprovalDialog.tripId || !page.vm.reconciliationEnabled)) reconApprovalDialog.close()
@@ -500,10 +500,11 @@ Item {
                             label: "النقدية"
                             issued: page.detail.cash ? page.detail.cash.issued : ""
                             returned: page.detail.cash ? page.detail.cash.returned : ""
-                            melted: page.detail.cash && (page.detail.cash.hasPaid || page.detail.cash.hasReceived || page.detail.cash.hasSpent)
+                            melted: page.detail.cash && (page.detail.cash.hasPaid || page.detail.cash.hasReceived || page.detail.cash.hasSpent || page.detail.cash.hasSettled)
                                     ? [page.detail.cash.hasPaid ? "مدفوع " + page.detail.cash.paid : "",
                                        page.detail.cash.hasReceived ? "من البيع +" + page.detail.cash.received : "",
-                                       page.detail.cash.hasSpent ? "مشتريات −" + page.detail.cash.spent : ""].filter(function(t) { return t !== "" }).join(" • ")
+                                       page.detail.cash.hasSpent ? "مشتريات −" + page.detail.cash.spent : "",
+                                       page.detail.cash.hasSettled ? "تسوية −" + page.detail.cash.settled : ""].filter(function(t) { return t !== "" }).join(" • ")
                                     : "—"
                             outstanding: page.detail.cash ? page.detail.cash.outstanding : ""
                             zero: page.detail.cash ? page.detail.cash.zero : true
@@ -516,12 +517,23 @@ Item {
                                 issued: modelData.issued + " جرام"
                                 returned: modelData.returned + " جرام"
                                 melted: (modelData.heated !== "" ? "حمّية " + modelData.heated + " جرام" : modelData.melted + " جرام")
+                                        + (modelData.settleMelted !== "" ? " • سُبك بعد الرجوع " + modelData.settleMelted + " جرام" : "")
                                         + (modelData.settled !== "" ? " • سُلِّم لمورد " + modelData.settled + " جرام" : "")
                                         + (modelData.sold !== "" ? " • بيع " + modelData.sold + " جرام" : "")
                                         + (modelData.purchased !== "" ? " • مشترى +" + modelData.purchased + " جرام" : "")
                                 outstanding: modelData.outstanding + " جرام"
                                 zero: modelData.zero
                             }
+                        }
+                        FigureRow {
+                            objectName: "custodyBarRow"
+                            visible: !!page.detail.barVisible
+                            label: "السبيكة (مكافئ عيار 21)"
+                            issued: "ناتج السبك"
+                            returned: "—"
+                            melted: "—"
+                            outstanding: (page.detail.bar || "") + " جرام"
+                            zero: !page.detail.barVisible
                         }
                     }
                     Flow {
@@ -576,12 +588,27 @@ Item {
                         Btn { objectName: "custodyLogoHoldButton"; text: "تسليم لوجو لمسوقجي"; visible: !!page.detail.holdVisible && !page.detail.isBook
                               enabled: !!page.detail.logoHoldAvailable && !!page.vm && !page.vm.writing
                               onClicked: logoHoldDialog.openFor(page.detail.id) }
+                        Btn { objectName: "classifyLogoButton"; text: "اعتبار المتبقي لوجو"; visible: !!page.detail.open && !page.detail.isBook
+                              enabled: !!page.detail.classifyLogoAvailable && !!page.vm && !page.vm.writing
+                              onClicked: classifyLogoDialog.openFor(page.detail.id) }
+                        Btn { objectName: "barMarketerButton"; text: "تسليم سبيكة لمسوقجي"; visible: !!page.detail.barMarketerVisible
+                              enabled: !!page.detail.barMarketerAvailable && !!page.vm && !page.vm.writing
+                              onClicked: barMarketerDialog.openFor(page.detail.id) }
                         Btn { objectName: "custodyGoldBuyButton"; text: "شراء ذهب نقدي"; visible: !!page.detail.open && !page.detail.isBook
                               enabled: !!page.detail.buyAvailable && !!page.vm && !page.vm.writing
                               onClicked: goldBuyDialog.openFor(page.detail.id) }
                         Btn { objectName: "custodySaleButton"; text: "بيع ذهب من العهدة"; visible: !!page.detail.open && !page.detail.isBook
                               enabled: !!page.detail.saleAvailable && !!page.vm && !page.vm.writing
                               onClicked: goldSaleDialog.openFor(page.detail.id) }
+                        Btn { objectName: "custodyDisposeButton"; text: "مرتجع سوق / خسية"; visible: !!page.detail.open && !page.detail.isBook
+                              enabled: !!page.detail.disposeAvailable && !!page.vm && !page.vm.writing
+                              onClicked: disposeDialog.openFor(page.detail.id) }
+                        Btn { objectName: "custodyAdjustButton"; text: "تصحيح وزن الإخراج"; visible: !!page.detail.open && !page.detail.isBook
+                              enabled: !!page.detail.adjustAvailable && !!page.vm && !page.vm.writing
+                              onClicked: adjustDialog.openFor(page.detail.id) }
+                        Btn { objectName: "custodyCashSettleButton"; text: "تسوية نقدية العهدة"; visible: !!page.detail.open && !page.detail.isBook
+                              enabled: !!page.detail.cashSettleAvailable && !!page.vm && !page.vm.writing
+                              onClicked: cashSettleDialog.openFor(page.detail.id) }
                         Btn { objectName: "custodyPayButton"; text: "دفع مصنعيات من العهدة"; visible: !!page.detail.open
                               enabled: !!page.detail.payAvailable && !!page.vm && !page.vm.writing
                               onClicked: payDialog.openFor(page.detail.id) }
@@ -594,6 +621,9 @@ Item {
                         Btn { objectName: "meltButton"; text: "سبك"; visible: !!page.detail.open && !page.detail.isBook
                               enabled: !!page.detail.meltAvailable && !!page.vm && !page.vm.writing
                               onClicked: meltDialog.openFor(page.detail.id) }
+                        Btn { objectName: "settleMeltButton"; text: "تسجيل سبك (بعد الرجوع)"; visible: !!page.detail.open && !page.detail.isBook
+                              enabled: !!page.detail.settleMeltAvailable && !!page.vm && !page.vm.writing
+                              onClicked: settleMeltDialog.openFor(page.detail.id) }
                         Btn { objectName: "closeTripButton"; text: "إغلاق العهدة"; visible: !!page.detail.open; accent: theme.green
                               enabled: !!page.detail.closable && !!page.vm && !page.vm.writing
                               onClicked: page.vm.closeTrip(page.detail.id) }
@@ -868,9 +898,8 @@ Item {
                         var line = g.lineIndex > 0 ? lineChoices[g.lineIndex] : null
                         rows.push({ karatId: line ? line.karatId : "", designation: line ? line.designation : "", weight: g.weight })
                     }
-                } else if (g.weight.trim().length > 0 || g.karatIndex > 0 || g.designationIndex > 0) {
-                    rows.push({ karatId: g.karatIndex > 0 ? karatChoices[g.karatIndex].id : "",
-                                designation: g.designationIndex > 0 ? designationChoices[g.designationIndex].id : "", weight: g.weight })
+                } else if (g.weight.trim().length > 0 || g.karatIndex > 0) {
+                    rows.push({ karatId: g.karatIndex > 0 ? karatChoices[g.karatIndex].id : "", designation: "", weight: g.weight })   // stage 1: no designation at issue
                 }
             }
             return rows
@@ -942,7 +971,7 @@ Item {
                         }
                     }
                     Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; visible: !entryDialog.cashOnly
-                          text: entryDialog.isReturn ? "الذهب المُرجَع (اختر السطر من العهدة ثم الوزن)" : "الذهب (كسر): العيار والوجهة والوزن الفعلي بالجرام" }
+                          text: entryDialog.isReturn ? "الذهب المُرجَع (اختر السطر من العهدة ثم الوزن)" : "الذهب (كسر): العيار والوزن الفعلي بالجرام" }
                     Repeater {
                         model: entryDialog.cashOnly ? null : goldModel
                         delegate: RowLayout {
@@ -966,15 +995,6 @@ Item {
                                 textRole: "text"
                                 currentIndex: karatIndex
                                 onActivated: function (i) { goldModel.setProperty(index, "karatIndex", i) }
-                            }
-                            Combo {
-                                objectName: "tripGoldDesignation_" + index
-                                visible: !entryDialog.isReturn
-                                Layout.preferredWidth: entryDialog.isReturn ? 0 : 130
-                                model: entryDialog.designationChoices
-                                textRole: "text"
-                                currentIndex: designationIndex
-                                onActivated: function (i) { goldModel.setProperty(index, "designationIndex", i) }
                             }
                             Field {
                                 objectName: "tripGoldWeight_" + index
@@ -1866,7 +1886,7 @@ Item {
             spacing: 6
             Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; text: "تسوية ذهب من العهدة" }
             Txt { objectName: "custodyGoldSettleRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                  text: "يُسلَّم للمورد ذهب لوجو موجود فعلًا في هذه العهدة ولا يتجاوز المتبقي منه، ويُحتسب في حسابه بعياره: الوزن × عيار المُسلَّم ÷ عيار المورد. لا يُخصم من كسر المحل مرة ثانية، ولا نقدية ولا مصنعيات ولا شحنات سبك." }
+                  text: "يُسلَّم للمورد ذهب موجود فعلًا في هذه العهدة ولا يتجاوز المتبقي منه: لوجو، أو ذهب خرج بدون وجهة ولم يُسبك (بعياره)، أو جزء من السبيكة (بمكافئ عيار 21). يُحتسب في حساب المورد بعياره هو: الوزن × عيار المُسلَّم ÷ عيار المورد. لا يُخصم من كسر المحل مرة ثانية، ولا نقدية ولا مصنعيات." }
             Flickable {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
@@ -1947,7 +1967,7 @@ Item {
                     objectName: "confirmCustodyGoldSettleButton"
                     text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "تسجيل التسوية"
                     primary: true
-                    enabled: goldSettleDialog.supplierId !== "" && !!goldSettleDialog.source.karatId && goldSettleWeight.text.trim().length > 0
+                    enabled: goldSettleDialog.supplierId !== "" && !!goldSettleDialog.source.key && goldSettleWeight.text.trim().length > 0
                              && goldSettleDate.text.trim().length > 0 && !!page.vm && !page.vm.writing
                              && goldSettleDialog.preview.short !== true && !goldSettleDialog.preview.error
                     onClicked: page.vm.settleGold(goldSettleDialog.tripId, goldSettleDialog.supplierId, goldSettleDialog.source.karatId,
@@ -1990,7 +2010,7 @@ Item {
             for (var i = 0; i < buyModel.count; ++i) {
                 var g = buyModel.get(i)
                 rows.push({ karatId: g.karatIndex > 0 ? karatChoices[g.karatIndex].id : "",
-                            designation: designationChoices[g.designationIndex] ? designationChoices[g.designationIndex].id : "",
+                            designation: "",                                                           // 064: bought gold has no melt / logo decision until the settlement
                             weight: g.weight, price: g.price })
             }
             return rows
@@ -2108,14 +2128,6 @@ Item {
                                 textRole: "text"
                                 currentIndex: karatIndex
                                 onActivated: function (i) { buyModel.setProperty(index, "karatIndex", i); goldBuyDialog.refreshLines() }
-                            }
-                            Combo {
-                                objectName: "custodyGoldBuyDesignation_" + index
-                                Layout.preferredWidth: 100
-                                model: goldBuyDialog.designationChoices
-                                textRole: "text"
-                                currentIndex: designationIndex
-                                onActivated: function (i) { buyModel.setProperty(index, "designationIndex", i); goldBuyDialog.refreshLines() }
                             }
                             Field {
                                 objectName: "custodyGoldBuyWeight_" + index
@@ -2498,6 +2510,542 @@ Item {
                 }
                 Btn { objectName: "cancelHeatButton"; text: "إلغاء"; accent: theme.textSecondary
                       enabled: !!page.vm && !page.vm.writing; onClicked: heatDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- settlement step 2f: the remainder returned to the shop or recorded as a loss
+    Popup {
+        id: disposeDialog
+        objectName: "tripDisposeDialog"
+        property string tripId: ""
+        property string requestKey: ""
+        readonly property var actionChoices: [{ action: "RETURN", text: "مرتجع سوق للمحل" }, { action: "CRUCIBLE", text: "خسية بوتقة" }, { action: "MARKET", text: "خسية سوق" }]
+        readonly property var sourceChoices: [{ key: "", source: "", karatId: "", text: "اختر المصدر" }].concat(page.detail.disposeSources || [])
+        readonly property var source: sourceChoices[disposeSource.currentIndex] ? sourceChoices[disposeSource.currentIndex] : ({})
+        readonly property string action: actionChoices[disposeAction.currentIndex].action
+        function openFor(trip) {
+            if (!page.vm) return
+            tripId = trip
+            requestKey = page.vm.newRequestKey()
+            disposeAction.currentIndex = 0
+            disposeSource.currentIndex = 0
+            disposeWeight.text = ""
+            disposeDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            disposeNotes.text = ""
+            page.vm.clearMessage()
+            page.vm.refresh()
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(540, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 520, 520)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { Layout.fillWidth: true; text: "مرتجع سوق / خسية"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
+            Txt { objectName: "disposeRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "المرتجع يدخل كسر المحل: السبيكة كعيار 21 بجرامات المكافئ، والذهب غير المسبوك واللوجو بعيارهما. الخسية تُخرج الجرامات من العهدة بتصنيف بوتقة أو سوق ولا تحرّك كسرًا ولا نقدية." }
+            Txt { Layout.fillWidth: true; text: "العملية *" }
+            Combo { id: disposeAction; objectName: "disposeActionCombo"; Layout.fillWidth: true; model: disposeDialog.actionChoices; textRole: "text" }
+            Txt { Layout.fillWidth: true; text: "المصدر *" }
+            Combo { id: disposeSource; objectName: "disposeSourceCombo"; Layout.fillWidth: true; model: disposeDialog.sourceChoices; textRole: "text" }
+            Txt { Layout.fillWidth: true; text: "الوزن (جرام) *" }
+            Field { id: disposeWeight; objectName: "disposeWeightField"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+            Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
+            Field { id: disposeDate; objectName: "disposeDateField"; Layout.fillWidth: true }
+            Txt { Layout.fillWidth: true; text: "ملاحظات" }
+            Field { id: disposeNotes; objectName: "disposeNotesField"; Layout.fillWidth: true }
+            Item { Layout.fillHeight: true }
+            Txt { objectName: "disposeError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmDisposeButton"
+                    text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "تسجيل"
+                    primary: true
+                    enabled: !!disposeDialog.source.source && disposeWeight.text.trim().length > 0 && disposeDate.text.trim().length > 0 && !!page.vm && !page.vm.writing
+                    onClicked: page.vm.disposeGold(disposeDialog.tripId, disposeDialog.action,
+                                                   disposeDialog.source.source + "|" + (disposeDialog.source.karatId || "") + "|" + disposeWeight.text,
+                                                   disposeDate.text, disposeNotes.text, disposeDialog.requestKey, "", "")
+                }
+                Btn { objectName: "cancelDisposeButton"; text: "إلغاء"; accent: theme.textSecondary
+                      enabled: !!page.vm && !page.vm.writing; onClicked: disposeDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- settlement step 2f: the issue-weight correction (both ways, reason mandatory)
+    Popup {
+        id: adjustDialog
+        objectName: "tripAdjustDialog"
+        property string tripId: ""
+        property string requestKey: ""
+        readonly property var karatChoices: [{ id: "", text: "اختر العيار" }].concat(page.detail.adjustKarats || [])
+        readonly property var directionChoices: [{ way: "INCREASE", text: "الوزن الفعلي أكبر من المسجّل (يُخصم من الكسر)" }, { way: "DECREASE", text: "الوزن الفعلي أقل من المسجّل (يرجع للكسر)" }]
+        readonly property string karatId: karatChoices[adjustKarat.currentIndex] ? karatChoices[adjustKarat.currentIndex].id : ""
+        readonly property string way: directionChoices[adjustDirection.currentIndex].way
+        function openFor(trip) {
+            if (!page.vm) return
+            tripId = trip
+            requestKey = page.vm.newRequestKey()
+            adjustKarat.currentIndex = 0
+            adjustDirection.currentIndex = 0
+            adjustWeight.text = ""
+            adjustReason.text = ""
+            adjustDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            page.vm.clearMessage()
+            page.vm.refresh()
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(540, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 500, 500)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { Layout.fillWidth: true; text: "تصحيح وزن الإخراج"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
+            Txt { objectName: "adjustRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "لتصحيح وزن كسر خرج بدون وجهة: الفرق يتحرك بين كسر المحل والعهدة، ولا يسمح النظام بكسر سالب. السبب إجباري." }
+            Txt { Layout.fillWidth: true; text: "العيار *" }
+            Combo { id: adjustKarat; objectName: "adjustKaratCombo"; Layout.fillWidth: true; model: adjustDialog.karatChoices; textRole: "text" }
+            Txt { Layout.fillWidth: true; text: "الاتجاه *" }
+            Combo { id: adjustDirection; objectName: "adjustDirectionCombo"; Layout.fillWidth: true; model: adjustDialog.directionChoices; textRole: "text" }
+            Txt { Layout.fillWidth: true; text: "فرق الوزن (جرام) *" }
+            Field { id: adjustWeight; objectName: "adjustWeightField"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+            Txt { Layout.fillWidth: true; text: "السبب *" }
+            Field { id: adjustReason; objectName: "adjustReasonField"; Layout.fillWidth: true }
+            Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
+            Field { id: adjustDate; objectName: "adjustDateField"; Layout.fillWidth: true }
+            Item { Layout.fillHeight: true }
+            Txt { objectName: "adjustError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmAdjustButton"
+                    text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "تسجيل"
+                    primary: true
+                    enabled: adjustDialog.karatId !== "" && adjustWeight.text.trim().length > 0 && adjustReason.text.trim().length > 0 && adjustDate.text.trim().length > 0
+                             && !!page.vm && !page.vm.writing
+                    onClicked: page.vm.correctIssueWeight(adjustDialog.tripId, adjustDialog.karatId, adjustDialog.way, adjustWeight.text, adjustReason.text,
+                                                          adjustDate.text, adjustDialog.requestKey)
+                }
+                Btn { objectName: "cancelAdjustButton"; text: "إلغاء"; accent: theme.textSecondary
+                      enabled: !!page.vm && !page.vm.writing; onClicked: adjustDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- settlement step 2e: the custody cash settled after the trip (expense / bank deposit / write-off)
+    Popup {
+        id: cashSettleDialog
+        objectName: "tripCashSettleDialog"
+        property string tripId: ""
+        property string requestKey: ""
+        readonly property var kindChoices: [{ kind: "EXPENSE", text: "مصروف (بيان حر)" }, { kind: "BANK", text: "إيداع في حساب بنك / محفظة" }, { kind: "WRITEOFF", text: "إعدام (بسبب)" }]
+        readonly property var bankChoices: [{ id: "", text: "اختر الحساب" }].concat(page.ctx.banks || [])
+        readonly property string kind: kindChoices[cashSettleKind.currentIndex].kind
+        readonly property string bankId: bankChoices[cashSettleBank.currentIndex] ? bankChoices[cashSettleBank.currentIndex].id : ""
+        function openFor(trip) {
+            if (!page.vm) return
+            tripId = trip
+            requestKey = page.vm.newRequestKey()
+            cashSettleKind.currentIndex = 0
+            cashSettleBank.currentIndex = 0
+            cashSettleAmount.text = ""
+            cashSettleText.text = ""
+            cashSettleDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            cashSettleNotes.text = ""
+            page.vm.clearMessage()
+            page.vm.refresh()
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(520, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 560, 560)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { Layout.fillWidth: true; text: "تسوية نقدية العهدة"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
+            Txt { objectName: "cashSettleRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "المبلغ يخرج من نقدية العهدة: مصروف ببيان حر، أو إيداع في حساب بنك أو محفظة، أو إعدام بسبب. لا يتحرك شيء في الخزنة الرئيسية. لرجوع النقدية للخزنة استخدم «رجوع من العهدة»." }
+            Txt { objectName: "cashSettleRemaining"; Layout.fillWidth: true; color: theme.amber; font.bold: true
+                  text: "المتبقي في نقدية العهدة: " + (page.detail.cash ? page.detail.cash.outstanding : "") }
+            Txt { Layout.fillWidth: true; text: "نوع التسوية *" }
+            Combo { id: cashSettleKind; objectName: "cashSettleKindCombo"; Layout.fillWidth: true; model: cashSettleDialog.kindChoices; textRole: "text" }
+            Txt { Layout.fillWidth: true; text: "المبلغ (ج) *" }
+            Field { id: cashSettleAmount; objectName: "cashSettleAmountField"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+            Txt { Layout.fillWidth: true; visible: cashSettleDialog.kind === "BANK"; text: "الحساب *" }
+            Combo { id: cashSettleBank; objectName: "cashSettleBankCombo"; Layout.fillWidth: true; visible: cashSettleDialog.kind === "BANK"; model: cashSettleDialog.bankChoices; textRole: "text" }
+            Txt { Layout.fillWidth: true; visible: cashSettleDialog.kind !== "BANK"; text: cashSettleDialog.kind === "EXPENSE" ? "البيان *" : "السبب *" }
+            Field { id: cashSettleText; objectName: "cashSettleTextField"; Layout.fillWidth: true; visible: cashSettleDialog.kind !== "BANK" }
+            Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
+            Field { id: cashSettleDate; objectName: "cashSettleDateField"; Layout.fillWidth: true }
+            Txt { Layout.fillWidth: true; text: "ملاحظات" }
+            Field { id: cashSettleNotes; objectName: "cashSettleNotesField"; Layout.fillWidth: true }
+            Item { Layout.fillHeight: true }
+            Txt { objectName: "cashSettleError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmCashSettleButton"
+                    text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "تسجيل"
+                    primary: true
+                    enabled: cashSettleAmount.text.trim().length > 0 && cashSettleDate.text.trim().length > 0 && !!page.vm && !page.vm.writing
+                             && (cashSettleDialog.kind === "BANK" ? cashSettleDialog.bankId !== "" : cashSettleText.text.trim().length > 0)
+                    onClicked: page.vm.settleCash(cashSettleDialog.tripId, cashSettleDialog.kind, cashSettleAmount.text, cashSettleText.text, cashSettleDialog.bankId,
+                                                  cashSettleDate.text, cashSettleNotes.text, cashSettleDialog.requestKey)
+                }
+                Btn { objectName: "cancelCashSettleButton"; text: "إلغاء"; accent: theme.textSecondary
+                      enabled: !!page.vm && !page.vm.writing; onClicked: cashSettleDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- settlement step 2c: what was not melted is LOGO (one explicit action)
+    Popup {
+        id: classifyLogoDialog
+        objectName: "tripClassifyLogoDialog"
+        property string tripId: ""
+        property string requestKey: ""
+        function openFor(trip) {
+            if (!page.vm) return
+            tripId = trip
+            requestKey = page.vm.newRequestKey()
+            classifyLogoDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            classifyLogoNotes.text = ""
+            page.vm.clearMessage()
+            page.vm.refresh()
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(520, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 460, 460)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { Layout.fillWidth: true; text: "اعتبار المتبقي لوجو"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
+            Txt { objectName: "classifyLogoRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "كل ذهب خرج بدون وجهة ولم يُسبك يُعتبر لوجو بعياره: بعدها تنطبق عليه حركات اللوجو (تسليم لمسوقجي أو مورد أو بيع أو رجوع). لا حركة كسر ولا نقدية ولا مورد." }
+            Txt { objectName: "classifyLogoLines"; Layout.fillWidth: true; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "الذي سيُعتبر لوجو: " + ((page.detail.classifyLogoLines || []).map(function (m) { return m.text }).join(" • ") || "لا يوجد") }
+            Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
+            Field { id: classifyLogoDate; objectName: "classifyLogoDateField"; Layout.fillWidth: true }
+            Txt { Layout.fillWidth: true; text: "ملاحظات" }
+            Field { id: classifyLogoNotes; objectName: "classifyLogoNotesField"; Layout.fillWidth: true }
+            Item { Layout.fillHeight: true }
+            Txt { objectName: "classifyLogoError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmClassifyLogoButton"
+                    text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "اعتبارها لوجو"
+                    primary: true
+                    enabled: classifyLogoDate.text.trim().length > 0 && !!page.vm && !page.vm.writing && !!page.detail.classifyLogoAvailable
+                    onClicked: page.vm.classifyAsLogo(classifyLogoDialog.tripId, classifyLogoDate.text, classifyLogoNotes.text, classifyLogoDialog.requestKey)
+                }
+                Btn { objectName: "cancelClassifyLogoButton"; text: "إلغاء"; accent: theme.textSecondary
+                      enabled: !!page.vm && !page.vm.writing; onClicked: classifyLogoDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- settlement step 2c: part of the melted bar handed to a marketer (his 21K entitlement)
+    Popup {
+        id: barMarketerDialog
+        objectName: "tripBarMarketerDialog"
+        property string tripId: ""
+        property string requestKey: ""
+        readonly property var partyChoices: [{ id: "", text: "اختر المسوقجي" }].concat(page.ctx.holdParties || [])
+        readonly property string partyId: partyChoices[barMarketerParty.currentIndex] ? partyChoices[barMarketerParty.currentIndex].id : ""
+        readonly property var preview: {
+            var loaded = page.detail.id !== undefined && page.ctx.holdParties !== undefined            // read, so the preview follows the loaded custody and parties
+            return loaded && page.vm ? page.vm.previewBarToMarketer(partyId, barMarketerWeight.text) : ({})
+        }
+        function openFor(trip) {
+            if (!page.vm) return
+            tripId = trip
+            requestKey = page.vm.newRequestKey()
+            barMarketerParty.currentIndex = 0
+            barMarketerWeight.text = ""
+            barMarketerDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            barMarketerNotes.text = ""
+            page.vm.clearMessage()
+            page.vm.refresh()
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(560, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 520, 520)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { Layout.fillWidth: true; text: "تسليم سبيكة لمسوقجي"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
+            Txt { objectName: "barMarketerRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "جزء من رصيد السبيكة (مكافئ عيار 21) يصير استحقاقًا للمسوقجي من ذهب المحل أمانةً عنده؛ ما يفعله به بعد ذلك (تسوية مورد أو رجوع) من صفحته. لا حركة كسر ولا نقدية ولا مورد." }
+            Flickable {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentHeight: barMarketerForm.implicitHeight
+                clip: true
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: barMarketerForm
+                    width: parent.width - 12
+                    spacing: 6
+                    Txt { Layout.fillWidth: true; text: "المسوقجي *" }
+                    Combo { id: barMarketerParty; objectName: "barMarketerPartyCombo"; Layout.fillWidth: true; model: barMarketerDialog.partyChoices; textRole: "text" }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "الوزن (جرام، مكافئ عيار 21) *" }
+                            Field { id: barMarketerWeight; objectName: "barMarketerWeightField"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+                        }
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
+                            Field { id: barMarketerDate; objectName: "barMarketerDateField"; Layout.fillWidth: true }
+                        }
+                    }
+                    Txt { objectName: "barMarketerFacts"; Layout.fillWidth: true; visible: !!barMarketerDialog.preview && (barMarketerDialog.preview.facts || "") !== ""
+                          text: barMarketerDialog.preview.facts || ""; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                    Txt { objectName: "barMarketerPreviewError"; Layout.fillWidth: true; visible: !!barMarketerDialog.preview && (barMarketerDialog.preview.error || "") !== ""
+                          text: barMarketerDialog.preview.error || ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                    Txt { Layout.fillWidth: true; text: "ملاحظات" }
+                    Field { id: barMarketerNotes; objectName: "barMarketerNotesField"; Layout.fillWidth: true }
+                }
+            }
+            Txt { objectName: "barMarketerError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmBarMarketerButton"
+                    text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "تسليم السبيكة"
+                    primary: true
+                    enabled: barMarketerDialog.partyId !== "" && barMarketerWeight.text.trim().length > 0 && barMarketerDate.text.trim().length > 0
+                             && !!page.vm && !page.vm.writing && barMarketerDialog.preview.valid === true
+                    onClicked: page.vm.settleBarToMarketer(barMarketerDialog.tripId, barMarketerDialog.partyId, barMarketerWeight.text, barMarketerDate.text,
+                                                           barMarketerNotes.text, barMarketerDialog.requestKey)
+                }
+                Btn { objectName: "cancelBarMarketerButton"; text: "إلغاء"; accent: theme.textSecondary
+                      enabled: !!page.vm && !page.vm.writing; onClicked: barMarketerDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- settlement step 2a: the melt recorded AFTER the owner returns (gold without a destination -> one bar)
+    Popup {
+        id: settleMeltDialog
+        objectName: "tripSettleMeltDialog"
+        property string tripId: ""
+        property string requestKey: ""
+        property var preview: ({})
+        readonly property var karatChoices: [{ karatId: "", text: "اختر العيار" }].concat(page.detail.settleMeltLines || [])
+        function lines() {
+            var rows = []
+            for (var i = 0; i < settleModel.count; ++i) {
+                var g = settleModel.get(i)
+                if (g.weight.trim().length > 0 || g.karatIndex > 0)
+                    rows.push({ karatId: g.karatIndex > 0 ? karatChoices[g.karatIndex].karatId : "", weight: g.weight })
+            }
+            return rows
+        }
+        function refreshPreview() {
+            preview = page.vm ? page.vm.previewSettleMelt(lines(), settleOutputField.text, settleFinenessField.text) : ({})
+        }
+        function openFor(trip) {
+            if (!page.vm) return
+            tripId = trip
+            requestKey = page.vm.newRequestKey()
+            settleDateField.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            settleWorkshopField.text = ""
+            settleOutputField.text = ""
+            settleFinenessField.text = ""
+            settleNotesField.text = ""
+            settleModel.clear()
+            settleModel.append({ karatIndex: 0, weight: "" })
+            refreshPreview()
+            page.vm.clearMessage()
+            page.vm.refresh()
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(640, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 640, 640)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        ListModel { id: settleModel }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; text: "تسجيل سبك (بعد الرجوع)" }
+            Txt { objectName: "settleMeltRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "اختر الجرامات المسبوكة من كل عيار (الذهب الذي خرج بدون وجهة) ثم اكتب وزن السبك الفعلي وعيارها بالألف (رقم صحيح). يُحسب مكافئ عيار 21 والفرق: خسية الوزن وخسية العيار." }
+            Flickable {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentHeight: settleForm.implicitHeight
+                clip: true
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: settleForm
+                    width: parent.width - 12
+                    spacing: 6
+                    Txt { objectName: "settleMeltStock"; Layout.fillWidth: true; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                          text: "المتاح للسبك الآن: " + ((page.detail.settleMeltLines || []).map(function (m) { return m.text }).join(" • ") || "لا يوجد") }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "تاريخ السبك (yyyy-MM-dd) *" }
+                            Field { id: settleDateField; objectName: "settleMeltDateField"; Layout.fillWidth: true }
+                        }
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "الورشة / المسؤول *" }
+                            Field { id: settleWorkshopField; objectName: "settleMeltWorkshopField"; Layout.fillWidth: true }
+                        }
+                    }
+                    Txt { Layout.fillWidth: true; text: "الذهب المسبوك: العيار والوزن (جرام)"; color: theme.textMuted; elide: Text.ElideNone }
+                    Repeater {
+                        model: settleModel
+                        delegate: RowLayout {
+                            Layout.fillWidth: true
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 8
+                            Combo {
+                                objectName: "settleMeltKarat_" + index
+                                Layout.preferredWidth: 250
+                                model: settleMeltDialog.karatChoices
+                                textRole: "text"
+                                currentIndex: karatIndex
+                                onActivated: function (i) { settleModel.setProperty(index, "karatIndex", i); settleMeltDialog.refreshPreview() }
+                            }
+                            Field {
+                                objectName: "settleMeltWeight_" + index
+                                Layout.fillWidth: true
+                                placeholderText: "الوزن (جرام)"
+                                text: weight
+                                inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                onTextEdited: { settleModel.setProperty(index, "weight", text); settleMeltDialog.refreshPreview() }
+                            }
+                        }
+                    }
+                    Btn { objectName: "addSettleMeltLineButton"; text: "＋ عيار آخر"; accent: theme.textSecondary
+                          enabled: settleModel.count < 6
+                          onClicked: { settleModel.append({ karatIndex: 0, weight: "" }); settleMeltDialog.refreshPreview() } }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "وزن السبك الفعلي (جرام) *" }
+                            Field { id: settleOutputField; objectName: "settleMeltOutputField"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                    onTextEdited: settleMeltDialog.refreshPreview() }
+                        }
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "عيار السبيكة بالألف (رقم صحيح) *" }
+                            Field { id: settleFinenessField; objectName: "settleMeltFinenessField"; Layout.fillWidth: true; inputMethodHints: Qt.ImhDigitsOnly
+                                    onTextEdited: settleMeltDialog.refreshPreview() }
+                        }
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: previewColumn.implicitHeight + 16
+                        radius: 6
+                        color: "transparent"
+                        border.color: theme.border
+                        visible: !!settleMeltDialog.preview && (settleMeltDialog.preview.actualText || "") !== ""
+                        ColumnLayout {
+                            id: previewColumn
+                            anchors.fill: parent
+                            anchors.margins: 8
+                            spacing: 2
+                            Txt { objectName: "settleMeltInputText"; Layout.fillWidth: true; text: "المسبوك: " + (settleMeltDialog.preview.inputText || ""); elide: Text.ElideNone }
+                            Txt { objectName: "settleMeltTheoretical"; Layout.fillWidth: true; text: "المكافئ النظري: " + (settleMeltDialog.preview.theoreticalText || ""); elide: Text.ElideNone }
+                            Txt { objectName: "settleMeltActual"; Layout.fillWidth: true; text: "المكافئ الفعلي للسبيكة: " + (settleMeltDialog.preview.actualText || "")
+                                  color: theme.green; font.bold: true; elide: Text.ElideNone }
+                            Txt { objectName: "settleMeltWeightLoss"; Layout.fillWidth: true; text: "خسية الوزن: " + (settleMeltDialog.preview.weightLossText || ""); elide: Text.ElideNone }
+                            Txt { objectName: "settleMeltFinenessLoss"; Layout.fillWidth: true; text: "خسية العيار: " + (settleMeltDialog.preview.finenessLossText || ""); elide: Text.ElideNone }
+                            Txt { objectName: "settleMeltLoss"; Layout.fillWidth: true; text: "الفرق الإجمالي (نظري − فعلي): " + (settleMeltDialog.preview.lossText || ""); color: theme.amber
+                                  elide: Text.ElideNone }
+                            Txt { objectName: "settleMeltGain"; Layout.fillWidth: true; visible: (settleMeltDialog.preview.gainText || "") !== ""; text: settleMeltDialog.preview.gainText || ""
+                                  color: theme.amber; elide: Text.ElideNone }
+                        }
+                    }
+                    Txt { objectName: "settleMeltPreviewError"; Layout.fillWidth: true; visible: !!settleMeltDialog.preview && (settleMeltDialog.preview.error || "") !== ""
+                          text: settleMeltDialog.preview.error || ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                    Txt { Layout.fillWidth: true; text: "ملاحظات" }
+                    Field { id: settleNotesField; objectName: "settleMeltNotesField"; Layout.fillWidth: true }
+                }
+            }
+            Txt { objectName: "settleMeltError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmSettleMeltButton"
+                    text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "تسجيل السبك"
+                    primary: true
+                    enabled: settleDateField.text.trim().length > 0 && settleMeltDialog.lines().length > 0 && settleOutputField.text.trim().length > 0
+                             && settleFinenessField.text.trim().length > 0 && !!page.vm && !page.vm.writing
+                    onClicked: page.vm.settleMelt(settleMeltDialog.tripId, settleMeltDialog.lines(), settleOutputField.text, settleFinenessField.text,
+                                                  settleWorkshopField.text, settleDateField.text, settleNotesField.text, settleMeltDialog.requestKey)
+                }
+                Btn { objectName: "cancelSettleMeltButton"; text: "إلغاء"; accent: theme.textSecondary
+                      enabled: !!page.vm && !page.vm.writing; onClicked: settleMeltDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }

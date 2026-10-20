@@ -37,7 +37,7 @@ class GoldBuyUiTests(base.MarketTripHeatPageTests):
         self.type_in(f"custodyGoldBuyWeight_{index}", weight)
         self.type_in(f"custodyGoldBuyPrice_{index}", price)
 
-    def gold_row(self, karat=21, designation="LOGO"):
+    def gold_row(self, karat=21, designation="UNCLASSIFIED"):
         custody = self.tvm._service.trip_detail(self.tvm.selectedTripId)["custody"]
         return next((g for g in custody["gold"] if g["karat_value"] == karat and g["designation"] == designation), None)
 
@@ -53,10 +53,10 @@ class GoldBuyUiTests(base.MarketTripHeatPageTests):
         self.assertTrue(self.item("custodyGoldBuyButton").property("enabled"))
         self.open_buy()
         for name in ("custodyGoldBuyVendorCombo", "custodyGoldBuyNameField", "custodyGoldBuyDateField", "custodyGoldBuyKarat_0",
-                     "custodyGoldBuyDesignation_0", "custodyGoldBuyWeight_0", "custodyGoldBuyPrice_0", "confirmCustodyGoldBuyButton",
+                     "custodyGoldBuyWeight_0", "custodyGoldBuyPrice_0", "confirmCustodyGoldBuyButton",
                      "cancelCustodyGoldBuyButton"):
             self.assert_inside_window(self.item(name))
-        self.assertEqual(self.item("custodyGoldBuyDesignation_0").property("currentIndex"), 1)         # «لوجو» is the default destination
+        self.assertIsNone(self.visible_item("custodyGoldBuyDesignation_0"))                                  # 064: no melt / logo choice for bought gold
         self.assertFalse(self.item("confirmCustodyGoldBuyButton").property("enabled"))                  # nothing chosen yet
         self.fill_line("5", "30000")
         self.assertFalse(self.item("confirmCustodyGoldBuyButton").property("enabled"))                  # the vendor is mandatory
@@ -89,7 +89,7 @@ class GoldBuyUiTests(base.MarketTripHeatPageTests):
         self.assertEqual((head["vendor_kind"], head["vendor_name"], head["price_warning_acknowledged"]), ("THIRD_PARTY", "تاجر السوق", 1))
         what = self.plain(" ".join(self.visible_texts("entryWhat")))
         self.assertIn("تاجر السوق", what)
-        self.assertIn("5.000 جرام عيار 21 (لوجو)", what)
+        self.assertIn("5.000 جرام عيار 21 (بدون وجهة)", what)
         self.assertEqual((self.db.sup_gold, self.db.sm_making, self.db.settlements), ([], [], {}))
         self.assertEqual(self.warnings, [])
 

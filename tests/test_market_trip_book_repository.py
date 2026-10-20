@@ -168,7 +168,9 @@ class ReadShapeTests(unittest.TestCase):
 
     def test_the_custody_cash_includes_the_book_trades_in_the_two_existing_terms(self):
         connection = Recorder()
-        MarketTripRepository(connection).custody_cash(5, current=True)
+        repository = MarketTripRepository(connection)
+        repository._cash_settle = False                                                      # 064: the capability probe is not the subject of this test
+        repository.custody_cash(5, current=True)
         trades = [s for s in connection.statements if "market_trip_book_trades" in s[0]]
         self.assertEqual(len(trades), 1)
         self.assertIn("IF(t.entry_kind = 'BK_SELL', t.total_price, 0)", trades[0][0])

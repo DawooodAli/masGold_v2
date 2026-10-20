@@ -156,9 +156,14 @@ class IssueTests(TripCase):
         self.db.cash_accounts.clear()
         self.refused("ACCOUNT_NOT_FOUND", lambda: self.issue("100"))
 
-    def test_funds_policy_is_unchanged_the_safe_may_go_negative(self):
-        self.issue("60000")
-        self.assertEqual(self.db.cash(), D("-10000.00"))
+    def test_the_safe_never_goes_negative_an_issue_above_its_balance_is_refused_with_no_trace(self):
+        self.db.safe_allowance = D("0.00")                                                 # the REAL seeded balance (50,000) decides
+        before = (self.db.cash(), dict(self.db.trips), dict(self.db.entries), list(self.db.scrap))
+        self.refused("SAFE_SHORTAGE", lambda: self.issue("60000"))
+        self.assertEqual((self.db.cash(), self.db.trips, self.db.entries, self.db.scrap), (before[0], before[1], before[2], before[3]))
+        self.issue("50000")                                                                # the exact balance may be taken
+        self.assertEqual(self.db.cash(), D("0.00"))
+        self.refused("SAFE_SHORTAGE", lambda: self.issue("0.01"))
 
     def test_no_supplier_or_other_business_effect_exists_in_this_slice(self):
         source = "".join((ROOT / p).read_text(encoding="utf-8") for p in ("services/market_trip_service.py", "repositories/market_trip_repository.py"))
@@ -565,6 +570,7 @@ class ViewModelTests(TripCase):
         self.assertEqual(calls, [])
 
     def test_the_detail_separates_custody_from_the_shop_and_explains_what_blocks_closing(self):
+        self.db.safe_allowance = D("0.00")                                                      # the screen shows the REAL safe balance
         self.vm.refresh()
         self.vm.issue("", "10000", [{"karatId": K21, "weight": "20", "designation": "MELT"}], TODAY, "", self.vm.newRequestKey())
         detail = self.vm.detail

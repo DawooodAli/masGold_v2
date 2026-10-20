@@ -133,8 +133,8 @@ class MarketerRepo:
         if trip_entry_id is not None:                                                                     # chk_mkgm_shape, trip-entry branch (058)
             assert document_id is None and settlement_id is None and doc_kind is None
             entry = self.db.entries[int(trip_entry_id)]                                                   # fk_mkgm_trip_entry
-            sign, kind = {"TRIP_BOOK_IN": (1, "BK_DLV_MKT"), "TRIP_BOOK_OUT": (-1, "BK_RECEIVE")}[base]
-            assert entry["entry_kind"] == trip_entry_kind == kind
+            sign, kinds = {"TRIP_BOOK_IN": (1, ("BK_DLV_MKT", "ST_BAR_MKT")), "TRIP_BOOK_OUT": (-1, ("BK_RECEIVE",))}[base]       # 062: ST_BAR_MKT joins the IN leg
+            assert entry["entry_kind"] == trip_entry_kind and trip_entry_kind in kinds
             assert (delta == sign * weight and correction_id is None) if base == movement_type else (delta == -sign * weight and correction_id is not None)
             assert not any((m.get("trip_entry_id"), m["movement_type"]) == (int(trip_entry_id), movement_type) for m in self.db.mk_gold)   # uq_mkgm_trip_entry_type
             movement_id = self.db.next("mk_gold")

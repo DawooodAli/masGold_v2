@@ -273,8 +273,11 @@ def build_position(*, scrap, shop_lots, receipt_stock, inventory, returned_pendi
                          "fineness": l["fineness"], "eq21": _q(eq)})
             custody.add(weight, eq)
             place(l["lot_id"], f"CUSTODY:{t['code']}")
-        if gold_rows or lots:
-            trip_rows.append({"trip_id": str(t["id"]), "code": t["code"], "status": t["status"], "gold": gold_rows, "lots": lots})
+        bar = _dec(view.get("bar", 0))                                      # 060: the melted bar not yet distributed, by its 21K equivalent (no physical grams)
+        if bar != 0:
+            custody.eq21 += bar
+        if gold_rows or lots or bar != 0:
+            trip_rows.append({"trip_id": str(t["id"]), "code": t["code"], "status": t["status"], "gold": gold_rows, "lots": lots, "bar_eq21": _q(bar)})
     out["custody"] = {"trips": trip_rows, **custody.as_row()}
 
     # ---- BOOK trips (056): ONE number per trip, counted once; the physical grams are unspecified and in no physical total
@@ -381,10 +384,12 @@ class GoldPositionService:
                 marketers = self._marketers(connection)                    # the SAME connection / snapshot as every other source
                 # ONE snapshot, no locks: eight aggregate queries whatever the number of trips (never a query per trip, never the cash or a document history)
                 gold_by_trip, lots_by_trip = trips_repo.custody_gold_by_trip(), trips_repo.custody_lots_by_trip()
+                bar_by_trip = trips_repo.settle_bar_by_trip()               # 060: the BAR pool of every trip (one aggregate query; {} before 060)
                 trips, trip_rows = [], trips_repo.all_trip_ids()
                 for row in trip_rows:                                       # EVERY trip: no list limit on a physical total
-                    custody = custody_view(("0.00", "0.00"), gold_by_trip.get(int(row["id"]), []), lots_by_trip.get(int(row["id"]), []), trip_id=row["id"])
-                    if any(_dec(g["outstanding"]) != 0 for g in custody["gold"]) or custody["lots"]:
+                    custody = custody_view(("0.00", "0.00"), gold_by_trip.get(int(row["id"]), []), lots_by_trip.get(int(row["id"]), []), trip_id=row["id"],
+                                           bar=bar_by_trip.get(int(row["id"]), 0))
+                    if any(_dec(g["outstanding"]) != 0 for g in custody["gold"]) or custody["lots"] or custody["bar"] != 0:
                         trips.append({"id": row["id"], "code": f"MT{int(row['id']):06d}", "status": row["status"], "custody": custody})
                 book_groups, statuses = trips_repo.book_groups_by_trip(), {int(r["id"]): r["status"] for r in trip_rows}
                 # the effective reconciliations come from the SAME snapshot as the source lines; an inconsistency refuses the whole read (GoldPositionError)

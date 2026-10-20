@@ -87,8 +87,7 @@ class PurchaseTests(BuyCase):
                            ("WEIGHT_REQUIRED", lambda: self.buy([line(weight="0")])), ("WEIGHT_INVALID", lambda: self.buy([line(weight="1.2345")])),
                            ("PRICE_INVALID", lambda: self.buy([line(price="")])), ("PRICE_INVALID", lambda: self.buy([line(price="0")])),
                            ("PRICE_INVALID", lambda: self.buy([line(price="10.005")])), ("PRICE_INVALID", lambda: self.buy([line(price="-1")])),
-                           ("DESIGNATION_REQUIRED", lambda: self.buy([line(designation="")])),
-                           ("DESIGNATION_REQUIRED", lambda: self.buy([line(designation="UNCLASSIFIED")])),
+                           ("DESIGNATION_REQUIRED", lambda: self.buy([line(designation="XYZ")])),                  # 064: blank / UNCLASSIFIED are valid (no destination yet)
                            ("KARAT_NOT_FOUND", lambda: self.buy([line(karat=99)])), ("TRIP_NOT_FOUND", lambda: self.buy(trip="99")),
                            ("DATE_REQUIRED", lambda: self.buy(when="")), ("REQUEST_INVALID", lambda: self.buy(request="not-a-key"))):
             with self.subTest(code=code):

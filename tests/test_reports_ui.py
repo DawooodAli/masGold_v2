@@ -27,7 +27,9 @@ class ReportsPageTests(harness.InvoicePageTests):
             yield object()
         service_self = self
 
-        class Repo(FakeRepo):
+        from tests.test_report_market import MarketRepo
+
+        class Repo(MarketRepo):
             def sales_returns(self, start, end):
                 if service_self.broken:
                     raise RuntimeError("read failed")
@@ -78,7 +80,7 @@ class ReportsPageTests(harness.InvoicePageTests):
         self.assertIsNone(self.visible_item("reportsNavButton"))
         vm = self.open_reports()
         self.assertIsNotNone(self.visible_item("reportsNavButton"))
-        self.assertEqual([r["key"] for r in vm.reports], ["sales", "stock", "gold", "customers", "suppliers", "treasury"])
+        self.assertEqual([r["key"] for r in vm.reports], ["sales", "stock", "gold", "customers", "suppliers", "treasury", "market"])
         self.assertEqual(self.warnings, [])
 
     def test_sales_report_shows_totals_rows_and_opens_the_invoice(self):
@@ -151,6 +153,22 @@ class ReportsPageTests(harness.InvoicePageTests):
         self.wait_until(lambda: not vm.busy and vm.result["tables"] and not vm.result["tables"][0]["available"], "unavailable source")
         self.assertIsNotNone(self.visible_item("reportTableUnavailable_0"))                         # never a successful empty report
         FakeRepo.tables["market_trip_book_lines"] = True
+
+    def test_the_market_report_shows_melts_losses_returns_and_cash_with_totals(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        vm = self.open_reports()
+        self.wait_report(vm)
+        self.reveal(self.item("reportChoice_market"))
+        self.click("reportChoice_market")
+        self.wait_until(lambda: not vm.busy and vm.result.get("report") == "market" and vm.result["tables"], "market report loaded")
+        QTest.qWait(150)
+        self.assertEqual([t["key"] for t in vm.result["tables"]], ["melts", "losses", "returns", "adjusts", "cash"])
+        labels = [x["label"] for x in vm.result["totals"]]
+        self.assertIn("خسية بوتقة — سبيكة (مكافئ عيار 21) (فعّال)", labels)
+        self.assertIn("مصروف (فعّال)", labels)
+        self.assertIsNotNone(self.visible_item("reportMeaning_0"))
+        self.assertEqual(self.warnings, [])
 
     def test_a_failed_read_is_shown_as_a_failure_and_clears_the_old_report(self):
         vm = self.open_reports()

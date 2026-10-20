@@ -5,6 +5,7 @@ Every caller uses these functions, so posting, return checks, closure and the co
   gold (per karat and designation)   outstanding = issued - returned - melted + effective heating differences - effective supplier settlements
                                                    - sold for cash (053) + bought for cash (054)
                                                    - handed to an intermediary (held_out) + taken back from it (held_back)   (049, LOGO only)
+                                                   - settlement moves out of the RAW pool (060, UNCLASSIFIED only: melted into a bar after the owner returns)
   cash                               outstanding = issued - returned - paid to suppliers + cash received from selling custody gold (053)
                                                    - cash spent on buying gold in the market (054)
 
@@ -24,19 +25,21 @@ def gold_outstanding(row):
     supplier_settled); the Logo heating difference is signed and only ever non-zero on LOGO, a melt only on MELT, a supplier settlement
     (046) only on LOGO in this slice; held_out / held_back (049) are the effective LOGO handovers to and returns from an intermediary."""
     return (_dec(row.get("issued")) - _dec(row.get("returned")) - _dec(row.get("melted")) + _dec(row.get("heat_delta"))
-            - _dec(row.get("supplier_settled")) - _dec(row.get("held_out")) + _dec(row.get("held_back")) - _dec(row.get("sold")) + _dec(row.get("purchased")))
+            - _dec(row.get("supplier_settled")) - _dec(row.get("held_out")) + _dec(row.get("held_back")) - _dec(row.get("sold")) + _dec(row.get("purchased"))
+            - _dec(row.get("settle_out")) + _dec(row.get("settle_in")))   # stage 2: grams that left the RAW pool (melted, classified as LOGO; UNCLASSIFIED only) / entered LOGO
 
 
-def cash_outstanding(issued, returned, paid=0, received=0, spent=0):
+def cash_outstanding(issued, returned, paid=0, received=0, spent=0, settled=0):
     """Custody cash still outside Main Safe: issued - returned - paid to suppliers from custody + proceeds of custody gold sold for cash (053)
-    - cash spent on gold bought in the market (054)."""
-    return _dec(issued) - _dec(returned) - _dec(paid) + _dec(received) - _dec(spent)
+    - cash spent on gold bought in the market (054) - cash settled after the trip (expense, bank deposit, write-off: 064)."""
+    return _dec(issued) - _dec(returned) - _dec(paid) + _dec(received) - _dec(spent) - _dec(settled)
 
 
 def cash_rows_outstanding(cash_rows):
     """The same, from the repository's (issued, returned[, paid]) tuple."""
     return cash_outstanding(cash_rows[0], cash_rows[1], cash_rows[2] if len(cash_rows) > 2 else 0,
-                            cash_rows[3] if len(cash_rows) > 3 else 0, cash_rows[4] if len(cash_rows) > 4 else 0)
+                            cash_rows[3] if len(cash_rows) > 3 else 0, cash_rows[4] if len(cash_rows) > 4 else 0,
+                            cash_rows[5] if len(cash_rows) > 5 else 0)
 
 
 def any_negative(cash_rows, gold_rows, designation=None):

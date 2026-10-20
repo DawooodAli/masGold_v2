@@ -91,6 +91,8 @@ class AggregationShapeTests(unittest.TestCase):
     def aggregate(self, connection=None):
         connection = connection or Connection()
         repo = MarketTripRepository(connection)
+        repo._settlement = False                                                   # 060: the settlement reads have their own tests below
+        repo._cash_settle = False                                                      # 064: the capability probe is not the subject of this test
         return connection, repo.custody_gold_by_trip(), repo.custody_lots_by_trip()
 
     def test_a_fixed_number_of_statements_whatever_the_number_of_trips(self):
@@ -127,6 +129,8 @@ class AggregationShapeTests(unittest.TestCase):
     def test_the_decision_reads_keep_their_locks(self):
         connection = Connection()
         repo = MarketTripRepository(connection)
+        repo._settlement = False                                                   # 060: the settlement reads have their own tests below
+        repo._cash_settle = False                                                      # 064: the capability probe is not the subject of this test
         repo.custody_gold(1, current=True)
         repo.custody_lots(2)
         self.assertEqual(len(connection.statements), 8)                           # custody_gold: 7 term queries (one trip) + custody_lots: 1
@@ -135,6 +139,46 @@ class AggregationShapeTests(unittest.TestCase):
         for sql in connection.statements:
             self.assertIn("FOR SHARE", sql)                                       # every decision statement is a current / locking read
         self.assertTrue(all("FOR SHARE)" in s for s in gold))                     # ... including the nested reversal lookup when current=True
+
+
+class SettlementReadsTests(unittest.TestCase):
+    """060: the RAW pool (grams that left UNCLASSIFIED custody) and the BAR pool are read with the same discipline as every other custody term: display = ONE aggregate query
+    each with NO lock and the snapshot reversal lookup; decision = locking reads; before 060 (no table) nothing is read at all."""
+
+    def repo(self, present=True):
+        connection = Connection()
+        repo = MarketTripRepository(connection)
+        repo._settlement = present
+        return connection, repo
+
+    def test_display_form_adds_one_unlocked_aggregate_per_pool(self):
+        connection, repo = self.repo()
+        repo.custody_gold_by_trip()
+        repo.settle_bar_by_trip()
+        settle = [s for s in connection.statements if "market_trip_settle_moves" in s]
+        self.assertEqual(len(settle), 3)                                           # the RAW and the LOGO terms of every trip + the BAR pools of every trip, whatever the number of trips
+        for sql in settle:
+            self.assertNotIn("FOR SHARE", sql)
+            self.assertNotIn("WHERE e.trip_id = %s", sql)
+            self.assertIn("FULL_REVERSAL", sql)                                    # a reversed melt stops counting (the snapshot form of the lookup)
+        self.assertEqual(len(connection.statements), 7 + 3)
+
+    def test_decision_form_locks_the_rows_and_the_nested_lookup(self):
+        connection, repo = self.repo()
+        repo.custody_gold(1, current=True)
+        repo.settle_bar_balance(1, current=True)
+        settle = [s for s in connection.statements if "market_trip_settle_moves" in s]
+        self.assertEqual(len(settle), 3)                                           # RAW, LOGO (the custody gold read) and the BAR balance
+        for sql in settle:
+            self.assertEqual(sql.count("FOR SHARE"), 2, sql)                       # the outer rows AND the nested reversal lookup
+
+    def test_a_database_before_060_reads_nothing_of_the_settlement(self):
+        connection, repo = self.repo(present=False)
+        repo.custody_gold_by_trip()
+        repo.custody_gold(1, current=True)
+        self.assertEqual(repo.settle_bar_balance(1), 0)
+        self.assertEqual(repo.settle_bar_by_trip(), {})
+        self.assertFalse([s for s in connection.statements if "market_trip_settle_moves" in s])
 
 
 class ArithmeticParityTests(unittest.TestCase):

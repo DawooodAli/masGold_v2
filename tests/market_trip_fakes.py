@@ -50,12 +50,20 @@ class Db:
         self.cash_accounts = {1: {"id": 1, "code": "MAIN_SAFE", "name": "الخزنة الرئيسية", "is_active": 1}}
         self.cash_moves = [{"id": 1, "account_id": 1, "amount_delta": D("50000.00"), "reference_type": "OPENING", "reference_id": "0",
                             "type_code": "OPENING_BALANCE"}]
+        self.safe_allowance = D("10000000.00")                          # see FakeRepository.cash_balance; the no-negative-safe tests set it to 0
         # counted Scrap: 100 g of 21K (5 g of it HELD for manager review), 50 g of 18K, none of 24K
         self.scrap = [{"id": 1, "karat_id": 1, "weight_delta": D("100.000"), "reference_type": "OPENING", "reference_id": "0", "type_code": "OPENING"},
                       {"id": 2, "karat_id": 2, "weight_delta": D("50.000"), "reference_type": "OPENING", "reference_id": "0", "type_code": "OPENING"}]
         self.holds = {1: D("5.000")}
         self.trips, self.entries, self.cash_legs, self.gold_legs, self.events = {}, {}, [], [], []
         self.melts, self.melt_inputs, self.lots, self.lot_moves = {}, [], {}, []          # 039
+        self.settle_melts, self.settle_melt_inputs, self.settle_moves = {}, [], []        # 060: settlement step 2a
+        self.settle_cash = {}                                                              # 064: entry id -> the custody cash settlement document
+        self.settle_lines, self.settle_adjusts = [], {}                                    # 065: return / loss lines and issue-weight corrections
+        self.bank_accounts = {1: {"id": 1, "name": "بنك مصر", "is_active": 1, "account_type": "BANK"},
+                              2: {"id": 2, "name": "محفظة موقوفة", "is_active": 0, "account_type": "WALLET"}}
+        self.bank_moves = []                                                               # 064: bank movements posted by a cash deposit
+        self.bar_sup_links = {}                                                           # 061: settlement step 2b (the melted bar delivered to a supplier)
         self.heats, self.heat_lines = {}, []                                                  # 042: Logo heating headers and lines
         self.suppliers = {10: {"id": 10, "name": "مورد نشط", "is_active": 1, "is_supplier": True, "is_intermediary": False, "karat_id": 1},
                           11: {"id": 11, "name": "مورد متوقف", "is_active": 0, "is_supplier": True, "is_intermediary": False, "karat_id": 2},
@@ -75,7 +83,7 @@ class Db:
         self.sm_payments, self.sm_making, self.sm_legs, self.supplier_links = {}, [], [], {}
         self.shop_moves, self.lot_returns, self.lot_issues = [], [], []                      # 040/041: shop-side lot ledger, return / issue links
         self.corrections, self.audit_rows = [], []
-        self.sequences = {"trip": 0, "entry": 0, "cash_move": 1, "scrap": 2, "correction": 0, "lot": 0, "lot_move": 0, "shop_move": 0,
+        self.sequences = {"trip": 0, "entry": 0, "cash_move": 1, "bank_move": 0, "scrap": 2, "correction": 0, "lot": 0, "lot_move": 0, "shop_move": 0,
                           "payment": 0, "sm_making": 0, "settlement": 0, "sup_gold": 0, "pool": 0, "doc": 0, "hmove": 0, "lpool": 0, "ldoc": 0, "lmove": 0, "receipt": 0, "piece": 0, "smove": 0, "amove": 0}
         self.fail_at = None
         self.transactions = 0
@@ -148,7 +156,9 @@ class TripRepo:
         return None if row is None else dict(row)
 
     def cash_balance(self, account_id):
-        return self.db.cash(int(account_id))
+        # The fixtures predate the «the safe never goes negative» rule (stage 1): they issue more cash than the 50,000 opening. `safe_allowance` models a funded safe for
+        # those tests; the tests of the rule itself set it to 0 so the seeded balance is the real one.
+        return self.db.cash(int(account_id)) + self.db.safe_allowance
 
     def karat(self, karat_id):
         row = self.db.karats.get(int(karat_id))
@@ -225,7 +235,7 @@ class TripRepo:
     def insert_entry(self, *, trip_id, entry_no, kind, entry_date, notes, key, digest, actor, now):
         self._fail("entry")
         marketer_key_guard(self.db, key)
-        assert kind in ("ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT", "SUPPLIER_PAY", "GOLD_SETTLE", "LOT_SETTLE", "LOT_HOLD", "HOLD_RETURN", "LOGO_HOLD", "HOLD_BACK", "GOLD_SALE", "GOLD_BUY", "BK_ISSUE", "BK_BUY", "BK_SELL", "BK_RETURN", "BK_RECON", "BK_ISS_STK", "BK_DLV_SUP", "BK_DLV_MKT", "BK_RECEIVE", "BK_GAIN")      # chk_mte_kind (059: BK_GAIN)
+        assert kind in ("ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT", "SUPPLIER_PAY", "GOLD_SETTLE", "LOT_SETTLE", "LOT_HOLD", "HOLD_RETURN", "LOGO_HOLD", "HOLD_BACK", "GOLD_SALE", "GOLD_BUY", "BK_ISSUE", "BK_BUY", "BK_SELL", "BK_RETURN", "BK_RECON", "BK_ISS_STK", "BK_DLV_SUP", "BK_DLV_MKT", "BK_RECEIVE", "BK_GAIN", "ST_MELT", "ST_BAR_SUP", "ST_BAR_MKT", "ST_LOGO", "ST_EXPENSE", "ST_CASH_BANK", "ST_CASH_OFF", "ST_RET_MKT", "ST_LOSS", "ST_ADJUST")      # chk_mte_kind (059: BK_GAIN; 060: ST_MELT; 061: ST_BAR_SUP)
         mode = book_rules.trip_mode(self.db.trips[int(trip_id)])
         book_rules.require_kind_in_mode(kind, mode)                                          # the repository check (the database repeats it: chk_mte_mode_kind + fk_mte_trip_mode)
         if any(e["request_key"] == key for e in self.db.entries.values()):
@@ -402,8 +412,10 @@ class TripRepo:
                 if e["trip_id"] == int(trip_id) and e["id"] not in reversed_ids and e["id"] != int(exclude or 0)]
 
     def custody_cash(self, trip_id, exclude_entry_id=None, *, current=False):
-        issued = returned = paid = proceeds = spent = D("0.00")
+        issued = returned = paid = proceeds = spent = settled = D("0.00")
         for e in self._live(trip_id, exclude_entry_id):
+            if e["id"] in self.db.settle_cash:
+                settled += self.db.settle_cash[e["id"]]["amount"]
             for leg in (l for l in self.db.cash_legs if l["entry_id"] == e["id"]):
                 issued, returned = (issued + leg["amount"], returned) if e["entry_kind"] == "ISSUE" else (issued, returned + leg["amount"])
             if e["id"] in self.db.supplier_links:
@@ -418,7 +430,7 @@ class TripRepo:
                     proceeds += trade["total_price"]
                 else:
                     spent += trade["total_price"]
-        return issued, returned, paid, proceeds, spent
+        return issued, returned, paid, proceeds, spent, settled
 
     def custody_gold(self, trip_id, exclude_entry_id=None, *, current=False):
         out = {}
@@ -429,7 +441,8 @@ class TripRepo:
                     "karat_id": leg["karat_id"], "karat_value": self.db.karats[leg["karat_id"]]["karat_value"],
                     "designation": leg["designation"], "issued": D("0.000"), "returned": D("0.000"), "melted": D("0.000"),
                     "heat_delta": D("0.000"), "supplier_settled": D("0.000")})
-                row["issued" if e["entry_kind"] == "ISSUE" else "returned"] += leg["weight_grams"]
+                if e["entry_kind"] in ("ISSUE", "RETURN"):
+                    row["issued" if e["entry_kind"] == "ISSUE" else "returned"] += leg["weight_grams"]
             for i in (i for i in self.db.melt_inputs if i["entry_id"] == e["id"]):
                 row = out.setdefault((i["karat_id"], MELT_DESIGNATION), {
                     "karat_id": i["karat_id"], "karat_value": self.db.karats[i["karat_id"]]["karat_value"],
@@ -469,8 +482,181 @@ class TripRepo:
                     "designation": line["designation"], "issued": D("0.000"), "returned": D("0.000"), "melted": D("0.000"),
                     "heat_delta": D("0.000"), "supplier_settled": D("0.000")})
                 row["purchased"] = row.get("purchased", D("0.000")) + line["weight_grams"]
+        for r in self.settle_raw_out(trip_id, exclude_entry_id):                                       # 060: grams that left the RAW pool (UNCLASSIFIED gold only)
+            row = out.setdefault((r["karat_id"], "UNCLASSIFIED"), {
+                "karat_id": r["karat_id"], "karat_value": r["karat_value"], "designation": "UNCLASSIFIED", "issued": D("0.000"), "returned": D("0.000"),
+                "melted": D("0.000"), "heat_delta": D("0.000"), "supplier_settled": D("0.000")})
+            row["settle_out"] = r["settle_out"]
+        for r in self.settle_logo_in(trip_id, exclude_entry_id):                                       # 062: grams classified as LOGO
+            row = out.setdefault((r["karat_id"], "LOGO"), {
+                "karat_id": r["karat_id"], "karat_value": r["karat_value"], "designation": "LOGO", "issued": D("0.000"), "returned": D("0.000"),
+                "melted": D("0.000"), "heat_delta": D("0.000"), "supplier_settled": D("0.000")})
+            row["settle_in"] = r["settle_in"]
         order = {"MELT": 0, "LOGO": 1, "UNCLASSIFIED": 2}
         return sorted(out.values(), key=lambda r: (-r["karat_value"], order[r["designation"]]))
+
+    # ---- settlement step 2a (060): the CHECK constraints of the three tables are mirrored as asserts
+    def has_settlement_schema(self):
+        return True
+
+    def insert_settle_melt(self, *, entry_id, workshop, melt_date, figures):
+        self._fail("settle_melt")
+        assert (workshop or "").strip()                                                        # chk_mtstm_workshop
+        assert figures["input_weight"] > 0 and figures["output_weight"] > 0                    # chk_mtstm_weights
+        assert 1 <= int(figures["fineness"]) <= 1000                                           # chk_mtstm_fineness
+        assert figures["loss_eq21"] == figures["theoretical_eq21"] - figures["actual_eq21"]    # chk_mtstm_loss
+        assert figures["weight_loss_eq21"] + figures["fineness_loss_eq21"] == figures["loss_eq21"]
+        assert int(entry_id) not in self.db.settle_melts and self.db.entries[int(entry_id)]["entry_kind"] == "ST_MELT"
+        self.db.settle_melts[int(entry_id)] = {"entry_id": int(entry_id), "workshop": workshop, "melt_date": melt_date,
+                                               "input_weight_grams": figures["input_weight"], "output_weight_grams": figures["output_weight"],
+                                               "fineness_permille": int(figures["fineness"]), "theoretical_eq21": figures["theoretical_eq21"],
+                                               "actual_eq21": figures["actual_eq21"], "loss_eq21": figures["loss_eq21"],
+                                               "weight_loss_eq21": figures["weight_loss_eq21"], "fineness_loss_eq21": figures["fineness_loss_eq21"]}
+
+    def insert_settle_melt_input(self, *, entry_id, karat_id, weight):
+        self._fail("settle_melt_input")
+        assert weight > 0 and int(entry_id) in self.db.settle_melts                            # chk_mtstmi_weight, fk_mtstmi_melt
+        if any((i["entry_id"], i["karat_id"]) == (int(entry_id), int(karat_id)) for i in self.db.settle_melt_inputs):
+            raise _dup("PRIMARY")
+        self.db.settle_melt_inputs.append({"entry_id": int(entry_id), "karat_id": int(karat_id), "weight_grams": weight})
+
+    # ---- settlement step 2e (064): the custody cash expense / bank deposit / write-off; the CHECK / FK constraints of market_trip_settle_cash are mirrored as asserts
+    def active_bank_accounts(self):
+        return [dict(a) for a in self.db.bank_accounts.values() if a["is_active"]]
+
+    def bank_account(self, account_id, *, lock=False):
+        row = self.db.bank_accounts.get(int(account_id))
+        return None if row is None else dict(row)
+
+    def post_bank_in(self, *, account_id, entry_id, code, amount, description, actor, now):
+        self._fail("bank_in")
+        move_id = self.db.next("bank_move")
+        self.db.bank_moves.append({"id": move_id, "account_id": int(account_id), "amount_delta": amount, "reference_type": SOURCE, "reference_id": str(entry_id),
+                                   "reference_code": code, "type_code": "TRIP_CUSTODY_BANK_IN"})
+        return move_id
+
+    def insert_settle_cash(self, *, entry_id, kind, amount, description, reference, bank_account_id, bank_movement_id):
+        self._fail("settle_cash")
+        assert amount > 0                                                                                     # chk_mtsc_amount
+        assert self.db.entries[int(entry_id)]["entry_kind"] == kind                                          # fk_mtsc_entry (entry, kind)
+        if kind in ("ST_EXPENSE", "ST_CASH_OFF"):                                                             # chk_mtsc_shape
+            assert description and description.strip() and bank_account_id is None and bank_movement_id is None
+        else:
+            assert kind == "ST_CASH_BANK" and bank_account_id is not None and bank_movement_id is not None
+            assert int(bank_account_id) in self.db.bank_accounts                                              # fk_mtsc_bank
+        if int(entry_id) in self.db.settle_cash:
+            raise _dup("PRIMARY")
+        self.db.settle_cash[int(entry_id)] = {"entry_id": int(entry_id), "entry_kind": kind, "amount": amount, "description": description or None,
+                                              "reference": reference or None, "bank_account_id": bank_account_id, "bank_movement_id": bank_movement_id}
+
+    def entry_settle_cash(self, entry_id):
+        row = self.db.settle_cash.get(int(entry_id))
+        if row is None:
+            return None
+        bank = None if row["bank_account_id"] is None else self.db.bank_accounts[row["bank_account_id"]]["name"]
+        return {**row, "bank_account_name": bank}
+
+    # ---- settlement step 2f (065): lines of a return / loss and the issue-weight correction; the CHECK / FK constraints are mirrored as asserts
+    def has_disposal_schema(self):
+        return True
+
+    def insert_settle_line(self, *, entry_id, kind, line_no, source, karat_id, weight, classification):
+        self._fail("settle_line")
+        assert weight > 0                                                                                     # chk_mtsl_weight
+        assert (source in ("RAW", "LOGO") and karat_id is not None) or (source == "BAR" and karat_id is None)  # chk_mtsl_source
+        assert (kind == "ST_RET_MKT" and classification is None) or (kind == "ST_LOSS" and classification in ("CRUCIBLE", "MARKET"))    # chk_mtsl_kind
+        assert self.db.entries[int(entry_id)]["entry_kind"] == kind                                          # fk_mtsl_entry
+        if any((l["entry_id"], l["line_no"]) == (int(entry_id), int(line_no)) for l in self.db.settle_lines):
+            raise _dup("uq_mtsl_line")
+        self.db.settle_lines.append({"entry_id": int(entry_id), "entry_kind": kind, "line_no": int(line_no), "source": source,
+                                     "karat_id": None if karat_id is None else int(karat_id), "weight_grams": weight, "classification": classification})
+
+    def entry_settle_lines(self, entry_id):
+        out = []
+        for l in sorted((l for l in self.db.settle_lines if l["entry_id"] == int(entry_id)), key=lambda l: l["line_no"]):
+            out.append({**l, "karat_value": None if l["karat_id"] is None else self.db.karats[l["karat_id"]]["karat_value"]})
+        return out
+
+    def insert_settle_adjust(self, *, entry_id, karat_id, direction, weight, reason):
+        self._fail("settle_adjust")
+        assert direction in ("INCREASE", "DECREASE") and weight > 0 and (reason or "").strip()               # chk_mtsa_*
+        assert self.db.entries[int(entry_id)]["entry_kind"] == "ST_ADJUST"
+        self.db.settle_adjusts[int(entry_id)] = {"entry_id": int(entry_id), "karat_id": int(karat_id), "direction": direction, "weight_grams": weight, "reason": reason}
+
+    def entry_settle_adjust(self, entry_id):
+        row = self.db.settle_adjusts.get(int(entry_id))
+        return None if row is None else {**row, "karat_value": self.db.karats[row["karat_id"]]["karat_value"]}
+
+    def insert_settle_move(self, *, entry_id, trip_id, kind, pool, karat_id, delta):
+        self._fail("settle_move")
+        assert kind in ("ST_MELT", "ST_BAR_SUP", "ST_BAR_MKT", "ST_LOGO", "GOLD_SALE", "ST_RET_MKT", "ST_LOSS", "ST_ADJUST") and delta != 0                     # chk_mtsm_kind, chk_mtsm_delta
+        assert (pool in ("RAW", "LOGO") and karat_id is not None) or (pool == "BAR" and karat_id is None)    # chk_mtsm_pool (062: LOGO)
+        assert self.db.entries[int(entry_id)]["trip_id"] == int(trip_id)                       # fk_mtsm_entry (entry, kind, trip)
+        self.db.settle_moves.append({"entry_id": int(entry_id), "trip_id": int(trip_id), "kind": kind, "pool": pool,
+                                     "karat_id": None if karat_id is None else int(karat_id), "delta": delta})
+
+    def settle_raw_out(self, trip_id, exclude_entry_id=None, *, current=True):
+        live = {e["id"] for e in self._live(trip_id, exclude_entry_id)}
+        out = {}
+        for m in self.db.settle_moves:
+            if m["entry_id"] in live and m["pool"] == "RAW":
+                out[m["karat_id"]] = out.get(m["karat_id"], D("0.000")) - m["delta"]
+        return [{"karat_id": k, "karat_value": self.db.karats[k]["karat_value"], "settle_out": v} for k, v in out.items()]
+
+    def settle_logo_in(self, trip_id, exclude_entry_id=None, *, current=True):
+        live = {e["id"] for e in self._live(trip_id, exclude_entry_id)}
+        out = {}
+        for m in self.db.settle_moves:
+            if m["entry_id"] in live and m["pool"] == "LOGO":
+                out[m["karat_id"]] = out.get(m["karat_id"], D("0.000")) + m["delta"]
+        return [{"karat_id": k, "karat_value": self.db.karats[k]["karat_value"], "settle_in": v} for k, v in out.items()]
+
+    def entry_settle_logo(self, entry_id):
+        return [{"karat_id": m["karat_id"], "karat_value": self.db.karats[m["karat_id"]]["karat_value"], "weight_grams": m["delta"]}
+                for m in self.db.settle_moves if m["entry_id"] == int(entry_id) and m["pool"] == "LOGO"]
+
+    def settle_bar_balance(self, trip_id, exclude_entry_id=None, *, current=True):
+        live = {e["id"] for e in self._live(trip_id, exclude_entry_id)}
+        return sum((m["delta"] for m in self.db.settle_moves if m["entry_id"] in live and m["pool"] == "BAR"), D("0.000"))
+
+    def settle_bar_by_trip(self):
+        out = {}
+        for trip in self.db.trips:
+            balance = self.settle_bar_balance(trip)
+            if balance != 0:
+                out[int(trip)] = balance
+        return out
+
+    def has_distribution_schema(self):
+        return True
+
+    def insert_bar_supplier_link(self, *, entry_id, trip_id, settlement_id, supplier_id, weight):
+        self._fail("bar_link")
+        entry = self.db.entries[int(entry_id)]
+        header = self.db.settlements[int(settlement_id)]
+        assert entry["entry_kind"] == "ST_BAR_SUP" and entry["trip_id"] == int(trip_id)             # fk_mtbarl_entry + chk_mtbarl_kind
+        assert header["source_kind"] == "TRIP_BAR" and header["supplier_id"] == int(supplier_id) and header["delivered_weight_grams"] == weight     # fk_mtbarl_settlement
+        assert weight > 0
+        if int(entry_id) in self.db.bar_sup_links or any(l["settlement_id"] == int(settlement_id) for l in self.db.bar_sup_links.values()):
+            raise _dup("PRIMARY")
+        self.db.bar_sup_links[int(entry_id)] = {"entry_id": int(entry_id), "settlement_id": int(settlement_id), "supplier_id": int(supplier_id), "weight_grams": weight}
+
+    def entry_bar_supplier(self, entry_id):
+        link = self.db.bar_sup_links.get(int(entry_id))
+        if link is None:
+            return None
+        header = self.db.settlements[link["settlement_id"]]
+        return {**link, "supplier_name": self.db.suppliers[link["supplier_id"]]["name"], "delivered_karat_value": header["delivered_karat_value"],
+                "credited_weight_grams": header["credited_weight_grams"], "credited_analytical_grams": header["credited_analytical_grams"],
+                "rounding_difference_grams": header["rounding_difference_grams"], "target_karat_value": header["target_karat_value"]}
+
+    def entry_settle_melt(self, entry_id):
+        doc = self.db.settle_melts.get(int(entry_id))
+        if doc is None:
+            return None
+        return {**doc, "inputs": [{"karat_id": i["karat_id"], "karat_value": self.db.karats[i["karat_id"]]["karat_value"], "weight_grams": i["weight_grams"]}
+                                  for i in sorted((i for i in self.db.settle_melt_inputs if i["entry_id"] == int(entry_id)),
+                                                  key=lambda i: -self.db.karats[i["karat_id"]]["karat_value"])]}
 
     def custody_lots(self, trip_id, exclude_entry_id=None, *, lot_id=None, current=True):
         """Lots CURRENTLY held by this trip's custody: derived from the movements of this trip's live entries, never from the lot's origin."""
@@ -606,6 +792,13 @@ class TripRepo:
                          "gold_sale": self.entry_gold_sale(e["id"]),
                          "gold_buy": self.entry_gold_buy(e["id"]),
                          "lot_settlement": self.entry_lot_settlement(e["id"]),
+                         "settle_melt": self.entry_settle_melt(e["id"]) if e["entry_kind"] == "ST_MELT" else None,
+                         "bar_supplier": self.entry_bar_supplier(e["id"]) if e["entry_kind"] == "ST_BAR_SUP" else None,
+                         "bar_marketer": self.entry_marketer_leg(e["id"]) if e["entry_kind"] == "ST_BAR_MKT" else None,
+                         "settle_logo": self.entry_settle_logo(e["id"]) if e["entry_kind"] == "ST_LOGO" else [],
+                         "settle_cash": self.entry_settle_cash(e["id"]),
+                         "settle_lines": self.entry_settle_lines(e["id"]) if e["entry_kind"] in ("ST_RET_MKT", "ST_LOSS") else [],
+                         "settle_adjust": self.entry_settle_adjust(e["id"]) if e["entry_kind"] == "ST_ADJUST" else None,
                          "book_lines": self.entry_book_lines(e["id"]) if e["entry_kind"].startswith("BK_") else [],
                          "book_trade": self.entry_book_trade(e["id"]) if e["entry_kind"].startswith("BK_") else None,
                          "gain": self.gain_of_entry(e["id"]) if e["entry_kind"] == "BK_GAIN" else None,
@@ -643,7 +836,7 @@ class TripRepo:
     # ---- supplier gold settlements from custody (046)
     def insert_gold_settlement_link(self, *, entry_id, settlement_id, supplier_id, karat_id, designation, weight):
         self._fail("gold_link")
-        assert weight > 0 and designation == "LOGO"                                          # chk_mtgs_weight / chk_mtgs_designation
+        assert weight > 0 and designation in ("LOGO", "UNCLASSIFIED")                      # chk_mtgs_weight / chk_mtgs_designation (061: UNCLASSIFIED)
         assert int(entry_id) in self.db.entries                                              # fk_mtgs_entry
         header = self.db.settlements.get(int(settlement_id))
         assert header is not None and (header["source_kind"], header["supplier_id"], header["delivered_karat_id"],
@@ -673,7 +866,7 @@ class TripRepo:
     def insert_gold_buy_line(self, *, entry_id, line_no, karat_id, designation, weight, price):
         self._fail("gold_buy_line")
         assert int(entry_id) in self.db.gold_buys                                                              # fk_mtgbl_buy
-        assert designation in ("MELT", "LOGO") and weight > 0 and price > 0                                    # chk_mtgbl_*
+        assert designation in ("MELT", "LOGO", "UNCLASSIFIED") and weight > 0 and price > 0                   # chk_mtgbl_* (064: UNCLASSIFIED)
         assert int(karat_id) in self.db.karats                                                                 # fk_mtgbl_karat
         assert not any((l["entry_id"], l["line_no"]) == (int(entry_id), int(line_no)) for l in self.db.gold_buy_lines)
         self.db.gold_buy_lines.append({"entry_id": int(entry_id), "line_no": int(line_no), "karat_id": int(karat_id), "designation": designation,
@@ -709,6 +902,8 @@ class TripRepo:
         assert (reference_price is None) == (deviation is None)                                               # chk_mtgsale_warning
         if source_kind == "CUSTODY_GOLD":                                                                      # chk_mtgsale_source
             assert karat_id is not None and designation in ("MELT", "LOGO", "UNCLASSIFIED") and lot is None and movement_id is None
+        elif source_kind == "TRIP_BAR":                                                                      # 063: the melted bar (Eq21 grams)
+            assert karat_id is None and designation is None and lot is None and movement_id is None
         else:
             assert source_kind == "CUSTODY_LOT" and lot is not None and lot["fineness_permille"] is not None
             assert karat_id is None and designation is None
@@ -1279,6 +1474,9 @@ class Corrections:
         for m in self.db.cash_moves:
             if (m["reference_type"], m["reference_id"]) in found:
                 out[("CASH", m["account_id"])] = out.get(("CASH", m["account_id"]), D("0.00")) + m["amount_delta"]
+        for m in self.db.bank_moves:
+            if (m["reference_type"], m["reference_id"]) in found:
+                out[("BANK", m["account_id"])] = out.get(("BANK", m["account_id"]), D("0.00")) + m["amount_delta"]
         return out
 
     def account_by_customer(self, source_type, source_id, correction_ids=()):
@@ -1307,9 +1505,9 @@ class Corrections:
         self._fail("reversal_cash")
         assert type_code == "REVERSAL_PAYMENT"
         move_id = self.db.next("cash_move")
-        self.db.cash_moves.append({"id": move_id, "account_id": int(account_id), "amount_delta": delta,
-                                   "reference_type": "TRANSACTION_CORRECTION", "reference_id": str(correction_id),
-                                   "type_code": type_code})
+        (self.db.bank_moves if ledger == "BANK" else self.db.cash_moves).append(
+            {"id": move_id, "account_id": int(account_id), "amount_delta": delta, "reference_type": "TRANSACTION_CORRECTION", "reference_id": str(correction_id),
+             "type_code": type_code})
         return str(move_id)
 
     def lock_old_gold_balance(self, karat_id):
@@ -1990,7 +2188,7 @@ class SettlementRepo:
                       reference, notes, key, digest, actor, now, source_kind="SHOP_SCRAP"):
         self._fail("sg_header")
         marketer_key_guard(self.db, key)
-        assert source_kind in ("SHOP_SCRAP", "CUSTODY_GOLD", "CUSTODY_LOT")                                  # chk_sgs_source (046)
+        assert source_kind in ("SHOP_SCRAP", "CUSTODY_GOLD", "CUSTODY_LOT", "TRIP_BAR")                      # chk_sgs_source (046; 061: TRIP_BAR)
         assert delivered_weight > 0 and credited > 0 and analytical > 0                       # chk_sgs_weights
         assert difference == credited - analytical                                            # chk_sgs_rounding
         if any(g["request_key"] == key for g in self.db.settlements.values()):
@@ -2089,7 +2287,7 @@ class SettlementRepo:
 
     def insert_leg(self, *, settlement_id, kind, source_kind, old_gold_movement_id=None, supplier_gold_movement_id=None):
         self._fail("sg_leg")
-        assert source_kind in ("SHOP_SCRAP", "CUSTODY_GOLD", "CUSTODY_LOT", "HOLDING_LOT", "HOLDING_LOGO", "HOLDING_MKT", "TRIP_BOOK")   # chk_sgsl_source (058)
+        assert source_kind in ("SHOP_SCRAP", "CUSTODY_GOLD", "CUSTODY_LOT", "HOLDING_LOT", "HOLDING_LOGO", "HOLDING_MKT", "TRIP_BOOK", "TRIP_BAR")   # chk_sgsl_source (058; 061: TRIP_BAR)
         assert kind != "SCRAP" or source_kind == "SHOP_SCRAP"                                 # chk_sgsl_scrap_only: no second Scrap deduction
         assert self.db.settlements[int(settlement_id)]["source_kind"] == source_kind          # fk_sgsl_source (the composite foreign key)
         assert (kind == "SCRAP" and old_gold_movement_id is not None and supplier_gold_movement_id is None) or \
@@ -2110,14 +2308,14 @@ class SettlementRepo:
 
     def _reversal(self, settlement_id):
         link = next((l for l in list(self.db.gold_settle_links.values()) + list(self.db.lot_settle_links.values()) + list(self.db.book_sup_links.values())
-                     if l["settlement_id"] == int(settlement_id)), None)
+                     + list(self.db.bar_sup_links.values()) if l["settlement_id"] == int(settlement_id)), None)
         return next((c for c in self.db.corrections if c["correction_type"] == "FULL_REVERSAL"
                      and ((c["source_type"] == "SUPPLIER_GOLD_SETTLEMENT" and c["source_id"] == str(settlement_id))
                           or (link is not None and c["source_type"] == "MARKET_TRIP_ENTRY" and c["source_id"] == str(link["entry_id"])))), None)
 
     def custody_entry(self, settlement_id):
         link = next((l for l in list(self.db.gold_settle_links.values()) + list(self.db.lot_settle_links.values()) + list(self.db.book_sup_links.values())
-                     if l["settlement_id"] == int(settlement_id)), None)
+                     + list(self.db.bar_sup_links.values()) if l["settlement_id"] == int(settlement_id)), None)
         if link is None:
             return None
         entry = self.db.entries[link["entry_id"]]

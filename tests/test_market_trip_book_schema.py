@@ -60,13 +60,13 @@ class BookCoreSchemaTests(unittest.TestCase):
         for name, expected in FROZEN.items():
             self.assertEqual(digest(name), expected, name)
         files = {f.name: f for f in load_chain(require_committed=False)}
-        self.assertEqual(len(files), 59)
+        self.assertEqual(len(files), 65)
         self.assertEqual(files[FORWARD].sha256, digest(FORWARD))
         self.assertIn(f"{digest(FORWARD)}  {FORWARD}", (ROOT / "database" / "schema" / "SHA256SUMS").read_text(encoding="utf-8"))
 
     def test_the_schema_level_follows_the_chain(self):
         from services.schema_level import REQUIRED_SCHEMA_LEVEL
-        self.assertEqual(REQUIRED_SCHEMA_LEVEL, 59)
+        self.assertEqual(REQUIRED_SCHEMA_LEVEL, 65)
 
     def test_every_alter_is_guarded_so_a_rerun_changes_nothing(self):
         for statement in re.findall(r"\"(ALTER TABLE [^\"]*)\"", self.forward):
@@ -97,10 +97,10 @@ class BookCoreSchemaTests(unittest.TestCase):
         legacy, book = re.search(r"trip_mode = 'LEGACY' AND entry_kind IN \(([^)]*)\)", rule).group(1), re.search(r"trip_mode = 'BOOK' AND entry_kind IN \(([^)]*)\)", rule).group(1)
         self.assertEqual(re.findall(r"'(\w+)'", legacy), list(EARLIER_KINDS))
         self.assertEqual(re.findall(r"'(\w+)'", book), list(book_rules.SHARED_CASH_KINDS) + list(book_rules.PHASE1_KINDS))
-        for kind in book_rules.LEGACY_ONLY_KINDS:                                                         # the pure rule and the database rule say the same thing
-            self.assertIn(kind, EARLIER_KINDS)
+        for kind in book_rules.LEGACY_ONLY_KINDS:                                                         # the pure rule and the database rule say the same thing (060 adds ST_MELT later)
+            self.assertIn(kind, EARLIER_KINDS + ("ST_MELT",))
             self.assertNotIn(f"'{kind}'", book)
-        self.assertEqual(set(EARLIER_KINDS), set(book_rules.LEGACY_ONLY_KINDS) | set(book_rules.SHARED_CASH_KINDS))
+        self.assertEqual(set(EARLIER_KINDS) | {"ST_MELT"}, set(book_rules.LEGACY_ONLY_KINDS) | set(book_rules.SHARED_CASH_KINDS))
 
     def test_the_legacy_gold_legs_exist_only_for_legacy_entries(self):
         for needle in ("ALTER TABLE market_trip_entry_gold ADD COLUMN trip_mode VARCHAR(8) NOT NULL DEFAULT 'LEGACY'", "CHECK (trip_mode = 'LEGACY')",

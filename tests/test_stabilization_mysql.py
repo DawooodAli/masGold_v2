@@ -409,6 +409,9 @@ class PausingTripRepository(MarketTripRepository):
         self._pause("custody_gold_by_trip")
         return result
 
+    def settle_bar_by_trip(self):
+        return {}                                                           # 060: no melted bar in these fixtures
+
     def custody_lots_by_trip(self):
         result = super().custody_lots_by_trip()
         self._pause("custody_lots_by_trip")

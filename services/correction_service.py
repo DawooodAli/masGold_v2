@@ -274,7 +274,7 @@ class CorrectionService:
                     if delivery is not None:
                         from repositories.supplier_gold_settlement_repository import SupplierGoldSettlementRepository as _BookSuppliers
                         _BookSuppliers(connection).get_supplier(delivery["supplier_id"], lock=True)
-                if source["entry_kind"] in ("BK_DLV_MKT", "BK_RECEIVE"):     # 058: trip -> the marketer account
+                if source["entry_kind"] in ("BK_DLV_MKT", "BK_RECEIVE", "ST_BAR_MKT"):     # 058 / 062: trip -> the marketer account
                     marketer_leg = repo.entry_marketer_leg(source_id)
                     if marketer_leg is not None:
                         from repositories.marketer_custody_repository import MarketerCustodyRepository as _BookMarketers
@@ -497,8 +497,9 @@ class CorrectionService:
             if source["trip_status"] != "OPEN":
                 plan.blockers.append(("TRIP_CLOSED", "العهدة مغلقة: أعد فتحها أولاً قبل عكس أي حركة فيها."))
             for leg in trips.entry_gold_legs(source_id):       # the exact stored Scrap movement is negated, never recomputed
-                code = "REVERSAL_TRIP_ISSUE_IN" if source["entry_kind"] == TRIP_ISSUE else "REVERSAL_TRIP_RETURN_OUT"
-                plan.old_gold.append((int(leg["karat_id"]), int(leg["karat_value"]), -Decimal(str(leg["weight_delta_grams"])), code))
+                reversed_delta = -Decimal(str(leg["weight_delta_grams"]))
+                code = "REVERSAL_TRIP_ISSUE_IN" if reversed_delta > 0 else "REVERSAL_TRIP_RETURN_OUT"        # 065: the label follows the stored sign (ST_ADJUST goes both ways)
+                plan.old_gold.append((int(leg["karat_id"]), int(leg["karat_value"]), reversed_delta, code))
             if source["entry_kind"] == TRIP_ISSUE:
                 # Undoing an issue must not leave a later (unreversed) return larger than what remains in custody.
                 cash = trips.custody_cash(source["trip_id"], exclude_entry_id=source_id, current=True)
@@ -552,6 +553,14 @@ class CorrectionService:
                 else:
                     plan.making.append((str(movement["supplier_id"]), -Decimal(str(movement["amount_delta"])), REVERSAL_MOVEMENT))
                 plan.extra_permissions.append(SMP_REVERSE_PERMISSION)
+            if source["entry_kind"] == "ST_ADJUST":
+                # 065. An INCREASE put the stored grams into the custody (RAW +g) and took them out of Scrap: its reversal removes them from the custody again, so it is blocked when
+                # they were used afterwards. A DECREASE returned grams to Scrap: its reversal needs that Scrap (decided with the generic Scrap check).
+                cash = trips.custody_cash(source["trip_id"], exclude_entry_id=source_id, current=True)
+                gold = trips.custody_gold(source["trip_id"], exclude_entry_id=source_id, current=True)
+                if custody_rules.any_negative(cash, gold):
+                    plan.blockers.append(("DEPENDENT_GOLD_USE_EXISTS",
+                                          "لا يمكن عكس التصحيح لأن الذهب المضاف للعهدة استُخدم بعد تسجيله (سبك أو بيع أو تسوية أو رجوع) — اعكس ما يعتمد عليه أولًا."))
             if source["entry_kind"] == "GOLD_SALE":
                 # 053. The sale document is never rewritten: the entry stops counting, so the exact stored grams are back in custody (an aggregate
                 # line, or the whole lot through its SALE_OUT movement) and the stored proceeds leave the custody cash. No supplier, making,
@@ -572,12 +581,13 @@ class CorrectionService:
                     plan.blockers.append(("DEPENDENT_GOLD_USE_EXISTS",
                                           "لا يمكن عكس الشراء لأن الذهب المشترى استُخدم بعد تسجيله (رجوع للمحل أو سبك أو حمّية أو بيع أو تسوية أو تسليم) — "
                                           "اعكس ما يعتمد عليه أولًا."))
-            if source["entry_kind"] in ("GOLD_SETTLE", "LOT_SETTLE"):
+            if source["entry_kind"] in ("GOLD_SETTLE", "LOT_SETTLE", "ST_BAR_SUP"):
                 # The stored supplier gold movement is restored (never a recomputed amount) and the entry stops consuming custody gold, so the
                 # stored delivered grams are back in custody. No Scrap, cash, making, bank or lot movement is posted. The supplier-side
                 # reversal of this document is refused: the custody entry is the only reversal path.
                 from repositories.supplier_gold_settlement_repository import GOLD_REVERSAL, SupplierGoldSettlementRepository
-                link = trips.entry_lot_settlement(source_id) if source["entry_kind"] == "LOT_SETTLE" else trips.entry_gold_settlement(source_id)
+                link = (trips.entry_lot_settlement(source_id) if source["entry_kind"] == "LOT_SETTLE"
+                        else trips.entry_bar_supplier(source_id) if source["entry_kind"] == "ST_BAR_SUP" else trips.entry_gold_settlement(source_id))
                 movement = None if link is None else SupplierGoldSettlementRepository(connection).gold_movement(link["settlement_id"])
                 if movement is None:
                     plan.blockers.append(("SETTLEMENT_MOVEMENT_MISSING", "حركة ذهب المورد الأصلية للتسوية غير موجودة."))
@@ -693,6 +703,35 @@ class CorrectionService:
                     plan.blockers.append(("DEPENDENT_LOT_USE_EXISTS",
                                           "لا يمكن عكس السبك لأن شحنة ناتجة عنه نُقلت أو سُوّيت للمورد في الحركة "
                                           f"{entry_code(dependent['trip_id'], dependent['entry_no'])} — اعكسها أولاً."))
+            if source["entry_kind"] == "ST_LOGO":
+                # 062: the classification posts nothing outside the settlement ledger: the entry stops counting, so the grams are back in the UNCLASSIFIED row. Decided by arithmetic only:
+                # any later use of the LOGO gold (heating, supplier settlement, hand-over, sale, return) makes the LOGO row without this entry negative. No cascade.
+                if custody_rules.any_negative(trips.custody_cash(source["trip_id"], exclude_entry_id=source_id, current=True),
+                                              trips.custody_gold(source["trip_id"], exclude_entry_id=source_id, current=True), designation="LOGO"):
+                    plan.blockers.append(("DEPENDENT_LOGO_USE_EXISTS",
+                                          "لا يمكن عكس اعتبار المتبقي لوجو لأن ذهب اللوجو استُخدم بعده (حمّية أو تسوية مورد أو تسليم لمسوقجي أو بيع أو رجوع) — اعكس ما يعتمد عليه أولًا."))
+            if source["entry_kind"] == "ST_BAR_MKT":
+                # 062: the STORED marketer leg gets its explicit compensation (the original stays counted) and the entry stops counting, so the grams are back in the BAR pool; a hand-over
+                # whose grams the marketer no longer holds (settled to a supplier, returned) cannot be undone. Rights on top: INTERMEDIARY_HOLDING_REVERSE.
+                from repositories.marketer_custody_repository import MarketerCustodyRepository as _Held
+                leg = trips.entry_marketer_leg(source_id)
+                if leg is None:
+                    plan.blockers.append(("MARKETER_LEG_MISSING", "حركة حساب المسوقجي الأصلية لهذا المستند غير موجودة."))
+                else:
+                    plan.extra_permissions.append(HOLDING_REVERSE_PERMISSION)
+                    grams, delta = Decimal(str(leg["weight_grams"])), Decimal(str(leg["weight_delta"]))
+                    held = Decimal(str(_Held(connection).gold_balance(leg["party_id"])))
+                    if held - grams < 0:
+                        plan.blockers.append(("DEPENDENT_MARKETER_USE_EXISTS",
+                                              f"لا يمكن عكس التسليم لأن المسوقجي لم يعد يحمل {grams:,.3f} جرام من استحقاقه (المتبقي {held:,.3f}) — اعكس ما يعتمد عليه أولًا."))
+                    plan.marketer_trip.append((int(leg["party_id"]), int(source_id), "ST_BAR_MKT", leg["movement_type"] + "_REVERSAL", grams, -delta))
+            if source["entry_kind"] == "ST_MELT":
+                # 060: the melt of the settlement posts nothing outside its own ledger (no cash, Scrap, supplier or lot movement): the entry stops counting, so the melted grams
+                # are back in the RAW pool and the bar leaves the BAR pool. Decided by arithmetic only: a later use of the bar (distribution, sale) makes the BAR pool without
+                # this entry negative. The melt document and its figures stay as history.
+                if trips.settle_bar_balance(source["trip_id"], exclude_entry_id=source_id, current=True) < 0:
+                    plan.blockers.append(("DEPENDENT_SETTLEMENT_USE_EXISTS",
+                                          "لا يمكن عكس تسجيل السبك لأن جزءًا من السبيكة وُزِّع أو بيع بعده — اعكس ما يعتمد عليه أولًا."))
         if source_type == SGS:
             # The STORED movements are what is undone (never a recomputed amount): the delivered grams return to Scrap and the credit is restored.
             from repositories.supplier_gold_settlement_repository import GOLD_REVERSAL, SCRAP_REVERSAL_IN, SupplierGoldSettlementRepository

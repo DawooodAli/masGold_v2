@@ -563,7 +563,7 @@ class SafetyTests(Case):
             service.run("sales", {})
 
     def test_available_reports_follow_the_rights(self):
-        self.assertEqual([r["key"] for r in self.service.available_reports()], ["sales", "stock", "gold", "customers", "suppliers", "treasury"])
+        self.assertEqual([r["key"] for r in self.service.available_reports()], ["sales", "stock", "gold", "customers", "suppliers", "treasury", "market"])
         self.session = session_for({"APP_LOGIN", "REPORTS_VIEW", "CUSTOMERS_VIEW"})
         limited = ReportService(self.session, repository=FakeRepo, authorization=FakeAuthorization(self.session))
         self.assertEqual([r["key"] for r in limited.available_reports()], ["customers"])
