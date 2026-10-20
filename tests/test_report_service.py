@@ -167,6 +167,21 @@ class FakeRepo:
                 {"id": 3, "customer_code": "C000003", "name": "جمال", "mobile": "", "is_active": 1, "balance": D("0.00")},
                 {"id": 4, "customer_code": "C000004", "name": "خالد", "mobile": "", "is_active": 0, "balance": D("50.00")}]
 
+    def customer_open_ledger(self):
+        def row(i, cid, name, code, mobile, active, day, delta, kind, ref, number=None):
+            return {"id": i, "customer_id": cid, "occurred_at": at(day), "amount_delta": D(delta), "reference_type": kind, "reference_id": ref, "reference_code": number or "", "invoice_number": number,
+                    "name": name, "customer_code": code, "mobile": mobile, "is_active": active}
+        return [row(1, 1, "أحمد", "C000001", "0100", 1, 2, "600.00", "INVOICE", 11, "INV0011"), row(2, 1, "أحمد", "C000001", "0100", 1, 3, "900.00", "INVOICE", 12, "INV0012"),
+                row(3, 1, "أحمد", "C000001", "0100", 1, 5, "-500.00", "CUSTOMER_ACCOUNT_SETTLEMENT", 7, "CS000007"),
+                row(4, 2, "بسمة", "C000002", "0111", 1, 4, "-300.00", "CUSTOMER_DEPOSIT", 3, "CD000003"),
+                row(5, 4, "خالد", "C000004", "", 0, 6, "50.00", "INVOICE", 13, "INV0013")]
+
+    def customer_dead_cash(self):
+        def w(i, cid, name, mobile, active, day, amount, reason, reversed_=0):
+            return {"id": i, "customer_id": cid, "name": name, "customer_code": f"C{cid:06d}", "mobile": mobile, "is_active": active, "amount": D(amount), "reason": reason,
+                    "occurred_at": at(day), "is_reversed": reversed_, "reversed_at": at(day + 1) if reversed_ else None}
+        return [w(3, 4, "خالد", "", 0, 9, "70.00", "عميل متوقف"), w(2, 2, "بسمة", "0111", 1, 8, "200.00", "هرب", reversed_=1), w(1, 1, "أحمد", "0100", 1, 7, "500.00", "لا يسدد")]
+
     def customer_before(self, start):
         return [{"customer_id": 1, "total": D("400.00")}]
 
@@ -493,21 +508,93 @@ class GoldMovementTests(Case):
 
 
 class CustomerTests(Case):
-    def test_balances_and_period_movements_are_separated(self):
-        result = self.service.run("customers", {"from": "2026-10-01", "to": "2026-10-31"})
-        t = self.totals(result)
-        self.assertEqual(t["إجمالي المستحق على العملاء (الأرصدة الحالية الموجبة)"], D("1000.00"))         # أحمد (the inactive customer is not listed by default)
-        self.assertEqual(t["إجمالي المستحق للعملاء (الأرصدة الحالية السالبة)"], D("300.00"))
-        self.assertEqual((t["مستحق جديد في الفترة"], t["تحصيل وعربون في الفترة"], t["مرتجع واستبدال في الفترة"]), (D("1000.00"), D("600.00"), D("100.00")))   # 300 + 300 collected
-        first = self.rows(result)[0]
-        self.assertEqual((first["name"], first["opening"], first["up"], first["collections"], first["returns"], first["closing"]), ("أحمد", D("400.00"), D("1000.00"), D("300.00"), D("100.00"), D("1000.00")))   # 400 + 1000 - 300 - 100
-        self.assertEqual(first["ref"], {"type": "CUSTOMER", "id": "1"})
+    """«العملاء» (owner redesign): two cards (what WE owe, what THEY owe) and ONE table of the open items by customer and invoice, oldest first."""
 
-    def test_state_filter_inactive_and_search(self):
-        credit = self.service.run("customers", {"balance": "CREDIT"})
-        self.assertEqual([r["name"] for r in self.rows(credit)], ["بسمة"])
-        self.assertEqual(len(self.rows(self.service.run("customers", {"inactive": "1"}))), 4)
-        self.assertEqual([r["name"] for r in self.rows(self.service.run("customers", {"text": "0111"}))], ["بسمة"])
+    def run_customers(self, **filters):
+        return self.service.run("customers", filters)
+
+    def test_the_two_cards_are_what_we_owe_and_what_they_owe(self):
+        t = self.totals(self.run_customers())
+        self.assertEqual(t["إجمالي اللي عليهم (على العملاء)"], D("1000.00"))                                 # أحمد: 600 + 900 - 500 (the inactive customer is not listed by default)
+        self.assertEqual(t["إجمالي اللي علينا (للعملاء)"], D("300.00"))                                      # بسمة: a 300 deposit
+        self.assertEqual([x["tone"] for x in self.run_customers()["totals"]], ["payable", "receivable"])
+
+    def test_the_payment_settles_the_oldest_invoice_first_and_the_rows_add_up_to_the_balance(self):
+        rows = self.rows(self.run_customers())
+        ahmed = [(r["document"], r["owes"], r["credit"]) for r in rows if r["name"] == "أحمد"]
+        self.assertEqual(ahmed, [("فاتورة INV0011", D("100.00"), None), ("فاتورة INV0012", D("900.00"), None)])        # 600 - 500 = 100 left of the first invoice
+        self.assertEqual(sum(r["owes"] for r in rows if r["name"] == "أحمد"), D("1000.00"))                           # = the customer's real balance
+        basma = [(r["document"], r["owes"], r["credit"]) for r in rows if r["name"] == "بسمة"]
+        self.assertEqual(basma, [("عربون CD000003", None, D("300.00"))])                                                # a credit is a line of its own, in the other column
+
+    def test_a_row_opens_its_invoice_or_the_customer(self):
+        rows = self.rows(self.run_customers())
+        self.assertEqual(next(r["ref"] for r in rows if r["document"] == "فاتورة INV0012"), {"type": "INVOICE", "id": "12"})
+        self.assertEqual(next(r["ref"] for r in rows if r["name"] == "بسمة"), {"type": "CUSTOMER", "id": "2"})
+
+    def test_side_inactive_and_search_filters(self):
+        self.assertEqual({r["name"] for r in self.rows(self.run_customers(balance="CREDIT"))}, {"بسمة"})
+        self.assertEqual({r["name"] for r in self.rows(self.run_customers(balance="OWES"))}, {"أحمد"})
+        self.assertEqual({r["name"] for r in self.rows(self.run_customers(inactive="1"))}, {"أحمد", "بسمة", "خالد"})
+        self.assertEqual({r["name"] for r in self.rows(self.run_customers(text="0111"))}, {"بسمة"})
+        self.assertEqual([r["document"] for r in self.rows(self.run_customers(text="INV0012"))], ["فاتورة INV0012"])
+        with self.assertRaises(ReportError):
+            self.run_customers(balance="SETTLED")
+
+    def test_open_items_unit_cases(self):
+        def ledger(*deltas):
+            return [{"amount_delta": D(x), "id": i} for i, x in enumerate(deltas)]
+        items = lambda *d: [str(i["amount"]) for i in ReportService.open_items(ledger(*d))]
+        self.assertEqual(items("100", "50", "-120"), ["30"])                         # 150 - 120 = 30 left of the second
+        self.assertEqual(items("100", "-100"), [])                                                          # a fully settled customer has no open item
+        self.assertEqual(items("100", "-130"), ["-30"])                                                     # an over-payment becomes a credit of its own
+        self.assertEqual(items("-50", "80"), ["30"])                                                        # a debt after a credit consumes the credit first
+        self.assertEqual(items("100", "-30", "-30"), ["40"])
+
+
+class DeadCashTests(Case):
+    """Dead Cash is its OWN report (owner request): cards (the active written-off total and the count) and one table of the write-offs."""
+
+    def run_dead(self, **filters):
+        return self.service.run("deadcash", filters)
+
+    def names(self, result):
+        return [r["name"] for r in self.rows(result, "deadcash")]
+
+    def test_the_cards_count_only_the_active_write_offs(self):
+        result = self.run_dead()
+        cards = {x["label"]: (x["value"], x["group"], x["tone"]) for x in result["totals"]}
+        self.assertEqual(cards["إجمالي الديون المعدومة"], (D("500.00"), "deadcash", "deadcash"))             # أحمد only: the inactive customer is hidden, the reversed one is not counted
+        self.assertEqual(cards["عدد الديون المعدومة"][0], 1)
+        self.assertEqual(cards["شطب معكوس (غير محسوب)"][0], D("200.00"))
+        self.assertEqual({x["group"] for x in result["totals"]}, {"deadcash"})
+
+    def test_one_table_newest_first_and_the_reversed_one_stays_listed(self):
+        result = self.run_dead()
+        self.assertEqual([t["key"] for t in result["tables"]], ["deadcash"])
+        self.assertEqual([(r["name"], r["amount"], r["state"], r["reason"]) for r in self.rows(result, "deadcash")], [("بسمة", D("200.00"), "معكوس", "هرب"), ("أحمد", D("500.00"), "ساري", "لا يسدد")])
+        self.assertEqual(self.rows(result, "deadcash")[0]["ref"], {"type": "CUSTOMER", "id": "2"})
+
+    def test_state_inactive_and_search_filters(self):
+        self.assertEqual(self.names(self.run_dead(state="ACTIVE")), ["أحمد"])
+        self.assertEqual(self.names(self.run_dead(state="REVERSED")), ["بسمة"])
+        self.assertEqual(self.names(self.run_dead(inactive="1")), ["خالد", "بسمة", "أحمد"])
+        self.assertEqual(self.names(self.run_dead(text="لا يسدد")), ["أحمد"])
+        self.assertEqual(self.totals(self.run_dead(state="REVERSED"))["إجمالي الديون المعدومة"], D("0.00"))
+        with self.assertRaises(ReportError):
+            self.run_dead(state="NOPE")
+
+    def test_the_customers_report_has_no_dead_cash_any_more(self):
+        result = self.service.run("customers", {})
+        self.assertEqual([t["key"] for t in result["tables"]], ["customers"])
+        self.assertFalse(any("المعدومة" in x["label"] for x in result["totals"]))
+
+    def test_the_right_is_the_customers_right(self):
+        session = session_for(ALL - {"CUSTOMERS_VIEW"})
+        limited = ReportService(session, transaction_factory=self.service._transaction, repository=FakeRepo, authorization=FakeAuthorization(session), today=lambda: TODAY)
+        with self.assertRaises(PermissionError):
+            limited.run("deadcash", {})
+        self.assertNotIn("deadcash", [r["key"] for r in limited.available_reports()])
 
 
 class SupplierTests(Case):
@@ -589,10 +676,10 @@ class SafetyTests(Case):
             service.run("sales", {})
 
     def test_available_reports_follow_the_rights(self):
-        self.assertEqual([r["key"] for r in self.service.available_reports()], ["sales", "stock", "gold", "customers", "suppliers", "treasury", "market"])
+        self.assertEqual([r["key"] for r in self.service.available_reports()], ["sales", "stock", "gold", "customers", "deadcash", "suppliers", "treasury", "market"])
         self.session = session_for({"APP_LOGIN", "REPORTS_VIEW", "CUSTOMERS_VIEW"})
         limited = ReportService(self.session, repository=FakeRepo, authorization=FakeAuthorization(self.session))
-        self.assertEqual([r["key"] for r in limited.available_reports()], ["customers"])
+        self.assertEqual([r["key"] for r in limited.available_reports()], ["customers", "deadcash"])
 
     def test_the_reads_are_one_snapshot_per_report(self):
         self.service.run("sales", {})

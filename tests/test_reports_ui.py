@@ -2,6 +2,7 @@
 opening the source document, load / empty / failure states, the session change and reachability at the three sizes. The service is the real ReportService over the fixtures of
 tests/test_report_service.py (no database); the QML-created view model gets it injected, exactly as the other pages do."""
 from contextlib import contextmanager
+from datetime import date
 from decimal import Decimal as D
 import unittest
 
@@ -80,7 +81,7 @@ class ReportsPageTests(harness.InvoicePageTests):
         self.assertIsNone(self.visible_item("reportsNavButton"))
         vm = self.open_reports()
         self.assertIsNotNone(self.visible_item("reportsNavButton"))
-        self.assertEqual([r["key"] for r in vm.reports], ["sales", "stock", "gold", "customers", "suppliers", "treasury", "market"])
+        self.assertEqual([r["key"] for r in vm.reports], ["sales", "stock", "gold", "customers", "deadcash", "suppliers", "treasury", "market"])
         self.assertEqual(self.warnings, [])
 
     def test_the_sales_report_shows_totals_only_without_the_documents_table(self):
@@ -123,7 +124,7 @@ class ReportsPageTests(harness.InvoicePageTests):
     def test_other_reports_show_their_sections_and_the_unavailable_state(self):
         vm = self.open_reports()
         self.wait_report(vm)
-        for key in ("stock", "customers", "suppliers", "treasury"):
+        for key in ("stock", "customers", "deadcash", "suppliers", "treasury"):
             self.click(f"reportChoice_{key}")
             self.wait_until(lambda key=key: not vm.busy and vm.result.get("report") == key and (vm.result["tables"] or vm.result["totals"]), f"{key} loaded")
             QTest.qWait(100)
@@ -199,6 +200,38 @@ class ReportsPageTests(harness.InvoicePageTests):
         self.click("reportChartClose")
         self.wait_until(lambda: not vm.chart, "chart closed")
         self.assertEqual(self.warnings, [])
+
+    def test_the_default_period_follows_the_calendar_until_the_employee_edits_a_date(self):
+        from app.viewmodels import reports_viewmodel as module
+        real = module._today
+        try:
+            module._today = lambda: date(2026, 10, 20)
+            vm = self.open_reports()
+            self.wait_report(vm)
+            self.assertEqual((vm.filters["from"], vm.filters["to"]), ("2026-10-01", "2026-10-20"))             # month start .. today
+            module._today = lambda: date(2026, 11, 3)                                                           # the app stayed open: a new month begins
+            vm.refreshPeriod()
+            self.wait_until(lambda: not vm.busy and vm.result.get("filters", {}).get("from") == "2026-11-01", "the automatic period moved with the calendar")
+            self.assertEqual((vm.filters["from"], vm.filters["to"]), ("2026-11-01", "2026-11-03"))
+            vm.setFilter("from", "2026-01-01")                                                                   # the employee chooses his own period
+            module._today = lambda: date(2026, 12, 9)
+            vm.refreshPeriod()
+            QTest.qWait(150)
+            self.assertEqual((vm.filters["from"], vm.filters["to"]), ("2026-01-01", "2026-11-03"))              # an edited period is never moved
+            self.click("reportApply")
+            self.wait_until(lambda: not vm.busy and vm.result.get("filters", {}).get("from") == "2026-01-01", "the edited period is used")
+        finally:
+            module._today = real
+
+    def test_money_in_a_table_reads_the_number_then_the_unit(self):
+        vm = self.open_reports()
+        self.wait_report(vm)
+        self.click("reportChoice_customers")
+        self.wait_until(lambda: not vm.busy and vm.result.get("report") == "customers" and vm.result["tables"], "customers loaded")
+        QTest.qWait(150)
+        cells = vm.result["tables"][0]["rows"][0]["cells"]
+        self.assertTrue(any(c.endswith(" ج") for c in cells))                                                   # the text itself is "4,000.00 ج" (number first)
+        self.assertFalse(any("⁦" in c for c in cells if c.endswith(" ج")))                                  # no LTR isolate forces the unit to the other side
 
     def test_the_session_change_clears_everything(self):
         vm = self.open_reports()

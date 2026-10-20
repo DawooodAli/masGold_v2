@@ -30,7 +30,7 @@ Item {
         }
     }
 
-    onVisibleChanged: if (visible && reportsVM.canView && reportsVM.report === "") reportsVM.select(reportsVM.reports[0].key)
+    onVisibleChanged: if (visible && reportsVM.canView) { if (reportsVM.report === "") reportsVM.select(reportsVM.reports[0].key); else reportsVM.refreshPeriod() }
 
     function ltr(text) {
         return text === undefined || text === null || text === "" ? "" : "⁦" + text + "⁩"
@@ -38,6 +38,10 @@ Item {
     // the karat colors of the whole app (the top bar balances); 0 = no karat
     function karatColor(k) {
         return k === 18 ? theme.balanceKarat18 : k === 21 ? theme.balanceKarat21 : k === 22 ? theme.balanceKarat22 : k === 24 ? theme.balanceKarat24 : theme.gold
+    }
+    // the tone of an owed-amount card: what WE owe (payable) and what THEY owe (receivable), the same account colors as the rest of the app
+    function toneColor(t) {
+        return t === "payable" ? theme.accountPayable : t === "receivable" ? theme.accountReceivable : t === "deadcash" ? theme.amber : ""
     }
     // a card value that carries an Arabic unit ("6 قطعة", "69.400 جرام") keeps the Arabic reading order; a plain number stays LTR
     function cardValue(text) {
@@ -50,7 +54,7 @@ Item {
         for (var i = 0; i < totals.length; ++i) {
             var g = totals[i].group || ""
             if (!(g in index)) { index[g] = out.length; out.push([]) }
-            out[index[g]].push({ label: totals[i].label, value: totals[i].value, note: totals[i].note, karat: totals[i].karat || 0, order: i })
+            out[index[g]].push({ label: totals[i].label, value: totals[i].value, note: totals[i].note, karat: totals[i].karat || 0, tone: totals[i].tone || "", order: i })
         }
         return out
     }
@@ -312,8 +316,8 @@ Item {
                             Layout.fillHeight: true
                             implicitHeight: totalColumn.implicitHeight + 20
                             radius: theme.radiusSmall; color: theme.panel
-                            border.color: totalCard.modelData.karat ? page.karatColor(totalCard.modelData.karat) : theme.border
-                            border.width: totalCard.modelData.karat ? 2 : 1
+                            border.color: totalCard.modelData.karat ? page.karatColor(totalCard.modelData.karat) : totalCard.modelData.tone ? page.toneColor(totalCard.modelData.tone) : theme.border
+                            border.width: totalCard.modelData.karat || totalCard.modelData.tone ? 2 : 1
                             ColumnLayout {
                                 id: totalColumn
                                 anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
@@ -321,7 +325,7 @@ Item {
                                 spacing: 2
                                 Txt { Layout.fillWidth: true; text: totalCard.modelData.label; color: theme.textSecondary; font.pixelSize: theme.fontBodyStrong; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                                 Txt { objectName: "reportTotalValue_" + totalCard.modelData.order; Layout.fillWidth: true; text: page.cardValue(totalCard.modelData.value)
-                                      color: totalCard.modelData.karat ? page.karatColor(totalCard.modelData.karat) : theme.gold; font.bold: true; font.pixelSize: 20 }
+                                      color: totalCard.modelData.karat ? page.karatColor(totalCard.modelData.karat) : totalCard.modelData.tone ? page.toneColor(totalCard.modelData.tone) : theme.gold; font.bold: true; font.pixelSize: 20 }
                                 Txt { Layout.fillWidth: true; visible: totalCard.modelData.note !== ""; text: totalCard.modelData.note; color: theme.textMuted; font.pixelSize: theme.fontBody; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                             }
                         }
@@ -386,7 +390,7 @@ Item {
                                         required property string modelData
                                         required property int index
                                         Layout.fillWidth: true; Layout.preferredWidth: 1
-                                        text: tableBlock.modelData.columns[index].kind === "text" ? modelData : page.ltr(modelData)
+                                        text: tableBlock.modelData.columns[index].kind === "text" ? modelData : page.cardValue(modelData)
                                         font.pixelSize: theme.fontBodyStrong
                                         horizontalAlignment: tableBlock.modelData.columns[index].kind === "text" ? Text.AlignRight : Text.AlignHCenter
                                     }

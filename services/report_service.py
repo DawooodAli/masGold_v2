@@ -30,9 +30,9 @@ MAX_ROWS = 50000
 ZERO = Decimal("0")
 ZERO3, ZERO2 = Decimal("0.000"), Decimal("0.00")
 BASE_PERMISSION = "REPORTS_VIEW"
-REPORT_PERMISSIONS = {"sales": ("INVOICE_VIEW",), "stock": ("INVENTORY_VIEW",), "gold": (), "customers": ("CUSTOMERS_VIEW",),
+REPORT_PERMISSIONS = {"sales": ("INVOICE_VIEW",), "stock": ("INVENTORY_VIEW",), "gold": (), "customers": ("CUSTOMERS_VIEW",), "deadcash": ("CUSTOMERS_VIEW",),
                       "suppliers": ("SUPPLIER_VIEW",), "treasury": (), "market": ("MARKET_TRIP_MANAGE",)}                      # treasury: CASH_VIEW and / or BANK_VIEW per section
-REPORT_TITLES = {"sales": "المبيعات والمرتجعات", "stock": "المخزون المتاح", "gold": "حركة الذهب", "customers": "العملاء", "suppliers": "الموردون", "treasury": "الخزنة والبنوك", "market": "عهدة السوق والخسائر"}
+REPORT_TITLES = {"sales": "المبيعات والمرتجعات", "stock": "المخزون المتاح", "gold": "حركة الذهب", "customers": "العملاء", "deadcash": "الديون المعدومة (Dead Cash)", "suppliers": "الموردون", "treasury": "الخزنة والبنوك", "market": "عهدة السوق والخسائر"}
 KIND_TEXT = {"SALE": "بيع", "MIXED": "بيع مع شراء كسر", "OLD_GOLD_PURCHASE": "شراء كسر", "RETURN": "مرتجع", "EXCHANGE": "استبدال"}
 STATUS_TEXT = {"IN_STOCK": "متاح", "SOLD": "مباع", "SCRAPPED": "كسر", "REMOVED": "مُخرج", "RETURNED_PENDING": "مرتجع بانتظار الفحص", "CONVERTED_TO_OLD_GOLD": "حُوّل إلى كسر"}
 CLASS_TEXT = {"NEW_STOCK": "جديد", "OLD_STOCK": "قديم"}
@@ -126,8 +126,8 @@ def table(key, title, columns, rows, *, paged=False, note="", karat=None):
     return {"key": key, "title": title, "columns": columns, "rows": rows, "paged": paged, "note": note, "karat": karat}
 
 
-def total(label, value, kind, note="", group="", karat=None):
-    return {"label": label, "value": value, "kind": kind, "note": note, "group": group, "karat": karat}
+def total(label, value, kind, note="", group="", karat=None, tone=None):
+    return {"label": label, "value": value, "kind": kind, "note": note, "group": group, "karat": karat, "tone": tone}
 
 
 class ReportService:
@@ -575,60 +575,108 @@ class ReportService:
         return number
 
     # ------------------------------------------------------------------ 4. customers
+    @staticmethod
+    def open_items(ledger):
+        """The OPEN items of ONE customer's ledger (rows in date order, signed: positive = owed by the customer, negative = owed to the customer). A new row of the same sign as the
+        open items is appended; a row of the opposite sign consumes the OLDEST open items first (oldest first) and any remainder becomes an item of its own sign. The open items always add up
+        to the customer's real balance; which invoice a payment settled is not stored (a settlement is not allocated to an invoice), so this is the oldest-first reading of the same ledger."""
+        queue = []
+        for row in ledger:
+            amount = _dec(row["amount_delta"])
+            if amount == 0:
+                continue
+            while queue and amount != 0 and (queue[0]["amount"] > 0) != (amount > 0):
+                head = queue[0]
+                take = min(abs(head["amount"]), abs(amount))
+                head["amount"] += take if head["amount"] < 0 else -take
+                amount += take if amount < 0 else -take
+                if head["amount"] == 0:
+                    queue.pop(0)
+            if amount != 0:
+                queue.append({"amount": amount, "row": row})
+        return queue
+
     def _customers(self, repo, gate, filters, start, end):
-        state = str(filters.get("balance") or "ALL")
-        if state not in ("ALL", "OWES", "CREDIT", "SETTLED"):
+        """Owner redesign: how much WE owe the customers and how much THEY owe us, detailed by customer and document. Two cards (the two totals), one table of the open items. Current state
+        (the period dates do not apply)."""
+        side = str(filters.get("balance") or "ALL")
+        if side not in ("ALL", "OWES", "CREDIT"):
             raise ReportError("FILTER_INVALID", "فلتر الرصيد غير صحيح.")
         include_inactive = str(filters.get("inactive") or "") in ("1", "true", "True")
         raw, folded = _text_filter(filters)
-        before = {int(r["customer_id"]): _dec(r["total"]) for r in repo.customer_before(start)}
-        period = {}
-        for r in repo.customer_period(start, end):
-            p = period.setdefault(int(r["customer_id"]), {"up": ZERO2, "collections": ZERO2, "returns": ZERO2, "other_down": ZERO2})
-            up, down, kind = _dec(r["owed_up"]), _dec(r["owed_down"]), r["reference_type"]
-            p["up"] += up
-            if kind in ("CUSTOMER_ACCOUNT_SETTLEMENT", "CUSTOMER_DEPOSIT"):
-                p["collections"] += -down
-            elif kind in ("RETURN", "EXCHANGE"):
-                p["returns"] += -down
+        by_customer = {}
+        for r in repo.customer_open_ledger():
+            by_customer.setdefault(int(r["customer_id"]), []).append(r)
+        rows, receivable, payable, shown = [], ZERO2, ZERO2, 0
+        for cid, ledger in by_customer.items():
+            head = ledger[0]
+            if not head["is_active"] and not include_inactive:
+                continue
+            items = self.open_items(ledger)
+            balance = sum((i["amount"] for i in items), ZERO2)
+            if balance == 0 or (side == "OWES" and balance < 0) or (side == "CREDIT" and balance > 0):
+                continue
+            matched = [i for i in items if _matches(folded, raw, head["name"], head["mobile"], head["customer_code"], self._document_label(i["row"]))]
+            if not matched:
+                continue
+            shown += 1
+            for item in matched:
+                amount = item["amount"]
+                receivable += amount if amount > 0 else ZERO2
+                payable += -amount if amount < 0 else ZERO2
+                r = item["row"]
+                invoice = r["reference_type"] == "INVOICE" and r["reference_id"]
+                rows.append({"name": head["name"], "document": self._document_label(r), "date": _dateish(r["occurred_at"]), "owes": amount if amount > 0 else None,
+                             "credit": -amount if amount < 0 else None, "ref": {"type": "INVOICE", "id": str(r["reference_id"])} if invoice else {"type": "CUSTOMER", "id": str(cid)}})
+        rows.sort(key=lambda x: (x["name"], x["date"]))
+        cols = [col("name", "العميل"), col("document", "الفاتورة / المستند"), col("date", "التاريخ", "date"), col("owes", "عليه", "money"), col("credit", "له", "money")]
+        totals = [total("إجمالي اللي علينا (للعملاء)", payable, "money", "أرصدة العملاء الدائنة", "money", tone="payable"),
+                  total("إجمالي اللي عليهم (على العملاء)", receivable, "money", "أرصدة العملاء المدينة", "money", tone="receivable")]
+        meaning = ["الإشارة: «عليه» مستحق للمحل، «له» مستحق للعميل. المصدر دفتر حساب العميل نفسه الذي يقرأه كشف الحساب.",
+                   "السطور هي بنود الحساب المفتوحة بمنطق الأقدم أولًا: كل تحصيل أو مرتجع أو عربون يُخصم من أقدم بند مفتوح لأن التحصيل لا يُربط بفاتورة بعينها. مجموع بنود العميل = رصيده الحالي.",
+                   "الأرقام هي رصيد اليوم، ولا تتأثر بتاريخ الفترة."]
+        return {"meaning": meaning, "tables": [table("customers", "الأرصدة المفتوحة حسب العميل والفاتورة", cols, rows, paged=True)], "totals": totals}
+
+    # ------------------------------------------------------------------ 4b. Dead Cash (its own report, beside the customers)
+    def _deadcash(self, repo, gate, filters, start, end):
+        """Owner request: Dead Cash apart from the customers report. Cards: the ACTIVE written-off total and the number of write-offs (a reversed one is listed, dimmed, and not counted); below them
+        one table of the write-offs (customer, date, amount, reason, state). Filters: state (active / reversed), inactive customers, search. All-time history (the period dates do not apply)."""
+        state = str(filters.get("state") or "ALL")
+        if state not in ("ALL", "ACTIVE", "REVERSED"):
+            raise ReportError("FILTER_INVALID", "فلتر الحالة غير صحيح.")
+        include_inactive = str(filters.get("inactive") or "") in ("1", "true", "True")
+        raw, folded = _text_filter(filters)
+        rows, active_total, active_count, reversed_count, reversed_total = [], ZERO2, 0, 0, ZERO2
+        for w in repo.customer_dead_cash():
+            if not w["is_active"] and not include_inactive:
+                continue
+            if not _matches(folded, raw, w["name"], w["mobile"], w["customer_code"], w["reason"]):
+                continue
+            amount, reversed_ = _dec(w["amount"]), bool(w["is_reversed"])
+            if (state == "ACTIVE" and reversed_) or (state == "REVERSED" and not reversed_):
+                continue
+            if reversed_:
+                reversed_count += 1
+                reversed_total += amount
             else:
-                p["other_down"] += -down
-        rows, receivable, payable, counts = [], ZERO2, ZERO2, {"OWES": 0, "CREDIT": 0, "SETTLED": 0}
-        up_all = col_all = ret_all = other_all = ZERO2
-        for c in repo.customer_rows():
-            if not c["is_active"] and not include_inactive:
-                continue
-            if not _matches(folded, raw, c["name"], c["mobile"], c["customer_code"]):
-                continue
-            balance = _dec(c["balance"])
-            st = "OWES" if balance > 0 else "CREDIT" if balance < 0 else "SETTLED"
-            if state != "ALL" and st != state:
-                continue
-            cid = int(c["id"])
-            p = period.get(cid, {"up": ZERO2, "collections": ZERO2, "returns": ZERO2, "other_down": ZERO2})
-            opening = before.get(cid, ZERO2)
-            closing = opening + p["up"] - p["collections"] - p["returns"] - p["other_down"]
-            counts[st] += 1
-            receivable += balance if balance > 0 else ZERO2
-            payable += -balance if balance < 0 else ZERO2
-            up_all += p["up"]
-            col_all += p["collections"]
-            ret_all += p["returns"]
-            other_all += p["other_down"]
-            rows.append({"code": c["customer_code"], "name": c["name"], "mobile": c["mobile"] or "", "opening": opening, "up": p["up"], "collections": p["collections"], "returns": p["returns"],
-                         "other": p["other_down"], "closing": closing, "balance": balance, "state": {"OWES": "على العميل", "CREDIT": "للعميل", "SETTLED": "الحساب متوازن"}[st],
-                         "ref": {"type": "CUSTOMER", "id": str(cid)}})
-        cols = [col("code", "الكود"), col("name", "العميل"), col("mobile", "الجوال"), col("opening", "رصيد أول الفترة", "money"), col("up", "مستحق جديد على العميل", "money"),
-                col("collections", "تحصيل وعربون", "money"), col("returns", "مرتجع واستبدال", "money"), col("other", "تخفيضات أخرى", "money"), col("closing", "رصيد آخر الفترة", "money"),
-                col("balance", "الرصيد الحالي", "money"), col("state", "الحالة")]
-        totals = [total("عدد العملاء المعروضين", len(rows), "count"), total("إجمالي المستحق على العملاء (الأرصدة الحالية الموجبة)", receivable, "money"),
-                  total("إجمالي المستحق للعملاء (الأرصدة الحالية السالبة)", payable, "money"), total("عدد العملاء على الحساب / للعميل / متوازن", f"{counts['OWES']} / {counts['CREDIT']} / {counts['SETTLED']}", "text"),
-                  total("مستحق جديد في الفترة", up_all, "money"), total("تحصيل وعربون في الفترة", col_all, "money"), total("مرتجع واستبدال في الفترة", ret_all, "money"),
-                  total("تخفيضات أخرى في الفترة", other_all, "money", "عكس وتصحيح وشطب وغيرها")]
-        meaning = ["الإشارة: موجب = على العميل (مستحق للمحل)، سالب = للعميل. المصدر دفتر حساب العميل نفسه الذي يقرأه كشف الحساب.",
-                   "الأعمدة تفصل المستحق الجديد عن التحصيل والمرتجع؛ التحصيل هنا حركة على الحساب وليس بالضرورة نقدية الفترة. الرصيد الحالي هو رصيد اليوم لا رصيد نهاية الفترة المختارة.",
-                   "يفتح العميل من الجدول إلى شاشة العملاء وكشف حسابه."]
-        return {"meaning": meaning, "tables": [table("customers", "أرصدة العملاء", cols, rows, paged=True)], "totals": totals}
+                active_total += amount
+                active_count += 1
+            rows.append({"name": w["name"], "date": _dateish(w["occurred_at"]), "amount": amount, "reason": w["reason"] or "", "state": "معكوس" if reversed_ else "ساري",
+                         "ref": {"type": "CUSTOMER", "id": str(w["customer_id"])}})
+        cols = [col("name", "العميل"), col("date", "تاريخ الشطب", "date"), col("amount", "المبلغ المعدوم", "money"), col("reason", "السبب"), col("state", "الحالة")]
+        totals = [total("إجمالي الديون المعدومة", active_total, "money", "الشطب السارية فقط", "deadcash", tone="deadcash"),
+                  total("عدد الديون المعدومة", active_count, "count", "", "deadcash", tone="deadcash")]
+        if reversed_count:
+            totals.append(total("شطب معكوس (غير محسوب)", reversed_total, "money", f"{reversed_count} شطب", "deadcash"))
+        meaning = ["الدين المعدوم هو رصيد على العميل شطبه المحل؛ الشطب المعكوس يبقى في القائمة بحالة «معكوس» ولا يدخل الإجماليات."]
+        return {"meaning": meaning, "tables": [table("deadcash", "الديون المعدومة", cols, rows, paged=True)], "totals": totals}
+
+    @staticmethod
+    def _document_label(row):
+        """«فاتورة INV0001» for an invoice, otherwise the kind of document and its code."""
+        kind = row["reference_type"] or "UNKNOWN"
+        code = row.get("invoice_number") or row.get("reference_code") or ""
+        return (REF_TEXT.get(kind, kind) + (f" {code}" if code else "")).strip()
 
     # ------------------------------------------------------------------ 5. suppliers
     def _suppliers(self, repo, gate, filters, start, end):

@@ -29,8 +29,10 @@ FILTER_SPECS = {
              {"key": "factory", "label": "المصنع", "options": [("", "الكل")], "dynamic": True},
              {"key": "weight_min", "label": "الوزن من (جرام)", "type": "text"},
              {"key": "weight_max", "label": "إلى (جرام)", "type": "text"}],
-    "customers": [{"key": "balance", "label": "الرصيد", "options": [ALL, ("OWES", "على العميل"), ("CREDIT", "للعميل"), ("SETTLED", "متوازن")]},
+    "customers": [{"key": "balance", "label": "الرصيد", "options": [ALL, ("OWES", "عليهم (على العميل)"), ("CREDIT", "علينا (للعميل)")]},
                   {"key": "inactive", "label": "العملاء المتوقفون", "options": [("", "غير معروضين"), ("1", "معروضون")]}],
+    "deadcash": [{"key": "state", "label": "الحالة", "options": [ALL, ("ACTIVE", "ساري"), ("REVERSED", "معكوس")]},
+                 {"key": "inactive", "label": "العملاء المتوقفون", "options": [("", "غير معروضين"), ("1", "معروضون")]}],
     "suppliers": [],
     "treasury": [],
     "market": [],
@@ -50,6 +52,15 @@ def _cell(kind, value):
     if kind == "count":
         return str(value)
     return str(value)
+
+
+def _today():
+    return date.today()
+
+
+def month_period(today):
+    """The default period of every report: the first day of the CURRENT month up to today (it moves by itself with the calendar)."""
+    return today.replace(day=1).isoformat(), today.isoformat()
 
 
 HIDDEN_ON_SCREEN = {("sales", "documents"), ("stock", "items"), ("stock", "summary")}
@@ -80,7 +91,7 @@ def result_view(built):
                        "paged": t["paged"], "rowCount": t.get("row_count", len(rows)), "page": t.get("page", 1), "pageSize": t.get("page_size", len(rows)), "hasMore": t.get("has_more", False),
                        "note": t.get("note", ""), "karat": int(t.get("karat") or 0)})
     return {"report": built["report"], "title": built["title"], "filters": built["filters"], "meaning": built["meaning"], "applied": built.get("applied", []), "tables": tables,
-            "totals": [{"label": clean_label(x["label"]), "value": _cell(x["kind"], x["value"]) if x["kind"] != "text" else str(x["value"]), "note": x["note"], "group": x.get("group", ""), "karat": int(x.get("karat") or 0)}
+            "totals": [{"label": clean_label(x["label"]), "value": _cell(x["kind"], x["value"]) if x["kind"] != "text" else str(x["value"]), "note": x["note"], "group": x.get("group", ""), "karat": int(x.get("karat") or 0), "tone": x.get("tone") or ""}
                        for x in built["totals"]], "options": built.get("options", {}), "error": ""}
 
 
@@ -98,6 +109,7 @@ class ReportsViewModel(QObject):
         self._request, self._latest, self._busy = 0, 0, False
         self._workers = set()
         self._chart, self._chart_request = {}, 0
+        self._period_edited = False                                           # False: the period is the automatic one (month start .. today)
 
     # ---- session
     def _get_session(self):
@@ -212,7 +224,8 @@ class ReportsViewModel(QObject):
         if report not in REPORT_TITLES or report == self._report:
             return
         self._report, self._result, self._error, self._message = report, {}, "", ""
-        self._filters = {"from": date.today().replace(day=1).isoformat(), "to": date.today().isoformat(), "text": ""}
+        self._period_edited = False
+        self._filters = {"from": month_period(_today())[0], "to": month_period(_today())[1], "text": ""}
         for spec in FILTER_SPECS.get(report, []):
             self._filters[spec["key"]] = "" if spec.get("type") == "text" else spec["options"][0][0]
         self.changed.emit()
@@ -221,8 +234,22 @@ class ReportsViewModel(QObject):
     @Slot(str, str)
     def setFilter(self, key, value):
         if key in ("from", "to", "text") or any(s["key"] == key for s in FILTER_SPECS.get(self._report, [])):
+            if key in ("from", "to"):
+                self._period_edited = True                                    # the employee chose a period: it is never moved automatically
             self._filters[key] = value
             self.changed.emit()
+
+    @Slot()
+    def refreshPeriod(self):
+        """Called when the page is shown again: an automatic period (never edited) follows the calendar - the first day of the current month up to today - and the report is
+        re-read when it moved (a new day or a new month). An edited period is left alone."""
+        if not self._report or self._period_edited:
+            return
+        first, last = month_period(_today())
+        if (self._filters.get("from"), self._filters.get("to")) != (first, last):
+            self._filters["from"], self._filters["to"] = first, last
+            self.changed.emit()
+            self.run(1)
 
     @Slot()
     def apply(self):
@@ -232,6 +259,8 @@ class ReportsViewModel(QObject):
     def run(self, page):
         if not self._report or self._service is None or self._session is None:
             return
+        if not self._period_edited:                                           # an automatic period is re-evaluated at every read (a session kept open past midnight / month end)
+            self._filters["from"], self._filters["to"] = month_period(_today())
         report, filters = self._report, {**self._filters, "page": max(1, int(page))}
         self._error, self._message, self._busy = "", "", True
         self._request += 1

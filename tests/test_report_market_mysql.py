@@ -83,5 +83,39 @@ class GoldMovementMySqlTests(unittest.TestCase):
         self.assertEqual(shown, direct)
 
 
+@unittest.skipUnless(os.environ.get("MASGOLD_BOOK_REHEARSAL") == "1", "explicit rehearsal-only opt-in")
+class CustomersReportMySqlTests(unittest.TestCase):
+    """«العملاء»: the open items on real MySQL add up to the real balances (independent SQL aggregate), read only."""
+
+    @classmethod
+    def setUpClass(cls):
+        BookCoreMySqlTests.setUpClass()
+        cls.h = BookCoreMySqlTests("test_the_migration_is_registered_and_the_objects_exist")
+        cls.result = ReportService(cls.h.session).run("customers", {"inactive": "1"})
+
+    def test_the_two_cards_equal_the_sums_of_the_real_balances(self):
+        rows = self.h.query("SELECT c.id, COALESCE(SUM(t.amount_delta),0) AS b FROM customers c LEFT JOIN customer_transactions t ON t.customer_id = c.id GROUP BY c.id")
+        owes = sum((D(str(r["b"])) for r in rows if D(str(r["b"])) > 0), D("0.00"))
+        credit = sum((-D(str(r["b"])) for r in rows if D(str(r["b"])) < 0), D("0.00"))
+        cards = {x["label"]: x["value"] for x in self.result["totals"]}
+        self.assertEqual(cards["إجمالي اللي عليهم (على العملاء)"], owes)
+        self.assertEqual(cards["إجمالي اللي علينا (للعملاء)"], credit)
+
+    def test_dead_cash_equals_an_independent_aggregate(self):
+        row = self.h.query("SELECT COALESCE(SUM(CASE WHEN is_reversed = 0 THEN amount ELSE 0 END),0) AS active, SUM(is_reversed = 0) AS n, COUNT(*) AS everything FROM dead_cash_writeoffs")[0]
+        dead = ReportService(self.h.session).run("deadcash", {"inactive": "1"})
+        cards = {x["label"]: x["value"] for x in dead["totals"]}
+        self.assertEqual(cards["إجمالي الديون المعدومة"], D(str(row["active"])))
+        self.assertEqual(cards["عدد الديون المعدومة"], int(row["n"] or 0))
+        self.assertEqual(len(next(t for t in dead["tables"] if t["key"] == "deadcash")["rows"]), int(row["everything"]))
+
+    def test_every_customer_rows_add_up_to_the_customer_balance(self):
+        per = {}
+        for r in next(t for t in self.result["tables"] if t["key"] == "customers")["rows"]:
+            per[r["name"]] = per.get(r["name"], D("0.00")) + (r["owes"] or D("0.00")) - (r["credit"] or D("0.00"))
+        for r in self.h.query("SELECT c.name, COALESCE(SUM(t.amount_delta),0) AS b FROM customers c JOIN customer_transactions t ON t.customer_id = c.id GROUP BY c.id, c.name HAVING SUM(t.amount_delta) <> 0"):
+            self.assertEqual(per.get(r["name"]), D(str(r["b"])), r["name"])
+
+
 if __name__ == "__main__":
     unittest.main()

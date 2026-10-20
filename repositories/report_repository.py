@@ -253,6 +253,28 @@ class ReportRepository(BaseRepository):
             "SELECT c.id, c.customer_code, c.name, c.mobile, c.is_active, "
             "COALESCE((SELECT SUM(t.amount_delta) FROM customer_transactions t WHERE t.customer_id = c.id), 0) AS balance FROM customers c ORDER BY c.name, c.id")
 
+    def customer_open_ledger(self):
+        """The ledger rows of every customer whose balance is not zero, with the customer and the invoice number of an invoice row (ONE statement; the service allocates the credits)."""
+        return self._fetch_all(
+            """
+            SELECT t.id, t.customer_id, t.occurred_at, t.amount_delta, t.reference_type, t.reference_id, t.reference_code, iv.invoice_number,
+                   c.name, c.customer_code, c.mobile, c.is_active
+            FROM customer_transactions t
+            JOIN customers c ON c.id = t.customer_id
+            LEFT JOIN invoices iv ON t.reference_type = 'INVOICE' AND iv.id = t.reference_id
+            WHERE t.customer_id IN (SELECT x.customer_id FROM customer_transactions x GROUP BY x.customer_id HAVING SUM(x.amount_delta) <> 0)
+            ORDER BY c.name, c.id, t.occurred_at, t.id
+            """)
+
+    def customer_dead_cash(self):
+        """Every Dead Cash write-off (a receivable the owner wrote off) with its customer and its reversal state (ONE statement; a reversed write-off stays listed)."""
+        return self._fetch_all(
+            """
+            SELECT w.id, w.customer_id, c.name, c.customer_code, c.mobile, c.is_active, w.amount, w.reason, w.occurred_at, w.is_reversed, w.reversed_at
+            FROM dead_cash_writeoffs w JOIN customers c ON c.id = w.customer_id
+            ORDER BY w.occurred_at DESC, w.id DESC
+            """)
+
     def customer_before(self, start):
         return self._fetch_all("SELECT customer_id, COALESCE(SUM(amount_delta), 0) AS total FROM customer_transactions WHERE occurred_at < %s GROUP BY customer_id", (start,))
 
