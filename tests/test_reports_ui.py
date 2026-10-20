@@ -154,7 +154,7 @@ class ReportsPageTests(harness.InvoicePageTests):
         self.assertIsNotNone(self.visible_item("reportTableUnavailable_0"))                         # never a successful empty report
         FakeRepo.tables["market_trip_book_lines"] = True
 
-    def test_the_market_report_shows_melts_losses_returns_and_cash_with_totals(self):
+    def test_the_market_report_shows_only_the_loss_totals(self):
         self.root.setWidth(1080)
         self.root.setHeight(680)
         vm = self.open_reports()
@@ -163,10 +163,9 @@ class ReportsPageTests(harness.InvoicePageTests):
         self.click("reportChoice_market")
         self.wait_until(lambda: not vm.busy and vm.result.get("report") == "market" and vm.result["tables"], "market report loaded")
         QTest.qWait(150)
-        self.assertEqual([t["key"] for t in vm.result["tables"]], ["melts", "losses", "returns", "adjusts", "cash"])
+        self.assertEqual([t["key"] for t in vm.result["tables"]], ["summary"])                       # totals only: no detail tables
         labels = [x["label"] for x in vm.result["totals"]]
-        self.assertIn("خسية بوتقة — سبيكة (مكافئ عيار 21) (فعّال)", labels)
-        self.assertIn("مصروف (فعّال)", labels)
+        self.assertIn("إجمالي الفقد والخسية (مكافئ عيار 21)", labels)
         self.assertIsNotNone(self.visible_item("reportMeaning_0"))
         self.assertEqual(self.warnings, [])
 

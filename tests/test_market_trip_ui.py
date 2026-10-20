@@ -108,6 +108,8 @@ class MarketTripPageTests(harness.InvoicePageTests):
         self.root.setProperty("currentPage", 15)
         QTest.qWait(250)
         self.wait_idle()
+        self.root.findChild(QObject, "marketTripsPage").setProperty("advancedActions", True)       # the older actions are hidden by default (owner review); these tests drive them
+        QTest.qWait(60)
 
     def wait_idle(self):
         self.wait_until(lambda: not self.tvm.busy, "trip view model idle")

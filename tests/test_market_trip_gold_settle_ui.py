@@ -5,7 +5,7 @@ from decimal import Decimal as D
 from unittest.mock import patch
 import unittest
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QObject, QPointF, Qt
 from PySide6.QtTest import QTest
 
 from tests import test_invoice_page_qml as harness
@@ -479,6 +479,26 @@ class DistributionPageTests(GoldSettlePageTests):
         self.wait_idle()
         self.assertEqual(self.db.physical(1), s21 - D("2.000"))
         self.assertEqual(self.warnings, [])
+
+
+    def test_the_older_actions_are_hidden_by_default_and_the_new_workflow_stays_visible(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.melted_trip()
+        page = self.root.findChild(QObject, "marketTripsPage")
+        page.setProperty("advancedActions", False)                                                  # the production default
+        QTest.qWait(150)
+        for name in ("lotIssueButton", "lotReturnButton", "meltButton", "heatButton", "classifyLogoButton", "barMarketerButton", "custodyLotSettleButton",
+                     "custodyLogoHoldButton", "custodyLotHoldButton"):
+            self.assertIsNone(self.visible_item(name), name)
+        for name in ("settleMeltButton", "custodyDisposeButton", "custodySaleButton", "custodyGoldBuyButton", "custodyAdjustButton", "custodyGoldSettleButton",
+                     "custodyCashSettleButton", "custodyPayButton", "issueMoreButton", "returnButton", "closeTripButton"):
+            self.assertIsNotNone(self.visible_item(name), name)
+        self.assertIsNotNone(self.visible_item("goldActions"))
+        self.assertIsNotNone(self.visible_item("cashActions"))
+        page.setProperty("advancedActions", True)
+        QTest.qWait(150)
+        self.assertIsNotNone(self.visible_item("meltButton"))                                       # one switch brings them back
 
 
 # The base classes carry their own tests: only this module's tests are collected here.

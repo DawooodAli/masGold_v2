@@ -14,6 +14,9 @@ Item {
     readonly property var detail: vm ? vm.detail : ({})
     readonly property var recon: vm ? vm.reconciliation : ({})                       // R1: the READ-ONLY reconciliation preview of the selected BOOK trip
     property bool reconMore: false
+    // Owner review (2026-10-20): the older custody actions (own melt / heat / bar lots / hand-over to a marketer / classify as logo) are hidden from the normal screen; the code and the
+    // services stay, so a single switch brings them back. Their history stays readable and reversible from the history list.
+    property bool advancedActions: false
     readonly property var ctx: vm ? vm.context : ({})
     readonly property bool hasSelection: !!vm && vm.selectedTripId !== "" && !!detail && detail.id !== undefined
 
@@ -483,7 +486,8 @@ Item {
                     }
                     // THE primary panel of the page: what is outside the shop now (cash and every karat / designation), right under the title.
                     Section {
-                        title: "في العهدة (خارج المحل)"
+                        objectName: "goldCustodySection"
+                        title: "عهدة الذهب"
                         accent: theme.amber
                         RowLayout {
                             Layout.fillWidth: true
@@ -494,20 +498,6 @@ Item {
                             Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: "رجع"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
                             Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: "سُبك / مدفوع"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
                             Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: "المتبقي"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
-                        }
-                        FigureRow {
-                            objectName: "custodyCashRow"
-                            label: "النقدية"
-                            issued: page.detail.cash ? page.detail.cash.issued : ""
-                            returned: page.detail.cash ? page.detail.cash.returned : ""
-                            melted: page.detail.cash && (page.detail.cash.hasPaid || page.detail.cash.hasReceived || page.detail.cash.hasSpent || page.detail.cash.hasSettled)
-                                    ? [page.detail.cash.hasPaid ? "مدفوع " + page.detail.cash.paid : "",
-                                       page.detail.cash.hasReceived ? "من البيع +" + page.detail.cash.received : "",
-                                       page.detail.cash.hasSpent ? "مشتريات −" + page.detail.cash.spent : "",
-                                       page.detail.cash.hasSettled ? "تسوية −" + page.detail.cash.settled : ""].filter(function(t) { return t !== "" }).join(" • ")
-                                    : "—"
-                            outstanding: page.detail.cash ? page.detail.cash.outstanding : ""
-                            zero: page.detail.cash ? page.detail.cash.zero : true
                         }
                         Repeater {
                             model: page.detail.gold || []
@@ -535,6 +525,98 @@ Item {
                             outstanding: (page.detail.bar || "") + " جرام"
                             zero: !page.detail.barVisible
                         }
+                    Flow {
+                        objectName: "goldActions"
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        Btn { objectName: "lotIssueButton"; text: "إخراج سبكة من المحل"; visible: page.advancedActions && !!page.detail.open && !page.detail.isBook
+                              enabled: !!page.vm && !page.vm.writing && page.vm.shopLots.length > 0
+                              onClicked: lotIssueDialog.openFor(page.detail.id) }
+                        Btn { objectName: "lotReturnButton"; text: "رجوع ناتج السبك"; visible: page.advancedActions && !!page.detail.open && !page.detail.isBook
+                              enabled: !!page.detail.lotReturnAvailable && !!page.vm && !page.vm.writing
+                              onClicked: lotReturnDialog.openFor(page.detail.id) }
+                        Btn { objectName: "meltButton"; text: "سبك"; visible: page.advancedActions && !!page.detail.open && !page.detail.isBook
+                              enabled: !!page.detail.meltAvailable && !!page.vm && !page.vm.writing
+                              onClicked: meltDialog.openFor(page.detail.id) }
+                        Btn { objectName: "settleMeltButton"; text: "تسجيل سبك (بعد الرجوع)"; visible: !!page.detail.open && !page.detail.isBook
+                              enabled: !!page.detail.settleMeltAvailable && !!page.vm && !page.vm.writing
+                              onClicked: settleMeltDialog.openFor(page.detail.id) }
+                        Btn { objectName: "heatButton"; text: "حمّية اللوجو"; visible: page.advancedActions && !!page.detail.open && !page.detail.isBook
+                              enabled: !!page.detail.heatAvailable && !!page.vm && !page.vm.writing
+                              onClicked: heatDialog.openFor(page.detail.id) }
+                        Btn { objectName: "classifyLogoButton"; text: "اعتبار المتبقي لوجو"; visible: page.advancedActions && !!page.detail.open && !page.detail.isBook
+                              enabled: !!page.detail.classifyLogoAvailable && !!page.vm && !page.vm.writing
+                              onClicked: classifyLogoDialog.openFor(page.detail.id) }
+                        Btn { objectName: "custodyGoldBuyButton"; text: "شراء ذهب نقدي"; visible: !!page.detail.open && !page.detail.isBook
+                              enabled: !!page.detail.buyAvailable && !!page.vm && !page.vm.writing
+                              onClicked: goldBuyDialog.openFor(page.detail.id) }
+                        Btn { objectName: "custodySaleButton"; text: "بيع ذهب من العهدة"; visible: !!page.detail.open && !page.detail.isBook
+                              enabled: !!page.detail.saleAvailable && !!page.vm && !page.vm.writing
+                              onClicked: goldSaleDialog.openFor(page.detail.id) }
+                        Btn { objectName: "custodyDisposeButton"; text: "مرتجع سوق / خسية"; visible: !!page.detail.open && !page.detail.isBook
+                              enabled: !!page.detail.disposeAvailable && !!page.vm && !page.vm.writing
+                              onClicked: disposeDialog.openFor(page.detail.id) }
+                        Btn { objectName: "custodyAdjustButton"; text: "تصحيح وزن الإخراج"; visible: !!page.detail.open && !page.detail.isBook
+                              enabled: !!page.detail.adjustAvailable && !!page.vm && !page.vm.writing
+                              onClicked: adjustDialog.openFor(page.detail.id) }
+                        Btn { objectName: "custodyGoldSettleButton"; text: "تسوية ذهب من العهدة"; visible: !!page.detail.open && !page.detail.isBook
+                              enabled: !!page.detail.goldSettleAvailable && !!page.vm && !page.vm.writing
+                              onClicked: goldSettleDialog.openFor(page.detail.id) }
+                        Btn { objectName: "custodyLotSettleButton"; text: "تسوية سبكة من العهدة"; visible: page.advancedActions && !!page.detail.open && !page.detail.isBook
+                              enabled: !!page.detail.lotSettleAvailable && !!page.vm && !page.vm.writing
+                              onClicked: lotSettleDialog.openFor(page.detail.id) }
+                        Btn { objectName: "barMarketerButton"; text: "تسليم سبيكة لمسوقجي"; visible: page.advancedActions && !!page.detail.barMarketerVisible
+                              enabled: !!page.detail.barMarketerAvailable && !!page.vm && !page.vm.writing
+                              onClicked: barMarketerDialog.openFor(page.detail.id) }
+                        Btn { objectName: "custodyLotHoldButton"; text: "تسليم ذهب لمسوقجي"; visible: page.advancedActions && !!page.detail.holdVisible && !page.detail.isBook
+                              enabled: !!page.detail.holdAvailable && !!page.vm && !page.vm.writing
+                              onClicked: lotHoldDialog.openFor(page.detail.id) }
+                        Btn { objectName: "custodyLogoHoldButton"; text: "تسليم لوجو لمسوقجي"; visible: page.advancedActions && !!page.detail.holdVisible && !page.detail.isBook
+                              enabled: !!page.detail.logoHoldAvailable && !!page.vm && !page.vm.writing
+                              onClicked: logoHoldDialog.openFor(page.detail.id) }
+                    }
+                    }
+                    Section {
+                        objectName: "cashCustodySection"
+                        title: "عهدة النقدية"
+                        accent: theme.green
+                        RowLayout {
+                            Layout.fillWidth: true
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 8
+                            Item { Layout.preferredWidth: 150 }
+                            Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: "أُخرج"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+                            Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: "رجع"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+                            Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: "سُبك / مدفوع"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+                            Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: "المتبقي"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+                        }
+                        FigureRow {
+                            objectName: "custodyCashRow"
+                            label: "النقدية"
+                            issued: page.detail.cash ? page.detail.cash.issued : ""
+                            returned: page.detail.cash ? page.detail.cash.returned : ""
+                            melted: page.detail.cash && (page.detail.cash.hasPaid || page.detail.cash.hasReceived || page.detail.cash.hasSpent || page.detail.cash.hasSettled)
+                                    ? [page.detail.cash.hasPaid ? "مدفوع " + page.detail.cash.paid : "",
+                                       page.detail.cash.hasReceived ? "من البيع +" + page.detail.cash.received : "",
+                                       page.detail.cash.hasSpent ? "مشتريات −" + page.detail.cash.spent : "",
+                                       page.detail.cash.hasSettled ? "تسوية −" + page.detail.cash.settled : ""].filter(function(t) { return t !== "" }).join(" • ")
+                                    : "—"
+                            outstanding: page.detail.cash ? page.detail.cash.outstanding : ""
+                            zero: page.detail.cash ? page.detail.cash.zero : true
+                        }
+                    Flow {
+                        objectName: "cashActions"
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        Btn { objectName: "custodyCashSettleButton"; text: "تسوية نقدية العهدة"; visible: !!page.detail.open && !page.detail.isBook
+                              enabled: !!page.detail.cashSettleAvailable && !!page.vm && !page.vm.writing
+                              onClicked: cashSettleDialog.openFor(page.detail.id) }
+                        Btn { objectName: "custodyPayButton"; text: "دفع مصنعيات من العهدة"; visible: !!page.detail.open
+                              enabled: !!page.detail.payAvailable && !!page.vm && !page.vm.writing
+                              onClicked: payDialog.openFor(page.detail.id) }
+                    }
                     }
                     Flow {
                         Layout.fillWidth: true
@@ -573,57 +655,6 @@ Item {
                         Btn { objectName: "returnButton"; text: page.detail.isBook ? "إرجاع نقدية إلى الخزنة" : "تسجيل رجوع"; visible: !!page.detail.open
                               enabled: !!page.vm && !page.vm.writing
                               onClicked: entryDialog.openFor("RETURN", page.detail.id) }
-                        Btn { objectName: "lotIssueButton"; text: "إخراج سبكة من المحل"; visible: !!page.detail.open && !page.detail.isBook
-                              enabled: !!page.vm && !page.vm.writing && page.vm.shopLots.length > 0
-                              onClicked: lotIssueDialog.openFor(page.detail.id) }
-                        Btn { objectName: "lotReturnButton"; text: "رجوع ناتج السبك"; visible: !!page.detail.open && !page.detail.isBook
-                              enabled: !!page.detail.lotReturnAvailable && !!page.vm && !page.vm.writing
-                              onClicked: lotReturnDialog.openFor(page.detail.id) }
-                        Btn { objectName: "custodyLotSettleButton"; text: "تسوية سبكة من العهدة"; visible: !!page.detail.open && !page.detail.isBook
-                              enabled: !!page.detail.lotSettleAvailable && !!page.vm && !page.vm.writing
-                              onClicked: lotSettleDialog.openFor(page.detail.id) }
-                        Btn { objectName: "custodyLotHoldButton"; text: "تسليم ذهب لمسوقجي"; visible: !!page.detail.holdVisible && !page.detail.isBook
-                              enabled: !!page.detail.holdAvailable && !!page.vm && !page.vm.writing
-                              onClicked: lotHoldDialog.openFor(page.detail.id) }
-                        Btn { objectName: "custodyLogoHoldButton"; text: "تسليم لوجو لمسوقجي"; visible: !!page.detail.holdVisible && !page.detail.isBook
-                              enabled: !!page.detail.logoHoldAvailable && !!page.vm && !page.vm.writing
-                              onClicked: logoHoldDialog.openFor(page.detail.id) }
-                        Btn { objectName: "classifyLogoButton"; text: "اعتبار المتبقي لوجو"; visible: !!page.detail.open && !page.detail.isBook
-                              enabled: !!page.detail.classifyLogoAvailable && !!page.vm && !page.vm.writing
-                              onClicked: classifyLogoDialog.openFor(page.detail.id) }
-                        Btn { objectName: "barMarketerButton"; text: "تسليم سبيكة لمسوقجي"; visible: !!page.detail.barMarketerVisible
-                              enabled: !!page.detail.barMarketerAvailable && !!page.vm && !page.vm.writing
-                              onClicked: barMarketerDialog.openFor(page.detail.id) }
-                        Btn { objectName: "custodyGoldBuyButton"; text: "شراء ذهب نقدي"; visible: !!page.detail.open && !page.detail.isBook
-                              enabled: !!page.detail.buyAvailable && !!page.vm && !page.vm.writing
-                              onClicked: goldBuyDialog.openFor(page.detail.id) }
-                        Btn { objectName: "custodySaleButton"; text: "بيع ذهب من العهدة"; visible: !!page.detail.open && !page.detail.isBook
-                              enabled: !!page.detail.saleAvailable && !!page.vm && !page.vm.writing
-                              onClicked: goldSaleDialog.openFor(page.detail.id) }
-                        Btn { objectName: "custodyDisposeButton"; text: "مرتجع سوق / خسية"; visible: !!page.detail.open && !page.detail.isBook
-                              enabled: !!page.detail.disposeAvailable && !!page.vm && !page.vm.writing
-                              onClicked: disposeDialog.openFor(page.detail.id) }
-                        Btn { objectName: "custodyAdjustButton"; text: "تصحيح وزن الإخراج"; visible: !!page.detail.open && !page.detail.isBook
-                              enabled: !!page.detail.adjustAvailable && !!page.vm && !page.vm.writing
-                              onClicked: adjustDialog.openFor(page.detail.id) }
-                        Btn { objectName: "custodyCashSettleButton"; text: "تسوية نقدية العهدة"; visible: !!page.detail.open && !page.detail.isBook
-                              enabled: !!page.detail.cashSettleAvailable && !!page.vm && !page.vm.writing
-                              onClicked: cashSettleDialog.openFor(page.detail.id) }
-                        Btn { objectName: "custodyPayButton"; text: "دفع مصنعيات من العهدة"; visible: !!page.detail.open
-                              enabled: !!page.detail.payAvailable && !!page.vm && !page.vm.writing
-                              onClicked: payDialog.openFor(page.detail.id) }
-                        Btn { objectName: "custodyGoldSettleButton"; text: "تسوية ذهب من العهدة"; visible: !!page.detail.open && !page.detail.isBook
-                              enabled: !!page.detail.goldSettleAvailable && !!page.vm && !page.vm.writing
-                              onClicked: goldSettleDialog.openFor(page.detail.id) }
-                        Btn { objectName: "heatButton"; text: "حمّية اللوجو"; visible: !!page.detail.open && !page.detail.isBook
-                              enabled: !!page.detail.heatAvailable && !!page.vm && !page.vm.writing
-                              onClicked: heatDialog.openFor(page.detail.id) }
-                        Btn { objectName: "meltButton"; text: "سبك"; visible: !!page.detail.open && !page.detail.isBook
-                              enabled: !!page.detail.meltAvailable && !!page.vm && !page.vm.writing
-                              onClicked: meltDialog.openFor(page.detail.id) }
-                        Btn { objectName: "settleMeltButton"; text: "تسجيل سبك (بعد الرجوع)"; visible: !!page.detail.open && !page.detail.isBook
-                              enabled: !!page.detail.settleMeltAvailable && !!page.vm && !page.vm.writing
-                              onClicked: settleMeltDialog.openFor(page.detail.id) }
                         Btn { objectName: "closeTripButton"; text: "إغلاق العهدة"; visible: !!page.detail.open; accent: theme.green
                               enabled: !!page.detail.closable && !!page.vm && !page.vm.writing
                               onClicked: page.vm.closeTrip(page.detail.id) }

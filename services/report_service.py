@@ -20,6 +20,7 @@ from repositories.invoice_lifecycle_repository import exchange_code
 from repositories.invoice_return_repository import return_code
 from repositories.market_trip_repository import entry_code, trip_code
 from repositories.report_repository import ReportRepository
+from services import book_rules
 from services.authorization_service import AuthorizationService
 from services.correction_rules import correction_code
 from services.gold_position_service import GoldPositionError, merge_reconciliations, read_transaction
@@ -246,125 +247,55 @@ class ReportService:
     def _unavailable(key, title, reason):
         return {"key": key, "title": title, "columns": [], "rows": [], "paged": False, "note": "", "available": False, "reason": reason}
 
-    # ------------------------------------------------------------------ 7. market custody after the trip (settlement steps 2a-2f)
-    _STATE_EFFECTIVE, _STATE_REVERSED = "فعّال", "معكوس (حالة اليوم)"
-
+    # ------------------------------------------------------------------ 7. market custody: ONE total of loss (owner: totals only, no detail tables)
     def _market(self, repo, gate, filters, start, end):
-        """Read only. Every table is independent (a missing table is «غير متاح», never an empty result). Documents are placed by their OWN date; reversed documents stay listed with their
-        current state and are totalled apart from the effective ones. Grams of different karats / units are never added: the bar is in 21K-equivalent grams, every other source per karat."""
-        folded, raw = _text_filter(filters)
+        """Read only. The owner wants only the TOTAL of the loss: the melt loss (weight loss + fineness loss), the crucible loss and the market loss, all in 21K-equivalent grams so the
+        karats can be added (the bar is already in 21K-equivalent grams; unmelted gold and logo are converted grams x karat / 21, posted once per line at 0.001 g). Documents sit in the
+        period by their OWN date; reversed documents are not counted (their number is shown apart). A missing table is «غير متاح», never a zero."""
         first, last = start.date(), (end - timedelta(days=1)).date()
-        meaning = ["كل مستند بتاريخه الفعلي؛ المستندات المعكوسة تظهر بحالتها اليوم وتُحسب إجمالياتها منفصلة ولا تدخل الإجماليات الفعّالة.",
-                   "الجرامات لا تُجمع عبر العيارات: السبيكة بمكافئ عيار 21، والذهب غير المسبوك واللوجو لكل عيار على حدة.",
-                   "البحث يصفّي السطور المعروضة وإجمالياتها بنفس النتيجة."]
-        tables, totals = [], []
-        state = lambda row: self._STATE_REVERSED if row["reversal_id"] else self._STATE_EFFECTIVE
-        ref = lambda row: {"type": "TRIP", "id": str(row["trip_id"])}
-
-        def section(key, title, needed_table, build):
-            if not repo.has_table(needed_table):
-                tables.append(self._unavailable(key, title, "هذا الجدول غير موجود في مستوى قاعدة البيانات الحالي."))
-                return
-            build()
-
-        def melts():
-            rows, eff = [], []
-            for m in repo.trip_melts(first, last + timedelta(days=1)):
-                code = entry_code(m["trip_id"], m["entry_no"])
-                if not _matches(folded, raw, trip_code(m["trip_id"]), code, m["workshop"]):
+        until = last + timedelta(days=1)
+        meaning = ["هذا التقرير أرقام إجمالية فقط للفقد والخسية، كلها بمكافئ عيار 21 حتى يمكن جمع الأعيار.",
+                   "المستندات المعكوسة لا تدخل الإجماليات (عددها يظهر منفصلًا). كل مستند يُحسب في الفترة بتاريخه الفعلي. الفقد السالب = زيادة.",
+                   "المصروفات وإعدام النقدية ليست فقد ذهب فلا تظهر هنا."]
+        rows, totals = [], []
+        melt_weight = melt_fineness = crucible = market = ZERO3
+        reversed_count = 0
+        unavailable = []
+        if repo.has_table("market_trip_settle_melts"):
+            for m in repo.trip_melts(first, until):
+                if m["reversal_id"]:
+                    reversed_count += 1
                     continue
-                row = {"date": _dateish(m["doc_date"]), "trip": trip_code(m["trip_id"]), "entry": code, "workshop": m["workshop"], "input": _dec(m["input_weight_grams"]), "bar": _dec(m["output_weight_grams"]),
-                       "fineness": int(m["fineness_permille"]), "theory": _dec(m["theoretical_eq21"]), "actual": _dec(m["actual_eq21"]), "loss": _dec(m["loss_eq21"]),
-                       "weight_loss": _dec(m["weight_loss_eq21"]), "fineness_loss": _dec(m["fineness_loss_eq21"]), "state": state(m), "ref": ref(m), "reversal_id": m["reversal_id"]}
-                rows.append(row)
-                if not m["reversal_id"]:
-                    eff.append(row)
-            tables.append(table("melts", "فرق الوزن والعيار (السبك)", [col("date", "التاريخ", "date"), col("trip", "الرحلة"), col("entry", "المستند"), col("workshop", "الورشة"),
-                                                                       col("input", "المسبوك (جرام)", "grams"), col("bar", "السبيكة (جرام)", "grams"), col("fineness", "العيار بالألف", "count"),
-                                                                       col("theory", "النظري (مكافئ 21)", "eq21"), col("actual", "الفعلي (مكافئ 21)", "eq21"), col("loss", "الفاقد (مكافئ 21)", "eq21"),
-                                                                       col("weight_loss", "فاقد الوزن", "eq21"), col("fineness_loss", "فاقد العيار", "eq21"), col("state", "الحالة")], rows, paged=True))
-            for label, key in (("النظري (فعّال)", "theory"), ("الفعلي (فعّال)", "actual"), ("الفاقد (فعّال)", "loss"), ("فاقد الوزن (فعّال)", "weight_loss"), ("فاقد العيار (فعّال)", "fineness_loss")):
-                totals.append(total("السبك — " + label + " (مكافئ عيار 21)", sum((r_[key] for r_ in eff), ZERO3), "eq21", "سالب = زيادة" if key != "theory" and key != "actual" else ""))
-            totals.append(total("عدد عمليات السبك الفعّالة", len(eff), "count"))
-            totals.append(total("عمليات سبك معكوسة (عددها)", len([r_ for r_ in rows if r_["reversal_id"]]), "count", "لا تدخل الإجماليات أعلاه"))
-
-        def unit_label(source, karat):
-            return "سبيكة (مكافئ عيار 21)" if source == "BAR" else f"عيار {int(karat)} ({'بدون وجهة' if source == 'RAW' else 'لوجو'})"
-
-        def lines():
-            loss_rows, back_rows = [], []
-            loss_totals, back_totals = {}, {}
-            for l in repo.trip_settle_lines(first, last + timedelta(days=1)):
-                code = entry_code(l["trip_id"], l["entry_no"])
-                unit = unit_label(l["source"], l["karat_value"])
-                cls_text = {"CRUCIBLE": "خسية بوتقة", "MARKET": "خسية سوق"}.get(l["classification"] or "", "")
-                if not _matches(folded, raw, trip_code(l["trip_id"]), code, unit, cls_text):
+                melt_weight += _dec(m["weight_loss_eq21"])
+                melt_fineness += _dec(m["fineness_loss_eq21"])
+        else:
+            unavailable.append("السبك")
+        if repo.has_table("market_trip_settle_lines"):
+            for l in repo.trip_settle_lines(first, until):
+                if l["entry_kind"] != "ST_LOSS":
+                    continue
+                if l["reversal_id"]:
+                    reversed_count += 1
                     continue
                 grams_ = _dec(l["weight_grams"])
-                row = {"date": _dateish(l["doc_date"]), "trip": trip_code(l["trip_id"]), "entry": code, "unit": unit, "weight": grams_, "class": cls_text or "مرتجع سوق",
-                       "state": state(l), "ref": ref(l)}
-                if l["entry_kind"] == "ST_LOSS":
-                    loss_rows.append(row)
-                    if not l["reversal_id"]:
-                        loss_totals[(cls_text, unit)] = loss_totals.get((cls_text, unit), ZERO3) + grams_
+                if l["source"] != "BAR":
+                    grams_ = book_rules.post(book_rules.analytical(grams_, book_rules.MASTER_KARAT, int(l["karat_value"])))
+                if l["classification"] == "CRUCIBLE":
+                    crucible += grams_
                 else:
-                    back_rows.append(row)
-                    if not l["reversal_id"]:
-                        back_totals[unit] = back_totals.get(unit, ZERO3) + grams_
-            tables.append(table("losses", "الخسية (بوتقة / سوق)", [col("date", "التاريخ", "date"), col("trip", "الرحلة"), col("entry", "المستند"), col("class", "التصنيف"), col("unit", "المصدر"),
-                                                                    col("weight", "الجرامات", "grams"), col("state", "الحالة")], loss_rows, paged=True))
-            tables.append(table("returns", "مرتجع السوق للمحل", [col("date", "التاريخ", "date"), col("trip", "الرحلة"), col("entry", "المستند"), col("unit", "المصدر"),
-                                                                  col("weight", "الجرامات (تدخل كسر المحل)", "grams"), col("state", "الحالة")], back_rows, paged=True))
-            for (cls_text, unit), g in sorted(loss_totals.items()):
-                totals.append(total(f"{cls_text} — {unit} (فعّال)", g, "grams"))
-            for unit, g in sorted(back_totals.items()):
-                totals.append(total(f"مرتجع سوق — {unit} (فعّال)", g, "grams", "تدخل كسر المحل (السبيكة كعيار 21)" if unit.startswith("سبيكة") else "تدخل كسر المحل بعياره"))
-            totals.append(total("خسائر / مرتجعات معكوسة (عدد السطور)", len([r_ for r_ in loss_rows + back_rows if r_["state"] == self._STATE_REVERSED]), "count", "لا تدخل الإجماليات"))
-
-        def adjusts():
-            rows, net = [], {}
-            for a in repo.trip_settle_adjusts(first, last + timedelta(days=1)):
-                code = entry_code(a["trip_id"], a["entry_no"])
-                if not _matches(folded, raw, trip_code(a["trip_id"]), code, a["reason"]):
-                    continue
-                grams_ = _dec(a["weight_grams"])
-                signed = grams_ if a["direction"] == "INCREASE" else -grams_
-                rows.append({"date": _dateish(a["doc_date"]), "trip": trip_code(a["trip_id"]), "entry": code, "karat": f"عيار {int(a['karat_value'])}",
-                             "direction": "زيادة (الفعلي أكبر)" if a["direction"] == "INCREASE" else "إنقاص (الفعلي أقل)", "weight": signed, "reason": a["reason"], "state": state(a), "ref": ref(a)})
-                if not a["reversal_id"]:
-                    net[int(a["karat_value"])] = net.get(int(a["karat_value"]), ZERO3) + signed
-            tables.append(table("adjusts", "أخطاء وزن الإخراج", [col("date", "التاريخ", "date"), col("trip", "الرحلة"), col("entry", "المستند"), col("karat", "العيار"), col("direction", "الاتجاه"),
-                                                                 col("weight", "الفرق (جرام)", "grams"), col("reason", "السبب"), col("state", "الحالة")], rows, paged=True))
-            for karat, g in sorted(net.items()):
-                totals.append(total(f"تصحيح وزن الإخراج — عيار {karat} (صافي فعّال)", g, "grams", "موجب = زاد الإخراج الفعلي"))
-
-        def cash():
-            rows, sums = [], {}
-            names = {"ST_EXPENSE": "مصروف", "ST_CASH_OFF": "إعدام", "ST_CASH_BANK": "إيداع في حساب"}
-            for c in repo.trip_settle_cash(first, last + timedelta(days=1)):
-                code = entry_code(c["trip_id"], c["entry_no"])
-                what = c["bank_name"] or c["description"] or ""
-                if not _matches(folded, raw, trip_code(c["trip_id"]), code, what, c["reference"], names[c["entry_kind"]]):
-                    continue
-                amount = _dec(c["amount"])
-                rows.append({"date": _dateish(c["doc_date"]), "trip": trip_code(c["trip_id"]), "entry": code, "kind": names[c["entry_kind"]], "what": what, "reference": c["reference"] or "",
-                             "amount": amount, "state": state(c), "ref": ref(c)})
-                if not c["reversal_id"]:
-                    sums[c["entry_kind"]] = sums.get(c["entry_kind"], ZERO2) + amount
-            tables.append(table("cash", "المصروفات والإيداع والإعدام (نقدية العهدة)", [col("date", "التاريخ", "date"), col("trip", "الرحلة"), col("entry", "المستند"), col("kind", "النوع"),
-                                                                                       col("what", "البيان / الحساب / السبب"), col("reference", "المرجع"), col("amount", "المبلغ", "money"),
-                                                                                       col("state", "الحالة")], rows, paged=True))
-            for kind in ("ST_EXPENSE", "ST_CASH_OFF", "ST_CASH_BANK"):
-                totals.append(total(f"{names[kind]} (فعّال)", sums.get(kind, ZERO2), "money", "يخرج من نقدية العهدة" + (" ويدخل حسابًا" if kind == "ST_CASH_BANK" else "")))
-
-        section("melts", "فرق الوزن والعيار (السبك)", "market_trip_settle_melts", melts)
-        if repo.has_table("market_trip_settle_lines"):
-            lines()
+                    market += grams_
         else:
-            tables.append(self._unavailable("losses", "الخسية (بوتقة / سوق)", "هذا الجدول غير موجود في مستوى قاعدة البيانات الحالي."))
-            tables.append(self._unavailable("returns", "مرتجع السوق للمحل", "هذا الجدول غير موجود في مستوى قاعدة البيانات الحالي."))
-        section("adjusts", "أخطاء وزن الإخراج", "market_trip_settle_adjust", adjusts)
-        section("cash", "المصروفات والإيداع والإعدام (نقدية العهدة)", "market_trip_settle_cash", cash)
+            unavailable.append("الخسية")
+        melt_total = melt_weight + melt_fineness
+        grand = melt_total + crucible + market
+        for label, value in (("فاقد السبك — وزن", melt_weight), ("فاقد السبك — عيار", melt_fineness), ("إجمالي فاقد السبك", melt_total), ("خسية البوتقة", crucible), ("خسية السوق", market),
+                             ("إجمالي الفقد والخسية", grand)):
+            rows.append({"label": label, "grams": value})
+        tables = [table("summary", "الفقد والخسية (مكافئ عيار 21)", [col("label", "البند"), col("grams", "جرام مكافئ عيار 21", "eq21")], rows)]
+        if unavailable:
+            tables.append(self._unavailable("missing", "بيانات غير متاحة", "جداول غير موجودة في مستوى قاعدة البيانات الحالي: " + "، ".join(unavailable) + " — الإجمالي ناقص."))
+        totals.append(total("إجمالي الفقد والخسية (مكافئ عيار 21)", grand, "eq21", "فاقد السبك + خسية البوتقة + خسية السوق" + (" • ناقص: " + "، ".join(unavailable) if unavailable else "")))
+        totals.append(total("مستندات معكوسة (عددها)", reversed_count, "count", "لا تدخل الإجماليات"))
         return {"meaning": meaning, "tables": tables, "totals": totals}
 
     # ------------------------------------------------------------------ 1. sales and returns
