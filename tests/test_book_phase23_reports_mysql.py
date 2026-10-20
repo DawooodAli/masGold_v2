@@ -113,11 +113,8 @@ class Phase23AndReportsMySqlTests(unittest.TestCase):
                 yield connection
             service = ReportService(self.h.session, transaction_factory=factory, today=lambda: today)
             for report in REPORTS:
-                for source in (GOLD_SOURCES if report == "gold" else (None,)):
-                    filters = {"from": "2020-01-01", "to": today.isoformat()}
-                    if source:
-                        filters["source"] = source
-                    results[(report, source)] = service.run(report, filters)
+                filters = {"from": "2020-01-01", "to": today.isoformat()}
+                results[(report, None)] = service.run(report, filters)
         return results
 
     def test_every_report_runs_on_real_mysql_without_a_write(self):
@@ -127,19 +124,9 @@ class Phase23AndReportsMySqlTests(unittest.TestCase):
             self.assertTrue(built["tables"], key)
             for table in built["tables"]:
                 self.assertIn("rows", table)
-        book = results[("gold", "BOOK")]
-        self.assertTrue(any(t.get("available", True) for t in book["tables"]), "the BOOK source must be readable at level 59")
+        keys = [t["key"] for t in results[("gold", None)]["tables"]]
+        self.assertTrue(keys[-1] == "scrap" and all(k.startswith("sales") for k in keys[:-1]) and len(keys) >= 2, keys)             # the redesigned gold movement report reads on real MySQL
         self.assertEqual(self.h.counts(("market_trips", "market_trip_entries", "old_gold_movements", "cash_movements", "bank_movements", "audit_log")), before)
-
-    def test_the_book_report_balance_matches_the_trip_page_after_a_reconciliation(self):
-        trip = self.h.book_trip("12")
-        self.h.service.book_return(trip, [karat(self.h.karats[21], "9")], DATE, "", self.h.key())
-        self.reconcile(trip)
-        book = self.run_reports(date.today())[("gold", "BOOK")]
-        current = next(t for t in book["tables"] if t.get("title", "").startswith("الرصيد الحالي"))
-        rows = [r for r in current["rows"] if str(r.get("trip")) in (str(trip), f"MT{int(trip):06d}")]
-        self.assertTrue(rows, "the reconciled trip must appear in the current-balance table")
-        self.assertEqual(self.posted(trip), D("3.000"))                                    # the SOURCE balance B stays; the report shows B, -L and -r apart
 
     def test_a_legacy_invoice_with_null_split_amounts_stays_unknown_and_is_not_written(self):
         with self.h.tx() as c:

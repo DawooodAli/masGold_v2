@@ -111,6 +111,40 @@ class ReportRepository(BaseRepository):
             ORDER BY k.karat_value DESC, ii.id
             """, tuple(statuses))
 
+    # ------------------------------------------------------------------ the physical gold movement report (sales of pieces by type, customer scrap purchases)
+    def gold_sold_pieces(self, start, end_exclusive):
+        """One row per SELL_INVENTORY line of a FINALIZED invoice dated in the period, with the piece's type / category / factory / karat / weight and the full-reversal correction of
+        the invoice, if any. Plain SELECT: the service filters, groups and totals the whole result."""
+        return self._fetch_all(
+            """
+            SELECT ii.id AS item_id, it.name AS item_type, cat.name AS category, f.id AS factory_id, f.name AS factory, k.karat_value, ii.weight_grams,
+                   iv.id AS invoice_id, iv.invoice_number, iv.invoice_date AS doc_date, c.id AS reversal_id
+            FROM invoice_lines il
+            JOIN invoices iv ON iv.id = il.invoice_id
+            JOIN inventory_items ii ON ii.id = il.inventory_item_id
+            JOIN karats k ON k.id = ii.karat_id
+            LEFT JOIN item_types it ON it.id = ii.item_type_id
+            LEFT JOIN item_categories cat ON cat.id = ii.category_id
+            LEFT JOIN factories f ON f.id = ii.factory_id
+            LEFT JOIN transaction_corrections c ON c.source_type = 'INVOICE' AND c.source_id = iv.id AND c.correction_type = 'FULL_REVERSAL'
+            WHERE il.line_type = 'SELL_INVENTORY' AND iv.invoice_status = 'FINALIZED' AND iv.invoice_date >= %s AND iv.invoice_date < %s
+            ORDER BY iv.invoice_date, iv.id, il.id
+            """, (start, end_exclusive))
+
+    def scrap_purchases(self, start, end_exclusive):
+        """COUNTED customer scrap purchases (and their reversals) per karat in the period: the number of purchase movements and the signed grams."""
+        return self._fetch_all(
+            """
+            SELECT k.karat_value, m.movement_code, COUNT(*) AS n, COALESCE(SUM(m.weight_delta_grams), 0) AS grams
+            FROM old_gold_movements m JOIN karats k ON k.id = m.karat_id
+            WHERE m.balance_effect = 'COUNTED' AND m.weight_delta_grams IS NOT NULL AND m.movement_code IN ('CUSTOMER_BUY_IN', 'CUSTOMER_BUY_IN_REVERSAL')
+              AND m.occurred_at >= %s AND m.occurred_at < %s
+            GROUP BY k.karat_value, m.movement_code
+            """, (start, end_exclusive))
+
+    def factories(self):
+        return self._fetch_all("SELECT id, name FROM factories ORDER BY name, id")
+
     # ------------------------------------------------------------------ gold movements (each source is its own ledger)
     def scrap_opening(self, start):
         """COUNTED Scrap per karat strictly before `start` (reference-only rows are not balance)."""

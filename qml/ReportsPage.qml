@@ -35,8 +35,99 @@ Item {
     function ltr(text) {
         return text === undefined || text === null || text === "" ? "" : "⁦" + text + "⁩"
     }
+    // the karat colors of the whole app (the top bar balances); 0 = no karat
+    function karatColor(k) {
+        return k === 18 ? theme.balanceKarat18 : k === 21 ? theme.balanceKarat21 : k === 22 ? theme.balanceKarat22 : k === 24 ? theme.balanceKarat24 : theme.gold
+    }
+    // a card value that carries an Arabic unit ("6 قطعة", "69.400 جرام") keeps the Arabic reading order; a plain number stays LTR
+    function cardValue(text) {
+        return /[\u0600-\u06FF]/.test(String(text)) ? String(text) : ltr(text)
+    }
+    // the totals grouped for the grid rows (a card keeps its global order for its object name)
+    readonly property var totalGroups: {
+        var out = [], index = {}
+        var totals = reportsVM.result.totals || []
+        for (var i = 0; i < totals.length; ++i) {
+            var g = totals[i].group || ""
+            if (!(g in index)) { index[g] = out.length; out.push([]) }
+            out[index[g]].push({ label: totals[i].label, value: totals[i].value, note: totals[i].note, karat: totals[i].karat || 0, order: i })
+        }
+        return out
+    }
 
     Rectangle { anchors.fill: parent; color: theme.bgPrimary }
+
+    // ---------------------------------------------------------------- the monthly sales chart of one item type (follows the report's filters)
+    Popup {
+        id: chartDialog
+        objectName: "reportChartDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(760, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 460, 460)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        onClosed: reportsVM.closeChart()
+        Connections {
+            target: reportsVM
+            function onChanged() { if (!!reportsVM.chart.type && !chartDialog.opened) chartDialog.open() }
+        }
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 8
+            Label { objectName: "reportChartTitle"; Layout.fillWidth: true; text: "المبيعات الشهرية — " + (reportsVM.chart.type || ""); color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; horizontalAlignment: Text.AlignRight }
+            Label { objectName: "reportChartApplied"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignRight
+                    visible: !!reportsVM.chart.applied; text: (reportsVM.chart.applied || []).join(" • ") }
+            Label { objectName: "reportChartLoading"; Layout.fillWidth: true; visible: !!reportsVM.chart.loading; color: theme.textMuted; text: "جارٍ التحميل…"; horizontalAlignment: Text.AlignRight }
+            Label { objectName: "reportChartError"; Layout.fillWidth: true; visible: !!reportsVM.chart.error; color: theme.red; text: reportsVM.chart.error || ""; wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignRight }
+            Label { objectName: "reportChartTotal"; Layout.fillWidth: true; visible: !reportsVM.chart.loading && !reportsVM.chart.error && !!reportsVM.chart.type; color: theme.textSecondary
+                    text: "الإجمالي: " + (reportsVM.chart.weight || "") + " • " + (reportsVM.chart.count || "0") + " قطعة"; horizontalAlignment: Text.AlignRight }
+            Flickable {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentWidth: Math.max(width, barRow.implicitWidth)
+                clip: true
+                ScrollBar.horizontal: ScrollBar {}
+                Row {
+                    id: barRow
+                    objectName: "reportChartBars"
+                    height: parent.height - 14
+                    spacing: 10
+                    layoutDirection: Qt.LeftToRight
+                    Repeater {
+                        model: reportsVM.chart.points || []
+                        delegate: Item {
+                            required property var modelData
+                            objectName: "reportChartBar_" + modelData.month
+                            width: 86
+                            height: barRow.height
+                            Column {
+                                anchors.fill: parent
+                                spacing: 3
+                                Item { width: parent.width; height: parent.height - 78
+                                    Rectangle {
+                                        anchors.bottom: parent.bottom; anchors.horizontalCenter: parent.horizontalCenter
+                                        width: 40; height: Math.max(modelData.ratio > 0 ? 3 : 0, parent.height * modelData.ratio)
+                                        color: theme.gold; radius: 3
+                                    }
+                                }
+                                Label { width: parent.width; horizontalAlignment: Text.AlignHCenter; text: modelData.weight; color: theme.gold; font.pixelSize: theme.fontTableHeader; font.bold: true; wrapMode: Text.WordWrap }
+                                Label { width: parent.width; horizontalAlignment: Text.AlignHCenter; text: modelData.count + " قطعة"; color: theme.textSecondary; font.pixelSize: theme.fontTableHeader }
+                                Label { width: parent.width; horizontalAlignment: Text.AlignHCenter; text: modelData.month; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+                            }
+                        }
+                    }
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                Btn { objectName: "reportChartClose"; text: "إغلاق"; accent: theme.textSecondary; onClicked: chartDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
 
     component Txt: Label {
         color: theme.textPrimary
@@ -161,8 +252,18 @@ Item {
                             layoutDirection: Qt.RightToLeft
                             spacing: 4
                             Txt { text: specRow.modelData.label; height: 32 }
+                            Field {
+                                objectName: "reportFilterText_" + specRow.modelData.key
+                                visible: specRow.modelData.type === "text"
+                                width: 110
+                                text: reportsVM.filters[specRow.modelData.key] || ""
+                                inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                onTextEdited: reportsVM.setFilter(specRow.modelData.key, text)
+                                onAccepted: reportsVM.apply()
+                            }
                             Combo {
                                 objectName: "reportFilter_" + specRow.modelData.key
+                                visible: specRow.modelData.type !== "text"
                                 width: 170
                                 model: specRow.modelData.options
                                 textRole: "text"
@@ -189,46 +290,40 @@ Item {
             Txt { objectName: "reportMessage"; Layout.fillWidth: true; visible: reportsVM.message !== ""; color: theme.green; text: reportsVM.message }
 
             // ---------------------------------------------------------------- meaning + totals
-            Rectangle {
-                Layout.fillWidth: true
-                visible: !!reportsVM.result.meaning && reportsVM.result.meaning.length > 0
-                implicitHeight: meaningColumn.implicitHeight + 14
-                radius: theme.radiusSmall; color: theme.bgTertiary; border.color: theme.border
-                ColumnLayout {
-                    id: meaningColumn
-                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-                    anchors.margins: 8
-                    spacing: 2
-                    Txt { text: "معنى الأرقام"; color: theme.gold; font.bold: true }
+            // the totals: one uniform grid per group (the cards of a group share a row), as many columns as fit
+            Repeater {
+                model: page.totalGroups
+                delegate: GridLayout {
+                    id: totalsGrid
+                    required property var modelData
+                    Layout.fillWidth: true
+                    layoutDirection: Qt.RightToLeft
+                    columns: Math.max(1, Math.floor((body.width + 8) / 280))
+                    columnSpacing: 8
+                    rowSpacing: 8
                     Repeater {
-                        model: reportsVM.result.meaning || []
-                        delegate: Txt { objectName: "reportMeaning_" + index; Layout.fillWidth: true; required property var modelData; required property int index; text: "• " + modelData
-                                        color: theme.textSecondary; font.pixelSize: theme.fontTableHeader }
-                    }
-                }
-            }
-            Flow {
-                Layout.fillWidth: true
-                layoutDirection: Qt.RightToLeft
-                spacing: 6
-                Repeater {
-                    model: reportsVM.result.totals || []
-                    delegate: Rectangle {
-                        id: totalCard
-                        required property var modelData
-                        required property int index
-                        objectName: "reportTotal_" + index
-                        width: Math.min(260, body.width)
-                        implicitHeight: totalColumn.implicitHeight + 12
-                        radius: theme.radiusSmall; color: theme.panel; border.color: theme.border
-                        ColumnLayout {
-                            id: totalColumn
-                            anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                            anchors.leftMargin: 8; anchors.rightMargin: 8
-                            spacing: 1
-                            Txt { Layout.fillWidth: true; text: totalCard.modelData.label; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
-                            Txt { objectName: "reportTotalValue_" + totalCard.index; Layout.fillWidth: true; text: page.ltr(totalCard.modelData.value); color: theme.gold; font.bold: true }
-                            Txt { Layout.fillWidth: true; visible: totalCard.modelData.note !== ""; text: totalCard.modelData.note; color: theme.textMuted; font.pixelSize: 11 }
+                        model: totalsGrid.modelData
+                        delegate: Rectangle {
+                            id: totalCard
+                            required property var modelData
+                            objectName: "reportTotal_" + modelData.order
+                            Layout.fillWidth: true
+                            Layout.preferredWidth: 1
+                            Layout.fillHeight: true
+                            implicitHeight: totalColumn.implicitHeight + 20
+                            radius: theme.radiusSmall; color: theme.panel
+                            border.color: totalCard.modelData.karat ? page.karatColor(totalCard.modelData.karat) : theme.border
+                            border.width: totalCard.modelData.karat ? 2 : 1
+                            ColumnLayout {
+                                id: totalColumn
+                                anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                                anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.topMargin: 8
+                                spacing: 2
+                                Txt { Layout.fillWidth: true; text: totalCard.modelData.label; color: theme.textSecondary; font.pixelSize: theme.fontBodyStrong; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                Txt { objectName: "reportTotalValue_" + totalCard.modelData.order; Layout.fillWidth: true; text: page.cardValue(totalCard.modelData.value)
+                                      color: totalCard.modelData.karat ? page.karatColor(totalCard.modelData.karat) : theme.gold; font.bold: true; font.pixelSize: 20 }
+                                Txt { Layout.fillWidth: true; visible: totalCard.modelData.note !== ""; text: totalCard.modelData.note; color: theme.textMuted; font.pixelSize: theme.fontBody; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            }
                         }
                     }
                 }
@@ -243,7 +338,15 @@ Item {
                     required property int index
                     Layout.fillWidth: true
                     spacing: 3
-                    Txt { Layout.fillWidth: true; text: tableBlock.modelData.title + (tableBlock.modelData.paged ? "  (" + tableBlock.modelData.rowCount + ")" : ""); color: theme.gold; font.bold: true }
+                    Item { Layout.preferredHeight: tableBlock.index > 0 ? 10 : 0 }                                  // a gap that separates the tables
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        Rectangle { visible: tableBlock.modelData.karat > 0; Layout.preferredWidth: 6; Layout.preferredHeight: 22; radius: 3; color: page.karatColor(tableBlock.modelData.karat) }
+                        Txt { Layout.fillWidth: true; text: tableBlock.modelData.title + (tableBlock.modelData.paged ? "  (" + tableBlock.modelData.rowCount + ")" : "")
+                              color: tableBlock.modelData.karat > 0 ? page.karatColor(tableBlock.modelData.karat) : theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
+                    }
                     Txt { objectName: "reportTableUnavailable_" + tableBlock.index; Layout.fillWidth: true; visible: !tableBlock.modelData.available; color: theme.amber
                           text: "غير متاح: " + tableBlock.modelData.reason }
                     Txt { objectName: "reportTableEmpty_" + tableBlock.index; Layout.fillWidth: true; visible: tableBlock.modelData.available && tableBlock.modelData.rows.length === 0
@@ -256,7 +359,7 @@ Item {
                         Repeater {
                             model: tableBlock.modelData.columns
                             delegate: Txt { required property var modelData; Layout.fillWidth: true; Layout.preferredWidth: 1; text: modelData.title; color: theme.textMuted
-                                            font.pixelSize: theme.fontTableHeader; font.bold: true; horizontalAlignment: Text.AlignRight }
+                                            font.pixelSize: theme.fontBodyStrong; font.bold: true; horizontalAlignment: modelData.kind === "text" ? Text.AlignRight : Text.AlignHCenter }
                         }
                         Item { Layout.preferredWidth: 78 }
                     }
@@ -284,8 +387,8 @@ Item {
                                         required property int index
                                         Layout.fillWidth: true; Layout.preferredWidth: 1
                                         text: tableBlock.modelData.columns[index].kind === "text" ? modelData : page.ltr(modelData)
-                                        font.pixelSize: theme.fontTableHeader
-                                        horizontalAlignment: tableBlock.modelData.columns[index].kind === "text" ? Text.AlignRight : Text.AlignLeft
+                                        font.pixelSize: theme.fontBodyStrong
+                                        horizontalAlignment: tableBlock.modelData.columns[index].kind === "text" ? Text.AlignRight : Text.AlignHCenter
                                     }
                                 }
                                 Btn {
@@ -295,7 +398,7 @@ Item {
                                     text: dataRow.modelData.refText || "فتح"
                                     accent: theme.textSecondary
                                     implicitHeight: 26
-                                    onClicked: reportsVM.open(dataRow.modelData.ref.type, dataRow.modelData.ref.id, "")
+                                    onClicked: reportsVM.open(dataRow.modelData.ref.type, dataRow.modelData.ref.id, dataRow.modelData.ref.extra || "")
                                 }
                                 Item { Layout.preferredWidth: dataRow.modelData.ref.type ? 0 : 78 }
                             }

@@ -25,9 +25,10 @@ FILTER_SPECS = {
     "stock": [{"key": "status", "label": "الحالة", "options": [("IN_STOCK", "متاح"), ("SOLD", "مباع"), ("RETURNED_PENDING", "مرتجع بانتظار الفحص"), ("SCRAPPED", "كسر"), ("REMOVED", "مُخرج"), ("ALL", "كل الحالات")]},
               {"key": "classification", "label": "التصنيف", "options": [("", "الكل"), ("NEW_STOCK", "جديد"), ("OLD_STOCK", "قديم")]},
               {"key": "karat", "label": "العيار", "options": [("", "الكل"), ("18", "18"), ("21", "21"), ("22", "22"), ("24", "24")]}],
-    "gold": [{"key": "source", "label": "المصدر", "options": [("SCRAP", "كسر المحل (بالعيار)"), ("PIECES", "المشغولات (قطع)"), ("ASSAYED", "مخزون مرتجع بعيار فعلي"),
-                                                              ("BOOK", "عهد السوق الدفترية"), ("MARKETER", "استحقاق المسوقجي")]},
-             {"key": "karat", "label": "العيار (للكسر والمشغولات)", "options": [("", "الكل"), ("18", "18"), ("21", "21"), ("22", "22"), ("24", "24")]}],
+    "gold": [{"key": "karat", "label": "العيار", "options": [("", "الكل"), ("18", "18"), ("21", "21"), ("22", "22"), ("24", "24")]},
+             {"key": "factory", "label": "المصنع", "options": [("", "الكل")], "dynamic": True},
+             {"key": "weight_min", "label": "الوزن من (جرام)", "type": "text"},
+             {"key": "weight_max", "label": "إلى (جرام)", "type": "text"}],
     "customers": [{"key": "balance", "label": "الرصيد", "options": [ALL, ("OWES", "على العميل"), ("CREDIT", "للعميل"), ("SETTLED", "متوازن")]},
                   {"key": "inactive", "label": "العملاء المتوقفون", "options": [("", "غير معروضين"), ("1", "معروضون")]}],
     "suppliers": [],
@@ -51,21 +52,36 @@ def _cell(kind, value):
     return str(value)
 
 
+HIDDEN_ON_SCREEN = {("sales", "documents"), ("stock", "items"), ("stock", "summary")}
+
+
+def grams_text(value):
+    return f"{Decimal(str(value)):,.3f} جرام"
+
+
+def clean_label(label):
+    """The owner does not want the word «فعّال» on a total (effective is the default meaning; only the reversed documents are named apart)."""
+    return str(label).replace(" (فعّال)", "").replace("(فعّال)", "").replace("  ", " ").strip()
+
+
 def result_view(built):
     """The display form of one `ReportService` result: strings only, plus the open-source references and the paging state."""
     tables = []
     for t in built["tables"]:
+        if (built["report"], t["key"]) in HIDDEN_ON_SCREEN:
+            continue                                                               # owner review: the sales documents table is not shown (the totals are; the CSV still has every row)
         if not t.get("available", True):
             tables.append({"key": t["key"], "title": t["title"], "available": False, "reason": t.get("reason", ""), "columns": [], "rows": [], "paged": False})
             continue
         cols = t["columns"]
         rows = [{"cells": [_cell(c["kind"], r.get(c["key"])) for c in cols], "ref": r.get("ref") or {}, "dim": bool(r.get("state", "") and ("معكوس" in str(r.get("state")) or "ملغاة" in str(r.get("state")))),
-                 "refText": {"INVOICE": "فتح الفاتورة", "CUSTOMER": "فتح العميل", "TRIP": "فتح الرحلة"}.get((r.get("ref") or {}).get("type"), "")} for r in t["rows"]]
+                 "refText": {"INVOICE": "فتح الفاتورة", "CUSTOMER": "فتح العميل", "TRIP": "فتح الرحلة", "CHART": "رسم بياني"}.get((r.get("ref") or {}).get("type"), "")} for r in t["rows"]]
         tables.append({"key": t["key"], "title": t["title"], "available": True, "reason": "", "columns": [{"title": c["title"], "kind": c["kind"]} for c in cols], "rows": rows,
                        "paged": t["paged"], "rowCount": t.get("row_count", len(rows)), "page": t.get("page", 1), "pageSize": t.get("page_size", len(rows)), "hasMore": t.get("has_more", False),
-                       "note": t.get("note", "")})
+                       "note": t.get("note", ""), "karat": int(t.get("karat") or 0)})
     return {"report": built["report"], "title": built["title"], "filters": built["filters"], "meaning": built["meaning"], "applied": built.get("applied", []), "tables": tables,
-            "totals": [{"label": x["label"], "value": _cell(x["kind"], x["value"]) if x["kind"] != "text" else str(x["value"]), "note": x["note"]} for x in built["totals"]], "error": ""}
+            "totals": [{"label": clean_label(x["label"]), "value": _cell(x["kind"], x["value"]) if x["kind"] != "text" else str(x["value"]), "note": x["note"], "group": x.get("group", ""), "karat": int(x.get("karat") or 0)}
+                       for x in built["totals"]], "options": built.get("options", {}), "error": ""}
 
 
 @QmlElement
@@ -81,6 +97,7 @@ class ReportsViewModel(QObject):
         self._report, self._filters, self._result, self._error, self._message = "", {}, {}, "", ""
         self._request, self._latest, self._busy = 0, 0, False
         self._workers = set()
+        self._chart, self._chart_request = {}, 0
 
     # ---- session
     def _get_session(self):
@@ -121,14 +138,61 @@ class ReportsViewModel(QObject):
 
     @Property("QVariantList", notify=changed)
     def filterSpecs(self):
-        specs = FILTER_SPECS.get(self._report, [])
-        if self._report == "gold" and self._filters.get("source", "SCRAP") not in ("SCRAP", "PIECES"):
-            specs = [s for s in specs if s["key"] != "karat"]                  # a filter that would have no effect is not offered
-        return [{"key": s["key"], "label": s["label"], "options": [{"value": v, "text": t} for v, t in s["options"]]} for s in specs]
+        out = []
+        for s in FILTER_SPECS.get(self._report, []):
+            if s.get("type") == "text":
+                out.append({"key": s["key"], "label": s["label"], "type": "text", "options": []})
+                continue
+            options = [{"value": v, "text": t} for v, t in s["options"]]
+            if s.get("dynamic"):                                                # the options come from the last answer (e.g. the factories), never typed by the client
+                options = (self._result.get("options") or {}).get(s["key"]) or options
+            out.append({"key": s["key"], "label": s["label"], "type": "choice", "options": options})
+        return out
 
     @Property("QVariantMap", notify=changed)
     def result(self):
         return self._result
+
+    @Property("QVariantMap", notify=changed)
+    def chart(self):
+        return self._chart
+
+    @Slot()
+    def closeChart(self):
+        self._chart_request += 1                                              # a late answer for a closed chart is never shown
+        self._chart = {}
+        self.changed.emit()
+
+    @Slot(str, str)
+    def showChart(self, item_type, karat=""):
+        """The monthly sales of one item type under the CURRENT filters of the report (the same words as the table)."""
+        if self._report != "gold" or self._service is None or self._session is None:
+            return
+        self._chart_request += 1
+        request, filters, report = self._chart_request, dict(self._filters), self._report
+        self._chart = {"loading": True, "type": item_type + (f" — عيار {karat}" if karat else ""), "error": "", "points": []}
+        from app.workers.invoice_worker import InvoiceWorker
+        actor = self._session.current_actor()
+        if actor is None:
+            return
+        worker = InvoiceWorker(lambda _expected_actor: self._service.gold_chart(filters, item_type, karat, _expected_actor=_expected_actor), self._session, actor, request, "report", self)
+        worker.completed.connect(lambda r, generation, operation, result, error, code, kind: self._chart_completed(r, generation, report, result, error, karat))
+        worker.finished.connect(lambda w=worker: self._workers.discard(w))
+        self._workers.add(worker)
+        worker.start()
+        self.changed.emit()
+
+    def _chart_completed(self, request, generation, report, result, error, karat_value=""):
+        actor = self._session.current_actor() if self._session is not None else None
+        if actor is None or str(actor.generation) != generation or request != self._chart_request or report != self._report:
+            return
+        if error:
+            self._chart = {"loading": False, "type": self._chart.get("type", ""), "error": error, "points": []}
+        else:
+            peak = max([p["weight"] for p in result["points"]] or [Decimal("0")]) or Decimal("1")
+            self._chart = {"loading": False, "error": "", "type": result["type"] + (f" — عيار {karat_value}" if karat_value else ""), "applied": result["applied"], "count": str(result["count"]), "weight": grams_text(result["weight"]),
+                           "points": [{"month": p["month"], "count": str(p["count"]), "weight": grams_text(p["weight"]), "ratio": float(p["weight"] / peak)} for p in result["points"]]}
+        self.changed.emit()
 
     @Property(bool, notify=changed)
     def busy(self):
@@ -150,7 +214,7 @@ class ReportsViewModel(QObject):
         self._report, self._result, self._error, self._message = report, {}, "", ""
         self._filters = {"from": date.today().replace(day=1).isoformat(), "to": date.today().isoformat(), "text": ""}
         for spec in FILTER_SPECS.get(report, []):
-            self._filters[spec["key"]] = spec["options"][0][0]
+            self._filters[spec["key"]] = "" if spec.get("type") == "text" else spec["options"][0][0]
         self.changed.emit()
         self.run(1)
 
@@ -188,7 +252,9 @@ class ReportsViewModel(QObject):
 
     @Slot(str, str, str)
     def open(self, kind, identifier, extra):
-        if kind in ("INVOICE", "CUSTOMER", "TRIP") and identifier:
+        if kind == "CHART":
+            self.showChart(str(identifier), str(extra or ""))
+        elif kind in ("INVOICE", "CUSTOMER", "TRIP") and identifier:
             self.openRequested.emit(kind, str(identifier), str(extra or ""))
 
     # ---- workers

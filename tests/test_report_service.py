@@ -38,6 +38,22 @@ class FakeRepo:
     def has_table(self, name):
         return self.tables.get(name, True)
 
+    # ---- gold movement (the owner redesign): pieces sold by type and scrap bought by karat
+    def gold_sold_pieces(self, start, end):
+        def piece(i, kind, factory, karat, weight, day, reversal=None):
+            return {"item_id": i, "item_type": kind, "category": "ذهب", "factory_id": factory, "factory": {1: "مصنع النور", 2: "مصنع الأمل", None: None}[factory], "karat_value": karat,
+                    "weight_grams": D(weight), "invoice_id": 100 + i, "invoice_number": f"INV{100 + i}", "doc_date": at(day), "reversal_id": reversal}
+        rows = [piece(1, "دبلة", 1, 21, "5.000", 2), piece(2, "دبلة", 1, 21, "6.500", 3), piece(3, "خاتم", 2, 21, "4.250", 4), piece(4, "غويشة", 1, 18, "10.000", 5),
+                piece(5, "خاتم", 1, 18, "3.000", 6), piece(6, "دبلة", 1, 21, "9.999", 7, reversal=5), piece(7, None, None, 24, "2.000", 8)]
+        return [r for r in rows if start <= r["doc_date"] < end]
+
+    def scrap_purchases(self, start, end):
+        return [{"karat_value": 21, "movement_code": "CUSTOMER_BUY_IN", "n": 3, "grams": D("30.000")}, {"karat_value": 21, "movement_code": "CUSTOMER_BUY_IN_REVERSAL", "n": 1, "grams": D("-5.000")},
+                {"karat_value": 18, "movement_code": "CUSTOMER_BUY_IN", "n": 2, "grams": D("12.500")}]
+
+    def factories(self):
+        return [{"id": 2, "name": "مصنع الأمل"}, {"id": 1, "name": "مصنع النور"}]
+
     # ---- sales
     def sales_invoices(self, start, end):
         def inv(i, kind, day, sell, buy, money_in, money_out, account, status="FINALIZED", reversal=None, customer="عميل أ"):
@@ -307,163 +323,173 @@ class SalesTests(Case):
 
 
 class StockTests(Case):
-    def test_counts_and_weights_per_karat_never_added_across_karats(self):
+    """The stock report is CARDS ONLY (owner review): one card per karat with the WEIGHT on top and the piece count under it, then one row of Scrap cards (weight only, own karat)."""
+
+    @staticmethod
+    def pieces(result):
+        return sum(int(x["note"].split()[0]) for x in result["totals"] if x["group"] == "pieces")
+
+    def test_weight_on_top_and_the_count_under_it_never_added_across_karats(self):
         result = self.service.run("stock", {})
         t = self.totals(result)
-        self.assertEqual(t["عدد القطع"], 6)                                                                # 6 pieces IN_STOCK (the SOLD one is not available stock)
-        self.assertEqual((t["عيار 21: عدد القطع"], t["عيار 21: الوزن (جرام)"]), (4, D("21.750")))        # 10.000 + 5.500 + 4.250 + 2.000
-        self.assertEqual((t["عيار 18: عدد القطع"], t["عيار 18: الوزن (جرام)"]), (2, D("4.000")))         # 3.000 + 1.000
-        self.assertNotIn(D("25.750"), t.values())                                                          # no cross-karat weight total
-        summary = self.rows(result, "summary")
-        self.assertEqual([(r["karat"], r["classification"], r["count"], r["weight"]) for r in summary],
-                         [("عيار 21", "جديد", 3, D("19.750")), ("عيار 21", "قديم", 1, D("2.000")), ("عيار 18", "جديد", 2, D("4.000"))])
+        notes = {x["label"]: x["note"] for x in result["totals"]}
+        self.assertEqual(self.pieces(result), 6)                                                           # 6 pieces IN_STOCK (the SOLD one is not available stock)
+        self.assertEqual((t["عيار 21"], notes["عيار 21"]), ("21.750 جرام", "4 قطعة"))                      # 10.000 + 5.500 + 4.250 + 2.000
+        self.assertEqual((t["عيار 18"], notes["عيار 18"]), ("4.000 جرام", "2 قطعة"))                       # 3.000 + 1.000
+        self.assertNotIn("25.750", " ".join(str(v) for v in t.values()))                                    # no cross-karat weight total
+        self.assertFalse(any(x["label"] == "عدد القطع" for x in result["totals"]))                          # the overall count card was removed
+        self.assertEqual(t["كسر المحل — عيار 21"], "100.000 جرام")                                         # the shop Scrap: weight only, in its own karat (the fake balance)
+        self.assertEqual([x["group"] for x in result["totals"]], ["pieces", "pieces", "scrap"])             # two rows: the pieces, then the Scrap
 
-    def test_barcode_search_and_the_linked_invoice(self):
+    def test_barcode_search_and_the_linked_invoice_stay_in_the_service_rows_for_the_csv(self):
         result = self.service.run("stock", {"text": "B1002"})
         row = self.rows(result, "items")[0]
         self.assertEqual((len(self.rows(result, "items")), row["barcode"], row["invoice"], row["ref"]), (1, "B1002", "INV0009 (بيع قطعة)", {"type": "INVOICE", "id": "9"}))
         plain = self.service.run("stock", {"text": "B1001"})
         self.assertEqual(self.rows(plain, "items")[0]["invoice"], "غير مرتبطة بفاتورة")
+        summary = self.rows(self.service.run("stock", {}), "summary")
+        self.assertEqual([(r["karat"], r["classification"], r["count"], r["weight"]) for r in summary],
+                         [("عيار 21", "جديد", 3, D("19.750")), ("عيار 21", "قديم", 1, D("2.000")), ("عيار 18", "جديد", 2, D("4.000"))])
 
     def test_status_classification_and_karat_filters(self):
-        self.assertEqual(self.totals(self.service.run("stock", {"status": "SOLD"}))["عدد القطع"], 1)
-        self.assertEqual(self.totals(self.service.run("stock", {"status": "ALL"}))["عدد القطع"], 7)
-        self.assertEqual(self.totals(self.service.run("stock", {"classification": "OLD_STOCK"}))["عدد القطع"], 1)
-        self.assertEqual(self.totals(self.service.run("stock", {"karat": "18"}))["عدد القطع"], 2)
+        self.assertEqual(self.pieces(self.service.run("stock", {"status": "SOLD"})), 1)
+        self.assertEqual(self.pieces(self.service.run("stock", {"status": "ALL"})), 7)
+        self.assertEqual(self.pieces(self.service.run("stock", {"classification": "OLD_STOCK"})), 1)
+        self.assertEqual(self.pieces(self.service.run("stock", {"karat": "18"})), 2)
         with self.assertRaises(ReportError):
             self.service.run("stock", {"status": "NOPE"})
 
-
-class GoldTests(Case):
-    def test_scrap_balance_per_karat_counts_only_counted_movements(self):
-        result = self.service.run("gold", {"source": "SCRAP", "from": "2026-10-01", "to": "2026-10-31"})
-        row = self.rows(result, "summary")[0]
-        self.assertEqual((row["opening"], row["in"], row["out"], row["closing"], row["ref_only"]), (D("100.000"), D("20.000"), D("30.000"), D("90.000"), 1))   # 100 + 20 - 30; the 5 g is reference only
-        moves = self.rows(result, "movements")
-        self.assertEqual([m["balance"] for m in moves], [None, D("90.000"), D("120.000")])                 # newest first; the reference-only row carries no balance
-        self.assertEqual(moves[2]["ref"], {"type": "INVOICE", "id": "3"})
-
-    def test_marketer_entitlement_and_assayed_stock_are_separate_ledgers(self):
-        marketer = self.service.run("gold", {"source": "MARKETER", "from": "2026-10-01", "to": "2026-10-31"})
-        row = self.rows(marketer, "summary")[0]
-        self.assertEqual((row["opening"], row["in"], row["out"], row["closing"]), (D("10.000"), D("2.000"), D("0.000"), D("12.000")))
-        assayed = self.service.run("gold", {"source": "ASSAYED", "from": "2026-10-01", "to": "2026-10-31"})
-        summary = {r["label"]: (r["grams"], r["posted"]) for r in self.rows(assayed, "summary")}
-        self.assertEqual(summary["رصيد آخر الفترة"], (D("0.900"), D("0.892")))                          # 1.800 - 0.900 grams; 1.783 - 0.891 posted
-        for result in (marketer, assayed):
-            self.assertEqual(result["totals"][0]["label"], "عدد الحركات")                                   # no combined gold total exists
-        self.assertTrue(any("لا يوجد إجمالي واحد" in m for m in marketer["meaning"]))
-
-    def test_a_missing_table_is_unavailable_not_zero(self):
-        FakeRepo.tables["market_trip_book_lines"] = False
-        result = self.service.run("gold", {"source": "BOOK"})
-        table_ = result["tables"][0]
-        self.assertEqual((table_["available"], result["totals"]), (False, []))
-        self.assertIn("غير موجود", table_["reason"])
-
-    def test_extra_rights_are_needed_for_book_and_marketer_sources(self):
-        self.session = session_for(ALL - {"MARKET_TRIP_MANAGE"})
-        service = ReportService(self.session, transaction_factory=self.service._transaction, repository=FakeRepo, authorization=FakeAuthorization(self.session), today=lambda: TODAY)
-        self.assertFalse(service.run("gold", {"source": "BOOK"})["tables"][0]["available"])
-        self.assertTrue(service.run("gold", {"source": "SCRAP"})["tables"][0]["rows"] is not None)
+    def test_the_scrap_cards_need_the_old_gold_right_and_follow_the_karat_filter(self):
+        session = session_for(ALL - {"OLD_GOLD_VIEW"})
+        limited = ReportService(session, transaction_factory=self.service._transaction, repository=FakeRepo, authorization=FakeAuthorization(session), today=lambda: TODAY)
+        self.assertFalse(any(x["label"].startswith("كسر المحل") for x in limited.run("stock", {})["totals"]))      # left out, never shown as zero
+        self.assertFalse(any(x["label"].startswith("كسر المحل") for x in self.service.run("stock", {"karat": "18"})["totals"]))      # the fake Scrap is 21K only
 
 
-def recon(trip, entry_no, b_star, loss, rounding, generation=1, a_star_units=None, entry_id=None):
-    return {"entry_id": entry_id or trip * 100 + entry_no, "trip_id": trip, "trip_mode": "BOOK", "entry_kind": "BK_RECON", "entry_no": entry_no, "record_entry_id": entry_id or trip * 100 + entry_no,
-            "record_kind": "BK_RECON", "record_trip_id": trip, "record_mode": "BOOK", "generation": generation, "a_star_units": a_star_units, "b_star": D(b_star), "loss_posted": D(loss),
-            "rounding_settlement": D(rounding)}
+class GoldMovementTests(Case):
+    """«حركة الذهب» (owner redesign): the pieces SOLD in the period, ONE row per item type (karats broken down in a text column), cards per karat (weight on top of the count), a monthly
+    chart per type under the same filters, and the scrap BOUGHT by karat."""
+    PERIOD = {"from": "2026-10-01", "to": "2026-10-31"}
 
+    def run_gold(self, **filters):
+        return self.service.run("gold", {**self.PERIOD, **filters})
 
-def group(trip, direction, weight, posted, karat=21):
-    return {"trip_id": trip, "direction": direction, "basis": "MASTER_KARAT", "karat_value": karat, "fineness_permille": None, "weight_grams": D(weight), "eq21_posted": D(posted), "lines": 1}
+    def sales(self, result):
+        """{(karat label, type): (count, weight)} over EVERY karat table of the result."""
+        return {(t["title"].rsplit(" — ", 1)[1], r["type"]): (r["count"], r["weight"]) for t in result["tables"] if t["key"].startswith("sales_") for r in t["rows"]}
 
+    def test_one_table_per_karat_with_one_row_per_type_and_a_reversed_invoice_is_not_counted(self):
+        result = self.run_gold()
+        sales = self.sales(result)
+        self.assertEqual([t["key"] for t in result["tables"] if t["key"].startswith("sales_")], ["sales_24", "sales_21", "sales_18"])     # a table per karat, highest first
+        self.assertEqual(sales[("عيار 21", "دبلة")], (2, D("11.500")))                              # 5.000 + 6.500 (the 9.999 piece belongs to a REVERSED invoice)
+        self.assertEqual(sales[("عيار 21", "خاتم")], (1, D("4.250")))                               # the 18K ring is NOT added to the 21K ring
+        self.assertEqual(sales[("عيار 18", "خاتم")], (1, D("3.000")))
+        self.assertEqual(sales[("عيار 18", "غويشة")], (1, D("10.000")))
+        self.assertEqual(sales[("عيار 24", "بدون صنف")], (1, D("2.000")))                           # a piece without a type is still shown, never dropped
+        self.assertEqual(len(sales), 5)
+        ring = next(r for t in result["tables"] if t["key"] == "sales_18" for r in t["rows"] if r["type"] == "خاتم")
+        self.assertEqual(ring["ref"], {"type": "CHART", "id": "خاتم", "extra": "18"})               # the chart button carries the karat of its table
 
-UNITS = 26_250_000
+    def test_one_card_per_karat_with_the_weight_on_top_and_the_count_under_it(self):
+        result = self.run_gold()
+        cards = {x["label"]: (x["value"], x["note"], x["group"]) for x in result["totals"]}
+        self.assertEqual(cards["مبيع عيار 21"], ("15.750 جرام", "3 قطعة", "pieces"))               # 11.500 + 4.250
+        self.assertEqual(cards["مبيع عيار 18"], ("13.000 جرام", "2 قطعة", "pieces"))               # 10.000 + 3.000
+        self.assertEqual(cards["مبيع عيار 24"], ("2.000 جرام", "1 قطعة", "pieces"))
+        self.assertNotIn("30.750", " ".join(str(v[0]) for v in cards.values()))                     # no cross-karat card
 
+    def test_every_karat_table_and_card_carries_its_karat_for_the_colors(self):
+        result = self.run_gold()
+        self.assertEqual({t["key"]: t["karat"] for t in result["tables"] if t["key"].startswith("sales_")}, {"sales_24": 24, "sales_21": 21, "sales_18": 18})
+        self.assertEqual({x["label"]: x["karat"] for x in result["totals"]}, {"مبيع عيار 24": 24, "مبيع عيار 21": 21, "مبيع عيار 18": 18})
+        stock = self.service.run("stock", {})
+        self.assertEqual({x["label"]: x["karat"] for x in stock["totals"]}, {"عيار 21": 21, "عيار 18": 18, "كسر المحل — عيار 21": 21})
 
-class BookBalanceTests(Case):
-    """F1: the BOOK report separates the source balance B from the balance after the effective reconciliations (B - b_star), merged by the same validation the Gold Position uses."""
+    def test_the_factory_weight_and_karat_filters(self):
+        self.assertEqual(set(self.sales(self.run_gold(factory="2"))), {("عيار 21", "خاتم")})
+        self.assertEqual(set(self.sales(self.run_gold(weight_min="5"))), {("عيار 21", "دبلة"), ("عيار 18", "غويشة")})                    # >= 5: 5.000, 6.500, 10.000
+        self.assertEqual(set(self.sales(self.run_gold(weight_max="4.25"))), {("عيار 21", "خاتم"), ("عيار 18", "خاتم"), ("عيار 24", "بدون صنف")})
+        self.assertEqual(set(self.sales(self.run_gold(weight_min="4", weight_max="6"))), {("عيار 21", "دبلة"), ("عيار 21", "خاتم")})
+        self.assertEqual(set(self.sales(self.run_gold(karat="18"))), {("عيار 18", "غويشة"), ("عيار 18", "خاتم")})
+        self.assertEqual(set(self.sales(self.run_gold(text="خاتم"))), {("عيار 21", "خاتم"), ("عيار 18", "خاتم")})
 
-    def current(self, **kw):
-        return self.service.run("gold", {"source": "BOOK", "from": "2026-10-01", "to": "2026-10-31", **kw})
+    def test_the_period_is_by_the_invoice_date_and_the_applied_filters_name_the_factory(self):
+        self.assertEqual(set(self.sales(self.run_gold(**{"from": "2026-10-04", "to": "2026-10-04"}))), {("عيار 21", "خاتم")})
+        result = self.run_gold(factory="1", weight_min="5")
+        self.assertIn("المصنع: مصنع النور", result["applied"])
+        self.assertIn("الوزن من: 5", result["applied"])
 
-    def row(self, result, trip):
-        return next(r for r in self.rows(result, "current") if r["trip"] == trip)
+    def test_the_factory_options_come_from_the_service(self):
+        options = self.run_gold()["options"]["factory"]
+        self.assertEqual([o["text"] for o in options], ["الكل", "مصنع الأمل", "مصنع النور"])
 
-    def test_without_a_reconciliation_the_current_balance_is_the_source_balance(self):
-        row = self.row(self.current(), "MT000001")
-        # +20.000 (entry 1) - 6.000 (return) + 1.500 (buy); the reversed -2.000 sale does not count
-        self.assertEqual((row["source"], row["loss"], row["rounding"], row["after"], row["recon"]), (D("15.500"), D("0.000"), D("0.000"), D("15.500"), "بلا تسوية فعّالة"))
+    # ---- the monthly chart of one type
+    def chart(self, item_type, karat=None, **filters):
+        return self.service.gold_chart({**self.PERIOD, **filters}, item_type, karat)
 
-    def test_an_effective_reconciliation_settles_the_balance_and_its_reversal_gives_it_back(self):
-        FakeRepo.groups = {2: [group(2, "IN", "10.000", "10.000")]}
-        FakeRepo.recons = [recon(2, 3, "10.000", "10.000", "0.000", a_star_units=10 * UNITS)]
-        result = self.current()
-        row = self.row(result, "MT000002")
-        self.assertEqual((row["source"], row["loss"], row["rounding"], row["after"]), (D("10.000"), D("-10.000"), D("0.000"), D("0.000")))   # B = 10, b_star = 10: nothing left
-        self.assertEqual(self.totals(result)["الرصيد الحالي بعد التسويات"], D("0.000"))
-        FakeRepo.recons = []                                                                       # the reconciliation was reversed: it is no longer returned as effective
-        self.assertEqual(self.row(self.current(), "MT000002")["after"], D("10.000"))             # the balance is back
+    def test_the_chart_is_monthly_per_type_and_includes_empty_months(self):
+        result = self.chart("دبلة", **{"from": "2026-08-15", "to": "2026-10-31"})
+        self.assertEqual([(p["month"], p["count"], p["weight"]) for p in result["points"]],
+                         [("2026-08", 0, D("0.000")), ("2026-09", 0, D("0.000")), ("2026-10", 2, D("11.500"))])           # August and September are zero bars
+        self.assertEqual((result["type"], result["count"], result["weight"]), ("دبلة", 2, D("11.500")))
 
-    def test_a_later_generation_is_counted_once(self):
-        FakeRepo.groups = {2: [group(2, "IN", "10.000", "10.000")]}
-        FakeRepo.recons = [recon(2, 5, "10.000", "10.000", "0.000", generation=2, a_star_units=10 * UNITS)]     # generation 1 was reversed and is not effective
-        FakeRepo.recon_docs = [{"entry_id": 201, "trip_id": 2, "entry_no": 3, "entry_date": date(2026, 10, 5), "b_star": D("10.000"), "loss_posted": D("10.000"), "rounding_settlement": D("0.000"),
-                                "reversal_id": 9},
-                               {"entry_id": 205, "trip_id": 2, "entry_no": 5, "entry_date": date(2026, 10, 9), "b_star": D("10.000"), "loss_posted": D("10.000"), "rounding_settlement": D("0.000"),
-                                "reversal_id": None}]
-        result = self.current()
-        self.assertEqual(self.row(result, "MT000002")["after"], D("0.000"))                        # 10 - 10, never 10 - 20
-        docs = [r for r in self.rows(result, "movements") if r["kind"] == "BK_RECON"]
-        self.assertEqual(sorted(r["state"] for r in docs), ["فعّال", "معكوس (حالة اليوم)"])
-        summary = next(r for r in self.rows(result, "summary") if r["trip"] == "MT000002")
-        self.assertEqual((summary["recon"], summary["reversed"]), (D("-10.000"), 1))               # only the effective one has an effect; the reversed one is counted apart
+    def test_the_chart_follows_every_filter_of_the_report(self):
+        self.assertEqual(self.chart("خاتم")["weight"], D("7.250"))                                  # no karat given: every karat of the filters
+        self.assertEqual(self.chart("خاتم", "18")["weight"], D("3.000"))                            # the chart of a row of the 18K table
+        self.assertEqual(self.chart("خاتم", "21")["weight"], D("4.250"))                            # the chart of a row of the 21K table
+        self.assertEqual(self.chart("خاتم", factory="2")["weight"], D("4.250"))
+        self.assertEqual(self.chart("خاتم", weight_min="4")["weight"], D("4.250"))
+        self.assertEqual(self.chart("خاتم", **{"from": "2026-10-05", "to": "2026-10-31"})["weight"], D("3.000"))             # the date range too
+        self.assertEqual(self.chart("دبلة", text="خاتم")["count"], 0)                                                        # the search too
+        self.assertEqual(self.chart("بدون صنف")["weight"], D("2.000"))
 
-    def test_loss_and_rounding_are_shown_apart_and_cancel_to_zero(self):
-        FakeRepo.groups = {3: [group(3, "IN", "1.000", "1.000"), group(3, "OUT", "0.9995", "1.000")]}   # B = 0.000, A = 0.0005 g exactly
-        FakeRepo.recons = [recon(3, 2, "0.000", "0.001", "-0.001", a_star_units=13125)]               # L = round3(A) = 0.001, r = B - L = -0.001
-        result = self.current()
-        row = self.row(result, "MT000003")
-        self.assertEqual((row["source"], row["loss"], row["rounding"], row["after"]), (D("0.000"), D("-0.001"), D("0.001"), D("0.000")))   # -L and -r: the total effect is zero
-        t = self.totals(result)
-        self.assertEqual((t["أثر الفاقد المرحّل المسوَّى (−L)"], t["أثر فرق التقريب المسوَّى (−r)"]), (D("-0.001"), D("0.001")))
-        self.assertTrue(any("ليس فاقدًا ولا ربحًا" in x["note"] for x in result["totals"]))
+    def test_the_chart_totals_equal_the_table_row(self):
+        row = next(r for r in self.rows(self.run_gold(), "sales_21") if r["type"] == "خاتم")
+        chart = self.chart("خاتم", "21")
+        self.assertEqual((chart["count"], chart["weight"]), (row["count"], row["weight"]))
 
-    def test_a_reversal_after_the_period_does_not_claim_a_historical_balance(self):
-        FakeRepo.groups = {2: [group(2, "IN", "10.000", "10.000")]}
-        FakeRepo.recon_docs = [{"entry_id": 203, "trip_id": 2, "entry_no": 3, "entry_date": date(2026, 10, 5), "b_star": D("10.000"), "loss_posted": D("10.000"), "rounding_settlement": D("0.000"),
-                                "reversal_id": 9}]                                                  # reconciled on 5 Oct, reversed LATER (today)
-        result = self.current(to="2026-10-06")
-        titles = [t["title"] for t in result["tables"]]
-        self.assertFalse(any("أول الفترة" in c["title"] or "آخر الفترة" in c["title"] for t in result["tables"] for c in t["columns"]))   # no opening / closing balance columns
-        self.assertTrue(any("ليست رصيدًا تاريخيًا" in t for t in titles))
-        self.assertTrue(any("ليست لقطة تاريخية" in m for m in result["meaning"]))
-        doc = next(r for r in self.rows(result, "movements") if r["kind"] == "BK_RECON")
-        self.assertEqual(doc["state"], "معكوس (حالة اليوم)")                                        # shown with its CURRENT state, not as a settled 5 Oct balance
-        self.assertEqual(self.row(result, "MT000002")["after"], D("10.000"))                      # today the reconciliation is not effective: the balance is back
+    def test_the_chart_needs_the_invoice_and_inventory_rights_and_validates_the_filters(self):
+        session = session_for(ALL - {"INVENTORY_VIEW"})
+        limited = ReportService(session, transaction_factory=self.service._transaction, repository=FakeRepo, authorization=FakeAuthorization(session), today=lambda: TODAY)
+        with self.assertRaises(PermissionError):
+            limited.gold_chart(self.PERIOD, "دبلة")
+        with self.assertRaises(ReportError):
+            self.chart("دبلة", "19")
 
-    def test_record_problems_are_errors_never_a_zero(self):
-        FakeRepo.groups = {2: [group(2, "IN", "10.000", "10.000")]}
-        bad = recon(2, 3, "10.000", "10.000", "0.000", a_star_units=10 * UNITS)
-        for name, recons, code in (("missing record", [{**bad, "record_entry_id": None}], "RECONCILIATION_RECORD_MISSING"),
-                                   ("two effective", [bad, recon(2, 4, "10.000", "10.000", "0.000", generation=2, a_star_units=10 * UNITS)], "RECONCILIATION_DUPLICATE"),
-                                   ("conflicting source", [recon(2, 3, "9.000", "9.000", "0.000", a_star_units=9 * UNITS)], "RECONCILIATION_SOURCE_MISMATCH"),
-                                   ("loss + rounding", [recon(2, 3, "10.000", "9.000", "0.000", a_star_units=10 * UNITS)], "RECONCILIATION_RECORD_INVALID")):
-            with self.subTest(name):
-                FakeRepo.recons = recons
-                with self.assertRaises(ReportError) as raised:
-                    self.current()
-                self.assertEqual(raised.exception.code, code)
+    def test_the_scrap_purchases_are_net_per_karat_with_the_purchase_count(self):
+        rows = {r["karat"]: (r["count"], r["weight"]) for r in self.rows(self.run_gold(), "scrap")}
+        self.assertEqual(rows["عيار 21"], (3, D("25.000")))                                         # 30.000 bought - 5.000 reversed; 3 purchases
+        self.assertEqual(rows["عيار 18"], (2, D("12.500")))
+        self.assertEqual(set(r["karat"] for r in self.rows(self.run_gold(karat="18"), "scrap")), {"عيار 18"})
 
-    def test_the_reads_are_a_fixed_set_whatever_the_number_of_trips(self):
-        self.current()
-        self.assertEqual(sum(1 for c in FakeRepo.calls if c == "book_groups_current"), 1)
-        self.assertEqual(sum(1 for c in FakeRepo.calls if c == "book_effective_reconciliations"), 1)
+    def test_invalid_filters_are_refused_not_ignored(self):
+        for bad in ({"karat": "19"}, {"weight_min": "abc"}, {"weight_min": "-1"}, {"weight_min": "9", "weight_max": "1"}):
+            with self.assertRaises(ReportError, msg=str(bad)):
+                self.run_gold(**bad)
 
-    def test_a_missing_table_is_unavailable_not_zero(self):
-        FakeRepo.tables["market_trip_book_lines"] = False
-        result = self.current()
-        self.assertEqual((result["tables"][0]["available"], result["totals"]), (False, []))
+    def test_a_missing_right_marks_its_section_unavailable_and_never_reads_it(self):
+        only_scrap = ALL - {"INVOICE_VIEW", "INVENTORY_VIEW"}
+        FakeRepo.calls = []
+        session = session_for(only_scrap)
+        service = ReportService(session, transaction_factory=self.service._transaction, repository=FakeRepo, authorization=FakeAuthorization(session), today=lambda: TODAY)
+        result = service.run("gold", self.PERIOD)
+        by_key = {t["key"]: t for t in result["tables"]}
+        self.assertFalse(by_key["sales"]["available"])
+        self.assertTrue(by_key["scrap"].get("available", True))
+        only_sales = ALL - {"OLD_GOLD_VIEW"}
+        session = session_for(only_sales)
+        service = ReportService(session, transaction_factory=self.service._transaction, repository=FakeRepo, authorization=FakeAuthorization(session), today=lambda: TODAY)
+        self.assertFalse({t["key"]: t for t in service.run("gold", self.PERIOD)["tables"]}["scrap"]["available"])
+        nothing = session_for({"APP_LOGIN", "REPORTS_VIEW"})
+        with self.assertRaises(PermissionError):
+            ReportService(nothing, transaction_factory=self.service._transaction, repository=FakeRepo, authorization=FakeAuthorization(nothing), today=lambda: TODAY).run("gold", self.PERIOD)
+
+    def test_the_csv_has_both_tables(self):
+        with tempfile.TemporaryDirectory() as folder:
+            text = Path(self.service.export_csv("gold", self.PERIOD, folder)).read_text(encoding="utf-8-sig")
+        for needle in ("حركة البيع حسب الصنف", "شراء الكسر بالعيار", "دبلة", "غويشة", "عدد عمليات الشراء"):
+            self.assertIn(needle, text)
 
 
 class CustomerTests(Case):
@@ -583,44 +609,13 @@ class ExportTests(Case):
             rows = list(csv.reader(raw.decode("utf-8-sig").splitlines()))
         numbers = [r[2] for r in rows if len(r) > 2 and r[2].startswith("INV")]
         self.assertEqual(len(numbers), 125)                                                                 # 5 + 120 invoices: more than one page of detail
-        value = next(r for r in rows if r and r[0] == "قيمة البيع (فعّال)")
+        value = next(r for r in rows if r and r[0] == "قيمة البيع")
         self.assertEqual(D(value[1]), D("30000"))                                                           # 10000 + 8000 + 120 x 100
         self.assertIn("المستندات", [r[0] for r in rows if r])
 
 
 class SearchConsistencyTests(Case):
     """F2: every visible filter has a known effect; the search narrows the MOVEMENTS and their totals, never an account balance."""
-
-    def gold(self, **kw):
-        return self.service.run("gold", {"source": "SCRAP", "from": "2026-10-01", "to": "2026-10-31", **kw})
-
-    def test_two_search_words_give_two_different_results_and_the_balances_stay_whole(self):
-        buy = self.gold(text="BUY")
-        manufacture = self.gold(text="MANUFACTURE")
-        self.assertEqual([r["code"] for r in self.rows(buy, "movements")], ["CUSTOMER_BUY_IN"])
-        self.assertEqual([r["code"] for r in self.rows(manufacture, "movements")], ["MANUFACTURE_OUT"])
-        for result in (buy, manufacture, self.gold()):
-            row = self.rows(result, "summary")[0]
-            self.assertEqual((row["opening"], row["in"], row["out"], row["closing"]), (D("100.000"), D("20.000"), D("30.000"), D("90.000")))     # a search never changes the balance
-        none = self.gold(text="لا يوجد")
-        self.assertEqual((self.rows(none, "movements"), self.totals(none)["عدد الحركات المعروضة"]), ([], 0))
-        self.assertEqual(self.rows(none, "summary")[0]["closing"], D("90.000"))
-        self.assertIn("البحث: BUY", buy["applied"][1])
-
-    def test_nested_filters_karat_and_search(self):
-        self.assertEqual(len(self.rows(self.gold(karat="21", text="OUT"), "movements")), 1)
-        self.assertEqual(self.rows(self.gold(karat="18", text="OUT"), "movements"), [])
-
-    def test_a_filter_that_has_no_effect_for_a_source_is_dropped(self):
-        result = self.service.run("gold", {"source": "BOOK", "karat": "18", "from": "2026-10-01", "to": "2026-10-31"})
-        self.assertNotIn("karat", result["filters"])                                                # not applied, so not claimed
-        self.assertFalse(any(line.startswith("العيار") for line in result["applied"]))
-
-    def test_every_gold_source_applies_the_search(self):
-        for source, word, hit in (("ASSAYED", "MT000003", 1), ("BOOK", "BK_BUY", 1), ("MARKETER", "تسليم", 1), ("PIECES", "لا يوجد", 0)):
-            with self.subTest(source):
-                result = self.service.run("gold", {"source": source, "text": word, "from": "2026-10-01", "to": "2026-10-31"})
-                self.assertEqual(len(self.rows(result, "movements")), hit)
 
     def test_treasury_search_filters_the_movements_and_leaves_every_balance_alone(self):
         everything = self.service.run("treasury", {"from": "2026-10-01", "to": "2026-10-31"})
@@ -683,23 +678,6 @@ class CurrentRightsTests(Case):
         with self.assertRaises(PermissionError):
             service.export_csv("treasury", {})
         self.assertEqual(FakeRepo.calls, [])
-
-    def test_a_revoked_trip_or_marketer_right_blocks_the_source_before_its_query(self):
-        for source, removed, forbidden in (("BOOK", "MARKET_TRIP_MANAGE", ("book_lines", "book_groups_current")), ("ASSAYED", "MARKET_TRIP_MANAGE", ("assayed_movements",)),
-                                           ("MARKETER", "INTERMEDIARY_HOLDING_VIEW", ("marketer_gold",))):
-            with self.subTest(source):
-                FakeRepo.calls = []
-                service = self.service_with(ALL - {removed})
-                result = service.run("gold", {"source": source})
-                self.assertFalse(result["tables"][0]["available"])
-                self.assertEqual(result["totals"], [])
-                for name in forbidden:
-                    self.assertNotIn(name, FakeRepo.calls)
-                with tempfile.TemporaryDirectory() as folder:                                      # the export is protected the same way
-                    path = service.export_csv("gold", {"source": source}, folder)
-                    self.assertIn("تحتاج صلاحية إضافية", Path(path).read_text(encoding="utf-8-sig"))
-                for name in forbidden:
-                    self.assertNotIn(name, FakeRepo.calls)
 
     def test_an_allowed_section_survives_when_another_is_revoked(self):
         service = self.service_with(ALL - {"CASH_VIEW"})

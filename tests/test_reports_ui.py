@@ -56,7 +56,7 @@ class ReportsPageTests(harness.InvoicePageTests):
         return vm
 
     def wait_report(self, vm, label="report loaded"):
-        self.wait_until(lambda: not vm.busy and bool(vm.result.get("tables") or vm.errorMessage), label)
+        self.wait_until(lambda: not vm.busy and bool(vm.result.get("tables") or vm.result.get("totals") or vm.errorMessage), label)
         QTest.qWait(150)
 
     def type_in(self, name, text):
@@ -83,29 +83,30 @@ class ReportsPageTests(harness.InvoicePageTests):
         self.assertEqual([r["key"] for r in vm.reports], ["sales", "stock", "gold", "customers", "suppliers", "treasury", "market"])
         self.assertEqual(self.warnings, [])
 
-    def test_sales_report_shows_totals_rows_and_opens_the_invoice(self):
+    def test_the_sales_report_shows_totals_only_without_the_documents_table(self):
         vm = self.open_reports()
         self.wait_report(vm)
         self.assertEqual(vm.report, "sales")                                                       # the first report opens on entry
         self.assertIn("قيمة البيع", " ".join(t["label"] for t in vm.result["totals"]))
+        self.assertNotIn("(فعّال)", " ".join(t["label"] for t in vm.result["totals"]))             # the word is not shown on a card (owner review)
         self.assertIn("18,000.00 ج", " ".join(self.total_values()))                              # the independent figure of test_report_service
-        self.assertIsNotNone(self.visible_item("reportMeaning_0"))
-        self.assertIsNotNone(self.visible_item("reportRow_0_0"))
-        self.reveal(self.item("reportOpen_0_0"))
-        self.click("reportOpen_0_0")
-        self.wait_until(lambda: self.root.property("currentPage") == 1, "opened the invoice screen")      # the existing Invoice History screen
+        self.assertEqual(vm.result["tables"], [])                                                  # the documents table was removed from the screen
+        self.assertIsNone(self.visible_item("reportRow_0_0"))
+        self.assertIsNone(self.visible_item("reportMeaning_0"))                                    # the explanatory box was removed (owner review)
+        self.assertIsNone(self.visible_item("reportNext"))                                         # nothing to page
 
-    def test_arabic_search_filter_and_apply(self):
+    def test_arabic_search_filter_and_apply_change_the_totals(self):
         vm = self.open_reports()
         self.wait_report(vm)
+        before = list(vm.result["totals"])
         self.type_in("reportText", "عميل ب")
         self.click("reportApply")
-        self.wait_until(lambda: not vm.busy and len(vm.result["tables"][0]["rows"]) == 1, "filtered")
-        self.assertEqual(vm.result["tables"][0]["rows"][0]["cells"][2], "INV0002")
+        self.wait_until(lambda: not vm.busy and vm.result["totals"] != before, "the search narrowed the totals")
+        self.assertIn("البحث: عميل ب", vm.result["applied"])
+        narrowed = list(vm.result["totals"])
         self.pick("reportFilter_state", 3)                                                          # ملغاة
         self.click("reportApply")
-        self.wait_until(lambda: not vm.busy and len(vm.result["tables"][0]["rows"]) == 0, "voided + text: nothing")
-        self.assertIsNotNone(self.visible_item("reportTableEmpty_0"))
+        self.wait_until(lambda: not vm.busy and vm.result["totals"] != narrowed, "voided + text changes the totals again")
 
     def pick(self, name, index):
         combo = self.item(name)
@@ -119,40 +120,14 @@ class ReportsPageTests(harness.InvoicePageTests):
         combo.activated[int].emit(index)
         QTest.qWait(150)
 
-    def test_totals_stay_the_same_across_pages(self):
-        FakeRepo.extra_invoices = 120
-        vm = self.open_reports()
-        self.wait_report(vm)
-        first = list(vm.result["totals"])
-        self.assertEqual((vm.result["tables"][0]["page"], vm.result["tables"][0]["rowCount"], vm.result["tables"][0]["hasMore"]), (1, 127, True))
-        self.reveal(self.item("reportNext"))
-        self.click("reportNext")
-        self.wait_until(lambda: not vm.busy and vm.result["tables"][0]["page"] == 2, "page 2")
-        self.assertEqual(vm.result["totals"], first)                                               # the totals cover the whole result, not the page
-        self.reveal(self.item("reportNext"))
-        self.click("reportNext")
-        self.wait_until(lambda: not vm.busy and vm.result["tables"][0]["page"] == 3, "page 3")
-        self.assertEqual((len(vm.result["tables"][0]["rows"]), vm.result["tables"][0]["hasMore"]), (27, False))
-        self.reveal(self.item("reportPrevious"))
-        self.click("reportPrevious")
-        self.wait_until(lambda: not vm.busy and vm.result["tables"][0]["page"] == 2, "back to page 2")
-
     def test_other_reports_show_their_sections_and_the_unavailable_state(self):
         vm = self.open_reports()
         self.wait_report(vm)
         for key in ("stock", "customers", "suppliers", "treasury"):
             self.click(f"reportChoice_{key}")
-            self.wait_until(lambda key=key: not vm.busy and vm.result.get("report") == key and vm.result["tables"], f"{key} loaded")
+            self.wait_until(lambda key=key: not vm.busy and vm.result.get("report") == key and (vm.result["tables"] or vm.result["totals"]), f"{key} loaded")
             QTest.qWait(100)
-            self.assertIsNotNone(self.visible_item("reportMeaning_0"), key)
-        self.click("reportChoice_gold")
-        self.wait_until(lambda: not vm.busy and vm.result.get("report") == "gold", "gold loaded")
-        FakeRepo.tables["market_trip_book_lines"] = False
-        self.pick("reportFilter_source", 3)                                                         # عهد السوق الدفترية
-        self.click("reportApply")
-        self.wait_until(lambda: not vm.busy and vm.result["tables"] and not vm.result["tables"][0]["available"], "unavailable source")
-        self.assertIsNotNone(self.visible_item("reportTableUnavailable_0"))                         # never a successful empty report
-        FakeRepo.tables["market_trip_book_lines"] = True
+            self.assertIsNone(self.visible_item("reportMeaning_0"), key)                  # the explanatory box was removed (owner review)
 
     def test_the_market_report_shows_only_the_loss_totals(self):
         self.root.setWidth(1080)
@@ -166,7 +141,7 @@ class ReportsPageTests(harness.InvoicePageTests):
         self.assertEqual([t["key"] for t in vm.result["tables"]], ["summary"])                       # totals only: no detail tables
         labels = [x["label"] for x in vm.result["totals"]]
         self.assertIn("إجمالي الفقد والخسية (مكافئ عيار 21)", labels)
-        self.assertIsNotNone(self.visible_item("reportMeaning_0"))
+        self.assertIsNone(self.visible_item("reportMeaning_0"))                          # the explanatory box was removed (owner review)
         self.assertEqual(self.warnings, [])
 
     def test_a_failed_read_is_shown_as_a_failure_and_clears_the_old_report(self):
@@ -183,27 +158,46 @@ class ReportsPageTests(harness.InvoicePageTests):
         FakeRepo.legacy = True
         vm = self.open_reports()
         self.wait_report(vm)
-        cells = [c for row in vm.result["tables"][0]["rows"] for c in row["cells"]]
-        self.assertIn("غير معلوم", cells)                                                            # not 0.00
+        self.assertEqual(vm.result["tables"], [])                                                    # the documents table is not shown; the unknown cells stay in the CSV (service tests)
         self.assertTrue(any("جزئي" in t["label"] for t in vm.result["totals"]))
         self.assertIsNotNone(self.visible_item("reportApplied"))
         self.assertIn("الفترة:", self.text("reportApplied"))
 
-    def test_the_book_report_shows_the_current_balance_after_the_reconciliation(self):
-        from tests.test_report_service import UNITS, group, recon
-        FakeRepo.groups = {2: [group(2, "IN", "10.000", "10.000")]}
-        FakeRepo.recons = [recon(2, 3, "10.000", "10.000", "0.000", a_star_units=10 * UNITS)]
+    def test_the_gold_movement_report_filters_by_factory_and_weight_and_shows_the_two_tables(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
         vm = self.open_reports()
         self.wait_report(vm)
+        self.reveal(self.item("reportChoice_gold"))
         self.click("reportChoice_gold")
-        self.wait_until(lambda: not vm.busy and vm.result.get("report") == "gold", "gold")
-        self.pick("reportFilter_source", 3)
+        self.wait_until(lambda: not vm.busy and vm.result.get("report") == "gold" and vm.result["tables"], "gold loaded")
+        QTest.qWait(150)
+        self.assertEqual([t["key"] for t in vm.result["tables"]], ["sales_24", "sales_21", "sales_18", "scrap"])             # a table per karat, then the scrap
+        self.assertEqual(vm.result["title"], "حركة الذهب")
+        self.assertIn("مبيع عيار 21", [x["label"] for x in vm.result["totals"]])
+        self.assertEqual([s["key"] for s in vm.filterSpecs], ["karat", "factory", "weight_min", "weight_max"])
+        self.assertEqual([o["text"] for o in vm.filterSpecs[1]["options"]], ["الكل", "مصنع الأمل", "مصنع النور"])      # the factories come from the service
+        self.assertIsNotNone(self.visible_item("reportFilterText_weight_min"))
+        self.type_in("reportFilterText_weight_min", "5")
+        self.pick("reportFilter_factory", 2)                                                        # مصنع النور
         self.click("reportApply")
-        self.wait_until(lambda: not vm.busy and vm.result["tables"][0]["key"] == "current", "book")
-        titles = [t["title"] for t in vm.result["tables"]]
-        self.assertTrue(any("الرصيد الحالي بعد التسويات" in t for t in titles))
-        self.assertIn("0.000", " ".join(vm.result["tables"][0]["rows"][0]["cells"]))
-        self.assertFalse(any("أول الفترة" in c["title"] for t in vm.result["tables"] for c in t["columns"]))
+        self.wait_until(lambda: not vm.busy and "الوزن من: 5" in vm.result.get("applied", []), "filtered")
+        self.assertIn("المصنع: مصنع النور", vm.result["applied"])
+        sales = [r for t in vm.result["tables"] if t["key"].startswith("sales_") for r in t["rows"]]
+        self.assertTrue(sales and all(float(r["cells"][2].replace(",", "").split()[0]) >= 5 for r in sales))             # one row per TYPE inside each karat table
+        self.assertEqual({r["refText"] for r in sales}, {"رسم بياني"})                                                 # every row has the chart button
+        # the monthly chart of the first type, under the SAME filters (factory النور, weight from 5)
+        self.reveal(self.item("reportOpen_0_0"))
+        self.click("reportOpen_0_0")
+        self.wait_until(lambda: not vm.chart.get("loading", True) and bool(vm.chart.get("points")), "chart loaded")
+        QTest.qWait(200)
+        self.assertTrue(self.item("reportChartDialog").property("opened"))
+        self.assertIn("المبيعات الشهرية", self.text("reportChartTitle"))
+        self.assertIn("المصنع: مصنع النور", " ".join(vm.chart["applied"]))
+        self.assertIsNotNone(self.visible_item("reportChartBar_2026-10"))
+        self.assert_inside_window(self.item("reportChartClose"))
+        self.click("reportChartClose")
+        self.wait_until(lambda: not vm.chart, "chart closed")
         self.assertEqual(self.warnings, [])
 
     def test_the_session_change_clears_everything(self):

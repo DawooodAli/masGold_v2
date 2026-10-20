@@ -54,5 +54,34 @@ class MarketReportMySqlTests(unittest.TestCase):
         self.assertEqual(self.h.counts(tables), before)
 
 
+@unittest.skipUnless(os.environ.get("MASGOLD_BOOK_REHEARSAL") == "1", "explicit rehearsal-only opt-in")
+class GoldMovementMySqlTests(unittest.TestCase):
+    """«حركة الذهب»: the two reads on real MySQL equal independent SQL aggregates over the same rows (read only)."""
+    RANGE = {"from": "2020-01-01", "to": "2030-12-31"}
+
+    @classmethod
+    def setUpClass(cls):
+        BookCoreMySqlTests.setUpClass()
+        cls.h = BookCoreMySqlTests("test_the_migration_is_registered_and_the_objects_exist")
+        cls.result = ReportService(cls.h.session).run("gold", dict(cls.RANGE))
+
+    def test_the_sold_pieces_per_karat_equal_an_independent_aggregate(self):
+        rows = self.h.query("""SELECT k.karat_value AS k, COUNT(*) AS n, COALESCE(SUM(ii.weight_grams),0) AS w FROM invoice_lines il JOIN invoices iv ON iv.id = il.invoice_id
+                               JOIN inventory_items ii ON ii.id = il.inventory_item_id JOIN karats k ON k.id = ii.karat_id
+                               WHERE il.line_type = 'SELL_INVENTORY' AND iv.invoice_status = 'FINALIZED'
+                                 AND NOT EXISTS (SELECT 1 FROM transaction_corrections c WHERE c.source_type='INVOICE' AND c.source_id=iv.id AND c.correction_type='FULL_REVERSAL')
+                               GROUP BY k.karat_value""")
+        direct = {f"مبيع عيار {r['k']}": (f"{D(str(r['w'])):,.3f} جرام", f"{r['n']} قطعة") for r in rows}
+        shown = {x["label"]: (x["value"], x["note"]) for x in self.result["totals"]}
+        self.assertEqual(shown, direct)
+
+    def test_the_scrap_purchases_equal_an_independent_aggregate(self):
+        rows = self.h.query("""SELECT k.karat_value AS k, COALESCE(SUM(m.weight_delta_grams),0) AS w, SUM(m.movement_code = 'CUSTOMER_BUY_IN') AS n FROM old_gold_movements m JOIN karats k ON k.id = m.karat_id
+                               WHERE m.balance_effect='COUNTED' AND m.weight_delta_grams IS NOT NULL AND m.movement_code IN ('CUSTOMER_BUY_IN','CUSTOMER_BUY_IN_REVERSAL') GROUP BY k.karat_value""")
+        direct = {f"عيار {r['k']}": (int(r["n"]), D(str(r["w"]))) for r in rows}
+        shown = {r["karat"]: (r["count"], r["weight"]) for r in next(t for t in self.result["tables"] if t["key"] == "scrap")["rows"]}
+        self.assertEqual(shown, direct)
+
+
 if __name__ == "__main__":
     unittest.main()

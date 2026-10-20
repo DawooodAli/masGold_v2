@@ -23,16 +23,16 @@ from repositories.report_repository import ReportRepository
 from services import book_rules
 from services.authorization_service import AuthorizationService
 from services.correction_rules import correction_code
-from services.gold_position_service import GoldPositionError, merge_reconciliations, read_transaction
+from services.gold_position_service import read_transaction
 
 PAGE_SIZE = 50
 MAX_ROWS = 50000
 ZERO = Decimal("0")
 ZERO3, ZERO2 = Decimal("0.000"), Decimal("0.00")
 BASE_PERMISSION = "REPORTS_VIEW"
-REPORT_PERMISSIONS = {"sales": ("INVOICE_VIEW",), "stock": ("INVENTORY_VIEW",), "gold": ("OLD_GOLD_VIEW",), "customers": ("CUSTOMERS_VIEW",),
+REPORT_PERMISSIONS = {"sales": ("INVOICE_VIEW",), "stock": ("INVENTORY_VIEW",), "gold": (), "customers": ("CUSTOMERS_VIEW",),
                       "suppliers": ("SUPPLIER_VIEW",), "treasury": (), "market": ("MARKET_TRIP_MANAGE",)}                      # treasury: CASH_VIEW and / or BANK_VIEW per section
-REPORT_TITLES = {"sales": "المبيعات والمرتجعات", "stock": "المخزون المتاح", "gold": "حركة المخزون والذهب", "customers": "العملاء", "suppliers": "الموردون", "treasury": "الخزنة والبنوك", "market": "عهدة السوق والخسائر"}
+REPORT_TITLES = {"sales": "المبيعات والمرتجعات", "stock": "المخزون المتاح", "gold": "حركة الذهب", "customers": "العملاء", "suppliers": "الموردون", "treasury": "الخزنة والبنوك", "market": "عهدة السوق والخسائر"}
 KIND_TEXT = {"SALE": "بيع", "MIXED": "بيع مع شراء كسر", "OLD_GOLD_PURCHASE": "شراء كسر", "RETURN": "مرتجع", "EXCHANGE": "استبدال"}
 STATUS_TEXT = {"IN_STOCK": "متاح", "SOLD": "مباع", "SCRAPPED": "كسر", "REMOVED": "مُخرج", "RETURNED_PENDING": "مرتجع بانتظار الفحص", "CONVERTED_TO_OLD_GOLD": "حُوّل إلى كسر"}
 CLASS_TEXT = {"NEW_STOCK": "جديد", "OLD_STOCK": "قديم"}
@@ -40,14 +40,9 @@ LINE_TEXT = {"SELL_INVENTORY": "بيع قطعة", "SELL_OLD_GOLD": "بيع من 
 REF_TEXT = {"INVOICE": "فاتورة", "RETURN": "مرتجع", "EXCHANGE": "استبدال", "CUSTOMER_ACCOUNT_SETTLEMENT": "تحصيل / تسوية حساب", "CUSTOMER_DEPOSIT": "عربون",
             "CUSTOMER_DEPOSIT_REFUND": "رد عربون", "FULL_REVERSAL": "عكس", "SETTLEMENT_CORRECTION": "تصحيح تسوية", "DEAD_CASH_WRITE_OFF": "شطب رصيد",
             "DEAD_CASH_REVERSAL": "عكس شطب", "UNKNOWN": "غير محدد"}
-GOLD_SOURCES = {"SCRAP": "كسر المحل (بالعيار)", "PIECES": "المشغولات (قطع)", "ASSAYED": "مخزون مرتجع بعيار فعلي", "BOOK": "عهد السوق الدفترية (مكافئ عيار 21)",
-                "MARKETER": "استحقاق المسوقجي (عيار 21)"}
-MARKETER_TYPE_TEXT = {"PURCHASE_IN": "شراء", "SALE_OUT": "بيع", "GOLD_RETURN": "رجوع ذهب للمحل", "SETTLEMENT": "تسوية لمورد", "TRIP_BOOK_IN": "تسليم من عهدة رحلة",
-                      "TRIP_BOOK_OUT": "استلام إلى عهدة رحلة"}
-
-
+NO_TYPE = "بدون صنف"
 UNKNOWN_TEXT = "غير معلوم"
-FILTER_LABELS = {"kind": "النوع", "state": "الحالة", "status": "الحالة", "classification": "التصنيف", "karat": "العيار", "source": "المصدر", "balance": "الرصيد",
+FILTER_LABELS = {"factory_name": "المصنع", "weight_min": "الوزن من", "weight_max": "الوزن إلى", "kind": "النوع", "state": "الحالة", "status": "الحالة", "classification": "التصنيف", "karat": "العيار", "source": "المصدر", "balance": "الرصيد",
                  "inactive": "العملاء المتوقفون", "supplier": "المورد", "account": "الحساب"}
 
 
@@ -127,12 +122,12 @@ def col(key, title, kind="text"):
     return {"key": key, "title": title, "kind": kind}
 
 
-def table(key, title, columns, rows, *, paged=False, note=""):
-    return {"key": key, "title": title, "columns": columns, "rows": rows, "paged": paged, "note": note}
+def table(key, title, columns, rows, *, paged=False, note="", karat=None):
+    return {"key": key, "title": title, "columns": columns, "rows": rows, "paged": paged, "note": note, "karat": karat}
 
 
-def total(label, value, kind, note=""):
-    return {"label": label, "value": value, "kind": kind, "note": note}
+def total(label, value, kind, note="", group="", karat=None):
+    return {"label": label, "value": value, "kind": kind, "note": note, "group": group, "karat": karat}
 
 
 class ReportService:
@@ -150,10 +145,20 @@ class ReportService:
             return []
         out = []
         for key, needed in REPORT_PERMISSIONS.items():
-            ok = set(needed) <= set(actor.permissions) if key != "treasury" else bool({"CASH_VIEW", "BANK_VIEW"} & set(actor.permissions))
+            ok = self._allowed(key, needed, set(actor.permissions))
             if ok:
                 out.append({"key": key, "title": REPORT_TITLES[key]})
         return out
+
+    @staticmethod
+    def _allowed(key, needed, has):
+        """`has` is a set of codes or a gate callable. treasury: cash and / or bank; gold: (invoices and inventory) and / or old gold; every other report: all its rights."""
+        have = has if callable(has) else (lambda code: code in has)
+        if key == "treasury":
+            return bool(have("CASH_VIEW") or have("BANK_VIEW"))
+        if key == "gold":
+            return bool((have("INVOICE_VIEW") and have("INVENTORY_VIEW")) or have("OLD_GOLD_VIEW"))
+        return all(have(code) for code in needed)
 
     def run(self, report, filters=None, *, _expected_actor=None):
         """The report with its WHOLE-result totals and ONE page of its paged detail table."""
@@ -192,7 +197,7 @@ class ReportService:
             writer.writerow([])
             writer.writerow(["الإجماليات (كما هي معرَّفة في عمود الملاحظة؛ المبالغ كاملة للفلتر المعروض، وأرصدة الحسابات لا يغيّرها البحث)"])
             for item in built["totals"]:
-                writer.writerow([item["label"], self._cell(item["value"]), item["note"]])
+                writer.writerow([item["label"].replace(" (فعّال)", "").replace("(فعّال)", "").strip(), self._cell(item["value"]), item["note"]])
         return str(path)
 
     @staticmethod
@@ -217,10 +222,7 @@ class ReportService:
             denied = PermissionError("ليس لديك صلاحية عرض هذا التقرير.")
             if not gate(BASE_PERMISSION):
                 raise denied
-            if report == "treasury":
-                if not (gate("CASH_VIEW") or gate("BANK_VIEW")):                  # the last right needed is gone: a clear refusal, nothing is read
-                    raise denied
-            elif not all(gate(code) for code in REPORT_PERMISSIONS[report]):
+            if not self._allowed(report, REPORT_PERMISSIONS[report], gate):                  # the last right needed is gone: a clear refusal, nothing is read
                 raise denied
             repo = self._repository(connection)
             built = getattr(self, f"_{report}")(repo, gate, filters, start, end)
@@ -430,228 +432,147 @@ class ReportService:
         scols = [col("karat", "العيار"), col("classification", "التصنيف"), col("status", "الحالة"), col("count", "عدد القطع", "count"), col("weight", "الوزن (جرام)", "grams")]
         dcols = [col("barcode", "الباركود"), col("karat", "العيار"), col("classification", "التصنيف"), col("status", "الحالة"), col("type", "الصنف"), col("category", "الفئة"),
                  col("factory", "المصنع"), col("weight", "الوزن (جرام)", "grams"), col("size", "المقاس"), col("invoice", "الفاتورة المرتبطة")]
-        totals = [total("عدد القطع", len(items), "count")] + [total(f"عيار {k}: عدد القطع", v["count"], "count") for k, v in sorted(per_karat.items(), reverse=True)] \
-                 + [total(f"عيار {k}: الوزن (جرام)", v["weight"], "grams", "وزن هذا العيار وحده") for k, v in sorted(per_karat.items(), reverse=True)]
+        # Owner review: ONE card per karat with the piece count and, under it, that karat's weight (karats are never added); then one card per karat of the shop Scrap (weight only, its
+        # own karat). The Scrap cards need the old-gold right and are left out (never shown as zero) without it.
+        totals = [total(f"عيار {k}", f"{v['weight']:,.3f} جرام", "text", f"{v['count']} قطعة", "pieces", karat=k) for k, v in sorted(per_karat.items(), reverse=True)]
+        if gate("OLD_GOLD_VIEW"):
+            scrap = {}
+            for r in repo.scrap_opening(datetime(9999, 12, 31)):
+                if not karat or str(r["karat_value"]) == karat:
+                    scrap[int(r["karat_value"])] = scrap.get(int(r["karat_value"]), ZERO3) + _dec(r["grams"])
+            totals += [total(f"كسر المحل — عيار {k}", f"{g:,.3f} جرام", "text", "الرصيد الحالي (الكسر المحسوب فقط)", "scrap", karat=k) for k, g in sorted(scrap.items(), reverse=True)]
         meaning = ["المخزون المتاح = القطع بحالة «متاح» (الافتراضي)؛ يمكن عرض الحالات الأخرى لمراجعة القطع المباعة أو المرتجعة.",
                    "الأوزان تُجمع داخل كل عيار فقط؛ لا يوجد إجمالي وزن لعيارات مختلفة. هذا التقرير للقطع المشغولة، وكسر المحل في تقرير «حركة المخزون والذهب».",
                    "الفاتورة المرتبطة: آخر فاتورة غير مسودة تحمل هذه القطعة في أحد أسطرها (الرابط `invoice_lines.inventory_item_id`)؛ ليست بالضرورة فاتورة أصل اقتناء القطعة، وتفتح من شاشة الفواتير."]
         return {"meaning": meaning, "tables": [table("summary", "الملخص حسب العيار والتصنيف والحالة", scols, summary), table("items", "القطع", dcols, rows, paged=True)], "totals": totals}
 
-    # ------------------------------------------------------------------ 3. gold movements (a ledger per source, never added together)
+    # ------------------------------------------------------------------ 3. gold movement: the pieces SOLD by type and the scrap BOUGHT by karat (owner redesign)
     def _gold(self, repo, gate, filters, start, end):
-        source = str(filters.get("source") or "SCRAP")
-        if source not in GOLD_SOURCES:
-            raise ReportError("FILTER_INVALID", "مصدر غير صحيح.")
-        if source not in ("SCRAP", "PIECES"):
-            filters.pop("karat", None)                                           # the karat filter exists only for the sources that are kept per master karat
-        needs = {"BOOK": ("MARKET_TRIP_MANAGE",), "MARKETER": ("INTERMEDIARY_HOLDING_VIEW",), "ASSAYED": ("MARKET_TRIP_MANAGE",), "PIECES": ("INVENTORY_VIEW",)}.get(source, ())
-        meaning = ["لكل مصدر دفتره ووحدته؛ لا يوجد إجمالي واحد للمصادر لأن ذلك يضاعف الذهب بين المحل والعهدة والمخزون والمسوقجي.",
-                   "البحث يصفّي الحركات المعروضة وعددها فقط؛ الأرصدة والملخصات تبقى كاملة للفترة."]
-        if not all(gate(code) for code in needs):                                # checked BEFORE any read of this source's data
-            return {"meaning": meaning, "tables": [self._unavailable("denied", GOLD_SOURCES[source], "تحتاج صلاحية إضافية لعرض هذا المصدر.")], "totals": []}
-        return getattr(self, f"_gold_{source.lower()}")(repo, filters, start, end, meaning)
+        """The PHYSICAL gold movement of the period. Table 1: the pieces sold (effective finalized invoices) grouped by TYPE (دبلة، خاتم، غويشة…) and karat, filterable by factory and a weight range;
+        one card per karat (weight on top, piece count under it). Table 2: the scrap bought from customers, per karat. Karats are never added together. A section whose right is missing is
+        marked unavailable (never a zero). Reversed / voided invoices are not counted; returns are NOT netted (this is the SALES movement)."""
+        karat, factory, weight_min, weight_max, folded, raw = self._gold_filter_values(filters)
+        can_sales, can_scrap = gate("INVOICE_VIEW") and gate("INVENTORY_VIEW"), gate("OLD_GOLD_VIEW")
+        tables, cards, options = [], [], {}
+        title_sales, title_scrap = "حركة البيع حسب الصنف", "شراء الكسر بالعيار"
+        if can_sales:
+            options["factory"] = [{"value": "", "text": "الكل"}] + [{"value": str(f["id"]), "text": f["name"]} for f in repo.factories()]
+            if factory:
+                filters["factory_name"] = next((o["text"] for o in options["factory"] if o["value"] == factory), factory)
+            groups, per_karat = {}, {}
+            for r in repo.gold_sold_pieces(start, end):
+                if not self._gold_keep(r, karat, factory, weight_min, weight_max, folded, raw):
+                    continue
+                weight = _dec(r["weight_grams"])
+                k = int(r["karat_value"])
+                g = groups.setdefault((k, r["item_type"] or NO_TYPE), {"count": 0, "weight": ZERO3})
+                g["count"] += 1
+                g["weight"] += weight
+                p = per_karat.setdefault(k, {"count": 0, "weight": ZERO3})
+                p["count"] += 1
+                p["weight"] += weight
+            columns = [col("type", "الصنف"), col("count", "عدد القطع", "count"), col("weight", "الوزن (جرام)", "grams")]
+            for k in sorted(per_karat, reverse=True):                                                  # a SEPARATE table per karat: pieces of different karats are never grouped together
+                rows = [{"type": t, "count": g["count"], "weight": g["weight"], "ref": {"type": "CHART", "id": t, "extra": str(k)}}
+                        for (kk, t), g in sorted(groups.items(), key=lambda kv: (-kv[1]["weight"], kv[0][1])) if kk == k]
+                tables.append(table(f"sales_{k}", f"{title_sales} — عيار {k}", columns, rows, karat=k))
+            if not per_karat:
+                tables.append(table("sales", title_sales, columns, []))
+            cards += [total(f"مبيع عيار {k}", f"{v['weight']:,.3f} جرام", "text", f"{v['count']} قطعة", "pieces", karat=k) for k, v in sorted(per_karat.items(), reverse=True)]
+        else:
+            tables.append(self._unavailable("sales", title_sales, "تحتاج صلاحية عرض الفواتير والمخزون."))
+        if can_scrap:
+            per = {}
+            for r in repo.scrap_purchases(start, end):
+                if karat and str(r["karat_value"]) != karat:
+                    continue
+                p = per.setdefault(int(r["karat_value"]), {"count": 0, "weight": ZERO3})
+                p["weight"] += _dec(r["grams"])                                                       # purchases plus their (negative) reversals
+                if r["movement_code"] == "CUSTOMER_BUY_IN":
+                    p["count"] += int(r["n"])
+            rows = [{"karat": f"عيار {k}", "count": v["count"], "weight": v["weight"]} for k, v in sorted(per.items(), reverse=True)]
+            tables.append(table("scrap", title_scrap, [col("karat", "العيار"), col("count", "عدد عمليات الشراء", "count"), col("weight", "الوزن المشترى (جرام)", "grams")], rows))
+        else:
+            tables.append(self._unavailable("scrap", title_scrap, "تحتاج صلاحية عرض الكسر."))
+        return {"meaning": [], "tables": tables, "totals": cards, "options": options}
 
-    def _gold_scrap(self, repo, filters, start, end, meaning):
-        opening_rows = repo.scrap_opening(start)
-        opening = {int(r["karat_id"]): _dec(r["grams"]) for r in opening_rows}
-        opening_karat = {int(r["karat_id"]): int(r["karat_value"]) for r in opening_rows}
-        moves = repo.scrap_movements(start, end)
+    @classmethod
+    def _gold_filter_values(cls, filters):
+        """The validated filters of the gold movement report (shared by the report and its monthly chart): karat, factory, weight range and the search."""
         karat = str(filters.get("karat") or "")
-        per = {}
-        for m in moves:
-            p = per.setdefault(int(m["karat_id"]), {"karat": int(m["karat_value"]), "in": ZERO3, "out": ZERO3, "ref_only": 0})
-            g = _dec(m["grams"])
-            if m["balance_effect"] == "COUNTED" and m["grams"] is not None:
-                p["in" if g > 0 else "out"] += abs(g) if g > 0 else abs(g)
-            else:
-                p["ref_only"] += 1
-        for kid in opening:
-            per.setdefault(kid, {"karat": opening_karat[kid], "in": ZERO3, "out": ZERO3, "ref_only": 0})
-        running = dict(opening)
-        rows = []
-        for m in moves:
-            kid, g = int(m["karat_id"]), _dec(m["grams"])
-            counted = m["balance_effect"] == "COUNTED" and m["grams"] is not None
-            if counted:
-                running[kid] = running.get(kid, ZERO3) + g
-            rows.append({"date": _dateish(m["occurred_at"]), "karat": f"عيار {int(m['karat_value'])}", "code": m["movement_code"] or "", "in": g if counted and g > 0 else ZERO3,
-                         "out": -g if counted and g < 0 else ZERO3, "balance": running.get(kid, ZERO3) if counted else None,
-                         "effect": "يدخل الرصيد" if counted else "مرجعي فقط (لا يدخل الرصيد)", "reference": m["reference_code"] or "",
-                         "ref": {"type": "INVOICE", "id": str(m["invoice_id"])} if m["invoice_id"] else None, "_karat_value": int(m["karat_value"])})
-        if karat:
-            rows = [r for r in rows if str(r["_karat_value"]) == karat]
-        raw, folded = _text_filter(filters)
-        rows = [r for r in rows if _matches(folded, raw, r["code"], r["reference"], r["karat"], r["effect"])]
-        rows.sort(key=lambda r: r["date"], reverse=True)
-        karat_values = {**opening_karat, **{int(m["karat_id"]): int(m["karat_value"]) for m in moves}}
-        summary = []
-        for kid, p in sorted(per.items(), key=lambda kv: -(kv[1]["karat"] or 0)):
-            kv = p["karat"] or karat_values.get(kid)
-            if karat and str(kv) != karat:
+        if karat not in ("", "18", "21", "22", "24"):
+            raise ReportError("FILTER_INVALID", "عيار غير صحيح.")
+        factory = str(filters.get("factory") or "")
+        weight_min, weight_max = cls._weight_filter(filters.get("weight_min"), "الوزن من"), cls._weight_filter(filters.get("weight_max"), "الوزن إلى")
+        if weight_min is not None and weight_max is not None and weight_min > weight_max:
+            raise ReportError("RANGE_INVALID", "الوزن (من) أكبر من الوزن (إلى).")
+        folded, raw = _text_filter(filters)
+        return karat, factory, weight_min, weight_max, folded, raw
+
+    @staticmethod
+    def _gold_keep(r, karat, factory, weight_min, weight_max, folded, raw):
+        """True when a sold piece counts under the filters (a reversed invoice's sale did not happen)."""
+        if r["reversal_id"]:
+            return False
+        weight = _dec(r["weight_grams"])
+        if karat and str(r["karat_value"]) != karat:
+            return False
+        if factory and str(r["factory_id"] or "") != factory:
+            return False
+        if (weight_min is not None and weight < weight_min) or (weight_max is not None and weight > weight_max):
+            return False
+        return _matches(folded, raw, r["item_type"], r["category"], r["factory"])
+
+    def gold_chart(self, filters, item_type, karat=None, *, _expected_actor=None):
+        """The MONTHLY sales of ONE item type (count and physical grams per calendar month of the period) under the SAME filters as the report (period, karat, factory, weight range,
+        search). Months without a sale are shown as zero bars. Needs the invoice and inventory rights, re-read inside the transaction."""
+        filters = dict(filters or {})
+        if str(karat or "").strip():
+            filters["karat"] = str(karat).strip()                                                      # the chart of a row of a KARAT table is that karat's
+        actor = self._session.require_authenticated()
+        if _expected_actor is not None and not self._session.is_current(_expected_actor):
+            raise PermissionError("انتهت جلسة الدخول.")
+        first, last, start, end = _range(filters, self._today())
+        filters = {**filters, "from": first.isoformat(), "to": last.isoformat()}
+        karat, factory, weight_min, weight_max, folded, raw = self._gold_filter_values(filters)
+        label = str(item_type or "").strip() or NO_TYPE
+        with self._transaction() as connection:
+            gate = _Gate(self._authorization, connection, actor)
+            if not (gate(BASE_PERMISSION) and gate("INVOICE_VIEW") and gate("INVENTORY_VIEW")):
+                raise PermissionError("ليس لديك صلاحية عرض هذا الرسم.")
+            repo = self._repository(connection)
+            sold = repo.gold_sold_pieces(start, end)
+            if factory:
+                filters["factory_name"] = next((f["name"] for f in repo.factories() if str(f["id"]) == factory), factory)
+            if not self._session.is_current(actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        months, cursor = {}, first.replace(day=1)
+        while cursor <= last:
+            months[f"{cursor.year}-{cursor.month:02d}"] = {"count": 0, "weight": ZERO3}
+            cursor = (cursor.replace(day=28) + timedelta(days=4)).replace(day=1)
+        for r in sold:
+            if (r["item_type"] or NO_TYPE) != label or not self._gold_keep(r, karat, factory, weight_min, weight_max, folded, raw):
                 continue
-            o = opening.get(kid, ZERO3)
-            summary.append({"karat": f"عيار {kv}" if kv else f"عيار #{kid}", "opening": o, "in": p["in"], "out": p["out"], "closing": o + p["in"] - p["out"], "ref_only": p["ref_only"]})
-        cols = [col("date", "التاريخ", "date"), col("karat", "العيار"), col("code", "نوع الحركة"), col("in", "داخل (جرام)", "grams"), col("out", "خارج (جرام)", "grams"),
-                col("balance", "رصيد العيار بعدها", "grams"), col("effect", "أثرها"), col("reference", "المرجع")]
-        scol = [col("karat", "العيار"), col("opening", "رصيد أول الفترة", "grams"), col("in", "داخل", "grams"), col("out", "خارج", "grams"), col("closing", "رصيد آخر الفترة", "grams"),
-                col("ref_only", "حركات مرجعية (لا تدخل الرصيد)", "count")]
-        meaning.append("كسر المحل بالجرام الفعلي لكل عيار على حدة؛ الرصيد = حركات «COUNTED» فقط، والحركات المرجعية تظهر ولا تدخل الرصيد.")
-        return {"meaning": meaning, "tables": [table("summary", "رصيد الكسر حسب العيار", scol, summary), table("movements", "الحركات", cols, rows, paged=True)],
-                "totals": [total("عدد الحركات المعروضة", len(rows), "count")]}
+            when = _dateish(r["doc_date"])
+            key = f"{when.year}-{when.month:02d}"
+            if key in months:
+                months[key]["count"] += 1
+                months[key]["weight"] += _dec(r["weight_grams"])
+        points = [{"month": m, "count": v["count"], "weight": v["weight"]} for m, v in months.items()]
+        return {"type": label, "points": points, "count": sum(p["count"] for p in points), "weight": sum((p["weight"] for p in points), ZERO3), "applied": self._applied(filters)}
 
-    def _gold_pieces(self, repo, filters, start, end, meaning):
-        moves = repo.piece_movements(start, end)
-        karat = str(filters.get("karat") or "")
-        rows, groups = [], {}
-        for m in moves:
-            if karat and str(m["karat_value"]) != karat:
-                continue
-            enter = m["to_inventory_status"] == "IN_STOCK" and m["from_inventory_status"] != "IN_STOCK"
-            leave = m["from_inventory_status"] == "IN_STOCK" and m["to_inventory_status"] != "IN_STOCK"
-            weight = _dec(m["to_weight_grams"] if m["to_weight_grams"] is not None else m["from_weight_grams"])
-            g = groups.setdefault((int(m["karat_value"]), m["type_name"]), {"enter": 0, "leave": 0, "enter_w": ZERO3, "leave_w": ZERO3})
-            if enter:
-                g["enter"] += 1
-                g["enter_w"] += weight
-            if leave:
-                g["leave"] += 1
-                g["leave_w"] += weight
-            rows.append({"date": _dateish(m["occurred_at"]), "karat": f"عيار {int(m['karat_value'])}", "type": m["type_name"], "from": STATUS_TEXT.get(m["from_inventory_status"], m["from_inventory_status"] or "—"),
-                         "to": STATUS_TEXT.get(m["to_inventory_status"], m["to_inventory_status"] or "—"), "weight": weight, "reference": m["reference_code"] or "", "item": f"#{m['item_id']}"})
-        raw, folded = _text_filter(filters)
-        rows = [r for r in rows if _matches(folded, raw, r["type"], r["reference"], r["item"], r["from"], r["to"], r["karat"])]
-        rows.sort(key=lambda r: r["date"], reverse=True)
-        summary = [{"karat": f"عيار {k}", "type": t, "enter": g["enter"], "enter_w": g["enter_w"], "leave": g["leave"], "leave_w": g["leave_w"]}
-                   for (k, t), g in sorted(groups.items(), key=lambda kv: (-kv[0][0], kv[0][1]))]
-        meaning.append("المشغولات: قطع بهوية وباركود؛ الداخل = دخول حالة «متاح»، الخارج = خروج منها. الرصيد الحالي للقطع في تقرير «المخزون المتاح» وليس هنا.")
-        scols = [col("karat", "العيار"), col("type", "نوع الحركة"), col("enter", "قطع داخلة", "count"), col("enter_w", "وزنها (جرام)", "grams"), col("leave", "قطع خارجة", "count"), col("leave_w", "وزنها (جرام)", "grams")]
-        cols = [col("date", "التاريخ", "date"), col("karat", "العيار"), col("type", "نوع الحركة"), col("from", "من حالة"), col("to", "إلى حالة"), col("weight", "الوزن (جرام)", "grams"),
-                col("item", "القطعة"), col("reference", "المرجع")]
-        return {"meaning": meaning, "tables": [table("summary", "ملخص حركة القطع", scols, summary), table("movements", "الحركات", cols, rows, paged=True)],
-                "totals": [total("عدد الحركات", len(rows), "count")]}
-
-    def _gold_assayed(self, repo, filters, start, end, meaning):
-        if not repo.has_table("shop_assayed_stock_movements"):
-            return {"meaning": meaning, "tables": [self._unavailable("assayed", GOLD_SOURCES["ASSAYED"], "هذا الجدول غير موجود في مستوى قاعدة البيانات الحالي.")], "totals": []}
-        opening = repo.assayed_opening(start)
-        moves = repo.assayed_movements(start, end)
-        g_in = sum((_dec(m["grams_delta"]) for m in moves if _dec(m["grams_delta"]) > 0), ZERO3)
-        g_out = -sum((_dec(m["grams_delta"]) for m in moves if _dec(m["grams_delta"]) < 0), ZERO3)
-        p_in = sum((_dec(m["eq21_posted_delta"]) for m in moves if _dec(m["eq21_posted_delta"]) > 0), ZERO3)
-        p_out = -sum((_dec(m["eq21_posted_delta"]) for m in moves if _dec(m["eq21_posted_delta"]) < 0), ZERO3)
-        og, op = _dec(opening["grams"]), _dec(opening["posted"])
-        summary = [{"label": "رصيد أول الفترة", "grams": og, "posted": op}, {"label": "داخل", "grams": g_in, "posted": p_in}, {"label": "خارج", "grams": g_out, "posted": p_out},
-                   {"label": "رصيد آخر الفترة", "grams": og + g_in - g_out, "posted": op + p_in - p_out}]
-        names = {"RECEIVE": "استلام من رحلة", "ISSUE": "إخراج إلى رحلة", "RECEIVE_REVERSAL": "عكس استلام", "ISSUE_REVERSAL": "عكس إخراج"}
-        rows = [{"date": _dateish(m["created_at"]), "type": names.get(m["movement_type"], m["movement_type"]), "item": f"بند {entry_code(m['trip_id'], m['entry_no'])} — عيار {m['fineness_permille']}‰",
-                 "grams": _dec(m["grams_delta"]), "posted": _dec(m["eq21_posted_delta"]), "reference": entry_code(m["trip_id"], m["entry_no"]),
-                 "ref": {"type": "TRIP", "id": str(m["trip_id"])}} for m in reversed(moves)]
-        raw, folded = _text_filter(filters)
-        rows = [r for r in rows if _matches(folded, raw, r["type"], r["item"], r["reference"])]
-        meaning.append("مخزون الذهب المرتجع بعيار فعلي (غير معياري): بالجرام الفعلي وبمكافئ عيار 21 المرحَّل المخزَّن معه؛ كل حركة معكوسة لها حركة تعويض مستقلة تُحتسب بجانب الأصل.")
-        return {"meaning": meaning, "tables": [table("summary", "الرصيد", [col("label", "البند"), col("grams", "جرام فعلي", "grams"), col("posted", "مكافئ عيار 21 مرحَّل", "eq21")], summary),
-                                               table("movements", "الحركات", [col("date", "التاريخ", "date"), col("type", "النوع"), col("item", "البند"), col("grams", "جرام", "grams"),
-                                                                              col("posted", "مكافئ 21 مرحَّل", "eq21"), col("reference", "مستند الرحلة")], rows, paged=True)],
-                "totals": [total("عدد الحركات", len(rows), "count")]}
-
-    def _gold_book(self, repo, filters, start, end, meaning):
-        """BOOK trips. TWO different things are shown and never mixed:
-        1. the CURRENT balance after the effective reconciliations (source balance B, the posted loss L, the rounding settlement r, B - b_star), merged and VALIDATED by the same
-           `gold_position_service.merge_reconciliations` the position uses (a record problem is an error, never a zero);
-        2. the DOCUMENTS of the selected period with their CURRENT reversal state (not a historical snapshot: the reversal date is not used to rebuild an old balance)."""
-        if not repo.has_table("market_trip_book_lines"):
-            return {"meaning": meaning, "tables": [self._unavailable("book", GOLD_SOURCES["BOOK"], "هذا الجدول غير موجود في مستوى قاعدة البيانات الحالي.")], "totals": []}
+    @staticmethod
+    def _weight_filter(value, label):
+        text = str(value or "").strip()
+        if not text:
+            return None
         try:
-            merged = merge_reconciliations(repo.book_groups_current(), repo.book_effective_reconciliations())
-        except GoldPositionError as exc:
-            raise ReportError(exc.code, str(exc)) from None
-        current, tb, tl, tr_, ta = [], ZERO3, ZERO3, ZERO3, ZERO3
-        for t in merged:
-            balance = t["balance"]
-            rc = t["reconciliation"]
-            b_star = rc["b_star"] if rc else ZERO3
-            after = balance.posted - b_star
-            tb += balance.posted
-            tl += rc["loss"] if rc else ZERO3
-            tr_ += rc["rounding"] if rc else ZERO3
-            ta += after
-            if balance.posted or rc:
-                current.append({"trip": t["code"], "source": balance.posted, "loss": -(rc["loss"]) if rc else ZERO3, "rounding": -(rc["rounding"]) if rc else ZERO3, "after": after,
-                                "recon": (f"{rc['code']} • جيل {rc['generation']}") if rc else "بلا تسوية فعّالة", "ref": {"type": "TRIP", "id": str(t["id"])}})
-        raw, folded = _text_filter(filters)
-        lines = repo.book_lines(end)
-        docs, per = [], {}
-        for l in lines:
-            when = _dateish(l["entry_date"])
-            if not (start <= when < end):
-                continue
-            signed, reversed_ = _dec(l["signed_eq21_posted"]), l["reversal_id"] is not None
-            p = per.setdefault(int(l["trip_id"]), {"in": ZERO3, "out": ZERO3, "reversed": 0, "recon": ZERO3})
-            if reversed_:
-                p["reversed"] += 1
-            else:
-                p["in" if signed > 0 else "out"] += abs(signed)
-            what = f"عيار {l['karat_value']}" if l["basis"] == "MASTER_KARAT" else f"عيار فعلي {l['fineness_permille']}‰"
-            docs.append({"date": when, "trip": trip_code(l["trip_id"]), "entry": entry_code(l["trip_id"], l["entry_no"]), "kind": l["entry_kind"], "physical": f"{_dec(l['weight_grams'])} جرام {what}",
-                         "posted": signed, "state": "معكوس (حالة اليوم)" if reversed_ else "فعّال", "ref": {"type": "TRIP", "id": str(l["trip_id"])}})
-        for r in repo.book_recon_documents(start, end):
-            when = _dateish(r["entry_date"])
-            reversed_ = r["reversal_id"] is not None
-            effect = -_dec(r["b_star"]) if r["b_star"] is not None else None
-            p = per.setdefault(int(r["trip_id"]), {"in": ZERO3, "out": ZERO3, "reversed": 0, "recon": ZERO3})
-            if reversed_:
-                p["reversed"] += 1
-            elif effect is not None:
-                p["recon"] += effect
-            docs.append({"date": when, "trip": trip_code(r["trip_id"]), "entry": entry_code(r["trip_id"], r["entry_no"]), "kind": "BK_RECON",
-                         "physical": "تسوية الرصيد الدفتري" + (f" • الفاقد المرحّل {_dec(r['loss_posted'])} • فرق التقريب {_dec(r['rounding_settlement'])}" if r["loss_posted"] is not None else " • بلا سجل مكتمل"),
-                         "posted": effect if effect is not None else UNKNOWN_TEXT, "state": "معكوس (حالة اليوم)" if reversed_ else "فعّال", "ref": {"type": "TRIP", "id": str(r["trip_id"])}})
-        docs = [d for d in docs if _matches(folded, raw, d["trip"], d["entry"], d["kind"], d["physical"])]
-        docs.sort(key=lambda r: (r["date"], r["entry"]), reverse=True)
-        summary = [{"trip": trip_code(t), "in": p["in"], "out": p["out"], "recon": p["recon"], "reversed": p["reversed"], "ref": {"type": "TRIP", "id": str(t)}}
-                   for t, p in sorted(per.items(), reverse=True) if p["in"] or p["out"] or p["recon"] or p["reversed"]]
-        meaning.append("العهد الدفترية: الرصيد رقم واحد بمكافئ عيار 21 المرحَّل (ليس وزنًا فعليًا). «الرصيد الحالي بعد التسويات» = رصيد المصدر B − الرصيد المرحّل المسوّى b_star من التسوية الفعّالة "
-                       "(= الفاقد المرحّل L + فرق التقريب r، وهما منفصلان: التقريب ليس فاقدًا ولا ربحًا). عكس التسوية يعيد الرصيد، والجيل الجديد وحده هو الفعّال، والإغلاق لا يُسقط الذهب.")
-        meaning.append("«مستندات الفترة» تُعرض بحالة العكس الحالية اليوم وليست لقطة تاريخية لرصيد نهاية الفترة؛ إسناد العكس إلى الفترات قرار مفتوح لعلي، فلا يُقدَّم رصيد تاريخي.")
-        return {"meaning": meaning,
-                "tables": [table("current", "الرصيد الحالي بعد التسويات (اليوم، مكافئ عيار 21 مرحَّل)",
-                                 [col("trip", "الرحلة"), col("source", "رصيد المصدر B", "eq21"), col("loss", "أثر الفاقد المرحّل (−L)", "eq21"), col("rounding", "أثر فرق التقريب (−r)", "eq21"),
-                                  col("after", "الرصيد بعد التسوية", "eq21"), col("recon", "التسوية الفعّالة")], current),
-                           table("summary", "مستندات الفترة وحالتها الحالية (ليست رصيدًا تاريخيًا)",
-                                 [col("trip", "الرحلة"), col("in", "داخل (فعّال)", "eq21"), col("out", "خارج (فعّال)", "eq21"), col("recon", "أثر التسويات الفعّالة", "eq21"),
-                                  col("reversed", "مستندات معكوسة", "count")], summary),
-                           table("movements", "المستندات", [col("date", "التاريخ", "date"), col("trip", "الرحلة"), col("entry", "المستند"), col("kind", "النوع"), col("physical", "الحقائق الفعلية"),
-                                                           col("posted", "المكافئ المرحَّل", "eq21"), col("state", "الحالة")], docs, paged=True)],
-                "totals": [total("رصيد المصدر B (كل الرحلات، اليوم)", tb, "eq21"), total("أثر الفاقد المرحّل المسوَّى (−L)", -tl, "eq21"),
-                           total("أثر فرق التقريب المسوَّى (−r)", -tr_, "eq21", "ليس فاقدًا ولا ربحًا"), total("الرصيد الحالي بعد التسويات", ta, "eq21", "اليوم، بالتسويات الفعّالة فقط"),
-                           total("عدد المستندات المعروضة", len(docs), "count")]}
-
-    def _gold_marketer(self, repo, filters, start, end, meaning):
-        if not repo.has_table("marketer_gold_movements"):
-            return {"meaning": meaning, "tables": [self._unavailable("marketer", GOLD_SOURCES["MARKETER"], "هذا الجدول غير موجود في مستوى قاعدة البيانات الحالي.")], "totals": []}
-        moves = repo.marketer_gold(end)
-        per, rows = {}, []
-        for m in moves:
-            when = _dateish(m["created_at"])
-            delta = _dec(m["weight_delta"])
-            p = per.setdefault(int(m["party_id"]), {"name": m["party_name"], "opening": ZERO3, "in": ZERO3, "out": ZERO3})
-            if when < start:
-                p["opening"] += delta
-            else:
-                p["in" if delta > 0 else "out"] += abs(delta)
-                src = (f"{m['doc_kind']}" if m["document_id"] else "تسوية لمورد" if m["settlement_id"] else entry_code(m["trip_id"], m["trip_entry_no"]) if m["trip_entry_id"] else "")
-                rows.append({"date": when, "party": m["party_name"], "type": MARKETER_TYPE_TEXT.get(m["movement_type"].replace("_REVERSAL", ""), m["movement_type"]) + (" (عكس)" if m["movement_type"].endswith("_REVERSAL") else ""),
-                             "delta": delta, "source": src, "ref": {"type": "TRIP", "id": str(m["trip_id"])} if m["trip_entry_id"] else None})
-        raw, folded = _text_filter(filters)
-        rows = [r for r in rows if _matches(folded, raw, r["party"], r["type"], r["source"])]
-        rows.sort(key=lambda r: r["date"], reverse=True)
-        summary = [{"party": p["name"], "opening": p["opening"], "in": p["in"], "out": p["out"], "closing": p["opening"] + p["in"] - p["out"]} for _, p in sorted(per.items(), key=lambda kv: kv[1]["name"])]
-        meaning.append("استحقاق المسوقجي من ذهب المحل بعيار 21 (جرام): رصيد = مجموع كل حركات دفتره بما فيها حركات التعويض عن العكس؛ يخص المحل ولا يدخل حساب مورد.")
-        return {"meaning": meaning, "tables": [table("summary", "استحقاق كل مسوقجي", [col("party", "المسوقجي"), col("opening", "أول الفترة", "grams"), col("in", "داخل", "grams"), col("out", "خارج", "grams"),
-                                                                                         col("closing", "آخر الفترة", "grams")], summary),
-                                               table("movements", "الحركات", [col("date", "التاريخ", "date"), col("party", "المسوقجي"), col("type", "النوع"), col("delta", "الأثر (جرام)", "grams"),
-                                                                              col("source", "المصدر")], rows, paged=True)],
-                "totals": [total("عدد الحركات", len(rows), "count")]}
+            number = Decimal(text.replace(",", ""))
+        except Exception:
+            raise ReportError("FILTER_INVALID", f"{label}: أدخل رقمًا صحيحًا.") from None
+        if not number.is_finite() or number < 0:
+            raise ReportError("FILTER_INVALID", f"{label}: أدخل رقمًا صحيحًا.")
+        return number
 
     # ------------------------------------------------------------------ 4. customers
     def _customers(self, repo, gate, filters, start, end):
