@@ -242,10 +242,10 @@ Item {
                     anchors.margins: 8
                     layoutDirection: Qt.RightToLeft
                     spacing: 8
-                    Txt { text: "من"; height: 32 }
-                    DateField { objectName: "reportFrom"; value: reportsVM.filters.from || ""; onPicked: function (v) { reportsVM.setFilter("from", v) } }
-                    Txt { text: "إلى"; height: 32 }
-                    DateField { objectName: "reportTo"; value: reportsVM.filters.to || ""; onPicked: function (v) { reportsVM.setFilter("to", v) } }
+                    Txt { text: "من"; height: 32; visible: reportsVM.periodUsed }
+                    DateField { objectName: "reportFrom"; visible: reportsVM.periodUsed; value: reportsVM.filters.from || ""; onPicked: function (v) { reportsVM.setFilter("from", v) } }
+                    Txt { text: "إلى"; height: 32; visible: reportsVM.periodUsed }
+                    DateField { objectName: "reportTo"; visible: reportsVM.periodUsed; value: reportsVM.filters.to || ""; onPicked: function (v) { reportsVM.setFilter("to", v) } }
                     Field { objectName: "reportText"; width: 190; placeholderText: "بحث (رقم، اسم، باركود…)"; text: reportsVM.filters.text || ""
                             onTextEdited: reportsVM.setFilter("text", text); onAccepted: reportsVM.apply() }
                     Repeater {

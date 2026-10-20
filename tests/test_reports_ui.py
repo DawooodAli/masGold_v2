@@ -223,6 +223,46 @@ class ReportsPageTests(harness.InvoicePageTests):
         finally:
             module._today = real
 
+    def test_the_automatic_period_applies_to_every_report(self):
+        from app.viewmodels import reports_viewmodel as module
+        real = module._today
+        try:
+            module._today = lambda: date(2026, 10, 20)
+            vm = self.open_reports()
+            self.wait_report(vm)
+            for key in [r["key"] for r in vm.reports]:
+                vm.select(key)
+                self.wait_until(lambda key=key: not vm.busy and vm.result.get("report") == key, f"{key} loaded")
+                self.assertEqual((vm.filters["from"], vm.filters["to"]), ("2026-10-01", "2026-10-20"), key)         # month start .. today on EVERY report
+            module._today = lambda: date(2026, 11, 3)
+            for key in [r["key"] for r in vm.reports]:
+                vm.select(key)
+                self.wait_until(lambda key=key: not vm.busy and vm.result.get("report") == key, f"{key} reloaded")
+                self.assertEqual((vm.filters["from"], vm.filters["to"]), ("2026-11-01", "2026-11-03"), key)         # and it follows the calendar on each of them
+        finally:
+            module._today = real
+
+    def test_the_period_fields_exist_only_on_the_reports_that_use_a_period(self):
+        vm = self.open_reports()
+        self.wait_report(vm)
+        for key, used in (("sales", True), ("gold", True), ("treasury", True), ("market", True), ("stock", False), ("customers", False), ("deadcash", False), ("suppliers", False)):
+            self.click(f"reportChoice_{key}")
+            self.wait_until(lambda key=key: not vm.busy and vm.result.get("report") == key, f"{key} loaded")
+            QTest.qWait(120)
+            self.assertEqual(vm.periodUsed, used, key)
+            self.assertEqual(self.visible_item("reportFrom") is not None, used, key)
+            self.assertEqual(self.visible_item("reportTo") is not None, used, key)
+
+    def test_the_suppliers_screen_shows_the_totals_table_and_no_movements(self):
+        vm = self.open_reports()
+        self.wait_report(vm)
+        self.click("reportChoice_suppliers")
+        self.wait_until(lambda: not vm.busy and vm.result.get("report") == "suppliers" and vm.result["tables"], "suppliers loaded")
+        QTest.qWait(150)
+        self.assertEqual([t["key"] for t in vm.result["tables"]], ["suppliers"])                                  # the movements table is not shown
+        self.assertIn("إجمالي مصنعيات علينا للموردين", [x["label"] for x in vm.result["totals"]])
+        self.assertFalse(any(line.startswith("الفترة") for line in vm.result["applied"]))
+
     def test_money_in_a_table_reads_the_number_then_the_unit(self):
         vm = self.open_reports()
         self.wait_report(vm)

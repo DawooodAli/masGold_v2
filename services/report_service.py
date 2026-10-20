@@ -40,6 +40,7 @@ LINE_TEXT = {"SELL_INVENTORY": "بيع قطعة", "SELL_OLD_GOLD": "بيع من 
 REF_TEXT = {"INVOICE": "فاتورة", "RETURN": "مرتجع", "EXCHANGE": "استبدال", "CUSTOMER_ACCOUNT_SETTLEMENT": "تحصيل / تسوية حساب", "CUSTOMER_DEPOSIT": "عربون",
             "CUSTOMER_DEPOSIT_REFUND": "رد عربون", "FULL_REVERSAL": "عكس", "SETTLEMENT_CORRECTION": "تصحيح تسوية", "DEAD_CASH_WRITE_OFF": "شطب رصيد",
             "DEAD_CASH_REVERSAL": "عكس شطب", "UNKNOWN": "غير محدد"}
+NO_PERIOD = frozenset({"stock", "customers", "deadcash", "suppliers"})          # reports of the CURRENT state: the period is neither offered nor printed
 NO_TYPE = "بدون صنف"
 UNKNOWN_TEXT = "غير معلوم"
 FILTER_LABELS = {"factory_name": "المصنع", "weight_min": "الوزن من", "weight_max": "الوزن إلى", "kind": "النوع", "state": "الحالة", "status": "الحالة", "classification": "التصنيف", "karat": "العيار", "source": "المصدر", "balance": "الرصيد",
@@ -228,16 +229,16 @@ class ReportService:
             built = getattr(self, f"_{report}")(repo, gate, filters, start, end)
             if not self._session.is_current(actor):
                 raise PermissionError("انتهت جلسة الدخول.")
-        built.update(report=report, title=REPORT_TITLES[report], filters=filters, applied=self._applied(filters))
+        built.update(report=report, title=REPORT_TITLES[report], filters=filters, applied=self._applied(filters, report not in NO_PERIOD))
         for t in built["tables"]:
             if len(t["rows"]) > MAX_ROWS:
                 raise ReportError("TOO_MANY_ROWS", "نتيجة التقرير أكبر من الحد المسموح: ضيّق الفترة أو الفلتر.")
         return built
 
     @staticmethod
-    def _applied(filters):
+    def _applied(filters, with_period=True):
         """The filters that were really applied (the same words on the screen and in the CSV)."""
-        out = [f"الفترة: من {filters['from']} إلى {filters['to']}"]
+        out = [f"الفترة: من {filters['from']} إلى {filters['to']}"] if with_period else []
         if str(filters.get("text") or "").strip():
             out.append(f"البحث: {str(filters['text']).strip()}")
         for key, label in FILTER_LABELS.items():
@@ -680,6 +681,9 @@ class ReportService:
 
     # ------------------------------------------------------------------ 5. suppliers
     def _suppliers(self, repo, gate, filters, start, end):
+        """Owner redesign: TOTALS per supplier. One table row per supplier with the balance of his GOLD account (physical grams of ITS OWN karat, never converted to 21K) and of his MAKING account
+        (EGP), each split into «علينا» (we owe the supplier, positive ledger sum) and «لنا» (the supplier owes us); cards: the making totals (we owe / they owe) and one gold card per karat. Gold and
+        making are never added together. The balances are the SUM of the immutable ledgers up to the end of the report date (today by default); the movements stay in the CSV, not on the screen."""
         raw, folded = _text_filter(filters)
         supplier_filter = str(filters.get("supplier") or "")
         suppliers = {int(s["id"]): s for s in repo.supplier_rows() if _matches(folded, raw, s["name"], s["phone"]) and (not supplier_filter or str(s["id"]) == supplier_filter)}
@@ -687,53 +691,62 @@ class ReportService:
         making_before = {int(r["supplier_id"]): _dec(r["amount"]) for r in repo.supplier_making_before(start)}
         gold = [m for m in repo.supplier_gold_movements(start, end) if int(m["supplier_id"]) in suppliers]
         making = [m for m in repo.supplier_making_movements(start, end) if int(m["supplier_id"]) in suppliers]
-        g_sum, karat_value = {}, {}
+        karat_value = {}
+        gold_close = dict(gold_before)
         for m in gold:
             k = (int(m["supplier_id"]), int(m["karat_id"]))
             karat_value[k] = int(m["karat_value"])
-            p = g_sum.setdefault(k, {"up": ZERO3, "down": ZERO3})
-            g = _dec(m["grams"])
-            p["up" if g > 0 else "down"] += abs(g)
-        for s in suppliers.values():
-            if s["karat_id"] is not None:
-                karat_value[(int(s["id"]), int(s["karat_id"]))] = int(s["karat_value"])
-        m_sum = {}
+            gold_close[k] = gold_close.get(k, ZERO3) + _dec(m["grams"])
+        for sid, sp in suppliers.items():
+            if sp["karat_id"] is not None:
+                karat_value[(sid, int(sp["karat_id"]))] = int(sp["karat_value"])
+        making_close = dict(making_before)
         for m in making:
-            p = m_sum.setdefault(int(m["supplier_id"]), {"up": ZERO2, "down": ZERO2})
-            a = _dec(m["amount"])
-            p["up" if a > 0 else "down"] += abs(a)
-        keys = set(g_sum) | set(gold_before) | {(sid, int(s["karat_id"])) for sid, s in suppliers.items() if s["karat_id"] is not None}
-        gold_rows = []
-        for (sid, kid) in sorted(k for k in keys if k[0] in suppliers):
-            o, p = gold_before.get((sid, kid), ZERO3), g_sum.get((sid, kid), {"up": ZERO3, "down": ZERO3})
-            if not (o or p["up"] or p["down"]):
-                continue
-            gold_rows.append({"supplier": suppliers[sid]["name"], "karat": f"عيار {karat_value.get((sid, kid), '؟')}", "opening": o, "up": p["up"], "down": p["down"], "closing": o + p["up"] - p["down"]})
-        making_rows = []
-        for sid, s in sorted(suppliers.items(), key=lambda kv: kv[1]["name"]):
-            o, p = making_before.get(sid, ZERO2), m_sum.get(sid, {"up": ZERO2, "down": ZERO2})
-            if o or p["up"] or p["down"]:
-                making_rows.append({"supplier": s["name"], "opening": o, "up": p["up"], "down": p["down"], "closing": o + p["up"] - p["down"]})
-        names = {sid: s["name"] for sid, s in suppliers.items()}
+            making_close[int(m["supplier_id"])] = making_close.get(int(m["supplier_id"]), ZERO2) + _dec(m["amount"])
+        rows, gold_by_karat = [], {}
+        making_owed = making_credit = ZERO2
+        for sid, sp in sorted(suppliers.items(), key=lambda kv: kv[1]["name"]):
+            gold_cells = [(k, v) for (i, k), v in gold_close.items() if i == sid and v != 0]
+            g_owed = ZERO3
+            g_credit = ZERO3
+            karat_text = ""
+            for kid, balance in gold_cells:
+                value = karat_value.get((sid, kid))
+                karat_text = f"عيار {value}" if value else "عيار ؟"
+                if balance > 0:
+                    g_owed += balance
+                else:
+                    g_credit += -balance
+                if value:
+                    c = gold_by_karat.setdefault(value, ZERO3)
+                    gold_by_karat[value] = c + balance
+            balance_m = making_close.get(sid, ZERO2)
+            if not gold_cells and balance_m == 0:
+                continue                                                                               # a supplier with nothing open is not listed
+            if balance_m > 0:
+                making_owed += balance_m
+            elif balance_m < 0:
+                making_credit += -balance_m
+            rows.append({"supplier": sp["name"], "karat": karat_text or "—",
+                         "gold_owed": g_owed if g_owed else None, "gold_credit": g_credit if g_credit else None,
+                         "making_owed": balance_m if balance_m > 0 else None, "making_credit": -balance_m if balance_m < 0 else None})
+        names = {sid: sp["name"] for sid, sp in suppliers.items()}
         det = [{"date": _dateish(m["occurred_at"]), "supplier": names[int(m["supplier_id"])], "account": f"ذهب عيار {m['karat_value']}", "type": m["type_name"],
                 "gold": _dec(m["grams"]), "amount": None, "source": m["source_reference"] or "", "description": m["description"] or ""} for m in gold]
         det += [{"date": _dateish(m["occurred_at"]), "supplier": names[int(m["supplier_id"])], "account": "مصنعيات", "type": m["type_name"], "gold": None, "amount": _dec(m["amount"]),
                  "source": m["source_reference"] or "", "description": m["description"] or ""} for m in making]
         det.sort(key=lambda r: r["date"], reverse=True)
-        gcols = [col("supplier", "المورد"), col("karat", "عيار حساب الذهب"), col("opening", "أول الفترة (جرام)", "grams"), col("up", "زيادة علينا", "grams"), col("down", "نقص علينا", "grams"),
-                 col("closing", "آخر الفترة (جرام)", "grams")]
-        mcols = [col("supplier", "المورد"), col("opening", "أول الفترة (ج)", "money"), col("up", "زيادة علينا", "money"), col("down", "نقص علينا", "money"), col("closing", "آخر الفترة (ج)", "money")]
+        cols = [col("supplier", "المورد"), col("karat", "عيار حساب الذهب"), col("gold_owed", "ذهب علينا (جرام)", "grams"), col("gold_credit", "ذهب لنا (جرام)", "grams"),
+                col("making_owed", "مصنعيات علينا", "money"), col("making_credit", "مصنعيات لنا", "money")]
         dcols = [col("date", "التاريخ", "date"), col("supplier", "المورد"), col("account", "الحساب"), col("type", "نوع الحركة (يشمل العكس)"), col("gold", "ذهب (جرام)", "grams"),
                  col("amount", "مصنعيات (ج)", "money"), col("source", "المرجع"), col("description", "البيان")]
-        totals = [total("عدد الحركات", len(det), "count"), total("إجمالي مصنعيات علينا للموردين (أرصدة آخر الفترة الموجبة)", sum((r["closing"] for r in making_rows if r["closing"] > 0), ZERO2), "money"),
-                  total("إجمالي مصنعيات لنا عند الموردين (السالبة)", -sum((r["closing"] for r in making_rows if r["closing"] < 0), ZERO2), "money")]
-        for k in sorted({r["karat"] for r in gold_rows}):
-            totals.append(total(f"{k}: صافي حساب الذهب (جرام، علينا +)", sum((r["closing"] for r in gold_rows if r["karat"] == k), ZERO3), "grams", "عيار حساب هذا المورد نفسه؛ لا تحويل إلى عيار 21"))
-        meaning = ["الإشارة: موجب = علينا للمورد، سالب = لنا عند المورد (اصطلاح الدفتر). الذهب بجرام فعلي بعيار حساب كل مورد؛ لا يُحوَّل إلى عيار 21 ولا يُجمع بين عيارين.",
-                   "المصنعيات بالجنيه حساب مستقل عن الذهب؛ لا يُجمع الذهب والمصنعيات.",
-                   "الفواتير والمدفوعات والتسويات وعكسها تظهر كحركات في دفتر الحساب بمرجعها ونوعها؛ العكس حركة مستقلة بنوعها ولا يمحو الأصل."]
-        return {"meaning": meaning, "tables": [table("gold", "أرصدة الذهب (بعيار حساب كل مورد)", gcols, gold_rows), table("making", "أرصدة المصنعيات", mcols, making_rows),
-                                               table("movements", "الحركات", dcols, det, paged=True)], "totals": totals}
+        totals = [total("إجمالي مصنعيات علينا للموردين", making_owed, "money", "أرصدة المصنعيات التي علينا", "making", tone="payable"),
+                  total("إجمالي مصنعيات لنا عند الموردين", making_credit, "money", "أرصدة المصنعيات التي لنا", "making", tone="receivable")]
+        for k, net in sorted(gold_by_karat.items(), reverse=True):
+            totals.append(total(f"ذهب عيار {k}", f"{abs(net):,.3f} جرام", "text", "علينا للموردين" if net > 0 else "لنا عند الموردين" if net < 0 else "متوازن", "gold", karat=k))
+        meaning = ["علينا = مستحق للمورد، لنا = مستحق لنا عند المورد. الذهب بجرام فعلي بعيار حساب كل مورد ولا يُحوَّل إلى عيار 21، والمصنعيات بالجنيه حساب مستقل ولا يُجمع مع الذهب.",
+                   "الأرصدة مجموع دفتر المورد حتى نهاية التاريخ (اليوم افتراضيًا). حركات الدفتر الكاملة (فواتير ومدفوعات وتسويات وعكسها) في ملف CSV."]
+        return {"meaning": meaning, "tables": [table("suppliers", "أرصدة الموردين", cols, rows), table("movements", "الحركات", dcols, det, paged=True)], "totals": totals}
 
     # ------------------------------------------------------------------ 6. treasury
     def _treasury(self, repo, gate, filters, start, end):

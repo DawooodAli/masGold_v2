@@ -598,18 +598,47 @@ class DeadCashTests(Case):
 
 
 class SupplierTests(Case):
-    def test_gold_stays_in_the_suppliers_own_karat_and_making_is_separate(self):
-        result = self.service.run("suppliers", {"from": "2026-10-01", "to": "2026-10-31"})
-        gold = self.rows(result, "gold")[0]
-        self.assertEqual((gold["karat"], gold["opening"], gold["up"], gold["down"], gold["closing"]), ("عيار 18", D("10.000"), D("5.000"), D("3.000"), D("12.000")))    # 10 + 5 - 3
-        making = self.rows(result, "making")[0]
-        self.assertEqual((making["opening"], making["up"], making["down"], making["closing"]), (D("500.00"), D("200.00"), D("100.00"), D("600.00")))
-        movements = self.rows(result, "movements")
+    """«الموردون» (owner redesign): TOTALS per supplier (gold in his own karat, making in EGP; علينا / لنا), cards, no movements table on screen but every movement in the CSV."""
+
+    def run_suppliers(self, **filters):
+        return self.service.run("suppliers", {"from": "2026-10-01", "to": "2026-10-31", **filters})
+
+    def test_one_row_per_supplier_with_gold_in_his_own_karat_and_making_apart(self):
+        result = self.run_suppliers()
+        rows = self.rows(result, "suppliers")
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual((row["supplier"], row["karat"], row["gold_owed"], row["gold_credit"]), ("مورد ذهب", "عيار 18", D("12.000"), None))     # 10 + 5 - 3 (physical grams of the 18K account)
+        self.assertEqual((row["making_owed"], row["making_credit"]), (D("600.00"), None))                                                      # 500 + 200 - 100
+        self.assertEqual([c["key"] for c in next(t for t in result["tables"] if t["key"] == "suppliers")["columns"]],
+                         ["supplier", "karat", "gold_owed", "gold_credit", "making_owed", "making_credit"])
+
+    def test_cards_are_the_making_totals_and_one_gold_card_per_karat(self):
+        result = self.run_suppliers()
+        cards = {x["label"]: (x["value"], x["note"], x["group"], x["tone"], x["karat"]) for x in result["totals"]}
+        self.assertEqual(cards["إجمالي مصنعيات علينا للموردين"][0], D("600.00"))
+        self.assertEqual(cards["إجمالي مصنعيات لنا عند الموردين"][0], D("0.00"))
+        self.assertEqual(cards["ذهب عيار 18"], ("12.000 جرام", "علينا للموردين", "gold", None, 18))
+        self.assertFalse(any("21" in label for label in cards))                                                       # never converted to 21K
+        self.assertEqual({x["group"] for x in result["totals"]}, {"making", "gold"})
+
+    def test_the_movements_stay_in_the_service_result_for_the_csv(self):
+        movements = self.rows(self.run_suppliers(), "movements")
         self.assertEqual(len(movements), 4)
         self.assertEqual({m["source"] for m in movements}, {"SP000001", "SG000001", "SM000001"})
-        t = self.totals(result)
-        self.assertEqual(t["عيار 18: صافي حساب الذهب (جرام، علينا +)"], D("12.000"))
-        self.assertFalse(any("21" in label for label in t))                                                # never converted to 21K
+        with tempfile.TemporaryDirectory() as folder:
+            text = Path(self.service.export_csv("suppliers", {"from": "2026-10-01", "to": "2026-10-31"}, folder)).read_text(encoding="utf-8-sig")
+        for needle in ("أرصدة الموردين", "الحركات", "SG000001", "مورد ذهب"):
+            self.assertIn(needle, text)
+
+    def test_the_search_filters_suppliers_and_a_supplier_with_nothing_open_is_not_listed(self):
+        self.assertEqual(self.rows(self.run_suppliers(text="لا يوجد"), "suppliers"), [])
+        self.assertEqual(len(self.rows(self.run_suppliers(text="ذهب"), "suppliers")), 1)
+
+    def test_no_period_line_for_the_current_state_reports(self):
+        for report in ("suppliers", "stock", "customers", "deadcash"):
+            self.assertFalse(any(line.startswith("الفترة") for line in self.service.run(report, {})["applied"]), report)
+        self.assertTrue(any(line.startswith("الفترة") for line in self.service.run("sales", {})["applied"]))
 
 
 class TreasuryTests(Case):

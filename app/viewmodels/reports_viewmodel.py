@@ -63,7 +63,8 @@ def month_period(today):
     return today.replace(day=1).isoformat(), today.isoformat()
 
 
-HIDDEN_ON_SCREEN = {("sales", "documents"), ("stock", "items"), ("stock", "summary")}
+HIDDEN_ON_SCREEN = {("sales", "documents"), ("stock", "items"), ("stock", "summary"), ("suppliers", "movements")}
+NO_PERIOD = {"stock", "customers", "deadcash", "suppliers"}                      # reports of the CURRENT state: the period fields are not offered
 
 
 def grams_text(value):
@@ -164,6 +165,10 @@ class ReportsViewModel(QObject):
     @Property("QVariantMap", notify=changed)
     def result(self):
         return self._result
+
+    @Property(bool, notify=changed)
+    def periodUsed(self):
+        return self._report not in NO_PERIOD
 
     @Property("QVariantMap", notify=changed)
     def chart(self):
