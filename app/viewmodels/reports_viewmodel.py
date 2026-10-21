@@ -25,6 +25,7 @@ FILTER_SPECS = {
     "stock": [{"key": "status", "label": "الحالة", "options": [("IN_STOCK", "متاح"), ("SOLD", "مباع"), ("RETURNED_PENDING", "مرتجع بانتظار الفحص"), ("SCRAPPED", "كسر"), ("REMOVED", "مُخرج"), ("ALL", "كل الحالات")]},
               {"key": "classification", "label": "التصنيف", "options": [("", "الكل"), ("NEW_STOCK", "جديد"), ("OLD_STOCK", "قديم")]},
               {"key": "karat", "label": "العيار", "options": [("", "الكل"), ("18", "18"), ("21", "21"), ("22", "22"), ("24", "24")]}],
+    "alerts": [{"key": "karat", "label": "العيار", "options": [("", "الكل"), ("18", "18"), ("21", "21"), ("22", "22"), ("24", "24")]}],
     "gold": [{"key": "karat", "label": "العيار", "options": [("", "الكل"), ("18", "18"), ("21", "21"), ("22", "22"), ("24", "24")]},
              {"key": "factory", "label": "المصنع", "options": [("", "الكل")], "dynamic": True},
              {"key": "weight_min", "label": "الوزن من (جرام)", "type": "text"},
@@ -64,7 +65,7 @@ def month_period(today):
 
 
 HIDDEN_ON_SCREEN = {("sales", "documents"), ("stock", "items"), ("stock", "summary"), ("suppliers", "movements"), ("treasury", "movements"), ("market", "summary")}
-NO_PERIOD = {"stock", "customers", "deadcash", "suppliers"}                      # reports of the CURRENT state: the period fields are not offered
+NO_PERIOD = {"stock", "alerts", "customers", "deadcash", "suppliers"}                      # reports of the CURRENT state: the period fields are not offered
 
 
 def grams_text(value):

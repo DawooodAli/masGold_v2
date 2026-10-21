@@ -30,9 +30,9 @@ MAX_ROWS = 50000
 ZERO = Decimal("0")
 ZERO3, ZERO2 = Decimal("0.000"), Decimal("0.00")
 BASE_PERMISSION = "REPORTS_VIEW"
-REPORT_PERMISSIONS = {"sales": ("INVOICE_VIEW",), "stock": ("INVENTORY_VIEW",), "gold": (), "customers": ("CUSTOMERS_VIEW",), "deadcash": ("CUSTOMERS_VIEW",),
+REPORT_PERMISSIONS = {"sales": ("INVOICE_VIEW",), "stock": ("INVENTORY_VIEW",), "alerts": ("INVENTORY_VIEW",), "gold": (), "customers": ("CUSTOMERS_VIEW",), "deadcash": ("CUSTOMERS_VIEW",),
                       "suppliers": ("SUPPLIER_VIEW",), "treasury": (), "market": ("MARKET_TRIP_MANAGE",)}                      # treasury: CASH_VIEW and / or BANK_VIEW per section
-REPORT_TITLES = {"sales": "المبيعات والمرتجعات", "stock": "المخزون المتاح", "gold": "حركة الذهب", "customers": "العملاء", "deadcash": "الديون المعدومة (Dead Cash)", "suppliers": "الموردون", "treasury": "الخزنة والبنوك", "market": "عهدة السوق والخسائر"}
+REPORT_TITLES = {"sales": "المبيعات والمرتجعات", "stock": "المخزون المتاح", "alerts": "تنبيهات المخزون", "gold": "حركة الذهب", "customers": "العملاء", "deadcash": "الديون المعدومة (Dead Cash)", "suppliers": "الموردون", "treasury": "الخزنة والبنوك", "market": "عهدة السوق والخسائر"}
 KIND_TEXT = {"SALE": "بيع", "MIXED": "بيع مع شراء كسر", "OLD_GOLD_PURCHASE": "شراء كسر", "RETURN": "مرتجع", "EXCHANGE": "استبدال"}
 STATUS_TEXT = {"IN_STOCK": "متاح", "SOLD": "مباع", "SCRAPPED": "كسر", "REMOVED": "مُخرج", "RETURNED_PENDING": "مرتجع بانتظار الفحص", "CONVERTED_TO_OLD_GOLD": "حُوّل إلى كسر"}
 CLASS_TEXT = {"NEW_STOCK": "جديد", "OLD_STOCK": "قديم"}
@@ -40,8 +40,12 @@ LINE_TEXT = {"SELL_INVENTORY": "بيع قطعة", "SELL_OLD_GOLD": "بيع من 
 REF_TEXT = {"INVOICE": "فاتورة", "RETURN": "مرتجع", "EXCHANGE": "استبدال", "CUSTOMER_ACCOUNT_SETTLEMENT": "تحصيل / تسوية حساب", "CUSTOMER_DEPOSIT": "عربون",
             "CUSTOMER_DEPOSIT_REFUND": "رد عربون", "FULL_REVERSAL": "عكس", "SETTLEMENT_CORRECTION": "تصحيح تسوية", "DEAD_CASH_WRITE_OFF": "شطب رصيد",
             "DEAD_CASH_REVERSAL": "عكس شطب", "UNKNOWN": "غير محدد"}
-NO_PERIOD = frozenset({"stock", "customers", "deadcash", "suppliers"})          # reports of the CURRENT state: the period is neither offered nor printed
+NO_PERIOD = frozenset({"stock", "alerts", "customers", "deadcash", "suppliers"})          # reports of the CURRENT state: the period is neither offered nor printed
 NO_TYPE = "بدون صنف"
+DEAD_STOCK_DAYS = 180                  # a piece in stock for six months without a sale is dead stock (owner decision)
+VELOCITY_DAYS, RECENT_DAYS = 90, 30    # the window the sales rate is measured on, and the "recent" figure shown beside it
+WEIGHT_BAND_TOP = 10                  # weight bands are one gram wide (1 – 2, 2 – 3 ...); every piece of WEIGHT_BAND_TOP grams or more is in the last band
+LOW_COVER_DAYS, MIN_SALES = 14, 3      # an item sold at least MIN_SALES times in the window whose stock covers fewer than LOW_COVER_DAYS days of sales is about to run out
 UNKNOWN_TEXT = "غير معلوم"
 FILTER_LABELS = {"factory_name": "المصنع", "weight_min": "الوزن من", "weight_max": "الوزن إلى", "kind": "النوع", "state": "الحالة", "status": "الحالة", "classification": "التصنيف", "karat": "العيار", "source": "المصدر", "balance": "الرصيد",
                  "inactive": "العملاء المتوقفون", "supplier": "المورد", "account": "الحساب"}
@@ -452,6 +456,114 @@ class ReportService:
                    "الأوزان تُجمع داخل كل عيار فقط؛ لا يوجد إجمالي وزن لعيارات مختلفة. هذا التقرير للقطع المشغولة، وكسر المحل في تقرير «حركة المخزون والذهب».",
                    "الفاتورة المرتبطة: آخر فاتورة غير مسودة تحمل هذه القطعة في أحد أسطرها (الرابط `invoice_lines.inventory_item_id`)؛ ليست بالضرورة فاتورة أصل اقتناء القطعة، وتفتح من شاشة الفواتير."]
         return {"meaning": meaning, "tables": [table("summary", "الملخص حسب العيار والتصنيف والحالة", scols, summary), table("items", "القطع", dcols, rows, paged=True)], "totals": totals}
+
+    # ------------------------------------------------------------------ 2b. inventory alerts (dead stock and items about to run out) - plain rules over our own data, no forecast
+    def _alerts(self, repo, gate, filters, start, end):
+        """Owner request (2026-10-21), rule based and explainable. (1) DEAD STOCK: a piece IN_STOCK acquired DEAD_STOCK_DAYS ago or earlier that was never on an invoice (a piece that came back
+        from a sale is not dead, it is recent). Grouped per KARAT (never across karats) by type and factory with count, weight and the oldest age. (2) ABOUT TO RUN OUT: for every (karat, type, factory,
+        size) sold at least MIN_SALES times in the last VELOCITY_DAYS, stock / (sales per day) = the days the stock covers; fewer than LOW_COVER_DAYS (or no stock left) is an alert; needs the invoice
+        right. It reads the CURRENT state (no period) and suggests nothing by itself: the owner decides."""
+        karat = str(filters.get("karat") or "")
+        if karat not in ("", "18", "21", "22", "24"):
+            raise ReportError("FILTER_INVALID", "عيار غير صحيح.")
+        raw, folded = _text_filter(filters)
+        today = self._today()
+        cutoff = today - timedelta(days=DEAD_STOCK_DAYS)
+        stock = [r for r in repo.stock_items(("IN_STOCK",)) if (not karat or str(r["karat_value"]) == karat) and _matches(folded, raw, r["item_type"], r["category"], r["factory"])]
+        tables, cards = [], []
+        dead = {}
+        for r in stock:
+            acquired = _dateish(r["acquired_at"])
+            if r["invoice_id"] is not None or acquired is None or acquired.date() > cutoff:
+                continue
+            g = dead.setdefault((int(r["karat_value"]), r["item_type"] or NO_TYPE, r["factory"] or "بدون مصنع"), {"count": 0, "weight": ZERO3, "oldest": 0})
+            g["count"] += 1
+            g["weight"] += _dec(r["weight_grams"])
+            g["oldest"] = max(g["oldest"], (today - acquired.date()).days)
+        per_karat = {}
+        for (k, _, _), g in dead.items():
+            p = per_karat.setdefault(k, {"count": 0, "weight": ZERO3, "oldest": 0})
+            p["count"] += g["count"]
+            p["weight"] += g["weight"]
+            p["oldest"] = max(p["oldest"], g["oldest"])
+        dead_cols = [col("type", "الصنف"), col("factory", "المصنع"), col("count", "عدد القطع", "count"), col("weight", "الوزن (جرام)", "grams"), col("oldest", "أقدم قطعة (يوم)", "count")]
+        for k in sorted(per_karat, reverse=True):
+            rows = [{"type": t, "factory": f, "count": g["count"], "weight": g["weight"], "oldest": g["oldest"]}
+                    for (kk, t, f), g in sorted(dead.items(), key=lambda kv: (-kv[1]["weight"], kv[0][1])) if kk == k]
+            tables.append(table(f"dead_{k}", f"قطع راكدة (أكثر من {DEAD_STOCK_DAYS} يوم) — عيار {k}", dead_cols, rows, karat=k))
+            cards.append(total(f"راكد عيار {k}", f"{per_karat[k]['weight']:,.3f} جرام", "text", f"{per_karat[k]['count']} قطعة • أقدمها {per_karat[k]['oldest']} يوم", "dead", karat=k))
+        if not per_karat:
+            tables.append(table("dead", f"قطع راكدة (أكثر من {DEAD_STOCK_DAYS} يوم)", dead_cols, []))
+        # ---- items about to run out
+        sold_weights = []
+        if gate("INVOICE_VIEW"):
+            since = datetime.combine(today - timedelta(days=VELOCITY_DAYS), time.min)
+            recent_from = today - timedelta(days=RECENT_DAYS)
+            sold90, sold30 = {}, {}
+            for r in repo.gold_sold_pieces(since, datetime.combine(today + timedelta(days=1), time.min)):
+                if r["reversal_id"] or (karat and str(r["karat_value"]) != karat) or not _matches(folded, raw, r["item_type"], r["category"], r["factory"]):
+                    continue
+                key = (int(r["karat_value"]), r["item_type"] or NO_TYPE, r["factory"] or "بدون مصنع", str(r.get("size") or "").strip())
+                sold90[key] = sold90.get(key, 0) + 1
+                recent = _dateish(r["doc_date"]).date() >= recent_from
+                if recent:
+                    sold30[key] = sold30.get(key, 0) + 1
+                sold_weights.append((int(r["karat_value"]), _dec(r["weight_grams"]), recent))
+            in_stock = {}
+            for r in stock:
+                key = (int(r["karat_value"]), r["item_type"] or NO_TYPE, r["factory"] or "بدون مصنع", str(r["size"] or "").strip())
+                in_stock[key] = in_stock.get(key, 0) + 1
+            low = {}
+            for key, n90 in sold90.items():
+                have = in_stock.get(key, 0)
+                if n90 < MIN_SALES:
+                    continue
+                cover = Decimal(have) * VELOCITY_DAYS / Decimal(n90)
+                if have == 0 or cover < LOW_COVER_DAYS:
+                    low[key] = {"sold30": sold30.get(key, 0), "sold90": n90, "stock": have, "cover": cover}
+            low_cols = [col("type", "الصنف"), col("factory", "المصنع"), col("size", "المقاس"), col("sold30", "مباع آخر 30 يوم", "count"), col("sold90", f"مباع آخر {VELOCITY_DAYS} يوم", "count"),
+                        col("stock", "المتاح", "count"), col("cover", "يكفي (يوم)")]
+            low_karats = sorted({k for k, *_ in low}, reverse=True)
+            for k in low_karats:
+                rows = [{"type": t, "factory": f, "size": sz or "—", "sold30": v["sold30"], "sold90": v["sold90"], "stock": v["stock"], "cover": "نفد" if v["stock"] == 0 else f"{int(v['cover'])}"}
+                        for (kk, t, f, sz), v in sorted(low.items(), key=lambda kv: (kv[1]["cover"], kv[0][1])) if kk == k]
+                tables.append(table(f"low_{k}", f"قاربت على النفاد — عيار {k}", low_cols, rows, karat=k))
+                cards.append(total(f"قارب النفاد عيار {k}", f"{len(rows)} صنف", "text", f"من أصناف بيعت {MIN_SALES} مرات فأكثر وتكفي أقل من {LOW_COVER_DAYS} يوم", "low", karat=k))
+            if not low_karats:
+                tables.append(table("low", "قاربت على النفاد", low_cols, []))
+        else:
+            tables.append(self._unavailable("low", "قاربت على النفاد", "تحتاج صلاحية عرض الفواتير لحساب معدل البيع."))
+        # ---- the weights: stock and sales per ONE-GRAM weight band, per karat (information for the owner to decide with; no alert)
+        def band(weight):
+            index = int(weight)
+            return min(index, WEIGHT_BAND_TOP)
+
+        def band_label(index):
+            return f"{WEIGHT_BAND_TOP} جرام فأكثر" if index >= WEIGHT_BAND_TOP else f"{index} – {index + 1} جرام"
+        bands = {}
+        for r in stock:
+            b = bands.setdefault((int(r["karat_value"]), band(_dec(r["weight_grams"]))), {"stock": 0, "weight": ZERO3, "sold30": 0, "sold90": 0})
+            b["stock"] += 1
+            b["weight"] += _dec(r["weight_grams"])
+        for k, weight, recent in sold_weights:
+            b = bands.setdefault((k, band(weight)), {"stock": 0, "weight": ZERO3, "sold30": 0, "sold90": 0})
+            b["sold90"] += 1
+            b["sold30"] += 1 if recent else 0
+        weight_cols = [col("band", "شريحة الوزن"), col("stock", "المتاح (عدد)", "count"), col("weight", "الوزن المتاح (جرام)", "grams"), col("sold30", "مباع آخر 30 يوم", "count"),
+                       col("sold90", f"مباع آخر {VELOCITY_DAYS} يوم", "count"), col("cover", "يكفي (يوم)")]
+        has_sales = gate("INVOICE_VIEW")
+        for k in sorted({k for k, _ in bands}, reverse=True):
+            rows = []
+            for (kk, index), b in sorted(bands.items(), key=lambda kv: kv[0][1]):
+                if kk != k:
+                    continue
+                cover = "—" if not has_sales or not b["sold90"] else "نفد" if b["stock"] == 0 else f"{int(Decimal(b['stock']) * VELOCITY_DAYS / Decimal(b['sold90']))}"
+                rows.append({"band": band_label(index), "stock": b["stock"], "weight": b["weight"], "sold30": b["sold30"] if has_sales else None, "sold90": b["sold90"] if has_sales else None,
+                             "cover": cover})
+            tables.append(table(f"weights_{k}", f"الأوزان — عيار {k}", weight_cols, rows, karat=k))
+        meaning = [f"راكد = قطعة متاحة منذ {DEAD_STOCK_DAYS} يومًا أو أكثر ولم تظهر في أي فاتورة. قارب النفاد = صنف بيع {MIN_SALES} مرات فأكثر في آخر {VELOCITY_DAYS} يومًا والمتاح منه يكفي أقل من {LOW_COVER_DAYS} يومًا بمعدل البيع.",
+                   "جداول الأوزان معلومات للمقارنة بين شرائح وزنها جرام واحد (الحد الأدنى داخل الشريحة والأعلى خارجها) ولا تنبّه ولا تقرّر. التقرير تنبيه وليس قرارًا: لا يقترح سعرًا ولا يغيّر شيئًا. الأعيار منفصلة دائمًا."]
+        return {"meaning": meaning, "tables": tables, "totals": cards}
 
     # ------------------------------------------------------------------ 3. gold movement: the pieces SOLD by type and the scrap BOUGHT by karat (owner redesign)
     def _gold(self, repo, gate, filters, start, end):

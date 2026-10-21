@@ -117,7 +117,7 @@ class ReportRepository(BaseRepository):
         the invoice, if any. Plain SELECT: the service filters, groups and totals the whole result."""
         return self._fetch_all(
             """
-            SELECT ii.id AS item_id, it.name AS item_type, cat.name AS category, f.id AS factory_id, f.name AS factory, k.karat_value, ii.weight_grams,
+            SELECT ii.id AS item_id, it.name AS item_type, cat.name AS category, f.id AS factory_id, f.name AS factory, k.karat_value, ii.weight_grams, ii.size,
                    iv.id AS invoice_id, iv.invoice_number, iv.invoice_date AS doc_date, c.id AS reversal_id
             FROM invoice_lines il
             JOIN invoices iv ON iv.id = il.invoice_id

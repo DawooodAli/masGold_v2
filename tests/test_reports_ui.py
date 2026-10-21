@@ -81,7 +81,7 @@ class ReportsPageTests(harness.InvoicePageTests):
         self.assertIsNone(self.visible_item("reportsNavButton"))
         vm = self.open_reports()
         self.assertIsNotNone(self.visible_item("reportsNavButton"))
-        self.assertEqual([r["key"] for r in vm.reports], ["sales", "stock", "gold", "customers", "deadcash", "suppliers", "treasury", "market"])
+        self.assertEqual([r["key"] for r in vm.reports], ["sales", "stock", "alerts", "gold", "customers", "deadcash", "suppliers", "treasury", "market"])
         self.assertEqual(self.warnings, [])
 
     def test_the_sales_report_shows_totals_only_without_the_documents_table(self):
@@ -244,7 +244,7 @@ class ReportsPageTests(harness.InvoicePageTests):
     def test_the_period_fields_exist_only_on_the_reports_that_use_a_period(self):
         vm = self.open_reports()
         self.wait_report(vm)
-        for key, used in (("sales", True), ("gold", True), ("treasury", True), ("market", True), ("stock", False), ("customers", False), ("deadcash", False), ("suppliers", False)):
+        for key, used in (("sales", True), ("gold", True), ("treasury", True), ("market", True), ("stock", False), ("alerts", False), ("customers", False), ("deadcash", False), ("suppliers", False)):
             self.click(f"reportChoice_{key}")
             self.wait_until(lambda key=key: not vm.busy and vm.result.get("report") == key, f"{key} loaded")
             QTest.qWait(120)

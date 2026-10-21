@@ -117,5 +117,33 @@ class CustomersReportMySqlTests(unittest.TestCase):
             self.assertEqual(per.get(r["name"]), D(str(r["b"])), r["name"])
 
 
+@unittest.skipUnless(os.environ.get("MASGOLD_BOOK_REHEARSAL") == "1", "explicit rehearsal-only opt-in")
+class InventoryAlertsMySqlTests(unittest.TestCase):
+    """«تنبيهات المخزون» on real MySQL: the dead stock per karat equals an independent aggregate (read only)."""
+
+    @classmethod
+    def setUpClass(cls):
+        BookCoreMySqlTests.setUpClass()
+        cls.h = BookCoreMySqlTests("test_the_migration_is_registered_and_the_objects_exist")
+        cls.service = ReportService(cls.h.session)
+        cls.result = cls.service.run("alerts", {})
+
+    def test_the_dead_stock_equals_an_independent_aggregate(self):
+        rows = self.h.query("""SELECT k.karat_value AS k, COUNT(*) AS n, COALESCE(SUM(ii.weight_grams),0) AS w FROM inventory_items ii JOIN karats k ON k.id = ii.karat_id
+                               WHERE ii.inventory_status = 'IN_STOCK' AND ii.acquired_at <= DATE_SUB(CURDATE(), INTERVAL 180 DAY)
+                                 AND NOT EXISTS (SELECT 1 FROM invoice_lines il JOIN invoices iv ON iv.id = il.invoice_id WHERE il.inventory_item_id = ii.id AND iv.invoice_status <> 'DRAFT')
+                               GROUP BY k.karat_value""")
+        direct = {f"راكد عيار {r['k']}": (f"{D(str(r['w'])):,.3f} جرام", f"{r['n']} قطعة") for r in rows}
+        shown = {x["label"]: (x["value"], x["note"].split(" • ")[0]) for x in self.result["totals"] if x["group"] == "dead"}
+        self.assertEqual(shown, direct)
+
+    def test_the_report_writes_nothing_and_every_table_is_readable(self):
+        before = self.h.counts(("inventory_items", "invoice_lines", "old_gold_movements"))
+        ReportService(self.h.session).run("alerts", {})
+        self.assertEqual(self.h.counts(("inventory_items", "invoice_lines", "old_gold_movements")), before)
+        for t in self.result["tables"]:
+            self.assertTrue(t.get("available", True), t["key"])
+
+
 if __name__ == "__main__":
     unittest.main()
