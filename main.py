@@ -129,7 +129,7 @@ class ApplicationController(QObject):
                  printer_settings_factory=create_printer_settings_viewmodel,
                  balance_factory=create_balance_viewmodel, dashboard_factory=create_dashboard_viewmodel,
                  exchange_factory=create_exchange_viewmodel, return_factory=create_return_viewmodel,
-                 correction_factory=create_correction_viewmodel):
+                 correction_factory=create_correction_viewmodel, snapshot_factory=None):
         super().__init__(app)
         self.app = app
         # English digits everywhere: typed Arabic-Indic / Persian digits become 0-9 before any field.
@@ -153,6 +153,7 @@ class ApplicationController(QObject):
         self._exchange_factory = exchange_factory
         self._return_factory = return_factory
         self._correction_factory = correction_factory
+        self._snapshot_factory = snapshot_factory
         self.operational_engine = None
         self.operational_viewmodels = {}
         self.login_engine = self._engine()
@@ -179,6 +180,17 @@ class ApplicationController(QObject):
         engine.quit.connect(self.app.quit)
         return engine
 
+    def _attach_position_snapshots(self):
+        """The owner's initial balance card (Settings) and the daily stocktaking sheet. The sheet is requested only in the real application (never offscreen / test platforms, so a test
+        never writes to a database); a failure is logged by the worker and never blocks the application."""
+        from app.viewmodels.position_snapshot_viewmodel import create_position_snapshot_viewmodel
+        viewmodel = self.operational_viewmodels.get("positionSnapshotVM")
+        if viewmodel is None:
+            viewmodel = (self._snapshot_factory or create_position_snapshot_viewmodel)(self.session)
+            self.operational_viewmodels["positionSnapshotVM"] = viewmodel
+        if QGuiApplication.platformName() not in ("offscreen", "minimal"):
+            viewmodel.ensureDaily()
+
     @Slot()
     def _open_operational(self):
         if not self.session.authenticated or self.operational_engine is not None:
@@ -193,6 +205,7 @@ class ApplicationController(QObject):
             self.operational_viewmodels.setdefault("printerSettingsVM", self._printer_settings_factory(self.session))
             self.operational_viewmodels.setdefault("balancesVM", self._balance_factory(self.session))
             self.operational_viewmodels.setdefault("dashboardVM", self._dashboard_factory(self.session))
+            self._attach_position_snapshots()
             customer_page = self.operational_viewmodels.get("customerVM")
             if hasattr(customer_page, "attach_session"):
                 customer_page.attach_session(self.session)       # Customers page reads need CUSTOMERS_VIEW

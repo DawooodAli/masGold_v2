@@ -2,7 +2,7 @@
 independently in the comment next to it). The SQL of ReportRepository is NOT exercised here (no MySQL): it is covered only by the static checks at the end."""
 from contextlib import contextmanager
 import csv
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal as D
 import re
 import tempfile
@@ -37,6 +37,25 @@ class FakeRepo:
 
     def has_table(self, name):
         return self.tables.get(name, True)
+
+    # ---- gold profit: the stocktaking sheets (opening balance 1 Oct, morning sheets, one on 1 Nov)
+    sheets = None
+
+    def position_snapshots(self):
+        def sheet(i, when, shop, suppliers, cash, bank):
+            total_ = D(shop) + D(suppliers)
+            return {"id": i, "snapshot_kind": "OPENING" if i == 1 else "DAILY", "taken_at": when, "gold_shop_eq21": D(shop), "gold_custody_eq21": D(0), "gold_intermediary_eq21": D(0),
+                    "gold_book_eq21": D(0), "gold_suppliers_eq21": D(suppliers), "gold_total_eq21": total_, "unknown_grams": D(0), "cash_egp": D(cash), "bank_egp": D(bank)}
+        return FakeRepo.sheets if FakeRepo.sheets is not None else [
+            sheet(1, datetime(2026, 10, 1, 9), "5000.000", "-100.000", "200000", "30000"), sheet(2, datetime(2026, 10, 15, 9), "5050.000", "-90.000", "210000", "30000"),
+            sheet(3, datetime(2026, 11, 1, 9), "5250.000", "-60.000", "190000", "35000")]
+
+    # ---- price indicators: 40 live days of karat 21 (buy 6000 + 10 per day, sell buy + 50) and 3 legacy days before them
+    def gold_price_history_legacy(self):
+        return [{"karat_value": 21, "day": date(2026, 1, d), "buy": 5900 + d, "sell": 5950 + d} for d in (1, 2, 3)]
+
+    def gold_price_daily(self):
+        return [{"karat_value": 21, "day": date(2026, 2, 1) + timedelta(days=i), "buy": 6000 + 10 * i, "sell": 6050 + 10 * i} for i in range(40)]
 
     # ---- gold movement (the owner redesign): pieces sold by type and scrap bought by karat
     def gold_sold_pieces(self, start, end):
@@ -724,14 +743,72 @@ class SafetyTests(Case):
             service.run("sales", {})
 
     def test_available_reports_follow_the_rights(self):
-        self.assertEqual([r["key"] for r in self.service.available_reports()], ["sales", "stock", "alerts", "gold", "customers", "deadcash", "suppliers", "treasury", "market"])
+        self.assertEqual([r["key"] for r in self.service.available_reports()], ["sales", "stock", "alerts", "indicators", "gold", "customers", "deadcash", "suppliers", "treasury", "market"])
         self.session = session_for({"APP_LOGIN", "REPORTS_VIEW", "CUSTOMERS_VIEW"})
         limited = ReportService(self.session, repository=FakeRepo, authorization=FakeAuthorization(self.session))
-        self.assertEqual([r["key"] for r in limited.available_reports()], ["customers", "deadcash"])
+        self.assertEqual([r["key"] for r in limited.available_reports()], ["indicators", "customers", "deadcash"])
 
     def test_the_reads_are_one_snapshot_per_report(self):
         self.service.run("sales", {})
         self.assertEqual(self.opened, 1)
+
+
+class IndicatorTests(Case):
+    def test_cards_follow_the_stored_prices_with_hand_checked_figures(self):
+        result = self.service.run("indicators", {})
+        values = {t["label"]: t for t in result["totals"]}
+        buy = values["عيار 21 — سعر شراء المحل"]
+        self.assertEqual(buy["value"], D(6390))                                   # day 40: 6000 + 10 * 39
+        self.assertIn("آخر سعر 2026-03-12", buy["note"])
+        self.assertEqual(values["عيار 21 — سعر بيع المحل"]["value"], D(6440))
+        self.assertIn("وليس توصية مالية", values["عيار 21 — إرشاد"]["note"])
+        self.assertTrue(all(t.get("karat") == 21 for t in result["totals"]))             # the other karats have no stored prices: no cards, never zeros
+        self.assertEqual(result["tables"][0]["rows"][0]["days"], 43)                      # 3 legacy + 40 live days
+
+    def test_the_price_chart_returns_the_window_with_the_average(self):
+        chart = self.service.price_chart(21, 30)
+        self.assertEqual(len(chart["points"]), 30)
+        self.assertEqual(chart["points"][-1]["buy"], D(6390))
+        self.assertEqual(chart["low"], D(6100))
+        with self.assertRaises(ReportError):
+            self.service.price_chart(22, 30)
+
+
+class ProfitTests(Case):
+    permissions = ALL | {"MANAGEMENT_REVIEW"}
+    PERIOD = {"from": "2026-10-01", "to": "2026-10-31"}
+
+    def setUp(self):
+        super().setUp()
+        FakeRepo.sheets = None
+
+    def test_profit_is_the_closing_gold_minus_the_opening_gold_with_cash_apart(self):
+        result = self.service.run("profit", self.PERIOD)
+        values = self.totals(result)
+        # opening 5000 - 100 = 4900; closing 5250 - 60 = 5190 -> +290 (the supplier debt fell by 40, the shop gold rose by 250)
+        self.assertEqual(values["ربح الذهب (مكافئ 21)"], "+290.000 جرام")
+        self.assertEqual((values["ذهب أول الفترة"], values["ذهب آخر الفترة"]), ("4,900.000 جرام", "5,190.000 جرام"))
+        self.assertEqual(values["الكاش (الخزنة) — التغير"], "-10,000.00 ج")                       # 190000 - 200000, shown but not part of the profit
+        self.assertEqual(values["البنوك والمحافظ — التغير"], "+5,000.00 ج")
+        parts = {r["part"]: r["change"] for r in result["tables"][0]["rows"]}
+        self.assertEqual((parts["مخزون وكسر وسبائك المحل"], parts["ذهب الموردين (صافي)"], parts["الإجمالي"]), (D("250.000"), D("40.000"), D("290.000")))
+
+    def test_a_loss_reads_as_negative_and_a_single_sheet_is_never_a_zero_profit(self):
+        FakeRepo.sheets = FakeRepo.position_snapshots(FakeRepo())[:1]
+        result = self.service.run("profit", self.PERIOD)
+        self.assertEqual(self.totals(result)["ربح الذهب (مكافئ 21)"], "غير متاح")
+        self.assertFalse(result["tables"][0]["available"])
+        FakeRepo.sheets = []
+        self.assertIn("الرصيد الافتتاحي", self.service.run("profit", self.PERIOD)["totals"][0]["note"])
+
+    def test_the_report_is_owner_only_and_missing_table_is_unavailable_not_empty(self):
+        session = session_for(ALL)                                                     # no MANAGEMENT_REVIEW
+        limited = ReportService(session, transaction_factory=self.service._transaction, repository=FakeRepo, authorization=FakeAuthorization(session), today=lambda: TODAY)
+        self.assertNotIn("profit", [r["key"] for r in limited.available_reports()])
+        with self.assertRaises(PermissionError):
+            limited.run("profit", self.PERIOD)
+        FakeRepo.tables["position_snapshots"] = False
+        self.assertFalse(self.service.run("profit", self.PERIOD)["tables"][0]["available"])
 
 
 class ExportTests(Case):

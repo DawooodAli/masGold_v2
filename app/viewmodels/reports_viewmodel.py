@@ -25,6 +25,7 @@ FILTER_SPECS = {
     "stock": [{"key": "status", "label": "الحالة", "options": [("IN_STOCK", "متاح"), ("SOLD", "مباع"), ("RETURNED_PENDING", "مرتجع بانتظار الفحص"), ("SCRAPPED", "كسر"), ("REMOVED", "مُخرج"), ("ALL", "كل الحالات")]},
               {"key": "classification", "label": "التصنيف", "options": [("", "الكل"), ("NEW_STOCK", "جديد"), ("OLD_STOCK", "قديم")]},
               {"key": "karat", "label": "العيار", "options": [("", "الكل"), ("18", "18"), ("21", "21"), ("22", "22"), ("24", "24")]}],
+    "indicators": [{"key": "karat", "label": "العيار", "options": [("", "الكل"), ("18", "18"), ("21", "21"), ("24", "24")]}],
     "alerts": [{"key": "karat", "label": "العيار", "options": [("", "الكل"), ("18", "18"), ("21", "21"), ("22", "22"), ("24", "24")]}],
     "gold": [{"key": "karat", "label": "العيار", "options": [("", "الكل"), ("18", "18"), ("21", "21"), ("22", "22"), ("24", "24")]},
              {"key": "factory", "label": "المصنع", "options": [("", "الكل")], "dynamic": True},
@@ -37,6 +38,7 @@ FILTER_SPECS = {
     "suppliers": [],
     "treasury": [],
     "market": [],
+    "profit": [],
 }
 KIND_FORMAT = {"money": lambda v: money(v, signed=v < 0), "grams": lambda v: grams(v, signed=v < 0), "eq21": lambda v: grams(v, signed=v < 0)}
 
@@ -65,7 +67,7 @@ def month_period(today):
 
 
 HIDDEN_ON_SCREEN = {("sales", "documents"), ("stock", "items"), ("stock", "summary"), ("suppliers", "movements"), ("treasury", "movements"), ("market", "summary")}
-NO_PERIOD = {"stock", "alerts", "customers", "deadcash", "suppliers"}                      # reports of the CURRENT state: the period fields are not offered
+NO_PERIOD = {"stock", "alerts", "indicators", "customers", "deadcash", "suppliers"}                      # reports of the CURRENT state: the period fields are not offered
 
 
 def grams_text(value):
@@ -88,7 +90,7 @@ def result_view(built):
             continue
         cols = t["columns"]
         rows = [{"cells": [_cell(c["kind"], r.get(c["key"])) for c in cols], "ref": r.get("ref") or {}, "dim": bool(r.get("state", "") and ("معكوس" in str(r.get("state")) or "ملغاة" in str(r.get("state")))),
-                 "refText": {"INVOICE": "فتح الفاتورة", "CUSTOMER": "فتح العميل", "TRIP": "فتح الرحلة", "CHART": "رسم بياني"}.get((r.get("ref") or {}).get("type"), "")} for r in t["rows"]]
+                 "refText": {"INVOICE": "فتح الفاتورة", "CUSTOMER": "فتح العميل", "TRIP": "فتح الرحلة", "CHART": "رسم بياني", "PRICE_CHART": "رسم بياني"}.get((r.get("ref") or {}).get("type"), "")} for r in t["rows"]]
         tables.append({"key": t["key"], "title": t["title"], "available": True, "reason": "", "columns": [{"title": c["title"], "kind": c["kind"]} for c in cols], "rows": rows,
                        "paged": t["paged"], "rowCount": t.get("row_count", len(rows)), "page": t.get("page", 1), "pageSize": t.get("page_size", len(rows)), "hasMore": t.get("has_more", False),
                        "note": t.get("note", ""), "karat": int(t.get("karat") or 0)})
@@ -111,6 +113,7 @@ class ReportsViewModel(QObject):
         self._request, self._latest, self._busy = 0, 0, False
         self._workers = set()
         self._chart, self._chart_request = {}, 0
+        self._price_chart, self._price_request = {}, 0
         self._period_edited = False                                           # False: the period is the automatic one (month start .. today)
 
     # ---- session
@@ -166,6 +169,49 @@ class ReportsViewModel(QObject):
     @Property("QVariantMap", notify=changed)
     def result(self):
         return self._result
+
+    @Property("QVariantMap", notify=changed)
+    def priceChart(self):
+        return self._price_chart
+
+    @Slot()
+    def closePriceChart(self):
+        self._price_request += 1
+        self._price_chart = {}
+        self.changed.emit()
+
+    @Slot(str, int)
+    def showPriceChart(self, karat, days):
+        """The daily price chart of one karat (days = 0 means everything stored)."""
+        if self._report != "indicators" or self._service is None or self._session is None:
+            return
+        self._price_request += 1
+        request, report = self._price_request, self._report
+        self._price_chart = {"loading": True, "karat": str(karat), "days": int(days), "error": "", "points": []}
+        actor = self._session.current_actor()
+        if actor is None:
+            return
+        from app.workers.invoice_worker import InvoiceWorker
+        worker = InvoiceWorker(lambda _expected_actor: self._service.price_chart(karat, days, _expected_actor=_expected_actor), self._session, actor, request, "report", self)
+        worker.completed.connect(lambda r, generation, operation, result, error, code, kind: self._price_chart_completed(r, generation, report, result, error, karat, days))
+        worker.finished.connect(lambda w=worker: self._workers.discard(w))
+        self._workers.add(worker)
+        worker.start()
+        self.changed.emit()
+
+    def _price_chart_completed(self, request, generation, report, result, error, karat, days):
+        actor = self._session.current_actor() if self._session is not None else None
+        if actor is None or str(actor.generation) != generation or request != self._price_request or report != self._report:
+            return
+        if error:
+            self._price_chart = {"loading": False, "karat": str(karat), "days": int(days), "error": error, "points": []}
+        else:
+            points = [{"date": p["date"].isoformat(), "buy": float(p["buy"]), "sell": float(p["sell"]), "average": None if p["average"] is None else float(p["average"])} for p in result["points"]]
+            self._price_chart = {"loading": False, "error": "", "karat": str(result["karat"]), "days": result["days"], "points": points,
+                                 "low": 0.0 if result["low"] is None else float(result["low"]), "high": 0.0 if result["high"] is None else float(result["high"]),
+                                 "lowText": "" if result["low"] is None else f"{result['low']:,.0f}", "highText": "" if result["high"] is None else f"{result['high']:,.0f}",
+                                 "first": points[0]["date"] if points else "", "last": points[-1]["date"] if points else ""}
+        self.changed.emit()
 
     @Property(bool, notify=changed)
     def periodUsed(self):
@@ -289,6 +335,8 @@ class ReportsViewModel(QObject):
     def open(self, kind, identifier, extra):
         if kind == "CHART":
             self.showChart(str(identifier), str(extra or ""))
+        elif kind == "PRICE_CHART":
+            self.showPriceChart(str(identifier), 90)
         elif kind in ("INVOICE", "CUSTOMER", "TRIP") and identifier:
             self.openRequested.emit(kind, str(identifier), str(extra or ""))
 

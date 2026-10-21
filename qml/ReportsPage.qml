@@ -61,6 +61,96 @@ Item {
 
     Rectangle { anchors.fill: parent; color: theme.bgPrimary }
 
+    // ---------------------------------------------------------------- the daily price chart of one karat (shop buy, shop sell and the 30-day average)
+    Popup {
+        id: priceChartDialog
+        objectName: "reportPriceChartDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(820, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 480, 480)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        onClosed: reportsVM.closePriceChart()
+        Connections {
+            target: reportsVM
+            function onChanged() { if (!!reportsVM.priceChart.karat && !priceChartDialog.opened) priceChartDialog.open(); priceCanvas.requestPaint() }
+        }
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: page.karatColor(parseInt(reportsVM.priceChart.karat || 0)); border.width: 2 }
+        contentItem: ColumnLayout {
+            spacing: 8
+            Label { objectName: "reportPriceChartTitle"; Layout.fillWidth: true; text: "سعر الذهب اليومي — عيار " + (reportsVM.priceChart.karat || ""); color: page.karatColor(parseInt(reportsVM.priceChart.karat || 0)); font.bold: true
+                    font.pixelSize: theme.fontSection; horizontalAlignment: Text.AlignRight }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 6
+                Repeater {
+                    model: [{ days: 30, text: "30 يوم" }, { days: 90, text: "90 يوم" }, { days: 365, text: "سنة" }, { days: 0, text: "الكل" }]
+                    delegate: Btn {
+                        required property var modelData
+                        objectName: "reportPriceRange_" + modelData.days
+                        text: modelData.text
+                        primary: reportsVM.priceChart.days === modelData.days
+                        onClicked: reportsVM.showPriceChart(reportsVM.priceChart.karat, modelData.days)
+                    }
+                }
+                Item { Layout.fillWidth: true }
+                Label { color: theme.textMuted; font.pixelSize: theme.fontTableHeader; text: "أحمر = بيع المحل • أخضر = شراء المحل • أصفر متقطع = متوسط 30 يوم" }
+            }
+            Label { objectName: "reportPriceChartLoading"; Layout.fillWidth: true; visible: !!reportsVM.priceChart.loading; color: theme.textMuted; text: "جارٍ التحميل…"; horizontalAlignment: Text.AlignRight }
+            Label { objectName: "reportPriceChartError"; Layout.fillWidth: true; visible: !!reportsVM.priceChart.error; color: theme.red; text: reportsVM.priceChart.error || ""; wrapMode: Text.WordWrap }
+            Canvas {
+                id: priceCanvas
+                objectName: "reportPriceChartCanvas"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                onPaint: {
+                    var ctx = getContext("2d")
+                    ctx.reset()
+                    var points = reportsVM.priceChart.points || []
+                    if (points.length < 2) return
+                    var left = 52, right = 8, top = 8, bottom = 20
+                    var w = width - left - right, h = height - top - bottom
+                    var low = reportsVM.priceChart.low, high = reportsVM.priceChart.high
+                    if (high <= low) high = low + 1
+                    function x(i) { return left + w * i / (points.length - 1) }
+                    function y(v) { return top + h * (1 - (v - low) / (high - low)) }
+                    ctx.strokeStyle = "#303842"; ctx.fillStyle = "#858D97"; ctx.font = "11px sans-serif"; ctx.lineWidth = 1
+                    for (var g = 0; g <= 4; ++g) {
+                        var gv = low + (high - low) * g / 4
+                        ctx.beginPath(); ctx.moveTo(left, y(gv)); ctx.lineTo(left + w, y(gv)); ctx.stroke()
+                        ctx.fillText(Math.round(gv).toString(), 4, y(gv) + 4)
+                    }
+                    ctx.fillText(points[0].date, left, height - 4)
+                    ctx.fillText(points[points.length - 1].date, left + w - 62, height - 4)
+                    function line(key, color, dash) {
+                        ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.setLineDash(dash)
+                        ctx.beginPath()
+                        var started = false
+                        for (var i = 0; i < points.length; ++i) {
+                            var v = points[i][key]
+                            if (v === null || v === undefined) continue
+                            if (!started) { ctx.moveTo(x(i), y(v)); started = true } else ctx.lineTo(x(i), y(v))
+                        }
+                        ctx.stroke()
+                    }
+                    line("sell", "#E06C75", [])
+                    line("buy", "#60C9AF", [])
+                    line("average", "#E4A853", [6, 4])
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                Btn { objectName: "reportPriceChartClose"; text: "إغلاق"; accent: theme.textSecondary; onClicked: priceChartDialog.close() }
+                Item { Layout.fillWidth: true }
+                Label { color: theme.textSecondary; text: (reportsVM.priceChart.first || "") + " → " + (reportsVM.priceChart.last || "") + "  •  أدنى " + (reportsVM.priceChart.lowText || "") + " • أعلى " + (reportsVM.priceChart.highText || "") }
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- the monthly sales chart of one item type (follows the report's filters)
     Popup {
         id: chartDialog

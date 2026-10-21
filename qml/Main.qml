@@ -5067,6 +5067,72 @@ ApplicationWindow {
         ]
     }
 
+    // Settings → الرصيد الافتتاحي: the owner's initial gold / cash balance, entered ONCE (the gold profit report starts from it), plus a manual stocktaking sheet.
+    component PositionOpeningSettings: SettingsSectionCard {
+        id: opening
+        objectName: "settingsPositionOpening"
+        sectionTitle: "الرصيد الافتتاحي وجرد الذهب"
+        accentColor: theme.gold
+        readonly property var vm: typeof positionSnapshotVM !== "undefined" ? positionSnapshotVM : null
+        visible: !!vm && vm.canManage
+        Component.onCompleted: if (vm && vm.canManage) vm.refresh()
+        content: [
+            GoldPriceLabel {
+                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                value: "يُسجَّل مرة واحدة عند بدء التشغيل الفعلي. ذهب المحل = مخزون + كسر + سبائك بمكافئ عيار 21، وذهب الموردين بالإشارة (موجب = لنا عندهم، سالب = علينا). بعد التسجيل لا يتغير، ويأخذ البرنامج جردًا تلقائيًا كل يوم."
+                color: theme.textMuted; font.pixelSize: 11
+            },
+            GoldPriceLabel {
+                objectName: "openingRecorded"; Layout.fillWidth: true; wrapMode: Text.WordWrap
+                visible: !!opening.vm && opening.vm.hasOpening
+                value: opening.vm ? opening.vm.openingText : ""
+                color: theme.green
+            },
+            GridLayout {
+                objectName: "openingFields"
+                visible: !!opening.vm && opening.vm.loaded && !opening.vm.hasOpening
+                columns: 2; layoutDirection: Qt.RightToLeft
+                Layout.fillWidth: true; columnSpacing: 12; rowSpacing: 8
+                enabled: !!opening.vm && !opening.vm.busy
+                GoldPriceLabel { Layout.preferredWidth: 150; value: "ذهب المحل (جرام مكافئ 21)" }
+                GoldPriceInput { id: openingGold; objectName: "openingGold"; Layout.fillWidth: true; Layout.maximumWidth: 300; Layout.preferredHeight: 34 }
+                GoldPriceLabel { Layout.preferredWidth: 150; value: "ذهب الموردين صافي (+ لنا / − علينا)" }
+                GoldPriceInput { id: openingSuppliers; objectName: "openingSuppliers"; Layout.fillWidth: true; Layout.maximumWidth: 300; Layout.preferredHeight: 34 }
+                GoldPriceLabel { Layout.preferredWidth: 150; value: "الكاش (الخزنة) ج" }
+                GoldPriceInput { id: openingCash; objectName: "openingCash"; Layout.fillWidth: true; Layout.maximumWidth: 300; Layout.preferredHeight: 34 }
+                GoldPriceLabel { Layout.preferredWidth: 150; value: "البنوك والمحافظ ج" }
+                GoldPriceInput { id: openingBank; objectName: "openingBank"; Layout.fillWidth: true; Layout.maximumWidth: 300; Layout.preferredHeight: 34 }
+            },
+            CheckBox {
+                id: openingConfirm; objectName: "openingConfirm"
+                visible: !!opening.vm && opening.vm.loaded && !opening.vm.hasOpening
+                text: "أؤكد أن الأرقام صحيحة وأنها لا تتغير بعد التسجيل"
+                font.family: "Cairo"; font.pixelSize: 12
+                contentItem: Text { text: openingConfirm.text; font: openingConfirm.font; color: theme.textPrimary; horizontalAlignment: Text.AlignRight; leftPadding: 4; rightPadding: openingConfirm.indicator.width + 6; verticalAlignment: Text.AlignVCenter }
+            },
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                GoldPriceLabel {
+                    objectName: "openingMessage"; Layout.fillWidth: true; visible: value.length > 0
+                    value: opening.vm ? opening.vm.message : ""
+                    color: opening.vm && opening.vm.messageIsError ? theme.priceError : theme.green
+                }
+                GoldPriceButton {
+                    objectName: "openingSave"; text: "تسجيل الرصيد الافتتاحي"
+                    visible: !!opening.vm && opening.vm.loaded && !opening.vm.hasOpening
+                    enabled: openingConfirm.checked && openingGold.text.length > 0 && !!opening.vm && !opening.vm.busy
+                    onClicked: opening.vm.saveOpening(openingGold.text, openingSuppliers.text, openingCash.text, openingBank.text)
+                }
+                GoldPriceButton {
+                    objectName: "openingTakeNow"; text: "جرد الآن"
+                    visible: !!opening.vm && opening.vm.hasOpening
+                    enabled: !!opening.vm && !opening.vm.busy
+                    onClicked: opening.vm.takeNow()
+                }
+            }
+        ]
+    }
+
     component GoldProviderSettings: SettingsSectionCard {
         property alias resultCard: testResultCard
         id: providerPanel
@@ -5305,6 +5371,7 @@ ApplicationWindow {
                 }
                 GoldProviderSettings { id: goldProvider; Layout.fillWidth: true }
                 PrintingSettings { id: printingSettings; Layout.fillWidth: true }
+                PositionOpeningSettings { id: positionOpening; Layout.fillWidth: true }
             }
         }
     }

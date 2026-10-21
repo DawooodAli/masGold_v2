@@ -13,7 +13,7 @@ Principles (every number below follows them):
 from contextlib import contextmanager
 import csv
 from datetime import date, datetime, time, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 from repositories.invoice_lifecycle_repository import exchange_code
@@ -21,6 +21,8 @@ from repositories.invoice_return_repository import return_code
 from repositories.market_trip_repository import entry_code, trip_code
 from repositories.report_repository import ReportRepository
 from services import book_rules
+from services import position_snapshot_rules as snapshot_math
+from services import price_indicators as indicators_math
 from services.authorization_service import AuthorizationService
 from services.correction_rules import correction_code
 from services.gold_position_service import read_transaction
@@ -30,9 +32,10 @@ MAX_ROWS = 50000
 ZERO = Decimal("0")
 ZERO3, ZERO2 = Decimal("0.000"), Decimal("0.00")
 BASE_PERMISSION = "REPORTS_VIEW"
-REPORT_PERMISSIONS = {"sales": ("INVOICE_VIEW",), "stock": ("INVENTORY_VIEW",), "alerts": ("INVENTORY_VIEW",), "gold": (), "customers": ("CUSTOMERS_VIEW",), "deadcash": ("CUSTOMERS_VIEW",),
-                      "suppliers": ("SUPPLIER_VIEW",), "treasury": (), "market": ("MARKET_TRIP_MANAGE",)}                      # treasury: CASH_VIEW and / or BANK_VIEW per section
-REPORT_TITLES = {"sales": "المبيعات والمرتجعات", "stock": "المخزون المتاح", "alerts": "تنبيهات المخزون", "gold": "حركة الأصناف", "customers": "العملاء", "deadcash": "الديون المعدومة (Dead Cash)", "suppliers": "الموردون", "treasury": "الخزنة والبنوك", "market": "عهدة السوق والخسائر"}
+REPORT_PERMISSIONS = {"sales": ("INVOICE_VIEW",), "stock": ("INVENTORY_VIEW",), "alerts": ("INVENTORY_VIEW",), "indicators": (), "gold": (), "customers": ("CUSTOMERS_VIEW",), "deadcash": ("CUSTOMERS_VIEW",),
+                      "suppliers": ("SUPPLIER_VIEW",), "treasury": (), "market": ("MARKET_TRIP_MANAGE",),
+                      "profit": ("MANAGEMENT_REVIEW", "MARKET_TRIP_MANAGE", "INTERMEDIARY_HOLDING_VIEW")}                      # treasury: CASH_VIEW and / or BANK_VIEW per section
+REPORT_TITLES = {"sales": "المبيعات والمرتجعات", "stock": "المخزون المتاح", "alerts": "تنبيهات المخزون", "indicators": "مؤشرات الذهب", "gold": "حركة الأصناف", "customers": "العملاء", "deadcash": "الديون المعدومة (Dead Cash)", "suppliers": "الموردون", "treasury": "الخزنة والبنوك", "market": "عهدة السوق والخسائر", "profit": "ربح الذهب (مكافئ 21)"}
 KIND_TEXT = {"SALE": "بيع", "MIXED": "بيع مع شراء كسر", "OLD_GOLD_PURCHASE": "شراء كسر", "RETURN": "مرتجع", "EXCHANGE": "استبدال"}
 STATUS_TEXT = {"IN_STOCK": "متاح", "SOLD": "مباع", "SCRAPPED": "كسر", "REMOVED": "مُخرج", "RETURNED_PENDING": "مرتجع بانتظار الفحص", "CONVERTED_TO_OLD_GOLD": "حُوّل إلى كسر"}
 CLASS_TEXT = {"NEW_STOCK": "جديد", "OLD_STOCK": "قديم"}
@@ -40,7 +43,11 @@ LINE_TEXT = {"SELL_INVENTORY": "بيع قطعة", "SELL_OLD_GOLD": "بيع من 
 REF_TEXT = {"INVOICE": "فاتورة", "RETURN": "مرتجع", "EXCHANGE": "استبدال", "CUSTOMER_ACCOUNT_SETTLEMENT": "تحصيل / تسوية حساب", "CUSTOMER_DEPOSIT": "عربون",
             "CUSTOMER_DEPOSIT_REFUND": "رد عربون", "FULL_REVERSAL": "عكس", "SETTLEMENT_CORRECTION": "تصحيح تسوية", "DEAD_CASH_WRITE_OFF": "شطب رصيد",
             "DEAD_CASH_REVERSAL": "عكس شطب", "UNKNOWN": "غير محدد"}
-NO_PERIOD = frozenset({"stock", "alerts", "customers", "deadcash", "suppliers"})          # reports of the CURRENT state: the period is neither offered nor printed
+NO_PERIOD = frozenset({"stock", "alerts", "indicators", "customers", "deadcash", "suppliers"})
+PRICE_KARATS = (24, 21, 18)                                                                    # the karats the price indicators are shown for (the provider's three)
+HINT_TEXT = {indicators_math.BUY_FAVOURABLE: "الشراء مناسب نسبيًا", indicators_math.SELL_FAVOURABLE: "البيع مناسب نسبيًا", indicators_math.NEUTRAL: "محايد",
+             indicators_math.UNKNOWN: "بيانات غير كافية"}
+HINT_DISCLAIMER = "إرشاد مبني على حركة أسعار المحل المخزنة وليس توصية مالية"          # reports of the CURRENT state: the period is neither offered nor printed
 NO_TYPE = "بدون صنف"
 DEAD_STOCK_DAYS = 180                  # a piece in stock for six months without a sale is dead stock (owner decision)
 VELOCITY_DAYS, RECENT_DAYS = 90, 30    # the window the sales rate is measured on, and the "recent" figure shown beside it
@@ -253,6 +260,44 @@ class ReportService:
     @staticmethod
     def _unavailable(key, title, reason):
         return {"key": key, "title": title, "columns": [], "rows": [], "paged": False, "note": "", "available": False, "reason": reason}
+
+    # ------------------------------------------------------------------ 8. gold profit (owner definition): the gold at the end of the period minus the gold at its start, in 21K equivalent
+    def _profit(self, repo, gate, filters, start, end):
+        """The owner's definition: profit = the gold the shop holds at the END of the period minus what it held at its START, in 21K-equivalent grams. The gold is the consolidated position (stock,
+        Scrap, bars, market custody, marketer and intermediary holdings) plus the NET supplier gold (what the suppliers hold for the shop counts as shop gold, what the shop owes is subtracted).
+        The two figures come from stored stocktaking sheets (position snapshots), never from a recomputed history. Cash and bank are shown beside it, NOT inside the profit."""
+        if not repo.has_table("position_snapshots"):
+            return {"meaning": [], "tables": [self._unavailable("missing", "بيانات غير متاحة", "جدول لقطات الرصيد غير موجود في مستوى قاعدة البيانات الحالي: طبّق التحديثات.")], "totals": []}
+        sheets = [{**dict(r), "taken_at": _dateish(r["taken_at"])} for r in repo.position_snapshots()]
+        opening, closing, problem = snapshot_math.choose(sheets, start, end)
+        meaning = ["ربح الذهب = ذهب آخر الفترة − ذهب أول الفترة، بجرام مكافئ عيار 21: مخزون جديد + كسر + سبائك + عهدة السوق + ذهب المسوقجي + ذهب الموردين (لنا موجب وعلينا سالب).",
+                   "الأرقام من لقطات الرصيد (جرد يُحفظ أول فتح للبرنامج كل يوم)، وليست إعادة حساب لتاريخ قديم. الكاش والبنوك للمعلومية فقط ولا تدخل في الربح.",
+                   "الربح هنا يشمل أي تغيير في الذهب (شراء بكاش أو سحب أو إيداع)، فراجعه مع حركة الكاش."]
+        notes = {"NO_SNAPSHOT": "لا توجد لقطات رصيد: سجّل الرصيد الافتتاحي من الإعدادات.", "NO_CLOSING": "لا توجد لقطة تغطي نهاية هذه الفترة.",
+                 "SAME_SNAPSHOT": "يوجد جرد واحد فقط لهذه الفترة، فلا يمكن قياس الفرق: اختر فترة أطول أو خذ لقطة جديدة."}
+        if problem:
+            return {"meaning": meaning, "tables": [self._unavailable("profit", "ربح الذهب", notes[problem])],
+                    "totals": [total("ربح الذهب (مكافئ 21)", "غير متاح", "text", notes[problem], "profit", tone="deadcash")]}
+        diff = snapshot_math.profit(opening, closing)
+
+        def day(row):
+            return _dateish(row["taken_at"]).strftime("%Y-%m-%d %H:%M")
+        early = " • تنبيه: الفترة تبدأ قبل أول جرد فاستُخدم أول جرد كمرجع" if opening["before_first"] else ""
+        grams_text = lambda v: f"{v:+,.3f} جرام" if v else "0.000 جرام"
+        money_text = lambda v: f"{v:+,.2f} ج" if v else "0.00 ج"
+        totals = [total("ربح الذهب (مكافئ 21)", grams_text(diff["gold_total_eq21"]), "text", f"من جرد {day(opening)} إلى جرد {day(closing)}{early}", "profit", tone="receivable" if diff["gold_total_eq21"] >= 0 else "payable"),
+                  total("ذهب أول الفترة", f"{_dec(opening['gold_total_eq21']):,.3f} جرام", "text", f"جرد {day(opening)}", "ends"),
+                  total("ذهب آخر الفترة", f"{_dec(closing['gold_total_eq21']):,.3f} جرام", "text", f"جرد {day(closing)}", "ends"),
+                  total("الكاش (الخزنة) — التغير", money_text(diff["cash_egp"]), "text", f"أول {_dec(opening['cash_egp']):,.2f} → آخر {_dec(closing['cash_egp']):,.2f} ج (للمعلومية)", "cash"),
+                  total("البنوك والمحافظ — التغير", money_text(diff["bank_egp"]), "text", f"أول {_dec(opening['bank_egp']):,.2f} → آخر {_dec(closing['bank_egp']):,.2f} ج (للمعلومية)", "cash")]
+        labels = (("gold_shop_eq21", "مخزون وكسر وسبائك المحل"), ("gold_custody_eq21", "عهدة السوق"), ("gold_intermediary_eq21", "ذهب المسوقجي والوسطاء"), ("gold_book_eq21", "رحلات الدفتر"),
+                  ("gold_suppliers_eq21", "ذهب الموردين (صافي)"), ("gold_total_eq21", "الإجمالي"))
+        rows = [{"part": label, "opening": _dec(opening[key]), "closing": _dec(closing[key]), "change": diff[key]} for key, label in labels]
+        unknown = _dec(closing.get("unknown_grams") or 0)
+        if unknown:
+            rows.append({"part": "جرامات بعيار غير معلوم (خارج الإجمالي)", "opening": _dec(opening.get("unknown_grams") or 0), "closing": unknown, "change": unknown - _dec(opening.get("unknown_grams") or 0)})
+        tables = [table("parts", "مكونات الذهب (جرام مكافئ عيار 21)", [col("part", "البند"), col("opening", "أول الفترة", "eq21"), col("closing", "آخر الفترة", "eq21"), col("change", "التغير", "eq21")], rows)]
+        return {"meaning": meaning, "tables": tables, "totals": totals}
 
     # ------------------------------------------------------------------ 7. market custody: ONE total of loss (owner: totals only, no detail tables)
     def _market(self, repo, gate, filters, start, end):
@@ -563,6 +608,87 @@ class ReportService:
         meaning = [f"راكد = قطعة متاحة منذ {DEAD_STOCK_DAYS} يومًا أو أكثر ولم تظهر في أي فاتورة. قارب النفاد = صنف بيع {MIN_SALES} مرات فأكثر في آخر {VELOCITY_DAYS} يومًا والمتاح منه يكفي أقل من {LOW_COVER_DAYS} يومًا بمعدل البيع.",
                    "جداول الأوزان لكل عيار وكل صنف: شرائح وزنها جرام واحد (الحد الأدنى داخل الشريحة والأعلى خارجها) معلومات للمقارنة ولا تنبّه ولا تقرّر. التقرير تنبيه وليس قرارًا: لا يقترح سعرًا ولا يغيّر شيئًا. الأعيار منفصلة دائمًا."]
         return {"meaning": meaning, "tables": tables, "totals": cards}
+
+    # ------------------------------------------------------------------ 2c. gold price indicators (owner request): standard formulas over the shop's own stored daily prices
+    @staticmethod
+    def _price_series(repo):
+        """{karat: [(date, buy, sell)]} = the imported history of the old shop (karat 21) merged with the live daily prices (every karat): legacy days stop the day before the first live day."""
+        legacy, live = {}, {}
+        if repo.has_table("gold_price_history_legacy"):
+            for r in repo.gold_price_history_legacy():
+                legacy.setdefault(int(r["karat_value"]), []).append((_dateish(r["day"]).date(), _dec(r["buy"]), _dec(r["sell"])))
+        for r in repo.gold_price_daily():
+            live.setdefault(int(r["karat_value"]), []).append((_dateish(r["day"]).date(), _dec(r["buy"]), _dec(r["sell"])))
+        return {k: indicators_math.merge_series(legacy.get(k, []), live.get(k, [])) for k in set(legacy) | set(live)}
+
+    def _indicators(self, repo, gate, filters, start, end):
+        """Indicative figures, NOT a forecast and NOT advice: per karat the latest SHOP_BUY / SHOP_SELL with their change, the 30-day average, the position inside the last 90 days, the daily
+        volatility and a plain hint (the SHOP_BUY price in the lower quarter of its 90-day range = buying is relatively favourable; the SHOP_SELL price in the upper quarter = selling is). A figure
+        that needs more history than stored is shown as unavailable. Current state: no period."""
+        karat = str(filters.get("karat") or "")
+        if karat not in ("", "18", "21", "24"):
+            raise ReportError("FILTER_INVALID", "عيار غير صحيح.")
+        series_by_karat = self._price_series(repo)
+        cards, coverage = [], []
+        signed = lambda v, unit="%": "—" if v is None else f"{'+' if v > 0 else ''}{v:,.2f}{unit}"
+        for k in PRICE_KARATS:
+            series = series_by_karat.get(k) or []
+            if len(series) < 1 or (karat and str(k) != karat):
+                continue
+            latest = series[-1]
+            group = f"price{k}"
+            c1, c7 = indicators_math.change(series, 1, 1), indicators_math.change(series, 1, 7)
+            cards.append(total(f"عيار {k} — سعر شراء المحل", latest[1], "money", f"عن اليوم السابق {signed(c1 and c1[1])} • عن أسبوع {signed(c7 and c7[1])} • آخر سعر {latest[0].isoformat()}", group, karat=k))
+            spread = indicators_math.spread_percent(series)
+            cards.append(total(f"عيار {k} — سعر بيع المحل", latest[2], "money", f"الفرق بين الشراء والبيع {spread:,.2f}%", group, karat=k))
+            average = indicators_math.moving_average(series, 1, 30)
+            cards.append(total(f"عيار {k} — متوسط 30 يوم", average[0] if average else "بيانات غير كافية", "money" if average else "text",
+                               (f"سعر الشراء الحالي {'أعلى' if average[1] > 0 else 'أقل' if average[1] < 0 else 'مساوٍ'} منه بنسبة {abs(average[1]):,.2f}%" if average else "تحتاج 10 أيام على الأقل"), group, karat=k))
+            position = indicators_math.range_position(series, 1, indicators_math.HINT_DAYS)
+            if position:
+                where = "الربع الأدنى" if position[0] <= indicators_math.QUARTER else "الربع الأعلى" if position[0] >= 1 - indicators_math.QUARTER else "في المنتصف"
+                cards.append(total(f"عيار {k} — موقع سعر الشراء (آخر {indicators_math.HINT_DAYS} يوم)", f"{where} ({position[0] * 100:,.0f}%)", "text", f"أدنى {position[1]:,.0f} • أعلى {position[2]:,.0f}", group, karat=k))
+            else:
+                cards.append(total(f"عيار {k} — موقع سعر الشراء (آخر {indicators_math.HINT_DAYS} يوم)", "بيانات غير كافية", "text", "تحتاج 5 أيام على الأقل بأسعار مختلفة", group, karat=k))
+            volatility = indicators_math.volatility(series, 1)
+            cards.append(total(f"عيار {k} — التذبذب اليومي (30 يوم)", "بيانات غير كافية" if volatility is None else f"{volatility:,.2f}%", "text",
+                               "متوسط تحرك السعر في اليوم" if volatility is not None else "تحتاج 8 أيام على الأقل", group, karat=k))
+            code, buy_position, sell_position = indicators_math.hint(series)
+            basis = ("سعر الشراء في الربع الأدنى من نطاقه" if code == indicators_math.BUY_FAVOURABLE else "سعر البيع في الربع الأعلى من نطاقه" if code == indicators_math.SELL_FAVOURABLE
+                     else "السعران داخل النطاق المعتاد" if code == indicators_math.NEUTRAL else "")
+            cards.append(total(f"عيار {k} — إرشاد", HINT_TEXT[code], "text", (basis + " • " if basis else "") + HINT_DISCLAIMER, group, karat=k))
+            coverage.append({"karat": f"عيار {k}", "days": len(series), "first": series[0][0], "last": latest[0], "ref": {"type": "PRICE_CHART", "id": str(k)}})
+        cols = [col("karat", "العيار"), col("days", "أيام الأسعار المتاحة", "count"), col("first", "أقدم يوم", "date"), col("last", "آخر يوم", "date")]
+        tables = [table("coverage", "الأسعار المخزنة (للرسم البياني)", cols, coverage)]
+        meaning = ["مؤشرات إرشادية من أسعار المحل المخزنة بمعادلات قياسية (متوسط، موقع بين الأدنى والأعلى، تذبذب). ليست توقعًا ولا توصية مالية.",
+                   "عيار 21 له تاريخ طويل من بيانات المحل القديمة؛ عيارا 18 و24 من الأسعار الحية فقط، فتظهر مؤشراتهما الأطول عند تراكم البيانات."]
+        return {"meaning": meaning, "tables": tables, "totals": cards}
+
+    def price_chart(self, karat, days, *, _expected_actor=None):
+        """The daily SHOP_BUY / SHOP_SELL prices of one karat for the chart (the last `days` days, 0 = everything stored) with the 30-day average of every point."""
+        actor = self._session.require_authenticated()
+        if _expected_actor is not None and not self._session.is_current(_expected_actor):
+            raise PermissionError("انتهت جلسة الدخول.")
+        try:
+            number, span = int(karat), int(days)
+        except (TypeError, ValueError):
+            raise ReportError("FILTER_INVALID", "عيار أو مدة غير صحيحة.") from None
+        if number not in PRICE_KARATS or span < 0:
+            raise ReportError("FILTER_INVALID", "عيار أو مدة غير صحيحة.")
+        with self._transaction() as connection:
+            gate = _Gate(self._authorization, connection, actor)
+            if not gate(BASE_PERMISSION):
+                raise PermissionError("ليس لديك صلاحية عرض هذا الرسم.")
+            series = self._price_series(self._repository(connection)).get(number, [])
+            if not self._session.is_current(actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        shown = indicators_math.window(series, span) if span else list(series)
+        points = []
+        for index, (day, buy, sell) in enumerate(shown):
+            earlier = [r for r in series if day - timedelta(days=29) <= r[0] <= day]
+            points.append({"date": day, "buy": buy, "sell": sell, "average": (sum((r[1] for r in earlier), Decimal(0)) / len(earlier)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if len(earlier) >= 3 else None})
+        return {"karat": number, "days": span, "points": points,
+                "low": min((p["buy"] for p in points), default=None), "high": max((p["sell"] for p in points), default=None)}
 
     # ------------------------------------------------------------------ 3. gold movement: the pieces SOLD by type and the scrap BOUGHT by karat (owner redesign)
     def _gold(self, repo, gate, filters, start, end):

@@ -81,7 +81,7 @@ class ReportsPageTests(harness.InvoicePageTests):
         self.assertIsNone(self.visible_item("reportsNavButton"))
         vm = self.open_reports()
         self.assertIsNotNone(self.visible_item("reportsNavButton"))
-        self.assertEqual([r["key"] for r in vm.reports], ["sales", "stock", "alerts", "gold", "customers", "deadcash", "suppliers", "treasury", "market"])
+        self.assertEqual([r["key"] for r in vm.reports], ["sales", "stock", "alerts", "indicators", "gold", "customers", "deadcash", "suppliers", "treasury", "market"])
         self.assertEqual(self.warnings, [])
 
     def test_the_sales_report_shows_totals_only_without_the_documents_table(self):
@@ -198,6 +198,23 @@ class ReportsPageTests(harness.InvoicePageTests):
         self.assert_inside_window(self.item("reportChartClose"))
         self.click("reportChartClose")
         self.wait_until(lambda: not vm.chart, "chart closed")
+        self.assertEqual(self.warnings, [])
+
+    def test_the_indicators_report_shows_karat_cards_and_the_price_chart_opens_by_a_real_click(self):
+        vm = self.open_reports()
+        self.wait_report(vm)
+        vm.select("indicators")
+        self.wait_until(lambda: not vm.busy and vm.result.get("report") == "indicators", "indicators loaded")
+        self.assertEqual(vm.result["title"], "مؤشرات الذهب")
+        self.assertTrue(any("سعر شراء المحل" in t["label"] for t in vm.result["totals"]))
+        self.reveal(self.item("reportOpen_0_0"))
+        self.click("reportOpen_0_0")
+        self.wait_until(lambda: not vm.priceChart.get("loading", True) and bool(vm.priceChart.get("points")), "price chart loaded")
+        QTest.qWait(200)
+        self.assertIn("سعر الذهب اليومي", self.text("reportPriceChartTitle"))
+        self.assert_inside_window(self.item("reportPriceChartClose"))
+        self.click("reportPriceChartClose")
+        self.wait_until(lambda: not vm.priceChart, "price chart closed")
         self.assertEqual(self.warnings, [])
 
     def test_the_default_period_follows_the_calendar_until_the_employee_edits_a_date(self):

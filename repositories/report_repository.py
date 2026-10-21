@@ -111,6 +111,29 @@ class ReportRepository(BaseRepository):
             ORDER BY k.karat_value DESC, ii.id
             """, tuple(statuses))
 
+    def position_snapshots(self):
+        """Every stocktaking sheet (migration 067), oldest first (ONE statement; the list stays small: one per day)."""
+        return self._fetch_all("SELECT * FROM position_snapshots ORDER BY taken_at, id")
+
+    # ------------------------------------------------------------------ gold price indicators (daily prices: the live quotes and the imported history of the old shop)
+    def gold_price_daily(self):
+        """The LAST accepted live quote of every day and karat (ONE statement): (karat, day, shop buy, shop sell)."""
+        return self._fetch_all(
+            """
+            SELECT k.karat_value, DATE(q.provider_timestamp) AS day, q.shop_buy_price_per_gram AS buy, q.shop_sell_price_per_gram AS sell
+            FROM gold_price_quotes q
+            JOIN karats k ON k.id = q.karat_id
+            JOIN (SELECT karat_id, DATE(provider_timestamp) AS d, MAX(id) AS last_id
+                  FROM gold_price_quotes
+                  WHERE validation_status = 'ACCEPTED' AND provider_timestamp IS NOT NULL AND shop_buy_price_per_gram IS NOT NULL AND shop_sell_price_per_gram IS NOT NULL
+                  GROUP BY karat_id, DATE(provider_timestamp)) m ON m.last_id = q.id
+            ORDER BY k.karat_value, day
+            """)
+
+    def gold_price_history_legacy(self):
+        """The imported daily prices of the old shop (migration 066): (karat, day, shop buy, shop sell)."""
+        return self._fetch_all("SELECT karat_value, price_date AS day, shop_buy AS buy, shop_sell AS sell FROM gold_price_history_legacy ORDER BY karat_value, price_date")
+
     # ------------------------------------------------------------------ the physical gold movement report (sales of pieces by type, customer scrap purchases)
     def gold_sold_pieces(self, start, end_exclusive):
         """One row per SELL_INVENTORY line of a FINALIZED invoice dated in the period, with the piece's type / category / factory / karat / weight and the full-reversal correction of
