@@ -81,7 +81,7 @@ class ReportsPageTests(harness.InvoicePageTests):
         self.assertIsNone(self.visible_item("reportsNavButton"))
         vm = self.open_reports()
         self.assertIsNotNone(self.visible_item("reportsNavButton"))
-        self.assertEqual([r["key"] for r in vm.reports], ["sales", "stock", "alerts", "indicators", "gold", "customers", "deadcash", "suppliers", "treasury", "market"])
+        self.assertEqual([r["key"] for r in vm.reports], ["sales", "stock", "alerts", "indicators", "gold", "employees", "customers", "deadcash", "suppliers", "treasury", "cashflow", "market"])
         self.assertEqual(self.warnings, [])
 
     def test_the_sales_report_shows_totals_only_without_the_documents_table(self):
@@ -124,7 +124,7 @@ class ReportsPageTests(harness.InvoicePageTests):
     def test_other_reports_show_their_sections_and_the_unavailable_state(self):
         vm = self.open_reports()
         self.wait_report(vm)
-        for key in ("stock", "customers", "deadcash", "suppliers", "treasury"):
+        for key in ("stock", "customers", "deadcash", "suppliers", "treasury", "cashflow"):
             self.click(f"reportChoice_{key}")
             self.wait_until(lambda key=key: not vm.busy and vm.result.get("report") == key and (vm.result["tables"] or vm.result["totals"]), f"{key} loaded")
             QTest.qWait(100)
@@ -191,7 +191,7 @@ class ReportsPageTests(harness.InvoicePageTests):
         self.click("reportOpen_0_0")
         self.wait_until(lambda: not vm.chart.get("loading", True) and bool(vm.chart.get("points")), "chart loaded")
         QTest.qWait(200)
-        self.assertTrue(self.item("reportChartDialog").property("opened"))
+        self.wait_until(lambda: self.item("reportChartDialog").property("opened"), "chart dialog opened")
         self.assertIn("المبيعات الشهرية", self.text("reportChartTitle"))
         self.assertIn("المصنع: مصنع النور", " ".join(vm.chart["applied"]))
         self.assertIsNotNone(self.visible_item("reportChartBar_2026-10"))

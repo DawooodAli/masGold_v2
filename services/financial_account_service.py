@@ -43,15 +43,17 @@ CASH_LABELS = {
     "TRIP_CASH_ISSUE": "إخراج عهدة السوق", "TRIP_CASH_RETURN": "رجوع عهدة السوق", "REVERSAL": "إلغاء عملية",
     "CORRECTION": "تصحيح تسوية", "TRANSFER_IN": "سحب بنك", "TRANSFER_OUT": "إيداع بنك",
     "EXPENSE": "مصروفات", "SALARY": "مرتبات", "RENT": "إيجار", "REVENUE": "إيراد", "REPAIR": "مرمة",
+    "UTILITIES": "كهرباء ومياه", "TRANSPORT": "نقل", "MAINTENANCE": "صيانة", "HOSPITALITY": "بوفيه وضيافة", "STAFF_ADVANCE": "سلف موظفين",
     "MANUAL_DEPOSIT": "إيداع يدوي", "MANUAL_WITHDRAWAL": "سحب يدوي", "OPENING_BALANCE": "رصيد افتتاحي",
     "OTHER": "حركة أخرى"}
 # The same business names seen from a bank / wallet / InstaPay account (a transfer INTO the account is a deposit).
 BANK_LABELS = {**CASH_LABELS, "TRANSFER_IN": "إيداع في الحساب", "TRANSFER_OUT": "سحب من الحساب"}
 # Manual cash movement types (prototype CASH_TYPES without a customer) and the cash directions they allow.
 # BANK_DEPOSIT / BANK_WITHDRAWAL are internal transfers (cash ↔ a real bank / wallet account).
-CASH_TYPES = {"EXPENSE": ("OUT",), "SALARY": ("OUT",), "RENT": ("OUT",), "REVENUE": ("IN",),
+CASH_TYPES = {"EXPENSE": ("OUT",), "SALARY": ("OUT",), "RENT": ("OUT",), "UTILITIES": ("OUT",), "TRANSPORT": ("OUT",), "MAINTENANCE": ("OUT",),
+              "HOSPITALITY": ("OUT",), "STAFF_ADVANCE": ("OUT",), "REVENUE": ("IN",),
               "REPAIR": ("IN", "OUT"), "BANK_WITHDRAWAL": ("IN",), "BANK_DEPOSIT": ("OUT",)}
-CASH_TYPE_TEXT = {**{k: CASH_LABELS[k] for k in ("EXPENSE", "SALARY", "RENT", "REVENUE", "REPAIR")},
+CASH_TYPE_TEXT = {**{k: CASH_LABELS[k] for k in ("EXPENSE", "SALARY", "RENT", "UTILITIES", "TRANSPORT", "MAINTENANCE", "HOSPITALITY", "STAFF_ADVANCE", "REVENUE", "REPAIR")},
                   "BANK_DEPOSIT": "إيداع بنك", "BANK_WITHDRAWAL": "سحب بنك"}
 
 

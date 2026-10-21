@@ -32,10 +32,10 @@ MAX_ROWS = 50000
 ZERO = Decimal("0")
 ZERO3, ZERO2 = Decimal("0.000"), Decimal("0.00")
 BASE_PERMISSION = "REPORTS_VIEW"
-REPORT_PERMISSIONS = {"sales": ("INVOICE_VIEW",), "stock": ("INVENTORY_VIEW",), "alerts": ("INVENTORY_VIEW",), "indicators": (), "gold": (), "customers": ("CUSTOMERS_VIEW",), "deadcash": ("CUSTOMERS_VIEW",),
-                      "suppliers": ("SUPPLIER_VIEW",), "treasury": (), "market": ("MARKET_TRIP_MANAGE",),
+REPORT_PERMISSIONS = {"sales": ("INVOICE_VIEW",), "stock": ("INVENTORY_VIEW",), "alerts": ("INVENTORY_VIEW",), "indicators": (), "gold": (), "employees": ("INVOICE_VIEW",), "customers": ("CUSTOMERS_VIEW",), "deadcash": ("CUSTOMERS_VIEW",),
+                      "suppliers": ("SUPPLIER_VIEW",), "treasury": (), "cashflow": (), "market": ("MARKET_TRIP_MANAGE",),
                       "profit": ("MANAGEMENT_REVIEW", "MARKET_TRIP_MANAGE", "INTERMEDIARY_HOLDING_VIEW")}                      # treasury: CASH_VIEW and / or BANK_VIEW per section
-REPORT_TITLES = {"sales": "المبيعات والمرتجعات", "stock": "المخزون المتاح", "alerts": "تنبيهات المخزون", "indicators": "مؤشرات الذهب", "gold": "حركة الأصناف", "customers": "العملاء", "deadcash": "الديون المعدومة (Dead Cash)", "suppliers": "الموردون", "treasury": "الخزنة والبنوك", "market": "عهدة السوق والخسائر", "profit": "ربح الذهب (مكافئ 21)"}
+REPORT_TITLES = {"sales": "المبيعات والمرتجعات", "stock": "المخزون المتاح", "alerts": "تنبيهات المخزون", "indicators": "مؤشرات الذهب", "gold": "حركة الأصناف", "employees": "أداء الموظفين", "customers": "العملاء", "deadcash": "الديون المعدومة (Dead Cash)", "suppliers": "الموردون", "treasury": "الخزنة والبنوك", "cashflow": "المصروفات والإيرادات", "market": "عهدة السوق والخسائر", "profit": "ربح الذهب (مكافئ 21)"}
 KIND_TEXT = {"SALE": "بيع", "MIXED": "بيع مع شراء كسر", "OLD_GOLD_PURCHASE": "شراء كسر", "RETURN": "مرتجع", "EXCHANGE": "استبدال"}
 STATUS_TEXT = {"IN_STOCK": "متاح", "SOLD": "مباع", "SCRAPPED": "كسر", "REMOVED": "مُخرج", "RETURNED_PENDING": "مرتجع بانتظار الفحص", "CONVERTED_TO_OLD_GOLD": "حُوّل إلى كسر"}
 CLASS_TEXT = {"NEW_STOCK": "جديد", "OLD_STOCK": "قديم"}
@@ -43,18 +43,25 @@ LINE_TEXT = {"SELL_INVENTORY": "بيع قطعة", "SELL_OLD_GOLD": "بيع من 
 REF_TEXT = {"INVOICE": "فاتورة", "RETURN": "مرتجع", "EXCHANGE": "استبدال", "CUSTOMER_ACCOUNT_SETTLEMENT": "تحصيل / تسوية حساب", "CUSTOMER_DEPOSIT": "عربون",
             "CUSTOMER_DEPOSIT_REFUND": "رد عربون", "FULL_REVERSAL": "عكس", "SETTLEMENT_CORRECTION": "تصحيح تسوية", "DEAD_CASH_WRITE_OFF": "شطب رصيد",
             "DEAD_CASH_REVERSAL": "عكس شطب", "UNKNOWN": "غير محدد"}
-NO_PERIOD = frozenset({"stock", "alerts", "indicators", "customers", "deadcash", "suppliers"})
+NO_PERIOD = frozenset({"stock", "alerts", "indicators", "customers", "deadcash", "suppliers"})          # reports of the CURRENT state: the period is neither offered nor printed
 PRICE_KARATS = (24, 21, 18)                                                                    # the karats the price indicators are shown for (the provider's three)
 HINT_TEXT = {indicators_math.BUY_FAVOURABLE: "الشراء مناسب نسبيًا", indicators_math.SELL_FAVOURABLE: "البيع مناسب نسبيًا", indicators_math.NEUTRAL: "محايد",
              indicators_math.UNKNOWN: "بيانات غير كافية"}
-HINT_DISCLAIMER = "إرشاد مبني على حركة أسعار المحل المخزنة وليس توصية مالية"          # reports of the CURRENT state: the period is neither offered nor printed
+HINT_DISCLAIMER = "إرشاد مبني على حركة أسعار المحل المخزنة وليس توصية مالية"
 NO_TYPE = "بدون صنف"
+NO_EMPLOYEE = "غير محدد"
+# cash-flow report: how a ledger movement is named (by what posted it) and what is NOT income / expense (money that only changes place)
+FLOW_LABELS = {"INVOICE": "المبيعات وشراء الكسر", "INVOICE_LIFECYCLE": "الاستبدال", "INVOICE_RETURN": "المرتجعات", "CUSTOMER_ACCOUNT_SETTLEMENT": "سداد العملاء والدفع لهم",
+               "CUSTOMER_DEPOSIT": "العربون", "SUPPLIER_MAKING_PAYMENT": "مصنعيات الموردين"}
+CORRECTION_FLOW = {"INVOICE": "INVOICE", "EXCHANGE": "INVOICE_LIFECYCLE", "RETURN": "INVOICE_RETURN", "CUSTOMER_ACCOUNT_SETTLEMENT": "CUSTOMER_ACCOUNT_SETTLEMENT",
+                   "CUSTOMER_DEPOSIT": "CUSTOMER_DEPOSIT", "SUPPLIER_MAKING_PAYMENT": "SUPPLIER_MAKING_PAYMENT"}
+INTERNAL_FLOW = {"MARKET_TRIP_ENTRY": "عهدة السوق (إخراج / رجوع / إيداع)", "MARKETER_DOCUMENT": "عهدة المسوقجي", "ACCOUNT_TRANSFER": "تحويلات بين الحسابات"}
 DEAD_STOCK_DAYS = 180                  # a piece in stock for six months without a sale is dead stock (owner decision)
 VELOCITY_DAYS, RECENT_DAYS = 90, 30    # the window the sales rate is measured on, and the "recent" figure shown beside it
 WEIGHT_BAND_TOP = 10                  # weight bands are one gram wide (1 – 2, 2 – 3 ...); every piece of WEIGHT_BAND_TOP grams or more is in the last band
 LOW_COVER_DAYS, MIN_SALES = 14, 3      # an item sold at least MIN_SALES times in the window whose stock covers fewer than LOW_COVER_DAYS days of sales is about to run out
 UNKNOWN_TEXT = "غير معلوم"
-FILTER_LABELS = {"factory_name": "المصنع", "weight_min": "الوزن من", "weight_max": "الوزن إلى", "kind": "النوع", "state": "الحالة", "status": "الحالة", "classification": "التصنيف", "karat": "العيار", "source": "المصدر", "balance": "الرصيد",
+FILTER_LABELS = {"employee_name": "الموظف", "factory_name": "المصنع", "weight_min": "الوزن من", "weight_max": "الوزن إلى", "kind": "النوع", "state": "الحالة", "status": "الحالة", "classification": "التصنيف", "karat": "العيار", "source": "المصدر", "balance": "الرصيد",
                  "inactive": "العملاء المتوقفون", "supplier": "المورد", "account": "الحساب"}
 
 
@@ -166,7 +173,7 @@ class ReportService:
     def _allowed(key, needed, has):
         """`has` is a set of codes or a gate callable. treasury: cash and / or bank; gold: (invoices and inventory) and / or old gold; every other report: all its rights."""
         have = has if callable(has) else (lambda code: code in has)
-        if key == "treasury":
+        if key in ("treasury", "cashflow"):
             return bool(have("CASH_VIEW") or have("BANK_VIEW"))
         if key == "gold":
             return bool((have("INVOICE_VIEW") and have("INVENTORY_VIEW")) or have("OLD_GOLD_VIEW"))
@@ -261,6 +268,70 @@ class ReportService:
     def _unavailable(key, title, reason):
         return {"key": key, "title": title, "columns": [], "rows": [], "paged": False, "note": "", "available": False, "reason": reason}
 
+    # ------------------------------------------------------------------ 9. income and expenses (owner request): the real money that came in and went out, named by what posted it
+    def _cashflow(self, repo, gate, filters, start, end):
+        """Every cash / bank movement of the period, named by what posted it, netted per name (a reversal / correction lands on the SAME name as its original, so it nets). Money that only
+        changes place (transfers between accounts, market custody issue / return / bank deposit, the marketer's cash) is shown apart and is neither income nor expense. Opening balances
+        are not movements of the period. «مصروفات مسجلة» and «إيرادات مسجلة» are the categorised manual entries of the treasury (إيجار، مرتبات، كهرباء...)."""
+        from services.financial_account_service import CASH_LABELS
+        ledgers = tuple(k for right, k in (("CASH_VIEW", "CASH"), ("BANK_VIEW", "BANK")) if gate(right))
+        operating, internal = {}, {}
+        recorded_out = recorded_in = ZERO2
+        for m in repo.cashflow_movements(start, end, ledgers):
+            amount = _dec(m["amount"])
+            if m["type_code"] == "OPENING_BALANCE":
+                continue
+            reference = m["reference_type"]
+            source, category, label, bucket = reference, m["category"], None, operating
+            if reference == "TRANSACTION_CORRECTION":
+                original = m["correction_source"] or ""
+                source = CORRECTION_FLOW.get(original, original)
+                if original == "FINANCIAL_OPERATION":
+                    source, category = "FINANCIAL_OPERATION", m["corrected_category"]
+                reference = original if original in INTERNAL_FLOW else reference
+            if m["transfer_group_id"] is not None:
+                bucket, label = internal, INTERNAL_FLOW["ACCOUNT_TRANSFER"]
+            elif reference in INTERNAL_FLOW:
+                bucket, label = internal, INTERNAL_FLOW[reference]
+            elif m["type_code"] == "TRIP_CUSTODY_BANK_IN":
+                bucket, label = internal, INTERNAL_FLOW["MARKET_TRIP_ENTRY"]
+            elif source == "FINANCIAL_OPERATION":
+                label = CASH_LABELS.get(category or "", "إيداع يدوي" if amount > 0 else "سحب يدوي")
+                if category:                                                              # a categorised entry counts on the side of its ORIGINAL direction; its reversal reduces that side
+                    direct = m["reference_type"] == "FINANCIAL_OPERATION"
+                    if (amount < 0) == direct:
+                        recorded_out += -amount
+                    else:
+                        recorded_in += amount
+            else:
+                label = FLOW_LABELS.get(source) or m["type_name"] or "حركة أخرى"
+            row = bucket.setdefault(label, {"in": ZERO2, "out": ZERO2})
+            if amount > 0:
+                row["in"] += amount
+            else:
+                row["out"] += -amount
+        cols = [col("label", "البند"), col("in", "داخل", "money"), col("out", "خارج", "money"), col("net", "الصافي", "money")]
+
+        def rows_of(bucket):
+            return [{"label": k, "in": v["in"], "out": v["out"], "net": v["in"] - v["out"]} for k, v in sorted(bucket.items(), key=lambda kv: (-(kv[1]["in"] + kv[1]["out"]), kv[0]))]
+        total_in, total_out = sum((v["in"] for v in operating.values()), ZERO2), sum((v["out"] for v in operating.values()), ZERO2)
+        internal_net = sum((v["in"] - v["out"] for v in internal.values()), ZERO2)
+        tables = [table("operating", "الإيرادات والمصروفات حسب البند", cols, rows_of(operating)), table("internal", "حركات لا تُحسب إيرادًا ولا مصروفًا (تغيير مكان الفلوس)", cols, rows_of(internal))]
+        missing = [name for right, name in (("CASH_VIEW", "النقدية"), ("BANK_VIEW", "البنوك والمحافظ")) if not gate(right)]
+        for name in missing:
+            tables.append(self._unavailable("missing_" + name, name, "ليست لديك صلاحية عرض هذا القسم: الأرقام لا تشملها."))
+        note = (" • لا تشمل: " + "، ".join(missing)) if missing else ""
+        totals = [total("مصروفات مسجلة", recorded_out, "money", "إيجار، مرتبات، كهرباء، نقل، صيانة، ضيافة، سلف... من حركة الخزنة" + note, "recorded", tone="payable"),
+                  total("إيرادات مسجلة", recorded_in, "money", "إيرادات مسجلة يدويًا من حركة الخزنة" + note, "recorded", tone="receivable"),
+                  total("إجمالي الداخل", total_in, "money", "كل الفلوس الداخلة بلا تغيير المكان" + note, "flow", tone="receivable"),
+                  total("إجمالي الخارج", total_out, "money", "كل الفلوس الخارجة بلا تغيير المكان" + note, "flow", tone="payable"),
+                  total("الصافي", total_in - total_out, "money", "الداخل − الخارج", "flow"),
+                  total("صافي حركات تغيير المكان", internal_net, "money", "عهدة السوق والمسوقجي والتحويلات (للمعلومية)", "internal")]
+        meaning = ["الفلوس الحقيقية فقط (خزنة وبنوك ومحافظ) مسمّاة بما سجّلها. الإلغاء والتصحيح يُحسبان على نفس بند الأصل فيُخصمان منه.",
+                   "عهدة السوق والمسوقجي وتحويلات الحسابات تغيّر مكان الفلوس فقط، فتظهر في جدول منفصل ولا تدخل في الإيراد أو المصروف.",
+                   "الداخل يشمل دفعات العملاء على الفواتير والسداد، وليس هو الربح: لا توجد تكلفة في هذا التقرير."]
+        return {"meaning": meaning, "tables": tables, "totals": totals}
+
     # ------------------------------------------------------------------ 8. gold profit (owner definition): the gold at the end of the period minus the gold at its start, in 21K equivalent
     def _profit(self, repo, gate, filters, start, end):
         """The owner's definition: profit = the gold the shop holds at the END of the period minus what it held at its START, in 21K-equivalent grams. The gold is the consolidated position (stock,
@@ -290,7 +361,7 @@ class ReportService:
                   total("ذهب آخر الفترة", f"{_dec(closing['gold_total_eq21']):,.3f} جرام", "text", f"جرد {day(closing)}", "ends"),
                   total("الكاش (الخزنة) — التغير", money_text(diff["cash_egp"]), "text", f"أول {_dec(opening['cash_egp']):,.2f} → آخر {_dec(closing['cash_egp']):,.2f} ج (للمعلومية)", "cash"),
                   total("البنوك والمحافظ — التغير", money_text(diff["bank_egp"]), "text", f"أول {_dec(opening['bank_egp']):,.2f} → آخر {_dec(closing['bank_egp']):,.2f} ج (للمعلومية)", "cash")]
-        labels = (("gold_shop_eq21", "مخزون وكسر وسبائك المحل"), ("gold_custody_eq21", "عهدة السوق"), ("gold_intermediary_eq21", "ذهب المسوقجي والوسطاء"), ("gold_book_eq21", "رحلات الدفتر"),
+        labels = (("gold_shop_eq21", "مخزون وكسر وسبائك المحل"), ("gold_custody_eq21", "عهدة السوق"), ("gold_intermediary_eq21", "ذهب المسوقجية"), ("gold_book_eq21", "رحلات الدفتر"),
                   ("gold_suppliers_eq21", "ذهب الموردين (صافي)"), ("gold_total_eq21", "الإجمالي"))
         rows = [{"part": label, "opening": _dec(opening[key]), "closing": _dec(closing[key]), "change": diff[key]} for key, label in labels]
         unknown = _dec(closing.get("unknown_grams") or 0)
@@ -739,6 +810,66 @@ class ReportService:
         else:
             tables.append(self._unavailable("scrap", title_scrap, "تحتاج صلاحية عرض الكسر."))
         return {"meaning": [], "tables": tables, "totals": cards, "options": options}
+
+    # ------------------------------------------------------------------ 3b. employee KPI (owner request): sold grams, average making and scrap bought per employee and karat
+    SELL_LINES = ("SELL_INVENTORY", "SELL_OLD_GOLD", "SELL_UNIDENTIFIED")
+
+    def _employees(self, repo, gate, filters, start, end):
+        """Per employee (the invoice's salesperson) and per KARAT (never added across karats): grams sold, the average making per gram (making total / weight over the lines whose making is
+        KNOWN; a line without a stored making is counted apart and never turned into zero), the grams of scrap bought and the average price paid per gram. Only FINALIZED invoices dated in the
+        period; fully reversed invoices are not counted (their number is shown). Returns are not netted (this is the employee's SALES activity)."""
+        karat = str(filters.get("karat") or "")
+        if karat not in ("", "18", "21", "22", "24"):
+            raise ReportError("FILTER_INVALID", "عيار غير صحيح.")
+        wanted = str(filters.get("employee") or "")
+        if wanted and not wanted.isdigit():
+            raise ReportError("FILTER_INVALID", "موظف غير صحيح.")
+        options = {"employee": [{"value": "", "text": "الكل"}, {"value": "0", "text": NO_EMPLOYEE}] + [{"value": str(e["id"]), "text": e["name"]} for e in repo.employees()]}
+        if wanted:
+            filters["employee_name"] = next((o["text"] for o in options["employee"] if o["value"] == wanted), wanted)
+        stats, names, reversed_invoices, people = {}, {}, set(), set()
+        for r in repo.employee_lines(start, end):
+            if r["reversal_id"]:
+                reversed_invoices.add(int(r["invoice_id"]))
+                continue
+            key = str(r["employee_id"] or 0)
+            if (wanted and key != wanted) or (karat and str(r["karat_value"]) != karat):
+                continue
+            names[key] = r["employee"] or NO_EMPLOYEE
+            people.add(key)
+            weight = _dec(r["weight_grams"])
+            s = stats.setdefault((key, int(r["karat_value"])), {"sold": ZERO3, "making": ZERO2, "making_weight": ZERO3, "unknown": ZERO3, "bought": ZERO3, "paid": ZERO2})
+            if r["line_type"] in self.SELL_LINES:
+                s["sold"] += weight
+                if r["making_total"] is None:
+                    s["unknown"] += weight
+                else:
+                    s["making"] += _dec(r["making_total"])
+                    s["making_weight"] += weight
+            else:
+                s["bought"] += weight
+                s["paid"] += _dec(r["line_total"])
+        columns = [col("karat", "العيار"), col("sold", "جرامات البيع", "grams"), col("making", "متوسط المصنعية للجرام", "money"),
+                   col("bought", "جرامات الكسر المشتراة", "grams"), col("paid", "متوسط سعر شراء الكسر للجرام", "money")]
+        tables = []
+        for key in sorted(people, key=lambda k: (names[k], k)):
+            rows, unknown = [], ZERO3
+            for k in sorted({kk for (ek, kk) in stats if ek == key}, reverse=True):
+                s = stats[(key, k)]
+                unknown += s["unknown"]
+                rows.append({"karat": f"عيار {k}", "sold": s["sold"],
+                             "making": (s["making"] / s["making_weight"]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if s["making_weight"] else "غير معلوم" if s["sold"] else "—",
+                             "bought": s["bought"], "paid": (s["paid"] / s["bought"]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if s["bought"] else "—"})
+            note = f"المصنعية غير معروفة في {unknown:,.3f} جرام مباع: لا تدخل في المتوسط." if unknown else ""
+            tables.append(table(f"employee_{key}", names[key], columns, rows, note=note))
+        if not tables:
+            tables.append(table("employees", "أداء الموظفين", columns, []))
+        meaning = ["لكل موظف وكل عيار على حدة (لا يُجمع بين الأعيار). المتوسطان موزونان بالوزن: المصنعية ÷ الجرامات المباعة المعروفة المصنعية، وسعر الشراء ÷ جرامات الكسر المشتراة.",
+                   "الفواتير النهائية فقط بتاريخها، والمعكوسة بالكامل لا تُحسب. المرتجعات لا تُخصم (هذا نشاط البيع)."]
+        cards = [total("موظفون لهم حركة", len(people), "count", "", "summary")]
+        if reversed_invoices:
+            cards.append(total("فواتير معكوسة غير محسوبة", len(reversed_invoices), "count", "", "summary"))
+        return {"meaning": meaning, "tables": tables, "totals": cards, "options": options}
 
     @classmethod
     def _gold_filter_values(cls, filters):

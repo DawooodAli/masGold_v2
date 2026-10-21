@@ -128,7 +128,7 @@ class ChainAndManifestTests(unittest.TestCase):
         self.assertEqual(chain.MANIFEST.read_text(encoding="utf-8"), chain.manifest_text())
         files = chain.load_chain(require_committed=False)
         self.assertEqual([f.name for f in files], chain.chain_names())
-        self.assertEqual([int(f.name[:3]) for f in files], list(range(1, 68)))
+        self.assertEqual([int(f.name[:3]) for f in files], list(range(1, 69)))
 
     def test_changed_file_is_refused(self):
         directory, manifest = self.copy_chain()
@@ -445,7 +445,7 @@ class CommandLineTests(unittest.TestCase):
                 mock.patch("subprocess.run", side_effect=AssertionError("no process expected")):
             code, out, _ = self.run_cli(["verify"])
         self.assertEqual(code, 0)
-        self.assertIn("OK: 67 files verified", out)
+        self.assertIn("OK: 68 files verified", out)
 
     def test_end_to_end_with_fake_mysql(self):
         runner = FakeRunner(stdout=b"")

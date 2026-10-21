@@ -165,6 +165,25 @@ class ReportRepository(BaseRepository):
             GROUP BY k.karat_value, m.movement_code
             """, (start, end_exclusive))
 
+    def employee_lines(self, start, end_exclusive):
+        """One row per sale / scrap-purchase line of a FINALIZED invoice dated in the period with the invoice's salesperson and its full-reversal correction (if any). Plain SELECT: the
+        service groups per employee and karat. making_total is NULL where the making is unknown (never turned into zero)."""
+        return self._fetch_all(
+            """
+            SELECT iv.id AS invoice_id, iv.employee_id, e.name AS employee, il.line_type, k.karat_value, il.weight_grams, il.making_total, il.line_total, c.id AS reversal_id
+            FROM invoice_lines il
+            JOIN invoices iv ON iv.id = il.invoice_id
+            JOIN karats k ON k.id = il.karat_id
+            LEFT JOIN employees e ON e.id = iv.employee_id
+            LEFT JOIN transaction_corrections c ON c.source_type = 'INVOICE' AND c.source_id = iv.id AND c.correction_type = 'FULL_REVERSAL'
+            WHERE il.line_type IN ('SELL_INVENTORY', 'SELL_OLD_GOLD', 'SELL_UNIDENTIFIED', 'BUY_OLD_GOLD') AND iv.invoice_status = 'FINALIZED'
+              AND iv.invoice_date >= %s AND iv.invoice_date < %s
+            ORDER BY iv.invoice_date, iv.id, il.id
+            """, (start, end_exclusive))
+
+    def employees(self):
+        return self._fetch_all("SELECT id, name FROM employees ORDER BY name, id")
+
     def factories(self):
         return self._fetch_all("SELECT id, name FROM factories ORDER BY name, id")
 
@@ -361,6 +380,24 @@ class ReportRepository(BaseRepository):
             FROM cash_movements m JOIN cash_movement_types t ON t.id = m.movement_type_id
             WHERE m.occurred_at >= %s AND m.occurred_at < %s ORDER BY m.occurred_at, m.id
             """, (start, end_exclusive))
+
+    def cashflow_movements(self, start, end_exclusive, ledgers=("CASH", "BANK")):
+        """Every cash / bank movement of the period with what the cash-flow report needs to name it: the category of a manual financial operation, and, for a reversal / correction
+        movement, the source document type of the correction (and the category of a reversed manual operation). ONE statement per ledger, no row multiplication (each join is on a primary key)."""
+        parts, params = [], []
+        for ledger, movements, column, types in (("CASH", "cash_movements", "cash_account_id", "cash_movement_types"), ("BANK", "bank_movements", "bank_account_id", "bank_movement_types")):
+            if ledger not in ledgers:
+                continue
+            parts.append(f"""
+            SELECT '{ledger}' AS ledger, m.{column} AS account_id, t.code AS type_code, t.name AS type_name, m.amount_delta AS amount, m.transfer_group_id, m.reference_type, m.reference_id,
+                   fo.category AS category, c.source_type AS correction_source, fo2.category AS corrected_category
+            FROM {movements} m JOIN {types} t ON t.id = m.movement_type_id
+            LEFT JOIN financial_operations fo ON m.reference_type = 'FINANCIAL_OPERATION' AND fo.id = m.reference_id
+            LEFT JOIN transaction_corrections c ON m.reference_type = 'TRANSACTION_CORRECTION' AND c.id = m.reference_id
+            LEFT JOIN financial_operations fo2 ON c.source_type = 'FINANCIAL_OPERATION' AND fo2.id = c.source_id
+            WHERE m.occurred_at >= %s AND m.occurred_at < %s""")
+            params += [start, end_exclusive]
+        return self._fetch_all(" UNION ALL ".join(parts), tuple(params)) if parts else []
 
     def bank_movements(self, start, end_exclusive):
         return self._fetch_all(

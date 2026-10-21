@@ -7,7 +7,7 @@ from decimal import Decimal as D
 from uuid import uuid4
 
 from repositories.financial_account_repository import FinancialAccountRepository as RealRepository
-from services.correction_service import FO
+from services.correction_service import FO, CorrectionError
 from services.financial_account_service import CASH_LABELS, CASH_TYPES
 from tests.test_financial_accounts import FinRepo, FinancialTestCase, SALESPERSON
 
@@ -71,9 +71,21 @@ class CashMovementTests(FinancialTestCase):
         self.assertEqual(self.fin.operation("1")["type_text"], "مرتبات")
         self.assertEqual(self.store.audit[0], ("MANUAL_WITHDRAWAL", "FO000001"))      # audit persisted
 
+    def test_the_new_expense_categories_are_cash_out_only_and_named_in_arabic(self):
+        before = self.cash()
+        names = {"UTILITIES": "كهرباء ومياه", "TRANSPORT": "نقل", "MAINTENANCE": "صيانة", "HOSPITALITY": "بوفيه وضيافة", "STAFF_ADVANCE": "سلف موظفين"}
+        for kind in names:
+            self.move("OUT", kind)
+        self.assertEqual(self.cash(), before - D("500"))
+        self.assertEqual([o["category"] for o in self.store.ops.values()], list(names))
+        self.assertEqual([leg["description"] for leg in self.store.op_legs], list(names.values()))
+        for kind in names:
+            with self.assertRaises(CorrectionError):
+                self.move("IN", kind)                                                   # an expense category is never income
+
     def test_no_second_customer_settlement_or_deposit_engine(self):
-        self.assertEqual(set(CASH_TYPES), {"EXPENSE", "SALARY", "RENT", "REVENUE", "REPAIR", "BANK_DEPOSIT",
-                                           "BANK_WITHDRAWAL"})
+        self.assertEqual(set(CASH_TYPES), {"EXPENSE", "SALARY", "RENT", "UTILITIES", "TRANSPORT", "MAINTENANCE", "HOSPITALITY", "STAFF_ADVANCE",
+                                           "REVENUE", "REPAIR", "BANK_DEPOSIT", "BANK_WITHDRAWAL"})
         for name in ("settle", "customer", "arboun", "advance"):
             self.assertFalse(any(name in attr.lower() for attr in dir(self.fin)), name)
 

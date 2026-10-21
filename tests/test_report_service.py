@@ -38,6 +38,34 @@ class FakeRepo:
     def has_table(self, name):
         return self.tables.get(name, True)
 
+    # ---- cash flow: sales 10,000 + 5,000 (bank) in and 3,000 scrap out; rent 4,000 out then reversed; revenue 1,500; electricity 600; supplier 700; custody 20,000 out; a transfer; an opening balance
+    def cashflow_movements(self, start, end, ledgers=("CASH", "BANK")):
+        def move(ledger, amount, reference=None, type_code="X", category=None, transfer=None, correction=None, corrected=None, name="حركة"):
+            return {"ledger": ledger, "account_id": 1, "type_code": type_code, "type_name": name, "amount": D(amount), "transfer_group_id": transfer, "reference_type": reference,
+                    "reference_id": 1, "category": category, "correction_source": correction, "corrected_category": corrected}
+        rows = [move("CASH", "10000", "INVOICE"), move("CASH", "-3000", "INVOICE"), move("BANK", "5000", "INVOICE"),
+                move("CASH", "-4000", "FINANCIAL_OPERATION", category="RENT"), move("CASH", "1500", "FINANCIAL_OPERATION", category="REVENUE"),
+                move("CASH", "-600", "FINANCIAL_OPERATION", category="UTILITIES"),
+                move("CASH", "4000", "TRANSACTION_CORRECTION", correction="FINANCIAL_OPERATION", corrected="RENT"),
+                move("CASH", "-700", "SUPPLIER_MAKING_PAYMENT"), move("CASH", "-20000", "MARKET_TRIP_ENTRY"),
+                move("CASH", "100", "FINANCIAL_OPERATION", transfer=7), move("CASH", "50000", None, type_code="OPENING_BALANCE")]
+        return [r for r in rows if r["ledger"] in ledgers]
+
+    # ---- employee KPI: salesperson 1 (علي) 21K sells 10 g (making 1000) + 5 g (600) + 5 g of F7 gold with UNKNOWN making, 18K 4 g (200), buys 8 g of 21K scrap for 48,000;
+    #      salesperson 2 (حسين) sells 2 g of 21K (300) and buys 3 g of 18K scrap for 15,000; an unassigned invoice sells 1 g of 24K (50); a fully reversed invoice of علي is not counted
+    def employee_lines(self, start, end):
+        def line(invoice, emp, name, kind, karat_, weight, making, total_=None, reversal=None):
+            return {"invoice_id": invoice, "employee_id": emp, "employee": name, "line_type": kind, "karat_value": karat_, "weight_grams": D(weight),
+                    "making_total": None if making is None else D(making), "line_total": D(total_ or "0"), "reversal_id": reversal}
+        return [line(1, 1, "علي", "SELL_INVENTORY", 21, "10.000", "1000.00"), line(1, 1, "علي", "SELL_INVENTORY", 21, "5.000", "600.00"),
+                line(2, 1, "علي", "SELL_OLD_GOLD", 21, "5.000", None), line(2, 1, "علي", "SELL_INVENTORY", 18, "4.000", "200.00"),
+                line(3, 1, "علي", "BUY_OLD_GOLD", 21, "8.000", None, "48000.00"),
+                line(4, 2, "حسين", "SELL_INVENTORY", 21, "2.000", "300.00"), line(4, 2, "حسين", "BUY_OLD_GOLD", 18, "3.000", None, "15000.00"),
+                line(5, None, None, "SELL_INVENTORY", 24, "1.000", "50.00"), line(99, 1, "علي", "SELL_INVENTORY", 21, "100.000", "9999.00", reversal=5)]
+
+    def employees(self):
+        return [{"id": 1, "name": "علي"}, {"id": 2, "name": "حسين"}]
+
     # ---- gold profit: the stocktaking sheets (opening balance 1 Oct, morning sheets, one on 1 Nov)
     sheets = None
 
@@ -743,7 +771,7 @@ class SafetyTests(Case):
             service.run("sales", {})
 
     def test_available_reports_follow_the_rights(self):
-        self.assertEqual([r["key"] for r in self.service.available_reports()], ["sales", "stock", "alerts", "indicators", "gold", "customers", "deadcash", "suppliers", "treasury", "market"])
+        self.assertEqual([r["key"] for r in self.service.available_reports()], ["sales", "stock", "alerts", "indicators", "gold", "employees", "customers", "deadcash", "suppliers", "treasury", "cashflow", "market"])
         self.session = session_for({"APP_LOGIN", "REPORTS_VIEW", "CUSTOMERS_VIEW"})
         limited = ReportService(self.session, repository=FakeRepo, authorization=FakeAuthorization(self.session))
         self.assertEqual([r["key"] for r in limited.available_reports()], ["indicators", "customers", "deadcash"])
@@ -809,6 +837,83 @@ class ProfitTests(Case):
             limited.run("profit", self.PERIOD)
         FakeRepo.tables["position_snapshots"] = False
         self.assertFalse(self.service.run("profit", self.PERIOD)["tables"][0]["available"])
+
+
+class EmployeeKpiTests(Case):
+    PERIOD = {"from": "2026-10-01", "to": "2026-10-31"}
+
+    def tables(self, result):
+        return {t["title"]: {r["karat"]: r for r in t["rows"]} for t in result["tables"]}
+
+    def test_each_employee_has_a_table_with_one_row_per_karat_and_hand_checked_averages(self):
+        result = self.service.run("employees", self.PERIOD)
+        tables = self.tables(result)
+        ali = tables["علي"]
+        self.assertEqual((ali["عيار 21"]["sold"], ali["عيار 21"]["making"]), (D("20.000"), D("106.67")))              # (1000 + 600) / (10 + 5): the unknown-making 5 g is not in the average
+        self.assertEqual((ali["عيار 21"]["bought"], ali["عيار 21"]["paid"]), (D("8.000"), D("6000.00")))               # 48,000 / 8 g
+        self.assertEqual((ali["عيار 18"]["sold"], ali["عيار 18"]["making"], ali["عيار 18"]["bought"], ali["عيار 18"]["paid"]), (D("4.000"), D("50.00"), D("0.000"), "—"))
+        hussein = tables["حسين"]
+        self.assertEqual((hussein["عيار 21"]["making"], hussein["عيار 18"]["bought"], hussein["عيار 18"]["paid"], hussein["عيار 18"]["making"]), (D("150.00"), D("3.000"), D("5000.00"), "—"))
+        self.assertEqual(tables["غير محدد"]["عيار 24"]["making"], D("50.00"))
+        note = next(t["note"] for t in result["tables"] if t["title"] == "علي")
+        self.assertIn("5.000", note)                                                                                  # the unknown making is stated, never a zero
+
+    def test_a_reversed_invoice_is_not_counted_and_the_cards_say_so(self):
+        values = self.totals(self.service.run("employees", self.PERIOD))
+        self.assertEqual((values["موظفون لهم حركة"], values["فواتير معكوسة غير محسوبة"]), (3, 1))
+
+    def test_filters_by_employee_and_karat_and_the_options_come_from_the_service(self):
+        result = self.service.run("employees", {**self.PERIOD, "employee": "2", "karat": "18"})
+        self.assertEqual([t["title"] for t in result["tables"]], ["حسين"])
+        self.assertEqual(list(self.tables(result)["حسين"]), ["عيار 18"])
+        self.assertEqual([o["text"] for o in result["options"]["employee"]], ["الكل", "غير محدد", "علي", "حسين"])
+        self.assertIn("الموظف: حسين", result["applied"])
+        with self.assertRaises(ReportError):
+            self.service.run("employees", {**self.PERIOD, "karat": "19"})
+        with self.assertRaises(ReportError):
+            self.service.run("employees", {**self.PERIOD, "employee": "x"})
+
+    def test_it_needs_the_invoice_right(self):
+        session = session_for(frozenset({"APP_LOGIN", "REPORTS_VIEW"}))
+        limited = ReportService(session, transaction_factory=self.service._transaction, repository=FakeRepo, authorization=FakeAuthorization(session), today=lambda: TODAY)
+        self.assertNotIn("employees", [r["key"] for r in limited.available_reports()])
+        with self.assertRaises(PermissionError):
+            limited.run("employees", self.PERIOD)
+
+
+class CashflowTests(Case):
+    PERIOD = {"from": "2026-10-01", "to": "2026-10-31"}
+
+    def rows(self, result, key):
+        return {r["label"]: r for r in next(t for t in result["tables"] if t["key"] == key)["rows"]}
+
+    def test_each_name_nets_its_reversals_and_the_totals_are_hand_checked(self):
+        result = self.service.run("cashflow", self.PERIOD)
+        rows = self.rows(result, "operating")
+        self.assertEqual((rows["المبيعات وشراء الكسر"]["in"], rows["المبيعات وشراء الكسر"]["out"], rows["المبيعات وشراء الكسر"]["net"]), (D("15000.00"), D("3000.00"), D("12000.00")))
+        self.assertEqual((rows["إيجار"]["in"], rows["إيجار"]["out"], rows["إيجار"]["net"]), (D("4000.00"), D("4000.00"), D("0.00")))        # the reversal lands on the SAME name
+        self.assertEqual((rows["كهرباء ومياه"]["out"], rows["إيراد"]["in"], rows["مصنعيات الموردين"]["out"]), (D("600.00"), D("1500.00"), D("700.00")))
+        values = self.totals(result)
+        self.assertEqual((values["إجمالي الداخل"], values["إجمالي الخارج"], values["الصافي"]), (D("20500.00"), D("8300.00"), D("12200.00")))     # 15000+4000+1500 / 3000+4000+600+700
+        self.assertEqual((values["مصروفات مسجلة"], values["إيرادات مسجلة"]), (D("600.00"), D("1500.00")))                      # rent 4000 - its reversal 4000 + electricity 600
+
+    def test_money_that_only_changes_place_is_apart_and_opening_balances_are_ignored(self):
+        result = self.service.run("cashflow", self.PERIOD)
+        internal = self.rows(result, "internal")
+        self.assertEqual((internal["عهدة السوق (إخراج / رجوع / إيداع)"]["out"], internal["تحويلات بين الحسابات"]["in"]), (D("20000.00"), D("100.00")))
+        self.assertEqual(self.totals(result)["صافي حركات تغيير المكان"], D("-19900.00"))
+        self.assertNotIn("حركة", " ".join(self.rows(result, "operating")))                                                  # the 50,000 opening balance is not a movement of the period
+
+    def test_a_missing_ledger_right_is_stated_and_its_money_is_left_out(self):
+        session = session_for(frozenset({"APP_LOGIN", "REPORTS_VIEW", "CASH_VIEW"}))
+        cash_only = ReportService(session, transaction_factory=self.service._transaction, repository=FakeRepo, authorization=FakeAuthorization(session), today=lambda: TODAY)
+        result = cash_only.run("cashflow", self.PERIOD)
+        self.assertEqual(self.rows(result, "operating")["المبيعات وشراء الكسر"]["in"], D("10000.00"))                      # the 5,000 bank payment is not included
+        self.assertTrue(any(not t.get("available", True) for t in result["tables"]))
+        self.assertIn("لا تشمل", self.totals(result) and result["totals"][0]["note"])
+        nobody = session_for(frozenset({"APP_LOGIN", "REPORTS_VIEW"}))
+        with self.assertRaises(PermissionError):
+            ReportService(nobody, transaction_factory=self.service._transaction, repository=FakeRepo, authorization=FakeAuthorization(nobody), today=lambda: TODAY).run("cashflow", self.PERIOD)
 
 
 class ExportTests(Case):

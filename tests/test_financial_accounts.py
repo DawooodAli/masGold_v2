@@ -90,7 +90,7 @@ class FinRepo:
         if operation_type != "ACCOUNT_TRANSFER":
             assert category or (reason and reason.strip())                        # chk_fo_shape (026)
             allowed = ((None, "REVENUE", "REPAIR") if operation_type == "MANUAL_DEPOSIT"
-                       else (None, "EXPENSE", "SALARY", "RENT", "REPAIR"))
+                       else (None, "EXPENSE", "SALARY", "RENT", "REPAIR", "UTILITIES", "TRANSPORT", "MAINTENANCE", "HOSPITALITY", "STAFF_ADVANCE"))      # 068
             assert category in allowed                                            # chk_fo_category
         else:
             assert category is None and source != destination
