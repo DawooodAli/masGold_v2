@@ -72,10 +72,14 @@ class TotalsTests(MarketCase):
 
     def test_the_grand_total_and_the_reversed_count(self):
         result = self.service.run("market", MONTH)
-        t = self.totals(result)
-        self.assertEqual(t["إجمالي الفقد والخسية (مكافئ عيار 21)"], D("3.406"))                 # 0.606 + 1.300 + 1.500
-        self.assertEqual(t["مستندات معكوسة (عددها)"], 2)                                         # one melt + one loss line
-        self.assertEqual(self.summary(result)["إجمالي الفقد والخسية"], D("3.406"))
+        cards = {x["label"]: (x["value"], x["note"], x["group"]) for x in result["totals"]}
+        self.assertEqual(cards["فاقد السبك"][0], "0.606 جرام")                                    # 0.197 - 0.100 + 0.569 - 0.060
+        self.assertEqual(cards["خسية البوتقة"][0], "1.300 جرام")
+        self.assertEqual(cards["خسية السوق"][0], "1.500 جرام")
+        self.assertEqual(cards["إجمالي الفقد والخسية"][0], "3.406 جرام")                          # 0.606 + 1.300 + 1.500
+        self.assertIn("2 مستند معكوس", cards["إجمالي الفقد والخسية"][1])                          # one melt + one loss line, not counted
+        self.assertEqual([x["group"] for x in result["totals"]], ["losses", "losses", "losses", "grand"])   # each loss alone in its card, the grand total in its own row
+        self.assertEqual(self.summary(result)["إجمالي الفقد والخسية"], D("3.406"))                 # the table stays in the result for the CSV
 
     def test_a_market_return_is_not_a_loss(self):
         s = self.summary(self.service.run("market", {"from": "2026-10-10", "to": "2026-10-10"}))
@@ -91,7 +95,7 @@ class SafetyTests(MarketCase):
         MarketRepo.missing = ("market_trip_settle_lines",)
         result = self.service.run("market", MONTH)
         self.assertTrue(any(t["key"] == "missing" and not t["available"] for t in result["tables"]))
-        self.assertIn("ناقص", next(t["note"] for t in result["totals"] if t["label"].startswith("إجمالي الفقد")))
+        self.assertIn("ناقص", next(t["note"] for t in result["totals"] if t["label"] == "إجمالي الفقد والخسية"))
         self.assertEqual(self.summary(result)["إجمالي فاقد السبك"], D("0.606"))                  # the melt part is still real
 
     def test_the_trip_right_is_required_and_rechecked(self):

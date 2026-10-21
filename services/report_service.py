@@ -297,8 +297,14 @@ class ReportService:
         tables = [table("summary", "الفقد والخسية (مكافئ عيار 21)", [col("label", "البند"), col("grams", "جرام مكافئ عيار 21", "eq21")], rows)]
         if unavailable:
             tables.append(self._unavailable("missing", "بيانات غير متاحة", "جداول غير موجودة في مستوى قاعدة البيانات الحالي: " + "، ".join(unavailable) + " — الإجمالي ناقص."))
-        totals.append(total("إجمالي الفقد والخسية (مكافئ عيار 21)", grand, "eq21", "فاقد السبك + خسية البوتقة + خسية السوق" + (" • ناقص: " + "، ".join(unavailable) if unavailable else "")))
-        totals.append(total("مستندات معكوسة (عددها)", reversed_count, "count", "لا تدخل الإجماليات"))
+        incomplete = (" • ناقص: " + "، ".join(unavailable)) if unavailable else ""
+
+        def gram_card(label, value, note, group):
+            return total(label, f"{value:,.3f} جرام", "text", ("زيادة (سالب = زيادة)" if value < 0 else note) + incomplete, group)
+        totals = [gram_card("فاقد السبك", melt_total, f"وزن {melt_weight:,.3f} + عيار {melt_fineness:,.3f} (مكافئ عيار 21)", "losses"),
+                  gram_card("خسية البوتقة", crucible, "مكافئ عيار 21", "losses"),
+                  gram_card("خسية السوق", market, "مكافئ عيار 21", "losses"),
+                  total("إجمالي الفقد والخسية", f"{grand:,.3f} جرام", "text", "فاقد السبك + خسية البوتقة + خسية السوق" + (f" • {reversed_count} مستند معكوس غير محسوب" if reversed_count else "") + incomplete, "grand", tone="deadcash")]
         return {"meaning": meaning, "tables": tables, "totals": totals}
 
     # ------------------------------------------------------------------ 1. sales and returns

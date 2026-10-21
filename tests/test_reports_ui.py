@@ -137,11 +137,10 @@ class ReportsPageTests(harness.InvoicePageTests):
         self.wait_report(vm)
         self.reveal(self.item("reportChoice_market"))
         self.click("reportChoice_market")
-        self.wait_until(lambda: not vm.busy and vm.result.get("report") == "market" and vm.result["tables"], "market report loaded")
+        self.wait_until(lambda: not vm.busy and vm.result.get("report") == "market" and vm.result["totals"], "market report loaded")
         QTest.qWait(150)
-        self.assertEqual([t["key"] for t in vm.result["tables"]], ["summary"])                       # totals only: no detail tables
-        labels = [x["label"] for x in vm.result["totals"]]
-        self.assertIn("إجمالي الفقد والخسية (مكافئ عيار 21)", labels)
+        self.assertEqual(vm.result["tables"], [])                                                    # cards only: no table on the screen
+        self.assertEqual([x["label"] for x in vm.result["totals"]], ["فاقد السبك", "خسية البوتقة", "خسية السوق", "إجمالي الفقد والخسية"])
         self.assertIsNone(self.visible_item("reportMeaning_0"))                          # the explanatory box was removed (owner review)
         self.assertEqual(self.warnings, [])
 

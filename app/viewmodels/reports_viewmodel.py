@@ -63,7 +63,7 @@ def month_period(today):
     return today.replace(day=1).isoformat(), today.isoformat()
 
 
-HIDDEN_ON_SCREEN = {("sales", "documents"), ("stock", "items"), ("stock", "summary"), ("suppliers", "movements"), ("treasury", "movements")}
+HIDDEN_ON_SCREEN = {("sales", "documents"), ("stock", "items"), ("stock", "summary"), ("suppliers", "movements"), ("treasury", "movements"), ("market", "summary")}
 NO_PERIOD = {"stock", "customers", "deadcash", "suppliers"}                      # reports of the CURRENT state: the period fields are not offered
 
 
