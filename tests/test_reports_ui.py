@@ -173,7 +173,7 @@ class ReportsPageTests(harness.InvoicePageTests):
         self.wait_until(lambda: not vm.busy and vm.result.get("report") == "gold" and vm.result["tables"], "gold loaded")
         QTest.qWait(150)
         self.assertEqual([t["key"] for t in vm.result["tables"]], ["sales_24", "sales_21", "sales_18", "scrap"])             # a table per karat, then the scrap
-        self.assertEqual(vm.result["title"], "حركة الذهب")
+        self.assertEqual(vm.result["title"], "حركة الأصناف")
         self.assertIn("مبيع عيار 21", [x["label"] for x in vm.result["totals"]])
         self.assertEqual([s["key"] for s in vm.filterSpecs], ["karat", "factory", "weight_min", "weight_max"])
         self.assertEqual([o["text"] for o in vm.filterSpecs[1]["options"]], ["الكل", "مصنع الأمل", "مصنع النور"])      # the factories come from the service

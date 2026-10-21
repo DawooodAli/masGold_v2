@@ -56,7 +56,7 @@ class MarketReportMySqlTests(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get("MASGOLD_BOOK_REHEARSAL") == "1", "explicit rehearsal-only opt-in")
 class GoldMovementMySqlTests(unittest.TestCase):
-    """«حركة الذهب»: the two reads on real MySQL equal independent SQL aggregates over the same rows (read only)."""
+    """«حركة الأصناف»: the two reads on real MySQL equal independent SQL aggregates over the same rows (read only)."""
     RANGE = {"from": "2020-01-01", "to": "2030-12-31"}
 
     @classmethod

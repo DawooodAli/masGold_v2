@@ -382,7 +382,7 @@ class StockTests(Case):
 
 
 class GoldMovementTests(Case):
-    """«حركة الذهب» (owner redesign): the pieces SOLD in the period, ONE row per item type (karats broken down in a text column), cards per karat (weight on top of the count), a monthly
+    """«حركة الأصناف» (owner redesign): the pieces SOLD in the period, ONE row per item type (karats broken down in a text column), cards per karat (weight on top of the count), a monthly
     chart per type under the same filters, and the scrap BOUGHT by karat."""
     PERIOD = {"from": "2026-10-01", "to": "2026-10-31"}
 

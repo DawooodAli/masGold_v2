@@ -100,6 +100,17 @@ class WeightBandsTests(AlertsCase):
         self.assertEqual((rows[("خاتم", "5 – 6 جرام")]["stock"], rows[("خاتم", "5 – 6 جرام")]["sold90"]), (0, 3))                         # the 5 g ring sales are not the 5 g dabla stock
         self.assertEqual((rows[("خاتم", "4 – 5 جرام")]["stock"], rows[("خاتم", "4 – 5 جرام")]["weight"], rows[("خاتم", "4 – 5 جرام")]["cover"]), (2, D("8.000"), "—"))
 
+    def test_the_first_band_starts_at_0_01_gram(self):
+        class Light(AlertsRepo):
+            def stock_items(self, statuses):
+                rows = super().stock_items(statuses)
+                rows[0] = {**rows[0], "weight_grams": D("0.500")}
+                return rows
+        service = ReportService(self.session, transaction_factory=self.service._transaction, repository=Light, authorization=self.authorization, today=lambda: TODAY)
+        labels = [r["band"] for r in next(t for t in service.run("alerts", {})["tables"] if t["key"] == "weights_21")["rows"]]
+        self.assertIn("0.01 – 1 جرام", labels)
+        self.assertFalse(any(l.startswith("0 – ") for l in labels))
+
     def test_a_band_with_sales_but_no_stock_and_the_last_band(self):
         result = self.run_alerts()
         self.assertEqual(self.bands(result, 21)[("خاتم", "5 – 6 جرام")]["cover"], "نفد")
