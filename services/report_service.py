@@ -508,7 +508,7 @@ class ReportService:
                 recent = _dateish(r["doc_date"]).date() >= recent_from
                 if recent:
                     sold30[key] = sold30.get(key, 0) + 1
-                sold_weights.append((int(r["karat_value"]), _dec(r["weight_grams"]), recent))
+                sold_weights.append((int(r["karat_value"]), r["item_type"] or NO_TYPE, _dec(r["weight_grams"]), recent))
             in_stock = {}
             for r in stock:
                 key = (int(r["karat_value"]), r["item_type"] or NO_TYPE, r["factory"] or "بدون مصنع", str(r["size"] or "").strip())
@@ -533,36 +533,35 @@ class ReportService:
                 tables.append(table("low", "قاربت على النفاد", low_cols, []))
         else:
             tables.append(self._unavailable("low", "قاربت على النفاد", "تحتاج صلاحية عرض الفواتير لحساب معدل البيع."))
-        # ---- the weights: stock and sales per ONE-GRAM weight band, per karat (information for the owner to decide with; no alert)
+        # ---- the weights: stock and sales per ONE-GRAM weight band, per KARAT and per item TYPE (information for the owner to decide with; no alert)
         def band(weight):
-            index = int(weight)
-            return min(index, WEIGHT_BAND_TOP)
+            return min(int(weight), WEIGHT_BAND_TOP)
 
         def band_label(index):
             return f"{WEIGHT_BAND_TOP} جرام فأكثر" if index >= WEIGHT_BAND_TOP else f"{index} – {index + 1} جرام"
         bands = {}
         for r in stock:
-            b = bands.setdefault((int(r["karat_value"]), band(_dec(r["weight_grams"]))), {"stock": 0, "weight": ZERO3, "sold30": 0, "sold90": 0})
+            b = bands.setdefault((int(r["karat_value"]), r["item_type"] or NO_TYPE, band(_dec(r["weight_grams"]))), {"stock": 0, "weight": ZERO3, "sold30": 0, "sold90": 0})
             b["stock"] += 1
             b["weight"] += _dec(r["weight_grams"])
-        for k, weight, recent in sold_weights:
-            b = bands.setdefault((k, band(weight)), {"stock": 0, "weight": ZERO3, "sold30": 0, "sold90": 0})
+        for k, kind, weight, recent in sold_weights:
+            b = bands.setdefault((k, kind, band(weight)), {"stock": 0, "weight": ZERO3, "sold30": 0, "sold90": 0})
             b["sold90"] += 1
             b["sold30"] += 1 if recent else 0
-        weight_cols = [col("band", "شريحة الوزن"), col("stock", "المتاح (عدد)", "count"), col("weight", "الوزن المتاح (جرام)", "grams"), col("sold30", "مباع آخر 30 يوم", "count"),
+        weight_cols = [col("type", "الصنف"), col("band", "شريحة الوزن"), col("stock", "المتاح (عدد)", "count"), col("weight", "الوزن المتاح (جرام)", "grams"), col("sold30", "مباع آخر 30 يوم", "count"),
                        col("sold90", f"مباع آخر {VELOCITY_DAYS} يوم", "count"), col("cover", "يكفي (يوم)")]
         has_sales = gate("INVOICE_VIEW")
-        for k in sorted({k for k, _ in bands}, reverse=True):
+        for k in sorted({k for k, _, _ in bands}, reverse=True):
             rows = []
-            for (kk, index), b in sorted(bands.items(), key=lambda kv: kv[0][1]):
+            for (kk, kind, index), b in sorted(bands.items(), key=lambda kv: (kv[0][1], kv[0][2])):
                 if kk != k:
                     continue
                 cover = "—" if not has_sales or not b["sold90"] else "نفد" if b["stock"] == 0 else f"{int(Decimal(b['stock']) * VELOCITY_DAYS / Decimal(b['sold90']))}"
-                rows.append({"band": band_label(index), "stock": b["stock"], "weight": b["weight"], "sold30": b["sold30"] if has_sales else None, "sold90": b["sold90"] if has_sales else None,
-                             "cover": cover})
-            tables.append(table(f"weights_{k}", f"الأوزان — عيار {k}", weight_cols, rows, karat=k))
+                rows.append({"type": kind, "band": band_label(index), "stock": b["stock"], "weight": b["weight"], "sold30": b["sold30"] if has_sales else None,
+                             "sold90": b["sold90"] if has_sales else None, "cover": cover})
+            tables.append(table(f"weights_{k}", f"الأوزان حسب الصنف — عيار {k}", weight_cols, rows, karat=k))
         meaning = [f"راكد = قطعة متاحة منذ {DEAD_STOCK_DAYS} يومًا أو أكثر ولم تظهر في أي فاتورة. قارب النفاد = صنف بيع {MIN_SALES} مرات فأكثر في آخر {VELOCITY_DAYS} يومًا والمتاح منه يكفي أقل من {LOW_COVER_DAYS} يومًا بمعدل البيع.",
-                   "جداول الأوزان معلومات للمقارنة بين شرائح وزنها جرام واحد (الحد الأدنى داخل الشريحة والأعلى خارجها) ولا تنبّه ولا تقرّر. التقرير تنبيه وليس قرارًا: لا يقترح سعرًا ولا يغيّر شيئًا. الأعيار منفصلة دائمًا."]
+                   "جداول الأوزان لكل عيار وكل صنف: شرائح وزنها جرام واحد (الحد الأدنى داخل الشريحة والأعلى خارجها) معلومات للمقارنة ولا تنبّه ولا تقرّر. التقرير تنبيه وليس قرارًا: لا يقترح سعرًا ولا يغيّر شيئًا. الأعيار منفصلة دائمًا."]
         return {"meaning": meaning, "tables": tables, "totals": cards}
 
     # ------------------------------------------------------------------ 3. gold movement: the pieces SOLD by type and the scrap BOUGHT by karat (owner redesign)

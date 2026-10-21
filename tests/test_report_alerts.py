@@ -83,36 +83,40 @@ class DeadStockTests(AlertsCase):
 
 
 class WeightBandsTests(AlertsCase):
-    """The weights (owner request): one-gram bands per karat with the stock, the sales and the days covered, as INFORMATION (the owner decides; nothing is flagged)."""
+    """The weights (owner request): one-gram bands PER KARAT AND PER ITEM TYPE with the stock, the sales and the days covered, as INFORMATION (the owner decides; nothing is flagged)."""
 
     def bands(self, result, karat):
-        return {r["band"]: r for r in self.table(result, f"weights_{karat}")["rows"]}
+        return {(r["type"], r["band"]): r for r in self.table(result, f"weights_{karat}")["rows"]}
 
-    def test_stock_and_sales_per_one_gram_band(self):
+    def test_the_bands_are_per_type_inside_each_karat(self):
         rows = self.bands(self.run_alerts(), 21)
-        self.assertEqual(list(rows), ["4 – 5 جرام", "5 – 6 جرام", "6 – 7 جرام", "8 – 9 جرام"])                  # bands with stock or sales only, lightest first
-        five = rows["5 – 6 جرام"]
-        self.assertEqual((five["stock"], five["weight"], five["sold30"], five["sold90"], five["cover"]), (3, D("15.500"), 9, 21, "12"))   # 5.000 + 5.500 + 5.000; 21 sold in 90 days: 3 x 90 / 21 = 12.8
-        four = rows["4 – 5 جرام"]
-        self.assertEqual((four["stock"], four["weight"], four["sold90"], four["cover"]), (2, D("8.000"), 0, "—"))                          # nothing sold: no cover figure
-        self.assertEqual(rows["6 – 7 جرام"]["stock"], 1)                                                                                   # exactly 6.000 g is in 6 – 7 (the lower limit is inside)
+        self.assertEqual(list(rows), [("خاتم", "4 – 5 جرام"), ("خاتم", "5 – 6 جرام"), ("دبلة", "5 – 6 جرام"), ("دبلة", "6 – 7 جرام"), ("سلسلة", "5 – 6 جرام"), ("سلسلة", "8 – 9 جرام")])   # type, then weight
+        ring = rows[("دبلة", "5 – 6 جرام")]
+        self.assertEqual((ring["stock"], ring["weight"], ring["sold30"], ring["sold90"], ring["cover"]), (3, D("15.500"), 7, 16, "16"))     # 5.000 + 5.500 + 5.000; 16 sold in 90 days: 3 x 90 / 16 = 16.9
+        self.assertEqual(rows[("دبلة", "6 – 7 جرام")]["stock"], 1)                                                                        # exactly 6.000 g is in 6 – 7 (the lower limit is inside)
 
-    def test_the_last_band_and_a_band_with_sales_but_no_stock(self):
+    def test_a_type_is_never_mixed_with_another_type_of_the_same_weight(self):
+        rows = self.bands(self.run_alerts(), 21)
+        self.assertEqual((rows[("خاتم", "5 – 6 جرام")]["stock"], rows[("خاتم", "5 – 6 جرام")]["sold90"]), (0, 3))                         # the 5 g ring sales are not the 5 g dabla stock
+        self.assertEqual((rows[("خاتم", "4 – 5 جرام")]["stock"], rows[("خاتم", "4 – 5 جرام")]["weight"], rows[("خاتم", "4 – 5 جرام")]["cover"]), (2, D("8.000"), "—"))
+
+    def test_a_band_with_sales_but_no_stock_and_the_last_band(self):
         result = self.run_alerts()
-        self.assertEqual(self.bands(result, 18)["10 جرام فأكثر"]["stock"], 1)                                                              # the 10.000 g piece
-        self.assertEqual(self.bands(result, 18)["5 – 6 جرام"]["cover"], "نفد")                                                             # 3 sales of 5 g, none in stock
-        self.assertEqual(self.bands(result, 24)["5 – 6 جرام"]["cover"], "نفد")
+        self.assertEqual(self.bands(result, 21)[("خاتم", "5 – 6 جرام")]["cover"], "نفد")
+        self.assertEqual(self.bands(result, 18)[("غويشة", "10 جرام فأكثر")]["stock"], 1)                                                  # the 10.000 g piece
+        self.assertEqual(self.bands(result, 18)[("غويشة", "5 – 6 جرام")]["cover"], "نفد")
+        self.assertEqual(self.bands(result, 24)[("سوار", "5 – 6 جرام")]["cover"], "نفد")
 
     def test_a_table_per_karat_tagged_for_the_colors_and_filters_apply(self):
         result = self.run_alerts()
         self.assertEqual({t["key"]: t["karat"] for t in result["tables"] if t["key"].startswith("weights_")}, {"weights_24": 24, "weights_21": 21, "weights_18": 18})
         self.assertEqual({t["key"] for t in self.run_alerts(karat="18")["tables"] if t["key"].startswith("weights_")}, {"weights_18"})
-        self.assertEqual([r["band"] for r in self.table(self.run_alerts(text="خاتم"), "weights_21")["rows"]], ["4 – 5 جرام", "5 – 6 جرام"])
+        self.assertEqual({r["type"] for r in self.table(self.run_alerts(text="خاتم"), "weights_21")["rows"]}, {"خاتم"})
 
     def test_without_the_invoice_right_only_the_stock_columns_are_shown(self):
         session = session_for(ALL_RIGHTS - {"INVOICE_VIEW"})
         limited = ReportService(session, transaction_factory=self.service._transaction, repository=AlertsRepo, authorization=FakeAuthorization(session), today=lambda: TODAY)
-        row = next(r for r in next(t for t in limited.run("alerts", {})["tables"] if t["key"] == "weights_21")["rows"] if r["band"] == "5 – 6 جرام")
+        row = next(r for r in next(t for t in limited.run("alerts", {})["tables"] if t["key"] == "weights_21")["rows"] if (r["type"], r["band"]) == ("دبلة", "5 – 6 جرام"))
         self.assertEqual((row["stock"], row["sold30"], row["sold90"], row["cover"]), (3, None, None, "—"))
 
 
