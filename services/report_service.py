@@ -760,6 +760,7 @@ class ReportService:
             else:
                 missing.append(label)
         summary, det = [], []
+        money_in = money_out = ZERO2
         net_transfers = ZERO2
         tot = {"CASH": ZERO2, "BANK": ZERO2}
         for kind, label, accounts, before, moves in sections:
@@ -789,6 +790,8 @@ class ReportService:
                 o = opening.get(aid, ZERO2)
                 closing = o + inn - out + t_in - t_out
                 net_transfers += t_in - t_out
+                money_in += inn
+                money_out += out
                 tot[kind] += closing
                 if o or inn or out or t_in or t_out or a["is_active"]:
                     summary.append({"account": f"{label}: {a['name']}", "opening": o, "in": inn, "out": out, "t_in": t_in, "t_out": t_out, "closing": closing})
@@ -796,18 +799,24 @@ class ReportService:
         scols = [col("account", "الحساب"), col("opening", "رصيد أول الفترة", "money"), col("in", "داخل", "money"), col("out", "خارج", "money"), col("t_in", "تحويل داخلي وارد", "money"),
                  col("t_out", "تحويل داخلي صادر", "money"), col("closing", "رصيد آخر الفترة", "money")]
         dcols = [col("date", "التاريخ", "date"), col("account", "الحساب"), col("type", "نوع الحركة"), col("amount", "المبلغ (+ داخل / − خارج)", "money"), col("reference", "المرجع"), col("description", "البيان")]
-        plain = [d["amount"] for d in det if not d["_transfer"]]
-        shown = "الحركات المطابقة للبحث" if raw else "الحركات المعروضة"
-        totals = [total("عدد " + shown, len(det), "count"),
-                  total(shown + " — داخل (بلا التحويلات)", sum((a for a in plain if a > 0), ZERO2), "money", "إجمالي ما يطابق البحث والحساب المختارين؛ لا يغيّر الأرصدة"),
-                  total(shown + " — خارج (بلا التحويلات)", -sum((a for a in plain if a < 0), ZERO2), "money"),
-                  total(shown + " — صافي التحويلات الداخلية", sum((d["amount"] for d in det if d["_transfer"]), ZERO2), "money", "التحويل الداخلي ليس إيرادًا ولا مصروفًا")]
+        # Owner review: no movement-based cards (count / in / out / net of the shown movements); the movements table is not shown on screen (the CSV keeps every movement).
+        totals = []
+        if gate("INVOICE_VIEW"):                                                                       # the month's sales and scrap purchases come from the invoices: left out without the right, never a zero
+            documents = {t["label"]: t["value"] for t in self._sales(repo, gate, {"from": filters["from"], "to": filters["to"], "kind": "ALL", "state": "ALL"}, start, end)["totals"]}
+            sales_value = next((v for k, v in documents.items() if k.startswith("قيمة البيع")), None)
+            buy_value = next((v for k, v in documents.items() if k.startswith("قيمة شراء الكسر")), None)
+            if sales_value is not None:
+                totals.append(total("المبيعات", sales_value, "money", "قيمة فواتير البيع في الفترة (فعّالة)", "documents"))
+            if buy_value is not None:
+                totals.append(total("مشتريات الذهب (الكسر)", buy_value, "money", "قيمة شراء الكسر من العملاء في الفترة", "documents"))
+        totals.append(total("الإيرادات", money_in, "money", "كل الداخل إلى الحسابات المعروضة بلا التحويلات الداخلية", "flow", tone="receivable"))
+        totals.append(total("المصروفات", money_out, "money", "كل الخارج من الحسابات المعروضة بلا التحويلات الداخلية", "flow", tone="payable"))
         if any(k == "CASH" for k, *_ in sections):
-            totals.append(total("رصيد آخر الفترة — النقدي (كل حركات الفترة)", tot["CASH"], "money", "لا يغيّره البحث"))
+            totals.append(total("رصيد آخر الفترة — النقدي", tot["CASH"], "money", "كل حركات الحسابات النقدية", "balances"))
         if any(k == "BANK" for k, *_ in sections):
-            totals.append(total("رصيد آخر الفترة — البنكي والمحافظ (كل حركات الفترة)", tot["BANK"], "money", "لا يغيّره البحث"))
+            totals.append(total("رصيد آخر الفترة — البنكي والمحافظ", tot["BANK"], "money", "كل حركات الحسابات البنكية والمحافظ", "balances"))
         if not missing and not account_filter:
-            totals.append(total("صافي التحويلات الداخلية لكل الحسابات (يجب أن يساوي صفرًا)", net_transfers, "money", "كل الحسابات، بلا بحث"))
+            totals.append(total("صافي التحويلات الداخلية لكل الحسابات (يجب أن يساوي صفرًا)", net_transfers, "money", "كل الحسابات", "balances"))
         meaning = ["الرصيد = مجموع حركات حساب الخزنة أو الحساب البنكي نفسه (دفتر الحركات)؛ رصيد أول الفترة = كل الحركات قبل تاريخ البداية. البحث يصفّي جدول الحركات وإجماليات «المطابقة» فقط، وأرصدة الحسابات كاملة دائمًا.",
                    "«داخل/خارج» للحركات العادية فقط؛ التحويل بين حسابين يظهر في عموده الخاص ولا يُحتسب إيرادًا ولا مصروفًا.",
                    "حركة الفترة لا تساوي بالضرورة مجموع المستندات الفعّالة في تقرير المبيعات (آجل، تحصيل لاحق، شراء كسر، مرتجع...)."]

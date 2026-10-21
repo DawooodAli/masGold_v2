@@ -654,6 +654,25 @@ class TreasuryTests(Case):
         self.assertTrue(any("تحويل داخلي" in m["type"] for m in moves))
         self.assertEqual(next(m for m in moves if m["reference"] == "INV0001")["ref"], {"type": "INVOICE", "id": "1"})
 
+    def test_the_cards_are_the_months_sales_and_scrap_purchases_the_money_in_and_out_and_the_balances(self):
+        result = self.service.run("treasury", {"from": "2026-10-01", "to": "2026-10-31"})
+        cards = {x["label"]: (x["value"], x["group"]) for x in result["totals"]}
+        sales = self.totals(self.service.run("sales", {"from": "2026-10-01", "to": "2026-10-31"}))
+        self.assertEqual(cards["المبيعات"][0], next(v for k, v in sales.items() if k.startswith("قيمة البيع")))               # the SAME figure as the sales report
+        self.assertEqual(cards["مشتريات الذهب (الكسر)"][0], next(v for k, v in sales.items() if k.startswith("قيمة شراء الكسر")))
+        self.assertEqual((cards["الإيرادات"][0], cards["المصروفات"][0]), (D("600.00"), D("200.00")))                         # 500 + 100 in; 200 out (the 300 transfer is neither)
+        self.assertEqual([x["group"] for x in result["totals"]], ["documents", "documents", "flow", "flow", "balances", "balances", "balances"])
+        self.assertEqual([x["tone"] for x in result["totals"] if x["group"] == "flow"], ["receivable", "payable"])
+        self.assertFalse(any("الحركات" in x["label"] for x in result["totals"]))                                              # no movement-count / movement-sum card
+
+    def test_the_sales_and_purchase_cards_need_the_invoice_right_and_are_left_out_without_it(self):
+        session = session_for(ALL - {"INVOICE_VIEW"})
+        limited = ReportService(session, transaction_factory=self.service._transaction, repository=FakeRepo, authorization=FakeAuthorization(session), today=lambda: TODAY)
+        labels = [x["label"] for x in limited.run("treasury", {"from": "2026-10-01", "to": "2026-10-31"})["totals"]]
+        self.assertNotIn("المبيعات", labels)
+        self.assertNotIn("مشتريات الذهب (الكسر)", labels)
+        self.assertIn("الإيرادات", labels)
+
     def test_account_filter_and_rights_per_section(self):
         only = self.service.run("treasury", {"account": "BANK:2"})
         self.assertEqual([r["account"] for r in self.rows(only, "accounts")], ["بنكي / محفظة: بنك"])
@@ -739,8 +758,8 @@ class SearchConsistencyTests(Case):
         self.assertEqual([m["description"] for m in self.rows(rent, "movements")], ["إيجار"])
         self.assertEqual(self.rows(rent, "accounts"), self.rows(everything, "accounts"))          # the real balances are complete
         t = self.totals(rent)
-        self.assertEqual((t["عدد الحركات المطابقة للبحث"], t["الحركات المطابقة للبحث — خارج (بلا التحويلات)"], t["الحركات المطابقة للبحث — داخل (بلا التحويلات)"]), (1, D("200.00"), D("0.00")))
-        self.assertEqual((t["رصيد آخر الفترة — النقدي (كل حركات الفترة)"], t["رصيد آخر الفترة — البنكي والمحافظ (كل حركات الفترة)"]), (D("1000.00"), D("400.00")))
+        self.assertEqual((t["رصيد آخر الفترة — النقدي"], t["رصيد آخر الفترة — البنكي والمحافظ"]), (D("1000.00"), D("400.00")))
+        self.assertEqual((t["الإيرادات"], t["المصروفات"]), (D("600.00"), D("200.00")))                    # the cards cover EVERY movement of the accounts: a search never changes them
         self.assertEqual(t["صافي التحويلات الداخلية لكل الحسابات (يجب أن يساوي صفرًا)"], D("0.00"))   # the all-accounts proof is not narrowed by the search
         nothing = self.service.run("treasury", {"from": "2026-10-01", "to": "2026-10-31", "text": "لا يوجد"})
         self.assertEqual((self.rows(nothing, "movements"), self.rows(nothing, "accounts")), ([], self.rows(everything, "accounts")))
@@ -749,8 +768,7 @@ class SearchConsistencyTests(Case):
         result = self.service.run("treasury", {"from": "2026-10-01", "to": "2026-10-31", "text": "FO000001"})
         t = self.totals(result)
         self.assertEqual(len(self.rows(result, "movements")), 2)                                  # both legs of the transfer
-        self.assertEqual((t["الحركات المطابقة للبحث — داخل (بلا التحويلات)"], t["الحركات المطابقة للبحث — خارج (بلا التحويلات)"], t["الحركات المطابقة للبحث — صافي التحويلات الداخلية"]),
-                         (D("0.00"), D("0.00"), D("0.00")))
+        self.assertEqual((t["الإيرادات"], t["المصروفات"]), (D("600.00"), D("200.00")))              # the transfer is neither income nor expense: 300 out of the cash and 300 into the bank are in neither card
 
     def test_the_csv_carries_the_applied_filters_and_exactly_the_matching_rows(self):
         with tempfile.TemporaryDirectory() as folder:
