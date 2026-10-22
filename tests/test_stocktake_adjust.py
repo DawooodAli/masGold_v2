@@ -128,6 +128,21 @@ class ApprovalTests(unittest.TestCase):
         with self.assertRaises(StocktakeError):
             service.write_off_pieces([], "MISSING", "", True, "key-00000011")
 
+    def test_a_whole_count_never_writes_off_a_piece_without_a_barcode(self):
+        service = self.build()
+        original = Repo.scope_pieces
+
+        def without_barcode(self, item_type_id, karat_id):
+            return [dict(r, barcode_value=None) if r["id"] == 4 else r for r in original(self, item_type_id, karat_id)]
+        Repo.scope_pieces = without_barcode
+        try:
+            with self.assertRaises(StocktakeError) as raised:
+                self.call(service)
+        finally:
+            Repo.scope_pieces = original
+        self.assertEqual(raised.exception.code, "PIECE_WITHOUT_BARCODE")
+        self.assertEqual(self.store.removed, [])
+
     def test_a_scoped_count_only_covers_its_karat(self):
         service = self.build()
         result = self.call(service, scanned=(1,), remaining=(2,), karat=2)

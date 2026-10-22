@@ -51,7 +51,7 @@ class DashboardRepository(BaseRepository):
         """Grams and pieces SOLD from the first day of the month through today (previous=False) or over the SAME number of days of the previous month (previous=True), per karat. Fully reversed
         invoices are left out. "Today" and the month are the database's own calendar (CURDATE())."""
         first = "DATE_FORMAT(CURDATE() - INTERVAL 1 MONTH, '%Y-%m-01')" if previous else "DATE_FORMAT(CURDATE(), '%Y-%m-01')"
-        end = f"{first} + INTERVAL DAY(CURDATE()) DAY" if previous else "CURDATE() + INTERVAL 1 DAY"
+        end = f"LEAST({first} + INTERVAL DAY(CURDATE()) DAY, DATE_FORMAT(CURDATE(), '%Y-%m-01'))" if previous else "CURDATE() + INTERVAL 1 DAY"
         return self._fetch_all(
             f"""
             SELECT k.karat_value, COALESCE(SUM(l.weight_grams), 0) AS grams, COUNT(*) AS pieces

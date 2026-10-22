@@ -468,7 +468,15 @@ class InventoryStockPageTests(harness.InvoicePageTests):
         approve = self.item("stocktakeApprove")
         self.assertFalse(approve.property("enabled"))                          # nothing scanned yet
         self.scan("02261001")
+        QTest.qWait(200)
+        self.assertGreater(vm.withoutBarcodeCount, 0)
+        self.assertFalse(approve.property("enabled"))                          # pieces without a barcode can never be scanned: the whole count is not approvable
+        vm._service = service_for(Store([p for p in MIXED if p.get("barcode_value")]))
+        vm.start()
+        self.wait_until(lambda: vm.loaded and vm.withoutBarcodeCount == 0, "only barcoded pieces")
+        self.scan("02261001")
         self.wait_until(lambda: approve.property("enabled"), "approve enabled")
+        remaining_before = vm.remainingCount
         for width, height in harness.SIZES:
             self.root.setWidth(width)
             self.root.setHeight(height)
@@ -483,7 +491,7 @@ class InventoryStockPageTests(harness.InvoicePageTests):
         self.click("stocktakeApproveOk")
         self.wait_until(lambda: len(calls) == 1 and not dialog.property("visible"), "approved")
         args = calls[0]
-        self.assertEqual((len(args[2]), len(args[3]), args[4]), (1, 5, "SOLD_OUTSIDE"))
+        self.assertEqual((len(args[2]), len(args[3]), args[4]), (1, remaining_before, "SOLD_OUTSIDE"))
         self.assertIn("SK000001", self.item("stocktakeDone").property("text"))
         self.assertEqual(self.warnings, [])
 

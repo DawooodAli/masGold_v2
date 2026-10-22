@@ -951,6 +951,25 @@ class CashflowTests(Case):
             ReportService(nobody, transaction_factory=self.service._transaction, repository=FakeRepo, authorization=FakeAuthorization(nobody), today=lambda: TODAY).run("cashflow", self.PERIOD)
 
 
+class CashflowTransferReversalTests(Case):
+    def test_the_reversal_of_a_manual_transfer_stays_a_change_of_place(self):
+        base = {"transfer_group_id": None, "type_name": "x", "category": None, "corrected_category": None}
+        rows = [dict(base, type_code="TRANSFER_OUT", amount=D("-5000.00"), reference_type="FINANCIAL_OPERATION", correction_source=None, corrected_operation_type=None, transfer_group_id=9),
+                dict(base, type_code="TRANSFER_IN", amount=D("5000.00"), reference_type="FINANCIAL_OPERATION", correction_source=None, corrected_operation_type=None, transfer_group_id=9),
+                dict(base, type_code="CORRECTION", amount=D("5000.00"), reference_type="TRANSACTION_CORRECTION", correction_source="FINANCIAL_OPERATION", corrected_operation_type="ACCOUNT_TRANSFER"),
+                dict(base, type_code="CORRECTION", amount=D("-5000.00"), reference_type="TRANSACTION_CORRECTION", correction_source="FINANCIAL_OPERATION", corrected_operation_type="ACCOUNT_TRANSFER")]
+
+        class Repo(FakeRepo):
+            def cashflow_movements(self, start, end, ledgers=("CASH", "BANK")):
+                return rows
+        service = ReportService(self.service._session, transaction_factory=self.service._transaction, repository=Repo, authorization=self.service._authorization, today=lambda: TODAY)
+        result = service.run("cashflow", {"from": "2026-10-01", "to": "2026-10-31"})
+        operating = next(t for t in result["tables"] if t["key"] == "operating")["rows"]
+        self.assertEqual(operating, [])                                                       # nothing is income or expense
+        values = {t["label"]: t["value"] for t in result["totals"]}
+        self.assertEqual((values["إجمالي الداخل"], values["إجمالي الخارج"]), (D("0.00"), D("0.00")))
+
+
 class MakingProfitTests(Case):
     PERIOD = {"from": "2026-10-01", "to": "2026-10-31"}
 

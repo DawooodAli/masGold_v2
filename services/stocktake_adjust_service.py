@@ -100,6 +100,8 @@ class StocktakeAdjustService:
             pieces = {int(r["id"]): r for r in (repository.scope_pieces(type_id, karat) if mode == "SCOPE" else repository.pieces_by_ids(sorted(off_ids)))}
             if set(pieces) != set(scanned) | off_ids:
                 raise StocktakeError("STOCK_CHANGED", "المخزون تغيّر أثناء الجرد (قطعة اتباعت أو اتضافت). أعد الجرد ثم اعتمده.")
+            if mode == "SCOPE" and any(not pieces[i].get("barcode_value") for i in off_ids):
+                raise StocktakeError("PIECE_WITHOUT_BARCODE", "من المتبقي قطع بدون باركود لا يمكن مسحها: احذفها واحدة واحدة أو أعطها باركود، ثم اعتمد الجرد.")
             movement_type = repository.movement_type_id("STOCKTAKE_WRITE_OFF")
             if movement_type is None:
                 raise StocktakeError("SCHEMA_OUTDATED", "نوع حركة الشطب غير موجود: طبّق التحديث 073.")

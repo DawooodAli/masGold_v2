@@ -3122,7 +3122,7 @@ ApplicationWindow {
                             horizontalAlignment: TextInput.AlignRight
                             font.family: "Cairo"
                             enabled: typeof managerGateVM !== "undefined" && !managerGateVM.busy
-                            onAccepted: managerGateEnter.clicked()
+                            onAccepted: if (managerGateEnter.enabled) managerGateEnter.clicked()
                         }
                         GoldPriceLabel {
                             objectName: "managerGateMessage"

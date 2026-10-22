@@ -465,7 +465,7 @@ class ReportRepository(BaseRepository):
                 continue
             parts.append(f"""
             SELECT '{ledger}' AS ledger, m.{column} AS account_id, t.code AS type_code, t.name AS type_name, m.amount_delta AS amount, m.transfer_group_id, m.reference_type, m.reference_id,
-                   fo.category AS category, c.source_type AS correction_source, fo2.category AS corrected_category
+                   fo.category AS category, c.source_type AS correction_source, fo2.category AS corrected_category, fo2.operation_type AS corrected_operation_type
             FROM {movements} m JOIN {types} t ON t.id = m.movement_type_id
             LEFT JOIN financial_operations fo ON m.reference_type = 'FINANCIAL_OPERATION' AND fo.id = m.reference_id
             LEFT JOIN transaction_corrections c ON m.reference_type = 'TRANSACTION_CORRECTION' AND c.id = m.reference_id

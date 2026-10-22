@@ -427,9 +427,8 @@ Item {
                     required property var modelData
                     required property int index
                     readonly property var members: reportsVM.reports.filter(function(r) {
-                        var inGold = ["stock", "alerts", "indicators", "gold", "scrapcost", "demand", "profit", "market"].indexOf(r.key) >= 0
-                        var inCash = ["treasury", "cashflow", "makingprofit", "deadcash"].indexOf(r.key) >= 0
-                        return groupRow.index === 0 ? inGold : groupRow.index === 1 ? inCash : (!inGold && !inCash)
+                        if (groupRow.index < 2) return groupRow.modelData.keys.indexOf(r.key) >= 0
+                        return groupRow.modelData.keys.length === 0 && ["stock", "alerts", "indicators", "gold", "scrapcost", "demand", "profit", "market", "treasury", "cashflow", "makingprofit", "deadcash"].indexOf(r.key) < 0
                     })
                     visible: members.length > 0
                     Layout.fillWidth: true

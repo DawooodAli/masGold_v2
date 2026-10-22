@@ -22,7 +22,9 @@ def clean_sales(rows):
     rows = list(rows)
     last = {}
     for r in sorted(rows, key=lambda r: int(r["id"])):
-        last[str(r["bill_id"])] = r                                                    # the highest id of a bill wins
+        raw = r["bill_id"]
+        key = "row:" + str(r["id"]) if raw is None or str(raw).strip() in ("", "NULL", "None") else "bill:" + str(raw)       # a row without a bill number is its own bill, never merged with the others
+        last[key] = r                                                                  # the highest id of a bill wins
     days = {}
     for r in last.values():
         day = r["date"] if isinstance(r["date"], date) else date.fromisoformat(str(r["date"]))

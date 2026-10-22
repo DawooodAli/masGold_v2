@@ -293,6 +293,8 @@ class ReportService:
                 if original == "FINANCIAL_OPERATION":
                     source, category = "FINANCIAL_OPERATION", m["corrected_category"]
                 reference = original if original in INTERNAL_FLOW else reference
+                if original == "FINANCIAL_OPERATION" and m.get("corrected_operation_type") == "ACCOUNT_TRANSFER":
+                    reference = "ACCOUNT_TRANSFER"                                          # the reversal of a manual transfer between accounts is still only a change of place
             if m["transfer_group_id"] is not None:
                 bucket, label = internal, INTERNAL_FLOW["ACCOUNT_TRANSFER"]
             elif reference in INTERNAL_FLOW:
@@ -782,10 +784,12 @@ class ReportService:
             if not self._session.is_current(actor):
                 raise PermissionError("انتهت جلسة الدخول.")
         shown = indicators_math.window(series, span) if span else list(series)
-        points = []
-        for index, (day, buy, sell) in enumerate(shown):
-            earlier = [r for r in series if day - timedelta(days=29) <= r[0] <= day]
-            points.append({"date": day, "buy": buy, "sell": sell, "average": (sum((r[1] for r in earlier), Decimal(0)) / len(earlier)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if len(earlier) >= 3 else None})
+        points, low, running, total = [], 0, Decimal(0), 0
+        for day, buy, sell in shown:
+            while low < len(series) and series[low][0] < day - timedelta(days=29):          # a sliding 30-day window over the (date ordered) series: one pass instead of a rescan per point
+                low += 1
+            window = [r for r in series[low:] if r[0] <= day]
+            points.append({"date": day, "buy": buy, "sell": sell, "average": (sum((r[1] for r in window), Decimal(0)) / len(window)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if len(window) >= 3 else None})
         return {"karat": number, "days": span, "points": points,
                 "low": min((p["buy"] for p in points), default=None), "high": max((p["sell"] for p in points), default=None)}
 

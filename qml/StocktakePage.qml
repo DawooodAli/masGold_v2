@@ -250,7 +250,7 @@ Item {
                 Button {
                     objectName: "stocktakeApprove"
                     visible: !!page.adjustVM && page.adjustVM.canAdjust
-                    enabled: !!page.vm && page.vm.scannedCount > 0 && page.vm.remainingCount > 0
+                    enabled: !!page.vm && page.vm.scannedCount > 0 && page.vm.remainingCount > 0 && page.vm.withoutBarcodeCount === 0
                     text: "✔  اعتماد الجرد وشطب المتبقي"
                     font.family: theme.fontFamily
                     onClicked: page.openApprove("all", "")
@@ -309,7 +309,7 @@ Item {
             visible: !!page.vm && (page.vm.errorMessage.length > 0 || page.vm.withoutBarcodeCount > 0)
             Layout.fillWidth: true
             text: !page.vm ? "" : page.vm.errorMessage.length > 0 ? page.vm.errorMessage
-                  : "⚠ " + page.vm.withoutBarcodeCount + " قطعة بدون باركود لا يمكن مسحها — تظل في المتبقي."
+                  : "⚠ " + page.vm.withoutBarcodeCount + " قطعة بدون باركود لا يمكن مسحها — تظل في المتبقي، واعتماد الجرد كله متوقف حتى تحذفها واحدة واحدة (🗑) أو تعطيها باركود."
             color: page.vm && page.vm.errorMessage.length > 0 ? theme.red : theme.amber
             wrapMode: Text.WordWrap
         }

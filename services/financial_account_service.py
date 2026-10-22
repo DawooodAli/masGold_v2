@@ -332,7 +332,7 @@ class FinancialAccountService:
         cash = _account(cash_key)
         if cash[0] != "CASH":
             raise CorrectionError("ACCOUNT_NOT_FOUND", "اختر الخزنة.")
-        if direction not in ("IN", "OUT") or (kind in CASH_TYPES and direction not in CASH_TYPES[kind]):
+        if direction not in ("IN", "OUT") or not kind or (kind in CASH_TYPES and direction not in CASH_TYPES[kind]):
             raise CorrectionError("TYPE_INVALID", "نوع الحركة لا يناسب الاتجاه المختار.")
         value, text = _amount(amount), _text(note, required=False, label="الملاحظة")
         if kind in ("BANK_DEPOSIT", "BANK_WITHDRAWAL"):
@@ -360,6 +360,11 @@ class FinancialAccountService:
         with self._transaction() as connection:
             actor = self._authorization.require_permission(connection, session_actor, OPERATE)
             repository = self._repository(connection)
+            prior = repository.by_request(key)                                 # an exact replay is answered BEFORE any state refusal (the category may have been disabled since)
+            if prior:
+                if prior["request_hash"] != digest or int(prior["performed_by_user_id"]) != int(actor.user_id):
+                    raise CorrectionError("REQUEST_CONFLICT", "طلب العملية مستخدم لعملية مختلفة.")
+                return self._result(prior["operation_type"], prior["id"], prior["amount"], duplicate=True)
             if category:                                                       # the category must exist, be active and fit the direction of the operation (decided from the table)
                 self._load_categories(repository)
                 chosen = self._categories.get(category)
