@@ -1085,6 +1085,42 @@ class ReportService:
                   table("forecast", "التوقع للأشهر القادمة", [col("month", "الشهر"), col("grams", "الجرامات المتوقعة", "grams"), col("confidence", "الثقة"), col("basis", "الأساس")], forecast_rows)]
         if not predicted:
             tables[-1]["note"] = "التاريخ أقصر من " + str(forecast_math.TREND_MONTHS) + " أشهر كاملة بأوزان معروفة: لا يوجد توقع."
+        # ---- seasons that move with the Islamic calendar, the weekday and the part of the month (daily grams; services/season_patterns.py)
+        from services import season_patterns as season_math
+        values, first_day, last_day = season_math.daily_values(daily, today)
+        uplifts = season_math.season_uplifts(values, first_day, last_day, today)
+        upcoming = season_math.next_season(today)
+
+        def next_start(key):
+            for year in (today.year, today.year + 1):
+                for w in season_math.season_windows(year):
+                    if w["key"] == key and w["end"] >= today:
+                        return w
+            return None
+        season_rows = []
+        for key, name in season_math.SEASONS:
+            entry, window = uplifts[key], next_start(key)
+            season_rows.append({"season": name, "years": len(entry["years"]), "uplift": f"×{entry['mean']:.2f}" if entry["mean"] is not None else "غير مقاس",
+                                "detail": " • ".join(f"{y['year']}: ×{y['uplift']:.2f}" for y in entry["years"]) or "التاريخ لا يغطي الموسم وما حوله",
+                                "next": f"{window['start']:%Y-%m-%d} → {window['end']:%Y-%m-%d}" if window else "—"})
+        weekday = season_math.weekday_pattern(values, first_day, last_day)
+        parts = season_math.month_pattern(values, first_day, last_day)
+        tables.append(table("seasons", "مواسم الأعياد والمناسبات (متوسط البيع اليومي مقابل الأيام المحيطة)",
+                            [col("season", "الموسم"), col("years", "سنوات مقاسة", "count"), col("uplift", "ارتفاع الطلب المعتاد"), col("detail", "كل سنة"), col("next", "الموعد القادم")], season_rows))
+        tables.append(table("weekdays", "نمط أيام الأسبوع (1.00 = متوسط اليوم)", [col("name", "اليوم"), col("index", "المعامل"), col("days", "عدد الأيام", "count")],
+                            [{"name": p["name"], "index": f"{p['index']:.2f}", "days": p["days"]} for p in weekday]))
+        tables.append(table("monthparts", "نمط أجزاء الشهر (1.00 = متوسط اليوم)", [col("label", "الجزء"), col("index", "المعامل"), col("days", "عدد الأيام", "count")],
+                            [{"label": p["label"], "index": f"{p['index']:.2f}", "days": p["days"]} for p in parts]))
+        if not weekday:
+            tables[-2]["note"] = "التاريخ لا يكفي لنمط الأسبوع (يلزم " + str(season_math.MIN_WEEKDAY_DAYS) + " أيام على الأقل لكل يوم)."
+        if not parts:
+            tables[-1]["note"] = "التاريخ لا يكفي لنمط الشهر (يلزم " + str(season_math.MIN_MONTH_PART_DAYS) + " يومًا على الأقل لكل جزء)."
+        if upcoming is not None:
+            measured = uplifts[upcoming["key"]]
+            typical = f"الارتفاع المعتاد ×{measured['mean']:.2f} ({len(measured['years'])} سنة)" if measured["mean"] is not None else "لم يُقَس ارتفاعه بعد"
+            cards.append(total("أقرب موسم", upcoming["name"], "text", ("جارٍ الآن" if upcoming["days_left"] == 0 else f"بعد {upcoming['days_left']} يوم") + f" • من {upcoming['start']:%Y-%m-%d} إلى {upcoming['end']:%Y-%m-%d} • {typical}", "demand"))
+        meaning.append("مواسم الأعياد وعيد الأم تُحسب على أيام كل سنة الفعلية (التقويم الهجري الجدولي، قد يختلف يومًا أو يومين عن الرؤية، ونوافذها أسبوع أو أكثر): متوسط البيع اليومي داخل النافذة ÷ متوسط الأيام المحيطة بها (28 يومًا قبلها وبعدها دون أي نافذة موسم أخرى). "
+                       "لكل موسم سنتان على الأكثر من التاريخ الحالي، فالأرقام مؤشر لا وعد. النمط الأسبوعي والشهري من الأيام التي فيها أوزان معروفة حتى أمس؛ اليوم الذي لا فواتير فيه صفر حقيقي.")
         return {"meaning": meaning, "tables": tables, "totals": cards}
 
     def _demand_daily(self, repo):

@@ -1073,6 +1073,19 @@ class DemandTests(Case):
         self.assertEqual(monthly["سبتمبر 2026"]["grams"], D("9999.000"))                              # nothing was cut at an opening day
         self.assertTrue(any("الرصيد الافتتاحي غير مسجل" in line for line in result["meaning"]))
 
+    def test_the_season_weekday_and_month_part_tables_are_present_and_say_when_the_history_is_too_short(self):
+        result = self.service.run("demand", {})
+        tables = {t["key"]: t for t in result["tables"]}
+        self.assertEqual([x["season"] for x in tables["seasons"]["rows"]], ["رمضان", "قبل عيد الفطر (7 أيام)", "أسبوع عيد الفطر", "بعد عيد الفطر (3 أسابيع)", "قبل عيد الأضحى (7 أيام)", "أسبوع عيد الأضحى", "بعد عيد الأضحى (3 أسابيع)", "عيد الأم (الأسبوع قبله)"])
+        self.assertTrue(all("×" in x["uplift"] or x["uplift"] == "غير مقاس" for x in tables["seasons"]["rows"]))
+        self.assertTrue(all(x["next"] != "" for x in tables["seasons"]["rows"]))
+        # the fixture has one bill a month: far too few days for a weekday pattern (every weekday needs eight days) and for the four parts of the month
+        self.assertEqual((tables["weekdays"]["rows"], tables["monthparts"]["rows"]), ([], []))
+        self.assertIn("التاريخ لا يكفي", tables["weekdays"]["note"])
+        card = next(t for t in result["totals"] if t["label"] == "أقرب موسم")
+        self.assertIn("بعد", card["note"])
+        self.assertTrue(any("التقويم الهجري الجدولي" in line for line in result["meaning"]))
+
     def test_the_line_chart_has_the_chosen_year_and_the_year_before_with_gaps_for_unfinished_periods(self):
         chart = self.service.demand_chart("M", "")
         self.assertEqual((chart["selected"], chart["available"], len(chart["labels"])), ([2026, 2025], [2025, 2026], 12))          # the default: the latest year with data and the one before it
