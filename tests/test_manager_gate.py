@@ -137,6 +137,29 @@ class GateScreenTests(harness.InvoicePageTests):
         self.assertEqual(calls[0], ("old-pass", "new-pass1", "new-pass1"))
         self.assertEqual(self.item("passwordCurrent").property("text"), "")                       # the fields are cleared
 
+    def test_the_inventory_pages_sit_behind_the_same_lock_and_open_from_the_reviews(self):
+        for page in (2, 11, 12):                                                                   # المخزون • بيان المخزون • الجرد بالباركود
+            self.gate.lock()
+            self.root.setProperty("currentPage", page)
+            self.wait_until(lambda: self.item("managerGate").property("visible"), f"page {page} is locked")
+        self.gate._unlocked = True
+        self.gate.changed.emit()
+        self.root.setProperty("currentPage", 10)
+        QTest.qWait(300)
+        self.click("reviewsOpenInventory")
+        self.wait_until(lambda: self.root.property("currentPage") == 2, "the inventory opened from the reviews")
+        self.assertFalse(self.item("managerGate").property("visible"))
+
+    def test_the_sidebar_has_no_inventory_button_and_the_treasury_sits_under_the_invoices(self):
+        from pathlib import Path
+        source = (Path(__file__).resolve().parents[1] / "qml" / "Main.qml").read_text(encoding="utf-8")
+        order = [source.index(f'objectName: "{name}"') for name in ("invoicesNavButton", "cashNavButton", "customersNavButton", "suppliersNavButton", "reviewsNavButton")]
+        self.assertEqual(order, sorted(order))                                                      # الفواتير • الخزنة • العملاء • الموردون • ... • مراجعات المدير (the treasury button is shown only to who may see the cash)
+        self.assertLess(self.item("invoicesNavButton").mapToScene(self.item("invoicesNavButton").boundingRect().topLeft()).y(), self.item("customersNavButton").mapToScene(self.item("customersNavButton").boundingRect().topLeft()).y())
+        for child in self.root.findChildren(object):
+            if str(child.property("text") or "").strip().endswith("المخزون") and child.property("visible") and child.metaObject().className().startswith("NavButton"):
+                self.fail("the inventory is no longer in the sidebar")
+
     def test_coming_back_inside_the_grace_time_stays_open(self):
         self.gate._unlocked = True
         self.gate.changed.emit()

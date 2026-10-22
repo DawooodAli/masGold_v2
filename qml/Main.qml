@@ -3092,7 +3092,7 @@ ApplicationWindow {
             Rectangle {
                 id: managerGate
                 objectName: "managerGate"
-                readonly property bool gated: root.currentPage === 10 || root.currentPage === 5
+                readonly property bool gated: root.currentPage === 10 || root.currentPage === 5 || root.currentPage === 2 || root.currentPage === 11 || root.currentPage === 12
                 readonly property bool open: typeof managerGateVM === "undefined" || managerGateVM.unlocked
                 visible: gated && !open
                 Layout.fillWidth: true
@@ -3262,6 +3262,7 @@ ApplicationWindow {
                     pageTitle: "مراجعات المدير"
                     reportsAvailable: reportsPage.canView
                     openingAvailable: typeof positionSnapshotVM !== "undefined" && positionSnapshotVM.canManage
+                    onInventoryRequested: root.currentPage = 2
                     legacyVoidAvailable: typeof legacyInvoiceVM !== "undefined" && legacyInvoiceVM.canVoid
                     onLegacyVoidRequested: legacyVoidDialog.open()
                     onReportsRequested: root.currentPage = 5
@@ -3372,29 +3373,12 @@ ApplicationWindow {
 
 
                 NavButton {
+                    objectName: "invoicesNavButton"
                     text: "🧾  الفواتير"
                     selected: root.currentPage === 1
 
                     onClicked:
                         root.currentPage = 1
-                }
-
-
-                NavButton {
-                    text: "📦  المخزون"
-                    selected: root.currentPage === 2 || root.currentPage === 11 || root.currentPage === 12
-
-                    onClicked:
-                        root.currentPage = 2
-                }
-
-
-                NavButton {
-                    text: "👥  العملاء"
-                    selected: root.currentPage === 3
-
-                    onClicked:
-                        root.currentPage = 3
                 }
 
 
@@ -3407,6 +3391,16 @@ ApplicationWindow {
 
                     onClicked:
                         root.currentPage = 4
+                }
+
+
+                NavButton {
+                    objectName: "customersNavButton"
+                    text: "👥  العملاء"
+                    selected: root.currentPage === 3
+
+                    onClicked:
+                        root.currentPage = 3
                 }
 
 
@@ -3440,7 +3434,7 @@ ApplicationWindow {
                     objectName: "reviewsNavButton"
                     text: "🔔  مراجعات المدير" + (typeof reviewsVM !== "undefined" && reviewsVM.totalCount > 0
                                                   ? "  •  " + reviewsVM.totalCount : "")
-                    selected: root.currentPage === 10 || root.currentPage === 5
+                    selected: root.currentPage === 10 || root.currentPage === 5 || root.currentPage === 2 || root.currentPage === 11 || root.currentPage === 12
                     onClicked: root.currentPage = 10
                     Rectangle {
                         anchors.left: parent.left

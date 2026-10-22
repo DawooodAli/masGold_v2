@@ -299,7 +299,7 @@ class RecoveryToolTests(RecoveryFixture):
     def test_full_interactive_recovery_succeeds_without_printing_any_secret(self):
         code, out, err = self.run_tool(["second-owner", "نسي كلمة المرور", "RECOVER second-owner"], [NEW, NEW])
         self.assertEqual(code, 0)
-        self.assertIn("تمت استعادة", out)
+        self.assertIn("Owner password recovered", out)
         self.assertIn("masgold_test", out)
         self.assertTrue(self.passwords.verify(self.hashes()[2], NEW))
         self.assertEqual(len(self.audit_rows()), 1)
@@ -317,7 +317,7 @@ class RecoveryToolTests(RecoveryFixture):
             with self.subTest(answer=answer):
                 code, out, err = self.run_tool(["admin", "السبب", answer], [NEW, NEW])
                 self.assertEqual(code, 1)
-                self.assertIn("الإلغاء", out)
+                self.assertIn("Cancelled", out)
                 self.assert_nothing_written(before)
                 self.assert_clean(out, err)
 
@@ -383,7 +383,7 @@ class RecoveryToolTests(RecoveryFixture):
         stream = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
         errors = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
         with patch.object(sys, "stdout", stream), patch.object(sys, "stderr", errors):
-            self.assertEqual(tool.main([NEW], service_factory=lambda: self.service), 2)   # Arabic text printed
+            self.assertEqual(tool.main([NEW], service_factory=lambda: self.service), 2)   # English text printed
         self.assertEqual(self.audit_rows(), [])
 
     def test_hidden_input_fallback_is_refused(self):

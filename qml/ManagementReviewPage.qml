@@ -16,6 +16,7 @@ Item {
     signal reportsRequested()
     signal openingBalanceRequested()
     signal legacyVoidRequested()
+    signal inventoryRequested()
     property bool legacyVoidAvailable: false
     property bool reportsAvailable: false
     property bool openingAvailable: false
@@ -697,6 +698,12 @@ Item {
                 font.bold: true
             }
             Item { Layout.fillWidth: true }
+            ActionButton {
+                objectName: "reviewsOpenInventory"
+                text: "📦  المخزون"
+                accent: theme.gold
+                onClicked: reviewPage.inventoryRequested()
+            }
             ActionButton {
                 objectName: "reviewsOpenLegacyVoid"
                 visible: reviewPage.legacyVoidAvailable
