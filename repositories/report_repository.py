@@ -211,6 +211,20 @@ class ReportRepository(BaseRepository):
     def item_categories(self):
         return self._fetch_all("SELECT id, code FROM item_categories ORDER BY sort_order, code")
 
+    def scrap_cost_lines(self, end_exclusive):
+        """Every scrap-purchase line (BUY_OLD_GOLD) of a FINALIZED invoice dated before `end_exclusive`, from the first one stored, with the full-reversal correction of its invoice (if any).
+        line_total is the value paid for the line (before the invoice's final EGP-5 rounding). Plain SELECT: the service splits the period from the cumulative figures."""
+        return self._fetch_all(
+            """
+            SELECT iv.id AS invoice_id, iv.invoice_date AS doc_date, k.karat_value, il.weight_grams, il.line_total, rc.id AS reversal_id
+            FROM invoice_lines il
+            JOIN invoices iv ON iv.id = il.invoice_id
+            JOIN karats k ON k.id = il.karat_id
+            LEFT JOIN transaction_corrections rc ON rc.source_type = 'INVOICE' AND rc.source_id = iv.id AND rc.correction_type = 'FULL_REVERSAL'
+            WHERE il.line_type = 'BUY_OLD_GOLD' AND iv.invoice_status = 'FINALIZED' AND iv.invoice_date < %s
+            ORDER BY iv.invoice_date, iv.id, il.id
+            """, (end_exclusive,))
+
     def employees(self):
         return self._fetch_all("SELECT id, name FROM employees ORDER BY name, id")
 

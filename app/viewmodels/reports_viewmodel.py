@@ -31,6 +31,7 @@ FILTER_SPECS = {
              {"key": "factory", "label": "المصنع", "options": [("", "الكل")], "dynamic": True},
              {"key": "weight_min", "label": "الوزن من (جرام)", "type": "text"},
              {"key": "weight_max", "label": "إلى (جرام)", "type": "text"}],
+    "scrapcost": [{"key": "karat", "label": "العيار", "options": [("", "الكل"), ("18", "18"), ("21", "21"), ("22", "22"), ("24", "24")]}],
     "makingprofit": [{"key": "category", "label": "الحرف", "options": [("", "الكل")], "dynamic": True},
                      {"key": "karat", "label": "العيار", "options": [("", "الكل"), ("18", "18"), ("21", "21"), ("22", "22"), ("24", "24")]}],
     "employees": [{"key": "employee", "label": "الموظف", "options": [("", "الكل")], "dynamic": True},

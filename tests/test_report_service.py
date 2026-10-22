@@ -51,6 +51,13 @@ class FakeRepo:
                 move("CASH", "100", "FINANCIAL_OPERATION", transfer=7), move("CASH", "50000", None, type_code="OPENING_BALANCE")]
         return [r for r in rows if r["ledger"] in ledgers]
 
+    # ---- scrap cost: 21K bought on 20 Sep (20 g for 118,000), on 5 Oct (10 g for 60,000) and 12 Oct (5 g for 31,000), plus a reversed purchase; 18K on 20 Oct (4 g for 18,000)
+    def scrap_cost_lines(self, end):
+        def line(invoice, day, karat_, grams, paid, reversal=None):
+            return {"invoice_id": invoice, "doc_date": day, "karat_value": karat_, "weight_grams": D(grams), "line_total": D(paid), "reversal_id": reversal}
+        return [line(1, datetime(2026, 9, 20, 11), 21, "20.000", "118000.00"), line(2, datetime(2026, 10, 5, 11), 21, "10.000", "60000.00"), line(3, datetime(2026, 10, 12, 11), 21, "5.000", "31000.00"),
+                line(4, datetime(2026, 10, 14, 11), 21, "7.000", "9999.00", reversal=5), line(5, datetime(2026, 10, 20, 11), 18, "4.000", "18000.00")]
+
     # ---- making profit: category costs now A = 150, B = 200; 21K A piece 10 g (making 2,000, stored cost 100/g), 21K A piece 5 g (making 1,000, no stored cost: estimated 150/g),
     #      18K B piece 4 g (making 800, stored cost 250/g), a legacy sale with unknown making, a piece without a letter or cost, and a fully reversed invoice
     def making_profit_lines(self, start, end):
@@ -786,7 +793,7 @@ class SafetyTests(Case):
             service.run("sales", {})
 
     def test_available_reports_follow_the_rights(self):
-        self.assertEqual([r["key"] for r in self.service.available_reports()], ["sales", "stock", "alerts", "indicators", "gold", "employees", "makingprofit", "customers", "deadcash", "suppliers", "treasury", "cashflow", "market"])
+        self.assertEqual([r["key"] for r in self.service.available_reports()], ["sales", "stock", "alerts", "indicators", "gold", "employees", "makingprofit", "scrapcost", "customers", "deadcash", "suppliers", "treasury", "cashflow", "market"])
         self.session = session_for({"APP_LOGIN", "REPORTS_VIEW", "CUSTOMERS_VIEW"})
         limited = ReportService(self.session, repository=FakeRepo, authorization=FakeAuthorization(self.session))
         self.assertEqual([r["key"] for r in limited.available_reports()], ["indicators", "customers", "deadcash"])
@@ -976,6 +983,44 @@ class MakingProfitTests(Case):
             self.assertNotIn("makingprofit", [r["key"] for r in limited.available_reports()])
             with self.assertRaises(PermissionError):
                 limited.run("makingprofit", self.PERIOD)
+
+
+class ScrapCostTests(Case):
+    PERIOD = {"from": "2026-10-01", "to": "2026-10-31"}
+
+    def row(self, result, karat_):
+        return next(r for r in result["tables"][0]["rows"] if r["karat"] == f"عيار {karat_}")
+
+    def test_weighted_average_for_the_period_and_from_the_start_with_hand_numbers(self):
+        r = self.row(self.service.run("scrapcost", self.PERIOD), 21)
+        self.assertEqual((r["p_grams"], r["p_paid"], r["p_avg"]), (D("15.000"), D("91000.00"), D("6066.67")))             # (60000 + 31000) / (10 + 5)
+        self.assertEqual((r["c_grams"], r["c_avg"]), (D("35.000"), D("5971.43")))                                         # (118000 + 91000) / (20 + 15)
+        self.assertEqual((r["price"], r["diff"]), (D("6390.00"), D("-323.33")))                                           # latest stored SHOP_BUY 6390; the period average is cheaper by 323.33
+
+    def test_karats_stay_apart_a_missing_price_is_a_dash_and_the_reversed_purchase_is_counted(self):
+        result = self.service.run("scrapcost", self.PERIOD)
+        r18 = self.row(result, 18)
+        self.assertEqual((r18["p_avg"], r18["price"], r18["diff"]), (D("4500.00"), "—", "—"))
+        values = self.totals(result)
+        self.assertEqual(values["فواتير معكوسة غير محسوبة"], 1)
+        self.assertEqual([t["karat"] for t in result["totals"] if t["karat"]], [21, 18])                                  # one coloured card per karat
+        self.assertIn("6,066.67", values["متوسط تكلفة كسر عيار 21"])
+
+    def test_a_period_without_purchases_has_no_period_figures_but_keeps_the_cumulative_ones(self):
+        result = self.service.run("scrapcost", {"from": "2026-11-01", "to": "2026-11-30"})
+        r = self.row(result, 21)
+        self.assertEqual((r["p_grams"], r["p_avg"], r["diff"]), (D("0.000"), "—", "—"))
+        self.assertEqual(r["c_avg"], D("5971.43"))                                                                        # (118000 + 60000 + 31000) / 35: nothing after October
+        self.assertEqual(self.service.run("scrapcost", {**self.PERIOD, "karat": "18"})["tables"][0]["rows"][0]["karat"], "عيار 18")
+        with self.assertRaises(ReportError):
+            self.service.run("scrapcost", {**self.PERIOD, "karat": "19"})
+
+    def test_it_needs_the_invoice_right(self):
+        session = session_for(frozenset({"APP_LOGIN", "REPORTS_VIEW"}))
+        limited = ReportService(session, transaction_factory=self.service._transaction, repository=FakeRepo, authorization=FakeAuthorization(session), today=lambda: TODAY)
+        self.assertNotIn("scrapcost", [r["key"] for r in limited.available_reports()])
+        with self.assertRaises(PermissionError):
+            limited.run("scrapcost", self.PERIOD)
 
 
 class ExportTests(Case):

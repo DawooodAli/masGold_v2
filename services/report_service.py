@@ -32,10 +32,10 @@ MAX_ROWS = 50000
 ZERO = Decimal("0")
 ZERO3, ZERO2 = Decimal("0.000"), Decimal("0.00")
 BASE_PERMISSION = "REPORTS_VIEW"
-REPORT_PERMISSIONS = {"sales": ("INVOICE_VIEW",), "stock": ("INVENTORY_VIEW",), "alerts": ("INVENTORY_VIEW",), "indicators": (), "gold": (), "employees": ("INVOICE_VIEW",), "makingprofit": ("INVOICE_VIEW", "INVENTORY_VIEW"), "customers": ("CUSTOMERS_VIEW",), "deadcash": ("CUSTOMERS_VIEW",),
+REPORT_PERMISSIONS = {"sales": ("INVOICE_VIEW",), "stock": ("INVENTORY_VIEW",), "alerts": ("INVENTORY_VIEW",), "indicators": (), "gold": (), "employees": ("INVOICE_VIEW",), "makingprofit": ("INVOICE_VIEW", "INVENTORY_VIEW"), "scrapcost": ("INVOICE_VIEW",), "customers": ("CUSTOMERS_VIEW",), "deadcash": ("CUSTOMERS_VIEW",),
                       "suppliers": ("SUPPLIER_VIEW",), "treasury": (), "cashflow": (), "market": ("MARKET_TRIP_MANAGE",),
                       "profit": ("MANAGEMENT_REVIEW", "MARKET_TRIP_MANAGE", "INTERMEDIARY_HOLDING_VIEW")}                      # treasury: CASH_VIEW and / or BANK_VIEW per section
-REPORT_TITLES = {"sales": "المبيعات والمرتجعات", "stock": "المخزون المتاح", "alerts": "تنبيهات المخزون", "indicators": "مؤشرات الذهب", "gold": "حركة الأصناف", "employees": "أداء الموظفين", "makingprofit": "ربح المصنعية", "customers": "العملاء", "deadcash": "الديون المعدومة (Dead Cash)", "suppliers": "الموردون", "treasury": "الخزنة والبنوك", "cashflow": "المصروفات والإيرادات", "market": "عهدة السوق والخسائر", "profit": "ربح الذهب (مكافئ 21)"}
+REPORT_TITLES = {"sales": "المبيعات والمرتجعات", "stock": "المخزون المتاح", "alerts": "تنبيهات المخزون", "indicators": "مؤشرات الذهب", "gold": "حركة الأصناف", "employees": "أداء الموظفين", "makingprofit": "ربح المصنعية", "scrapcost": "تكلفة الكسر", "customers": "العملاء", "deadcash": "الديون المعدومة (Dead Cash)", "suppliers": "الموردون", "treasury": "الخزنة والبنوك", "cashflow": "المصروفات والإيرادات", "market": "عهدة السوق والخسائر", "profit": "ربح الذهب (مكافئ 21)"}
 KIND_TEXT = {"SALE": "بيع", "MIXED": "بيع مع شراء كسر", "OLD_GOLD_PURCHASE": "شراء كسر", "RETURN": "مرتجع", "EXCHANGE": "استبدال"}
 STATUS_TEXT = {"IN_STOCK": "متاح", "SOLD": "مباع", "SCRAPPED": "كسر", "REMOVED": "مُخرج", "RETURNED_PENDING": "مرتجع بانتظار الفحص", "CONVERTED_TO_OLD_GOLD": "حُوّل إلى كسر"}
 CLASS_TEXT = {"NEW_STOCK": "جديد", "OLD_STOCK": "قديم"}
@@ -948,6 +948,57 @@ class ReportService:
         if reversed_invoices:
             cards.append(total("فواتير معكوسة غير محسوبة", len(reversed_invoices), "count", "", "margin"))
         return {"meaning": meaning, "tables": tables, "totals": cards, "options": options}
+
+    # ------------------------------------------------------------------ 3d. scrap cost (owner request): what the shop really paid per gram for the scrap it bought
+    def _scrapcost(self, repo, gate, filters, start, end):
+        """Per KARAT: the grams of scrap bought from customers and the value paid for them, as the weighted average price per gram, for the PERIOD and cumulatively from the first stored purchase up
+        to the end of the period; and, for information, the latest stored SHOP_BUY price of that karat with the difference (average of the period minus that price: positive = the shop paid more than
+        the price it would pay today). Only FINALIZED invoices; fully reversed ones are not counted. The value is the line total before the invoice's final EGP-5 rounding. It is a price comparison,
+        NOT a valuation of the stock."""
+        karat = str(filters.get("karat") or "")
+        if karat not in ("", "18", "21", "22", "24"):
+            raise ReportError("FILTER_INVALID", "عيار غير صحيح.")
+        period, cumulative, reversed_invoices = {}, {}, set()
+        for r in repo.scrap_cost_lines(end):
+            if r["reversal_id"]:
+                if _dateish(r["doc_date"]) >= start:
+                    reversed_invoices.add(int(r["invoice_id"]))
+                continue
+            k = int(r["karat_value"])
+            if karat and str(k) != karat:
+                continue
+            grams, paid = _dec(r["weight_grams"]), _dec(r["line_total"])
+            for bucket in ((cumulative, period) if _dateish(r["doc_date"]) >= start else (cumulative,)):
+                b = bucket.setdefault(k, {"grams": ZERO3, "paid": ZERO2})
+                b["grams"] += grams
+                b["paid"] += paid
+        latest = {}
+        if repo.has_table("gold_price_quotes"):
+            for r in repo.gold_price_daily():                                      # ascending by day: the last one per karat is the latest stored price
+                latest[int(r["karat_value"])] = (_dateish(r["day"]).date(), _dec(r["buy"]))
+
+        def average(b):
+            return (b["paid"] / b["grams"]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if b and b["grams"] else None
+        columns = [col("karat", "العيار"), col("p_grams", "جرامات الفترة", "grams"), col("p_paid", "المدفوع في الفترة", "money"), col("p_avg", "متوسط سعر الجرام (الفترة)", "money"),
+                   col("c_grams", "الجرامات من البداية", "grams"), col("c_avg", "متوسط سعر الجرام (من البداية)", "money"), col("price", "سعر شراء المحل الحالي", "money"),
+                   col("diff", "الفرق عن السعر الحالي", "money")]
+        rows, cards = [], []
+        for k in sorted(set(period) | set(cumulative), reverse=True):
+            p, c = period.get(k), cumulative.get(k)
+            p_avg, c_avg = average(p), average(c)
+            price = latest.get(k)
+            rows.append({"karat": f"عيار {k}", "p_grams": p["grams"] if p else ZERO3, "p_paid": p["paid"] if p else ZERO2, "p_avg": p_avg if p_avg is not None else "—",
+                         "c_grams": c["grams"] if c else ZERO3, "c_avg": c_avg if c_avg is not None else "—", "price": price[1] if price else "—",
+                         "diff": (p_avg - price[1]) if p_avg is not None and price else "—"})
+            if p_avg is not None:
+                note = f"{p['grams']:,.3f} جرام بقيمة {p['paid']:,.2f} ج" + (f" • من البداية {c_avg:,.2f}" if c_avg is not None else "")
+                cards.append(total(f"متوسط تكلفة كسر عيار {k}", f"{p_avg:,.2f} ج/جرام", "text", note, f"scrap{k}", karat=k))
+        meaning = ["متوسط مرجح: كل ما دفعناه ÷ كل جرامات الكسر المشتراة من العملاء، لكل عيار على حدة (لا يُجمع بين الأعيار). «من البداية» من أول فاتورة شراء مخزنة حتى نهاية الفترة.",
+                   "القيمة هي إجمالي بند شراء الكسر (بعد خصم الكسر) قبل تقريب الفاتورة النهائي. الفواتير المعكوسة بالكامل لا تُحسب.",
+                   "الفرق عن السعر الحالي = متوسط الفترة − آخر سعر شراء مخزن: الموجب يعني أن الشراء كان بأعلى من سعر اليوم. هو مقارنة أسعار وليس تقييمًا للمخزون."]
+        if reversed_invoices:
+            cards.append(total("فواتير معكوسة غير محسوبة", len(reversed_invoices), "count", "", "summary"))
+        return {"meaning": meaning, "tables": [table("scrapcost", "تكلفة الكسر المشترى", columns, rows)], "totals": cards}
 
     @classmethod
     def _gold_filter_values(cls, filters):
