@@ -64,8 +64,6 @@ Item {
         color: theme.panel
         radius: theme.radiusCard
         border.color: theme.cardBorder
-        Rectangle { anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom
-                    anchors.topMargin: 16; anchors.bottomMargin: 16; anchors.rightMargin: 1; width: 3; radius: 2; color: section.accent }
         Txt { id: sectionTitle; anchors.top: parent.top; anchors.right: parent.right; anchors.topMargin: 7
               anchors.rightMargin: 14; value: section.title; color: section.accent; font.bold: true
               font.pixelSize: theme.fontSection }
@@ -658,29 +656,6 @@ Item {
                 }
                 }
 
-                Section {
-                    objectName: "historyReturnTrackingSection"
-                    title: "الأصلي / المرتجع / المتبقي"
-                    visible: !!historyPage.vm && historyPage.vm.returnTracking.length > 0
-                    Repeater {
-                        model: historyPage.vm ? historyPage.vm.returnTracking : []
-                        delegate: ColumnLayout {
-                            required property var modelData
-                            required property int index
-                            Layout.fillWidth: true
-                            spacing: 3
-                            Txt { Layout.fillWidth: true; value: modelData.item + (modelData.barcode ? " — " + modelData.barcode : "")
-                                  font.bold: true; color: theme.gold }
-                            Txt { objectName: "historyTrackingOriginal_" + index; Layout.fillWidth: true
-                                  value: modelData.original; wrapMode: Text.WordWrap }
-                            Txt { objectName: "historyTrackingReturned_" + index; Layout.fillWidth: true
-                                  value: modelData.returned; wrapMode: Text.WordWrap; color: theme.accountPayable }
-                            Txt { objectName: "historyTrackingRemaining_" + index; Layout.fillWidth: true
-                                  value: modelData.remaining; wrapMode: Text.WordWrap }
-                        }
-                    }
-                }
-
                 // ============ 4. exchanges of this invoice (inline, compact; only exchange facts)
                 Section {
                     objectName: "historyExchangesSection"
@@ -912,6 +887,30 @@ Item {
                         Figure { objectName: "historyFinalizedAt"; label: "تاريخ ووقت الحفظ"; value: detailScroll.d.finalizedAt || "" }
                         Figure { objectName: "historyOperation"; label: "العملية"
                                  value: (detailScroll.d.typeText || "") + " • " + (detailScroll.d.settlementText || "") }
+                    }
+                }
+
+                // ============ 6. the original / returned / remaining of each sold piece: the LAST card, after the total strip
+                Section {
+                    objectName: "historyReturnTrackingSection"
+                    title: "الأصلي / المرتجع / المتبقي"
+                    visible: !!historyPage.vm && historyPage.vm.returnTracking.length > 0
+                    Repeater {
+                        model: historyPage.vm ? historyPage.vm.returnTracking : []
+                        delegate: ColumnLayout {
+                            required property var modelData
+                            required property int index
+                            Layout.fillWidth: true
+                            spacing: 3
+                            Txt { Layout.fillWidth: true; value: modelData.item + (modelData.barcode ? " — " + modelData.barcode : "")
+                                  font.bold: true; color: theme.gold }
+                            Txt { objectName: "historyTrackingOriginal_" + index; Layout.fillWidth: true
+                                  value: modelData.original; wrapMode: Text.WordWrap }
+                            Txt { objectName: "historyTrackingReturned_" + index; Layout.fillWidth: true
+                                  value: modelData.returned; wrapMode: Text.WordWrap; color: theme.accountPayable }
+                            Txt { objectName: "historyTrackingRemaining_" + index; Layout.fillWidth: true
+                                  value: modelData.remaining; wrapMode: Text.WordWrap }
+                        }
                     }
                 }
 

@@ -3261,7 +3261,11 @@ ApplicationWindow {
                 ManagementReviewPage {
                     pageTitle: "مراجعات المدير"
                     reportsAvailable: reportsPage.canView
+                    openingAvailable: typeof positionSnapshotVM !== "undefined" && positionSnapshotVM.canManage
+                    legacyVoidAvailable: typeof legacyInvoiceVM !== "undefined" && legacyInvoiceVM.canVoid
+                    onLegacyVoidRequested: legacyVoidDialog.open()
                     onReportsRequested: root.currentPage = 5
+                    onOpeningBalanceRequested: positionOpeningDialog.open()
                     onInvoiceRequested: function(invoiceId) {
                         root.currentPage = 1
                         billingWorkspace.currentTab = 1
@@ -5713,7 +5717,6 @@ ApplicationWindow {
                 GoldProviderSettings { id: goldProvider; Layout.fillWidth: true }
                 PrintingSettings { id: printingSettings; Layout.fillWidth: true }
                 PasswordSettings { id: passwordSettings; Layout.fillWidth: true }
-                PositionOpeningSettings { id: positionOpening; Layout.fillWidth: true }
             }
         }
     }
@@ -8601,6 +8604,74 @@ ApplicationWindow {
             ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
             ColumnLayout { id: dialogBody; width: parent.width; spacing: 10 }
         }
+    }
+
+    // إلغاء فاتورة قديمة: opened ONLY from مراجعات المدير (behind its password). The service rechecks the right and every rule.
+    SettingsDialog {
+        id: legacyVoidDialog
+        objectName: "legacyVoidDialog"
+        dialogTitle: "إلغاء فاتورة قديمة وإرجاع قطعها للمخزون"
+        readonly property var vm: typeof legacyInvoiceVM !== "undefined" ? legacyInvoiceVM : null
+        onOpened: { if (vm) vm.reset(); voidNumber.text = ""; voidReason.text = ""; voidConfirm.checked = false; voidNumber.forceActiveFocus() }
+        Connections { target: legacyVoidDialog.vm; ignoreUnknownSignals: true
+                      function onVoided(number, count) { voidReason.text = ""; voidConfirm.checked = false; voidNumber.text = "" } }
+        GoldPriceLabel {
+            Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.textMuted; font.pixelSize: 11
+            value: "للفواتير القديمة المنقولة من البرنامج القديم فقط (الفواتير الجديدة تُلغى بالعكس من تصحيح العمليات). القطع المباعة فيها ترجع للمخزون، ورصيد العميل لا يتغيّر (عدّله يدويًا لو لزم)."
+        }
+        RowLayout {
+            Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+            GoldPriceLabel { value: "رقم الفاتورة"; color: theme.textSecondary }
+            TextField { id: voidNumber; objectName: "legacyVoidNumber"; Layout.preferredWidth: 220; horizontalAlignment: TextInput.AlignRight; font.family: "Cairo"
+                        onAccepted: voidSearch.clicked() }
+            GoldPriceButton { id: voidSearch; objectName: "legacyVoidSearch"; text: "🔍 بحث"; enabled: !!legacyVoidDialog.vm && !legacyVoidDialog.vm.busy && voidNumber.text.length > 0
+                              onClicked: legacyVoidDialog.vm.lookup(voidNumber.text) }
+            Item { Layout.fillWidth: true }
+        }
+        ColumnLayout {
+            objectName: "legacyVoidInfo"
+            Layout.fillWidth: true; spacing: 4
+            visible: !!legacyVoidDialog.vm && !!legacyVoidDialog.vm.info.number
+            GoldPriceLabel { objectName: "legacyVoidHeadline"; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.gold; font.bold: true
+                             value: legacyVoidDialog.vm && legacyVoidDialog.vm.info.number ? "فاتورة " + legacyVoidDialog.vm.info.number + " — " + legacyVoidDialog.vm.info.date + " — " + legacyVoidDialog.vm.info.customer + " — " + legacyVoidDialog.vm.info.total + " ج" : "" }
+            Repeater {
+                model: legacyVoidDialog.vm && legacyVoidDialog.vm.info.pieces ? legacyVoidDialog.vm.info.pieces : []
+                delegate: GoldPriceLabel {
+                    required property var modelData
+                    Layout.fillWidth: true; wrapMode: Text.WordWrap
+                    color: modelData.ok ? theme.textPrimary : theme.red
+                    value: modelData.item + " عيار " + modelData.karat + " — " + modelData.weight + " جرام — " + modelData.barcode + (modelData.ok ? "  ← ترجع للمخزون" : "  ✕ لم تعد «مباعة»")
+                }
+            }
+            GoldPriceLabel { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: 11; visible: !!legacyVoidDialog.vm && legacyVoidDialog.vm.info.oldGoldLines > 0
+                             value: legacyVoidDialog.vm && legacyVoidDialog.vm.info.oldGoldLines ? legacyVoidDialog.vm.info.oldGoldLines + " بند كسر: تاريخ فقط ولا يتحرك بسببه شيء." : "" }
+            GoldPriceLabel { objectName: "legacyVoidBlocked"; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.red; font.bold: true; visible: !!legacyVoidDialog.vm && !!legacyVoidDialog.vm.info.blocked
+                             value: "لا يمكن إلغاء هذه الفاتورة: فيها قطعة لم تعد «مباعة»." }
+            TextField { id: voidReason; objectName: "legacyVoidReason"; Layout.fillWidth: true; placeholderText: "سبب الإلغاء (إجباري)"; horizontalAlignment: TextInput.AlignRight; font.family: "Cairo"; maximumLength: 500 }
+            CheckBox { id: voidConfirm; objectName: "legacyVoidConfirm"; Layout.fillWidth: true; font.family: "Cairo"; text: "أؤكد إلغاء الفاتورة وإرجاع قطعها للمخزون" }
+            GoldPriceButton {
+                objectName: "legacyVoidDo"
+                text: "إلغاء الفاتورة وإرجاع القطع"
+                enabled: !!legacyVoidDialog.vm && !legacyVoidDialog.vm.busy && !legacyVoidDialog.vm.info.blocked && voidConfirm.checked && voidReason.text.trim().length > 0
+                onClicked: legacyVoidDialog.vm.void(legacyVoidDialog.vm.info.number, voidReason.text, voidConfirm.checked)
+            }
+        }
+        GoldPriceLabel {
+            objectName: "legacyVoidMessage"
+            Layout.fillWidth: true; wrapMode: Text.WordWrap; font.bold: true
+            visible: value.length > 0
+            value: legacyVoidDialog.vm ? legacyVoidDialog.vm.message : ""
+            color: legacyVoidDialog.vm && legacyVoidDialog.vm.messageIsError ? theme.red : theme.green
+        }
+    }
+
+    // الرصيد الافتتاحي وجرد الذهب: opened ONLY from مراجعات المدير (behind its password), never from the Settings page.
+    SettingsDialog {
+        id: positionOpeningDialog
+        objectName: "positionOpeningDialog"
+        dialogTitle: "الرصيد الافتتاحي وجرد الذهب"
+        onOpened: if (typeof positionSnapshotVM !== "undefined" && positionSnapshotVM.canManage) positionSnapshotVM.refresh()
+        PositionOpeningSettings { Layout.fillWidth: true; sectionTitle: "" }
     }
 
     SettingsDialog {

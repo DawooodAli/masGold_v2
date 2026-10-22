@@ -24,7 +24,8 @@ class AuthenticationWorker(QThread):
                 result = self._service.first_run_status()
             elif self._operation == "dev_login":
                 # TEMPORARY DEVELOPMENT AUTO-LOGIN — DISABLE BEFORE PRODUCTION
-                result = self._service.establish_development_session(self._username)
+                sign_in = getattr(self._service, "establish_automatic_session", None) or self._service.establish_development_session
+                result = sign_in(self._username)
             elif self._operation == "setup":
                 result = self._service.create_first_owner(**self._payload)
             else:

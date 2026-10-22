@@ -54,7 +54,7 @@ class _CardBase(harness.InvoicePageTests):
     allowed = True
 
     def open_settings(self):
-        self.root.setProperty("currentPage", 6)
+        self.open_settings_dialog(10, "reviewsOpenOpening", "positionOpeningDialog")                 # the card lives inside مراجعات المدير
         self.wait_until(lambda: self.visual_item("settingsPositionOpening") is not None, "the card is visible")
         vm = self.controller.operational_viewmodels["positionSnapshotVM"]
         self.wait_until(lambda: vm.loaded, "the initial balance state loaded")
@@ -66,7 +66,7 @@ class PositionOpeningCardTests(_CardBase):
     def test_the_initial_balance_is_entered_once_then_read_only_and_the_manual_button_appears(self):
         vm = self.open_settings()
         QTest.qWait(300)
-        self.scroll_settings_to("settingsPositionOpening")
+        self.scroll_dialog_to("positionOpeningDialog", "settingsPositionOpening")
         self.assertFalse(self.item("openingSave").property("enabled"))                       # nothing typed, nothing confirmed
         self.type_into("openingGold", "5000")
         self.type_into("openingSuppliers", "-120.5")
@@ -74,7 +74,7 @@ class PositionOpeningCardTests(_CardBase):
         self.type_into("openingBank", "30000")
         self.assertFalse(self.item("openingSave").property("enabled"))                       # the confirmation is mandatory
         QTest.qWait(300)                                                                     # the other Settings cards finish loading and move the layout
-        self.scroll_settings_to("openingConfirm")
+        self.scroll_dialog_to("positionOpeningDialog", "openingConfirm")
         self.click("openingConfirm")
         self.wait_until(lambda: self.item("openingSave").property("enabled"), "save enabled after confirming")
         self.assert_inside_window(self.item("openingSave"))
@@ -90,7 +90,7 @@ class PositionOpeningCardTests(_CardBase):
             self.root.setWidth(width)
             self.root.setHeight(height)
             QTest.qWait(150)
-            self.scroll_settings_to("settingsPositionOpening")
+            self.scroll_dialog_to("positionOpeningDialog", "settingsPositionOpening")
             self.assert_inside_window(self.item("openingTakeNow"))
         self.assertEqual(self.warnings if hasattr(self, "warnings") else [], [])
 
@@ -99,9 +99,13 @@ class PositionOpeningHiddenTests(_CardBase):
     allowed = False
 
     def test_a_user_who_is_not_the_owner_is_not_offered_the_card(self):
+        self.root.setProperty("currentPage", 10)
+        QTest.qWait(500)
+        button = self.visual_item("reviewsOpenOpening")
+        self.assertTrue(button is None or not button.property("visible"))                    # not the owner: no button in the manager reviews
         self.root.setProperty("currentPage", 6)
-        QTest.qWait(400)
-        self.assertFalse(self.item("settingsPositionOpening").property("visible"))            # not the owner: the card is not offered
+        QTest.qWait(300)
+        self.assertIsNone(self.visual_item("settingsPositionOpening"))                        # and the Settings page never carried it any more
 
 
 for _cls in (_CardBase, PositionOpeningCardTests, PositionOpeningHiddenTests):

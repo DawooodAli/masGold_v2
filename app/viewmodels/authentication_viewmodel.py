@@ -16,7 +16,8 @@ class AuthenticationViewModel(QObject):
         # after logout the normal Login window is shown.
         if service is None:
             from config.dev_settings import dev_auto_login_username
-            self._dev_auto_login = dev_auto_login_username()
+            from config.workstation_settings import auto_sign_in_user
+            self._dev_auto_login = dev_auto_login_username() or auto_sign_in_user()          # the development switch, else this workstation's own choice
         else:
             self._dev_auto_login = None
         self._dev_login_pending = False

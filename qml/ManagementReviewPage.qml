@@ -14,7 +14,11 @@ Item {
     signal invoiceRequested(string invoiceId)
     signal customerRequested(string customerId)
     signal reportsRequested()
+    signal openingBalanceRequested()
+    signal legacyVoidRequested()
+    property bool legacyVoidAvailable: false
     property bool reportsAvailable: false
+    property bool openingAvailable: false
 
     Theme { id: theme }
 
@@ -693,6 +697,20 @@ Item {
                 font.bold: true
             }
             Item { Layout.fillWidth: true }
+            ActionButton {
+                objectName: "reviewsOpenLegacyVoid"
+                visible: reviewPage.legacyVoidAvailable
+                text: "🗑  إلغاء فاتورة قديمة"
+                accent: theme.red
+                onClicked: reviewPage.legacyVoidRequested()
+            }
+            ActionButton {
+                objectName: "reviewsOpenOpening"
+                visible: reviewPage.openingAvailable
+                text: "⚖  الرصيد الافتتاحي وجرد الذهب"
+                accent: theme.gold
+                onClicked: reviewPage.openingBalanceRequested()
+            }
             ActionButton {
                 objectName: "reviewsOpenReports"
                 visible: reviewPage.reportsAvailable

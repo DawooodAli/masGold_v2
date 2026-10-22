@@ -309,6 +309,35 @@ class AuthenticationService:
         finally:
             self._lock.release()
 
+    def establish_automatic_session(self, username):
+        """Open the program as ONE named account without its password, only when that account is the one this workstation chose (config.workstation_settings) or the development auto-login allows it.
+        Every account check of a normal login still applies (exists, active, linked employee active, APP_LOGIN, no pending password change) and the login is recorded like a normal login."""
+        from config.dev_settings import dev_auto_login_username
+        from config.workstation_settings import auto_sign_in_user
+        if not isinstance(username, str) or not username or username not in (dev_auto_login_username(), auto_sign_in_user()):
+            raise AuthenticationError(GENERIC_ERROR)
+        if not self._lock.acquire(blocking=False):
+            raise AuthenticationError(GENERIC_ERROR)
+        try:
+            with self._transaction() as connection:
+                repository = self._repository(connection)
+                credentials = repository.find_credentials(username)
+                user = credentials and repository.get_identity(credentials["id"], lock=True)
+                if (not user or not user["is_active"]
+                        or (user["employee_id"] is not None and not user.get("employee_active"))):
+                    raise AuthenticationError(GENERIC_ERROR)
+                permissions = repository.effective_permissions(user["id"], lock=True)
+                if "APP_LOGIN" not in permissions:
+                    raise AuthenticationError(GENERIC_ERROR)
+                if user["must_change_password"]:
+                    raise AuthenticationError(CHANGE_REQUIRED)
+                repository.record_login(user["id"])
+                result = AuthenticationResult(int(user["id"]), user["employee_id"], user["display_name"], permissions, _VERIFIED)
+            logger.info("Automatic sign-in of user id %s (chosen on this workstation).", result.user_id)
+            return result
+        finally:
+            self._lock.release()
+
     def _authenticate(self, username, password):
         if not isinstance(username, str) or not 0 < len(username) <= 100:
             raise AuthenticationError(GENERIC_ERROR)

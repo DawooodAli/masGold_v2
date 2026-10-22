@@ -1,12 +1,25 @@
 from dataclasses import dataclass
 from pathlib import Path
 import os
+import re
 
 from dotenv import load_dotenv
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-ENV_FILE = PROJECT_ROOT / ".env"
+
+
+def env_file_path(environ=None):
+    """The settings file of this run: `.env` (development, the default) or the one named by MASGOLD_ENV_FILE (for example `.env.production`, started through run_production.bat). Only a plain
+    `.env` / `.env.<name>` file in the project folder is accepted, so the variable can never point anywhere else."""
+    environ = os.environ if environ is None else environ
+    name = str(environ.get("MASGOLD_ENV_FILE", "") or "").strip()
+    if name and re.fullmatch(r"\.env(\.[A-Za-z0-9_-]{1,30})?", name):
+        return PROJECT_ROOT / name
+    return PROJECT_ROOT / ".env"
+
+
+ENV_FILE = env_file_path()
 
 load_dotenv(ENV_FILE, override=True)
 

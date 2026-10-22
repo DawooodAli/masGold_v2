@@ -194,6 +194,8 @@ class InvoiceHistoryService:
             _decimal(saved.get("L")) if saved.get("L") not in (None, "") else ZERO)
 
         sale_lines = [self._sale_line(line) for line in invoice["lines"] if line["line_type"] in SALE_LINE_TYPES]
+        if legacy and not saved:
+            saved = self._legacy_economics(sale_lines)                 # the values the old bill's own stored lines prove (never today's prices)
         self._return_tracking(sale_lines, invoice)
         old_gold_lines = [self._old_gold_line(line) for line in invoice["lines"] if line["line_type"] == "BUY_OLD_GOLD"]
         economics = {
@@ -403,6 +405,24 @@ class InvoiceHistoryService:
             except ValueError:
                 return {}
         return value or {}
+
+    @staticmethod
+    def _legacy_economics(sale_lines):
+        """Gold value / making of a legacy bill from its stored lines: a figure is given only when EVERY sold line carries it; the average making is the making over the sold grams."""
+        pieces = list(sale_lines)
+        if not pieces:
+            return {}
+        out = {}
+        if all(line["gold_value"] is not None for line in pieces):
+            out["gold_value_total"] = str(sum((line["gold_value"] for line in pieces), ZERO))
+        if all(line["making_total"] is not None for line in pieces):
+            making, grams = sum((line["making_total"] for line in pieces), ZERO), sum((line["weight"] for line in pieces), ZERO)
+            out["making_total"] = str(making)
+            if grams > 0:
+                out["average_making_per_gram"] = str((making / grams).quantize(Decimal("0.01")))
+            if all(line["line_total"] is not None for line in pieces):
+                out["effective_sale_total"] = str(sum((line["line_total"] for line in pieces), ZERO))
+        return out
 
     @staticmethod
     def _sale_line(line):
