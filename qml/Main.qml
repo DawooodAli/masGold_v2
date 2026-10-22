@@ -5219,6 +5219,55 @@ ApplicationWindow {
         ]
     }
 
+    // Settings → تكلفة المصنعية للحروف: the owner's actual making cost per gram of each category (one number for every karat), frozen into a piece at stock entry.
+    component CategoryCostSettings: SettingsSectionCard {
+        id: costs
+        objectName: "settingsCategoryCosts"
+        sectionTitle: "تكلفة المصنعية للحروف"
+        accentColor: theme.gold
+        readonly property var vm: typeof categoryCostVM !== "undefined" ? categoryCostVM : null
+        visible: !!vm && vm.canManage
+        Component.onCompleted: if (vm && vm.canManage) vm.refresh()
+        content: [
+            GoldPriceLabel {
+                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                value: "التكلفة الفعلية لمصنعية الجرام لكل حرف (رقم واحد لكل الأعيار). تُثبَّت في القطعة وقت إدخالها، فتغييرها لا يغيّر القطع القديمة. القطع القديمة بدون تكلفة تُقدَّر بالتكلفة الحالية في «ربح المصنعية»."
+                color: theme.textMuted; font.pixelSize: 11
+            },
+            Repeater {
+                model: costs.vm ? costs.vm.categories : []
+                delegate: RowLayout {
+                    required property var modelData
+                    objectName: "costRow_" + modelData.code
+                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                    GoldPriceLabel { Layout.preferredWidth: 60; value: modelData.code; font.bold: true; color: theme.gold }
+                    GoldPriceInput {
+                        id: costField; objectName: "costField_" + modelData.code
+                        Layout.preferredWidth: 130; Layout.preferredHeight: 34
+                        text: modelData.cost; placeholderText: "غير محدد"
+                    }
+                    GoldPriceLabel { Layout.preferredWidth: 60; value: "ج/جرام"; color: theme.textSecondary }
+                    GoldPriceLabel { Layout.fillWidth: true; value: modelData.range; color: theme.textMuted; font.pixelSize: 11 }
+                    GoldPriceButton {
+                        objectName: "costSave_" + modelData.code; text: "حفظ"
+                        enabled: !costs.vm.busy && costField.text.trim().length > 0
+                        onClicked: costs.vm.setCost(modelData.id, costField.text)
+                    }
+                    GoldPriceButton {
+                        objectName: "costClear_" + modelData.code; text: "مسح"; visible: modelData.hasCost
+                        enabled: !costs.vm.busy
+                        onClicked: costs.vm.clearCost(modelData.id)
+                    }
+                }
+            },
+            GoldPriceLabel {
+                objectName: "costMessage"; Layout.fillWidth: true; visible: value.length > 0
+                value: costs.vm ? costs.vm.message : ""
+                color: costs.vm && costs.vm.messageIsError ? theme.priceError : theme.green
+            }
+        ]
+    }
+
     component GoldProviderSettings: SettingsSectionCard {
         property alias resultCard: testResultCard
         id: providerPanel
@@ -5459,6 +5508,7 @@ ApplicationWindow {
                 PrintingSettings { id: printingSettings; Layout.fillWidth: true }
                 PositionOpeningSettings { id: positionOpening; Layout.fillWidth: true }
                 CashCategorySettings { id: cashCategories; Layout.fillWidth: true }
+                CategoryCostSettings { id: categoryCosts; Layout.fillWidth: true }
             }
         }
     }

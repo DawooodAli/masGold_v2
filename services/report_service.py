@@ -32,10 +32,10 @@ MAX_ROWS = 50000
 ZERO = Decimal("0")
 ZERO3, ZERO2 = Decimal("0.000"), Decimal("0.00")
 BASE_PERMISSION = "REPORTS_VIEW"
-REPORT_PERMISSIONS = {"sales": ("INVOICE_VIEW",), "stock": ("INVENTORY_VIEW",), "alerts": ("INVENTORY_VIEW",), "indicators": (), "gold": (), "employees": ("INVOICE_VIEW",), "customers": ("CUSTOMERS_VIEW",), "deadcash": ("CUSTOMERS_VIEW",),
+REPORT_PERMISSIONS = {"sales": ("INVOICE_VIEW",), "stock": ("INVENTORY_VIEW",), "alerts": ("INVENTORY_VIEW",), "indicators": (), "gold": (), "employees": ("INVOICE_VIEW",), "makingprofit": ("INVOICE_VIEW", "INVENTORY_VIEW"), "customers": ("CUSTOMERS_VIEW",), "deadcash": ("CUSTOMERS_VIEW",),
                       "suppliers": ("SUPPLIER_VIEW",), "treasury": (), "cashflow": (), "market": ("MARKET_TRIP_MANAGE",),
                       "profit": ("MANAGEMENT_REVIEW", "MARKET_TRIP_MANAGE", "INTERMEDIARY_HOLDING_VIEW")}                      # treasury: CASH_VIEW and / or BANK_VIEW per section
-REPORT_TITLES = {"sales": "المبيعات والمرتجعات", "stock": "المخزون المتاح", "alerts": "تنبيهات المخزون", "indicators": "مؤشرات الذهب", "gold": "حركة الأصناف", "employees": "أداء الموظفين", "customers": "العملاء", "deadcash": "الديون المعدومة (Dead Cash)", "suppliers": "الموردون", "treasury": "الخزنة والبنوك", "cashflow": "المصروفات والإيرادات", "market": "عهدة السوق والخسائر", "profit": "ربح الذهب (مكافئ 21)"}
+REPORT_TITLES = {"sales": "المبيعات والمرتجعات", "stock": "المخزون المتاح", "alerts": "تنبيهات المخزون", "indicators": "مؤشرات الذهب", "gold": "حركة الأصناف", "employees": "أداء الموظفين", "makingprofit": "ربح المصنعية", "customers": "العملاء", "deadcash": "الديون المعدومة (Dead Cash)", "suppliers": "الموردون", "treasury": "الخزنة والبنوك", "cashflow": "المصروفات والإيرادات", "market": "عهدة السوق والخسائر", "profit": "ربح الذهب (مكافئ 21)"}
 KIND_TEXT = {"SALE": "بيع", "MIXED": "بيع مع شراء كسر", "OLD_GOLD_PURCHASE": "شراء كسر", "RETURN": "مرتجع", "EXCHANGE": "استبدال"}
 STATUS_TEXT = {"IN_STOCK": "متاح", "SOLD": "مباع", "SCRAPPED": "كسر", "REMOVED": "مُخرج", "RETURNED_PENDING": "مرتجع بانتظار الفحص", "CONVERTED_TO_OLD_GOLD": "حُوّل إلى كسر"}
 CLASS_TEXT = {"NEW_STOCK": "جديد", "OLD_STOCK": "قديم"}
@@ -50,6 +50,7 @@ HINT_TEXT = {indicators_math.BUY_FAVOURABLE: "الشراء مناسب نسبيً
 HINT_DISCLAIMER = "إرشاد مبني على حركة أسعار المحل المخزنة وليس توصية مالية"
 NO_TYPE = "بدون صنف"
 NO_EMPLOYEE = "غير محدد"
+NO_CATEGORY = "بدون حرف"
 # cash-flow report: how a ledger movement is named (by what posted it) and what is NOT income / expense (money that only changes place)
 FLOW_LABELS = {"INVOICE": "المبيعات وشراء الكسر", "INVOICE_LIFECYCLE": "الاستبدال", "INVOICE_RETURN": "المرتجعات", "CUSTOMER_ACCOUNT_SETTLEMENT": "سداد العملاء والدفع لهم",
                "CUSTOMER_DEPOSIT": "العربون", "SUPPLIER_MAKING_PAYMENT": "مصنعيات الموردين"}
@@ -61,7 +62,7 @@ VELOCITY_DAYS, RECENT_DAYS = 90, 30    # the window the sales rate is measured o
 WEIGHT_BAND_TOP = 10                  # weight bands are one gram wide (1 – 2, 2 – 3 ...); every piece of WEIGHT_BAND_TOP grams or more is in the last band
 LOW_COVER_DAYS, MIN_SALES = 14, 3      # an item sold at least MIN_SALES times in the window whose stock covers fewer than LOW_COVER_DAYS days of sales is about to run out
 UNKNOWN_TEXT = "غير معلوم"
-FILTER_LABELS = {"employee_name": "الموظف", "factory_name": "المصنع", "weight_min": "الوزن من", "weight_max": "الوزن إلى", "kind": "النوع", "state": "الحالة", "status": "الحالة", "classification": "التصنيف", "karat": "العيار", "source": "المصدر", "balance": "الرصيد",
+FILTER_LABELS = {"category_name": "الحرف", "employee_name": "الموظف", "factory_name": "المصنع", "weight_min": "الوزن من", "weight_max": "الوزن إلى", "kind": "النوع", "state": "الحالة", "status": "الحالة", "classification": "التصنيف", "karat": "العيار", "source": "المصدر", "balance": "الرصيد",
                  "inactive": "العملاء المتوقفون", "supplier": "المورد", "account": "الحساب"}
 
 
@@ -872,6 +873,80 @@ class ReportService:
         cards = [total("موظفون لهم حركة", len(people), "count", "", "summary")]
         if reversed_invoices:
             cards.append(total("فواتير معكوسة غير محسوبة", len(reversed_invoices), "count", "", "summary"))
+        return {"meaning": meaning, "tables": tables, "totals": cards, "options": options}
+
+    # ------------------------------------------------------------------ 3c. making profit (owner request): the making charged on a sale against the making COST of the piece
+    def _makingprofit(self, repo, gate, filters, start, end):
+        """For every identified piece SOLD in the period (SELL_INVENTORY lines of FINALIZED, not fully reversed invoices): the making charged on the line minus the making COST of the piece =
+        its profit or loss on the making. The cost is the piece's stored acquisition making per gram (the real one of a supplier intake, or the category cost frozen at stock entry); a piece
+        without one is ESTIMATED from the category's CURRENT cost and its margin is shown apart as an estimate; a piece with neither, or a sale line whose making is unknown (legacy), is counted
+        and left out of the margin, never turned into zero. Karats stay in separate tables (the cost is the same number for every karat). Sales activity only: returns are not netted."""
+        karat = str(filters.get("karat") or "")
+        if karat not in ("", "18", "21", "22", "24"):
+            raise ReportError("FILTER_INVALID", "عيار غير صحيح.")
+        wanted = str(filters.get("category") or "")
+        if wanted and not wanted.isdigit():
+            raise ReportError("FILTER_INVALID", "حرف غير صحيح.")
+        costs = repo.category_costs()
+        current = {int(r["category_id"]): _dec(r["cost"]) for r in (costs or [])}
+        options = {"category": [{"value": "", "text": "الكل"}, {"value": "0", "text": NO_CATEGORY}] + [{"value": str(c["id"]), "text": c["code"]} for c in repo.item_categories()]}
+        if wanted:
+            filters["category_name"] = next((o["text"] for o in options["category"] if o["value"] == wanted), wanted)
+        stats, reversed_invoices = {}, set()
+        for r in repo.making_profit_lines(start, end):
+            if r["reversal_id"]:
+                reversed_invoices.add(int(r["invoice_id"]))
+                continue
+            key = str(r["category_id"] or 0)
+            if (wanted and key != wanted) or (karat and str(r["karat_value"]) != karat):
+                continue
+            weight = _dec(r["weight_grams"])
+            s = stats.setdefault((int(r["karat_value"]), r["category_code"] or NO_CATEGORY), {"pieces": 0, "grams": ZERO3, "sold": ZERO2, "cost": ZERO2, "margin": ZERO2, "estimated": ZERO2,
+                                                                                          "estimated_pieces": 0, "left_out": 0})
+            s["pieces"] += 1
+            s["grams"] += weight
+            if r["making_total"] is None:
+                s["left_out"] += 1                                                                          # legacy sale line: the making charged is unknown
+                continue
+            sold = _dec(r["making_total"])
+            if r["piece_cost"] is not None:
+                per_gram, estimated = _dec(r["piece_cost"]), False
+            elif r["category_id"] and int(r["category_id"]) in current:
+                per_gram, estimated = current[int(r["category_id"])], True
+            else:
+                s["left_out"] += 1                                                                          # no cost anywhere: left out of the margin
+                continue
+            cost = (per_gram * weight).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            s["sold"] += sold
+            s["cost"] += cost
+            s["margin"] += sold - cost
+            if estimated:
+                s["estimated"] += sold - cost
+                s["estimated_pieces"] += 1
+        columns = [col("category", "الحرف"), col("pieces", "القطع المباعة", "count"), col("grams", "الجرامات", "grams"), col("sold", "مصنعية البيع", "money"), col("cost", "تكلفة المصنعية", "money"),
+                   col("margin", "الفرق (ربح / خسارة)", "money"), col("estimated", "منه تقديري", "money"), col("left_out", "قطع بدون حساب", "count")]
+        tables, tot_margin, tot_estimated, tot_sold, tot_left = [], ZERO2, ZERO2, ZERO2, 0
+        for k in sorted({kk for kk, _ in stats}, reverse=True):
+            rows = [{"category": code, **{n: v for n, v in s.items() if n != "estimated_pieces"}} for (kk, code), s in sorted(stats.items(), key=lambda kv: kv[0][1]) if kk == k]
+            for s in (s for (kk, _), s in stats.items() if kk == k):
+                tot_margin += s["margin"]
+                tot_estimated += s["estimated"]
+                tot_sold += s["sold"]
+                tot_left += s["left_out"]
+            tables.append(table(f"making_{k}", f"ربح المصنعية — عيار {k}", columns, rows, karat=k))
+        if not tables:
+            tables.append(table("making", "ربح المصنعية", columns, []))
+        meaning = ["الفرق = مصنعية البيع − تكلفة المصنعية للقطعة (جرامات القطعة × تكلفة الجرام المحفوظة فيها). التكلفة الحقيقية لقطع الموردين، وتكلفة الحرف وقت إدخال القطعة لباقي القطع.",
+                   "القطعة بلا تكلفة محفوظة تُقدَّر بتكلفة حرفها الحالية ويظهر فرقها منفصلًا في «منه تقديري». قطعة بلا تكلفة أصلًا أو بيع مصنعيته مجهولة (قديم) تُعدّ في «قطع بدون حساب» ولا تدخل الفرق.",
+                   "نشاط بيع فقط: المرتجعات لا تُخصم. القطع المباعة بدون هوية (F5 / F7) ليست في هذا التقرير."]
+        if costs is None:
+            meaning.append("جدول تكلفة الحروف غير موجود في مستوى قاعدة البيانات الحالي: طبّق التحديثات.")
+        cards = [total("الفرق على المصنعية", tot_margin, "money", "مصنعية البيع − تكلفتها للقطع المحسوبة" + (f" • منه تقديري {tot_estimated:,.2f}" if tot_estimated else ""), "margin",
+                       tone="receivable" if tot_margin >= 0 else "payable"),
+                 total("مصنعية البيع المحسوبة", tot_sold, "money", "للقطع التي لها تكلفة", "margin"),
+                 total("قطع بدون حساب", tot_left, "count", "بلا تكلفة أو مصنعية بيعها مجهولة", "margin")]
+        if reversed_invoices:
+            cards.append(total("فواتير معكوسة غير محسوبة", len(reversed_invoices), "count", "", "margin"))
         return {"meaning": meaning, "tables": tables, "totals": cards, "options": options}
 
     @classmethod

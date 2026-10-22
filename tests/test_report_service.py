@@ -51,6 +51,21 @@ class FakeRepo:
                 move("CASH", "100", "FINANCIAL_OPERATION", transfer=7), move("CASH", "50000", None, type_code="OPENING_BALANCE")]
         return [r for r in rows if r["ledger"] in ledgers]
 
+    # ---- making profit: category costs now A = 150, B = 200; 21K A piece 10 g (making 2,000, stored cost 100/g), 21K A piece 5 g (making 1,000, no stored cost: estimated 150/g),
+    #      18K B piece 4 g (making 800, stored cost 250/g), a legacy sale with unknown making, a piece without a letter or cost, and a fully reversed invoice
+    def making_profit_lines(self, start, end):
+        def line(invoice, karat_, weight, making, category, code, piece_cost=None, reversal=None):
+            return {"invoice_id": invoice, "karat_value": karat_, "weight_grams": D(weight), "making_total": None if making is None else D(making), "item_id": invoice * 10, "category_id": category,
+                    "category_code": code, "piece_cost": None if piece_cost is None else D(piece_cost), "reversal_id": reversal}
+        return [line(1, 21, "10.000", "2000.00", 1, "A", "100.00"), line(1, 21, "5.000", "1000.00", 1, "A"), line(2, 18, "4.000", "800.00", 2, "B", "250.00"),
+                line(3, 21, "3.000", None, 1, "A"), line(4, 21, "2.000", "400.00", None, None), line(99, 21, "50.000", "9999.00", 1, "A", "100.00", reversal=5)]
+
+    def category_costs(self):
+        return [{"category_id": 1, "cost": D("150.00")}, {"category_id": 2, "cost": D("200.00")}]
+
+    def item_categories(self):
+        return [{"id": 1, "code": "A"}, {"id": 2, "code": "B"}]
+
     # ---- employee KPI: salesperson 1 (علي) 21K sells 10 g (making 1000) + 5 g (600) + 5 g of F7 gold with UNKNOWN making, 18K 4 g (200), buys 8 g of 21K scrap for 48,000;
     #      salesperson 2 (حسين) sells 2 g of 21K (300) and buys 3 g of 18K scrap for 15,000; an unassigned invoice sells 1 g of 24K (50); a fully reversed invoice of علي is not counted
     def employee_lines(self, start, end):
@@ -771,7 +786,7 @@ class SafetyTests(Case):
             service.run("sales", {})
 
     def test_available_reports_follow_the_rights(self):
-        self.assertEqual([r["key"] for r in self.service.available_reports()], ["sales", "stock", "alerts", "indicators", "gold", "employees", "customers", "deadcash", "suppliers", "treasury", "cashflow", "market"])
+        self.assertEqual([r["key"] for r in self.service.available_reports()], ["sales", "stock", "alerts", "indicators", "gold", "employees", "makingprofit", "customers", "deadcash", "suppliers", "treasury", "cashflow", "market"])
         self.session = session_for({"APP_LOGIN", "REPORTS_VIEW", "CUSTOMERS_VIEW"})
         limited = ReportService(self.session, repository=FakeRepo, authorization=FakeAuthorization(self.session))
         self.assertEqual([r["key"] for r in limited.available_reports()], ["indicators", "customers", "deadcash"])
@@ -914,6 +929,53 @@ class CashflowTests(Case):
         nobody = session_for(frozenset({"APP_LOGIN", "REPORTS_VIEW"}))
         with self.assertRaises(PermissionError):
             ReportService(nobody, transaction_factory=self.service._transaction, repository=FakeRepo, authorization=FakeAuthorization(nobody), today=lambda: TODAY).run("cashflow", self.PERIOD)
+
+
+class MakingProfitTests(Case):
+    PERIOD = {"from": "2026-10-01", "to": "2026-10-31"}
+
+    def rows(self, result, karat_):
+        return {r["category"]: r for r in next(t for t in result["tables"] if t["key"] == f"making_{karat_}")["rows"]}
+
+    def test_margin_is_the_making_charged_minus_the_stored_or_estimated_cost_per_karat(self):
+        result = self.service.run("makingprofit", self.PERIOD)
+        a = self.rows(result, 21)["A"]
+        # pieces 3 (the legacy line counts as a piece), grams 18; sold 2000 + 1000; cost 100 x 10 + 150 x 5 = 1750; margin 1250 of which 250 is an estimate
+        self.assertEqual((a["pieces"], a["grams"], a["sold"], a["cost"], a["margin"], a["estimated"], a["left_out"]), (3, D("18.000"), D("3000.00"), D("1750.00"), D("1250.00"), D("250.00"), 1))
+        self.assertEqual(self.rows(result, 18)["B"]["margin"], D("-200.00"))                                    # 800 - 250 x 4 = a LOSS
+        letterless = self.rows(result, 21)["بدون حرف"]
+        self.assertEqual((letterless["pieces"], letterless["sold"], letterless["margin"], letterless["left_out"]), (1, D("0.00"), D("0.00"), 1))          # no cost anywhere: left out, never zero profit
+
+    def test_cards_and_the_reversed_invoice(self):
+        result = self.service.run("makingprofit", self.PERIOD)
+        values = self.totals(result)
+        self.assertEqual((values["الفرق على المصنعية"], values["مصنعية البيع المحسوبة"], values["قطع بدون حساب"], values["فواتير معكوسة غير محسوبة"]), (D("1050.00"), D("3800.00"), 2, 1))
+        self.assertIn("منه تقديري 250.00", next(t["note"] for t in result["totals"] if t["label"] == "الفرق على المصنعية"))
+        self.assertEqual([t["karat"] for t in result["tables"]], [21, 18])           # one table per karat, never mixed
+
+    def test_filters_and_their_options(self):
+        result = self.service.run("makingprofit", {**self.PERIOD, "category": "2", "karat": "18"})
+        self.assertEqual([t["key"] for t in result["tables"]], ["making_18"])
+        self.assertEqual([o["text"] for o in result["options"]["category"]], ["الكل", "بدون حرف", "A", "B"])
+        self.assertIn("الحرف: B", result["applied"])
+        with self.assertRaises(ReportError):
+            self.service.run("makingprofit", {**self.PERIOD, "karat": "19"})
+
+    def test_a_database_below_070_still_reports_with_the_stored_costs_only(self):
+        from unittest import mock
+        with mock.patch.object(FakeRepo, "category_costs", lambda self: None):
+            result = self.service.run("makingprofit", self.PERIOD)
+        a = self.rows(result, 21)["A"]
+        self.assertEqual((a["cost"], a["margin"], a["estimated"], a["left_out"]), (D("1000.00"), D("1000.00"), D("0.00"), 2))
+        self.assertTrue(any("طبّق التحديثات" in line for line in result["meaning"]))
+
+    def test_it_needs_both_the_invoice_and_the_inventory_right(self):
+        for held in ({"INVOICE_VIEW"}, {"INVENTORY_VIEW"}):
+            session = session_for(frozenset({"APP_LOGIN", "REPORTS_VIEW"} | held))
+            limited = ReportService(session, transaction_factory=self.service._transaction, repository=FakeRepo, authorization=FakeAuthorization(session), today=lambda: TODAY)
+            self.assertNotIn("makingprofit", [r["key"] for r in limited.available_reports()])
+            with self.assertRaises(PermissionError):
+                limited.run("makingprofit", self.PERIOD)
 
 
 class ExportTests(Case):

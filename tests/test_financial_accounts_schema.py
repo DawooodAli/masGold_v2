@@ -13,7 +13,7 @@ ROLLBACK = Path("database/schema/rollback/025_financial_operations_rollback.sql"
 
 class FinancialAccountsSchemaTests(unittest.TestCase):
     def test_chain_tables_and_foreign_keys(self):
-        self.assertEqual(len(load_chain(require_committed=False)), 69)
+        self.assertEqual(len(load_chain(require_committed=False)), 70)
         model = build()
         self.assertEqual(model.problems, [])
         self.assertEqual(fk_problems(model), [])

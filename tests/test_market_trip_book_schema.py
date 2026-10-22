@@ -60,13 +60,13 @@ class BookCoreSchemaTests(unittest.TestCase):
         for name, expected in FROZEN.items():
             self.assertEqual(digest(name), expected, name)
         files = {f.name: f for f in load_chain(require_committed=False)}
-        self.assertEqual(len(files), 69)
+        self.assertEqual(len(files), 70)
         self.assertEqual(files[FORWARD].sha256, digest(FORWARD))
         self.assertIn(f"{digest(FORWARD)}  {FORWARD}", (ROOT / "database" / "schema" / "SHA256SUMS").read_text(encoding="utf-8"))
 
     def test_the_schema_level_follows_the_chain(self):
         from services.schema_level import REQUIRED_SCHEMA_LEVEL
-        self.assertEqual(REQUIRED_SCHEMA_LEVEL, 69)
+        self.assertEqual(REQUIRED_SCHEMA_LEVEL, 70)
 
     def test_every_alter_is_guarded_so_a_rerun_changes_nothing(self):
         for statement in re.findall(r"\"(ALTER TABLE [^\"]*)\"", self.forward):

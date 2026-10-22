@@ -20,7 +20,7 @@ from services.market_trip_service import TripError
 from services.report_service import ReportService
 from tests.test_market_trip_book_mysql import BookCoreMySqlTests, DATE, karat
 
-REPORTS = ("sales", "stock", "alerts", "indicators", "gold", "employees", "customers", "deadcash", "suppliers", "treasury", "cashflow")
+REPORTS = ("sales", "stock", "alerts", "indicators", "gold", "employees", "makingprofit", "customers", "deadcash", "suppliers", "treasury", "cashflow")
 GOLD_SOURCES = ("SCRAP", "PIECES", "ASSAYED", "BOOK", "MARKETER")
 
 

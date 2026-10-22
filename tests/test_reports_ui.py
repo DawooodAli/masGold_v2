@@ -81,7 +81,7 @@ class ReportsPageTests(harness.InvoicePageTests):
         self.assertIsNone(self.visible_item("reportsNavButton"))
         vm = self.open_reports()
         self.assertIsNotNone(self.visible_item("reportsNavButton"))
-        self.assertEqual([r["key"] for r in vm.reports], ["sales", "stock", "alerts", "indicators", "gold", "employees", "customers", "deadcash", "suppliers", "treasury", "cashflow", "market"])
+        self.assertEqual([r["key"] for r in vm.reports], ["sales", "stock", "alerts", "indicators", "gold", "employees", "makingprofit", "customers", "deadcash", "suppliers", "treasury", "cashflow", "market"])
         self.assertEqual(self.warnings, [])
 
     def test_the_sales_report_shows_totals_only_without_the_documents_table(self):

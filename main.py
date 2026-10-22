@@ -129,7 +129,7 @@ class ApplicationController(QObject):
                  printer_settings_factory=create_printer_settings_viewmodel,
                  balance_factory=create_balance_viewmodel, dashboard_factory=create_dashboard_viewmodel,
                  exchange_factory=create_exchange_viewmodel, return_factory=create_return_viewmodel,
-                 correction_factory=create_correction_viewmodel, snapshot_factory=None, category_factory=None):
+                 correction_factory=create_correction_viewmodel, snapshot_factory=None, category_factory=None, cost_factory=None):
         super().__init__(app)
         self.app = app
         # English digits everywhere: typed Arabic-Indic / Persian digits become 0-9 before any field.
@@ -155,6 +155,7 @@ class ApplicationController(QObject):
         self._correction_factory = correction_factory
         self._snapshot_factory = snapshot_factory
         self._category_factory = category_factory
+        self._cost_factory = cost_factory
         self.operational_engine = None
         self.operational_viewmodels = {}
         self.login_engine = self._engine()
@@ -189,6 +190,9 @@ class ApplicationController(QObject):
         if viewmodel is None:
             viewmodel = (self._snapshot_factory or create_position_snapshot_viewmodel)(self.session)
             self.operational_viewmodels["positionSnapshotVM"] = viewmodel
+        if self.operational_viewmodels.get("categoryCostVM") is None:
+            from app.viewmodels.category_cost_viewmodel import create_category_cost_viewmodel
+            self.operational_viewmodels["categoryCostVM"] = (self._cost_factory or create_category_cost_viewmodel)(self.session)
         categories = self.operational_viewmodels.get("cashCategoryVM")
         if categories is None:
             from app.viewmodels.cash_category_viewmodel import create_cash_category_viewmodel

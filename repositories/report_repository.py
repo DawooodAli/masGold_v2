@@ -185,6 +185,32 @@ class ReportRepository(BaseRepository):
         """The current names of the income / expense categories (migration 069), or None below 069."""
         return self._fetch_all("SELECT code, name FROM cash_categories ORDER BY sort_order, id") if self.has_table("cash_categories") else None
 
+    def making_profit_lines(self, start, end_exclusive):
+        """One row per SELL_INVENTORY line of a FINALIZED invoice dated in the period with the piece's category and its stored acquisition making per gram, and the full-reversal correction of
+        the invoice (if any). making_total is NULL where the sale making is unknown. Plain SELECT: the service groups per karat and category."""
+        return self._fetch_all(
+            """
+            SELECT iv.id AS invoice_id, k.karat_value, il.weight_grams, il.making_total, ii.id AS item_id, ii.category_id, c.code AS category_code,
+                   ii.acquisition_making_per_gram AS piece_cost, rc.id AS reversal_id
+            FROM invoice_lines il
+            JOIN invoices iv ON iv.id = il.invoice_id
+            JOIN inventory_items ii ON ii.id = il.inventory_item_id
+            JOIN karats k ON k.id = il.karat_id
+            LEFT JOIN item_categories c ON c.id = ii.category_id
+            LEFT JOIN transaction_corrections rc ON rc.source_type = 'INVOICE' AND rc.source_id = iv.id AND rc.correction_type = 'FULL_REVERSAL'
+            WHERE il.line_type = 'SELL_INVENTORY' AND iv.invoice_status = 'FINALIZED' AND iv.invoice_date >= %s AND iv.invoice_date < %s
+            ORDER BY iv.invoice_date, iv.id, il.id
+            """, (start, end_exclusive))
+
+    def category_costs(self):
+        """{category_id: current making cost per gram} (migration 070), or None below 070."""
+        if not self.has_table("item_category_costs"):
+            return None
+        return self._fetch_all("SELECT category_id, making_cost_per_gram AS cost FROM item_category_costs")
+
+    def item_categories(self):
+        return self._fetch_all("SELECT id, code FROM item_categories ORDER BY sort_order, code")
+
     def employees(self):
         return self._fetch_all("SELECT id, name FROM employees ORDER BY name, id")
 

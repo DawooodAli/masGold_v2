@@ -289,6 +289,13 @@ class InventoryService:
                     "Category is not active or does not exist."
                 )
 
+            # The making COST of the piece: a real acquisition making (supplier intake) wins; otherwise the owner's current cost of this category is FROZEN into the
+            # piece now, so a later change of the category cost never rewrites it (the making-profit report reads this stored figure).
+            if "acquisition_making_per_gram" not in extra:
+                cost = repository.get_category_making_cost(category_id)
+                if cost is not None:
+                    extra["acquisition_making_per_gram"] = cost
+
         # ----------------------------------------------
         # Factory
         # ----------------------------------------------

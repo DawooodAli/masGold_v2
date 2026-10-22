@@ -1,3 +1,5 @@
+from mysql.connector import ProgrammingError
+
 from repositories.base_repository import BaseRepository
 
 
@@ -449,6 +451,16 @@ class InventoryRepository(BaseRepository):
             """,
             (category_id,),
         )
+
+    def get_category_making_cost(self, category_id: int):
+        """The owner's CURRENT making cost per gram of a category (migration 070), or None when none is set or the table does not exist yet (a database below 070)."""
+        try:
+            row = self._fetch_one("SELECT making_cost_per_gram FROM item_category_costs WHERE category_id = %s", (category_id,))
+        except ProgrammingError as exc:
+            if getattr(exc, "errno", None) == 1146:
+                return None
+            raise
+        return None if row is None else row["making_cost_per_gram"]
 
     def get_active_factory_by_id(
             self,
