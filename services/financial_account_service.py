@@ -215,17 +215,19 @@ class FinancialAccountService:
         return {"account": {"key": account_key(ledger, account_id), "ledger": ledger, "name": account["name"],
                             "account_type": account["account_type"], "is_active": bool(account["is_active"]),
                             "balance": str(Decimal(str(balance)))},
-                "rows": [self._row(r, ledger) for r in rows[:PAGE_SIZE]], "has_more": len(rows) > PAGE_SIZE,
+                "rows": [self._row(r, ledger, self._all_labels()) for r in rows[:PAGE_SIZE]], "has_more": len(rows) > PAGE_SIZE,
                 "page": page}
 
-    def _row(self, r, ledger="CASH"):
+    @staticmethod
+    def _row(r, ledger="CASH", names=None):
+        """One statement row. `names` = {code: current Arabic name} (the categories table); without it the fixed business names are used."""
         out = dict(r)
         for name in ("id", "reference_id", "invoice_id", "corrected_source_id", "operation_id", "customer_id"):
             out[name] = None if r.get(name) is None else str(r[name])
         out["amount_delta"] = Decimal(str(r["amount_delta"]))
         out["balance_after"] = Decimal(str(r["balance_after"]))
         key = r.get("label_key")
-        out["label"] = (BANK_LABELS.get(key) if ledger == "BANK" and key in ("TRANSFER_IN", "TRANSFER_OUT") else None) or self._label(key)
+        out["label"] = ((BANK_LABELS.get(key) if ledger == "BANK" and key in ("TRANSFER_IN", "TRANSFER_OUT") else None) or (names or {}).get(key) or CASH_LABELS.get(key, CASH_LABELS["OTHER"]))
         out.update(movement_context(r))
         return out
 

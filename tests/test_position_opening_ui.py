@@ -65,6 +65,7 @@ class _CardBase(harness.InvoicePageTests):
 class PositionOpeningCardTests(_CardBase):
     def test_the_initial_balance_is_entered_once_then_read_only_and_the_manual_button_appears(self):
         vm = self.open_settings()
+        QTest.qWait(300)
         self.scroll_settings_to("settingsPositionOpening")
         self.assertFalse(self.item("openingSave").property("enabled"))                       # nothing typed, nothing confirmed
         self.type_into("openingGold", "5000")
@@ -72,6 +73,8 @@ class PositionOpeningCardTests(_CardBase):
         self.type_into("openingCash", "200000")
         self.type_into("openingBank", "30000")
         self.assertFalse(self.item("openingSave").property("enabled"))                       # the confirmation is mandatory
+        QTest.qWait(300)                                                                     # the other Settings cards finish loading and move the layout
+        self.scroll_settings_to("openingConfirm")
         self.click("openingConfirm")
         self.wait_until(lambda: self.item("openingSave").property("enabled"), "save enabled after confirming")
         self.assert_inside_window(self.item("openingSave"))
