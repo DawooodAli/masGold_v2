@@ -407,16 +407,22 @@ def compose(overlay, calibration=None, style=STYLE_PROTOTYPE, typography=None):
         ops.append(Op("line", c.x(x0), c.y(y0), c.length(x1 - x0), c.length(y1 - y0), region=region,
                       width_pt=c.pt(GRID_PT), gray=GRID_GRAY))
 
+    def labelled(region, x0, y0, x1, y1, label, value, size, bold, align="center"):
+        """«label : value» as THREE independent runs (the word, a standalone colon, the value as a left-to-right isolate), exactly the text the single string had. The printer's text layout
+        moved the colon of the single string to the wrong side of the label next to a date / time / amount (owner physical print, 2026-10-23); separate runs cannot be reordered."""
+        parts = tuple((txt, c.pt(size), bold, 0) for txt in (label, " : ", value))
+        ops.append(Op("text", c.x(x0), c.y(y0), c.length(x1 - x0), c.length(y1 - y0), "".join(p[0] for p in parts), c.pt(size), bold, align, region, spans=parts))
+
     # Header (row 1: name • barcode • date, row 2: place • number • time) — bold 10 pt, centred.
     cells = PROTO_HEADER_CELLS
     text("header", cells["right"][0], PROTO_HEADER_ROW1[0], cells["right"][1], PROTO_HEADER_ROW1[1],
          f"الاسم : {overlay.customer_name}", HEADER_PT, True)
     text("header", cells["right"][0], PROTO_HEADER_ROW2[0], cells["right"][1], PROTO_HEADER_ROW2[1],
          f"العنوان: {overlay.place}", HEADER_PT, True)
-    text("header", cells["left"][0], PROTO_HEADER_ROW1[0], cells["left"][1], PROTO_HEADER_ROW1[1],
-         f"التاريخ : {_ltr(overlay.date_text)}", HEADER_PT, True)
-    text("header", cells["left"][0], PROTO_HEADER_ROW2[0], cells["left"][1], PROTO_HEADER_ROW2[1],
-         f"الوقت : {_ltr(overlay.time_text)}", HEADER_PT, True)
+    labelled("header", cells["left"][0], PROTO_HEADER_ROW1[0], cells["left"][1], PROTO_HEADER_ROW1[1],
+             LABEL_DATE, _ltr(overlay.date_text), HEADER_PT, True)
+    labelled("header", cells["left"][0], PROTO_HEADER_ROW2[0], cells["left"][1], PROTO_HEADER_ROW2[1],
+             LABEL_TIME, _ltr(overlay.time_text), HEADER_PT, True)
     text("header", cells["middle"][0], PROTO_HEADER_ROW2[0], cells["middle"][1], PROTO_HEADER_ROW2[1],
          overlay.invoice_number, HEADER_PT, True)
     modules = code128_modules(overlay.invoice_number)
@@ -458,8 +464,12 @@ def compose(overlay, calibration=None, style=STYLE_PROTOTYPE, typography=None):
     # Line 1 is the prototype's row: [amount in words | total label].
     y0 = box_top + pad_y
     y1 = y0 + PROTO_MONEY_LINE_H
-    text("money", split + PROTO_MONEY_PAD_X, y0, right - PROTO_MONEY_PAD_X, y1, overlay.total_label, MONEY_PT,
-         align="right")
+    if overlay.extra.get("settled"):
+        text("money", split + PROTO_MONEY_PAD_X, y0, right - PROTO_MONEY_PAD_X, y1, overlay.total_label, MONEY_PT,
+             align="right")
+    else:
+        labelled("money", split + PROTO_MONEY_PAD_X, y0, right - PROTO_MONEY_PAD_X, y1, LABEL_TOTAL,
+                 _ltr(overlay.extra.get("total", "")) + " جنيه", MONEY_PT, False, align="right")
     text("money", left + PROTO_MONEY_PAD_X, y0, split - PROTO_MONEY_PAD_X, y1, overlay.total_words, MONEY_PT,
          align="right")
     # Line 2 (V2 only, when money moved differently from the total): the actual payment and its

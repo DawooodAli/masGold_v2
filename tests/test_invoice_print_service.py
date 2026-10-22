@@ -104,6 +104,16 @@ def ops_for(invoice, calibration=None):
     return compose(bill_overlay.build_overlay(invoice), calibration or BillCalibration())
 
 
+class PrototypeLabelRunsTests(unittest.TestCase):
+    def test_the_date_time_and_total_are_three_independent_runs_so_the_printer_cannot_move_the_colon(self):
+        ops = ops_for(invoice_row())                                                           # the prototype style (the old program's look)
+        by_text = {op.text: op for op in ops if op.kind == "text" and op.spans}
+        for label in ("التاريخ", "الوقت", "إجمالي الفاتورة"):
+            op = next(o for t, o in by_text.items() if t.startswith(label + " : "))
+            self.assertEqual([part[0] for part in op.spans][:2], [label, " : "])               # the word, then a standalone colon, then the value
+            self.assertEqual(len(op.spans), 3)
+
+
 class OverlayContentTests(unittest.TestCase):
     def test_invoice_total_is_the_main_printed_amount_in_figures_and_words(self):
         page = joined(ops_for(invoice_row()))
