@@ -946,6 +946,8 @@ current HEAD. Read both `AGENTS.md` and `CLAUDE.md`.
 
 ### Official test baseline
 
+Latest GREEN full run (2026-10-22, commit `f36b003`, every `MASGOLD_*` opt-in variable unset, `.venv` Python, the non-database regression): **4319 tests, OK, 577 skipped (the opt-in rehearsal / DEV categories), EXIT=0**. It supersedes the older figures below for the current tree; the opt-in real-MySQL modules of migrations 067-072 were run separately and focused on `masgold_rehearsal`.
+
 Last GREEN full run on record (`full7`, 2026-10-16 about 20:16, the working tree just before commit `7afe108`, migration 054): **2858 tests = 2673 passed
 + 185 skipped, EXIT=0**. The figure documented until now (2867 = 2673 + 194) was that run plus the 9 opt-in 054 MySQL tests added afterwards (all skipped without
 their opt-in), i.e. an arithmetic extension, not a run. Earlier recorded baselines (1546 / 2751 / 2823) are historical and are superseded.
