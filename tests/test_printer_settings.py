@@ -71,6 +71,18 @@ class PrinterSettingsTests(unittest.TestCase):
         return PrinterSettingsViewModel(self.session(), settings=settings, printers=lambda: list(printers),
                                         bill_printing=bill, label_printing=label, runner=runner), settings
 
+    def test_the_bill_style_is_a_local_choice_between_the_current_look_and_the_old_programs(self):
+        vm, settings = self.vm()
+        self.assertEqual(vm.billStyle, "variant_c")                                            # the default stays the current look
+        vm.setBillStyle("prototype")
+        self.assertEqual((vm.billStyle, vm.messageIsError), ("prototype", False))
+        self.assertEqual(self.vm()[0].billStyle, "prototype")                                  # persists after a restart
+        vm.setBillStyle("nonsense")
+        self.assertEqual((vm.billStyle, vm.messageIsError), ("prototype", True))               # refused, unchanged
+        vm.setBillStyle("variant_c")
+        self.assertEqual(vm.billStyle, "variant_c")
+        self.assertEqual(settings.bill_printer(), "")                                          # the printers are untouched
+
     def test_bill_and_label_printers_are_stored_independently(self):
         vm, settings = self.vm()
         vm.setBillPrinter("Brother HL-L2360D series")

@@ -5100,6 +5100,23 @@ ApplicationWindow {
                 }
                 Item { Layout.fillWidth: true }
             },
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 10
+                visible: printerChoice.kind === "bill"
+                GoldPriceLabel { value: "شكل الفاتورة"; color: theme.textSecondary }
+                ComboBox {
+                    id: billStyleCombo
+                    objectName: "billStyleCombo"
+                    Layout.preferredWidth: 300
+                    font.family: "Cairo"
+                    textRole: "text"
+                    valueRole: "code"
+                    model: [{ "code": "variant_c", "text": "الشكل الحالي (قيم أوضح)" }, { "code": "prototype", "text": "مثل البرنامج القديم" }]
+                    currentIndex: printerChoice.vm && printerChoice.vm.billStyle === "prototype" ? 1 : 0
+                    onActivated: function(index) { printerChoice.vm.setBillStyle(model[index].code) }
+                }
+                Item { Layout.fillWidth: true }
+            },
             GoldPriceLabel {
                 Layout.fillWidth: true
                 value: "الورق: " + (printerChoice.vm ? (printerChoice.kind === "bill" ? printerChoice.vm.billFormat

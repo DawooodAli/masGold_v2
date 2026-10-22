@@ -88,6 +88,23 @@ class PrinterSettingsViewModel(QObject):
     def labelFormat(self):
         return LABEL_FORMAT_TEXT
 
+    # ------------------------------------------------------------ the look of the printed bill (this workstation only)
+    @Property(str, notify=changed)
+    def billStyle(self):
+        from services.bill_overlay import style_from_settings
+        return style_from_settings(self._settings)
+
+    @Slot(str)
+    def setBillStyle(self, style):
+        """«شكل الفاتورة»: the current look (Variant C) or the old program's look (the prototype: same Segoe UI, headings in both languages equally bold). The geometry and the physical
+        calibration are identical in both, so the choice never moves anything on the paper."""
+        from services.bill_overlay import BILL_STYLES
+        if style not in BILL_STYLES:
+            self._say("اختر شكلاً من القائمة.", True)
+            return
+        self._settings.set_bill_style(style)
+        self._say("شكل الفاتورة: " + ("مثل البرنامج القديم" if style == "prototype" else "الشكل الحالي"), False)
+
     @Slot(str)
     def setBillPrinter(self, name):
         """Only a printer Windows reports right now can be chosen; the Label printer is untouched."""
