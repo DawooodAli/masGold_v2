@@ -20,6 +20,7 @@ from services.invoice_service import invoice_transaction
 
 DASHBOARD_KARATS = (21, 18, 22, 24)
 SALES_PERMISSIONS = frozenset({"INVOICE_CREATE", "INVOICE_FINALIZE"})
+STOCK_PERMISSIONS = frozenset({"INVENTORY_VIEW", "INVENTORY_MANAGE"})
 GRAMS, MONEY = Decimal("0.001"), Decimal("0.01")
 
 
@@ -47,6 +48,29 @@ class DashboardService:
     def can_see_sales(actor):
         return bool(SALES_PERMISSIONS & set(actor.permissions))
 
+    @staticmethod
+    def month_summary(current, previous):
+        """Per karat (never summed across karats): the grams and pieces sold so far this month and the grams over the same span of the previous month."""
+        now = {int(r["karat_value"]): r for r in current}
+        before = {int(r["karat_value"]): Decimal(str(r["grams"])) for r in previous}
+        out = []
+        for karat in sorted(set(now) | set(before), key=lambda k: (k not in DASHBOARD_KARATS, DASHBOARD_KARATS.index(k) if k in DASHBOARD_KARATS else k)):
+            grams = Decimal(str(now[karat]["grams"])) if karat in now else Decimal(0)
+            out.append({"karat": karat, "grams": str(grams.quantize(GRAMS)), "pieces": int(now[karat]["pieces"]) if karat in now else 0,
+                        "previous": str(before.get(karat, Decimal(0)).quantize(GRAMS))})
+        return out
+
+    @staticmethod
+    def shortages(rows):
+        """The minimum-stock rules the stock is below: [{type, karat, short}] with what is missing in pieces and / or grams (None below migration 072 -> [])."""
+        out = []
+        for r in rows or []:
+            short_p = max(0, int(r["min_pieces"]) - int(r["pieces"])) if r["min_pieces"] else 0
+            short_g = max(Decimal(0), Decimal(str(r["min_grams"])) - Decimal(str(r["grams"]))) if r["min_grams"] else Decimal(0)
+            if short_p or short_g:
+                out.append({"type": r["item_type"], "karat": int(r["karat_value"]), "short_pieces": short_p, "short_grams": str(short_g.quantize(GRAMS))})
+        return out
+
     def today(self, *, _expected_actor=None):
         actor = self._actor(_expected_actor)
 
@@ -59,7 +83,11 @@ class DashboardService:
             result = {"old_gold_balance": balances.old_gold_counted(), "old_gold_flow": dashboard.today_old_gold_flow()}
             if sales:
                 result.update(invoices=dashboard.today_invoices(), sold=dashboard.today_sold_by_karat(),
-                              recent=dashboard.recent_invoices(5))
+                              recent=dashboard.recent_invoices(5), month=dashboard.month_sold_by_karat(), prev_month=dashboard.month_sold_by_karat(previous=True),
+                              month_info=dashboard.month_start())
+            if STOCK_PERMISSIONS & set(verified.permissions):                  # the minimum-stock shortages follow the CURRENT inventory grants
+                result["below_min"] = dashboard.below_min_levels()
+                result["can_see_stock"] = True
             return sales, result
         try:
             with self._transaction() as connection:
@@ -77,6 +105,9 @@ class DashboardService:
                           "out": str(Decimal(str(flow.get(karat, {}).get("grams_out", 0))).quantize(GRAMS))}
                          for karat in DASHBOARD_KARATS],
         }
+        snapshot["can_see_stock"] = bool(raw.get("can_see_stock"))
+        if snapshot["can_see_stock"]:
+            snapshot["below_min"] = self.shortages(raw.get("below_min"))
         if sales:
             invoices = raw["invoices"] or {}
             sold = {int(r["karat_value"]): r for r in raw["sold"]}
@@ -93,6 +124,7 @@ class DashboardService:
                        "from_old_gold": str(Decimal(str(sold[karat]["from_old_gold_grams"])).quantize(GRAMS))}
                       for karat in sorted(sold, key=lambda k: (k not in DASHBOARD_KARATS,
                                                               DASHBOARD_KARATS.index(k) if k in DASHBOARD_KARATS else k))],
+                month=self.month_summary(raw["month"], raw["prev_month"]), month_day=int((raw.get("month_info") or {}).get("day") or 0),
                 recent=[{"invoice_number": r["invoice_number"], "finalized_at": r["finalized_at"],
                          "net_amount": str(Decimal(str(r["net_amount"])).quantize(MONEY)),
                          "net_direction": r["net_direction"],

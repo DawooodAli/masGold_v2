@@ -64,13 +64,12 @@ class GoldPositionPageTests(harness.InvoicePageTests):
             self.root.setWidth(width)
             self.root.setHeight(height)
             QTest.qWait(120)
-            for name in ("goldPositionTotal", "goldSummary_shop", "goldSummary_custody", "goldSummary_intermediary",
-                         "goldDetailsToggle", "goldRefreshButton"):
+            for name in ("goldDetailsToggle", "goldRefreshButton"):
                 self.assert_inside_window(self.visible_item(name))
         shop = D("10") + D("6.3") * 18 / 21 + D("30")
         custody_eq, inter = D("5"), D("4") * D("0.9") * 24 / 21
         total = (shop + custody_eq + inter).quantize(D("0.001"))
-        self.assertEqual(self.text("goldTotalValue"), f"{total:,.3f} جرام")
+        self.assertIsNone(self.visible_item("goldTotalValue"))                  # the four summary cards were removed at the owner's request
         self.assertIsNotNone(self.visible_item("goldUnknownNote"))               # the legacy receipt piece (3 g, assay unknown)
         self.assertIn("3.000", self.text("goldUnknownNote"))
         self.assertIsNone(self.visible_item("goldDetailsPanel"))                 # details closed by default

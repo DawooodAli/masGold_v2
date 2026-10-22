@@ -9,6 +9,7 @@ from app.workers.invoice_worker import InvoiceWorker
 
 # Staff wording for who pays whom on an invoice (an internal screen, not the customer's bill).
 DIRECTION_TEXT = {"CUSTOMER_PAYS_SHOP": "يدفع العميل", "SHOP_PAYS_CUSTOMER": "يدفع المحل", "SETTLED": "متعادلة"}
+MONTHS = ("يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر")
 WEEKDAYS = ("الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد")
 
 
@@ -138,6 +139,42 @@ class DashboardViewModel(QObject):
                          "amount": money(r["net_amount"]),
                          "direction": DIRECTION_TEXT.get(r["net_direction"], "")})
         return rows
+
+    # ------------------------------------------------------------ the month so far (billing permission)
+    @Property(str, notify=changed)
+    def monthTitle(self):
+        day = int(self._data.get("month_day", 0))
+        now = self._clock()
+        return f"مبيعات شهر {MONTHS[now.month - 1]} (حتى يوم {day})" if day else "مبيعات الشهر"
+
+    @Property("QVariantList", notify=changed)
+    def monthByKarat(self):
+        rows = []
+        for r in self._data.get("month", []):
+            now, before = Decimal(r["grams"]), Decimal(r["previous"])
+            if before:
+                change = (now - before) / before * 100
+                versus = f"{'▲' if change > 0 else '▼' if change < 0 else '●'} {abs(change):.0f}% عن نفس الفترة من الشهر الماضي ({grams(before)})"
+                direction = "up" if change > 0 else "down" if change < 0 else "flat"
+            else:
+                versus, direction = ("لا مبيعات بنفس الفترة من الشهر الماضي" if not now else "لا مقارنة: الشهر الماضي بلا مبيعات في نفس الفترة"), "flat"
+            rows.append({"karat": str(r["karat"]), "grams": grams(now), "pieces": f"{r['pieces']} قطعة", "versus": versus, "direction": direction})
+        return rows
+
+    # ------------------------------------------------------------ minimum stock (inventory permission)
+    @Property(bool, notify=changed)
+    def canSeeStock(self):
+        return bool(self._data.get("can_see_stock"))
+
+    @Property("QVariantList", notify=changed)
+    def belowMin(self):
+        out = []
+        for r in self._data.get("below_min", []):
+            parts = [f"{r['short_pieces']} قطعة"] if r["short_pieces"] else []
+            if Decimal(r["short_grams"]):
+                parts.append(grams(r["short_grams"]))
+            out.append({"title": f"{r['type']} عيار {r['karat']}", "short": "ناقص " + " و ".join(parts)})
+        return out
 
     # ------------------------------------------------------------ old gold (every logged-in user)
     @Property("QVariantList", notify=changed)

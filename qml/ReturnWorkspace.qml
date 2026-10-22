@@ -56,10 +56,10 @@ Item {
         Layout.alignment: Qt.AlignTop
         Layout.preferredHeight: sectionBody.implicitHeight + 44
         color: theme.panel
-        radius: theme.radiusSmall
-        border.color: theme.border
+        radius: theme.radiusCard
+        border.color: theme.cardBorder
         Rectangle { anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom
-                    anchors.margins: 1; width: 3; radius: 2; color: section.accent }
+                    anchors.topMargin: 16; anchors.bottomMargin: 16; anchors.rightMargin: 1; width: 3; radius: 2; color: section.accent }
         Txt { id: sectionTitle; anchors.top: parent.top; anchors.right: parent.right; anchors.topMargin: 8
               anchors.rightMargin: 14; value: section.title; color: section.accent; font.bold: true
               font.pixelSize: theme.fontSection }

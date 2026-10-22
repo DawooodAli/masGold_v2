@@ -104,10 +104,10 @@ Item {
         Layout.fillWidth: true
         implicitHeight: body.implicitHeight + 46
         color: theme.panel
-        radius: theme.radiusSmall
-        border.color: theme.border
+        radius: theme.radiusCard
+        border.color: theme.cardBorder
         Rectangle { anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom
-                    anchors.margins: 1; width: 3; radius: 2; color: parent.accent }
+                    anchors.topMargin: 16; anchors.bottomMargin: 16; anchors.rightMargin: 1; width: 3; radius: 2; color: parent.accent }
         Txt { id: cardTitle; anchors.top: parent.top; anchors.right: parent.right; anchors.topMargin: 8
               anchors.rightMargin: 14; text: parent.title; color: parent.accent; font.bold: true
               font.pixelSize: theme.fontSection }

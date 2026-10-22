@@ -62,10 +62,10 @@ Item {
         Layout.fillWidth: true
         Layout.preferredHeight: sectionBody.implicitHeight + 42
         color: theme.panel
-        radius: theme.radiusSmall
-        border.color: theme.border
+        radius: theme.radiusCard
+        border.color: theme.cardBorder
         Rectangle { anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom
-                    anchors.margins: 1; width: 3; radius: 2; color: section.accent }
+                    anchors.topMargin: 16; anchors.bottomMargin: 16; anchors.rightMargin: 1; width: 3; radius: 2; color: section.accent }
         Txt { id: sectionTitle; anchors.top: parent.top; anchors.right: parent.right; anchors.topMargin: 7
               anchors.rightMargin: 14; value: section.title; color: section.accent; font.bold: true
               font.pixelSize: theme.fontSection }
@@ -91,10 +91,14 @@ Item {
               font.pixelSize: parent.strong ? theme.fontBodyStrong : theme.fontBody }
     }
 
+    // One control height for every field, combo and button of the filter rows (owner review 2026-10-22).
+    readonly property int ctlH: 34
+
     component Btn: Button {
         id: btn
         property bool primary: false
-        implicitHeight: 30
+        implicitHeight: historyPage.ctlH
+        height: historyPage.ctlH
         contentItem: Label { text: btn.text; font.family: theme.fontFamily; font.pixelSize: theme.fontBody
                              font.bold: btn.primary; color: btn.enabled ? theme.textPrimary : theme.textDisabled
                              horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
@@ -105,7 +109,8 @@ Item {
     }
 
     component Field: TextField {
-        implicitHeight: 30
+        implicitHeight: historyPage.ctlH
+        height: historyPage.ctlH
         font.family: theme.fontFamily
         font.pixelSize: theme.fontBody
         color: theme.textPrimary
@@ -117,7 +122,8 @@ Item {
     }
 
     component Choice: ComboBox {
-        implicitHeight: 30
+        implicitHeight: historyPage.ctlH
+        height: historyPage.ctlH
         font.family: theme.fontFamily
         font.pixelSize: theme.fontBody
         textRole: "text"
@@ -143,7 +149,8 @@ Item {
                 objectName: "historySearch"
                 mixed: true
                 width: 260
-                implicitHeight: 30
+                implicitHeight: historyPage.ctlH
+                height: historyPage.ctlH
                 font.family: theme.fontFamily
                 font.pixelSize: theme.fontBody
                 color: theme.textPrimary
@@ -157,12 +164,12 @@ Item {
                 onAccepted: historyPage.vm.submitSearch(text)
             }
             // اليوم: the default view (active on open); gold while today is the range.
-            Btn { objectName: "historyToday"; text: "اليوم"; primary: !!historyPage.vm && historyPage.vm.todayActive
+            Btn { objectName: "historyToday"; text: "📅 اليوم"; primary: !!historyPage.vm && historyPage.vm.todayActive
                   onClicked: { historyPage.vm.setToday(); historyPage.syncDates() } }
-            DateField { id: fromField; objectName: "historyDateFrom"; placeholder: "من"; width: 138 }
-            DateField { id: toField; objectName: "historyDateTo"; placeholder: "إلى"; width: 138 }
+            DateField { id: fromField; objectName: "historyDateFrom"; placeholder: "من"; width: 138; height: historyPage.ctlH }
+            DateField { id: toField; objectName: "historyDateTo"; placeholder: "إلى"; width: 138; height: historyPage.ctlH }
             // One query with the chosen range (custom range: اليوم is no longer active).
-            Btn { objectName: "historyApplyDates"; text: "تطبيق"
+            Btn { objectName: "historyApplyDates"; text: "✔ تطبيق"
                   onClicked: { historyPage.vm.setDateRange(fromField.value, toField.value); historyPage.syncDates() } }
             Choice {
                 objectName: "historyType"
@@ -178,9 +185,9 @@ Item {
                         { code: "PARTIAL", text: "مسددة جزئياً" }, { code: "UNSETTLED", text: "غير مسددة" }]
                 onActivated: historyPage.vm.setStatusFilter(currentValue)
             }
-            Btn { objectName: "historyClear"; text: "مسح"
+            Btn { objectName: "historyClear"; text: "✖ مسح"
                   onClicked: { searchField.text = ""; historyPage.vm.clearFilters(); historyPage.syncDates() } }
-            Txt { objectName: "historyRangeText"; height: 30; value: historyPage.vm ? historyPage.vm.rangeText : ""
+            Txt { objectName: "historyRangeText"; height: historyPage.ctlH; value: historyPage.vm ? historyPage.vm.rangeText : ""
                   color: historyPage.vm && historyPage.vm.todayActive ? theme.gold : theme.textSecondary; font.bold: true }
         }
 
@@ -200,7 +207,7 @@ Item {
             }
             Btn {
                 objectName: "historyNumberOpen"
-                text: "بحث / فتح"
+                text: "🔍 بحث / فتح"
                 primary: true
                 enabled: !!historyPage.vm && !historyPage.vm.lookupBusy
                 onClicked: historyPage.vm.openByNumber(numberField.text)

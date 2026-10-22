@@ -66,7 +66,7 @@ class _Base(harness.InvoicePageTests):
         super().setUp()
 
     def open_settings(self):
-        self.root.setProperty("currentPage", 6)
+        self.open_settings_dialog(4, "cashCategories", "cashCategoriesDialog")
         self.wait_until(lambda: self.visual_item("settingsCashCategories") is not None, "the card exists")
         vm = self.controller.operational_viewmodels["cashCategoryVM"]
         self.wait_until(lambda: vm.loaded, "the categories loaded")
@@ -77,7 +77,7 @@ class _Base(harness.InvoicePageTests):
 class CashCategoryCardTests(_Base):
     def test_add_rename_disable_and_delete_with_real_clicks(self):
         vm = self.open_settings()
-        self.scroll_settings_to("settingsCashCategories")
+        self.scroll_dialog_to("cashCategoriesDialog", "settingsCashCategories")
         service = type(self).service
         self.assertEqual(len(vm.categories), 10)
         self.assertIsNone(self.visual_item("categoryDelete_RENT") if self.item("categoryDelete_RENT").property("visible") else None)      # a used category has no delete button
@@ -89,14 +89,14 @@ class CashCategoryCardTests(_Base):
         self.assertEqual(service.calls[-1], ("add", "تأمينات", "OUT"))
         self.assertTrue(any(c["name"] == "تأمينات" for c in vm.categories))
         # rename: edit, type, save
-        self.scroll_settings_to("categoryEdit_EXPENSE")
+        self.scroll_dialog_to("cashCategoriesDialog", "categoryEdit_EXPENSE")
         self.click("categoryEdit_EXPENSE")
         self.type_into("categoryRenameField_EXPENSE", "مصروفات عامة")
         self.click("categorySave_EXPENSE")
         self.wait_until(lambda: ("rename", "EXPENSE", "مصروفات عامة") in service.calls, "renamed")
         self.wait_until(lambda: any(c["name"] == "مصروفات عامة" for c in vm.categories), "the list shows the new name")
         # disable then enable
-        self.scroll_settings_to("categoryToggle_SALARY")
+        self.scroll_dialog_to("cashCategoriesDialog", "categoryToggle_SALARY")
         self.click("categoryToggle_SALARY")
         self.wait_until(lambda: ("active", "SALARY", False) in service.calls, "disabled")
         self.wait_until(lambda: next(c for c in vm.categories if c["code"] == "SALARY")["active"] is False, "listed as disabled")
@@ -106,7 +106,7 @@ class CashCategoryCardTests(_Base):
         self.wait_until(lambda: ("active", "SALARY", True) in service.calls, "enabled again")
         # delete needs two clicks
         QTest.qWait(400)
-        self.scroll_settings_to("categoryDelete_TRANSPORT")
+        self.scroll_dialog_to("cashCategoriesDialog", "categoryDelete_TRANSPORT")
         self.click("categoryDelete_TRANSPORT")
         self.assertNotIn(("delete", "TRANSPORT"), service.calls)                               # the first click only asks
         self.assertEqual(self.item("categoryDelete_TRANSPORT").property("text"), "تأكيد الحذف")
@@ -117,7 +117,7 @@ class CashCategoryCardTests(_Base):
             self.root.setWidth(width)
             self.root.setHeight(height)
             QTest.qWait(150)
-            self.scroll_settings_to("cashCategoryAdd")
+            self.scroll_dialog_to("cashCategoriesDialog", "cashCategoryAdd")
             self.assert_inside_window(self.item("cashCategoryAdd"))
 
 
@@ -125,9 +125,10 @@ class CashCategoryHiddenTests(_Base):
     allowed = False
 
     def test_a_user_without_the_settings_right_is_not_offered_the_card(self):
-        self.root.setProperty("currentPage", 6)
+        self.root.setProperty("currentPage", 4)
         QTest.qWait(400)
-        self.assertFalse(self.item("settingsCashCategories").property("visible"))
+        QTest.qWait(200)
+        self.assertFalse(self.item("cashCategories").property("visible"))
 
 
 for _cls in (_Base, CashCategoryCardTests, CashCategoryHiddenTests):

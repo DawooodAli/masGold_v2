@@ -77,7 +77,7 @@ Item {
             target: reportsVM
             function onChanged() { if (!!reportsVM.demandChart.granularity && !demandChartDialog.opened) demandChartDialog.open(); demandCanvas.requestPaint() }
         }
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold; border.width: 2 }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.gold; border.width: 2 }
         contentItem: ColumnLayout {
             spacing: 8
             Label { objectName: "reportDemandChartTitle"; Layout.fillWidth: true; font.bold: true; font.pixelSize: theme.fontSection; color: theme.gold; horizontalAlignment: Text.AlignRight
@@ -120,7 +120,7 @@ Item {
                 objectName: "reportDemandChartCanvas"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                readonly property var palette: ["#E4A853", "#60C9AF", "#6CA6E0", "#B48EDB", "#C9D1D9", "#858D97"]
+                readonly property var palette: ["#DDB961", "#70B0F1", "#5EC3CE", "#A5B2C3", "#77C599", "#E7AA5B"]
                 onPaint: {
                     var ctx = getContext("2d")
                     ctx.reset()
@@ -184,7 +184,7 @@ Item {
             target: reportsVM
             function onChanged() { if (!!reportsVM.priceChart.karat && !priceChartDialog.opened) priceChartDialog.open(); priceCanvas.requestPaint() }
         }
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: page.karatColor(parseInt(reportsVM.priceChart.karat || 0)); border.width: 2 }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: page.karatColor(parseInt(reportsVM.priceChart.karat || 0)); border.width: 2 }
         contentItem: ColumnLayout {
             spacing: 8
             Label { objectName: "reportPriceChartTitle"; Layout.fillWidth: true; text: "سعر الذهب اليومي — عيار " + (reportsVM.priceChart.karat || ""); color: page.karatColor(parseInt(reportsVM.priceChart.karat || 0)); font.bold: true
@@ -204,7 +204,7 @@ Item {
                     }
                 }
                 Item { Layout.fillWidth: true }
-                Label { color: theme.textMuted; font.pixelSize: theme.fontTableHeader; text: "أحمر = بيع المحل • أخضر = شراء المحل • أصفر متقطع = متوسط 30 يوم" }
+                Label { color: theme.textMuted; font.pixelSize: theme.fontTableHeader; text: "ذهبي = بيع المحل • أخضر مزرق = شراء المحل • رمادي متقطع = متوسط 30 يوم" }
             }
             Label { objectName: "reportPriceChartLoading"; Layout.fillWidth: true; visible: !!reportsVM.priceChart.loading; color: theme.textMuted; text: "جارٍ التحميل…"; horizontalAlignment: Text.AlignRight }
             Label { objectName: "reportPriceChartError"; Layout.fillWidth: true; visible: !!reportsVM.priceChart.error; color: theme.red; text: reportsVM.priceChart.error || ""; wrapMode: Text.WordWrap }
@@ -243,9 +243,9 @@ Item {
                         }
                         ctx.stroke()
                     }
-                    line("sell", "#E06C75", [])
-                    line("buy", "#60C9AF", [])
-                    line("average", "#E4A853", [6, 4])
+                    line("sell", "#E2BC63", [])
+                    line("buy", "#73CBB0", [])
+                    line("average", "#858D97", [6, 4])
                 }
             }
             RowLayout {
@@ -274,7 +274,7 @@ Item {
             target: reportsVM
             function onChanged() { if (!!reportsVM.chart.type && !chartDialog.opened) chartDialog.open() }
         }
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.gold }
         contentItem: ColumnLayout {
             spacing: 8
             Label { objectName: "reportChartTitle"; Layout.fillWidth: true; text: "المبيعات الشهرية — " + (reportsVM.chart.type || ""); color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; horizontalAlignment: Text.AlignRight }
@@ -432,7 +432,7 @@ Item {
                 Layout.fillWidth: true
                 visible: reportsVM.report !== ""
                 implicitHeight: filterFlow.implicitHeight + 16
-                radius: theme.radiusSmall; color: theme.bgSecondary; border.color: theme.border
+                radius: theme.radiusCard; color: theme.bgSecondary; border.color: theme.cardBorder
                 Flow {
                     id: filterFlow
                     anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
@@ -512,7 +512,7 @@ Item {
                             Layout.preferredWidth: 1
                             Layout.fillHeight: true
                             implicitHeight: totalColumn.implicitHeight + 20
-                            radius: theme.radiusSmall; color: theme.panel
+                            radius: theme.radiusCard; color: theme.panel
                             border.color: totalCard.modelData.karat ? page.karatColor(totalCard.modelData.karat) : totalCard.modelData.tone ? page.toneColor(totalCard.modelData.tone) : theme.border
                             border.width: totalCard.modelData.karat || totalCard.modelData.tone ? 2 : 1
                             ColumnLayout {

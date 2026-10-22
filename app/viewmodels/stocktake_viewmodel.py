@@ -162,6 +162,26 @@ class StocktakeViewModel(QObject):
                  "scanned_weight_text": weight_text(e["scanned"][1])}
                 for (_, karat), e in sorted(totals.items(), key=lambda kv: (kv[0][0], -(kv[0][1] or 0)))]
 
+    @Slot("QVariantList")
+    def dropRemaining(self, ids):
+        """Pieces written off one by one leave المتبقي (the scans of the session stay)."""
+        gone = {str(i) for i in ids}
+        for item_id in [i for i in self._remaining if i in gone]:
+            self._remaining.remove(item_id)
+            self._remaining_weight -= self._rows[item_id]["weight_grams"]
+        self.changed.emit()
+
+    @Slot(str, result="QVariantMap")
+    def pieceInfo(self, item_id):
+        """What the single write-off dialog shows about one remaining piece."""
+        row = self._rows.get(str(item_id))
+        return {} if row is None else self._display(str(item_id))
+
+    @Slot(result="QVariantMap")
+    def approvalPayload(self):
+        """What the approval needs: the scope and the two id lists of this session (the service re-derives every figure from the locked database rows)."""
+        return {"itemType": str(self._item_type_id), "karat": str(self._karat_id), "scanned": list(self._scanned), "remaining": list(self._remaining)}
+
     @Property(bool, notify=changed)
     def hasScanned(self):
         return bool(self._scanned)

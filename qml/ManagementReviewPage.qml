@@ -355,7 +355,7 @@ Item {
         implicitHeight: groupColumn.implicitHeight + 12
         color: theme.bgTertiary
         radius: 4
-        border.color: theme.border
+        border.color: theme.cardBorder
         ColumnLayout {
             id: groupColumn
             anchors.fill: parent
@@ -374,8 +374,8 @@ Item {
         Layout.fillWidth: true
         implicitHeight: scrapColumn.implicitHeight + 12
         color: scrapSource.containsMouse ? theme.panelHover : theme.bgSecondary
-        radius: 4
-        border.color: theme.border
+        radius: theme.radiusMedium
+        border.color: theme.cardBorder
         Rectangle { anchors.right: parent.right; width: 3; height: parent.height; color: theme.amber; radius: 2 }
         SourceArea { id: scrapSource; objectName: "scrapSource_" + scrapCard.rowIndex; invoiceId: scrapCard.review.invoiceId || "" }
         ColumnLayout {
@@ -712,10 +712,10 @@ Item {
                     objectName: "reviewCard_" + modelData.code
                     width: 150
                     height: 50
-                    radius: theme.radiusSmall
+                    radius: theme.radiusCard
                     color: cardArea.containsMouse ? theme.panelHover : theme.bgSecondary
                     border.width: modelData.selected ? 2 : 1
-                    border.color: modelData.selected ? theme.goldBright : modelData.pending ? theme.goldDark : theme.border
+                    border.color: modelData.selected ? theme.goldBright : modelData.pending ? theme.goldDark : theme.cardBorder
                     Rectangle {
                         anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom
                         anchors.margins: 1; width: 3; radius: 2
@@ -834,50 +834,6 @@ Item {
                         font.pixelSize: 12
                         horizontalAlignment: Text.AlignRight
                         wrapMode: Text.WordWrap
-                    }
-                    Flow {
-                        Layout.fillWidth: true
-                        Layout.preferredWidth: 1
-                        layoutDirection: Qt.RightToLeft
-                        spacing: 8
-                        visible: reviewPage.goldLoaded
-                        Rectangle {
-                            objectName: "goldPositionTotal"
-                            width: 190; height: 64; radius: theme.radiusSmall
-                            color: theme.bgSecondary; border.width: 1; border.color: theme.goldDark
-                            Rectangle { anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom
-                                        anchors.margins: 1; width: 3; radius: 2; color: theme.goldBright }
-                            ColumnLayout {
-                                anchors.fill: parent; anchors.rightMargin: 12; anchors.leftMargin: 8; spacing: 0
-                                Label { Layout.fillWidth: true; text: "إجمالي ذهب المحل (21K)"; color: theme.textSecondary
-                                        font.family: "Cairo"; font.pixelSize: 12; horizontalAlignment: Text.AlignRight }
-                                Label { objectName: "goldTotalValue"; Layout.fillWidth: true
-                                        text: reviewPage.goldLoaded ? reviewPage.goldPos.total + " جرام" : ""
-                                        color: theme.goldBright; font.family: "Cairo"; font.pixelSize: 20; font.bold: true
-                                        horizontalAlignment: Text.AlignRight }
-                            }
-                        }
-                        Repeater {
-                            model: reviewPage.goldLoaded ? reviewPage.goldPos.summary : []
-                            Rectangle {
-                                id: goldBox
-                                required property var modelData
-                                objectName: "goldSummary_" + modelData.key
-                                width: 170; height: 64; radius: theme.radiusSmall
-                                color: theme.bgSecondary; border.width: 1; border.color: theme.border
-                                Rectangle { anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom
-                                            anchors.margins: 1; width: 3; radius: 2; color: theme.gold }
-                                ColumnLayout {
-                                    anchors.fill: parent; anchors.rightMargin: 12; anchors.leftMargin: 8; spacing: 0
-                                    Label { Layout.fillWidth: true; text: goldBox.modelData.label; color: theme.textSecondary
-                                            font.family: "Cairo"; font.pixelSize: 12; horizontalAlignment: Text.AlignRight }
-                                    Label { Layout.fillWidth: true; text: goldBox.modelData.eq21 + " جرام (21K)"; color: theme.textPrimary
-                                            font.family: "Cairo"; font.pixelSize: 15; font.bold: true; horizontalAlignment: Text.AlignRight }
-                                    Label { Layout.fillWidth: true; text: "فعلي " + goldBox.modelData.grams + " جرام"; color: theme.textMuted
-                                            font.family: "Cairo"; font.pixelSize: 11; horizontalAlignment: Text.AlignRight }
-                                }
-                            }
-                        }
                     }
                     Label {
                         objectName: "goldUnknownNote"

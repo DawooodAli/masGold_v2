@@ -52,13 +52,13 @@ class _Base(harness.InvoicePageTests):
 
 class CategoryCostCardTests(_Base):
     def test_save_a_cost_refuse_a_bad_one_and_clear_with_real_clicks(self):
-        self.root.setProperty("currentPage", 6)
+        self.open_settings_dialog(2, "openCategoryCostsButton", "categoryCostsDialog")
         self.wait_until(lambda: self.visual_item("settingsCategoryCosts") is not None, "the card exists")
         vm = self.controller.operational_viewmodels["categoryCostVM"]
         self.wait_until(lambda: vm.loaded, "loaded")
         self.wait_until(lambda: self.item("settingsCategoryCosts").property("visible"), "the card is shown")
         service = type(self).service
-        self.scroll_settings_to("costRow_A")
+        self.scroll_dialog_to("categoryCostsDialog", "costRow_A")
         self.assertEqual(self.item("costField_A").property("text"), "150.00")                    # the stored cost is shown
         self.assertEqual(self.item("costField_B").property("text"), "")                          # not set
         self.assertFalse(self.item("costClear_B").property("visible"))                           # nothing to clear
@@ -71,14 +71,14 @@ class CategoryCostCardTests(_Base):
         self.click("costSave_C")
         self.wait_until(lambda: vm.messageIsError, "refused")
         self.assertNotIn(("set", 3, D("12.35")), service.calls)
-        self.scroll_settings_to("costClear_A")
+        self.scroll_dialog_to("categoryCostsDialog", "costClear_A")
         self.click("costClear_A")
         self.wait_until(lambda: ("clear", 1) in service.calls, "cleared")
         for width, height in SIZES:
             self.root.setWidth(width)
             self.root.setHeight(height)
             QTest.qWait(150)
-            self.scroll_settings_to("costRow_B")
+            self.scroll_dialog_to("categoryCostsDialog", "costRow_B")
             self.assert_inside_window(self.item("costSave_B"))
 
 
@@ -86,9 +86,10 @@ class CategoryCostHiddenTests(_Base):
     allowed = False
 
     def test_a_user_without_the_settings_right_is_not_offered_the_card(self):
-        self.root.setProperty("currentPage", 6)
+        self.root.setProperty("currentPage", 2)
         QTest.qWait(400)
-        self.assertFalse(self.item("settingsCategoryCosts").property("visible"))
+        QTest.qWait(200)
+        self.assertFalse(self.item("openCategoryCostsButton").property("visible"))
 
 
 for _cls in (_Base, CategoryCostCardTests, CategoryCostHiddenTests):

@@ -447,6 +447,79 @@ class InventoryStockPageTests(harness.InvoicePageTests):
         self.assertEqual(store.created + store.movements, [])                 # never a stock write
         self.assertEqual(self.warnings, [])
 
+    def test_approving_the_stocktake_writes_off_the_remaining_with_real_clicks(self):
+        vm = self.controller.operational_viewmodels["stocktakeVM"]
+        adjust = self.controller.operational_viewmodels["stocktakeAdjustVM"]
+        calls = []
+
+        class FakeAdjust:
+            def can_adjust(self):
+                return True
+
+            def approve(self, *args, **kwargs):
+                calls.append(args)
+                return {"code": "SK000001", "id": "1", "written_off_count": len(args[3]), "written_off_grams": D("10.000"), "replayed": False}
+        adjust._service = FakeAdjust()
+        adjust.changed.emit()
+        vm._service = service_for(Store(MIXED))
+        self.page(INVENTORY)
+        self.click("openStocktakeButton")
+        self.wait_until(lambda: self.root.property("currentPage") == STOCKTAKE and vm.loaded, "stocktake opened")
+        approve = self.item("stocktakeApprove")
+        self.assertFalse(approve.property("enabled"))                          # nothing scanned yet
+        self.scan("02261001")
+        self.wait_until(lambda: approve.property("enabled"), "approve enabled")
+        for width, height in harness.SIZES:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(150)
+            self.assert_inside_window(approve)
+        self.click("stocktakeApprove")
+        dialog = self.item("stocktakeApproveDialog")
+        self.wait_until(lambda: dialog.property("opened"), "dialog")
+        self.assertFalse(self.item("stocktakeApproveOk").property("enabled"))  # the confirmation is required
+        self.click("stocktakeConfirmCheck")
+        self.wait_until(lambda: self.item("stocktakeApproveOk").property("enabled"), "confirmed")
+        self.click("stocktakeApproveOk")
+        self.wait_until(lambda: len(calls) == 1 and not dialog.property("visible"), "approved")
+        args = calls[0]
+        self.assertEqual((len(args[2]), len(args[3]), args[4]), (1, 5, "SOLD_OUTSIDE"))
+        self.assertIn("SK000001", self.item("stocktakeDone").property("text"))
+        self.assertEqual(self.warnings, [])
+
+    def test_a_remaining_row_can_be_deleted_from_the_stock_with_real_clicks(self):
+        vm = self.controller.operational_viewmodels["stocktakeVM"]
+        adjust = self.controller.operational_viewmodels["stocktakeAdjustVM"]
+        calls = []
+
+        class FakeAdjust:
+            def can_adjust(self):
+                return True
+
+            def write_off_pieces(self, ids, reason, note, confirmed, key, **kwargs):
+                calls.append((list(ids), reason, confirmed))
+                return {"code": "SK000002", "id": "2", "written_off_count": len(ids), "written_off_grams": D("1.000"), "replayed": False}
+        adjust._service = FakeAdjust()
+        adjust.changed.emit()
+        vm._service = service_for(Store(MIXED))
+        self.page(INVENTORY)
+        self.click("openStocktakeButton")
+        self.wait_until(lambda: self.root.property("currentPage") == STOCKTAKE and vm.loaded, "stocktake opened")
+        first = vm.remainingRows[0]["id"]
+        before = vm.remainingCount
+        self.wait_until(lambda: self.visual_item("stocktakeRemainingDelete_" + first) is not None, "the delete button")
+        self.click("stocktakeRemainingDelete_" + first)
+        dialog = self.item("stocktakeApproveDialog")
+        self.wait_until(lambda: dialog.property("opened"), "dialog")
+        self.assertNotEqual(self.item("stocktakePieceInfo").property("text"), "")
+        self.click("stocktakeConfirmCheck")
+        self.wait_until(lambda: self.item("stocktakeApproveOk").property("enabled"), "confirmed")
+        self.click("stocktakeApproveOk")
+        self.wait_until(lambda: len(calls) == 1 and not dialog.property("visible"), "written off")
+        self.assertEqual(calls[0], ([first], "SOLD_OUTSIDE", True))
+        self.assertEqual((vm.remainingCount, first in [r["id"] for r in vm.remainingRows]), (before - 1, False))
+        self.assertEqual(self.warnings, [])
+
     def test_stocktake_empty_inventory(self):
         vm = self.controller.operational_viewmodels["stocktakeVM"]
         vm._service = service_for(Store())

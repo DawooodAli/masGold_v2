@@ -46,6 +46,18 @@ class FakeDashboardRepo:
         self.state["reads"].append(f"recent:{limit}")
         return self.state["recent"]
 
+    def month_sold_by_karat(self, previous=False):
+        self.state["reads"].append("month_prev" if previous else "month")
+        return self.state["month_prev" if previous else "month"]
+
+    def month_start(self):
+        self.state["reads"].append("month_start")
+        return self.state["month_info"]
+
+    def below_min_levels(self):
+        self.state["reads"].append("below_min")
+        return self.state["below_min"]
+
 
 class FakeBalanceRepo:
     def __init__(self, connection):
@@ -58,7 +70,7 @@ class FakeBalanceRepo:
 def empty_state():
     return {"reads": [], "invoices": {"invoice_count": 0, "sell_total": D("0"), "buy_total": D("0"),
                                       "sale_invoice_count": 0, "buy_invoice_count": 0, "unidentified_lines": 0},
-            "sold": [], "flow": [], "recent": [],
+            "sold": [], "flow": [], "recent": [], "month": [], "month_prev": [], "month_info": {"first": "2026-09-01", "day": 27, "today": datetime(2026, 9, 27)}, "below_min": [],
             "balance": [{"karat_id": 1, "karat_value": 21, "balance_grams": D("0")},
                         {"karat_id": 2, "karat_value": 18, "balance_grams": D("0")},
                         {"karat_id": 3, "karat_value": 24, "balance_grams": D("0")}]}
@@ -71,6 +83,8 @@ def busy_state():
     state["sold"] = [{"karat_value": 18, "grams": D("4.250"), "pieces": 2, "from_old_gold_grams": D("0")},
                      {"karat_value": 21, "grams": D("7.100"), "pieces": 3, "from_old_gold_grams": D("2.000")}]
     state["flow"] = [{"karat_value": 21, "grams_in": D("5.000"), "grams_out": D("2.000")}]
+    state["month"] = [{"karat_value": 21, "grams": D("120.500"), "pieces": 30}, {"karat_value": 18, "grams": D("40.000"), "pieces": 9}]
+    state["month_prev"] = [{"karat_value": 21, "grams": D("100.000"), "pieces": 25}]
     state["balance"][0]["balance_grams"] = D("128.520")
     state["recent"] = [{"invoice_number": "26092618", "finalized_at": datetime(2026, 9, 27, 13, 5),
                         "net_amount": D("23000.00"), "net_direction": "CUSTOMER_PAYS_SHOP",
@@ -118,18 +132,37 @@ class DashboardServiceTests(unittest.TestCase):
         self.assertFalse(snapshot["can_see_sales"])
         for key in ("invoice_count", "sell_total", "buy_total", "sold", "recent"):
             self.assertNotIn(key, snapshot)
-        self.assertEqual(state["reads"], ["flow"])                          # sales queries never ran
+        self.assertEqual(state["reads"], ["flow"])                          # sales and stock queries never ran
         self.assertEqual(len(snapshot["old_gold"]), 4)                       # the strip's information only
 
     def test_one_small_set_of_queries_per_refresh(self):
         state = busy_state()
         make_service(state)[0].today()
-        self.assertEqual(sorted(state["reads"]), ["flow", "invoices", "recent:5", "sold"])
+        self.assertEqual(sorted(state["reads"]), ["flow", "invoices", "month", "month_prev", "month_start", "recent:5", "sold"])
 
     def test_no_money_received_customer_or_bank_balances_on_the_dashboard(self):
         snapshot = make_service(busy_state())[0].today()
         for key in ("money_received", "cash_balance", "bank", "wallet", "customer_balance"):
             self.assertNotIn(key, snapshot)
+
+    def test_the_month_so_far_is_per_karat_against_the_same_span_of_the_previous_month(self):
+        snapshot = make_service(busy_state())[0].today()
+        self.assertEqual(snapshot["month_day"], 27)
+        self.assertEqual(snapshot["month"], [{"karat": 21, "grams": "120.500", "pieces": 30, "previous": "100.000"}, {"karat": 18, "grams": "40.000", "pieces": 9, "previous": "0.000"}])
+        self.assertNotIn("month_total", snapshot)                                                       # never summed across karats
+
+    def test_the_minimum_stock_shortages_need_an_inventory_grant_and_list_what_is_missing(self):
+        state = busy_state()
+        state["below_min"] = [{"item_type": "دبلة", "karat_value": 21, "min_pieces": 5, "min_grams": D("20.000"), "pieces": 4, "grams": D("21.500")},       # 1 piece short
+                              {"item_type": "خاتم", "karat_value": 21, "min_pieces": 2, "min_grams": D("10.000"), "pieces": 2, "grams": D("8.000")},        # 2 g short
+                              {"item_type": "سلسلة", "karat_value": 18, "min_pieces": 1, "min_grams": None, "pieces": 1, "grams": D("8.000")}]               # fine
+        granted = make_service(state, BILLING | {"INVENTORY_VIEW"})[0].today()
+        self.assertEqual(granted["below_min"], [{"type": "دبلة", "karat": 21, "short_pieces": 1, "short_grams": "0.000"}, {"type": "خاتم", "karat": 21, "short_pieces": 0, "short_grams": "2.000"}])
+        self.assertIn("below_min", state["reads"])
+        plain = make_service(busy_state(), BILLING)[0].today()
+        self.assertFalse(plain["can_see_stock"])
+        self.assertNotIn("below_min", plain)
+        self.assertEqual(make_service({**busy_state(), "below_min": None}, BILLING | {"INVENTORY_VIEW"})[0].today()["below_min"], [])      # a database below 072
 
     def test_requires_a_login(self):
         service, session = make_service(empty_state())
@@ -243,6 +276,39 @@ class DashboardPageTests(page_harness.InvoicePageTests):
                 self.root.grabWindow().save(str(Path(target) / f"dashboard-{width}x{height}.png"))
         self.assertEqual(self.warnings, [])
 
+    def test_dashboard_cards_of_a_row_have_the_same_height_and_the_new_cards_show_their_figures(self):
+        """Owner review (2026-10-22): the cards of one row are level with each other, the page text is bigger, and the month / minimum-stock cards exist and the gold price card is the first (rightmost) one."""
+        self.grant("INVENTORY_VIEW")
+        state = busy_state()
+        state["below_min"] = [{"item_type": "دبلة", "karat_value": 21, "min_pieces": 5, "min_grams": None, "pieces": 4, "grams": D("21.500")}]
+        service, _ = make_service(state, BILLING | {"INVENTORY_VIEW"})
+        vm = self.open_dashboard(service.today())
+        self.assertEqual([r["karat"] for r in vm.monthByKarat], ["21", "18"])
+        self.assertIn("▲ 20%", vm.monthByKarat[0]["versus"])                                         # 120.5 against 100 g of the same span last month
+        self.assertEqual(vm.belowMin, [{"title": "دبلة عيار 21", "short": "ناقص 1 قطعة"}])
+        for width, height in page_harness.SIZES:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(250)
+            page = self.item("dashboardPage")
+            for name in ("monthCard", "belowMinCard"):
+                item = self.item(name)
+                self.assertTrue(item.property("visible"), f"{name} hidden at {width}x{height}")
+                left = item.mapToItem(page, QPointF(0, 0)).x()
+                self.assertGreaterEqual(left, -1, name)
+                self.assertLessEqual(left + item.property("width"), page.property("width") + 1, name)
+            wide = bool(page.property("wide"))                                                               # three columns on a wide page, two on a narrow one
+            rows = ([("priceCard", "todayCard", "soldWeightCard"), ("oldGoldCard", "attentionCard", "actionsCard")] if wide else [("priceCard", "todayCard"), ("soldWeightCard", "oldGoldCard"), ("attentionCard", "actionsCard")])
+            for row in rows:
+                heights = {name: round(self.item(name).property("height")) for name in row}
+                self.assertEqual(len(set(heights.values())), 1, f"cards of one row differ in height at {width}x{height}: {heights}")
+            if wide:
+                right = {name: self.item(name).mapToItem(page, QPointF(0, 0)).x() + self.item(name).property("width") for name in ("priceCard", "todayCard", "soldWeightCard")}
+                self.assertGreater(right["priceCard"], right["todayCard"], f"the gold price card is not the rightmost at {width}x{height}")        # the price on the physical right (owner review)
+                self.assertGreater(right["todayCard"], right["soldWeightCard"])
+            self.assertGreaterEqual(self.item("invoiceCount").property("font").pixelSize(), 26)             # the key figure is bigger than before
+        self.assertEqual(self.warnings, [])
+
     def test_dashboard_header_stays_readable_with_large_balances(self):
         """Worst realistic header: 7-digit cash and 4-digit grams, at every target size."""
         balances = self.controller.operational_viewmodels["balancesVM"]
@@ -294,7 +360,7 @@ class DashboardPageTests(page_harness.InvoicePageTests):
                 self.assertGreaterEqual(label.property("font").pixelSize(), 30)       # a hero number
                 self.assert_inside_window(label)
                 self.assertLessEqual(label.property("contentWidth"), label.property("width") + 1)
-            self.assertLess(self.item("dashboardPriceStatus").property("font").pixelSize(), 12)  # status stays small
+            self.assertLess(self.item("dashboardPriceStatus").property("font").pixelSize(), 14)  # status stays small (the page text is two points bigger since the 2026-10-22 review)
             self.assertIn("6,232", self.item("goldTopSell").property("text"))           # label is separate
             if target:
                 Path(target).mkdir(parents=True, exist_ok=True)

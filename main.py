@@ -194,6 +194,9 @@ class ApplicationController(QObject):
         if self.operational_viewmodels.get("stockMinLevelVM") is None:
             from app.viewmodels.stock_min_level_viewmodel import create_stock_min_level_viewmodel
             self.operational_viewmodels["stockMinLevelVM"] = (self._level_factory or create_stock_min_level_viewmodel)(self.session)
+        if self.operational_viewmodels.get("stocktakeAdjustVM") is None:
+            from app.viewmodels.stocktake_adjust_viewmodel import create_stocktake_adjust_viewmodel
+            self.operational_viewmodels["stocktakeAdjustVM"] = create_stocktake_adjust_viewmodel(self.session)
         if self.operational_viewmodels.get("categoryCostVM") is None:
             from app.viewmodels.category_cost_viewmodel import create_category_cost_viewmodel
             self.operational_viewmodels["categoryCostVM"] = (self._cost_factory or create_category_cost_viewmodel)(self.session)

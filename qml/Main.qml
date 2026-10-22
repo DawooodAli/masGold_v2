@@ -2012,6 +2012,29 @@ ApplicationWindow {
                         }
                     }
 
+                    // إعدادات المخزون: each opens its own window (SETTINGS_MANAGE is rechecked by the services).
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        visible: (typeof categoryCostVM !== "undefined" && categoryCostVM.canManage) || (typeof stockMinLevelVM !== "undefined" && stockMinLevelVM.canManage)
+                        Button {
+                            objectName: "openCategoryCostsButton"
+                            visible: typeof categoryCostVM !== "undefined" && categoryCostVM.canManage
+                            text: "🏷  تكلفة المصنعية للحروف"
+                            font.family: "Cairo"
+                            onClicked: categoryCostsDialog.open()
+                        }
+                        Button {
+                            objectName: "openStockMinLevelsButton"
+                            visible: typeof stockMinLevelVM !== "undefined" && stockMinLevelVM.canManage
+                            text: "📉  الحد الأدنى للمخزون"
+                            font.family: "Cairo"
+                            onClicked: stockMinLevelsDialog.open()
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
+
 
                     // =================================================
                     // SUMMARY
@@ -3108,6 +3131,7 @@ ApplicationWindow {
                 // index 4: الخزنة — daily cash in / out and operational cash movements.
                 FinancialAccountsPage {
                     pageTitle: "💰 الخزنة"
+                    onCategoriesRequested: cashCategoriesDialog.open()
                     onInvoiceRequested: function(invoiceId) {
                         root.currentPage = 1
                         billingWorkspace.currentTab = 1
@@ -3632,8 +3656,8 @@ ApplicationWindow {
 
     component CustomerCard: Rectangle {
         color: theme.bgSecondary
-        radius: theme.radiusSmall
-        border.color: theme.border
+        radius: theme.radiusCard
+        border.color: theme.cardBorder
     }
 
     component CustomerDetail: RowLayout {
@@ -4949,11 +4973,12 @@ ApplicationWindow {
         property alias content: sectionBody.data
         implicitHeight: sectionLayout.implicitHeight + 28
         color: theme.bgSecondary
-        radius: theme.radiusSmall
-        border.color: theme.border
+        radius: theme.radiusCard
+        border.color: theme.cardBorder
         border.width: 1
         Rectangle {
             anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
+            anchors.leftMargin: 22; anchors.rightMargin: 22                       // the line stays inside the straight part of the rounded edge
             height: 3; radius: 2; color: sectionCard.accentColor
         }
         ColumnLayout {
@@ -5503,7 +5528,7 @@ ApplicationWindow {
             ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
             ColumnLayout {
                 id: settingsBody
-                width: Math.min(settingsScroll.availableWidth, 980)
+                width: Math.min(settingsScroll.availableWidth, 1180)
                 x: settingsScroll.availableWidth - width
                 spacing: 12
                 GoldPriceLabel {
@@ -5512,7 +5537,7 @@ ApplicationWindow {
                 }
                 GoldPriceLabel { Layout.fillWidth: true; value: "إدارة بيانات المحل ومصدر أسعار الذهب"; color: theme.textMuted }
                 GridLayout {
-                    Layout.fillWidth: true; columns: width < 580 ? 1 : 3
+                    Layout.fillWidth: true; columns: width < 520 ? 1 : (width < 700 ? 2 : 4)
                     layoutDirection: Qt.RightToLeft; columnSpacing: 10; rowSpacing: 10
                     SettingsCard {
                         objectName: "settingsCategories"
@@ -5562,9 +5587,6 @@ ApplicationWindow {
                 GoldProviderSettings { id: goldProvider; Layout.fillWidth: true }
                 PrintingSettings { id: printingSettings; Layout.fillWidth: true }
                 PositionOpeningSettings { id: positionOpening; Layout.fillWidth: true }
-                CashCategorySettings { id: cashCategories; Layout.fillWidth: true }
-                CategoryCostSettings { id: categoryCosts; Layout.fillWidth: true }
-                StockMinLevelSettings { id: stockMinLevels; Layout.fillWidth: true }
             }
         }
     }
@@ -8150,7 +8172,7 @@ ApplicationWindow {
 
         color: theme.bgSecondary
 
-        radius: theme.radiusSmall
+        radius: theme.radiusCard
 
         border.color: theme.border
         border.width: 1
@@ -8356,13 +8378,13 @@ ApplicationWindow {
             ? theme.panelHover
             : theme.bgSecondary
 
-        radius: theme.radiusSmall
+        radius: theme.radiusCard
 
         border.color:
             cardMouse.containsMouse
             && clickable
             ? accentColor
-            : theme.border
+            : theme.cardBorder
 
         border.width: 1
 
@@ -8371,6 +8393,8 @@ ApplicationWindow {
             anchors.top: parent.top
             anchors.left: parent.left
             anchors.right: parent.right
+            anchors.leftMargin: 22
+            anchors.rightMargin: 22
 
             height: 3
 
@@ -8421,6 +8445,60 @@ ApplicationWindow {
         }
     }
 
+
+
+    // نافذة إعدادات تفتح بزر من صفحتها (الخزنة / المخزون): the card inside is the same Settings card, so every service-side right (SETTINGS_MANAGE) stays as it was.
+    component SettingsDialog: Dialog {
+        id: settingsDialog
+        property string dialogTitle: ""
+        default property alias body: dialogBody.data
+        modal: true
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(880, root.width - 60)
+        height: Math.min(root.height - 60, 760)
+        padding: 14
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        background: Rectangle { color: theme.bgPrimary; radius: theme.radiusCard; border.color: theme.cardBorder; border.width: 1 }
+        header: Rectangle {
+            implicitHeight: 46; color: "transparent"
+            RowLayout {
+                anchors.fill: parent; anchors.leftMargin: 14; anchors.rightMargin: 18; layoutDirection: Qt.RightToLeft
+                GoldPriceLabel { Layout.fillWidth: true; value: settingsDialog.dialogTitle; color: theme.gold; font.pixelSize: 17; font.bold: true }
+                GoldPriceButton { objectName: settingsDialog.objectName + "Close"; text: "✕  إغلاق"; onClicked: settingsDialog.close() }
+            }
+        }
+        contentItem: ScrollView {
+            clip: true
+            contentWidth: availableWidth
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+            ColumnLayout { id: dialogBody; width: parent.width; spacing: 10 }
+        }
+    }
+
+    SettingsDialog {
+        id: cashCategoriesDialog
+        objectName: "cashCategoriesDialog"
+        dialogTitle: "تصنيفات المصروفات والإيرادات"
+        onOpened: if (typeof cashCategoryVM !== "undefined" && cashCategoryVM.canManage) cashCategoryVM.refresh()
+        CashCategorySettings { Layout.fillWidth: true; sectionTitle: "" }
+    }
+
+    SettingsDialog {
+        id: categoryCostsDialog
+        objectName: "categoryCostsDialog"
+        dialogTitle: "تكلفة المصنعية للحروف"
+        onOpened: if (typeof categoryCostVM !== "undefined" && categoryCostVM.canManage) categoryCostVM.refresh()
+        CategoryCostSettings { Layout.fillWidth: true; sectionTitle: "" }
+    }
+
+    SettingsDialog {
+        id: stockMinLevelsDialog
+        objectName: "stockMinLevelsDialog"
+        dialogTitle: "الحد الأدنى للمخزون"
+        onOpened: if (typeof stockMinLevelVM !== "undefined" && stockMinLevelVM.canManage) stockMinLevelVM.refresh()
+        StockMinLevelSettings { Layout.fillWidth: true; sectionTitle: "" }
+    }
 
     // ========================================================
     // NEW FACTORY DIALOG

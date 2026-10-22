@@ -13,6 +13,7 @@ Rectangle {
     signal invoiceRequested(string invoiceId)
     signal correctionRequested(string operationId)
     signal customerRequested(string customerId)
+    signal categoriesRequested()
     color: theme.bgPrimary
     Theme { id: theme }
 
@@ -79,7 +80,7 @@ Rectangle {
         property string total: ""
         property string totalLabel: ""
         property string prefix: ""
-        color: theme.bgSecondary; radius: theme.radiusMedium; border.color: theme.border
+        color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder
         ColumnLayout {
             anchors.fill: parent; anchors.margins: 10; spacing: 6
             Txt { text: table.title; color: table.accent; font.bold: true; font.pixelSize: theme.fontSection
@@ -168,7 +169,7 @@ Rectangle {
         // -------------------------------------------------------------- header: the safe and its balance
         Rectangle {
             Layout.fillWidth: true; implicitHeight: headRow.implicitHeight + 18
-            color: theme.bgSecondary; radius: theme.radiusMedium; border.color: theme.border
+            color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder
             RowLayout {
                 id: headRow; anchors.fill: parent; anchors.margins: 9; layoutDirection: Qt.RightToLeft; spacing: 12
                 ColumnLayout {
@@ -189,6 +190,9 @@ Rectangle {
                 Btn { objectName: "cashNewMovement"; text: "حركة نقدية جديدة"; primary: true
                       visible: !!page.vm && page.vm.canOperate; enabled: !page.vm.saving
                       onClicked: movementDialog.begin() }
+                Btn { objectName: "cashCategories"; text: "🗂 تصنيفات المصروفات والإيرادات"
+                      visible: typeof cashCategoryVM !== "undefined" && cashCategoryVM.canManage
+                      onClicked: page.categoriesRequested() }
                 Btn { objectName: "cashRefresh"; text: "تحديث"; enabled: !!page.vm && !page.vm.busy
                       onClicked: page.vm.refresh() }
             }

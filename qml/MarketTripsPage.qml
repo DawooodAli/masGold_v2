@@ -160,8 +160,8 @@ Item {
         Layout.fillWidth: true
         implicitHeight: sectionColumn.implicitHeight + 20
         color: theme.panel
-        radius: theme.radiusSmall
-        border.color: theme.border
+        radius: theme.radiusCard
+        border.color: theme.cardBorder
         ColumnLayout {
             id: sectionColumn
             anchors.fill: parent

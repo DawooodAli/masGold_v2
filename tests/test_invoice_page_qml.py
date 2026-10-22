@@ -508,6 +508,23 @@ class InvoicePageTests(unittest.TestCase):
         flick.setProperty("contentY", max(0, min(limit, top - 120)))
         QTest.qWait(150)
 
+    def open_settings_dialog(self, page, button, dialog):
+        """Open one of the settings windows the way the owner does: go to its page and click its button."""
+        self.root.setProperty("currentPage", page)
+        self.wait_until(lambda: self.visual_item(button) is not None and self.item(button).property("visible"), "the button is shown")
+        QTest.qWait(600)                                                                         # the page and its layout settle before the click
+        self.click(button)
+        self.wait_until(lambda: self.item(dialog).property("opened"), "the window is open")
+
+    def scroll_dialog_to(self, dialog, name):
+        """A settings window scrolls; bring an item into view as the owner would."""
+        flick = self.item(dialog).property("contentItem").property("contentItem")
+        target = self.item(name)
+        top = target.mapToItem(flick.property("contentItem"), QPointF(0, 0)).y()
+        limit = max(0, flick.property("contentHeight") - flick.height())
+        flick.setProperty("contentY", max(0, min(limit, top - 120)))
+        QTest.qWait(150)
+
     def name_customer(self):
         """Every invoice needs a customer name: tests that don't choose one type a new walk-in name."""
         if self.vm.customerId or self.vm._new_customer["name"]:
