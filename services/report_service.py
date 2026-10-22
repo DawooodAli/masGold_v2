@@ -589,7 +589,8 @@ class ReportService:
         raw, folded = _text_filter(filters)
         today = self._today()
         cutoff = today - timedelta(days=DEAD_STOCK_DAYS)
-        stock = [r for r in repo.stock_items(("IN_STOCK",)) if (not karat or str(r["karat_value"]) == karat) and _matches(folded, raw, r["item_type"], r["category"], r["factory"])]
+        all_stock = list(repo.stock_items(("IN_STOCK",)))
+        stock = [r for r in all_stock if (not karat or str(r["karat_value"]) == karat) and _matches(folded, raw, r["item_type"], r["category"], r["factory"])]
         tables, cards = [], []
         dead = {}
         for r in stock:
@@ -653,6 +654,29 @@ class ReportService:
                 tables.append(table("low", "قاربت على النفاد", low_cols, []))
         else:
             tables.append(self._unavailable("low", "قاربت على النفاد", "تحتاج صلاحية عرض الفواتير لحساب معدل البيع."))
+        # ---- the minimum levels the owner set in Settings: a type of a karat below its minimum pieces / grams is a reorder alert (it only alerts)
+        levels = getattr(repo, "stock_min_levels", lambda: None)()
+        if levels:
+            have = {}
+            for r in all_stock:
+                h = have.setdefault((r["item_type"] or NO_TYPE, int(r["karat_value"])), [0, ZERO3])
+                h[0] += 1
+                h[1] += _dec(r["weight_grams"])
+            below = []
+            for lv in levels:
+                k = int(lv["karat_value"])
+                if karat and str(k) != karat:
+                    continue
+                pieces, grams = have.get((lv["item_type"], k), [0, ZERO3])
+                short_p = max(0, int(lv["min_pieces"]) - pieces) if lv["min_pieces"] else 0
+                short_g = max(ZERO3, _dec(lv["min_grams"]) - grams) if lv["min_grams"] else ZERO3
+                if short_p or short_g:
+                    below.append({"type": lv["item_type"], "karat": f"عيار {k}", "have": f"{pieces} قطعة • {grams:,.3f} جرام",
+                                  "minimum": " و ".join(x for x in (f"{int(lv['min_pieces'])} قطعة" if lv["min_pieces"] else "", f"{_dec(lv['min_grams']):,.3f} جرام" if lv["min_grams"] else "") if x),
+                                  "short": " و ".join(x for x in (f"{short_p} قطعة" if short_p else "", f"{short_g:,.3f} جرام" if short_g else "") if x), "_k": k})
+            below.sort(key=lambda r: (-r["_k"], r["type"]))
+            tables.append(table("below_min", "تحت الحد الأدنى للمخزون", [col("type", "الصنف"), col("karat", "العيار"), col("have", "الموجود"), col("minimum", "الحد الأدنى"), col("short", "العجز")], below))
+            cards.append(total("تحت الحد الأدنى", len(below), "count", f"من {len(levels)} حدًّا حدّدته في الإعدادات", "minimum"))
         # ---- the weights: stock and sales per ONE-GRAM weight band, per KARAT and per item TYPE (information for the owner to decide with; no alert)
         def band(weight):
             return min(int(weight), WEIGHT_BAND_TOP)

@@ -5268,6 +5268,61 @@ ApplicationWindow {
         ]
     }
 
+    // Settings → الحد الأدنى للمخزون: how many pieces / grams of an item type and karat the owner wants to keep (the inventory alerts list what is below).
+    component StockMinLevelSettings: SettingsSectionCard {
+        id: levels
+        objectName: "settingsStockMinLevels"
+        sectionTitle: "الحد الأدنى للمخزون"
+        accentColor: theme.gold
+        readonly property var vm: typeof stockMinLevelVM !== "undefined" ? stockMinLevelVM : null
+        visible: !!vm && vm.canManage
+        Component.onCompleted: if (vm && vm.canManage) vm.refresh()
+        content: [
+            GoldPriceLabel {
+                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                value: "حدد لكل صنف وعيار أقل كمية تريد الاحتفاظ بها (قطع و/أو جرامات). تظهر الأصناف الأقل من حدها في «تنبيهات المخزون». لا يُطلب شيء تلقائيًا."
+                color: theme.textMuted; font.pixelSize: 11
+            },
+            Repeater {
+                model: levels.vm ? levels.vm.levels : []
+                delegate: RowLayout {
+                    required property var modelData
+                    objectName: "levelRow_" + modelData.id
+                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                    GoldPriceLabel { Layout.preferredWidth: 150; value: modelData.type + " — عيار " + modelData.karat; font.bold: true }
+                    GoldPriceLabel { Layout.preferredWidth: 160; value: "الحد: " + modelData.minimum; color: theme.textSecondary }
+                    GoldPriceLabel { Layout.fillWidth: true; value: "الموجود: " + modelData.have; color: modelData.below ? theme.priceError : theme.green }
+                    GoldPriceButton { objectName: "levelDelete_" + modelData.id; text: "حذف"; enabled: !levels.vm.busy; onClicked: levels.vm.remove(modelData.id) }
+                }
+            },
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                enabled: !!levels.vm && !levels.vm.busy
+                ComboBox {
+                    id: levelType; objectName: "levelType"; Layout.preferredWidth: 160; Layout.preferredHeight: 34
+                    model: levels.vm ? levels.vm.itemTypes : []; textRole: "name"; font.family: "Cairo"
+                }
+                ComboBox {
+                    id: levelKarat; objectName: "levelKarat"; Layout.preferredWidth: 110; Layout.preferredHeight: 34
+                    model: levels.vm ? levels.vm.karats : []; textRole: "name"; font.family: "Cairo"
+                }
+                GoldPriceInput { id: levelPieces; objectName: "levelPieces"; Layout.preferredWidth: 100; Layout.preferredHeight: 34; placeholderText: "الحد بالقطع" }
+                GoldPriceInput { id: levelGrams; objectName: "levelGrams"; Layout.preferredWidth: 110; Layout.preferredHeight: 34; placeholderText: "الحد بالجرام" }
+                GoldPriceButton {
+                    objectName: "levelSave"; text: "حفظ الحد"
+                    enabled: levelType.currentIndex >= 0 && levelKarat.currentIndex >= 0 && (levelPieces.text.trim().length > 0 || levelGrams.text.trim().length > 0)
+                    onClicked: { levels.vm.save(levels.vm.itemTypes[levelType.currentIndex].id, levels.vm.karats[levelKarat.currentIndex].id, levelPieces.text, levelGrams.text); levelPieces.text = ""; levelGrams.text = "" }
+                }
+                Item { Layout.fillWidth: true }
+            },
+            GoldPriceLabel {
+                objectName: "levelMessage"; Layout.fillWidth: true; visible: value.length > 0
+                value: levels.vm ? levels.vm.message : ""
+                color: levels.vm && levels.vm.messageIsError ? theme.priceError : theme.green
+            }
+        ]
+    }
+
     component GoldProviderSettings: SettingsSectionCard {
         property alias resultCard: testResultCard
         id: providerPanel
@@ -5509,6 +5564,7 @@ ApplicationWindow {
                 PositionOpeningSettings { id: positionOpening; Layout.fillWidth: true }
                 CashCategorySettings { id: cashCategories; Layout.fillWidth: true }
                 CategoryCostSettings { id: categoryCosts; Layout.fillWidth: true }
+                StockMinLevelSettings { id: stockMinLevels; Layout.fillWidth: true }
             }
         }
     }

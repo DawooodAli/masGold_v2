@@ -249,6 +249,13 @@ class ReportRepository(BaseRepository):
         row = self._fetch_one("SELECT DATE(taken_at) AS day FROM position_snapshots WHERE snapshot_kind = 'OPENING' ORDER BY id LIMIT 1")
         return None if row is None else row["day"]
 
+    def stock_min_levels(self):
+        """The owner's minimum stock rules (migration 072) with the type name and karat, or None below 072."""
+        if not self.has_table("stock_min_levels"):
+            return None
+        return self._fetch_all("SELECT t.name AS item_type, k.karat_value, l.min_pieces, l.min_grams FROM stock_min_levels l JOIN item_types t ON t.id = l.item_type_id "
+                               "JOIN karats k ON k.id = l.karat_id WHERE l.is_active = TRUE ORDER BY t.name, k.karat_value DESC")
+
     def employees(self):
         return self._fetch_all("SELECT id, name FROM employees ORDER BY name, id")
 

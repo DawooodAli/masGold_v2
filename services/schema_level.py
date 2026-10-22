@@ -4,7 +4,7 @@ A missing table or column raised by a newer query (MySQL 1146 / 1054) used to su
 it. When that happens, the worker asks `schema_problem()`: if the database's highest applied migration is lower than REQUIRED_SCHEMA_LEVEL, the employee gets
 the specific instruction instead. Read only; any failure of the check itself returns None (the generic message then stays)."""
 
-REQUIRED_SCHEMA_LEVEL = 71            # the highest migration in database/schema (a test keeps this equal to the chain)
+REQUIRED_SCHEMA_LEVEL = 72            # the highest migration in database/schema (a test keeps this equal to the chain)
 SCHEMA_ERRNOS = (1146, 1054)          # ER_NO_SUCH_TABLE, ER_BAD_FIELD_ERROR
 
 

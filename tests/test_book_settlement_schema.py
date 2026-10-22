@@ -75,11 +75,11 @@ def row_of(settlement):
 class ForwardMigrationTests(unittest.TestCase):
     def test_it_is_the_next_file_of_the_chain_and_the_manifest_matches(self):
         files = load_chain(require_committed=False)
-        self.assertEqual((len(files), LAST, files[56].name), (71, 71, "057_market_trip_reconciliation.sql"))      # 058 and 059 follow it (Phase 2)
+        self.assertEqual((len(files), LAST, files[56].name), (72, 72, "057_market_trip_reconciliation.sql"))      # 058 and 059 follow it (Phase 2)
         self.assertEqual(files[56].sha256, sha256_of((SCHEMA_DIR / files[56].name).read_bytes()))
         manifest = (SCHEMA_DIR / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
         self.assertEqual(manifest[56], f"{hashlib.sha256(FORWARD.replace(chr(13) + chr(10), chr(10)).encode()).hexdigest()}  057_market_trip_reconciliation.sql")
-        self.assertEqual(REQUIRED_SCHEMA_LEVEL, 71)
+        self.assertEqual(REQUIRED_SCHEMA_LEVEL, 72)
 
     def test_it_refuses_without_056_and_every_step_is_guarded(self):
         self.assertIn("version=56", FORWARD)
