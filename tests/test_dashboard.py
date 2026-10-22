@@ -367,7 +367,7 @@ class DashboardPageTests(page_harness.InvoicePageTests):
                 self.root.grabWindow().save(str(Path(target) / f"dashboard-prices-{width}x{height}.png"))
 
     def test_dashboard_hidden_placeholder_pages_are_not_in_the_sidebar(self):
-        for name in ("cashNavButton", "reportsNavButton"):
+        for name in ("cashNavButton",):
             self.assertFalse(self.item(name).property("visible"), name)
         self.assertTrue(self.item("reviewsNavButton").property("visible"))
 

@@ -13,6 +13,8 @@ Item {
     // The source of a review / a ledger movement is opened through the application's existing pages.
     signal invoiceRequested(string invoiceId)
     signal customerRequested(string customerId)
+    signal reportsRequested()
+    property bool reportsAvailable: false
 
     Theme { id: theme }
 
@@ -691,6 +693,13 @@ Item {
                 font.bold: true
             }
             Item { Layout.fillWidth: true }
+            ActionButton {
+                objectName: "reviewsOpenReports"
+                visible: reviewPage.reportsAvailable
+                text: "📊  التقارير"
+                accent: theme.gold
+                onClicked: reviewPage.reportsRequested()
+            }
         }
 
         // Summary / navigation cards: one per real review category (+ the financial accounts). A click

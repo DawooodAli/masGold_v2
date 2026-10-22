@@ -76,12 +76,35 @@ class ReportsPageTests(harness.InvoicePageTests):
             index += 1
 
     # ------------------------------------------------------------ tests
-    def test_the_navigation_follows_the_reports_right(self):
+    def test_the_reports_button_follows_the_reports_right_and_lives_inside_the_manager_reviews(self):
         self.grant(revoke=("REPORTS_VIEW",))
-        self.assertIsNone(self.visible_item("reportsNavButton"))
+        self.assertIsNone(self.visual_item("reportsNavButton"))                                         # no sidebar button any more
+        self.root.setProperty("currentPage", 10)
+        QTest.qWait(300)
+        self.assertIsNone(self.visible_item("reviewsOpenReports"))
+        self.grant("REPORTS_VIEW")
+        self.rvm().changed.emit()
+        QTest.qWait(300)
+        self.assertIsNotNone(self.visible_item("reviewsOpenReports"))
+        self.click("reviewsOpenReports")
+        self.wait_until(lambda: self.root.property("currentPage") == 5, "reports opened from the manager reviews")
+        self.click("reportsBack")
+        self.wait_until(lambda: self.root.property("currentPage") == 10, "back to the manager reviews")
         vm = self.open_reports()
-        self.assertIsNotNone(self.visible_item("reportsNavButton"))
         self.assertEqual([r["key"] for r in vm.reports], ["sales", "stock", "alerts", "indicators", "gold", "employees", "makingprofit", "scrapcost", "demand", "customers", "deadcash", "suppliers", "treasury", "cashflow", "market"])
+        self.assertEqual(self.warnings, [])
+
+    def test_the_report_buttons_are_grouped_into_gold_cash_and_general_rows(self):
+        vm = self.open_reports()
+        def y(key):
+            item = self.item("reportChoice_" + key)
+            return round(item.mapToScene(item.boundingRect().topLeft()).y())
+        gold = {y(k) for k in ("stock", "alerts", "gold")}
+        cash = {y(k) for k in ("treasury", "cashflow")}
+        general = {y(k) for k in ("sales", "customers", "suppliers")}
+        self.assertTrue(gold.isdisjoint(cash) and gold.isdisjoint(general) and cash.isdisjoint(general), (gold, cash, general))   # three separate rows, never mixed
+        self.assertLess(min(gold), min(cash))
+        self.assertLess(min(cash), min(general))
         self.assertEqual(self.warnings, [])
 
     def test_the_sales_report_shows_totals_only_without_the_documents_table(self):

@@ -16,6 +16,7 @@ Item {
     signal invoiceRequested(string invoiceId)
     signal customerRequested(string customerId)
     signal tripRequested(string tripId)
+    signal backRequested()
 
     Theme { id: theme }
 
@@ -407,21 +408,49 @@ Item {
             spacing: 10
 
             // ---------------------------------------------------------------- header + report choice
-            Txt { Layout.fillWidth: true; text: "📊 التقارير"; color: theme.gold; font.bold: true; font.pixelSize: 20 }
-            Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
-                  text: "للعرض فقط — الأرقام من دفاتر البرنامج وكل إجمالي يشمل كامل نتائج الفلتر وليس الصفحة المعروضة فقط." }
-            Flow {
+            RowLayout {
                 Layout.fillWidth: true
                 layoutDirection: Qt.RightToLeft
-                spacing: 6
-                Repeater {
-                    model: reportsVM.reports
-                    delegate: Btn {
-                        required property var modelData
-                        objectName: "reportChoice_" + modelData.key
-                        text: modelData.title
-                        primary: reportsVM.report === modelData.key
-                        onClicked: reportsVM.select(modelData.key)
+                Txt { text: "📊 التقارير"; color: theme.gold; font.bold: true; font.pixelSize: 20 }
+                Item { Layout.fillWidth: true }
+                Btn { objectName: "reportsBack"; text: "←  مراجعات المدير"; onClicked: page.backRequested() }
+            }
+            Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                  text: "للعرض فقط — الأرقام من دفاتر البرنامج وكل إجمالي يشمل كامل نتائج الفلتر وليس الصفحة المعروضة فقط." }
+            // الأزرار في ثلاث مجموعات: الذهب • النقدية • العام
+            Repeater {
+                model: [{ "name": "الذهب", "keys": ["stock", "alerts", "indicators", "gold", "scrapcost", "demand", "profit", "market"] },
+                        { "name": "النقدية", "keys": ["treasury", "cashflow", "makingprofit", "deadcash"] },
+                        { "name": "عام", "keys": [] }]
+                delegate: RowLayout {
+                    id: groupRow
+                    required property var modelData
+                    required property int index
+                    readonly property var members: reportsVM.reports.filter(function(r) {
+                        var inGold = ["stock", "alerts", "indicators", "gold", "scrapcost", "demand", "profit", "market"].indexOf(r.key) >= 0
+                        var inCash = ["treasury", "cashflow", "makingprofit", "deadcash"].indexOf(r.key) >= 0
+                        return groupRow.index === 0 ? inGold : groupRow.index === 1 ? inCash : (!inGold && !inCash)
+                    })
+                    visible: members.length > 0
+                    Layout.fillWidth: true
+                    layoutDirection: Qt.RightToLeft
+                    spacing: 8
+                    Txt { Layout.preferredWidth: 64; Layout.alignment: Qt.AlignTop; text: groupRow.modelData.name; color: theme.gold; font.bold: true }
+                    Flow {
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: 1
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 6
+                        Repeater {
+                            model: groupRow.members
+                            delegate: Btn {
+                                required property var modelData
+                                objectName: "reportChoice_" + modelData.key
+                                text: modelData.title
+                                primary: reportsVM.report === modelData.key
+                                onClicked: reportsVM.select(modelData.key)
+                            }
+                        }
                     }
                 }
             }

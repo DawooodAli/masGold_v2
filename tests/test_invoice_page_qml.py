@@ -243,6 +243,9 @@ class InvoicePageTests(unittest.TestCase):
         self.controller.operational_engine.warnings.connect(
             lambda errors: self.warnings.extend(e.toString() for e in errors))
         self.vm = self.controller.operational_viewmodels["invoiceVM"]
+        gate = self.controller.operational_viewmodels["managerGateVM"]          # the manager lock is open for every page test; its own tests lock it
+        gate._unlocked = True
+        gate.changed.emit()
         self.root.setWidth(1280)
         self.root.setHeight(800)
         self.root.setProperty("currentPage", 1)

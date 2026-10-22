@@ -3088,9 +3088,81 @@ ApplicationWindow {
             // PAGES
             // =================================================
 
+            // قفل مراجعات المدير والتقارير: the signed-in user's own password; locks again 60 seconds after leaving.
+            Rectangle {
+                id: managerGate
+                objectName: "managerGate"
+                readonly property bool gated: root.currentPage === 10 || root.currentPage === 5
+                readonly property bool open: typeof managerGateVM === "undefined" || managerGateVM.unlocked
+                visible: gated && !open
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                color: theme.bgPrimary
+                onVisibleChanged: if (visible) { gatePassword.text = ""; gatePassword.forceActiveFocus() }
+                Rectangle {
+                    anchors.centerIn: parent
+                    width: Math.min(420, parent.width - 40)
+                    height: gateColumn.implicitHeight + 36
+                    radius: theme.radiusCard
+                    color: theme.bgSecondary
+                    border.color: theme.cardBorder
+                    ColumnLayout {
+                        id: gateColumn
+                        anchors.fill: parent
+                        anchors.margins: 18
+                        spacing: 10
+                        GoldPriceLabel { Layout.fillWidth: true; value: "🔒  مراجعات المدير والتقارير"; color: theme.gold; font.pixelSize: 18; font.bold: true }
+                        GoldPriceLabel { Layout.fillWidth: true; wrapMode: Text.WordWrap; value: "اكتب كلمة مرور حسابك للدخول."; color: theme.textMuted }
+                        TextField {
+                            id: gatePassword
+                            objectName: "managerGatePassword"
+                            Layout.fillWidth: true
+                            echoMode: TextInput.Password
+                            placeholderText: "كلمة المرور"
+                            horizontalAlignment: TextInput.AlignRight
+                            font.family: "Cairo"
+                            enabled: typeof managerGateVM !== "undefined" && !managerGateVM.busy
+                            onAccepted: managerGateEnter.clicked()
+                        }
+                        GoldPriceLabel {
+                            objectName: "managerGateMessage"
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            visible: value.length > 0
+                            value: typeof managerGateVM !== "undefined" ? managerGateVM.message : ""
+                            color: theme.red
+                            font.bold: true
+                        }
+                        GoldPriceButton {
+                            id: managerGateEnter
+                            objectName: "managerGateEnter"
+                            text: "دخول"
+                            enabled: typeof managerGateVM !== "undefined" && !managerGateVM.busy && gatePassword.text.length > 0
+                            onClicked: { managerGateVM.unlock(gatePassword.text); gatePassword.text = "" }
+                        }
+                    }
+                }
+            }
+
+            Timer {
+                id: managerRelock
+                objectName: "managerRelock"
+                interval: 60000
+                onTriggered: if (typeof managerGateVM !== "undefined") managerGateVM.lock()
+            }
+            Connections {
+                target: root
+                function onCurrentPageChanged() {
+                    if (managerGate.gated) managerRelock.stop()
+                    else if (typeof managerGateVM !== "undefined" && managerGateVM.unlocked) managerRelock.restart()
+                }
+            }
+
             StackLayout {
                 id: pageStack
+                objectName: "pageStack"
 
+                visible: !managerGate.visible
                 Layout.fillWidth: true
                 Layout.fillHeight: true
 
@@ -3149,6 +3221,7 @@ ApplicationWindow {
                 ReportsPage {
                     id: reportsPage
                     pageTitle: "📊 التقارير"
+                    onBackRequested: root.currentPage = 10
                     onInvoiceRequested: function(invoiceId) {
                         root.currentPage = 1
                         billingWorkspace.currentTab = 1
@@ -3187,6 +3260,8 @@ ApplicationWindow {
                 // index 10: one review area for every management review type
                 ManagementReviewPage {
                     pageTitle: "مراجعات المدير"
+                    reportsAvailable: reportsPage.canView
+                    onReportsRequested: root.currentPage = 5
                     onInvoiceRequested: function(invoiceId) {
                         root.currentPage = 1
                         billingWorkspace.currentTab = 1
@@ -3355,25 +3430,13 @@ ApplicationWindow {
                 }
 
 
-                NavButton {
-                    objectName: "reportsNavButton"
-                    // Shown when the user may open at least one report (each report re-checks its own rights in the service).
-                    visible: reportsPage.canView
-                    text: "📊  التقارير"
-                    selected: root.currentPage === 5
-
-                    onClicked:
-                        root.currentPage = 5
-                }
-
-
                 // مراجعات المدير • N — visible to everyone; amber while reviews are open.
                 NavButton {
                     id: reviewsNav
                     objectName: "reviewsNavButton"
                     text: "🔔  مراجعات المدير" + (typeof reviewsVM !== "undefined" && reviewsVM.totalCount > 0
                                                   ? "  •  " + reviewsVM.totalCount : "")
-                    selected: root.currentPage === 10
+                    selected: root.currentPage === 10 || root.currentPage === 5
                     onClicked: root.currentPage = 10
                     Rectangle {
                         anchors.left: parent.left
@@ -5093,6 +5156,52 @@ ApplicationWindow {
     }
 
     // Settings → الرصيد الافتتاحي: the owner's initial gold / cash balance, entered ONCE (the gold profit report starts from it), plus a manual stocktaking sheet.
+    // Settings → كلمة المرور: the signed-in user's own login password, which is also the مراجعات المدير lock password.
+    component PasswordSettings: SettingsSectionCard {
+        id: passwordCard
+        objectName: "settingsPassword"
+        sectionTitle: "كلمة مرور الدخول ومراجعات المدير"
+        accentColor: theme.gold
+        readonly property var vm: typeof managerGateVM !== "undefined" ? managerGateVM : null
+        content: [
+            GoldPriceLabel {
+                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                value: "هذه هي كلمة مرور دخولك نفسها، وهي التي تفتح مراجعات المدير والتقارير. اكتب الحالية ثم الجديدة مرتين (٦ أحرف على الأقل)."
+                color: theme.textMuted; font.pixelSize: 11
+            },
+            GridLayout {
+                Layout.fillWidth: true; columns: 2; layoutDirection: Qt.RightToLeft; columnSpacing: 10; rowSpacing: 8
+                GoldPriceLabel { value: "كلمة المرور الحالية"; color: theme.textSecondary }
+                TextField { id: currentPassword; objectName: "passwordCurrent"; Layout.fillWidth: true; echoMode: TextInput.Password; horizontalAlignment: TextInput.AlignRight; font.family: "Cairo"
+                            onTextEdited: if (passwordCard.vm) passwordCard.vm.clearChangeMessage() }
+                GoldPriceLabel { value: "كلمة المرور الجديدة"; color: theme.textSecondary }
+                TextField { id: newPassword; objectName: "passwordNew"; Layout.fillWidth: true; echoMode: TextInput.Password; horizontalAlignment: TextInput.AlignRight; font.family: "Cairo" }
+                GoldPriceLabel { value: "تأكيد الجديدة"; color: theme.textSecondary }
+                TextField { id: confirmPassword; objectName: "passwordConfirm"; Layout.fillWidth: true; echoMode: TextInput.Password; horizontalAlignment: TextInput.AlignRight; font.family: "Cairo"
+                            onAccepted: changePasswordButton.clicked() }
+            },
+            GoldPriceLabel {
+                objectName: "passwordMessage"
+                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                visible: value.length > 0
+                value: passwordCard.vm ? passwordCard.vm.changeMessage : ""
+                color: passwordCard.vm && passwordCard.vm.changeIsError ? theme.red : theme.green
+                font.bold: true
+            },
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                GoldPriceButton {
+                    id: changePasswordButton
+                    objectName: "passwordChange"
+                    text: "تغيير كلمة المرور"
+                    enabled: !!passwordCard.vm && !passwordCard.vm.changeBusy && currentPassword.text.length > 0 && newPassword.text.length > 0 && confirmPassword.text.length > 0
+                    onClicked: if (enabled) { passwordCard.vm.changePassword(currentPassword.text, newPassword.text, confirmPassword.text); currentPassword.text = ""; newPassword.text = ""; confirmPassword.text = "" }
+                }
+                Item { Layout.fillWidth: true }
+            }
+        ]
+    }
+
     component PositionOpeningSettings: SettingsSectionCard {
         id: opening
         objectName: "settingsPositionOpening"
@@ -5586,6 +5695,7 @@ ApplicationWindow {
                 }
                 GoldProviderSettings { id: goldProvider; Layout.fillWidth: true }
                 PrintingSettings { id: printingSettings; Layout.fillWidth: true }
+                PasswordSettings { id: passwordSettings; Layout.fillWidth: true }
                 PositionOpeningSettings { id: positionOpening; Layout.fillWidth: true }
             }
         }
