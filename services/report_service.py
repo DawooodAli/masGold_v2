@@ -32,10 +32,10 @@ MAX_ROWS = 50000
 ZERO = Decimal("0")
 ZERO3, ZERO2 = Decimal("0.000"), Decimal("0.00")
 BASE_PERMISSION = "REPORTS_VIEW"
-REPORT_PERMISSIONS = {"sales": ("INVOICE_VIEW",), "stock": ("INVENTORY_VIEW",), "alerts": ("INVENTORY_VIEW",), "indicators": (), "gold": (), "employees": ("INVOICE_VIEW",), "makingprofit": ("INVOICE_VIEW", "INVENTORY_VIEW"), "scrapcost": ("INVOICE_VIEW",), "customers": ("CUSTOMERS_VIEW",), "deadcash": ("CUSTOMERS_VIEW",),
+REPORT_PERMISSIONS = {"sales": ("INVOICE_VIEW",), "stock": ("INVENTORY_VIEW",), "alerts": ("INVENTORY_VIEW",), "indicators": (), "gold": (), "employees": ("INVOICE_VIEW",), "makingprofit": ("INVOICE_VIEW", "INVENTORY_VIEW"), "scrapcost": ("INVOICE_VIEW",), "demand": ("INVOICE_VIEW",), "customers": ("CUSTOMERS_VIEW",), "deadcash": ("CUSTOMERS_VIEW",),
                       "suppliers": ("SUPPLIER_VIEW",), "treasury": (), "cashflow": (), "market": ("MARKET_TRIP_MANAGE",),
                       "profit": ("MANAGEMENT_REVIEW", "MARKET_TRIP_MANAGE", "INTERMEDIARY_HOLDING_VIEW")}                      # treasury: CASH_VIEW and / or BANK_VIEW per section
-REPORT_TITLES = {"sales": "المبيعات والمرتجعات", "stock": "المخزون المتاح", "alerts": "تنبيهات المخزون", "indicators": "مؤشرات الذهب", "gold": "حركة الأصناف", "employees": "أداء الموظفين", "makingprofit": "ربح المصنعية", "scrapcost": "تكلفة الكسر", "customers": "العملاء", "deadcash": "الديون المعدومة (Dead Cash)", "suppliers": "الموردون", "treasury": "الخزنة والبنوك", "cashflow": "المصروفات والإيرادات", "market": "عهدة السوق والخسائر", "profit": "ربح الذهب (مكافئ 21)"}
+REPORT_TITLES = {"sales": "المبيعات والمرتجعات", "stock": "المخزون المتاح", "alerts": "تنبيهات المخزون", "indicators": "مؤشرات الذهب", "gold": "حركة الأصناف", "employees": "أداء الموظفين", "makingprofit": "ربح المصنعية", "scrapcost": "تكلفة الكسر", "demand": "الموسمية والطلب", "customers": "العملاء", "deadcash": "الديون المعدومة (Dead Cash)", "suppliers": "الموردون", "treasury": "الخزنة والبنوك", "cashflow": "المصروفات والإيرادات", "market": "عهدة السوق والخسائر", "profit": "ربح الذهب (مكافئ 21)"}
 KIND_TEXT = {"SALE": "بيع", "MIXED": "بيع مع شراء كسر", "OLD_GOLD_PURCHASE": "شراء كسر", "RETURN": "مرتجع", "EXCHANGE": "استبدال"}
 STATUS_TEXT = {"IN_STOCK": "متاح", "SOLD": "مباع", "SCRAPPED": "كسر", "REMOVED": "مُخرج", "RETURNED_PENDING": "مرتجع بانتظار الفحص", "CONVERTED_TO_OLD_GOLD": "حُوّل إلى كسر"}
 CLASS_TEXT = {"NEW_STOCK": "جديد", "OLD_STOCK": "قديم"}
@@ -43,7 +43,7 @@ LINE_TEXT = {"SELL_INVENTORY": "بيع قطعة", "SELL_OLD_GOLD": "بيع من 
 REF_TEXT = {"INVOICE": "فاتورة", "RETURN": "مرتجع", "EXCHANGE": "استبدال", "CUSTOMER_ACCOUNT_SETTLEMENT": "تحصيل / تسوية حساب", "CUSTOMER_DEPOSIT": "عربون",
             "CUSTOMER_DEPOSIT_REFUND": "رد عربون", "FULL_REVERSAL": "عكس", "SETTLEMENT_CORRECTION": "تصحيح تسوية", "DEAD_CASH_WRITE_OFF": "شطب رصيد",
             "DEAD_CASH_REVERSAL": "عكس شطب", "UNKNOWN": "غير محدد"}
-NO_PERIOD = frozenset({"stock", "alerts", "indicators", "customers", "deadcash", "suppliers"})          # reports of the CURRENT state: the period is neither offered nor printed
+NO_PERIOD = frozenset({"stock", "alerts", "indicators", "demand", "customers", "deadcash", "suppliers"})          # reports of the CURRENT state: the period is neither offered nor printed
 PRICE_KARATS = (24, 21, 18)                                                                    # the karats the price indicators are shown for (the provider's three)
 HINT_TEXT = {indicators_math.BUY_FAVOURABLE: "الشراء مناسب نسبيًا", indicators_math.SELL_FAVOURABLE: "البيع مناسب نسبيًا", indicators_math.NEUTRAL: "محايد",
              indicators_math.UNKNOWN: "بيانات غير كافية"}
@@ -999,6 +999,124 @@ class ReportService:
         if reversed_invoices:
             cards.append(total("فواتير معكوسة غير محسوبة", len(reversed_invoices), "count", "", "summary"))
         return {"meaning": meaning, "tables": [table("scrapcost", "تكلفة الكسر المشترى", columns, rows)], "totals": cards}
+
+    # ------------------------------------------------------------------ 3e. demand and seasonality (owner request): sold grams per month, a simple seasonal forecast and the price association
+    def _demand(self, repo, gate, filters, start, end):
+        """The shop's SOLD GRAMS per month (the old shop's imported history up to the day before the owner's initial balance, then the new system), the seasonal index of every calendar month that was
+        seen at least twice, a forecast of the next three months and the association between the monthly 21K selling price and the grams. A small explainable statistic (services/demand_forecast.py),
+        not a promise: every number says how many observations stand behind it and a figure that the history cannot support is not produced. The old history has no karat (all karats together)
+        and its weights exist only from February 2025."""
+        from services import demand_forecast as forecast_math
+        today = self._today()
+        daily, legacy, opening = self._demand_daily(repo)
+        series = forecast_math.monthly(daily, today)
+        prices = {}
+        sell_prices = {}
+        for day, _buy, sell in self._price_series(repo).get(21, []):
+            sell_prices.setdefault((day.year, day.month), []).append(sell)
+        for key, values in sell_prices.items():
+            prices[key] = (sum(values, Decimal(0)) / len(values)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        grams_by_month = {(m["year"], m["month"]): m["grams"] for m in series}
+        months_ar = ("يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر")
+        rows = []
+        for m in series:
+            before = grams_by_month.get((m["year"] - 1, m["month"]))
+            change = None
+            if m["complete"] and m["grams"] is not None and before:
+                change = ((m["grams"] - before) / before * 100).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+            rows.append({"month": f"{months_ar[m['month'] - 1]} {m['year']}" + ("" if m["complete"] else " (لم ينتهِ)"), "bills": m["bills"],
+                         "grams": m["grams"].quantize(Decimal("0.001")) if m["grams"] is not None else "غير معلوم", "price": prices.get((m["year"], m["month"]), "—"),
+                         "yoy": f"{change:+}%" if change is not None else "—"})
+        indices = forecast_math.seasonal_indices(series)
+        season_rows = [{"month": months_ar[i - 1], "index": f"{indices[i][0]:.2f}" if i in indices else "—", "observations": indices[i][1] if i in indices else 0} for i in range(1, 13)]
+        predicted = forecast_math.forecast(series, today)
+        forecast_rows = [{"month": f"{months_ar[f['month'] - 1]} {f['year']}", "grams": f["grams"], "confidence": f["confidence"], "basis": f"معامل موسمي {f['index']:.2f} ({f['observations']} سنة)" if f["index"] is not None else "متوسط آخر 6 أشهر فقط"}
+                         for f in predicted]
+        link = forecast_math.elasticity(series, prices)
+        complete = forecast_math.usable(series)
+        cards = []
+        if complete:
+            last_six = complete[-forecast_math.TREND_MONTHS:]
+            average = sum((m["grams"] for m in last_six), Decimal(0)) / len(last_six)
+            cards.append(total("متوسط المبيعات الشهري", f"{average:,.1f} جرام", "text", f"متوسط آخر {len(last_six)} أشهر كاملة بأوزان معروفة", "demand"))
+            cards.append(total("آخر شهر كامل", f"{complete[-1]['grams']:,.1f} جرام", "text", f"{months_ar[complete[-1]['month'] - 1]} {complete[-1]['year']}", "demand"))
+        if predicted:
+            first = predicted[0]
+            cards.append(total("المتوقع للشهر القادم", f"{first['grams']:,.1f} جرام", "text", f"ثقة {first['confidence']} • {forecast_rows[0]['basis']}", "demand"))
+        if link is not None:
+            cards.append(total("علاقة السعر بالطلب", f"{link['slope']:+.2f}", "text", f"عند ارتفاع سعر بيع 21 بنسبة 10% يتغير البيع بحوالي {link['slope'] * 10:+.1f}% • علاقة {forecast_math.strength(link['r'])} (ن = {link['n']} شهرًا)", "demand"))
+        notes = []
+        if legacy is None:
+            notes.append("جدول تاريخ مبيعات المحل القديم غير موجود في مستوى قاعدة البيانات الحالي: طبّق التحديثات.")
+        if opening is None:
+            notes.append("الرصيد الافتتاحي غير مسجل: المبيعات من النظام الجديد لا تدخل التقرير بعد (تاريخ المحل القديم فقط).")
+        meaning = ["إحصاء بسيط من أرقام مبيعاتك، وليس نموذج ذكاء اصطناعي ولا وعدًا بالمستقبل: كل رقم معه عدد المشاهدات خلفه، وما لا يدعمه التاريخ لا يُحسب.",
+                   "تاريخ المحل القديم بجرامات كل الأعيار معًا (بدون تفصيل عيار) وأوزانه معروفة من فبراير 2025 فقط؛ الشهر الجاري لا يدخل الحساب لأنه لم ينتهِ. المعامل الموسمي يحتاج مشاهدتين على الأقل لنفس الشهر.",
+                   "علاقة السعر بالطلب ارتباط إحصائي على أشهر قليلة، ولا تثبت أن السعر هو السبب (قد يكون نمو المحل أو موسم بعينه)."] + notes
+        cols = [col("month", "الشهر"), col("bills", "عدد الفواتير", "count"), col("grams", "الجرامات المباعة", "grams"), col("price", "متوسط سعر بيع 21", "money"), col("yoy", "عن نفس الشهر العام الماضي")]
+        charts = [{"chart": "المبيعات على مدار السنة — شهريًا (خط)", "ref": {"type": "DEMAND_CHART", "id": "M"}}, {"chart": "المبيعات على مدار السنة — أسبوعيًا (خط)", "ref": {"type": "DEMAND_CHART", "id": "W"}}]
+        tables = [table("charts", "الرسوم البيانية", [col("chart", "الرسم")], charts),
+                  table("monthly", "المبيعات الشهرية (جرامات كل الأعيار)", cols, rows),
+                  table("seasonal", "معامل الموسمية لكل شهر (1.00 = المتوسط العام)", [col("month", "الشهر"), col("index", "المعامل"), col("observations", "عدد السنوات", "count")], season_rows),
+                  table("forecast", "التوقع للأشهر القادمة", [col("month", "الشهر"), col("grams", "الجرامات المتوقعة", "grams"), col("confidence", "الثقة"), col("basis", "الأساس")], forecast_rows)]
+        if not predicted:
+            tables[-1]["note"] = "التاريخ أقصر من " + str(forecast_math.TREND_MONTHS) + " أشهر كاملة بأوزان معروفة: لا يوجد توقع."
+        return {"meaning": meaning, "tables": tables, "totals": cards}
+
+    def _demand_daily(self, repo):
+        """The sold grams per DAY: the old shop's imported history up to the day before the owner's initial balance, then the new system from that day. Returns (daily, legacy rows or None, opening date or None)."""
+        legacy = repo.sales_history_legacy()
+        opening = repo.opening_date()
+        daily = []
+        for r in legacy or []:
+            day = _dateish(r["day"]).date()
+            if opening is None or day < opening:
+                daily.append({"date": day, "bills": int(r["bills"]), "bills_with_weight": int(r["bills_with_weight"]), "grams": _dec(r["grams"])})
+        if opening is not None:
+            daily += [{"date": _dateish(r["day"]).date(), "bills": int(r["bills"]), "bills_with_weight": int(r["bills_with_weight"]), "grams": _dec(r["grams"])} for r in repo.sales_new_daily(opening)]
+        return daily, legacy, opening
+
+    MAX_CHART_YEARS = 6
+
+    def demand_chart(self, granularity, years, *, _expected_actor=None):
+        """The sales line chart over the year: `granularity` M = the 12 months, W = the ISO weeks; one line per YEAR the owner chose to compare (`years` = "2026,2025,2024"; empty = the latest year with data and
+        the one before it). Unfinished or unknown periods are gaps, never zeros."""
+        from services import demand_forecast as forecast_math
+        actor = self._session.require_authenticated()
+        if _expected_actor is not None and not self._session.is_current(_expected_actor):
+            raise PermissionError("انتهت جلسة الدخول.")
+        if granularity not in ("M", "W"):
+            raise ReportError("FILTER_INVALID", "نوع الرسم غير صحيح.")
+        with self._transaction() as connection:
+            gate = _Gate(self._authorization, connection, actor)
+            if not gate(BASE_PERMISSION) or not gate("INVOICE_VIEW"):
+                raise PermissionError("ليس لديك صلاحية عرض هذا الرسم.")
+            daily, _legacy, _opening = self._demand_daily(self._repository(connection))
+            if not self._session.is_current(actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        today = self._today()
+        if granularity == "M":
+            periods = {(m["year"], m["month"]): m for m in forecast_math.monthly(daily, today)}
+            size = 12
+        else:
+            periods = {key: w for key, w in forecast_math.weekly(daily, today).items()}
+            size = 53
+        available = sorted({k[0] for k, p in periods.items() if p["grams"] is not None})
+        try:
+            chosen = [int(y) for y in str(years or "").replace("،", ",").split(",") if y.strip()]
+        except (TypeError, ValueError):
+            raise ReportError("FILTER_INVALID", "سنة غير صحيحة.") from None
+        chosen = list(dict.fromkeys(chosen))
+        if len(chosen) > self.MAX_CHART_YEARS or any(y < 1990 or y > 2200 for y in chosen):
+            raise ReportError("FILTER_INVALID", f"اختر حتى {self.MAX_CHART_YEARS} سنوات صحيحة للمقارنة.")
+        if not chosen:
+            chosen = sorted(available[-2:], reverse=True) if available else [today.year]
+        chosen.sort(reverse=True)                                                      # newest first: it gets the first (gold) line
+        months_ar = ("يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر")
+        labels = list(months_ar) if granularity == "M" else [str(i) for i in range(1, size + 1)]
+        lines = [{"year": y, "values": forecast_math.year_values(periods, y, size)} for y in chosen]
+        known = [v for line in lines for v in line["values"] if v is not None]
+        return {"granularity": granularity, "selected": chosen, "available": available, "labels": labels, "lines": lines, "high": max(known) if known else 0.0, "has_data": bool(known)}
 
     @classmethod
     def _gold_filter_values(cls, filters):

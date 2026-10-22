@@ -81,7 +81,7 @@ class ReportsPageTests(harness.InvoicePageTests):
         self.assertIsNone(self.visible_item("reportsNavButton"))
         vm = self.open_reports()
         self.assertIsNotNone(self.visible_item("reportsNavButton"))
-        self.assertEqual([r["key"] for r in vm.reports], ["sales", "stock", "alerts", "indicators", "gold", "employees", "makingprofit", "scrapcost", "customers", "deadcash", "suppliers", "treasury", "cashflow", "market"])
+        self.assertEqual([r["key"] for r in vm.reports], ["sales", "stock", "alerts", "indicators", "gold", "employees", "makingprofit", "scrapcost", "demand", "customers", "deadcash", "suppliers", "treasury", "cashflow", "market"])
         self.assertEqual(self.warnings, [])
 
     def test_the_sales_report_shows_totals_only_without_the_documents_table(self):
@@ -215,6 +215,32 @@ class ReportsPageTests(harness.InvoicePageTests):
         self.assert_inside_window(self.item("reportPriceChartClose"))
         self.click("reportPriceChartClose")
         self.wait_until(lambda: not vm.priceChart, "price chart closed")
+        self.assertEqual(self.warnings, [])
+
+    def test_the_demand_report_opens_the_monthly_and_weekly_line_chart_by_real_clicks(self):
+        vm = self.open_reports()
+        self.wait_report(vm)
+        vm.select("demand")
+        self.wait_until(lambda: not vm.busy and vm.result.get("report") == "demand", "demand loaded")
+        self.assertEqual(vm.result["title"], "الموسمية والطلب")
+        self.assertEqual([t["key"] for t in vm.result["tables"]][:2], ["charts", "monthly"])
+        self.reveal(self.item("reportOpen_0_0"))
+        self.click("reportOpen_0_0")                                                              # the monthly line chart
+        self.wait_until(lambda: not vm.demandChart.get("loading", True) and bool(vm.demandChart.get("labels")), "monthly chart loaded")
+        QTest.qWait(200)
+        self.assertIn("المبيعات الشهرية", self.text("reportDemandChartTitle"))
+        self.assertEqual((len(vm.demandChart["labels"]), vm.demandChart["selected"]), (12, ["2026", "2025"]))        # the default comparison: the latest year and the one before it
+        self.click("reportDemandWeeks")
+        self.wait_until(lambda: vm.demandChart.get("granularity") == "W" and not vm.demandChart.get("loading", True), "weekly chart loaded")
+        self.assertEqual((len(vm.demandChart["labels"]), len(vm.demandChart["lines"])), (53, 2))
+        self.click("reportDemandYear_2025")                                                         # the owner removes 2025 from the comparison
+        self.wait_until(lambda: vm.demandChart.get("selected") == ["2026"] and not vm.demandChart.get("loading", True), "one year only")
+        QTest.qWait(300)
+        self.click("reportDemandYear_2025")                                                         # ... and adds it back
+        self.wait_until(lambda: vm.demandChart.get("selected") == ["2026", "2025"] and not vm.demandChart.get("loading", True), "two years again")
+        self.assert_inside_window(self.item("reportDemandChartClose"))
+        self.click("reportDemandChartClose")
+        self.wait_until(lambda: not vm.demandChart, "chart closed")
         self.assertEqual(self.warnings, [])
 
     def test_the_default_period_follows_the_calendar_until_the_employee_edits_a_date(self):

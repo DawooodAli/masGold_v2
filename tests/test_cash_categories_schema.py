@@ -24,7 +24,7 @@ class CashCategoriesSchemaTests(unittest.TestCase):
         self.assertIn("MIGRATION_069_REFUSED_missing_068", self.forward)
         self.assertRegex(self.forward, r"INSERT INTO schema_migrations\(version,name\) VALUES \(69,")
         self.assertLessEqual(len(re.search(r"VALUES \(69,'([^']*)'", self.forward).group(1)), 150)
-        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 70)
+        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 71)
 
     def test_the_table_seeds_exactly_the_code_categories_and_binds_operations_by_foreign_key(self):
         for code, name, direction in SEED:

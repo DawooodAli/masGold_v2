@@ -61,6 +61,113 @@ Item {
 
     Rectangle { anchors.fill: parent; color: theme.bgPrimary }
 
+    // ---------------------------------------------------------------- the sales line chart of one year (months or ISO weeks) with the year before for comparison
+    Popup {
+        id: demandChartDialog
+        objectName: "reportDemandChartDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(900, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 500, 500)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        onClosed: reportsVM.closeDemandChart()
+        Connections {
+            target: reportsVM
+            function onChanged() { if (!!reportsVM.demandChart.granularity && !demandChartDialog.opened) demandChartDialog.open(); demandCanvas.requestPaint() }
+        }
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold; border.width: 2 }
+        contentItem: ColumnLayout {
+            spacing: 8
+            Label { objectName: "reportDemandChartTitle"; Layout.fillWidth: true; font.bold: true; font.pixelSize: theme.fontSection; color: theme.gold; horizontalAlignment: Text.AlignRight
+                    text: (reportsVM.demandChart.granularity === "W" ? "المبيعات الأسبوعية" : "المبيعات الشهرية") + " على مدار السنة (جرام، كل الأعيار)" }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 6
+                Btn { objectName: "reportDemandMonths"; text: "شهري"; primary: reportsVM.demandChart.granularity === "M"; onClicked: reportsVM.showDemandChart("M", (reportsVM.demandChart.selected || []).join(",")) }
+                Btn { objectName: "reportDemandWeeks"; text: "أسبوعي"; primary: reportsVM.demandChart.granularity === "W"; onClicked: reportsVM.showDemandChart("W", (reportsVM.demandChart.selected || []).join(",")) }
+                Label { color: theme.textMuted; text: "قارن السنوات:" }
+                Repeater {
+                    model: reportsVM.demandChart.available || []
+                    delegate: Btn {
+                        required property var modelData
+                        objectName: "reportDemandYear_" + modelData
+                        text: modelData
+                        primary: (reportsVM.demandChart.selected || []).indexOf(modelData) >= 0
+                        onClicked: {
+                            var now = (reportsVM.demandChart.selected || []).slice()
+                            var at = now.indexOf(modelData)
+                            if (at >= 0) { if (now.length > 1) now.splice(at, 1) } else now.push(modelData)
+                            reportsVM.showDemandChart(reportsVM.demandChart.granularity, now.join(","))
+                        }
+                    }
+                }
+                Item { Layout.fillWidth: true }
+                Repeater {
+                    model: reportsVM.demandChart.lines || []
+                    delegate: Label { required property var modelData; required property int index; objectName: "reportDemandLegend_" + modelData.year; text: "━ " + modelData.year; font.bold: true
+                                      color: demandCanvas.palette[index % demandCanvas.palette.length] }
+                }
+            }
+            Label { objectName: "reportDemandChartLoading"; Layout.fillWidth: true; visible: !!reportsVM.demandChart.loading; color: theme.textMuted; text: "جارٍ التحميل…"; horizontalAlignment: Text.AlignRight }
+            Label { objectName: "reportDemandChartError"; Layout.fillWidth: true; visible: !!reportsVM.demandChart.error; color: theme.red; text: reportsVM.demandChart.error || ""; wrapMode: Text.WordWrap }
+            Label { objectName: "reportDemandChartEmpty"; Layout.fillWidth: true; visible: !reportsVM.demandChart.loading && !reportsVM.demandChart.error && reportsVM.demandChart.hasData === false; color: theme.textMuted
+                    text: "لا توجد بيانات مبيعات بأوزان معروفة لهذه السنة."; horizontalAlignment: Text.AlignRight }
+            Canvas {
+                id: demandCanvas
+                objectName: "reportDemandChartCanvas"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                readonly property var palette: ["#E4A853", "#60C9AF", "#6CA6E0", "#B48EDB", "#C9D1D9", "#858D97"]
+                onPaint: {
+                    var ctx = getContext("2d")
+                    ctx.reset()
+                    var labels = reportsVM.demandChart.labels || []
+                    if (labels.length < 2) return
+                    var lines = reportsVM.demandChart.lines || []
+                    var left = 52, right = 8, top = 8, bottom = 22
+                    var w = width - left - right, h = height - top - bottom
+                    var high = reportsVM.demandChart.high || 0
+                    if (high <= 0) high = 1
+                    function x(i) { return left + w * i / (labels.length - 1) }
+                    function y(v) { return top + h * (1 - v / high) }
+                    ctx.strokeStyle = "#303842"; ctx.fillStyle = "#858D97"; ctx.font = "11px sans-serif"; ctx.lineWidth = 1
+                    for (var g = 0; g <= 4; ++g) {
+                        var gv = high * g / 4
+                        ctx.beginPath(); ctx.moveTo(left, y(gv)); ctx.lineTo(left + w, y(gv)); ctx.stroke()
+                        ctx.fillText(Math.round(gv).toString(), 4, y(gv) + 4)
+                    }
+                    var step = labels.length > 20 ? 4 : 1
+                    for (var i = 0; i < labels.length; i += step) ctx.fillText(labels[i], x(i) - 10, height - 6)
+                    function line(values, color, dash) {
+                        ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.setLineDash(dash)
+                        ctx.beginPath()
+                        var started = false
+                        for (var k = 0; k < values.length; ++k) {
+                            var v = values[k]
+                            if (v === null || v === undefined) { started = false; continue }
+                            if (!started) { ctx.moveTo(x(k), y(v)); started = true } else ctx.lineTo(x(k), y(v))
+                        }
+                        ctx.stroke()
+                        ctx.setLineDash([])
+                        ctx.fillStyle = color
+                        for (var j = 0; j < values.length; ++j) if (values[j] !== null && values[j] !== undefined) { ctx.beginPath(); ctx.arc(x(j), y(values[j]), 2.5, 0, 6.2832); ctx.fill() }
+                    }
+                    for (var li = lines.length - 1; li >= 0; --li) line(lines[li].values, palette[li % palette.length], li === 0 ? [] : [6, 4])
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                Btn { objectName: "reportDemandChartClose"; text: "إغلاق"; accent: theme.textSecondary; onClicked: demandChartDialog.close() }
+                Item { Layout.fillWidth: true }
+                Label { color: theme.textSecondary; text: "أعلى نقطة " + (reportsVM.demandChart.highText || "") + " جرام" }
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- the daily price chart of one karat (shop buy, shop sell and the 30-day average)
     Popup {
         id: priceChartDialog

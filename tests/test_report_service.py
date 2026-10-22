@@ -51,6 +51,19 @@ class FakeRepo:
                 move("CASH", "100", "FINANCIAL_OPERATION", transfer=7), move("CASH", "50000", None, type_code="OPENING_BALANCE")]
         return [r for r in rows if r["ledger"] in ledgers]
 
+    # ---- demand: the old shop sold 100 g every month from 2025-02 to 2026-08 (200 g in both Februaries) plus a row AFTER the opening that must be ignored; the new system sold 120 g on 2026-09-10
+    opening = date(2026, 9, 1)
+
+    def sales_history_legacy(self):
+        rows = [{"day": date(2025 + (m - 1) // 12, (m - 1) % 12 + 1, 15), "bills": 10, "bills_with_weight": 10, "grams": D("200") if (m - 1) % 12 + 1 == 2 else D("100")} for m in range(2, 21)]
+        return rows + [{"day": date(2026, 9, 15), "bills": 5, "bills_with_weight": 5, "grams": D("9999")}]
+
+    def sales_new_daily(self, since):
+        return [{"day": date(2026, 9, 10), "bills": 6, "bills_with_weight": 6, "grams": D("120")}]
+
+    def opening_date(self):
+        return FakeRepo.opening
+
     # ---- scrap cost: 21K bought on 20 Sep (20 g for 118,000), on 5 Oct (10 g for 60,000) and 12 Oct (5 g for 31,000), plus a reversed purchase; 18K on 20 Oct (4 g for 18,000)
     def scrap_cost_lines(self, end):
         def line(invoice, day, karat_, grams, paid, reversal=None):
@@ -793,7 +806,7 @@ class SafetyTests(Case):
             service.run("sales", {})
 
     def test_available_reports_follow_the_rights(self):
-        self.assertEqual([r["key"] for r in self.service.available_reports()], ["sales", "stock", "alerts", "indicators", "gold", "employees", "makingprofit", "scrapcost", "customers", "deadcash", "suppliers", "treasury", "cashflow", "market"])
+        self.assertEqual([r["key"] for r in self.service.available_reports()], ["sales", "stock", "alerts", "indicators", "gold", "employees", "makingprofit", "scrapcost", "demand", "customers", "deadcash", "suppliers", "treasury", "cashflow", "market"])
         self.session = session_for({"APP_LOGIN", "REPORTS_VIEW", "CUSTOMERS_VIEW"})
         limited = ReportService(self.session, repository=FakeRepo, authorization=FakeAuthorization(self.session))
         self.assertEqual([r["key"] for r in limited.available_reports()], ["indicators", "customers", "deadcash"])
@@ -1021,6 +1034,80 @@ class ScrapCostTests(Case):
         self.assertNotIn("scrapcost", [r["key"] for r in limited.available_reports()])
         with self.assertRaises(PermissionError):
             limited.run("scrapcost", self.PERIOD)
+
+
+class DemandTests(Case):
+    def setUp(self):
+        super().setUp()
+        FakeRepo.opening = date(2026, 9, 1)
+
+    def tearDown(self):
+        FakeRepo.opening = date(2026, 9, 1)
+
+    def rows(self, result, key):
+        return next(t for t in result["tables"] if t["key"] == key)["rows"]
+
+    def test_the_old_history_stops_at_the_opening_day_and_the_new_system_continues_it(self):
+        monthly = {r["month"]: r for r in self.rows(self.service.run("demand", {}), "monthly")}
+        self.assertEqual(monthly["سبتمبر 2026"]["grams"], D("120.000"))                              # the 9,999 g legacy row after the opening is ignored
+        self.assertEqual(monthly["سبتمبر 2026"]["yoy"], "+20.0%")                                     # against 100 g of September 2025
+        self.assertEqual(monthly["فبراير 2026"]["yoy"], "+0.0%")                                      # 200 g both Februaries
+
+    def test_cards_seasonal_indices_and_a_low_confidence_forecast_with_hand_numbers(self):
+        result = self.service.run("demand", {})
+        values = self.totals(result)
+        self.assertEqual(values["متوسط المبيعات الشهري"], "103.3 جرام")                                # the last six complete months: April-August 100, September 120
+        self.assertEqual(values["آخر شهر كامل"], "120.0 جرام")
+        seasonal = {r["month"]: r for r in self.rows(result, "seasonal")}
+        self.assertEqual((seasonal["فبراير"]["index"], seasonal["فبراير"]["observations"]), ("1.80", 2))      # 200 / (2,220 / 20 months)
+        self.assertEqual(seasonal["نوفمبر"]["index"], "—")                                            # seen once: no index
+        forecast = self.rows(result, "forecast")
+        self.assertEqual([r["month"] for r in forecast], ["نوفمبر 2026", "ديسمبر 2026", "يناير 2027"])
+        self.assertEqual((forecast[0]["grams"], forecast[0]["confidence"]), (D("112.9"), "منخفضة"))      # the six months de-seasonalised: April-August 100 / 0.8995 = 111.2 (x5), September 120 / 0.9878 = 121.5 -> 112.9
+        self.assertNotIn("علاقة السعر بالطلب", values)                                                  # only three months have a price: nothing is claimed
+
+    def test_without_the_opening_balance_only_the_old_history_counts_and_it_says_so(self):
+        FakeRepo.opening = None
+        result = self.service.run("demand", {})
+        monthly = {r["month"]: r for r in self.rows(result, "monthly")}
+        self.assertEqual(monthly["سبتمبر 2026"]["grams"], D("9999.000"))                              # nothing was cut at an opening day
+        self.assertTrue(any("الرصيد الافتتاحي غير مسجل" in line for line in result["meaning"]))
+
+    def test_the_line_chart_has_the_chosen_year_and_the_year_before_with_gaps_for_unfinished_periods(self):
+        chart = self.service.demand_chart("M", "")
+        self.assertEqual((chart["selected"], chart["available"], len(chart["labels"])), ([2026, 2025], [2025, 2026], 12))          # the default: the latest year with data and the one before it
+        current, previous = (line["values"] for line in chart["lines"])
+        self.assertEqual(current[:3], [100.0, 200.0, 100.0])                                                    # Jan 100, Feb 200, Mar 100 (2026)
+        self.assertEqual((current[8], current[9]), (120.0, None))                                               # September from the new system, October unfinished: a gap
+        self.assertEqual((previous[0], previous[1], previous[11]), (None, 200.0, 100.0))                        # 2025 starts in February
+        self.assertEqual(chart["high"], 200.0)
+        week = self.service.demand_chart("W", "2026")
+        self.assertEqual(len(week["lines"]), 1)                                                                 # the owner chose one year only
+        self.assertEqual(week["lines"][0]["values"][date(2026, 9, 10).isocalendar()[1] - 1], 120.0)             # the week of the new-system sale
+        many = self.service.demand_chart("M", "2024, 2025,2026,2025")                                           # any years, de-duplicated, newest first (2024 has no data: an empty line)
+        self.assertEqual([line["year"] for line in many["lines"]], [2026, 2025, 2024])
+        self.assertTrue(all(v is None for v in many["lines"][2]["values"]))
+        with self.assertRaises(ReportError):
+            self.service.demand_chart("D", "")
+        with self.assertRaises(ReportError):
+            self.service.demand_chart("M", "abc")
+        with self.assertRaises(ReportError):
+            self.service.demand_chart("M", "2020,2021,2022,2023,2024,2025,2026")                               # more than six years
+
+    def test_the_chart_needs_the_invoice_right(self):
+        session = session_for(frozenset({"APP_LOGIN", "REPORTS_VIEW"}))
+        limited = ReportService(session, transaction_factory=self.service._transaction, repository=FakeRepo, authorization=FakeAuthorization(session), today=lambda: TODAY)
+        with self.assertRaises(PermissionError):
+            limited.demand_chart("M", "")
+
+    def test_a_database_below_071_says_so_and_it_needs_the_invoice_right(self):
+        from unittest import mock
+        with mock.patch.object(FakeRepo, "sales_history_legacy", lambda self: None):
+            result = self.service.run("demand", {})
+        self.assertTrue(any("طبّق التحديثات" in line for line in result["meaning"]))
+        session = session_for(frozenset({"APP_LOGIN", "REPORTS_VIEW"}))
+        limited = ReportService(session, transaction_factory=self.service._transaction, repository=FakeRepo, authorization=FakeAuthorization(session), today=lambda: TODAY)
+        self.assertNotIn("demand", [r["key"] for r in limited.available_reports()])
 
 
 class ExportTests(Case):

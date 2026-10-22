@@ -225,6 +225,30 @@ class ReportRepository(BaseRepository):
             ORDER BY iv.invoice_date, iv.id, il.id
             """, (end_exclusive,))
 
+    def sales_history_legacy(self):
+        """The imported daily sales history of the old shop (migration 071), or None below 071."""
+        if not self.has_table("sales_history_legacy"):
+            return None
+        return self._fetch_all("SELECT sale_date AS day, bills, bills_with_weight, grams FROM sales_history_legacy ORDER BY sale_date")
+
+    def sales_new_daily(self, since):
+        """The sold grams per day of the new system from `since` on: sale lines (pieces, F7 gold, F5 unidentified) of FINALIZED, not fully reversed invoices. ONE statement."""
+        return self._fetch_all(
+            """
+            SELECT DATE(iv.invoice_date) AS day, COUNT(DISTINCT iv.id) AS bills, COUNT(DISTINCT iv.id) AS bills_with_weight, COALESCE(SUM(il.weight_grams), 0) AS grams
+            FROM invoice_lines il JOIN invoices iv ON iv.id = il.invoice_id
+            WHERE il.line_type IN ('SELL_INVENTORY', 'SELL_OLD_GOLD', 'SELL_UNIDENTIFIED') AND iv.invoice_status = 'FINALIZED' AND iv.invoice_date >= %s
+              AND NOT EXISTS (SELECT 1 FROM transaction_corrections c WHERE c.source_type = 'INVOICE' AND c.source_id = iv.id AND c.correction_type = 'FULL_REVERSAL')
+            GROUP BY DATE(iv.invoice_date) ORDER BY day
+            """, (since,))
+
+    def opening_date(self):
+        """The date of the owner's initial balance (the start of the new system), or None while it was not entered or below 067."""
+        if not self.has_table("position_snapshots"):
+            return None
+        row = self._fetch_one("SELECT DATE(taken_at) AS day FROM position_snapshots WHERE snapshot_kind = 'OPENING' ORDER BY id LIMIT 1")
+        return None if row is None else row["day"]
+
     def employees(self):
         return self._fetch_all("SELECT id, name FROM employees ORDER BY name, id")
 

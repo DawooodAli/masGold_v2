@@ -31,6 +31,7 @@ FILTER_SPECS = {
              {"key": "factory", "label": "المصنع", "options": [("", "الكل")], "dynamic": True},
              {"key": "weight_min", "label": "الوزن من (جرام)", "type": "text"},
              {"key": "weight_max", "label": "إلى (جرام)", "type": "text"}],
+    "demand": [],
     "scrapcost": [{"key": "karat", "label": "العيار", "options": [("", "الكل"), ("18", "18"), ("21", "21"), ("22", "22"), ("24", "24")]}],
     "makingprofit": [{"key": "category", "label": "الحرف", "options": [("", "الكل")], "dynamic": True},
                      {"key": "karat", "label": "العيار", "options": [("", "الكل"), ("18", "18"), ("21", "21"), ("22", "22"), ("24", "24")]}],
@@ -73,7 +74,7 @@ def month_period(today):
 
 
 HIDDEN_ON_SCREEN = {("sales", "documents"), ("stock", "items"), ("stock", "summary"), ("suppliers", "movements"), ("treasury", "movements"), ("market", "summary")}
-NO_PERIOD = {"stock", "alerts", "indicators", "customers", "deadcash", "suppliers"}                      # reports of the CURRENT state: the period fields are not offered
+NO_PERIOD = {"stock", "alerts", "indicators", "demand", "customers", "deadcash", "suppliers"}                      # reports of the CURRENT state: the period fields are not offered
 
 
 def grams_text(value):
@@ -96,7 +97,7 @@ def result_view(built):
             continue
         cols = t["columns"]
         rows = [{"cells": [_cell(c["kind"], r.get(c["key"])) for c in cols], "ref": r.get("ref") or {}, "dim": bool(r.get("state", "") and ("معكوس" in str(r.get("state")) or "ملغاة" in str(r.get("state")))),
-                 "refText": {"INVOICE": "فتح الفاتورة", "CUSTOMER": "فتح العميل", "TRIP": "فتح الرحلة", "CHART": "رسم بياني", "PRICE_CHART": "رسم بياني"}.get((r.get("ref") or {}).get("type"), "")} for r in t["rows"]]
+                 "refText": {"INVOICE": "فتح الفاتورة", "CUSTOMER": "فتح العميل", "TRIP": "فتح الرحلة", "CHART": "رسم بياني", "PRICE_CHART": "رسم بياني", "DEMAND_CHART": "رسم بياني"}.get((r.get("ref") or {}).get("type"), "")} for r in t["rows"]]
         tables.append({"key": t["key"], "title": t["title"], "available": True, "reason": "", "columns": [{"title": c["title"], "kind": c["kind"]} for c in cols], "rows": rows,
                        "paged": t["paged"], "rowCount": t.get("row_count", len(rows)), "page": t.get("page", 1), "pageSize": t.get("page_size", len(rows)), "hasMore": t.get("has_more", False),
                        "note": t.get("note", ""), "karat": int(t.get("karat") or 0)})
@@ -120,6 +121,7 @@ class ReportsViewModel(QObject):
         self._workers = set()
         self._chart, self._chart_request = {}, 0
         self._price_chart, self._price_request = {}, 0
+        self._demand_chart, self._demand_request = {}, 0
         self._period_edited = False                                           # False: the period is the automatic one (month start .. today)
 
     # ---- session
@@ -217,6 +219,47 @@ class ReportsViewModel(QObject):
                                  "low": 0.0 if result["low"] is None else float(result["low"]), "high": 0.0 if result["high"] is None else float(result["high"]),
                                  "lowText": "" if result["low"] is None else f"{result['low']:,.0f}", "highText": "" if result["high"] is None else f"{result['high']:,.0f}",
                                  "first": points[0]["date"] if points else "", "last": points[-1]["date"] if points else ""}
+        self.changed.emit()
+
+    @Property("QVariantMap", notify=changed)
+    def demandChart(self):
+        return self._demand_chart
+
+    @Slot()
+    def closeDemandChart(self):
+        self._demand_request += 1
+        self._demand_chart = {}
+        self.changed.emit()
+
+    @Slot(str, str)
+    def showDemandChart(self, granularity, years):
+        """The sales line chart over the year (granularity M = months, W = weeks); `years` = the years to compare as "2026,2025" (empty = the latest year with data and the one before it)."""
+        if self._report != "demand" or self._service is None or self._session is None:
+            return
+        self._demand_request += 1
+        request, report = self._demand_request, self._report
+        self._demand_chart = {"loading": True, "granularity": str(granularity), "selected": [], "error": "", "labels": [], "lines": [], "available": []}
+        actor = self._session.current_actor()
+        if actor is None:
+            return
+        from app.workers.invoice_worker import InvoiceWorker
+        worker = InvoiceWorker(lambda _expected_actor: self._service.demand_chart(granularity, years, _expected_actor=_expected_actor), self._session, actor, request, "report", self)
+        worker.completed.connect(lambda r, generation, operation, result, error, code, kind: self._demand_chart_completed(r, generation, report, result, error, granularity))
+        worker.finished.connect(lambda w=worker: self._workers.discard(w))
+        self._workers.add(worker)
+        worker.start()
+        self.changed.emit()
+
+    def _demand_chart_completed(self, request, generation, report, result, error, granularity):
+        actor = self._session.current_actor() if self._session is not None else None
+        if actor is None or str(actor.generation) != generation or request != self._demand_request or report != self._report:
+            return
+        if error:
+            self._demand_chart = {"loading": False, "granularity": str(granularity), "error": error, "labels": [], "lines": [], "selected": [], "available": []}
+        else:
+            self._demand_chart = {"loading": False, "error": "", "granularity": result["granularity"], "selected": [str(y) for y in result["selected"]], "available": [str(y) for y in result["available"]],
+                                  "labels": result["labels"], "lines": [{"year": str(line["year"]), "values": line["values"]} for line in result["lines"]], "high": result["high"],
+                                  "hasData": result["has_data"], "highText": f"{result['high']:,.0f}"}
         self.changed.emit()
 
     @Property(bool, notify=changed)
@@ -343,6 +386,8 @@ class ReportsViewModel(QObject):
             self.showChart(str(identifier), str(extra or ""))
         elif kind == "PRICE_CHART":
             self.showPriceChart(str(identifier), 90)
+        elif kind == "DEMAND_CHART":
+            self.showDemandChart(str(identifier), "")
         elif kind in ("INVOICE", "CUSTOMER", "TRIP") and identifier:
             self.openRequested.emit(kind, str(identifier), str(extra or ""))
 
