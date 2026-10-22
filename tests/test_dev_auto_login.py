@@ -256,9 +256,15 @@ class DevAutoLoginStartupTests(unittest.TestCase):
 
     def test_setting_is_read_only_for_the_real_service(self):
         with patch.dict(os.environ, {"MASGOLD_ENV": "development", "MASGOLD_DB_NAME": "masgold_v2",
-                                     "MASGOLD_DEV_AUTO_LOGIN": "0"}):         # no opt-in: the normal Login window
+                                     "MASGOLD_DEV_AUTO_LOGIN": "0"}), \
+                patch("config.workstation_settings.auto_sign_in_user", return_value=None):         # no opt-in (neither the development switch nor this workstation's choice): the normal Login window
             controller = ApplicationController(self.app, gold_price_service=auth_fixture.EmptyGoldPrices())
             self.assertIsNone(controller.authentication._dev_auto_login)
+            self._dispose(controller)
+        with patch.dict(os.environ, {"MASGOLD_ENV": "production", "MASGOLD_DB_NAME": "masgold_prod", "MASGOLD_DEV_AUTO_LOGIN": "0"}), \
+                patch("config.workstation_settings.auto_sign_in_user", return_value="admin"):      # this workstation chose to open as admin: honoured, also in production
+            controller = ApplicationController(self.app, gold_price_service=auth_fixture.EmptyGoldPrices())
+            self.assertEqual(controller.authentication._dev_auto_login, "admin")
             self._dispose(controller)
         with patch.dict(os.environ, DEV_ENV):
             controller = ApplicationController(self.app, gold_price_service=auth_fixture.EmptyGoldPrices())
