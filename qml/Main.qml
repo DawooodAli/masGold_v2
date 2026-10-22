@@ -5133,6 +5133,92 @@ ApplicationWindow {
         ]
     }
 
+    // Settings → تصنيفات المصروفات والإيرادات: the categories of the treasury's «حركة نقدية جديدة» (add, rename, disable / enable, delete while unused).
+    component CashCategorySettings: SettingsSectionCard {
+        id: categories
+        objectName: "settingsCashCategories"
+        sectionTitle: "تصنيفات المصروفات والإيرادات"
+        accentColor: theme.gold
+        readonly property var vm: typeof cashCategoryVM !== "undefined" ? cashCategoryVM : null
+        property string editing: ""          // the code whose name is being edited
+        property string confirmDelete: ""    // the code whose deletion awaits the second click
+        visible: !!vm && vm.canManage
+        Component.onCompleted: if (vm && vm.canManage) vm.refresh()
+        content: [
+            GoldPriceLabel {
+                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                value: "تظهر هذه التصنيفات في «حركة نقدية جديدة» بالخزنة. التصنيف المستخدم في عمليات سابقة لا يُحذف، يمكن تعطيله فقط (فيختفي من القائمة ويبقى اسمه في السجل)."
+                color: theme.textMuted; font.pixelSize: 11
+            },
+            Repeater {
+                model: categories.vm ? categories.vm.categories : []
+                delegate: RowLayout {
+                    required property var modelData
+                    objectName: "categoryRow_" + modelData.code
+                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                    GoldPriceLabel {
+                        Layout.preferredWidth: 190; visible: categories.editing !== modelData.code
+                        value: modelData.name; color: modelData.active ? theme.textPrimary : theme.textMuted
+                        objectName: "categoryName_" + modelData.code
+                    }
+                    GoldPriceInput {
+                        id: renameField; objectName: "categoryRenameField_" + modelData.code
+                        Layout.preferredWidth: 190; Layout.preferredHeight: 34
+                        visible: categories.editing === modelData.code; text: modelData.name
+                        placeholderText: ""
+                    }
+                    GoldPriceLabel { Layout.preferredWidth: 80; value: modelData.direction_text; color: theme.textSecondary }
+                    GoldPriceLabel { Layout.preferredWidth: 70; value: modelData.active ? "نشط" : "معطّل"; color: modelData.active ? theme.green : theme.textMuted }
+                    Item { Layout.fillWidth: true }
+                    GoldPriceButton {
+                        objectName: "categoryEdit_" + modelData.code; visible: categories.editing !== modelData.code
+                        text: "تعديل الاسم"; enabled: !categories.vm.busy
+                        onClicked: { categories.confirmDelete = ""; categories.editing = modelData.code }
+                    }
+                    GoldPriceButton {
+                        objectName: "categorySave_" + modelData.code; visible: categories.editing === modelData.code
+                        text: "حفظ الاسم"; enabled: !categories.vm.busy && renameField.text.trim().length > 0
+                        onClicked: { categories.vm.rename(modelData.code, renameField.text); categories.editing = "" }
+                    }
+                    GoldPriceButton {
+                        objectName: "categoryToggle_" + modelData.code
+                        text: modelData.active ? "تعطيل" : "تفعيل"; enabled: !categories.vm.busy
+                        onClicked: categories.vm.setActive(modelData.code, !modelData.active)
+                    }
+                    GoldPriceButton {
+                        objectName: "categoryDelete_" + modelData.code
+                        visible: !modelData.used
+                        text: categories.confirmDelete === modelData.code ? "تأكيد الحذف" : "حذف"; enabled: !categories.vm.busy
+                        onClicked: {
+                            if (categories.confirmDelete === modelData.code) { categories.confirmDelete = ""; categories.vm.remove(modelData.code) }
+                            else { categories.editing = ""; categories.confirmDelete = modelData.code }
+                        }
+                    }
+                }
+            },
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                enabled: !!categories.vm && !categories.vm.busy
+                GoldPriceInput { id: cashCategoryNewName; objectName: "cashCategoryNewName"; Layout.preferredWidth: 220; Layout.preferredHeight: 34; placeholderText: "اسم تصنيف جديد" }
+                ComboBox {
+                    id: cashCategoryNewDirection; objectName: "cashCategoryNewDirection"; Layout.preferredWidth: 130; Layout.preferredHeight: 34
+                    model: [{ text: "خرج (مصروف)", value: "OUT" }, { text: "دخل (إيراد)", value: "IN" }, { text: "الاتجاهين", value: "BOTH" }]
+                    textRole: "text"; font.family: "Cairo"
+                }
+                GoldPriceButton {
+                    objectName: "cashCategoryAdd"; text: "إضافة تصنيف"; enabled: cashCategoryNewName.text.trim().length > 0
+                    onClicked: { categories.vm.add(cashCategoryNewName.text, cashCategoryNewDirection.model[cashCategoryNewDirection.currentIndex].value); cashCategoryNewName.text = "" }
+                }
+                Item { Layout.fillWidth: true }
+            },
+            GoldPriceLabel {
+                objectName: "categoryMessage"; Layout.fillWidth: true; visible: value.length > 0
+                value: categories.vm ? categories.vm.message : ""
+                color: categories.vm && categories.vm.messageIsError ? theme.priceError : theme.green
+            }
+        ]
+    }
+
     component GoldProviderSettings: SettingsSectionCard {
         property alias resultCard: testResultCard
         id: providerPanel
@@ -5372,6 +5458,7 @@ ApplicationWindow {
                 GoldProviderSettings { id: goldProvider; Layout.fillWidth: true }
                 PrintingSettings { id: printingSettings; Layout.fillWidth: true }
                 PositionOpeningSettings { id: positionOpening; Layout.fillWidth: true }
+                CashCategorySettings { id: cashCategories; Layout.fillWidth: true }
             }
         }
     }

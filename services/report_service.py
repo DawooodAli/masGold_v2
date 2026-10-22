@@ -273,7 +273,10 @@ class ReportService:
         """Every cash / bank movement of the period, named by what posted it, netted per name (a reversal / correction lands on the SAME name as its original, so it nets). Money that only
         changes place (transfers between accounts, market custody issue / return / bank deposit, the marketer's cash) is shown apart and is neither income nor expense. Opening balances
         are not movements of the period. «مصروفات مسجلة» and «إيرادات مسجلة» are the categorised manual entries of the treasury (إيجار، مرتبات، كهرباء...)."""
-        from services.financial_account_service import CASH_LABELS
+        from services.financial_account_service import CASH_LABELS as FIXED_LABELS
+        reader = getattr(repo, "cash_categories", None)
+        named = reader() if reader else None
+        CASH_LABELS = {**FIXED_LABELS, **{r["code"]: r["name"] for r in (named or [])}}                       # a category's CURRENT name (renamed in Settings), otherwise the fixed names
         ledgers = tuple(k for right, k in (("CASH_VIEW", "CASH"), ("BANK_VIEW", "BANK")) if gate(right))
         operating, internal = {}, {}
         recorded_out = recorded_in = ZERO2

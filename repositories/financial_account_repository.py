@@ -8,6 +8,8 @@ transaction; nothing here commits, and no original row is ever updated or delete
 """
 import json
 
+from mysql.connector import ProgrammingError
+
 from repositories.base_repository import BaseRepository
 
 SOURCE = "FINANCIAL_OPERATION"
@@ -269,6 +271,15 @@ class FinancialAccountRepository(BaseRepository):
             (int(operation_id), leg_role, delta, movement_id if ledger == "CASH" else None,
              movement_id if ledger == "BANK" else None))
         return str(movement_id)
+
+    def cash_categories(self):
+        """The manageable income / expense categories (migration 069) in display order, or None while the table does not exist (a database below 069 keeps the fixed list)."""
+        try:
+            return self._fetch_all("SELECT code, name, direction, is_active FROM cash_categories ORDER BY sort_order, name, id")
+        except ProgrammingError as exc:
+            if getattr(exc, "errno", None) == 1146:
+                return None
+            raise
 
     def audit(self, *, actor, event_type, operation_id, code, description, metadata, now):
         self._execute(

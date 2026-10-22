@@ -95,7 +95,8 @@ class AuthorizationPathTests(unittest.TestCase):
 
 class CallSiteAuditTests(unittest.TestCase):
     """The non-locking path is used only by the confirmed read-only flows; every mutation stays strict."""
-    READ_SITES = {("services/report_service.py", "__call__"),                          # the report's rights, re-read per request by `_Gate` (REPORTS_VIEW + the report's own view right, packet26/27)
+    READ_SITES = {("services/cash_category_service.py", "categories"),                # SETTINGS_MANAGE (the category list of the Settings card, 069)
+                  ("services/report_service.py", "__call__"),                          # the report's rights, re-read per request by `_Gate` (REPORTS_VIEW + the report's own view right, packet26/27)
                   ("services/market_trip_book_service.py", "book_report"),            # MARKET_TRIP_MANAGE (059 read-only gain / reconciliation report)
                   ("services/market_trip_book_service.py", "closure_preview"),       # MARKET_TRIP_MANAGE (059 read-only closure readiness)
                   ("services/market_trip_service.py", "preview_settle_melt"),         # MARKET_TRIP_MANAGE (060 read-only figures of a melt before it is recorded)

@@ -11,7 +11,7 @@ from PySide6.QtCore import QObject, QPointF, Qt
 from PySide6.QtTest import QTest
 
 from tests import test_invoice_page_qml as harness
-from services.financial_account_service import CASH_LABELS, CASH_TYPES, CASH_TYPE_TEXT
+from services.financial_account_service import CASH_LABELS, CASH_TYPES, CASH_TYPE_TEXT, category_table
 
 HUGE = "9007199254740993"                                      # beyond JavaScript's exact integer range
 
@@ -42,7 +42,8 @@ class Service:
                 "in": {"rows": copy.deepcopy(IN_ROWS), "total": "42000.00", "count": 4},
                 "out": {"rows": copy.deepcopy(OUT_ROWS), "total": "49100.00", "count": 5},
                 "labels": [{"code": k, "text": v} for k, v in CASH_LABELS.items()],
-                "types": [{"code": k, "text": CASH_TYPE_TEXT[k], "directions": list(v)} for k, v in CASH_TYPES.items()],
+                "types": [{"code": k, "text": c["name"], "directions": list(c["directions"])} for k, c in category_table(None).items()]
+                         + [{"code": k, "text": CASH_TYPE_TEXT[k], "directions": list(v)} for k, v in CASH_TYPES.items()],
                 "bank_accounts": [{"key": "BANK:1", "name": "بنك مصر", "account_type": "BANK"}],
                 "can_operate": True, "can_correct": True}
 
@@ -209,7 +210,7 @@ class CashScreenTests(harness.InvoicePageTests):
         self.click("cashDirectionIn")
         self.assertEqual([t["text"] for t in self.fin.typesFor("IN")], ["إيراد", "مرمة", "سحب بنك"])
         self.assertEqual([t["text"] for t in self.fin.typesFor("OUT")],
-                         ["مصروفات", "مرتبات", "إيجار", "مرمة", "إيداع بنك"])
+                         ["مصروفات", "مرتبات", "إيجار", "كهرباء ومياه", "نقل", "صيانة", "بوفيه وضيافة", "سلف موظفين", "مرمة", "إيداع بنك"])
         self.choose("cashMovementType", 0)
         self.type_into("cashAmount", "2000")
         self.click("cashMovementNext")
@@ -222,7 +223,7 @@ class CashScreenTests(harness.InvoicePageTests):
         self.click("cashNewMovement")
         self.wait_until(lambda: self.item("cashMovementDialog").property("opened"))
         self.click("cashDirectionOut")
-        self.choose("cashMovementType", 4)                                      # إيداع بنك
+        self.choose("cashMovementType", 9)                                      # إيداع بنك (the last of the ten expense categories + the bank deposit)
         self.type_into("cashAmount", "20000")
         self.assertFalse(self.item("cashMovementNext").property("enabled"))    # bank not chosen yet
         self.choose("cashBankAccount", 0)

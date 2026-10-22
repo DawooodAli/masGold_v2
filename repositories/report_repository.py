@@ -181,6 +181,10 @@ class ReportRepository(BaseRepository):
             ORDER BY iv.invoice_date, iv.id, il.id
             """, (start, end_exclusive))
 
+    def cash_categories(self):
+        """The current names of the income / expense categories (migration 069), or None below 069."""
+        return self._fetch_all("SELECT code, name FROM cash_categories ORDER BY sort_order, id") if self.has_table("cash_categories") else None
+
     def employees(self):
         return self._fetch_all("SELECT id, name FROM employees ORDER BY name, id")
 

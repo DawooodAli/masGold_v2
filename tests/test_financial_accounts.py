@@ -84,6 +84,9 @@ class FinRepo:
                                                          "reason": reversal["reason"], "occurred_at": self.store.now}
         return row
 
+    def cash_categories(self):
+        return getattr(self.store, "categories", None)                           # None = a database below 069 (the fixed list)
+
     def insert_operation(self, *, operation_type, key, digest, amount, source, destination, reason, actor, now,
                          category=None):
         assert amount > 0                                                         # chk_fo_amount
@@ -91,6 +94,8 @@ class FinRepo:
             assert category or (reason and reason.strip())                        # chk_fo_shape (026)
             allowed = ((None, "REVENUE", "REPAIR") if operation_type == "MANUAL_DEPOSIT"
                        else (None, "EXPENSE", "SALARY", "RENT", "REPAIR", "UTILITIES", "TRANSPORT", "MAINTENANCE", "HOSPITALITY", "STAFF_ADVANCE"))      # 068
+            if getattr(self.store, "categories", None) is not None:               # 069: the category must exist in cash_categories (fk_fo_category)
+                allowed = (None, *(c["code"] for c in self.store.categories))
             assert category in allowed                                            # chk_fo_category
         else:
             assert category is None and source != destination

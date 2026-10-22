@@ -84,8 +84,7 @@ class CashMovementTests(FinancialTestCase):
                 self.move("IN", kind)                                                   # an expense category is never income
 
     def test_no_second_customer_settlement_or_deposit_engine(self):
-        self.assertEqual(set(CASH_TYPES), {"EXPENSE", "SALARY", "RENT", "UTILITIES", "TRANSPORT", "MAINTENANCE", "HOSPITALITY", "STAFF_ADVANCE",
-                                           "REVENUE", "REPAIR", "BANK_DEPOSIT", "BANK_WITHDRAWAL"})
+        self.assertEqual(set(CASH_TYPES), {"BANK_DEPOSIT", "BANK_WITHDRAWAL"})                     # the income / expense categories live in the cash_categories table (069)
         for name in ("settle", "customer", "arboun", "advance"):
             self.assertFalse(any(name in attr.lower() for attr in dir(self.fin)), name)
 

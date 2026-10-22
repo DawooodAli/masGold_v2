@@ -48,13 +48,18 @@ CASH_LABELS = {
     "OTHER": "حركة أخرى"}
 # The same business names seen from a bank / wallet / InstaPay account (a transfer INTO the account is a deposit).
 BANK_LABELS = {**CASH_LABELS, "TRANSFER_IN": "إيداع في الحساب", "TRANSFER_OUT": "سحب من الحساب"}
-# Manual cash movement types (prototype CASH_TYPES without a customer) and the cash directions they allow.
-# BANK_DEPOSIT / BANK_WITHDRAWAL are internal transfers (cash ↔ a real bank / wallet account).
-CASH_TYPES = {"EXPENSE": ("OUT",), "SALARY": ("OUT",), "RENT": ("OUT",), "UTILITIES": ("OUT",), "TRANSPORT": ("OUT",), "MAINTENANCE": ("OUT",),
-              "HOSPITALITY": ("OUT",), "STAFF_ADVANCE": ("OUT",), "REVENUE": ("IN",),
-              "REPAIR": ("IN", "OUT"), "BANK_WITHDRAWAL": ("IN",), "BANK_DEPOSIT": ("OUT",)}
-CASH_TYPE_TEXT = {**{k: CASH_LABELS[k] for k in ("EXPENSE", "SALARY", "RENT", "UTILITIES", "TRANSPORT", "MAINTENANCE", "HOSPITALITY", "STAFF_ADVANCE", "REVENUE", "REPAIR")},
-                  "BANK_DEPOSIT": "إيداع بنك", "BANK_WITHDRAWAL": "سحب بنك"}
+# The two transfers between the cash safe and a real bank / wallet account (BANK_DEPOSIT / BANK_WITHDRAWAL) and the cash directions they allow. The income / expense categories are NOT here:
+# they live in the cash_categories table (migration 069, managed in Settings) and `category_table()` is their fixed fallback.
+CASH_TYPES = {"BANK_WITHDRAWAL": ("IN",), "BANK_DEPOSIT": ("OUT",)}
+CASH_TYPE_TEXT = {"BANK_DEPOSIT": "إيداع بنك", "BANK_WITHDRAWAL": "سحب بنك"}
+
+
+def category_table(rows):
+    """{code: {name, directions, active}} from the cash_categories rows; None (a database below 069) falls back to the fixed list of the code before the feature."""
+    from services.cash_category_service import SEED
+    if rows is None:
+        rows = [{"code": c, "name": n, "direction": d, "is_active": 1} for c, n, d in SEED]
+    return {r["code"]: {"name": r["name"], "directions": ("IN", "OUT") if r["direction"] == "BOTH" else (r["direction"],), "active": bool(r["is_active"])} for r in rows}
 
 
 class _Discard(Exception):
@@ -114,8 +119,21 @@ class FinancialAccountService:
         self._transaction = transaction_factory
         self._repository = repository
         self._authorization = authorization or AuthorizationService(session)
+        self._categories = category_table(None)
 
     # ------------------------------------------------------------ plumbing
+    def _load_categories(self, repository):
+        """The current categories, read inside the caller's transaction (a repository without the read keeps the fixed list)."""
+        reader = getattr(repository, "cash_categories", None)
+        self._categories = category_table(reader() if reader else None)
+
+    def _label(self, code):
+        """The employee-facing name of a movement kind: a category's current name, otherwise the fixed business names."""
+        category = self._categories.get(code)
+        return category["name"] if category else CASH_LABELS.get(code, CASH_LABELS["OTHER"])
+
+    def _all_labels(self):
+        return {**CASH_LABELS, **{code: c["name"] for code, c in self._categories.items()}}
     def _actor(self, expected_actor):
         actor = self._session.require_authenticated()
         if expected_actor is not None and not self._session.is_current(expected_actor):
@@ -137,7 +155,9 @@ class FinancialAccountService:
                 ledgers = visible_ledgers(verified.permissions)
                 if not ledgers:
                     raise PermissionError("ليس لديك صلاحية عرض الحسابات المالية.")
-                raise _Discard(work(self._repository(connection), ledgers))
+                repository = self._repository(connection)
+                self._load_categories(repository)
+                raise _Discard(work(repository, ledgers))
         except _Discard as done:
             return done.args[0]
 
@@ -198,15 +218,14 @@ class FinancialAccountService:
                 "rows": [self._row(r, ledger) for r in rows[:PAGE_SIZE]], "has_more": len(rows) > PAGE_SIZE,
                 "page": page}
 
-    @staticmethod
-    def _row(r, ledger="CASH"):
+    def _row(self, r, ledger="CASH"):
         out = dict(r)
         for name in ("id", "reference_id", "invoice_id", "corrected_source_id", "operation_id", "customer_id"):
             out[name] = None if r.get(name) is None else str(r[name])
         out["amount_delta"] = Decimal(str(r["amount_delta"]))
         out["balance_after"] = Decimal(str(r["balance_after"]))
-        labels = BANK_LABELS if ledger == "BANK" else CASH_LABELS
-        out["label"] = labels.get(r.get("label_key"), CASH_LABELS["OTHER"])
+        key = r.get("label_key")
+        out["label"] = (BANK_LABELS.get(key) if ledger == "BANK" and key in ("TRANSFER_IN", "TRANSFER_OUT") else None) or self._label(key)
         out.update(movement_context(r))
         return out
 
@@ -227,7 +246,7 @@ class FinancialAccountService:
         from services.correction_rules import correction_code
         reversal = row["reversal"]
         return {"operation_id": str(row["id"]), "code": operation_code(row["operation_type"], row["id"]),
-                "operation_type": row["operation_type"], "type_text": CASH_LABELS[row["category"]] if row.get("category")
+                "operation_type": row["operation_type"], "type_text": self._label(row["category"]) if row.get("category")
                 else TYPE_TEXT[row["operation_type"]],
                 "amount": str(row["amount"]), "from_name": row.get("from_name"), "to_name": row.get("to_name"),
                 "reason": row.get("reason") or "", "actor_name": row.get("actor_name") or "",
@@ -262,10 +281,10 @@ class FinancialAccountService:
         last = CustomerService._statement_date(end, "تاريخ النهاية")
         if first and last and first > last:
             raise ValueError("تاريخ البداية بعد النهاية.")
-        if label not in ("",) + tuple(CASH_LABELS):
-            raise ValueError("نوع الحركة غير صحيح.")
 
         def read(repository, ledgers):
+            if label not in ("",) + tuple(self._all_labels()):
+                raise ValueError("نوع الحركة غير صحيح.")
             self._require_ledgers(ledgers, "CASH")
             cash = next((a for a in repository.accounts(("CASH",)) if a["is_active"]), None)
             if cash is None:
@@ -283,7 +302,7 @@ class FinancialAccountService:
 
         def side(sign):
             chosen = [r for r in rows if (r["amount_delta"] > 0) == (sign > 0)]
-            return {"rows": [{"id": str(r["id"]), "label": CASH_LABELS.get(r["label_key"], CASH_LABELS["OTHER"]),
+            return {"rows": [{"id": str(r["id"]), "label": self._label(r["label_key"]),
                               "amount": str(abs(Decimal(str(r["amount_delta"]))).quantize(Decimal("0.01"))),
                               "invoice_id": None if r.get("invoice_id") is None else str(r["invoice_id"]),
                               "operation_id": None if r.get("operation_id") is None else str(r["operation_id"]),
@@ -295,8 +314,9 @@ class FinancialAccountService:
                             "balance": str(Decimal(str(cash["balance"])))},
                 "start": period[0].isoformat(), "end": period[1].isoformat(),
                 "in": side(1), "out": side(-1),
-                "labels": [{"code": k, "text": v} for k, v in CASH_LABELS.items()],
-                "types": [{"code": k, "text": CASH_TYPE_TEXT[k], "directions": list(v)} for k, v in CASH_TYPES.items()],
+                "labels": [{"code": k, "text": v} for k, v in self._all_labels().items()],
+                "types": [{"code": k, "text": c["name"], "directions": list(c["directions"])} for k, c in self._categories.items() if c["active"]]
+                         + [{"code": k, "text": CASH_TYPE_TEXT[k], "directions": list(CASH_TYPES[k])} for k in ("BANK_DEPOSIT", "BANK_WITHDRAWAL")],
                 "bank_accounts": [{"key": account_key("BANK", b["id"]), "name": b["name"],
                                    "account_type": b["account_type"]} for b in banks],
                 "can_operate": OPERATE in actor.permissions,
@@ -310,7 +330,7 @@ class FinancialAccountService:
         cash = _account(cash_key)
         if cash[0] != "CASH":
             raise CorrectionError("ACCOUNT_NOT_FOUND", "اختر الخزنة.")
-        if kind not in CASH_TYPES or direction not in CASH_TYPES[kind]:
+        if direction not in ("IN", "OUT") or (kind in CASH_TYPES and direction not in CASH_TYPES[kind]):
             raise CorrectionError("TYPE_INVALID", "نوع الحركة لا يناسب الاتجاه المختار.")
         value, text = _amount(amount), _text(note, required=False, label="الملاحظة")
         if kind in ("BANK_DEPOSIT", "BANK_WITHDRAWAL"):
@@ -338,6 +358,12 @@ class FinancialAccountService:
         with self._transaction() as connection:
             actor = self._authorization.require_permission(connection, session_actor, OPERATE)
             repository = self._repository(connection)
+            if category:                                                       # the category must exist, be active and fit the direction of the operation (decided from the table)
+                self._load_categories(repository)
+                chosen = self._categories.get(category)
+                wanted = "IN" if operation_type == DEPOSIT else "OUT"
+                if chosen is None or not chosen["active"] or wanted not in chosen["directions"]:
+                    raise CorrectionError("TYPE_INVALID", "نوع الحركة لا يناسب الاتجاه المختار.")
             accounts = {}
             for side in sorted({s for s in (source, destination) if s}):       # deterministic lock order
                 row = repository.account(side[0], side[1], lock=True)
@@ -373,10 +399,10 @@ class FinancialAccountService:
                 side, role = (destination, "IN") if operation_type == DEPOSIT else (source, "OUT")
                 repository.post_leg(operation_id=operation_id, code=code, leg_role=role, ledger=side[0],
                                     account_id=side[1], amount=amount, type_code=operation_type,
-                                    description=(CASH_LABELS[category] if category else TYPE_TEXT[operation_type])
+                                    description=(self._label(category) if category else TYPE_TEXT[operation_type])
                                     + (f" — {reason}" if reason else ""), notes=reason or None,
                                     group=None, actor=actor, now=now)
-                text = (f"{CASH_LABELS[category] if category else TYPE_TEXT[operation_type]} {amount:,.2f} ج — "
+                text = (f"{self._label(category) if category else TYPE_TEXT[operation_type]} {amount:,.2f} ج — "
                         f"{accounts[side]['name']} — {code}")
             repository.audit(actor=actor, event_type=operation_type, operation_id=operation_id, code=code,
                              description=text,
