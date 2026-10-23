@@ -75,6 +75,21 @@ class Repo:
         self.store.created.append(values)
         return 41
 
+    def assign_barcode(self, **values):
+        self.store.__dict__.setdefault("assigned", []).append(values)
+
+    # correction of a piece's type and karat
+    def lock_item_for_correction(self, item_id):
+        return next((dict(p, id=item_id) for p in self.store.pieces if p["inventory_item_id"] == item_id), None)
+
+    def update_item_type_and_karat(self, item_id, item_type_id, karat_id):
+        piece = next(p for p in self.store.pieces if p["inventory_item_id"] == item_id)
+        piece["item_type_id"], piece["karat_id"] = item_type_id, karat_id
+        return 1
+
+    def audit_item_correction(self, **values):
+        self.store.__dict__.setdefault("audits", []).append(values)
+
     def create_inventory_movement(self, **values):
         self.store.movements.append(values)
         return 1
@@ -92,6 +107,16 @@ def session_for(permissions=frozenset({"APP_LOGIN", "INVENTORY_MANAGE"}), user_i
     return session
 
 
+class FakeBarcodes:
+    """The automatic barcode allocation (BarcodeRepository.allocate_barcode_value) without a database."""
+    def __init__(self, connection):
+        self.store = connection.store
+
+    def allocate_barcode_value(self, for_date):
+        self.store.auto_barcodes = getattr(self.store, "auto_barcodes", 0) + 1
+        return f"{self.store.auto_barcodes:02d}{for_date.strftime('%y%m%d')}"
+
+
 def service_for(store, session=None, authorization=None):
     @contextmanager
     def transaction():
@@ -99,7 +124,7 @@ def service_for(store, session=None, authorization=None):
         yield type("T", (), {"connection": type("C", (), {"store": store})()})()
     session = session or session_for()
     return InventoryService(transaction_factory=transaction, repository=Repo, session=session,
-                            authorization=authorization or FakeAuthorization(session))
+                            authorization=authorization or FakeAuthorization(session), barcode_repository=FakeBarcodes)
 
 
 MIXED = [
@@ -135,6 +160,34 @@ class ManualEntryTests(unittest.TestCase):
         self.assertEqual(store.created[0]["created_by_user_id"], 9)            # the AUTHENTICATED session actor
         self.assertIsNone(store.movements[0]["performed_by_employee_id"])
         self.assertEqual(store.movements[0]["performed_by_user_id"], 9)
+
+    def test_a_piece_entered_without_a_barcode_gets_the_next_automatic_one_and_a_typed_one_is_kept(self):
+        store = Store()
+        service = service_for(store)
+        service.create_inventory_item(item_type_id=1, karat_id=1, weight_grams="3.600", stock_classification="NEW_STOCK")
+        service.create_inventory_item(item_type_id=1, karat_id=1, weight_grams="2.000", stock_classification="NEW_STOCK", barcode="MY-77")
+        self.assertEqual([a["barcode_value"] for a in store.assigned], [store.assigned[0]["barcode_value"], "MY-77"])
+        self.assertRegex(store.assigned[0]["barcode_value"], r"^01\d{6}$")                         # NNYYMMDD, the canonical sequence
+
+    def test_a_piece_in_stock_can_have_its_type_and_karat_corrected_with_a_reason_and_an_audit(self):
+        store = Store([dict(MIXED[0], inventory_item_id=7, inventory_status="IN_STOCK")])
+        service = service_for(store)
+        with self.assertRaises(ValueError):
+            service.correct_item(7, 2, 2, "   ")                                           # the reason is mandatory
+        with self.assertRaises(ValueError):
+            service.correct_item(7, store.pieces[0]["item_type_id"], store.pieces[0]["karat_id"], "لا تغيير")
+        service.correct_item(7, 99, 3, "اتدخلت بعيار غلط")
+        self.assertEqual((store.pieces[0]["item_type_id"], store.pieces[0]["karat_id"]), (99, 3))
+        audit = store.audits[0]
+        self.assertEqual((audit["item_id"], audit["metadata"]["reason"], audit["metadata"]["after"]), (7, "اتدخلت بعيار غلط", {"item_type_id": 99, "karat_id": 3}))
+
+    def test_a_sold_or_missing_piece_is_never_corrected(self):
+        store = Store([dict(MIXED[0], inventory_item_id=8, inventory_status="SOLD")])
+        service = service_for(store)
+        for item_id in (8, 404):
+            with self.assertRaises(ValueError):
+                service.correct_item(item_id, 99, 3, "x")
+        self.assertFalse(hasattr(store, "audits"))
 
     def test_other_required_fields_still_refused(self):
         service = service_for(Store())

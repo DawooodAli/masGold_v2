@@ -220,6 +220,62 @@ class InventoryStockPageTests(harness.InvoicePageTests):
                 self.wait_until(lambda: not dialog.property("visible"), "closed")
         self.assertEqual(self.warnings, [])
 
+    def test_a_piece_in_stock_can_have_its_type_and_karat_corrected_with_real_clicks(self):
+        calls = []
+
+        class Service:
+            def get_stock_items(self, **kwargs):
+                return []
+
+            def get_stock_summary(self):
+                return {}
+
+            def correct_item(self, item_id, item_type_id, karat_id, reason):
+                calls.append((item_id, item_type_id, karat_id, reason))
+                return {"inventory_item_id": item_id}
+        inventory = self.controller.operational_viewmodels["inventoryVM"]
+        inventory._service = Service()
+        self.page(INVENTORY)
+        master = self.controller.operational_viewmodels["masterDataVM"]
+        master._item_types = [{"id": 1, "name": "خاتم"}, {"id": 2, "name": "سلسلة"}]
+        master._karats = [{"id": 1, "name": "عيار 21"}, {"id": 2, "name": "عيار 18"}]
+        master.dataChanged.emit()
+        item = {"inventory_item_id": 7, "item_type_id": master.itemTypes[0]["id"], "karat_id": master.karats[0]["id"], "item_type_name": "خاتم", "karat_value": 21,
+                "weight_grams": 3.6, "size": "55", "factory_name": "النور", "category_code": "A", "barcode_value": "01261001", "stock_classification": "NEW_STOCK",
+                "inventory_status": "IN_STOCK", "acquisition_source": "MANUAL_ENTRY", "acquired_at": "2026-10-01 10:00:00", "notes": ""}
+        self.root.setProperty("selectedInventoryItem", item)
+        details = self.item("inventoryItemDetailsDialog")
+        for width, height in harness.SIZES:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            details.open()
+            self.wait_until(lambda: details.property("opened"), "details")
+            button = self.item("inventoryItemCorrectOpen")
+            self.assertTrue(button.property("visible"))
+            self.assert_inside_window(button)
+            self.click(button)
+            dialog = self.item("inventoryItemCorrectDialog")
+            self.wait_until(lambda: dialog.property("opened"), "correction dialog")
+            self.assertFalse(self.item("inventoryCorrectSave").property("enabled"))                  # the reason is mandatory
+            self.choose("inventoryCorrectKarat", len(master.karats) - 1)
+            self.type_into("inventoryCorrectReason", "اتدخلت بعيار غلط")
+            self.wait_until(lambda: self.item("inventoryCorrectSave").property("enabled"), "can save")
+            self.assert_inside_window(self.item("inventoryCorrectSave"))
+            before = len(calls)
+            self.click("inventoryCorrectSave")
+            self.wait_until(lambda: len(calls) == before + 1, "correction sent")
+            self.wait_until(lambda: not dialog.property("visible") and not details.property("visible"), "both dialogs close")
+        self.assertEqual(calls[-1][0], 7)
+        self.assertEqual(calls[-1][2], master.karats[-1]["id"])
+        self.assertEqual(calls[-1][3], "اتدخلت بعيار غلط")
+        sold = dict(item, inventory_status="SOLD")
+        self.root.setProperty("selectedInventoryItem", sold)
+        details.open()
+        self.wait_until(lambda: details.property("opened"), "details")
+        self.assertFalse(self.item("inventoryItemCorrectOpen").property("visible"))                  # a sold piece is never corrected
+        details.close()
+        self.assertEqual(self.warnings, [])
+
     def test_supplier_items_are_labelled_tawrid_mawrid_never_market_purchase(self):
         self.page(INVENTORY)
         dialog = self.item("inventoryItemDetailsDialog")

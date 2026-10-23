@@ -400,8 +400,8 @@ class IntakeTests(SupplierCase):
         auto = self.piece(self.invoice_id, self.g1, "1.000")
         manual = self.piece(self.invoice_id, self.g1, "1.000", barcode_mode="MANUAL", barcode="SUP-0001")
         none = self.piece(self.invoice_id, self.g1, "1.000", barcode_mode="NONE")
-        self.assertEqual((auto["barcode"], manual["barcode"], none["barcode"]), ("01261008", "SUP-0001", ""))
-        self.assertIsNone(self.db.items[int(none["inventory_item_id"])]["barcode"])       # stays non-printable
+        self.assertEqual((auto["barcode"], manual["barcode"], none["barcode"]), ("01261008", "SUP-0001", "02261008"))
+        self.assertEqual(self.db.items[int(none["inventory_item_id"])]["barcode"], "02261008")       # «no barcode» is also automatic now: every piece can be printed
         with self.assertRaises(SupplierRuleError):
             self.piece(self.invoice_id, self.g1, "1.000", barcode_mode="MANUAL", barcode="  ")
         with self.assertRaises(SupplierRuleError):
@@ -460,7 +460,8 @@ class IntakeTests(SupplierCase):
         # The shared canonical path still defaults to manual entry and passes MARKET_PURCHASE through untouched.
         self.assertEqual(inspect.signature(InventoryService._create_item).parameters["acquisition_source"].default,
                          "MANUAL_ENTRY")
-        market = InventoryService(repository=InventoryRepo).create_item_on_connection(
+        automatic = type("B", (), {"__init__": lambda s, c: None, "allocate_barcode_value": lambda s, d: "99261008"})
+        market = InventoryService(repository=InventoryRepo, barcode_repository=automatic).create_item_on_connection(
             self.db, actor_user_id=7, item_type_id=1, karat_id=1, weight_grams="2",
             acquisition_source="MARKET_PURCHASE")
         self.assertEqual(self.db.items[market]["acquisition_source"], "MARKET_PURCHASE")

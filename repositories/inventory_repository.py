@@ -396,6 +396,30 @@ class InventoryRepository(BaseRepository):
             (employee_id,),
         )
 
+    def lock_item_for_correction(self, item_id):
+        """The piece row, locked (a correction reads and writes it in one transaction)."""
+        return self._fetch_one(
+            "SELECT id, inventory_status, item_type_id, karat_id, weight_grams FROM inventory_items WHERE id = %s FOR UPDATE", (int(item_id),))
+
+    def update_item_type_and_karat(self, item_id, item_type_id, karat_id):
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute("UPDATE inventory_items SET item_type_id = %s, karat_id = %s WHERE id = %s", (int(item_type_id), int(karat_id), int(item_id)))
+            return cursor.rowcount
+        finally:
+            cursor.close()
+
+    def audit_item_correction(self, *, user_id, item_id, description, metadata):
+        import json
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(
+                "INSERT INTO audit_log (user_id, event_type, entity_type, entity_id, entity_reference, description, metadata_json, occurred_at) "
+                "VALUES (%s, 'INVENTORY_ITEM_CORRECTED', 'INVENTORY_ITEM', %s, %s, %s, %s, NOW())",
+                (user_id, int(item_id), f"#{int(item_id)}", description, json.dumps(metadata, ensure_ascii=False, default=str)))
+        finally:
+            cursor.close()
+
     def get_active_item_type_by_id(
             self,
             item_type_id: int,

@@ -103,7 +103,8 @@ class FreezeTests(unittest.TestCase):
         def transaction():
             yield type("T", (), {"connection": type("C", (), {"store": store})()})()
         from services.inventory_service import InventoryService
-        service = InventoryService(transaction_factory=transaction, repository=CategoryRepo, session=session, authorization=FakeAuthorization(session))
+        from tests.test_inventory_stock import FakeBarcodes
+        service = InventoryService(transaction_factory=transaction, repository=CategoryRepo, session=session, authorization=FakeAuthorization(session), barcode_repository=FakeBarcodes)
         service.create_inventory_item(item_type_id=1, karat_id=1, weight_grams="3.600", stock_classification="NEW_STOCK", **values)
         return store.created[0]
 
@@ -122,7 +123,8 @@ class FreezeTests(unittest.TestCase):
         @contextmanager
         def transaction():
             yield type("T", (), {"connection": type("C", (), {"store": store})()})()
-        service = InventoryService(transaction_factory=transaction, repository=CategoryRepo, session=session, authorization=FakeAuthorization(session))
+        from tests.test_inventory_stock import FakeBarcodes
+        service = InventoryService(transaction_factory=transaction, repository=CategoryRepo, session=session, authorization=FakeAuthorization(session), barcode_repository=FakeBarcodes)
         service.create_item_on_connection(type("C", (), {"store": store})(), actor_user_id=9, item_type_id=1, karat_id=1, weight_grams="3.600", acquisition_source="SUPPLIER_PURCHASE",
                                           category_id=1, acquisition_making_per_gram=D("90.00"))
         self.assertEqual(store.created[0]["acquisition_making_per_gram"], D("90.00"))                 # the supplier's real rate wins over the category's 150

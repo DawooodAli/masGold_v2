@@ -13,9 +13,10 @@ class InventoryService:
     MANAGE_PERMISSION = "INVENTORY_MANAGE"
 
     def __init__(self, transaction_factory=DatabaseTransaction, repository=InventoryRepository, session=None,
-                 authorization=None):
+                 authorization=None, barcode_repository=None):
         self._transaction = transaction_factory
         self._repository = repository
+        self._barcode_repository = barcode_repository
         self._session = session
         self._authorization = authorization
 
@@ -361,9 +362,11 @@ class InventoryService:
         )
 
         # ----------------------------------------------
-        # 2. Optional barcode
+        # 2. The barcode: the typed one, otherwise the next automatic one (every piece that enters stock has one, so it can be printed)
         # ----------------------------------------------
 
+        if not barcode:
+            barcode = self._automatic_barcode(connection)
         if barcode:
             repository.assign_barcode(
                 inventory_item_id=(
@@ -396,6 +399,48 @@ class InventoryService:
 
         return inventory_item_id
 
+
+    def correct_item(self, item_id, item_type_id, karat_id, reason):
+        """تعديل صنف وعيار قطعة مدخلة بالخطأ: only a piece still IN_STOCK, with a mandatory reason, audited with the before / after values. Never a sold, returned or removed piece
+        (its invoices keep the values they were sold with). The weight, barcode and every movement stay as they are."""
+        session_actor = self._require_actor()
+        item_id = self._required_id(item_id, "Item is required.")
+        item_type_id = self._required_id(item_type_id, "Item type is required.")
+        karat_id = self._required_id(karat_id, "Karat is required.")
+        reason = self._clean_optional_text(reason, 500, "Reason is too long.")
+        if not reason:
+            raise ValueError("اكتب سبب التعديل.")
+        with self._transaction() as transaction:
+            connection = transaction.connection
+            user_id = int(self._authorize_write(connection, session_actor).user_id)
+            repository = self._repository(connection)
+            item = repository.lock_item_for_correction(item_id)
+            if item is None:
+                raise ValueError("القطعة غير موجودة.")
+            if item["inventory_status"] != "IN_STOCK":
+                raise ValueError("يمكن تعديل الصنف والعيار لقطعة بالمخزون فقط (المباعة أو المرتجعة تحتفظ ببياناتها).")
+            if int(item["item_type_id"]) == item_type_id and int(item["karat_id"]) == karat_id:
+                raise ValueError("لم يتغير الصنف ولا العيار.")
+            new_type = repository.get_active_item_type_by_id(item_type_id)
+            if new_type is None:
+                raise ValueError("Item type is not active or does not exist.")
+            new_karat = repository.get_active_karat_by_id(karat_id)
+            if new_karat is None:
+                raise ValueError("Karat is not active or does not exist.")
+            repository.update_item_type_and_karat(item_id, item_type_id, karat_id)
+            repository.audit_item_correction(
+                user_id=user_id, item_id=item_id, description=f"تعديل صنف / عيار القطعة #{item_id}",
+                metadata={"reason": reason, "before": {"item_type_id": int(item["item_type_id"]), "karat_id": int(item["karat_id"])},
+                          "after": {"item_type_id": item_type_id, "karat_id": karat_id}, "weight_grams": str(item["weight_grams"])})
+        return {"inventory_item_id": item_id}
+
+    def _automatic_barcode(self, connection):
+        """The next canonical NNYYMMDD barcode (the day's sequence row is locked until the caller's transaction ends)."""
+        from datetime import date
+        if self._barcode_repository is None:
+            from repositories.barcode_repository import BarcodeRepository
+            self._barcode_repository = BarcodeRepository
+        return self._barcode_repository(connection).allocate_barcode_value(date.today())
 
     def create_inventory_item(
             self,

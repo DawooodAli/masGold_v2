@@ -355,7 +355,7 @@ class SupplierPurchaseService:
             # persists nothing and two concurrent intakes of one group cannot both spend the same remaining allowance.
             rules.check_intake(group["supplier_weight_grams"], repository.group_actual_weight(group_id), weight)
             now = repository.db_now()
-            value = (self._barcodes(connection).allocate_barcode_value(now.date()) if mode == "AUTO"
+            value = (self._barcodes(connection).allocate_barcode_value(now.date()) if mode in ("AUTO", "NONE")        # every piece that enters stock has a barcode, so it can be printed
                      else manual if mode == "MANUAL" else None)
             try:
                 item_id = self._inventory.create_item_on_connection(

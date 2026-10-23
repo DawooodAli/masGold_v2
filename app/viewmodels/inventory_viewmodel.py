@@ -447,6 +447,23 @@ class InventoryViewModel(QObject):
 
             return False
 
+    @Slot(int, int, int, str, result=bool)
+    def correctInventoryItem(self, item_id, item_type_id, karat_id, reason):
+        """تعديل صنف وعيار قطعة بالمخزون (the service authorizes, requires the reason and audits)."""
+        try:
+            self._service.correct_item(item_id, item_type_id, karat_id, reason)
+            self._action_message = "تم تعديل الصنف والعيار."
+            self._action_success = True
+            self.refresh()
+            self.actionChanged.emit()
+            return True
+        except Exception as exc:
+            self._action_message = (str(exc) if isinstance(exc, (ValueError, PermissionError)) and any("\u0600" <= ch <= "\u06ff" for ch in str(exc))
+                                    else "تعذر تعديل القطعة؛ حدّث البيانات وأعد المحاولة.")
+            self._action_success = False
+            self.actionChanged.emit()
+            return False
+
     @Slot()
     def clearActionMessage(self):
 

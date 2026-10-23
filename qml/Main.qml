@@ -10631,7 +10631,7 @@ ApplicationWindow {
                             Layout.fillWidth: true
 
                             text:
-                                "إدخال بضاعة جديدة أو قطعة محولة من الكسر — الباركود اختياري"
+                                "إدخال بضاعة جديدة أو قطعة محولة من الكسر — كل قطعة تأخذ باركود (اكتبه أو يُولَّد تلقائياً)"
 
                             color: theme.textMuted
 
@@ -11118,7 +11118,7 @@ ApplicationWindow {
                                 Layout.preferredHeight: 44
 
                                 placeholderText:
-                                    "اختياري — يمكن تركه فارغاً"
+                                    "اتركه فارغاً ليُولَّد باركود تلقائي"
 
                                 color: theme.textPrimary
 
@@ -12172,6 +12172,14 @@ ApplicationWindow {
                     }
 
                     Button {
+                        objectName: "inventoryItemCorrectOpen"
+                        text: "تعديل الصنف والعيار"
+                        visible: inventoryVM.canManage
+                                 && root.selectedInventoryItem.inventory_status === "IN_STOCK"
+                        onClicked: inventoryItemCorrectDialog.begin()
+                    }
+
+                    Button {
                         text: "إغلاق"
                         onClicked:
                             inventoryItemDetailsDialog.close()
@@ -12181,6 +12189,101 @@ ApplicationWindow {
         }
     }
 
+
+    // ========================================================
+    // تعديل صنف وعيار قطعة بالمخزون
+    // ========================================================
+
+    Dialog {
+        id: inventoryItemCorrectDialog
+        objectName: "inventoryItemCorrectDialog"
+        modal: true
+        dim: true
+        padding: 16
+        width: Math.min(root.width - 60, 460)
+        x: Math.round((root.width - width) / 2)
+        y: Math.round((root.height - height) / 2)
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgPrimary; radius: 10; border.color: theme.goldDark }
+
+        function begin() {
+            correctTypeCombo.currentIndex = correctTypeCombo.indexOfValue(Number(root.selectedInventoryItem.item_type_id))
+            correctKaratCombo.currentIndex = correctKaratCombo.indexOfValue(Number(root.selectedInventoryItem.karat_id))
+            correctReason.text = ""
+            inventoryVM.clearActionMessage()
+            open()
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 10
+            Label {
+                Layout.fillWidth: true
+                text: "تعديل الصنف والعيار — قطعة #" + root.selectedInventoryItem.inventory_item_id
+                color: theme.gold; font.bold: true; font.pixelSize: 15; font.family: "Cairo"
+                horizontalAlignment: Text.AlignRight
+            }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                Label { text: "الصنف"; color: theme.textPrimary; font.family: "Cairo"; Layout.preferredWidth: 70; horizontalAlignment: Text.AlignRight }
+                ComboBox {
+                    id: correctTypeCombo; objectName: "inventoryCorrectType"
+                    Layout.fillWidth: true; Layout.preferredHeight: 40
+                    model: masterDataVM.itemTypes; textRole: "name"; valueRole: "id"
+                    displayText: currentIndex >= 0 ? currentText : "اختر الصنف"
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                Label { text: "العيار"; color: theme.textPrimary; font.family: "Cairo"; Layout.preferredWidth: 70; horizontalAlignment: Text.AlignRight }
+                ComboBox {
+                    id: correctKaratCombo; objectName: "inventoryCorrectKarat"
+                    Layout.fillWidth: true; Layout.preferredHeight: 40
+                    model: masterDataVM.karats; textRole: "name"; valueRole: "id"
+                    displayText: currentIndex >= 0 ? currentText : "اختر العيار"
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                Label { text: "السبب"; color: theme.textPrimary; font.family: "Cairo"; Layout.preferredWidth: 70; horizontalAlignment: Text.AlignRight }
+                TextField {
+                    id: correctReason; objectName: "inventoryCorrectReason"
+                    Layout.fillWidth: true; Layout.preferredHeight: 40
+                    placeholderText: "مثلاً: اتدخلت بصنف / عيار غلط"
+                    font.family: "Cairo"; color: theme.textPrimary; horizontalAlignment: TextInput.AlignRight
+                    background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.border }
+                }
+            }
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap; font.family: "Cairo"; font.pixelSize: 11
+                color: theme.textMuted; horizontalAlignment: Text.AlignRight
+                text: "الوزن والباركود لا يتغيران. لو الباركود مطبوع على الليبل بعيار قديم أعد طباعته."
+            }
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap; font.family: "Cairo"
+                visible: text.length > 0 && !inventoryVM.actionSuccess
+                text: inventoryVM.actionMessage
+                color: theme.red; horizontalAlignment: Text.AlignRight
+            }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                Button {
+                    objectName: "inventoryCorrectSave"
+                    text: "حفظ التعديل"
+                    enabled: correctTypeCombo.currentIndex >= 0 && correctKaratCombo.currentIndex >= 0 && correctReason.text.trim().length > 0
+                    onClicked: {
+                        if (inventoryVM.correctInventoryItem(Number(root.selectedInventoryItem.inventory_item_id),
+                                                             Number(correctTypeCombo.currentValue), Number(correctKaratCombo.currentValue),
+                                                             correctReason.text)) {
+                            inventoryItemCorrectDialog.close()
+                            inventoryItemDetailsDialog.close()
+                        }
+                    }
+                }
+                Button { text: "إلغاء"; onClicked: inventoryItemCorrectDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
 
     // ========================================================
     // BULK BARCODE PRINT QUEUE
