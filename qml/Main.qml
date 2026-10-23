@@ -2664,6 +2664,15 @@ ApplicationWindow {
                                     horizontalAlignment: Text.AlignRight
                                 }
                                 Button {
+                                    objectName: "inventoryHistoryRestore"
+                                    Layout.alignment: Qt.AlignRight
+                                    visible: inventoryVM.historyPiece.statusCode === "REMOVED"
+                                             && typeof stocktakeAdjustVM !== "undefined" && stocktakeAdjustVM.canAdjust
+                                    text: "إعادة القطعة للمخزون"
+                                    font.family: "Cairo"
+                                    onClicked: inventoryRestoreDialog.begin()
+                                }
+                                Button {
                                     objectName: "inventoryHistoryOpenInvoice"
                                     Layout.alignment: Qt.AlignRight
                                     visible: (inventoryVM.historyPiece.invoiceId || "").length > 0
@@ -12363,6 +12372,80 @@ ApplicationWindow {
                     }
                 }
                 Button { text: "إلغاء"; onClicked: inventoryItemCorrectDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ========================================================
+    // قطعة اتشطبت بالجرد ورجعت ظهرت: إعادتها للمخزون (STOCKTAKE_ADJUST, بسبب إجباري)
+    // ========================================================
+
+    Dialog {
+        id: inventoryRestoreDialog
+        objectName: "inventoryRestoreDialog"
+        modal: true
+        dim: true
+        padding: 16
+        width: Math.min(root.width - 60, 460)
+        x: Math.round((root.width - width) / 2)
+        y: Math.round((root.height - height) / 2)
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgPrimary; radius: 10; border.color: theme.goldDark }
+
+        function begin() {
+            restoreReason.text = ""
+            stocktakeAdjustVM.prepare()
+            open()
+        }
+        Connections {
+            target: typeof stocktakeAdjustVM !== "undefined" ? stocktakeAdjustVM : null
+            ignoreUnknownSignals: true
+            function onRestored(pieceId) {
+                inventoryRestoreDialog.close()
+                inventoryVM.refresh()
+            }
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 10
+            Label {
+                Layout.fillWidth: true
+                text: "إعادة القطعة " + (inventoryVM.historyPiece.itemNumber || "") + " للمخزون"
+                color: theme.gold; font.bold: true; font.pixelSize: 15; font.family: "Cairo"
+                horizontalAlignment: Text.AlignRight
+            }
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap; font.family: "Cairo"
+                color: theme.textPrimary; horizontalAlignment: Text.AlignRight
+                text: "القطعة اتشطبت بجرد وطلعت موجودة. هترجع للمخزون بنفس الباركود (" + (inventoryVM.historyPiece.barcode || "—") + ") ونفس البيانات، وبيتسجل ده بسببه."
+            }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                Label { text: "السبب"; color: theme.textPrimary; font.family: "Cairo"; Layout.preferredWidth: 70; horizontalAlignment: Text.AlignRight }
+                TextField {
+                    id: restoreReason; objectName: "inventoryRestoreReason"
+                    Layout.fillWidth: true; Layout.preferredHeight: 40
+                    placeholderText: "مثلاً: لقيتها موجودة"
+                    font.family: "Cairo"; color: theme.textPrimary; horizontalAlignment: TextInput.AlignRight; maximumLength: 300
+                    background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.border }
+                }
+            }
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap; font.family: "Cairo"
+                visible: text.length > 0
+                text: stocktakeAdjustVM.messageIsError ? stocktakeAdjustVM.message : ""
+                color: theme.red; horizontalAlignment: Text.AlignRight
+            }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                Button {
+                    objectName: "inventoryRestoreSave"
+                    text: "إعادة للمخزون"
+                    enabled: restoreReason.text.trim().length > 0 && !stocktakeAdjustVM.busy
+                    onClicked: stocktakeAdjustVM.restore(inventoryVM.historyPiece.pieceId, restoreReason.text)
+                }
+                Button { text: "إلغاء"; onClicked: inventoryRestoreDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }

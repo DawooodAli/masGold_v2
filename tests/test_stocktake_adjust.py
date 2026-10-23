@@ -64,6 +64,27 @@ class Repo:
     def audit(self, **kw):
         self.store.audits.append(kw)
 
+    # restoring a piece an approved stocktake removed
+    def lock_removed_piece(self, item_id):
+        if item_id not in self.store.pieces:
+            return None
+        status = "REMOVED" if item_id in self.store.removed else "IN_STOCK"
+        return {"id": item_id, "inventory_status": status, "stock_classification": "NEW_STOCK", "weight_grams": D(self.store.pieces[item_id][1]),
+                "write_offs": 1 if item_id in self.store.removed or item_id in getattr(self.store, "restored", []) else 0, "barcode_value": f"B{item_id}"}
+
+    def restore_piece(self, item_id, user_id):
+        if item_id not in self.store.removed:
+            return False
+        self.store.removed.remove(item_id)
+        self.store.__dict__.setdefault("restored", []).append(item_id)
+        return True
+
+    def insert_restore_movement(self, **kw):
+        self.store.movements.append(dict(kw, restore=True))
+
+    def audit_restore(self, **kw):
+        self.store.audits.append(dict(kw, code="RESTORE"))
+
 
 class ApprovalTests(unittest.TestCase):
     def build(self, permissions=MANAGER):
@@ -89,6 +110,30 @@ class ApprovalTests(unittest.TestCase):
         self.assertEqual((detail["expected"], detail["found"], detail["written_off"]), ([4, D("18.750")], [2, D("9.000")], [2, D("9.750")]))
         self.assertEqual(detail["summary"]["21"]["off"], [1, "6.250"])
         self.assertEqual([a["code"] for a in self.store.audits], ["SK000001"])
+
+    def test_a_piece_the_stocktake_removed_goes_back_to_the_stock_with_a_reason_and_never_twice(self):
+        service = self.build()
+        self.call(service)
+        with self.assertRaises(StocktakeError) as refused:
+            service.restore_piece("2", "  ")
+        self.assertEqual(refused.exception.code, "REASON_REQUIRED")
+        result = service.restore_piece("2", "لقيتها موجودة")
+        self.assertEqual((result["restored"], sorted(self.store.removed)), (True, [4]))
+        self.assertEqual([m.get("restore") for m in self.store.movements][-1], True)
+        self.assertEqual(self.store.audits[-1]["metadata"]["reason"], "لقيتها موجودة")
+        with self.assertRaises(StocktakeError) as again:
+            service.restore_piece("2", "تاني")                                                  # already back in stock
+        self.assertEqual(again.exception.code, "NOT_REMOVED_BY_STOCKTAKE")
+        with self.assertRaises(StocktakeError) as never:
+            service.restore_piece("1", "x")                                                     # never removed by a stocktake
+        self.assertEqual(never.exception.code, "NOT_REMOVED_BY_STOCKTAKE")
+        with self.assertRaises(StocktakeError):
+            service.restore_piece("99", "x")
+
+    def test_restoring_needs_the_stocktake_right(self):
+        service = self.build(frozenset({"APP_LOGIN"}))
+        with self.assertRaises(PermissionError):
+            service.restore_piece("2", "x")
 
     def test_an_exact_replay_returns_the_original_and_a_different_payload_conflicts(self):
         service = self.build()

@@ -304,6 +304,7 @@ class InventoryViewModel(QObject):
             "weight": f"{weight:,.3f}", "factory": piece.get("factory_code") or piece.get("factory_name") or "—",
             "category": piece.get("category_code") or "—",
             "status": STATUS_TEXT.get(piece.get("inventory_status"), piece.get("inventory_status") or ""),
+            "statusCode": piece.get("inventory_status") or "", "pieceId": str(piece["inventory_item_id"]),
             "invoiceId": str(sale["invoice_id"]) if sale.get("invoice_id") is not None else "",
             "invoiceNumber": sale.get("invoice_number") or "",
             "invoiceDate": self._qml_safe(sale.get("invoice_date")) or "",

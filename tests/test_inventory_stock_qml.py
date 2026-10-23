@@ -324,6 +324,53 @@ class InventoryStockPageTests(harness.InvoicePageTests):
         details.close()
         self.assertEqual(self.warnings, [])
 
+    def test_a_piece_removed_by_a_stocktake_comes_back_to_the_stock_with_real_clicks(self):
+        restored = []
+
+        class Service:
+            def get_stock_items(self, **kwargs):
+                return []
+
+            def get_stock_summary(self):
+                return {}
+
+            def find_piece(self, text):
+                return {"inventory_item_id": 12550, "inventory_status": "REMOVED", "weight_grams": D("2.190"), "karat_id": 2, "item_type_id": 2, "item_type_name": "دبلة", "karat_value": 18,
+                        "factory_code": "SL", "category_code": "T", "barcode_value": "25260929"}
+
+        class Adjust:
+            def can_adjust(self):
+                return True
+
+            def restore_piece(self, piece_id, reason, *, _expected_actor=None):
+                restored.append((piece_id, reason))
+                return {"piece_id": piece_id, "restored": True}
+        inventory = self.controller.operational_viewmodels["inventoryVM"]
+        inventory._service = Service()
+        adjust = self.controller.operational_viewmodels["stocktakeAdjustVM"]
+        adjust._service = Adjust()
+        adjust.changed.emit()
+        self.page(INVENTORY)
+        inventory.search("25260929")
+        self.wait_until(lambda: inventory.hasHistoryPiece, "history card")
+        for width, height in harness.SIZES:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(120)
+            button = self.visual_item("inventoryHistoryRestore")
+            self.assertIsNotNone(button)
+        self.click("inventoryHistoryRestore")
+        dialog = self.item("inventoryRestoreDialog")
+        self.wait_until(lambda: dialog.property("opened"), "restore dialog")
+        self.assertFalse(self.item("inventoryRestoreSave").property("enabled"))                   # the reason is mandatory
+        self.type_into("inventoryRestoreReason", "لقيتها موجودة")
+        self.wait_until(lambda: self.item("inventoryRestoreSave").property("enabled"), "can save")
+        self.assert_inside_window(self.item("inventoryRestoreSave"))
+        self.click("inventoryRestoreSave")
+        self.wait_until(lambda: restored == [("12550", "لقيتها موجودة")], "restore sent")
+        self.wait_until(lambda: not dialog.property("visible"), "dialog closes")
+        self.assertEqual(self.warnings, [])
+
     def test_supplier_items_are_labelled_tawrid_mawrid_never_market_purchase(self):
         self.page(INVENTORY)
         dialog = self.item("inventoryItemDetailsDialog")

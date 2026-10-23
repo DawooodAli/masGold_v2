@@ -85,6 +85,31 @@ class StocktakeAdjustRepository(BaseRepository):
             (item_id, movement_type_id, stock_classification, stock_classification, weight, weight, reason, reference_id, user_id))
         return new_id
 
+    # ---- a piece written off by a stocktake that turns up again
+    def lock_removed_piece(self, item_id):
+        """The piece, locked, with how many STOCKTAKE_WRITE_OFF movements it has (a restore is only for a piece an approved stocktake removed)."""
+        return self._fetch_one(
+            "SELECT ii.id, ii.inventory_status, ii.stock_classification, ii.weight_grams, "
+            "(SELECT COUNT(*) FROM inventory_movements mv JOIN inventory_movement_types t ON t.id = mv.movement_type_id WHERE mv.inventory_item_id = ii.id AND t.code = 'STOCKTAKE_WRITE_OFF') AS write_offs, "
+            "(SELECT b.barcode_value FROM inventory_barcodes b WHERE b.inventory_item_id = ii.id AND b.barcode_status = 'ACTIVE' LIMIT 1) AS barcode_value "
+            "FROM inventory_items ii WHERE ii.id = %s FOR UPDATE", (int(item_id),))
+
+    def restore_piece(self, item_id, user_id):
+        _, count = self._execute("UPDATE inventory_items SET inventory_status = 'IN_STOCK', updated_by_user_id = %s, updated_at = NOW() WHERE id = %s AND inventory_status = 'REMOVED'", (user_id, int(item_id)))
+        return count == 1
+
+    def insert_restore_movement(self, *, item, movement_type_id, reason, user_id):
+        new_id, _ = self._execute(
+            "INSERT INTO inventory_movements (inventory_item_id, movement_type_id, from_stock_classification, to_stock_classification, from_inventory_status, to_inventory_status, "
+            "from_weight_grams, to_weight_grams, reason, reference_type, reference_id, occurred_at, performed_by_user_id, performed_by_employee_id) "
+            "VALUES (%s, %s, %s, %s, 'REMOVED', 'IN_STOCK', %s, %s, %s, 'STOCKTAKE_RESTORE', %s, NOW(), %s, NULL)",
+            (int(item["id"]), movement_type_id, item["stock_classification"], item["stock_classification"], item["weight_grams"], item["weight_grams"], reason, int(item["id"]), user_id))
+        return new_id
+
+    def audit_restore(self, *, user_id, item_id, description, metadata):
+        self._execute("INSERT INTO audit_log (user_id, event_type, entity_type, entity_id, entity_reference, description, metadata_json, occurred_at) VALUES (%s, 'STOCKTAKE_PIECE_RESTORED', 'INVENTORY_ITEM', %s, %s, %s, %s, NOW())",
+                      (user_id, int(item_id), f"#{int(item_id)}", description, json.dumps(metadata, ensure_ascii=False, default=str)))
+
     def insert_item(self, *, adjustment_id, item_id, karat_id, weight, barcode, movement_id):
         self._execute("INSERT INTO stocktake_adjustment_items (adjustment_id, inventory_item_id, karat_id, weight_grams, barcode_snapshot, inventory_movement_id) VALUES (%s, %s, %s, %s, %s, %s)",
                       (adjustment_id, item_id, karat_id, weight, barcode, movement_id))

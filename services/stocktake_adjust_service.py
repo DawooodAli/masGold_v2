@@ -50,6 +50,40 @@ class StocktakeAdjustService:
         actor = self._session.current_actor()
         return actor is not None and PERMISSION in actor.permissions
 
+    def restore_piece(self, piece_id, reason, *, _expected_actor=None):
+        """قطعة اتشطبت بالجرد ورجعت ظهرت: returns ONE piece an approved stocktake removed (status REMOVED) to the stock, with a mandatory reason. The stored stocktake document is never rewritten; the
+        piece gets a RESTORED movement and an audit row. A piece that was never removed by a stocktake, or is already back, is refused. Right STOCKTAKE_ADJUST, rechecked in the transaction."""
+        session_actor = self._session.require_authenticated()
+        if _expected_actor is not None and not self._session.is_current(_expected_actor):
+            raise PermissionError("انتهت جلسة الدخول.")
+        text = str(reason or "").strip()
+        if not text:
+            raise StocktakeError("REASON_REQUIRED", "اكتب سبب إعادة القطعة للمخزون.")
+        if len(text) > 300:
+            raise StocktakeError("NOTE_TOO_LONG", "السبب 300 حرف على الأكثر.")
+        raw = str(piece_id or "").strip()
+        if not raw.isdigit() or int(raw) <= 0:
+            raise StocktakeError("PIECE_NOT_FOUND", "القطعة غير موجودة.")
+        with self._transaction() as connection:
+            actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+            repository = self._repository(connection)
+            piece = repository.lock_removed_piece(int(raw))
+            if piece is None:
+                raise StocktakeError("PIECE_NOT_FOUND", "القطعة غير موجودة.")
+            if piece["inventory_status"] != "REMOVED" or int(piece["write_offs"] or 0) < 1:
+                raise StocktakeError("NOT_REMOVED_BY_STOCKTAKE", "هذه القطعة لم تُشطب بجرد، أو رجعت للمخزون بالفعل.")
+            movement_type = repository.movement_type_id("RESTORED")
+            if movement_type is None:
+                raise StocktakeError("SCHEMA_OUTDATED", "نوع حركة الإرجاع غير موجود.")
+            if not repository.restore_piece(int(raw), actor.user_id):
+                raise StocktakeError("NOT_REMOVED_BY_STOCKTAKE", "هذه القطعة لم تُشطب بجرد، أو رجعت للمخزون بالفعل.")
+            repository.insert_restore_movement(item=piece, movement_type_id=movement_type, reason=f"إرجاع قطعة مشطوبة بالجرد — {text}", user_id=actor.user_id)
+            repository.audit_restore(user_id=actor.user_id, item_id=int(raw), description=f"إرجاع القطعة #{int(raw)} للمخزون بعد شطبها بجرد",
+                                     metadata={"reason": text, "barcode": piece.get("barcode_value"), "weight_grams": str(piece["weight_grams"])})
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        return {"piece_id": raw, "restored": True}
+
     def approve(self, item_type_id, karat_id, scanned_ids, remaining_ids, reason_code, note, confirmed, request_key, *, _expected_actor=None):
         """The whole counted scope: scanned + remaining must be exactly the pieces IN_STOCK of the scope."""
         return self._post("SCOPE", item_type_id, karat_id, scanned_ids, remaining_ids, reason_code, note, confirmed, request_key, _expected_actor)

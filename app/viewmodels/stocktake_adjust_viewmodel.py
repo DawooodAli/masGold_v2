@@ -13,6 +13,7 @@ from app.workers.invoice_worker import InvoiceWorker
 class StocktakeAdjustViewModel(QObject):
     changed = Signal()
     approved = Signal(str, int, str)             # code, written-off count, grams text
+    restored = Signal(str)                       # a written-off piece went back to the stock
 
     def __init__(self, session=None, service=None, parent=None):
         super().__init__(parent)
@@ -54,6 +55,11 @@ class StocktakeAdjustViewModel(QObject):
         ids = [str(i) for i in piece_ids]
         self._start(lambda _expected_actor, key: self._service.write_off_pieces(ids, reason, note, bool(confirmed), key, _expected_actor=_expected_actor))
 
+    @Slot(str, str)
+    def restore(self, piece_id, reason):
+        """قطعة اتشطبت بالجرد ورجعت ظهرت: back to the stock with a reason (one attempt = one call; the service refuses a piece that is not removed by a stocktake)."""
+        self._start(lambda _expected_actor, key: self._service.restore_piece(piece_id, reason, _expected_actor=_expected_actor))
+
     def _start(self, work):
         if self._service is None or self._session is None or self._busy:
             return
@@ -86,6 +92,11 @@ class StocktakeAdjustViewModel(QObject):
             self.changed.emit()
             return
         self._key = ""
+        if result.get("restored"):
+            self._message, self._is_error = "تمت إعادة القطعة للمخزون.", False
+            self.changed.emit()
+            self.restored.emit(str(result["piece_id"]))
+            return
         self._message, self._is_error = f"تم اعتماد الجرد {result['code']} وشطب {result['written_off_count']} قطعة.", False
         self.changed.emit()
         self.approved.emit(result["code"], int(result["written_off_count"]), f"{result['written_off_grams']:,.3f}")
