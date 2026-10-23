@@ -50,7 +50,7 @@ CASH_LABELS = {
 BANK_LABELS = {**CASH_LABELS, "TRANSFER_IN": "إيداع في الحساب", "TRANSFER_OUT": "سحب من الحساب"}
 # The two transfers between the cash safe and a real bank / wallet account (BANK_DEPOSIT / BANK_WITHDRAWAL) and the cash directions they allow. The income / expense categories are NOT here:
 # they live in the cash_categories table (migration 069, managed in Settings) and `category_table()` is their fixed fallback.
-ADVANCE_CATEGORIES = ("STAFF_ADVANCE", "CUSTOMER_CUSTODY", "ADVANCE_REPAY")      # recorded only through the advance flows (they need an owner of the money)
+ADVANCE_CATEGORIES = ("STAFF_ADVANCE", "CUSTOMER_CUSTODY", "ADVANCE_REPAY", "BORROWED_CASH", "BORROW_REPAY")      # recorded only through the advance flows (they need an owner of the money)
 CASH_TYPES = {"BANK_WITHDRAWAL": ("IN",), "BANK_DEPOSIT": ("OUT",)}
 CASH_TYPE_TEXT = {"BANK_DEPOSIT": "إيداع بنك", "BANK_WITHDRAWAL": "سحب بنك"}
 
@@ -61,7 +61,9 @@ def category_table(rows):
     if rows is None:
         rows = [{"code": c, "name": n, "direction": d, "is_active": 1} for c, n, d in SEED]
         rows += [{"code": "CUSTOMER_CUSTODY", "name": "عهدة مؤقتة لعميل", "direction": "OUT", "is_active": 1},       # 074
-                 {"code": "ADVANCE_REPAY", "name": "سداد سلفة / عهدة", "direction": "IN", "is_active": 1}]
+                 {"code": "ADVANCE_REPAY", "name": "سداد سلفة / عهدة", "direction": "IN", "is_active": 1},
+                 {"code": "BORROWED_CASH", "name": "سلفة مستلفة", "direction": "IN", "is_active": 1},                    # 076
+                 {"code": "BORROW_REPAY", "name": "سداد سلفة مستلفة", "direction": "OUT", "is_active": 1}]
     return {r["code"]: {"name": r["name"], "directions": ("IN", "OUT") if r["direction"] == "BOTH" else (r["direction"],), "active": bool(r["is_active"])} for r in rows}
 
 
@@ -381,26 +383,74 @@ class FinancialAccountService:
         return result
 
     def repay_advance(self, advance_id, account_key_value, amount, note, request_key, *, _expected_actor=None):
-        """سداد سلفة / عهدة: the money comes back into the chosen cash / bank account; partial repayments are allowed, never above what is still owed."""
-        destination = _account(account_key_value)
+        """سداد سلفة / عهدة: for an advance the shop LENT the money comes back into the chosen cash / bank account; for cash the shop BORROWED (076) it goes OUT of that account.
+        Partial repayments are allowed, never above what is still owed."""
+        account = _account(account_key_value)
         value, text = _amount(amount), _text(note, required=False, label="الملاحظة")
         try:
             advance_number = int(str(advance_id))
         except (TypeError, ValueError):
             raise CorrectionError("ADVANCE_NOT_FOUND", "السلفة غير موجودة.") from None
+        session_actor = self._actor(_expected_actor)
+        with self._transaction() as connection:                                  # which way the money goes depends on the advance (a plain read; the link below re-checks it under the lock)
+            first = self._repository(connection).advance(advance_number)
+        if first is None:
+            raise CorrectionError("ADVANCE_NOT_FOUND", "السلفة غير موجودة.")
+        direction = first.get("direction") or "LEND"
 
         def link(repository, operation_id, actor, now):
             row = repository.advance(advance_number, lock=True)
             if row is None:
                 raise CorrectionError("ADVANCE_NOT_FOUND", "السلفة غير موجودة.")
+            if (row.get("direction") or "LEND") != direction:
+                raise CorrectionError("ADVANCE_CHANGED", "تغيّرت السلفة؛ أعد المحاولة.")
             if row["voided"]:
                 raise CorrectionError("ADVANCE_REVERSED", "هذه السلفة ملغاة بالعكس.")
             owed = Decimal(str(row["amount"])) - Decimal(str(row["repaid"]))
             if value > owed:
                 raise CorrectionError("REPAY_EXCEEDS", f"المتبقي على السلفة {owed:,.2f} ج فقط.")
             repository.insert_repayment(advance_id=advance_number, amount=value, operation_id=operation_id, actor=actor, now=now)
-        return self._finalize(DEPOSIT, None, destination, value, text or "سداد سلفة / عهدة", request_key, _expected_actor,
+        if direction == "BORROW":
+            return self._finalize(WITHDRAWAL, account, None, value, text or "سداد سلفة مستلفة", request_key, session_actor,
+                                  category="BORROW_REPAY", link=link, extra=["REPAY", advance_number])
+        return self._finalize(DEPOSIT, None, account, value, text or "سداد سلفة / عهدة", request_key, session_actor,
                               category="ADVANCE_REPAY", link=link, extra=["REPAY", advance_number])
+
+    def open_borrow(self, account_key_value, kind, party_id, lender_name, amount, note, request_key, *, _expected_actor=None):
+        """سلفة مستلفة: the shop takes cash from an employee (EMPLOYEE), a customer (CUSTOMER) or an outside person (THIRD_PARTY, typed name) and owes it back, no interest. The money enters the
+        chosen cash / bank account (one manual deposit) and the debt is tied to the lender in the SAME transaction."""
+        account = _account(account_key_value)
+        if kind not in ("EMPLOYEE", "CUSTOMER", "THIRD_PARTY"):
+            raise CorrectionError("TYPE_INVALID", "اختر موظفًا أو عميلًا أو اكتب اسم الشخص.")
+        name = (lender_name or "").strip()
+        party = None
+        if kind == "THIRD_PARTY":
+            if not name:
+                raise CorrectionError("PARTY_REQUIRED", "اكتب اسم اللي استلفنا منه.")
+            if len(name) > 100:
+                raise CorrectionError("PARTY_REQUIRED", "الاسم طويل جداً.")
+        else:
+            try:
+                party = int(str(party_id))
+            except (TypeError, ValueError):
+                raise CorrectionError("PARTY_REQUIRED", "اختر الموظف أو العميل اللي استلفنا منه.") from None
+            if party <= 0:
+                raise CorrectionError("PARTY_REQUIRED", "اختر الموظف أو العميل اللي استلفنا منه.")
+        value, text = _amount(amount), _text(note, required=False, label="الملاحظة")
+        holder = {"name": name}
+
+        def link(repository, operation_id, actor, now):
+            if kind != "THIRD_PARTY":
+                row = repository.employee(party) if kind == "EMPLOYEE" else repository.customer(party)
+                if row is None or not row["is_active"]:
+                    raise CorrectionError("PARTY_NOT_FOUND", "الموظف غير موجود أو غير نشط." if kind == "EMPLOYEE" else "العميل غير موجود أو غير نشط.")
+                holder["name"] = row["name"]
+            repository.insert_advance(kind=kind, direction="BORROW", employee_id=party if kind == "EMPLOYEE" else None, customer_id=party if kind == "CUSTOMER" else None,
+                                      lender_name=name if kind == "THIRD_PARTY" else None, amount=value, operation_id=operation_id, note=text or None, actor=actor, now=now)
+        result = self._finalize(DEPOSIT, None, account, value, text or "سلفة مستلفة", request_key, _expected_actor,
+                                category="BORROWED_CASH", link=link, extra=["BORROW", kind, party, name])
+        result["party_name"] = holder["name"]
+        return result
 
     def advances(self, *, _expected_actor=None):
         """Every advance with who owes it, what was repaid and what is left, plus the employees an advance can be given to."""
@@ -416,12 +466,14 @@ class FinancialAccountService:
             cent = Decimal("0.01")
             amount, repaid = Decimal(str(r["amount"])).quantize(cent), Decimal(str(r["repaid"])).quantize(cent)
             voided = bool(r["voided"])
-            result.append({"id": str(r["id"]), "code": f"SA{int(r['id']):06d}", "kind": r["kind"],
-                           "kind_text": "سلفة موظف" if r["kind"] == "EMPLOYEE" else "عهدة عميل",
+            borrowed = (r.get("direction") or "LEND") == "BORROW"
+            result.append({"id": str(r["id"]), "code": f"SA{int(r['id']):06d}", "kind": r["kind"], "direction": "BORROW" if borrowed else "LEND",
+                           "kind_text": (("سلفة مستلفة من موظف" if r["kind"] == "EMPLOYEE" else "سلفة مستلفة من عميل" if r["kind"] == "CUSTOMER" else "سلفة مستلفة")
+                                         if borrowed else ("سلفة موظف" if r["kind"] == "EMPLOYEE" else "عهدة عميل")),
                            "party": r["party_name"] or "", "amount": str(amount), "repaid": str(repaid),
                            "owed": str(Decimal("0.00") if voided else amount - repaid), "voided": voided,
                            "date": r["created_at"].strftime("%Y-%m-%d") if r["created_at"] else "", "note": r["note"] or "",
-                           "operation": operation_code(WITHDRAWAL, r["operation_id"])})
+                           "operation": operation_code(DEPOSIT if borrowed else WITHDRAWAL, r["operation_id"])})
         result.sort(key=lambda r: (r["voided"], Decimal(r["owed"]) == 0, -int(r["id"])))
         return {"advances": result, "employees": employees}
 

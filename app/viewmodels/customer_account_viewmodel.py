@@ -324,12 +324,17 @@ class CustomerAccountViewModel(QObject):
     @Property('QVariantList',notify=changed)
     def custody(self):
         """Temporary cash custody still owed by THIS customer (separate from the balance)."""
-        return [{'code':c['code'],'date':c['date'],'amount':money(c['amount']),'repaid':money(c['repaid']),'owed':money(c['owed']),'note':c['note']}
-                for c in self._data.get('custody',[])]
+        return [{'code':c['code'],'date':c['date'],'amount':money(c['amount']),'repaid':money(c['repaid']),'owed':money(c['owed']),'note':c['note'],
+                 'borrowed':c.get('direction')=='BORROW'} for c in self._data.get('custody',[])]
     @Property(str,notify=changed)
     def custodyTotal(self):
         from decimal import Decimal
-        return money(sum((Decimal(c['owed']) for c in self._data.get('custody',[])),Decimal('0')))
+        held=sum((Decimal(c['owed']) for c in self._data.get('custody',[]) if c.get('direction')!='BORROW'),Decimal('0'))
+        owed=sum((Decimal(c['owed']) for c in self._data.get('custody',[]) if c.get('direction')=='BORROW'),Decimal('0'))
+        parts=[]
+        if held: parts.append('عهدة عنده '+money(held))
+        if owed: parts.append('سلفة منه (علينا) '+money(owed))
+        return ' • '.join(parts)
     @Property('QVariantList',notify=changed)
     def methods(self):return METHODS
     @Property('QVariantList',notify=changed)

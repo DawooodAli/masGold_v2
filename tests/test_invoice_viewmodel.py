@@ -680,16 +680,17 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.assertEqual(last.old_gold_lines[0].discount_value, "1.5")                   # the rejected 1.00 never left
         self.assertGreater(len([c for c in self.service.calls if c[0] == "preview"]), calls)
 
-    def test_old_gold_only_uses_the_same_discount_range(self):
+    def test_old_gold_only_may_go_down_to_one_percent(self):
         self.vm.setSalesperson("5")
         self.vm.addOldGold(1, "10")
-        for value in ("1.25", "1.5", "2", "5"):
+        for value in ("1", "1.25", "1.5", "2", "5"):
             with self.subTest(accepted=value):
                 self.assertEqual(self.vm.commitOldGoldDiscount(value), value)
                 self.assertEqual(self.vm.discountWarning, "")
-        for value in ("1.24", "5.01", "0.5", "0"):
+        for value in ("0.99", "5.01", "0.5", "0"):
             with self.subTest(rejected=value):
                 self.assertEqual(self.vm.commitOldGoldDiscount(value), "5")        # the last valid value stays
+                self.assertEqual(self.vm.discountWarning, "النسبة المسموح بها من ⁦1%⁩ إلى ⁦5%⁩")
                 self.assertNotEqual(self.vm.discountWarning, "")
 
     def test_old_gold_gap_is_settled_or_put_on_the_account(self):

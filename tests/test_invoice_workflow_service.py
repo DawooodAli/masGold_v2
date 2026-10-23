@@ -539,14 +539,17 @@ class CommercialModelTests(InvoiceServiceTestCase):
                               [p["code"] for p in self.service.preview(draft)["blocking_problems"]])
                 self.assertRefused("OLD_GOLD_DISCOUNT_RANGE", draft)
 
-    def test_old_gold_only_uses_the_same_discount_range(self):
-        # Owner decision 2026-10-06: the same 1.25–5.00% range, no exemption for old gold only.
-        for percent in ("1.25", "1.50", "2.00", "5.00"):
+    def test_old_gold_only_may_go_down_to_one_percent_while_a_sale_keeps_1_25(self):
+        # Owner decision 2026-10-23: buying old gold only accepts 1.00–5.00%; the mixed invoice keeps 1.25–5.00%.
+        for percent in ("1.00", "1.25", "1.50", "2.00", "5.00"):
             with self.subTest(percent=percent):
                 preview = self.service.preview(InvoiceDraft(5, "12", (), (disc(percent, "10"),), ()))
                 self.assertNotIn("OLD_GOLD_DISCOUNT_RANGE", [p["code"] for p in preview["blocking_problems"]])
-                self.assertEqual(preview["old_gold_discount_range"], ["1.25", "5.00"])
-        for line in (disc("1.24", "10"), disc("5.01", "10"), disc("0.5", "10"), old(1, "10"),
+                self.assertEqual(preview["old_gold_discount_range"], ["1.00", "5.00"])
+        mixed = self.service.preview(InvoiceDraft(5, "12", (scanned(),), (disc("1.24"),), (pay("55000"),)))
+        self.assertEqual(mixed["old_gold_discount_range"], ["1.25", "5.00"])
+        self.assertIn("OLD_GOLD_DISCOUNT_RANGE", [p["code"] for p in mixed["blocking_problems"]])
+        for line in (disc("0.99", "10"), disc("5.01", "10"), disc("0.5", "10"), old(1, "10"),
                      old(1, "10", discount_type="AMOUNT", discount_value="500")):
             with self.subTest(line=line):
                 draft = InvoiceDraft(5, "12", (), (line,), ())

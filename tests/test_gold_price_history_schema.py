@@ -23,7 +23,7 @@ class PriceHistorySchemaTests(unittest.TestCase):
         self.assertIn("MIGRATION_066_REFUSED_missing_065", self.forward)
         self.assertRegex(self.forward, r"INSERT INTO schema_migrations\(version,name\) VALUES \(66,")
         self.assertLessEqual(len(re.search(r"VALUES \(66,'([^']*)'", self.forward).group(1)), 150)
-        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 75)
+        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 77)
 
     def test_the_history_table_is_a_daily_per_karat_insert_only_record(self):
         for needle in ("CREATE TABLE IF NOT EXISTS gold_price_history_legacy", "PRIMARY KEY (price_date, karat_value)", "karat_value IN (18, 21, 22, 24)",

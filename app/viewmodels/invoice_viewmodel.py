@@ -35,7 +35,9 @@ REASONS = (("NO_BARCODE", "لم يُنشأ لها باركود"), ("BARCODE_LOST
 UNIDENTIFIED, OLD_GOLD_STOCK = "UNIDENTIFIED", "OLD_GOLD_STOCK"
 # UX mirror of the service's hard rule (the service validates again on preview and finalize).
 DISCOUNT_MIN, DISCOUNT_MAX = Decimal("1.25"), Decimal("5.00")
+DISCOUNT_MIN_OLD_GOLD_ONLY = Decimal("1.00")           # owner decision 2026-10-23: buying old gold only may go down to 1%, any sale on the invoice keeps 1.25%
 DISCOUNT_WARNING = "النسبة المسموح بها من \u20661.25%\u2069 إلى \u20665%\u2069"
+DISCOUNT_WARNING_OLD_GOLD_ONLY = "النسبة المسموح بها من \u20661%\u2069 إلى \u20665%\u2069"
 PAYMENT_TEXT = {"PHYSICAL_CASH": "نقدي", "MOBILE_WALLET": "محفظة", "INSTAPAY": "InstaPay",
                 "BANK_TRANSFER": "تحويل بنكي"}
 ACCOUNT_TYPE_FOR_METHOD = {"MOBILE_WALLET": "MOBILE_WALLET", "INSTAPAY": "BANK", "BANK_TRANSFER": "BANK"}
@@ -608,8 +610,11 @@ class InvoiceViewModel(QObject):
             self._touched()
 
     def _discount_range_active(self):
-        """1.25–5.00% applies to every old-gold purchase: mixed invoices and old gold only."""
+        """The range applies to every old-gold purchase: 1.25–5.00% on a mixed invoice, 1.00–5.00% on an old-gold-only invoice."""
         return True
+
+    def _discount_floor(self):
+        return DISCOUNT_MIN if (self._sales or self._described) else DISCOUNT_MIN_OLD_GOLD_ONLY
 
     @Slot(str, result=str)
     def commitOldGoldDiscount(self, value):
@@ -621,9 +626,10 @@ class InvoiceViewModel(QObject):
         value = (value or "").strip()
         number = _decimal(value) if value else None
         in_range = number is not None and (not self._discount_range_active()
-                                          or DISCOUNT_MIN <= number <= DISCOUNT_MAX)
+                                          or self._discount_floor() <= number <= DISCOUNT_MAX)
         if number is None or number < 0 or number > 100 or not in_range:
-            self._discount_warning = DISCOUNT_WARNING if number is None or not in_range else "نسبة الخصم غير صحيحة"
+            self._discount_warning = ((DISCOUNT_WARNING if self._discount_floor() == DISCOUNT_MIN else DISCOUNT_WARNING_OLD_GOLD_ONLY)
+                                      if number is None or not in_range else "نسبة الخصم غير صحيحة")
             self.changed.emit()
             return self._old_gold_discount
         self._discount_warning = ""

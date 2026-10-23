@@ -26,7 +26,7 @@ decides it:
     on the selected, typed account;
   * old gold only: nothing can absorb a rounding gap, so it is settled
     explicitly (limits, approval) or put on the account;
-  * every invoice that buys old gold (mixed or old gold only) keeps the discount at 1.25–5.00%;
+  * every invoice that buys old gold keeps the discount at 1.25–5.00% (mixed) or 1.00–5.00% (old gold only);
   * F5 unidentified sales open a reconciliation case; F7 sales from old-gold
     stock deduct COUNTED grams; reviews never change price, balance or invoice.
 
@@ -65,6 +65,8 @@ WITHIN_RANGE, OUT_OF_RANGE, NOT_CONFIGURED = "WITHIN_RANGE", "OUT_OF_RANGE", "NO
 # Old-gold discount allowed on every invoice that buys old gold — mixed AND old gold only (hard rule,
 # owner decision 2026-10-06: 1.25–5.00%, default 1.50%).
 SALE_DISCOUNT_MIN, SALE_DISCOUNT_MAX = Decimal("1.25"), Decimal("5.00")
+# Owner decision 2026-10-23: an invoice that ONLY buys old gold may go down to 1.00%; as soon as it also sells something the minimum stays 1.25%.
+OLD_GOLD_ONLY_DISCOUNT_MIN = Decimal("1.00")
 CUSTOMER_OWES, SHOP_OWES = "CUSTOMER_OWES", "SHOP_OWES"
 # Customer-facing money ends on a multiple of EGP 5 (owner rule). Internal values stay exact; only the
 # FINAL settlement amount is rounded, to the nearest 5 (half up), and the difference is recorded.
@@ -642,11 +644,12 @@ class InvoiceService:
 
     @staticmethod
     def _discount_problems(calculated, draft):
-        """Every old-gold line (mixed invoice or old gold only) is a PERCENT within 1.25–5.00."""
+        """Every old-gold line is a PERCENT within 1.25–5.00 on a mixed invoice and within 1.00–5.00 on an old-gold-only invoice."""
+        minimum = SALE_DISCOUNT_MIN if calculated.sales else OLD_GOLD_ONLY_DISCOUNT_MIN
         for line in calculated.olds:
-            if line.discount_type != "PERCENT" or not SALE_DISCOUNT_MIN <= line.discount_value <= SALE_DISCOUNT_MAX:
+            if line.discount_type != "PERCENT" or not minimum <= line.discount_value <= SALE_DISCOUNT_MAX:
                 return [InvoiceError("OLD_GOLD_DISCOUNT_RANGE",
-                                     f"خصم الكسر يجب أن يكون بين {SALE_DISCOUNT_MIN}% و {SALE_DISCOUNT_MAX}%.")]
+                                     f"خصم الكسر يجب أن يكون بين {minimum}% و {SALE_DISCOUNT_MAX}%.")]
         return []
 
     @staticmethod
@@ -1077,7 +1080,7 @@ class InvoiceService:
             "making_groups": groups,
             "old_gold_discount_changed": bool(discount_changes),
             "old_gold_discount_default_percent": _money(limits["old_gold_discount_default_percent"]),
-            "old_gold_discount_range": [_money(SALE_DISCOUNT_MIN), _money(SALE_DISCOUNT_MAX)],
+            "old_gold_discount_range": [_money(SALE_DISCOUNT_MIN if calculated.sales else OLD_GOLD_ONLY_DISCOUNT_MIN), _money(SALE_DISCOUNT_MAX)],
             "settlement_limits": {key: _money(value) for key, value in limits.items()},
             "settlement_needs_approval": bool(gap and abs(gap) > limits["settlement_self_limit"]
                                               and approval is None),

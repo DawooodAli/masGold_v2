@@ -283,11 +283,17 @@ class FinancialAccountRepository(BaseRepository):
                 return None
             raise
 
-    def insert_advance(self, *, kind, employee_id, customer_id, amount, operation_id, note, actor, now):
-        advance_id, _ = self._execute(
-            "INSERT INTO cash_advances (kind, employee_id, customer_id, amount, operation_id, note, created_by_user_id, created_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-            (kind, employee_id, customer_id, amount, int(operation_id), note, actor.user_id, now))
+    def insert_advance(self, *, kind, employee_id, customer_id, amount, operation_id, note, actor, now, direction="LEND", lender_name=None):
+        if direction == "LEND" and lender_name is None:                       # the shape every advance had before 076 (a database below 076 has no such columns)
+            advance_id, _ = self._execute(
+                "INSERT INTO cash_advances (kind, employee_id, customer_id, amount, operation_id, note, created_by_user_id, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (kind, employee_id, customer_id, amount, int(operation_id), note, actor.user_id, now))
+        else:
+            advance_id, _ = self._execute(
+                "INSERT INTO cash_advances (kind, direction, employee_id, customer_id, lender_name, amount, operation_id, note, created_by_user_id, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (kind, direction, employee_id, customer_id, lender_name, amount, int(operation_id), note, actor.user_id, now))
         return str(advance_id)
 
     def insert_repayment(self, *, advance_id, amount, operation_id, actor, now):
@@ -302,8 +308,8 @@ class FinancialAccountRepository(BaseRepository):
         return rows[0] if rows else None
 
     _ADVANCE_SELECT = """
-        SELECT a.id, a.kind, a.employee_id, a.customer_id, a.amount, a.operation_id, a.note, a.created_at,
-               COALESCE(e.name, c.name) AS party_name,
+        SELECT a.id, a.kind, a.direction, a.employee_id, a.customer_id, a.amount, a.operation_id, a.note, a.created_at,
+               COALESCE(e.name, c.name, a.lender_name) AS party_name,
                (SELECT COUNT(*) FROM transaction_corrections k WHERE k.source_type = 'FINANCIAL_OPERATION'
                   AND k.source_id = a.operation_id AND k.correction_type = 'FULL_REVERSAL') AS voided,
                COALESCE((SELECT SUM(r.amount) FROM cash_advance_repayments r WHERE r.advance_id = a.id

@@ -251,11 +251,21 @@ class FinancialAccountsViewModel(QObject):
             self._error = error
             return
         self._advance_key = str(uuid4())
-        self._message = f"تم تسجيل السلفة على {result.get('party_name') or 'صاحبها'}."
+        self._message = f"تم تسجيل السلفة: {result.get('party_name') or 'صاحبها'}."
         self._message_timer.start()
         self.finalized.emit(result["code"])
         self.refresh()
         self.loadAdvances()
+
+    @Slot(str, str, str, str, str, str)
+    def openBorrow(self, kind, party_id, lender_name, account_key, amount, note):
+        """سلفة مستلفة: the shop takes cash from an employee / customer / outside person; the money enters the chosen account."""
+        if "advance" in self._busy or not self.canOperate:
+            return
+        service, key = self._service_instance(), self._advance_key
+        self._error = ""
+        self._start("advance", lambda _expected_actor: service.open_borrow(
+            account_key or self._view["account"]["key"], kind, party_id, lender_name, amount, note, key, _expected_actor=_expected_actor))
 
     @Slot(str, str, str, str)
     def repayAdvance(self, advance_id, account_key, amount, note):

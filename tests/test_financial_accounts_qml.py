@@ -66,6 +66,10 @@ class Service:
         self.calls.append(("repay_advance", advance_id, account_key, amount, request_key))
         return {"operation_id": "12", "code": "FO000012", "operation_type": "MANUAL_DEPOSIT", "amount": amount, "duplicate": False}
 
+    def open_borrow(self, account_key, kind, party_id, lender_name, amount, note, request_key, *, _expected_actor=None):
+        self.calls.append(("open_borrow", account_key, kind, party_id, lender_name, amount, request_key))
+        return {"operation_id": "13", "code": "FO000013", "operation_type": "MANUAL_DEPOSIT", "amount": amount, "duplicate": False, "party_name": lender_name}
+
     def operation(self, operation_id, *, _expected_actor=None):
         self.calls.append(("operation", operation_id))
         return {"operation_id": operation_id, "code": "FO000006", "operation_type": "MANUAL_WITHDRAWAL",
@@ -252,6 +256,33 @@ class CashScreenTests(harness.InvoicePageTests):
             self.click("repaySave")
             self.wait_until(lambda: self.count("repay_advance") == before + 1, "repayment posted")
             self.assertEqual(self.last("repay_advance")[1:4], ("1", "CASH:1", "25"))
+            self.wait_until(lambda: self.item("advanceNew").property("visible"), "back to the list")
+            self.item("cashAdvancesDialog").close()
+            self.wait_until(lambda: not self.item("cashAdvancesDialog").property("visible"), "dialog closes")
+        self.assertEqual(self.warnings, [])
+
+    def test_borrowed_cash_from_an_outside_person_with_real_clicks_at_all_sizes(self):
+        self.open_page()
+        for width, height in harness.SIZES:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(120)
+            self.click("cashAdvances")
+            self.wait_until(lambda: self.item("cashAdvancesDialog").property("opened"))
+            self.wait_until(lambda: len(self.fin.advances) == 1, "advances loaded")
+            self.assert_inside_window(self.visible_item("advanceBorrowNew"))
+            self.click("advanceBorrowNew")
+            self.assertFalse(self.item("borrowSave").property("enabled"))                              # no name, no amount
+            self.click("borrowKindOther")
+            self.type_into("borrowName", "الحاج محمود")
+            self.type_into("borrowAmount", "1000")
+            self.wait_until(lambda: self.item("borrowSave").property("enabled"), "can save")
+            self.assert_inside_window(self.item("borrowSave"))
+            before = self.count("open_borrow")
+            self.click("borrowSave")
+            self.wait_until(lambda: self.count("open_borrow") == before + 1, "borrow posted")
+            call = self.last("open_borrow")
+            self.assertEqual(call[1:6], ("CASH:1", "THIRD_PARTY", "", "الحاج محمود", "1000"))
             self.wait_until(lambda: self.item("advanceNew").property("visible"), "back to the list")
             self.item("cashAdvancesDialog").close()
             self.wait_until(lambda: not self.item("cashAdvancesDialog").property("visible"), "dialog closes")

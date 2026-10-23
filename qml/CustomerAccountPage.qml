@@ -86,11 +86,11 @@ Rectangle {
             ColumnLayout {
                 id: custodyColumn; anchors.left: parent.left; anchors.right: parent.right; anchors.margins: 8; y: 7; spacing: 3
                 Txt { objectName: "customerCustodyTotal"; font.bold: true; color: theme.amber
-                      text: page.vm ? "عهدة مؤقتة مفتوحة (خارج الرصيد): " + page.vm.custodyTotal : "" }
+                      text: page.vm ? "عهد وسلف مفتوحة (خارج الرصيد): " + page.vm.custodyTotal : "" }
                 Repeater {
                     model: page.vm ? page.vm.custody : []
                     delegate: Txt { required property var modelData; color: theme.textMuted; font.pixelSize: 12
-                        text: modelData.code + " • " + modelData.date + " • المبلغ " + modelData.amount + " • المسدد " + modelData.repaid + " • المتبقي " + modelData.owed
+                        text: (modelData.borrowed ? "سلفة منه (علينا) • " : "عهدة عنده • ") + modelData.code + " • " + modelData.date + " • المبلغ " + modelData.amount + " • المسدد " + modelData.repaid + " • المتبقي " + modelData.owed
                               + (modelData.note.length > 0 ? " • " + modelData.note : "") }
                 }
             }

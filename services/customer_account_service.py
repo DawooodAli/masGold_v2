@@ -44,7 +44,7 @@ class CustomerAccountService:
         from repositories.financial_account_repository import FinancialAccountRepository
         reader = getattr(FinancialAccountRepository(connection), 'customer_open_advances', None)
         cent = Decimal('0.01')
-        return [{'id':str(r['id']),'code':f"SA{int(r['id']):06d}",'date':r['created_at'].strftime('%Y-%m-%d') if r['created_at'] else '',
+        return [{'id':str(r['id']),'code':f"SA{int(r['id']):06d}",'direction':r.get('direction') or 'LEND','date':r['created_at'].strftime('%Y-%m-%d') if r['created_at'] else '',
                  'amount':str(Decimal(str(r['amount'])).quantize(cent)),'repaid':str(Decimal(str(r['repaid'])).quantize(cent)),
                  'owed':str((Decimal(str(r['amount']))-Decimal(str(r['repaid']))).quantize(cent)),'note':r.get('note') or ''}
                 for r in (reader(customer_id) if reader else [])]

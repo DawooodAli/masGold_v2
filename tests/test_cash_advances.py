@@ -77,9 +77,59 @@ class CashAdvanceTests(FinancialTestCase):
 
     def test_the_advance_money_is_neither_expense_nor_income_in_the_report_sources(self):
         from services.financial_account_service import ADVANCE_CATEGORIES
-        self.assertEqual(set(ADVANCE_CATEGORIES), {"STAFF_ADVANCE", "CUSTOMER_CUSTODY", "ADVANCE_REPAY"})
+        self.assertEqual(set(ADVANCE_CATEGORIES), {"STAFF_ADVANCE", "CUSTOMER_CUSTODY", "ADVANCE_REPAY", "BORROWED_CASH", "BORROW_REPAY"})
 
 
 if __name__ == "__main__":
     import unittest
     unittest.main()
+
+
+class BorrowedCashTests(FinancialTestCase):
+    def borrow(self, kind="THIRD_PARTY", party="", name="الحاج محمود", amount="1000", account="CASH:1", key=None):
+        return self.fin.open_borrow(account, kind, party, name, amount, "", key or str(uuid4()))
+
+    def row(self):
+        return self.fin.advances()["advances"][0]
+
+    def test_borrowed_cash_enters_the_account_and_stays_owed_by_the_shop_until_repaid_in_parts(self):
+        before = self.cash()
+        result = self.borrow()
+        self.assertEqual((self.cash(), result["party_name"]), (before + D("1000"), "الحاج محمود"))
+        row = self.row()
+        self.assertEqual((row["direction"], row["kind_text"], row["owed"], row["party"]), ("BORROW", "سلفة مستلفة", "1000.00", "الحاج محمود"))
+        self.assertEqual(self.store.ops["1"]["category"], "BORROWED_CASH")
+        self.fin.repay_advance("1", "CASH:1", "400", "", str(uuid4()))
+        self.assertEqual((self.cash(), self.row()["owed"]), (before + D("600"), "600.00"))                  # the repayment takes the money OUT
+        self.assertEqual(self.store.ops["2"]["category"], "BORROW_REPAY")
+        self.assertFinRefused("REPAY_EXCEEDS", lambda: self.fin.repay_advance("1", "CASH:1", "600.01", "", str(uuid4())))
+        self.fin.repay_advance("1", "CASH:1", "600", "", str(uuid4()))
+        self.assertEqual((self.cash(), self.row()["owed"]), (before, "0.00"))
+
+    def test_the_lender_can_be_an_employee_a_customer_or_a_typed_name_and_must_exist(self):
+        self.borrow("EMPLOYEE", "1", "")
+        self.borrow("CUSTOMER", "7", "")
+        kinds = [(r["kind"], r["party"], r["kind_text"]) for r in reversed(self.fin.advances()["advances"])]
+        self.assertEqual(kinds, [("EMPLOYEE", "شلاطة", "سلفة مستلفة من موظف"), ("CUSTOMER", "عميل أ", "سلفة مستلفة من عميل")])
+        before = self.cash()
+        for kind, party, name, code in (("THIRD_PARTY", "", "  ", "PARTY_REQUIRED"), ("EMPLOYEE", "", "", "PARTY_REQUIRED"), ("EMPLOYEE", "2", "", "PARTY_NOT_FOUND"),
+                                        ("CUSTOMER", "99", "", "PARTY_NOT_FOUND"), ("WHATEVER", "1", "x", "TYPE_INVALID")):
+            self.assertFinRefused(code, lambda kind=kind, party=party, name=name: self.borrow(kind, party, name))
+        self.assertEqual(self.cash(), before)
+
+    def test_a_retry_posts_once_and_the_plain_movement_refuses_the_borrow_categories(self):
+        key = str(uuid4())
+        self.borrow(key=key)
+        self.assertTrue(self.borrow(key=key)["duplicate"])
+        self.assertEqual(len(self.store.advances), 1)
+        for kind, direction in (("BORROWED_CASH", "IN"), ("BORROW_REPAY", "OUT")):
+            self.assertFinRefused("USE_ADVANCE", lambda kind=kind, direction=direction: self.fin.cash_movement("CASH:1", direction, kind, "5", "", str(uuid4())))
+
+    def test_a_borrow_with_a_repayment_is_not_reversible_until_the_repayment_is(self):
+        self.borrow()
+        self.fin.repay_advance("1", "CASH:1", "100", "", str(uuid4()))
+        self.assertRefused("ADVANCE_HAS_REPAYMENTS", lambda: self.service.reverse(FO, "1", "خطأ"))
+        self.service.reverse(FO, "2", "سداد بالخطأ")
+        self.assertEqual(self.row()["owed"], "1000.00")
+        self.service.reverse(FO, "1", "سلفة بالخطأ")
+        self.assertEqual((self.row()["voided"], self.row()["owed"]), (True, "0.00"))

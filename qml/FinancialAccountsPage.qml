@@ -327,6 +327,9 @@ Rectangle {
         function begin() { mode = "list"; page.vm.loadAdvances(); open() }
         function startNew() { mode = "new"; partyKind = "EMPLOYEE"; advAmount.text = ""; advNote.text = ""; employeeBox.currentIndex = -1
                               page.vm.prepareAdvance(""); }
+        property string borrowKind: "EMPLOYEE"
+        function startBorrow() { mode = "borrow"; borrowKind = "EMPLOYEE"; borrowAmount.text = ""; borrowNote.text = ""; borrowName.text = ""; borrowEmployee.currentIndex = -1
+                                 borrowAccount.currentIndex = 0; page.vm.prepareAdvance("") }
         function startRepay(row) { current = row; mode = "repay"; repayAmount.text = row.owed; repayNote.text = ""; page.vm.prepareAdvance("") }
         anchors.centerIn: parent; width: Math.min(page.width - 24, 560)
         height: Math.min(page.height - 24, 560)
@@ -335,7 +338,7 @@ Rectangle {
         background: Rectangle { color: theme.bgPrimary; radius: theme.radiusMedium; border.color: theme.goldDark }
         contentItem: ColumnLayout {
             spacing: 8
-            Txt { text: advancesDialog.mode === "new" ? "سلفة / عهدة مؤقتة جديدة" : advancesDialog.mode === "repay" ? "سداد سلفة" : "سلف وعهد مؤقتة"
+            Txt { text: advancesDialog.mode === "new" ? "سلفة / عهدة مؤقتة جديدة" : advancesDialog.mode === "borrow" ? "سلفة مستلفة (فلوس بناخدها ونرجعها)" : advancesDialog.mode === "repay" ? "سداد سلفة" : "سلف وعهد مؤقتة"
                   font.bold: true; font.pixelSize: theme.fontSection; color: theme.gold; Layout.fillWidth: true }
 
             // ---- the list
@@ -344,6 +347,7 @@ Rectangle {
                 RowLayout {
                     Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
                     Btn { objectName: "advanceNew"; text: "سلفة / عهدة جديدة"; primary: true; onClicked: advancesDialog.startNew() }
+                    Btn { objectName: "advanceBorrowNew"; text: "سلفة مستلفة"; onClicked: advancesDialog.startBorrow() }
                     Item { Layout.fillWidth: true }
                     Btn { text: "إغلاق"; onClicked: advancesDialog.close() }
                 }
@@ -368,7 +372,7 @@ Rectangle {
                                       color: theme.textMuted; font.pixelSize: theme.fontTableHeader; Layout.fillWidth: true; wrapMode: Text.Wrap }
                             }
                             Txt { objectName: "advanceOwed_" + advRow.index
-                                  text: advRow.modelData.voided ? "ملغاة" : Number(advRow.modelData.owed) === 0 ? "مسددة" : "المتبقي " + advRow.modelData.owed + " ج"
+                                  text: advRow.modelData.voided ? "ملغاة" : Number(advRow.modelData.owed) === 0 ? "مسددة" : (advRow.modelData.direction === "BORROW" ? "المتبقي علينا " : "المتبقي ") + advRow.modelData.owed + " ج"
                                   color: advRow.modelData.voided ? theme.textMuted : Number(advRow.modelData.owed) === 0 ? theme.green : theme.amber; font.bold: true }
                             Btn { objectName: "advanceRepay_" + advRow.index; text: "سداد"; visible: !advRow.modelData.voided && Number(advRow.modelData.owed) > 0
                                   onClicked: advancesDialog.startRepay(advRow.modelData) }
@@ -424,6 +428,67 @@ Rectangle {
                 }
             }
 
+            // ---- borrowed cash
+            ColumnLayout {
+                visible: advancesDialog.mode === "borrow"; Layout.fillWidth: true; spacing: 8
+                RowLayout {
+                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                    Txt { text: "استلفنا من"; Layout.preferredWidth: 80 }
+                    Btn { objectName: "borrowKindEmployee"; text: "موظف"; chosen: advancesDialog.borrowKind === "EMPLOYEE"; Layout.fillWidth: true; onClicked: advancesDialog.borrowKind = "EMPLOYEE" }
+                    Btn { objectName: "borrowKindCustomer"; text: "عميل"; chosen: advancesDialog.borrowKind === "CUSTOMER"; Layout.fillWidth: true; onClicked: advancesDialog.borrowKind = "CUSTOMER" }
+                    Btn { objectName: "borrowKindOther"; text: "شخص آخر"; chosen: advancesDialog.borrowKind === "THIRD_PARTY"; Layout.fillWidth: true; onClicked: advancesDialog.borrowKind = "THIRD_PARTY" }
+                }
+                RowLayout {
+                    visible: advancesDialog.borrowKind === "EMPLOYEE"; Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                    Txt { text: "الموظف"; Layout.preferredWidth: 80 }
+                    Combo { id: borrowEmployee; objectName: "borrowEmployee"; Layout.fillWidth: true
+                            displayText: currentIndex < 0 ? "اختر الموظف" : currentText
+                            model: page.vm ? page.vm.employees : []; textRole: "name"; valueRole: "id" }
+                }
+                RowLayout {
+                    visible: advancesDialog.borrowKind === "CUSTOMER"; Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                    Txt { text: "العميل"; Layout.preferredWidth: 80 }
+                    CustomerPicker { id: borrowCustomer; objectName: "borrowCustomer"; Layout.fillWidth: true; clearable: true }
+                }
+                RowLayout {
+                    visible: advancesDialog.borrowKind === "THIRD_PARTY"; Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                    Txt { text: "الاسم"; Layout.preferredWidth: 80 }
+                    Field { id: borrowName; objectName: "borrowName"; Layout.fillWidth: true; placeholderText: "اسم الشخص"; maximumLength: 100 }
+                }
+                RowLayout {
+                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                    Txt { text: "المبلغ"; Layout.preferredWidth: 80 }
+                    Field { id: borrowAmount; objectName: "borrowAmount"; Layout.fillWidth: true; placeholderText: "0.00"; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+                }
+                RowLayout {
+                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                    Txt { text: "تدخل في"; Layout.preferredWidth: 80 }
+                    Combo { id: borrowAccount; objectName: "borrowAccount"; Layout.fillWidth: true
+                            model: [{ "key": page.vm && page.vm.accountKey ? page.vm.accountKey : "", "name": page.vm && page.vm.accountName ? page.vm.accountName : "الخزنة" }].concat(page.vm ? page.vm.bankAccounts : [])
+                            textRole: "name"; valueRole: "key"; currentIndex: 0 }
+                }
+                RowLayout {
+                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                    Txt { text: "ملاحظة"; Layout.preferredWidth: 80 }
+                    Field { id: borrowNote; objectName: "borrowNote"; Layout.fillWidth: true; placeholderText: "اختياري" }
+                }
+                Txt { Layout.fillWidth: true; wrapMode: Text.Wrap; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
+                      text: "من غير فوائد: بنرجّع نفس المبلغ. الفلوس بتدخل الحساب المختار، وبتفضل علينا لحد ما نسدد." }
+                Txt { Layout.fillWidth: true; wrapMode: Text.Wrap; color: theme.red; text: page.vm ? page.vm.errorMessage : ""; visible: text.length > 0 }
+                RowLayout {
+                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                    Btn { objectName: "borrowSave"; primary: true; text: page.vm && page.vm.advanceBusy ? "جارٍ التسجيل…" : "تسجيل السلفة المستلفة"
+                          enabled: !!page.vm && !page.vm.advanceBusy && Number(borrowAmount.text) > 0
+                                   && (advancesDialog.borrowKind === "EMPLOYEE" ? borrowEmployee.currentIndex >= 0
+                                       : advancesDialog.borrowKind === "CUSTOMER" ? borrowCustomer.hasSelection : borrowName.text.trim().length > 0)
+                          onClicked: page.vm.openBorrow(advancesDialog.borrowKind,
+                                       advancesDialog.borrowKind === "EMPLOYEE" ? String(borrowEmployee.currentValue) : advancesDialog.borrowKind === "CUSTOMER" ? borrowCustomer.selectedCustomerId : "",
+                                       borrowName.text, String(borrowAccount.currentValue || ""), borrowAmount.text, borrowNote.text) }
+                    Btn { text: "رجوع"; enabled: !!page.vm && !page.vm.advanceBusy; onClicked: advancesDialog.mode = "list" }
+                    Item { Layout.fillWidth: true }
+                }
+            }
+
             // ---- repay
             ColumnLayout {
                 visible: advancesDialog.mode === "repay"; Layout.fillWidth: true; spacing: 8
@@ -436,7 +501,7 @@ Rectangle {
                 }
                 RowLayout {
                     Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
-                    Txt { text: "يدخل في"; Layout.preferredWidth: 80 }
+                    Txt { text: advancesDialog.current && advancesDialog.current.direction === "BORROW" ? "يخرج من" : "يدخل في"; Layout.preferredWidth: 80 }
                     Combo { id: repayAccount; objectName: "repayAccount"; Layout.fillWidth: true
                             model: [{ "key": page.vm && page.vm.accountKey ? page.vm.accountKey : "", "name": page.vm && page.vm.accountName ? page.vm.accountName : "الخزنة" }].concat(page.vm ? page.vm.bankAccounts : [])
                             textRole: "name"; valueRole: "key"; currentIndex: 0 }

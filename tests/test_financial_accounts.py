@@ -107,12 +107,14 @@ class FinRepo:
         self._advances()
         return [{"id": e["id"], "name": e["name"]} for e in self.store.employees_list.values() if e["is_active"]]
 
-    def insert_advance(self, *, kind, employee_id, customer_id, amount, operation_id, note, actor, now):
+    def insert_advance(self, *, kind, employee_id, customer_id, amount, operation_id, note, actor, now, direction="LEND", lender_name=None):
         advances = self._advances()
         assert (kind == "EMPLOYEE") == (employee_id is not None) and (kind == "CUSTOMER") == (customer_id is not None)   # chk_cash_advance_party
+        assert (kind == "THIRD_PARTY") == bool(lender_name and lender_name.strip())
+        assert direction == "BORROW" or kind in ("EMPLOYEE", "CUSTOMER")                                                    # chk_cash_advance_direction
         assert amount > 0 and not any(a["operation_id"] == str(operation_id) for a in advances.values())             # uq_cash_advance_operation
         advance_id = str(len(advances) + 1)
-        advances[advance_id] = {"id": advance_id, "kind": kind, "employee_id": employee_id, "customer_id": customer_id, "amount": amount,
+        advances[advance_id] = {"id": advance_id, "kind": kind, "direction": direction, "lender_name": lender_name, "employee_id": employee_id, "customer_id": customer_id, "amount": amount,
                                 "operation_id": str(operation_id), "note": note, "created_at": now}
         return advance_id
 
@@ -126,7 +128,7 @@ class FinRepo:
 
     def _advance_row(self, a):
         repaid = sum((r["amount"] for r in self.store.repayments if r["advance_id"] == a["id"] and not self._reversed(r["operation_id"])), D("0"))
-        party = (self.store.employees_list if a["kind"] == "EMPLOYEE" else self.store.customers_list)[a["employee_id"] or a["customer_id"]]["name"]
+        party = a["lender_name"] if a["kind"] == "THIRD_PARTY" else (self.store.employees_list if a["kind"] == "EMPLOYEE" else self.store.customers_list)[a["employee_id"] or a["customer_id"]]["name"]
         return {**a, "party_name": party, "voided": 1 if self._reversed(a["operation_id"]) else 0, "repaid": repaid}
 
     def advance(self, advance_id, lock=False):
@@ -152,8 +154,8 @@ class FinRepo:
         assert amount > 0                                                         # chk_fo_amount
         if operation_type != "ACCOUNT_TRANSFER":
             assert category or (reason and reason.strip())                        # chk_fo_shape (026)
-            allowed = ((None, "REVENUE", "REPAIR", "ADVANCE_REPAY") if operation_type == "MANUAL_DEPOSIT"
-                       else (None, "EXPENSE", "SALARY", "RENT", "REPAIR", "UTILITIES", "TRANSPORT", "MAINTENANCE", "HOSPITALITY", "STAFF_ADVANCE", "CUSTOMER_CUSTODY"))      # 068 / 074
+            allowed = ((None, "REVENUE", "REPAIR", "ADVANCE_REPAY", "BORROWED_CASH") if operation_type == "MANUAL_DEPOSIT"
+                       else (None, "EXPENSE", "SALARY", "RENT", "REPAIR", "UTILITIES", "TRANSPORT", "MAINTENANCE", "HOSPITALITY", "STAFF_ADVANCE", "CUSTOMER_CUSTODY", "BORROW_REPAY"))      # 068 / 074 / 076
             if getattr(self.store, "categories", None) is not None:               # 069: the category must exist in cash_categories (fk_fo_category)
                 allowed = (None, *(c["code"] for c in self.store.categories))
             assert category in allowed                                            # chk_fo_category
