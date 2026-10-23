@@ -11,7 +11,7 @@ from PySide6.QtCore import QObject, QPointF, Qt
 from PySide6.QtTest import QTest
 
 from tests import test_invoice_page_qml as harness
-from services.financial_account_service import CASH_LABELS, CASH_TYPES, CASH_TYPE_TEXT, category_table
+from services.financial_account_service import ADVANCE_CATEGORIES, CASH_LABELS, CASH_TYPES, CASH_TYPE_TEXT, category_table
 
 HUGE = "9007199254740993"                                      # beyond JavaScript's exact integer range
 
@@ -42,7 +42,7 @@ class Service:
                 "in": {"rows": copy.deepcopy(IN_ROWS), "total": "42000.00", "count": 4},
                 "out": {"rows": copy.deepcopy(OUT_ROWS), "total": "49100.00", "count": 5},
                 "labels": [{"code": k, "text": v} for k, v in CASH_LABELS.items()],
-                "types": [{"code": k, "text": c["name"], "directions": list(c["directions"])} for k, c in category_table(None).items()]
+                "types": [{"code": k, "text": c["name"], "directions": list(c["directions"])} for k, c in category_table(None).items() if k not in ADVANCE_CATEGORIES]
                          + [{"code": k, "text": CASH_TYPE_TEXT[k], "directions": list(v)} for k, v in CASH_TYPES.items()],
                 "bank_accounts": [{"key": "BANK:1", "name": "بنك مصر", "account_type": "BANK"}],
                 "can_operate": True, "can_correct": True}
@@ -50,6 +50,21 @@ class Service:
     def cash_movement(self, cash_key, direction, kind, amount, note, request_key, bank_key="", *, _expected_actor=None):
         self.calls.append(("cash_movement", cash_key, direction, kind, amount, note, request_key, bank_key))
         return {"operation_id": "10", "code": "FO000010", "operation_type": "X", "amount": amount, "duplicate": False}
+
+    def advances(self, *, _expected_actor=None):
+        self.calls.append(("advances",))
+        return {"advances": copy.deepcopy(self.advance_rows), "employees": [{"id": "1", "name": "شلاطة"}, {"id": "2", "name": "علي"}]}
+
+    advance_rows = [{"id": "1", "code": "SA000001", "kind": "EMPLOYEE", "kind_text": "سلفة موظف", "party": "شلاطة", "amount": "75.00", "repaid": "0.00",
+                     "owed": "75.00", "voided": False, "date": "2026-10-23", "note": "", "operation": "FO000001"}]
+
+    def open_advance(self, cash_key, kind, party_id, amount, note, request_key, *, _expected_actor=None):
+        self.calls.append(("open_advance", cash_key, kind, party_id, amount, request_key))
+        return {"operation_id": "11", "code": "FO000011", "operation_type": "MANUAL_WITHDRAWAL", "amount": amount, "duplicate": False, "party_name": "شلاطة"}
+
+    def repay_advance(self, advance_id, account_key, amount, note, request_key, *, _expected_actor=None):
+        self.calls.append(("repay_advance", advance_id, account_key, amount, request_key))
+        return {"operation_id": "12", "code": "FO000012", "operation_type": "MANUAL_DEPOSIT", "amount": amount, "duplicate": False}
 
     def operation(self, operation_id, *, _expected_actor=None):
         self.calls.append(("operation", operation_id))
@@ -203,6 +218,45 @@ class CashScreenTests(harness.InvoicePageTests):
         self.assertEqual(self.last("cash_movement")[1:6], ("CASH:1", "OUT", "EXPENSE", "1500", ""))
         self.assertEqual(self.warnings, [])
 
+    def test_advances_dialog_opens_an_employee_advance_and_repays_it_with_real_clicks(self):
+        self.open_page()
+        for width, height in harness.SIZES:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(120)
+            self.assert_inside_window(self.visible_item("cashAdvances"))
+            self.click("cashAdvances")
+            self.wait_until(lambda: self.item("cashAdvancesDialog").property("opened"))
+            self.wait_until(lambda: len(self.fin.advances) == 1, "advances loaded")
+            self.assertEqual(self.item("advanceParty_0").property("text"), "شلاطة — سلفة موظف")
+            self.assertEqual(self.item("advanceOwed_0").property("text"), "المتبقي 75.00 ج")
+            self.assert_inside_window(self.visible_item("advanceRepay_0"))
+            # a new employee advance
+            self.click("advanceNew")
+            self.assertFalse(self.item("advanceSave").property("enabled"))                  # no employee, no amount
+            self.choose("advanceEmployee", 0)
+            self.type_into("advanceAmount", "250")
+            self.wait_until(lambda: self.item("advanceSave").property("enabled"), "can save")
+            self.assert_inside_window(self.item("advanceSave"))
+            before = self.count("open_advance")
+            self.click("advanceSave")
+            self.wait_until(lambda: self.count("open_advance") == before + 1, "advance posted")
+            call = self.last("open_advance")
+            self.assertEqual(call[1:5], ("CASH:1", "EMPLOYEE", "1", "250"))
+            self.wait_until(lambda: self.item("advanceNew").property("visible"), "back to the list")
+            # repay it
+            self.click("advanceRepay_0")
+            self.type_into("repayAmount", "25")
+            self.assert_inside_window(self.item("repaySave"))
+            before = self.count("repay_advance")
+            self.click("repaySave")
+            self.wait_until(lambda: self.count("repay_advance") == before + 1, "repayment posted")
+            self.assertEqual(self.last("repay_advance")[1:4], ("1", "CASH:1", "25"))
+            self.wait_until(lambda: self.item("advanceNew").property("visible"), "back to the list")
+            self.item("cashAdvancesDialog").close()
+            self.wait_until(lambda: not self.item("cashAdvancesDialog").property("visible"), "dialog closes")
+        self.assertEqual(self.warnings, [])
+
     def test_revenue_in_and_bank_deposit_forms(self):
         self.open_page()
         self.click("cashNewMovement")
@@ -210,7 +264,7 @@ class CashScreenTests(harness.InvoicePageTests):
         self.click("cashDirectionIn")
         self.assertEqual([t["text"] for t in self.fin.typesFor("IN")], ["إيراد", "مرمة", "سحب بنك"])
         self.assertEqual([t["text"] for t in self.fin.typesFor("OUT")],
-                         ["مصروفات", "مرتبات", "إيجار", "كهرباء ومياه", "نقل", "صيانة", "بوفيه وضيافة", "سلف موظفين", "مرمة", "إيداع بنك"])
+                         ["مصروفات", "مرتبات", "إيجار", "كهرباء ومياه", "نقل", "صيانة", "بوفيه وضيافة", "مرمة", "إيداع بنك"])
         self.choose("cashMovementType", 0)
         self.type_into("cashAmount", "2000")
         self.click("cashMovementNext")
@@ -223,7 +277,7 @@ class CashScreenTests(harness.InvoicePageTests):
         self.click("cashNewMovement")
         self.wait_until(lambda: self.item("cashMovementDialog").property("opened"))
         self.click("cashDirectionOut")
-        self.choose("cashMovementType", 9)                                      # إيداع بنك (the last of the ten expense categories + the bank deposit)
+        self.choose("cashMovementType", 8)                                      # إيداع بنك (the last of the expense categories + the bank deposit)
         self.type_into("cashAmount", "20000")
         self.assertFalse(self.item("cashMovementNext").property("enabled"))    # bank not chosen yet
         self.choose("cashBankAccount", 0)

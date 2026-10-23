@@ -970,6 +970,25 @@ class CashflowTransferReversalTests(Case):
         self.assertEqual((values["إجمالي الداخل"], values["إجمالي الخارج"]), (D("0.00"), D("0.00")))
 
 
+class CashflowAdvanceTests(Case):
+    def test_an_advance_and_its_repayment_are_money_that_returns_never_an_expense_or_income(self):
+        base = {"transfer_group_id": None, "type_name": "x", "correction_source": None, "corrected_operation_type": None, "corrected_category": None, "reference_type": "FINANCIAL_OPERATION"}
+        rows = [dict(base, type_code="MANUAL_WITHDRAWAL", amount=D("-75.00"), category="STAFF_ADVANCE"),
+                dict(base, type_code="MANUAL_WITHDRAWAL", amount=D("-300.00"), category="CUSTOMER_CUSTODY"),
+                dict(base, type_code="MANUAL_DEPOSIT", amount=D("100.00"), category="ADVANCE_REPAY")]
+
+        class Repo(FakeRepo):
+            def cashflow_movements(self, start, end, ledgers=("CASH", "BANK")):
+                return rows
+        service = ReportService(self.service._session, transaction_factory=self.service._transaction, repository=Repo, authorization=self.service._authorization, today=lambda: TODAY)
+        result = service.run("cashflow", {"from": "2026-10-01", "to": "2026-10-31"})
+        self.assertEqual(next(t for t in result["tables"] if t["key"] == "operating")["rows"], [])
+        internal = next(t for t in result["tables"] if t["key"] == "internal")["rows"]
+        self.assertEqual([(r["label"], r["in"], r["out"]) for r in internal], [("سلف وعهد مؤقتة (تعود للمحل)", D("100.00"), D("375.00"))])
+        values = {t["label"]: t["value"] for t in result["totals"]}
+        self.assertEqual((values["مصروفات مسجلة"], values["إيرادات مسجلة"]), (D("0.00"), D("0.00")))
+
+
 class MakingProfitTests(Case):
     PERIOD = {"from": "2026-10-01", "to": "2026-10-31"}
 

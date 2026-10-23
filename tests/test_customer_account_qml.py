@@ -87,6 +87,31 @@ class CustomerAccountPageTests(harness.InvoicePageTests):
         self.assertEqual(self.warnings,[])
 
     # Reuse harness lifecycle without inheriting its unrelated test cases.
+    def test_open_temporary_custody_is_listed_under_the_customers_account_apart_from_the_balance(self):
+        vm=self.controller.operational_viewmodels['customerAccountVM']
+        customer_vm=self.controller.operational_viewmodels['customerVM']
+        customer={'customer_id':'12','name':'عميل','mobile':'01000000000','balance':D('200'),'balance_status':'CUSTOMER_OWES_SHOP','is_active':True}
+        customer_vm._service=Mock(get_customer_types=Mock(return_value=[]),get_customer_transaction_types=Mock(return_value=[]),
+            search_customers=Mock(return_value={'items':[customer],'page':1,'has_more':False}),
+            get_customer_profile=Mock(side_effect=lambda cid:{'customer':dict(customer,customer_id=str(cid)),'active_flags':[],
+                'transactions_page':{'items':[],'page':1,'has_more':False},'dead_cash_page':{'items':[],'page':1,'has_more':False},
+                'statement_summary':{},'statement_loaded_at':datetime(2026,9,30),'ledger_token':None}))
+        custody=[{'id':'3','code':'SA000003','date':'2026-10-23','amount':'1200.00','repaid':'200.00','owed':'1000.00','note':'عهدة مؤقتة'}]
+        class Service:
+            def statement(self,*args,**kw):
+                return {'customer':customer,'rows':[],'has_more':False,'page':1,'accounts':[],'can_settle':True,'custody':custody}
+        vm.service=Service()
+        self.root.setProperty('currentPage',3)
+        self.assertTrue(customer_vm.selectCustomer('12'));vm.open('12')
+        self.wait_until(lambda:not vm.busy and len(vm.custody)==1)
+        for size in ((1440,900),(1280,800),(1080,680)):
+            self.root.setWidth(size[0]);self.root.setHeight(size[1]);QTest.qWait(120)
+            self.assert_inside_window(self.visual_item('customerCustodyCard'))
+            self.assertIn('1,000.00',self.item('customerCustodyTotal').property('text'))
+        self.assertNotIn('1,000',vm.balance)                                              # the custody never enters the balance
+        custody.clear();vm.refresh();self.wait_until(lambda:not vm.busy and len(vm.custody)==0)
+        self.assertFalse(self.item('customerCustodyCard').property('visible'))
+
     def test_invoice_references_open_existing_detail_at_all_sizes(self):
         vm=self.controller.operational_viewmodels['customerAccountVM']
         self.controller.operational_viewmodels['customerVM']._service=Mock(

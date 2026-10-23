@@ -65,6 +65,7 @@ class FinancialAccountsViewModel(QObject):
         self._view, self._error, self._message = {}, "", ""
         self._filters = {"start": "", "end": "", "label": ""}
         self._detail, self._request_key, self._form = {}, str(uuid4()), False
+        self._advances, self._employees, self._advance_key = [], [], str(uuid4())
 
     # ------------------------------------------------------------ plumbing
     def _service_instance(self):
@@ -205,6 +206,78 @@ class FinancialAccountsViewModel(QObject):
         self.finalized.emit(result["code"])
         self.refresh()
 
+    # ------------------------------------------------------------ سلف وعهد مؤقتة (074)
+    @Property("QVariantList", notify=changed)
+    def advances(self):
+        return self._advances
+
+    @Property("QVariantList", notify=changed)
+    def employees(self):
+        return self._employees
+
+    @Property(bool, notify=changed)
+    def advanceBusy(self):
+        return bool({"advance", "repay"} & self._busy)
+
+    @Slot()
+    def loadAdvances(self):
+        service = self._service_instance()
+        self._advance_key = str(uuid4())
+        self._start("advances", lambda _expected_actor: service.advances(_expected_actor=_expected_actor))
+
+    def _on_advances(self, result, error):
+        if error:
+            self._error = error
+            return
+        self._advances, self._employees = result["advances"], result["employees"]
+
+    @Slot(str)
+    def prepareAdvance(self, _name=""):
+        self._advance_key, self._error, self._message = str(uuid4()), "", ""
+        self.changed.emit()
+
+    @Slot(str, str, str, str)
+    def openAdvance(self, kind, party_id, amount, note):
+        """سلفة موظف / عهدة عميل مؤقتة: the safe pays, the person owes it; one key per attempt."""
+        if "advance" in self._busy or not self.canOperate:
+            return
+        service, key, cash = self._service_instance(), self._advance_key, self._view["account"]["key"]
+        self._error = ""
+        self._start("advance", lambda _expected_actor: service.open_advance(
+            cash, kind, party_id, amount, note, key, _expected_actor=_expected_actor))
+
+    def _on_advance(self, result, error):
+        if error:
+            self._error = error
+            return
+        self._advance_key = str(uuid4())
+        self._message = f"تم تسجيل السلفة على {result.get('party_name') or 'صاحبها'}."
+        self._message_timer.start()
+        self.finalized.emit(result["code"])
+        self.refresh()
+        self.loadAdvances()
+
+    @Slot(str, str, str, str)
+    def repayAdvance(self, advance_id, account_key, amount, note):
+        """سداد (كلي أو جزئي) من صاحب السلفة: the money returns to the chosen account."""
+        if "repay" in self._busy or not self.canOperate:
+            return
+        service, key = self._service_instance(), self._advance_key
+        self._error = ""
+        self._start("repay", lambda _expected_actor: service.repay_advance(
+            advance_id, account_key or self._view["account"]["key"], amount, note, key, _expected_actor=_expected_actor))
+
+    def _on_repay(self, result, error):
+        if error:
+            self._error = error
+            return
+        self._advance_key = str(uuid4())
+        self._message = "تم تسجيل السداد."
+        self._message_timer.start()
+        self.finalized.emit(result["code"])
+        self.refresh()
+        self.loadAdvances()
+
     # ------------------------------------------------------------ row → existing detail / correction
     def _rows(self):
         return self._view.get("in", {}).get("rows", []) + self._view.get("out", {}).get("rows", [])
@@ -331,6 +404,10 @@ class FinancialAccountsViewModel(QObject):
     @Property("QVariantList", notify=changed)
     def labels(self):
         return [{"code": "", "text": "كل الحركات"}] + list(self._view.get("labels", []))
+
+    @Property(str, notify=changed)
+    def accountKey(self):
+        return self._view.get("account", {}).get("key", "")
 
     @Property("QVariantList", notify=changed)
     def bankAccounts(self):

@@ -89,7 +89,6 @@ Item {
         color: accountHover.hovered ? theme.panelHover : theme.bgSecondary
         radius: 4
         HoverHandler { id: accountHover }
-        Rectangle { anchors.right: parent.right; width: 3; height: parent.height; color: theme.priceBuy; radius: 2 }
         // The whole card opens the account's movement history (activation / opening-balance controls keep their clicks).
         MouseArea {
             objectName: "accountOpenHistory_" + accountRow.rowIndex
@@ -258,7 +257,6 @@ Item {
         implicitHeight: cardColumn.implicitHeight + 12
         color: cardSource.containsMouse ? theme.panelHover : theme.bgSecondary
         radius: 4
-        Rectangle { anchors.right: parent.right; width: 3; height: parent.height; color: theme.amber; radius: 2 }
         SourceArea { id: cardSource; objectName: "inspectionSource_" + card.rowIndex; invoiceId: card.review.invoiceId || "" }
         ColumnLayout {
             id: cardColumn
@@ -383,7 +381,6 @@ Item {
         color: scrapSource.containsMouse ? theme.panelHover : theme.bgSecondary
         radius: theme.radiusMedium
         border.color: theme.cardBorder
-        Rectangle { anchors.right: parent.right; width: 3; height: parent.height; color: theme.amber; radius: 2 }
         SourceArea { id: scrapSource; objectName: "scrapSource_" + scrapCard.rowIndex; invoiceId: scrapCard.review.invoiceId || "" }
         ColumnLayout {
             id: scrapColumn
@@ -646,7 +643,6 @@ Item {
         implicitHeight: 52
         color: rowSource.containsMouse ? theme.panelHover : theme.bgSecondary
         radius: 4
-        Rectangle { anchors.right: parent.right; width: 3; height: parent.height; color: theme.amber; radius: 2 }
         SourceArea { id: rowSource; objectName: "reviewSource_" + row.invoiceId; invoiceId: row.invoiceId }
         ColumnLayout {
             anchors.fill: parent
@@ -750,12 +746,6 @@ Item {
                     color: cardArea.containsMouse ? theme.panelHover : theme.bgSecondary
                     border.width: modelData.selected ? 2 : 1
                     border.color: modelData.selected ? theme.goldBright : modelData.pending ? theme.goldDark : theme.cardBorder
-                    Rectangle {
-                        anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom
-                        anchors.margins: 1; width: 3; radius: 2
-                        color: modelData.pending ? theme.gold : modelData.code === "ACCOUNTS" ? theme.priceBuy
-                               : modelData.code === "GOLD_POSITION" ? theme.goldBright : theme.green
-                    }
                     ColumnLayout {
                         anchors.fill: parent
                         anchors.rightMargin: 12
@@ -1090,7 +1080,6 @@ Item {
                             implicitHeight: approvalColumn.implicitHeight + 12
                             color: approvalSource.containsMouse ? theme.panelHover : theme.bgSecondary
                             radius: 4
-                            Rectangle { anchors.right: parent.right; width: 3; height: parent.height; color: theme.amber; radius: 2 }
                             SourceArea { id: approvalSource; objectName: "approvalSource_" + approvalCard.index
                                          invoiceId: approvalCard.modelData.invoiceId || "" }
                             ColumnLayout {

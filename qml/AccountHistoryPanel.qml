@@ -92,8 +92,6 @@ ColumnLayout {
             height: 48
             radius: 4
             color: theme.bgSecondary
-            Rectangle { anchors.right: parent.right; width: 3; height: parent.height; radius: 2
-                        color: moveRow.modelData.incoming ? theme.green : theme.accountPayable }
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: 10

@@ -7,6 +7,7 @@ filters and paging, one-to-one joins, never a query per row). Every write runs o
 transaction; nothing here commits, and no original row is ever updated or deleted.
 """
 import json
+from decimal import Decimal
 
 from mysql.connector import ProgrammingError
 
@@ -271,6 +272,78 @@ class FinancialAccountRepository(BaseRepository):
             (int(operation_id), leg_role, delta, movement_id if ledger == "CASH" else None,
              movement_id if ledger == "BANK" else None))
         return str(movement_id)
+
+    # ------------------------------------------------------------ temporary advances (074)
+    def _advance_guard(self, query, params=()):
+        """Runs an advance read; a database below 074 has no table: None (the advances simply do not exist)."""
+        try:
+            return self._fetch_all(query, params)
+        except ProgrammingError as exc:
+            if getattr(exc, "errno", None) == 1146:
+                return None
+            raise
+
+    def insert_advance(self, *, kind, employee_id, customer_id, amount, operation_id, note, actor, now):
+        advance_id, _ = self._execute(
+            "INSERT INTO cash_advances (kind, employee_id, customer_id, amount, operation_id, note, created_by_user_id, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (kind, employee_id, customer_id, amount, int(operation_id), note, actor.user_id, now))
+        return str(advance_id)
+
+    def insert_repayment(self, *, advance_id, amount, operation_id, actor, now):
+        self._execute("INSERT INTO cash_advance_repayments (advance_id, amount, operation_id, created_by_user_id, created_at) VALUES (%s, %s, %s, %s, %s)",
+                      (int(advance_id), amount, int(operation_id), actor.user_id, now))
+
+    def advance(self, advance_id, lock=False):
+        """One advance with its effective state: a reversed withdrawal voids it, a reversed repayment stops counting."""
+        if lock:
+            self._advance_guard("SELECT id FROM cash_advances WHERE id = %s FOR UPDATE", (int(advance_id),))
+        rows = self._advance_guard(self._ADVANCE_SELECT + " WHERE a.id = %s", (int(advance_id),))
+        return rows[0] if rows else None
+
+    _ADVANCE_SELECT = """
+        SELECT a.id, a.kind, a.employee_id, a.customer_id, a.amount, a.operation_id, a.note, a.created_at,
+               COALESCE(e.name, c.name) AS party_name,
+               (SELECT COUNT(*) FROM transaction_corrections k WHERE k.source_type = 'FINANCIAL_OPERATION'
+                  AND k.source_id = a.operation_id AND k.correction_type = 'FULL_REVERSAL') AS voided,
+               COALESCE((SELECT SUM(r.amount) FROM cash_advance_repayments r WHERE r.advance_id = a.id
+                  AND NOT EXISTS (SELECT 1 FROM transaction_corrections k WHERE k.source_type = 'FINANCIAL_OPERATION'
+                     AND k.source_id = r.operation_id AND k.correction_type = 'FULL_REVERSAL')), 0) AS repaid
+        FROM cash_advances a
+        LEFT JOIN employees e ON a.kind = 'EMPLOYEE' AND e.id = a.employee_id
+        LEFT JOIN customers c ON a.kind = 'CUSTOMER' AND c.id = a.customer_id"""
+
+    def advances(self):
+        """Every advance, newest first (None below 074)."""
+        return self._advance_guard(self._ADVANCE_SELECT + " ORDER BY a.id DESC")
+
+    def customer_open_advances(self, customer_id):
+        """The customer's temporary custody still owed (not reversed, not fully repaid), oldest first; [] below 074."""
+        rows = self._advance_guard(self._ADVANCE_SELECT + " WHERE a.kind = 'CUSTOMER' AND a.customer_id = %s ORDER BY a.id", (int(customer_id),)) or []
+        return [r for r in rows if not r["voided"] and Decimal(str(r["amount"])) - Decimal(str(r["repaid"])) > 0]
+
+    def advance_by_operation(self, operation_id):
+        rows = self._advance_guard(self._ADVANCE_SELECT + " WHERE a.operation_id = %s", (int(operation_id),))
+        return rows[0] if rows else None
+
+    def advance_reversal_blockers(self, operation_id):
+        """Reasons a manual operation cannot be reversed because of an advance: an advance with an effective repayment (reverse the repayments first)."""
+        advance = self.advance_by_operation(operation_id)
+        if advance and Decimal(str(advance["repaid"])) > 0 and not advance["voided"]:
+            return ["على هذه السلفة سداد فعّال: اعكس السداد أولاً ثم اعكس السلفة."]
+        return []
+
+    def active_employees(self):
+        return self._fetch_all("SELECT id, name FROM employees WHERE is_active = TRUE ORDER BY name, id")
+
+    def employee(self, employee_id):
+        return self._fetch_one("SELECT id, name, is_active FROM employees WHERE id = %s", (int(employee_id),))
+
+    def customer(self, customer_id):
+        return self._fetch_one("SELECT id, name, is_active FROM customers WHERE id = %s", (int(customer_id),))
+
+    def operation_category(self, operation_id):
+        return self._fetch_one("SELECT id, operation_type, category FROM financial_operations WHERE id = %s", (int(operation_id),))
 
     def cash_categories(self):
         """The manageable income / expense categories (migration 069) in display order, or None while the table does not exist (a database below 069 keeps the fixed list)."""

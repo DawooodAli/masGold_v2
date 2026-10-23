@@ -491,6 +491,11 @@ class CorrectionService:
                 plan.account[customer] = -Decimal(str(total))
         if source_type not in STANDALONE:
             getattr(self, f"_plan_{source_type.lower()}")(connection, plan, source, lock)
+        if source_type == FO:                                   # an advance with an effective repayment is reversed only after its repayments (074)
+            from repositories.financial_account_repository import FinancialAccountRepository
+            guard = getattr(FinancialAccountRepository(connection), "advance_reversal_blockers", None)
+            for text in (guard(source_id) if guard else []):
+                plan.blockers.append(("ADVANCE_HAS_REPAYMENTS", text))
         if source_type == MTE:
             from repositories.market_trip_repository import ISSUE as TRIP_ISSUE, MarketTripRepository, entry_code
             trips = MarketTripRepository(connection)

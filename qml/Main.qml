@@ -3517,8 +3517,6 @@ ApplicationWindow {
         color: theme.bgTertiary
         border.color: balanceStrip.failed ? theme.red : theme.border
         border.width: 1
-        Rectangle { anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom
-                    anchors.margins: 1; width: 3; radius: 2; color: box.accent; opacity: box.zero ? 0.5 : 1 }
         Column {
             id: boxColumn
             anchors.centerIn: parent
@@ -5037,11 +5035,6 @@ ApplicationWindow {
         radius: theme.radiusCard
         border.color: theme.cardBorder
         border.width: 1
-        Rectangle {
-            anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
-            anchors.leftMargin: 22; anchors.rightMargin: 22                       // the line stays inside the straight part of the rounded edge
-            height: 3; radius: 2; color: sectionCard.accentColor
-        }
         ColumnLayout {
             id: sectionLayout
             anchors.fill: parent; anchors.margins: 14; spacing: 10
@@ -8578,19 +8571,6 @@ ApplicationWindow {
         border.width: 1
 
 
-        Rectangle {
-            anchors.top: parent.top
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.leftMargin: 22
-            anchors.rightMargin: 22
-
-            height: 3
-
-            color: accentColor
-
-            radius: 2
-        }
 
 
         ColumnLayout {

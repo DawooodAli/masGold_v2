@@ -196,8 +196,6 @@ Item {
         color: theme.bgTertiary
         radius: theme.radiusCard
         border.color: theme.cardBorder
-        Rectangle { anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom
-                    anchors.topMargin: 16; anchors.bottomMargin: 16; anchors.rightMargin: 1; width: 3; radius: 2; color: parent.accent }
         Txt { id: cardTitle; anchors.top: parent.top; anchors.right: parent.right; anchors.topMargin: 4
               anchors.rightMargin: 14; text: parent.title; color: parent.accent; font.bold: true }
         ColumnLayout {

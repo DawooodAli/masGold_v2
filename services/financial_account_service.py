@@ -50,6 +50,7 @@ CASH_LABELS = {
 BANK_LABELS = {**CASH_LABELS, "TRANSFER_IN": "إيداع في الحساب", "TRANSFER_OUT": "سحب من الحساب"}
 # The two transfers between the cash safe and a real bank / wallet account (BANK_DEPOSIT / BANK_WITHDRAWAL) and the cash directions they allow. The income / expense categories are NOT here:
 # they live in the cash_categories table (migration 069, managed in Settings) and `category_table()` is their fixed fallback.
+ADVANCE_CATEGORIES = ("STAFF_ADVANCE", "CUSTOMER_CUSTODY", "ADVANCE_REPAY")      # recorded only through the advance flows (they need an owner of the money)
 CASH_TYPES = {"BANK_WITHDRAWAL": ("IN",), "BANK_DEPOSIT": ("OUT",)}
 CASH_TYPE_TEXT = {"BANK_DEPOSIT": "إيداع بنك", "BANK_WITHDRAWAL": "سحب بنك"}
 
@@ -59,6 +60,8 @@ def category_table(rows):
     from services.cash_category_service import SEED
     if rows is None:
         rows = [{"code": c, "name": n, "direction": d, "is_active": 1} for c, n, d in SEED]
+        rows += [{"code": "CUSTOMER_CUSTODY", "name": "عهدة مؤقتة لعميل", "direction": "OUT", "is_active": 1},       # 074
+                 {"code": "ADVANCE_REPAY", "name": "سداد سلفة / عهدة", "direction": "IN", "is_active": 1}]
     return {r["code"]: {"name": r["name"], "directions": ("IN", "OUT") if r["direction"] == "BOTH" else (r["direction"],), "active": bool(r["is_active"])} for r in rows}
 
 
@@ -317,7 +320,7 @@ class FinancialAccountService:
                 "start": period[0].isoformat(), "end": period[1].isoformat(),
                 "in": side(1), "out": side(-1),
                 "labels": [{"code": k, "text": v} for k, v in self._all_labels().items()],
-                "types": [{"code": k, "text": c["name"], "directions": list(c["directions"])} for k, c in self._categories.items() if c["active"]]
+                "types": [{"code": k, "text": c["name"], "directions": list(c["directions"])} for k, c in self._categories.items() if c["active"] and k not in ADVANCE_CATEGORIES]
                          + [{"code": k, "text": CASH_TYPE_TEXT[k], "directions": list(CASH_TYPES[k])} for k in ("BANK_DEPOSIT", "BANK_WITHDRAWAL")],
                 "bank_accounts": [{"key": account_key("BANK", b["id"]), "name": b["name"],
                                    "account_type": b["account_type"]} for b in banks],
@@ -334,6 +337,8 @@ class FinancialAccountService:
             raise CorrectionError("ACCOUNT_NOT_FOUND", "اختر الخزنة.")
         if direction not in ("IN", "OUT") or not kind or (kind in CASH_TYPES and direction not in CASH_TYPES[kind]):
             raise CorrectionError("TYPE_INVALID", "نوع الحركة لا يناسب الاتجاه المختار.")
+        if kind in ADVANCE_CATEGORIES:
+            raise CorrectionError("USE_ADVANCE", "السلف والعهد المؤقتة تُسجّل من زر «سلفة / عهدة مؤقتة» باسم صاحبها.")
         value, text = _amount(amount), _text(note, required=False, label="الملاحظة")
         if kind in ("BANK_DEPOSIT", "BANK_WITHDRAWAL"):
             bank = _account(bank_key)
@@ -345,8 +350,107 @@ class FinancialAccountService:
             return self._finalize(DEPOSIT, None, cash, value, text, request_key, _expected_actor, category=kind)
         return self._finalize(WITHDRAWAL, cash, None, value, text, request_key, _expected_actor, category=kind)
 
+    # ------------------------------------------------------------ temporary advances / custody (074)
+    def open_advance(self, cash_key, kind, party_id, amount, note, request_key, *, _expected_actor=None):
+        """سلفة موظف (EMPLOYEE) أو عهدة مؤقتة لعميل (CUSTOMER): cash leaves the safe on that person's name and stays owed until repaid. One transaction with the withdrawal."""
+        cash = _account(cash_key)
+        if cash[0] != "CASH":
+            raise CorrectionError("ACCOUNT_NOT_FOUND", "اختر الخزنة.")
+        if kind not in ("EMPLOYEE", "CUSTOMER"):
+            raise CorrectionError("TYPE_INVALID", "اختر موظفًا أو عميلًا.")
+        try:
+            party = int(str(party_id))
+        except (TypeError, ValueError):
+            raise CorrectionError("PARTY_REQUIRED", "اختر الموظف أو العميل صاحب السلفة.") from None
+        if party <= 0:
+            raise CorrectionError("PARTY_REQUIRED", "اختر الموظف أو العميل صاحب السلفة.")
+        value, text = _amount(amount), _text(note, required=False, label="الملاحظة")
+        category = "STAFF_ADVANCE" if kind == "EMPLOYEE" else "CUSTOMER_CUSTODY"
+        holder = {"name": ""}
+
+        def link(repository, operation_id, actor, now):
+            row = repository.employee(party) if kind == "EMPLOYEE" else repository.customer(party)
+            if row is None or not row["is_active"]:
+                raise CorrectionError("PARTY_NOT_FOUND", "الموظف غير موجود أو غير نشط." if kind == "EMPLOYEE" else "العميل غير موجود أو غير نشط.")
+            repository.insert_advance(kind=kind, employee_id=party if kind == "EMPLOYEE" else None, customer_id=party if kind == "CUSTOMER" else None,
+                                      amount=value, operation_id=operation_id, note=text or None, actor=actor, now=now)
+            holder["name"] = row["name"]
+        result = self._finalize(WITHDRAWAL, cash, None, value, text or ("سلفة موظف" if kind == "EMPLOYEE" else "عهدة مؤقتة لعميل"), request_key, _expected_actor,
+                                category=category, link=link, extra=[kind, party])
+        result["party_name"] = holder["name"]
+        return result
+
+    def repay_advance(self, advance_id, account_key_value, amount, note, request_key, *, _expected_actor=None):
+        """سداد سلفة / عهدة: the money comes back into the chosen cash / bank account; partial repayments are allowed, never above what is still owed."""
+        destination = _account(account_key_value)
+        value, text = _amount(amount), _text(note, required=False, label="الملاحظة")
+        try:
+            advance_number = int(str(advance_id))
+        except (TypeError, ValueError):
+            raise CorrectionError("ADVANCE_NOT_FOUND", "السلفة غير موجودة.") from None
+
+        def link(repository, operation_id, actor, now):
+            row = repository.advance(advance_number, lock=True)
+            if row is None:
+                raise CorrectionError("ADVANCE_NOT_FOUND", "السلفة غير موجودة.")
+            if row["voided"]:
+                raise CorrectionError("ADVANCE_REVERSED", "هذه السلفة ملغاة بالعكس.")
+            owed = Decimal(str(row["amount"])) - Decimal(str(row["repaid"]))
+            if value > owed:
+                raise CorrectionError("REPAY_EXCEEDS", f"المتبقي على السلفة {owed:,.2f} ج فقط.")
+            repository.insert_repayment(advance_id=advance_number, amount=value, operation_id=operation_id, actor=actor, now=now)
+        return self._finalize(DEPOSIT, None, destination, value, text or "سداد سلفة / عهدة", request_key, _expected_actor,
+                              category="ADVANCE_REPAY", link=link, extra=["REPAY", advance_number])
+
+    def advances(self, *, _expected_actor=None):
+        """Every advance with who owes it, what was repaid and what is left, plus the employees an advance can be given to."""
+        actor = self._actor(_expected_actor)
+        if OPERATE not in actor.permissions and "MANAGEMENT_REVIEW" not in actor.permissions:
+            raise PermissionError("ليس لديك صلاحية عرض السلف.")
+        with self._transaction() as connection:
+            repository = self._repository(connection)
+            rows = repository.advances() or []
+            employees = [{"id": str(e["id"]), "name": e["name"]} for e in repository.active_employees()]
+        result = []
+        for r in rows:
+            cent = Decimal("0.01")
+            amount, repaid = Decimal(str(r["amount"])).quantize(cent), Decimal(str(r["repaid"])).quantize(cent)
+            voided = bool(r["voided"])
+            result.append({"id": str(r["id"]), "code": f"SA{int(r['id']):06d}", "kind": r["kind"],
+                           "kind_text": "سلفة موظف" if r["kind"] == "EMPLOYEE" else "عهدة عميل",
+                           "party": r["party_name"] or "", "amount": str(amount), "repaid": str(repaid),
+                           "owed": str(Decimal("0.00") if voided else amount - repaid), "voided": voided,
+                           "date": r["created_at"].strftime("%Y-%m-%d") if r["created_at"] else "", "note": r["note"] or "",
+                           "operation": operation_code(WITHDRAWAL, r["operation_id"])})
+        result.sort(key=lambda r: (r["voided"], Decimal(r["owed"]) == 0, -int(r["id"])))
+        return {"advances": result, "employees": employees}
+
+    def attach_existing_advance(self, operation_id, employee_id, *, _expected_actor=None):
+        """Links an OLD manual «سلف موظفين» withdrawal (recorded before 074, no employee) to its employee. Owner only; never twice, never a reversed or other-category operation."""
+        session_actor = self._actor(_expected_actor)
+        with self._transaction() as connection:
+            actor = self._authorization.require_permission(connection, session_actor, "SETTINGS_MANAGE")
+            repository = self._repository(connection)
+            operation = repository.operation_category(operation_id)
+            if operation is None or operation["operation_type"] != WITHDRAWAL or operation["category"] != "STAFF_ADVANCE":
+                raise CorrectionError("TYPE_INVALID", "هذه ليست حركة سلف موظفين.")
+            if repository.advance_by_operation(operation_id) is not None:
+                raise CorrectionError("ALREADY_LINKED", "هذه السلفة مربوطة بالفعل.")
+            row = repository.operation(operation_id)
+            if row["reversal"] is not None:
+                raise CorrectionError("ADVANCE_REVERSED", "هذه الحركة معكوسة.")
+            employee = repository.employee(employee_id)
+            if employee is None:
+                raise CorrectionError("PARTY_NOT_FOUND", "الموظف غير موجود.")
+            now = repository.db_now()
+            repository.insert_advance(kind="EMPLOYEE", employee_id=int(employee_id), customer_id=None, amount=Decimal(str(row["amount"])),
+                                      operation_id=operation_id, note=row.get("reason"), actor=actor, now=now)
+            repository.audit(actor=actor, event_type="ADVANCE_ATTACHED", operation_id=operation_id, code=operation_code(WITHDRAWAL, operation_id),
+                             description=f"ربط سلفة قديمة بالموظف {employee['name']}", metadata={"employee_id": int(employee_id)}, now=now)
+        return {"operation_id": str(operation_id), "employee": employee["name"]}
+
     def _finalize(self, operation_type, source, destination, amount, reason, request_key, expected_actor,
-                  category=None):
+                  category=None, link=None, extra=None):
         session_actor = self._actor(expected_actor)
         if OPERATE not in session_actor.permissions:
             raise PermissionError("ليس لديك صلاحية تنفيذ العمليات المالية.")
@@ -356,7 +460,7 @@ class FinancialAccountService:
             raise CorrectionError("REQUEST_INVALID", "أعد فتح النموذج وحاول مرة أخرى.") from None
         digest = hashlib.sha256(json.dumps(
             [operation_type, category, list(source) if source else None,
-             list(destination) if destination else None, str(amount), reason], ensure_ascii=False).encode()).hexdigest()
+             list(destination) if destination else None, str(amount), reason] + ([extra] if extra is not None else []), ensure_ascii=False).encode()).hexdigest()
         with self._transaction() as connection:
             actor = self._authorization.require_permission(connection, session_actor, OPERATE)
             repository = self._repository(connection)
@@ -390,6 +494,8 @@ class FinancialAccountService:
                 operation_type=operation_type, key=key, digest=digest, amount=amount, source=source,
                 destination=destination, reason=reason or None, actor=actor, now=now, category=category)
             code = operation_code(operation_type, operation_id)
+            if link is not None:                                               # the advance row of this operation, in the SAME transaction (any refusal rolls the money back too)
+                link(repository, operation_id, actor, now)
             group = key if operation_type == TRANSFER else None
             if operation_type == TRANSFER:
                 source_name, destination_name = accounts[source]["name"], accounts[destination]["name"]

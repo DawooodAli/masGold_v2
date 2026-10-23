@@ -73,19 +73,25 @@ class CashMovementTests(FinancialTestCase):
 
     def test_the_new_expense_categories_are_cash_out_only_and_named_in_arabic(self):
         before = self.cash()
-        names = {"UTILITIES": "كهرباء ومياه", "TRANSPORT": "نقل", "MAINTENANCE": "صيانة", "HOSPITALITY": "بوفيه وضيافة", "STAFF_ADVANCE": "سلف موظفين"}
+        names = {"UTILITIES": "كهرباء ومياه", "TRANSPORT": "نقل", "MAINTENANCE": "صيانة", "HOSPITALITY": "بوفيه وضيافة"}
         for kind in names:
             self.move("OUT", kind)
-        self.assertEqual(self.cash(), before - D("500"))
+        self.assertEqual(self.cash(), before - D("400"))
         self.assertEqual([o["category"] for o in self.store.ops.values()], list(names))
         self.assertEqual([leg["description"] for leg in self.store.op_legs], list(names.values()))
         for kind in names:
             with self.assertRaises(CorrectionError):
                 self.move("IN", kind)                                                   # an expense category is never income
 
+    def test_an_advance_category_needs_its_owner_so_the_plain_movement_refuses_it(self):
+        for kind in ("STAFF_ADVANCE", "CUSTOMER_CUSTODY", "ADVANCE_REPAY"):
+            direction = "IN" if kind == "ADVANCE_REPAY" else "OUT"
+            self.assertFinRefused("USE_ADVANCE", lambda kind=kind, direction=direction: self.move(direction, kind))
+        self.assertEqual(len(self.store.ops), 0)
+
     def test_no_second_customer_settlement_or_deposit_engine(self):
         self.assertEqual(set(CASH_TYPES), {"BANK_DEPOSIT", "BANK_WITHDRAWAL"})                     # the income / expense categories live in the cash_categories table (069)
-        for name in ("settle", "customer", "arboun", "advance"):
+        for name in ("settle", "customer", "arboun"):
             self.assertFalse(any(name in attr.lower() for attr in dir(self.fin)), name)
 
     def test_permissions(self):

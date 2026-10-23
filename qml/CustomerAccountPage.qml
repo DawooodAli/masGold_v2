@@ -78,6 +78,23 @@ Rectangle {
                 enabled: page.vm && !page.vm.busy && typeof customerVM !== "undefined" && !customerVM.busy
                 onClicked: page.deadCashRequested(page.vm.customerId) }
         }
+        Rectangle {
+            objectName: "customerCustodyCard"
+            visible: !!page.vm && page.vm.custody.length > 0
+            Layout.fillWidth: true; implicitHeight: custodyColumn.implicitHeight + 14
+            color: theme.bgSecondary; radius: 6; border.color: theme.cardBorder
+            ColumnLayout {
+                id: custodyColumn; anchors.left: parent.left; anchors.right: parent.right; anchors.margins: 8; y: 7; spacing: 3
+                Txt { objectName: "customerCustodyTotal"; font.bold: true; color: theme.amber
+                      text: page.vm ? "عهدة مؤقتة مفتوحة (خارج الرصيد): " + page.vm.custodyTotal : "" }
+                Repeater {
+                    model: page.vm ? page.vm.custody : []
+                    delegate: Txt { required property var modelData; color: theme.textMuted; font.pixelSize: 12
+                        text: modelData.code + " • " + modelData.date + " • المبلغ " + modelData.amount + " • المسدد " + modelData.repaid + " • المتبقي " + modelData.owed
+                              + (modelData.note.length > 0 ? " • " + modelData.note : "") }
+                }
+            }
+        }
         Txt { text: page.vm ? page.vm.message : ""; visible: text.length>0; color: theme.gold }
         RowLayout {
             Layout.fillWidth: true; layoutDirection: Qt.RightToLeft

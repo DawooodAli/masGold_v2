@@ -87,13 +87,73 @@ class FinRepo:
     def cash_categories(self):
         return getattr(self.store, "categories", None)                           # None = a database below 069 (the fixed list)
 
+    # ---- 074: temporary advances
+    def _advances(self):
+        if not hasattr(self.store, "advances"):
+            self.store.advances, self.store.repayments = {}, []
+            self.store.employees_list = {1: {"id": 1, "name": "شلاطة", "is_active": 1}, 2: {"id": 2, "name": "موظف قديم", "is_active": 0}}
+            self.store.customers_list = {7: {"id": 7, "name": "عميل أ", "is_active": 1}}
+        return self.store.advances
+
+    def employee(self, employee_id):
+        self._advances()
+        return self.store.employees_list.get(int(employee_id))
+
+    def customer(self, customer_id):
+        self._advances()
+        return self.store.customers_list.get(int(customer_id))
+
+    def active_employees(self):
+        self._advances()
+        return [{"id": e["id"], "name": e["name"]} for e in self.store.employees_list.values() if e["is_active"]]
+
+    def insert_advance(self, *, kind, employee_id, customer_id, amount, operation_id, note, actor, now):
+        advances = self._advances()
+        assert (kind == "EMPLOYEE") == (employee_id is not None) and (kind == "CUSTOMER") == (customer_id is not None)   # chk_cash_advance_party
+        assert amount > 0 and not any(a["operation_id"] == str(operation_id) for a in advances.values())             # uq_cash_advance_operation
+        advance_id = str(len(advances) + 1)
+        advances[advance_id] = {"id": advance_id, "kind": kind, "employee_id": employee_id, "customer_id": customer_id, "amount": amount,
+                                "operation_id": str(operation_id), "note": note, "created_at": now}
+        return advance_id
+
+    def insert_repayment(self, *, advance_id, amount, operation_id, actor, now):
+        assert amount > 0
+        self._advances()
+        self.store.repayments.append({"advance_id": str(advance_id), "amount": amount, "operation_id": str(operation_id)})
+
+    def _reversed(self, operation_id):
+        return any(c["source_type"] == FO and c["source_id"] == str(operation_id) and c["correction_type"] == "FULL_REVERSAL" for c in self.store.corrections)
+
+    def _advance_row(self, a):
+        repaid = sum((r["amount"] for r in self.store.repayments if r["advance_id"] == a["id"] and not self._reversed(r["operation_id"])), D("0"))
+        party = (self.store.employees_list if a["kind"] == "EMPLOYEE" else self.store.customers_list)[a["employee_id"] or a["customer_id"]]["name"]
+        return {**a, "party_name": party, "voided": 1 if self._reversed(a["operation_id"]) else 0, "repaid": repaid}
+
+    def advance(self, advance_id, lock=False):
+        a = self._advances().get(str(advance_id))
+        return None if a is None else self._advance_row(a)
+
+    def advances(self):
+        return [self._advance_row(a) for a in reversed(list(self._advances().values()))]
+
+    def advance_by_operation(self, operation_id):
+        return next((self._advance_row(a) for a in self._advances().values() if a["operation_id"] == str(operation_id)), None)
+
+    def advance_reversal_blockers(self, operation_id):
+        row = self.advance_by_operation(operation_id)
+        return ["على هذه السلفة سداد فعّال: اعكس السداد أولاً ثم اعكس السلفة."] if row and row["repaid"] > 0 and not row["voided"] else []
+
+    def operation_category(self, operation_id):
+        row = self.store.ops.get(str(operation_id))
+        return None if row is None else {"id": operation_id, "operation_type": row["operation_type"], "category": row["category"]}
+
     def insert_operation(self, *, operation_type, key, digest, amount, source, destination, reason, actor, now,
                          category=None):
         assert amount > 0                                                         # chk_fo_amount
         if operation_type != "ACCOUNT_TRANSFER":
             assert category or (reason and reason.strip())                        # chk_fo_shape (026)
-            allowed = ((None, "REVENUE", "REPAIR") if operation_type == "MANUAL_DEPOSIT"
-                       else (None, "EXPENSE", "SALARY", "RENT", "REPAIR", "UTILITIES", "TRANSPORT", "MAINTENANCE", "HOSPITALITY", "STAFF_ADVANCE"))      # 068
+            allowed = ((None, "REVENUE", "REPAIR", "ADVANCE_REPAY") if operation_type == "MANUAL_DEPOSIT"
+                       else (None, "EXPENSE", "SALARY", "RENT", "REPAIR", "UTILITIES", "TRANSPORT", "MAINTENANCE", "HOSPITALITY", "STAFF_ADVANCE", "CUSTOMER_CUSTODY"))      # 068 / 074
             if getattr(self.store, "categories", None) is not None:               # 069: the category must exist in cash_categories (fk_fo_category)
                 allowed = (None, *(c["code"] for c in self.store.categories))
             assert category in allowed                                            # chk_fo_category

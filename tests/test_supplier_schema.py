@@ -110,7 +110,7 @@ class SupplierSchemaTests(unittest.TestCase):
 
     def test_the_manifest_hash_matches_the_committed_file(self):
         files = {f.name: f for f in load_chain(require_committed=False)}
-        self.assertEqual(len(files), 73)
+        self.assertEqual(len(files), 74)
         self.assertIn(FORWARD, files)
 
     # ------------------------------------------------------------------ acquisition source

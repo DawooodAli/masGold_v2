@@ -322,6 +322,15 @@ class CustomerAccountViewModel(QObject):
                  'status':STATUS_TEXT.get(r['invoice_status'],'')+' · '+SETTLEMENT_TEXT.get(r['settlement_status'],'')}
                 for r in self._invoice_data.get('items',[])]
     @Property('QVariantList',notify=changed)
+    def custody(self):
+        """Temporary cash custody still owed by THIS customer (separate from the balance)."""
+        return [{'code':c['code'],'date':c['date'],'amount':money(c['amount']),'repaid':money(c['repaid']),'owed':money(c['owed']),'note':c['note']}
+                for c in self._data.get('custody',[])]
+    @Property(str,notify=changed)
+    def custodyTotal(self):
+        from decimal import Decimal
+        return money(sum((Decimal(c['owed']) for c in self._data.get('custody',[])),Decimal('0')))
+    @Property('QVariantList',notify=changed)
     def methods(self):return METHODS
     @Property('QVariantList',notify=changed)
     def accounts(self):return [{'id':str(a['id']),'name':a['name']} for a in self._data.get('accounts',[])]

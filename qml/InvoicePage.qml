@@ -300,14 +300,6 @@ Item {
         property color accent: theme.border
         color: theme.bgSecondary
         radius: 4
-        Rectangle {
-            anchors.right: parent.right
-            anchors.top: parent.top
-            anchors.bottom: parent.bottom
-            width: 3
-            radius: 2
-            color: strip.accent
-        }
     }
 
     component FieldLabel: Label {

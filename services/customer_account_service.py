@@ -37,6 +37,18 @@ class CustomerAccountService:
                 invoice_type=invoice_type or None, page=CustomerService._page_number(page),
                 _expected_actor=_expected_actor)
 
+    @staticmethod
+    def _open_custody(connection, customer_id):
+        """The customer's temporary cash custody still owed (074): shown beside the account, never part of the balance. Empty when none or below 074."""
+        from decimal import Decimal
+        from repositories.financial_account_repository import FinancialAccountRepository
+        reader = getattr(FinancialAccountRepository(connection), 'customer_open_advances', None)
+        cent = Decimal('0.01')
+        return [{'id':str(r['id']),'code':f"SA{int(r['id']):06d}",'date':r['created_at'].strftime('%Y-%m-%d') if r['created_at'] else '',
+                 'amount':str(Decimal(str(r['amount'])).quantize(cent)),'repaid':str(Decimal(str(r['repaid'])).quantize(cent)),
+                 'owed':str((Decimal(str(r['amount']))-Decimal(str(r['repaid']))).quantize(cent)),'note':r.get('note') or ''}
+                for r in (reader(customer_id) if reader else [])]
+
     def statement(self, customer_id, start='', end='', source='', search='', page=1, *, _expected_actor=None):
         actor = self.session.require_authenticated()
         if _expected_actor is not None and not self.session.is_current(_expected_actor):
@@ -65,6 +77,7 @@ class CustomerAccountService:
                 datetime.combine(last+timedelta(days=1),time.min) if last else None,
                 source,search.strip(),(page-1)*50)
             accounts = self.invoices(connection).active_bank_accounts()
+            custody = self._open_custody(connection, cid)
             try:                                     # Dead Cash detail needs DEAD_CASH_VIEW (non-locking)
                 self.authorization.require_permission_read(connection, actor, 'DEAD_CASH_VIEW')
             except PermissionError:
@@ -74,7 +87,8 @@ class CustomerAccountService:
                         if r.get('source_type') in ('DEAD_CASH_WRITE_OFF','DEAD_CASH_REVERSAL') else r
                         for r in rows]
         return {'customer':customer,'rows':rows[:50],'has_more':len(rows)>50,'page':page,
-                'accounts':accounts,'can_settle':PERMISSION in actor.permissions and bool(customer['balance'])}
+                'accounts':accounts,'can_settle':PERMISSION in actor.permissions and bool(customer['balance']),
+                'custody':custody}
 
     def finalize(self, customer_id, payments, request_key, notes='', *, _expected_actor=None):
         actor = self.session.require_authenticated()

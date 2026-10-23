@@ -30,7 +30,7 @@ class DisposalSchemaTests(unittest.TestCase):
         self.assertIn("MIGRATION_065_REFUSED_missing_064", self.forward)
         self.assertRegex(self.forward, r"INSERT INTO schema_migrations\(version,name\) VALUES \(65,")
         self.assertLessEqual(len(re.search(r"VALUES \(65,'([^']*)'", self.forward).group(1)), 150)
-        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 73)
+        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 74)
 
     def test_the_three_kinds_are_legacy_only_and_fit_the_column(self):
         self.assertEqual(kinds(self.forward), kinds(self.m064) + list(NEW_KINDS))

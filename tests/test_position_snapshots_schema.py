@@ -23,7 +23,7 @@ class PositionSnapshotSchemaTests(unittest.TestCase):
         self.assertIn("MIGRATION_067_REFUSED_missing_066", self.forward)
         self.assertRegex(self.forward, r"INSERT INTO schema_migrations\(version,name\) VALUES \(67,")
         self.assertLessEqual(len(re.search(r"VALUES \(67,'([^']*)'", self.forward).group(1)), 150)
-        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 73)
+        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 74)
 
     def test_the_snapshot_table_has_one_opening_and_a_consistent_total(self):
         for needle in ("CREATE TABLE IF NOT EXISTS position_snapshots", "snapshot_kind IN ('OPENING', 'DAILY', 'MANUAL')", "opening_flag TINYINT GENERATED ALWAYS AS (IF(snapshot_kind = 'OPENING', 1, NULL)) STORED",

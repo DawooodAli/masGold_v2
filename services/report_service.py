@@ -301,6 +301,8 @@ class ReportService:
                 bucket, label = internal, INTERNAL_FLOW[reference]
             elif m["type_code"] == "TRIP_CUSTODY_BANK_IN":
                 bucket, label = internal, INTERNAL_FLOW["MARKET_TRIP_ENTRY"]
+            elif source == "FINANCIAL_OPERATION" and category in ("STAFF_ADVANCE", "CUSTOMER_CUSTODY", "ADVANCE_REPAY"):
+                bucket, label = internal, "سلف وعهد مؤقتة (تعود للمحل)"                  # money lent and taken back: neither income nor expense
             elif source == "FINANCIAL_OPERATION":
                 label = CASH_LABELS.get(category or "", "إيداع يدوي" if amount > 0 else "سحب يدوي")
                 if category:                                                              # a categorised entry counts on the side of its ORIGINAL direction; its reversal reduces that side
