@@ -12172,6 +12172,15 @@ ApplicationWindow {
                     }
 
                     Button {
+                        objectName: "inventoryItemScrapOpen"
+                        text: "تحويل إلى الكسر"
+                        visible: inventoryVM.canManage
+                                 && root.selectedInventoryItem.inventory_status === "IN_STOCK"
+                                 && typeof oldGoldConversionVM !== "undefined" && oldGoldConversionVM.canManage
+                        onClicked: inventoryItemScrapDialog.begin()
+                    }
+
+                    Button {
                         objectName: "inventoryItemCorrectOpen"
                         text: "تعديل الصنف والعيار"
                         visible: inventoryVM.canManage
@@ -12280,6 +12289,78 @@ ApplicationWindow {
                     }
                 }
                 Button { text: "إلغاء"; onClicked: inventoryItemCorrectDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ========================================================
+    // قطعة بايظة: تحويل من البضاعة إلى الكسر
+    // ========================================================
+
+    Dialog {
+        id: inventoryItemScrapDialog
+        objectName: "inventoryItemScrapDialog"
+        modal: true
+        dim: true
+        padding: 16
+        width: Math.min(root.width - 60, 460)
+        x: Math.round((root.width - width) / 2)
+        y: Math.round((root.height - height) / 2)
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgPrimary; radius: 10; border.color: theme.goldDark }
+
+        function begin() {
+            scrapReason.text = ""
+            inventoryVM.clearActionMessage()
+            open()
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 10
+            Label {
+                Layout.fillWidth: true
+                text: "تحويل القطعة #" + root.selectedInventoryItem.inventory_item_id + " إلى الكسر"
+                color: theme.gold; font.bold: true; font.pixelSize: 15; font.family: "Cairo"
+                horizontalAlignment: Text.AlignRight
+            }
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap; font.family: "Cairo"
+                color: theme.textPrimary; horizontalAlignment: Text.AlignRight
+                text: "القطعة تخرج من البضاعة، وتدخل الكسر بنفس العيار (" + root.selectedInventoryItem.karat_value
+                      + ") ونفس الوزن (" + Number(root.selectedInventoryItem.weight_grams).toFixed(3) + " جرام). لا يمكن إرجاعها للبضاعة من هنا."
+            }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                Label { text: "السبب"; color: theme.textPrimary; font.family: "Cairo"; Layout.preferredWidth: 70; horizontalAlignment: Text.AlignRight }
+                TextField {
+                    id: scrapReason; objectName: "inventoryScrapReason"
+                    Layout.fillWidth: true; Layout.preferredHeight: 40
+                    placeholderText: "مثلاً: القطعة بايظة"
+                    font.family: "Cairo"; color: theme.textPrimary; horizontalAlignment: TextInput.AlignRight
+                    background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.border }
+                }
+            }
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap; font.family: "Cairo"
+                visible: text.length > 0 && !inventoryVM.actionSuccess
+                text: inventoryVM.actionMessage
+                color: theme.red; horizontalAlignment: Text.AlignRight
+            }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                Button {
+                    objectName: "inventoryScrapSave"
+                    text: "تحويل إلى الكسر"
+                    enabled: scrapReason.text.trim().length > 0
+                    onClicked: {
+                        if (inventoryVM.convertInventoryItemToScrap(Number(root.selectedInventoryItem.inventory_item_id), scrapReason.text)) {
+                            inventoryItemScrapDialog.close()
+                            inventoryItemDetailsDialog.close()
+                        }
+                    }
+                }
+                Button { text: "إلغاء"; onClicked: inventoryItemScrapDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }

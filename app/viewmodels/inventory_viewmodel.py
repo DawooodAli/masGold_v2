@@ -447,6 +447,23 @@ class InventoryViewModel(QObject):
 
             return False
 
+    @Slot(int, str, result=bool)
+    def convertInventoryItemToScrap(self, item_id, reason):
+        """قطعة بايظة بالمخزون تتحول للكسر (the service authorizes, requires the reason, moves stock and Scrap in one transaction)."""
+        try:
+            self._service.convert_item_to_scrap(item_id, reason)
+            self._action_message = "تم تحويل القطعة إلى الكسر."
+            self._action_success = True
+            self.refresh()
+            self.actionChanged.emit()
+            return True
+        except Exception as exc:
+            self._action_message = (str(exc) if isinstance(exc, (ValueError, PermissionError)) and any("\u0600" <= ch <= "\u06ff" for ch in str(exc))
+                                    else "تعذر تحويل القطعة؛ حدّث البيانات وأعد المحاولة.")
+            self._action_success = False
+            self.actionChanged.emit()
+            return False
+
     @Slot(int, int, int, str, result=bool)
     def correctInventoryItem(self, item_id, item_type_id, karat_id, reason):
         """تعديل صنف وعيار قطعة بالمخزون (the service authorizes, requires the reason and audits)."""

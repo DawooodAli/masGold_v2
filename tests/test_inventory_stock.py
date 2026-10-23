@@ -90,6 +90,27 @@ class Repo:
     def audit_item_correction(self, **values):
         self.store.__dict__.setdefault("audits", []).append(values)
 
+    # a spoiled piece becomes Scrap
+    def lock_old_gold_balance(self, karat_id):
+        self.store.__dict__.setdefault("locks", []).append(("scrap", karat_id))
+
+    def lock_item_for_scrap(self, item_id):
+        piece = next((p for p in self.store.pieces if p["inventory_item_id"] == item_id), None)
+        return None if piece is None else dict(piece, id=item_id, barcode_value=piece.get("barcode_value"))
+
+    def mark_item_scrapped(self, item_id, user_id):
+        piece = next(p for p in self.store.pieces if p["inventory_item_id"] == item_id)
+        piece["inventory_status"] = "SCRAPPED"
+        return 1
+
+    def add_scrapped_movement(self, *, item, reason, user_id):
+        self.store.movements.append({"kind": "SCRAPPED", "reason": reason})
+        return 501
+
+    def add_scrap_in_from_stock(self, *, item, notes, user_id):
+        self.store.__dict__.setdefault("scrap_in", []).append((item["karat_id"], item["weight_grams"], notes))
+        return 601
+
     def create_inventory_movement(self, **values):
         self.store.movements.append(values)
         return 1
@@ -180,6 +201,28 @@ class ManualEntryTests(unittest.TestCase):
         self.assertEqual((store.pieces[0]["item_type_id"], store.pieces[0]["karat_id"]), (99, 3))
         audit = store.audits[0]
         self.assertEqual((audit["item_id"], audit["metadata"]["reason"], audit["metadata"]["after"]), (7, "اتدخلت بعيار غلط", {"item_type_id": 99, "karat_id": 3}))
+
+    def test_a_spoiled_piece_in_stock_becomes_scrap_of_the_same_karat_and_weight_with_one_audit(self):
+        piece = dict(MIXED[0], inventory_item_id=7, inventory_status="IN_STOCK")
+        store = Store([piece])
+        service = service_for(store, session_for(frozenset({"APP_LOGIN", "INVENTORY_MANAGE", "OLD_GOLD_MANAGE"})))
+        with self.assertRaises(ValueError):
+            service.convert_item_to_scrap(7, "  ")                                              # the reason is mandatory
+        service.convert_item_to_scrap(7, "القطعة بايظة")
+        self.assertEqual(piece["inventory_status"], "SCRAPPED")
+        self.assertEqual((store.scrap_in[0][0], store.scrap_in[0][1]), (piece["karat_id"], piece["weight_grams"]))
+        self.assertEqual((len(store.movements), store.audits[0]["event_type"], store.audits[0]["metadata"]["old_gold_movement_id"]), (1, "INVENTORY_ITEM_TO_SCRAP", 601))
+        with self.assertRaises(ValueError):
+            service.convert_item_to_scrap(7, "تاني")                                            # no longer in stock: never twice
+        self.assertEqual(len(store.scrap_in), 1)
+
+    def test_converting_to_scrap_needs_both_the_stock_and_the_scrap_rights(self):
+        store = Store([dict(MIXED[0], inventory_item_id=7, inventory_status="IN_STOCK")])
+        with self.assertRaises(PermissionError):
+            service_for(store).convert_item_to_scrap(7, "x")                                     # INVENTORY_MANAGE only
+        with self.assertRaises(PermissionError):
+            service_for(store, session_for(frozenset({"APP_LOGIN", "OLD_GOLD_MANAGE"}))).convert_item_to_scrap(7, "x")
+        self.assertFalse(hasattr(store, "scrap_in"))
 
     def test_a_sold_or_missing_piece_is_never_corrected(self):
         store = Store([dict(MIXED[0], inventory_item_id=8, inventory_status="SOLD")])

@@ -276,6 +276,54 @@ class InventoryStockPageTests(harness.InvoicePageTests):
         details.close()
         self.assertEqual(self.warnings, [])
 
+    def test_a_spoiled_piece_in_stock_is_converted_to_scrap_with_real_clicks(self):
+        calls = []
+
+        class Service:
+            def get_stock_items(self, **kwargs):
+                return []
+
+            def get_stock_summary(self):
+                return {}
+
+            def convert_item_to_scrap(self, item_id, reason):
+                calls.append((item_id, reason))
+                return {"inventory_item_id": item_id}
+        inventory = self.controller.operational_viewmodels["inventoryVM"]
+        inventory._service = Service()
+        self.page(INVENTORY)
+        item = {"inventory_item_id": 397, "item_type_id": 1, "karat_id": 1, "item_type_name": "دبلة", "karat_value": 21, "weight_grams": 3.63, "size": "50",
+                "factory_name": "لوكس", "category_code": "", "barcode_value": "67250122", "stock_classification": "NEW_STOCK", "inventory_status": "IN_STOCK",
+                "acquisition_source": "LEGACY_MIGRATION", "acquired_at": "2025-02-05 00:00:00", "notes": ""}
+        self.root.setProperty("selectedInventoryItem", item)
+        details = self.item("inventoryItemDetailsDialog")
+        for width, height in harness.SIZES:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            details.open()
+            self.wait_until(lambda: details.property("opened"), "details")
+            button = self.item("inventoryItemScrapOpen")
+            self.assertTrue(button.property("visible"))
+            self.assert_inside_window(button)
+            self.click(button)
+            dialog = self.item("inventoryItemScrapDialog")
+            self.wait_until(lambda: dialog.property("opened"), "scrap dialog")
+            self.assertFalse(self.item("inventoryScrapSave").property("enabled"))                       # the reason is mandatory
+            self.type_into("inventoryScrapReason", "القطعة بايظة")
+            self.wait_until(lambda: self.item("inventoryScrapSave").property("enabled"), "can save")
+            self.assert_inside_window(self.item("inventoryScrapSave"))
+            before = len(calls)
+            self.click("inventoryScrapSave")
+            self.wait_until(lambda: len(calls) == before + 1, "conversion sent")
+            self.wait_until(lambda: not dialog.property("visible") and not details.property("visible"), "both dialogs close")
+        self.assertEqual(calls[-1], (397, "القطعة بايظة"))
+        self.root.setProperty("selectedInventoryItem", dict(item, inventory_status="SOLD"))
+        details.open()
+        self.wait_until(lambda: details.property("opened"), "details")
+        self.assertFalse(self.item("inventoryItemScrapOpen").property("visible"))                       # only a piece in stock
+        details.close()
+        self.assertEqual(self.warnings, [])
+
     def test_supplier_items_are_labelled_tawrid_mawrid_never_market_purchase(self):
         self.page(INVENTORY)
         dialog = self.item("inventoryItemDetailsDialog")

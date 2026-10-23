@@ -396,6 +396,54 @@ class InventoryRepository(BaseRepository):
             (employee_id,),
         )
 
+    # ---- a spoiled piece of stock becomes Scrap (old gold) of the same karat and weight
+    def lock_old_gold_balance(self, karat_id):
+        """The COUNTED old-gold ledger of the karat, locked (the same lock billing and the conversions take)."""
+        self._fetch_all("SELECT id FROM old_gold_movements WHERE karat_id = %s AND balance_effect = 'COUNTED' FOR UPDATE", (int(karat_id),))
+
+    def lock_item_for_scrap(self, item_id):
+        return self._fetch_one(
+            "SELECT ii.id, ii.inventory_status, ii.karat_id, ii.weight_grams, ii.stock_classification, "
+            "(SELECT b.barcode_value FROM inventory_barcodes b WHERE b.inventory_item_id = ii.id AND b.barcode_status = 'ACTIVE' LIMIT 1) AS barcode_value "
+            "FROM inventory_items ii WHERE ii.id = %s FOR UPDATE", (int(item_id),))
+
+    def mark_item_scrapped(self, item_id, user_id):
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(f"UPDATE inventory_items ii SET ii.inventory_status = 'SCRAPPED', ii.updated_by_user_id = %s WHERE ii.id = %s AND {CURRENT_STOCK}", (user_id, int(item_id)))
+            return cursor.rowcount
+        finally:
+            cursor.close()
+
+    def add_scrapped_movement(self, *, item, reason, user_id):
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(
+                "INSERT INTO inventory_movements (inventory_item_id, movement_type_id, from_stock_classification, to_stock_classification, from_inventory_status, to_inventory_status, "
+                "from_weight_grams, to_weight_grams, reason, reference_type, reference_id, occurred_at, performed_by_user_id, performed_by_employee_id) "
+                "SELECT %s, t.id, %s, %s, 'IN_STOCK', 'SCRAPPED', %s, %s, %s, 'INVENTORY_CONVERSION', %s, NOW(), %s, NULL FROM inventory_movement_types t WHERE t.code = 'SCRAPPED' AND t.is_active = TRUE",
+                (int(item["id"]), item["stock_classification"], item["stock_classification"], item["weight_grams"], item["weight_grams"], reason, int(item["id"]), user_id))
+            if cursor.rowcount != 1:
+                raise RuntimeError("inventory movement type SCRAPPED is missing")
+            return cursor.lastrowid
+        finally:
+            cursor.close()
+
+    def add_scrap_in_from_stock(self, *, item, notes, user_id):
+        """COUNTED STOCK_SCRAP_IN (positive): the piece's exact karat and weight enter the Scrap."""
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(
+                "INSERT INTO old_gold_movements (movement_type_id, karat_id, weight_delta_grams, balance_effect, related_inventory_item_id, reference_type, reference_id, reference_code, notes, "
+                "created_by_user_id, performed_by_user_id, received_by_employee_id, movement_code) "
+                "SELECT t.id, %s, %s, 'COUNTED', %s, 'INVENTORY_CONVERSION', %s, %s, %s, %s, %s, NULL, 'STOCK_SCRAP_IN' FROM old_gold_movement_types t WHERE t.code = 'STOCK_SCRAP_IN' AND t.is_active = TRUE",
+                (int(item["karat_id"]), item["weight_grams"], int(item["id"]), int(item["id"]), f"#{int(item['id'])}", notes, user_id, user_id))
+            if cursor.rowcount != 1:
+                raise RuntimeError("old-gold movement type STOCK_SCRAP_IN is missing")
+            return cursor.lastrowid
+        finally:
+            cursor.close()
+
     def lock_item_for_correction(self, item_id):
         """The piece row, locked (a correction reads and writes it in one transaction)."""
         return self._fetch_one(
@@ -409,14 +457,14 @@ class InventoryRepository(BaseRepository):
         finally:
             cursor.close()
 
-    def audit_item_correction(self, *, user_id, item_id, description, metadata):
+    def audit_item_correction(self, *, user_id, item_id, description, metadata, event_type="INVENTORY_ITEM_CORRECTED"):
         import json
         cursor = self.connection.cursor()
         try:
             cursor.execute(
                 "INSERT INTO audit_log (user_id, event_type, entity_type, entity_id, entity_reference, description, metadata_json, occurred_at) "
-                "VALUES (%s, 'INVENTORY_ITEM_CORRECTED', 'INVENTORY_ITEM', %s, %s, %s, %s, NOW())",
-                (user_id, int(item_id), f"#{int(item_id)}", description, json.dumps(metadata, ensure_ascii=False, default=str)))
+                "VALUES (%s, %s, 'INVENTORY_ITEM', %s, %s, %s, %s, NOW())",
+                (user_id, event_type, int(item_id), f"#{int(item_id)}", description, json.dumps(metadata, ensure_ascii=False, default=str)))
         finally:
             cursor.close()
 

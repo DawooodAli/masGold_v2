@@ -434,6 +434,39 @@ class InventoryService:
                           "after": {"item_type_id": item_type_id, "karat_id": karat_id}, "weight_grams": str(item["weight_grams"])})
         return {"inventory_item_id": item_id}
 
+    SCRAP_PERMISSION = "OLD_GOLD_MANAGE"
+
+    def convert_item_to_scrap(self, item_id, reason):
+        """قطعة بايظة بالمخزون تتحول للكسر: a piece still IN_STOCK leaves the stock (status SCRAPPED, movement SCRAPPED) and its exact karat and weight enter the Scrap (counted STOCK_SCRAP_IN)
+        in ONE transaction, with a mandatory reason and an audit. Needs INVENTORY_MANAGE and OLD_GOLD_MANAGE, both rechecked here. The piece is never deleted and its barcode stays historical."""
+        session_actor = self._require_actor()
+        if self.SCRAP_PERMISSION not in session_actor.permissions:
+            raise PermissionError("لا توجد صلاحية لإدارة الكسر.")
+        item_id = self._required_id(item_id, "Item is required.")
+        reason = self._clean_optional_text(reason, 500, "Reason is too long.")
+        if not reason:
+            raise ValueError("اكتب سبب التحويل للكسر.")
+        with self._transaction() as transaction:
+            connection = transaction.connection
+            user_id = int(self._authorize_write(connection, session_actor).user_id)
+            self._authorization.require_permission_for_write(connection, session_actor, self.SCRAP_PERMISSION)
+            repository = self._repository(connection)
+            item = repository.lock_item_for_scrap(item_id)
+            if item is None:
+                raise ValueError("القطعة غير موجودة.")
+            if item["inventory_status"] != "IN_STOCK":
+                raise ValueError("يمكن تحويل قطعة بالمخزون فقط للكسر.")
+            repository.lock_old_gold_balance(item["karat_id"])
+            if repository.mark_item_scrapped(item_id, user_id) != 1:
+                raise ValueError("القطعة لم تعد بالمخزون.")
+            movement_id = repository.add_scrapped_movement(item=item, reason=f"تحويل قطعة بايظة إلى الكسر — {reason}", user_id=user_id)
+            scrap_id = repository.add_scrap_in_from_stock(item=item, notes=f"قطعة بايظة — الباركود {item.get('barcode_value') or '—'} — {reason}", user_id=user_id)
+            repository.audit_item_correction(
+                user_id=user_id, item_id=item_id, description=f"تحويل القطعة #{item_id} إلى الكسر", event_type="INVENTORY_ITEM_TO_SCRAP",
+                metadata={"reason": reason, "karat_id": int(item["karat_id"]), "weight_grams": str(item["weight_grams"]), "barcode": item.get("barcode_value"),
+                          "inventory_movement_id": movement_id, "old_gold_movement_id": scrap_id})
+        return {"inventory_item_id": item_id, "old_gold_movement_id": scrap_id}
+
     def _automatic_barcode(self, connection):
         """The next canonical NNYYMMDD barcode (the day's sequence row is locked until the caller's transaction ends)."""
         from datetime import date
