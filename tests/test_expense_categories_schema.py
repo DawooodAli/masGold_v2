@@ -24,7 +24,7 @@ class ExpenseCategoriesSchemaTests(unittest.TestCase):
         self.assertIn("MIGRATION_068_REFUSED_missing_067", self.forward)
         self.assertRegex(self.forward, r"INSERT INTO schema_migrations\(version,name\) VALUES \(68,")
         self.assertLessEqual(len(re.search(r"VALUES \(68,'([^']*)'", self.forward).group(1)), 150)
-        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 74)
+        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 75)
 
     def test_only_the_outgoing_categories_are_widened_and_the_old_ones_stay(self):
         add = self.forward[self.forward.index("ADD CONSTRAINT chk_fo_category"):]

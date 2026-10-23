@@ -3265,6 +3265,8 @@ ApplicationWindow {
                     onInventoryRequested: root.currentPage = 2
                     legacyVoidAvailable: typeof legacyInvoiceVM !== "undefined" && legacyInvoiceVM.canVoid
                     onLegacyVoidRequested: legacyVoidDialog.open()
+                    scrapAdjustAvailable: typeof oldGoldAdjustVM !== "undefined" && oldGoldAdjustVM.canAdjust
+                    onScrapAdjustRequested: scrapAdjustDialog.open()
                     onReportsRequested: root.currentPage = 5
                     onOpeningBalanceRequested: positionOpeningDialog.open()
                     onInvoiceRequested: function(invoiceId) {
@@ -8704,6 +8706,67 @@ ApplicationWindow {
         }
     }
 
+    // تعديل رصيد الكسر: opened ONLY from مراجعات المدير (behind its password). The service rechecks OLD_GOLD_ADJUST and refuses a decrease above the available Scrap.
+    SettingsDialog {
+        id: scrapAdjustDialog
+        objectName: "scrapAdjustDialog"
+        dialogTitle: "تعديل رصيد الكسر"
+        readonly property var vm: typeof oldGoldAdjustVM !== "undefined" ? oldGoldAdjustVM : null
+        property string direction: "IN"
+        onOpened: { scrapAdjustGrams.text = ""; scrapAdjustReason.text = ""; direction = "IN"; scrapAdjustKarat.currentIndex = -1; if (vm) vm.refresh() }
+        Connections { target: scrapAdjustDialog.vm; ignoreUnknownSignals: true
+                      function onAdjusted(movementId) { scrapAdjustGrams.text = ""; scrapAdjustReason.text = "" } }
+        GoldPriceLabel {
+            Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.textMuted; font.pixelSize: 11
+            value: "يسجّل حركة تعديل باسمك وبسببها (لا يمسح أي حركة قديمة). النقص لا يزيد عن المتاح (غير المحجوز لمراجعة المدير)."
+        }
+        Repeater {
+            model: scrapAdjustDialog.vm ? scrapAdjustDialog.vm.balances : []
+            delegate: GoldPriceLabel {
+                required property var modelData
+                Layout.fillWidth: true; color: theme.textPrimary
+                value: modelData.name + " — الرصيد " + modelData.physical + " جرام" + (Number(modelData.held) > 0 ? " (محجوز " + modelData.held + ")" : "")
+            }
+        }
+        RowLayout {
+            Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+            GoldPriceLabel { value: "العيار"; color: theme.textSecondary; Layout.preferredWidth: 80 }
+            ComboBox {
+                id: scrapAdjustKarat; objectName: "scrapAdjustKarat"; Layout.preferredWidth: 260; Layout.preferredHeight: 38
+                model: scrapAdjustDialog.vm ? scrapAdjustDialog.vm.balances : []; textRole: "name"; valueRole: "karat_id"
+                currentIndex: -1; displayText: currentIndex >= 0 ? currentText : "اختر العيار"; font.family: "Cairo"
+            }
+            Item { Layout.fillWidth: true }
+        }
+        RowLayout {
+            Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+            GoldPriceLabel { value: "النوع"; color: theme.textSecondary; Layout.preferredWidth: 80 }
+            GoldPriceButton { objectName: "scrapAdjustIn"; text: "زيادة"; checkable: true; checked: scrapAdjustDialog.direction === "IN"; onClicked: scrapAdjustDialog.direction = "IN" }
+            GoldPriceButton { objectName: "scrapAdjustOut"; text: "نقص"; checkable: true; checked: scrapAdjustDialog.direction === "OUT"; onClicked: scrapAdjustDialog.direction = "OUT" }
+            Item { Layout.fillWidth: true }
+        }
+        RowLayout {
+            Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+            GoldPriceLabel { value: "الوزن (جرام)"; color: theme.textSecondary; Layout.preferredWidth: 80 }
+            TextField { id: scrapAdjustGrams; objectName: "scrapAdjustGrams"; Layout.preferredWidth: 180; horizontalAlignment: TextInput.AlignRight; font.family: "Cairo"; placeholderText: "0.000" }
+            Item { Layout.fillWidth: true }
+        }
+        TextField { id: scrapAdjustReason; objectName: "scrapAdjustReason"; Layout.fillWidth: true; placeholderText: "سبب التعديل (إجباري)"; horizontalAlignment: TextInput.AlignRight; font.family: "Cairo"; maximumLength: 500 }
+        GoldPriceButton {
+            objectName: "scrapAdjustSave"
+            text: "تسجيل التعديل"
+            enabled: !!scrapAdjustDialog.vm && !scrapAdjustDialog.vm.busy && scrapAdjustKarat.currentIndex >= 0 && Number(scrapAdjustGrams.text) > 0 && scrapAdjustReason.text.trim().length > 0
+            onClicked: scrapAdjustDialog.vm.adjust(String(scrapAdjustKarat.currentValue), scrapAdjustDialog.direction, scrapAdjustGrams.text, scrapAdjustReason.text)
+        }
+        GoldPriceLabel {
+            objectName: "scrapAdjustMessage"
+            Layout.fillWidth: true; wrapMode: Text.WordWrap; font.bold: true
+            visible: value.length > 0
+            value: scrapAdjustDialog.vm ? scrapAdjustDialog.vm.message : ""
+            color: scrapAdjustDialog.vm && scrapAdjustDialog.vm.messageIsError ? theme.red : theme.green
+        }
+    }
+
     // الرصيد الافتتاحي وجرد الذهب: opened ONLY from مراجعات المدير (behind its password), never from the Settings page.
     SettingsDialog {
         id: positionOpeningDialog
@@ -12219,6 +12282,7 @@ ApplicationWindow {
             correctTypeCombo.currentIndex = correctTypeCombo.indexOfValue(Number(root.selectedInventoryItem.item_type_id))
             correctKaratCombo.currentIndex = correctKaratCombo.indexOfValue(Number(root.selectedInventoryItem.karat_id))
             correctReason.text = ""
+            correctWeight.text = Number(root.selectedInventoryItem.weight_grams).toFixed(3)
             inventoryVM.clearActionMessage()
             open()
         }
@@ -12253,6 +12317,16 @@ ApplicationWindow {
             }
             RowLayout {
                 Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                Label { text: "الوزن"; color: theme.textPrimary; font.family: "Cairo"; Layout.preferredWidth: 70; horizontalAlignment: Text.AlignRight }
+                TextField {
+                    id: correctWeight; objectName: "inventoryCorrectWeight"
+                    Layout.fillWidth: true; Layout.preferredHeight: 40
+                    font.family: "Cairo"; color: theme.textPrimary; horizontalAlignment: TextInput.AlignRight
+                    background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.border }
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
                 Label { text: "السبب"; color: theme.textPrimary; font.family: "Cairo"; Layout.preferredWidth: 70; horizontalAlignment: Text.AlignRight }
                 TextField {
                     id: correctReason; objectName: "inventoryCorrectReason"
@@ -12265,7 +12339,7 @@ ApplicationWindow {
             Label {
                 Layout.fillWidth: true; wrapMode: Text.Wrap; font.family: "Cairo"; font.pixelSize: 11
                 color: theme.textMuted; horizontalAlignment: Text.AlignRight
-                text: "الوزن والباركود لا يتغيران. لو الباركود مطبوع على الليبل بعيار قديم أعد طباعته."
+                text: "الباركود لا يتغير. لو الليبل مطبوع ببيانات قديمة أعد طباعته. لو القطعة جاية من الكسر وصحّحت وزنها، صحّح رصيد الكسر من مراجعات المدير."
             }
             Label {
                 Layout.fillWidth: true; wrapMode: Text.Wrap; font.family: "Cairo"
@@ -12282,7 +12356,7 @@ ApplicationWindow {
                     onClicked: {
                         if (inventoryVM.correctInventoryItem(Number(root.selectedInventoryItem.inventory_item_id),
                                                              Number(correctTypeCombo.currentValue), Number(correctKaratCombo.currentValue),
-                                                             correctReason.text)) {
+                                                             correctReason.text, correctWeight.text)) {
                             inventoryItemCorrectDialog.close()
                             inventoryItemDetailsDialog.close()
                         }

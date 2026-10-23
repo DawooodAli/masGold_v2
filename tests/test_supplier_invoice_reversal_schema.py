@@ -41,7 +41,7 @@ class SupplierInvoiceReversalSchemaTests(unittest.TestCase):
         for name, expected in FROZEN.items():
             self.assertEqual(digest(name), expected, name)
         files = {f.name: f for f in load_chain(require_committed=False)}
-        self.assertEqual((len(files), chain_module.LAST), (74, 74))
+        self.assertEqual((len(files), chain_module.LAST), (75, 75))
         self.assertEqual(files[FORWARD].sha256, digest(FORWARD))
         self.assertIn(f"{digest(FORWARD)}  {FORWARD}", (ROOT / "database" / "schema" / "SHA256SUMS").read_text(encoding="utf-8"))
 

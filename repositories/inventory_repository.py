@@ -449,10 +449,13 @@ class InventoryRepository(BaseRepository):
         return self._fetch_one(
             "SELECT id, inventory_status, item_type_id, karat_id, weight_grams FROM inventory_items WHERE id = %s FOR UPDATE", (int(item_id),))
 
-    def update_item_type_and_karat(self, item_id, item_type_id, karat_id):
+    def update_item_type_and_karat(self, item_id, item_type_id, karat_id, weight_grams=None):
         cursor = self.connection.cursor()
         try:
-            cursor.execute("UPDATE inventory_items SET item_type_id = %s, karat_id = %s WHERE id = %s", (int(item_type_id), int(karat_id), int(item_id)))
+            if weight_grams is None:
+                cursor.execute("UPDATE inventory_items SET item_type_id = %s, karat_id = %s WHERE id = %s", (int(item_type_id), int(karat_id), int(item_id)))
+            else:
+                cursor.execute("UPDATE inventory_items SET item_type_id = %s, karat_id = %s, weight_grams = %s WHERE id = %s", (int(item_type_id), int(karat_id), weight_grams, int(item_id)))
             return cursor.rowcount
         finally:
             cursor.close()

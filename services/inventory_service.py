@@ -400,9 +400,10 @@ class InventoryService:
         return inventory_item_id
 
 
-    def correct_item(self, item_id, item_type_id, karat_id, reason):
-        """تعديل صنف وعيار قطعة مدخلة بالخطأ: only a piece still IN_STOCK, with a mandatory reason, audited with the before / after values. Never a sold, returned or removed piece
-        (its invoices keep the values they were sold with). The weight, barcode and every movement stay as they are."""
+    def correct_item(self, item_id, item_type_id, karat_id, reason, weight_grams=None):
+        """تعديل صنف وعيار (ووزن) قطعة مدخلة بالخطأ: only a piece still IN_STOCK, with a mandatory reason, audited with the before / after values. Never a sold, returned or removed piece
+        (its invoices keep the values they were sold with). The barcode and every movement stay; the weight changes only when a new weight is given (the Scrap that the piece came from is
+        corrected separately by the manager's Scrap adjustment)."""
         session_actor = self._require_actor()
         item_id = self._required_id(item_id, "Item is required.")
         item_type_id = self._required_id(item_type_id, "Item type is required.")
@@ -410,6 +411,7 @@ class InventoryService:
         reason = self._clean_optional_text(reason, 500, "Reason is too long.")
         if not reason:
             raise ValueError("اكتب سبب التعديل.")
+        new_weight = None if weight_grams in (None, "") else self._parse_weight(weight_grams)
         with self._transaction() as transaction:
             connection = transaction.connection
             user_id = int(self._authorize_write(connection, session_actor).user_id)
@@ -419,19 +421,21 @@ class InventoryService:
                 raise ValueError("القطعة غير موجودة.")
             if item["inventory_status"] != "IN_STOCK":
                 raise ValueError("يمكن تعديل الصنف والعيار لقطعة بالمخزون فقط (المباعة أو المرتجعة تحتفظ ببياناتها).")
-            if int(item["item_type_id"]) == item_type_id and int(item["karat_id"]) == karat_id:
-                raise ValueError("لم يتغير الصنف ولا العيار.")
+            weight_changed = new_weight is not None and Decimal(str(item["weight_grams"])) != new_weight
+            if int(item["item_type_id"]) == item_type_id and int(item["karat_id"]) == karat_id and not weight_changed:
+                raise ValueError("لم يتغير الصنف ولا العيار ولا الوزن.")
             new_type = repository.get_active_item_type_by_id(item_type_id)
             if new_type is None:
                 raise ValueError("Item type is not active or does not exist.")
             new_karat = repository.get_active_karat_by_id(karat_id)
             if new_karat is None:
                 raise ValueError("Karat is not active or does not exist.")
-            repository.update_item_type_and_karat(item_id, item_type_id, karat_id)
+            repository.update_item_type_and_karat(item_id, item_type_id, karat_id, new_weight if weight_changed else None)
             repository.audit_item_correction(
                 user_id=user_id, item_id=item_id, description=f"تعديل صنف / عيار القطعة #{item_id}",
                 metadata={"reason": reason, "before": {"item_type_id": int(item["item_type_id"]), "karat_id": int(item["karat_id"])},
-                          "after": {"item_type_id": item_type_id, "karat_id": karat_id}, "weight_grams": str(item["weight_grams"])})
+                          "after": {"item_type_id": item_type_id, "karat_id": karat_id}, "weight_grams": str(item["weight_grams"]),
+                          "new_weight_grams": str(new_weight) if weight_changed else None})
         return {"inventory_item_id": item_id}
 
     SCRAP_PERMISSION = "OLD_GOLD_MANAGE"

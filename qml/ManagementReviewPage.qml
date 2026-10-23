@@ -16,8 +16,10 @@ Item {
     signal reportsRequested()
     signal openingBalanceRequested()
     signal legacyVoidRequested()
+    signal scrapAdjustRequested()
     signal inventoryRequested()
     property bool legacyVoidAvailable: false
+    property bool scrapAdjustAvailable: false
     property bool reportsAvailable: false
     property bool openingAvailable: false
 
@@ -706,6 +708,13 @@ Item {
                 text: "🗑  إلغاء فاتورة قديمة"
                 accent: theme.red
                 onClicked: reviewPage.legacyVoidRequested()
+            }
+            ActionButton {
+                objectName: "reviewsOpenScrapAdjust"
+                visible: reviewPage.scrapAdjustAvailable
+                text: "⚖  تعديل رصيد الكسر"
+                accent: theme.amber
+                onClicked: reviewPage.scrapAdjustRequested()
             }
             ActionButton {
                 objectName: "reviewsOpenOpening"

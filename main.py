@@ -200,6 +200,9 @@ class ApplicationController(QObject):
         if self.operational_viewmodels.get("managerGateVM") is None:
             from app.viewmodels.manager_gate_viewmodel import create_manager_gate_viewmodel
             self.operational_viewmodels["managerGateVM"] = create_manager_gate_viewmodel(self.session)
+        if self.operational_viewmodels.get("oldGoldAdjustVM") is None:
+            from app.viewmodels.old_gold_adjustment_viewmodel import create_old_gold_adjustment_viewmodel
+            self.operational_viewmodels["oldGoldAdjustVM"] = create_old_gold_adjustment_viewmodel(self.session)
         if self.operational_viewmodels.get("stocktakeAdjustVM") is None:
             from app.viewmodels.stocktake_adjust_viewmodel import create_stocktake_adjust_viewmodel
             self.operational_viewmodels["stocktakeAdjustVM"] = create_stocktake_adjust_viewmodel(self.session)
@@ -247,6 +250,9 @@ class ApplicationController(QObject):
             balances = self.operational_viewmodels["balancesVM"]
             if hasattr(invoice_vm, "finalized") and hasattr(balances, "refresh"):
                 invoice_vm.finalized.connect(balances.refresh)       # the ledgers just changed
+            scrap_adjust = self.operational_viewmodels.get("oldGoldAdjustVM")
+            if hasattr(scrap_adjust, "adjusted") and hasattr(balances, "refresh"):
+                scrap_adjust.adjusted.connect(balances.refresh)      # the Scrap in the top bar follows a manual adjustment
             dashboard = self.operational_viewmodels["dashboardVM"]
             if hasattr(invoice_vm, "finalized") and hasattr(dashboard, "refresh"):
                 invoice_vm.finalized.connect(dashboard.refresh)      # today's figures just changed

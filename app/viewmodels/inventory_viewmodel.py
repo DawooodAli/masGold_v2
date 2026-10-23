@@ -464,11 +464,11 @@ class InventoryViewModel(QObject):
             self.actionChanged.emit()
             return False
 
-    @Slot(int, int, int, str, result=bool)
-    def correctInventoryItem(self, item_id, item_type_id, karat_id, reason):
-        """تعديل صنف وعيار قطعة بالمخزون (the service authorizes, requires the reason and audits)."""
+    @Slot(int, int, int, str, str, result=bool)
+    def correctInventoryItem(self, item_id, item_type_id, karat_id, reason, weight):
+        """تعديل صنف وعيار ووزن قطعة بالمخزون (the service authorizes, requires the reason and audits)."""
         try:
-            self._service.correct_item(item_id, item_type_id, karat_id, reason)
+            self._service.correct_item(item_id, item_type_id, karat_id, reason, weight)
             self._action_message = "تم تعديل الصنف والعيار."
             self._action_success = True
             self.refresh()

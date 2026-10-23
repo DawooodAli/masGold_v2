@@ -82,9 +82,11 @@ class Repo:
     def lock_item_for_correction(self, item_id):
         return next((dict(p, id=item_id) for p in self.store.pieces if p["inventory_item_id"] == item_id), None)
 
-    def update_item_type_and_karat(self, item_id, item_type_id, karat_id):
+    def update_item_type_and_karat(self, item_id, item_type_id, karat_id, weight_grams=None):
         piece = next(p for p in self.store.pieces if p["inventory_item_id"] == item_id)
         piece["item_type_id"], piece["karat_id"] = item_type_id, karat_id
+        if weight_grams is not None:
+            piece["weight_grams"] = weight_grams
         return 1
 
     def audit_item_correction(self, **values):
@@ -201,6 +203,18 @@ class ManualEntryTests(unittest.TestCase):
         self.assertEqual((store.pieces[0]["item_type_id"], store.pieces[0]["karat_id"]), (99, 3))
         audit = store.audits[0]
         self.assertEqual((audit["item_id"], audit["metadata"]["reason"], audit["metadata"]["after"]), (7, "اتدخلت بعيار غلط", {"item_type_id": 99, "karat_id": 3}))
+
+    def test_the_weight_of_a_piece_in_stock_can_be_corrected_with_the_same_reason_and_audit(self):
+        piece = dict(MIXED[0], inventory_item_id=7, inventory_status="IN_STOCK")
+        store = Store([piece])
+        service = service_for(store)
+        service.correct_item(7, piece["item_type_id"], piece["karat_id"], "وزن غلط", "3.700")
+        self.assertEqual(piece["weight_grams"], D("3.700"))
+        self.assertEqual(store.audits[0]["metadata"]["new_weight_grams"], "3.700")
+        with self.assertRaises(ValueError):
+            service.correct_item(7, piece["item_type_id"], piece["karat_id"], "لا تغيير", "3.700")      # nothing changed
+        with self.assertRaises(ValueError):
+            service.correct_item(7, piece["item_type_id"], piece["karat_id"], "x", "-1")                 # a weight must be positive
 
     def test_a_spoiled_piece_in_stock_becomes_scrap_of_the_same_karat_and_weight_with_one_audit(self):
         piece = dict(MIXED[0], inventory_item_id=7, inventory_status="IN_STOCK")

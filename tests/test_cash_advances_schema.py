@@ -23,7 +23,7 @@ class CashAdvancesSchemaTests(unittest.TestCase):
         self.assertIn("MIGRATION_074_REFUSED_missing_073", self.forward)
         self.assertRegex(self.forward, r"INSERT INTO schema_migrations\(version,name\) VALUES \(74,")
         self.assertLessEqual(len(re.search(r"VALUES \(74,'([^']*)'", self.forward).group(1)), 150)
-        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 74)
+        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 75)
 
     def test_an_advance_has_exactly_one_party_one_withdrawal_and_a_positive_amount(self):
         for needle in ("CREATE TABLE IF NOT EXISTS cash_advances", "UNIQUE KEY uq_cash_advance_operation (operation_id)", "FOREIGN KEY (operation_id) REFERENCES financial_operations(id)",

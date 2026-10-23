@@ -230,7 +230,7 @@ class InventoryStockPageTests(harness.InvoicePageTests):
             def get_stock_summary(self):
                 return {}
 
-            def correct_item(self, item_id, item_type_id, karat_id, reason):
+            def correct_item(self, item_id, item_type_id, karat_id, reason, weight_grams=None):
                 calls.append((item_id, item_type_id, karat_id, reason))
                 return {"inventory_item_id": item_id}
         inventory = self.controller.operational_viewmodels["inventoryVM"]
