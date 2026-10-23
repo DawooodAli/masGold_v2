@@ -42,6 +42,11 @@ def build_snapshot(summary, supplier_rows, cash, bank):
             "cash_egp": _money(cash), "bank_egp": _money(bank)}
 
 
+def eq21(grams_by_karat):
+    """21K-equivalent grams of {karat: grams}: grams x karat / 21, summed (three decimals)."""
+    return _q(sum((_dec(grams) * int(karat) / Decimal(21) for karat, grams in grams_by_karat.items()), Decimal(0)))
+
+
 def opening_snapshot(gold_shop_eq21, gold_suppliers_eq21, cash, bank):
     """The owner's initial balance: the gold of the shop and the NET supplier gold (signed: + the suppliers hold it for the shop, - the shop owes it), cash and bank. Other parts start at zero."""
     parts = {"gold_shop_eq21": _q(gold_shop_eq21), "gold_custody_eq21": Decimal("0.000"), "gold_intermediary_eq21": Decimal("0.000"), "gold_book_eq21": Decimal("0.000"),

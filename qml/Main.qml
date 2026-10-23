@@ -5228,7 +5228,7 @@ ApplicationWindow {
         content: [
             GoldPriceLabel {
                 Layout.fillWidth: true; wrapMode: Text.WordWrap
-                value: "يُسجَّل مرة واحدة عند بدء التشغيل الفعلي. ذهب المحل = مخزون + كسر + سبائك بمكافئ عيار 21، وذهب الموردين بالإشارة (موجب = لنا عندهم، سالب = علينا). بعد التسجيل لا يتغير، ويأخذ البرنامج جردًا تلقائيًا كل يوم."
+                value: "مرحلتان، كل واحدة تتسجّل مرة واحدة ولا تتغير: (١) رصيد الكسر والكاش والبنوك والمحافظ، ويتسجّل في الأرصدة الفعلية. (٢) الذهب الجديد بعد الجرد، والبرنامج يحسب مكافئه بعيار 21 ويقفل الكارت. بعدها يأخذ البرنامج جردًا تلقائيًا كل يوم."
                 color: theme.textMuted; font.pixelSize: 11
             },
             GoldPriceLabel {
@@ -5237,40 +5237,105 @@ ApplicationWindow {
                 value: opening.vm ? opening.vm.openingText : ""
                 color: theme.green
             },
-            GridLayout {
-                objectName: "openingFields"
-                visible: !!opening.vm && opening.vm.loaded && !opening.vm.hasOpening
-                columns: 2; layoutDirection: Qt.RightToLeft
-                Layout.fillWidth: true; columnSpacing: 12; rowSpacing: 8
+            // ---- STAGE 1: the scrap per karat, the cash and the bank / wallet balances (posted into the real ledgers)
+            ColumnLayout {
+                objectName: "openingStage1"
+                Layout.fillWidth: true; spacing: 8
+                visible: !!opening.vm && opening.vm.loaded && !opening.vm.ledgersPosted && !opening.vm.hasOpening
                 enabled: !!opening.vm && !opening.vm.busy
-                GoldPriceLabel { Layout.preferredWidth: 150; value: "ذهب المحل (جرام مكافئ 21)" }
-                GoldPriceInput { id: openingGold; objectName: "openingGold"; Layout.fillWidth: true; Layout.maximumWidth: 300; Layout.preferredHeight: 34 }
-                GoldPriceLabel { Layout.preferredWidth: 150; value: "ذهب الموردين صافي (+ لنا / − علينا)" }
-                GoldPriceInput { id: openingSuppliers; objectName: "openingSuppliers"; Layout.fillWidth: true; Layout.maximumWidth: 300; Layout.preferredHeight: 34 }
-                GoldPriceLabel { Layout.preferredWidth: 150; value: "الكاش (الخزنة) ج" }
-                GoldPriceInput { id: openingCash; objectName: "openingCash"; Layout.fillWidth: true; Layout.maximumWidth: 300; Layout.preferredHeight: 34 }
-                GoldPriceLabel { Layout.preferredWidth: 150; value: "البنوك والمحافظ ج" }
-                GoldPriceInput { id: openingBank; objectName: "openingBank"; Layout.fillWidth: true; Layout.maximumWidth: 300; Layout.preferredHeight: 34 }
+                GoldPriceLabel { Layout.fillWidth: true; value: "١) رصيد الكسر والكاش والبنوك"; color: theme.gold; font.bold: true }
+                GoldPriceLabel { Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.textMuted; font.pixelSize: 11
+                                 value: "يتسجّل في رصيد الكسر وفي الخزنة وفي حسابات البنوك والمحافظ مباشرة (حركة «رصيد افتتاحي» لكل حساب)، ولا يتغير بعد التسجيل." }
+                GridLayout {
+                    columns: 2; layoutDirection: Qt.RightToLeft; Layout.fillWidth: true; columnSpacing: 12; rowSpacing: 8
+                    GoldPriceLabel { Layout.preferredWidth: 170; value: "كسر عيار 21 (جرام)" }
+                    GoldPriceInput { id: scrap21; objectName: "openingScrap21"; Layout.fillWidth: true; Layout.maximumWidth: 300; Layout.preferredHeight: 34 }
+                    GoldPriceLabel { Layout.preferredWidth: 170; value: "كسر عيار 18 (جرام)" }
+                    GoldPriceInput { id: scrap18; objectName: "openingScrap18"; Layout.fillWidth: true; Layout.maximumWidth: 300; Layout.preferredHeight: 34 }
+                    GoldPriceLabel { Layout.preferredWidth: 170; value: "كسر عيار 24 (جرام)" }
+                    GoldPriceInput { id: scrap24; objectName: "openingScrap24"; Layout.fillWidth: true; Layout.maximumWidth: 300; Layout.preferredHeight: 34 }
+                    GoldPriceLabel { Layout.preferredWidth: 170; value: "الكاش — الخزنة (ج)" }
+                    GoldPriceInput { id: openingCash; objectName: "openingCash"; Layout.fillWidth: true; Layout.maximumWidth: 300; Layout.preferredHeight: 34 }
+                }
+                Repeater {
+                    id: bankRepeater
+                    model: opening.vm ? opening.vm.accounts.filter(function(a) { return a.ledger === "BANK" }) : []
+                    delegate: RowLayout {
+                        id: bankRow
+                        required property var modelData
+                        property string accountId: modelData.id
+                        readonly property string amount: bankAmount.text
+                        Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 12
+                        GoldPriceLabel { Layout.preferredWidth: 170; value: bankRow.modelData.name + " (" + bankRow.modelData.typeText + ") ج" }
+                        GoldPriceInput { id: bankAmount; objectName: "openingAccount_" + bankRow.modelData.id; Layout.fillWidth: true; Layout.maximumWidth: 300; Layout.preferredHeight: 34
+                                         enabled: bankRow.modelData.free }
+                        GoldPriceLabel { visible: !bankRow.modelData.free; value: "لها حركات بالفعل"; color: theme.amber; font.pixelSize: 11 }
+                        Item { Layout.fillWidth: true }
+                    }
+                }
+                GoldPriceLabel { visible: bankRepeater.count === 0; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.amber; font.pixelSize: 11
+                                 value: "لا توجد حسابات بنوك أو محافظ بعد: أضفها من «الحسابات المالية» في مراجعات المدير لو عايز تسجّل لها رصيد (مثل فودافون كاش)." }
+                CheckBox {
+                    id: ledgersConfirm; objectName: "openingLedgersConfirm"
+                    text: "أؤكد أن أرصدة الكسر والكاش والبنوك صحيحة وأنها لا تتغير بعد التسجيل"
+                    font.family: "Cairo"; font.pixelSize: 12
+                    contentItem: Text { text: ledgersConfirm.text; font: ledgersConfirm.font; color: theme.textPrimary; horizontalAlignment: Text.AlignRight; leftPadding: 4; rightPadding: ledgersConfirm.indicator.width + 6; verticalAlignment: Text.AlignVCenter }
+                }
+                GoldPriceButton {
+                    objectName: "openingLedgersSave"; text: "تسجيل الكسر والكاش والبنوك"
+                    enabled: ledgersConfirm.checked && !!opening.vm && !opening.vm.busy
+                    onClicked: {
+                        var banks = {}
+                        for (var i = 0; i < bankRepeater.count; i++) { var row = bankRepeater.itemAt(i); if (row && row.amount.length > 0) banks[row.accountId] = row.amount }
+                        opening.vm.saveLedgers({"21": scrap21.text, "18": scrap18.text, "24": scrap24.text}, openingCash.text, banks)
+                    }
+                }
             },
-            CheckBox {
-                id: openingConfirm; objectName: "openingConfirm"
-                visible: !!opening.vm && opening.vm.loaded && !opening.vm.hasOpening
-                text: "أؤكد أن الأرقام صحيحة وأنها لا تتغير بعد التسجيل"
-                font.family: "Cairo"; font.pixelSize: 12
-                contentItem: Text { text: openingConfirm.text; font: openingConfirm.font; color: theme.textPrimary; horizontalAlignment: Text.AlignRight; leftPadding: 4; rightPadding: openingConfirm.indicator.width + 6; verticalAlignment: Text.AlignVCenter }
+            GoldPriceLabel {
+                objectName: "openingLedgersRecorded"; Layout.fillWidth: true; wrapMode: Text.WordWrap
+                visible: !!opening.vm && opening.vm.ledgersPosted
+                value: opening.vm ? opening.vm.postedText : ""
+                color: theme.green
+            },
+            // ---- STAGE 2: the new gold per karat (typed after the stocktake), the 21K equivalent is computed; recording it closes the card
+            ColumnLayout {
+                objectName: "openingStage2"
+                Layout.fillWidth: true; spacing: 8
+                visible: !!opening.vm && opening.vm.loaded && opening.vm.ledgersPosted && !opening.vm.hasOpening
+                enabled: !!opening.vm && !opening.vm.busy
+                GoldPriceLabel { Layout.fillWidth: true; value: "٢) الذهب الجديد (بعد الجرد)"; color: theme.gold; font.bold: true }
+                GridLayout {
+                    columns: 2; layoutDirection: Qt.RightToLeft; Layout.fillWidth: true; columnSpacing: 12; rowSpacing: 8
+                    GoldPriceLabel { Layout.preferredWidth: 170; value: "ذهب جديد عيار 21 (جرام)" }
+                    GoldPriceInput { id: gold21; objectName: "openingGold21"; Layout.fillWidth: true; Layout.maximumWidth: 300; Layout.preferredHeight: 34 }
+                    GoldPriceLabel { Layout.preferredWidth: 170; value: "ذهب جديد عيار 18 (جرام)" }
+                    GoldPriceInput { id: gold18; objectName: "openingGold18"; Layout.fillWidth: true; Layout.maximumWidth: 300; Layout.preferredHeight: 34 }
+                    GoldPriceLabel { Layout.preferredWidth: 170; value: "ذهب جديد عيار 24 (جرام)" }
+                    GoldPriceInput { id: gold24; objectName: "openingGold24"; Layout.fillWidth: true; Layout.maximumWidth: 300; Layout.preferredHeight: 34 }
+                    GoldPriceLabel { Layout.preferredWidth: 170; value: "المكافئ بعيار 21 (جرام) — يتحسب لوحده"; color: theme.gold }
+                    GoldPriceLabel { objectName: "openingEq21"; Layout.fillWidth: true; color: theme.gold; font.bold: true
+                                     value: opening.vm ? opening.vm.previewEq21({"21": gold21.text, "18": gold18.text, "24": gold24.text}) : "" }
+                    GoldPriceLabel { Layout.preferredWidth: 170; value: "ذهب الموردين صافي (+ لنا / − علينا) — اختياري" }
+                    GoldPriceInput { id: openingSuppliers; objectName: "openingSuppliers"; Layout.fillWidth: true; Layout.maximumWidth: 300; Layout.preferredHeight: 34 }
+                }
+                CheckBox {
+                    id: openingConfirm; objectName: "openingConfirm"
+                    text: "أؤكد أن أرقام الذهب الجديد صحيحة، وأن الكارت يتقفل بعد التسجيل"
+                    font.family: "Cairo"; font.pixelSize: 12
+                    contentItem: Text { text: openingConfirm.text; font: openingConfirm.font; color: theme.textPrimary; horizontalAlignment: Text.AlignRight; leftPadding: 4; rightPadding: openingConfirm.indicator.width + 6; verticalAlignment: Text.AlignVCenter }
+                }
+                GoldPriceButton {
+                    objectName: "openingSave"; text: "تسجيل الذهب الجديد وإغلاق الكارت"
+                    enabled: openingConfirm.checked && (gold21.text.length > 0 || gold18.text.length > 0 || gold24.text.length > 0) && !!opening.vm && !opening.vm.busy
+                    onClicked: opening.vm.saveOpening({"21": gold21.text, "18": gold18.text, "24": gold24.text}, openingSuppliers.text)
+                }
             },
             RowLayout {
                 Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
                 GoldPriceLabel {
-                    objectName: "openingMessage"; Layout.fillWidth: true; visible: value.length > 0
+                    objectName: "openingMessage"; Layout.fillWidth: true; visible: value.length > 0; wrapMode: Text.WordWrap
                     value: opening.vm ? opening.vm.message : ""
                     color: opening.vm && opening.vm.messageIsError ? theme.priceError : theme.green
-                }
-                GoldPriceButton {
-                    objectName: "openingSave"; text: "تسجيل الرصيد الافتتاحي"
-                    visible: !!opening.vm && opening.vm.loaded && !opening.vm.hasOpening
-                    enabled: openingConfirm.checked && openingGold.text.length > 0 && !!opening.vm && !opening.vm.busy
-                    onClicked: opening.vm.saveOpening(openingGold.text, openingSuppliers.text, openingCash.text, openingBank.text)
                 }
                 GoldPriceButton {
                     objectName: "openingTakeNow"; text: "جرد الآن"

@@ -19,6 +19,7 @@ class PositionSnapshotViewModel(QObject):
         super().__init__(parent)
         self._session, self._service = session, service
         self._opening, self._loaded, self._busy = None, False, False
+        self._ledgers_posted, self._accounts, self._posted = False, [], {}
         self._message, self._is_error = "", False
         self._request, self._workers = 0, set()
 
@@ -47,6 +48,24 @@ class PositionSnapshotViewModel(QObject):
     def messageIsError(self):
         return self._is_error
 
+    @Property(bool, notify=changed)
+    def ledgersPosted(self):
+        return self._ledgers_posted
+
+    @Property("QVariantList", notify=changed)
+    def accounts(self):
+        """The main safe and the bank / wallet accounts that can take an opening balance: {id, ledger, name, typeText, free}."""
+        return self._accounts
+
+    @Property(str, notify=changed)
+    def postedText(self):
+        """What stage 1 posted (read-only once recorded)."""
+        if not self._ledgers_posted:
+            return ""
+        scrap = self._posted.get("scrap", {})
+        parts = [f"كسر {karat}: {scrap[karat]:,.3f} جرام" for karat in (21, 18, 24) if scrap.get(karat)]
+        return "سُجّل: " + " • ".join(parts + [f"الكاش {self._posted.get('cash', 0):,.2f} ج", f"البنوك والمحافظ {self._posted.get('bank', 0):,.2f} ج"])
+
     @Property(str, notify=changed)
     def openingText(self):
         o = self._opening
@@ -60,9 +79,30 @@ class PositionSnapshotViewModel(QObject):
     def refresh(self):
         self._run("opening", lambda _expected_actor: self._service.opening_state(_expected_actor=_expected_actor), self._opening_loaded)
 
-    @Slot(str, str, str, str)
-    def saveOpening(self, gold, suppliers, cash, bank):
-        self._run("opening-save", lambda _expected_actor: self._service.set_opening(gold, suppliers, cash, bank, _expected_actor=_expected_actor), self._opening_saved)
+    @Slot("QVariantMap", str, "QVariantMap")
+    def saveLedgers(self, scrap, cash, banks):
+        """Stage 1: scrap per karat ({"21": "...", ...}), the cash and the bank / wallet openings ({account id: amount})."""
+        scrap, banks = dict(scrap or {}), dict(banks or {})
+        self._run("opening-ledgers", lambda _expected_actor: self._service.post_opening_ledgers(scrap, cash, banks, _expected_actor=_expected_actor), self._ledgers_saved)
+
+    @Slot("QVariantMap", str)
+    def saveOpening(self, new_gold, suppliers):
+        """Stage 2: the new gold per karat ({"21": "...", ...}) and the optional net supplier gold; it records the OPENING sheet and closes the card."""
+        new_gold = dict(new_gold or {})
+        self._run("opening-save", lambda _expected_actor: self._service.set_opening(new_gold, suppliers, _expected_actor=_expected_actor), self._opening_saved)
+
+    @Slot("QVariantMap", result=str)
+    def previewEq21(self, grams):
+        """The 21K-equivalent grams of what is typed per karat (display only; the service computes the stored figure)."""
+        from decimal import Decimal, InvalidOperation
+        from services import position_snapshot_rules as rules
+        parsed = {}
+        for karat, value in dict(grams or {}).items():
+            try:
+                parsed[int(karat)] = Decimal(str(value).strip().replace(",", "") or "0")
+            except (InvalidOperation, ValueError):
+                return "—"
+        return f"{rules.eq21(parsed):,.3f}"
 
     @Slot()
     def takeNow(self):
@@ -105,7 +145,14 @@ class PositionSnapshotViewModel(QObject):
         self.changed.emit()
 
     def _opening_loaded(self, result):
-        self._opening, self._loaded = result, True
+        self._opening, self._loaded = result["opening"], True
+        self._ledgers_posted, self._posted = result["ledgers_posted"], result["posted"]
+        names = {"CASH": "نقدية", "BANK": "بنك", "MOBILE_WALLET": "محفظة"}
+        self._accounts = [{"id": a["id"], "ledger": a["ledger"], "name": a["name"], "typeText": names.get(a["type"], a["type"] or ""), "free": a["free"]} for a in result["accounts"]]
+
+    def _ledgers_saved(self, result):
+        self._message, self._is_error = "تم تسجيل الكسر والكاش والبنوك. الآن سجّل الذهب الجديد.", False
+        self.refresh()
 
     def _opening_saved(self, result):
         self._message, self._is_error = "تم تسجيل الرصيد الافتتاحي ولا يمكن تعديله.", False

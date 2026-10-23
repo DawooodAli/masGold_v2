@@ -74,9 +74,13 @@ class PositionSnapshotsMySqlTests(unittest.TestCase):
     def test_the_service_enters_the_opening_once_takes_a_daily_sheet_once_and_the_report_reads_them(self):
         service = self.snapshot_service()
         self.assertEqual(service.ensure_daily(), {"taken": False, "reason": "NO_OPENING"})
-        service.set_opening("5000", "-120.5", "200000", "30000")
         with self.assertRaises(SnapshotError) as raised:
-            service.set_opening("1", "0", "0", "0")
+            service.set_opening({"21": "5000"}, "0")                                              # the ledgers come first
+        self.assertEqual(raised.exception.code, "LEDGERS_FIRST")
+        service.post_opening_ledgers({"21": "100"}, "0", {})                                      # stage 1 (scrap only: the rehearsal accounts already have movements)
+        service.set_opening({"21": "5000"}, "-120.5")
+        with self.assertRaises(SnapshotError) as raised:
+            service.set_opening({"21": "1"}, "0")
         self.assertEqual(raised.exception.code, "ALREADY_INITIALIZED")
         first = service.ensure_daily()
         self.assertTrue(first["taken"], first)
@@ -87,7 +91,11 @@ class PositionSnapshotsMySqlTests(unittest.TestCase):
         q.close()
         self.assertEqual([r["snapshot_kind"] for r in rows][-2:], ["OPENING", "DAILY"])
         opening = next(r for r in rows if r["snapshot_kind"] == "OPENING")
-        self.assertEqual((opening["gold_shop_eq21"], opening["gold_suppliers_eq21"], opening["gold_total_eq21"]), (D("5000.000"), D("-120.500"), D("4879.500")))
+        from services import position_snapshot_rules as rules
+        from repositories.position_snapshot_repository import PositionSnapshotRepository
+        scrap_rows, _cash, _bank = PositionSnapshotRepository(self.connection).opening_totals()                      # the rehearsal database already holds other opening scrap: the sheet takes the whole ledger
+        scrap_eq21 = rules.eq21({int(r["karat_value"]): r["grams"] for r in scrap_rows})
+        self.assertEqual((opening["gold_shop_eq21"], opening["gold_suppliers_eq21"], opening["gold_total_eq21"]), (D("5000.000") + scrap_eq21, D("-120.500"), D("4879.500") + scrap_eq21))
 
         @contextmanager
         def factory():
@@ -97,7 +105,7 @@ class PositionSnapshotsMySqlTests(unittest.TestCase):
         self.assertIn("ربح الذهب (مكافئ 21)", labels)
         self.assertNotEqual(labels["ربح الذهب (مكافئ 21)"]["value"], "غير متاح", labels["ربح الذهب (مكافئ 21)"]["note"])      # two sheets: a difference can be measured
         parts = {r["part"]: r for r in report["tables"][0]["rows"]}
-        self.assertEqual(parts["الإجمالي"]["opening"], D("4879.500"))
+        self.assertEqual(parts["الإجمالي"]["opening"], D("4879.500") + scrap_eq21)
         self.assertEqual(parts["الإجمالي"]["change"], parts["الإجمالي"]["closing"] - parts["الإجمالي"]["opening"])
 
 

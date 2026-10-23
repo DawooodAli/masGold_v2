@@ -16,20 +16,30 @@ SIZES = ((1440, 900), (1280, 800), (1080, 680))
 
 class RecorderService:
     def __init__(self, allowed=True):
-        self.allowed, self.opening, self.saved, self.manual = allowed, None, [], 0
+        self.allowed, self.opening, self.ledgers, self.saved, self.manual = allowed, None, None, [], 0
+        self.accounts = [{"id": "1", "ledger": "CASH", "name": "الخزنة الرئيسية", "type": "CASH", "free": True}, {"id": "5", "ledger": "BANK", "name": "بنك مصر", "type": "BANK", "free": True},
+                         {"id": "6", "ledger": "BANK", "name": "فودافون كاش", "type": "MOBILE_WALLET", "free": True}]
 
     def can_snapshot(self):
         return self.allowed
 
     def opening_state(self, *, _expected_actor=None):
-        return self.opening
+        return {"opening": self.opening, "ledgers_posted": self.ledgers is not None, "accounts": self.accounts,
+                "posted": {"scrap": {21: D("100"), 18: D("50")}, "cash": D("200000"), "bank": D("31500")} if self.ledgers is not None else {"scrap": {}, "cash": D(0), "bank": D(0)}}
 
-    def set_opening(self, gold, suppliers, cash, bank, *, _expected_actor=None):
+    def post_opening_ledgers(self, scrap, cash, banks, *, _expected_actor=None):
+        if self.ledgers is not None:
+            raise SnapshotError("ALREADY_INITIALIZED", "الكسر والكاش والبنوك سُجّلت بالفعل ولا تتغير.")
+        self.ledgers = (dict(scrap), cash, dict(banks))
+        return {"posted": []}
+
+    def set_opening(self, new_gold, suppliers, *, _expected_actor=None):
         if self.opening is not None:
             raise SnapshotError("ALREADY_INITIALIZED", "الرصيد الافتتاحي مسجل بالفعل ولا يتغير.")
-        self.saved.append((gold, suppliers, cash, bank))
-        self.opening = {"id": "1", "taken_at": datetime(2026, 10, 22, 9, 0), "gold_shop_eq21": D(gold), "gold_custody_eq21": D(0), "gold_intermediary_eq21": D(0), "gold_book_eq21": D(0),
-                        "gold_suppliers_eq21": D(suppliers or 0), "gold_total_eq21": D(gold) + D(suppliers or 0), "cash_egp": D(cash or 0), "bank_egp": D(bank or 0)}
+        self.saved.append((dict(new_gold), suppliers))
+        gold = D("5204.000") + D("154.286")
+        self.opening = {"id": "1", "taken_at": datetime(2026, 10, 22, 9, 0), "gold_shop_eq21": gold, "gold_custody_eq21": D(0), "gold_intermediary_eq21": D(0), "gold_book_eq21": D(0),
+                        "gold_suppliers_eq21": D(suppliers or 0), "gold_total_eq21": gold + D(suppliers or 0), "cash_egp": D("200000"), "bank_egp": D("31500")}
         return {"id": "1"}
 
     def take(self, kind="MANUAL", *, _expected_actor=None):
@@ -63,27 +73,43 @@ class _CardBase(harness.InvoicePageTests):
 
 
 class PositionOpeningCardTests(_CardBase):
-    def test_the_initial_balance_is_entered_once_then_read_only_and_the_manual_button_appears(self):
+    def test_stage_one_posts_the_ledgers_then_the_new_gold_is_typed_with_its_21k_equivalent_and_the_card_closes(self):
         vm = self.open_settings()
         QTest.qWait(300)
-        self.scroll_dialog_to("positionOpeningDialog", "settingsPositionOpening")
-        self.assertFalse(self.item("openingSave").property("enabled"))                       # nothing typed, nothing confirmed
-        self.type_into("openingGold", "5000")
-        self.type_into("openingSuppliers", "-120.5")
+        self.assertIsNotNone(self.visual_item("openingStage1"))
+        self.assertFalse(self.item("openingStage2").property("visible"))                         # the new gold waits for stage 1
+        self.assertFalse(self.item("openingLedgersSave").property("enabled"))                    # the confirmation is mandatory
+        self.type_into("openingScrap21", "100")
+        self.type_into("openingScrap18", "50")
+        self.type_into("openingScrap24", "10")
         self.type_into("openingCash", "200000")
-        self.type_into("openingBank", "30000")
-        self.assertFalse(self.item("openingSave").property("enabled"))                       # the confirmation is mandatory
-        QTest.qWait(300)                                                                     # the other Settings cards finish loading and move the layout
+        self.type_into("openingAccount_5", "30000")
+        self.type_into("openingAccount_6", "1500")
+        self.scroll_dialog_to("positionOpeningDialog", "openingLedgersConfirm")
+        self.click("openingLedgersConfirm")
+        self.wait_until(lambda: self.item("openingLedgersSave").property("enabled"), "stage 1 can be saved")
+        self.assert_inside_window(self.item("openingLedgersSave"))
+        self.click("openingLedgersSave")
+        self.wait_until(lambda: vm.ledgersPosted, "stage 1 recorded")
+        self.assertEqual(type(self).service.ledgers, ({"21": "100", "18": "50", "24": "10"}, "200000", {"5": "30000", "6": "1500"}))
+        self.wait_until(lambda: self.item("openingStage2").property("visible"), "stage 2 appears")
+        self.assertFalse(self.item("openingStage1").property("visible"))                         # stage 1 cannot be entered twice
+        self.type_into("openingGold21", "5000")
+        self.type_into("openingGold18", "210")
+        self.type_into("openingGold24", "21")
+        self.wait_until(lambda: "5,204.000" in str(self.item("openingEq21").property("text")), "the 21K equivalent is computed by itself")
         self.scroll_dialog_to("positionOpeningDialog", "openingConfirm")
+        self.assertFalse(self.item("openingSave").property("enabled"))
         self.click("openingConfirm")
-        self.wait_until(lambda: self.item("openingSave").property("enabled"), "save enabled after confirming")
+        self.wait_until(lambda: self.item("openingSave").property("enabled"), "stage 2 can be saved")
         self.assert_inside_window(self.item("openingSave"))
         self.click("openingSave")
         self.wait_until(lambda: vm.hasOpening, "recorded")
-        self.assertEqual(type(self).service.saved, [("5000", "-120.5", "200000", "30000")])
+        self.assertEqual(type(self).service.saved, [({"21": "5000", "18": "210", "24": "21"}, "")])
         self.wait_until(lambda: self.visual_item("openingRecorded") is not None, "the recorded line is shown")
-        self.assertIn("5,000.000", self.item("openingRecorded").property("text"))
-        self.assertFalse(self.item("openingFields").property("visible"))                       # the entry fields are gone: it cannot be entered twice
+        self.assertIn("5,358.286", self.item("openingRecorded").property("text"))
+        self.assertFalse(self.item("openingStage2").property("visible"))                         # the card closes: nothing left to enter
+        self.assertFalse(self.item("openingStage1").property("visible"))
         self.click("openingTakeNow")
         self.wait_until(lambda: type(self).service.manual == 1, "manual sheet requested")
         for width, height in SIZES:
