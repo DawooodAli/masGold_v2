@@ -156,6 +156,42 @@ class HoldingSettlementService:
                 "facts": facts, "balance": balance, "recipients": recipients, "history": history, "allocated": any(d in ALLOCATING for d in history),
                 "whole_confirmation_text": SETTLE_CONFIRMATION_TEXT}
 
+    def settlement_sources(self, *, _expected_actor=None):
+        """Display-only catalog of positive lot and LOGO pools held by intermediaries.
+
+        The selected pool and its balance are re-read by `context()` and again under
+        the posting locks; this list is never an availability decision.
+        """
+        actor = self._writer(_expected_actor)
+        with self._transaction() as connection:
+            self._authorization.require_permission_read(connection, actor, SETTLE_PERMISSION)
+            self._authorization.require_permission_read(connection, actor, MANAGE_PERMISSION)
+            holdings = self._holdings(connection)
+            lots = holdings.open_pools()
+            logos = holdings.logo_open_pools()
+        sources = []
+        for row in lots:
+            balance = Decimal(str(row["balance"]))
+            fineness = row.get("fineness_permille")
+            if balance <= 0 or fineness is None:
+                continue
+            sources.append({
+                "key": f"holding:LOT:{row['pool_id']}", "source_type": "HOLDING", "pool_kind": POOL_LOT,
+                "pool_id": str(row["pool_id"]), "available": str(balance), "fineness": str(fineness),
+                "text": (f"مسوقجي: {row['party_name']} • عهدة {row['trip_id']} • شحنة {row['lot_no']} "
+                         f"• عيار فعلي {fineness} بالألف • المتاح {balance:,.3f} جرام")})
+        for row in logos:
+            balance = Decimal(str(row["balance"]))
+            if balance <= 0:
+                continue
+            karat_value = int(row["karat_value"])
+            sources.append({
+                "key": f"holding:LOGO:{row['pool_id']}", "source_type": "HOLDING", "pool_kind": POOL_LOGO,
+                "pool_id": str(row["pool_id"]), "available": str(balance), "karat_value": karat_value,
+                "text": (f"مسوقجي: {row['party_name']} • عهدة {row['trip_id']} • لوجو عيار {karat_value} "
+                         f"• المتاح {balance:,.3f} جرام")})
+        return sources
+
     # ------------------------------------------------------------------ results and replay
     def _result(self, holdings, header, kind, duplicate, remaining=None):
         lot = header["source_kind"] == HOLDING_LOT_KIND

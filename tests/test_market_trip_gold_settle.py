@@ -256,16 +256,17 @@ class ReplayTests(GoldSettleCase):
             with self.subTest(label):
                 self.refused("REQUEST_CONFLICT", call)
 
-    def test_a_key_is_shared_with_the_direct_settlement_in_both_directions(self):
-        self.direct.settle(S18_INACTIVE, 1, "1", TODAY, "", "", lkey(500))                           # a direct SHOP_SCRAP settlement
-        self.refused("REQUEST_CONFLICT", lambda: self.settle(weight="1", request=lkey(500)))          # custody reusing its key
+    def test_new_direct_settlements_are_disabled_and_custody_keys_conflict_with_the_legacy_endpoint(self):
+        with self.assertRaises(SupplierRuleError) as disabled:
+            self.direct.settle(S18_INACTIVE, 1, "1", TODAY, "", "", lkey(500))
+        self.assertEqual(disabled.exception.code, "SHOP_SCRAP_SETTLEMENT_DISABLED")
         done = self.settle(weight="1", request=lkey(501))
         before = self.state()
         with self.assertRaises(SupplierRuleError) as context:                                         # the direct flow reusing the custody key
             self.direct.settle(S18_INACTIVE, 1, "1", TODAY, "", "", lkey(501))
         self.assertEqual(context.exception.code, "REQUEST_CONFLICT")
         self.assertEqual(self.state(), before)
-        self.assertEqual(done["settlement_code"], "SG000002")
+        self.assertEqual(done["settlement_code"], "SG000001")
 
     def test_a_concurrent_twin_gets_the_original_and_only_the_request_key_violation_is_handled(self):
         first = self.settle(weight="2", request=lkey(7))
@@ -452,24 +453,17 @@ class DependencyTests(GoldSettleCase):
         return self.service.heat(self.trip, [{"karat_id": karat, "input_weight": before, "output_weight": after}], TODAY, "ورشة", "", "", "", lkey(9000 + self.n))
 
 
-class UnchangedDirectFlowTests(GoldSettleCase):
-    def test_the_direct_shop_scrap_settlement_still_posts_its_scrap_out_and_two_legs_and_reverses_on_its_own(self):
-        scrap = self.db.physical(1)
-        done = self.direct.settle(S18_INACTIVE, 1, "10", TODAY, "", "", lkey(600))
-        self.assertEqual(self.db.physical(1), scrap - D("10.000"))                                   # the delivered grams left the SHOP Scrap
-        self.assertEqual([(l["leg_kind"], l["source_kind"]) for l in self.db.settlement_legs], [("SCRAP", "SHOP_SCRAP"), ("GOLD", "SHOP_SCRAP")])
-        self.assertEqual(self.db.settlements[int(done["id"])]["source_kind"], "SHOP_SCRAP")
-        self.direct.reverse(done["id"], "تصحيح")
-        self.assertEqual(self.db.physical(1), scrap)
-        self.assertEqual(self.payable(11, 2), D("0.000"))
-        self.assertEqual(self.logo(), D("20.000"))                                                   # custody was never involved
+class DirectScrapPolicyTests(GoldSettleCase):
+    def test_shop_scrap_posting_is_disabled_while_market_custody_remains_available(self):
+        before = self.state()
+        with self.assertRaises(SupplierRuleError) as refusal:
+            self.direct.settle(S18_INACTIVE, 1, "10", TODAY, "", "", lkey(600))
+        self.assertEqual(refusal.exception.code, "SHOP_SCRAP_SETTLEMENT_DISABLED")
+        self.assertEqual(self.state(), before)
 
-    def test_a_direct_and_a_custody_settlement_of_the_same_supplier_add_up_independently(self):
-        self.direct.settle(S18_INACTIVE, 1, "10", TODAY, "", "", lkey(601))
-        self.settle(S18_INACTIVE, K21, "10")
-        self.assertEqual(self.payable(11, 2), D("-23.334"))
-        self.assertEqual(self.logo(), D("10.000"))
-        self.assertEqual(self.db.physical(1), D("100.000") - D("20.000") - D("3.000") - D("10.000"))   # opening - custody issue - the DIRECT delivery
+        done = self.settle(S18_INACTIVE, K21, "10")
+        self.assertEqual((self.logo(), self.payable(11, 2), self.db.physical(1)),
+                         (D("10.000"), D("-11.667"), D("100.000") - D("20.000") - D("3.000")))
 
 
 class ArithmeticTests(unittest.TestCase):

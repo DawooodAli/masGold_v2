@@ -366,10 +366,8 @@ class ApplicationController(QObject):
                                                               SupplierPurchaseViewModel(self.session))
             if hasattr(purchases, "invoicePosted") and hasattr(suppliers, "refresh"):
                 purchases.invoicePosted.connect(suppliers.refresh)      # the supplier ledgers just changed
-            # A supplier making payment / its reversal moved REAL money (Main Safe or a bank account): the top-bar
-            # balances, the wallet / bank balances and الحسابات المالية reload from the database at once. The signals are
-            # emitted only after the transaction committed; every target keeps its latest request, so a refresh asked
-            # while another load is running still ends with a fresh read. (No local arithmetic: balances are re-read.)
+            # A supplier-making payment / reversal can affect a bank account, market custody or marketer cash. Refresh the
+            # relevant cash-facing views from the database after commit; balances are re-read, never adjusted locally.
             for money_changed in (getattr(suppliers, "paymentPosted", None), getattr(suppliers, "reversalDone", None)):
                 if money_changed is None:
                     continue
@@ -406,6 +404,10 @@ class ApplicationController(QObject):
                                      (self.operational_viewmodels.get("oldGoldConversionVM"), "refreshBalances")):
                     if target is not None and hasattr(target, slot):
                         trips.custodyChanged.connect(getattr(target, slot))
+            if hasattr(suppliers, "custodySettlementPosted") and hasattr(trips, "refresh"):
+                suppliers.custodySettlementPosted.connect(trips.refresh)
+            if hasattr(suppliers, "supplierGoldSettlementPosted") and hasattr(reviews, "loadGoldPosition"):
+                suppliers.supplierGoldSettlementPosted.connect(reviews.loadGoldPosition)
             # Marketer custody account (055): the signals are emitted only after the transaction committed, and every target keeps its latest
             # request, so a refresh asked while another read is running still ends with a read that includes the committed write.
             marketer = getattr(suppliers, "marketer", None)

@@ -132,13 +132,13 @@ class LotSettleTests(GoldSettleCase):
         self.refused("SUPPLIER_ROLE_REQUIRED",lambda:self.deliver(trip,lots[0],INTERMEDIARY),SupplierRuleError)
         self.refused("SUPPLIER_KARAT_MISSING",lambda:self.deliver(trip,lots[0],NO_KARAT))
 
-    def test_request_payload_conflict_and_cross_flow_conflicts(self):
+    def test_request_payload_conflict_and_custody_key_is_refused_by_legacy_direct_endpoint(self):
         trip,_,lots=self.make_lots();self.deliver(trip,lots[0],request=lkey(860))
         self.refused("REQUEST_CONFLICT",lambda:self.deliver(trip,lots[0],S24,request=lkey(860)))
         self.refused("REQUEST_CONFLICT",lambda:self.settle(request=lkey(860)))
         self.refused("REQUEST_CONFLICT",lambda:self.direct.settle(S18_INACTIVE,K21,"1",TODAY,"","",lkey(860)),SupplierRuleError)
-        direct=self.direct.settle(S18_INACTIVE,K21,"1",TODAY,"","",lkey(861))
-        self.refused("REQUEST_CONFLICT",lambda:self.deliver(trip,lots[0],request=lkey(861)))
+        self.refused("SHOP_SCRAP_SETTLEMENT_DISABLED",
+                     lambda:self.direct.settle(S18_INACTIVE,K21,"1",TODAY,"","",lkey(861)),SupplierRuleError)
 
     def test_close_reopen_reverse_restores_same_lot(self):
         trip,_,lots=self.make_lots();done=self.deliver(trip,lots[0]);self.service.close(trip)

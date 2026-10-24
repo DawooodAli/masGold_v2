@@ -391,6 +391,59 @@ class MarketTripService:
                                 "physical": Decimal(str(r["physical_grams"])), "held": Decimal(str(r["held_grams"])),
                                 "available": Decimal(str(r["available_grams"]))} for r in scrap]}
 
+    def supplier_settlement_sources(self, *, _expected_actor=None):
+        """Display-only catalog of currently eligible gold in OPEN LEGACY custodies.
+
+        The posting methods remain authoritative and re-derive every balance under
+        their transaction locks. BOOK trips and unknown-assay lots are not offered.
+        """
+        actor = self._actor(_expected_actor)
+        if GOLD_SETTLE_PERMISSION not in actor.permissions:
+            raise PermissionError("تسوية ذهب الموردين غير متاحة لك.")
+        with self._transaction() as connection:
+            self._authorization.require_permission_read(connection, actor, PERMISSION)
+            self._authorization.require_permission_read(connection, actor, GOLD_SETTLE_PERMISSION)
+            repository = self._repository(connection)
+            trips, page = [], 1
+            while True:
+                batch = repository.trip_page(OPEN, page, MAX_TRIP_PAGE_SIZE)
+                trips.extend(batch[:MAX_TRIP_PAGE_SIZE])
+                if len(batch) <= MAX_TRIP_PAGE_SIZE:
+                    break
+                page += 1
+            sources = []
+            for trip in trips:
+                if book_rules.trip_mode(trip) != book_rules.LEGACY:
+                    continue
+                custody = self._custody(repository, trip["id"], current=False)
+                trip_id, code = str(trip["id"]), trip_code(trip["id"])
+                for line in custody["gold"]:
+                    if line["designation"] not in (LOGO_DESIGNATION, UNCLASSIFIED) or line["outstanding"] <= 0:
+                        continue
+                    designation_text = "لوجو" if line["designation"] == LOGO_DESIGNATION else "بدون وجهة"
+                    sources.append({
+                        "key": f"custody-gold:{trip_id}:{line['karat_id']}:{line['designation']}",
+                        "source_type": "CUSTODY_GOLD", "trip_id": trip_id, "trip_code": code, "karat_id": str(line["karat_id"]),
+                        "designation": line["designation"], "available": str(line["outstanding"]),
+                        "karat_value": int(line["karat_value"]),
+                        "text": f"{code} • عيار {line['karat_value']} ({designation_text}) • المتاح {line['outstanding']:,.3f} جرام"})
+                if custody.get("bar", 0) > 0:
+                    sources.append({
+                        "key": f"custody-bar:{trip_id}", "source_type": "TRIP_BAR", "trip_id": trip_id, "trip_code": code,
+                        "karat_id": "", "designation": "BAR", "available": str(custody["bar"]), "karat_value": BASE_KARAT_VALUE,
+                        "text": f"{code} • سبيكة السبك (مكافئ عيار 21) • المتاح {custody['bar']:,.3f} جرام"})
+                for lot in custody["lots"]:
+                    if lot["fineness"] is None or lot["outstanding"] != lot["weight"]:
+                        continue
+                    sources.append({
+                        "key": f"custody-lot:{trip_id}:{lot['lot_id']}", "source_type": "CUSTODY_LOT",
+                        "trip_id": trip_id, "trip_code": code, "lot_id": str(lot["lot_id"]), "karat_id": "",
+                        "designation": "", "available": str(lot["weight"]), "karat_value": None,
+                        "fineness": str(lot["fineness"]), "lot_kind": lot["kind"], "lot_no": int(lot["lot_no"]),
+                        "text": f"{code} • شحنة {lot['lot_no']} • عيار فعلي {lot['fineness']} بالألف • "
+                                f"{lot['weight']:,.3f} جرام"})
+        return sources
+
     def trip_page(self, status=OPEN, page=1, page_size=TRIP_PAGE_SIZE, *, _expected_actor=None):
         """ONE page of the OPEN (active) or CLOSED (archive) trips, newest first (see `MarketTripRepository.trip_page`). The status filter and the order are
         applied before the limit; `has_more` says whether another page exists. Closed trips stay fully readable through `trip_detail`."""

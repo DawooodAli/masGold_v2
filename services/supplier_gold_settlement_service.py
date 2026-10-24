@@ -1,7 +1,10 @@
-"""Direct supplier GOLD settlement from available shop Scrap (045): the shop delivers Scrap of a selected master karat to a SUPPLIER against its gold
-account.
+"""Historical direct supplier GOLD settlement from shop Scrap (045).
 
-A settlement (SGxxxxxx) is one immutable document that posts, atomically in ONE transaction:
+New SHOP_SCRAP settlements are disabled. This service retains exact replay and the
+canonical reversal path for historical records; new settlements use market custody
+or intermediary holdings.
+
+Historical SHOP_SCRAP documents posted, atomically in ONE transaction:
   * one COUNTED Scrap OUT of the DELIVERED karat (the actual physical grams, deducted once; Scrap held for manager review is not available), and
   * one NEGATIVE supplier gold movement in the supplier's DEDICATED karat (the shop owes the supplier less).
 credited grams = delivered grams x delivered karat / supplier karat (services.supplier_rules.settlement_credit): the POSTED credit is derived straight
@@ -170,57 +173,17 @@ class SupplierGoldSettlementService:
         with self._transaction() as connection:
             actor = self._authorization.require_permission_for_write(connection, session_actor, SETTLE)
             repository, scrap = self._repository(connection), self._scrap(connection)
-            supplier = repository.get_supplier(supplier_id, lock=True)                        # lock order: supplier -> Scrap karat
+            supplier = repository.get_supplier(supplier_id, lock=True)                        # preserve the legacy supplier lock before replay
             if supplier is None:
                 raise rules.SupplierRuleError("SUPPLIER_NOT_FOUND", "المورد غير موجود.")
-            delivered = repository.get_karat(karat_id)
-            if delivered is None or not delivered["is_active"]:
-                raise rules.SupplierRuleError("KARAT_NOT_FOUND", "عيار الذهب المُسلَّم غير موجود أو غير نشط.")
-            available = sum((Decimal(str(r["weight_delta_grams"])) for r in scrap.lock_old_gold_balance(karat_id)), Decimal("0.000"))
             prior = repository.by_request(key)
             if prior is not None:
                 return self._replayed(prior, digest, actor)
             if repository.request_key_used_elsewhere(key):                                   # a custody / holding operation owns this key
                 raise rules.SupplierRuleError("REQUEST_CONFLICT", "طلب العملية مستخدم لعملية مختلفة.")
-            rules.require_supplier_role(supplier)                                            # an intermediary-only party has no gold account
-            if supplier["karat_id"] is None:
-                raise rules.SupplierRuleError("SUPPLIER_KARAT_MISSING",
-                                              "عيار هذا المورد غير محدد. حدّد عياره من تعديل المورد قبل تسوية الذهب له.")
-            target = repository.get_karat(supplier["karat_id"])
-            if weight > available:                                                           # only AVAILABLE Scrap: manager-review holds excluded
-                raise rules.SupplierRuleError("SCRAP_SHORTAGE", shortage_message(int(delivered["karat_value"]), weight, available,
-                                                                                 held_grams(scrap, karat_id)))
-            credited, analytical, difference = rules.settlement_credit(weight, delivered["karat_value"], target["karat_value"])
-            type_id = repository.gold_type_id(GOLD_MOVEMENT)
-            if type_id is None:
-                raise RuntimeError("supplier gold movement type SETTLEMENT is missing (migration 045)")
-            now = repository.db_now()
-            settlement_id = repository.insert_header(
-                supplier_id=supplier_id, delivered_karat=delivered, target_karat=target, delivered_weight=weight, credited=credited,
-                analytical=analytical, difference=difference, settlement_date=settled_on, reference=reference, notes=notes, key=key,
-                digest=digest, actor=actor, now=now)
-            code = settlement_code(settlement_id)
-            label = (f"تسوية ذهب للمورد {code}: سُلِّم {weight:,.3f} جرام عيار {int(delivered['karat_value'])} "
-                     f"← احتُسب {credited:,.3f} جرام عيار {int(target['karat_value'])}")
-            scrap_id = repository.post_scrap_out(settlement_id=settlement_id, karat_id=karat_id, weight=weight, code=code,
-                                                 notes=f"{label} — {supplier['name']}", actor=actor, now=now)
-            gold_id = repository.insert_gold_movement(
-                supplier_id=supplier_id, type_id=type_id, karat_id=target["id"], weight_delta=-credited,
-                eq21_delta=-rules.equivalent_21(credited, target["karat_value"]), source_type=SOURCE, source_id=settlement_id,
-                reference=code, description=label, now=now, user_id=actor.user_id)
-            repository.insert_leg(settlement_id=settlement_id, kind="SCRAP", source_kind=SOURCE_KIND, old_gold_movement_id=scrap_id)
-            repository.insert_leg(settlement_id=settlement_id, kind="GOLD", source_kind=SOURCE_KIND, supplier_gold_movement_id=gold_id)
-            repository.audit(actor=actor, event_type="SUPPLIER_GOLD_SETTLEMENT", entity_id=settlement_id, entity_type=SOURCE, reference=code,
-                             description=label,
-                             metadata={"supplier_id": supplier_id, "delivered_karat": int(delivered["karat_value"]), "delivered_weight": str(weight),
-                                       "target_karat": int(target["karat_value"]), "credited": str(credited), "analytical": str(analytical),
-                                       "rounding_difference": str(difference), "settlement_date": settled_on.isoformat(), "reference": reference,
-                                       "employee_id": actor.employee_id}, now=now)
-            if not self._session.is_current(session_actor):
-                raise PermissionError("انتهت جلسة الدخول.")
-        return {"id": str(settlement_id), "code": code, "supplier_id": str(supplier_id), "delivered_karat": int(delivered["karat_value"]),
-                "target_karat": int(target["karat_value"]), "delivered_weight": str(weight), "credited_weight": str(credited),
-                "analytical": str(analytical), "rounding_difference": str(difference), "duplicate": False}
+            raise rules.SupplierRuleError(
+                "SHOP_SCRAP_SETTLEMENT_DISABLED",
+                "التسوية الجديدة من كسر المحل متوقفة. اختر ذهبًا من عهدة السوق أو من رصيد المسوقجي.")
 
     @staticmethod
     def _replayed(prior, digest, actor):

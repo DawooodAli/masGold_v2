@@ -60,6 +60,7 @@ Item {
         function onPaymentPosted(code) { payDialog.close() }
         function onReversalDone(code) { reverseDialog.close() }
         function onSettlementPosted(code) { goldSettleDialog.close() }
+        function onSupplierGoldSettlementPosted(code) { goldSettleDialog.close() }
         function onSettlementReversed(code) { reverseSettlementDialog.close() }
         function onHoldingReturned(code) { holdingReturnDialog.close(); logoReturnDialog.close() }
         function onHoldingSettled(code) { holdingSettleDialog.close() }
@@ -1596,21 +1597,31 @@ Item {
 
 
     // ---------------------------------------------------------------- making payment (دفع مصنعيات)
-    // Cash from MAIN_SAFE or a transfer from a selected active bank account. The figures (current / resulting position,
+    // Payment from market custody, marketer-held cash, or a selected active bank account. The figures (current / resulting position,
     // even a credit balance) come from supplierVM; nothing is calculated here and the service re-checks every right.
     Popup {
         id: payDialog
         objectName: "payMakingDialog"
         property string requestKey: ""
-        property string method: "CASH"
+        property string method: "BANK"
+        property bool confirmSameParty: false
         property var preview: ({ valid: false, error: "", afterText: "", afterParts: ({}), afterTone: "settled", note: "" })
         readonly property var ctx: page.vm ? page.vm.payContext : ({})
         readonly property bool ready: !!ctx && ctx.supplierId !== undefined
         // Entry 0 is a placeholder: a ComboBox whose model arrives after it is created would otherwise silently pick the
         // first account, and a payment must never leave an account the employee did not choose.
-        readonly property var bankChoices: [{ id: "", text: "اختر الحساب" }].concat(ready ? ctx.banks : [])
-        readonly property bool accountReady: method === "CASH" ? (ready && ctx.safeReady === true)
-                                                              : (payBankCombo.currentIndex > 0)
+        readonly property var bankChoices: [{ id: "", text: "اختر الحساب البنكي" }].concat(ready ? (ctx.banks || []) : [])
+        readonly property var custodyChoices: [{ id: "", text: "اختر عهدة السوق" }].concat(ready ? (ctx.custodies || []) : [])
+        readonly property var marketerChoices: [{ id: "", text: "اختر المسوقجي" }].concat(ready ? (ctx.marketers || []) : [])
+        readonly property bool selectedMarketerIsSupplier: method === "MARKETER" && payMarketerCombo.currentIndex > 0
+                                                           && marketerChoices[payMarketerCombo.currentIndex].self === true
+        readonly property bool accountReady: method === "BANK" ? payBankCombo.currentIndex > 0
+                                                : method === "CUSTODY" ? payCustodyCombo.currentIndex > 0
+                                                : payMarketerCombo.currentIndex > 0
+                                                  && (!selectedMarketerIsSupplier || confirmSameParty)
+        readonly property string sourceId: method === "BANK" ? (payBankCombo.currentIndex > 0 ? bankChoices[payBankCombo.currentIndex].id : "")
+                                             : method === "CUSTODY" ? (payCustodyCombo.currentIndex > 0 ? custodyChoices[payCustodyCombo.currentIndex].id : "")
+                                             : (payMarketerCombo.currentIndex > 0 ? marketerChoices[payMarketerCombo.currentIndex].id : "")
         readonly property bool canSubmit: ready && preview.valid === true && accountReady
                                           && payDateField.text.trim().length > 0 && !!page.vm && !page.vm.paying
         function recompute() {
@@ -1619,8 +1630,11 @@ Item {
         function openFor() {
             if (!page.vm || !page.hasSelection) return
             requestKey = page.vm.newRequestKey()
-            method = "CASH"
+            method = "BANK"
+            confirmSameParty = false
             payBankCombo.currentIndex = 0
+            payCustodyCombo.currentIndex = 0
+            payMarketerCombo.currentIndex = 0
             payAmountField.text = ""
             payDateField.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
             payReferenceField.text = ""
@@ -1681,17 +1695,15 @@ Item {
                         Layout.fillWidth: true
                         layoutDirection: Qt.RightToLeft
                         spacing: 8
-                        Btn { objectName: "payMethodCash"; text: "نقدًا من الخزنة الرئيسية"; primary: payDialog.method === "CASH"
-                              onClicked: payDialog.method = "CASH" }
-                        Btn { objectName: "payMethodBank"; text: "تحويل بنكي"; primary: payDialog.method === "BANK"
+                        Btn { objectName: "payMethodCustody"; text: "عهدة السوق"; visible: payDialog.ready && payDialog.custodyChoices.length > 1
+                              primary: payDialog.method === "CUSTODY"; onClicked: payDialog.method = "CUSTODY" }
+                        Btn { objectName: "payMethodMarketer"; text: "نقدية المسوقجي"; visible: payDialog.ready && payDialog.marketerChoices.length > 1
+                              primary: payDialog.method === "MARKETER"; onClicked: payDialog.method = "MARKETER" }
+                        Btn { objectName: "payMethodBank"; text: "تحويل بنكي"; visible: payDialog.ready && payDialog.bankChoices.length > 1
+                              primary: payDialog.method === "BANK"
                               onClicked: payDialog.method = "BANK" }
                         Item { Layout.fillWidth: true }
                     }
-                    Txt { Layout.fillWidth: true; visible: payDialog.method === "CASH" && payDialog.ready
-                          text: payDialog.ctx.safeReady === true ? "يُخصم المبلغ من: " + (payDialog.ctx.safeName || "")
-                                                                  : "الخزنة الرئيسية غير متاحة."
-                          color: payDialog.ctx.safeReady === true ? theme.textSecondary : theme.red
-                          wrapMode: Text.WordWrap; elide: Text.ElideNone }
                     Txt { Layout.fillWidth: true; visible: payDialog.method === "BANK"; text: "الحساب البنكي *" }
                     Combo {
                         id: payBankCombo
@@ -1700,6 +1712,36 @@ Item {
                         visible: payDialog.method === "BANK"
                         model: payDialog.bankChoices
                         textRole: "text"
+                    }
+                    Txt { Layout.fillWidth: true; visible: payDialog.method === "CUSTODY"; text: "عهدة السوق المفتوحة *" }
+                    Combo {
+                        id: payCustodyCombo
+                        objectName: "payCustodyCombo"
+                        Layout.fillWidth: true
+                        visible: payDialog.method === "CUSTODY"
+                        model: payDialog.custodyChoices
+                        textRole: "text"
+                    }
+                    Txt { Layout.fillWidth: true; visible: payDialog.method === "MARKETER"; text: "المسوقجي صاحب النقدية *" }
+                    Combo {
+                        id: payMarketerCombo
+                        objectName: "payMarketerCombo"
+                        Layout.fillWidth: true
+                        visible: payDialog.method === "MARKETER"
+                        model: payDialog.marketerChoices
+                        textRole: "text"
+                    }
+                    CheckBox {
+                        objectName: "paySamePartyConfirm"
+                        Layout.fillWidth: true
+                        visible: payDialog.selectedMarketerIsSupplier
+                        enabled: !!page.vm && !page.vm.paying
+                        checked: payDialog.confirmSameParty
+                        onToggled: payDialog.confirmSameParty = checked
+                        text: "المورد هو نفسه المسوقجي؛ أؤكد تسجيل الدفعة من نقديته دون خلط حساب المورد بحساب العهدة."
+                        font.family: "Cairo"
+                        font.pixelSize: theme.fontTableHeader
+                        LayoutMirroring.enabled: false
                     }
                     RowLayout {
                         Layout.fillWidth: true
@@ -1760,7 +1802,7 @@ Item {
                     primary: true
                     enabled: payDialog.canSubmit
                     onClicked: page.vm.payMaking(payDialog.ctx.supplierId, payDialog.method,
-                                                 payDialog.method === "BANK" ? payDialog.bankChoices[payBankCombo.currentIndex].id : "",
+                                                 payDialog.sourceId, payDialog.confirmSameParty && payDialog.selectedMarketerIsSupplier,
                                                  payAmountField.text, payDateField.text, payReferenceField.text,
                                                  payNotesField.text, payDialog.requestKey)
                 }
@@ -1934,30 +1976,45 @@ Item {
         }
     }
 
-    // ---------------------------------------------------------------- gold settlement from shop Scrap (تسوية ذهب)
-    // The delivered gold leaves the counted Scrap once; the supplier is credited in grams of ITS karat. Everything shown here is computed by the
-    // service rules through the view model (no arithmetic in QML); the service recomputes and re-checks the available Scrap when it posts.
+    // ---------------------------------------------------------------- supplier gold settlement from custody or intermediary holdings
     Popup {
         id: goldSettleDialog
         objectName: "goldSettleDialog"
         property string requestKey: ""
-        readonly property var karatOptions: [{ karatId: "", text: "اختر عيار الذهب المُسلَّم" }].concat(page.vm && page.vm.settlementContext.scrap
-                                                                                                  ? page.vm.settlementContext.scrap : [])
-        readonly property string karatId: karatOptions[goldSettleKarat.currentIndex] ? karatOptions[goldSettleKarat.currentIndex].karatId : ""
+        property string sourceKey: ""
+        property string declarationCode: ""
+        readonly property var sourceContext: page.vm ? page.vm.supplierGoldSourceContext : ({})
+        readonly property var sources: page.vm ? page.vm.supplierGoldSources : []
+        readonly property var sourceOptions: [{ key: "", text: "اختر مصدر الذهب" }].concat(sources)
+        readonly property var declarationOptions: preview.options || []
+        readonly property bool declarationOk: sourceContext.type !== "HOLDING" || sourceContext.isLot !== true || declarationCode !== ""
         readonly property var preview: {
-            var context = page.vm ? page.vm.settlementContext : ({})                // read, so the preview follows the loaded Scrap
-            return page.vm && context.supplierId !== undefined ? page.vm.previewSettlement(karatId, goldSettleWeight.text) : ({})
+            return page.vm && sourceContext.key === sourceKey
+                   ? page.vm.previewSupplierGoldSettlement(page.detail.id, goldSettleWeight.text,
+                                                           declarationCode, goldSettleSelf.checked)
+                   : ({})
+        }
+        onDeclarationOptionsChanged: {
+            var selectedIndex = 0
+            for (var i = 0; i < declarationOptions.length; i++)
+                if (declarationOptions[i].code === declarationCode) selectedIndex = i + 1
+            if (selectedIndex === 0) declarationCode = ""
+            goldSettleDeclaration.currentIndex = selectedIndex
         }
         function openFor() {
             if (!page.vm || !page.hasSelection) return
             requestKey = page.vm.newRequestKey()
-            goldSettleKarat.currentIndex = 0
+            sourceKey = ""
+            declarationCode = ""
+            goldSettleSource.currentIndex = 0
+            goldSettleDeclaration.currentIndex = 0
             goldSettleWeight.text = ""
             goldSettleDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
             goldSettleReference.text = ""
             goldSettleNotes.text = ""
+            goldSettleSelf.checked = false
             page.vm.clearMessage()
-            page.vm.loadSettlementContext(page.detail.id)
+            page.vm.loadSupplierGoldSources(page.detail.id)
             open()
         }
         parent: Overlay.overlay
@@ -1971,10 +2028,10 @@ Item {
         contentItem: ColumnLayout {
             spacing: 6
             Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection
-                  text: "تسوية ذهب للمورد " + (page.vm && page.vm.settlementContext.supplierName ? page.vm.settlementContext.supplierName : "") }
+                  text: "تسوية ذهب للمورد " + (page.detail.name || "") }
             Txt { objectName: "goldSettleRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
                   wrapMode: Text.WordWrap; elide: Text.ElideNone
-                  text: "يُخصم الذهب المُسلَّم فعليًا من كسر المحل المتاح مرة واحدة، ويُحتسب للمورد بعياره: الوزن × عيار المُسلَّم ÷ عيار المورد. لا نقدية ولا مصنعيات ولا بيع أو شراء." }
+                  text: "اختر الذهب من عهدة سوق مفتوحة أو من رصيد المسوقجي. لا تُسجَّل تسوية جديدة من كسر المحل؛ وكل رصيد وصلاحية يُعاد التحقق منهما عند التسجيل." }
             Flickable {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
@@ -1985,10 +2042,36 @@ Item {
                     id: goldSettleForm
                     width: parent.width - 12
                     spacing: 6
-                    Txt { objectName: "goldSettleSupplierKarat"; Layout.fillWidth: true; color: theme.amber; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                          text: "عيار حساب المورد: " + (page.vm && page.vm.settlementContext.karatText ? page.vm.settlementContext.karatText : "—") }
-                    Txt { Layout.fillWidth: true; text: "عيار الذهب المُسلَّم *" }
-                    Combo { id: goldSettleKarat; objectName: "goldSettleKarat"; Layout.fillWidth: true; model: goldSettleDialog.karatOptions; textRole: "text" }
+                    Txt { Layout.fillWidth: true; text: "مصدر الذهب *" }
+                    Combo {
+                        id: goldSettleSource; objectName: "goldSettleSource"; Layout.fillWidth: true
+                        enabled: !!page.vm && !page.vm.supplierGoldSourcesLoading && !page.vm.settlingSupplierGold
+                        model: goldSettleDialog.sourceOptions; textRole: "text"
+                        onActivated: {
+                            var row = goldSettleDialog.sourceOptions[currentIndex]
+                            goldSettleDialog.sourceKey = row ? row.key : ""
+                            goldSettleDialog.declarationCode = ""
+                            goldSettleWeight.text = ""
+                            if (page.vm && goldSettleDialog.sourceKey !== "")
+                                page.vm.loadSupplierGoldSource(goldSettleDialog.sourceKey)
+                        }
+                    }
+                    Txt { objectName: "goldSettleNoSources"; Layout.fillWidth: true
+                          visible: !!page.vm && !page.vm.supplierGoldSourcesLoading && goldSettleDialog.sources.length === 0
+                          text: "لا يوجد ذهب متاح حاليًا في عهدة مفتوحة أو لدى المسوقجي."; color: theme.textSecondary
+                          wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                    Txt { objectName: "goldSettleSourcesLoading"; Layout.fillWidth: true
+                          visible: !!page.vm && page.vm.supplierGoldSourcesLoading
+                          text: "جارٍ تحميل مصادر الذهب…"; color: theme.textSecondary }
+                    Txt { objectName: "goldSettleSourceLoading"; Layout.fillWidth: true
+                          visible: !!page.vm && page.vm.supplierGoldSourceLoading
+                          text: "جارٍ تحميل رصيد المصدر…"; color: theme.textSecondary }
+                    Txt { objectName: "goldSettleSourceText"; Layout.fillWidth: true; visible: !!goldSettleDialog.sourceContext.sourceText
+                          text: goldSettleDialog.sourceContext.sourceText || ""; color: theme.amber; font.bold: true
+                          wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                    Txt { objectName: "goldSettleAvailable"; Layout.fillWidth: true; visible: !!goldSettleDialog.sourceContext.availableText
+                          text: "المتاح من هذا المصدر: " + (goldSettleDialog.sourceContext.availableText || ""); color: theme.textSecondary
+                          wrapMode: Text.WordWrap; elide: Text.ElideNone }
                     RowLayout {
                         Layout.fillWidth: true
                         layoutDirection: Qt.RightToLeft
@@ -2015,9 +2098,6 @@ Item {
                             anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
                             anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.topMargin: 7
                             spacing: 3
-                            Txt { objectName: "goldSettleAvailable"; Layout.fillWidth: true; visible: !!goldSettleDialog.preview.availableText
-                                  text: "المتاح في كسر المحل: " + goldSettleDialog.preview.availableText; color: theme.textSecondary
-                                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
                             Txt { objectName: "goldSettleDelivered"; Layout.fillWidth: true; visible: !!goldSettleDialog.preview.deliveredText
                                   text: "المُسلَّم: " + goldSettleDialog.preview.deliveredText; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                             Txt { objectName: "goldSettleFormula"; Layout.fillWidth: true; visible: !!goldSettleDialog.preview.formulaText
@@ -2030,11 +2110,29 @@ Item {
                                   text: "القيمة التحليلية: " + goldSettleDialog.preview.analyticalText + " • فرق التقريب: " + goldSettleDialog.preview.differenceText
                                   color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                             Txt { objectName: "goldSettleShort"; Layout.fillWidth: true; visible: goldSettleDialog.preview.short === true
-                                  text: "الوزن أكبر من المتاح في كسر المحل."; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                  text: "الوزن أكبر من المتاح من المصدر المختار."; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                             Txt { objectName: "goldSettlePreviewError"; Layout.fillWidth: true; visible: !!goldSettleDialog.preview.error
                                   text: goldSettleDialog.preview.error || ""; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                             Item { Layout.preferredHeight: 2 }
                         }
+                    }
+                    Txt { Layout.fillWidth: true; visible: goldSettleDialog.sourceContext.type === "HOLDING" && goldSettleDialog.sourceContext.isLot === true
+                          text: "إقرار الحالة الفعلية للسبكة *"; font.bold: true }
+                    Combo {
+                        id: goldSettleDeclaration; objectName: "goldSettleDeclaration"; Layout.fillWidth: true
+                        visible: goldSettleDialog.sourceContext.type === "HOLDING" && goldSettleDialog.sourceContext.isLot === true
+                        model: [{ code: "", text: "اختر الإقرار" }].concat(goldSettleDialog.declarationOptions); textRole: "text"
+                        onActivated: {
+                            var row = model[currentIndex]
+                            goldSettleDialog.declarationCode = row ? row.code : ""
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true; visible: goldSettleDialog.preview.isSelf === true
+                        layoutDirection: Qt.RightToLeft; spacing: 8
+                        CheckBox { id: goldSettleSelf; objectName: "goldSettleSelfConfirm" }
+                        Txt { Layout.fillWidth: true; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                              text: "المسوقجي هو نفسه المورد: أؤكد أن رصيد ذهب المحل وحساب المورد منفصلان." }
                     }
                     Txt { Layout.fillWidth: true; text: "المرجع (اختياري)" }
                     Field { id: goldSettleReference; objectName: "goldSettleReference"; Layout.fillWidth: true }
@@ -2050,15 +2148,18 @@ Item {
                 spacing: 8
                 Btn {
                     objectName: "confirmGoldSettleButton"
-                    text: !!page.vm && page.vm.settling ? "جارٍ الحفظ…" : "تسجيل التسوية"
+                    text: !!page.vm && page.vm.settlingSupplierGold ? "جارٍ التسجيل…" : "تسجيل التسوية"
                     primary: true
-                    enabled: goldSettleDialog.karatId !== "" && goldSettleWeight.text.trim().length > 0 && goldSettleDate.text.trim().length > 0
-                             && !!page.vm && !page.vm.settling && goldSettleDialog.preview.short !== true && !goldSettleDialog.preview.error
-                    onClicked: page.vm.postSettlement(page.detail.id, goldSettleDialog.karatId, goldSettleWeight.text, goldSettleDate.text,
-                                                      goldSettleReference.text, goldSettleNotes.text, goldSettleDialog.requestKey)
+                    enabled: goldSettleDialog.sourceKey !== "" && goldSettleWeight.text.trim().length > 0 && goldSettleDate.text.trim().length > 0
+                             && !!page.vm && !page.vm.settlingSupplierGold && goldSettleDialog.preview.valid === true && goldSettleDialog.declarationOk
+                             && (goldSettleDialog.preview.isSelf !== true || goldSettleSelf.checked)
+                    onClicked: page.vm.postSupplierGoldSettlement(goldSettleDialog.sourceKey, goldSettleWeight.text,
+                                                                   goldSettleDialog.declarationCode, goldSettleSelf.checked,
+                                                                   goldSettleDate.text, goldSettleReference.text, goldSettleNotes.text,
+                                                                   goldSettleDialog.requestKey)
                 }
                 Btn { objectName: "cancelGoldSettleButton"; text: "إلغاء"; accent: theme.textSecondary
-                      enabled: !!page.vm && !page.vm.settling; onClicked: goldSettleDialog.close() }
+                      enabled: !!page.vm && !page.vm.settlingSupplierGold; onClicked: goldSettleDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }

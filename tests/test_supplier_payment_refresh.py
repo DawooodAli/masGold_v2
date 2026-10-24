@@ -94,8 +94,8 @@ class SupplierPaymentRefreshTests(harness.InvoicePageTests):
         self.wait_until(lambda: not self.balances._workers and not self.reviews._workers and not self.accounts._workers, "refreshes done")
         QTest.qWait(60)
 
-    def pay(self, amount="1000", method="CASH", bank="", key=None):
-        self.svm.payMaking(self.supplier, method, bank, amount, TODAY, "", "", key or str(uuid4()))
+    def pay(self, amount="1000", method="BANK", bank="5", key=None):
+        self.svm.payMaking(self.supplier, method, bank, False, amount, TODAY, "", "", key or str(uuid4()))
         self.settle()
 
     def counts(self):
@@ -109,8 +109,9 @@ class SupplierPaymentRefreshTests(harness.InvoicePageTests):
         before = self.counts()
         self.pay("1000")
         self.assertEqual(self.counts(), (before[0] + 1, before[1] + 1, before[2] + 1))
-        self.assertEqual(self.balances.cashText, money(D("-1000.00")))          # the authoritative re-read, not arithmetic here
-        self.assertEqual(self.accounts._view["account"]["balance"], "-1000.00")
+        self.assertEqual(self.balances.cashText, money(D("0.00")))               # Main Safe is not a making-payment source
+        self.assertEqual(self.accounts._view["account"]["balance"], "0.00")
+        self.assertEqual(len(self.db.bank_moves), 1)
         self.assertEqual(self.svm.errorMessage, "")
 
     def test_a_bank_payment_also_reloads_the_wallet_and_bank_balances(self):
@@ -136,7 +137,8 @@ class SupplierPaymentRefreshTests(harness.InvoicePageTests):
         self.accounts.activate()
         self.settle()
         self.assertEqual(self.ledgers.view_calls, 1)
-        self.assertEqual(self.accounts._view["account"]["balance"], "-700.00")
+        self.assertEqual(self.accounts._view["account"]["balance"], "0.00")
+        self.assertEqual(len(self.db.bank_moves), 1)
 
     def test_a_refused_payment_or_reversal_notifies_nothing(self):
         self.accounts.activate()
@@ -162,7 +164,7 @@ class SupplierPaymentRefreshTests(harness.InvoicePageTests):
         self.settle()
         QTest.qWait(900)                                                         # the slow stale read finally returns
         self.assertEqual(self.ledgers.strip_calls, 2)
-        self.assertEqual(self.balances.cashText, money(D("-1000.00")))           # the stale result did not win
+        self.assertEqual(self.balances.cashText, money(D("0.00")))                # the stale result did not win
 
     def test_a_failing_refresh_is_not_presented_as_a_failed_payment_and_nothing_is_resubmitted(self):
         self.ledgers.fail = True

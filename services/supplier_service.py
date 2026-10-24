@@ -224,6 +224,11 @@ class SupplierService:
         if reversed_payment is not None and r.get("reversed_custody_entry_no") is not None:
             reverses = (f"{_payment_code(reversed_payment)} • "
                         f"{_custody_code(r['reversed_custody_trip_id'], r['reversed_custody_entry_no'])}")
+        account = (custody if method == "CUSTODY"
+                   else r.get("marketer_name") if method == "MARKETER"
+                   else r.get("bank_account_name") if method == "BANK" else r.get("cash_account_name"))
+        if method == "MARKETER" and r.get("self_payment_confirmed"):
+            account = f"{account} (بتأكيد الطرف نفسه)"
         return {"id": str(r["id"]), "occurred_at": r["occurred_at"], "movement": r["movement_name"],
                 "movement_code": r.get("movement_code"),
                 "amount_delta": Decimal(str(r["amount_delta"])),
@@ -232,8 +237,7 @@ class SupplierService:
                 "reference": r["source_reference"] or "", "actor": r["actor_name"] or "",
                 "payment_id": None if payment_id is None else str(payment_id),
                 "payment_method": method,
-                "payment_account": (custody if method == "CUSTODY"
-                                    else r.get("bank_account_name") if method == "BANK" else r.get("cash_account_name")),
+                "payment_account": account,
                 "custody_reference": custody,
                 "reversed_by": (None if r.get("reversal_id") is None
                                 else correction_code("FULL_REVERSAL", r["reversal_id"])),

@@ -12,7 +12,8 @@ from PySide6.QtCore import QObject, Property, Signal, Slot
 from app.formatting import date_text, datetime_text, grams, money, number
 from services import supplier_rules as rules
 
-KIND_TEXT = {"CASH_HANDOVER": "تسليم نقدية", "CASH_RETURN": "استرجاع نقدية", "GOLD_RETURN": "استرجاع ذهب", "PURCHASE": "شراء ذهب نقدي", "SALE": "بيع ذهب"}
+KIND_TEXT = {"CASH_HANDOVER": "تسليم نقدية", "CASH_RETURN": "استرجاع نقدية", "GOLD_RETURN": "استرجاع ذهب",
+             "PURCHASE": "شراء ذهب نقدي", "SALE": "بيع ذهب", "SUPPLIER_PAY": "دفعة مصنعيات من نقدية المسوقجي"}
 WRITE_TEXT = {"cashhandover": "تم تسليم النقدية للمسوقجي", "cashreturn": "تم استرجاع النقدية إلى الخزنة الرئيسية", "goldreturn": "تم استرجاع الذهب إلى كسر المحل",
               "sale": "تم تسجيل بيع الذهب", "purchase": "تم تسجيل شراء الذهب", "settle": "تمت تسوية الذهب للمورد", "reverse": "تم العكس"}
 # What each SUCCESSFUL write changed elsewhere (decided here by the operation, never by a hint from the page). Emitted only after the commit:
@@ -37,6 +38,8 @@ def _doc_text(d):
         return f"{cash} إلى الخزنة الرئيسية"
     if kind == "GOLD_RETURN":
         return f"{weight} جرام وزنة عيار 21 إلى كسر المحل"
+    if kind == "SUPPLIER_PAY":
+        return f"{cash} للمورد {d.get('supplier_payment_supplier_name') or ''}".strip()
     if kind == "PURCHASE":
         text = f"{weight} جرام وزنة عيار 21 من {d['counterparty']} بإجمالي {cash}"
     else:
@@ -127,6 +130,10 @@ class MarketerCustodyViewModel(QObject):
             return
         service, party = self._service_instance(), self._party
         self._start("account", lambda _expected_actor: service.account(party, _expected_actor=_expected_actor))
+
+    def refresh_if_party(self, party_id):
+        if self._party is not None and self._party == str(party_id):
+            self.load()
 
     def _on_account(self, result, error):
         if error:
@@ -350,7 +357,8 @@ class MarketerCustodyViewModel(QObject):
         documents = [{"id": d["id"], "code": d["code"], "kindText": KIND_TEXT[d["kind"]], "kind": d["kind"], "text": _doc_text(d),
                       "date": date_text(d["date"]), "time": datetime_text(d["at"]), "reference": d["reference"], "reversed": d["reversed"],
                       "state": ("معكوس • " + d["reversal_reason"]) if d["reversed"] else "",
-                      "canReverse": bool(a["can_reverse"] and not d["reversed"])} for d in a["documents"]]
+                      "canReverse": bool(a["can_reverse"] and not d["reversed"] and d["kind"] != "SUPPLIER_PAY"),
+                      "note": "يُعكس من سجل دفعات مصنعيات المورد" if d["kind"] == "SUPPLIER_PAY" else ""} for d in a["documents"]]
         settlements = [{"id": s["id"], "code": s["code"], "text": f"{s['supplier_name']}: سُلِّم {grams(s['delivered'])} جرام وزنة عيار 21 ← احتُسب "
                                                                    f"{grams(s['credited'])} جرام عيار {s['target_karat']}"
                                                                    + (" • تسوية للطرف نفسه (بتأكيد المالك)" if s["self_settlement"] else ""),

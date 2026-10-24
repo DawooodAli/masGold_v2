@@ -26,7 +26,7 @@ class BarSaleSchemaTests(unittest.TestCase):
         self.assertRegex(self.forward, r"INSERT INTO schema_migrations\(version,name\) VALUES \(63,")
         self.assertLessEqual(len(re.search(r"VALUES \(63,'([^']*)'", self.forward).group(1)), 150)
         files = {f.name: f for f in load_chain(require_committed=False)}
-        self.assertEqual(len(files), 77)
+        self.assertEqual(len(files), 78)
 
     def test_the_sale_source_gains_only_the_bar_branch(self):
         self.assertIn("(source_kind = 'TRIP_BAR' AND karat_id IS NULL AND designation IS NULL AND lot_id IS NULL AND fineness_permille IS NULL AND custody_movement_id IS NULL "

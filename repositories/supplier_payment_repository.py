@@ -44,16 +44,18 @@ class SupplierPaymentRepository(SupplierRepository):
 
     # ------------------------------------------------------------------ the payment
     def insert_header(self, *, supplier_id, method, cash_account_id, bank_account_id, amount, payment_date, reference,
-                      notes, before, after, key, digest, actor, now):
+                      notes, before, after, key, digest, actor, now, marketer_party_id=None, self_payment_confirmed=False):
         require_no_marketer_key(self._fetch_one, key)                    # 055: a marketer document owns this key -> REQUEST_CONFLICT, nothing is written
         payment_id, _ = self._execute(
             """
-            INSERT INTO supplier_making_payments (supplier_id, payment_method, cash_account_id, bank_account_id, amount,
+            INSERT INTO supplier_making_payments (supplier_id, payment_method, cash_account_id, bank_account_id, marketer_party_id,
+                self_payment_confirmed, amount,
                 payment_date, reference, notes, balance_before, balance_after, request_key, request_hash,
                 performed_by_user_id, performed_by_employee_id, occurred_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (_id(supplier_id), method, cash_account_id, bank_account_id, amount, payment_date, reference, notes, before,
+            (_id(supplier_id), method, cash_account_id, bank_account_id, marketer_party_id, 1 if self_payment_confirmed else 0,
+             amount, payment_date, reference, notes, before,
              after, key, digest, actor.user_id, actor.employee_id, now))
         return int(payment_id)
 
@@ -97,6 +99,7 @@ class SupplierPaymentRepository(SupplierRepository):
     _SELECT = """
         SELECT p.*, s.name AS supplier_name, s.is_active AS supplier_active, te.trip_id AS custody_trip_id, te.entry_no AS custody_entry_no,
                ca.name AS cash_account_name, ba.name AS bank_account_name, ba.account_type AS bank_account_type,
+               mp.name AS marketer_name,
                u.display_name AS actor_name,
                c.id AS reversal_id, c.reason AS reversal_reason, c.occurred_at AS reversal_at,
                cu.display_name AS reversal_actor_name
@@ -104,6 +107,7 @@ class SupplierPaymentRepository(SupplierRepository):
         JOIN suppliers s ON s.id = p.supplier_id
         LEFT JOIN cash_accounts ca ON ca.id = p.cash_account_id
         LEFT JOIN bank_accounts ba ON ba.id = p.bank_account_id
+        LEFT JOIN suppliers mp ON mp.id = p.marketer_party_id
         LEFT JOIN users u ON u.id = p.performed_by_user_id
         LEFT JOIN market_trip_supplier_payments tl ON tl.payment_id = p.id
         LEFT JOIN market_trip_entries te ON te.id = tl.entry_id
@@ -129,6 +133,9 @@ class SupplierPaymentRepository(SupplierRepository):
             "SELECT m.id, m.supplier_id, m.amount_delta FROM supplier_making_payment_legs l "
             "JOIN supplier_making_movements m ON m.id = l.making_movement_id "
             "WHERE l.payment_id = %s AND l.leg_kind = 'MAKING'", (_id(payment_id),))
+
+    def marketer_link(self, payment_id):
+        return self._fetch_one("SELECT * FROM supplier_making_marketer_payments WHERE payment_id = %s", (_id(payment_id),))
 
     def payments_of(self, supplier_id, limit=200):
         return self._fetch_all(self._SELECT + " WHERE p.supplier_id = %s ORDER BY p.id DESC LIMIT %s",

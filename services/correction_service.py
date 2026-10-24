@@ -409,6 +409,9 @@ class CorrectionService:
                     accounts.account("CASH", source["cash_account_id"], lock=True)
                 elif source["payment_method"] == "BANK":
                     accounts.account("BANK", source["bank_account_id"], lock=True)
+                elif source["payment_method"] == "MARKETER":
+                    from repositories.marketer_custody_repository import MarketerCustodyRepository
+                    MarketerCustodyRepository(connection).party(source["marketer_party_id"], lock=True)
                 source = repo.source(source_id, lock=True)
             reference = payment_code(source_id)
             context = {"invoice_id": None, "invoice_number": reference, "customer_name_snapshot": None,
@@ -770,22 +773,38 @@ class CorrectionService:
             self._plan_receipt(connection, plan, source, lock)
         if source_type == SPI:
             self._plan_supplier_invoice(connection, plan, source, source_id, lock)
-        if source_type == SMP and source["payment_method"] == "CUSTODY":
-            # Paid with market-custody cash: the custody entry is the only reversal path (it also restores the custody cash).
-            from repositories.market_trip_repository import MarketTripRepository, entry_code
-            entry = MarketTripRepository(connection).payment_entry(source_id)
-            plan.blockers.append(("CUSTODY_PAYMENT_REVERSE_FROM_TRIP",
-                                  "هذه الدفعة سُدِّدت من عهدة السوق"
-                                  + ("" if entry is None else f" ({entry_code(entry['trip_id'], entry['entry_no'])})")
-                                  + ": اعكسها من حركة العهدة نفسها (دفع مصنعيات من العهدة) من صفحة عهدة السوق."))
-        elif source_type == SMP:
-            # The exact stored making movement is restored (never a recomputed amount): the payment's negative delta, negated.
+        if source_type == SMP:
             from repositories.supplier_payment_repository import REVERSAL_MOVEMENT, SupplierPaymentRepository
-            movement = SupplierPaymentRepository(connection).payment_making_movement(source_id)
+            payments = SupplierPaymentRepository(connection)
+            movement = payments.payment_making_movement(source_id)
             if movement is None:
                 plan.blockers.append(("PAYMENT_MOVEMENT_MISSING", "حركة المصنعيات الأصلية للدفعة غير موجودة."))
             else:
                 plan.making.append((str(movement["supplier_id"]), -Decimal(str(movement["amount_delta"])), REVERSAL_MOVEMENT))
+            if source["payment_method"] == "CUSTODY":
+                # Paid with market-custody cash: the custody entry is the only reversal path (it also restores the custody cash).
+                from repositories.market_trip_repository import MarketTripRepository, entry_code
+                entry = MarketTripRepository(connection).payment_entry(source_id)
+                plan.blockers.append(("CUSTODY_PAYMENT_REVERSE_FROM_TRIP",
+                                      "هذه الدفعة سُدِّدت من عهدة السوق"
+                                      + ("" if entry is None else f" ({entry_code(entry['trip_id'], entry['entry_no'])})")
+                                      + ": اعكسها من حركة العهدة نفسها (دفع مصنعيات من العهدة) من صفحة عهدة السوق."))
+            elif source["payment_method"] == "MARKETER":
+                from repositories.marketer_custody_repository import MarketerCustodyRepository
+                link = payments.marketer_link(source_id)
+                if link is None or int(link["marketer_party_id"]) != int(source.get("marketer_party_id") or 0) \
+                        or Decimal(str(link["amount"])) != Decimal(str(source["amount"])):
+                    plan.blockers.append(("MARKETER_PAYMENT_LINK_MISSING", "ربط دفعة المسوقجي غير موجود أو لا يطابق الدفعة."))
+                else:
+                    marketer_repo = MarketerCustodyRepository(connection)
+                    party = marketer_repo.party(link["marketer_party_id"])
+                    if party is None or not party["is_intermediary"]:
+                        plan.blockers.append(("MARKETER_NOT_FOUND", "المسوقجي المرتبط بدفعة المصنعيات غير موجود."))
+                    else:
+                        amount = Decimal(str(link["amount"]))
+                        plan.marketer.append(("CASH", int(link["marketer_party_id"]), int(link["marketer_document_id"]),
+                                              "SUPPLIER_PAY", None, "SUPPLIER_PAY_REVERSAL", amount, amount))
+                        plan.extra_permissions.append(HOLDING_REVERSE_PERMISSION)
         if source_type == CD and source["direction"] == "IN":
             # Reversing a deposit must not leave refunds larger than the remaining deposits.
             from repositories.customer_deposit_repository import CustomerDepositRepository

@@ -23,7 +23,7 @@ SHOP_OWES_TEXT, SUPPLIER_OWES_TEXT, SETTLED_TEXT = "علينا للمورد", "�
 GOLD_SETTLED_TEXT, MAKING_SETTLED_TEXT = "حساب المورد: لا توجد مستحقات ذهب", "لا توجد مستحقات مصنعية"
 HELD_GOLD_LABEL = "ذهب المحل لديه بصفته مسوقجي"
 ACCOUNT_TYPE_TEXT = {"BANK": "حساب بنكي", "MOBILE_WALLET": "محفظة"}
-PAYMENT_METHOD_TEXT = {"CASH": "نقدًا من", "BANK": "تحويل من", "CUSTODY": "من عهدة السوق"}
+PAYMENT_METHOD_TEXT = {"CASH": "نقدًا من", "BANK": "تحويل من", "CUSTODY": "من عهدة السوق", "MARKETER": "من نقدية المسوقجي"}
 TONES = {rules.SHOP_OWES: "shopOwes", rules.SUPPLIER_OWES: "supplierOwes", rules.SETTLED: "settled"}
 
 
@@ -148,6 +148,8 @@ class SupplierViewModel(QObject):
     paymentPosted = Signal(str)          # a making payment was posted (its code): the payment dialog can close
     reversalDone = Signal(str)           # a making payment was reversed (the RV code): the reversal dialog can close
     settlementPosted = Signal(str)       # a gold settlement was posted (its SG code): the dialog can close and the Scrap views reload
+    supplierGoldSettlementPosted = Signal(str)  # supplier-page custody / intermediary settlement completed
+    custodySettlementPosted = Signal(str)        # a custody balance changed; the custody page reloads
     settlementReversed = Signal(str)     # a gold settlement was reversed (the RV code): the dialog can close and the Scrap views reload
     holdingReturned = Signal(str)        # a whole lot came back from the intermediary (its IH code): the dialog can close
     holdingChanged = Signal()            # custody entries changed by a holding return (after commit): the custody views reload
@@ -161,6 +163,9 @@ class SupplierViewModel(QObject):
         self._holding_receipts = None
         self._pay_context = {}
         self._settlements, self._set_context = None, {}
+        self._market_trip_settlements = None
+        self._gold_sources, self._gold_source_context = [], {}
+        self._gold_sources_supplier_id = self._gold_source_context_supplier_id = ""
         self._workers, self._request, self._latest, self._busy = set(), 0, {}, set()
         self._shutdown = False
         self._suppliers, self._detail = [], {}
@@ -209,6 +214,12 @@ class SupplierViewModel(QObject):
             from services.supplier_gold_settlement_service import SupplierGoldSettlementService
             self._settlements = SupplierGoldSettlementService(self._session)
         return self._settlements
+
+    def _market_trip_settlement_service(self):
+        if self._market_trip_settlements is None:
+            from services.market_trip_service import MarketTripService
+            self._market_trip_settlements = MarketTripService(self._session)
+        return self._market_trip_settlements
 
     def _start(self, operation, call):
         from app.workers.invoice_worker import InvoiceWorker
@@ -295,6 +306,8 @@ class SupplierViewModel(QObject):
     def selectSupplier(self, supplier_id):
         self._selected = str(supplier_id or "")
         self._detail = {}
+        self._gold_sources, self._gold_source_context = [], {}
+        self._gold_sources_supplier_id = self._gold_source_context_supplier_id = ""
         self._marketer.clear()
         self.changed.emit()
         if self._selected:
@@ -381,7 +394,7 @@ class SupplierViewModel(QObject):
 
     @Slot(str)
     def loadPaymentContext(self, supplier_id):
-        """The CURRENT making position, MAIN_SAFE and the active bank accounts for the payment dialog."""
+        """The CURRENT making position and the active bank, custody-cash and marketer-cash sources."""
         self._pay_context = {}
         self._error = self._message = ""
         service = self._payment_service()
@@ -414,14 +427,15 @@ class SupplierViewModel(QObject):
                 "note": ("المبلغ أكبر من المستحق: يصبح رصيد المصنعيات «لنا عند المورد» (رصيد دائن للمحل)."
                          if after < 0 else "")}
 
-    @Slot(str, str, str, str, str, str, str, str)
-    def payMaking(self, supplier_id, method, bank_account_id, amount, payment_date, reference, notes, request_key):
+    @Slot(str, str, str, bool, str, str, str, str, str)
+    def payMaking(self, supplier_id, method, source_id, confirm_same_party, amount, payment_date, reference, notes, request_key):
         if "pay" in self._busy:
             return                                                     # a double click never submits twice
         self._message = self._error = ""
         service = self._payment_service()
         self._start("pay", lambda _expected_actor: service.pay(
-            supplier_id, method, bank_account_id, amount, payment_date, reference, notes, request_key,
+            supplier_id, method, source_id, amount, payment_date, reference, notes, request_key,
+            confirm_same_party=confirm_same_party,
             _expected_actor=_expected_actor))
         self.changed.emit()
 
@@ -431,6 +445,10 @@ class SupplierViewModel(QObject):
             return
         self._message = (f"دفعة المصنعيات {result['code']} مسجلة من قبل (لم تُسجل مرة ثانية)." if result.get("duplicate")
                          else f"تم تسجيل دفعة المصنعيات {result['code']}.")
+        if result.get("method") == "CUSTODY":
+            self.custodySettlementPosted.emit(result.get("custody_code") or "")
+        if result.get("method") == "MARKETER" and result.get("marketer_party_id"):
+            self._marketer.refresh_if_party(result["marketer_party_id"])
         self.refresh()
         self.paymentPosted.emit(result["code"])
 
@@ -450,6 +468,207 @@ class SupplierViewModel(QObject):
         self._message = f"تم عكس دفعة المصنعيات {result['source_reference']} ({result['code']})."
         self.refresh()
         self.reversalDone.emit(result["code"])
+
+    # ------------------------------------------------------------ supplier gold source selection
+    @Slot(str)
+    def loadSupplierGoldSources(self, supplier_id):
+        if str(supplier_id or "") != self._selected:
+            return
+        self._gold_sources, self._gold_source_context = [], {}
+        self._gold_sources_supplier_id = str(supplier_id)
+        self._gold_source_context_supplier_id = ""
+        self._error = self._message = ""
+        self._start("goldsources", lambda _expected_actor: (
+            str(supplier_id), self._read_supplier_gold_sources(_expected_actor)))
+
+    def _read_supplier_gold_sources(self, expected_actor):
+        permissions = set(expected_actor.permissions)
+        rows = []
+        if {"MARKET_TRIP_MANAGE", "SUPPLIER_GOLD_SETTLE"} <= permissions:
+            rows.extend(self._market_trip_settlement_service().supplier_settlement_sources(_expected_actor=expected_actor))
+        if {"INTERMEDIARY_HOLDING_MANAGE", "SUPPLIER_GOLD_SETTLE"} <= permissions:
+            rows.extend(self._holding_settlement_service().settlement_sources(_expected_actor=expected_actor))
+        return sorted(rows, key=lambda row: (row["source_type"], row["text"]))
+
+    def _on_goldsources(self, result, error):
+        if self._gold_sources_supplier_id != self._selected:
+            return
+        if error:
+            self._gold_sources = []
+            self._error = error
+            return
+        supplier_id, rows = result
+        if supplier_id != self._selected:
+            return
+        self._gold_sources = list(rows or [])
+        if not self._gold_sources:
+            self._message = "لا يوجد ذهب متاح حاليًا في عهدة مفتوحة أو لدى المسوقجي."
+
+    @Slot(str)
+    def loadSupplierGoldSource(self, source_key):
+        source = next((row for row in self._gold_sources if row["key"] == str(source_key)), None)
+        if source is None:
+            self._gold_source_context = {}
+            self._error = "مصدر الذهب لم يعد ضمن القائمة. حدّث المصادر وحاول مرة أخرى."
+            self.changed.emit()
+            return
+        self._gold_source_context = {}
+        self._gold_source_context_supplier_id = self._selected
+        self._error = self._message = ""
+        supplier_id = self._selected
+        self._start("goldsourcecontext", lambda _expected_actor: self._read_supplier_gold_source(source, supplier_id, _expected_actor))
+
+    def _read_supplier_gold_source(self, source, supplier_id, expected_actor):
+        if source["source_type"] == "HOLDING":
+            holding = self._holding_settlement_service().context(source["pool_kind"], source["pool_id"],
+                                                                  _expected_actor=expected_actor)
+            return {"source": source, "holding": holding, "supplier_id": supplier_id}
+        trip = self._market_trip_settlement_service().trip_detail(source["trip_id"], _expected_actor=expected_actor)
+        if trip["trip"]["status"] != "OPEN" or trip["mode"] != "LEGACY":
+            raise ValueError("العهدة لم تعد مفتوحة أو لا تدعم التسوية الفعلية.")
+        custody = trip["custody"]
+        kind = source["source_type"]
+        if kind == "CUSTODY_GOLD":
+            line = next((row for row in custody["gold"] if str(row["karat_id"]) == source["karat_id"]
+                         and row["designation"] == source["designation"]), None)
+            if line is None or line["outstanding"] <= 0:
+                raise ValueError("لم يعد في هذا المصدر ذهب متاح.")
+            available, karat_value, fineness = line["outstanding"], int(line["karat_value"]), None
+        elif kind == "TRIP_BAR":
+            available, karat_value, fineness = custody["bar"], 21, None
+            if available <= 0:
+                raise ValueError("لم يعد في هذه العهدة رصيد سبيكة متاح.")
+        else:
+            line = next((row for row in custody["lots"] if row["lot_id"] == source["lot_id"]), None)
+            if line is None or line["fineness"] is None or line["outstanding"] != line["weight"]:
+                raise ValueError("لم تعد السبكة كاملة ومتاحة في هذه العهدة.")
+            available, karat_value, fineness = line["weight"], None, line["fineness"]
+        return {"source": source, "available": available, "karat_value": karat_value, "fineness": fineness,
+                "supplier_id": supplier_id}
+
+    def _on_goldsourcecontext(self, result, error):
+        if self._gold_source_context_supplier_id != self._selected:
+            return
+        if error:
+            self._gold_source_context = {}
+            self._error = error
+            return
+        if result.get("supplier_id") != self._selected:
+            return
+        self._gold_source_context = result
+
+    @Slot(str, str, str, bool, result="QVariantMap")
+    def previewSupplierGoldSettlement(self, supplier_id, quantity, declaration, self_confirmed):
+        empty = {"valid": False, "short": False, "error": "", "deliveredText": "", "creditedText": "",
+                 "analyticalText": "", "differenceText": "", "formulaText": "", "availableText": "",
+                 "options": [], "isSelf": False}
+        context = self._gold_source_context
+        if (not context or context.get("supplier_id") != self._selected
+                or str(supplier_id or "") != self._selected):
+            return empty
+        source = context["source"]
+        if source["source_type"] == "HOLDING":
+            holding = context["holding"]
+            raw = holding_preview(holding, supplier_id, quantity)
+            out = {**empty, "valid": raw["valid"], "error": raw["error"], "short": raw["short"],
+                   "isSelf": raw["self"], "options": raw["options"]}
+            if raw.get("delivered") is not None:
+                facts = holding["facts"]
+                lot = holding["pool_kind"] == POOL_LOT
+                basis = (f"عيار فعلي {number(facts['fineness'], 1)} بالألف" if lot
+                         else f"عيار {facts['karat_value']}")
+                out.update({"availableText": f"{grams(holding['balance'])} جرام",
+                            "deliveredText": f"{grams(raw['delivered'])} جرام ({basis})",
+                            "formulaText": (f"{grams(raw['delivered'])} × {number(facts['fineness'], 1)} ÷ 1000 × 24 ÷ {raw['supplier_karat']}"
+                                            if lot else f"{grams(raw['delivered'])} × {facts['karat_value']} ÷ {raw['supplier_karat']}"),
+                            "creditedText": f"{grams(raw['credited'])} جرام عيار {raw['supplier_karat']}",
+                            "analyticalText": number(raw["analytical"], 6),
+                            "differenceText": number(raw["rounding_difference"], 6, signed=True)})
+            return out
+
+        supplier = (self._detail or {}).get("supplier", {})
+        if supplier.get("karat_value") is None:
+            return {**empty, "error": "عيار هذا المورد غير محدد: حدّده من تعديل المورد أولًا."}
+        try:
+            delivered = rules.parse_delivered_weight(quantity)
+            available = Decimal(str(context["available"]))
+            if source["source_type"] == "CUSTODY_LOT":
+                if delivered != available:
+                    return {**empty, "short": True, "availableText": f"{grams(available)} جرام",
+                            "error": "تُسلَّم السبكة كاملة فقط؛ الوزن يجب أن يساوي كامل رصيدها."}
+                credited, analytical, difference = rules.lot_settlement_credit(delivered, context["fineness"],
+                                                                                supplier["karat_value"])
+                formula = f"{grams(delivered)} × {number(context['fineness'], 1)} ÷ 1000 × 24 ÷ {supplier['karat_value']}"
+            else:
+                credited, analytical, difference = rules.settlement_credit(delivered, context["karat_value"],
+                                                                            supplier["karat_value"])
+                formula = f"{grams(delivered)} × {context['karat_value']} ÷ {supplier['karat_value']}"
+        except (rules.SupplierRuleError, ValueError) as exc:
+            return {**empty, "error": str(exc)}
+        short = delivered > available
+        source_basis = (f"عيار فعلي {number(context['fineness'], 1)} بالألف"
+                        if source["source_type"] == "CUSTODY_LOT"
+                        else f"عيار {context['karat_value']}")
+        return {"valid": not short, "short": short, "error": "",
+                "availableText": f"{grams(available)} جرام",
+                "deliveredText": f"{grams(delivered)} جرام ({source_basis})",
+                "creditedText": f"{grams(credited)} جرام عيار {supplier['karat_value']}",
+                "analyticalText": number(analytical, 6), "differenceText": number(difference, 6, signed=True),
+                "formulaText": formula, "options": [], "isSelf": False}
+
+    @Slot(str, str, str, bool, str, str, str, str)
+    def postSupplierGoldSettlement(self, source_key, quantity, declaration, self_confirmed, settlement_date, reference, notes, request_key):
+        if "suppliergoldsettle" in self._busy:
+            return
+        source = next((row for row in self._gold_sources if row["key"] == str(source_key)), None)
+        context = self._gold_source_context
+        if (source is None or not context or context.get("supplier_id") != self._selected
+                or context["source"]["key"] != str(source_key)):
+            self._error = "اختر مصدر الذهب وأعد تحميل بياناته قبل التسجيل."
+            self.changed.emit()
+            return
+        supplier_id = self._selected
+        self._message = self._error = ""
+
+        def post(_expected_actor):
+            if source["source_type"] == "HOLDING":
+                return self._holding_settlement_service().settle(
+                    source["pool_kind"], source["pool_id"], supplier_id, quantity, declaration, self_confirmed,
+                    settlement_date, reference, notes, request_key, _expected_actor=_expected_actor)
+            service = self._market_trip_settlement_service()
+            kind = source["source_type"]
+            if kind == "TRIP_BAR":
+                return service.settle_supplier_bar(source["trip_id"], supplier_id, quantity, settlement_date,
+                                                   reference, notes, request_key, _expected_actor=_expected_actor)
+            if kind == "CUSTODY_LOT":
+                return service.settle_supplier_lot(source["trip_id"], supplier_id, source["lot_id"], settlement_date,
+                                                   reference, notes, request_key, weight=quantity, _expected_actor=_expected_actor)
+            return service.settle_supplier_gold(source["trip_id"], supplier_id, source["karat_id"], source["designation"],
+                                                quantity, settlement_date, reference, notes, request_key, _expected_actor=_expected_actor)
+
+        self._start("suppliergoldsettle", post)
+
+    def _on_suppliergoldsettle(self, result, error):
+        if error:
+            self._error = error
+            return
+        source = self._gold_source_context.get("source", {})
+        code = result.get("settlement_code") or result.get("code", "")
+        if source.get("source_type") == "HOLDING":
+            self._message = (f"تم تسجيل تسوية الذهب {code} من رصيد المسوقجي: سُلِّم "
+                             f"{grams(Decimal(result['delivered_weight']))} جرام واحتُسب للمورد "
+                             f"{grams(Decimal(result['credited_weight']))} جرام عيار {result['target_karat']}.")
+            self.holdingChanged.emit()
+        elif source.get("source_type") == "CUSTODY_LOT":
+            self._message = f"تم تسجيل تسوية السبكة {code} من عهدة السوق {result.get('code', '')}."
+            self.custodySettlementPosted.emit(code)
+        else:
+            self._message = (f"تم تسجيل تسوية الذهب {code} من عهدة السوق: سُلِّم "
+                             f"{grams(Decimal(result['delivered_weight']))} جرام واحتُسب للمورد "
+                             f"{grams(Decimal(result['credited_weight']))} جرام عيار {result['target_karat']}.")
+            self.custodySettlementPosted.emit(code)
+        self.refresh()
+        self.supplierGoldSettlementPosted.emit(code)
 
     # ------------------------------------------------------------ gold settlement (تسوية ذهب) and its reversal (045)
     @Slot(str)
@@ -828,7 +1047,51 @@ class SupplierViewModel(QObject):
     @Property(bool, notify=changed)
     def canSettleGold(self):
         actor = self._session.current_actor()
-        return bool(actor and "SUPPLIER_GOLD_SETTLE" in actor.permissions)
+        if actor is None or "SUPPLIER_GOLD_SETTLE" not in actor.permissions:
+            return False
+        return bool({"MARKET_TRIP_MANAGE", "INTERMEDIARY_HOLDING_MANAGE"} & set(actor.permissions))
+
+    @Property(bool, notify=changed)
+    def settlingSupplierGold(self):
+        return "suppliergoldsettle" in self._busy
+
+    @Property("QVariantList", notify=changed)
+    def supplierGoldSources(self):
+        return list(self._gold_sources)
+
+    @Property(bool, notify=changed)
+    def supplierGoldSourcesLoading(self):
+        return "goldsources" in self._busy
+
+    @Property(bool, notify=changed)
+    def supplierGoldSourceLoading(self):
+        return "goldsourcecontext" in self._busy
+
+    @Property("QVariantMap", notify=changed)
+    def supplierGoldSourceContext(self):
+        context = self._gold_source_context
+        if not context:
+            return {}
+        source = context["source"]
+        if source["source_type"] == "HOLDING":
+            holding = context["holding"]
+            lot = holding["pool_kind"] == POOL_LOT
+            facts = holding["facts"]
+            source_text = (f"سبكة • العيار الفعلي {number(facts['fineness'], 1)} بالألف"
+                           if lot else f"لوجو عيار {facts['karat_value']}")
+            source_text += f" • المسوقجي: {holding['holder']['name']}"
+            return {"key": source["key"], "type": "HOLDING", "sourceText": source_text,
+                    "availableText": f"{grams(holding['balance'])} جرام", "isLot": lot,
+                    "poolKind": holding["pool_kind"], "poolId": holding["pool_id"]}
+        source_text = source["text"]
+        available = Decimal(str(context["available"]))
+        if source["source_type"] == "CUSTODY_LOT":
+            source_text += f" • العهدة {source['trip_code']}"
+        return {"key": source["key"], "type": source["source_type"], "sourceText": source_text,
+                "availableText": f"{grams(available)} جرام", "available": str(available),
+                "tripId": source["trip_id"], "karatId": source.get("karat_id", ""),
+                "designation": source.get("designation", ""), "lotId": source.get("lot_id", ""),
+                "isLot": source["source_type"] == "CUSTODY_LOT"}
 
     @Property(bool, notify=changed)
     def canReverseSettlement(self):
@@ -876,18 +1139,19 @@ class SupplierViewModel(QObject):
 
     @Property("QVariantMap", notify=changed)
     def payContext(self):
-        """The payment dialog's data (empty while it loads): supplier, current making position, Main Safe, bank accounts."""
+        """The payment dialog's data (empty while it loads): supplier position and authorized payment-source balances."""
         context = self._pay_context
         if not context:
             return {}
         direction = context["making_direction"]
-        safe = context["safe"]
         return {"supplierId": context["supplier"]["id"], "supplierName": context["supplier"]["name"],
                 "supplierCode": context["supplier"]["code"], "supplierActive": context["supplier"]["active"],
                 "currentParts": position_parts(direction, context["making"], "making"),
                 "currentText": making_position_text(direction, context["making"]),
                 "currentTone": TONES[direction],
-                "safeName": "" if safe is None else safe["name"], "safeReady": bool(safe and safe["active"]),
+                "custodies": [{"id": t["id"], "text": f"{t['code']} — متاح {money(t['cash'])} ج"} for t in context["custodies"]],
+                "marketers": [{"id": m["id"], "text": f"{m['name']}{' (موقوف)' if not m['active'] else ''} — متاح {money(m['cash'])} ج",
+                               "self": m["self"]} for m in context["marketers"]],
                 "banks": [{"id": b["id"],
                            "text": f"{b['name']} — {ACCOUNT_TYPE_TEXT.get(b['account_type'], b['account_type'])}"
                                    + (f" ({b['label']})" if b["label"] else "")} for b in context["banks"]]}

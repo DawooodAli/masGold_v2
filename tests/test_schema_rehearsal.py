@@ -128,7 +128,7 @@ class ChainAndManifestTests(unittest.TestCase):
         self.assertEqual(chain.MANIFEST.read_text(encoding="utf-8"), chain.manifest_text())
         files = chain.load_chain(require_committed=False)
         self.assertEqual([f.name for f in files], chain.chain_names())
-        self.assertEqual([int(f.name[:3]) for f in files], list(range(1, 78)))
+        self.assertEqual([int(f.name[:3]) for f in files], list(range(1, 79)))
 
     def test_changed_file_is_refused(self):
         directory, manifest = self.copy_chain()

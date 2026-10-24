@@ -11,10 +11,10 @@ from PySide6.QtTest import QTest
 from services.correction_service import CorrectionService
 from tests import test_invoice_page_qml as harness
 from tests.supplier_fakes import AccountsRepo, MANAGER_RIGHTS, OWNER_RIGHTS, PaymentRepo, build_payments
-from tests.test_supplier_payments import Corrections, Customers, Invoices
+from tests.test_supplier_payments import Corrections, Customers, Invoices, MarketerPaymentRepo
 
 NAME = "مورد الدفعات"
-CASH_TEXT = "نقدًا من الخزنة الرئيسية"
+BANK_TEXT = "تحويل من بنك مصر"
 
 
 class SupplierPaymentPageTests(harness.InvoicePageTests):
@@ -29,7 +29,8 @@ class SupplierPaymentPageTests(harness.InvoicePageTests):
             session, authorization=self.authorization, transaction_factory=self.db.transaction,
             invoice_repository=Invoices, correction_repository=Corrections, customer_repository=Customers)
         for target, value in (("repositories.supplier_payment_repository.SupplierPaymentRepository", PaymentRepo),
-                              ("repositories.financial_account_repository.FinancialAccountRepository", AccountsRepo)):
+                              ("repositories.financial_account_repository.FinancialAccountRepository", AccountsRepo),
+                              ("repositories.marketer_custody_repository.MarketerCustodyRepository", MarketerPaymentRepo)):
             started = patch(target, value)
             started.start()
             self.addCleanup(started.stop)
@@ -102,11 +103,17 @@ class SupplierPaymentPageTests(harness.InvoicePageTests):
     def making(self):
         return sum((m["amount_delta"] for m in self.db.making), D("0.00"))
 
+    def add_marketer_cash(self, party_id, amount="1500.00"):
+        self.db.marketer_cash_moves.append({
+            "id": self.db.next("marketer_cash_move"), "party_id": int(party_id), "document_id": None,
+            "doc_kind": "OPENING", "movement_type": "OPENING", "cash_amount": D(amount),
+            "amount_delta": D(amount), "correction_id": None})
+
     def closed(self, name):
         self.wait_until(lambda: not self.item(name).property("visible"), f"{name} closed")
 
     # ------------------------------------------------------------ tests
-    def test_owner_pays_from_the_main_safe_with_real_clicks_at_1080(self):
+    def test_owner_pays_from_a_selected_bank_with_real_clicks_at_1080(self):
         self.root.setWidth(1080)
         self.root.setHeight(680)
         self.open_supplier()
@@ -114,10 +121,12 @@ class SupplierPaymentPageTests(harness.InvoicePageTests):
         self.assert_inside_window(self.item("payMakingButton"))
         self.open_dialog()
         self.assertEqual(self.text("payCurrentPosition"), "علينا للمورد 5,000.00 ج مصنعيات")
-        self.assertIsNone(self.visible_item("payBankCombo"))                 # the bank selector is for bank payments only
+        self.assertIsNotNone(self.visible_item("payBankCombo"))
         self.assertFalse(self.item("confirmPayMakingButton").property("enabled"))      # no amount yet
         self.type_in("payAmountField", "1000")
         self.assertEqual(self.text("payResultPosition"), "علينا للمورد 4,000.00 ج مصنعيات")
+        self.assertFalse(self.item("confirmPayMakingButton").property("enabled"))     # the account must be selected
+        self.pick("payBankCombo", 1)
         self.assertTrue(self.item("confirmPayMakingButton").property("enabled"))
         for name in ("confirmPayMakingButton", "cancelPayMakingButton", "payAmountField", "payNotesField"):
             self.assert_inside_window(self.item(name))
@@ -126,8 +135,8 @@ class SupplierPaymentPageTests(harness.InvoicePageTests):
         self.closed("payMakingDialog")
         self.wait_idle()
         self.assertEqual(self.text("makingPosition"), "علينا للمورد 4,000.00 ج مصنعيات")
-        self.assertEqual([(m["account_id"], m["amount_delta"]) for m in self.db.cash_moves], [(1, D("-1000.00"))])
-        self.assertEqual(self.db.bank_moves, [])
+        self.assertEqual([(m["account_id"], m["amount_delta"]) for m in self.db.bank_moves], [(5, D("-1000.00"))])
+        self.assertEqual(self.db.cash_moves, [])
         self.assertEqual(self.svm.message, "تم تسجيل دفعة المصنعيات SM000001.")
         self.assertEqual(self.warnings, [])
 
@@ -151,6 +160,49 @@ class SupplierPaymentPageTests(harness.InvoicePageTests):
         self.assertEqual(([m["account_id"] for m in self.db.bank_moves], self.db.cash_moves), ([5], []))
         self.assertEqual(self.text("makingPosition"), "لنا عند المورد 1,000.00 ج مصنعيات")
         self.assertEqual(self.making(), D("-1000.00"))
+        self.assertEqual(self.warnings, [])
+
+    def test_a_marketer_payment_uses_held_cash_and_not_a_bank_or_safe_ledger(self):
+        self.grant("INTERMEDIARY_HOLDING_MANAGE")
+        marketer_id = self.svm._service.create_supplier("مسوقجي الدفعات", karat_id=None,
+                                                        is_supplier=False, is_intermediary=True)
+        self.add_marketer_cash(marketer_id)
+        self.open_supplier()
+        self.open_dialog()
+        self.click("payMethodMarketer")
+        self.pick("payMarketerCombo", 1)
+        self.type_in("payAmountField", "700")
+        self.assertTrue(self.item("confirmPayMakingButton").property("enabled"))
+        self.click("confirmPayMakingButton")
+        self.wait_until(lambda: len(self.db.payments) == 1, "marketer-funded payment posted")
+        self.closed("payMakingDialog")
+        self.wait_idle()
+        payment = next(iter(self.db.payments.values()))
+        self.assertEqual((payment["payment_method"], payment["marketer_party_id"], payment["self_payment_confirmed"]),
+                         ("MARKETER", int(marketer_id), False))
+        self.assertEqual(self.db.marketer_cash_moves[-1]["amount_delta"], D("-700.00"))
+        self.assertEqual((self.db.bank_moves, self.db.cash_moves), ([], []))
+        self.assertEqual(self.warnings, [])
+
+    def test_same_supplier_marketer_requires_a_real_click_confirmation(self):
+        self.grant("INTERMEDIARY_HOLDING_MANAGE")
+        self.db.suppliers[int(self.supplier)]["is_intermediary"] = True
+        self.add_marketer_cash(self.supplier)
+        self.open_supplier()
+        self.open_dialog()
+        self.click("payMethodMarketer")
+        self.pick("payMarketerCombo", 1)
+        self.type_in("payAmountField", "700")
+        confirm = self.item("paySamePartyConfirm")
+        self.assertTrue(confirm.property("visible"))
+        self.assertFalse(self.item("confirmPayMakingButton").property("enabled"))
+        self.click(confirm)
+        self.assertTrue(self.item("confirmPayMakingButton").property("enabled"))
+        self.click("confirmPayMakingButton")
+        self.wait_until(lambda: len(self.db.payments) == 1, "confirmed self-funded payment posted")
+        self.closed("payMakingDialog")
+        payment = next(iter(self.db.payments.values()))
+        self.assertTrue(payment["self_payment_confirmed"])
         self.assertEqual(self.warnings, [])
 
     def test_an_invalid_amount_is_explained_and_never_submittable(self):
@@ -190,24 +242,26 @@ class SupplierPaymentPageTests(harness.InvoicePageTests):
         self.open_supplier()
         self.open_dialog()
         self.type_in("payAmountField", "700")
+        self.pick("payBankCombo", 1)
         self.double_click("confirmPayMakingButton")
         self.wait_until(lambda: len(self.db.payments) >= 1, "payment posted")
         self.closed("payMakingDialog")
         self.wait_idle()
         QTest.qWait(150)
-        self.assertEqual((len(self.db.payments), len(self.db.cash_moves), self.making()), (1, 1, D("4300.00")))
+        self.assertEqual((len(self.db.payments), len(self.db.bank_moves), self.making()), (1, 1, D("4300.00")))
 
     def test_history_shows_reference_method_account_and_the_owner_reverses_it_with_a_reason(self):
         self.open_supplier()
         self.open_dialog()
         self.type_in("payAmountField", "1000")
+        self.pick("payBankCombo", 1)
         self.click("confirmPayMakingButton")
         self.wait_until(lambda: len(self.db.payments) == 1, "payment posted")
         self.closed("payMakingDialog")
         self.wait_idle()
         self.click("tabMaking")
         QTest.qWait(150)
-        self.assertIn(CASH_TEXT, " ".join(self.visible_texts("makingPaymentDetail")))
+        self.assertIn(BANK_TEXT, " ".join(self.visible_texts("makingPaymentDetail")))
         self.assertIsNotNone(self.visible_item("reversePaymentButton"))
         self.assert_inside_window(self.visible_item("reversePaymentButton"))
         self.click(self.visible_item("reversePaymentButton"))
@@ -221,7 +275,7 @@ class SupplierPaymentPageTests(harness.InvoicePageTests):
         self.closed("reversePaymentDialog")
         self.wait_idle()
         QTest.qWait(150)
-        self.assertEqual((self.making(), sum((m["amount_delta"] for m in self.db.cash_moves), D("0.00"))),
+        self.assertEqual((self.making(), sum((m["amount_delta"] for m in self.db.bank_moves), D("0.00"))),
                          (D("5000.00"), D("0.00")))
         states = " | ".join(self.visible_texts("makingPaymentState"))
         self.assertIn("معكوسة بالعملية RV000001", states)
@@ -233,6 +287,7 @@ class SupplierPaymentPageTests(harness.InvoicePageTests):
         self.open_supplier()
         self.open_dialog()
         self.type_in("payAmountField", "100")
+        self.pick("payBankCombo", 1)
         self.click("confirmPayMakingButton")
         self.wait_until(lambda: len(self.db.payments) == 1, "payment posted")
         self.closed("payMakingDialog")
@@ -257,6 +312,7 @@ class SupplierPaymentPageTests(harness.InvoicePageTests):
         self.open_dialog()
         self.assertIsNotNone(self.visible_item("payInactiveNote"))
         self.type_in("payAmountField", "1000")
+        self.pick("payBankCombo", 1)
         self.assertTrue(self.item("confirmPayMakingButton").property("enabled"))
         self.click("confirmPayMakingButton")
         self.wait_until(lambda: len(self.db.payments) == 1, "payment posted")
@@ -279,6 +335,7 @@ class SupplierPaymentPageTests(harness.InvoicePageTests):
         self.open_supplier()
         self.open_dialog()
         self.type_in("payAmountField", "100")
+        self.pick("payBankCombo", 1)
         self.authorization.permissions = OWNER_RIGHTS - {"SUPPLIER_MAKING_PAY"}           # revoked in the database
         self.click("confirmPayMakingButton")
         self.wait_until(lambda: self.svm.errorMessage != "", "refusal")
@@ -296,7 +353,7 @@ class SupplierPaymentPageTests(harness.InvoicePageTests):
                 self.open_dialog()
                 self.click("payMethodBank")
                 self.type_in("payAmountField", "6000")
-                for name in ("payMethodCash", "payMethodBank", "payBankCombo", "payAmountField", "payDateField",
+                for name in ("payMethodBank", "payBankCombo", "payAmountField", "payDateField",
                              "payNotesField", "confirmPayMakingButton", "cancelPayMakingButton"):
                     self.assert_inside_window(self.item(name))
                 self.item("payMakingDialog").close()

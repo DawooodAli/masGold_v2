@@ -110,6 +110,8 @@ class CallSiteAuditTests(unittest.TestCase):
                   ("services/supplier_payment_service.py", "payment_detail"),       # SUPPLIER_VIEW (payment document)
                  ("services/supplier_gold_settlement_service.py", "settlement_context"),   # SUPPLIER_GOLD_SETTLE (settlement dialog)
                  ("services/supplier_gold_settlement_service.py", "settlement_detail"),    # SUPPLIER_GOLD_SETTLE (settlement document)
+                 ("services/market_trip_service.py", "supplier_settlement_sources"),     # MARKET_TRIP_MANAGE + SUPPLIER_GOLD_SETTLE (custody source catalog)
+                 ("services/holding_settlement_service.py", "settlement_sources"),       # INTERMEDIARY_HOLDING_MANAGE + SUPPLIER_GOLD_SETTLE (holding source catalog)
                   ("services/holding_receipt_service.py", "context"),                # INTERMEDIARY_HOLDING_VIEW + MANAGE (receipt dialog context)
                   ("services/intermediary_holding_service.py", "return_review"),      # MANAGE + MARKET_TRIP_MANAGE (whole-bar return review, read-only)
                   ("services/holding_settlement_service.py", "context"),            # SUPPLIER_GOLD_SETTLE + INTERMEDIARY_HOLDING_MANAGE (settlement dialog context)
@@ -158,18 +160,22 @@ class CallSiteAuditTests(unittest.TestCase):
         self.assertEqual(self.sites("require_permission_read") | self.sites("require_any_permission_read"),
                          self.READ_SITES)
 
-    def test_the_two_added_trip_read_sites_require_the_permission_and_call_no_writer(self):
-        """trip_page and book_preview use the non-locking read path ONLY after reviewing them: each asks for MARKET_TRIP_MANAGE and calls no repository writer."""
+    def test_explicit_read_only_service_sites_recheck_the_documented_permissions(self):
         import ast
         writers = ("insert", "update_", "delete", "post", "lock", "write", "record", "reverse", "close", "reopen", "commit")
-        for path, name in (("services/market_trip_service.py", "trip_page"), ("services/market_trip_book_service.py", "book_preview"),
-                           ("services/market_trip_book_service.py", "reconciliation_preview")):
+        cases = (
+            ("services/market_trip_service.py", "trip_page", {"PERMISSION"}),
+            ("services/market_trip_book_service.py", "book_preview", {"PERMISSION"}),
+            ("services/market_trip_book_service.py", "reconciliation_preview", {"PERMISSION"}),
+            ("services/market_trip_service.py", "supplier_settlement_sources", {"PERMISSION", "GOLD_SETTLE_PERMISSION"}),
+            ("services/holding_settlement_service.py", "settlement_sources", {"SETTLE_PERMISSION", "MANAGE_PERMISSION"}),
+        )
+        for path, name, expected_permissions in cases:
             tree = ast.parse(Path(path).read_text(encoding="utf-8"))
             function = next(f for f in ast.walk(tree) if isinstance(f, ast.FunctionDef) and f.name == name)
             calls = [n for n in ast.walk(function) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
             permission = [c for c in calls if c.func.attr == "require_permission_read"]
-            self.assertEqual(len(permission), 1, name)
-            self.assertEqual(ast.unparse(permission[0].args[2]), "PERMISSION", name)
+            self.assertEqual({ast.unparse(c.args[2]) for c in permission}, expected_permissions, name)
             self.assertFalse([c.func.attr for c in calls if c.func.attr.startswith(writers)], name)
             self.assertFalse([c for c in calls if c.func.attr in ("require_permission", "require_permission_for_write")], name)
 

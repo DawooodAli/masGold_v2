@@ -26,7 +26,8 @@ from mysql.connector import Error as MySqlError, IntegrityError
 
 from repositories.financial_account_repository import FinancialAccountRepository
 from repositories.marketer_custody_repository import (CASH_HANDOVER, CASH_MOVEMENT, CASH_RETURN, GOLD_MOVEMENT as MARKETER_GOLD, GOLD_RETURN, HOLDING_MKT,
-                                                      KARAT_VALUE, MOVE_SETTLEMENT, PURCHASE, SALE, SOURCE, MarketerCustodyRepository, document_code)
+                                                      KARAT_VALUE, MOVE_SETTLEMENT, PURCHASE, SALE, SOURCE, SUPPLIER_PAY,
+                                                      MarketerCustodyRepository, document_code)
 from repositories.old_gold_conversion_repository import OldGoldConversionRepository
 from repositories.supplier_gold_settlement_repository import GOLD_MOVEMENT as SUPPLIER_GOLD_MOVEMENT, SupplierGoldSettlementRepository, settlement_code
 from services import supplier_rules as rules
@@ -41,7 +42,7 @@ VIEW_PERMISSION = "INTERMEDIARY_HOLDING_VIEW"
 REVERSE_PERMISSION = "INTERMEDIARY_HOLDING_REVERSE"
 SETTLE_PERMISSION = "SUPPLIER_GOLD_SETTLE"
 KIND_TEXT = {CASH_HANDOVER: "تسليم نقدية للمسوقجي", CASH_RETURN: "استرجاع نقدية من المسوقجي", GOLD_RETURN: "استرجاع ذهب عيار 21 من المسوقجي",
-             PURCHASE: "شراء ذهب نقدي للمسوقجي", SALE: "بيع ذهب المسوقجي"}
+             PURCHASE: "شراء ذهب نقدي للمسوقجي", SALE: "بيع ذهب المسوقجي", SUPPLIER_PAY: "دفعة مصنعيات من نقدية المسوقجي"}
 SELF_SETTLEMENT_TEXT = ("المسوقجي هو نفسه المورد المستلم: أكّد صراحةً أن ذهب المحل لديه (أمانة) يبقى منفصلًا تمامًا عن حساب المورد وأن هذه التسوية "
                         "تنقل الجرامات من عهدته إلى حسابه كمورد.")
 
@@ -216,6 +217,7 @@ class MarketerCustodyService:
                 "cash": None if d["cash_amount"] is None else Decimal(str(d["cash_amount"])),
                 "weight": None if d["weight_grams"] is None else Decimal(str(d["weight_grams"])),
                 "counterparty": d.get("counterparty_name"), "counterparty_kind": d.get("counterparty_kind"),
+                "supplier_payment_supplier_name": d.get("supplier_payment_supplier_name") or "",
                 "counterparty_party_id": None if d.get("counterparty_party_id") is None else str(d["counterparty_party_id"]),
                 "price_warning_acknowledged": bool(d.get("price_warning_acknowledged")),
                 "deviation_percent": None if d.get("deviation_percent") is None else Decimal(str(d["deviation_percent"])),

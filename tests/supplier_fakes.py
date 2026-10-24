@@ -58,6 +58,7 @@ class Db:
                 "account_label": "01000000000", "is_active": 1},
             7: {"id": 7, "name": "حساب موقوف", "account_type": "BANK", "bank_name": None, "account_label": None, "is_active": 0}}
         self.payments, self.legs, self.cash_moves, self.bank_moves, self.corrections = {}, [], [], [], []
+        self.marketer_documents, self.marketer_cash_moves, self.marketer_payment_links = {}, [], {}
         self.fail_at = None                       # raise at a named step of a payment / reversal (atomicity tests)
         # The category master with its purchase-making ranges. The default is ONE catch-all grade so that every rate used by
         # the general tests resolves; the category tests install a realistic (overlapping / gapped) set instead.
@@ -66,7 +67,8 @@ class Db:
         self.item_types = {1: "خاتم", 2: "سلسلة"}
         self.item_type_defaults = {}              # item type id -> its default_category_id (never allowed to win over the group)
         self.sequences = {"supplier": 0, "invoice": 0, "group": 0, "gold": 0, "making": 0, "link": 0, "item": 100,
-                          "barcode": 0, "payment": 0, "cash_move": 0, "bank_move": 0, "correction": 0}
+                          "barcode": 0, "payment": 0, "cash_move": 0, "bank_move": 0, "correction": 0,
+                          "marketer_document": 0, "marketer_cash_move": 0}
         self.fail_after_item = False             # raise after the inventory item is written (atomicity tests)
         self.transactions = 0
 
@@ -636,10 +638,12 @@ class PaymentRepo(PurchaseRepo):
         return None if row is None else dict(row)
 
     def insert_header(self, *, supplier_id, method, cash_account_id, bank_account_id, amount, payment_date, reference,
-                      notes, before, after, key, digest, actor, now):
+                      notes, before, after, key, digest, actor, now, marketer_party_id=None, self_payment_confirmed=False):
         assert amount > 0 and after == before - amount                                  # chk_smp_amount / chk_smp_balance
-        assert (method == "CASH" and cash_account_id is not None and bank_account_id is None) or \
-               (method == "BANK" and bank_account_id is not None and cash_account_id is None)     # chk_smp_method
+        assert ((method == "BANK" and bank_account_id is not None and cash_account_id is None
+                 and marketer_party_id is None and not self_payment_confirmed)
+                or (method == "MARKETER" and bank_account_id is None and cash_account_id is None
+                    and marketer_party_id is not None))
         if any(p["request_key"] == key for p in self.db.payments.values()):            # uq_smp_request, as MySQL words it
             raise IntegrityError(f"1062 (23000): Duplicate entry '{key}' for key 'supplier_making_payments.uq_smp_request'",
                                  errno=1062)
@@ -647,7 +651,8 @@ class PaymentRepo(PurchaseRepo):
         payment_id = self.db.next("payment")
         self.db.payments[payment_id] = {
             "id": payment_id, "supplier_id": int(supplier_id), "payment_method": method, "cash_account_id": cash_account_id,
-            "bank_account_id": bank_account_id, "amount": amount, "payment_date": payment_date, "reference": reference,
+            "bank_account_id": bank_account_id, "marketer_party_id": marketer_party_id,
+            "self_payment_confirmed": bool(self_payment_confirmed), "amount": amount, "payment_date": payment_date, "reference": reference,
             "notes": notes, "balance_before": before, "balance_after": after, "request_key": key, "request_hash": digest,
             "performed_by_user_id": actor.user_id, "performed_by_employee_id": actor.employee_id, "occurred_at": now}
         return payment_id
@@ -696,10 +701,12 @@ class PaymentRepo(PurchaseRepo):
         supplier = self.db.suppliers[payment["supplier_id"]]
         cash = self.db.cash_accounts.get(payment["cash_account_id"]) if payment["cash_account_id"] else None
         bank = self.db.bank_accounts.get(payment["bank_account_id"]) if payment["bank_account_id"] else None
+        marketer = self.db.suppliers.get(payment.get("marketer_party_id"))
         reversal = next((c for c in self.db.corrections if c["source_type"] == "SUPPLIER_MAKING_PAYMENT"
                          and c["source_id"] == str(payment["id"]) and c["correction_type"] == "FULL_REVERSAL"), None)
         return {**payment, "supplier_name": supplier["name"], "supplier_active": supplier["is_active"],
                 "cash_account_name": cash and cash["name"], "bank_account_name": bank and bank["name"],
+                "marketer_name": marketer and marketer["name"],
                 "bank_account_type": bank and bank["account_type"], "actor_name": "المدير",
                 "reversal_id": reversal and int(reversal["correction_id"]),
                 "reversal_reason": reversal and reversal["reason"], "reversal_at": reversal and reversal["occurred_at"],
@@ -719,6 +726,9 @@ class PaymentRepo(PurchaseRepo):
             return None
         move = next(m for m in self.db.making if m["id"] == leg["making_movement_id"])
         return {"id": move["id"], "supplier_id": move["supplier_id"], "amount_delta": move["amount_delta"]}
+
+    def marketer_link(self, payment_id):
+        return self.db.marketer_payment_links.get(int(payment_id))
 
     def payments_of(self, supplier_id, limit=200):
         return [self._joined(p) for p in sorted(self.db.payments.values(), key=lambda p: -p["id"])

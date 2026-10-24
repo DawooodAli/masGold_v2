@@ -15,8 +15,9 @@ KARAT_VALUE = 21
 MAIN_SAFE = "MAIN_SAFE"
 
 CASH_HANDOVER, CASH_RETURN, GOLD_RETURN, PURCHASE, SALE = "CASH_HANDOVER", "CASH_RETURN", "GOLD_RETURN", "PURCHASE", "SALE"
-KINDS = (CASH_HANDOVER, CASH_RETURN, GOLD_RETURN, PURCHASE, SALE)
-CODE_PREFIX = {SALE: "MS", PURCHASE: "MB", CASH_HANDOVER: "MH", CASH_RETURN: "MR", GOLD_RETURN: "MR"}
+SUPPLIER_PAY = "SUPPLIER_PAY"
+KINDS = (CASH_HANDOVER, CASH_RETURN, GOLD_RETURN, PURCHASE, SALE, SUPPLIER_PAY)
+CODE_PREFIX = {SALE: "MS", PURCHASE: "MB", CASH_HANDOVER: "MH", CASH_RETURN: "MR", GOLD_RETURN: "MR", SUPPLIER_PAY: "MK"}
 
 # cash ledger movement types: (original, compensation)
 CASH_MOVEMENT = {CASH_HANDOVER: ("CASH_HANDOVER", "CASH_HANDOVER_REVERSAL", 1), CASH_RETURN: ("CASH_RETURN", "CASH_RETURN_REVERSAL", -1),
@@ -73,6 +74,16 @@ class MarketerCustodyRepository(BaseRepository):
     def marketers(self):
         return self._fetch_all("SELECT id, name, is_active, is_supplier FROM suppliers WHERE is_intermediary = 1 ORDER BY is_active DESC, name, id")
 
+    def cash_payment_sources(self):
+        """Marketers with positive available cash; this is a display read, never the posting authority."""
+        return self._fetch_all(
+            """SELECT s.id, s.name, s.is_active, s.is_supplier, COALESCE(SUM(m.amount_delta), 0) AS balance
+               FROM suppliers s LEFT JOIN marketer_cash_movements m ON m.party_id = s.id
+               WHERE s.is_intermediary = 1
+               GROUP BY s.id, s.name, s.is_active, s.is_supplier
+               HAVING COALESCE(SUM(m.amount_delta), 0) > 0
+               ORDER BY s.is_active DESC, s.name, s.id""")
+
     # ------------------------------------------------------------------ request keys
     def by_request(self, key):
         return self._fetch_one("SELECT * FROM marketer_documents WHERE request_key = %s FOR UPDATE", (key,))
@@ -120,6 +131,16 @@ class MarketerCustodyRepository(BaseRepository):
             "VALUES (%s, %s, %s, %s, %s, %s, %s)",
             (_id(party_id), _id(document_id), doc_kind, movement_type, amount, delta, None if correction_id is None else _id(correction_id)))
         return int(movement_id)
+
+    def insert_supplier_payment_link(self, *, payment_id, document_id, party_id, amount):
+        self._execute(
+            "INSERT INTO supplier_making_marketer_payments "
+            "(payment_id, marketer_document_id, doc_kind, marketer_party_id, amount) "
+            "VALUES (%s, %s, 'SUPPLIER_PAY', %s, %s)",
+            (_id(payment_id), _id(document_id), _id(party_id), amount))
+
+    def supplier_payment_link(self, payment_id):
+        return self._fetch_one("SELECT * FROM supplier_making_marketer_payments WHERE payment_id = %s", (_id(payment_id),))
 
     def insert_gold_movement(self, *, party_id, document_id=None, doc_kind=None, settlement_id=None, movement_type, weight, delta, correction_id=None,
                              trip_entry_id=None, trip_entry_kind=None):
@@ -207,16 +228,28 @@ class MarketerCustodyRepository(BaseRepository):
     # ------------------------------------------------------------------ reads
     def document(self, document_id, lock=False):
         return self._fetch_one(
-            """SELECT d.*, p.name AS party_name, c.id AS reversal_id, c.reason AS reversal_reason, c.occurred_at AS reversal_at
+            """SELECT d.*, p.name AS party_name, c.id AS reversal_id, c.reason AS reversal_reason, c.occurred_at AS reversal_at,
+                      sp.name AS supplier_payment_supplier_name
                FROM marketer_documents d JOIN suppliers p ON p.id = d.party_id
-               LEFT JOIN transaction_corrections c ON c.source_type = %s AND c.source_id = d.id AND c.correction_type = 'FULL_REVERSAL'
+               LEFT JOIN supplier_making_marketer_payments smmp ON smmp.marketer_document_id = d.id
+               LEFT JOIN supplier_making_payments smp ON smp.id = smmp.payment_id
+               LEFT JOIN suppliers sp ON sp.id = smp.supplier_id
+               LEFT JOIN transaction_corrections c ON c.correction_type = 'FULL_REVERSAL'
+                    AND ((c.source_type = %s AND c.source_id = d.id)
+                         OR (c.source_type = 'SUPPLIER_MAKING_PAYMENT' AND c.source_id = smp.id))
                WHERE d.id = %s""" + (" FOR UPDATE OF d" if lock else ""), (SOURCE, _id(document_id)))
 
     def documents(self, party_id, limit=300):
         rows = self._fetch_all(
-            """SELECT d.*, u.display_name AS actor_name, c.id AS reversal_id, c.reason AS reversal_reason, c.occurred_at AS reversal_at
+            """SELECT d.*, u.display_name AS actor_name, c.id AS reversal_id, c.reason AS reversal_reason, c.occurred_at AS reversal_at,
+                      sp.name AS supplier_payment_supplier_name
                FROM marketer_documents d LEFT JOIN users u ON u.id = d.performed_by_user_id
-               LEFT JOIN transaction_corrections c ON c.source_type = %s AND c.source_id = d.id AND c.correction_type = 'FULL_REVERSAL'
+               LEFT JOIN supplier_making_marketer_payments smmp ON smmp.marketer_document_id = d.id
+               LEFT JOIN supplier_making_payments smp ON smp.id = smmp.payment_id
+               LEFT JOIN suppliers sp ON sp.id = smp.supplier_id
+               LEFT JOIN transaction_corrections c ON c.correction_type = 'FULL_REVERSAL'
+                    AND ((c.source_type = %s AND c.source_id = d.id)
+                         OR (c.source_type = 'SUPPLIER_MAKING_PAYMENT' AND c.source_id = smp.id))
                WHERE d.party_id = %s ORDER BY d.id DESC LIMIT %s""", (SOURCE, _id(party_id), int(limit)))
         for row in rows:
             row["lines"] = self.purchase_lines(row["id"]) if row["doc_kind"] == PURCHASE else []

@@ -85,8 +85,10 @@ class SettlementVmCase(unittest.TestCase):
 class RightsAndContextTests(SettlementVmCase):
     def test_ui_hints_follow_the_session_rights_only(self):
         self.assertEqual((self.vm.canSettleGold, self.vm.canReverseSettlement), (True, True))
-        manager = self.user_vm(MANAGER_SG)
+        manager = self.user_vm(MANAGER_SG | {"INTERMEDIARY_HOLDING_MANAGE"})
         self.assertEqual((manager.canSettleGold, manager.canReverseSettlement), (True, False))
+        manager_without_source_right = self.user_vm(MANAGER_SG)
+        self.assertEqual(manager_without_source_right.canSettleGold, False)
         cashier = self.user_vm(CASHIER)
         self.assertEqual((cashier.canSettleGold, cashier.canReverseSettlement), (False, False))
 
@@ -166,65 +168,88 @@ class PreviewTests(SettlementVmCase):
 
 
 class PostingAndReversalTests(SettlementVmCase):
-    def setUp(self):
-        super().setUp()
-        self.vm.loadSettlementContext("11")
+    def source(self, source_type="CUSTODY_GOLD"):
+        if source_type == "HOLDING":
+            return {"key": "source-1", "source_type": source_type, "pool_kind": "LOT", "pool_id": "1",
+                    "text": "مسوقجي • سبكة"}
+        return {"key": "source-1", "source_type": source_type, "trip_id": "1", "trip_code": "MT000001",
+                "karat_id": K21, "designation": "LOGO", "text": "MT000001 • لوجو عيار 21"}
 
-    def test_a_posted_settlement_signals_once_with_its_code_and_reports_the_delivered_and_credited_grams(self):
-        self.vm.postSettlement("11", K21, "10", TODAY, "ت-1", "", self.vm.newRequestKey())
-        self.assertEqual(self.posted, ["SG000001"])
-        self.assertEqual(self.vm.errorMessage, "")
-        self.assertIn("SG000001", self.vm.message)
-        self.assertIn("10.000 جرام عيار 21", self.vm.message)
-        self.assertIn("11.667 جرام عيار 18", self.vm.message)
-        self.assertEqual(self.db.physical(1), D("90.000"))
-        self.assertEqual(len(self.db.settlements), 1)
+    def prepare_source(self, source):
+        self.vm._gold_sources = [source]
+        self.vm._gold_sources_supplier_id = "11"
+        if source["source_type"] == "HOLDING":
+            self.vm._gold_source_context = {"source": source, "holding": {} , "supplier_id": "11"}
+        else:
+            self.vm._gold_source_context = {"source": source, "available": D("25.000"), "karat_value": 21,
+                                            "supplier_id": "11"}
+        self.vm._gold_source_context_supplier_id = "11"
 
-    def test_a_refusal_keeps_the_dialog_open_with_the_reason_and_writes_nothing(self):
-        self.vm.postSettlement("11", K21, "95.001", TODAY, "", "", self.vm.newRequestKey())
+    def test_the_legacy_scrap_viewmodel_entry_point_cannot_post_a_new_settlement(self):
+        self.vm.postSettlement("11", K21, "10", TODAY, "", "", self.vm.newRequestKey())
         self.assertEqual(self.posted, [])
-        self.assertIn("المتاح", self.vm.errorMessage)
         self.assertEqual((self.db.settlements, self.db.physical(1)), ({}, D("100.000")))
+        self.assertIn("كسر المحل متوقفة", self.vm.errorMessage)
 
-    def test_a_second_submit_while_the_first_is_running_is_ignored(self):
+    def test_direct_duplicate_source_submission_is_ignored_while_the_operation_is_busy(self):
+        source = self.source()
+        self.prepare_source(source)
         calls = []
-        self.vm._settlements = type("S", (), {"settle": lambda s, *a, **k: calls.append(a)})()
-        self.vm._busy.add("settle")
-        self.vm.postSettlement("11", K21, "10", TODAY, "", "", self.vm.newRequestKey())
+        self.vm._market_trip_settlements = type(
+            "TripService", (), {"settle_supplier_gold": lambda service, *args, **kwargs: calls.append(args)})()
+        self.vm._busy.add("suppliergoldsettle")
+        self.vm.postSupplierGoldSettlement("source-1", "10", "", False, TODAY, "", "", self.vm.newRequestKey())
         self.assertEqual(calls, [])
-        self.assertTrue(self.vm.settling)
+        self.assertTrue(self.vm.settlingSupplierGold)
 
-    def test_the_same_request_key_posts_once_even_if_submitted_twice(self):
-        request = self.vm.newRequestKey()
-        for _ in range(2):
-            self.vm.postSettlement("11", K21, "10", TODAY, "", "", request)
-        self.assertEqual((len(self.db.settlements), self.db.physical(1)), (1, D("90.000")))
-        self.assertIn("مسجلة من قبل", self.vm.message)
+    def test_custody_source_submission_uses_the_market_trip_settlement_service(self):
+        source = self.source()
+        self.prepare_source(source)
+        calls = []
+        service = type("TripService", (), {
+            "settle_supplier_gold": lambda instance, *args, **kwargs: (
+                calls.append((args, kwargs)) or {"code": "SG000001", "delivered_weight": "10.000",
+                                                "credited_weight": "11.667", "target_karat": 18})
+        })()
+        self.vm._market_trip_settlements = service
+        completed, custody = [], []
+        self.vm.supplierGoldSettlementPosted.connect(completed.append)
+        self.vm.custodySettlementPosted.connect(custody.append)
+        self.vm.postSupplierGoldSettlement("source-1", "10", "", False, TODAY, "R", "N", self.vm.newRequestKey())
+        self.assertEqual(len(calls), 1)
+        args, kwargs = calls[0]
+        self.assertEqual(args[:5], ("1", "11", K21, "LOGO", "10"))
+        self.assertEqual(kwargs["_expected_actor"].user_id, self.session.current_actor().user_id)
+        self.assertEqual((completed, custody), (["SG000001"], ["SG000001"]))
+        self.assertIn("من عهدة السوق", self.vm.message)
 
-    def test_reversal_signals_restores_the_stored_grams_and_says_the_gold_was_actually_recovered(self):
-        self.vm.postSettlement("11", K21, "10", TODAY, "", "", self.vm.newRequestKey())
-        self.vm.reverseSettlement("1", "تسوية خاطئة")
-        self.assertEqual(self.reversed, ["RV000001"])
-        self.assertIn("فعليًا", self.vm.message)
-        self.assertIn("SG000001", self.vm.message)
-        self.assertEqual((self.db.physical(1), self.vm.errorMessage), (D("100.000"), ""))
-        self.vm.reverseSettlement("1", "مرة ثانية")
-        self.assertEqual(self.reversed, ["RV000001"])
-        self.assertTrue(self.vm.errorMessage)
+    def test_holding_source_submission_uses_holding_settlement_service(self):
+        source = self.source("HOLDING")
+        self.prepare_source(source)
+        calls = []
+        service = type("HoldingService", (), {
+            "settle": lambda instance, *args, **kwargs: (
+                calls.append((args, kwargs)) or {"code": "SG000002", "delivered_weight": "2.000",
+                                                "credited_weight": "2.333", "target_karat": 18})
+        })()
+        self.vm._holding_settlements = service
+        completed = []
+        self.vm.supplierGoldSettlementPosted.connect(completed.append)
+        self.vm.postSupplierGoldSettlement("source-1", "2", "GRAM_ENTITLEMENT", False,
+                                           TODAY, "", "", self.vm.newRequestKey())
+        self.assertEqual(len(calls), 1)
+        args, kwargs = calls[0]
+        self.assertEqual(args[:6], ("LOT", "1", "11", "2", "GRAM_ENTITLEMENT", False))
+        self.assertEqual(kwargs["_expected_actor"].user_id, self.session.current_actor().user_id)
+        self.assertEqual(completed, ["SG000002"])
+        self.assertIn("من رصيد المسوقجي", self.vm.message)
 
-    def test_a_manager_view_model_is_refused_the_reversal_with_a_message_and_nothing_moves(self):
-        self.vm.postSettlement("11", K21, "10", TODAY, "", "", self.vm.newRequestKey())
-        manager = self.user_vm(MANAGER_SG)
-        manager.reverseSettlement("1", "x")
-        self.assertTrue(manager.errorMessage)
-        self.assertEqual((self.db.physical(1), self.db.corrections), (D("90.000"), []))
-
-    def test_a_reversal_needs_a_reason(self):
-        self.vm.postSettlement("11", K21, "10", TODAY, "", "", self.vm.newRequestKey())
-        self.vm.reverseSettlement("1", "   ")
-        self.assertEqual(self.reversed, [])
-        self.assertTrue(self.vm.errorMessage)
-        self.assertEqual(self.db.physical(1), D("90.000"))
+    def test_source_context_is_bound_to_the_supplier_selection(self):
+        self.prepare_source(self.source())
+        self.vm.selectSupplier("12")
+        self.assertEqual((self.vm.supplierGoldSources, self.vm.supplierGoldSourceContext), ([], {}))
+        self.vm.postSupplierGoldSettlement("source-1", "1", "", False, TODAY, "", "", self.vm.newRequestKey())
+        self.assertIn("أعد تحميل بياناته", self.vm.errorMessage)
 
 
 class LedgerRowTests(SettlementVmCase):

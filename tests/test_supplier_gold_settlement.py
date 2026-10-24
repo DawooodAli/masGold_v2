@@ -1,11 +1,14 @@
-"""Direct supplier gold settlement from available shop Scrap (045, SGxxxxxx). Real SupplierGoldSettlementService and the real CorrectionService over the
-in-memory transactional database of tests/market_trip_fakes.py (a failed transaction restores every table; the 045 CHECK / unique constraints are
-mirrored as asserts). Scrap, holds, the supplier gold ledger and the corrections are tables of that one fake database.
+"""Legacy direct supplier gold settlement from shop Scrap (045, SGxxxxxx).
+
+New SHOP_SCRAP posting is disabled; tests cover that policy alongside exact replay
+and canonical reversal of historical records in the in-memory transactional database.
 
 NOT real-MySQL tests: the SQL, the constraints and the rollback were exercised on the masgold_rehearsal sandbox, single-threaded. Concurrency is not
 exercised anywhere (the supplier-then-Scrap lock order is inferred from the code, not proven)."""
 import copy
 from decimal import Decimal as D
+import hashlib
+import json
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
@@ -79,174 +82,116 @@ class SettlementCase(unittest.TestCase):
         return SettlementRepo(self.db).balance(supplier, karat)
 
 
-class PostingTests(SettlementCase):
-    def test_the_example_credits_the_suppliers_karat_and_deducts_the_delivered_grams_once(self):
-        cash, making = copy.deepcopy(self.db.cash_moves), copy.deepcopy(self.db.sm_making)
-        scrap = self.db.physical(K21)
-        done = self.settle(S18_INACTIVE, K21, "10.000", reference="ت-1")
-        self.assertEqual((done["delivered_weight"], done["credited_weight"], done["analytical"], done["rounding_difference"], done["duplicate"]),
-                         ("10.000", "11.667", "11.666667", "0.000333", False))
-        self.assertEqual(self.db.physical(K21), scrap - D("10.000"))                         # the ACTUAL delivered grams, once
-        self.assertEqual(self.payable(11, K18), D("-11.667"))                                # the supplier's own karat, never converted back
-        self.assertEqual((self.db.cash_moves, self.db.sm_making), (cash, making))             # no cash and no making effect
-        row = self.db.sup_gold[0]
-        self.assertEqual((row["karat_id"], row["weight_delta"], row["source_type"]), (K18, D("-11.667"), "SUPPLIER_GOLD_SETTLEMENT"))
-        self.assertLess(row["eq21"], 0)                                                       # the Eq21 compatibility column keeps the sign
-        self.assertEqual(self.db.scrap[-1]["type_code"], "SUPPLIER_GOLD_SETTLEMENT_OUT")
+class PostingPolicyTests(SettlementCase):
+    def test_new_shop_scrap_settlements_are_refused_without_any_ledger_effect(self):
+        before = self.state()
+        with self.assertRaises(SupplierRuleError) as refusal:
+            self.settle(S18_INACTIVE, K21, "10")
+        self.assertEqual(refusal.exception.code, "SHOP_SCRAP_SETTLEMENT_DISABLED")
+        self.assertEqual(self.state(), before)
 
-    def test_the_document_keeps_every_original_and_derived_figure(self):
-        done = self.settle(S18_INACTIVE, K21, "10", reference="ت-1", notes="ملاحظة")
-        document = self.service.settlement_detail(done["id"])
-        self.assertEqual((document["code"], document["supplier_name"], document["delivered_karat"], document["target_karat"], document["delivered_weight"],
-                          document["credited_weight"], document["analytical"], document["rounding_difference"], document["reference"], document["notes"]),
-                         ("SG000001", "مورد متوقف", 21, 18, D("10.000"), D("11.667"), D("11.666667"), D("0.000333"), "ت-1", "ملاحظة"))
-        stored = self.db.settlements[int(done["id"])]
-        self.assertEqual(stored["rounding_difference_grams"], stored["credited_weight_grams"] - stored["credited_analytical_grams"])   # from the two stored figures
-        self.assertEqual(stored["source_kind"], "SHOP_SCRAP")
-        self.assertEqual([l["leg_kind"] for l in self.db.settlement_legs], ["SCRAP", "GOLD"])
+    def test_a_manager_with_the_settlement_right_is_still_blocked_from_shop_scrap(self):
+        with self.assertRaises(SupplierRuleError) as refusal:
+            self.settle(service=self.as_user(MANAGER_SG))
+        self.assertEqual(refusal.exception.code, "SHOP_SCRAP_SETTLEMENT_DISABLED")
+        self.denied(lambda: self.settle(service=self.as_user(CASHIER)))
 
-    def test_the_same_karat_credits_the_delivered_grams(self):
-        done = self.settle(S21, K21, "7.250")
-        self.assertEqual((done["credited_weight"], done["analytical"], done["rounding_difference"]), ("7.250", "7.250000", "0.000000"))
-        self.assertEqual(self.payable(10, K21), D("-7.250"))
-
-    def test_the_supplier_credit_may_cross_zero_and_an_inactive_supplier_and_a_dual_role_party_receive_it(self):
-        self.assertEqual(self.payable(10, K21), D("0.000"))
-        self.settle(S21, K21, "3")
-        self.assertEqual(self.payable(10, K21), D("-3.000"))                                  # crossed zero: the supplier owes the shop
-        self.db.suppliers[10]["is_active"] = 0
-        self.settle(S21, K21, "1")                                                           # an inactive supplier still receives it
-        self.assertEqual(self.payable(10, K21), D("-4.000"))
-        done = self.settle(S24_BOTH, K21, "2.100")                                           # a supplier + intermediary party
-        self.assertEqual(done["credited_weight"], "1.838")                                   # 2.1 * 21 / 24 = 1.8375 -> half up
-
-    def test_held_manager_review_scrap_is_not_available(self):
-        self.assertEqual((self.db.physical(K21), self.db.available(K21)), (D("100.000"), D("95.000")))      # 5 g are held
-        self.refused("SCRAP_SHORTAGE", lambda: self.settle(S21, K21, "95.001"))
-        self.settle(S21, K21, "95.000")                                                       # exactly the available grams
-        self.assertEqual((self.db.physical(K21), self.db.available(K21)), (D("5.000"), D("0.000")))
-        self.refused("SCRAP_SHORTAGE", lambda: self.settle(S21, K21, "0.001"))
-
-    def test_refusals_leave_no_trace(self):
-        self.refused("SUPPLIER_ROLE_REQUIRED", lambda: self.settle(INTERMEDIARY, K21, "1"))
-        self.refused("SUPPLIER_KARAT_MISSING", lambda: self.settle(NO_KARAT, K21, "1"))
-        self.refused("SUPPLIER_NOT_FOUND", lambda: self.settle("999", K21, "1"))
-        self.refused("SUPPLIER_NOT_FOUND", lambda: self.settle("x", K21, "1"))
-        self.refused("KARAT_NOT_FOUND", lambda: self.settle(S21, 999, "1"))
-        self.refused("KARAT_NOT_FOUND", lambda: self.settle(S21, K22, "1"))                   # an inactive master karat
-        self.refused("KARAT_REQUIRED", lambda: self.settle(S21, "", "1"))
+    def test_input_syntax_is_validated_before_the_disabled_source_is_rejected(self):
         for weight in ("", "0", "-1", "abc", "1.0005", "0.0004"):
             with self.subTest(weight=weight):
                 self.refused("WEIGHT_INVALID", lambda w=weight: self.settle(S21, K21, w))
         self.refused("DATE_INVALID", lambda: self.settle(S21, K21, "1", when="2026-13-45"))
         self.refused("DATE_REQUIRED", lambda: self.settle(S21, K21, "1", when=""))
-        self.refused("REQUEST_INVALID", lambda: self.settle(S21, K21, "1", request="nope"))
         self.assertEqual(self.db.settlements, {})
 
-    def test_permissions_are_checked_inside_the_transaction(self):
-        self.denied(lambda: self.settle(service=self.as_user(CASHIER)))
-        done = self.settle(service=self.as_user(MANAGER_SG))                                  # a MANAGER may post
-        self.assertEqual(done["credited_weight"], "10.000")
+    def test_authorization_is_still_checked_before_the_source_policy(self):
         revoked = self.as_user(MANAGER_SG, user_id=11)
-        revoked._authorization.permissions = frozenset({"APP_LOGIN"})                          # revoked in the database, stale session
+        revoked._authorization.permissions = frozenset({"APP_LOGIN"})
         self.denied(lambda: self.settle(service=revoked))
 
-    def test_a_failure_at_any_posting_step_persists_nothing(self):
-        before = self.state()
-        for step in ("sg_header", "sg_scrap", "sg_gold", "sg_leg", "sg_audit"):
-            self.db.fail_at = step
-            with self.assertRaises(RuntimeError):
-                self.settle(S18_INACTIVE, K21, "10")
-            self.db.fail_at = None
-            self.assertEqual(self.state(), before, f"a failure at {step} left a trace")
-        self.settle(S18_INACTIVE, K21, "10")
-        self.assertEqual(len(self.db.settlements), 1)
-
-    def test_replay_returns_the_original_and_any_other_payload_is_refused(self):
+    def test_request_key_owned_by_another_flow_is_refused_before_the_source_policy(self):
         request = key(900)
-        first = self.settle(S18_INACTIVE, K21, "10", request=request, reference="a")
-        after = self.state()
-        again = self.settle(S18_INACTIVE, K21, "10", request=request, reference="a")
-        self.assertEqual((again["duplicate"], again["id"], again["code"], again["credited_weight"]), (True, first["id"], first["code"], first["credited_weight"]))
-        self.assertEqual(self.state(), after)
-        for call in (lambda: self.settle(S18_INACTIVE, K21, "10.001", request=request, reference="a"),
-                     lambda: self.settle(S21, K21, "10", request=request, reference="a"),
-                     lambda: self.settle(S18_INACTIVE, K18, "10", request=request, reference="a"),
-                     lambda: self.settle(S18_INACTIVE, K21, "10", request=request, reference="b"),
-                     lambda: self.settle(S18_INACTIVE, K21, "10", request=request, reference="a", service=self.as_user(OWNER, user_id=99))):
-            self.refused("REQUEST_CONFLICT", call)
+        self.db.entries[1] = {"request_key": request}
+        self.refused("REQUEST_CONFLICT", lambda: self.settle(request=request))
 
-    def test_a_twin_that_committed_first_is_decided_from_a_fresh_read(self):
-        request = key(950)
-        first = self.settle(request=request)
-        digest = self.db.settlements[int(first["id"])]["request_hash"]
-        original = IntegrityError(msg="Duplicate entry for key 'uq_sgs_request'", errno=1062)
-        replay = self.service._replay(self.session.require_authenticated(), request, digest, original)
-        self.assertEqual((replay["id"], replay["duplicate"]), (first["id"], True))
-
-    def test_the_context_lists_the_available_scrap_per_active_karat_and_the_recipient(self):
+    def test_read_only_scrap_context_remains_available_for_legacy_history(self):
         context = self.service.settlement_context(S18_INACTIVE)
-        self.assertEqual((context["supplier"]["karat_value"], context["supplier"]["is_active"], context["supplier"]["code"]), (18, False, "S000011"))
+        self.assertEqual((context["supplier"]["karat_value"], context["supplier"]["is_active"], context["supplier"]["code"]),
+                         (18, False, "S000011"))
         by_karat = {k["karat_value"]: (k["available"], k["held"]) for k in context["scrap"]}
         self.assertEqual(by_karat[21], (D("95.000"), D("5.000")))
-        self.assertEqual(by_karat[18], (D("50.000"), D("0.000")))
-        self.assertNotIn(22, by_karat)                                                       # an inactive karat is never offered
+        self.assertNotIn(22, by_karat)
         self.denied(lambda: self.as_user(CASHIER).settlement_context(S21))
 
 
-class ReversalTests(SettlementCase):
-    def reverse(self, result, reason="تصحيح", service=None):
-        return (service or self.service).reverse(result["id"], reason)
+class LegacyReplayAndReversalTests(SettlementCase):
+    def seed_legacy_settlement(self, supplier=S18_INACTIVE, karat=K21, weight="10", request=None, reference="legacy", notes=""):
+        weight = rules.parse_delivered_weight(weight)
+        request = request or key(999)
+        supplier_id, karat_id = int(supplier), int(karat)
+        repo = SettlementRepo(self.db)
+        delivered_karat = repo.get_karat(karat_id)
+        target_karat = repo.get_supplier(supplier_id)
+        credited, analytical, difference = rules.settlement_credit(weight, delivered_karat["karat_value"], target_karat["karat_value"])
+        notes = notes or None
+        digest = hashlib.sha256(json.dumps(
+            [supplier_id, karat_id, str(weight), TODAY, reference, notes], ensure_ascii=False).encode()).hexdigest()
+        actor = self.session.require_authenticated()
+        settlement_id = repo.insert_header(
+            supplier_id=supplier_id, delivered_karat=delivered_karat,
+            target_karat=repo.get_karat(target_karat["karat_id"]), delivered_weight=weight,
+            credited=credited, analytical=analytical, difference=difference, settlement_date=TODAY,
+            reference=reference, notes=notes, key=request, digest=digest, actor=actor, now=self.db.now)
+        scrap_id = repo.post_scrap_out(settlement_id=settlement_id, karat_id=karat_id, weight=weight, code="SG000001",
+                                       notes=notes, actor=actor, now=self.db.now)
+        gold_type = repo.gold_type_id("SETTLEMENT")
+        gold_id = repo.insert_gold_movement(
+            supplier_id=supplier_id, type_id=gold_type, karat_id=target_karat["karat_id"], weight_delta=-credited,
+            eq21_delta=-(credited * D(target_karat["karat_value"]) / D("21")), source_type="SUPPLIER_GOLD_SETTLEMENT",
+            source_id=settlement_id, reference="SG000001", description="", now=self.db.now, user_id=actor.user_id)
+        repo.insert_leg(settlement_id=settlement_id, kind="SCRAP", source_kind="SHOP_SCRAP", old_gold_movement_id=scrap_id)
+        repo.insert_leg(settlement_id=settlement_id, kind="GOLD", source_kind="SHOP_SCRAP", supplier_gold_movement_id=gold_id)
+        return {"id": str(settlement_id), "code": f"SG{settlement_id:06d}", "request": request, "digest": digest,
+                "credited": credited, "weight": weight, "karat_id": target_karat["karat_id"]}
 
-    def test_a_reversal_restores_the_stored_grams_and_the_stored_credit_never_a_recalculation(self):
-        done = self.settle(S18_INACTIVE, K21, "10")
-        scrap_after = self.db.physical(K21)
-        self.db.suppliers[11]["karat_id"] = K24                                                # the supplier's karat changes afterwards...
-        cash = copy.deepcopy(self.db.cash_moves)
-        reversal = self.reverse(done, "تسليم خاطئ")
-        self.assertTrue(reversal["code"].startswith("RV"))
-        self.assertEqual(self.db.physical(K21), scrap_after + D("10.000"))                     # the stored 10.000 g return to Scrap
-        self.assertEqual((self.payable(11, K18), self.payable(11, K24)), (D("0.000"), D("0.000")))     # ...the STORED 11.667 of the STORED karat is restored
-        self.assertEqual(self.db.cash_moves, cash)
-        back = self.db.sup_gold[-1]
-        self.assertEqual((back["karat_id"], back["weight_delta"], back["source_type"]), (K18, D("11.667"), "TRANSACTION_CORRECTION"))
-        self.assertEqual(self.db.scrap[-1]["type_code"], "REVERSAL_SUPPLIER_GOLD_SETTLEMENT_IN")
-
-    def test_one_correction_record_drives_the_reversed_state(self):
-        done = self.settle()
-        self.assertFalse(self.service.settlement_detail(done["id"])["reversed"])
-        reversal = self.reverse(done)
-        records = [c for c in self.db.corrections if c["correction_type"] == "FULL_REVERSAL"]
-        self.assertEqual([(c["source_type"], c["source_id"]) for c in records], [("SUPPLIER_GOLD_SETTLEMENT", done["id"])])
-        document = self.service.settlement_detail(done["id"])
-        self.assertEqual((document["reversed"], document["reversal_code"], document["reversal_reason"]), (True, reversal["code"], "تصحيح"))
-        self.assertEqual(self.db.settlements[int(done["id"])]["credited_weight_grams"], D("10.000"))      # the original is never rewritten
-
-    def test_the_rights_the_reason_and_a_second_reversal(self):
-        done = self.settle()
-        self.denied(lambda: self.reverse(done, service=self.as_user(MANAGER_SG)))             # OWNER only
-        self.denied(lambda: self.reverse(done, service=self.as_user(OWNER - {"TRANSACTION_CORRECT"}, user_id=12)))
-        self.denied(lambda: self.reverse(done, service=self.as_user(OWNER - {"SUPPLIER_GOLD_SETTLE_REVERSE"}, user_id=13)))
-        self.refused("REASON_REQUIRED", lambda: self.reverse(done, reason="  "), error=CorrectionError)
-        self.reverse(done)
-        self.refused("ALREADY_REVERSED", lambda: self.reverse(done), error=CorrectionError)
-
-    def test_a_failure_inside_the_reversal_changes_nothing(self):
-        done = self.settle()
+    def test_exact_replay_of_an_existing_shop_scrap_request_remains_readable(self):
+        legacy = self.seed_legacy_settlement()
         before = self.state()
-        for step in ("correction", "reversal_scrap", "sg_gold", "audit"):
-            self.db.fail_at = step
-            with self.assertRaises(RuntimeError):
-                self.reverse(done)
-            self.db.fail_at = None
-            self.assertEqual(self.state(), before, step)
+        replay = self.settle(S18_INACTIVE, K21, "10", request=legacy["request"], reference="legacy")
+        self.assertEqual((replay["duplicate"], replay["id"], replay["code"]), (True, legacy["id"], legacy["code"]))
+        self.assertEqual(self.state(), before)
 
-    def test_a_reversed_settlement_can_be_settled_again_with_a_new_document(self):
-        done = self.settle()
-        self.reverse(done)
-        again = self.settle()
-        self.assertNotEqual(again["id"], done["id"])
-        self.assertEqual(self.payable(10, K21), D("-10.000"))
+    def test_replay_conflict_is_not_misreported_as_a_disabled_source(self):
+        legacy = self.seed_legacy_settlement()
+        self.refused("REQUEST_CONFLICT", lambda: self.settle(S18_INACTIVE, K21, "10.001",
+                                                              request=legacy["request"], reference="legacy"))
+
+    def test_a_valid_legacy_reversal_still_uses_stored_values_and_the_canonical_correction(self):
+        legacy = self.seed_legacy_settlement()
+        scrap_after = self.db.physical(K21)
+        self.db.suppliers[11]["karat_id"] = K24
+        reversal = self.service.reverse(legacy["id"], "تسليم خاطئ")
+        self.assertTrue(reversal["code"].startswith("RV"))
+        self.assertEqual(self.db.physical(K21), scrap_after + legacy["weight"])
+        self.assertEqual((self.payable(11, K18), self.payable(11, K24)), (D("0.000"), D("0.000")))
+        self.assertEqual(self.db.sup_gold[-1]["karat_id"], legacy["karat_id"])
+        self.assertEqual(self.db.sup_gold[-1]["weight_delta"], legacy["credited"])
+        document = self.service.settlement_detail(legacy["id"])
+        self.assertTrue(document["reversed"])
+        self.assertEqual(self.db.settlements[int(legacy["id"])]["credited_weight_grams"], legacy["credited"])
+
+    def test_legacy_reversal_requires_owner_right_reason_and_remains_single_use(self):
+        legacy = self.seed_legacy_settlement()
+        manager = self.as_user(MANAGER_SG)
+        self.denied(lambda: manager.reverse(legacy["id"], "تصحيح"))
+        self.refused("REASON_REQUIRED", lambda: self.service.reverse(legacy["id"], "  "), error=CorrectionError)
+        self.service.reverse(legacy["id"], "تصحيح")
+        self.refused("ALREADY_REVERSED", lambda: self.service.reverse(legacy["id"], "مرة أخرى"), error=CorrectionError)
+
+    def test_a_reversed_legacy_settlement_does_not_reenable_new_shop_scrap_posting(self):
+        legacy = self.seed_legacy_settlement()
+        self.service.reverse(legacy["id"], "تصحيح")
+        self.refused("SHOP_SCRAP_SETTLEMENT_DISABLED", lambda: self.settle(S18_INACTIVE, K21, "1"))
 
 
 class RulesTests(unittest.TestCase):

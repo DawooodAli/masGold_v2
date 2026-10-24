@@ -491,7 +491,7 @@ class RequestKeySequentialTests(Base, unittest.TestCase):
         grams = self.trip("2", "LOGO", tag="STAB-KEY")
         names = {
             "custody entry": self.refused(lambda: s.trips.issue("", "", [{"karat_id": k[21], "weight": "1", "designation": "LOGO"}], DATE, "STAB", kk)),
-            "direct supplier gold settlement": self.refused(lambda: s.direct.settle(self.env.supplier18, k[21], "1", DATE, "", "", kk)),
+            "legacy direct supplier endpoint": self.refused(lambda: s.direct.settle(self.env.supplier18, k[21], "1", DATE, "", "", kk)),
             "supplier making payment": self.refused(lambda: s.pay.pay(self.env.supplier18, "CASH", None, "10", DATE, "", "", kk)),
             "legacy LOGO holding document": self.refused(lambda: s.hold.hand_over_logo(grams["trip_id"], self.env.dual, k[21], "1", DATE, "", "", kk)),
         }
@@ -502,11 +502,12 @@ class RequestKeySequentialTests(Base, unittest.TestCase):
         issued = key()
         trip = s.trips.issue("", "", [{"karat_id": k[21], "weight": "3", "designation": "LOGO"}], DATE, "STAB-KEY", issued)
         sg_key, sm_key, hold_key = key(), key(), key()
-        s.direct.settle(self.env.supplier18, k[21], "1", DATE, "", "", sg_key)
+        s.trips.settle_supplier_gold(trip["trip_id"], self.env.supplier18, k[21], "LOGO", "1", DATE, "", "", sg_key)
         s.pay.pay(self.env.supplier18, "CASH", None, "10", DATE, "", "", sm_key)
         s.hold.hand_over_logo(trip["trip_id"], self.env.marketer_two, k[21], "1", DATE, "", "", hold_key)
         names = {name: self.refused(lambda kk=kk: s.marketer.cash_handover(p, "1000", DATE, "STAB", "", kk))
-                 for name, kk in (("custody entry", issued), ("direct supplier gold settlement", sg_key), ("supplier making payment", sm_key), ("LOGO holding document", hold_key))}
+                 for name, kk in (("custody entry", issued), ("custody supplier gold settlement", sg_key),
+                                 ("supplier making payment", sm_key), ("LOGO holding document", hold_key))}
         record("keys_sequential", {"legacy_key_refused_by_marketer": names})
 
     def test_exact_replay_and_intentionally_linked_documents_remain_valid(self):
@@ -627,7 +628,10 @@ class RequestKeyConcurrentTests(Base, unittest.TestCase):
             if legacy_name == "issue":
                 calls["legacy"] = lambda: b.trips.issue("", "", [{"karat_id": k[21], "weight": "0.100", "designation": "LOGO"}], DATE, f"STABRACE {kk}", kk)
             else:
-                calls["legacy"] = lambda: b.direct.settle(self.env.supplier21, k[21], "0.100", DATE, f"STABRACE {kk}", "", kk)
+                trip = b.trips.issue("", "", [{"karat_id": k[21], "weight": "0.100", "designation": "LOGO"}],
+                                     DATE, f"STABRACE PREP {kk}", key())
+                calls["legacy"] = lambda: b.trips.settle_supplier_gold(
+                    trip["trip_id"], self.env.supplier21, k[21], "LOGO", "0.100", DATE, f"STABRACE {kk}", "", kk)
             threads = [threading.Thread(target=side, args=(name, fn), name=f"race-{name}") for name, fn in calls.items()]
             started = time.time()
             try:

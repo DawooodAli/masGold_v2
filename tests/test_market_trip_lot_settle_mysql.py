@@ -303,17 +303,14 @@ class WholeLotMySqlTests(unittest.TestCase):
 
     def test_existing_scrap_logo_flows_and_request_key_conflicts(self):
         direct=SupplierGoldSettlementService(self.session,transaction_factory=self.tx)
-        key=str(uuid4());scrap=direct.settle(self.sup18,self.karats[21],'1',DATE,'','',key)
-        self.assertEqual(scrap['credited_weight'],'1.167')
-        self.assertEqual(self.query('SELECT source_kind FROM supplier_gold_settlements WHERE id=%s',(scrap['id'],))[0]['source_kind'],'SHOP_SCRAP')
+        key=str(uuid4());before=self.snapshot()
+        with self.assertRaises(SupplierRuleError) as disabled:
+            direct.settle(self.sup18,self.karats[21],'1',DATE,'','',key)
+        self.assertEqual(disabled.exception.code,'SHOP_SCRAP_SETTLEMENT_DISABLED');self.assertEqual(before,self.snapshot())
         logo=self.service.issue('','',[{'karat_id':self.karats[21],'weight':'2','designation':'LOGO'}],DATE,'',str(uuid4()))
         done=self.service.settle_supplier_gold(logo['trip_id'],self.sup18,self.karats[21],'LOGO','1',DATE,'','',str(uuid4()))
         self.assertEqual(done['credited_weight'],'1.167')
         t,m,l=self.lots()
-        before=self.snapshot()
-        with self.assertRaises(TripError) as e:self.settle(t,l[0],key=key)
-        self.assertEqual(e.exception.code,'REQUEST_CONFLICT');self.assertEqual(before,self.snapshot())
-
         key=str(uuid4());lot_done=self.settle(t,l[0],key=key);before=self.snapshot()
         with self.assertRaises(SupplierRuleError) as e:direct.settle(self.sup18,self.karats[21],'1',DATE,'','',key)
         self.assertEqual(e.exception.code,'REQUEST_CONFLICT');self.assertEqual(before,self.snapshot())

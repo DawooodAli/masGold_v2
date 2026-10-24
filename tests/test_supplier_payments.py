@@ -109,6 +109,64 @@ class Customers:
         pass
 
 
+class MarketerPaymentRepo:
+    """The marketer cash-ledger subset used by supplier-making payments and their canonical correction."""
+
+    def __init__(self, db):
+        self.db = db
+
+    def cash_payment_sources(self):
+        rows = []
+        for party in self.db.suppliers.values():
+            if not party.get("is_intermediary"):
+                continue
+            balance = self.cash_balance(party["id"])
+            if balance > 0:
+                rows.append({**party, "balance": balance})
+        return rows
+
+    def by_request(self, request_key):
+        return next((d for d in self.db.marketer_documents.values() if d["request_key"] == request_key), None)
+
+    def key_used_elsewhere(self, request_key):
+        return any(p["request_key"] == request_key for p in self.db.payments.values())
+
+    def party(self, party_id, lock=False):
+        return self.db.suppliers.get(int(party_id))
+
+    def cash_balance(self, party_id):
+        return sum((m["amount_delta"] for m in self.db.marketer_cash_moves if m["party_id"] == int(party_id)), D("0.00"))
+
+    def gold_balance(self, party_id):
+        return D("0.000")
+
+    def insert_document(self, *, kind, party_id, cash_amount, document_date, reference, notes, key, digest, actor, now, **unused):
+        if any(d["request_key"] == key for d in self.db.marketer_documents.values()):
+            raise IntegrityError(f"1062 (23000): Duplicate request key {key}", errno=1062)
+        document_id = self.db.next("marketer_document")
+        self.db.marketer_documents[document_id] = {
+            "id": document_id, "doc_kind": kind, "party_id": int(party_id), "cash_amount": cash_amount,
+            "document_date": document_date, "reference": reference, "notes": notes, "request_key": key,
+            "request_hash": digest, "performed_by_user_id": actor.user_id, "occurred_at": now}
+        return document_id
+
+    def insert_cash_movement(self, *, party_id, document_id, doc_kind, movement_type, amount, delta, correction_id=None):
+        movement_id = self.db.next("marketer_cash_move")
+        self.db.marketer_cash_moves.append({
+            "id": movement_id, "party_id": int(party_id), "document_id": int(document_id), "doc_kind": doc_kind,
+            "movement_type": movement_type, "cash_amount": amount, "amount_delta": delta, "correction_id": correction_id})
+        return movement_id
+
+    def insert_supplier_payment_link(self, *, payment_id, document_id, party_id, amount):
+        self.db.marketer_payment_links[int(payment_id)] = {
+            "payment_id": int(payment_id), "marketer_document_id": int(document_id), "doc_kind": "SUPPLIER_PAY",
+            "marketer_party_id": int(party_id), "amount": amount}
+
+    def audit(self, *, actor, event_type, entity_id, reference, description, metadata, now, entity_type):
+        self.db.audit_rows.append({"user_id": actor.user_id, "event_type": event_type, "entity_type": entity_type,
+                                   "entity_id": entity_id, "reference": reference, "metadata": metadata})
+
+
 class PaymentCase(unittest.TestCase):
     """One supplier (21K) with a posted invoice: making owed to the supplier = 5,000.00; gold 50.000 g."""
 
@@ -120,7 +178,8 @@ class PaymentCase(unittest.TestCase):
         self.purchases.post_invoice(draft["id"], key(901))
         self.n = 0
         for target, value in (("repositories.supplier_payment_repository.SupplierPaymentRepository", PaymentRepo),
-                              ("repositories.financial_account_repository.FinancialAccountRepository", AccountsRepo)):
+                              ("repositories.financial_account_repository.FinancialAccountRepository", AccountsRepo),
+                              ("repositories.marketer_custody_repository.MarketerCustodyRepository", MarketerPaymentRepo)):
             started = patch(target, value)
             started.start()
             self.addCleanup(started.stop)
@@ -132,7 +191,7 @@ class PaymentCase(unittest.TestCase):
                                  invoice_repository=Invoices, correction_repository=Corrections, customer_repository=Customers)
 
     # ------------------------------------------------------------ helpers
-    def pay(self, amount="1000", method="CASH", bank=None, when=TODAY, reference="", notes="", request=None, service=None):
+    def pay(self, amount="1000", method="BANK", bank="5", when=TODAY, reference="", notes="", request=None, service=None):
         self.n += 1
         return (service or self.payments).pay(self.supplier, method, bank, amount, when, reference, notes,
                                               request or key(self.n))
@@ -148,6 +207,17 @@ class PaymentCase(unittest.TestCase):
 
     def bank(self, account):
         return sum((m["amount_delta"] for m in self.db.bank_moves if m["account_id"] == account), D("0.00"))
+
+    def marketer(self, name="مسوقجي دفعات", cash="2000.00", *, same_as_supplier=False):
+        if same_as_supplier:
+            party_id = int(self.supplier)
+            self.db.suppliers[party_id]["is_intermediary"] = True
+        else:
+            party_id = int(self.suppliers.create_supplier(name, karat_id=None, is_supplier=False, is_intermediary=True))
+        self.db.marketer_cash_moves.append({"id": self.db.next("marketer_cash_move"), "party_id": party_id,
+                                            "document_id": None, "doc_kind": "OPENING", "movement_type": "OPENING",
+                                            "cash_amount": D(cash), "amount_delta": D(cash), "correction_id": None})
+        return str(party_id)
 
     def state(self):
         return copy.deepcopy({k: v for k, v in vars(self.db).items() if k not in ("fail_at", "transactions", "lock_log")})
@@ -168,29 +238,33 @@ class PaymentCase(unittest.TestCase):
                                          corrections=self.correction_service(session, authorization))
         return service, session, authorization
 
+    def service_with_marketer_right(self, user_id=8):
+        return self.service_for(OWNER_RIGHTS | {"INTERMEDIARY_HOLDING_MANAGE", "INTERMEDIARY_HOLDING_REVERSE"},
+                                user_id)[0]
+
 
 # --------------------------------------------------------------------------- the payment
 class PaymentPostingTests(PaymentCase):
-    def test_a_cash_payment_posts_one_money_out_and_one_negative_making_movement(self):
+    def test_a_bank_payment_posts_one_money_out_and_one_negative_making_movement(self):
         gold_before = self.gold()
         result = self.pay("1000.00", reference="إيصال 77", notes="دفعة أولى")
         self.assertEqual((result["code"], result["amount"], result["balance_before"], result["balance_after"],
                           result["duplicate"]), ("SM000001", "1000.00", "5000.00", "4000.00", False))
-        (money,) = self.db.cash_moves
+        (money,) = self.db.bank_moves
         self.assertEqual((money["account_id"], money["amount_delta"], money["reference_type"], money["reference_id"],
-                          money["reference_code"], money["type_code"]), (1, D("-1000.00"), SOURCE, "1", "SM000001", SOURCE))
-        self.assertEqual(self.db.bank_moves, [])
+                          money["reference_code"], money["type_code"]), (5, D("-1000.00"), SOURCE, "1", "SM000001", SOURCE))
+        self.assertEqual(self.db.cash_moves, [])
         made = [m for m in self.db.making if m["source_type"] == SOURCE]
         self.assertEqual([(m["amount_delta"], m["source_id"], m["source_reference"], m["movement_type_id"]) for m in made],
                          [(D("-1000.00"), 1, "SM000001", 2)])
         self.assertEqual(self.making(), D("4000.00"))
         self.assertEqual(self.gold(), gold_before)                       # the supplier GOLD account never moves
-        self.assertEqual(sorted((l["leg_kind"], l["cash_movement_id"], l["making_movement_id"]) for l in self.db.legs),
+        self.assertEqual(sorted((l["leg_kind"], l["bank_movement_id"], l["making_movement_id"]) for l in self.db.legs),
                          [("MAKING", None, made[0]["id"]), ("MONEY", money["id"], None)])
         (payment,) = self.db.payments.values()
         self.assertEqual((payment["performed_by_user_id"], payment["payment_method"], payment["cash_account_id"],
                           payment["bank_account_id"], payment["reference"], payment["notes"], payment["balance_after"]),
-                         (7, "CASH", 1, None, "إيصال 77", "دفعة أولى", D("4000.00")))
+                         (7, "BANK", None, 5, "إيصال 77", "دفعة أولى", D("4000.00")))
         audit = self.db.audit_rows[-1]
         self.assertEqual((audit["event_type"], audit["entity_type"], audit["reference"]),
                          ("SUPPLIER_MAKING_PAYMENT", SOURCE, "SM000001"))
@@ -203,19 +277,11 @@ class PaymentPostingTests(PaymentCase):
         self.assertEqual([(p["payment_method"], p["bank_account_id"], p["cash_account_id"]) for p in self.db.payments.values()],
                          [("BANK", 5, None), ("BANK", 6, None)])
 
-    def test_the_main_safe_is_resolved_by_its_code_never_by_a_hard_coded_id(self):
-        self.db.cash_accounts = {9: {**self.db.cash_accounts[1], "id": 9}}
-        self.pay("300")
-        self.assertEqual((self.cash(9), self.cash(1)), (D("-300.00"), D("0.00")))
-        self.assertEqual(next(iter(self.db.payments.values()))["cash_account_id"], 9)
+    def test_main_safe_is_not_a_supplier_making_payment_source(self):
+        self.refused("METHOD_INVALID", lambda: self.pay("300", method="CASH", bank=None))
+        self.assertEqual((self.db.payments, self.db.cash_moves, self.db.bank_moves), ({}, [], []))
         source = (ROOT / "services" / "supplier_payment_service.py").read_text(encoding="utf-8")
-        self.assertNotRegex(source, r'"CASH",\s*1\b')
-        self.assertIn("main_safe()", source)
-        self.db.cash_accounts[9]["code"] = "OTHER"
-        self.refused("ACCOUNT_NOT_FOUND", lambda: self.pay("1"))
-        self.db.cash_accounts[9]["code"] = "MAIN_SAFE"
-        self.db.cash_accounts[9]["is_active"] = 0
-        self.refused("ACCOUNT_INACTIVE", lambda: self.pay("1"))
+        self.assertNotIn("main_safe()", source)
 
     def test_a_bank_payment_needs_an_existing_active_account(self):
         self.refused("ACCOUNT_REQUIRED", lambda: self.pay(method="BANK", bank=None))
@@ -225,9 +291,64 @@ class PaymentPostingTests(PaymentCase):
         self.refused("ACCOUNT_INACTIVE", lambda: self.pay(method="BANK", bank="7"))
         self.assertEqual((self.db.payments, self.db.bank_moves), ({}, []))
 
-    def test_cash_ignores_a_bank_account_the_caller_sends(self):
-        self.pay("100", method="CASH", bank="5")
-        self.assertEqual((self.cash(1), self.bank(5)), (D("-100.00"), D("0.00")))
+    def test_cash_is_refused_even_when_a_bank_account_is_also_supplied(self):
+        self.refused("METHOD_INVALID", lambda: self.pay("100", method="CASH", bank="5"))
+        self.assertEqual((self.cash(1), self.bank(5)), (D("0.00"), D("0.00")))
+
+    def test_a_marketer_cash_payment_debits_only_that_marketer_and_records_confirmation_state(self):
+        marketer_id = self.marketer(cash="1500")
+        service = self.service_with_marketer_right()
+        context = service.payment_context(self.supplier)
+        self.assertEqual([(row["id"], row["cash"]) for row in context["marketers"]], [(marketer_id, D("1500.00"))])
+        result = service.pay(self.supplier, "MARKETER", marketer_id, "700", TODAY, "", "", key(52))
+        self.assertEqual((result["method"], result["balance_after"], result["duplicate"]),
+                         ("MARKETER", "4300.00", False))
+        self.assertEqual((self.bank(5), self.cash(1), MarketerPaymentRepo(self.db).cash_balance(marketer_id)),
+                         (D("0.00"), D("0.00"), D("800.00")))
+        payment = next(iter(self.db.payments.values()))
+        self.assertEqual((payment["payment_method"], payment["marketer_party_id"], payment["self_payment_confirmed"]),
+                         ("MARKETER", int(marketer_id), False))
+        self.assertEqual(len(self.db.marketer_payment_links), 1)
+        movement = self.db.marketer_cash_moves[-1]
+        self.assertEqual((movement["doc_kind"], movement["movement_type"], movement["amount_delta"]),
+                         ("SUPPLIER_PAY", "SUPPLIER_PAY", D("-700.00")))
+
+    def test_marketer_payment_requires_sufficient_held_cash_and_valid_self_confirmation(self):
+        marketer_id = self.marketer(cash="50")
+        service = self.service_with_marketer_right()
+        self.refused("MARKETER_CASH_INSUFFICIENT",
+                     lambda: service.pay(self.supplier, "MARKETER", marketer_id, "51", TODAY, "", "", key(53)))
+        self.refused("CONFIRMATION_INVALID",
+                     lambda: service.pay(self.supplier, "MARKETER", marketer_id, "10", TODAY, "", "", key(54),
+                                         confirm_same_party="yes"))
+        self.refused("CONFIRMATION_INVALID",
+                     lambda: service.pay(self.supplier, "MARKETER", marketer_id, "10", TODAY, "", "", key(55),
+                                         confirm_same_party=True))
+        self.assertEqual((self.db.payments, len(self.db.marketer_cash_moves)), ({}, 1))
+
+    def test_self_payment_requires_and_persists_explicit_confirmation(self):
+        marketer_id = self.marketer(cash="700", same_as_supplier=True)
+        service = self.service_with_marketer_right()
+        self.refused("SELF_PAYMENT_CONFIRMATION_REQUIRED",
+                     lambda: service.pay(self.supplier, "MARKETER", marketer_id, "500", TODAY, "", "", key(56)))
+        result = service.pay(self.supplier, "MARKETER", marketer_id, "500", TODAY, "", "", key(57),
+                             confirm_same_party=True)
+        payment = self.db.payments[int(result["id"])]
+        self.assertTrue(payment["self_payment_confirmed"])
+        self.assertTrue(self.db.audit_rows[-1]["metadata"]["self_payment_confirmed"])
+        self.assertEqual(MarketerPaymentRepo(self.db).cash_balance(marketer_id), D("200.00"))
+
+    def test_marketer_payment_replay_is_idempotent_and_confirmation_is_part_of_the_payload(self):
+        marketer_id = self.marketer(cash="1000")
+        service = self.service_with_marketer_right()
+        first = service.pay(self.supplier, "MARKETER", marketer_id, "300", TODAY, "r", "", key(58))
+        before = self.state()
+        replay = service.pay(self.supplier, "MARKETER", marketer_id, "300", TODAY, "r", "", key(58))
+        self.assertTrue(replay["duplicate"])
+        self.assertEqual((replay["id"], self.state()), (first["id"], before))
+        self.refused("REQUEST_CONFLICT",
+                     lambda: service.pay(self.supplier, "MARKETER", marketer_id, "300", TODAY, "r", "", key(58),
+                                         confirm_same_party=True))
 
     def test_exact_partial_and_over_payments_cross_zero_into_supplier_credit(self):
         self.pay("1000")
@@ -245,7 +366,7 @@ class PaymentPostingTests(PaymentCase):
     def test_one_payment_larger_than_the_payable_balance_is_accepted_whole(self):
         result = self.pay("6000.00")
         self.assertEqual((result["balance_before"], result["balance_after"]), ("5000.00", "-1000.00"))
-        self.assertEqual((self.cash(), self.making()), (D("-6000.00"), D("-1000.00")))
+        self.assertEqual((self.bank(5), self.making()), (D("-6000.00"), D("-1000.00")))
 
     def test_amounts_are_exact_positive_and_at_most_two_decimals(self):
         for bad in ("0", "0.00", "-5", "abc", "", "  ", "1.234", "1.005", "1e30", "100000000000000", "NaN", "Infinity"):
@@ -257,9 +378,9 @@ class PaymentPostingTests(PaymentCase):
         self.assertTrue(all(isinstance(p["amount"], D) for p in self.db.payments.values()))
 
     def test_funds_rule_is_unchanged_an_account_may_go_negative(self):
-        self.assertEqual(self.cash(), D("0.00"))
+        self.assertEqual(self.bank(5), D("0.00"))
         self.pay("1000")
-        self.assertEqual(self.cash(), D("-1000.00"))                         # no insufficient-funds policy was invented
+        self.assertEqual(self.bank(5), D("-1000.00"))                         # no insufficient-funds policy was invented
 
     def test_method_date_reference_and_supplier_are_validated_by_the_service(self):
         self.refused("METHOD_INVALID", lambda: self.pay(method="CHEQUE"))
@@ -271,7 +392,7 @@ class PaymentPostingTests(PaymentCase):
         self.refused("TEXT_LONG", lambda: self.pay(notes="x" * 1001))
         self.refused("REQUEST_INVALID", lambda: self.pay(request="not-a-uuid"))
         with self.assertRaises(SupplierRuleError) as context:
-            self.payments.pay("999", "CASH", None, "10", TODAY, "", "", key(50))
+            self.payments.pay("999", "BANK", "5", "10", TODAY, "", "", key(50))
         self.assertEqual(context.exception.code, "SUPPLIER_NOT_FOUND")
         self.pay("10", reference="", notes="")                                # reference and notes are optional
         self.pay("10", when="٢٠٢٦-١٠-٠٩")                                      # Arabic digits in the date
@@ -281,7 +402,7 @@ class PaymentPostingTests(PaymentCase):
         gold = self.gold()
         result = self.pay("1000")
         self.assertEqual((result["balance_before"], result["balance_after"]), ("5000.00", "4000.00"))
-        self.assertEqual([(m["account_id"], m["amount_delta"]) for m in self.db.cash_moves], [(1, D("-1000.00"))])
+        self.assertEqual([(m["account_id"], m["amount_delta"]) for m in self.db.bank_moves], [(5, D("-1000.00"))])
         self.assertEqual([m["amount_delta"] for m in self.db.making if m["source_type"] == SOURCE], [D("-1000.00")])
         self.assertEqual((len(self.db.legs), self.gold()), (2, gold))
         self.assertEqual(self.pay("5000.00", method="BANK", bank="5")["balance_after"], "-1000.00")     # crossing is unchanged
@@ -300,7 +421,7 @@ class PaymentPostingTests(PaymentCase):
     def test_an_inactive_financial_account_is_still_refused_for_an_inactive_supplier_with_no_effects(self):
         self.suppliers.set_active(self.supplier, False)
         self.refused("ACCOUNT_INACTIVE", lambda: self.pay(method="BANK", bank="7"))
-        self.db.cash_accounts[1]["is_active"] = 0
+        self.db.bank_accounts[5]["is_active"] = 0
         self.refused("ACCOUNT_INACTIVE", lambda: self.pay())
         self.assertEqual((self.db.payments, self.db.cash_moves, self.db.bank_moves, self.db.legs), ({}, [], [], []))
 
@@ -349,7 +470,7 @@ class PaymentGuardTests(PaymentCase):
         second = self.pay("700", reference="r", request=key(1))
         self.assertEqual((second["id"], second["code"], second["duplicate"]), (first["id"], first["code"], True))
         self.assertEqual(self.state(), before)
-        self.assertEqual((len(self.db.payments), len(self.db.cash_moves), len(self.db.legs)), (1, 1, 2))
+        self.assertEqual((len(self.db.payments), len(self.db.bank_moves), len(self.db.legs)), (1, 1, 2))
 
     def test_same_key_with_any_different_payload_is_refused(self):
         self.pay("700", reference="r", request=key(1))
@@ -357,7 +478,7 @@ class PaymentGuardTests(PaymentCase):
                      lambda: self.pay("700", reference="other", request=key(1)),
                      lambda: self.pay("700", reference="r", notes="n", request=key(1)),
                      lambda: self.pay("700", reference="r", when="2026-10-08", request=key(1)),
-                     lambda: self.pay("700", method="BANK", bank="5", reference="r", request=key(1))):
+                     lambda: self.pay("700", method="BANK", bank="6", reference="r", request=key(1))):
             self.refused("REQUEST_CONFLICT", call)
         other, *_ = self.service_for(OWNER_RIGHTS, 21)                          # another user cannot reuse the key either
         self.refused("REQUEST_CONFLICT", lambda: self.pay("700", reference="r", request=key(1), service=other))
@@ -383,7 +504,7 @@ class PaymentGuardTests(PaymentCase):
         twin = self.pay("700", reference="r", request=key(7))
         self.assertEqual((twin["id"], twin["code"], twin["duplicate"]), (winner["id"], winner["code"], True))
         self.assertEqual(self.state(), before)                                           # the loser left nothing behind
-        self.assertEqual((len(self.db.payments), len(self.db.cash_moves), len(self.db.legs)), (1, 1, 2))
+        self.assertEqual((len(self.db.payments), len(self.db.bank_moves), len(self.db.legs)), (1, 1, 2))
 
     def test_a_concurrent_twin_with_a_different_supplier_or_payload_is_a_request_conflict(self):
         self.pay("700", request=key(8))
@@ -391,7 +512,7 @@ class PaymentGuardTests(PaymentCase):
         self.stale_first_read()
         before = self.state()
         with self.assertRaises(SupplierRuleError) as context:
-            self.payments.pay(other, "CASH", None, "700", TODAY, "", "", key(8))      # same key, different supplier
+            self.payments.pay(other, "BANK", "5", "700", TODAY, "", "", key(8))      # same key, different supplier
         self.assertEqual(context.exception.code, "REQUEST_CONFLICT")
         self.assertEqual(self.state(), before)
         self.assertEqual(len(self.db.payments), 1)
@@ -469,12 +590,13 @@ class PaymentGuardTests(PaymentCase):
 
 # --------------------------------------------------------------------------- reads
 class PaymentReadTests(PaymentCase):
-    def test_the_dialog_context_shows_position_main_safe_and_only_active_bank_accounts(self):
+    def test_the_dialog_context_shows_position_and_only_active_bank_accounts(self):
         self.pay("1000")
         context = self.payments.payment_context(self.supplier)
         self.assertEqual((context["supplier"]["name"], context["making"], context["making_direction"]),
                          ("مورد المصنعيات", D("4000.00"), rules.SHOP_OWES))
-        self.assertEqual(context["safe"], {"id": "1", "name": "الخزنة الرئيسية", "active": True})
+        self.assertEqual((context["custodies"], context["marketers"]), ([], []))
+        self.assertNotIn("safe", context)
         self.assertEqual([b["id"] for b in context["banks"]], ["5", "6"])        # the inactive account is not offered
         self.suppliers.set_active(self.supplier, False)
         inactive = self.payments.payment_context(self.supplier)                  # the context loads for an inactive supplier
@@ -496,7 +618,7 @@ class PaymentReadTests(PaymentCase):
         rows = {r["movement_code"]: r for r in self.suppliers.supplier_detail(self.supplier)["making_ledger"]}
         self.assertEqual((rows["PAYMENT"]["payment_method"], rows["PAYMENT"]["payment_account"], rows["PAYMENT"]["reference"],
                           rows["PAYMENT"]["reversed_by"], rows["PAYMENT"]["balance_after"]),
-                         ("CASH", "الخزنة الرئيسية", "SM000001", None, D("4750.00")))
+                         ("BANK", "بنك مصر", "SM000001", None, D("4750.00")))
         self.assertIsNone(rows["PURCHASE_INVOICE"]["payment_id"])
 
 
@@ -507,16 +629,16 @@ class ReversalTests(PaymentCase):
     def reverse(self, payment_id="1", reason=None, service=None):
         return (service or self.payments).reverse(payment_id, self.REASON if reason is None else reason)
 
-    def test_owner_reverses_a_cash_payment_the_safe_and_the_supplier_are_restored(self):
+    def test_owner_reverses_a_bank_payment_and_the_supplier_is_restored(self):
         self.pay("1000")
-        original = copy.deepcopy((self.db.payments, self.db.cash_moves[0], [m for m in self.db.making if m["source_type"] == SOURCE]))
+        original = copy.deepcopy((self.db.payments, self.db.bank_moves[0], [m for m in self.db.making if m["source_type"] == SOURCE]))
         gold = self.gold()
         result = self.reverse()
         self.assertEqual((result["code"], result["source_reference"]), ("RV000001", "SM000001"))
-        self.assertEqual((self.cash(1), self.making(), self.gold()), (D("0.00"), D("5000.00"), gold))
-        self.assertEqual(self.db.cash_moves[0], original[1])                           # the original movement is untouched
-        self.assertEqual(self.db.cash_moves[1]["amount_delta"], D("1000.00"))            # a new opposite movement
-        self.assertEqual((self.db.cash_moves[1]["reference_type"], self.db.cash_moves[1]["type_code"]),
+        self.assertEqual((self.bank(5), self.making(), self.gold()), (D("0.00"), D("5000.00"), gold))
+        self.assertEqual(self.db.bank_moves[0], original[1])                           # the original movement is untouched
+        self.assertEqual(self.db.bank_moves[1]["amount_delta"], D("1000.00"))            # a new opposite movement
+        self.assertEqual((self.db.bank_moves[1]["reference_type"], self.db.bank_moves[1]["type_code"]),
                          ("TRANSACTION_CORRECTION", "REVERSAL_PAYMENT"))
         self.assertEqual(self.db.payments, original[0])                                  # the payment document is immutable
         self.assertEqual([m for m in self.db.making if m["source_type"] == SOURCE], original[2])
@@ -527,6 +649,18 @@ class ReversalTests(PaymentCase):
         self.assertEqual((correction["source_type"], correction["source_id"], correction["invoice_id"], correction["reason"]),
                          (SOURCE, "1", None, self.REASON))
         self.assertEqual(self.db.audit_rows[-1]["event_type"], "TRANSACTION_REVERSED")
+
+    def test_owner_reverses_a_marketer_payment_with_a_compensating_marketer_cash_movement(self):
+        marketer_id = self.marketer(cash="1200")
+        service = self.service_with_marketer_right()
+        result = service.pay(self.supplier, "MARKETER", marketer_id, "400", TODAY, "", "", key(59))
+        service.reverse(result["id"], self.REASON)
+        self.assertEqual((self.making(), MarketerPaymentRepo(self.db).cash_balance(marketer_id),
+                          self.bank(5), self.cash(1)), (D("5000.00"), D("1200.00"), D("0.00"), D("0.00")))
+        self.assertEqual([(movement["movement_type"], movement["amount_delta"])
+                          for movement in self.db.marketer_cash_moves[-2:]],
+                         [("SUPPLIER_PAY", D("-400.00")), ("SUPPLIER_PAY_REVERSAL", D("400.00"))])
+        self.assertEqual(len(self.db.corrections), 1)
 
     def test_a_bank_payment_is_restored_to_its_original_account_even_if_it_was_deactivated(self):
         self.pay("800", method="BANK", bank="6")
@@ -553,14 +687,14 @@ class ReversalTests(PaymentCase):
         self.pay("6000")
         self.assertEqual(self.making(), D("-1000.00"))
         self.reverse()
-        self.assertEqual((self.making(), self.cash()), (D("5000.00"), D("0.00")))
+        self.assertEqual((self.making(), self.bank(5)), (D("5000.00"), D("0.00")))
 
     def test_a_second_reversal_is_refused_and_leaves_no_trace(self):
         self.pay("1000")
         self.reverse()
         self.refused("ALREADY_REVERSED", lambda: self.reverse(), CorrectionError)
         self.assertEqual(len(self.db.corrections), 1)
-        self.assertEqual((self.cash(), self.making()), (D("0.00"), D("5000.00")))
+        self.assertEqual((self.bank(5), self.making()), (D("0.00"), D("5000.00")))
 
     def test_a_concurrent_second_reversal_is_stopped_by_the_unique_key_and_rolls_back_completely(self):
         self.pay("1000")
@@ -571,7 +705,7 @@ class ReversalTests(PaymentCase):
             with self.assertRaises(RuntimeError):
                 self.reverse()
         self.assertEqual(self.state(), before)
-        self.assertEqual((len(self.db.corrections), len(self.db.cash_moves), self.cash(), self.making()), (1, 2, D("0.00"), D("5000.00")))
+        self.assertEqual((len(self.db.corrections), len(self.db.bank_moves), self.bank(5), self.making()), (1, 2, D("0.00"), D("5000.00")))
         self.assertIs(CorrectionService._history, history)
 
     def test_a_reason_is_mandatory(self):
@@ -598,7 +732,7 @@ class ReversalTests(PaymentCase):
         with self.assertRaises(PermissionError):
             direct.reverse(SOURCE, "1", self.REASON)
         self.reverse()                                                                             # the OWNER can
-        self.assertEqual(self.cash(), D("0.00"))
+        self.assertEqual(self.bank(5), D("0.00"))
 
     def test_the_owner_right_is_rechecked_against_the_database_inside_the_transaction(self):
         self.pay("1000")
@@ -619,7 +753,7 @@ class ReversalTests(PaymentCase):
                     self.reverse()
                 self.db.fail_at = None
                 self.assertEqual(self.state(), before)
-                self.assertEqual((self.db.corrections, self.cash(), self.making()), ([], D("-1000.00"), D("4000.00")))
+                self.assertEqual((self.db.corrections, self.bank(5), self.making()), ([], D("-1000.00"), D("4000.00")))
         self.reverse()
 
     def test_the_preview_states_the_exact_effects_and_needs_the_owner_right(self):
@@ -764,8 +898,8 @@ class ViewModelTests(PaymentCase):
         self.assertEqual(self.vm.payContext, {})
         self.vm.loadPaymentContext(self.supplier)
         context = self.vm.payContext
-        self.assertEqual((context["supplierName"], context["currentText"], context["safeReady"]),
-                         ("مورد المصنعيات", "علينا للمورد 5,000.00 ج مصنعيات", True))
+        self.assertEqual((context["supplierName"], context["currentText"]),
+                         ("مورد المصنعيات", "علينا للمورد 5,000.00 ج مصنعيات"))
         self.assertEqual([b["id"] for b in context["banks"]], ["5", "6"])
         self.assertTrue(context["banks"][1]["text"].startswith("فودافون كاش — محفظة"))
         preview = self.vm.previewPayment("1000")
@@ -782,18 +916,18 @@ class ViewModelTests(PaymentCase):
 
     def test_a_posted_payment_closes_the_dialog_signal_refreshes_and_shows_in_history(self):
         self.vm.loadPaymentContext(self.supplier)
-        self.vm.payMaking(self.supplier, "CASH", "", "1000", TODAY, "ref", "", self.vm.newRequestKey())
+        self.vm.payMaking(self.supplier, "BANK", "5", False, "1000", TODAY, "ref", "", self.vm.newRequestKey())
         self.assertEqual(self.posted, ["SM000001"])
         self.assertIn("SM000001", self.vm.message)
         self.assertEqual(self.vm.errorMessage, "")
         self.assertEqual(self.vm.detail["makingText"], "علينا للمورد 4,000.00 ج مصنعيات")
         row = next(r for r in self.vm.detail["makingLedger"] if r["paymentId"])
         self.assertEqual((row["reference"], row["detail"], row["state"], row["canReverse"], row["reversed"]),
-                         ("SM000001", "نقدًا من الخزنة الرئيسية", "", True, False))
+                         ("SM000001", "تحويل من بنك مصر", "", True, False))
 
     def test_a_refusal_keeps_the_dialog_open_with_the_reason_and_no_signal(self):
         self.vm.loadPaymentContext(self.supplier)
-        self.vm.payMaking(self.supplier, "BANK", "7", "1000", TODAY, "", "", self.vm.newRequestKey())
+        self.vm.payMaking(self.supplier, "BANK", "7", False, "1000", TODAY, "", "", self.vm.newRequestKey())
         self.assertEqual(self.posted, [])
         self.assertIn("غير نشط", self.vm.errorMessage)
         self.assertEqual(self.db.payments, {})
@@ -802,19 +936,19 @@ class ViewModelTests(PaymentCase):
         calls = []
         self.vm._payments = type("P", (), {"pay": lambda s, *a, **k: calls.append(a)})()
         self.vm._busy.add("pay")
-        self.vm.payMaking(self.supplier, "CASH", "", "1000", TODAY, "", "", self.vm.newRequestKey())
+        self.vm.payMaking(self.supplier, "BANK", "5", False, "1000", TODAY, "", "", self.vm.newRequestKey())
         self.assertEqual(calls, [])
         self.assertTrue(self.vm.paying)
 
     def test_the_same_request_key_posts_once_even_if_submitted_twice(self):
         request = self.vm.newRequestKey()
         for _ in range(2):
-            self.vm.payMaking(self.supplier, "CASH", "", "1000", TODAY, "", "", request)
-        self.assertEqual((len(self.db.payments), len(self.db.cash_moves)), (1, 1))
+            self.vm.payMaking(self.supplier, "BANK", "5", False, "1000", TODAY, "", "", request)
+        self.assertEqual((len(self.db.payments), len(self.db.bank_moves)), (1, 1))
         self.assertIn("مسجلة من قبل", self.vm.message)
 
     def test_reversal_through_the_view_model_marks_both_rows(self):
-        self.vm.payMaking(self.supplier, "BANK", "5", "400", TODAY, "", "", self.vm.newRequestKey())
+        self.vm.payMaking(self.supplier, "BANK", "5", False, "400", TODAY, "", "", self.vm.newRequestKey())
         self.vm.reversePayment("1", "غلط")
         self.assertEqual(self.reversed, ["RV000001"])
         rows = {r["paymentId"] or r["movement"]: r for r in self.vm.detail["makingLedger"]}
@@ -828,13 +962,13 @@ class ViewModelTests(PaymentCase):
         self.assertIn("تم عكس", self.vm.errorMessage)
 
     def test_a_manager_view_model_reversal_is_refused_with_a_message(self):
-        self.vm.payMaking(self.supplier, "CASH", "", "400", TODAY, "", "", self.vm.newRequestKey())
+        self.vm.payMaking(self.supplier, "BANK", "5", False, "400", TODAY, "", "", self.vm.newRequestKey())
         manager, *_ = self.service_for(MANAGER_RIGHTS, 41)
         self.vm._payments = manager
         self.vm.reversePayment("1", "غلط")
         self.assertEqual(self.reversed, [])
         self.assertTrue(self.vm.errorMessage)
-        self.assertEqual(self.cash(), D("-400.00"))
+        self.assertEqual(self.bank(5), D("-400.00"))
 
 
 if __name__ == "__main__":

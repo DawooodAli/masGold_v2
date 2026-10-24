@@ -450,13 +450,16 @@ class RightsTests(SettleCase):
                                                 module.SPI: module.SPI_REVERSE_PERMISSION,
                                                   module.MKD: module.HOLDING_REVERSE_PERMISSION})                    # 052 / 055: the supplier invoice and the marketer document reversal rights are additive
 
-    def test_a_direct_shop_scrap_settlement_still_needs_only_its_own_rights(self):
+    def test_new_direct_shop_scrap_settlement_is_disabled_even_with_the_settlement_right(self):
         from services.supplier_gold_settlement_service import SupplierGoldSettlementService
+        from services.supplier_rules import SupplierRuleError
         direct = SupplierGoldSettlementService(self.session, transaction_factory=self.db.transaction, repository=SettlementRepo, scrap=__import__("tests.market_trip_fakes", fromlist=["ScrapRepo"]).ScrapRepo,
                                                authorization=self.authorization, corrections=self.corrections)
-        done = direct.settle("10", "1", "5", TODAY, "", "", skey(700))
-        rights = self.writes(lambda: direct.reverse(done["id"], "x"))
-        self.assertEqual(rights, {"TRANSACTION_CORRECT", "SUPPLIER_GOLD_SETTLE_REVERSE"})
+        before = (self.untouched(), copy.deepcopy(self.db.sup_gold), copy.deepcopy(self.db.settlements))
+        with self.assertRaises(SupplierRuleError) as refusal:
+            direct.settle("10", "1", "5", TODAY, "", "", skey(700))
+        self.assertEqual(refusal.exception.code, "SHOP_SCRAP_SETTLEMENT_DISABLED")
+        self.assertEqual((self.untouched(), self.db.sup_gold, self.db.settlements), before)
 
     def test_extra_permissions_are_all_checked_even_when_a_source_adds_several(self):
         from services.correction_service import _Plan
