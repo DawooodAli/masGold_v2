@@ -9,6 +9,7 @@ from repositories.supplier_repository import SupplierRepository, _id
 
 SOURCE = "SUPPLIER_MAKING_PAYMENT"          # transaction_corrections.source_type, cash/bank reference_type, making source_type
 PAYMENT_MOVEMENT, REVERSAL_MOVEMENT = "PAYMENT", "PAYMENT_REVERSAL"
+BAR_FEE_MOVEMENT, BAR_FEE_REVERSAL_MOVEMENT = "BAR_FEE", "BAR_FEE_REVERSAL"
 MAIN_SAFE = "MAIN_SAFE"
 CORRECTION_REFERENCE = "TRANSACTION_CORRECTION"
 CASH, BANK = "CASH", "BANK"

@@ -561,6 +561,19 @@ class CorrectionService:
                 else:
                     plan.making.append((str(movement["supplier_id"]), -Decimal(str(movement["amount_delta"])), REVERSAL_MOVEMENT))
                 plan.extra_permissions.append(SMP_REVERSE_PERMISSION)
+            if source["entry_kind"] == "ST_BAR_FEE":
+                # 080. The fee stops counting in custody cash and the stored supplier deduction is restored; blocked when the fee cash was used.
+                fee = trips.entry_bar_fee(source_id)
+                if fee is None:
+                    plan.blockers.append(("BAR_FEE_MISSING", "سجل أجر السبيكة الأصلي غير موجود."))
+                else:
+                    if fee.get("making_movement_id") is not None:
+                        plan.making.append((str(fee["party_id"]), Decimal(str(fee["amount"])), "BAR_FEE_REVERSAL"))
+                        plan.extra_permissions.append(SMP_REVERSE_PERMISSION)
+                    cash = trips.custody_cash(source["trip_id"], exclude_entry_id=source_id, current=True)
+                    if custody_rules.cash_rows_outstanding(cash) < 0:
+                        plan.blockers.append(("DEPENDENT_CASH_USE_EXISTS",
+                                              "لا يمكن عكس الأجر لأن نقديته استُخدمت بعد تسجيله — اعكس ما يعتمد عليه أولًا."))
             if source["entry_kind"] == "ST_ADJUST":
                 # 065. An INCREASE put the stored grams into the custody (RAW +g) and took them out of Scrap: its reversal removes them from the custody again, so it is blocked when
                 # they were used afterwards. A DECREASE returned grams to Scrap: its reversal needs that Scrap (decided with the generic Scrap check).

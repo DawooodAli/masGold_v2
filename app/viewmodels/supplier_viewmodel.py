@@ -561,7 +561,7 @@ class SupplierViewModel(QObject):
     def previewSupplierGoldSettlement(self, supplier_id, quantity, declaration, self_confirmed):
         empty = {"valid": False, "short": False, "error": "", "deliveredText": "", "creditedText": "",
                  "analyticalText": "", "differenceText": "", "formulaText": "", "availableText": "",
-                 "options": [], "isSelf": False}
+                 "shortageText": "", "canIncreaseCustody": False, "options": [], "isSelf": False}
         context = self._gold_source_context
         if (not context or context.get("supplier_id") != self._selected
                 or str(supplier_id or "") != self._selected):
@@ -609,7 +609,10 @@ class SupplierViewModel(QObject):
         source_basis = (f"عيار فعلي {number(context['fineness'], 1)} بالألف"
                         if source["source_type"] == "CUSTODY_LOT"
                         else f"عيار {context['karat_value']}")
-        return {"valid": not short, "short": short, "error": "",
+        can_increase = (short and source["source_type"] == "CUSTODY_GOLD"
+                        and source.get("designation") == "UNCLASSIFIED")
+        return {"valid": not short, "short": short, "error": "", "canIncreaseCustody": can_increase,
+                "shortageText": f"{grams(delivered - available)} جرام" if can_increase else "",
                 "availableText": f"{grams(available)} جرام",
                 "deliveredText": f"{grams(delivered)} جرام ({source_basis})",
                 "creditedText": f"{grams(credited)} جرام عيار {supplier['karat_value']}",
@@ -647,6 +650,45 @@ class SupplierViewModel(QObject):
                                                 quantity, settlement_date, reference, notes, request_key, _expected_actor=_expected_actor)
 
         self._start("suppliergoldsettle", post)
+
+    @Slot(str, str, str, str, str, str)
+    def increaseSupplierCustodyWeight(self, source_key, target_weight, source_kind, reason, entry_date, request_key):
+        if "suppliercustodyadjust" in self._busy or "suppliergoldsettle" in self._busy:
+            return
+        source = next((row for row in self._gold_sources if row["key"] == str(source_key)), None)
+        context = self._gold_source_context
+        if (source is None or source.get("source_type") != "CUSTODY_GOLD"
+                or source.get("designation") != "UNCLASSIFIED" or not context
+                or context.get("supplier_id") != self._selected
+                or context["source"]["key"] != str(source_key)):
+            self._error = "لا يمكن زيادة هذا المصدر: أعد تحميل رصيد الذهب بدون وجهة من عهدة مفتوحة."
+            self.changed.emit()
+            return
+        if not str(request_key or "").strip():
+            self._error = "تعذر بدء تصحيح الوزن؛ أغلق النافذة وافتحها ثم أعد المحاولة."
+            self.changed.emit()
+            return
+        self._message = self._error = ""
+        supplier_id = self._selected
+        service = self._market_trip_settlement_service()
+
+        def post(_expected_actor):
+            result = service.correct_issue_weight(
+                source["trip_id"], source["karat_id"], "INCREASE", None, reason, entry_date, request_key,
+                source_kind=source_kind, target_weight=target_weight, _expected_actor=_expected_actor)
+            return {**result, "source_key": source_key, "supplier_id": supplier_id}
+
+        self._start("suppliercustodyadjust", post)
+
+    def _on_suppliercustodyadjust(self, result, error):
+        if error:
+            self._error = error
+            return
+        source_key = result["source_key"]
+        source_kind = result.get("source_kind", "SHOP_SCRAP")
+        source_text = "من كسر المحل" if source_kind == "SHOP_SCRAP" else "تسجيل فعلي دون حركة كسر"
+        self.loadSupplierGoldSource(source_key)
+        self._message = f"تم تسجيل فرق الوزن {result['code']} ({grams(Decimal(result['weight']))} جرام {source_text})."
 
     def _on_suppliergoldsettle(self, result, error):
         if error:
@@ -1054,6 +1096,10 @@ class SupplierViewModel(QObject):
     @Property(bool, notify=changed)
     def settlingSupplierGold(self):
         return "suppliergoldsettle" in self._busy
+
+    @Property(bool, notify=changed)
+    def adjustingSupplierCustody(self):
+        return "suppliercustodyadjust" in self._busy
 
     @Property("QVariantList", notify=changed)
     def supplierGoldSources(self):

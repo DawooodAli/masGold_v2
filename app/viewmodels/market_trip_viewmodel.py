@@ -24,7 +24,7 @@ GOLD_SETTLE_REVERSAL_NOTE = ("عكس تسوية الذهب يسجّل أن ال�
                              "لا يتحرك كسر المحل ولا النقدية؛ أرجع الذهب إلى المحل بـ«تسجيل رجوع» عند إرجاعه فعلًا.")
 PAYMENT_REVERSAL_NOTE = ("عكس دفع المصنعيات يسجّل أن المبلغ عاد فعلًا إلى عهدة السوق (بالمبلغ المخزّن في الدفعة) ويعيد مستحقات المورد بنفس المبلغ. "
                          "لا يُعاد المبلغ تلقائيًا إلى الخزنة الرئيسية: سجّل «تسجيل رجوع» من العهدة عند إرجاعه فعلًا.")
-KIND_TEXT = {"ST_MELT": "تسجيل سبك (بعد الرجوع)", "ST_BAR_SUP": "تسليم سبيكة لمورد (بعد الرجوع)", "ST_BAR_MKT": "تسليم سبيكة لمسوقجي (بعد الرجوع)", "ST_LOGO": "اعتبار المتبقي لوجو", "ST_EXPENSE": "مصروف من العهدة", "ST_RET_MKT": "مرتجع سوق للمحل", "ST_LOSS": "خسية", "ST_ADJUST": "تصحيح وزن الإخراج", "ST_CASH_BANK": "إيداع باقي النقدية في حساب", "ST_CASH_OFF": "إعدام باقي النقدية","ISSUE": "إخراج عهدة", "RETURN": "رجوع من العهدة", "MELT": "سبك", "LOT_RETURN": "رجوع ناتج السبك", "LOT_ISSUE": "إخراج سبكة من المحل",
+KIND_TEXT = {"ST_MELT": "تسجيل سبك (بعد الرجوع)", "ST_BAR_SUP": "تسليم سبيكة لمورد (بعد الرجوع)", "ST_BAR_MKT": "تسليم سبيكة لمسوقجي (بعد الرجوع)", "ST_LOGO": "اعتبار المتبقي لوجو", "ST_EXPENSE": "مصروف من العهدة", "ST_RET_MKT": "مرتجع سوق للمحل", "ST_LOSS": "خسية", "ST_ADJUST": "تصحيح وزن الإخراج", "ST_BAR_FEE": "أجر سبيكة", "ST_CASH_BANK": "إيداع باقي النقدية في حساب", "ST_CASH_OFF": "إعدام باقي النقدية","ISSUE": "إخراج عهدة", "RETURN": "رجوع من العهدة", "MELT": "سبك", "LOT_RETURN": "رجوع ناتج السبك", "LOT_ISSUE": "إخراج سبكة من المحل",
              "GOLD_BUY": "شراء ذهب نقدي", "GOLD_SALE": "بيع ذهب من العهدة", "HEAT": "حمّية اللوجو", "SUPPLIER_PAY": "دفع مصنعيات من العهدة", "GOLD_SETTLE": "تسوية ذهب من العهدة", "LOT_SETTLE": "تسوية سبكة من العهدة",
              "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي", "LOGO_HOLD": "تسليم لوجو لمسوقجي", "HOLD_BACK": "رجوع لوجو من مسوقجي",
              "BK_ISSUE": "إخراج ذهب (دفتري)", "BK_BUY": "شراء ذهب (دفتري)", "BK_SELL": "بيع ذهب (دفتري)", "BK_RETURN": "رجوع ذهب للمحل (دفتري)", "BK_RECON": "تسوية العهدة الدفترية",
@@ -249,6 +249,7 @@ class MarketTripViewModel(QObject):
 
     # ------------------------------------------------------------ reads
     @Slot()
+    @Slot(str)
     def refresh(self, _reason=""):
         """The shown page of trips, the selected trip's detail and the entry-dialog context: always from the database."""
         if not self.canManage:
@@ -534,6 +535,12 @@ class MarketTripViewModel(QObject):
         else:
             self._write("cashsettle", "تم تسجيل المصروف من العهدة", lambda s, a: s.record_custody_expense(
                 trip_id, amount, text, entry_date, "", notes, request_key, _expected_actor=a), False)
+
+    @Slot(str, str, str, str, str, str, str)
+    def recordBarFee(self, trip_id, party_id, amount, entry_date, reference, notes, request_key):
+        """Record the cash fee a supplier / marketer paid for a bar: it enters the custody cash (a supplier's making account is reduced by it). Only ids and typed text are sent."""
+        self._write("barfee", "تم تسجيل أجر السبيكة", lambda s, a: s.bar_fee(
+            trip_id, party_id, amount, entry_date, reference, notes, request_key, _expected_actor=a), False)
 
     @Slot(str, str, str, str)
     def classifyAsLogo(self, trip_id, entry_date, notes, request_key):
@@ -1276,6 +1283,7 @@ class MarketTripViewModel(QObject):
                      "received": money(custody["cash"].get("received", 0)), "hasReceived": custody["cash"].get("received", 0) != 0,
                      "spent": money(custody["cash"].get("spent", 0)), "hasSpent": custody["cash"].get("spent", 0) != 0,
                      "settled": money(custody["cash"].get("settled", 0)), "hasSettled": custody["cash"].get("settled", 0) != 0,
+                     "fee": money(custody["cash"].get("fee", 0)), "hasFee": custody["cash"].get("fee", 0) != 0,
                      "outstanding": money(custody["cash"]["outstanding"]), "zero": custody["cash"]["outstanding"] == 0,
                      "outstandingValue": f"{custody['cash']['outstanding']:.2f}"},
             "gold": [{"karat": g["karat_value"], "karatId": str(g["karat_id"]), "designation": g["designation"],
@@ -1391,7 +1399,9 @@ class MarketTripViewModel(QObject):
             parts.append(f"{what}: {grams(line['weight'])} جرام" + {"CRUCIBLE": " • خسية بوتقة", "MARKET": " • خسية سوق"}.get(line.get("classification") or "", ""))
         adjust = e.get("settle_adjust")
         if adjust:
-            parts.append(f"عيار {adjust['karat_value']}: {'زيادة' if adjust['direction'] == 'INCREASE' else 'إنقاص'} {grams(adjust['weight'])} جرام • {adjust['reason']}")
+            source = "من كسر المحل" if adjust.get("source_kind", "SHOP_SCRAP") == "SHOP_SCRAP" else "زيادة فعلية دون حركة كسر"
+            parts.append(f"عيار {adjust['karat_value']}: {'زيادة' if adjust['direction'] == 'INCREASE' else 'إنقاص'} "
+                         f"{grams(adjust['weight'])} جرام • {source} • {adjust['reason']}")
         cash_doc = e.get("settle_cash")
         if cash_doc:
             parts.append(f"{money(cash_doc['amount'])}" + (f" ← {cash_doc['bank_account']}" if cash_doc["bank_account"] else f" • {cash_doc['description']}")

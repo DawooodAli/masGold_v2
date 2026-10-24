@@ -143,6 +143,17 @@ class PreviewTests(SettlementVmCase):
         exact = self.vm.previewSettlement(K21, "95.000")
         self.assertEqual((exact["short"], exact["valid"]), (False, True))
 
+    def test_only_an_unclassified_custody_shortfall_offers_the_two_weight_increase_sources(self):
+        source = {"key": "source-1", "source_type": "CUSTODY_GOLD", "designation": "UNCLASSIFIED"}
+        self.vm._gold_source_context = {"source": source, "available": D("66.300"), "karat_value": 21, "supplier_id": "11"}
+        self.vm._detail = {"supplier": {"karat_value": 18}}
+        preview = self.vm.previewSupplierGoldSettlement("11", "66.450", "", False)
+        self.assertEqual((preview["short"], preview["valid"], preview["canIncreaseCustody"]), (True, False, True))
+        self.assertEqual(preview["shortageText"], "0.150 جرام")
+        self.vm._gold_source_context["source"]["designation"] = "LOGO"
+        preview = self.vm.previewSupplierGoldSettlement("11", "66.450", "", False)
+        self.assertFalse(preview["canIncreaseCustody"])
+
     def test_incomplete_or_invalid_input_gives_an_empty_or_explained_preview_never_a_figure(self):
         for karat, weight in ((K21, ""), (K21, "   "), ("", "5")):
             with self.subTest(karat=karat, weight=weight):
@@ -168,12 +179,12 @@ class PreviewTests(SettlementVmCase):
 
 
 class PostingAndReversalTests(SettlementVmCase):
-    def source(self, source_type="CUSTODY_GOLD"):
+    def source(self, source_type="CUSTODY_GOLD", designation="LOGO"):
         if source_type == "HOLDING":
             return {"key": "source-1", "source_type": source_type, "pool_kind": "LOT", "pool_id": "1",
                     "text": "مسوقجي • سبكة"}
         return {"key": "source-1", "source_type": source_type, "trip_id": "1", "trip_code": "MT000001",
-                "karat_id": K21, "designation": "LOGO", "text": "MT000001 • لوجو عيار 21"}
+                "karat_id": K21, "designation": designation, "text": "MT000001 • لوجو عيار 21"}
 
     def prepare_source(self, source):
         self.vm._gold_sources = [source]
@@ -222,6 +233,46 @@ class PostingAndReversalTests(SettlementVmCase):
         self.assertEqual(kwargs["_expected_actor"].user_id, self.session.current_actor().user_id)
         self.assertEqual((completed, custody), (["SG000001"], ["SG000001"]))
         self.assertIn("من عهدة السوق", self.vm.message)
+
+    def test_unsourced_weight_increase_uses_a_stable_target_and_reloads_source_balance(self):
+        source = self.source(designation="UNCLASSIFIED")
+        self.prepare_source(source)
+        self.vm._gold_source_context["available"] = D("66.300")
+        calls, live = [], {"available": D("66.300")}
+
+        class TripService:
+            def correct_issue_weight(_self, *args, **kwargs):
+                calls.append((args, kwargs))
+                live["available"] = D(kwargs["target_weight"])
+                return {"code": "MT000001-9", "weight": str(live["available"] - D("66.300")),
+                        "source_kind": kwargs["source_kind"]}
+
+            def trip_detail(_self, trip_id, _expected_actor=None):
+                return {"trip": {"status": "OPEN"}, "mode": "LEGACY",
+                        "custody": {"gold": [{"karat_id": 1, "designation": "UNCLASSIFIED",
+                                              "outstanding": live["available"], "karat_value": 21}],
+                                    "bar": D("0"), "lots": []}}
+
+        self.vm._market_trip_settlements = TripService()
+        request_key = self.vm.newRequestKey()
+        self.vm.increaseSupplierCustodyWeight("source-1", "66.450", "UNSOURCED", "فرق وزن", TODAY, request_key)
+        self.assertEqual(len(calls), 1)
+        args, kwargs = calls[0]
+        self.assertEqual(args, ("1", K21, "INCREASE", None, "فرق وزن", TODAY, request_key))
+        self.assertEqual((kwargs["source_kind"], kwargs["target_weight"]), ("UNSOURCED", "66.450"))
+        self.assertEqual(self.vm.supplierGoldSourceContext["available"], "66.450")
+        self.assertIn("0.150 جرام", self.vm.message)
+
+    def test_direct_duplicate_weight_adjustment_is_ignored_while_busy(self):
+        source = self.source(designation="UNCLASSIFIED")
+        self.prepare_source(source)
+        calls = []
+        self.vm._market_trip_settlements = type(
+            "TripService", (), {"correct_issue_weight": lambda service, *args, **kwargs: calls.append(args)})()
+        self.vm._busy.add("suppliercustodyadjust")
+        self.vm.increaseSupplierCustodyWeight("source-1", "66.450", "UNSOURCED", "فرق وزن", TODAY, self.vm.newRequestKey())
+        self.assertEqual(calls, [])
+        self.assertTrue(self.vm.adjustingSupplierCustody)
 
     def test_holding_source_submission_uses_holding_settlement_service(self):
         source = self.source("HOLDING")

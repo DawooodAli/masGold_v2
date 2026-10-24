@@ -28,7 +28,7 @@ class SupplierMakingMarketerCashSchemaTests(unittest.TestCase):
 
     def test_chain_is_contiguous_and_has_no_static_foreign_key_defect(self):
         self.assertEqual(self.model.problems, [])
-        self.assertEqual(len(load_chain(require_committed=False)), 78)
+        self.assertEqual(len(load_chain(require_committed=False)), 80)
 
     def test_payment_link_ties_one_payment_to_one_supplier_pay_document_and_marketer(self):
         link = table(self.forward, "supplier_making_marketer_payments")

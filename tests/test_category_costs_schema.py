@@ -23,7 +23,7 @@ class CategoryCostSchemaTests(unittest.TestCase):
         self.assertIn("MIGRATION_070_REFUSED_missing_069", self.forward)
         self.assertRegex(self.forward, r"INSERT INTO schema_migrations\(version,name\) VALUES \(70,")
         self.assertLessEqual(len(re.search(r"VALUES \(70,'([^']*)'", self.forward).group(1)), 150)
-        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 77)
+        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 80)
 
     def test_one_non_negative_cost_per_category_and_no_existing_row_is_touched(self):
         for needle in ("CREATE TABLE IF NOT EXISTS item_category_costs", "PRIMARY KEY (category_id)", "FOREIGN KEY (category_id) REFERENCES item_categories(id) ON DELETE CASCADE",

@@ -23,7 +23,7 @@ class StockMinLevelsSchemaTests(unittest.TestCase):
         self.assertIn("MIGRATION_072_REFUSED_missing_071", self.forward)
         self.assertRegex(self.forward, r"INSERT INTO schema_migrations\(version,name\) VALUES \(72,")
         self.assertLessEqual(len(re.search(r"VALUES \(72,'([^']*)'", self.forward).group(1)), 150)
-        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 77)
+        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 80)
 
     def test_one_rule_per_type_and_karat_with_at_least_one_positive_minimum(self):
         for needle in ("CREATE TABLE IF NOT EXISTS stock_min_levels", "UNIQUE KEY uq_stock_min_level (item_type_id, karat_id)", "FOREIGN KEY (item_type_id) REFERENCES item_types(id) ON DELETE CASCADE",

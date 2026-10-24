@@ -56,7 +56,7 @@ from repositories.intermediary_holding_repository import IntermediaryHoldingRepo
 from repositories.old_gold_conversion_repository import OldGoldConversionRepository
 from repositories.supplier_gold_settlement_repository import (CUSTODY_SOURCE_KIND, LOT_SOURCE_KIND, GOLD_MOVEMENT, SupplierGoldSettlementRepository,
                                                               settlement_code)
-from repositories.supplier_payment_repository import PAYMENT_MOVEMENT, SOURCE as SMP_SOURCE, SupplierPaymentRepository, payment_code
+from repositories.supplier_payment_repository import BAR_FEE_MOVEMENT, PAYMENT_MOVEMENT, SOURCE as SMP_SOURCE, SupplierPaymentRepository, payment_code
 from services.authorization_service import AuthorizationService
 from services import book_rules
 from services.correction_rules import correction_code
@@ -72,6 +72,7 @@ ST_MELT = "ST_MELT"                                # 060: the melt recorded AFTE
 ST_BAR_SUP, BAR_SOURCE_KIND = "ST_BAR_SUP", "TRIP_BAR"      # 061: the melted bar (21K-equivalent grams) delivered to a supplier (settlement step 2b)
 ST_RET_MKT, ST_LOSS, ST_ADJUST = "ST_RET_MKT", "ST_LOSS", "ST_ADJUST"      # 065: remainder returned to the shop / lost, issue-weight correction
 ST_EXPENSE, ST_CASH_BANK, ST_CASH_OFF = "ST_EXPENSE", "ST_CASH_BANK", "ST_CASH_OFF"      # 064: the custody cash settled after the trip
+ST_BAR_FEE = "ST_BAR_FEE"                      # 080: the cash fee a supplier / marketer pays when a bar is handed over
 ST_LOGO = "ST_LOGO"                                # 062: the unmelted remainder classified as LOGO (the owner rule: what was not melted is logo)
 ST_BAR_MKT = "ST_BAR_MKT"                          # 062: the melted bar handed to a marketer: his 21K entitlement gains the grams (settlement step 2c)
 BASE_KARAT_VALUE = 21                                  # the bar is delivered as N grams of the 21K master karat (its equivalent)
@@ -97,7 +98,7 @@ ZERO_MONEY, ZERO_WEIGHT = Decimal("0.00"), Decimal("0.000")
 KIND_TEXT = {ISSUE: "إخراج عهدة", RETURN: "رجوع من العهدة", MELT: "سبك", LOT_RETURN: "رجوع ناتج السبك", LOT_ISSUE: "إخراج سبكة من المحل",
              HEAT: "حمّية اللوجو", SUPPLIER_PAY: "دفع مصنعيات من العهدة", GOLD_SETTLE: "تسوية ذهب من العهدة", LOT_SETTLE: "تسوية سبكة من العهدة",
              GOLD_SALE: "بيع ذهب من العهدة", GOLD_BUY: "شراء ذهب نقدي", "BK_ISSUE": "إخراج ذهب (دفتري)", "BK_BUY": "شراء ذهب (دفتري)",
-             "BK_SELL": "بيع ذهب (دفتري)", "BK_RETURN": "رجوع ذهب للمحل (دفتري)", "BK_RECON": "تسوية الرصيد الدفتري", "BK_ISS_STK": "إخراج مخزون مرتجع إلى العهدة (دفتري)", "BK_DLV_SUP": "تسليم ذهب لمورد (دفتري)", "BK_DLV_MKT": "تسليم ذهب لمسوقجي (دفتري)", "BK_RECEIVE": "استلام ذهب من مسوقجي (دفتري)", "BK_GAIN": "زيادة مثبتة (دفتري)", "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي", "LOGO_HOLD": "تسليم لوجو لمسوقجي", "HOLD_BACK": "رجوع لوجو من مسوقجي", "ST_MELT": "تسجيل سبك (بعد الرجوع)", "ST_BAR_SUP": "تسليم سبيكة لمورد (بعد الرجوع)", "ST_BAR_MKT": "تسليم سبيكة لمسوقجي (بعد الرجوع)", "ST_LOGO": "اعتبار المتبقي لوجو", "ST_EXPENSE": "مصروف من العهدة", "ST_CASH_BANK": "إيداع باقي النقدية في حساب", "ST_CASH_OFF": "إعدام باقي النقدية", "ST_RET_MKT": "مرتجع سوق للمحل", "ST_LOSS": "خسية", "ST_ADJUST": "تصحيح وزن الإخراج"}
+             "BK_SELL": "بيع ذهب (دفتري)", "BK_RETURN": "رجوع ذهب للمحل (دفتري)", "BK_RECON": "تسوية الرصيد الدفتري", "BK_ISS_STK": "إخراج مخزون مرتجع إلى العهدة (دفتري)", "BK_DLV_SUP": "تسليم ذهب لمورد (دفتري)", "BK_DLV_MKT": "تسليم ذهب لمسوقجي (دفتري)", "BK_RECEIVE": "استلام ذهب من مسوقجي (دفتري)", "BK_GAIN": "زيادة مثبتة (دفتري)", "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي", "LOGO_HOLD": "تسليم لوجو لمسوقجي", "HOLD_BACK": "رجوع لوجو من مسوقجي", "ST_MELT": "تسجيل سبك (بعد الرجوع)", "ST_BAR_SUP": "تسليم سبيكة لمورد (بعد الرجوع)", "ST_BAR_MKT": "تسليم سبيكة لمسوقجي (بعد الرجوع)", "ST_LOGO": "اعتبار المتبقي لوجو", "ST_EXPENSE": "مصروف من العهدة", "ST_CASH_BANK": "إيداع باقي النقدية في حساب", "ST_CASH_OFF": "إعدام باقي النقدية", "ST_RET_MKT": "مرتجع سوق للمحل", "ST_LOSS": "خسية", "ST_ADJUST": "تصحيح وزن الإخراج", "ST_BAR_FEE": "أجر سبيكة"}
 DESIGNATION_TEXT = {MELT_DESIGNATION: "للسبك", LOGO_DESIGNATION: "لوجو", UNCLASSIFIED: "بدون وجهة"}
 _DESIGNATION_INPUT = {"MELT": MELT_DESIGNATION, "للسبك": MELT_DESIGNATION, "LOGO": LOGO_DESIGNATION, "لوجو": LOGO_DESIGNATION,
                       "UNCLASSIFIED": UNCLASSIFIED, "غير مصنف": UNCLASSIFIED}
@@ -227,6 +228,7 @@ def custody_view(cash_rows, gold_rows, lot_rows=(), trip_id=None, bar=0):
     spent = Decimal(str(cash_rows[4])) if len(cash_rows) > 4 else Decimal("0.00")         # spent on gold bought in the market (054)
     received = Decimal(str(cash_rows[3])) if len(cash_rows) > 3 else Decimal("0.00")      # proceeds of custody gold sold for cash (053)
     settled = Decimal(str(cash_rows[5])) if len(cash_rows) > 5 else Decimal("0.00")       # expense / bank deposit / write-off after the trip (064)
+    fee = Decimal(str(cash_rows[6])) if len(cash_rows) > 6 else Decimal("0.00")           # bar fees received in cash (080)
     gold = []
     for r in gold_rows:
         g_issued, g_returned = Decimal(str(r["issued"])), Decimal(str(r["returned"]))
@@ -248,9 +250,9 @@ def custody_view(cash_rows, gold_rows, lot_rows=(), trip_id=None, bar=0):
              "origin_trip_id": int(r.get("origin_trip_id") or trip_id or 0) or None,
              "code": None if not (r.get("origin_trip_id") or trip_id) else entry_code(r.get("origin_trip_id") or trip_id, r["entry_no"])}
             for r in lot_rows if Decimal(str(r["outstanding_grams"])) != 0]
-    cash_left = custody_rules.cash_outstanding(issued, returned, paid, received, spent, settled)
+    cash_left = custody_rules.cash_outstanding(issued, returned, paid, received, spent, settled, fee)
     bar_left = Decimal(str(bar or 0))                                                       # 060: Eq21 grams of the melted bars not yet distributed
-    return {"cash": {"issued": issued, "returned": returned, "paid": paid, "received": received, "spent": spent, "settled": settled, "outstanding": cash_left}, "gold": gold,
+    return {"cash": {"issued": issued, "returned": returned, "paid": paid, "received": received, "spent": spent, "settled": settled, "fee": fee, "outstanding": cash_left}, "gold": gold,
             "lots": lots, "bar": bar_left,
             "settled": cash_left == 0 and all(g["outstanding"] == 0 for g in gold) and not lots and bar_left == 0}
 
@@ -1211,6 +1213,99 @@ class MarketTripService:
                 "created": False, "duplicate": False, "payment_id": str(payment_id), "payment_code": pcode, "supplier_id": str(supplier_id),
                 "amount": str(value), "balance_before": str(before), "balance_after": str(after)}
 
+    # ------------------------------------------------------------------ bar fee received in cash (080)
+    def bar_fee(self, trip_id, party_id, amount, fee_date, reference, notes, request_key, *, _expected_actor=None):
+        """RECORD the cash fee (أجر السبيكة) a supplier / marketer pays the owner when a bar is handed to them. The cash enters the
+        custody cash (no Main Safe / bank movement); for a SUPPLIER party the fee is also deducted from its making account through a
+        negative BAR_FEE making movement (needs SUPPLIER_MAKING_PAY); a marketer-only party gets no making movement."""
+        session_actor = self._actor(_expected_actor)
+        if str(trip_id or "").strip() == "":
+            raise TripError("TRIP_NOT_FOUND", "اختر العهدة.")
+        trip_number = _trip_id(trip_id)
+        try:
+            party_number = int(str(party_id).strip())
+        except (TypeError, ValueError):
+            raise TripError("SUPPLIER_NOT_FOUND", "اختر المورد أو المسوقجي.") from None
+        if party_number <= 0:
+            raise TripError("SUPPLIER_NOT_FOUND", "اختر المورد أو المسوقجي.")
+        value = parse_cash(amount)
+        if value == 0:
+            raise TripError("AMOUNT_REQUIRED", "أدخل أجر السبيكة بقيمة موجبة.")
+        dated = _entry_date(fee_date)
+        reference_text, notes_text = _text(reference, PAYMENT_REFERENCE_MAX, "المرجع"), _text(notes, NOTES_MAX, "الملاحظات")
+        key = _key(request_key)
+        digest = hashlib.sha256(json.dumps([ST_BAR_FEE, trip_number, party_number, str(value), dated.isoformat(), reference_text, notes_text],
+                                           ensure_ascii=False).encode()).hexdigest()
+        try:
+            return self._post_bar_fee(session_actor, trip_number, party_number, value, dated, reference_text, notes_text, key, digest)
+        except IntegrityError as exc:
+            if getattr(exc, "errno", None) != 1062 or "uq_mte_request" not in str(exc):
+                raise
+            with self._transaction() as connection:
+                actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+                replay = self._bar_fee_prior(self._repository(connection), key, digest, actor)
+                if replay is None:
+                    raise
+                return replay
+
+    @staticmethod
+    def _bar_fee_prior(repository, key, digest, actor):
+        entry = repository.by_request(key)
+        if entry is None:
+            return None
+        if entry["entry_kind"] != ST_BAR_FEE or entry["request_hash"] != digest or int(entry["performed_by_user_id"]) != int(actor.user_id):
+            raise TripError("REQUEST_CONFLICT", "طلب العملية مستخدم لعملية مختلفة.")
+        fee = repository.entry_bar_fee(entry["id"]) or {}
+        return {"entry_id": str(entry["id"]), "trip_id": str(entry["trip_id"]), "trip_code": trip_code(entry["trip_id"]),
+                "code": entry_code(entry["trip_id"], entry["entry_no"]), "kind": ST_BAR_FEE, "created": False, "duplicate": True,
+                "party_id": str(fee.get("party_id", "")), "amount": str(fee.get("amount", ""))}
+
+    def _post_bar_fee(self, session_actor, trip_id, party_id, value, dated, reference, notes, key, digest):
+        with self._transaction() as connection:
+            actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+            repository, suppliers = self._repository(connection), self._supplier_payments(connection)
+            if not repository.has_bar_fee_schema():
+                raise TripError("SCHEMA_OUTDATED", "أجر السبيكة يحتاج تحديث قاعدة البيانات (080).")
+            trip = repository.trip(trip_id, lock=True)                           # lock order: trip -> party
+            if trip is None:
+                raise TripError("TRIP_NOT_FOUND", "العهدة غير موجودة.")
+            replay = self._bar_fee_prior(repository, key, digest, actor)
+            if replay is not None:
+                return replay
+            if trip["status"] != OPEN:
+                raise TripError("TRIP_CLOSED", "العهدة مغلقة: أعد فتحها أولاً لتسجيل أجر السبيكة.")
+            party = suppliers.get_supplier(party_id, lock=True)
+            if party is None:
+                raise TripError("SUPPLIER_NOT_FOUND", "المورد أو المسوقجي غير موجود.")
+            is_supplier = rules.has_supplier_role(party)
+            if not is_supplier and not party.get("is_intermediary"):
+                raise TripError("PARTY_ROLE", "الطرف المختار ليس موردًا ولا مسوقجيًا.")
+            if is_supplier:
+                actor = self._authorization.require_permission_for_write(connection, session_actor, SUPPLIER_PAY_PERMISSION)
+            now = repository.db_now()
+            entry_no = repository.next_entry_no(trip_id)
+            entry_id = repository.insert_entry(trip_id=trip_id, entry_no=entry_no, kind=ST_BAR_FEE, entry_date=dated, notes=notes,
+                                               key=key, digest=digest, actor=actor, now=now)
+            code = entry_code(trip_id, entry_no)
+            label = f"{KIND_TEXT[ST_BAR_FEE]} {code} — {trip_code(trip_id)}: {value:,.2f} ج من {party['name']}"
+            making_id = None
+            if is_supplier:
+                making_type = suppliers.making_type_id(BAR_FEE_MOVEMENT)
+                if making_type is None:
+                    raise RuntimeError("supplier making movement type BAR_FEE is missing (migration 080)")
+                making_id = suppliers.insert_making_movement(supplier_id=party_id, type_id=making_type, amount_delta=-value,
+                                                             source_type=BAR_FEE_MOVEMENT, source_id=entry_id, reference=code,
+                                                             description=label, now=now, user_id=actor.user_id)
+            repository.insert_bar_fee(entry_id=entry_id, party_id=party_id, party_kind="SUPPLIER" if is_supplier else "INTERMEDIARY",
+                                      amount=value, making_movement_id=making_id, reference=reference)
+            repository.audit(actor=actor, event_type="MARKET_TRIP_BAR_FEE", entity_id=entry_id, reference=code, description=label,
+                             metadata={"trip_id": trip_id, "kind": ST_BAR_FEE, "party_id": party_id, "amount": str(value),
+                                       "date": dated.isoformat(), "employee_id": actor.employee_id}, now=now)
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        return {"entry_id": str(entry_id), "trip_id": str(trip_id), "trip_code": trip_code(trip_id), "code": code, "kind": ST_BAR_FEE,
+                "created": False, "duplicate": False, "party_id": str(party_id), "amount": str(value)}
+
     # ------------------------------------------------------------------ supplier GOLD settlement from custody (046)
     def settle_supplier_gold(self, trip_id, supplier_id, karat_id, designation, weight, settlement_date, reference, notes, request_key,
                              *, _expected_actor=None):
@@ -2119,10 +2214,11 @@ class MarketTripService:
         what = "سبيكة (مكافئ عيار 21)" if source == "BAR" else f"عيار {karat['karat_value']} ({'بدون وجهة' if source == 'RAW' else 'لوجو'})"
         return f"{what} {grams:,.3f} جرام" + {"CRUCIBLE": " — خسية بوتقة", "MARKET": " — خسية سوق"}.get(classification or "", "")
 
-    def correct_issue_weight(self, trip_id, karat_id, direction, weight, reason, entry_date, request_key, *, _expected_actor=None):
+    def correct_issue_weight(self, trip_id, karat_id, direction, weight, reason, entry_date, request_key, *,
+                              source_kind="SHOP_SCRAP", target_weight=None, _expected_actor=None):
         """Correct the weight of gold issued without a destination (تصحيح وزن الإخراج), both ways, reason mandatory. INCREASE: the real issued weight was HIGHER, so the
-        difference leaves Scrap and enters the custody (refused when Scrap would go negative). DECREASE: it was LOWER, so the difference returns to Scrap and leaves the
-        custody (refused when the unmelted custody gold of that karat is smaller). Nothing else moves."""
+        difference leaves Scrap and enters the custody (refused when Scrap would go negative), or is recorded without a Scrap movement. DECREASE remains Scrap-backed.
+        When `target_weight` is supplied, it is the desired physical RAW balance and the difference is derived under the custody lock."""
         session_actor = self._actor(_expected_actor)
         if str(trip_id or "").strip() == "":
             raise TripError("TRIP_NOT_FOUND", "اختر العهدة.")
@@ -2136,14 +2232,29 @@ class MarketTripService:
             raise TripError("KARAT_REQUIRED", "اختر العيار.") from None
         if karat_number <= 0:
             raise TripError("KARAT_REQUIRED", "اختر العيار.")
-        grams = parse_weight(weight)
+        source = str(source_kind or "").strip().upper()
+        if source not in ("SHOP_SCRAP", "UNSOURCED"):
+            raise TripError("ADJUST_SOURCE_INVALID", "اختر مصدر تصحيح الوزن.")
+        if way == "DECREASE" and source != "SHOP_SCRAP":
+            raise TripError("ADJUST_SOURCE_INVALID", "إنقاص وزن العهدة يجب أن يعيد الذهب إلى كسر المحل.")
+        desired = None if target_weight is None else parse_weight(target_weight)
+        if desired is not None and (way != "INCREASE" or desired == 0):
+            raise TripError("WEIGHT_REQUIRED", "أدخل الوزن الفعلي المطلوب بزيادة موجبة.")
+        if source == "UNSOURCED" and desired is None:
+            raise TripError("WEIGHT_REQUIRED", "أدخل الوزن الفعلي الإجمالي؛ فرق الزيادة يُحسب من رصيد العهدة المقفول.")
+        grams = None if desired is not None else parse_weight(weight)
         if grams == 0:
             raise TripError("WEIGHT_REQUIRED", "أدخل فرق الوزن بقيمة موجبة.")
         reason_text = _text(reason, SETTLE_TEXT_MAX, "السبب", required=True)
         on_date, key = _entry_date(entry_date), _key(request_key)
-        digest = hashlib.sha256(json.dumps([ST_ADJUST, trip_number, karat_number, way, str(grams), reason_text, on_date.isoformat()], ensure_ascii=False).encode()).hexdigest()
+        if desired is None and source == "SHOP_SCRAP":
+            payload = [ST_ADJUST, trip_number, karat_number, way, str(grams), reason_text, on_date.isoformat()]
+        else:
+            payload = [ST_ADJUST, trip_number, karat_number, way, source, str(desired if desired is not None else grams),
+                       "TARGET" if desired is not None else "DELTA", reason_text, on_date.isoformat()]
+        digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode()).hexdigest()
         try:
-            return self._post_adjust(session_actor, trip_number, karat_number, way, grams, reason_text, on_date, key, digest)
+            return self._post_adjust(session_actor, trip_number, karat_number, way, grams, source, desired, reason_text, on_date, key, digest)
         except IntegrityError as exc:
             if not _is_request_key_violation(exc):
                 raise
@@ -2158,7 +2269,8 @@ class MarketTripService:
     def _adjust_result(entry, adjust, duplicate):
         return {"entry_id": str(entry["id"]), "trip_id": str(entry["trip_id"]), "trip_code": trip_code(entry["trip_id"]),
                 "code": entry_code(entry["trip_id"], entry["entry_no"]), "kind": ST_ADJUST, "created": False, "duplicate": duplicate,
-                "karat_value": int(adjust["karat_value"]), "direction": adjust["direction"], "weight": str(adjust["weight_grams"]), "reason": adjust["reason"]}
+                "karat_value": int(adjust["karat_value"]), "direction": adjust["direction"], "weight": str(adjust["weight_grams"]),
+                "source_kind": adjust.get("source_kind", "SHOP_SCRAP"), "reason": adjust["reason"]}
 
     @classmethod
     def _adjust_prior(cls, repository, key, digest, actor):
@@ -2170,7 +2282,7 @@ class MarketTripService:
             raise TripError("REQUEST_CONFLICT", "طلب العملية مستخدم لعملية مختلفة.")
         return cls._adjust_result(entry, adjust, True)
 
-    def _post_adjust(self, session_actor, trip_id, karat_id, way, grams, reason, on_date, key, digest):
+    def _post_adjust(self, session_actor, trip_id, karat_id, way, grams, source, desired, reason, on_date, key, digest):
         with self._transaction() as connection:
             actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
             repository = self._repository(connection)
@@ -2183,14 +2295,25 @@ class MarketTripService:
             book_rules.require_legacy_trip(trip)
             if trip["status"] != OPEN:
                 raise TripError("TRIP_CLOSED", "العهدة مغلقة: أعد فتحها أولاً.")
+            if source == "UNSOURCED" and not repository.has_adjustment_source_schema():
+                raise TripError("SCHEMA_OUTDATED", "لا يمكن تسجيل زيادة دون حركة كسر قبل تطبيق تحديث قاعدة البيانات 079.")
             karat = repository.karat(karat_id)
             if karat is None or not karat["is_active"]:
                 raise TripError("KARAT_NOT_FOUND", "العيار غير موجود أو غير نشط.")
             if way == "INCREASE":
-                scrap = self._scrap(connection)
-                available = sum((Decimal(str(r["weight_delta_grams"])) for r in scrap.lock_old_gold_balance(karat_id)), ZERO_WEIGHT)
-                if grams > available:
-                    raise TripError("SCRAP_SHORTAGE", shortage_message(karat["karat_value"], grams, available, held_grams(scrap, karat_id)))
+                if desired is not None:
+                    custody = self._custody(repository, trip_id, current=True)
+                    row = next((g for g in custody["gold"] if g["karat_id"] == karat_id and g["designation"] == UNCLASSIFIED), None)
+                    left = ZERO_WEIGHT if row is None else row["outstanding"]
+                    if desired <= left:
+                        raise TripError("ADJUST_TARGET_NOT_HIGHER",
+                                        f"الرصيد الحالي من عيار {karat['karat_value']} (بدون وجهة) هو {left:,.3f} جرام؛ الوزن المطلوب ليس أكبر منه.")
+                    grams = desired - left
+                if source == "SHOP_SCRAP":
+                    scrap = self._scrap(connection)
+                    available = sum((Decimal(str(r["weight_delta_grams"])) for r in scrap.lock_old_gold_balance(karat_id)), ZERO_WEIGHT)
+                    if grams > available:
+                        raise TripError("SCRAP_SHORTAGE", shortage_message(karat["karat_value"], grams, available, held_grams(scrap, karat_id)))
             else:
                 custody = self._custody(repository, trip_id, current=True)
                 row = next((g for g in custody["gold"] if g["karat_id"] == karat_id and g["designation"] == UNCLASSIFIED), None)
@@ -2201,13 +2324,17 @@ class MarketTripService:
             entry_no = repository.next_entry_no(trip_id)
             entry_id = repository.insert_entry(trip_id=trip_id, entry_no=entry_no, kind=ST_ADJUST, entry_date=on_date, notes=reason, key=key, digest=digest, actor=actor, now=now)
             code = entry_code(trip_id, entry_no)
-            movement = repository.post_scrap(kind=ISSUE if way == "INCREASE" else RETURN, karat_id=karat_id, weight=grams, entry_id=entry_id, code=code, notes=reason, actor=actor, now=now)
-            repository.insert_gold_leg(entry_id=entry_id, karat_id=karat_id, designation=UNCLASSIFIED, weight=grams, scrap_movement_id=movement)
+            movement = None
+            if way == "DECREASE" or source == "SHOP_SCRAP":
+                movement = repository.post_scrap(kind=ISSUE if way == "INCREASE" else RETURN, karat_id=karat_id, weight=grams, entry_id=entry_id, code=code, notes=reason, actor=actor, now=now)
+                repository.insert_gold_leg(entry_id=entry_id, karat_id=karat_id, designation=UNCLASSIFIED, weight=grams, scrap_movement_id=movement)
             repository.insert_settle_move(entry_id=entry_id, trip_id=trip_id, kind=ST_ADJUST, pool="RAW", karat_id=karat_id, delta=grams if way == "INCREASE" else -grams)
-            repository.insert_settle_adjust(entry_id=entry_id, karat_id=karat_id, direction=way, weight=grams, reason=reason)
-            label = f"{KIND_TEXT[ST_ADJUST]} {code} — {trip_code(trip_id)}: عيار {karat['karat_value']} {'+' if way == 'INCREASE' else '−'}{grams:,.3f} جرام • {reason}"
+            repository.insert_settle_adjust(entry_id=entry_id, karat_id=karat_id, direction=way, source_kind=source, weight=grams, reason=reason)
+            source_text = "من كسر المحل" if source == "SHOP_SCRAP" else "تسجيل فعلي دون حركة كسر"
+            label = f"{KIND_TEXT[ST_ADJUST]} {code} — {trip_code(trip_id)}: عيار {karat['karat_value']} {'+' if way == 'INCREASE' else '−'}{grams:,.3f} جرام • {source_text} • {reason}"
             repository.audit(actor=actor, event_type="MARKET_TRIP_ST_ADJUST", entity_id=entry_id, reference=code, description=label,
-                             metadata={"trip_id": trip_id, "kind": ST_ADJUST, "karat": karat["karat_value"], "direction": way, "weight": str(grams), "reason": reason,
+                             metadata={"trip_id": trip_id, "kind": ST_ADJUST, "karat": karat["karat_value"], "direction": way, "weight": str(grams),
+                                       "source_kind": source, "target_weight": None if desired is None else str(desired), "reason": reason,
                                        "date": on_date.isoformat(), "employee_id": actor.employee_id}, now=now)
             entry = repository.by_request(key)
             result = self._adjust_result(entry, repository.entry_settle_adjust(entry_id), False)

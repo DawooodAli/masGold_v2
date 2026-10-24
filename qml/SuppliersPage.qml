@@ -1981,8 +1981,10 @@ Item {
         id: goldSettleDialog
         objectName: "goldSettleDialog"
         property string requestKey: ""
+        property string adjustmentRequestKey: ""
         property string sourceKey: ""
         property string declarationCode: ""
+        property string adjustmentSourceKind: ""
         readonly property var sourceContext: page.vm ? page.vm.supplierGoldSourceContext : ({})
         readonly property var sources: page.vm ? page.vm.supplierGoldSources : []
         readonly property var sourceOptions: [{ key: "", text: "اختر مصدر الذهب" }].concat(sources)
@@ -2004,8 +2006,10 @@ Item {
         function openFor() {
             if (!page.vm || !page.hasSelection) return
             requestKey = page.vm.newRequestKey()
+            adjustmentRequestKey = page.vm.newRequestKey()
             sourceKey = ""
             declarationCode = ""
+            adjustmentSourceKind = ""
             goldSettleSource.currentIndex = 0
             goldSettleDeclaration.currentIndex = 0
             goldSettleWeight.text = ""
@@ -2013,6 +2017,8 @@ Item {
             goldSettleReference.text = ""
             goldSettleNotes.text = ""
             goldSettleSelf.checked = false
+            goldSettleAdjustmentSource.currentIndex = 0
+            goldSettleAdjustmentReason.text = ""
             page.vm.clearMessage()
             page.vm.loadSupplierGoldSources(page.detail.id)
             open()
@@ -2033,6 +2039,7 @@ Item {
                   wrapMode: Text.WordWrap; elide: Text.ElideNone
                   text: "اختر الذهب من عهدة سوق مفتوحة أو من رصيد المسوقجي. لا تُسجَّل تسوية جديدة من كسر المحل؛ وكل رصيد وصلاحية يُعاد التحقق منهما عند التسجيل." }
             Flickable {
+                objectName: "goldSettleFormScroll"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 contentHeight: goldSettleForm.implicitHeight
@@ -2046,11 +2053,15 @@ Item {
                     Combo {
                         id: goldSettleSource; objectName: "goldSettleSource"; Layout.fillWidth: true
                         enabled: !!page.vm && !page.vm.supplierGoldSourcesLoading && !page.vm.settlingSupplierGold
+                                 && !page.vm.adjustingSupplierCustody
                         model: goldSettleDialog.sourceOptions; textRole: "text"
                         onActivated: {
                             var row = goldSettleDialog.sourceOptions[currentIndex]
                             goldSettleDialog.sourceKey = row ? row.key : ""
                             goldSettleDialog.declarationCode = ""
+                            goldSettleDialog.adjustmentSourceKind = ""
+                            goldSettleAdjustmentSource.currentIndex = 0
+                            goldSettleAdjustmentReason.text = ""
                             goldSettleWeight.text = ""
                             if (page.vm && goldSettleDialog.sourceKey !== "")
                                 page.vm.loadSupplierGoldSource(goldSettleDialog.sourceKey)
@@ -2079,12 +2090,15 @@ Item {
                         ColumnLayout {
                             Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
                             Txt { Layout.fillWidth: true; text: "الوزن المُسلَّم الفعلي (جرام) *" }
-                            Field { id: goldSettleWeight; objectName: "goldSettleWeight"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+                            Field { id: goldSettleWeight; objectName: "goldSettleWeight"; Layout.fillWidth: true
+                                    inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                    enabled: !!page.vm && !page.vm.adjustingSupplierCustody }
                         }
                         ColumnLayout {
                             Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
                             Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
-                            Field { id: goldSettleDate; objectName: "goldSettleDate"; Layout.fillWidth: true }
+                            Field { id: goldSettleDate; objectName: "goldSettleDate"; Layout.fillWidth: true
+                                    enabled: !!page.vm && !page.vm.adjustingSupplierCustody }
                         }
                     }
                     Rectangle {
@@ -2111,6 +2125,10 @@ Item {
                                   color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                             Txt { objectName: "goldSettleShort"; Layout.fillWidth: true; visible: goldSettleDialog.preview.short === true
                                   text: "الوزن أكبر من المتاح من المصدر المختار."; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { objectName: "goldSettleAdjustmentAmount"; Layout.fillWidth: true
+                                  visible: goldSettleDialog.preview.canIncreaseCustody === true
+                                  text: "يمكن تسجيل الفرق فقط: " + (goldSettleDialog.preview.shortageText || ""); color: theme.amber
+                                  font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                             Txt { objectName: "goldSettlePreviewError"; Layout.fillWidth: true; visible: !!goldSettleDialog.preview.error
                                   text: goldSettleDialog.preview.error || ""; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                             Item { Layout.preferredHeight: 2 }
@@ -2138,10 +2156,50 @@ Item {
                     Field { id: goldSettleReference; objectName: "goldSettleReference"; Layout.fillWidth: true }
                     Txt { Layout.fillWidth: true; text: "ملاحظات" }
                     Field { id: goldSettleNotes; objectName: "goldSettleNotes"; Layout.fillWidth: true }
+                    Txt { objectName: "goldSettleAdjustmentSourceLabel"; Layout.fillWidth: true
+                          visible: goldSettleDialog.preview.canIncreaseCustody === true
+                          text: "مصدر فرق الوزن *"; font.bold: true }
+                    Combo {
+                        id: goldSettleAdjustmentSource; objectName: "goldSettleAdjustmentSource"; Layout.fillWidth: true
+                        visible: goldSettleDialog.preview.canIncreaseCustody === true
+                        enabled: !!page.vm && !page.vm.adjustingSupplierCustody
+                        model: [{ key: "", text: "اختر مصدر الفرق" },
+                                { key: "SHOP_SCRAP", text: "من كسر المحل المتاح" },
+                                { key: "UNSOURCED", text: "زيادة فعلية دون حركة كسر — مع السبب" }]
+                        textRole: "text"
+                        onActivated: {
+                            var row = model[currentIndex]
+                            goldSettleDialog.adjustmentSourceKind = row ? row.key : ""
+                        }
+                    }
+                    Txt { Layout.fillWidth: true; visible: goldSettleDialog.preview.canIncreaseCustody === true
+                          text: "سبب تصحيح الوزن *" }
+                    Field { id: goldSettleAdjustmentReason; objectName: "goldSettleAdjustmentReason"; Layout.fillWidth: true
+                            visible: goldSettleDialog.preview.canIncreaseCustody === true
+                            enabled: !!page.vm && !page.vm.adjustingSupplierCustody }
                 }
             }
             Txt { objectName: "goldSettleError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
                   text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            Txt { objectName: "goldSettleMessage"; Layout.fillWidth: true; visible: !!page.vm && page.vm.message !== ""
+                  text: page.vm ? page.vm.message : ""; color: theme.gold; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            Btn {
+                objectName: "recordCustodyWeightAdjustmentButton"
+                visible: goldSettleDialog.preview.canIncreaseCustody === true
+                Layout.fillWidth: true
+                text: !!page.vm && page.vm.adjustingSupplierCustody ? "جارٍ تسجيل فرق الوزن…"
+                      : (goldSettleDialog.adjustmentSourceKind === "SHOP_SCRAP" ? "إضافة الفرق من كسر المحل"
+                         : goldSettleDialog.adjustmentSourceKind === "UNSOURCED" ? "تسجيل الزيادة دون حركة كسر" : "تسجيل فرق الوزن")
+                accent: theme.amber
+                enabled: goldSettleDialog.sourceKey !== "" && goldSettleWeight.text.trim().length > 0
+                         && goldSettleDate.text.trim().length > 0 && goldSettleDialog.adjustmentSourceKind !== ""
+                         && goldSettleAdjustmentReason.text.trim().length > 0 && !!page.vm
+                         && !page.vm.adjustingSupplierCustody && !page.vm.settlingSupplierGold
+                onClicked: page.vm.increaseSupplierCustodyWeight(goldSettleDialog.sourceKey, goldSettleWeight.text,
+                                                                  goldSettleDialog.adjustmentSourceKind,
+                                                                  goldSettleAdjustmentReason.text, goldSettleDate.text,
+                                                                  goldSettleDialog.adjustmentRequestKey)
+            }
             RowLayout {
                 Layout.fillWidth: true
                 layoutDirection: Qt.RightToLeft
@@ -2151,7 +2209,8 @@ Item {
                     text: !!page.vm && page.vm.settlingSupplierGold ? "جارٍ التسجيل…" : "تسجيل التسوية"
                     primary: true
                     enabled: goldSettleDialog.sourceKey !== "" && goldSettleWeight.text.trim().length > 0 && goldSettleDate.text.trim().length > 0
-                             && !!page.vm && !page.vm.settlingSupplierGold && goldSettleDialog.preview.valid === true && goldSettleDialog.declarationOk
+                             && !!page.vm && !page.vm.settlingSupplierGold && !page.vm.adjustingSupplierCustody
+                             && goldSettleDialog.preview.valid === true && goldSettleDialog.declarationOk
                              && (goldSettleDialog.preview.isSelf !== true || goldSettleSelf.checked)
                     onClicked: page.vm.postSupplierGoldSettlement(goldSettleDialog.sourceKey, goldSettleWeight.text,
                                                                    goldSettleDialog.declarationCode, goldSettleSelf.checked,
@@ -2159,7 +2218,7 @@ Item {
                                                                    goldSettleDialog.requestKey)
                 }
                 Btn { objectName: "cancelGoldSettleButton"; text: "إلغاء"; accent: theme.textSecondary
-                      enabled: !!page.vm && !page.vm.settlingSupplierGold; onClicked: goldSettleDialog.close() }
+                      enabled: !!page.vm && !page.vm.settlingSupplierGold && !page.vm.adjustingSupplierCustody; onClicked: goldSettleDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }

@@ -398,13 +398,13 @@ class RepositoryHygieneTests(unittest.TestCase):
         readme = (folder / "README.md").read_text(encoding="utf-8")
         self.assertIn("NOT a migration chain", readme)
         self.assertIn("Do **not** apply", readme)
-        self.assertEqual(len(list((ROOT / "database" / "schema").glob("0[0-9][0-9]_*.sql"))), 77)   # the one chain
+        self.assertEqual(len(list((ROOT / "database" / "schema").glob("0[0-9][0-9]_*.sql"))), 80)   # the one chain
 
     def test_documentation_states_the_current_schema_and_rules(self):
         for name in ("AGENTS.md", "CLAUDE.md"):
             text = (ROOT / name).read_text(encoding="utf-8")
-            self.assertIn("001–077", text, name)
-            self.assertIn("next migration is `078`", text, name)
+            self.assertIn("001–079", text, name)
+            self.assertIn("next migration is `080`", text, name)
             self.assertNotIn("001–024", text, name)
             for rule in ("1.25%–5.00%", "حفظ فقط", "MASGOLD_DEV_AUTO_LOGIN", "USERS_MANAGE"):
                 self.assertIn(rule, text, f"{name}: {rule}")
@@ -419,9 +419,9 @@ class SchemaVersionExpectationTests(unittest.TestCase):
             text = (ROOT / "tests" / name).read_text(encoding="utf-8")
             self.assertNotRegex(text, r"==\s*30\b|\"masgold_v2\",\s*30\)|migration 25", name)
 
-    def test_the_repository_chain_ends_at_033(self):
+    def test_the_repository_chain_ends_at_079(self):
         chain = sorted(p.name for p in (ROOT / "database" / "schema").glob("0[0-9][0-9]_*.sql"))
-        self.assertEqual([int(n[:3]) for n in chain], list(range(1, 79)))
+        self.assertEqual([int(n[:3]) for n in chain], list(range(1, 80)))
 
 
 if __name__ == "__main__":

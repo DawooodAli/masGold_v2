@@ -11,11 +11,27 @@ from PySide6.QtCore import QMetaObject, QObject, QPointF, Qt
 from PySide6.QtTest import QTest
 
 from app.formatting import money
+from app.viewmodels.market_trip_viewmodel import MarketTripViewModel
 from tests import test_invoice_page_qml as harness
 from tests.market_trip_fakes import (AccountsRepo, Corrections, Customers, HoldingRepo, Invoices, OWNER, ScrapRepo, SupplierPayRepo, TripRepo,
                                      build)
 
 TODAY = "2026-10-10"
+
+
+class AdjustmentHistoryFormattingTests(unittest.TestCase):
+    def test_adjustment_history_distinguishes_unsourced_increases(self):
+        from datetime import date, datetime
+
+        formatted = MarketTripViewModel._entry(
+            {"id": "1", "code": "MT000001-2", "kind": "ST_ADJUST", "cash": None, "gold": [],
+             "settle_adjust": {"karat_value": 21, "direction": "INCREASE", "weight": "0.150",
+                               "source_kind": "UNSOURCED", "reason": "فرق وزن فعلي"},
+             "date": date(2026, 10, 10), "at": datetime(2026, 10, 10, 12, 0), "actor": "المالك",
+             "notes": "", "reversed": False, "reversal_code": None, "reversal_reason": None}, True)
+
+        self.assertIn("زيادة فعلية دون حركة كسر", formatted["what"])
+        self.assertIn("فرق وزن فعلي", formatted["what"])
 
 
 class Ledgers:
@@ -138,6 +154,11 @@ class MarketTripPageTests(harness.InvoicePageTests):
 
     def counts(self):
         return (self.ledgers.strip_calls, self.ledgers.account_calls, self.ledgers.scrap_calls)
+
+    def test_refresh_exposes_qml_and_signal_slot_signatures(self):
+        meta = self.tvm.metaObject()
+        self.assertGreaterEqual(meta.indexOfMethod("refresh()"), 0)
+        self.assertGreaterEqual(meta.indexOfMethod("refresh(QString)"), 0)
 
     def new_trip(self, cash="10000", gold=None, designation=""):
         """Create a trip through the dialog with real clicks; gold is [(combo index, weight)]. The issue dialog has NO designation (stage 1); a test of the OLD melt / heat

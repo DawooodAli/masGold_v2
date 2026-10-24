@@ -38,19 +38,28 @@ class TripSettlementStub:
             "karat_id": "1", "designation": "LOGO", "available": "25.000", "karat_value": 21,
             "text": "MT000001 • عيار 21 (لوجو) • المتاح 25.000 جرام"}]
         self.posts = []
+        self.adjustments = []
+        self.availability = D("25.000")
 
     def supplier_settlement_sources(self, _expected_actor=None):
         return self.sources
 
     def trip_detail(self, trip_id, _expected_actor=None):
         return {"trip": {"status": "OPEN"}, "mode": "LEGACY",
-                "custody": {"gold": [{"karat_id": 1, "designation": "LOGO", "outstanding": D("25.000"),
+                "custody": {"gold": [{"karat_id": 1, "designation": self.sources[0]["designation"], "outstanding": self.availability,
                                       "karat_value": 21}], "bar": D("0"), "lots": []}}
 
     def settle_supplier_gold(self, *args, **kwargs):
         self.posts.append((args, kwargs))
         return {"code": "SG000001", "settlement_code": "SG000001", "delivered_weight": "10.000",
                 "credited_weight": "11.667", "target_karat": 18}
+
+    def correct_issue_weight(self, *args, **kwargs):
+        self.adjustments.append((args, kwargs))
+        before = self.availability
+        self.availability = D(kwargs["target_weight"])
+        return {"code": "MT000001-9", "weight": str(self.availability - before),
+                "source_kind": kwargs["source_kind"]}
 
 
 class HoldingSettlementStub:
@@ -119,6 +128,16 @@ class GoldSettlementPageTests(harness.InvoicePageTests):
         combo.activated[int].emit(index)
         self.wait_until(lambda: self.svm.supplierGoldSourceContext.get("key") == key, "source details")
 
+    def pick_adjustment_source(self, key):
+        combo = self.item("goldSettleAdjustmentSource")
+        self.click(combo)
+        self.wait_until(lambda: combo.property("down"), "adjustment source popup")
+        index = {"": 0, "SHOP_SCRAP": 1, "UNSOURCED": 2}[key]
+        for _ in range(index):
+            QTest.keyClick(self.root, Qt.Key_Down)
+        QTest.keyClick(self.root, Qt.Key_Return)
+        self.wait_until(lambda: not combo.property("down"), "adjustment source popup closed")
+
     def double_click(self, name):
         item = self.item(name)
         self.assertTrue(item.property("enabled"))
@@ -186,6 +205,40 @@ class GoldSettlementPageTests(harness.InvoicePageTests):
         self.wait_idle()
         self.assertEqual(len(self.trip_settlements.posts), 1)
         self.assertEqual(self.db.settlements, {})
+
+    def test_short_unclassified_custody_can_add_only_the_deficit_without_scrap(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.trip_settlements.sources = [{
+            "key": "custody-gold:1:1:UNCLASSIFIED", "source_type": "CUSTODY_GOLD", "trip_id": "1", "trip_code": "MT000001",
+            "karat_id": "1", "designation": "UNCLASSIFIED", "available": "66.300", "karat_value": 21,
+            "text": "MT000001 • عيار 21 (بدون وجهة) • المتاح 66.300 جرام"}]
+        self.trip_settlements.availability = D("66.300")
+        self.open_supplier()
+        self.open_dialog()
+        self.pick_source("custody-gold:1:1:UNCLASSIFIED")
+        self.type_in("goldSettleWeight", "66.450")
+        self.assertEqual(self.text("goldSettleAdjustmentAmount"), "يمكن تسجيل الفرق فقط: 0.150 جرام")
+        self.assertFalse(self.item("confirmGoldSettleButton").property("enabled"))
+        self.pick_adjustment_source("UNSOURCED")
+        self.type_in("goldSettleAdjustmentReason", "weight difference")
+        self.assertEqual(self.item("goldSettleDialog").property("adjustmentSourceKind"), "UNSOURCED")
+        self.assertEqual(self.text("goldSettleAdjustmentReason"), "weight difference")
+        self.assertTrue(self.svm.previewSupplierGoldSettlement(SUPPLIER, "66.450", "", False)["canIncreaseCustody"])
+        self.assertFalse(self.svm.adjustingSupplierCustody)
+        self.assertTrue(self.item("recordCustodyWeightAdjustmentButton").property("enabled"))
+        self.assert_inside_window(self.item("recordCustodyWeightAdjustmentButton"))
+        self.double_click("recordCustodyWeightAdjustmentButton")
+        self.wait_until(lambda: len(self.trip_settlements.adjustments) == 1, "custody adjustment")
+        self.wait_until(lambda: self.svm.supplierGoldSourceContext.get("available") == "66.450", "updated custody balance")
+        self.wait_idle()
+        args, kwargs = self.trip_settlements.adjustments[0]
+        self.assertEqual(args[:6], ("1", "1", "INCREASE", None, "weight difference", self.text("goldSettleDate")))
+        self.assertEqual((kwargs["source_kind"], kwargs["target_weight"]), ("UNSOURCED", "66.450"))
+        self.assertEqual(self.db.physical(1), D("100.000"))
+        self.assertEqual(self.trip_settlements.posts, [])
+        self.assertIn("0.150 جرام", self.text("goldSettleMessage"))
+        self.assertEqual(self.warnings, [])
 
     def test_unavailable_source_rights_hide_the_settlement_action(self):
         self.open_supplier()

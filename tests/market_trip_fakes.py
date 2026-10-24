@@ -577,11 +577,16 @@ class TripRepo:
             out.append({**l, "karat_value": None if l["karat_id"] is None else self.db.karats[l["karat_id"]]["karat_value"]})
         return out
 
-    def insert_settle_adjust(self, *, entry_id, karat_id, direction, weight, reason):
+    def insert_settle_adjust(self, *, entry_id, karat_id, direction, weight, reason, source_kind="SHOP_SCRAP"):
         self._fail("settle_adjust")
         assert direction in ("INCREASE", "DECREASE") and weight > 0 and (reason or "").strip()               # chk_mtsa_*
+        assert (direction == "INCREASE" and source_kind in ("SHOP_SCRAP", "UNSOURCED")) or (direction == "DECREASE" and source_kind == "SHOP_SCRAP")
         assert self.db.entries[int(entry_id)]["entry_kind"] == "ST_ADJUST"
-        self.db.settle_adjusts[int(entry_id)] = {"entry_id": int(entry_id), "karat_id": int(karat_id), "direction": direction, "weight_grams": weight, "reason": reason}
+        self.db.settle_adjusts[int(entry_id)] = {"entry_id": int(entry_id), "karat_id": int(karat_id), "direction": direction,
+                                                 "source_kind": source_kind, "weight_grams": weight, "reason": reason}
+
+    def has_adjustment_source_schema(self):
+        return getattr(self.db, "adjustment_source_schema", True)
 
     def entry_settle_adjust(self, entry_id):
         row = self.db.settle_adjusts.get(int(entry_id))

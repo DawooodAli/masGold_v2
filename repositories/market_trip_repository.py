@@ -556,15 +556,46 @@ class MarketTripRepository(BaseRepository):
             WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}{_share(current, 'e, t')}
             """, (_id(trip_id), int(exclude_entry_id or 0)))
         base = (row["issued"], row["returned"], paid["paid"], sold["proceeds"] + trades["proceeds"], bought["spent"] + trades["spent"])
-        if not self.has_cash_settle_schema():
+        has_settle, has_fee = self.has_cash_settle_schema(), self.has_bar_fee_schema()
+        if not has_settle and not has_fee:
             return base
-        settled = self._fetch_one(                                          # 064: expense, bank deposit and write-off consume custody cash (no Main Safe movement)
+        settled = {"settled": 0}
+        if has_settle:
+            settled = self._fetch_one(                                      # 064: expense, bank deposit and write-off consume custody cash (no Main Safe movement)
+                f"""
+                SELECT COALESCE(SUM(s.amount), 0) AS settled
+                FROM market_trip_entries e JOIN market_trip_settle_cash s ON s.entry_id = e.id
+                WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}{_share(current, 'e, s')}
+                """, (_id(trip_id), int(exclude_entry_id or 0)))
+        if not has_fee:
+            return base + (settled["settled"],)
+        fees = self._fetch_one(                                             # 080: a bar fee received in cash enters custody cash (no Main Safe movement)
             f"""
-            SELECT COALESCE(SUM(s.amount), 0) AS settled
-            FROM market_trip_entries e JOIN market_trip_settle_cash s ON s.entry_id = e.id
-            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}{_share(current, 'e, s')}
+            SELECT COALESCE(SUM(f.amount), 0) AS fee
+            FROM market_trip_entries e JOIN market_trip_bar_fees f ON f.entry_id = e.id
+            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}{_share(current, 'e, f')}
             """, (_id(trip_id), int(exclude_entry_id or 0)))
-        return base + (settled["settled"],)
+        return base + (settled["settled"], fees["fee"])
+
+    # ------------------------------------------------------------------ bar fee (080)
+    def has_bar_fee_schema(self):
+        """True when migration 080 is present (the bar fee document exists). Asked once per repository object."""
+        if not hasattr(self, "_bar_fee"):
+            row = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'market_trip_bar_fees'")
+            self._bar_fee = bool(row and int(row["n"]))
+        return self._bar_fee
+
+    def insert_bar_fee(self, *, entry_id, party_id, party_kind, amount, making_movement_id, reference):
+        self._execute("INSERT INTO market_trip_bar_fees (entry_id, party_id, party_kind, amount, making_movement_id, reference) VALUES (%s, %s, %s, %s, %s, %s)",
+                      (_id(entry_id), int(party_id), party_kind, amount, making_movement_id, reference))
+
+    def entry_bar_fee(self, entry_id):
+        """The fee a ST_BAR_FEE entry recorded (None for any other entry or a database before 080)."""
+        if not self.has_bar_fee_schema():
+            return None
+        return self._fetch_one(
+            "SELECT f.entry_id, f.party_id, f.party_kind, f.amount, f.making_movement_id, f.reference, s.name AS party_name "
+            "FROM market_trip_bar_fees f JOIN suppliers s ON s.id = f.party_id WHERE f.entry_id = %s", (_id(entry_id),))
 
     # ------------------------------------------------------------------ supplier payments from custody (043)
     def suppliers(self):
@@ -893,6 +924,7 @@ class MarketTripRepository(BaseRepository):
             row["settle_cash"] = self.entry_settle_cash(row["id"]) if row["entry_kind"] in ("ST_EXPENSE", "ST_CASH_BANK", "ST_CASH_OFF") else None
             row["settle_lines"] = self.entry_settle_lines(row["id"]) if row["entry_kind"] in ("ST_RET_MKT", "ST_LOSS") else []
             row["settle_adjust"] = self.entry_settle_adjust(row["id"]) if row["entry_kind"] == "ST_ADJUST" else None
+            row["bar_fee"] = self.entry_bar_fee(row["id"]) if row["entry_kind"] == "ST_BAR_FEE" else None
             if str(row["entry_kind"]).startswith("BK_"):                       # 056: only BOOK entries carry book lines / a trade
                 row["book_lines"] = self.entry_book_lines(row["id"])
                 row["book_trade"] = self.entry_book_trade(row["id"])
@@ -1237,6 +1269,15 @@ class MarketTripRepository(BaseRepository):
             self._disposal = bool(row and int(row["n"]))
         return self._disposal
 
+    def has_adjustment_source_schema(self):
+        """True when migration 079 distinguishes Scrap-backed and unsourced weight corrections."""
+        if not hasattr(self, "_adjustment_source"):
+            row = self._fetch_one(
+                "SELECT COUNT(*) AS n FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() "
+                "AND TABLE_NAME = 'market_trip_settle_adjust' AND COLUMN_NAME = 'source_kind'")
+            self._adjustment_source = bool(row and int(row["n"]))
+        return self._adjustment_source
+
     def insert_settle_line(self, *, entry_id, kind, line_no, source, karat_id, weight, classification):
         """One stored line of an ST_RET_MKT / ST_LOSS entry: the source pool (RAW / LOGO of a karat, or BAR in 21K-equivalent grams), the grams and the loss classification."""
         self._execute("INSERT INTO market_trip_settle_lines (entry_id, entry_kind, line_no, source, karat_id, weight_grams, classification) VALUES (%s, %s, %s, %s, %s, %s, %s)",
@@ -1249,9 +1290,15 @@ class MarketTripRepository(BaseRepository):
             "SELECT l.line_no, l.source, l.karat_id, k.karat_value, l.weight_grams, l.classification FROM market_trip_settle_lines l LEFT JOIN karats k ON k.id = l.karat_id "
             "WHERE l.entry_id = %s ORDER BY l.line_no", (_id(entry_id),))
 
-    def insert_settle_adjust(self, *, entry_id, karat_id, direction, weight, reason):
-        self._execute("INSERT INTO market_trip_settle_adjust (entry_id, entry_kind, karat_id, direction, weight_grams, reason) VALUES (%s, 'ST_ADJUST', %s, %s, %s, %s)",
-                      (_id(entry_id), int(karat_id), direction, weight, reason))
+    def insert_settle_adjust(self, *, entry_id, karat_id, direction, source_kind="SHOP_SCRAP", weight, reason):
+        if self.has_adjustment_source_schema():
+            self._execute("INSERT INTO market_trip_settle_adjust (entry_id, entry_kind, karat_id, direction, source_kind, weight_grams, reason) VALUES (%s, 'ST_ADJUST', %s, %s, %s, %s, %s)",
+                          (_id(entry_id), int(karat_id), direction, source_kind, weight, reason))
+        elif source_kind == "SHOP_SCRAP":
+            self._execute("INSERT INTO market_trip_settle_adjust (entry_id, entry_kind, karat_id, direction, weight_grams, reason) VALUES (%s, 'ST_ADJUST', %s, %s, %s, %s)",
+                          (_id(entry_id), int(karat_id), direction, weight, reason))
+        else:
+            raise RuntimeError("migration 079 is required for unsourced custody adjustments")
 
     def entry_settle_adjust(self, entry_id):
         if not self.has_disposal_schema():

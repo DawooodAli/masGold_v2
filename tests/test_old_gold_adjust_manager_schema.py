@@ -23,7 +23,7 @@ class OldGoldAdjustManagerSchemaTests(unittest.TestCase):
         self.assertIn("MIGRATION_075_REFUSED_missing_074", self.forward)
         self.assertRegex(self.forward, r"INSERT INTO schema_migrations\(version,name\) VALUES \(75,")
         self.assertLessEqual(len(re.search(r"VALUES \(75,'([^']*)'", self.forward).group(1)), 150)
-        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 77)
+        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 80)
 
     def test_only_the_existing_permission_is_granted_to_the_manager_and_the_owner_idempotently(self):
         self.assertIn("p.code = 'OLD_GOLD_ADJUST'", self.forward)

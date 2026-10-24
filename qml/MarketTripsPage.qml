@@ -49,7 +49,7 @@ Item {
 
     Connections {
         target: page.vm
-        function onEntryPosted(code) { entryDialog.close(); bookDialog.close(); stockDialog.close(); meltDialog.close(); settleMeltDialog.close(); barMarketerDialog.close(); classifyLogoDialog.close(); cashSettleDialog.close(); disposeDialog.close(); adjustDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close(); payDialog.close(); goldSettleDialog.close(); goldSaleDialog.close(); goldBuyDialog.close(); lotSettleDialog.close(); lotHoldDialog.close(); logoHoldDialog.close() }
+        function onEntryPosted(code) { entryDialog.close(); bookDialog.close(); stockDialog.close(); meltDialog.close(); settleMeltDialog.close(); barMarketerDialog.close(); classifyLogoDialog.close(); cashSettleDialog.close(); barFeeDialog.close(); disposeDialog.close(); adjustDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close(); payDialog.close(); goldSettleDialog.close(); goldSaleDialog.close(); goldBuyDialog.close(); lotSettleDialog.close(); lotHoldDialog.close(); logoHoldDialog.close() }
         function onActionDone(operation) { reasonDialog.close(); if (operation === "reconcile") reconApprovalDialog.close() }
         function onChanged() {
             if (reconApprovalDialog.opened && (page.vm.selectedTripId !== reconApprovalDialog.tripId || !page.vm.reconciliationEnabled)) reconApprovalDialog.close()
@@ -616,6 +616,9 @@ Item {
                         Btn { objectName: "custodyPayButton"; text: "دفع مصنعيات من العهدة"; visible: !!page.detail.open
                               enabled: !!page.detail.payAvailable && !!page.vm && !page.vm.writing
                               onClicked: payDialog.openFor(page.detail.id) }
+                        Btn { objectName: "custodyBarFeeButton"; text: "أجر السبيكة"; visible: !!page.detail.open && !page.detail.isBook
+                              enabled: !!page.vm && !page.vm.writing
+                              onClicked: barFeeDialog.openFor(page.detail.id) }
                     }
                     }
                     Flow {
@@ -2679,6 +2682,77 @@ Item {
                 }
                 Btn { objectName: "cancelAdjustButton"; text: "إلغاء"; accent: theme.textSecondary
                       enabled: !!page.vm && !page.vm.writing; onClicked: adjustDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- bar fee: cash a supplier / marketer paid for a delivered bar
+    Popup {
+        id: barFeeDialog
+        objectName: "tripBarFeeDialog"
+        property string tripId: ""
+        property string requestKey: ""
+        readonly property var partyChoices: {
+            var seen = {}, out = [{ id: "", text: "اختر المورد / المسوقجي" }]
+            var all = (page.ctx.suppliers || []).concat(page.ctx.holdParties || [])
+            for (var i = 0; i < all.length; i++) { if (!seen[all[i].id]) { seen[all[i].id] = true; out.push(all[i]) } }
+            return out
+        }
+        readonly property string partyId: partyChoices[barFeeParty.currentIndex] ? partyChoices[barFeeParty.currentIndex].id : ""
+        function openFor(trip) {
+            if (!page.vm) return
+            tripId = trip
+            requestKey = page.vm.newRequestKey()
+            barFeeParty.currentIndex = 0
+            barFeeAmount.text = ""
+            barFeeReference.text = ""
+            barFeeDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            barFeeNotes.text = ""
+            page.vm.clearMessage()
+            page.vm.refresh()
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(520, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 520, 520)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { Layout.fillWidth: true; text: "أجر السبيكة"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
+            Txt { objectName: "barFeeRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "الأجر نقدية استلمتها من المورد أو المسوقجي: تدخل نقدية العهدة، وتُخصم من مصنعيات المورد. يمكنك بعدها رجوعها للخزنة أو دفع مصنعيات منها." }
+            Txt { Layout.fillWidth: true; text: "المورد / المسوقجي *" }
+            Combo { id: barFeeParty; objectName: "barFeePartyCombo"; Layout.fillWidth: true; model: barFeeDialog.partyChoices; textRole: "text" }
+            Txt { Layout.fillWidth: true; text: "المبلغ (ج) *" }
+            Field { id: barFeeAmount; objectName: "barFeeAmountField"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+            Txt { Layout.fillWidth: true; text: "المرجع" }
+            Field { id: barFeeReference; objectName: "barFeeReferenceField"; Layout.fillWidth: true }
+            Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
+            Field { id: barFeeDate; objectName: "barFeeDateField"; Layout.fillWidth: true }
+            Txt { Layout.fillWidth: true; text: "ملاحظات" }
+            Field { id: barFeeNotes; objectName: "barFeeNotesField"; Layout.fillWidth: true }
+            Item { Layout.fillHeight: true }
+            Txt { objectName: "barFeeError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmBarFeeButton"
+                    text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "تسجيل"
+                    primary: true
+                    enabled: barFeeDialog.partyId !== "" && barFeeAmount.text.trim().length > 0 && barFeeDate.text.trim().length > 0 && !!page.vm && !page.vm.writing
+                    onClicked: page.vm.recordBarFee(barFeeDialog.tripId, barFeeDialog.partyId, barFeeAmount.text, barFeeDate.text,
+                                                    barFeeReference.text, barFeeNotes.text, barFeeDialog.requestKey)
+                }
+                Btn { objectName: "cancelBarFeeButton"; text: "إلغاء"; accent: theme.textSecondary
+                      enabled: !!page.vm && !page.vm.writing; onClicked: barFeeDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }

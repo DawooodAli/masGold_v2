@@ -130,6 +130,11 @@ class LossTests(DisposalCase):
 
 
 class IssueWeightCorrectionTests(DisposalCase):
+    def adjust_to(self, target, source="UNSOURCED", request=None, reason="فرق وزن فعلي"):
+        self.n += 1
+        return self.service.correct_issue_weight(self.trip, K21, "INCREASE", None, reason, TODAY,
+                                                 request or key(710 + self.n), source_kind=source, target_weight=target)
+
     def test_an_increase_takes_the_difference_from_scrap_and_adds_it_to_the_custody(self):
         s21 = self.scrap(1)
         done = self.adjust(K21, "INCREASE", "2.5")
@@ -137,11 +142,53 @@ class IssueWeightCorrectionTests(DisposalCase):
         self.assertEqual(self.scrap(1), s21 - D("2.500"))
         self.assertEqual(self.gold()[(21, "UNCLASSIFIED")]["outstanding"], D("12.500"))
 
+    def test_unsourced_increase_adds_only_the_locked_difference_and_never_moves_scrap(self):
+        before_scrap, before_rows = self.scrap(1), len(self.db.scrap)
+        before_legs = len(self.db.gold_legs)
+        self.db.fail_at = "scrap"
+        done = self.adjust_to("12.500")
+        self.db.fail_at = None
+        self.assertEqual((done["weight"], done["source_kind"]), ("2.500", "UNSOURCED"))
+        self.assertEqual(self.gold()[(21, "UNCLASSIFIED")]["outstanding"], D("12.500"))
+        self.assertEqual((self.scrap(1), len(self.db.scrap)), (before_scrap, before_rows))
+        self.assertEqual(len(self.db.gold_legs), before_legs)
+        audit = next(row for row in self.db.audit_rows if row["entity_id"] == int(done["entry_id"]))
+        self.assertEqual((audit["metadata"]["source_kind"], audit["metadata"]["target_weight"]), ("UNSOURCED", "12.500"))
+
+    def test_unsourced_target_must_exceed_the_live_balance_and_requires_a_reason(self):
+        self.refused("ADJUST_TARGET_NOT_HIGHER", lambda: self.adjust_to("10.000"))
+        self.refused("REASON_REQUIRED", lambda: self.adjust_to("12.000", reason=""))
+
+    def test_unsourced_adjustment_requires_a_target_and_migration_079(self):
+        self.refused("WEIGHT_REQUIRED", lambda: self.service.correct_issue_weight(
+            self.trip, K21, "INCREASE", "2", "سبب", TODAY, key(65), source_kind="UNSOURCED"))
+        self.db.adjustment_source_schema = False
+        self.refused("SCHEMA_OUTDATED", lambda: self.adjust_to("12.000"))
+
+    def test_unsourced_replay_posts_no_second_adjustment_and_changed_target_conflicts(self):
+        request = key(68)
+        first = self.adjust_to("12.500", request=request)
+        again = self.adjust_to("12.500", request=request)
+        self.assertEqual((again["entry_id"], again["duplicate"]), (first["entry_id"], True))
+        self.assertEqual(self.gold()[(21, "UNCLASSIFIED")]["outstanding"], D("12.500"))
+        self.refused("REQUEST_CONFLICT", lambda: self.adjust_to("13.000", request=request))
+
+    def test_unsourced_reversal_removes_custody_without_scrap_compensation(self):
+        before_scrap, before_rows = self.scrap(1), len(self.db.scrap)
+        done = self.adjust_to("12.500")
+        self.reverse(done["entry_id"])
+        self.assertEqual(self.gold()[(21, "UNCLASSIFIED")]["outstanding"], D("10.000"))
+        self.assertEqual((self.scrap(1), len(self.db.scrap)), (before_scrap, before_rows))
+
     def test_a_decrease_returns_the_difference_to_scrap_and_removes_it_from_the_custody(self):
         s21 = self.scrap(1)
         self.adjust(K21, "DECREASE", "4")
         self.assertEqual(self.scrap(1), s21 + D("4.000"))
         self.assertEqual(self.gold()[(21, "UNCLASSIFIED")]["outstanding"], D("6.000"))
+
+    def test_unsourced_decrease_is_refused(self):
+        self.refused("ADJUST_SOURCE_INVALID", lambda: self.service.correct_issue_weight(
+            self.trip, K21, "DECREASE", "1", "سبب", TODAY, key(69), source_kind="UNSOURCED"))
 
     def test_scrap_can_never_go_negative_and_the_custody_cannot_go_below_zero(self):
         self.refused("SCRAP_SHORTAGE", lambda: self.adjust(K21, "INCREASE", "500"))

@@ -29,17 +29,18 @@ def gold_outstanding(row):
             - _dec(row.get("settle_out")) + _dec(row.get("settle_in")))   # stage 2: grams that left the RAW pool (melted, classified as LOGO; UNCLASSIFIED only) / entered LOGO
 
 
-def cash_outstanding(issued, returned, paid=0, received=0, spent=0, settled=0):
+def cash_outstanding(issued, returned, paid=0, received=0, spent=0, settled=0, fee=0):
     """Custody cash still outside Main Safe: issued - returned - paid to suppliers from custody + proceeds of custody gold sold for cash (053)
-    - cash spent on gold bought in the market (054) - cash settled after the trip (expense, bank deposit, write-off: 064)."""
-    return _dec(issued) - _dec(returned) - _dec(paid) + _dec(received) - _dec(spent) - _dec(settled)
+    - cash spent on gold bought in the market (054) - cash settled after the trip (expense, bank deposit, write-off: 064)
+    + bar fees received in cash (080)."""
+    return _dec(issued) - _dec(returned) - _dec(paid) + _dec(received) - _dec(spent) - _dec(settled) + _dec(fee)
 
 
 def cash_rows_outstanding(cash_rows):
     """The same, from the repository's (issued, returned[, paid]) tuple."""
     return cash_outstanding(cash_rows[0], cash_rows[1], cash_rows[2] if len(cash_rows) > 2 else 0,
                             cash_rows[3] if len(cash_rows) > 3 else 0, cash_rows[4] if len(cash_rows) > 4 else 0,
-                            cash_rows[5] if len(cash_rows) > 5 else 0)
+                            cash_rows[5] if len(cash_rows) > 5 else 0, cash_rows[6] if len(cash_rows) > 6 else 0)
 
 
 def any_negative(cash_rows, gold_rows, designation=None):
