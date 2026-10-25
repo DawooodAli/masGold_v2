@@ -80,6 +80,12 @@ def split_statements(text):
 
 _GUARDED = re.compile(r'^SET\s+@masgold_sql\s*:=\s*IF\((?P<guard>.*?),\s*"(?P<ddl>[^"]*)"\s*,\s*\'DO 0\'\s*\)$',
                       re.S | re.I)
+# Some migrations (078) wrap real DDL in single quotes instead of double quotes. Only
+# unwrap when the payload is genuine DDL; a 'SELECT 1 FROM MIGRATION_..._REFUSED' marker
+# (used by refusal guards, e.g. 013-015) must stay dropped as plumbing, never unwrapped.
+_GUARDED_SQ = re.compile(
+    r'^SET\s+@masgold_sql\s*:=\s*IF\((?P<guard>.*?),\s*\'(?P<ddl>(?:ALTER|CREATE|INSERT|UPDATE|DROP|RENAME)\b.*?)\'\s*,\s*\'DO 0\'\s*\)$',
+    re.S | re.I)
 _PLUMBING = re.compile(r"^(PREPARE|EXECUTE|DEALLOCATE)\b|^SET\s+(@masgold_|SESSION\s+sql_mode)", re.I)
 
 
@@ -87,7 +93,7 @@ def statements(text):
     """Effective statements; PREPARE/EXECUTE plumbing and session settings dropped."""
     result = []
     for raw in split_statements(text):
-        match = _GUARDED.match(raw)
+        match = _GUARDED.match(raw) or _GUARDED_SQ.match(raw)
         if match:
             result.append(Statement(" ".join(match["ddl"].split()), match["guard"]))
         elif not _PLUMBING.match(raw):

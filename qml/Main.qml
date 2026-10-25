@@ -5541,6 +5541,112 @@ ApplicationWindow {
         ]
     }
 
+    // Settings → إعدادات النظام (081): القيم الإعدادية للمحل. الخدمة وحدها تتحقق من الصلاحية
+    // (SYSTEM_SETTINGS_VIEW / SYSTEM_SETTINGS_MANAGE) ومن صحة كل قيمة مقابل نوعها داخل المعاملة.
+    component SystemSettingsCard: SettingsSectionCard {
+        id: systemSettings
+        objectName: "settingsSystemSettings"
+        sectionTitle: "إعدادات النظام"
+        accentColor: theme.gold
+        readonly property var vm: typeof systemSettingsVM !== "undefined" ? systemSettingsVM : null
+        visible: !!vm && vm.canManage
+        Component.onCompleted: if (vm && vm.canManage) vm.refresh()
+        content: [
+            GoldPriceLabel {
+                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                value: "قيم إعدادية عامة للمحل (الاسم، الهاتف، رمز العملة…) تُستخدم في الواجهة والتقارير. كل تغيير يُسجَّل في سجل التدقيق باسمك، ولا يُحذف أي إعداد."
+                color: theme.textMuted; font.pixelSize: 11
+            },
+            Repeater {
+                model: systemSettings.vm ? systemSettings.vm.settings : []
+                delegate: RowLayout {
+                    id: settingRow
+                    required property var modelData
+                    objectName: "settingRow_" + modelData.key
+                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+
+                    GoldPriceLabel {
+                        objectName: "settingKey_" + settingRow.modelData.key
+                        Layout.preferredWidth: 210
+                        value: settingRow.modelData.key
+                        color: theme.gold; font.bold: true
+                        elide: Text.ElideLeft
+                    }
+                    GoldPriceLabel {
+                        Layout.preferredWidth: 74
+                        value: settingRow.modelData.type_text
+                        color: theme.textSecondary; font.pixelSize: 11
+                    }
+                    GoldPriceLabel {
+                        Layout.fillWidth: true
+                        value: settingRow.modelData.description
+                        color: theme.textMuted; font.pixelSize: 11
+                        elide: Text.ElideLeft
+                    }
+                    // STRING / INT / DECIMAL: a plain field (GoldPriceInput would block Arabic letters).
+                    TextField {
+                        id: valueField
+                        objectName: "settingValue_" + settingRow.modelData.key
+                        visible: settingRow.modelData.type !== "BOOL" && settingRow.modelData.type !== "JSON"
+                        Layout.preferredWidth: 190; Layout.preferredHeight: 34
+                        font.family: "Cairo"
+                        horizontalAlignment: Text.AlignRight
+                        selectByMouse: true
+                        text: String(settingRow.modelData.value)
+                        color: theme.textPrimary
+                        background: Rectangle {
+                            color: theme.bgTertiary
+                            border.color: parent.activeFocus ? theme.gold : theme.border
+                            radius: theme.radiusSmall
+                        }
+                    }
+                    ComboBox {
+                        id: boolCombo
+                        objectName: "settingBool_" + settingRow.modelData.key
+                        visible: settingRow.modelData.type === "BOOL"
+                        Layout.preferredWidth: 120; Layout.preferredHeight: 34
+                        font.family: "Cairo"
+                        model: ["مفعل", "معطل"]
+                        currentIndex: (settingRow.modelData.value === true || settingRow.modelData.value === "1"
+                                       || settingRow.modelData.value === 1) ? 0 : 1
+                    }
+                    GoldPriceLabel {
+                        visible: settingRow.modelData.type === "JSON"
+                        Layout.preferredWidth: 190
+                        value: "قيمة JSON — لا تُعدَّل من هنا"
+                        color: theme.textMuted; font.pixelSize: 11
+                    }
+                    GoldPriceLabel {
+                        visible: settingRow.modelData.public
+                        Layout.preferredWidth: 44
+                        value: "عام"
+                        color: theme.green; font.pixelSize: 11
+                    }
+                    GoldPriceButton {
+                        objectName: "settingSave_" + settingRow.modelData.key
+                        text: "حفظ"
+                        visible: settingRow.modelData.type !== "JSON"
+                        enabled: !!systemSettings.vm && !systemSettings.vm.busy
+                        onClicked: {
+                            var newValue = settingRow.modelData.type === "BOOL"
+                                ? (boolCombo.currentIndex === 0 ? "1" : "0")
+                                : valueField.text
+                            systemSettings.vm.save(settingRow.modelData.key, newValue,
+                                                   settingRow.modelData.type,
+                                                   settingRow.modelData.description,
+                                                   settingRow.modelData.public)
+                        }
+                    }
+                }
+            },
+            GoldPriceLabel {
+                objectName: "systemSettingsMessage"; Layout.fillWidth: true; visible: value.length > 0
+                value: systemSettings.vm ? systemSettings.vm.message : ""
+                color: systemSettings.vm && systemSettings.vm.messageIsError ? theme.priceError : theme.green
+            }
+        ]
+    }
+
     component GoldProviderSettings: SettingsSectionCard {
         property alias resultCard: testResultCard
         id: providerPanel
@@ -5680,7 +5786,12 @@ ApplicationWindow {
     component SettingsPage: Item {
         property string pageTitle: ""
         Rectangle { anchors.fill: parent; color: theme.bgPrimary }
-        onVisibleChanged: if (visible && typeof userAdminVM !== "undefined" && userAdminVM.canManage) userAdminVM.refresh()
+        onVisibleChanged: {
+            if (!visible)
+                return
+            if (typeof userAdminVM !== "undefined" && userAdminVM.canManage) userAdminVM.refresh()
+            if (typeof systemSettingsVM !== "undefined" && systemSettingsVM.canManage) systemSettingsVM.refresh()
+        }
         // The Test Connection result card is the last item on this page:
         // once the layout settles, scroll to the end so the whole card shows.
         Connections {
@@ -5761,6 +5872,16 @@ ApplicationWindow {
                         subtitle: masterDataVM.disabledItemTypeCount > 0 ? masterDataVM.disabledItemTypeCount + " صنف معطل" : "إدارة أنواع الأصناف"
                         accentColor: theme.green; clickable: true; Layout.preferredHeight: 92
                         onClicked: { masterDataVM.refresh(); root.currentPage = 8 }
+                    }
+                    // Owner only (SYSTEM_SETTINGS_MANAGE, re-checked by the service on every call).
+                    SettingsCard {
+                        objectName: "settingsSystemSettingsCard"
+                        visible: typeof systemSettingsVM !== "undefined" && systemSettingsVM.canManage
+                        title: "إعدادات النظام"
+                        value: typeof systemSettingsVM !== "undefined" ? systemSettingsVM.settings.length.toString() : "0"
+                        subtitle: "اسم المحل والهاتف وقيم إعدادية عامة"
+                        accentColor: theme.blue; clickable: true; Layout.preferredHeight: 92
+                        onClicked: systemSettingsDialog.open()
                     }
                 }
                 SettingsSectionCard {
@@ -8807,6 +8928,14 @@ ApplicationWindow {
         dialogTitle: "الحد الأدنى للمخزون"
         onOpened: if (typeof stockMinLevelVM !== "undefined" && stockMinLevelVM.canManage) stockMinLevelVM.refresh()
         StockMinLevelSettings { Layout.fillWidth: true; sectionTitle: "" }
+    }
+
+    SettingsDialog {
+        id: systemSettingsDialog
+        objectName: "systemSettingsDialog"
+        dialogTitle: "إعدادات النظام"
+        onOpened: if (typeof systemSettingsVM !== "undefined" && systemSettingsVM.canManage) systemSettingsVM.refresh()
+        SystemSettingsCard { Layout.fillWidth: true; sectionTitle: "" }
     }
 
     // ========================================================

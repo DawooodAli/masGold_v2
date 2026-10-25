@@ -200,6 +200,9 @@ class ApplicationController(QObject):
         if self.operational_viewmodels.get("managerGateVM") is None:
             from app.viewmodels.manager_gate_viewmodel import create_manager_gate_viewmodel
             self.operational_viewmodels["managerGateVM"] = create_manager_gate_viewmodel(self.session)
+        if self.operational_viewmodels.get("systemSettingsVM") is None:
+            from app.viewmodels.system_settings_viewmodel import create_system_settings_viewmodel
+            self.operational_viewmodels["systemSettingsVM"] = create_system_settings_viewmodel(self.session)
         if self.operational_viewmodels.get("oldGoldAdjustVM") is None:
             from app.viewmodels.old_gold_adjustment_viewmodel import create_old_gold_adjustment_viewmodel
             self.operational_viewmodels["oldGoldAdjustVM"] = create_old_gold_adjustment_viewmodel(self.session)
@@ -442,6 +445,8 @@ class ApplicationController(QObject):
             if hasattr(dashboard, "activate"):
                 dashboard.activate()
         except Exception:
+            import traceback
+            traceback.print_exc()
             self.authentication.logout()
             self.authentication.show_application_error()
 

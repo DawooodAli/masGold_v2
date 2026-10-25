@@ -22,7 +22,7 @@ PREPARE masgold_stmt FROM @masgold_sql; EXECUTE masgold_stmt; DEALLOCATE PREPARE
 CREATE TABLE IF NOT EXISTS market_trip_bar_fees (
  entry_id BIGINT UNSIGNED NOT NULL,
  entry_kind VARCHAR(12) NOT NULL DEFAULT 'ST_BAR_FEE',
- party_id BIGINT UNSIGNED NOT NULL,
+ party_id INT UNSIGNED NOT NULL,
  party_kind VARCHAR(12) NOT NULL,
  amount DECIMAL(16,2) NOT NULL,
  making_movement_id BIGINT UNSIGNED DEFAULT NULL,
