@@ -235,7 +235,8 @@ class MarketerCustodyViewModel(QObject):
     # ------------------------------------------------------------ previews (service functions on loaded data; no database read)
     @Slot(str, str, str, result="QVariantMap")
     def previewSale(self, weight, price_mode, price):
-        from services.market_trip_service import MarketTripService, PRICE_WARNING_PERCENT, TripError, parse_weight
+        from services import setting_rules
+        from services.market_trip_service import MarketTripService, TripError, parse_weight
         empty = {"valid": False, "error": "", "availableText": "", "totalText": "", "perGramText": "", "referenceText": "", "deviationText": "", "warning": False,
                  "warningText": ""}
         if not self._account:
@@ -255,7 +256,7 @@ class MarketerCustodyViewModel(QObject):
             return {**base, "error": str(exc)}
         prices = {int(k): Decimal(v) for k, v in self._reference_prices.items()}
         reference_total, _, deviation = MarketTripService.sale_reference(prices, amount, 21, None, total)
-        warned = deviation is not None and abs(deviation) > PRICE_WARNING_PERCENT
+        warned = deviation is not None and abs(deviation) > setting_rules.price_warning_from(self._account)
         shown = per_gram if per_gram is not None else (total / amount).quantize(Decimal("0.0001"))
         return {**base, "valid": True, "totalText": money(total), "perGramText": number(shown, 4),
                 "referenceText": "" if reference_total is None else f"المرجع (سعر شراء المحل): {money(reference_total)}",
@@ -264,7 +265,8 @@ class MarketerCustodyViewModel(QObject):
 
     @Slot("QVariantList", result="QVariantMap")
     def previewPurchase(self, lines):
-        from services.market_trip_service import MarketTripService, PRICE_WARNING_PERCENT, TripError
+        from services import setting_rules
+        from services.market_trip_service import MarketTripService, TripError
         from services.marketer_custody_service import parse_purchase_lines
         empty = {"valid": False, "error": "", "availableText": "", "totalText": "", "referenceText": "", "deviationText": "", "warning": False, "warningText": ""}
         if not self._account:
@@ -282,7 +284,7 @@ class MarketerCustodyViewModel(QObject):
             return {**base, "totalText": money(total), "error": f"الإجمالي أكبر من نقدية المسوقجي ({money(held)})."}
         prices = {int(k): Decimal(v) for k, v in self._reference_prices.items()}
         reference_total, deviation = MarketTripService.buy_reference(prices, [{"karat_id": 21, "weight": l["weight"]} for l in parsed], {21: 21}, total)
-        warned = deviation is not None and abs(deviation) > PRICE_WARNING_PERCENT
+        warned = deviation is not None and abs(deviation) > setting_rules.price_warning_from(self._account)
         return {**base, "valid": True, "totalText": money(total),
                 "referenceText": "" if reference_total is None else f"المرجع (سعر شراء المحل): {money(reference_total)}",
                 "deviationText": "" if deviation is None else f"{number(deviation, 2, signed=True)}%", "warning": warned,

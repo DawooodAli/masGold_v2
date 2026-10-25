@@ -27,9 +27,9 @@ import json
 from mysql.connector import Error as MySqlError, IntegrityError
 
 from repositories.market_trip_repository import (BK_BUY, BK_ISSUE, BK_RETURN, BK_SELL, BOOK, ISSUE, OPEN, RETURN, entry_code, trip_code)
-from services import book_reconciliation, book_rules, book_settlement, custody_rules
+from services import book_reconciliation, book_rules, book_settlement, custody_rules, setting_rules
 from services.market_trip_service import (KIND_TEXT, MAX_MONEY, MONEY_STEP, NOTES_MAX, PAYMENT_REFERENCE_MAX, PERMISSION,
-                                          PRICE_WARNING_PERCENT, ZERO_MONEY, MarketTripService, TripError, _decimal, _entry_date, _is_request_key_violation, _key,
+                                          ZERO_MONEY, MarketTripService, TripError, _decimal, _entry_date, _is_request_key_violation, _key,
                                           _text, _trip_id, parse_fineness, parse_weight)
 from services.old_gold_availability import held_grams, shortage_message
 
@@ -919,7 +919,7 @@ class MarketTripBookService(MarketTripService):
                     if total > available:
                         raise TripError("PURCHASE_EXCEEDS_CASH", f"نقدية العهدة المتاحة {available:,.2f} ج فقط: لا يمكن شراء بإجمالي {total:,.2f} ج.")
                 reference_total, deviation = self.book_reference(self._reference_prices(), parsed, karat_values, total)
-                warned = deviation is not None and abs(deviation) > PRICE_WARNING_PERCENT
+                warned = deviation is not None and abs(deviation) > setting_rules.price_warning_percent(repository)
                 if warned and not acknowledged:
                     raise TripError("PRICE_DEVIATION", self._buy_warning_text(deviation, reference_total) if kind == BK_BUY
                                     else self._price_warning_text(deviation, reference_total))
@@ -1021,7 +1021,8 @@ class MarketTripBookService(MarketTripService):
                     total = Decimal(out["total"])
                     reference_total, deviation = self.book_reference(self._reference_prices(), parsed, karat_values, total)
                     if reference_total is not None:
-                        out.update(reference_total=str(reference_total), deviation=str(deviation), warning=abs(deviation) > PRICE_WARNING_PERCENT)
+                        out.update(reference_total=str(reference_total), deviation=str(deviation),
+                                   warning=abs(deviation) > setting_rules.price_warning_percent(repository))
                 if kind == BK_ISSUE:
                     scrap = {r["karat_id"]: Decimal(str(r["available_grams"])) for r in repository.shop_scrap()}
                     per_karat = {}

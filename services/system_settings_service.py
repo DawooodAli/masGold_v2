@@ -13,6 +13,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from repositories.system_settings_repository import SystemSettingsRepository
+from services import setting_rules
 from services.authorization_service import AuthorizationService
 from services.invoice_service import invoice_transaction
 
@@ -142,6 +143,12 @@ class SystemSettingsService:
         key = clean_key(key)
         setting_type = str(setting_type or "STRING").upper()
         stored = cast_and_check(value, setting_type)
+        # A key the business rules APPLY (081, `setting_rules.SPEC`) must land inside its range: the
+        # services fall back to the default silently, so refusing here is what keeps the screen's
+        # "saved" honest. A key outside that SPEC is not one of ours and keeps the type check alone.
+        problem = setting_rules.writer_problem(key, stored)
+        if problem:
+            raise SettingsError("VALUE_RANGE", problem)
         description = clean_description(description)
         public = 1 if is_public else 0
 

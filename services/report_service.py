@@ -23,6 +23,7 @@ from repositories.report_repository import ReportRepository
 from services import book_rules
 from services import position_snapshot_rules as snapshot_math
 from services import price_indicators as indicators_math
+from services import setting_rules
 from services.authorization_service import AuthorizationService
 from services.correction_rules import correction_code
 from services.gold_position_service import read_transaction
@@ -57,10 +58,10 @@ FLOW_LABELS = {"INVOICE": "المبيعات وشراء الكسر", "INVOICE_LIF
 CORRECTION_FLOW = {"INVOICE": "INVOICE", "EXCHANGE": "INVOICE_LIFECYCLE", "RETURN": "INVOICE_RETURN", "CUSTOMER_ACCOUNT_SETTLEMENT": "CUSTOMER_ACCOUNT_SETTLEMENT",
                    "CUSTOMER_DEPOSIT": "CUSTOMER_DEPOSIT", "SUPPLIER_MAKING_PAYMENT": "SUPPLIER_MAKING_PAYMENT"}
 INTERNAL_FLOW = {"MARKET_TRIP_ENTRY": "عهدة السوق (إخراج / رجوع / إيداع)", "MARKETER_DOCUMENT": "عهدة المسوقجي", "ACCOUNT_TRANSFER": "تحويلات بين الحسابات"}
-DEAD_STOCK_DAYS = 180                  # a piece in stock for six months without a sale is dead stock (owner decision)
-VELOCITY_DAYS, RECENT_DAYS = 90, 30    # the window the sales rate is measured on, and the "recent" figure shown beside it
-WEIGHT_BAND_TOP = 10                  # weight bands are one gram wide (1 – 2, 2 – 3 ...); every piece of WEIGHT_BAND_TOP grams or more is in the last band
-LOW_COVER_DAYS, MIN_SALES = 14, 3      # an item sold at least MIN_SALES times in the window whose stock covers fewer than LOW_COVER_DAYS days of sales is about to run out
+DEAD_STOCK_DAYS = 180                  # DEFAULT for how long a piece may sit in stock without a sale before it is dead stock; the effective figure comes from System Settings (081)
+VELOCITY_DAYS, RECENT_DAYS = 90, 30    # the window the sales rate is measured on (081), and the "recent" figure shown beside it (a hard rule, no setting)
+WEIGHT_BAND_TOP = 10                  # DEFAULT: weight bands are one gram wide (1 – 2, 2 – 3 ...); every piece of WEIGHT_BAND_TOP grams or more is in the last band (081)
+LOW_COVER_DAYS, MIN_SALES = 14, 3      # DEFAULTS: an item sold at least MIN_SALES times in the window whose stock covers fewer than LOW_COVER_DAYS days of sales is about to run out (081)
 UNKNOWN_TEXT = "غير معلوم"
 FILTER_LABELS = {"category_name": "الحرف", "employee_name": "الموظف", "factory_name": "المصنع", "weight_min": "الوزن من", "weight_max": "الوزن إلى", "kind": "النوع", "state": "الحالة", "status": "الحالة", "classification": "التصنيف", "karat": "العيار", "source": "المصدر", "balance": "الرصيد",
                  "inactive": "العملاء المتوقفون", "supplier": "المورد", "account": "الحساب"}
@@ -583,16 +584,19 @@ class ReportService:
 
     # ------------------------------------------------------------------ 2b. inventory alerts (dead stock and items about to run out) - plain rules over our own data, no forecast
     def _alerts(self, repo, gate, filters, start, end):
-        """Owner request (2026-10-21), rule based and explainable. (1) DEAD STOCK: a piece IN_STOCK acquired DEAD_STOCK_DAYS ago or earlier that was never on an invoice (a piece that came back
+        """Owner request (2026-10-21), rule based and explainable; every threshold comes from System Settings (081), with the hard-coded figure as its fallback. (1) DEAD STOCK: a piece IN_STOCK acquired `dead_stock_days` ago or earlier that was never on an invoice (a piece that came back
         from a sale is not dead, it is recent). Grouped per KARAT (never across karats) by type and factory with count, weight and the oldest age. (2) ABOUT TO RUN OUT: for every (karat, type, factory,
-        size) sold at least MIN_SALES times in the last VELOCITY_DAYS, stock / (sales per day) = the days the stock covers; fewer than LOW_COVER_DAYS (or no stock left) is an alert; needs the invoice
+        size) sold at least `min_sales` times in the last `velocity_days`, stock / (sales per day) = the days the stock covers; fewer than `low_cover_days` (or no stock left) is an alert; needs the invoice
         right. It reads the CURRENT state (no period) and suggests nothing by itself: the owner decides."""
         karat = str(filters.get("karat") or "")
         if karat not in ("", "18", "21", "22", "24"):
             raise ReportError("FILTER_INVALID", "عيار غير صحيح.")
         raw, folded = _text_filter(filters)
+        limits = setting_rules.report_thresholds(repo)                    # System Settings (081), the hard-coded defaults when a key is absent or unusable
+        dead_stock_days, velocity_days = limits["dead_stock_days"], limits["velocity_days"]
+        low_cover_days, weight_band_top, min_sales = limits["low_cover_days"], limits["weight_band_top"], limits["min_sales_for_velocity"]
         today = self._today()
-        cutoff = today - timedelta(days=DEAD_STOCK_DAYS)
+        cutoff = today - timedelta(days=dead_stock_days)
         all_stock = list(repo.stock_items(("IN_STOCK",)))
         stock = [r for r in all_stock if (not karat or str(r["karat_value"]) == karat) and _matches(folded, raw, r["item_type"], r["category"], r["factory"])]
         tables, cards = [], []
@@ -615,14 +619,14 @@ class ReportService:
         for k in sorted(per_karat, reverse=True):
             rows = [{"type": t, "factory": f, "count": g["count"], "weight": g["weight"], "oldest": g["oldest"]}
                     for (kk, t, f), g in sorted(dead.items(), key=lambda kv: (-kv[1]["weight"], kv[0][1])) if kk == k]
-            tables.append(table(f"dead_{k}", f"قطع راكدة (أكثر من {DEAD_STOCK_DAYS} يوم) — عيار {k}", dead_cols, rows, karat=k))
+            tables.append(table(f"dead_{k}", f"قطع راكدة (أكثر من {dead_stock_days} يوم) — عيار {k}", dead_cols, rows, karat=k))
             cards.append(total(f"راكد عيار {k}", f"{per_karat[k]['weight']:,.3f} جرام", "text", f"{per_karat[k]['count']} قطعة • أقدمها {per_karat[k]['oldest']} يوم", "dead", karat=k))
         if not per_karat:
-            tables.append(table("dead", f"قطع راكدة (أكثر من {DEAD_STOCK_DAYS} يوم)", dead_cols, []))
+            tables.append(table("dead", f"قطع راكدة (أكثر من {dead_stock_days} يوم)", dead_cols, []))
         # ---- items about to run out
         sold_weights = []
         if gate("INVOICE_VIEW"):
-            since = datetime.combine(today - timedelta(days=VELOCITY_DAYS), time.min)
+            since = datetime.combine(today - timedelta(days=velocity_days), time.min)
             recent_from = today - timedelta(days=RECENT_DAYS)
             sold90, sold30 = {}, {}
             for r in repo.gold_sold_pieces(since, datetime.combine(today + timedelta(days=1), time.min)):
@@ -641,19 +645,19 @@ class ReportService:
             low = {}
             for key, n90 in sold90.items():
                 have = in_stock.get(key, 0)
-                if n90 < MIN_SALES:
+                if n90 < min_sales:
                     continue
-                cover = Decimal(have) * VELOCITY_DAYS / Decimal(n90)
-                if have == 0 or cover < LOW_COVER_DAYS:
+                cover = Decimal(have) * velocity_days / Decimal(n90)
+                if have == 0 or cover < low_cover_days:
                     low[key] = {"sold30": sold30.get(key, 0), "sold90": n90, "stock": have, "cover": cover}
-            low_cols = [col("type", "الصنف"), col("factory", "المصنع"), col("size", "المقاس"), col("sold30", "مباع آخر 30 يوم", "count"), col("sold90", f"مباع آخر {VELOCITY_DAYS} يوم", "count"),
+            low_cols = [col("type", "الصنف"), col("factory", "المصنع"), col("size", "المقاس"), col("sold30", "مباع آخر 30 يوم", "count"), col("sold90", f"مباع آخر {velocity_days} يوم", "count"),
                         col("stock", "المتاح", "count"), col("cover", "يكفي (يوم)")]
             low_karats = sorted({k for k, *_ in low}, reverse=True)
             for k in low_karats:
                 rows = [{"type": t, "factory": f, "size": sz or "—", "sold30": v["sold30"], "sold90": v["sold90"], "stock": v["stock"], "cover": "نفد" if v["stock"] == 0 else f"{int(v['cover'])}"}
                         for (kk, t, f, sz), v in sorted(low.items(), key=lambda kv: (kv[1]["cover"], kv[0][1])) if kk == k]
                 tables.append(table(f"low_{k}", f"قاربت على النفاد — عيار {k}", low_cols, rows, karat=k))
-                cards.append(total(f"قارب النفاد عيار {k}", f"{len(rows)} صنف", "text", f"من أصناف بيعت {MIN_SALES} مرات فأكثر وتكفي أقل من {LOW_COVER_DAYS} يوم", "low", karat=k))
+                cards.append(total(f"قارب النفاد عيار {k}", f"{len(rows)} صنف", "text", f"من أصناف بيعت {min_sales} مرات فأكثر وتكفي أقل من {low_cover_days} يوم", "low", karat=k))
             if not low_karats:
                 tables.append(table("low", "قاربت على النفاد", low_cols, []))
         else:
@@ -683,10 +687,10 @@ class ReportService:
             cards.append(total("تحت الحد الأدنى", len(below), "count", f"من {len(levels)} حدًّا حدّدته في الإعدادات", "minimum"))
         # ---- the weights: stock and sales per ONE-GRAM weight band, per KARAT and per item TYPE (information for the owner to decide with; no alert)
         def band(weight):
-            return min(int(weight), WEIGHT_BAND_TOP)
+            return min(int(weight), weight_band_top)
 
         def band_label(index):
-            return f"{WEIGHT_BAND_TOP} جرام فأكثر" if index >= WEIGHT_BAND_TOP else "0.01 – 1 جرام" if index == 0 else f"{index} – {index + 1} جرام"      # the first band starts at 0.01 g (owner)
+            return f"{weight_band_top} جرام فأكثر" if index >= weight_band_top else "0.01 – 1 جرام" if index == 0 else f"{index} – {index + 1} جرام"      # the first band starts at 0.01 g (owner)
         bands = {}
         for r in stock:
             b = bands.setdefault((int(r["karat_value"]), r["item_type"] or NO_TYPE, band(_dec(r["weight_grams"]))), {"stock": 0, "weight": ZERO3, "sold30": 0, "sold90": 0})
@@ -697,18 +701,18 @@ class ReportService:
             b["sold90"] += 1
             b["sold30"] += 1 if recent else 0
         weight_cols = [col("type", "الصنف"), col("band", "شريحة الوزن"), col("stock", "المتاح (عدد)", "count"), col("weight", "الوزن المتاح (جرام)", "grams"), col("sold30", "مباع آخر 30 يوم", "count"),
-                       col("sold90", f"مباع آخر {VELOCITY_DAYS} يوم", "count"), col("cover", "يكفي (يوم)")]
+                       col("sold90", f"مباع آخر {velocity_days} يوم", "count"), col("cover", "يكفي (يوم)")]
         has_sales = gate("INVOICE_VIEW")
         for k in sorted({k for k, _, _ in bands}, reverse=True):
             rows = []
             for (kk, kind, index), b in sorted(bands.items(), key=lambda kv: (kv[0][1], kv[0][2])):
                 if kk != k:
                     continue
-                cover = "—" if not has_sales or not b["sold90"] else "نفد" if b["stock"] == 0 else f"{int(Decimal(b['stock']) * VELOCITY_DAYS / Decimal(b['sold90']))}"
+                cover = "—" if not has_sales or not b["sold90"] else "نفد" if b["stock"] == 0 else f"{int(Decimal(b['stock']) * velocity_days / Decimal(b['sold90']))}"
                 rows.append({"type": kind, "band": band_label(index), "stock": b["stock"], "weight": b["weight"], "sold30": b["sold30"] if has_sales else None,
                              "sold90": b["sold90"] if has_sales else None, "cover": cover})
             tables.append(table(f"weights_{k}", f"الأوزان حسب الصنف — عيار {k}", weight_cols, rows, karat=k))
-        meaning = [f"راكد = قطعة متاحة منذ {DEAD_STOCK_DAYS} يومًا أو أكثر ولم تظهر في أي فاتورة. قارب النفاد = صنف بيع {MIN_SALES} مرات فأكثر في آخر {VELOCITY_DAYS} يومًا والمتاح منه يكفي أقل من {LOW_COVER_DAYS} يومًا بمعدل البيع.",
+        meaning = [f"راكد = قطعة متاحة منذ {dead_stock_days} يومًا أو أكثر ولم تظهر في أي فاتورة. قارب النفاد = صنف بيع {min_sales} مرات فأكثر في آخر {velocity_days} يومًا والمتاح منه يكفي أقل من {low_cover_days} يومًا بمعدل البيع.",
                    "جداول الأوزان لكل عيار وكل صنف: شرائح وزنها جرام واحد (الحد الأدنى داخل الشريحة والأعلى خارجها) معلومات للمقارنة ولا تنبّه ولا تقرّر. التقرير تنبيه وليس قرارًا: لا يقترح سعرًا ولا يغيّر شيئًا. الأعيار منفصلة دائمًا."]
         return {"meaning": meaning, "tables": tables, "totals": cards}
 

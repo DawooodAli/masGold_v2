@@ -50,6 +50,7 @@ from repositories.invoice_repository import InvoiceRepository
 from services.authorization_service import AuthorizationService
 from services.gold_price_service import GoldPriceService
 from services.old_gold_availability import held_grams, shortage_message
+from services import setting_rules
 from services.invoice_calculator import ZERO, InvoiceCalculationError, InvoiceCalculator as Calc
 
 
@@ -63,10 +64,10 @@ ACCOUNT_TYPE_FOR_METHOD = {"MOBILE_WALLET": "MOBILE_WALLET", "INSTAPAY": "BANK",
 NO_ACCOUNT_TEXT = {"MOBILE_WALLET": "لا توجد محفظة مفعلة", "BANK": "لا يوجد حساب بنكي مفعّل"}
 WITHIN_RANGE, OUT_OF_RANGE, NOT_CONFIGURED = "WITHIN_RANGE", "OUT_OF_RANGE", "NOT_CONFIGURED"
 # Old-gold discount allowed on every invoice that buys old gold — mixed AND old gold only (hard rule,
-# owner decision 2026-10-06: 1.25–5.00%, default 1.50%).
-SALE_DISCOUNT_MIN, SALE_DISCOUNT_MAX = Decimal("1.25"), Decimal("5.00")
-# Owner decision 2026-10-23: an invoice that ONLY buys old gold may go down to 1.00%; as soon as it also sells something the minimum stays 1.25%.
-OLD_GOLD_ONLY_DISCOUNT_MIN = Decimal("1.00")
+# owner decision 2026-10-06). The MIXED minimum has no System Settings key and stays hard-coded; the
+# old-gold-only minimum, the maximum and the default come from System Settings (081), which the owner
+# made the reference for them (they were 1.00% / 5.00% / 1.50% before 081).
+SALE_DISCOUNT_MIN = Decimal("1.25")
 CUSTOMER_OWES, SHOP_OWES = "CUSTOMER_OWES", "SHOP_OWES"
 # Customer-facing money ends on a multiple of EGP 5 (owner rule). Internal values stay exact; only the
 # FINAL settlement amount is rounded, to the nearest 5 (half up), and the difference is recorded.
@@ -124,8 +125,10 @@ OLD_GOLD_STOCK = "OLD_GOLD_STOCK"        # F7 بيع من الكسر
 REASONS = {"NO_BARCODE": "لم يُنشأ لها باركود", "BARCODE_LOST": "الباركود مفقود أو تالف",
            "NOT_FOUND": "لم أجد القطعة في البحث", "OTHER": "سبب آخر"}
 SETTLE, ACCOUNT = "SETTLE", "ACCOUNT"
-DEFAULT_LIMITS = {"settlement_self_limit": Decimal("50.00"), "settlement_approval_limit": Decimal("500.00"),
-                  "old_gold_discount_default_percent": Decimal("1.50")}
+# Settlement limits: the frozen `billing_settings` row (016) overrides these when it exists. The old-gold discount default is NOT here
+# anymore — it comes from System Settings (081) through `setting_rules.discount_limits`, and `_limits` keeps its historic key name
+# (`old_gold_discount_default_percent`) because the invoice screen reads it from there.
+DEFAULT_LIMITS = {"settlement_self_limit": Decimal("50.00"), "settlement_approval_limit": Decimal("500.00")}
 
 
 @dataclass(frozen=True)
@@ -608,7 +611,7 @@ class InvoiceService:
     def _rules(self, calculated, customer, warning, dead_cash_confirmed, draft, limits, approval_ok=False):
         """Rules shared by preview (reported) and finalize (enforced)."""
         # A discount outside the allowed range is the first thing to fix (it changes O).
-        problems = self._discount_problems(calculated, draft) + list(calculated.problems)
+        problems = self._discount_problems(calculated, draft, limits) + list(calculated.problems)
         gap = calculated.gap or ZERO                     # old gold only: R − L still to decide
         if gap and draft.settlement_choice != SETTLE and not calculated.rounding:
             problems.append(InvoiceError("SETTLEMENT_CHOICE_REQUIRED",
@@ -643,19 +646,28 @@ class InvoiceService:
         return problems
 
     @staticmethod
-    def _discount_problems(calculated, draft):
-        """Every old-gold line is a PERCENT within 1.25–5.00 on a mixed invoice and within 1.00–5.00 on an old-gold-only invoice."""
-        minimum = SALE_DISCOUNT_MIN if calculated.sales else OLD_GOLD_ONLY_DISCOUNT_MIN
+    def _discount_problems(calculated, draft, limits):
+        """Every old-gold line is a PERCENT inside the range of System Settings (081): up to the configured maximum on every invoice,
+        from the configured old-gold-only minimum on an old-gold-only invoice, and from `SALE_DISCOUNT_MIN` (a hard rule, no setting)
+        as soon as the invoice also sells something."""
+        maximum = limits["max_old_gold_discount_pct"]
+        minimum = SALE_DISCOUNT_MIN if calculated.sales else limits["min_old_gold_discount_pct"]
         for line in calculated.olds:
-            if line.discount_type != "PERCENT" or not minimum <= line.discount_value <= SALE_DISCOUNT_MAX:
+            if line.discount_type != "PERCENT" or not minimum <= line.discount_value <= maximum:
                 return [InvoiceError("OLD_GOLD_DISCOUNT_RANGE",
-                                     f"خصم الكسر يجب أن يكون بين {minimum}% و {SALE_DISCOUNT_MAX}%.")]
+                                     f"خصم الكسر يجب أن يكون بين {minimum}% و {maximum}%.")]
         return []
 
     @staticmethod
     def _limits(invoices):
+        """Settlement limits from the frozen `billing_settings` row (016, written by no interface), and the old-gold discount triple
+        from System Settings (081), the reference for it since the owner's decision. The default is what the employee starts from;
+        the range is what `_discount_problems` enforces."""
         row = invoices.billing_settings() if hasattr(invoices, "billing_settings") else None
-        return {key: Decimal(str(row[key])) for key in DEFAULT_LIMITS} if row else dict(DEFAULT_LIMITS)
+        limits = {key: Decimal(str(row[key])) for key in DEFAULT_LIMITS} if row else dict(DEFAULT_LIMITS)
+        limits.update(setting_rules.discount_limits(invoices))
+        limits["old_gold_discount_default_percent"] = limits.pop("default_old_gold_discount_pct")
+        return limits
 
     @staticmethod
     def _new_customer_values(new_customer):
@@ -1080,7 +1092,8 @@ class InvoiceService:
             "making_groups": groups,
             "old_gold_discount_changed": bool(discount_changes),
             "old_gold_discount_default_percent": _money(limits["old_gold_discount_default_percent"]),
-            "old_gold_discount_range": [_money(SALE_DISCOUNT_MIN if calculated.sales else OLD_GOLD_ONLY_DISCOUNT_MIN), _money(SALE_DISCOUNT_MAX)],
+            "old_gold_discount_range": [_money(SALE_DISCOUNT_MIN if calculated.sales else limits["min_old_gold_discount_pct"]),
+                                        _money(limits["max_old_gold_discount_pct"])],
             "settlement_limits": {key: _money(value) for key, value in limits.items()},
             "settlement_needs_approval": bool(gap and abs(gap) > limits["settlement_self_limit"]
                                               and approval is None),

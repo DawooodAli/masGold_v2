@@ -58,7 +58,7 @@ from repositories.supplier_gold_settlement_repository import (CUSTODY_SOURCE_KIN
                                                               settlement_code)
 from repositories.supplier_payment_repository import BAR_FEE_MOVEMENT, PAYMENT_MOVEMENT, SOURCE as SMP_SOURCE, SupplierPaymentRepository, payment_code
 from services.authorization_service import AuthorizationService
-from services import book_rules
+from services import book_rules, setting_rules
 from services.correction_rules import correction_code
 from services.intermediary_holding_rules import (MANAGE_PERMISSION as MANAGE_HOLDINGS, VIEW_PERMISSION as VIEW_HOLDINGS, logo_pool_row, pool_row)
 from services.invoice_service import invoice_transaction
@@ -86,7 +86,8 @@ _VENDOR_MAP = {ord(c): "ا" for c in "أإآٱ"}
 _VENDOR_MAP.update({ord("ى"): "ي", ord("ة"): "ه", ord("ؤ"): "و", ord("ئ"): "ي"})
 _VENDOR_MAP.update({ord(c): None for c in "\u064b\u064c\u064d\u064e\u064f\u0650\u0651\u0652\u0640"})            # diacritics and tatweel
 SALE_PER_GRAM_STEP = Decimal("0.0001")
-PRICE_WARNING_PERCENT = Decimal("10")                # a sale price farther than this from the SHOP_BUY reference needs the owner's acknowledgement
+# A sale price farther than this (a percentage, from System Settings 081: `price_deviation_warning_pct`, default 10) from the SHOP_BUY
+# reference needs the owner's acknowledgement — a soft warning, never an automatic refusal.
 SETTLEABLE_DESIGNATIONS = (LOGO_DESIGNATION, UNCLASSIFIED)   # 046: Logo gold; 061: also gold that left WITHOUT a destination and was not melted (it stays in its OWN karat)
 CUSTODY_METHOD = "CUSTODY"
 PAYMENT_REFERENCE_MAX = 100
@@ -378,7 +379,9 @@ class MarketTripService:
             buyers = repository.buyers()
             intermediaries = repository.intermediaries() if {VIEW_HOLDINGS, MANAGE_HOLDINGS} <= set(actor.permissions) else []
             banks = repository.active_bank_accounts()
-        return {"banks": [{"id": str(b["id"]), "name": b["name"]} for b in banks],
+            warning_pct = setting_rules.price_warning_percent(repository)    # System Settings (081): the previews must warn exactly when posting will
+        return {"price_deviation_warning_pct": warning_pct,
+                "banks": [{"id": str(b["id"]), "name": b["name"]} for b in banks],
                 "buyers": [{"id": str(r["id"]), "name": r["name"], "active": bool(r["is_active"]),
                             "supplier": bool(r["is_supplier"]), "intermediary": bool(r["is_intermediary"])} for r in buyers],
                 "intermediaries": [{"id": str(r["id"]), "name": r["name"], "active": bool(r["is_active"])} for r in intermediaries],
@@ -1765,7 +1768,7 @@ class MarketTripService:
                 raise TripError("PURCHASE_EXCEEDS_CASH",
                                 f"نقدية العهدة المتاحة {available:,.2f} ج فقط: لا يمكن شراء بإجمالي {total:,.2f} ج.")
             reference_total, deviation = self.buy_reference(self._reference_prices(), parsed, karat_values, total)
-            warned = deviation is not None and abs(deviation) > PRICE_WARNING_PERCENT
+            warned = deviation is not None and abs(deviation) > setting_rules.price_warning_percent(repository)
             if warned and not acknowledged:
                 raise TripError("PRICE_DEVIATION", self._buy_warning_text(deviation, reference_total))
             now = repository.db_now()
@@ -2024,7 +2027,7 @@ class MarketTripService:
             buyer_kind, buyer_id, buyer_label = self._sale_buyer(repository, party_text, buyer_name)
             basis, total, per_gram = self._sale_price(grams, price_mode, price)
             reference_total, reference_per_gram, deviation = self._sale_reference(grams, karat_value, fineness, total)
-            warned = deviation is not None and abs(deviation) > PRICE_WARNING_PERCENT
+            warned = deviation is not None and abs(deviation) > setting_rules.price_warning_percent(repository)
             if warned and not acknowledged:
                 raise TripError("PRICE_DEVIATION", self._price_warning_text(deviation, reference_total))
             now = repository.db_now()
@@ -2479,7 +2482,7 @@ class MarketTripService:
                     raise TripError("WEIGHT_REQUIRED", "أدخل وزن الذهب المباع.")
         basis, total, per_gram = self._sale_price(grams, price_mode, price)
         reference_total, reference_per_gram, deviation = self._sale_reference(grams, karat_value, fineness, total)
-        warned = deviation is not None and abs(deviation) > PRICE_WARNING_PERCENT
+        warned = deviation is not None and abs(deviation) > setting_rules.price_warning_percent(repository)
         return {"basis": basis, "total": str(total), "per_gram": str(per_gram if per_gram is not None else (total / grams).quantize(SALE_PER_GRAM_STEP, rounding=ROUND_HALF_UP)),
                 "weight": str(grams), "reference_total": None if reference_total is None else str(reference_total),
                 "reference_per_gram": None if reference_per_gram is None else str(reference_per_gram),

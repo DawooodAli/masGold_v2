@@ -721,7 +721,8 @@ class MarketTripViewModel(QObject):
     def previewSale(self, source_kind, karat_id, designation, lot_id, weight, price_mode, price):
         """The agreed total, the per-gram price and the reference deviation BEFORE submitting: figures come from the service's own functions on
         the loaded context (never QML arithmetic, no database read). The service recomputes and re-checks everything when it posts."""
-        from services.market_trip_service import MarketTripService, TripError, parse_weight, PRICE_WARNING_PERCENT
+        from services import setting_rules
+        from services.market_trip_service import MarketTripService, TripError, parse_weight
         empty = {"valid": False, "error": "", "availableText": "", "totalText": "", "perGramText": "", "referenceText": "", "deviationText": "",
                  "warning": False, "warningText": ""}
         if not self._detail:
@@ -768,7 +769,7 @@ class MarketTripViewModel(QObject):
             return {**empty, "error": str(exc)}
         prices = {int(k): Decimal(v) for k, v in self._reference_prices.items()}
         reference_total, reference_gram, deviation = MarketTripService.sale_reference(prices, grams_value, karat_value, fineness, total)
-        warned = deviation is not None and abs(deviation) > PRICE_WARNING_PERCENT
+        warned = deviation is not None and abs(deviation) > setting_rules.price_warning_from(self._context)
         shown_gram = per_gram if per_gram is not None else (total / grams_value).quantize(Decimal("0.0001"))
         return {**empty, "valid": True, "availableText": available, "totalText": money(total), "perGramText": number(shown_gram, 4),
                 "referenceText": "" if reference_total is None else f"المرجع (سعر شراء المحل): {money(reference_total)}",
@@ -874,8 +875,8 @@ class MarketTripViewModel(QObject):
         """The posted equivalent of every line, the document total, the book balance and the first refusal BEFORE submitting: computed by the SAME pure rules as the
         posting (services.book_rules) on the loaded detail - no database read, no QML arithmetic. The service recomputes and re-checks everything when it posts."""
         from services import book_rules
+        from services import setting_rules
         from services.market_trip_book_service import MarketTripBookService
-        from services.market_trip_service import PRICE_WARNING_PERCENT
         empty = {"valid": False, "error": "", "lines": [], "totalPosted": "", "balanceText": "", "totalText": "", "referenceText": "", "deviationText": "",
                  "warning": False, "warningText": ""}
         book = (self._detail or {}).get("book")
@@ -912,7 +913,7 @@ class MarketTripViewModel(QObject):
             prices = {int(k): Decimal(v) for k, v in self._reference_prices.items()}
             reference_total, deviation = MarketTripBookService.book_reference(prices, parsed, karats, total)
             if reference_total is not None:
-                warned = abs(deviation) > PRICE_WARNING_PERCENT
+                warned = abs(deviation) > setting_rules.price_warning_from(self._context)
                 out.update(referenceText=f"المرجع (سعر شراء المحل): {money(reference_total)}", deviationText=f"{ltr(number(deviation, 2, signed=True))}%", warning=warned,
                            warningText=("الإجمالي بعيد عن المرجع بنسبة " + number(abs(deviation), 2) + "%: ستُطلب منك الموافقة عليه.") if warned else "")
         return {**out, "valid": True}
@@ -945,7 +946,8 @@ class MarketTripViewModel(QObject):
     def previewBuy(self, lines):
         """The total, the available cash and the reference deviation BEFORE submitting, from the service's own functions on the loaded context
         (never QML arithmetic, no database read). The service recomputes and re-checks everything when it posts."""
-        from services.market_trip_service import MarketTripService, TripError, PRICE_WARNING_PERCENT
+        from services import setting_rules
+        from services.market_trip_service import MarketTripService, TripError
         empty = {"valid": False, "error": "", "availableText": "", "totalText": "", "referenceText": "", "deviationText": "", "warning": False,
                  "warningText": ""}
         if not self._detail:
@@ -963,7 +965,7 @@ class MarketTripViewModel(QObject):
         karat_values = {int(k["id"]): int(str(k["text"]).replace("عيار", "").strip()) for k in self.context.get("karats", [])}
         prices = {int(k): Decimal(v) for k, v in self._reference_prices.items()}
         reference_total, deviation = MarketTripService.buy_reference(prices, parsed, karat_values, total)
-        warned = deviation is not None and abs(deviation) > PRICE_WARNING_PERCENT
+        warned = deviation is not None and abs(deviation) > setting_rules.price_warning_from(self._context)
         return {**base, "valid": True, "totalText": money(total),
                 "referenceText": "" if reference_total is None else f"المرجع (سعر شراء المحل لنفس العيارات): {money(reference_total)}",
                 "deviationText": "" if deviation is None else f"{number(deviation, 2, signed=True)}%", "warning": warned,

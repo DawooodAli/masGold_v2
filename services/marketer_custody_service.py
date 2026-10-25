@@ -30,11 +30,11 @@ from repositories.marketer_custody_repository import (CASH_HANDOVER, CASH_MOVEME
                                                       MarketerCustodyRepository, document_code)
 from repositories.old_gold_conversion_repository import OldGoldConversionRepository
 from repositories.supplier_gold_settlement_repository import GOLD_MOVEMENT as SUPPLIER_GOLD_MOVEMENT, SupplierGoldSettlementRepository, settlement_code
-from services import supplier_rules as rules
+from services import setting_rules, supplier_rules as rules
 from services.authorization_service import AuthorizationService
 from services.invoice_service import invoice_transaction
 from services.market_trip_service import (BUYER_NAME_MAX, BUYER_REGISTERED, BUYER_THIRD_PARTY, MAX_MONEY, MONEY_STEP, NOTES_MAX, PAYMENT_REFERENCE_MAX,
-                                          PRICE_WARNING_PERCENT, ZERO_MONEY, ZERO_WEIGHT, MarketTripService, TripError, _decimal, _entry_date, _key, _text,
+                                          ZERO_MONEY, ZERO_WEIGHT, MarketTripService, TripError, _decimal, _entry_date, _key, _text,
                                           parse_weight)
 
 MANAGE_PERMISSION = "INTERMEDIARY_HOLDING_MANAGE"
@@ -198,7 +198,9 @@ class MarketerCustodyService:
             trip_legs = repo.trip_movements(party_number)
             counterparties = repo.counterparties()
             recipients = repo.recipients()
-        return {"party": {"id": str(party["id"]), "name": party["name"], "active": bool(party["is_active"]), "is_supplier": bool(party["is_supplier"]),
+            warning_pct = setting_rules.price_warning_percent(repo)          # System Settings (081): the previews must warn exactly when posting will
+        return {"price_deviation_warning_pct": warning_pct,
+                "party": {"id": str(party["id"]), "name": party["name"], "active": bool(party["is_active"]), "is_supplier": bool(party["is_supplier"]),
                           "is_intermediary": True},
                 "cash": cash.quantize(MONEY_STEP), "gold": gold.quantize(Decimal("0.001")), "karat": KARAT_VALUE,
                 "documents": [self._document_row(d) for d in documents], "settlements": [self._settlement_row(s) for s in settlements],
@@ -453,7 +455,7 @@ class MarketerCustodyService:
                 raise TripError("PURCHASE_EXCEEDS_CASH", f"نقدية المسوقجي {held:,.2f} ج فقط: لا يمكن شراء بإجمالي {total:,.2f} ج.")
             reference_total, deviation = MarketTripService.buy_reference(
                 self._reference_prices(), [{"karat_id": karat["id"], "weight": l["weight"]} for l in parsed], {karat["id"]: KARAT_VALUE}, total)
-            warned = deviation is not None and abs(deviation) > PRICE_WARNING_PERCENT
+            warned = deviation is not None and abs(deviation) > setting_rules.price_warning_percent(repo)
             if warned and not acknowledge_price:
                 raise TripError("PRICE_DEVIATION", MarketTripService._buy_warning_text(deviation, reference_total))
             now = repo.db_now()
@@ -499,7 +501,7 @@ class MarketerCustodyService:
             if grams > held:
                 raise TripError("SALE_EXCEEDS_GOLD", f"ذهب المسوقجي (عيار 21) {held:,.3f} جرام فقط: لا يمكن بيع {grams:,.3f} جرام.")
             reference_total, _, deviation = MarketTripService.sale_reference(self._reference_prices(), grams, KARAT_VALUE, None, total)
-            warned = deviation is not None and abs(deviation) > PRICE_WARNING_PERCENT
+            warned = deviation is not None and abs(deviation) > setting_rules.price_warning_percent(repo)
             if warned and not acknowledge_price:
                 raise TripError("PRICE_DEVIATION", MarketTripService._price_warning_text(deviation, reference_total))
             now = repo.db_now()
