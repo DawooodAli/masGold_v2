@@ -120,7 +120,7 @@ class MasterRoleTests(RoleCase):
         self.purchases.cancel_draft(draft)                                                  # a CANCELLED invoice is still history
         self.refused(lambda: self.suppliers.update_supplier(with_draft, "مسودة", is_supplier=False), "ROLE_HISTORY_EXISTS")
         with_payment = self.suppliers.create_supplier("دفعة", None, None, K21, is_supplier=True, is_intermediary=True)
-        self.payments.pay(with_payment, "CASH", None, "10", TODAY, "", "", self.next_key())
+        self.payments.pay(with_payment, "CASH", 1, "10", TODAY, "", "", self.next_key())
         self.refused(lambda: self.suppliers.update_supplier(with_payment, "دفعة", is_supplier=False), "ROLE_HISTORY_EXISTS")
         self.assertTrue(self.db.suppliers[int(with_draft)]["is_supplier"])
         self.assertTrue(self.db.suppliers[int(with_payment)]["is_supplier"])
@@ -136,7 +136,7 @@ class MasterRoleTests(RoleCase):
     def test_an_inactive_supplier_with_both_roles_stays_payable(self):
         sid = self.suppliers.create_supplier("متوقف", None, None, K21, is_supplier=True, is_intermediary=True)
         self.suppliers.set_active(sid, False)
-        paid = self.payments.pay(sid, "CASH", None, "25", TODAY, "", "", self.next_key())
+        paid = self.payments.pay(sid, "CASH", 1, "25", TODAY, "", "", self.next_key())
         self.assertEqual(paid["amount"], "25.00")
 
     def test_the_roles_are_audited_and_creation_permissions_are_unchanged(self):

@@ -36,6 +36,8 @@ class Recorder:
                     self.rows = [{"n": 1}]
                 elif "marketer_documents" in text:
                     self.rows = [{"n": 0}]
+                elif "market_trip_bar_fees" in text and " as fee" in text:
+                    self.rows = [{"fee": 0}]
                 elif "from market_trips" in text and "where id" in text:
                     self.rows = [] if outer.trip is None else [dict(outer.trip)]
                 elif text.lstrip().startswith("select"):

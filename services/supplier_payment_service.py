@@ -41,7 +41,7 @@ PAY, REVERSE = "SUPPLIER_MAKING_PAY", "SUPPLIER_MAKING_PAY_REVERSE"
 REFERENCE_MAX, NOTES_MAX = 100, 1000
 CUSTODY = "CUSTODY"                         # paid with cash already in an open market custody (043): never a direct payment method
 MARKETER = "MARKETER"
-METHODS = (BANK, CUSTODY, MARKETER)
+METHODS = (CASH, BANK, CUSTODY, MARKETER)
 TRIP_PERMISSION, HOLDING_MANAGE_PERMISSION = "MARKET_TRIP_MANAGE", "INTERMEDIARY_HOLDING_MANAGE"
 METHOD_TEXT = {CASH: "نقدًا من الخزنة الرئيسية", BANK: "تحويل من حساب بنكي", CUSTODY: "من عهدة السوق",
                MARKETER: "من نقدية المسوقجي"}
@@ -208,16 +208,32 @@ class SupplierPaymentService:
         supplier_id = _supplier_id(supplier_id)
         method = str(method or "").strip().upper()
         if method not in METHODS:
-            raise rules.SupplierRuleError("METHOD_INVALID", "اختر عهدة السوق أو نقدية المسوقجي أو تحويلًا بنكيًا.")
+            raise rules.SupplierRuleError("METHOD_INVALID", "اختر نقدًا من الخزنة أو تحويلًا بنكيًا أو عهدة السوق أو نقدية المسوقجي.")
         value = rules.parse_amount(amount)
         paid_on = _payment_date(payment_date)
         reference_text = clean_text(reference, REFERENCE_MAX, "المرجع")
         notes_text = clean_text(notes, NOTES_MAX, "الملاحظات")
         key = _key(request_key)
-        selected_id = (_bank_id(source_id) if method == BANK else
-                       _source_id(source_id, "CUSTODY_REQUIRED", "اختر عهدة السوق.")
-                       if method == CUSTODY else
-                       _source_id(source_id, "MARKETER_NOT_FOUND", "اختر مسوقجيًا لديه نقدية."))
+        # Validate supplier role early: CASH, BANK, CUSTODY need supplier role; MARKETER can use intermediary-only party
+        if method != MARKETER:
+            with self._transaction() as connection:
+                repository = self._repository(connection)
+                supplier = repository.get_supplier(supplier_id)
+                if supplier is None:
+                    raise rules.SupplierRuleError("SUPPLIER_NOT_FOUND", "المورد غير موجود.")
+                if not supplier["is_supplier"]:
+                    raise rules.SupplierRuleError("SUPPLIER_ROLE_REQUIRED", "المورد يجب أن يكون له دور المورد.")
+        if method == CASH:
+            cash_account_id = _source_id(source_id, "CASH_ACCOUNT_REQUIRED", "اختر خزنة رئيسية.")
+            bank_id = cash_account_id
+            marketer_id = None
+        else:
+            selected_id = (_bank_id(source_id) if method == BANK else
+                           _source_id(source_id, "CUSTODY_REQUIRED", "اختر عهدة السوق.")
+                           if method == CUSTODY else
+                           _source_id(source_id, "MARKETER_NOT_FOUND", "اختر مسوقجيًا لديه نقدية."))
+            marketer_id = selected_id if method == MARKETER else None
+            bank_id = selected_id if method == BANK else None
         if not isinstance(confirm_same_party, bool):
             raise rules.SupplierRuleError("CONFIRMATION_INVALID", "تأكيد الطرف نفسه غير صحيح.")
         confirmed = confirm_same_party
@@ -231,8 +247,6 @@ class SupplierPaymentService:
                     "method": CUSTODY, "amount": str(value), "balance_before": result["balance_before"],
                     "balance_after": result["balance_after"], "duplicate": bool(result.get("duplicate")),
                     "custody_trip_id": result["trip_id"], "custody_code": result["code"]}
-        marketer_id = selected_id if method == MARKETER else None
-        bank_id = selected_id if method == BANK else None
         digest = hashlib.sha256(json.dumps(
             [supplier_id, method, bank_id, marketer_id, confirmed, str(value), paid_on.isoformat(), reference_text, notes_text],
             ensure_ascii=False).encode()).hexdigest()
@@ -281,6 +295,10 @@ class SupplierPaymentService:
                     raise rules.SupplierRuleError("MARKETER_CASH_INSUFFICIENT",
                                                   f"النقدية المتاحة لدى المسوقجي {held_cash:,.2f} ج فقط.")
                 account = None
+            elif method == CASH:
+                account = accounts.account("CASH", bank_id, lock=True)
+                if account is None:
+                    raise rules.SupplierRuleError("ACCOUNT_NOT_FOUND", "الحساب النقدي غير موجود.")
             else:
                 account = accounts.account("BANK", bank_id, lock=True)
                 if account is None:
@@ -295,7 +313,7 @@ class SupplierPaymentService:
             after = rules.making_after_payment(before, value)
             now = repository.db_now()
             payment_id = repository.insert_header(
-                supplier_id=supplier_id, method=method, cash_account_id=None,
+                supplier_id=supplier_id, method=method, cash_account_id=int(account["id"]) if method == CASH else None,
                 bank_account_id=int(account["id"]) if method == BANK else None, marketer_party_id=marketer_id,
                 self_payment_confirmed=confirm_same_party, amount=value, payment_date=paid_on,
                 reference=reference_text, notes=notes_text, before=before, after=after, key=key, digest=digest,
@@ -307,6 +325,11 @@ class SupplierPaymentService:
                     ledger=method, account_id=account["id"], payment_id=payment_id, code=code, amount=value,
                     description=f"{label} — {supplier['name']}", notes=notes_text, actor=actor, now=now)
                 repository.insert_leg(payment_id=payment_id, kind="MONEY", bank_movement_id=money_id)
+            elif method == CASH:
+                money_id = repository.post_money(
+                    ledger=method, account_id=account["id"], payment_id=payment_id, code=code, amount=value,
+                    description=f"{label} — {supplier['name']}", notes=notes_text, actor=actor, now=now)
+                repository.insert_leg(payment_id=payment_id, kind="MONEY", cash_movement_id=money_id)
             else:
                 from repositories.marketer_custody_repository import document_code
                 marketer = marketer_repository.party(marketer_id)

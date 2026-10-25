@@ -640,7 +640,9 @@ class PaymentRepo(PurchaseRepo):
     def insert_header(self, *, supplier_id, method, cash_account_id, bank_account_id, amount, payment_date, reference,
                       notes, before, after, key, digest, actor, now, marketer_party_id=None, self_payment_confirmed=False):
         assert amount > 0 and after == before - amount                                  # chk_smp_amount / chk_smp_balance
-        assert ((method == "BANK" and bank_account_id is not None and cash_account_id is None
+        assert ((method == "CASH" and cash_account_id is not None and bank_account_id is None
+                 and marketer_party_id is None and not self_payment_confirmed)
+                or (method == "BANK" and bank_account_id is not None and cash_account_id is None
                  and marketer_party_id is None and not self_payment_confirmed)
                 or (method == "MARKETER" and bank_account_id is None and cash_account_id is None
                     and marketer_party_id is not None))

@@ -37,6 +37,24 @@ class Conn:
     def __init__(self, store):
         self.store = store
 
+    def cursor(self, dictionary=False):
+        owner = self
+
+        class Cursor:
+            def execute(self, query, params=()):
+                pass
+
+            def fetchall(self):
+                return []
+
+            def fetchone(self):
+                return None
+
+            def close(self):
+                pass
+
+        return Cursor()
+
 
 class Balances:
     def __init__(self, connection):

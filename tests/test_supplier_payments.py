@@ -278,7 +278,8 @@ class PaymentPostingTests(PaymentCase):
                          [("BANK", 5, None), ("BANK", 6, None)])
 
     def test_main_safe_is_not_a_supplier_making_payment_source(self):
-        self.refused("METHOD_INVALID", lambda: self.pay("300", method="CASH", bank=None))
+        # CASH is now a valid method but requires a cash_account_id
+        self.refused("CASH_ACCOUNT_REQUIRED", lambda: self.pay("300", method="CASH", bank=None))
         self.assertEqual((self.db.payments, self.db.cash_moves, self.db.bank_moves), ({}, [], []))
         source = (ROOT / "services" / "supplier_payment_service.py").read_text(encoding="utf-8")
         self.assertNotIn("main_safe()", source)
@@ -292,7 +293,10 @@ class PaymentPostingTests(PaymentCase):
         self.assertEqual((self.db.payments, self.db.bank_moves), ({}, []))
 
     def test_cash_is_refused_even_when_a_bank_account_is_also_supplied(self):
-        self.refused("METHOD_INVALID", lambda: self.pay("100", method="CASH", bank="5"))
+        # CASH method requires a valid cash account ID, not a bank account ID.
+        # Passing a bank account ID (5) as the cash_account_id will fail with ACCOUNT_NOT_FOUND
+        # because account 5 is a BANK account, not a CASH account.
+        self.refused("ACCOUNT_NOT_FOUND", lambda: self.pay("100", method="CASH", bank="5"))
         self.assertEqual((self.cash(1), self.bank(5)), (D("0.00"), D("0.00")))
 
     def test_a_marketer_cash_payment_debits_only_that_marketer_and_records_confirmation_state(self):

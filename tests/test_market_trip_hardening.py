@@ -177,11 +177,15 @@ class Capture:
         class Cursor:
             def execute(self, query, params=()):
                 capture.sql.append(" ".join(query.split()))
+                capture._last_sql = query
 
             def fetchall(self):
                 return []
 
             def fetchone(self):
+                sql = getattr(capture, "_last_sql", "")
+                if "COUNT(*)" in sql and " AS n" in sql:
+                    return {"n": 0}
                 return {"issued": 0, "returned": 0, "paid": 0, "proceeds": 0, "spent": 0}
 
             def close(self):
@@ -202,6 +206,7 @@ class RepositorySqlTests(unittest.TestCase):
         repo = MarketTripRepository(capture)
         repo._settlement = False                                              # 060: the capability probe is not the subject of this test
         repo._cash_settle = False                                                      # 064: the capability probe is not the subject of this test
+        repo._bar_fee = False                                                         # 080: the capability probe is not the subject of this test
         repo.custody_cash(1, 2, **flags)
         repo.custody_gold(1, 2, **flags)
         return capture.sql

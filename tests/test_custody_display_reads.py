@@ -26,8 +26,12 @@ class Recorder:
 
             def execute(self, sql, params=()):
                 outer.statements.append(" ".join(sql.split()))
+                outer._last_sql = sql
 
             def fetchone(self):
+                sql = getattr(outer, "_last_sql", "")
+                if "COUNT(*)" in sql and " AS n" in sql:
+                    return {"n": 0}
                 return {"issued": 0, "returned": 0, "paid": 0, "proceeds": 0, "spent": 0}
 
             def fetchall(self):
@@ -43,6 +47,7 @@ def recorded(call):
     repo = MarketTripRepository(connection)
     repo._settlement = False                                              # 060: the capability probe and the settlement reads are covered by their own tests
     repo._cash_settle = False                                                      # 064: the capability probe is not the subject of this test
+    repo._bar_fee = False                                                         # 080: the capability probe is not the subject of this test
     call(repo)
     return connection.statements
 
@@ -97,7 +102,7 @@ class DecisionFormTests(unittest.TestCase):
 
 class CallerAuditTests(unittest.TestCase):
     """The caller audit as a test: only the named DISPLAY callers read the custody without locks; every other caller states `current=True` or relies on the locking default."""
-    DISPLAY_FUNCTIONS = {"trips", "trip_page", "trip_detail", "book_preview", "reconciliation_preview", "closure_preview", "preview_settle_melt"}      # R1 adds the read-only reconciliation preview
+    DISPLAY_FUNCTIONS = {"trips", "trip_page", "trip_detail", "book_preview", "reconciliation_preview", "closure_preview", "preview_settle_melt", "supplier_settlement_sources"}      # R1 adds the read-only reconciliation preview; 080 adds supplier_settlement_sources
 
     @staticmethod
     def calls(path, attr):
