@@ -146,6 +146,35 @@ class DashboardViewModel(QObject):
                 "versus": f"سعر الشراء الآن {'أعلى' if value > 0 else 'أقل' if value < 0 else 'مساوي'} منه بنسبة {abs(value):.2f}%",
                 "action": action, "tone": hint.get("hint_tone") or "muted"}
 
+    # ------------------------------------------------------------ overdue debts (customers permission)
+    @Property("QVariantMap", notify=changed)
+    def overdueDebts(self):
+        """Customers' open owed items at least N days old (N shown in the title text): the total, the number of customers and the oldest rows."""
+        data = self._data.get("overdue") or {}
+        return {"days": int(data.get("days", 0)), "total": money(data.get("total", "0")), "count": int(data.get("customers", 0)),
+                "rows": [{"name": r["customer"] + (f"  ({r['code']})" if r["code"] else ""), "amount": money(r["amount"]), "age": f"منذ {r['age']} يوم"}
+                         for r in data.get("rows", [])]}
+
+    # ------------------------------------------------------------ today's scrap price (billing permission)
+    @Property("QVariantList", notify=changed)
+    def scrapToday(self):
+        """Per karat: today's scrap bought, the average price per gram paid and the latest stored SHOP_BUY; difference > 0 = paid more than today's buying price (amber), <= 0 = green."""
+        rows = []
+        for r in self._data.get("scrap_today", []):
+            diff = Decimal(r["diff"]) if r["diff"] is not None else None
+            rows.append({"karat": str(r["karat"]), "grams": grams(r["grams"]), "average": money(r["average"]),
+                         "price": money(r["price"]) if r["price"] is not None else "السعر غير متاح",
+                         "diff": ("" if diff is None else f"{'+' if diff > 0 else ''}{money(diff)}"), "over": bool(diff is not None and diff > 0)})
+        return rows
+
+    # ------------------------------------------------------------ dead stock (inventory permission)
+    @Property("QVariantMap", notify=changed)
+    def deadStock(self):
+        data = self._data.get("dead_stock") or {}
+        return {"days": int(data.get("days", 0)),
+                "rows": [{"karat": str(r["karat"]), "pieces": f"{r['pieces']} قطعة", "grams": grams(r["grams"]), "oldest": f"أقدمها {r['oldest']} يوم"}
+                         for r in data.get("rows", [])]}
+
     # ------------------------------------------------------------ customer balances (customers permission)
     @Property(bool, notify=changed)
     def canSeeBalances(self):

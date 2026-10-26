@@ -5,7 +5,7 @@ and empty states. QML: the real Main.qml at 1440×900 / 1280×800 / 1080×680 (s
 MASGOLD_UI_REVIEW_DIR is set), permissions and refresh after a finalized invoice.
 """
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 import os
 from pathlib import Path
@@ -72,6 +72,31 @@ class FakeDashboardRepo:
         return self.state["customer_balances"]
 
 
+    def today_scrap_purchases(self):
+        self.state["reads"].append("scrap")
+        return self.state["scrap"]
+
+    def latest_shop_buy_prices(self):
+        self.state["reads"].append("scrap_prices")
+        return self.state["scrap_prices"]
+
+    def db_today(self):
+        return self.state["today"]
+
+    def dead_stock_by_karat(self, days):
+        self.state["reads"].append(("dead", days))
+        return self.state["dead_stock"]
+
+
+class FakeReportRepo:
+    def __init__(self, connection):
+        self.state = connection
+
+    def customer_open_ledger(self):
+        self.state["reads"].append("debt_ledger")
+        return self.state["debt_ledger"]
+
+
 class FakeBalanceRepo:
     def __init__(self, connection):
         self.state = connection
@@ -91,6 +116,7 @@ def empty_state():
                                       "sale_invoice_count": 0, "buy_invoice_count": 0, "unidentified_lines": 0},
             "sold": [], "flow": [], "month": [], "month_prev": [], "month_info": {"first": "2026-09-01", "day": 27, "today": datetime(2026, 9, 27)}, "below_min": [],
             "top_types": [], "price_daily": [], "price_legacy": [], "customer_balances": [],
+            "scrap": [], "scrap_prices": [], "today": date(2026, 9, 27), "dead_stock": [], "debt_ledger": [],
             "balance": [{"karat_id": 1, "karat_value": 21, "balance_grams": D("0")},
                         {"karat_id": 2, "karat_value": 18, "balance_grams": D("0")},
                         {"karat_id": 3, "karat_value": 24, "balance_grams": D("0")}]}
@@ -111,6 +137,14 @@ def busy_state():
     state["customer_balances"] = [{"customer_id": 7, "customer_code": "CU0007", "name": "سليا محمد", "balance": D("25000.00")},
                                   {"customer_id": 9, "customer_code": None, "name": "منى علي", "balance": D("-3200.00")},
                                   {"customer_id": 11, "customer_code": "CU0011", "name": "أحمد حسن", "balance": D("0.00")}]   # settled: never reaches the card
+    state["scrap"] = [{"karat_value": 21, "grams": D("10.000"), "paid": D("61000.00")}, {"karat_value": 18, "grams": D("4.000"), "paid": D("20000.00")}]
+    state["scrap_prices"] = [{"karat_value": 21, "buy": D("6207.0000")}]
+    state["dead_stock"] = [{"karat_value": 21, "pieces": 4, "grams": D("20.500"), "oldest_days": 400}, {"karat_value": 18, "pieces": 1, "grams": D("3.000"), "oldest_days": 200}]
+    state["debt_ledger"] = [
+        {"customer_id": 7, "name": "سليا محمد", "customer_code": "CU0007", "is_active": 1, "occurred_at": datetime(2026, 7, 1), "amount_delta": D("1000.00")},
+        {"customer_id": 7, "name": "سليا محمد", "customer_code": "CU0007", "is_active": 1, "occurred_at": datetime(2026, 9, 20), "amount_delta": D("300.00")},
+        {"customer_id": 9, "name": "منى علي", "customer_code": None, "is_active": 1, "occurred_at": datetime(2026, 9, 25), "amount_delta": D("700.00")},        # recent: not overdue
+        {"customer_id": 11, "name": "عميل موقوف", "customer_code": None, "is_active": 0, "occurred_at": datetime(2026, 1, 1), "amount_delta": D("50.00")}]
     state["balance"][0]["balance_grams"] = D("128.520")
     return state
 
@@ -124,7 +158,7 @@ def make_service(state, permissions=BILLING):
         yield state
     from tests.auth_fakes import FakeAuthorization
     return DashboardService(session, transaction_factory=transaction, repository=FakeDashboardRepo,
-                            balance_repository=FakeBalanceRepo, authorization=FakeAuthorization(session)), session
+                            balance_repository=FakeBalanceRepo, report_repository=FakeReportRepo, authorization=FakeAuthorization(session)), session
 
 
 class DashboardServiceTests(unittest.TestCase):
@@ -162,7 +196,7 @@ class DashboardServiceTests(unittest.TestCase):
         state = busy_state()
         make_service(state)[0].today()
         self.assertEqual(sorted(state["reads"]), ["flow", "invoices", "month", "month_prev", "month_start",
-                                                  "price_daily", "price_legacy", "sold", "top_types"])
+                                                  "price_daily", "price_legacy", "scrap", "scrap_prices", "sold", "top_types"])
 
     def test_no_money_received_cash_or_bank_balances_on_the_dashboard(self):
         snapshot = make_service(busy_state())[0].today()
@@ -231,6 +265,44 @@ class StaticService:
     def today(self, *, _expected_actor=None):
         self.calls += 1
         return self.snapshot
+
+
+class DashboardNewCardsServiceTests(unittest.TestCase):
+    def test_overdue_debts_are_the_old_open_owed_items_of_active_customers(self):
+        snapshot = make_service(busy_state(), CUSTOMERS)[0].today()
+        overdue = snapshot["overdue"]
+        self.assertEqual((overdue["days"], overdue["total"], overdue["customers"]), (30, "1000.00", 1))     # 300 (7 days) and 700 (2 days) are recent; the inactive customer is left out
+        self.assertEqual(overdue["rows"], [{"customer": "سليا محمد", "code": "CU0007", "amount": "1000.00", "age": 88}])
+        state = busy_state()
+        self.assertNotIn("overdue", make_service(state, BILLING)[0].today())
+        self.assertNotIn("debt_ledger", state["reads"])
+
+    def test_a_payment_consumes_the_oldest_debt_first(self):
+        state = busy_state()
+        state["debt_ledger"].insert(1, {"customer_id": 7, "name": "سليا محمد", "customer_code": "CU0007", "is_active": 1,
+                                        "occurred_at": datetime(2026, 7, 5), "amount_delta": D("-1000.00")})
+        overdue = make_service(state, CUSTOMERS)[0].today()["overdue"]
+        self.assertEqual((overdue["total"], overdue["customers"], overdue["rows"]), ("0.00", 0, []))
+
+    def test_scrap_today_is_per_karat_with_the_price_difference(self):
+        rows = make_service(busy_state(), BILLING)[0].today()["scrap_today"]
+        self.assertEqual(rows[0], {"karat": 21, "grams": "10.000", "average": "6100.00", "price": "6207.00", "diff": "-107.00"})
+        self.assertEqual(rows[1], {"karat": 18, "grams": "4.000", "average": "5000.00", "price": None, "diff": None})       # no stored price: never invented
+        none = make_service(empty_state(), BILLING)[0].today()
+        self.assertEqual(none["scrap_today"], [])
+        state = busy_state()
+        self.assertNotIn("scrap_today", make_service(state, VIEW_ONLY)[0].today())
+        self.assertNotIn("scrap", state["reads"])
+
+    def test_dead_stock_follows_the_inventory_grant_and_is_per_karat(self):
+        state = busy_state()
+        snapshot = make_service(state, BILLING | {"INVENTORY_VIEW"})[0].today()
+        self.assertEqual(snapshot["dead_stock"], {"days": 180, "rows": [{"karat": 21, "pieces": 4, "grams": "20.500", "oldest": 400},
+                                                                          {"karat": 18, "pieces": 1, "grams": "3.000", "oldest": 200}]})
+        self.assertIn(("dead", 180), state["reads"])
+        state = busy_state()
+        self.assertNotIn("dead_stock", make_service(state, BILLING)[0].today())
+        self.assertNotIn(("dead", 180), state["reads"])
 
 
 class DashboardViewModelTests(unittest.TestCase):
@@ -486,6 +558,35 @@ class DashboardPageTests(page_harness.InvoicePageTests):
         credit = self.item("customerBalance_1")
         line2 = next(c for c in credit.findChildren(object) if c.property("value") is not None and c.property("value") != "")
         self.assertEqual(line2.property("valueColor").name(), self._theme_color("blue"))
+
+    def test_overdue_scrap_and_dead_stock_cards(self):
+        """Owner request 2026-10-26: the overdue debts, today's scrap price and the dead stock, readable at every target size."""
+        service, _ = make_service(busy_state(), CUSTOMERS | {"INVENTORY_VIEW"})
+        self.open_dashboard(service.today())
+        for width, height in page_harness.SIZES:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(250)
+            page = self.item("dashboardPage")
+            for name in ("overdueCard", "scrapTodayCard", "deadStockCard"):
+                item = self.item(name)
+                self.assertTrue(item.property("visible"), f"{name} hidden at {width}x{height}")
+                left = item.mapToItem(page, QPointF(0, 0)).x()
+                self.assertGreaterEqual(left, -1, name)
+                self.assertLessEqual(left + item.property("width"), page.property("width") + 1, name)
+        self.assertEqual(self.item("overdueRow_0") is not None, True)
+        self.assertEqual(self.item("overdueEmpty").property("visible"), False)
+        self.assertIsNotNone(self.item("scrapToday_0"))
+        self.assertIsNotNone(self.item("deadStock_0"))
+        self.assertEqual(self.item("deadStockEmpty").property("visible"), False)
+        self.assertEqual(self.warnings, [])
+
+    def test_new_cards_follow_the_grants(self):
+        service, _ = make_service(busy_state(), BILLING)
+        self.open_dashboard(service.today())
+        for name in ("overdueCard", "deadStockCard"):
+            self.assertFalse(self.item(name).property("visible"), name)
+        self.assertTrue(self.item("scrapTodayCard").property("visible"))
 
     def _theme_color(self, name):
         """The Theme colour (Theme has no objectName): the only child of the page exposing that colour property."""

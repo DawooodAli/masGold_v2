@@ -10,6 +10,8 @@ Every figure has one meaning (no mixing of commercial value, real money and cust
 - top types: the best-selling item types of the month (SELL_INVENTORY lines only);
 - price hint: the 21K shop BUY price against its 30-day average and the 90-day hint, from the
   stored daily prices (the same formulas and source as the price-indicators report);
+- overdue debts: the customers' OPEN owed items (the oldest-first reading of the customer ledger, as in the customers report) older than OVERDUE_DAYS;
+- today's scrap price: the average price per gram paid for today's scrap purchases against the latest stored SHOP_BUY of that karat;
 - customer balances: the TRUE ledger-derived balance of customers active from the first day of
   the current month (customers permission), settled accounts excluded.
 Money received / paid and bank / wallet balances are NOT on this page.
@@ -17,16 +19,19 @@ Money received / paid and bank / wallet balances are NOT on this page.
 Sales figures need a billing permission; old-gold weights are the same
 operational information the MainWindow strip already shows every logged-in user.
 """
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from repositories.dashboard_repository import DashboardRepository
 from repositories.financial_balance_repository import FinancialBalanceRepository
-from services import price_indicators as indicators_math
+from repositories.report_repository import ReportRepository
+from services import price_indicators as indicators_math, setting_rules
 from services.invoice_service import invoice_transaction
+from services.report_service import DEAD_STOCK_DAYS, ReportService
 
 DASHBOARD_KARATS = (21, 18, 22, 24)
 SALES_PERMISSIONS = frozenset({"INVOICE_CREATE", "INVOICE_FINALIZE"})
 STOCK_PERMISSIONS = frozenset({"INVENTORY_VIEW", "INVENTORY_MANAGE"})
+OVERDUE_DAYS = 30
 GRAMS, MONEY = Decimal("0.001"), Decimal("0.01")
 HINT_TEXT = {indicators_math.BUY_FAVOURABLE: "الشراء مناسب نسبيًا", indicators_math.SELL_FAVOURABLE: "البيع مناسب نسبيًا", indicators_math.NEUTRAL: "محايد",
              indicators_math.UNKNOWN: "بيانات غير كافية"}
@@ -40,13 +45,14 @@ class _Discard(Exception):
 
 class DashboardService:
     def __init__(self, session, *, transaction_factory=invoice_transaction, repository=DashboardRepository,
-                 balance_repository=FinancialBalanceRepository, authorization=None):
+                 balance_repository=FinancialBalanceRepository, report_repository=ReportRepository, authorization=None):
         from services.authorization_service import AuthorizationService
         self._authorization = authorization or AuthorizationService(session)
         self._session = session
         self._transaction = transaction_factory
         self._repository = repository
         self._balances = balance_repository
+        self._reports = report_repository
 
     def _actor(self, expected_actor):
         actor = self._session.require_authenticated()
@@ -104,6 +110,56 @@ class DashboardService:
         return out
 
     @staticmethod
+    def overdue(ledger_rows, today, days=OVERDUE_DAYS, limit=5):
+        """The customers' OVERDUE debts: the OPEN owed items (oldest-first reading of each ACTIVE customer's ledger, the same as the customers report) at least `days` old.
+        {days, total, customers, rows: [{customer, code, amount, age}]} oldest first; age = days since the oldest overdue item."""
+        by_customer = {}
+        for r in ledger_rows or []:
+            by_customer.setdefault(int(r["customer_id"]), []).append(r)
+        day_of = lambda value: value.date() if hasattr(value, "date") else value
+        found, total = [], Decimal(0)
+        for ledger in by_customer.values():
+            head = ledger[0]
+            if not head["is_active"]:
+                continue
+            owed = [(i["amount"], (today - day_of(i["row"]["occurred_at"])).days) for i in ReportService.open_items(ledger) if i["amount"] > 0]
+            amounts = [a for a, age in owed if age >= days]
+            if not amounts:
+                continue
+            amount = sum(amounts, Decimal(0))
+            total += amount
+            found.append({"customer": head["name"], "code": head.get("customer_code") or "", "amount": amount, "age": max(age for _a, age in owed)})
+        found.sort(key=lambda r: (-r["age"], -r["amount"]))
+        return {"days": days, "total": str(total.quantize(MONEY)), "customers": len(found),
+                "rows": [{"customer": r["customer"], "code": r["code"], "amount": str(r["amount"].quantize(MONEY)), "age": r["age"]} for r in found[:limit]]}
+
+    @staticmethod
+    def dead_stock(rows, days):
+        """Dead stock per KARAT (never summed across karats): pieces IN_STOCK for `days` or more that were never on an invoice: {days, rows: [{karat, pieces, grams, oldest}]}."""
+        out = [{"karat": int(r["karat_value"]), "pieces": int(r["pieces"]), "grams": str(Decimal(str(r["grams"])).quantize(GRAMS)), "oldest": int(r["oldest_days"] or 0)}
+               for r in rows or [] if int(r["pieces"])]
+        out.sort(key=lambda r: (r["karat"] not in DASHBOARD_KARATS, DASHBOARD_KARATS.index(r["karat"]) if r["karat"] in DASHBOARD_KARATS else r["karat"]))
+        return {"days": days, "rows": out}
+
+    @staticmethod
+    def scrap_today(purchases, prices):
+        """Per karat (never summed across karats): today's scrap bought, the weighted average price per gram paid and the latest stored SHOP_BUY of that karat;
+        diff = average - price (positive = paid more than today's buying price). A karat without a stored price has price / diff None."""
+        price = {int(r["karat_value"]): Decimal(str(r["buy"])) for r in prices or []}
+        out = []
+        for r in sorted(purchases or [], key=lambda r: (int(r["karat_value"]) not in DASHBOARD_KARATS,
+                                                        DASHBOARD_KARATS.index(int(r["karat_value"])) if int(r["karat_value"]) in DASHBOARD_KARATS else int(r["karat_value"]))):
+            weight, paid = Decimal(str(r["grams"])), Decimal(str(r["paid"]))
+            if not weight:
+                continue
+            average = (paid / weight).quantize(MONEY, rounding=ROUND_HALF_UP)
+            now = price.get(int(r["karat_value"]))
+            out.append({"karat": int(r["karat_value"]), "grams": str(weight.quantize(GRAMS)), "average": str(average),
+                        "price": str(now.quantize(MONEY, rounding=ROUND_HALF_UP)) if now is not None else None,
+                        "diff": str((average - now).quantize(MONEY, rounding=ROUND_HALF_UP)) if now is not None else None})
+        return out
+
+    @staticmethod
     def price_hint(series):
         """The dashboard's plain 21K price indicator (the same formulas and definitions as the price-indicators report): the 30-day average of the shop BUY price, the current
         price against it in percent and the 90-day hint. A figure that needs more history than stored is None / «بيانات غير كافية», never invented."""
@@ -127,15 +183,20 @@ class DashboardService:
             result = {"old_gold_balance": balances.old_gold_counted(), "old_gold_flow": dashboard.today_old_gold_flow(),
                       "price_daily": dashboard.price_daily_21(), "price_legacy": dashboard.price_history_legacy_21()}
             if sales:
-                result.update(invoices=dashboard.today_invoices(), sold=dashboard.today_sold_by_karat(),
+                result.update(scrap=dashboard.today_scrap_purchases(), scrap_prices=dashboard.latest_shop_buy_prices(),
+                              invoices=dashboard.today_invoices(), sold=dashboard.today_sold_by_karat(),
                               month=dashboard.month_sold_by_karat(), prev_year=dashboard.month_sold_by_karat(previous=True),
                               month_info=dashboard.month_start(), top_types=dashboard.month_top_types())
             if STOCK_PERMISSIONS & set(verified.permissions):                  # the minimum-stock shortages follow the CURRENT inventory grants
                 result["below_min"] = dashboard.below_min_levels()
+                result["dead_days"] = int(setting_rules.report_thresholds(dashboard)["dead_stock_days"])
+                result["dead_stock"] = dashboard.dead_stock_by_karat(result["dead_days"])
                 result["can_see_stock"] = True
             if "CUSTOMERS_VIEW" in set(verified.permissions):                 # the customer balances follow the CURRENT customers grants
                 result["can_see_balances"] = True
                 result["customer_balances"] = dashboard.customer_balances()
+                result["debt_today"] = dashboard.db_today()
+                result["debt_ledger"] = self._reports(connection).customer_open_ledger()
             return sales, result
         try:
             with self._transaction() as connection:
@@ -156,6 +217,7 @@ class DashboardService:
         snapshot["can_see_stock"] = bool(raw.get("can_see_stock"))
         if snapshot["can_see_stock"]:
             snapshot["below_min"] = self.shortages(raw.get("below_min"))
+            snapshot["dead_stock"] = self.dead_stock(raw.get("dead_stock"), raw.get("dead_days") or DEAD_STOCK_DAYS)
         day_of = lambda value: value.date() if hasattr(value, "date") else value
         live = [(day_of(r["day"]), Decimal(str(r["buy"])), Decimal(str(r["sell"]))) for r in raw.get("price_daily") or []]
         legacy = [(day_of(r["day"]), Decimal(str(r["buy"])), Decimal(str(r["sell"]))) for r in raw.get("price_legacy") or []]
@@ -163,6 +225,7 @@ class DashboardService:
         snapshot["can_see_balances"] = bool(raw.get("can_see_balances"))
         if snapshot["can_see_balances"]:
             snapshot["customer_balances"] = self.balances(raw.get("customer_balances"))
+            snapshot["overdue"] = self.overdue(raw.get("debt_ledger"), raw["debt_today"])
         if sales:
             invoices = raw["invoices"] or {}
             sold = {int(r["karat_value"]): r for r in raw["sold"]}
@@ -180,5 +243,5 @@ class DashboardService:
                       for karat in sorted(sold, key=lambda k: (k not in DASHBOARD_KARATS,
                                                               DASHBOARD_KARATS.index(k) if k in DASHBOARD_KARATS else k))],
                 month=self.month_summary(raw["month"], raw["prev_year"]), month_day=int((raw.get("month_info") or {}).get("day") or 0),
-                top_types=self.top_types(raw.get("top_types")))
+                top_types=self.top_types(raw.get("top_types")), scrap_today=self.scrap_today(raw.get("scrap"), raw.get("scrap_prices")))
         return snapshot

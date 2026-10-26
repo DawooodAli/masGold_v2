@@ -120,6 +120,49 @@ class DashboardRepository(BaseRepository):
             LIMIT %s
             """, (int(limit),))
 
+    def today_scrap_purchases(self):
+        """Today's scrap bought from customers (BUY_OLD_GOLD lines of FINALIZED, not fully reversed invoices), per karat: grams and the value paid (line total, before the invoice's final EGP-5 rounding)."""
+        return self._fetch_all(
+            f"""
+            SELECT k.karat_value, COALESCE(SUM(l.weight_grams), 0) AS grams, COALESCE(SUM(l.line_total), 0) AS paid
+            FROM invoice_lines l
+            JOIN invoices i ON i.id = l.invoice_id
+            JOIN karats k ON k.id = l.karat_id
+            WHERE i.invoice_status = 'FINALIZED' AND {_TODAY} AND l.line_type = 'BUY_OLD_GOLD'
+              AND NOT EXISTS (SELECT 1 FROM transaction_corrections c WHERE c.source_type = 'INVOICE' AND c.source_id = i.id AND c.correction_type = 'FULL_REVERSAL')
+            GROUP BY k.karat_value
+            ORDER BY k.karat_value
+            """)
+
+    def dead_stock_by_karat(self, days):
+        """DEAD STOCK per karat: pieces IN_STOCK acquired `days` days ago or earlier that were never on a non-draft invoice (the same rule as the inventory-alerts report): pieces, grams, oldest age in days."""
+        return self._fetch_all(
+            """
+            SELECT k.karat_value, COUNT(*) AS pieces, COALESCE(SUM(ii.weight_grams), 0) AS grams, MAX(DATEDIFF(CURDATE(), DATE(ii.acquired_at))) AS oldest_days
+            FROM inventory_items ii
+            JOIN karats k ON k.id = ii.karat_id
+            WHERE ii.inventory_status = 'IN_STOCK' AND ii.acquired_at IS NOT NULL AND DATE(ii.acquired_at) <= CURDATE() - INTERVAL %s DAY
+              AND NOT EXISTS (SELECT 1 FROM invoice_lines il JOIN invoices iv ON iv.id = il.invoice_id
+                              WHERE il.inventory_item_id = ii.id AND iv.invoice_status <> 'DRAFT')
+            GROUP BY k.karat_value
+            ORDER BY k.karat_value
+            """, (int(days),))
+
+    def latest_shop_buy_prices(self):
+        """The latest ACCEPTED stored SHOP_BUY price of every karat (the same source as the scrap-cost report): (karat_value, buy)."""
+        return self._fetch_all(
+            """
+            SELECT k.karat_value, q.shop_buy_price_per_gram AS buy
+            FROM gold_price_quotes q
+            JOIN karats k ON k.id = q.karat_id
+            JOIN (SELECT karat_id, MAX(id) AS last_id FROM gold_price_quotes
+                  WHERE validation_status = 'ACCEPTED' AND shop_buy_price_per_gram IS NOT NULL GROUP BY karat_id) m ON m.last_id = q.id
+            ORDER BY k.karat_value
+            """)
+
+    def db_today(self):
+        return self._fetch_one("SELECT CURDATE() AS today")["today"]
+
     def price_daily_21(self):
         """The last accepted quote of each day for karat 21 (the same source as the price-indicators report): (day, buy, sell), ascending."""
         return self._fetch_all(

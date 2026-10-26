@@ -399,6 +399,82 @@ Item {
                           value: "العملاء الذين لديهم حركة حساب من أول الشهر الحالي فقط؛ عند تسوية الحساب يُشال الاسم تلقائيًا"
                           color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
                 }
+
+                // --- ديون متأخرة (customers permission): open owed items at least N days old, oldest-first reading of the customer ledger
+                Card {
+                    objectName: "overdueCard"
+                    visible: !!dashboard.vm && dashboard.vm.canSeeBalances
+                    title: "ديون متأخرة (أكثر من " + (dashboard.vm ? dashboard.vm.overdueDebts.days : 0) + " يوم)"
+                    accent: !!dashboard.vm && dashboard.vm.overdueDebts.count > 0 ? theme.red : theme.textMuted
+                    badge: dashboard.vm && dashboard.vm.overdueDebts.count > 0 ? String(dashboard.vm.overdueDebts.count) : ""
+                    Line { objectName: "overdueTotal"; label: "إجمالي المتأخر"; value: dashboard.vm ? dashboard.vm.overdueDebts.total : ""; strong: true
+                           valueColor: dashboard.vm && dashboard.vm.overdueDebts.count > 0 ? theme.red : theme.textMuted
+                           visible: !!dashboard.vm && dashboard.vm.overdueDebts.count > 0 }
+                    Repeater {
+                        model: dashboard.vm ? dashboard.vm.overdueDebts.rows : []
+                        delegate: ColumnLayout {
+                            required property var modelData
+                            required property int index
+                            objectName: "overdueRow_" + index
+                            Layout.fillWidth: true
+                            spacing: 0
+                            Line { label: modelData.name; value: modelData.amount; strong: true; valueColor: theme.red }
+                            Txt { Layout.fillWidth: true; value: modelData.age; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
+                        }
+                    }
+                    Empty { objectName: "overdueEmpty"; value: "لا توجد ديون متأخرة ✓"
+                            visible: !dashboard.vm || dashboard.vm.overdueDebts.count === 0 }
+                }
+
+                // --- سعر شراء الكسر اليوم (billing permission): the average paid per gram today against the latest stored SHOP_BUY of that karat
+                Card {
+                    objectName: "scrapTodayCard"
+                    visible: dashboard.sales
+                    title: "سعر شراء الكسر اليوم"
+                    accent: theme.priceBuy
+                    Repeater {
+                        model: dashboard.vm ? dashboard.vm.scrapToday : []
+                        delegate: ColumnLayout {
+                            required property var modelData
+                            required property int index
+                            objectName: "scrapToday_" + index
+                            Layout.fillWidth: true
+                            spacing: 0
+                            Line { label: "عيار " + modelData.karat + "  •  " + modelData.grams; value: modelData.average; strong: true
+                                   valueColor: theme.balanceKaratColor(modelData.karat) }
+                            Txt { Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                  value: "سعر الشراء الآن " + modelData.price + (modelData.diff ? "  •  الفرق " + modelData.diff : "")
+                                  color: modelData.over ? theme.amber : theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
+                        }
+                    }
+                    Empty { objectName: "scrapTodayEmpty"; value: "لم يُشترَ كسر اليوم بعد"
+                            visible: !dashboard.vm || dashboard.vm.scrapToday.length === 0 }
+                }
+
+                // --- قطع راكدة (inventory permission): IN_STOCK pieces never on an invoice for N days, per karat
+                Card {
+                    objectName: "deadStockCard"
+                    visible: !!dashboard.vm && dashboard.vm.canSeeStock
+                    title: "قطع راكدة (أكثر من " + (dashboard.vm ? dashboard.vm.deadStock.days : 0) + " يوم)"
+                    accent: !!dashboard.vm && dashboard.vm.deadStock.rows.length > 0 ? theme.amber : theme.textMuted
+                    Repeater {
+                        model: dashboard.vm ? dashboard.vm.deadStock.rows : []
+                        delegate: ColumnLayout {
+                            required property var modelData
+                            required property int index
+                            objectName: "deadStock_" + index
+                            Layout.fillWidth: true
+                            spacing: 0
+                            Line { label: "عيار " + modelData.karat + "  •  " + modelData.pieces; value: modelData.grams; strong: true
+                                   valueColor: theme.balanceKaratColor(modelData.karat) }
+                            Txt { Layout.fillWidth: true; value: modelData.oldest; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
+                        }
+                    }
+                    Empty { objectName: "deadStockEmpty"; value: "لا توجد قطع راكدة ✓"
+                            visible: !dashboard.vm || dashboard.vm.deadStock.rows.length === 0 }
+                    Action { objectName: "dashboardOpenDeadStock"; text: "فتح التقارير (تنبيهات المخزون)"; page: 5
+                             visible: !!dashboard.vm && dashboard.vm.deadStock.rows.length > 0 }
+                }
             }
 
 
