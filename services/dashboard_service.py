@@ -110,7 +110,7 @@ class DashboardService:
         return out
 
     @staticmethod
-    def overdue(ledger_rows, today, days=OVERDUE_DAYS, limit=5):
+    def overdue(ledger_rows, today, days=OVERDUE_DAYS, limit=3):
         """The customers' OVERDUE debts: the OPEN owed items (oldest-first reading of each ACTIVE customer's ledger, the same as the customers report) at least `days` old.
         {days, total, customers, rows: [{customer, code, amount, age}]} oldest first; age = days since the oldest overdue item."""
         by_customer = {}

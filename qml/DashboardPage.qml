@@ -16,7 +16,7 @@ Item {
     readonly property var price: typeof goldPriceVM !== "undefined" ? goldPriceVM : null
     readonly property bool sales: !!vm && vm.canSeeSales
     readonly property bool wide: width >= 1000
-    readonly property int boost: 2                  // owner review (2026-10-22): the dashboard reads from a distance, every themed size is two points bigger
+    readonly property int boost: 1                  // owner review (2026-10-22): the dashboard reads from a distance, every themed size is two points bigger
 
     Theme { id: theme }
 
@@ -46,7 +46,7 @@ Item {
         default property alias content: body.data
         Layout.fillWidth: true
         Layout.fillHeight: true
-        Layout.preferredHeight: body.implicitHeight + 70
+        Layout.preferredHeight: body.implicitHeight + 56
         Rectangle {                                                    // the soft shadow: the face shifted down, dark and translucent
             anchors.fill: face; anchors.topMargin: 5; anchors.bottomMargin: -5; anchors.leftMargin: 2; anchors.rightMargin: 2
             radius: face.radius; color: "#000000"; opacity: 0.4
@@ -61,7 +61,7 @@ Item {
             RowLayout {
                 id: head
                 anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
-                anchors.topMargin: 14; anchors.leftMargin: 18; anchors.rightMargin: 20
+                anchors.topMargin: 9; anchors.leftMargin: 16; anchors.rightMargin: 18
                 layoutDirection: Qt.RightToLeft
                 spacing: 8
                 Txt { value: card.title; color: card.accent; font.bold: true; font.pixelSize: theme.fontSection + dashboard.boost }
@@ -71,8 +71,8 @@ Item {
             ColumnLayout {
                 id: body
                 anchors.top: head.bottom; anchors.left: parent.left; anchors.right: parent.right
-                anchors.topMargin: 10; anchors.leftMargin: 18; anchors.rightMargin: 20
-                spacing: 4
+                anchors.topMargin: 5; anchors.leftMargin: 16; anchors.rightMargin: 18
+                spacing: 2
             }
         }
     }
@@ -149,8 +149,8 @@ Item {
                 Layout.fillWidth: true
                 columns: dashboard.wide ? 3 : 2
                 layoutDirection: Qt.RightToLeft
-                columnSpacing: 16
-                rowSpacing: 16
+                columnSpacing: 14
+                rowSpacing: 10
 
                 // --- سعر الذهب (the engine's own formatted values)
                 Card {
