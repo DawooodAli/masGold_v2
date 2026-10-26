@@ -106,18 +106,48 @@ Item {
     // One control height for every field, combo and button of the filter rows (owner review 2026-10-22).
     readonly property int ctlH: 34
 
+    // Owner visual review (2026-10-26): one button style for the whole page — a real hover (Qt's
+    // Button ignores the mouse until hoverEnabled is set, so the old hover styling never showed),
+    // a pressed state, short colour transitions, breathing padding, and a gold TEXT on the primary
+    // action so the brand accent reads at a glance. The gold border alone is not enough on a
+    // dark panel.
     component Btn: Button {
         id: btn
         property bool primary: false
+        // A gold-outlined action that stays clearly readable on a dark panel without the
+        // filled background of a primary button (the «رجوع Esc» escape hatch).
+        property bool goldOutline: false
         implicitHeight: historyPage.ctlH
         height: historyPage.ctlH
-        contentItem: Label { text: btn.text; font.family: theme.fontFamily; font.pixelSize: theme.fontBody
-                             font.bold: btn.primary; color: btn.enabled ? theme.textPrimary : theme.textDisabled
-                             horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-        background: Rectangle { implicitWidth: 76; radius: theme.radiusSmall
-                                color: btn.primary ? (btn.hovered ? theme.goldDark : theme.bgTertiary)
-                                                   : (btn.hovered ? theme.panelHover : theme.bgTertiary)
-                                border.color: btn.primary ? theme.gold : (btn.activeFocus ? theme.gold : theme.border) }
+        hoverEnabled: true
+        padding: 12
+        contentItem: Label {
+            text: btn.text
+            font.family: theme.fontFamily
+            font.pixelSize: theme.fontBody
+            font.bold: btn.primary || btn.goldOutline
+            color: !btn.enabled ? theme.textDisabled
+                   : btn.primary || btn.goldOutline ? (btn.hovered ? theme.goldBright : theme.gold)
+                   : btn.hovered ? theme.textPrimary : theme.textSecondary
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            Behavior on color { ColorAnimation { duration: 120 } }
+        }
+        background: Rectangle {
+            radius: theme.radiusSmall
+            // The primary action sits on a dark gold-tinted chip; a plain action on the normal
+            // panel chip; both press DOWN into the page background when clicked.
+            color: !btn.enabled ? theme.bgSecondary
+                   : btn.primary ? (btn.down ? theme.goldDark : btn.hovered ? "#3A2F1A" : "#2A2214")
+                   : btn.down ? theme.bgPrimary : btn.hovered ? theme.panelHover : theme.bgTertiary
+            border.width: 1
+            border.color: !btn.enabled ? theme.border
+                          : btn.primary ? (btn.down ? theme.goldBright : theme.gold)
+                          : btn.goldOutline ? (btn.down ? theme.goldBright : theme.gold)
+                          : (btn.hovered || btn.activeFocus) ? theme.goldDark : theme.border
+            Behavior on color { ColorAnimation { duration: 120 } }
+            Behavior on border.color { ColorAnimation { duration: 120 } }
+        }
     }
 
     component Field: TextField {
@@ -488,7 +518,6 @@ Item {
             anchors.margins: 12
             layoutDirection: Qt.RightToLeft
             spacing: 8
-            Btn { objectName: "historyBack"; text: "رجوع  ⁦Esc⁩"; onClicked: historyPage.vm.closeDetail() }
             Txt { value: detailRoot.d.number ? "فاتورة " + detailRoot.d.number : ""; color: theme.gold
                   font.bold: true; font.pixelSize: theme.fontPageTitle }
             Txt { value: detailRoot.d.legacyLabel || ""; visible: value.length > 0; color: theme.amber }
@@ -522,6 +551,12 @@ Item {
                   visible: !!detailRoot.d.canReprint
                   enabled: !!historyPage.vm && !historyPage.vm.reprintBusy
                   onClicked: historyPage.vm.reprint() }
+            // Esc escape hatch, parked at the far LEFT edge of the bar (last item in an RTL row)
+            // so it never mixes with the lifecycle actions, and gold-outlined to stay readable.
+            Item { Layout.preferredWidth: 18 }
+            Btn { objectName: "historyBack"; goldOutline: true
+                  text: "رجوع  ⁦Esc⁩"
+                  onClicked: historyPage.vm.closeDetail() }
         }
 
         Txt { objectName: "historyDetailState"; anchors.centerIn: parent

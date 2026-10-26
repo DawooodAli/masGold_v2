@@ -98,8 +98,11 @@ Item {
         textFormat: Text.PlainText
     }
 
-    // Material buttons carry a 6 px top/bottom inset that shrinks a custom background to ~60 % of the item height
-    // (the cause of the clipped tab labels): the insets are cleared so the control is as tall as it says.
+    // Unified app button (same look as the invoice-history «Btn»): a real hover state, a
+    // pressed state, short colour transitions and breathing padding. A coloured accent
+    // (red / amber / secondary) keeps its meaning on a dark chip; a plain action stays
+    // quiet until it is hovered. The Material insets stay cleared: their 6 px top/bottom
+    // shrink a custom background and clip the tab labels.
     component Btn: Button {
         id: btn
         property bool primary: false
@@ -111,25 +114,32 @@ Item {
         bottomInset: 0
         leftInset: 0
         rightInset: 0
-        topPadding: 0
-        bottomPadding: 0
-        leftPadding: 12
-        rightPadding: 12
         hoverEnabled: true
+        padding: 12
         contentItem: Label {
             text: btn.text
-            font: btn.font
-            color: !btn.enabled ? theme.textDisabled : btn.primary ? theme.bgPrimary : btn.accent
+            font.family: btn.font.family
+            font.pixelSize: btn.font.pixelSize
+            font.bold: btn.primary
+            color: !btn.enabled ? theme.textDisabled
+                   : btn.primary ? (btn.hovered ? theme.goldBright : btn.accent)
+                   : btn.accent.toString() !== theme.gold.toString() ? (btn.hovered ? theme.textPrimary : btn.accent)
+                   : btn.hovered ? theme.textPrimary : theme.textSecondary
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
+            Behavior on color { ColorAnimation { duration: 120 } }
         }
         background: Rectangle {
             radius: theme.radiusSmall
-            color: !btn.enabled ? (btn.primary ? theme.bgTertiary : "transparent")
-                 : btn.primary ? (btn.down || btn.hovered ? Qt.lighter(btn.accent, 1.12) : btn.accent)
-                 : btn.down ? theme.panelHover : btn.hovered ? theme.bgTertiary : "transparent"
-            border.color: btn.visualFocus ? theme.goldBright : btn.enabled ? btn.accent : theme.border
-            border.width: btn.visualFocus ? 2 : 1
+            color: !btn.enabled ? theme.bgSecondary
+                   : btn.primary ? (btn.down ? Qt.darker(btn.accent, 1.3) : btn.hovered ? "#3A2F1A" : "#2A2214")
+                   : btn.down ? theme.bgPrimary : btn.hovered ? theme.panelHover : theme.bgTertiary
+            border.width: 1
+            border.color: !btn.enabled ? theme.border
+                          : btn.primary || btn.accent.toString() !== theme.gold.toString() ? (btn.down ? theme.goldBright : btn.accent)
+                          : (btn.hovered || btn.activeFocus) ? theme.goldDark : theme.border
+            Behavior on color { ColorAnimation { duration: 120 } }
+            Behavior on border.color { ColorAnimation { duration: 120 } }
         }
     }
 

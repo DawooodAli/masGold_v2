@@ -13,7 +13,6 @@ Rectangle {
     signal invoiceRequested(string invoiceId)
     signal correctionRequested(string operationId)
     signal customerRequested(string customerId)
-    signal categoriesRequested()
     color: theme.bgPrimary
     Theme { id: theme }
 
@@ -50,17 +49,42 @@ Rectangle {
         color: theme.textPrimary; selectByMouse: true; implicitHeight: 34
         background: Rectangle { color: theme.bgSecondary; radius: theme.radiusSmall; border.color: theme.border }
     }
+    // Unified app button (same look as the invoice-history «Btn»): a real hover state (the
+    // default Button ignores the mouse until hoverEnabled is set), a pressed state, short
+    // colour transitions and breathing padding. `chosen` marks the selected account chip.
     component Btn: Button {
         id: btn
         property bool primary: false
         property bool chosen: false
-        font.family: "Cairo"; font.pixelSize: theme.fontBody; implicitHeight: 34
-        contentItem: Label { text: btn.text; font: btn.font; horizontalAlignment: Text.AlignHCenter
+        font.family: "Cairo"
+        font.pixelSize: theme.fontBody
+        implicitHeight: 34
+        hoverEnabled: true
+        padding: 12
+        contentItem: Label {
+            text: btn.text
+            font.family: btn.font.family
+            font.pixelSize: btn.font.pixelSize
+            font.bold: btn.primary || btn.chosen
+            color: !btn.enabled ? theme.textDisabled
+                   : btn.primary || btn.chosen ? (btn.hovered ? theme.goldBright : theme.gold)
+                   : btn.hovered ? theme.textPrimary : theme.textSecondary
+            horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
-            color: !btn.enabled ? theme.textDisabled : btn.primary ? theme.bgPrimary : btn.chosen ? theme.gold : theme.textPrimary }
-        background: Rectangle { radius: theme.radiusSmall
-            color: btn.primary && btn.enabled ? theme.gold : btn.hovered ? theme.panelHover : theme.bgTertiary
-            border.color: btn.primary || btn.chosen ? theme.gold : theme.border }
+            Behavior on color { ColorAnimation { duration: 120 } }
+        }
+        background: Rectangle {
+            radius: theme.radiusSmall
+            color: !btn.enabled ? theme.bgSecondary
+                   : btn.primary || btn.chosen ? (btn.down ? theme.goldDark : btn.hovered ? "#3A2F1A" : "#2A2214")
+                   : btn.down ? theme.bgPrimary : btn.hovered ? theme.panelHover : theme.bgTertiary
+            border.width: 1
+            border.color: !btn.enabled ? theme.border
+                          : btn.primary || btn.chosen ? (btn.down ? theme.goldBright : theme.gold)
+                          : (btn.hovered || btn.activeFocus) ? theme.goldDark : theme.border
+            Behavior on color { ColorAnimation { duration: 120 } }
+            Behavior on border.color { ColorAnimation { duration: 120 } }
+        }
     }
     component Combo: ComboBox {
         id: combo
@@ -193,9 +217,6 @@ Rectangle {
                 Btn { objectName: "cashAdvances"; text: "سلف وعهد مؤقتة"
                       visible: !!page.vm && page.vm.canOperate
                       onClicked: advancesDialog.begin() }
-                Btn { objectName: "cashCategories"; text: "🗂 تصنيفات المصروفات والإيرادات"
-                      visible: typeof cashCategoryVM !== "undefined" && cashCategoryVM.canManage
-                      onClicked: page.categoriesRequested() }
                 Btn { objectName: "cashRefresh"; text: "تحديث"; enabled: !!page.vm && !page.vm.busy
                       onClicked: page.vm.refresh() }
             }

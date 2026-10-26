@@ -50,9 +50,34 @@ Rectangle {
     component Btn: Button {
         id: accountButton
         font.family: "Cairo"
-        contentItem: Txt { text: accountButton.text; verticalAlignment: Text.AlignVCenter
-            font.bold: accountButton.checked; color: accountButton.checked ? theme.gold : theme.textPrimary }
-        background: Rectangle { color: theme.bgTertiary; radius: 5; border.color: accountButton.checked ? theme.gold : theme.goldDark }
+        font.pixelSize: theme.fontBody
+        implicitHeight: 32
+        hoverEnabled: true
+        padding: 12
+        contentItem: Label {
+            text: accountButton.text
+            font.family: accountButton.font.family
+            font.pixelSize: accountButton.font.pixelSize
+            font.bold: accountButton.checked
+            color: !accountButton.enabled ? theme.textDisabled
+                   : accountButton.checked ? (accountButton.hovered ? theme.goldBright : theme.gold)
+                   : accountButton.hovered ? theme.textPrimary : theme.textSecondary
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            Behavior on color { ColorAnimation { duration: 120 } }
+        }
+        background: Rectangle {
+            radius: theme.radiusSmall
+            color: !accountButton.enabled ? theme.bgSecondary
+                   : accountButton.checked ? (accountButton.down ? theme.goldDark : accountButton.hovered ? "#3A2F1A" : "#2A2214")
+                   : accountButton.down ? theme.bgPrimary : accountButton.hovered ? theme.panelHover : theme.bgTertiary
+            border.width: 1
+            border.color: !accountButton.enabled ? theme.border
+                          : accountButton.checked ? (accountButton.down ? theme.goldBright : theme.gold)
+                          : (accountButton.hovered || accountButton.activeFocus) ? theme.goldDark : theme.border
+            Behavior on color { ColorAnimation { duration: 120 } }
+            Behavior on border.color { ColorAnimation { duration: 120 } }
+        }
     }
     component Combo: ComboBox {
         id: accountCombo

@@ -3211,7 +3211,6 @@ ApplicationWindow {
                 // index 4: الخزنة — daily cash in / out and operational cash movements.
                 FinancialAccountsPage {
                     pageTitle: "💰 الخزنة"
-                    onCategoriesRequested: cashCategoriesDialog.open()
                     onInvoiceRequested: function(invoiceId) {
                         root.currentPage = 1
                         billingWorkspace.currentTab = 1
@@ -5743,6 +5742,7 @@ ApplicationWindow {
                 return
             if (typeof userAdminVM !== "undefined" && userAdminVM.canManage) userAdminVM.refresh()
             if (typeof systemSettingsVM !== "undefined" && systemSettingsVM.canManage) systemSettingsVM.refresh()
+            if (typeof cashCategoryVM !== "undefined" && cashCategoryVM.canManage) cashCategoryVM.refresh()
         }
         // The Test Connection result card is the last item on this page:
         // once the layout settles, scroll to the end so the whole card shows.
@@ -5853,6 +5853,8 @@ ApplicationWindow {
                 GoldProviderSettings { id: goldProvider; Layout.fillWidth: true }
                 PrintingSettings { id: printingSettings; Layout.fillWidth: true }
                 PasswordSettings { id: passwordSettings; Layout.fillWidth: true }
+                // تصنيفات المصروفات والإيرادات: نُقلت من الخزنة (حوار بزر 🗂) إلى هنا كما طلب المالك.
+                CashCategorySettings { Layout.fillWidth: true }
             }
         }
     }
@@ -8853,14 +8855,6 @@ ApplicationWindow {
         dialogTitle: "الرصيد الافتتاحي وجرد الذهب"
         onOpened: if (typeof positionSnapshotVM !== "undefined" && positionSnapshotVM.canManage) positionSnapshotVM.refresh()
         PositionOpeningSettings { Layout.fillWidth: true; sectionTitle: "" }
-    }
-
-    SettingsDialog {
-        id: cashCategoriesDialog
-        objectName: "cashCategoriesDialog"
-        dialogTitle: "تصنيفات المصروفات والإيرادات"
-        onOpened: if (typeof cashCategoryVM !== "undefined" && cashCategoryVM.canManage) cashCategoryVM.refresh()
-        CashCategorySettings { Layout.fillWidth: true; sectionTitle: "" }
     }
 
     SettingsDialog {

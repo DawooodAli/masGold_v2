@@ -101,18 +101,43 @@ Item {
               font.pixelSize: parent.strong ? theme.fontBodyStrong : theme.fontBody }
     }
 
+    // Unified app button (same look as the invoice-history «Btn»): a real hover state (the
+    // default Button ignores the mouse until hoverEnabled is set), a pressed state, short
+    // colour transitions and breathing padding. The primary action is gold text on a dark
+    // gold-tinted chip; a plain action stays quiet until it is hovered.
     component Btn: Button {
         id: btn
         property bool primary: false
+        font.family: theme.fontFamily
+        font.pixelSize: theme.fontBody
         implicitHeight: 30
-        contentItem: Label { text: btn.text; font.family: theme.fontFamily; font.pixelSize: theme.fontBody
-                             font.bold: btn.primary; color: btn.enabled ? theme.textPrimary : theme.textDisabled
-                             horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-        background: Rectangle { implicitWidth: 72; radius: theme.radiusSmall
-                                color: btn.primary && btn.enabled ? (btn.hovered ? theme.goldDark : theme.bgTertiary)
-                                                                  : (btn.hovered ? theme.panelHover : theme.bgTertiary)
-                                border.color: btn.primary && btn.enabled ? theme.gold
-                                              : (btn.activeFocus ? theme.gold : theme.border) }
+        hoverEnabled: true
+        padding: 12
+        contentItem: Label {
+            text: btn.text
+            font.family: btn.font.family
+            font.pixelSize: btn.font.pixelSize
+            font.bold: btn.primary
+            color: !btn.enabled ? theme.textDisabled
+                   : btn.primary ? (btn.hovered ? theme.goldBright : theme.gold)
+                   : btn.hovered ? theme.textPrimary : theme.textSecondary
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            Behavior on color { ColorAnimation { duration: 120 } }
+        }
+        background: Rectangle {
+            implicitWidth: 72
+            radius: theme.radiusSmall
+            color: !btn.enabled ? theme.bgSecondary
+                   : btn.primary ? (btn.down ? theme.goldDark : btn.hovered ? "#3A2F1A" : "#2A2214")
+                   : btn.down ? theme.bgPrimary : btn.hovered ? theme.panelHover : theme.bgTertiary
+            border.width: 1
+            border.color: !btn.enabled ? theme.border
+                          : btn.primary ? (btn.down ? theme.goldBright : theme.gold)
+                          : (btn.hovered || btn.activeFocus) ? theme.goldDark : theme.border
+            Behavior on color { ColorAnimation { duration: 120 } }
+            Behavior on border.color { ColorAnimation { duration: 120 } }
+        }
     }
 
     component Field: TextField {

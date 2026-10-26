@@ -88,6 +88,13 @@ class CashScreenTests(harness.InvoicePageTests):
             search_customers=Mock(return_value={"items": [], "page": 1, "has_more": False}))
         self.root.setProperty("currentPage", 4)
         self.wait_until(lambda: len(self.fin.inRows) == 4 and not self.fin.busy, "cash view")
+        # The header RowLayout runs its first pass after the page becomes current: until it does,
+        # «حركة نقدية جديدة» and «سلف وعهد مؤقتة» still sit on top of each other at the row origin,
+        # and the first click lands on the wrong button (opens the advances dialog instead of the
+        # movement dialog). Wait for a real laid-out row before any test clicks a header button.
+        self.wait_until(lambda: self.item("cashNewMovement").mapToScene(QPointF(0, 0)).x()
+                        != self.item("cashAdvances").mapToScene(QPointF(0, 0)).x(),
+                        "header row laid out")
 
     def count(self, name):
         return sum(1 for c in self.service.calls if c[0] == name)
