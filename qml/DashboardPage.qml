@@ -3,8 +3,8 @@ import QtQuick.Controls
 import QtQuick.Layouts
 
 // الرئيسية: what happened today, at a glance. Read-only: every figure comes formatted from
-// DashboardViewModel (today's finalized invoices, COUNTED old-gold ledger), GoldPriceViewModel
-// and ManagementReviewViewModel. No SQL, no calculation here.
+// DashboardViewModel (today's finalized invoices, COUNTED old-gold ledger) and GoldPriceViewModel.
+// No SQL, no calculation here.
 Item {
     id: dashboard
     objectName: "dashboardPage"
@@ -14,7 +14,6 @@ Item {
 
     readonly property var vm: typeof dashboardVM !== "undefined" ? dashboardVM : null
     readonly property var price: typeof goldPriceVM !== "undefined" ? goldPriceVM : null
-    readonly property var reviews: typeof reviewsVM !== "undefined" ? reviewsVM : null
     readonly property bool sales: !!vm && vm.canSeeSales
     readonly property bool wide: width >= 1000
     readonly property int boost: 2                  // owner review (2026-10-22): the dashboard reads from a distance, every themed size is two points bigger
@@ -159,17 +158,18 @@ Item {
                     title: "سعر الذهب • عيار 21"
                     accent: theme.priceSell
                     // Readable from across the shop: the two 21K numbers dominate the card; the labels,
-                    // source and freshness stay small. Sell (the shop's selling price) on the right.
+                    // source and freshness stay small. Same order as the Main.qml price strip: shop BUY
+                    // (شراء المحل) on the right, shop SELL (بيع المحل) on the left.
                     RowLayout {
                         Layout.fillWidth: true
                         layoutDirection: Qt.RightToLeft
                         spacing: 8
                         Repeater {
                             model: [
-                                { name: "dashboardPriceSell", label: "بيع المحل", color: theme.priceSell,
-                                  value: dashboard.price && dashboard.price.headlineSell ? dashboard.price.headlineSell : "—" },
                                 { name: "dashboardPriceBuy", label: "شراء المحل", color: theme.priceBuy,
-                                  value: dashboard.price && dashboard.price.headlineBuy ? dashboard.price.headlineBuy : "—" }
+                                  value: dashboard.price && dashboard.price.headlineBuy ? dashboard.price.headlineBuy : "—" },
+                                { name: "dashboardPriceSell", label: "بيع المحل", color: theme.priceSell,
+                                  value: dashboard.price && dashboard.price.headlineSell ? dashboard.price.headlineSell : "—" }
                             ]
                             delegate: Rectangle {
                                 required property var modelData
@@ -209,6 +209,59 @@ Item {
                           color: !dashboard.price || dashboard.price.status === "ERROR" ? theme.priceError
                                  : dashboard.price.status === "STALE_ALLOWED" ? theme.priceWarning : theme.textMuted
                           font.pixelSize: (theme.fontTableHeader + dashboard.boost) }
+                }
+
+                // --- أسعار كل الكيات (every logged-in user): the same rows the top price strip and the price window show (owner request 2026-10-25)
+                Card {
+                    objectName: "allPricesCard"
+                    title: "أسعار الذهب — كل الكيات"
+                    accent: theme.gold
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        Txt { value: "العيار"; Layout.preferredWidth: 74; color: theme.gold; font.bold: true }
+                        Txt { value: "شراء المحل"; Layout.fillWidth: true; color: theme.priceBuy; font.bold: true
+                              horizontalAlignment: Text.AlignHCenter }
+                        Txt { value: "بيع المحل"; Layout.fillWidth: true; color: theme.priceSell; font.bold: true
+                              horizontalAlignment: Text.AlignHCenter }
+                    }
+                    Repeater {
+                        model: dashboard.price && dashboard.price.prices ? dashboard.price.prices : []
+                        delegate: RowLayout {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 8
+                            Txt { objectName: "allPriceKarat_" + modelData.karat; value: "عيار " + modelData.karat; Layout.preferredWidth: 74; font.bold: true
+                                  color: theme.balanceKaratColor(modelData.karat) }
+                            Txt { objectName: "allPriceBuy_" + modelData.karat; value: modelData.shop_buy_price_per_gram; Layout.fillWidth: true; color: theme.priceBuy
+                                  horizontalAlignment: Text.AlignHCenter }
+                            Txt { objectName: "allPriceSell_" + modelData.karat; value: modelData.shop_sell_price_per_gram; Layout.fillWidth: true; color: theme.priceSell
+                                  horizontalAlignment: Text.AlignHCenter }
+                        }
+                    }
+                    Empty { objectName: "allPricesEmpty"; value: "السعر غير متاح"
+                            visible: !dashboard.price || !dashboard.price.prices || dashboard.price.prices.length === 0 }
+                }
+
+                // --- مؤشر سعر عيار 21 (every logged-in user): the shop's own stored prices, the same formulas and wording as the indicators report
+                Card {
+                    objectName: "priceHintCard"
+                    title: "مؤشر سعر عيار 21"
+                    accent: theme.gold
+                    Line { objectName: "priceHintAverage"; label: "متوسط 30 يوم (شراء)"
+                           value: dashboard.vm && dashboard.vm.priceHint.average ? dashboard.vm.priceHint.average : "—"; strong: true }
+                    Line { objectName: "priceHintVersus"; label: "السعر الآن مقابل المتوسط"
+                           value: dashboard.vm ? dashboard.vm.priceHint.versus : "" }
+                    Line { objectName: "priceHintAction"; label: "الإرشاد"
+                           value: dashboard.vm ? dashboard.vm.priceHint.action : ""; strong: true
+                           valueColor: !dashboard.vm ? theme.textMuted
+                                      : dashboard.vm.priceHint.tone === "buy" ? theme.priceBuy
+                                      : dashboard.vm.priceHint.tone === "sell" ? theme.priceSell : theme.textMuted }
+                    Txt { Layout.fillWidth: true; wrapMode: Text.WordWrap
+                          value: "إرشاد مبني على حركة أسعار المحل المخزنة وليس توصية مالية"
+                          color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
                 }
 
                 // --- شغل اليوم (billing permission)
@@ -290,40 +343,7 @@ Item {
                     Empty { value: "جاري التحميل..."; visible: !dashboard.vm || !dashboard.vm.ready }
                 }
 
-                // --- يحتاج مراجعة (the existing review counts; details need the review permission)
-                Card {
-                    objectName: "attentionCard"
-                    title: "يحتاج مراجعة"
-                    accent: dashboard.reviews && dashboard.reviews.totalCount > 0 ? theme.amber : theme.textMuted
-                    badge: dashboard.reviews ? String(dashboard.reviews.totalCount) : ""
-                    Repeater {
-                        model: dashboard.reviews ? dashboard.reviews.categories : []
-                        delegate: Line {
-                            required property var modelData
-                            visible: modelData.count > 0
-                            label: modelData.title
-                            value: String(modelData.count)
-                            valueColor: theme.amber
-                            strong: true
-                        }
-                    }
-                    Empty { objectName: "attentionEmpty"; value: "لا توجد مراجعات مفتوحة ✓"
-                            visible: !dashboard.reviews || dashboard.reviews.totalCount === 0 }
-                    Action { objectName: "dashboardOpenReviews"; text: "فتح مراجعات المدير"; page: 10
-                             visible: !!dashboard.reviews && dashboard.reviews.canOpen && dashboard.reviews.totalCount > 0 }
-                }
-
-                // --- اختصارات (existing screens only)
-                Card {
-                    objectName: "actionsCard"
-                    title: "اختصارات"
-                    accent: theme.textMuted
-                    Action { objectName: "dashboardNewInvoice"; text: "🧾  فاتورة جديدة"; page: 1; visible: dashboard.sales }
-                    Action { objectName: "dashboardInventory"; text: "📦  المخزون والبحث عن قطعة"; page: 2 }
-                    Action { objectName: "dashboardCustomers"; text: "👥  العملاء"; page: 3 }
-                }
-
-                // --- مبيعات الشهر (billing permission): the month so far per karat against the same span of the previous month
+                // --- مبيعات الشهر (billing permission): the month so far per karat against the same span of the same month LAST YEAR (owner request 2026-10-25)
                 Card {
                     objectName: "monthCard"
                     visible: dashboard.sales
@@ -344,6 +364,29 @@ Item {
                     Empty { objectName: "monthEmpty"; value: "لا مبيعات هذا الشهر بعد"; visible: !dashboard.vm || dashboard.vm.monthByKarat.length === 0 }
                 }
 
+                // --- أكثر الأصناف مبيعًا هذا الشهر (billing permission): one row per item type, never summed across types (owner request 2026-10-25)
+                Card {
+                    objectName: "topTypesCard"
+                    visible: dashboard.sales
+                    title: "أكثر الأصناف مبيعًا هذا الشهر"
+                    accent: theme.priceSell
+                    Repeater {
+                        model: dashboard.vm ? dashboard.vm.topTypes : []
+                        delegate: ColumnLayout {
+                            required property var modelData
+                            required property int index
+                            objectName: "topType_" + index
+                            Layout.fillWidth: true
+                            spacing: 0
+                            Line { label: modelData.type; value: modelData.value; strong: true }
+                            Txt { Layout.fillWidth: true; value: modelData.pieces + " • " + modelData.grams
+                                  color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
+                        }
+                    }
+                    Empty { objectName: "topTypesEmpty"; value: "لا مبيعات هذا الشهر بعد"
+                            visible: !dashboard.vm || dashboard.vm.topTypes.length === 0 }
+                }
+
                 // --- تحت الحد الأدنى للمخزون (inventory permission): the rules the owner set in Settings
                 Card {
                     objectName: "belowMinCard"
@@ -359,58 +402,40 @@ Item {
                             wrapMode: Text.WordWrap }
                     Action { objectName: "dashboardOpenAlerts"; text: "فتح التقارير (تنبيهات المخزون)"; page: 5; visible: !!dashboard.vm && dashboard.vm.belowMin.length > 0 }
                 }
-            }
 
-            // --- آخر الفواتير (billing permission) — a glance, not Invoice History
-            Card {
-                objectName: "recentCard"
-                visible: dashboard.sales
-                title: "آخر الفواتير"
-                badge: "آخر 5"
-                RowLayout {
-                    objectName: "recentHeader"
-                    Layout.fillWidth: true
-                    Layout.leftMargin: 8; Layout.rightMargin: 8
-                    layoutDirection: Qt.RightToLeft
-                    spacing: 12
-                    visible: !!dashboard.vm && dashboard.vm.recentInvoices.length > 0
-                    Txt { value: "الفاتورة"; color: theme.textMuted; font.pixelSize: (theme.fontCaption + dashboard.boost); Layout.preferredWidth: 92 }
-                    Txt { value: "الوقت"; color: theme.textMuted; font.pixelSize: (theme.fontCaption + dashboard.boost); Layout.preferredWidth: 92 }
-                    Txt { value: "العميل"; color: theme.textMuted; font.pixelSize: (theme.fontCaption + dashboard.boost); Layout.fillWidth: true
-                          Layout.minimumWidth: 80 }
-                    Txt { value: "البائع"; color: theme.textMuted; font.pixelSize: (theme.fontCaption + dashboard.boost); Layout.preferredWidth: 100
-                          visible: dashboard.wide }
-                    Txt { value: "الاتجاه"; color: theme.textMuted; font.pixelSize: (theme.fontCaption + dashboard.boost); Layout.preferredWidth: 70 }
-                    Txt { value: "الصافي"; color: theme.textMuted; font.pixelSize: (theme.fontCaption + dashboard.boost); Layout.preferredWidth: 140 }
-                }
-                Repeater {
-                    model: dashboard.vm ? dashboard.vm.recentInvoices : []
-                    delegate: Rectangle {
-                        required property var modelData
-                        required property int index
-                        Layout.fillWidth: true
-                        implicitHeight: 32
-                        color: index % 2 ? "transparent" : theme.bgSecondary
-                        radius: 3
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 8; anchors.rightMargin: 8
-                            layoutDirection: Qt.RightToLeft
-                            spacing: 12
-                            Txt { value: modelData.number; color: theme.gold; font.bold: true; Layout.preferredWidth: 92 }
-                            Txt { value: modelData.time; color: theme.textMuted; Layout.preferredWidth: 92 }
-                            Txt { value: modelData.customer; Layout.fillWidth: true; Layout.minimumWidth: 80 }
-                            Txt { value: modelData.salesperson; color: theme.textMuted; Layout.preferredWidth: 100
-                                  visible: dashboard.wide }
-                            Txt { value: modelData.direction; color: theme.textMuted; font.pixelSize: (theme.fontTableHeader + dashboard.boost)
-                                  Layout.preferredWidth: 70 }
-                            Txt { value: modelData.amount; color: theme.textPrimary; font.bold: true
-                                  Layout.preferredWidth: 140; horizontalAlignment: Text.AlignRight }
+                // --- أرصدة العملاء (customers permission): who owes and who is owed, from the customer ledger.
+                // Only customers with account activity from the first day of the current month; a settled account disappears on its own.
+                Card {
+                    objectName: "customerBalancesCard"
+                    visible: !!dashboard.vm && dashboard.vm.canSeeBalances
+                    title: "أرصدة العملاء (من أول الشهر)"
+                    accent: theme.gold
+                    badge: dashboard.vm && dashboard.vm.customerBalances.length > 0 ? String(dashboard.vm.customerBalances.length) : ""
+                    Repeater {
+                        model: dashboard.vm ? dashboard.vm.customerBalances : []
+                        delegate: ColumnLayout {
+                            required property var modelData
+                            required property int index
+                            objectName: "customerBalance_" + index
+                            Layout.fillWidth: true
+                            spacing: 0
+                            Line { label: modelData.name + (modelData.code ? "  (" + modelData.code + ")" : "")
+                                   value: (modelData.owes ? "على العميل " : "للعميل ") + modelData.balance
+                                   valueColor: modelData.owes ? theme.accountReceivable : theme.accountPayable
+                                   strong: true }
+                            Txt { Layout.fillWidth: true; value: modelData.meaning
+                                  color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
                         }
                     }
+                    Empty { objectName: "customerBalancesEmpty"; value: "لا يوجد عملاء برصيد غير متعادل عليهم أو علينا"
+                            visible: !dashboard.vm || dashboard.vm.customerBalances.length === 0
+                            wrapMode: Text.WordWrap }
+                    Txt { Layout.fillWidth: true; wrapMode: Text.WordWrap
+                          value: "العملاء الذين لديهم حركة حساب من أول الشهر الحالي فقط؛ عند تسوية الحساب يُشال الاسم تلقائيًا"
+                          color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
                 }
-                Empty { value: "لا توجد فواتير بعد"; visible: !dashboard.vm || dashboard.vm.recentInvoices.length === 0 }
             }
+
 
             Item { Layout.preferredHeight: 4 }
         }

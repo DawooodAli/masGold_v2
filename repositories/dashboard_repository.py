@@ -48,10 +48,10 @@ class DashboardRepository(BaseRepository):
             """)
 
     def month_sold_by_karat(self, previous=False):
-        """Grams and pieces SOLD from the first day of the month through today (previous=False) or over the SAME number of days of the previous month (previous=True), per karat. Fully reversed
+        """Grams and pieces SOLD from the first day of the month through today (previous=False) or over the SAME number of days of the SAME month LAST YEAR (previous=True), per karat. Fully reversed
         invoices are left out. "Today" and the month are the database's own calendar (CURDATE())."""
-        first = "DATE_FORMAT(CURDATE() - INTERVAL 1 MONTH, '%Y-%m-01')" if previous else "DATE_FORMAT(CURDATE(), '%Y-%m-01')"
-        end = f"LEAST({first} + INTERVAL DAY(CURDATE()) DAY, DATE_FORMAT(CURDATE(), '%Y-%m-01'))" if previous else "CURDATE() + INTERVAL 1 DAY"
+        first = "DATE_FORMAT(CURDATE() - INTERVAL 1 YEAR, '%Y-%m-01')" if previous else "DATE_FORMAT(CURDATE(), '%Y-%m-01')"
+        end = f"LEAST({first} + INTERVAL DAY(CURDATE()) DAY, {first} + INTERVAL 1 MONTH)" if previous else "CURDATE() + INTERVAL 1 DAY"
         return self._fetch_all(
             f"""
             SELECT k.karat_value, COALESCE(SUM(l.weight_grams), 0) AS grams, COUNT(*) AS pieces
@@ -101,16 +101,58 @@ class DashboardRepository(BaseRepository):
             ORDER BY k.karat_value
             """)
 
-    def recent_invoices(self, limit=5):
-        """The latest finalized invoices (a glance, not Invoice History)."""
+    def month_top_types(self, limit=3):
+        """The item types sold the most so far this month (SELL_INVENTORY lines of FINALIZED, not fully reversed invoices): pieces, grams and line value per type, best first.
+        Same window as month_sold_by_karat (finalized_at, from the first day of the month through today)."""
         return self._fetch_all(
             """
-            SELECT i.invoice_number, i.finalized_at, i.net_amount, i.net_direction,
-                   s.customer_name_snapshot, e.name AS employee_name
-            FROM invoices i
-            LEFT JOIN invoice_customer_snapshots s ON s.invoice_id = i.id
-            LEFT JOIN employees e ON e.id = i.employee_id
-            WHERE i.invoice_status = 'FINALIZED'
-            ORDER BY i.finalized_at DESC, i.id DESC
+            SELECT COALESCE(it.name, 'بدون صنف') AS item_type, COUNT(*) AS pieces,
+                   COALESCE(SUM(il.weight_grams), 0) AS grams, COALESCE(SUM(il.line_total), 0) AS value
+            FROM invoice_lines il
+            JOIN invoices iv ON iv.id = il.invoice_id
+            LEFT JOIN inventory_items ii ON ii.id = il.inventory_item_id
+            LEFT JOIN item_types it ON it.id = ii.item_type_id
+            WHERE il.line_type = 'SELL_INVENTORY' AND iv.invoice_status = 'FINALIZED'
+              AND iv.finalized_at >= DATE_FORMAT(CURDATE(), '%Y-%m-01') AND iv.finalized_at < CURDATE() + INTERVAL 1 DAY
+              AND NOT EXISTS (SELECT 1 FROM transaction_corrections c WHERE c.source_type = 'INVOICE' AND c.source_id = iv.id AND c.correction_type = 'FULL_REVERSAL')
+            GROUP BY COALESCE(it.name, 'بدون صنف')
+            ORDER BY value DESC, grams DESC
+            LIMIT %s
+            """, (int(limit),))
+
+    def price_daily_21(self):
+        """The last accepted quote of each day for karat 21 (the same source as the price-indicators report): (day, buy, sell), ascending."""
+        return self._fetch_all(
+            """
+            SELECT DATE(q.provider_timestamp) AS day, q.shop_buy_price_per_gram AS buy, q.shop_sell_price_per_gram AS sell
+            FROM gold_price_quotes q
+            JOIN karats k ON k.id = q.karat_id
+            JOIN (SELECT karat_id, DATE(provider_timestamp) AS d, MAX(id) AS last_id
+                  FROM gold_price_quotes
+                  WHERE validation_status = 'ACCEPTED' AND provider_timestamp IS NOT NULL AND shop_buy_price_per_gram IS NOT NULL AND shop_sell_price_per_gram IS NOT NULL
+                  GROUP BY karat_id, DATE(provider_timestamp)) m ON m.last_id = q.id
+            WHERE k.karat_value = 21
+            ORDER BY day
+            """)
+
+    def price_history_legacy_21(self):
+        """The imported daily 21K prices of the old shop (migration 066), or None below 066."""
+        try:
+            return self._fetch_all("SELECT price_date AS day, shop_buy AS buy, shop_sell AS sell FROM gold_price_history_legacy WHERE karat_value = 21 ORDER BY price_date")
+        except ProgrammingError as exc:
+            if getattr(exc, "errno", None) == 1146:
+                return None
+            raise
+
+    def customer_balances(self, limit=6):
+        """The customers whose account is NOT settled (the true ledger-derived balance of vw_customer_balances) AND who have at least one customer transaction from the FIRST DAY OF
+        THE CURRENT MONTH (the owner's provisional recency filter): biggest absolute balance first. A settled customer disappears on his own (balance = 0 never reaches the card)."""
+        return self._fetch_all(
+            """
+            SELECT v.customer_id, v.customer_code, v.name, v.balance
+            FROM vw_customer_balances v
+            WHERE v.balance <> 0
+              AND EXISTS (SELECT 1 FROM customer_transactions ct WHERE ct.customer_id = v.customer_id AND ct.occurred_at >= DATE_FORMAT(CURDATE(), '%Y-%m-01'))
+            ORDER BY ABS(v.balance) DESC
             LIMIT %s
             """, (int(limit),))

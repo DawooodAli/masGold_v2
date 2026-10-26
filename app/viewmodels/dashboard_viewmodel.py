@@ -7,8 +7,6 @@ from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
 from app.formatting import grams, ltr, money, number
 from app.workers.invoice_worker import InvoiceWorker
 
-# Staff wording for who pays whom on an invoice (an internal screen, not the customer's bill).
-DIRECTION_TEXT = {"CUSTOMER_PAYS_SHOP": "يدفع العميل", "SHOP_PAYS_CUSTOMER": "يدفع المحل", "SETTLED": "متعادلة"}
 MONTHS = ("يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر")
 WEEKDAYS = ("الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد")
 
@@ -127,18 +125,40 @@ class DashboardViewModel(QObject):
                 for r in self._data.get("sold", [])]
 
     @Property("QVariantList", notify=changed)
-    def recentInvoices(self):
-        rows = []
-        for r in self._data.get("recent", []):
-            when = r.get("finalized_at")
-            today = self._clock().date()
-            time_text = ("" if when is None else when.strftime("%H:%M") if when.date() == today
-                         else ltr(when.strftime("%d-%m %H:%M")))
-            rows.append({"number": r["invoice_number"], "time": time_text,
-                         "customer": r["customer"] or "بدون عميل", "salesperson": r["salesperson"],
-                         "amount": money(r["net_amount"]),
-                         "direction": DIRECTION_TEXT.get(r["net_direction"], "")})
-        return rows
+    def topTypes(self):
+        """The best-selling item types of the month (one row per type)."""
+        return [{"type": r["type"], "pieces": f"{r['pieces']} قطعة",
+                 "grams": grams(r["grams"]), "value": money(r["value"])}
+                for r in self._data.get("top_types", [])]
+
+    @Property("QVariantMap", notify=changed)
+    def priceHint(self):
+        """The 21K price indicator card: the 30-day average of the shop BUY price, the current price against it and the plain hint."""
+        hint = self._data.get("price_hint") or {}
+        average, versus = hint.get("average30"), hint.get("vs_average30_percent")
+        action = hint.get("hint_text") or "بيانات غير كافية"
+        if average is None:
+            return {"available": bool(hint.get("available")), "average": "—",
+                    "versus": "بيانات غير كافية (تحتاج 10 أيام أسعار على الأقل)",
+                    "action": action, "tone": hint.get("hint_tone") or "muted"}
+        value = Decimal(versus)
+        return {"available": True, "average": money(average),
+                "versus": f"سعر الشراء الآن {'أعلى' if value > 0 else 'أقل' if value < 0 else 'مساوي'} منه بنسبة {abs(value):.2f}%",
+                "action": action, "tone": hint.get("hint_tone") or "muted"}
+
+    # ------------------------------------------------------------ customer balances (customers permission)
+    @Property(bool, notify=changed)
+    def canSeeBalances(self):
+        """True when the CURRENT database grants the user the customers permission (checked in the read transaction)."""
+        return bool(self._data.get("can_see_balances"))
+
+    @Property("QVariantList", notify=changed)
+    def customerBalances(self):
+        """The customers who had account activity from the first day of the current month and are NOT settled: the true ledger-derived balance, «على العميل» (owes) or «للعميل» (credit);
+        a settled account disappears on its own."""
+        return [{"name": r["customer"], "code": r["code"], "balance": money(r["balance"]),
+                 "meaning": r["meaning"], "owes": r["direction"] == "OWED"}
+                for r in self._data.get("customer_balances", [])]
 
     # ------------------------------------------------------------ the month so far (billing permission)
     @Property(str, notify=changed)
@@ -154,10 +174,10 @@ class DashboardViewModel(QObject):
             now, before = Decimal(r["grams"]), Decimal(r["previous"])
             if before:
                 change = (now - before) / before * 100
-                versus = f"{'▲' if change > 0 else '▼' if change < 0 else '●'} {abs(change):.0f}% عن نفس الفترة من الشهر الماضي ({grams(before)})"
+                versus = f"{'▲' if change > 0 else '▼' if change < 0 else '●'} {abs(change):.0f}% عن نفس الفترة من السنة الماضية ({grams(before)})"
                 direction = "up" if change > 0 else "down" if change < 0 else "flat"
             else:
-                versus, direction = ("لا مبيعات بنفس الفترة من الشهر الماضي" if not now else "لا مقارنة: الشهر الماضي بلا مبيعات في نفس الفترة"), "flat"
+                versus, direction = ("لا مبيعات بنفس الفترة من السنة الماضية" if not now else "لا مقارنة: السنة الماضية بلا مبيعات في نفس الفترة"), "flat"
             rows.append({"karat": str(r["karat"]), "grams": grams(now), "pieces": f"{r['pieces']} قطعة", "versus": versus, "direction": direction})
         return rows
 

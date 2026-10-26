@@ -2,7 +2,7 @@
 
 Service: each figure's one definition, permissions, the empty day. ViewModel: Arabic formatting
 and empty states. QML: the real Main.qml at 1440×900 / 1280×800 / 1080×680 (screenshots when
-MASGOLD_UI_REVIEW_DIR is set), permissions, shortcuts and refresh after a finalized invoice.
+MASGOLD_UI_REVIEW_DIR is set), permissions and refresh after a finalized invoice.
 """
 from contextlib import contextmanager
 from datetime import datetime
@@ -24,6 +24,7 @@ from tests import test_invoice_page_qml as page_harness
 D = Decimal
 BILLING = frozenset({"APP_LOGIN", "INVOICE_CREATE", "INVOICE_FINALIZE"})
 VIEW_ONLY = frozenset({"APP_LOGIN"})
+CUSTOMERS = BILLING | {"CUSTOMERS_VIEW"}
 
 
 class FakeDashboardRepo:
@@ -42,10 +43,6 @@ class FakeDashboardRepo:
         self.state["reads"].append("flow")
         return self.state["flow"]
 
-    def recent_invoices(self, limit=5):
-        self.state["reads"].append(f"recent:{limit}")
-        return self.state["recent"]
-
     def month_sold_by_karat(self, previous=False):
         self.state["reads"].append("month_prev" if previous else "month")
         return self.state["month_prev" if previous else "month"]
@@ -54,9 +51,25 @@ class FakeDashboardRepo:
         self.state["reads"].append("month_start")
         return self.state["month_info"]
 
+    def month_top_types(self, limit=3):
+        self.state["reads"].append("top_types")
+        return self.state["top_types"]
+
+    def price_daily_21(self):
+        self.state["reads"].append("price_daily")
+        return self.state["price_daily"]
+
+    def price_history_legacy_21(self):
+        self.state["reads"].append("price_legacy")
+        return self.state["price_legacy"]
+
     def below_min_levels(self):
         self.state["reads"].append("below_min")
         return self.state["below_min"]
+
+    def customer_balances(self, limit=6):
+        self.state["reads"].append("customer_balances")
+        return self.state["customer_balances"]
 
 
 class FakeBalanceRepo:
@@ -67,10 +80,17 @@ class FakeBalanceRepo:
         return self.state["balance"]
 
 
+def price_series():
+    """12 stored 21K days ending 2026-09-27, buy rising 6,000 → 6,275 (sell +25): the 30-day
+    average of the buy price is 6,137.50 and the latest sits 2.24% above it."""
+    return [{"day": datetime(2026, 9, 16 + i), "buy": D(6000 + 25 * i), "sell": D(6025 + 25 * i)} for i in range(12)]
+
+
 def empty_state():
     return {"reads": [], "invoices": {"invoice_count": 0, "sell_total": D("0"), "buy_total": D("0"),
                                       "sale_invoice_count": 0, "buy_invoice_count": 0, "unidentified_lines": 0},
-            "sold": [], "flow": [], "recent": [], "month": [], "month_prev": [], "month_info": {"first": "2026-09-01", "day": 27, "today": datetime(2026, 9, 27)}, "below_min": [],
+            "sold": [], "flow": [], "month": [], "month_prev": [], "month_info": {"first": "2026-09-01", "day": 27, "today": datetime(2026, 9, 27)}, "below_min": [],
+            "top_types": [], "price_daily": [], "price_legacy": [], "customer_balances": [],
             "balance": [{"karat_id": 1, "karat_value": 21, "balance_grams": D("0")},
                         {"karat_id": 2, "karat_value": 18, "balance_grams": D("0")},
                         {"karat_id": 3, "karat_value": 24, "balance_grams": D("0")}]}
@@ -85,10 +105,13 @@ def busy_state():
     state["flow"] = [{"karat_value": 21, "grams_in": D("5.000"), "grams_out": D("2.000")}]
     state["month"] = [{"karat_value": 21, "grams": D("120.500"), "pieces": 30}, {"karat_value": 18, "grams": D("40.000"), "pieces": 9}]
     state["month_prev"] = [{"karat_value": 21, "grams": D("100.000"), "pieces": 25}]
+    state["top_types"] = [{"item_type": "دبلة", "pieces": 5, "grams": D("45.000"), "value": D("280000.00")},
+                          {"item_type": "خاتم", "pieces": 3, "grams": D("12.250"), "value": D("78000.00")}]
+    state["price_daily"] = price_series()
+    state["customer_balances"] = [{"customer_id": 7, "customer_code": "CU0007", "name": "سليا محمد", "balance": D("25000.00")},
+                                  {"customer_id": 9, "customer_code": None, "name": "منى علي", "balance": D("-3200.00")},
+                                  {"customer_id": 11, "customer_code": "CU0011", "name": "أحمد حسن", "balance": D("0.00")}]   # settled: never reaches the card
     state["balance"][0]["balance_grams"] = D("128.520")
-    state["recent"] = [{"invoice_number": "26092618", "finalized_at": datetime(2026, 9, 27, 13, 5),
-                        "net_amount": D("23000.00"), "net_direction": "CUSTOMER_PAYS_SHOP",
-                        "customer_name_snapshot": "سليا محمد", "employee_name": "علي"}]
     return state
 
 
@@ -107,8 +130,8 @@ def make_service(state, permissions=BILLING):
 class DashboardServiceTests(unittest.TestCase):
     def test_empty_day(self):
         snapshot = make_service(empty_state())[0].today()
-        self.assertEqual((snapshot["invoice_count"], snapshot["sell_total"], snapshot["sold"], snapshot["recent"]),
-                         (0, "0.00", [], []))
+        self.assertEqual((snapshot["invoice_count"], snapshot["sell_total"], snapshot["sold"]),
+                         (0, "0.00", []))
         self.assertEqual([r["balance"] for r in snapshot["old_gold"]], ["0.000", "0.000", "0.000", "0.000"])
 
     def test_today_counts_values_and_weights_each_have_one_meaning(self):
@@ -130,22 +153,23 @@ class DashboardServiceTests(unittest.TestCase):
         state = busy_state()
         snapshot = make_service(state, VIEW_ONLY)[0].today()
         self.assertFalse(snapshot["can_see_sales"])
-        for key in ("invoice_count", "sell_total", "buy_total", "sold", "recent"):
+        for key in ("invoice_count", "sell_total", "buy_total", "sold", "top_types"):
             self.assertNotIn(key, snapshot)
-        self.assertEqual(state["reads"], ["flow"])                          # sales and stock queries never ran
-        self.assertEqual(len(snapshot["old_gold"]), 4)                       # the strip's information only
+        self.assertEqual(state["reads"], ["flow", "price_daily", "price_legacy"])   # sales, stock and customer queries never ran
+        self.assertEqual(len(snapshot["old_gold"]), 4)                              # the strip's information only
 
     def test_one_small_set_of_queries_per_refresh(self):
         state = busy_state()
         make_service(state)[0].today()
-        self.assertEqual(sorted(state["reads"]), ["flow", "invoices", "month", "month_prev", "month_start", "recent:5", "sold"])
+        self.assertEqual(sorted(state["reads"]), ["flow", "invoices", "month", "month_prev", "month_start",
+                                                  "price_daily", "price_legacy", "sold", "top_types"])
 
-    def test_no_money_received_customer_or_bank_balances_on_the_dashboard(self):
+    def test_no_money_received_cash_or_bank_balances_on_the_dashboard(self):
         snapshot = make_service(busy_state())[0].today()
-        for key in ("money_received", "cash_balance", "bank", "wallet", "customer_balance"):
+        for key in ("money_received", "cash_balance", "bank", "wallet"):
             self.assertNotIn(key, snapshot)
 
-    def test_the_month_so_far_is_per_karat_against_the_same_span_of_the_previous_month(self):
+    def test_the_month_so_far_is_per_karat_against_the_same_span_of_the_same_month_last_year(self):
         snapshot = make_service(busy_state())[0].today()
         self.assertEqual(snapshot["month_day"], 27)
         self.assertEqual(snapshot["month"], [{"karat": 21, "grams": "120.500", "pieces": 30, "previous": "100.000"}, {"karat": 18, "grams": "40.000", "pieces": 9, "previous": "0.000"}])
@@ -169,6 +193,35 @@ class DashboardServiceTests(unittest.TestCase):
         session.logout()
         with self.assertRaises(Exception):
             service.today()
+
+    def test_top_types_list_one_row_per_type_and_are_never_summed(self):
+        snapshot = make_service(busy_state())[0].today()
+        self.assertEqual(snapshot["top_types"], [{"type": "دبلة", "pieces": 5, "grams": "45.000", "value": "280000.00"},
+                                                 {"type": "خاتم", "pieces": 3, "grams": "12.250", "value": "78000.00"}])
+        self.assertNotIn("top_types_total", snapshot)
+        self.assertEqual(make_service(empty_state())[0].today()["top_types"], [])
+
+    def test_price_hint_is_the_21k_buy_price_against_its_30_day_average(self):
+        hint = make_service(busy_state())[0].today()["price_hint"]
+        self.assertEqual(hint, {"available": True, "average30": "6137.50", "vs_average30_percent": "2.24",
+                                "hint_text": "البيع مناسب نسبيًا", "hint_tone": "sell"})          # the sell price sits at the top of its 90-day range
+        short = make_service({**empty_state(), "price_daily": price_series()[:5]})[0].today()["price_hint"]
+        self.assertEqual((short["available"], short["average30"], short["vs_average30_percent"]), (True, None, None))   # below the 10 observations the average needs
+        self.assertEqual(make_service(empty_state())[0].today()["price_hint"],
+                         {"available": False, "average30": None, "vs_average30_percent": None,
+                          "hint_text": "بيانات غير كافية", "hint_tone": "muted"})                    # no stored price at all
+
+    def test_customer_balances_need_a_customers_grant_and_show_the_true_ledger_balance(self):
+        state = busy_state()
+        granted = make_service(state, CUSTOMERS)[0].today()
+        self.assertTrue(granted["can_see_balances"])
+        self.assertIn("customer_balances", state["reads"])
+        self.assertEqual(granted["customer_balances"],
+                         [{"customer": "سليا محمد", "code": "CU0007", "balance": "25000.00", "direction": "OWED", "meaning": "على العميل للمحل"},
+                          {"customer": "منى علي", "code": "", "balance": "3200.00", "direction": "CREDIT", "meaning": "للعميل عند المحل"}])   # the settled customer disappears
+        plain = make_service(busy_state(), BILLING)[0].today()
+        self.assertFalse(plain["can_see_balances"])
+        self.assertNotIn("customer_balances", plain)
 
 
 class StaticService:
@@ -207,9 +260,6 @@ class DashboardViewModelTests(unittest.TestCase):
                                              "fromOldGold": "منها من الكسر 2.000"})
         self.assertEqual(vm.oldGold[0]["balance"], "128.520")
         self.assertEqual((vm.oldGold[0]["inText"], vm.oldGold[0]["outText"]), ("⁦+5.000⁩", "⁦−2.000⁩"))
-        self.assertEqual(vm.recentInvoices[0], {"number": "26092618", "time": "13:05", "customer": "سليا محمد",
-                                                "salesperson": "علي", "amount": "23,000.00 ج",
-                                                "direction": "يدفع العميل"})
         self.assertEqual(vm.dateText, "الأحد ⁦27-09-2026⁩")
 
     def test_empty_states(self):
@@ -222,7 +272,27 @@ class DashboardViewModelTests(unittest.TestCase):
     def test_view_only_user_sees_no_sales(self):
         vm = self.vm(busy_state(), VIEW_ONLY)
         self.assertFalse(vm.canSeeSales)
-        self.assertEqual((vm.invoiceCount, vm.recentInvoices, vm.soldByKarat), (0, [], []))
+        self.assertEqual((vm.invoiceCount, vm.soldByKarat, vm.topTypes), (0, [], []))
+        self.assertFalse(vm.canSeeBalances)
+        self.assertEqual(vm.customerBalances, [])
+
+    def test_formatting_of_the_new_cards(self):
+        vm = self.vm(busy_state(), CUSTOMERS)
+        self.assertEqual(vm.topTypes[0], {"type": "دبلة", "pieces": "5 قطعة", "grams": "45.000", "value": "280,000.00 ج"})
+        self.assertEqual(vm.priceHint, {"available": True, "average": "6,137.50 ج",
+                                        "versus": "سعر الشراء الآن أعلى منه بنسبة 2.24%",
+                                        "action": "البيع مناسب نسبيًا", "tone": "sell"})
+        self.assertTrue(vm.canSeeBalances)
+        self.assertEqual(vm.customerBalances, [{"name": "سليا محمد", "code": "CU0007", "balance": "25,000.00 ج",
+                                                "meaning": "على العميل للمحل", "owes": True},
+                                               {"name": "منى علي", "code": "", "balance": "3,200.00 ج",
+                                                "meaning": "للعميل عند المحل", "owes": False}])          # the settled customer disappears
+
+    def test_price_hint_without_history_says_the_data_is_insufficient(self):
+        self.assertEqual(self.vm(empty_state()).priceHint,
+                         {"available": False, "average": "—",
+                          "versus": "بيانات غير كافية (تحتاج 10 أيام أسعار على الأقل)",
+                          "action": "بيانات غير كافية", "tone": "muted"})
 
 
 def _only_dashboard_tests(loader, tests, pattern):
@@ -249,7 +319,7 @@ class DashboardPageTests(page_harness.InvoicePageTests):
         return vm
 
     def busy_snapshot(self):
-        service, _ = make_service(busy_state())
+        service, _ = make_service(busy_state(), CUSTOMERS)
         return service.today()
 
     def test_dashboard_fits_every_target_size(self):
@@ -260,8 +330,8 @@ class DashboardPageTests(page_harness.InvoicePageTests):
             self.root.setHeight(height)
             QTest.qWait(250)
             page = self.item("dashboardPage")
-            for name in ("todayCard", "soldWeightCard", "priceCard", "oldGoldCard", "attentionCard",
-                         "actionsCard", "invoiceCount", "sellTotal", "dashboardPriceSell"):
+            for name in ("todayCard", "soldWeightCard", "priceCard", "oldGoldCard", "allPricesCard",
+                         "priceHintCard", "topTypesCard", "invoiceCount", "sellTotal", "dashboardPriceSell"):
                 item = self.item(name)
                 self.assertTrue(item.property("visible"), f"{name} hidden at {width}x{height}")
                 left = item.mapToItem(page, QPointF(0, 0)).x()
@@ -284,7 +354,7 @@ class DashboardPageTests(page_harness.InvoicePageTests):
         service, _ = make_service(state, BILLING | {"INVENTORY_VIEW"})
         vm = self.open_dashboard(service.today())
         self.assertEqual([r["karat"] for r in vm.monthByKarat], ["21", "18"])
-        self.assertIn("▲ 20%", vm.monthByKarat[0]["versus"])                                         # 120.5 against 100 g of the same span last month
+        self.assertIn("▲ 20%", vm.monthByKarat[0]["versus"])                                         # 120.5 against 100 g of the same span last year
         self.assertEqual(vm.belowMin, [{"title": "دبلة عيار 21", "short": "ناقص 1 قطعة"}])
         for width, height in page_harness.SIZES:
             self.root.setWidth(width)
@@ -298,14 +368,21 @@ class DashboardPageTests(page_harness.InvoicePageTests):
                 self.assertGreaterEqual(left, -1, name)
                 self.assertLessEqual(left + item.property("width"), page.property("width") + 1, name)
             wide = bool(page.property("wide"))                                                               # three columns on a wide page, two on a narrow one
-            rows = ([("priceCard", "todayCard", "soldWeightCard"), ("oldGoldCard", "attentionCard", "actionsCard")] if wide else [("priceCard", "todayCard"), ("soldWeightCard", "oldGoldCard"), ("attentionCard", "actionsCard")])
+            rows = ([("priceCard", "allPricesCard", "priceHintCard"), ("todayCard", "soldWeightCard", "oldGoldCard"),
+                     ("monthCard", "topTypesCard", "belowMinCard")] if wide else
+                    [("priceCard", "allPricesCard"), ("priceHintCard", "todayCard"), ("soldWeightCard", "oldGoldCard"),
+                     ("monthCard", "topTypesCard"), ("belowMinCard",)])
             for row in rows:
                 heights = {name: round(self.item(name).property("height")) for name in row}
                 self.assertEqual(len(set(heights.values())), 1, f"cards of one row differ in height at {width}x{height}: {heights}")
             if wide:
-                right = {name: self.item(name).mapToItem(page, QPointF(0, 0)).x() + self.item(name).property("width") for name in ("priceCard", "todayCard", "soldWeightCard")}
-                self.assertGreater(right["priceCard"], right["todayCard"], f"the gold price card is not the rightmost at {width}x{height}")        # the price on the physical right (owner review)
-                self.assertGreater(right["todayCard"], right["soldWeightCard"])
+                # RTL grid: the first card is the rightmost (biggest x); each next card is further left.
+                row1 = {name: self.item(name).mapToItem(page, QPointF(0, 0)).x() for name in ("priceCard", "allPricesCard", "priceHintCard")}
+                self.assertGreater(row1["priceCard"], row1["allPricesCard"], f"the gold price card is not the rightmost at {width}x{height}")        # the price on the physical right (owner review)
+                self.assertGreater(row1["allPricesCard"], row1["priceHintCard"])
+                row2 = {name: self.item(name).mapToItem(page, QPointF(0, 0)).x() for name in ("todayCard", "soldWeightCard", "oldGoldCard")}
+                self.assertGreater(row2["todayCard"], row2["soldWeightCard"])
+                self.assertGreater(row2["soldWeightCard"], row2["oldGoldCard"])
             self.assertGreaterEqual(self.item("invoiceCount").property("font").pixelSize(), 26)             # the key figure is bigger than before
         self.assertEqual(self.warnings, [])
 
@@ -356,6 +433,8 @@ class DashboardPageTests(page_harness.InvoicePageTests):
             QTest.qWait(250)
             sell, buy = self.item("dashboardPriceSell"), self.item("dashboardPriceBuy")
             self.assertEqual((sell.property("text"), buy.property("text")), ("6,232", "6,207"))
+            page = self.item("dashboardPage")                                                              # the same order as the Main.qml price strip: buy on the physical right
+            self.assertGreater(buy.mapToItem(page, QPointF(0, 0)).x(), sell.mapToItem(page, QPointF(0, 0)).x())
             for label in (sell, buy):
                 self.assertGreaterEqual(label.property("font").pixelSize(), 30)       # a hero number
                 self.assert_inside_window(label)
@@ -376,22 +455,39 @@ class DashboardPageTests(page_harness.InvoicePageTests):
         self.assertEqual(self.item("invoiceCount").property("text"), "0")
         self.assertEqual(self.item("invoiceBreakdown").property("text"), "لا توجد فواتير اليوم بعد")
         self.assertTrue(self.item("soldWeightEmpty").property("visible"))
-        self.assertTrue(self.item("attentionEmpty").property("visible"))
         target = os.getenv("MASGOLD_UI_REVIEW_DIR")
         if target:
             self.root.grabWindow().save(str(Path(target) / "dashboard-empty-1280x800.png"))
 
     def test_dashboard_hides_sales_without_billing_permission(self):
-        self.open_dashboard({**self.dashboard.snapshot, "can_see_sales": False})
-        for name in ("todayCard", "soldWeightCard", "recentCard", "dashboardNewInvoice"):
+        self.open_dashboard({**self.dashboard.snapshot, "can_see_sales": False, "can_see_balances": True,
+                             "customer_balances": []})
+        for name in ("todayCard", "soldWeightCard", "monthCard", "topTypesCard"):
             self.assertFalse(self.item(name).property("visible"), name)
-        for name in ("priceCard", "oldGoldCard", "attentionCard"):
-            self.assertTrue(self.item(name).property("visible"), name)
+        for name in ("priceCard", "oldGoldCard", "allPricesCard", "priceHintCard", "customerBalancesCard"):
+            self.assertTrue(self.item(name).property("visible"), name)                                   # the price and balance cards are for every user
+        self.assertTrue(self.item("customerBalancesEmpty").property("visible"))
 
-    def test_dashboard_shortcut_opens_the_existing_billing_page(self):
-        self.open_dashboard()
-        self.click("dashboardNewInvoice")
-        self.wait_until(lambda: self.root.property("currentPage") == 1, "new invoice did not open Billing")
+    def test_dashboard_new_cards_show_their_figures(self):
+        """Owner request 2026-10-25: all karats' prices, the 21K price hint, the best-selling types and the customer balances."""
+        prices = self.controller.gold_prices
+        prices._data = {"status": "FRESH", "mode": "AUTO", "source": "GOLDTIMO", "age_seconds": 30,
+                        "prices": [{"karat": "21", "shop_buy_price_per_gram": "6207.0000", "shop_sell_price_per_gram": "6232.0000"},
+                                   {"karat": "18", "shop_buy_price_per_gram": "5320.0000", "shop_sell_price_per_gram": "5342.0000"},
+                                   {"karat": "24", "shop_buy_price_per_gram": "7094.0000", "shop_sell_price_per_gram": "7122.0000"}]}
+        prices.changed.emit()
+        vm = self.open_dashboard(self.busy_snapshot())
+        self.assertEqual(self.item("allPriceKarat_21").property("text"), "عيار 21")
+        self.assertEqual(self.item("allPriceBuy_21").property("text"), "6207.0000")
+        self.assertEqual(self.item("allPriceSell_18").property("text"), "5342.0000")
+        self.assertEqual((self.item("priceHintAverage").property("value"), self.item("priceHintVersus").property("value")),
+                         ("6,137.50 ج", "سعر الشراء الآن أعلى منه بنسبة 2.24%"))
+        self.assertEqual(self.item("priceHintAction").property("value"), "البيع مناسب نسبيًا")
+        self.assertIsNotNone(self.item("topType_0"))                                                     # the first best-selling type row exists
+        self.assertEqual(vm.topTypes[0]["type"], "دبلة")
+        # the customer balances card needs the customers grant and its rows carry the direction
+        self.assertTrue(self.item("customerBalancesCard").property("visible"))
+        self.assertEqual(self.item("customerBalancesEmpty").property("visible"), False)
 
     def test_dashboard_refreshes_after_a_finalized_invoice(self):
         self.open_dashboard()

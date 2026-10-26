@@ -6,22 +6,33 @@ Every figure has one meaning (no mixing of commercial value, real money and cust
 - buy_total: the commercial value of today's old-gold purchases (invoices.buy_total);
 - sold grams per karat: today's sale lines (incl. sales from old-gold stock, shown separately);
 - old gold: COUNTED balance per karat (same ledger as the MainWindow strip) + today's IN / OUT;
-- unidentified_lines: today's manual (F5) sale lines awaiting reconciliation.
-Money received / paid, customer balances and bank / wallet balances are NOT on this page.
+- unidentified_lines: today's manual (F5) sale lines awaiting reconciliation;
+- top types: the best-selling item types of the month (SELL_INVENTORY lines only);
+- price hint: the 21K shop BUY price against its 30-day average and the 90-day hint, from the
+  stored daily prices (the same formulas and source as the price-indicators report);
+- customer balances: the TRUE ledger-derived balance of customers active from the first day of
+  the current month (customers permission), settled accounts excluded.
+Money received / paid and bank / wallet balances are NOT on this page.
 
-Sales figures and the recent invoices need a billing permission; old-gold weights are the same
+Sales figures need a billing permission; old-gold weights are the same
 operational information the MainWindow strip already shows every logged-in user.
 """
 from decimal import Decimal
 
 from repositories.dashboard_repository import DashboardRepository
 from repositories.financial_balance_repository import FinancialBalanceRepository
+from services import price_indicators as indicators_math
 from services.invoice_service import invoice_transaction
 
 DASHBOARD_KARATS = (21, 18, 22, 24)
 SALES_PERMISSIONS = frozenset({"INVOICE_CREATE", "INVOICE_FINALIZE"})
 STOCK_PERMISSIONS = frozenset({"INVENTORY_VIEW", "INVENTORY_MANAGE"})
 GRAMS, MONEY = Decimal("0.001"), Decimal("0.01")
+BALANCE_DIRECTION = {"OWED": "على العميل للمحل", "CREDIT": "للعميل عند المحل"}
+HINT_TEXT = {indicators_math.BUY_FAVOURABLE: "الشراء مناسب نسبيًا", indicators_math.SELL_FAVOURABLE: "البيع مناسب نسبيًا", indicators_math.NEUTRAL: "محايد",
+             indicators_math.UNKNOWN: "بيانات غير كافية"}
+HINT_TONE = {indicators_math.BUY_FAVOURABLE: "buy", indicators_math.SELL_FAVOURABLE: "sell", indicators_math.NEUTRAL: "muted",
+             indicators_math.UNKNOWN: "muted"}
 
 
 class _Discard(Exception):
@@ -50,7 +61,7 @@ class DashboardService:
 
     @staticmethod
     def month_summary(current, previous):
-        """Per karat (never summed across karats): the grams and pieces sold so far this month and the grams over the same span of the previous month."""
+        """Per karat (never summed across karats): the grams and pieces sold so far this month and the grams over the same span of the same month LAST YEAR."""
         now = {int(r["karat_value"]): r for r in current}
         before = {int(r["karat_value"]): Decimal(str(r["grams"])) for r in previous}
         out = []
@@ -71,6 +82,40 @@ class DashboardService:
                 out.append({"type": r["item_type"], "karat": int(r["karat_value"]), "short_pieces": short_p, "short_grams": str(short_g.quantize(GRAMS))})
         return out
 
+    @staticmethod
+    def top_types(rows):
+        """The best-selling item types of the month: [{type, pieces, grams, value}], one row per type (never summed across types)."""
+        return [{"type": r["item_type"] or "بدون صنف", "pieces": int(r["pieces"]),
+                 "grams": str(Decimal(str(r["grams"])).quantize(GRAMS)),
+                 "value": str(Decimal(str(r["value"])).quantize(MONEY))} for r in rows or []]
+
+    @staticmethod
+    def balances(rows):
+        """The customer balances shown on the dashboard: [{customer, code, balance, direction, meaning}] with the TRUE ledger-derived balance of vw_customer_balances (never a period
+        balance); balance > 0 = OWED («على العميل»), balance < 0 = CREDIT («للعميل»). A settled customer never reaches the card (the query only returns balance <> 0)."""
+        out = []
+        for r in rows or []:
+            balance = Decimal(str(r["balance"]))
+            if not balance:                                                       # a settled account never reaches the card (the query already refuses it; kept here as defence)
+                continue
+            direction = "OWED" if balance > 0 else "CREDIT"
+            out.append({"customer": r["name"], "code": r.get("customer_code") or "",
+                        "balance": str(abs(balance).quantize(MONEY)), "direction": direction,
+                        "meaning": BALANCE_DIRECTION[direction]})
+        return out
+
+    @staticmethod
+    def price_hint(series):
+        """The dashboard's plain 21K price indicator (the same formulas and definitions as the price-indicators report): the 30-day average of the shop BUY price, the current
+        price against it in percent and the 90-day hint. A figure that needs more history than stored is None / «بيانات غير كافية», never invented."""
+        latest = series[-1] if series else None
+        average = indicators_math.moving_average(series, 1, 30)
+        code, _buy_position, _sell_position = indicators_math.hint(series)
+        return {"available": latest is not None,
+                "average30": str(average[0]) if average else None,
+                "vs_average30_percent": str(average[1]) if average else None,
+                "hint_text": HINT_TEXT[code], "hint_tone": HINT_TONE[code]}
+
     def today(self, *, _expected_actor=None):
         actor = self._actor(_expected_actor)
 
@@ -80,14 +125,18 @@ class DashboardService:
             verified = self._authorization.require_permission_read(connection, actor, "APP_LOGIN")
             sales = self.can_see_sales(verified)
             dashboard, balances = self._repository(connection), self._balances(connection)
-            result = {"old_gold_balance": balances.old_gold_counted(), "old_gold_flow": dashboard.today_old_gold_flow()}
+            result = {"old_gold_balance": balances.old_gold_counted(), "old_gold_flow": dashboard.today_old_gold_flow(),
+                      "price_daily": dashboard.price_daily_21(), "price_legacy": dashboard.price_history_legacy_21()}
             if sales:
                 result.update(invoices=dashboard.today_invoices(), sold=dashboard.today_sold_by_karat(),
-                              recent=dashboard.recent_invoices(5), month=dashboard.month_sold_by_karat(), prev_month=dashboard.month_sold_by_karat(previous=True),
-                              month_info=dashboard.month_start())
+                              month=dashboard.month_sold_by_karat(), prev_year=dashboard.month_sold_by_karat(previous=True),
+                              month_info=dashboard.month_start(), top_types=dashboard.month_top_types())
             if STOCK_PERMISSIONS & set(verified.permissions):                  # the minimum-stock shortages follow the CURRENT inventory grants
                 result["below_min"] = dashboard.below_min_levels()
                 result["can_see_stock"] = True
+            if "CUSTOMERS_VIEW" in set(verified.permissions):                 # the customer balances follow the CURRENT customers grants
+                result["can_see_balances"] = True
+                result["customer_balances"] = dashboard.customer_balances()
             return sales, result
         try:
             with self._transaction() as connection:
@@ -108,6 +157,13 @@ class DashboardService:
         snapshot["can_see_stock"] = bool(raw.get("can_see_stock"))
         if snapshot["can_see_stock"]:
             snapshot["below_min"] = self.shortages(raw.get("below_min"))
+        day_of = lambda value: value.date() if hasattr(value, "date") else value
+        live = [(day_of(r["day"]), Decimal(str(r["buy"])), Decimal(str(r["sell"]))) for r in raw.get("price_daily") or []]
+        legacy = [(day_of(r["day"]), Decimal(str(r["buy"])), Decimal(str(r["sell"]))) for r in raw.get("price_legacy") or []]
+        snapshot["price_hint"] = self.price_hint(indicators_math.merge_series(legacy, live))
+        snapshot["can_see_balances"] = bool(raw.get("can_see_balances"))
+        if snapshot["can_see_balances"]:
+            snapshot["customer_balances"] = self.balances(raw.get("customer_balances"))
         if sales:
             invoices = raw["invoices"] or {}
             sold = {int(r["karat_value"]): r for r in raw["sold"]}
@@ -124,10 +180,6 @@ class DashboardService:
                        "from_old_gold": str(Decimal(str(sold[karat]["from_old_gold_grams"])).quantize(GRAMS))}
                       for karat in sorted(sold, key=lambda k: (k not in DASHBOARD_KARATS,
                                                               DASHBOARD_KARATS.index(k) if k in DASHBOARD_KARATS else k))],
-                month=self.month_summary(raw["month"], raw["prev_month"]), month_day=int((raw.get("month_info") or {}).get("day") or 0),
-                recent=[{"invoice_number": r["invoice_number"], "finalized_at": r["finalized_at"],
-                         "net_amount": str(Decimal(str(r["net_amount"])).quantize(MONEY)),
-                         "net_direction": r["net_direction"],
-                         "customer": r.get("customer_name_snapshot") or "",
-                         "salesperson": r.get("employee_name") or ""} for r in raw["recent"]])
+                month=self.month_summary(raw["month"], raw["prev_year"]), month_day=int((raw.get("month_info") or {}).get("day") or 0),
+                top_types=self.top_types(raw.get("top_types")))
         return snapshot

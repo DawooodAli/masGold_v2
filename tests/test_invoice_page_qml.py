@@ -146,7 +146,7 @@ class UiDashboard:
         self.calls = 0
         self.snapshot = {"can_see_sales": True, "invoice_count": 0, "sale_invoice_count": 0,
                          "buy_invoice_count": 0, "unidentified_lines": 0, "sell_total": "0.00",
-                         "buy_total": "0.00", "sold": [], "recent": [],
+                         "buy_total": "0.00", "sold": [],
                          "old_gold": [{"karat": k, "balance": "0.000", "in": "0.000", "out": "0.000"}
                                       for k in (21, 18, 24)]}
 
