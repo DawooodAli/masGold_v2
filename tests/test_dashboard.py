@@ -217,8 +217,8 @@ class DashboardServiceTests(unittest.TestCase):
         self.assertTrue(granted["can_see_balances"])
         self.assertIn("customer_balances", state["reads"])
         self.assertEqual(granted["customer_balances"],
-                         [{"customer": "سليا محمد", "code": "CU0007", "balance": "25000.00", "direction": "OWED", "meaning": "على العميل للمحل"},
-                          {"customer": "منى علي", "code": "", "balance": "3200.00", "direction": "CREDIT", "meaning": "للعميل عند المحل"}])   # the settled customer disappears
+                         [{"customer": "سليا محمد", "code": "CU0007", "balance": "25000.00", "direction": "OWED"},
+                          {"customer": "منى علي", "code": "", "balance": "3200.00", "direction": "CREDIT"}])   # the settled customer disappears
         plain = make_service(busy_state(), BILLING)[0].today()
         self.assertFalse(plain["can_see_balances"])
         self.assertNotIn("customer_balances", plain)
@@ -284,9 +284,9 @@ class DashboardViewModelTests(unittest.TestCase):
                                         "action": "البيع مناسب نسبيًا", "tone": "sell"})
         self.assertTrue(vm.canSeeBalances)
         self.assertEqual(vm.customerBalances, [{"name": "سليا محمد", "code": "CU0007", "balance": "25,000.00 ج",
-                                                "meaning": "على العميل للمحل", "owes": True},
+                                                "owes": True},
                                                {"name": "منى علي", "code": "", "balance": "3,200.00 ج",
-                                                "meaning": "للعميل عند المحل", "owes": False}])          # the settled customer disappears
+                                                "owes": False}])          # the settled customer disappears
 
     def test_price_hint_without_history_says_the_data_is_insufficient(self):
         self.assertEqual(self.vm(empty_state()).priceHint,
@@ -330,7 +330,7 @@ class DashboardPageTests(page_harness.InvoicePageTests):
             self.root.setHeight(height)
             QTest.qWait(250)
             page = self.item("dashboardPage")
-            for name in ("todayCard", "soldWeightCard", "priceCard", "oldGoldCard", "allPricesCard",
+            for name in ("todayCard", "soldWeightCard", "priceCard", "oldGoldCard",
                          "priceHintCard", "topTypesCard", "invoiceCount", "sellTotal", "dashboardPriceSell"):
                 item = self.item(name)
                 self.assertTrue(item.property("visible"), f"{name} hidden at {width}x{height}")
@@ -368,21 +368,21 @@ class DashboardPageTests(page_harness.InvoicePageTests):
                 self.assertGreaterEqual(left, -1, name)
                 self.assertLessEqual(left + item.property("width"), page.property("width") + 1, name)
             wide = bool(page.property("wide"))                                                               # three columns on a wide page, two on a narrow one
-            rows = ([("priceCard", "allPricesCard", "priceHintCard"), ("todayCard", "soldWeightCard", "oldGoldCard"),
-                     ("monthCard", "topTypesCard", "belowMinCard")] if wide else
-                    [("priceCard", "allPricesCard"), ("priceHintCard", "todayCard"), ("soldWeightCard", "oldGoldCard"),
-                     ("monthCard", "topTypesCard"), ("belowMinCard",)])
+            rows = ([("priceCard", "priceHintCard", "todayCard"), ("soldWeightCard", "oldGoldCard", "monthCard"),
+                     ("topTypesCard", "belowMinCard")] if wide else
+                    [("priceCard", "priceHintCard"), ("todayCard", "soldWeightCard"), ("oldGoldCard", "monthCard"),
+                     ("topTypesCard", "belowMinCard")])
             for row in rows:
                 heights = {name: round(self.item(name).property("height")) for name in row}
                 self.assertEqual(len(set(heights.values())), 1, f"cards of one row differ in height at {width}x{height}: {heights}")
             if wide:
                 # RTL grid: the first card is the rightmost (biggest x); each next card is further left.
-                row1 = {name: self.item(name).mapToItem(page, QPointF(0, 0)).x() for name in ("priceCard", "allPricesCard", "priceHintCard")}
-                self.assertGreater(row1["priceCard"], row1["allPricesCard"], f"the gold price card is not the rightmost at {width}x{height}")        # the price on the physical right (owner review)
-                self.assertGreater(row1["allPricesCard"], row1["priceHintCard"])
-                row2 = {name: self.item(name).mapToItem(page, QPointF(0, 0)).x() for name in ("todayCard", "soldWeightCard", "oldGoldCard")}
-                self.assertGreater(row2["todayCard"], row2["soldWeightCard"])
+                row1 = {name: self.item(name).mapToItem(page, QPointF(0, 0)).x() for name in ("priceCard", "priceHintCard", "todayCard")}
+                self.assertGreater(row1["priceCard"], row1["priceHintCard"], f"the gold price card is not the rightmost at {width}x{height}")        # the price on the physical right (owner review)
+                self.assertGreater(row1["priceHintCard"], row1["todayCard"])
+                row2 = {name: self.item(name).mapToItem(page, QPointF(0, 0)).x() for name in ("soldWeightCard", "oldGoldCard", "monthCard")}
                 self.assertGreater(row2["soldWeightCard"], row2["oldGoldCard"])
+                self.assertGreater(row2["oldGoldCard"], row2["monthCard"])
             self.assertGreaterEqual(self.item("invoiceCount").property("font").pixelSize(), 26)             # the key figure is bigger than before
         self.assertEqual(self.warnings, [])
 
@@ -464,30 +464,34 @@ class DashboardPageTests(page_harness.InvoicePageTests):
                              "customer_balances": []})
         for name in ("todayCard", "soldWeightCard", "monthCard", "topTypesCard"):
             self.assertFalse(self.item(name).property("visible"), name)
-        for name in ("priceCard", "oldGoldCard", "allPricesCard", "priceHintCard", "customerBalancesCard"):
+        for name in ("priceCard", "oldGoldCard", "priceHintCard", "customerBalancesCard"):
             self.assertTrue(self.item(name).property("visible"), name)                                   # the price and balance cards are for every user
         self.assertTrue(self.item("customerBalancesEmpty").property("visible"))
 
     def test_dashboard_new_cards_show_their_figures(self):
-        """Owner request 2026-10-25: all karats' prices, the 21K price hint, the best-selling types and the customer balances."""
-        prices = self.controller.gold_prices
-        prices._data = {"status": "FRESH", "mode": "AUTO", "source": "GOLDTIMO", "age_seconds": 30,
-                        "prices": [{"karat": "21", "shop_buy_price_per_gram": "6207.0000", "shop_sell_price_per_gram": "6232.0000"},
-                                   {"karat": "18", "shop_buy_price_per_gram": "5320.0000", "shop_sell_price_per_gram": "5342.0000"},
-                                   {"karat": "24", "shop_buy_price_per_gram": "7094.0000", "shop_sell_price_per_gram": "7122.0000"}]}
-        prices.changed.emit()
+        """Owner request 2026-10-25: the 21K price hint, the best-selling types and the customer balances (red = على العميل, blue = للعميل, no wording)."""
         vm = self.open_dashboard(self.busy_snapshot())
-        self.assertEqual(self.item("allPriceKarat_21").property("text"), "عيار 21")
-        self.assertEqual(self.item("allPriceBuy_21").property("text"), "6207.0000")
-        self.assertEqual(self.item("allPriceSell_18").property("text"), "5342.0000")
         self.assertEqual((self.item("priceHintAverage").property("value"), self.item("priceHintVersus").property("value")),
                          ("6,137.50 ج", "سعر الشراء الآن أعلى منه بنسبة 2.24%"))
         self.assertEqual(self.item("priceHintAction").property("value"), "البيع مناسب نسبيًا")
         self.assertIsNotNone(self.item("topType_0"))                                                     # the first best-selling type row exists
         self.assertEqual(vm.topTypes[0]["type"], "دبلة")
-        # the customer balances card needs the customers grant and its rows carry the direction
+        # the customer balances card: the amount only, distinguished by colour (RED owes / BLUE credit)
         self.assertTrue(self.item("customerBalancesCard").property("visible"))
         self.assertEqual(self.item("customerBalancesEmpty").property("visible"), False)
+        row = self.item("customerBalance_0")
+        line = next(c for c in row.findChildren(object) if c.property("value") is not None and c.property("value") != "")
+        self.assertEqual(line.property("value"), "25,000.00 ج")                                         # no «على العميل» prefix, no direction wording
+        self.assertEqual(line.property("valueColor").name(), self._theme_color("red"))
+        credit = self.item("customerBalance_1")
+        line2 = next(c for c in credit.findChildren(object) if c.property("value") is not None and c.property("value") != "")
+        self.assertEqual(line2.property("valueColor").name(), self._theme_color("blue"))
+
+    def _theme_color(self, name):
+        """The Theme colour (Theme has no objectName): the only child of the page exposing that colour property."""
+        theme = next(c for c in self.item("dashboardPage").findChildren(object) if c.property(name) is not None)
+        value = theme.property(name)
+        return value.name() if hasattr(value, "name") else str(value)
 
     def test_dashboard_refreshes_after_a_finalized_invoice(self):
         self.open_dashboard()

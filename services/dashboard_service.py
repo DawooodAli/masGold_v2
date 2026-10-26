@@ -28,7 +28,6 @@ DASHBOARD_KARATS = (21, 18, 22, 24)
 SALES_PERMISSIONS = frozenset({"INVOICE_CREATE", "INVOICE_FINALIZE"})
 STOCK_PERMISSIONS = frozenset({"INVENTORY_VIEW", "INVENTORY_MANAGE"})
 GRAMS, MONEY = Decimal("0.001"), Decimal("0.01")
-BALANCE_DIRECTION = {"OWED": "على العميل للمحل", "CREDIT": "للعميل عند المحل"}
 HINT_TEXT = {indicators_math.BUY_FAVOURABLE: "الشراء مناسب نسبيًا", indicators_math.SELL_FAVOURABLE: "البيع مناسب نسبيًا", indicators_math.NEUTRAL: "محايد",
              indicators_math.UNKNOWN: "بيانات غير كافية"}
 HINT_TONE = {indicators_math.BUY_FAVOURABLE: "buy", indicators_math.SELL_FAVOURABLE: "sell", indicators_math.NEUTRAL: "muted",
@@ -91,17 +90,17 @@ class DashboardService:
 
     @staticmethod
     def balances(rows):
-        """The customer balances shown on the dashboard: [{customer, code, balance, direction, meaning}] with the TRUE ledger-derived balance of vw_customer_balances (never a period
-        balance); balance > 0 = OWED («على العميل»), balance < 0 = CREDIT («للعميل»). A settled customer never reaches the card (the query only returns balance <> 0)."""
+        """The customer balances shown on the dashboard: [{customer, code, balance, direction}] with the TRUE ledger-derived balance of vw_customer_balances (never a period
+        balance); balance > 0 = OWED (red, «على العميل»), balance < 0 = CREDIT (blue, «للعميل») — the card distinguishes them by COLOUR only, no wording.
+        A settled customer never reaches the card (the query only returns balance <> 0)."""
         out = []
         for r in rows or []:
             balance = Decimal(str(r["balance"]))
             if not balance:                                                       # a settled account never reaches the card (the query already refuses it; kept here as defence)
                 continue
-            direction = "OWED" if balance > 0 else "CREDIT"
             out.append({"customer": r["name"], "code": r.get("customer_code") or "",
-                        "balance": str(abs(balance).quantize(MONEY)), "direction": direction,
-                        "meaning": BALANCE_DIRECTION[direction]})
+                        "balance": str(abs(balance).quantize(MONEY)),
+                        "direction": "OWED" if balance > 0 else "CREDIT"})
         return out
 
     @staticmethod

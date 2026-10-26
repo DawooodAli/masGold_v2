@@ -211,40 +211,6 @@ Item {
                           font.pixelSize: (theme.fontTableHeader + dashboard.boost) }
                 }
 
-                // --- أسعار كل الكيات (every logged-in user): the same rows the top price strip and the price window show (owner request 2026-10-25)
-                Card {
-                    objectName: "allPricesCard"
-                    title: "أسعار الذهب — كل الكيات"
-                    accent: theme.gold
-                    RowLayout {
-                        Layout.fillWidth: true
-                        layoutDirection: Qt.RightToLeft
-                        spacing: 8
-                        Txt { value: "العيار"; Layout.preferredWidth: 74; color: theme.gold; font.bold: true }
-                        Txt { value: "شراء المحل"; Layout.fillWidth: true; color: theme.priceBuy; font.bold: true
-                              horizontalAlignment: Text.AlignHCenter }
-                        Txt { value: "بيع المحل"; Layout.fillWidth: true; color: theme.priceSell; font.bold: true
-                              horizontalAlignment: Text.AlignHCenter }
-                    }
-                    Repeater {
-                        model: dashboard.price && dashboard.price.prices ? dashboard.price.prices : []
-                        delegate: RowLayout {
-                            required property var modelData
-                            Layout.fillWidth: true
-                            layoutDirection: Qt.RightToLeft
-                            spacing: 8
-                            Txt { objectName: "allPriceKarat_" + modelData.karat; value: "عيار " + modelData.karat; Layout.preferredWidth: 74; font.bold: true
-                                  color: theme.balanceKaratColor(modelData.karat) }
-                            Txt { objectName: "allPriceBuy_" + modelData.karat; value: modelData.shop_buy_price_per_gram; Layout.fillWidth: true; color: theme.priceBuy
-                                  horizontalAlignment: Text.AlignHCenter }
-                            Txt { objectName: "allPriceSell_" + modelData.karat; value: modelData.shop_sell_price_per_gram; Layout.fillWidth: true; color: theme.priceSell
-                                  horizontalAlignment: Text.AlignHCenter }
-                        }
-                    }
-                    Empty { objectName: "allPricesEmpty"; value: "السعر غير متاح"
-                            visible: !dashboard.price || !dashboard.price.prices || dashboard.price.prices.length === 0 }
-                }
-
                 // --- مؤشر سعر عيار 21 (every logged-in user): the shop's own stored prices, the same formulas and wording as the indicators report
                 Card {
                     objectName: "priceHintCard"
@@ -419,12 +385,11 @@ Item {
                             objectName: "customerBalance_" + index
                             Layout.fillWidth: true
                             spacing: 0
+                            // Distinguished by COLOUR only (owner request 2026-10-25): RED = على العميل (he owes), BLUE = للعميل (we owe).
                             Line { label: modelData.name + (modelData.code ? "  (" + modelData.code + ")" : "")
-                                   value: (modelData.owes ? "على العميل " : "للعميل ") + modelData.balance
-                                   valueColor: modelData.owes ? theme.accountReceivable : theme.accountPayable
+                                   value: modelData.balance
+                                   valueColor: modelData.owes ? theme.red : theme.blue
                                    strong: true }
-                            Txt { Layout.fillWidth: true; value: modelData.meaning
-                                  color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
                         }
                     }
                     Empty { objectName: "customerBalancesEmpty"; value: "لا يوجد عملاء برصيد غير متعادل عليهم أو علينا"

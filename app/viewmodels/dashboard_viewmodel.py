@@ -154,10 +154,10 @@ class DashboardViewModel(QObject):
 
     @Property("QVariantList", notify=changed)
     def customerBalances(self):
-        """The customers who had account activity from the first day of the current month and are NOT settled: the true ledger-derived balance, «على العميل» (owes) or «للعميل» (credit);
-        a settled account disappears on its own."""
+        """The customers who had account activity from the first day of the current month and are NOT settled: the true ledger-derived balance, shown by colour only —
+        owes = RED («على العميل»), credit = BLUE («للعميل»); a settled account disappears on its own."""
         return [{"name": r["customer"], "code": r["code"], "balance": money(r["balance"]),
-                 "meaning": r["meaning"], "owes": r["direction"] == "OWED"}
+                 "owes": r["direction"] == "OWED"}
                 for r in self._data.get("customer_balances", [])]
 
     # ------------------------------------------------------------ the month so far (billing permission)
