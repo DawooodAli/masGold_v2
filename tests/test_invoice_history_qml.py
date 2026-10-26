@@ -40,7 +40,7 @@ class InvoiceHistoryPageTests(page_harness.InvoicePageTests):
             for name in ("historySearch", "historyToday", "historyNext"):
                 self.assert_inside_window(self.item(name))
             # Every visible cell of the first row, including the invoice number, is inside the window.
-            number = row.childItems()[0].childItems()[0]
+            number = self.visual_item("historyNumber_0")       # the first line-row of the invoice group
             self.assert_inside_window(number)
             self.assertLessEqual(number.property("contentWidth"), number.property("width") + 1, f"number clipped at {width}")
             self.shot(f"list-{width}x{height}")

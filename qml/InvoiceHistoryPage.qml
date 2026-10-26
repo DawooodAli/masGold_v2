@@ -12,8 +12,21 @@ Item {
     signal customerRequested(string customerId)
     readonly property var vm: typeof invoiceHistoryVM !== "undefined" ? invoiceHistoryVM : null
     readonly property bool detailMode: !!vm && vm.detailOpen
-    // Below ~900 px of table the salesperson and time columns step aside (both stay in the detail).
-    readonly property bool narrow: width < 1000
+    // Three display levels of the invoice table, chosen by THIS page's width (the page is the
+    // window minus the sidebar), so every level fits its window exactly:
+    //   full     >= 1160  every column (time and salesperson included);
+    //   compact  <  1160  the time and salesperson columns step aside (both stay in the detail);
+    //   mini     <  1040  the operation type steps aside too; the factory and the amount (the
+    //                      last column) always stay.
+    readonly property bool compact: width < 1160
+    readonly property bool mini: width < 1040
+    // The invoice list is this page's reading surface: its cells are a bit bigger than the default
+    // body text, the header row has its own size, and one invoice occupies grouped rows.
+    readonly property int fontTable: theme.fontBody + 2
+    readonly property int fontTableHead: theme.fontTableHeader + 2
+    readonly property real tableRowH: mini ? 34 : 38
+    // Table gutters: one spacing value shared by the header and every cell row (columns match).
+    readonly property real tableSpacing: compact ? 6 : 8
 
     Theme { id: theme }
 
@@ -37,9 +50,10 @@ Item {
     // ------------------------------------------------------------ building blocks
     component Txt: Label {
         property string value: ""
+        property int cellSize: 0       // > 0: a bigger cell font (the invoice-list table)
         text: value
         font.family: theme.fontFamily
-        font.pixelSize: theme.fontBody
+        font.pixelSize: cellSize > 0 ? cellSize : theme.fontBody
         color: theme.textSecondary
         horizontalAlignment: Text.AlignRight
         verticalAlignment: Text.AlignVCenter
@@ -50,7 +64,7 @@ Item {
 
     component Head: Txt {
         color: theme.textMuted
-        font.pixelSize: theme.fontCaption
+        font.pixelSize: cellSize > 0 ? cellSize : theme.fontCaption
         font.bold: true
     }
 
@@ -238,18 +252,42 @@ Item {
                 spacing: 2
 
                 RowLayout {
+                    // Layout.preferredWidth: 0 caps this row's implicit width (Qt then shrinks the
+                    // fill-width cells instead of the whole column overflowing the window).
                     Layout.fillWidth: true
+                    Layout.preferredWidth: 0
+                    Layout.leftMargin: 6
+                    Layout.rightMargin: 6
                     layoutDirection: Qt.RightToLeft
-                    spacing: historyPage.narrow ? 6 : 10
-                    Head { value: "رقم الفاتورة"; Layout.preferredWidth: 86 }
-                    Head { value: "التاريخ"; Layout.preferredWidth: 84 }
-                    Head { value: "الوقت"; Layout.preferredWidth: 42; visible: !historyPage.narrow }
-                    Head { value: "العميل"; Layout.fillWidth: true; Layout.minimumWidth: 90 }
-                    Head { value: "البائع"; Layout.preferredWidth: 80; visible: !historyPage.narrow }
-                    Head { value: "نوع العملية"; Layout.preferredWidth: 78 }
-                    Head { value: "إجمالي الفاتورة"; Layout.preferredWidth: 116 }
-                    Head { value: "المدفوع فعلياً"; Layout.preferredWidth: 132 }
-                    Head { value: "الحالة"; Layout.preferredWidth: 80 }
+                    spacing: historyPage.tableSpacing
+                    // EVERY column is fillWidth: on a wide window the free space is spread across
+                    // the whole table instead of pooling into one huge half-empty column.
+                    Head { value: "رقم الفاتورة"; cellSize: historyPage.fontTableHead
+                           Layout.fillWidth: true; Layout.preferredWidth: 76; Layout.minimumWidth: 74 }
+                    Head { value: "التاريخ"; cellSize: historyPage.fontTableHead
+                           Layout.fillWidth: true; Layout.preferredWidth: 74 }
+                    Head { value: "الوقت"; cellSize: historyPage.fontTableHead
+                           Layout.fillWidth: true; Layout.preferredWidth: 36
+                           visible: !historyPage.compact }
+                    Head { value: "العميل"; cellSize: historyPage.fontTableHead
+                           Layout.fillWidth: true; Layout.preferredWidth: historyPage.mini ? 104 : 130
+                           Layout.minimumWidth: 80 }
+                    Head { value: "البائع"; cellSize: historyPage.fontTableHead
+                           Layout.fillWidth: true; Layout.preferredWidth: 70
+                           visible: !historyPage.compact }
+                    Head { value: "نوع العملية"; cellSize: historyPage.fontTableHead
+                           Layout.fillWidth: true; Layout.preferredWidth: 62; visible: !historyPage.mini }
+                    Head { value: "الصنف"; cellSize: historyPage.fontTableHead
+                           Layout.fillWidth: true; Layout.preferredWidth: historyPage.mini ? 124 : 150
+                           Layout.minimumWidth: 80 }
+                    Head { value: "العيار"; cellSize: historyPage.fontTableHead
+                           Layout.fillWidth: true; Layout.preferredWidth: 42 }
+                    Head { value: "الوزن (ج)"; cellSize: historyPage.fontTableHead
+                           Layout.fillWidth: true; Layout.preferredWidth: 58 }
+                    Head { value: "المصنع"; cellSize: historyPage.fontTableHead
+                           Layout.fillWidth: true; Layout.preferredWidth: historyPage.mini ? 92 : 104 }
+                    Head { value: "المبلغ"; cellSize: historyPage.fontTableHead
+                           Layout.fillWidth: true; Layout.preferredWidth: historyPage.mini ? 108 : 114 }
                 }
 
                 ListView {
@@ -264,36 +302,126 @@ Item {
                     ScrollBar.vertical: ScrollBar {}
                     Keys.onReturnPressed: if (currentIndex >= 0) historyPage.vm.openInvoice(model[currentIndex].invoiceId)
                     Keys.onEnterPressed: if (currentIndex >= 0) historyPage.vm.openInvoice(model[currentIndex].invoiceId)
-                    delegate: Rectangle {
+                    delegate: Item {
                         id: row
                         required property var modelData
                         required property int index
                         objectName: "historyRow_" + index
                         width: list.width
-                        height: 30
-                        radius: 3
-                        color: ListView.isCurrentItem ? theme.bgTertiary : index % 2 ? "transparent" : theme.bgSecondary
-                        border.color: ListView.isCurrentItem ? theme.goldDark : "transparent"
-                        RowLayout {
+                        height: group.height
+                        // ONE invoice = ONE group of rows (the old-style layout): the first row carries the
+                        // invoice's own figures, every row carries one saved line (الصنف / العيار / الوزن /
+                        // المصنع). An invoice whose lines are unknown shows its first row alone.
+                        readonly property var lines: (modelData.lines && modelData.lines.length)
+                                                     ? modelData.lines : [{}]
+                        readonly property real rowH: historyPage.tableRowH
+                        readonly property bool current: ListView.isCurrentItem
+
+                        Rectangle {                // one background across the whole group
                             anchors.fill: parent
-                            anchors.leftMargin: 6; anchors.rightMargin: 6
-                            layoutDirection: Qt.RightToLeft
-                            spacing: historyPage.narrow ? 6 : 10
-                            Txt { value: row.modelData.number; color: theme.gold; font.bold: true; Layout.preferredWidth: 86 }
-                            Txt { value: row.modelData.date; Layout.preferredWidth: 84 }
-                            Txt { value: row.modelData.time; color: theme.textMuted; Layout.preferredWidth: 42
-                                  visible: !historyPage.narrow }
-                            Txt { value: row.modelData.customer; color: theme.textPrimary; Layout.fillWidth: true
-                                  Layout.minimumWidth: 90 }
-                            Txt { value: row.modelData.salesperson; color: theme.textMuted; Layout.preferredWidth: 80
-                                  visible: !historyPage.narrow }
-                            Txt { value: row.modelData.typeText; Layout.preferredWidth: 78 }
-                            Txt { value: row.modelData.total; color: theme.textPrimary; font.bold: true
-                                  Layout.preferredWidth: 116; horizontalAlignment: Text.AlignRight }
-                            Txt { value: row.modelData.moved; Layout.preferredWidth: 132 }
-                            Txt { value: row.modelData.statusText
-                                  color: row.modelData.statusText === "مسددة" ? theme.green : theme.amber
-                                  Layout.preferredWidth: 80 }
+                            radius: 3
+                            color: row.current ? theme.bgTertiary
+                                                : row.index % 2 ? "transparent" : theme.bgSecondary
+                            border.color: row.current ? theme.goldDark : "transparent"
+                        }
+                        Column {
+                            id: group
+                            width: parent.width
+                            spacing: 0
+                            Repeater {
+                                model: row.lines
+                                delegate: Rectangle {
+                                    id: line
+                                    required property var modelData
+                                    required property int index
+                                    width: row.width
+                                    height: row.rowH
+                                    color: "transparent"
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 6; anchors.rightMargin: 6
+                                        layoutDirection: Qt.RightToLeft
+                                        spacing: historyPage.tableSpacing
+                                        // The invoice's own cells are filled on the FIRST row of the group
+                                        // only and stay blank afterwards: the columns remain aligned, so the
+                                        // invoice reads as one merged block (exactly like the old program).
+                                        // Every cell is fillWidth with the header's exact width, so the
+                                        // free space of a wide window spreads across the whole table.
+                                        Txt { cellSize: historyPage.fontTable; font.bold: true; color: theme.gold
+                                              value: line.index === 0 ? row.modelData.number : ""
+                                              objectName: line.index === 0 ? "historyNumber_" + row.index : ""
+                                              Layout.fillWidth: true
+                                              Layout.preferredWidth: 76; Layout.minimumWidth: 74 }
+                                        Txt { cellSize: historyPage.fontTable
+                                              value: line.index === 0 ? row.modelData.date : ""
+                                              Layout.fillWidth: true; Layout.preferredWidth: 74 }
+                                        Txt { cellSize: historyPage.fontTable; color: theme.textMuted
+                                              value: line.index === 0 ? row.modelData.time : ""
+                                              visible: !historyPage.compact
+                                              Layout.fillWidth: true; Layout.preferredWidth: 36 }
+                                        Txt { cellSize: historyPage.fontTable; color: theme.textPrimary
+                                              value: line.index === 0 ? row.modelData.customer : ""
+                                              Layout.fillWidth: true
+                                              Layout.preferredWidth: historyPage.mini ? 104 : 130
+                                              Layout.minimumWidth: 80 }
+                                        Txt { cellSize: historyPage.fontTable; color: theme.textMuted
+                                              value: line.index === 0 ? row.modelData.salesperson : ""
+                                              visible: !historyPage.compact
+                                              Layout.fillWidth: true; Layout.preferredWidth: 70 }
+                                        Txt { cellSize: historyPage.fontTable
+                                              value: line.index === 0 ? row.modelData.typeText : ""
+                                              visible: !historyPage.mini
+                                              Layout.fillWidth: true; Layout.preferredWidth: 62 }
+                                        // THIS row's saved line: الصنف (coloured like the old program —
+                                        // أخضر = بيع المحل، برتقالي = شراء/كسر) then its karat, weight
+                                        // and REAL factory.
+                                        Txt { cellSize: historyPage.fontTable; font.bold: true
+                                              color: (line.modelData && line.modelData.buy) ? theme.amber : theme.green
+                                              value: (line.modelData && line.modelData.name) || ""
+                                              Layout.fillWidth: true
+                                              Layout.preferredWidth: historyPage.mini ? 124 : 150
+                                              Layout.minimumWidth: 80 }
+                                        // The karat carries the top bar's karat colour (18 / 21 / 22 / 24).
+                                        Txt { cellSize: historyPage.fontTable; font.bold: true
+                                              color: { var k = Number(line.modelData && line.modelData.karat)
+                                                      k === 18 ? theme.balanceKarat18
+                                                      : k === 21 ? theme.balanceKarat21
+                                                      : k === 22 ? theme.balanceKarat22
+                                                      : k === 24 ? theme.balanceKarat24 : theme.textSecondary }
+                                              value: (line.modelData && line.modelData.karat) || ""
+                                              Layout.fillWidth: true; Layout.preferredWidth: 42 }
+                                        // الوزن: weight of a shop-sold line in the normal white,
+                                        // the CUSTOMER'S SCRAP weight (شراء كسر) in amber — the same
+                                        // scrap colour as its الصنف, so the two are told apart.
+                                        Txt { cellSize: historyPage.fontTable
+                                              color: (line.modelData && line.modelData.buy)
+                                                     ? theme.amber : theme.textPrimary
+                                              font.bold: true
+                                              value: (line.modelData && line.modelData.weight) || ""
+                                              Layout.fillWidth: true; Layout.preferredWidth: 58 }
+                                        // The REAL factory of the line (its own snapshot), never money.
+                                        Txt { cellSize: historyPage.fontTable; color: theme.textSecondary
+                                              value: (line.modelData && line.modelData.factory) || ""
+                                              Layout.fillWidth: true
+                                              Layout.preferredWidth: historyPage.mini ? 92 : 104 }
+                                        // The LAST column: the plain amount — green = money INTO the
+                                        // shop, red = money OUT of it (the colour says it all).
+                                        Txt { cellSize: historyPage.fontTable; font.bold: true
+                                              color: row.modelData.out ? theme.red : theme.green
+                                              value: line.index === 0 ? row.modelData.moved : ""
+                                              Layout.fillWidth: true
+                                              Layout.preferredWidth: historyPage.mini ? 108 : 114 }
+                                    }
+                                    Rectangle {        // one hairline UNDER the whole invoice group
+                                        visible: line.index === row.lines.length - 1
+                                        anchors.bottom: parent.bottom
+                                        anchors.left: parent.left; anchors.right: parent.right
+                                        anchors.leftMargin: 6; anchors.rightMargin: 6
+                                        height: 1
+                                        color: theme.border
+                                    }
+                                }
+                            }
                         }
                         MouseArea {
                             anchors.fill: parent

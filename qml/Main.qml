@@ -2405,7 +2405,6 @@ ApplicationWindow {
 
 
                                 ComboBox {
-                                    id: inventoryBarcodeFilter
 
                                     Layout.preferredWidth: 150
                                     Layout.preferredHeight: 38
@@ -3441,7 +3440,6 @@ ApplicationWindow {
 
                 // مراجعات المدير • N — visible to everyone; amber while reviews are open.
                 NavButton {
-                    id: reviewsNav
                     objectName: "reviewsNavButton"
                     text: "🔔  مراجعات المدير" + (typeof reviewsVM !== "undefined" && reviewsVM.totalCount > 0
                                                   ? "  •  " + reviewsVM.totalCount : "")
@@ -3827,7 +3825,6 @@ ApplicationWindow {
         id: customersPage
         objectName: "customersPage"
         property string pageTitle: ""
-        property bool initialized: false
         property int historyTab: 0
         property bool skipEntryRefresh: false
         property bool showProfile: false
@@ -3841,7 +3838,6 @@ ApplicationWindow {
 
         function initialize() {
             if (visible) {
-                initialized = true
                 if (skipEntryRefresh) { skipEntryRefresh = false; customerVM.refreshList(); return }
                 customerVM.refresh()
                 customerAccountVM.refresh()
@@ -4988,49 +4984,6 @@ ApplicationWindow {
 
     // CUSTOMERS V1 END
 
-    component PlaceholderPage: Item {
-
-        property string pageTitle: ""
-        property string description: ""
-
-
-        Rectangle {
-            anchors.fill: parent
-            color: theme.bgPrimary
-        }
-
-
-        ColumnLayout {
-            anchors.centerIn: parent
-            spacing: 10
-
-
-            Label {
-                text: pageTitle
-
-                color: theme.gold
-
-                font.family: "Cairo"
-                font.pixelSize: 27
-                font.bold: true
-
-                Layout.alignment: Qt.AlignHCenter
-            }
-
-
-            Label {
-                text: description
-
-                color: theme.textMuted
-
-                font.family: "Cairo"
-                font.pixelSize: 14
-
-                Layout.alignment: Qt.AlignHCenter
-            }
-        }
-    }
-
 
     // ========================================================
     // SETTINGS PAGE
@@ -5079,7 +5032,6 @@ ApplicationWindow {
                 Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 10
                 GoldPriceLabel { value: "الطابعة"; color: theme.textSecondary }
                 ComboBox {
-                    id: printerCombo
                     objectName: printerChoice.kind === "bill" ? "billPrinterCombo" : "labelPrinterCombo"
                     Layout.preferredWidth: 300
                     font.family: "Cairo"
@@ -6163,7 +6115,6 @@ ApplicationWindow {
 
 
                     delegate: Rectangle {
-                        id: factoryRow
 
                         required property var modelData
 
@@ -6648,7 +6599,6 @@ ApplicationWindow {
 
 
                     delegate: Rectangle {
-                        id: itemTypeRow
 
                         required property var modelData
 
@@ -7161,7 +7111,6 @@ ApplicationWindow {
 
 
                 delegate: Rectangle {
-                    id: categoryRow
 
                     required property var modelData
 
@@ -12071,7 +12020,6 @@ ApplicationWindow {
                     }
 
                     Rectangle {
-                        id: inventoryDetailsDataCard
 
                         Layout.fillWidth: true
 

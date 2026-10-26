@@ -25,12 +25,24 @@ _BIGINT_FIELDS = frozenset({
 
 # History list: the invoice kind from its saved lines (the same rule as the detail page).
 HISTORY_KIND_FOR_TYPE = {"SELL": "SALE", "BUY": "OLD_GOLD_PURCHASE", "MIXED": "MIXED"}
+# The saved line types behind BOTH the kind probe and the history list's gold gram columns, defined once:
+_HISTORY_SOLD_LINE_TYPES = ("'SELL_INVENTORY'", "'SELL_UNIDENTIFIED'", "'SELL_OLD_GOLD'")
+_HISTORY_BUY_LINE_TYPE = "'BUY_OLD_GOLD'"
 _HISTORY_SOLD = ("EXISTS (SELECT 1 FROM invoice_lines hl WHERE hl.invoice_id = i.id "
-                 "AND hl.line_type IN ('SELL_INVENTORY', 'SELL_UNIDENTIFIED', 'SELL_OLD_GOLD'))")
-_HISTORY_OLD = ("EXISTS (SELECT 1 FROM invoice_lines ho WHERE ho.invoice_id = i.id "
-                "AND ho.line_type = 'BUY_OLD_GOLD')")
+                 f"AND hl.line_type IN ({', '.join(_HISTORY_SOLD_LINE_TYPES)}))")
+_HISTORY_OLD = (f"EXISTS (SELECT 1 FROM invoice_lines ho WHERE ho.invoice_id = i.id "
+                f"AND ho.line_type = {_HISTORY_BUY_LINE_TYPE})")
 _HISTORY_KIND_SQL = (f"(CASE WHEN {_HISTORY_SOLD} AND {_HISTORY_OLD} THEN 'MIXED' "
                      f"WHEN {_HISTORY_OLD} THEN 'OLD_GOLD_PURCHASE' ELSE 'SALE' END)")
+# The line details of the history list (the old-style layout: each invoice shown as its lines): ONE
+# correlated JSON array per page row, in the SAME summary query — no N+1, no GROUP_CONCAT 1024 limit.
+# Ordering inside JSON_ARRAYAGG is not guaranteed on MySQL, so every object carries `no`
+# (line_number) and the service sorts the parsed lines by it.
+_HISTORY_LINES_JSON = (
+    "(SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT("
+    "'t', hl.line_type, 'k', k.karat_value, 'w', hl.weight_grams, 'n', hl.item_name_snapshot, "
+    "'m', hl.making_total, 'f', hl.factory_snapshot, 'no', hl.line_number)), '[]') "
+    "FROM invoice_lines hl JOIN karats k ON k.id = hl.karat_id WHERE hl.invoice_id = i.id)")
 
 
 
@@ -847,7 +859,8 @@ class InvoiceRepository(BaseRepository):
                    (SELECT COALESCE(SUM(CASE WHEN p.direction = 'IN' THEN p.amount ELSE 0 END), 0)
                     FROM invoice_payments p WHERE p.invoice_id = i.id) AS money_received,
                    (SELECT COALESCE(SUM(CASE WHEN p.direction = 'OUT' THEN p.amount ELSE 0 END), 0)
-                    FROM invoice_payments p WHERE p.invoice_id = i.id) AS money_paid
+                    FROM invoice_payments p WHERE p.invoice_id = i.id) AS money_paid,
+                   {_HISTORY_LINES_JSON} AS lines_json
             FROM invoices i
             LEFT JOIN invoice_customer_snapshots s ON s.invoice_id = i.id
             LEFT JOIN employees e ON e.id = i.employee_id

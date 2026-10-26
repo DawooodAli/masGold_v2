@@ -53,6 +53,35 @@ def _decimal(value):
     return None if value in (None, "") else Decimal(str(value))
 
 
+def _history_lines(raw):
+    """The saved lines of one invoice for the history list (old-style layout): the JSON array built by
+    the list query. The array order is not guaranteed on MySQL, so the parsed lines are sorted by their
+    own `no` (line_number). Missing or malformed content is an empty list — never an error and never a
+    fabricated line; a legacy invoice simply shows its header row alone."""
+    if not raw:
+        return []
+    try:
+        data = raw if isinstance(raw, list) else json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    lines = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        try:
+            number_value = int(item.get("no") or 0)
+        except (TypeError, ValueError):
+            number_value = 0
+        lines.append({"line_number": number_value, "line_type": str(item.get("t") or ""),
+                      "karat": item.get("k"), "weight": _decimal(item.get("w")),
+                      "name": item.get("n"), "making": _decimal(item.get("m")),
+                      "factory": item.get("f")})
+    lines.sort(key=lambda line: line["line_number"])
+    return lines
+
+
 def transaction_kind(sale_lines, old_gold_lines):
     """What the invoice IS, from its saved lines: SALE (shop-sold lines only), OLD_GOLD_PURCHASE (customer
     old gold only) or MIXED (both). Independent of the settlement direction (a MIXED invoice may pay the
@@ -141,6 +170,8 @@ class InvoiceHistoryService:
             "invoice_total": row["net_amount"], "net_direction": row["net_direction"],
             # Real money that moved, in the invoice's own direction (IN for a sale, OUT when the shop pays).
             "money_moved": paid if row["net_direction"] == "SHOP_PAYS_CUSTOMER" else received,
+            # The saved lines themselves, for the old-style list layout (one group of rows per invoice).
+            "lines": _history_lines(row.get("lines_json")),
         }
 
     # ------------------------------------------------------------ exact invoice-number lookup

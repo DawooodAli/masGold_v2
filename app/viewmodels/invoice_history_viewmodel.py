@@ -37,6 +37,20 @@ def known_money(value):
     return UNAVAILABLE if value is None else money(value)
 
 
+def list_line(line):
+    """One display line of the history list (old-style layout): the item's name, karat, weight, factory
+    and making exactly as saved on that line. Unknown values stay blank (a legacy line) or "—", never
+    invented."""
+    return {"name": (line.get("name") or "").strip() or "—",
+            "karat": str(line["karat"]) if line.get("karat") is not None else "—",
+            "weight": grams(line["weight"]) if line.get("weight") else "",
+            "making": money(line["making"]) if line.get("making") is not None else "",
+            # The REAL factory of the line (the piece's own snapshot), never a money figure.
+            "factory": (line.get("factory") or "").strip() or "—",
+            # The colour of the row: the customer's old gold (شراء) apart from shop sales (بيع).
+            "buy": line.get("line_type") == "BUY_OLD_GOLD"}
+
+
 class InvoiceHistoryViewModel(QObject):
     changed = Signal()
 
@@ -325,7 +339,6 @@ class InvoiceHistoryViewModel(QObject):
 
     @staticmethod
     def _row(item):
-        moved_label = "مدفوع" if item["net_direction"] == "SHOP_PAYS_CUSTOMER" else "مستلم"
         when = item.get("finalized_at")
         return {"invoiceId": item["invoice_id"], "number": item["invoice_number"],
                 "date": ltr(when.strftime("%Y-%m-%d")) if when else "", "time": when.strftime("%H:%M") if when else "",
@@ -333,7 +346,13 @@ class InvoiceHistoryViewModel(QObject):
                 "typeText": KIND_TYPE_TEXT.get(item.get("transaction_kind"),
                                                TYPE_TEXT.get(item["invoice_type"], item["invoice_type"])),
                 "total": known_money(item.get("invoice_total")),
-                "moved": f"{moved_label} {money(item['money_moved'])}",
+                # The saved lines for the old-style grouped rows; an invoice without them stays one row.
+                "lines": [list_line(line) for line in item.get("lines") or []],
+                # The plain amount: the direction is carried by the colour alone (red = money out,
+                # green = money in), so no "مدفوع" / "مستلم" words are needed.
+                "moved": money(item["money_moved"]),
+                # Direction of that money for the colour: out of the shop vs into it.
+                "out": item["net_direction"] == "SHOP_PAYS_CUSTOMER",
                 "statusText": SETTLEMENT_TEXT.get(item["settlement_status"], item["settlement_status"] or ""),
                 "isLegacy": bool(item.get("is_legacy"))}
 

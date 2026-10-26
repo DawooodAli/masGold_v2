@@ -345,7 +345,7 @@ class HistoryViewModelTests(unittest.TestCase):
         row = self.vm.results[0]
         self.assertEqual((row["number"], row["date"], row["time"], row["total"], row["moved"], row["statusText"],
                           row["typeText"]),
-                         ("26092701", "⁦2026-09-27⁩", "21:51", "90,000.00 ج", "مستلم 89,000.00 ج",
+                         ("26092701", "⁦2026-09-27⁩", "21:51", "90,000.00 ج", "89,000.00 ج",
                           "مسددة جزئياً", "بيع"))
 
     def test_typing_is_debounced_into_one_search(self):
