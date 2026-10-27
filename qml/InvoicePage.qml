@@ -636,7 +636,9 @@ Item {
         Label {
             objectName: "invoiceProblems"
             Layout.fillWidth: true
-            visible: text.length > 0
+            // Owner decision (2026-10-28): the top copy is hidden — the same warnings flash once
+            // in the card's problems line (stripProblems); the text stays for the tests that read it.
+            visible: false
             text: invoiceVM.blockingProblems.length > 0 ? invoiceVM.blockingProblems.join(" • ")
                                                         : invoiceVM.previewError
             color: theme.statusWarning
@@ -1812,16 +1814,20 @@ Item {
                         layoutDirection: Qt.RightToLeft
                         spacing: 8
                         visible: invoiceVM.blockingProblems.length > 0 || invoiceVM.previewError.length > 0
+                                    || invoiceVM.summary.makingNotice.length > 0
                         Label {
                             objectName: "stripProblems"
                             Layout.fillWidth: true
                             Layout.minimumWidth: 0
-                            // Everything that stops the save: required fields (salesperson, customer
-                            // name, …) and the last preview error, in one flashing line.
+                            // Everything that stops or questions the save: required fields
+                            // (salesperson, customer name, …), the last preview error and the
+                            // making notice, in one flashing line.
                             text: {
                                 var all = invoiceVM.blockingProblems.slice()
                                 if (invoiceVM.previewError.length > 0)
                                     all.push(invoiceVM.previewError)
+                                if (invoiceVM.summary.makingNotice.length > 0)
+                                    all.push(invoiceVM.summary.makingNotice)
                                 return all.join(" • ")
                             }
                             color: theme.red
@@ -1887,7 +1893,9 @@ Item {
                             }
                             Label {
                                 objectName: "makingReviewFlag"
-                                visible: text.length > 0
+                                // Owner decision (2026-10-28): the notice flashes in the card's
+                                // problems line above instead of here; the text stays for the tests.
+                                visible: false
                                 // The one flexible item of this row: it gives way (elides) before anything
                                 // else, so a long notice can never push the row onto a second line.
                                 Layout.fillWidth: true

@@ -807,7 +807,9 @@ class InvoicePageTests(unittest.TestCase):
         self.scan("01260925")
         self.receive("66500")
         self.settle()
-        self.wait_until(lambda: self.item("makingReviewFlag").property("visible"))
+        # Owner (2026-10-28): the notice flashes in the card's problems line; the prices-row
+        # flag stays in the tree with the same text but hidden.
+        self.wait_until(lambda: "السعر يحتاج مراجعة" in self.text("stripProblems"))
         self.assertEqual(self.text("makingReviewFlag"), "السعر يحتاج مراجعة")
         self.finalize()
         self.assertEqual(self.store.invoices[0]["sell_total"], D("66500.00"))   # the customer price is unchanged
