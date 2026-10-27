@@ -697,21 +697,30 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.service.preview_result = preview(payment_direction="OUT", gap_signed="-8.00", gold_value_total=None)
         self.sale_ready()
         self.assertTrue(self.vm.hasDifference)
-        self.assertEqual((self.vm.settlementChoice, self.vm.summary["differenceAmount"]), ("", "8.00"))
-        self.vm.setSettlementChoice("SETTLE")
+        self.assertEqual(self.vm.settlementChoice, "SETTLE")                    # automatic: the «تسوية الفرق» button is gone
+        self.preview_now()
+        self.assertEqual(self.vm.summary["differenceAmount"], "8.00")
         self.assertEqual(self.vm._draft().settlement_choice, "SETTLE")
         self.assertFalse(self.vm.settlementNeedsReason)
-        self.preview_now()
         self.vm.setSettlementChoice("ACCOUNT")                                  # fills the account amount
         draft = self.vm._draft()
         self.assertEqual((draft.settlement_choice, draft.account_amount, draft.account_direction),
                          (None, "8.00", "SHOP_OWES"))
+
+    def test_old_gold_total_is_the_rounded_final_amount(self):
+        """Owner request 2026-10-26: إجمالي الفاتورة of an old-gold-only invoice = what is paid + what is on the account = the final EGP-5 amount."""
+        self.service.preview_result = preview(payment_direction="OUT", gap_signed="-31081.67", difference_signed="-31080.00",
+                                              final_settlement_amount="31080.00", net_amount="31081.67", gold_value_total=None)
+        self.sale_ready()
+        self.preview_now()
+        self.assertEqual(self.vm.invoiceTotalText, money("31080.00"))
 
     def test_account_button_uses_the_rounded_final_amount_not_the_exact_gap(self):
         # exact 9,005.22 → final 9,005; cash 9,000: the account part is 5.00, never the exact 5.22.
         self.service.preview_result = preview(payment_direction="OUT", gap_signed="-5.22", difference_signed="-5.00",
                                               final_settlement_amount="9005.00", gold_value_total=None)
         self.sale_ready()
+        self.preview_now()                                                       # the automatic settlement choice re-previews once
         self.assertTrue(self.vm.hasDifference)
         self.assertEqual((self.vm.summary["differenceAmount"], self.vm.summary["settleAmount"]), ("5.00", "5.22"))
         self.vm.setSettlementChoice("ACCOUNT")

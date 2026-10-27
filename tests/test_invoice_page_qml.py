@@ -385,10 +385,12 @@ class InvoicePageTests(unittest.TestCase):
         self.assertTrue(item.property("visible"), item.objectName())
         self.assertTrue(item.property("enabled"), item.objectName())
         self.reveal(item)
-        for _ in range(25):                                  # a row that just appeared may still be laid out
+        previous = None
+        for _ in range(25):                                  # a row that just appeared may still be laid out (a Flow re-lays out one frame later)
             point = item.mapToScene(QPointF(item.width() / 2, item.height() / 2)).toPoint()
-            if 0 <= point.x() <= self.root.width() and 0 <= point.y() <= self.root.height():
+            if 0 <= point.x() <= self.root.width() and 0 <= point.y() <= self.root.height() and point == previous:
                 break
+            previous = point
             QTest.qWait(20)
         self.assertTrue(0 <= point.x() <= self.root.width() and 0 <= point.y() <= self.root.height(),
                         f"{item.objectName()} is outside the window")
@@ -821,16 +823,22 @@ class InvoicePageTests(unittest.TestCase):
         self.receive(paid)
         self.settle()
 
-    def test_small_difference_is_settled_explicitly_without_ledger(self):
+    def test_small_difference_is_settled_automatically_and_confirmed_at_save(self):
         self.old_gold_payout("61130")
         self.wait_until(lambda: self.item("settlementDifference").property("visible"))
-        # Shown against the FINAL amount (61,140 − 61,130); the explicit settlement keeps the exact 8.95.
+        # Shown against the FINAL amount (61,140 − 61,130); the automatic settlement keeps the exact 8.95.
         self.assertEqual(self.text("settlementDifference"), "10.00")
-        self.assertFalse(self.item("finalizeInvoice").property("enabled"))   # never automatic
-        self.click("settleDifference")
+        self.assertIsNone(self.root.findChild(QObject, "settleDifference"))                     # the «تسوية الفرق» button is gone
+        self.wait_until(lambda: self.vm.settlementChoice == "SETTLE")        # automatic, no click
         self.settle()
         self.snapshot("settle")
-        self.finalize()
+        self.click("finalizeInvoice")
+        dialog = self.item("confirmFinalizeDialog")
+        self.wait_until(lambda: dialog.property("opened"))
+        self.assertTrue(self.item("settlementWaiverWarning").property("visible"))
+        self.assertIn("10.00", self.text("settlementWaiverWarning"))         # the customer waives the rest: said before saving
+        self.click("confirmFinalize")
+        self.wait_until(lambda: self.vm.hasSuccess, f"no success: {self.vm.errorMessage!r}")
         self.assertEqual(self.store.ledger, [])
         self.assertEqual(self.store.adjustments[0]["amount_signed"], D("-8.95"))
         self.assertEqual(self.store.invoices[0]["settlement_status"], "SETTLED")
@@ -856,7 +864,7 @@ class InvoicePageTests(unittest.TestCase):
 
     def test_above_fifty_needs_reason_and_manager_approval(self):
         self.old_gold_payout("61080")                                          # 58.95
-        self.click("settleDifference")
+        self.wait_until(lambda: self.vm.settlementChoice == "SETTLE")         # automatic
         self.settle()
         self.wait_until(lambda: self.item("requestApproval").property("visible"))
         self.assertFalse(self.item("finalizeInvoice").property("enabled"))

@@ -1259,6 +1259,12 @@ class InvoiceViewModel(QObject):
         # A settled/closed choice no longer applies once there is no difference.
         if not self._residual() and self._settlement_choice:
             self._settlement_choice = ""
+        elif self._difference() and not self._settlement_choice:
+            # Old gold only: the «تسوية الفرق» button is gone — the rest settles automatically and the
+            # employee confirms it when saving (the confirmation says the customer waives that amount).
+            # «إضافته للحساب» still puts it on the customer account instead.
+            self._settlement_choice = "SETTLE"
+            self._touched()
 
     def _difference(self):
         """Old gold only: what is left to resolve against the FINAL (EGP-5 rounded) amount — the figure
@@ -1857,6 +1863,10 @@ class InvoiceViewModel(QObject):
         and the customer account, and the value the making is based on."""
         if not self.previewReady or self._preview.get("net_amount") in (None, ""):
             return ""
+        if self._preview.get("difference_signed") not in (None, "") and self._preview.get("final_settlement_amount"):
+            # Old gold only: the customer-facing amount (exact value rounded ONCE to EGP 5) = what is paid
+            # + what goes on the customer account; the exact value stays stored unchanged.
+            return money(self._preview["final_settlement_amount"])
         return money(self._preview["net_amount"])
 
     @Property("QVariantList", notify=changed)
