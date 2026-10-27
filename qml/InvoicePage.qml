@@ -5,7 +5,7 @@ import QtQuick.Layouts
 // Billing V2 (canonical invoices) — point-of-sale page in the masGold prototype
 // layout: thin header strip (salesperson, customer), sale and old-gold entry rows
 // above their side-by-side tables with per-karat gram totals, and the money strip
-// (sale → old gold → settlement → save) as ONE horizontal row at the bottom.
+// at the bottom in three lines: prices+total, payment legs, customer account.
 // Every amount shown comes from invoiceVM (recalculated by InvoiceService);
 // this page only forwards employee input. Gold prices are shown in the
 // MainWindow top bar, not here.
@@ -810,7 +810,7 @@ Item {
                     Strip {
                         id: saleEntry
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 32
+                        Layout.preferredHeight: 46
                         accent: theme.priceSell
 
                         RowLayout {
@@ -830,23 +830,24 @@ Item {
                                 id: barcodeField
                                 objectName: "invoiceBarcodeField"
                                 Layout.fillWidth: true
-                                Layout.maximumWidth: 220
-                                Layout.minimumWidth: 100
-                                Layout.preferredHeight: 30
-                                topPadding: 3
-                                bottomPadding: 3
+                                Layout.maximumWidth: 320
+                                Layout.minimumWidth: 160
+                                Layout.preferredHeight: 40
+                                topPadding: 5
+                                bottomPadding: 5
                                 placeholderText: activeFocus || text.length > 0 ? "" : "الباركود ثم Enter"
                                 color: theme.textPrimary
-                                placeholderTextColor: theme.textDisabled
+                                placeholderTextColor: theme.textMuted
                                 font.family: "Cairo"
-                                font.pixelSize: 13
+                                font.pixelSize: 16
                                 horizontalAlignment: TextInput.AlignRight
                                 selectByMouse: true
                                 onAccepted: invoicePage.barcodeEnter()
+                                // A clearly visible input: dark field, gold rim, brighter on focus.
                                 background: Rectangle {
-                                    radius: 4
-                                    color: theme.bgPrimary
-                                    border.color: barcodeField.activeFocus ? theme.gold : theme.border
+                                    radius: theme.radiusSmall
+                                    color: barcodeField.activeFocus ? theme.bgSecondary : theme.bgPrimary
+                                    border.color: theme.gold
                                     border.width: barcodeField.activeFocus ? 2 : 1
                                 }
                             }
@@ -1792,350 +1793,433 @@ Item {
                 layoutDirection: Qt.RightToLeft
                 spacing: 10
 
-                Flow {
+                ColumnLayout {
                     id: moneyColumn
                     Layout.fillWidth: true
-                    layoutDirection: Qt.RightToLeft
-                    spacing: 8
+                    spacing: 6
+                    // Three fixed horizontal lines: prices -> total+legs -> customer account, under
+                    // a flashing problems line when something required is still missing.
                     // على العميل = receivable (cool), للعميل = payable (warm); the words stay explicit.
                     readonly property color tone: invoiceVM.accountDirection === "CUSTOMER_OWES"
                                                   ? theme.accountReceivable
                                                   : invoiceVM.accountDirection === "SHOP_OWES"
                                                     ? theme.accountPayable : theme.textSecondary
-                    // ONE horizontal row: sale money -> old gold -> total -> payment legs ->
-                    // customer account (a Flow wraps only when the window is too narrow).
 
-                    // Sale money (right) and old gold bought (left, only when present) share the row.
+                    // Blocking problems (salesperson / customer name / …): clear text, top-right of
+                    // the card, flashing until they are resolved.
                     RowLayout {
-                        id: salePricingBlock
-                        objectName: "salePricingBlock"
-                        Layout.fillWidth: true
-                        visible: invoiceVM.saleCount > 0
-                        layoutDirection: Qt.RightToLeft
-                        spacing: 6
-                        FieldLabel { text: invoicePage.compact ? "ذهب الجديد" : "قيمة ذهب الجديد" }
-                        Value { objectName: "summaryGoldValue"; text: invoiceVM.summary.goldValue || "—"; color: theme.textSecondary; font.pixelSize: 15 }
-                        FieldLabel { text: invoicePage.compact ? "سعر البيع" : "سعر البيع الفعلي" }
-                        Value { objectName: "summaryEffectiveSale"; text: invoiceVM.summary.effectiveSale || "—"; color: theme.textSecondary; font.pixelSize: 15 }
-                        // The one making figure the salesman needs: average per gram.
-                        Rectangle {
-                            Layout.preferredHeight: 30
-                            Layout.preferredWidth: averageRow.implicitWidth + 14
-                            radius: theme.radiusSmall
-                            color: theme.bgTertiary
-                            border.color: invoiceVM.summary.makingStatus === "OUT_OF_RANGE" ? theme.statusWarning : theme.goldDark
-                            RowLayout {
-                                id: averageRow
-                                anchors.centerIn: parent
-                                layoutDirection: Qt.RightToLeft
-                                spacing: 6
-                                FieldLabel { text: invoicePage.compact ? "م. المصنعية" : "متوسط المصنعية"; color: theme.textSecondary }
-                                Value {
-                                    objectName: "summaryAverageMaking"
-                                    text: invoiceVM.summary.averageMaking || "—"
-                                    color: theme.goldBright
-                                    font.pixelSize: 19
-                                }
-                            }
-                        }
-                        Label {
-                            objectName: "makingReviewFlag"
-                            visible: text.length > 0
-                            // The one flexible item of this row: it gives way (elides) before anything
-                            // else, so a long notice can never push the row onto a second line.
-                            Layout.fillWidth: true
-                            Layout.minimumWidth: 0
-                            Layout.preferredWidth: Math.min(implicitWidth, 240)
-                            Layout.maximumWidth: 240
-                            elide: Text.ElideLeft
-                            ToolTip.visible: truncated && makingFlagHover.hovered
-                            ToolTip.text: text
-                            HoverHandler { id: makingFlagHover }
-                            text: invoiceVM.summary.makingNotice
-                            color: invoiceVM.summary.makingStatus === "OUT_OF_RANGE" ? theme.statusWarning : theme.textMuted
-                            font.family: "Cairo"
-                            font.pixelSize: 14
-                            font.bold: invoiceVM.summary.makingStatus === "OUT_OF_RANGE"
-                        }
-                    }
-                    Rectangle {
-                        visible: oldGoldBlock.visible && salePricingBlock.visible
-                        width: 1
-                        height: 22
-                        color: theme.border
-                    }
-                    RowLayout {
-                        id: oldGoldBlock
-                        objectName: "oldGoldBlock"
-                        visible: invoiceVM.oldGoldCount > 0
-                        layoutDirection: Qt.RightToLeft
-                        spacing: 6
-                        FieldLabel { text: invoicePage.compact ? "الكسر" : "قيمة الكسر" }
-                        Value { objectName: "summaryOldGoldGross"; text: invoiceVM.summary.oldGoldGross || "—"; color: theme.textSecondary; font.pixelSize: 15 }
-                        FieldLabel { text: "خصم %" }
-                        AmountField {
-                            id: discountField
-                            objectName: "oldGoldDiscountField"
-                            // Room for 1.25 / 2.00 / 5.00 without shrinking the font (default padding
-                            // alone ate most of the old 50 px).
-                            Layout.preferredWidth: 72
-                            leftPadding: 6
-                            rightPadding: 6
-                            placeholderText: ""
-                            font.pixelSize: 15
-                            color: invoiceVM.summary.discountChanged ? theme.amber : theme.textPrimary
-                            text: invoiceVM.oldGoldDiscountPercent
-                            // Validated only when committed (Enter, focus lost, before save); an invalid
-                            // value is replaced by the last valid one and never reaches the preview.
-                            function commit() {
-                                if (text !== invoiceVM.oldGoldDiscountPercent)
-                                    invoiceVM.commitOldGoldDiscount(text)
-                                text = Qt.binding(function() { return invoiceVM.oldGoldDiscountPercent })
-                            }
-                            onEditingFinished: commit()
-                            onAccepted: invoicePage.focusPayment()
-                        }
-                        Label {
-                            objectName: "discountWarning"
-                            visible: text.length > 0
-                            text: invoiceVM.discountWarning
-                            color: theme.statusWarning
-                            font.family: "Cairo"
-                            font.pixelSize: 14
-                        }
-                        FieldLabel { text: invoicePage.compact ? "الصافي" : "صافي الكسر" }
-                        Value { objectName: "summaryOldGold"; text: invoiceVM.summary.oldGoldTotal || "—"; color: theme.priceBuy }
-                        Label {
-                            objectName: "discountChangedFlag"
-                            visible: invoiceVM.summary.discountChanged
-                            text: invoicePage.compact ? "مُعدّل" : "خصم مُعدّل"
-                            color: theme.amber
-                            font.family: "Cairo"
-                            font.pixelSize: 14
-                        }
-                    }
-
-                    // إجمالي الفاتورة: the ONE commercial total (with sold pieces). The payment legs and
-                    // the customer account below only allocate it; they never change it.
-                    RowLayout {
-                        objectName: "invoiceTotalRow"
-                        visible: invoiceVM.totalMode
                         Layout.fillWidth: true
                         layoutDirection: Qt.RightToLeft
-                        spacing: 6
-                        FieldLabel { text: "إجمالي الفاتورة"; color: theme.textPrimary; font.bold: true }
-                        AmountField {
-                            id: invoiceTotalField
-                            objectName: "invoiceTotalField"
-                            Layout.preferredWidth: invoicePage.compact ? 110 : 130
-                            placeholderText: ""
-                            font.bold: true
-                            text: invoiceVM.invoiceTotal
-                            onTextEdited: invoiceVM.setInvoiceTotal(text)
-                            // A refused total is replaced by the last valid one when editing ends.
-                            onEditingFinished: {
-                                invoiceVM.commitInvoiceTotal()          // mixed invoice: nearest EGP 5, once
-                                text = Qt.binding(function() { return invoiceVM.invoiceTotal })
-                            }
-                            onAccepted: invoicePage.findVisual(invoicePage, "legAmount_0").forceActiveFocus()
-                        }
+                        spacing: 8
+                        visible: invoiceVM.blockingProblems.length > 0 || invoiceVM.previewError.length > 0
                         Label {
-                            objectName: "remainingNow"
-                            visible: text.length > 0
-                            text: invoiceVM.remainingText
-                            color: theme.amber
-                            font.family: "Cairo"
-                            font.pixelSize: 15
-                            font.bold: true
-                        }
-                        Label {
-                            objectName: "totalRoundedNote"
-                            visible: text.length > 0
-                            text: invoiceVM.totalRoundedNote
-                            color: theme.amber
-                            font.family: "Cairo"
-                            font.pixelSize: 14
-                        }
-                        Label {
-                            objectName: "paymentWarning"
-                            visible: text.length > 0
+                            objectName: "stripProblems"
                             Layout.fillWidth: true
-                            // Bounded so a long warning stays inside the single money row.
                             Layout.minimumWidth: 0
-                            Layout.preferredWidth: Math.min(implicitWidth, 320)
-                            Layout.maximumWidth: 320
-                            text: invoiceVM.paymentWarning
+                            // Everything that stops the save: required fields (salesperson, customer
+                            // name, …) and the last preview error, in one flashing line.
+                            text: {
+                                var all = invoiceVM.blockingProblems.slice()
+                                if (invoiceVM.previewError.length > 0)
+                                    all.push(invoiceVM.previewError)
+                                return all.join(" • ")
+                            }
                             color: theme.red
                             font.family: "Cairo"
-                            font.pixelSize: 14
-                            elide: Text.ElideLeft
+                            font.pixelSize: 15
+                            font.bold: true
+                            elide: Text.ElideRight
                             horizontalAlignment: Text.AlignRight
+                            SequentialAnimation on opacity {
+                                running: stripProblems.visible && invoicePage.visible
+                                loops: Animation.Infinite
+                                NumberAnimation { to: 0.25; duration: 450 }
+                                NumberAnimation { to: 1.0; duration: 450 }
+                            }
                         }
-                        Item { Layout.fillWidth: !invoiceVM.paymentWarning }
                     }
 
-                    // Real money: the direction in words, then a group per payment leg.
-                    Repeater {
-                        id: legRepeater
-                        model: invoiceVM.paymentLegsModel
+                    // Line 1: sale prices and the old-gold discount.
+                    Flow {
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        // Sale money (right) and old gold bought (left, only when present) share the row.
                         RowLayout {
-                            id: legRow
-                            objectName: "paymentLeg_" + legIndex
-                            required property int legIndex
-                            required property string method
-                            required property string account
-                            required property string amount
-                            required property bool needsAccount
-                            required property var accounts
-                            required property string unavailableText
+                            id: salePricingBlock
+                            objectName: "salePricingBlock"
                             Layout.fillWidth: true
+                            visible: invoiceVM.saleCount > 0
                             layoutDirection: Qt.RightToLeft
                             spacing: 6
-
-                            // Direction: fixed words, or an explicit choice for an exchange.
+                            FieldLabel { text: invoicePage.compact ? "ذهب الجديد" : "قيمة ذهب الجديد" }
+                            Value { objectName: "summaryGoldValue"; text: invoiceVM.summary.goldValue || "—"; color: theme.textSecondary; font.pixelSize: 15 }
+                            FieldLabel { text: invoicePage.compact ? "سعر البيع" : "سعر البيع الفعلي" }
+                            Value { objectName: "summaryEffectiveSale"; text: invoiceVM.summary.effectiveSale || "—"; color: theme.textSecondary; font.pixelSize: 15 }
+                            // The one making figure the salesman needs: average per gram.
+                            Rectangle {
+                                Layout.preferredHeight: 30
+                                Layout.preferredWidth: averageRow.implicitWidth + 14
+                                radius: theme.radiusSmall
+                                color: theme.bgTertiary
+                                border.color: invoiceVM.summary.makingStatus === "OUT_OF_RANGE" ? theme.statusWarning : theme.goldDark
+                                RowLayout {
+                                    id: averageRow
+                                    anchors.centerIn: parent
+                                    layoutDirection: Qt.RightToLeft
+                                    spacing: 6
+                                    FieldLabel { text: invoicePage.compact ? "م. المصنعية" : "متوسط المصنعية"; color: theme.textSecondary }
+                                    Value {
+                                        objectName: "summaryAverageMaking"
+                                        text: invoiceVM.summary.averageMaking || "—"
+                                        color: theme.goldBright
+                                        font.pixelSize: 19
+                                    }
+                                }
+                            }
+                            SmallButton {
+                                objectName: "requestMakingApproval"
+                                visible: invoiceVM.makingNeedsApproval
+                                text: invoiceVM.makingCanConfirm ? "اعتماد المصنعية" : "موافقة المدير (المصنعية)"
+                                // The right to approve never approves by itself: an explicit confirmation.
+                                onClicked: invoiceVM.makingCanConfirm ? makingConfirmDialog.open() : approvalPopup.open()
+                            }
                             Label {
-                                objectName: "paymentDirectionLabel"
-                                visible: legRow.legIndex === 0 && !invoiceVM.directionChoosable
-                                text: invoiceVM.paymentLabel
-                                color: invoiceVM.paymentDirection === "OUT" ? theme.priceBuy : theme.priceSell
+                                objectName: "makingReviewFlag"
+                                visible: text.length > 0
+                                // The one flexible item of this row: it gives way (elides) before anything
+                                // else, so a long notice can never push the row onto a second line.
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                Layout.preferredWidth: Math.min(implicitWidth, 240)
+                                Layout.maximumWidth: 240
+                                elide: Text.ElideLeft
+                                ToolTip.visible: truncated && makingFlagHover.hovered
+                                ToolTip.text: text
+                                HoverHandler { id: makingFlagHover }
+                                text: invoiceVM.summary.makingNotice
+                                color: invoiceVM.summary.makingStatus === "OUT_OF_RANGE" ? theme.statusWarning : theme.textMuted
                                 font.family: "Cairo"
+                                font.pixelSize: 14
+                                font.bold: invoiceVM.summary.makingStatus === "OUT_OF_RANGE"
+                            }
+                        }
+                        Rectangle {
+                            visible: oldGoldBlock.visible && salePricingBlock.visible
+                            width: 1
+                            height: 22
+                            color: theme.border
+                        }
+                        RowLayout {
+                            id: oldGoldBlock
+                            objectName: "oldGoldBlock"
+                            visible: invoiceVM.oldGoldCount > 0
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 6
+                            FieldLabel { text: invoicePage.compact ? "الكسر" : "قيمة الكسر" }
+                            Value { objectName: "summaryOldGoldGross"; text: invoiceVM.summary.oldGoldGross || "—"; color: theme.textSecondary; font.pixelSize: 15 }
+                            FieldLabel { text: "خصم %" }
+                            AmountField {
+                                id: discountField
+                                objectName: "oldGoldDiscountField"
+                                // Room for 1.25 / 2.00 / 5.00 without shrinking the font (default padding
+                                // alone ate most of the old 50 px).
+                                Layout.preferredWidth: 72
+                                leftPadding: 6
+                                rightPadding: 6
+                                placeholderText: ""
                                 font.pixelSize: 15
-                                font.bold: true
-                            }
-                            SmallButton {
-                                objectName: "directionIn"
-                                Layout.preferredHeight: 34
-                                visible: legRow.legIndex === 0 && invoiceVM.directionChoosable
-                                text: "المستلم من العميل"
-                                font.pixelSize: 14
-                                checkedLook: invoiceVM.paymentDirection === "IN"
-                                onClicked: invoiceVM.setPaymentDirection("IN")
-                            }
-                            SmallButton {
-                                objectName: "directionOut"
-                                Layout.preferredHeight: 34
-                                visible: legRow.legIndex === 0 && invoiceVM.directionChoosable
-                                text: "المدفوع للعميل"
-                                font.pixelSize: 14
-                                checkedLook: invoiceVM.paymentDirection === "OUT"
-                                checkedColor: theme.priceBuy
-                                onClicked: invoiceVM.setPaymentDirection("OUT")
-                            }
-                            Item { visible: legRow.legIndex > 0; Layout.preferredWidth: 20 }
-                            ChoiceCombo {
-                                id: methodCombo
-                            Layout.preferredHeight: 32
-                                objectName: "legMethod_" + legRow.legIndex
-                                popup.onAboutToShow: invoiceVM.refreshReference()
-                                Layout.preferredWidth: invoicePage.compact ? 124 : 150
-                                // All four supported methods stay visible; one without an active
-                                // account is shown dimmed and cannot be saved.
-                                model: invoiceVM.paymentMethods
-                                textRole: "text"
-                                valueRole: "code"
-                                popup.width: Math.max(width, 170)
-                                delegate: ItemDelegate {
-                                    required property var modelData
-                                    required property int index
-                                    objectName: "legMethodOption_" + modelData.code
-                                    width: methodCombo.popup.width
-                                    text: modelData.available ? modelData.text : modelData.text + " • غير مفعّل"
-                                    font.family: "Cairo"
-                                    font.pixelSize: 15
-                                    opacity: modelData.available ? 1 : 0.55
-                                    highlighted: methodCombo.highlightedIndex === index
+                                color: invoiceVM.summary.discountChanged ? theme.amber : theme.textPrimary
+                                text: invoiceVM.oldGoldDiscountPercent
+                                // Validated only when committed (Enter, focus lost, before save); an invalid
+                                // value is replaced by the last valid one and never reaches the preview.
+                                function commit() {
+                                    if (text !== invoiceVM.oldGoldDiscountPercent)
+                                        invoiceVM.commitOldGoldDiscount(text)
+                                    text = Qt.binding(function() { return invoiceVM.oldGoldDiscountPercent })
                                 }
-                                currentIndex: {
-                                    const rows = invoiceVM.paymentMethods
-                                    for (let i = 0; i < rows.length; ++i)
-                                        if (rows[i].code === legRow.method)
-                                            return i
-                                    return -1
-                                }
-                                onActivated: invoiceVM.setLegMethod(legRow.legIndex, currentValue)
-                            }
-                            ChoiceCombo {
-                                objectName: "legAccount_" + legRow.legIndex
-                            Layout.preferredHeight: 32
-                                visible: legRow.needsAccount
-                                Layout.preferredWidth: invoicePage.compact ? 114 : 172
-                                model: legRow.accounts
-                                popup.width: Math.max(width, 200)          // full account names in the list
-                                placeholder: "اختر الحساب"
-                                currentIndex: {
-                                    const rows = legRow.accounts
-                                    for (let i = 0; i < rows.length; ++i)
-                                        if (rows[i].id === legRow.account)
-                                            return i
-                                    return -1
-                                }
-                                onActivated: invoiceVM.setLegAccount(legRow.legIndex, currentValue)
+                                onEditingFinished: commit()
+                                onAccepted: invoicePage.focusPayment()
                             }
                             Label {
-                                objectName: "legUnavailable_" + legRow.legIndex
-                                visible: legRow.unavailableText.length > 0
-                                text: legRow.unavailableText
+                                objectName: "discountWarning"
+                                visible: text.length > 0
+                                text: invoiceVM.discountWarning
                                 color: theme.statusWarning
                                 font.family: "Cairo"
                                 font.pixelSize: 14
                             }
-                            AmountField {
-                                id: legAmount
-                            Layout.preferredHeight: 32
-                                objectName: "legAmount_" + legRow.legIndex
-                                Layout.preferredWidth: invoicePage.compact ? 98 : 136
-                                placeholderText: ""
-                                font.bold: true
-                                text: legRow.amount
-                                // Every keystroke recalculates at once (remaining, على العميل, Save). A value
-                                // that would exceed إجمالي الفاتورة is refused; when editing ends the field
-                                // shows the last valid value again.
-                                function commit() {
-                                    if (text !== legRow.amount) {
-                                        invoiceVM.setLegAmount(legRow.legIndex, text)
-                                        if (text !== legRow.amount)        // refused: back to before this edit
-                                            invoiceVM.revertLegAmount(legRow.legIndex, editStart)
-                                    }
-                                    text = Qt.binding(function() { return legRow.amount })
-                                }
-                                onTextEdited: invoiceVM.setLegAmount(legRow.legIndex, text)
-                                onEditingFinished: commit()
-                                Connections {
-                                    target: invoiceVM
-                                    function onDraftReset() { legAmount.text = Qt.binding(function() { return legRow.amount }) }
-                                }
-                                onAccepted: invoicePage.startFinalize()
-                            }
-                            RemoveButton {
-                                objectName: "removeLeg_" + legRow.legIndex
-                                visible: legRow.legIndex > 0
-                                onClicked: invoiceVM.removePaymentLeg(legRow.legIndex)
-                            }
-                            SmallButton {
-                                objectName: "payFullButton"
-                                Layout.preferredHeight: 34
-                                // Only when a full amount exists (old gold only); never a dead button.
-                                visible: legRow.legIndex === 0 && invoiceVM.fullAmountAvailable
-                                text: "كامل F8"
-                                enabled: invoiceVM.fullAmountAvailable
-                                onClicked: { invoiceVM.payFullAmount(); legAmount.forceActiveFocus() }
-                            }
-                            SmallButton {
-                                objectName: "addPaymentLeg"
-                                Layout.preferredHeight: 34
-                                visible: legRow.legIndex === legRepeater.count - 1 && legRepeater.count < 3
-                                enabled: invoiceVM.canAddPayment
-                                text: invoiceVM.totalMode ? "+ إضافة" : "+ طريقة"
+                            FieldLabel { text: invoicePage.compact ? "الصافي" : "صافي الكسر" }
+                            Value { objectName: "summaryOldGold"; text: invoiceVM.summary.oldGoldTotal || "—"; color: theme.priceBuy }
+                            Label {
+                                objectName: "discountChangedFlag"
+                                visible: invoiceVM.summary.discountChanged
+                                text: invoicePage.compact ? "مُعدّل" : "خصم مُعدّل"
+                                color: theme.amber
+                                font.family: "Cairo"
                                 font.pixelSize: 14
-                                onClicked: {
-                                    // Adding a leg rebuilds these rows (this button included): keep the page,
-                                    // then focus the NEW leg's method once the rows exist.
-                                    const page = invoicePage
-                                    invoiceVM.addPaymentLeg()
-                                    Qt.callLater(page.focusLastLegMethod)
+                            }
+                        }
+                    }
+
+                    // Line 2: the invoice total and every payment leg on ONE line, right-aligned.
+                    Item {
+                        Layout.fillWidth: true
+                        implicitHeight: legsFlow.implicitHeight
+                        RowLayout {
+                            id: legsFlow
+                            objectName: "paymentLegsFlow"
+                            // Content-sized and pinned to the right so every card row lines up.
+                            anchors.right: parent.right
+                            width: Math.min(implicitWidth, parent.width)
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 8
+                            // إجمالي الفاتورة: the ONE commercial total (with sold pieces). The payment legs and
+                            // the customer account below only allocate it; they never change it.
+                            RowLayout {
+                                objectName: "invoiceTotalRow"
+                                visible: invoiceVM.totalMode
+                                Layout.fillWidth: true
+                                layoutDirection: Qt.RightToLeft
+                                spacing: 6
+                                // إجمالي الفاتورة is the first thing the salesman enters: gold, large
+                                // and with a golden field so it stands out in the row.
+                                FieldLabel { text: "إجمالي الفاتورة"; color: theme.gold; font.bold: true; font.pixelSize: 15 }
+                                AmountField {
+                                    id: invoiceTotalField
+                                    objectName: "invoiceTotalField"
+                                    Layout.preferredHeight: 40
+                                    Layout.preferredWidth: invoicePage.compact ? 120 : 150
+                                    placeholderText: ""
+                                    font.bold: true
+                                    font.pixelSize: 16
+                                    background: Rectangle {
+                                        radius: theme.radiusSmall
+                                        color: theme.bgSecondary
+                                        border.color: theme.gold
+                                        border.width: invoiceTotalField.activeFocus ? 2 : 1
+                                    }
+                                    text: invoiceVM.invoiceTotal
+                                    onTextEdited: invoiceVM.setInvoiceTotal(text)
+                                    // A refused total is replaced by the last valid one when editing ends.
+                                    onEditingFinished: {
+                                        invoiceVM.commitInvoiceTotal()          // mixed invoice: nearest EGP 5, once
+                                        text = Qt.binding(function() { return invoiceVM.invoiceTotal })
+                                    }
+                                    onAccepted: invoicePage.findVisual(invoicePage, "legAmount_0").forceActiveFocus()
+                                }
+                                Label {
+                                    objectName: "remainingNow"
+                                    visible: text.length > 0
+                                    text: invoiceVM.remainingText
+                                    color: theme.amber
+                                    font.family: "Cairo"
+                                    font.pixelSize: 15
+                                    font.bold: true
+                                }
+                                Label {
+                                    objectName: "totalRoundedNote"
+                                    visible: text.length > 0
+                                    text: invoiceVM.totalRoundedNote
+                                    color: theme.amber
+                                    font.family: "Cairo"
+                                    font.pixelSize: 14
+                                }
+                                Label {
+                                    objectName: "paymentWarning"
+                                    visible: text.length > 0
+                                    Layout.fillWidth: true
+                                    // Bounded so a long warning stays inside the single money row.
+                                    Layout.minimumWidth: 0
+                                    Layout.preferredWidth: Math.min(implicitWidth, 320)
+                                    Layout.maximumWidth: 320
+                                    text: invoiceVM.paymentWarning
+                                    color: theme.red
+                                    font.family: "Cairo"
+                                    font.pixelSize: 14
+                                    elide: Text.ElideLeft
+                                    horizontalAlignment: Text.AlignRight
+                                }
+                                Item { Layout.fillWidth: !invoiceVM.paymentWarning }
+                            }
+                            // Real money: the direction in words and one group per payment leg; the
+                            // additions (+ طريقة / + إضافة) stay on THIS line.
+                            Repeater {
+                                id: legRepeater
+                                model: invoiceVM.paymentLegsModel
+                                RowLayout {
+                                    id: legRow
+                                    objectName: "paymentLeg_" + legIndex
+                                    required property int legIndex
+                                    required property string method
+                                    required property string account
+                                    required property string amount
+                                    required property bool needsAccount
+                                    required property var accounts
+                                    required property string unavailableText
+                                    Layout.fillWidth: true
+                                    layoutDirection: Qt.RightToLeft
+                                    spacing: 6
+
+                                    // Direction: fixed words, or an explicit choice for an exchange.
+                                    Label {
+                                        objectName: "paymentDirectionLabel"
+                                        visible: legRow.legIndex === 0 && !invoiceVM.directionChoosable
+                                        text: invoiceVM.paymentLabel
+                                        color: invoiceVM.paymentDirection === "OUT" ? theme.priceBuy : theme.priceSell
+                                        font.family: "Cairo"
+                                        font.pixelSize: 14
+                                        elide: Text.ElideLeft
+                                        font.bold: true
+                                    }
+                                    SmallButton {
+                                        objectName: "directionIn"
+                                        Layout.preferredHeight: 38
+                                        visible: legRow.legIndex === 0 && invoiceVM.directionChoosable
+                                        text: "المستلم من العميل"
+                                        font.pixelSize: 13
+                                        checkedLook: invoiceVM.paymentDirection === "IN"
+                                        onClicked: invoiceVM.setPaymentDirection("IN")
+                                    }
+                                    SmallButton {
+                                        objectName: "directionOut"
+                                        Layout.preferredHeight: 38
+                                        visible: legRow.legIndex === 0 && invoiceVM.directionChoosable
+                                        text: "المدفوع للعميل"
+                                        font.pixelSize: 13
+                                        checkedLook: invoiceVM.paymentDirection === "OUT"
+                                        checkedColor: theme.priceBuy
+                                        onClicked: invoiceVM.setPaymentDirection("OUT")
+                                    }
+                                    Item { visible: legRow.legIndex > 0; Layout.preferredWidth: 20 }
+                                    ChoiceCombo {
+                                        id: methodCombo
+                                        Layout.preferredHeight: 36
+                                        Layout.minimumWidth: 0
+                                        Layout.fillWidth: true
+                                        objectName: "legMethod_" + legRow.legIndex
+                                        popup.onAboutToShow: invoiceVM.refreshReference()
+                                        Layout.preferredWidth: invoicePage.compact ? 140 : 170
+                                        // All four supported methods stay visible; one without an active
+                                        // account is shown dimmed and cannot be saved.
+                                        model: invoiceVM.paymentMethods
+                                        textRole: "text"
+                                        valueRole: "code"
+                                        popup.width: Math.max(width, 170)
+                                        delegate: ItemDelegate {
+                                            required property var modelData
+                                            required property int index
+                                            objectName: "legMethodOption_" + modelData.code
+                                            width: methodCombo.popup.width
+                                            text: modelData.available ? modelData.text : modelData.text + " • غير مفعّل"
+                                            font.family: "Cairo"
+                                            font.pixelSize: 15
+                                            opacity: modelData.available ? 1 : 0.55
+                                            highlighted: methodCombo.highlightedIndex === index
+                                        }
+                                        currentIndex: {
+                                            const rows = invoiceVM.paymentMethods
+                                            for (let i = 0; i < rows.length; ++i)
+                                                if (rows[i].code === legRow.method)
+                                                    return i
+                                            return -1
+                                        }
+                                        onActivated: invoiceVM.setLegMethod(legRow.legIndex, currentValue)
+                                    }
+                                    ChoiceCombo {
+                                        objectName: "legAccount_" + legRow.legIndex
+                                        Layout.preferredHeight: 36
+                                        Layout.minimumWidth: 0
+                                        Layout.fillWidth: true
+                                        visible: legRow.needsAccount
+                                        Layout.preferredWidth: invoicePage.compact ? 124 : 184
+                                        model: legRow.accounts
+                                        popup.width: Math.max(width, 200)          // full account names in the list
+                                        placeholder: "اختر الحساب"
+                                        currentIndex: {
+                                            const rows = legRow.accounts
+                                            for (let i = 0; i < rows.length; ++i)
+                                                if (rows[i].id === legRow.account)
+                                                    return i
+                                            return -1
+                                        }
+                                        onActivated: invoiceVM.setLegAccount(legRow.legIndex, currentValue)
+                                    }
+                                    Label {
+                                        objectName: "legUnavailable_" + legRow.legIndex
+                                        visible: legRow.unavailableText.length > 0
+                                        Layout.fillWidth: true
+                                        text: legRow.unavailableText
+                                        color: theme.statusWarning
+                                        font.family: "Cairo"
+                                        font.pixelSize: 14
+                                        elide: Text.ElideLeft
+                                    }
+                                    AmountField {
+                                        id: legAmount
+                                        Layout.preferredHeight: 38
+                                        Layout.minimumWidth: 0
+                                        Layout.fillWidth: true
+                                        objectName: "legAmount_" + legRow.legIndex
+                                        Layout.preferredWidth: invoicePage.compact ? 118 : 168
+                                        placeholderText: ""
+                                        font.bold: true
+                                        font.pixelSize: 14
+                                        text: legRow.amount
+                                        // Every keystroke recalculates at once (remaining, على العميل, Save). A value
+                                        // that would exceed إجمالي الفاتورة is refused; when editing ends the field
+                                        // shows the last valid value again.
+                                        function commit() {
+                                            if (text !== legRow.amount) {
+                                                invoiceVM.setLegAmount(legRow.legIndex, text)
+                                                if (text !== legRow.amount)        // refused: back to before this edit
+                                                    invoiceVM.revertLegAmount(legRow.legIndex, editStart)
+                                            }
+                                            text = Qt.binding(function() { return legRow.amount })
+                                        }
+                                        onTextEdited: invoiceVM.setLegAmount(legRow.legIndex, text)
+                                        onEditingFinished: commit()
+                                        Connections {
+                                            target: invoiceVM
+                                            function onDraftReset() { legAmount.text = Qt.binding(function() { return legRow.amount }) }
+                                        }
+                                        onAccepted: invoicePage.startFinalize()
+                                    }
+                                    RemoveButton {
+                                        objectName: "removeLeg_" + legRow.legIndex
+                                        Layout.preferredHeight: 32
+                                        visible: legRow.legIndex > 0
+                                        onClicked: invoiceVM.removePaymentLeg(legRow.legIndex)
+                                    }
+                                    SmallButton {
+                                        objectName: "payFullButton"
+                                        Layout.preferredHeight: 38
+                                        // Only when a full amount exists (old gold only); never a dead button.
+                                        visible: legRow.legIndex === 0 && invoiceVM.fullAmountAvailable
+                                        text: "كامل F8"
+                                        font.pixelSize: 12
+                                        enabled: invoiceVM.fullAmountAvailable
+                                        onClicked: { invoiceVM.payFullAmount(); legAmount.forceActiveFocus() }
+                                    }
+                                    SmallButton {
+                                        objectName: "addPaymentLeg"
+                                        Layout.preferredHeight: 38
+                                        visible: legRow.legIndex === legRepeater.count - 1 && legRepeater.count < 3
+                                        enabled: invoiceVM.canAddPayment
+                                        text: invoiceVM.totalMode ? "+ إضافة" : "+ طريقة"
+                                        font.pixelSize: 13
+                                        onClicked: {
+                                            // Adding a leg rebuilds these rows (this button included): keep the page,
+                                            // then focus the NEW leg's method once the rows exist.
+                                            const page = invoicePage
+                                            invoiceVM.addPaymentLeg()
+                                            Qt.callLater(page.focusLastLegMethod)
+                                        }
+                                    }
+                                    Item { Layout.fillWidth: true }
                                 }
                             }
-                            Item { Layout.fillWidth: true }
                         }
                     }
 
@@ -2143,129 +2227,149 @@ Item {
                     // keeps the two blocks visually apart.
                     Rectangle {
                         objectName: "accountSeparator"
-                        width: 1
-                        height: 22
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 1
                         color: theme.border
                     }
 
-                    // Still in the same row: money deliberately left on the customer account and,
-                    // for old gold only, the explicit decision about a rounding gap.
-                    // حساب العميل: a separate ledger entry with its own direction; it never changes
-                    // the sale price, the making or the money above.
-                    FieldLabel { text: "حساب العميل"; color: theme.textPrimary; font.bold: true }
-                    SmallButton {
-                        objectName: "accountCustomerOwes"
-                        text: "على العميل"
-                        font.pixelSize: 12
-                        // The account part follows the money direction: only one side is offered.
-                        enabled: invoiceVM.accountDirection === "CUSTOMER_OWES"
-                        checkedLook: enabled
-                        checkedColor: theme.accountReceivable
-                        onClicked: invoiceVM.setAccountDirection("CUSTOMER_OWES")
-                    }
-                    SmallButton {
-                        objectName: "accountShopOwes"
-                        text: "للعميل"
-                        font.pixelSize: 12
-                        enabled: invoiceVM.accountDirection === "SHOP_OWES"
-                        checkedLook: enabled
-                        checkedColor: theme.accountPayable
-                        onClicked: invoiceVM.setAccountDirection("SHOP_OWES")
-                    }
-                    FieldLabel { text: "المبلغ" }
-                    AmountField {
-                        id: accountField
-                        height: 32                                  // a Flow child: the Layout height below is not applied
-                        Layout.preferredHeight: 32
-                        objectName: "accountAmountField"
-                        Layout.preferredWidth: invoicePage.compact ? 84 : 110
-                        width: invoicePage.compact ? 84 : 110
-                        placeholderText: ""
-                        text: invoiceVM.accountAmount
-                        // على العميل = total − real payments, recalculated automatically (owner rule).
-                        readOnly: invoiceVM.accountAutomatic
-                        function commit() {
-                            if (text !== invoiceVM.accountAmount)
-                                invoiceVM.setAccountAmount(text)
-                            text = Qt.binding(function() { return invoiceVM.accountAmount })
+                    // Line 3, directly under the payment legs: the customer account, on the right.
+                    Item {
+                        Layout.fillWidth: true
+                        implicitHeight: accountFlow.implicitHeight
+                        RowLayout {
+                            id: accountFlow
+                            objectName: "accountRow"
+                            // Content-sized and pinned to the right, next to إجمالي الفاتورة.
+                            anchors.right: parent.right
+                            width: Math.min(implicitWidth, parent.width)
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 8
+                            // حساب العميل: a separate ledger entry with its own direction; it never changes
+                            // the sale price, the making or the money above.
+                            FieldLabel { text: "حساب العميل"; color: theme.textPrimary; font.bold: true; font.pixelSize: 12 }
+                            SmallButton {
+                                objectName: "accountCustomerOwes"
+                                Layout.preferredHeight: 36
+                                text: "على العميل"
+                                font.pixelSize: 12
+                                // The account part follows the money direction: only one side is offered.
+                                enabled: invoiceVM.accountDirection === "CUSTOMER_OWES"
+                                checkedLook: enabled
+                                checkedColor: theme.accountReceivable
+                                onClicked: invoiceVM.setAccountDirection("CUSTOMER_OWES")
+                            }
+                            SmallButton {
+                                objectName: "accountShopOwes"
+                                Layout.preferredHeight: 36
+                                text: "للعميل"
+                                font.pixelSize: 12
+                                enabled: invoiceVM.accountDirection === "SHOP_OWES"
+                                checkedLook: enabled
+                                checkedColor: theme.accountPayable
+                                onClicked: invoiceVM.setAccountDirection("SHOP_OWES")
+                            }
+                            FieldLabel { text: "المبلغ"; font.pixelSize: 12 }
+                            AmountField {
+                                id: accountField
+                                Layout.preferredHeight: 38
+                                Layout.minimumWidth: 0
+                                Layout.fillWidth: true
+                                objectName: "accountAmountField"
+                                Layout.preferredWidth: invoicePage.compact ? 104 : 130
+                                placeholderText: ""
+                                font.pixelSize: 14
+                                text: invoiceVM.accountAmount
+                                // على العميل = total − real payments, recalculated automatically (owner rule).
+                                readOnly: invoiceVM.accountAutomatic
+                                function commit() {
+                                    if (text !== invoiceVM.accountAmount)
+                                        invoiceVM.setAccountAmount(text)
+                                    text = Qt.binding(function() { return invoiceVM.accountAmount })
+                                }
+                                onTextEdited: if (!invoiceVM.accountAutomatic) invoiceVM.setAccountAmount(text)
+                                onEditingFinished: commit()
+                                onAccepted: invoicePage.startFinalize()
+                            }
+                            Label {
+                                objectName: "requiredNow"
+                                visible: text.length > 0
+                                Layout.fillWidth: true
+                                text: invoiceVM.requiredNowText
+                                color: theme.amber
+                                font.family: "Cairo"
+                                font.pixelSize: 12
+                                font.bold: true
+                                elide: Text.ElideLeft
+                            }
+                            Label {
+                                objectName: "accountEffect"
+                                visible: text.length > 0 && !invoiceVM.hasDifference
+                                Layout.fillWidth: true
+                                text: invoiceVM.accountEffectText
+                                color: moneyColumn.tone
+                                font.family: "Cairo"
+                                font.pixelSize: 12
+                                elide: Text.ElideLeft
+                            }
+                            Label {
+                                text: "الباقي:"
+                                visible: invoiceVM.hasDifference
+                                Layout.fillWidth: true
+                                color: theme.amber
+                                font.family: "Cairo"
+                                font.pixelSize: 13
+                                font.bold: true
+                                elide: Text.ElideLeft
+                            }
+                            Label {
+                                objectName: "settlementDifference"
+                                visible: invoiceVM.hasDifference
+                                Layout.fillWidth: true
+                                text: invoiceVM.summary.differenceAmount
+                                color: theme.amber
+                                font.family: "Cairo"
+                                font.pixelSize: 15
+                                font.bold: true
+                            }
+                            SmallButton {
+                                objectName: "differenceToAccount"
+                                visible: invoiceVM.hasDifference
+                                Layout.fillWidth: true
+                                text: invoicePage.compact ? "للحساب" : "إضافته للحساب"
+                                checkedColor: theme.blue
+                                onClicked: invoiceVM.setSettlementChoice("ACCOUNT")
+                            }
+                            TextInputField {
+                                id: settlementReason
+                                objectName: "settlementReason"
+                                visible: invoiceVM.settlementNeedsReason
+                                Layout.preferredWidth: 110
+                                Layout.minimumWidth: 0
+                                Layout.fillWidth: true
+                                width: 110
+                                placeholderText: text.length > 0 ? "" : "سبب التسوية"
+                                text: invoiceVM.settlementReason
+                                onTextEdited: invoiceVM.setSettlementReason(text)
+                            }
+                            SmallButton {
+                                objectName: "requestApproval"
+                                visible: invoiceVM.settlementNeedsReason && !invoiceVM.approverOk && invoiceVM.settlementNeedsApproval
+                                Layout.fillWidth: true
+                                text: "موافقة المدير"
+                                onClicked: approvalPopup.open()
+                            }
+                            Label {
+                                objectName: "approverText"
+                                visible: text.length > 0
+                                Layout.fillWidth: true
+                                text: invoiceVM.approverText
+                                color: invoiceVM.approverOk ? theme.green : theme.red
+                                font.family: "Cairo"
+                                font.pixelSize: 12
+                                elide: Text.ElideLeft
+                            }
                         }
-                        onTextEdited: if (!invoiceVM.accountAutomatic) invoiceVM.setAccountAmount(text)
-                        onEditingFinished: commit()
-                        onAccepted: invoicePage.startFinalize()
                     }
-                    Label {
-                        objectName: "requiredNow"
-                        visible: text.length > 0
-                        text: invoiceVM.requiredNowText
-                        color: theme.amber
-                        font.family: "Cairo"
-                        font.pixelSize: 12
-                        font.bold: true
-                    }
-                    Label {
-                        objectName: "accountEffect"
-                        visible: text.length > 0 && !invoiceVM.hasDifference
-                        text: invoiceVM.accountEffectText
-                        color: moneyColumn.tone
-                        font.family: "Cairo"
-                        font.pixelSize: 12
-                    }
-                    Label {
-                        text: "الباقي:"
-                        visible: invoiceVM.hasDifference
-                        color: theme.amber
-                        font.family: "Cairo"
-                        font.pixelSize: 13
-                        font.bold: true
-                    }
-                    Label {
-                        objectName: "settlementDifference"
-                        visible: invoiceVM.hasDifference
-                        text: invoiceVM.summary.differenceAmount
-                        color: theme.amber
-                        font.family: "Cairo"
-                        font.pixelSize: 15
-                        font.bold: true
-                    }
-                    SmallButton {
-                        objectName: "differenceToAccount"
-                        visible: invoiceVM.hasDifference
-                        text: invoicePage.compact ? "للحساب" : "إضافته للحساب"
-                        checkedColor: theme.blue
-                        onClicked: invoiceVM.setSettlementChoice("ACCOUNT")
-                    }
-                    TextInputField {
-                        id: settlementReason
-                        objectName: "settlementReason"
-                        visible: invoiceVM.settlementNeedsReason
-                        Layout.preferredWidth: 110
-                        width: 110
-                        placeholderText: text.length > 0 ? "" : "سبب التسوية"
-                        text: invoiceVM.settlementReason
-                        onTextEdited: invoiceVM.setSettlementReason(text)
-                    }
-                    SmallButton {
-                        objectName: "requestMakingApproval"
-                        visible: invoiceVM.makingNeedsApproval
-                        text: invoiceVM.makingCanConfirm ? "اعتماد المصنعية" : "موافقة المدير (المصنعية)"
-                        // The right to approve never approves by itself: an explicit confirmation.
-                        onClicked: invoiceVM.makingCanConfirm ? makingConfirmDialog.open() : approvalPopup.open()
-                    }
-                    SmallButton {
-                        objectName: "requestApproval"
-                        visible: invoiceVM.settlementNeedsReason && !invoiceVM.approverOk && invoiceVM.settlementNeedsApproval
-                        text: "موافقة المدير"
-                        onClicked: approvalPopup.open()
-                    }
-                    Label {
-                        objectName: "approverText"
-                            visible: text.length > 0
-                            text: invoiceVM.approverText
-                            color: invoiceVM.approverOk ? theme.green : theme.red
-                            font.family: "Cairo"
-                            font.pixelSize: 12
-                        }
-                        Item { Layout.fillWidth: true }
                 }
 
                 Rectangle { Layout.preferredWidth: 1; Layout.fillHeight: true; color: theme.border }
@@ -2276,6 +2380,9 @@ Item {
                     objectName: "summaryDueBox"
                     property string title: invoiceVM.summary.dueLabel
                     Layout.preferredWidth: invoicePage.compact ? 200 : 240
+                    // RowLayout prefers a child's implicitWidth when it is larger; the long warning
+                    // texts would otherwise swallow the whole strip and crush the money column.
+                    Layout.maximumWidth: invoicePage.compact ? 200 : 240
                     Layout.minimumWidth: 160
                     Layout.alignment: Qt.AlignVCenter
                     spacing: 1
