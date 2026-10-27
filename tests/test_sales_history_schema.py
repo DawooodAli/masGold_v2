@@ -23,7 +23,7 @@ class SalesHistorySchemaTests(unittest.TestCase):
         self.assertIn("MIGRATION_071_REFUSED_missing_070", self.forward)
         self.assertRegex(self.forward, r"INSERT INTO schema_migrations\(version,name\) VALUES \(71,")
         self.assertLessEqual(len(re.search(r"VALUES \(71,'([^']*)'", self.forward).group(1)), 150)
-        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 80)
+        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 81)
 
     def test_the_history_is_a_daily_insert_only_record_with_honest_weights(self):
         for needle in ("CREATE TABLE IF NOT EXISTS sales_history_legacy", "PRIMARY KEY (sale_date)", "bills >= 1 AND bills_with_weight <= bills", "bills_with_weight > 0 OR grams = 0", "source = 'GOLDDB'"):

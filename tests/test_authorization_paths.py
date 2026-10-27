@@ -140,7 +140,9 @@ class CallSiteAuditTests(unittest.TestCase):
                   ("services/customer_service.py", "get_dead_cash_history"),       # DEAD_CASH_VIEW (history)
                   ("services/user_admin_service.py", "overview"),                  # USERS_MANAGE (read model, no hashes)
                   ("services/supplier_service.py", "_read_verified"),              # SUPPLIER_VIEW (suppliers, ledgers)
-                  ("services/supplier_purchase_service.py", "_read_verified")}     # SUPPLIER_VIEW (invoices, intake)
+                  ("services/supplier_purchase_service.py", "_read_verified"),     # SUPPLIER_VIEW (invoices, intake)
+                  ("services/system_settings_service.py", "overview"),             # SYSTEM_SETTINGS_VIEW (the settings list, 081)
+                  ("services/system_settings_service.py", "public_settings")}      # SYSTEM_SETTINGS_VIEW (the public settings of the interface, 081)
 
     def sites(self, method):
         found = set()

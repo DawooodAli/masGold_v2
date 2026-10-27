@@ -17,7 +17,7 @@ class MarketTripAdjustmentSourceSchemaTests(unittest.TestCase):
 
     def test_migration_is_the_current_chain_tip_and_is_checksummed(self):
         files = load_chain(require_committed=False)
-        self.assertEqual((len(files), LAST, files[78].name), (80, 80, FORWARD))
+        self.assertEqual((len(files), LAST, files[78].name), (81, 81, FORWARD))
         self.assertIn(f"  {FORWARD}", (sql.SCHEMA_DIR / "SHA256SUMS").read_text(encoding="utf-8"))
 
     def test_old_adjustments_default_to_scrap_and_new_source_is_increase_only(self):

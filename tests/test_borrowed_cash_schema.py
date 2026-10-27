@@ -23,7 +23,7 @@ class BorrowedCashSchemaTests(unittest.TestCase):
         self.assertIn("MIGRATION_076_REFUSED_missing_075", self.forward)
         self.assertRegex(self.forward, r"INSERT INTO schema_migrations\(version,name\) VALUES \(76,")
         self.assertLessEqual(len(re.search(r"VALUES \(76,'([^']*)'", self.forward).group(1)), 150)
-        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 80)
+        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 81)
 
     def test_existing_advances_stay_lend_and_the_shapes_are_checked(self):
         for needle in ("direction VARCHAR(6) NOT NULL DEFAULT 'LEND'", "lender_name VARCHAR(100) DEFAULT NULL", "kind = 'THIRD_PARTY' AND employee_id IS NULL AND customer_id IS NULL AND lender_name IS NOT NULL",
