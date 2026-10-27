@@ -22,3 +22,6 @@ reports/
 
 # Local-only credential note (never versioned, never opened by tooling)
 Note for password.txt
+
+# Local OpenCode tool config (no secrets, not versioned)
+opencode.json
