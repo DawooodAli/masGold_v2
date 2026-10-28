@@ -557,7 +557,7 @@ class CommercialModelTests(InvoiceServiceTestCase):
                 preview = self.service.preview(InvoiceDraft(5, "12", (), (line,), ()))
                 row = preview["old_gold_lines"][0]
                 self.assertEqual((row["discount_amount"], row["scrap_kind"]), ("0.00", line.scrap_kind))
-                self.assertEqual(Decimal(row["line_total"]), Decimal(row["gross_total"]) + Decimal(line.cashback))
+                self.assertEqual(Decimal(row["line_total"]), Decimal(row["gross_total"]) + Decimal(line.cashback) * 10)      # per gram x 10 g
                 self.assertFalse(preview["cashback_review"])
                 self.assertNotIn("OLD_GOLD_DISCOUNT_RANGE", [p["code"] for p in preview["blocking_problems"]])
 
@@ -568,14 +568,14 @@ class CommercialModelTests(InvoiceServiceTestCase):
     def test_a_cashback_above_100_is_saved_and_reviewed_by_the_manager(self):
         ok = self.service.preview(InvoiceDraft(5, "12", (), (old(3, "10", scrap_kind="BAR", cashback="100"),), ()))
         self.assertFalse(ok["cashback_review"])
-        over = InvoiceDraft(5, "12", (), (old(3, "10", scrap_kind="BAR", cashback="100.01"),), (pay("71030"),), settlement_choice="SETTLE")
+        over = InvoiceDraft(5, "12", (), (old(3, "10", scrap_kind="BAR", cashback="100.01"),), (pay("71930"),), settlement_choice="SETTLE")  # 100.01 per gram
         self.assertTrue(self.service.preview(over)["cashback_review"])
         self.finalize(over)
         self.assertEqual([r["review_type"] for r in self.store.reviews], ["OLD_GOLD_DISCOUNT"])
-        self.assertEqual(self.store.reviews[0]["details"]["cashback_lines"][0]["cashback"], Decimal("100.01"))
+        self.assertEqual(self.store.reviews[0]["details"]["cashback_lines"][0]["cashback_per_gram"], Decimal("100.01"))
         saved = [v for kind, v in self.store.lines if kind == "OLD"][0]
-        self.assertEqual((saved["scrap_kind"], saved["cashback_amount"]), ("BAR", Decimal("100.01")))
-        self.assertEqual(saved["line_total"], saved["gross_total"] + Decimal("100.01"))
+        self.assertEqual((saved["scrap_kind"], saved["cashback_amount"]), ("BAR", Decimal("1000.10")))             # the TOTAL extra
+        self.assertEqual(saved["line_total"], saved["gross_total"] + Decimal("1000.10"))
 
     def test_an_ordinary_line_never_carries_the_new_columns(self):
         self.finalize(InvoiceDraft(5, "12", (scanned(),), (disc("2"),), (pay("55000"),)))

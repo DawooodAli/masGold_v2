@@ -802,10 +802,10 @@ class InvoiceService:
 
     @staticmethod
     def _cashback_review(olds, draft_lines, limit):
-        """Bar / pound lines whose cashback is above the limit: they go to the manager reviews (the invoice is still saved at once)."""
+        """Bar / pound lines whose cashback PER GRAM is above the limit: they go to the manager reviews (the invoice is still saved at once)."""
         return [{"karat_id": int(entry.karat_id), "scrap_kind": entry.scrap_kind, "weight_grams": line.weight_grams,
-                 "cashback": line.cashback, "limit": limit}
-                for line, entry in zip(olds, draft_lines) if entry.scrap_kind and line.cashback > limit]
+                 "cashback_per_gram": Decimal(str(entry.cashback or "0")), "cashback": line.cashback, "limit": limit}
+                for line, entry in zip(olds, draft_lines) if entry.scrap_kind and Decimal(str(entry.cashback or "0")) > limit]
 
     @staticmethod
     def _discount_changes(olds, draft_lines, default_percent, minimum=None):
@@ -1416,7 +1416,7 @@ class InvoiceService:
                 invoices.insert_management_review(
                     review_type="OLD_GOLD_DISCOUNT", invoice_id=invoice_id,
                     summary=(f"خصم كسر أقل من الحد الأدنى — فاتورة {number}" if below
-                             else f"كاش باك أعلى من {limits['cashback_review_limit']:,.0f} ج — فاتورة {number}" if not discount_changes
+                             else f"كاش باك أعلى من {limits['cashback_review_limit']:,.0f} ج للجرام — فاتورة {number}" if not discount_changes
                              else f"تم تعديل نسبة خصم الكسر — فاتورة {number}"),
                     details={"invoice_number": number, "salesperson_employee_id": int(salesperson["id"]),
                              "salesperson_name": salesperson["name"], "actor_user_id": actor.user_id,

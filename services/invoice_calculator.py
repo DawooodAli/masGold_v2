@@ -163,10 +163,11 @@ class InvoiceCalculator:
         price = _decimal(price, PRICE, label="سعر الجرام", positive=True)
         gross = _money(weight * price)
         if cashback is not None:
-            # A bar / pound line: no discount at all, the cashback is paid ON TOP of the gold value.
+            # A bar / pound line: no discount at all. The cashback is EGP PER GRAM (owner, 2026-10-28: 7269 + 30 = 7299 per gram),
+            # paid ON TOP of the gold value; the line keeps the TOTAL extra (rate x weight, rounded once).
             if discount_type is not None or discount_value is not None:
                 raise InvoiceCalculationError("DISCOUNT_TYPE", "لا خصم على السبائك والجنيهات؛ الكاش باك فقط.")
-            extra = _money(_decimal(cashback, MONEY, label="الكاش باك"))
+            extra = _money(weight * _decimal(cashback, MONEY, label="الكاش باك"))
             return OldGoldLine(weight, price, gross, None, None, ZERO, gross + extra, extra)
         if discount_type is None:
             if discount_value is not None:

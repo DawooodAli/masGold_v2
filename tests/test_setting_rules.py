@@ -253,8 +253,8 @@ class InvoiceLimitsTests(unittest.TestCase):
         self.assertEqual(InvoiceService._discount_minimum(calculation(["a line"], ["1.00"]), both), D("2"))        # mixed: now a setting
         self.assertEqual(both["cashback_review_limit"], D("250"))
         self.assertEqual(InvoiceService._limits(InvoiceRepo())["cashback_review_limit"], D("100"))                # default
-        entry = type("E", (), {"scrap_kind": "BAR", "karat_id": 3})()
-        line = type("L", (), {"cashback": D("120"), "weight_grams": D("5")})()
+        entry = type("E", (), {"scrap_kind": "BAR", "karat_id": 3, "cashback": "120"})()   # per gram
+        line = type("L", (), {"cashback": D("600"), "weight_grams": D("5")})()
         self.assertEqual(len(InvoiceService._cashback_review([line], [entry], D("100"))), 1)
         self.assertEqual(InvoiceService._cashback_review([line], [entry], D("250")), [])
 

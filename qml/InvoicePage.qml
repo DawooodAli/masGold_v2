@@ -1671,7 +1671,7 @@ Item {
                                 Layout.preferredWidth: oldGoldPanel.tight ? 54 : 84
                                 Layout.preferredHeight: 40
                                 font.pixelSize: 15
-                                placeholderText: "كاش باك"
+                                placeholderText: "كاش باك/جم"
                                 text: invoiceVM.scrapCashback            // starts at the default (System Settings) and again after every added line
                                 onTextEdited: invoiceVM.setScrapCashback(text)
                                 onAccepted: oldGoldWeight.forceActiveFocus()
