@@ -1100,8 +1100,8 @@ class HistoryPresentationTests(unittest.TestCase):
         detail = qml[qml.index("// ============================================================ DETAIL"):]
         order = [detail.index(f'objectName: "{name}"') for name in (
             "historyTopRow", "historyCustomerSection", "historyMoneySection", "historyPricesSection",
-            "historyItemsRow", "historyItemsSection", "historyOldGoldSection", "historyExchangesSection",
-            "historyHeaderSection")]
+            "historyItemsRow", "historyItemsSection", "historyOldGoldSection", "historyHeaderSection",
+            "historyExchangesSection")]
         self.assertEqual(order, sorted(order))                              # the exact owner order
         for gone in ("سجل العمليات", "historyTimelineSection", "historyPaymentsSection", "إجمالي المصنعية"):
             self.assertNotIn(gone, detail)

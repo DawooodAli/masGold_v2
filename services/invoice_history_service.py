@@ -77,7 +77,7 @@ def _history_lines(raw):
         lines.append({"line_number": number_value, "line_type": str(item.get("t") or ""),
                       "karat": item.get("k"), "weight": _decimal(item.get("w")),
                       "name": item.get("n"), "making": _decimal(item.get("m")),
-                      "factory": item.get("f")})
+                      "factory": item.get("f"), "item_id": None if item.get("i") is None else str(item["i"])})
     lines.sort(key=lambda line: line["line_number"])
     return lines
 
@@ -151,8 +151,35 @@ class InvoiceHistoryService:
             date_to_exclusive=None if date_to is None else date_to + timedelta(days=1),
             invoice_type=invoice_type, settlement_status=settlement_status,
             limit=self._page_size + 1, offset=(page - 1) * self._page_size, **customer_filter))
-        return {"items": [self._summary(row) for row in rows[:self._page_size]], "page": page,
-                "has_more": len(rows) > self._page_size}
+        items = [self._summary(row) for row in rows[:self._page_size]]
+        self._attach_exchanges(actor, items)
+        return {"items": items, "page": page, "has_more": len(rows) > self._page_size}
+
+    def _attach_exchanges(self, actor, items):
+        """Invoices with an effective exchange carry its date and difference for the list (display only; one extra read per page)."""
+        ids = [item["invoice_id"] for item in items if not item["is_legacy"]]
+        if not ids:
+            return
+        from repositories.invoice_lifecycle_repository import InvoiceLifecycleRepository
+
+        def read(invoices):
+            repo = (self._lifecycle or InvoiceLifecycleRepository)(invoices.connection)
+            return repo.exchange_notes(ids) if hasattr(repo, "exchange_notes") else {}
+        try:
+            notes = self._read(actor, read)
+        except Exception:                           # the list never fails because of a display note
+            return
+        for item in items:
+            item["exchanges"] = [dict(x, signed_amount=_decimal(x["signed_amount"]))
+                                 for x in notes.get(str(item["invoice_id"]), [])]
+            # The list shows the CURRENT pieces: the exchanged ones leave, their replacements (type, karat, weight) take their place.
+            gone = {i for x in item["exchanges"] for i in x["returned"]}
+            if item["exchanges"] and item.get("lines") is not None:
+                item["lines"] = [l for l in item["lines"] if l.get("item_id") not in gone] + [
+                    {"line_number": 10_000, "line_type": "SELL_INVENTORY", "karat": r["karat"],
+                     "weight": _decimal(r["weight"]), "name": r["name"], "making": None, "factory": None, "item_id": r["item_id"],
+                     "exchanged": True}
+                    for x in item["exchanges"] for r in x["replacements"]]
 
     @staticmethod
     def _summary(row):
@@ -201,6 +228,9 @@ class InvoiceHistoryService:
             invoice["payment_accounts"] = invoices.get_payment_accounts(invoice_id)
             invoice["account_entries"] = invoices.invoice_account_allocation(invoice_id, invoice.get("customer_id"))
             invoice["exchanges"] = self._exchanges(invoices, invoice_id, invoice.get("events", []))
+            from services.correction_rules import reversal_of
+            for x in invoice["exchanges"]:            # display only: a reversed exchange no longer replaces anything
+                x["reversed"] = bool(reversal_of(invoice, "EXCHANGE", x["lifecycle_id"]))
             invoice["returns"] = self._returns(invoices, invoice_id, invoice.get("events", []))
             invoice["corrections"] = self._corrections(invoices, invoice_id, invoice.get("events", []))
             invoice["post_invoice"] = self._post_invoice(invoices, invoice)

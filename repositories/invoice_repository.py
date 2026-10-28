@@ -41,7 +41,7 @@ _HISTORY_KIND_SQL = (f"(CASE WHEN {_HISTORY_SOLD} AND {_HISTORY_OLD} THEN 'MIXED
 _HISTORY_LINES_JSON = (
     "(SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT("
     "'t', hl.line_type, 'k', k.karat_value, 'w', hl.weight_grams, 'n', hl.item_name_snapshot, "
-    "'m', hl.making_total, 'f', hl.factory_snapshot, 'no', hl.line_number)), '[]') "
+    "'m', hl.making_total, 'f', hl.factory_snapshot, 'no', hl.line_number, 'i', hl.inventory_item_id)), '[]') "
     "FROM invoice_lines hl JOIN karats k ON k.id = hl.karat_id WHERE hl.invoice_id = i.id)")
 
 

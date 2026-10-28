@@ -190,6 +190,8 @@ class HistoryUxQmlTests(qml_fixture.InvoiceHistoryPageTests):
                           "shop_buy_price_per_gram": None, "gold_amount": "0", "making_refund": "0"}]}
         vm._detail["returns"] = [dict(return_summary(row), reversed_by="RV000001")]
         vm.changed.emit()
+        self.item("historyDetailRoot").setProperty("trackingExpanded", True)       # folded by default
+        QCoreApplication.processEvents()
         for width, height in ((1440, 900), (1280, 800), (1080, 680)):
             self.root.setWidth(width); self.root.setHeight(height)
             QCoreApplication.processEvents()
@@ -207,7 +209,57 @@ class HistoryUxQmlTests(qml_fixture.InvoiceHistoryPageTests):
 
 def load_tests(loader, tests, pattern):
     suite = unittest.TestSuite()
-    for cls in (SummaryTests, RefreshTests, HistoryUxQmlTests):
+    for cls in (SummaryTests, RefreshTests, HistoryUxQmlTests, ExchangedInvoiceViewTests, ListExchangeNoteTests):
         suite.addTests(cls(n) for n in loader.getTestCaseNames(cls)
                        if cls is not HistoryUxQmlTests or n.startswith("test_ux_"))
     return suite
+
+
+class ExchangedInvoiceViewTests(unittest.TestCase):
+    """After an exchange the page shows the CURRENT invoice; the saved one stays in its own card (display only)."""
+
+    def vm_with(self, *, reversed_exchange=False):
+        vm = fixture.InvoiceHistoryViewModel(fixture.AppSession())
+        original = {"line_id": "1", "kind": "INVENTORY", "inventory_item_id": "29", "barcode": "44260902",
+                    "item_name": "خاتم", "karat": 21, "weight": D("2.290"), "quantity": 1, "line_total": D("154000"),
+                    "identification_method": "SCAN", "category": None, "factory": None, "size": None, "notes": ""}
+        exchange = {"code": "EX000001", "reversed": reversed_exchange, "signed_amount": "14000.00",
+                    "returned": [{"inventory_item_id": "29", "item_name": "خاتم", "karat": 21, "weight_grams": "2.29"}],
+                    "replacements": [{"inventory_item_id": "30", "item_name": "خاتم", "karat": 21, "weight_grams": "4.31",
+                                      "barcode": "NEW1", "source": "SCAN"}]}
+        vm._detail = {"sale_lines": [original], "old_gold_lines": [], "exchanges": [exchange],
+                      "invoice_total": D("154000"), "net_direction": "CUSTOMER_PAYS_SHOP"}
+        return vm
+
+    def test_current_invoice_has_the_new_piece_and_total_and_the_original_is_kept_apart(self):
+        vm = self.vm_with()
+        self.assertTrue(vm.exchangedInvoice)
+        rows = vm.saleLines
+        self.assertEqual([r["barcode"] for r in rows], ["NEW1"])
+        self.assertIn("EX000001", rows[0]["notes"])
+        self.assertIn("168,000", vm.beforeExchange["currentTotal"])
+        self.assertEqual([r["barcode"] for r in vm.beforeExchange["rows"]], ["44260902"])
+        self.assertIn("154,000", vm.beforeExchange["total"])
+
+    def test_a_reversed_exchange_changes_nothing(self):
+        vm = self.vm_with(reversed_exchange=True)
+        self.assertFalse(vm.exchangedInvoice)
+        self.assertEqual([r["barcode"] for r in vm.saleLines], ["44260902"])
+
+
+class ListExchangeNoteTests(unittest.TestCase):
+    def test_exchanged_invoice_shows_its_date_and_total_plus_difference(self):
+        from datetime import datetime
+        item = {"invoice_id": "1", "invoice_number": "26102702", "invoice_type": "SELL", "settlement_status": "SETTLED",
+                "invoice_total": D("154000"), "net_direction": "CUSTOMER_PAYS_SHOP", "money_moved": D("154000"),
+                "finalized_at": datetime(2026, 10, 27, 17, 48),
+                "exchanges": [{"occurred_at": datetime(2026, 10, 28, 17, 48), "signed_amount": D("14000"), "returned": ["1"],
+                                "replacements": [{"item_id": "2", "karat": 21, "weight": D("4.31"), "name": "خاتم"}]}]}
+        text = fixture.InvoiceHistoryViewModel._row(item)["exchangeText"]
+        self.assertIn("2026-10-28", text)
+        self.assertIn("154,000", text)
+        self.assertIn("+", text)
+        self.assertIn("14,000", text)
+        self.assertIn("خاتم", text)
+        self.assertIn("4.31", text)
+        self.assertEqual(fixture.InvoiceHistoryViewModel._row(dict(item, exchanges=[]))["exchangeText"], "")

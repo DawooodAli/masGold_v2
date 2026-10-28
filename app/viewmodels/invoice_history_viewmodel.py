@@ -52,7 +52,9 @@ def list_line(line):
             # The REAL factory of the line (the piece's own snapshot), never a money figure.
             "factory": (line.get("factory") or "").strip() or "—",
             # The colour of the row: the customer's old gold (شراء) apart from shop sales (بيع).
-            "buy": line.get("line_type") == "BUY_OLD_GOLD"}
+            "buy": line.get("line_type") == "BUY_OLD_GOLD",
+            # The piece an exchange put in place of the sold one (shown in red in the list).
+            "exchanged": bool(line.get("exchanged"))}
 
 
 class InvoiceHistoryViewModel(QObject):
@@ -358,7 +360,26 @@ class InvoiceHistoryViewModel(QObject):
                 # Direction of that money for the colour: out of the shop vs into it.
                 "out": item["net_direction"] == "SHOP_PAYS_CUSTOMER",
                 "statusText": SETTLEMENT_TEXT.get(item["settlement_status"], item["settlement_status"] or ""),
-                "isLegacy": bool(item.get("is_legacy"))}
+                "isLegacy": bool(item.get("is_legacy")),
+                "exchangeText": InvoiceHistoryViewModel._exchange_text(item)}
+
+    @staticmethod
+    def _exchange_text(item):
+        """«استبدال 2026-10-28 • 154,000 + 14,000»: the date and the saved total with the exchange difference."""
+        exchanges = item.get("exchanges") or []
+        total = item.get("invoice_total")
+        if not exchanges or total is None:
+            return ""
+        parts = []
+        for x in exchanges:
+            delta = x["signed_amount"]
+            when = x["occurred_at"]
+            pieces = " + ".join(f"{r['name'] or '—'} عيار {r['karat']} {grams(r['weight'])} جرام"
+                                for r in x.get("replacements", []))
+            parts.append(f"{when.strftime('%Y-%m-%d')}  بديل: {pieces}  •  "
+                         f"{money(total)} {'+' if delta >= 0 else '-'} {money(abs(delta))}" if pieces else
+                         f"{when.strftime('%Y-%m-%d')}  {money(total)} {'+' if delta >= 0 else '-'} {money(abs(delta))}")
+        return "استبدال " + "  |  ".join(parts)
 
     # ------------------------------------------------------------ detail
     @Slot(str)
@@ -505,7 +526,7 @@ class InvoiceHistoryViewModel(QObject):
             "customerName": customer.get("name") or "بدون عميل", "customerCode": customer.get("code") or "",
             "customerId": str(customer.get("customer_id") or ""),
             "customerMobile": customer.get("mobile") or "", "customerPlace": customer.get("place") or "",
-            "invoiceTotal": known_money(d["invoice_total"]),
+            "invoiceTotal": known_money(self._current_total(d)),
             "directionText": DIRECTION_TEXT.get(d["net_direction"], ""),
             # Direction-aware title of the real money (also the payments card title); never "الدفع الفعلي".
             "movedLabel": moved_label,
@@ -533,7 +554,7 @@ class InvoiceHistoryViewModel(QObject):
     @Property("QVariantList", notify=changed)
     def saleLines(self):
         rows = []
-        for i, line in enumerate(self._detail.get("sale_lines", []) if self._detail else []):
+        for i, line in enumerate(self._current_lines() if self._detail else []):
             kind = KIND_TEXT[line["kind"]]
             if line["kind"] == "INVENTORY" and line.get("identification_method") in IDENTIFIED_TEXT:
                 kind += " — " + IDENTIFIED_TEXT[line["identification_method"]]
@@ -544,6 +565,59 @@ class InvoiceHistoryViewModel(QObject):
                          "barcode": line.get("barcode") or "", "kindText": kind,
                          "manual": line["kind"] == "MANUAL", "fromOldGold": line["kind"] == "OLD_GOLD_STOCK"})
         return rows
+
+    # ---- after an exchange the page shows the CURRENT invoice; the original stays in its own card (display only,
+    # nothing stored is rewritten)
+    def _effective_exchanges(self, d=None):
+        d = d or self._detail or {}
+        return [x for x in d.get("exchanges", []) if not x.get("reversed")]
+
+    def _current_lines(self):
+        d = self._detail
+        lines = list(d.get("sale_lines", []))
+        effective = self._effective_exchanges(d)
+        if not effective:
+            return lines
+        gone = {str(p["inventory_item_id"]) for x in effective for p in x["returned"]}
+        lines = [l for l in lines if str(l.get("inventory_item_id")) not in gone]
+        kinds = {"MANUAL": "MANUAL", "OLD_GOLD_STOCK": "OLD_GOLD_STOCK"}
+        for x in effective:
+            for p in x["replacements"]:
+                lines.append({"kind": kinds.get(p.get("source"), "INVENTORY"), "identification_method": p.get("source"),
+                              "inventory_item_id": p.get("inventory_item_id"), "barcode": p.get("barcode"),
+                              "item_name": p.get("item_name"), "category": None, "factory": None,
+                              "karat": p["karat"], "weight": Decimal(str(p["weight_grams"])), "quantity": 1,
+                              "size": None, "notes": f"بديل — استبدال {x['code']}"})
+        return lines
+
+    def _current_total(self, d):
+        total = d["invoice_total"]
+        effective = self._effective_exchanges(d)
+        if effective and total is not None and d.get("net_direction") in ("CUSTOMER_PAYS_SHOP", "SETTLED"):
+            return Decimal(str(total)) + sum((Decimal(str(x["signed_amount"])) for x in effective), Decimal("0"))
+        return total
+
+    @Property(bool, notify=changed)
+    def exchangedInvoice(self):
+        return bool(self._detail) and bool(self._effective_exchanges())
+
+    @Property("QVariantMap", notify=changed)
+    def beforeExchange(self):
+        """The invoice as it was saved, shown apart once an exchange replaced pieces of it."""
+        d = self._detail
+        if not d or not self._effective_exchanges():
+            return {}
+        rows = []
+        for i, line in enumerate(d.get("sale_lines", [])):
+            rows.append({"serial": str(i + 1), "item": line.get("item_name") or line.get("category") or "—",
+                         "karat": str(line["karat"]), "weight": grams(line["weight"]), "barcode": line.get("barcode") or "",
+                         "value": known_money(line.get("line_total"))})
+        effective = self._effective_exchanges()
+        delta = sum((Decimal(str(x["signed_amount"])) for x in effective), Decimal("0"))
+        return {"rows": rows, "total": known_money(d["invoice_total"]),
+                "deltaText": ("فرق الاستبدال " + ("على العميل " if delta > 0 else "للعميل " if delta < 0 else "")
+                              + money(abs(delta))),
+                "currentTotal": known_money(self._current_total(d))}
 
     @Property("QVariantList", notify=changed)
     def returnTracking(self):
@@ -606,7 +680,7 @@ class InvoiceHistoryViewModel(QObject):
     @Property("QVariantMap", notify=changed)
     def soldSummary(self):
         """Shop-sold pieces only (sold stock, manual and from old-gold stock); never the customer's old gold."""
-        return self._weights(self._detail.get("sale_lines", [])) if self._detail else {}
+        return self._weights(self._current_lines()) if self._detail else {}
 
     @Property("QVariantMap", notify=changed)
     def oldGoldSummary(self):

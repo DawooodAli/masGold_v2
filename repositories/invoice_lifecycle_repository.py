@@ -60,6 +60,53 @@ class InvoiceLifecycleRepository(BaseRepository):
                      returned_by=None if row.get("returned_by") is None else str(row["returned_by"]))
                 for row in rows]
 
+    def exchange_notes(self, invoice_ids):
+        """Effective (not reversed) exchanges of a page of invoices in TWO statements: {invoice_id: [(occurred_at, signed_amount)]}."""
+        ids = [_id(i) for i in invoice_ids]
+        if not ids:
+            return {}
+        marks = ",".join(["%s"] * len(ids))
+        rows = self._fetch_all(
+            f"""
+            SELECT t.id AS lifecycle_id, t.source_invoice_id, t.signed_amount, t.occurred_at
+            FROM invoice_lifecycle_transactions t
+            WHERE t.transaction_type = 'EXCHANGE' AND t.source_invoice_id IN ({marks})
+            ORDER BY t.id
+            """, tuple(ids))
+        if not rows:
+            return {}
+        reversed_ids = {str(r["source_id"]) for r in self._fetch_all(
+            f"""
+            SELECT JSON_UNQUOTE(JSON_EXTRACT(e.details_json, '$.source_id')) AS source_id
+            FROM invoice_events e
+            WHERE e.event_type = 'REVERSED' AND e.invoice_id IN ({marks})
+              AND JSON_UNQUOTE(JSON_EXTRACT(e.details_json, '$.source_type')) = 'EXCHANGE'
+            """, tuple(ids))}
+        effective = [r for r in rows if str(r["lifecycle_id"]) not in reversed_ids]
+        if not effective:
+            return {}
+        pieces = {}
+        life_marks = ",".join(["%s"] * len(effective))
+        for p in self._fetch_all(
+                f"""
+                SELECT l.lifecycle_transaction_id AS lifecycle_id, l.line_role, l.inventory_item_id, l.karat_value,
+                       l.weight_grams, l.item_name_snapshot
+                FROM invoice_lifecycle_lines l
+                WHERE l.lifecycle_transaction_id IN ({life_marks}) ORDER BY l.line_number
+                """, tuple(int(r["lifecycle_id"]) for r in effective)):
+            pieces.setdefault(str(p["lifecycle_id"]), []).append(p)
+        notes = {}
+        for r in effective:
+            lines = pieces.get(str(r["lifecycle_id"]), [])
+            notes.setdefault(str(r["source_invoice_id"]), []).append({
+                "occurred_at": r["occurred_at"], "signed_amount": r["signed_amount"],
+                "returned": [str(p["inventory_item_id"]) for p in lines
+                             if p["line_role"] == "RETURNED" and p["inventory_item_id"] is not None],
+                "replacements": [{"item_id": None if p["inventory_item_id"] is None else str(p["inventory_item_id"]),
+                                  "karat": p["karat_value"], "weight": p["weight_grams"], "name": p["item_name_snapshot"]}
+                                 for p in lines if p["line_role"] == "REPLACEMENT"]})
+        return notes
+
     def for_invoice(self, invoice_id):
         """Lifecycle transactions of one original invoice, oldest first."""
         return [_ids(row) for row in self._fetch_all(

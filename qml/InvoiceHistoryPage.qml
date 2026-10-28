@@ -406,15 +406,17 @@ Item {
                                         // أخضر = بيع المحل، برتقالي = شراء/كسر) then its karat, weight
                                         // and REAL factory.
                                         Txt { cellSize: historyPage.fontTable; font.bold: true
-                                              color: (line.modelData && line.modelData.buy) ? theme.amber : theme.green
+                                              color: (line.modelData && line.modelData.exchanged) ? theme.red
+                                                   : (line.modelData && line.modelData.buy) ? theme.amber : theme.green
                                               value: (line.modelData && line.modelData.name) || ""
                                               Layout.fillWidth: true
                                               Layout.preferredWidth: historyPage.mini ? 124 : 150
                                               Layout.minimumWidth: 80 }
                                         // The karat carries the top bar's karat colour (18 / 21 / 22 / 24).
                                         Txt { cellSize: historyPage.fontTable; font.bold: true
-                                              color: { var k = Number(line.modelData && line.modelData.karat)
-                                                      k === 18 ? theme.balanceKarat18
+                                              color: { var k = Number(line.modelData && line.modelData.karat);
+                                                      (line.modelData && line.modelData.exchanged) ? theme.red
+                                                      : k === 18 ? theme.balanceKarat18
                                                       : k === 21 ? theme.balanceKarat21
                                                       : k === 22 ? theme.balanceKarat22
                                                       : k === 24 ? theme.balanceKarat24 : theme.textSecondary }
@@ -424,8 +426,8 @@ Item {
                                         // the CUSTOMER'S SCRAP weight (شراء كسر) in amber — the same
                                         // scrap colour as its الصنف, so the two are told apart.
                                         Txt { cellSize: historyPage.fontTable
-                                              color: (line.modelData && line.modelData.buy)
-                                                     ? theme.amber : theme.textPrimary
+                                              color: (line.modelData && line.modelData.exchanged) ? theme.red
+                                                     : (line.modelData && line.modelData.buy) ? theme.amber : theme.textPrimary
                                               font.bold: true
                                               value: (line.modelData && line.modelData.weight) || ""
                                               Layout.fillWidth: true; Layout.preferredWidth: 58 }
@@ -451,6 +453,17 @@ Item {
                                         color: theme.border
                                     }
                                 }
+                            }
+                            // An exchanged invoice: its date and «الإجمالي + فرق الاستبدال» for reference.
+                            Rectangle {
+                                objectName: "historyExchangeNote_" + row.index
+                                visible: !!row.modelData.exchangeText
+                                width: row.width
+                                height: visible ? row.rowH : 0
+                                color: "transparent"
+                                Txt { anchors.right: parent.right; anchors.rightMargin: 10; anchors.verticalCenter: parent.verticalCenter
+                                      cellSize: historyPage.fontTable; color: theme.amber; font.bold: true
+                                      value: row.modelData.exchangeText }
                             }
                         }
                         MouseArea {
@@ -491,11 +504,13 @@ Item {
     // gold (its own section), this invoice's exchanges inline, and the money / prices / timeline.
     Item {
         id: detailRoot
+        objectName: "historyDetailRoot"
         anchors.fill: parent
         visible: historyPage.detailMode
         readonly property var d: historyPage.vm ? historyPage.vm.detail : ({})
         readonly property var sold: historyPage.vm ? historyPage.vm.soldSummary : ({})
         readonly property var oldGold: historyPage.vm ? historyPage.vm.oldGoldSummary : ({})
+        property bool trackingExpanded: false          // the original / returned / remaining card is folded by default
         readonly property bool wide: width >= 1100
         // Sold pieces beside customer old gold (only when both exist and two columns stay readable).
         // Compact sold-table widths: half width beside the old gold, or a narrow window.
@@ -819,74 +834,131 @@ Item {
                 }
                 }
 
-                // ============ 4. exchanges of this invoice (inline, compact; only exchange facts)
-                Section {
-                    objectName: "historyExchangesSection"
-                    visible: !!historyPage.vm && historyPage.vm.exchanges.length > 0
-                    title: "الاستبدالات"
-                    accent: theme.accountPayable
+                // ============ 2c. ONE financial / transaction strip, right under the invoice (owner 2026-10-28)
+                Rectangle {
+                    objectName: "historyHeaderSection"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: figures.implicitHeight + 20
+                    color: theme.panel
+                    radius: theme.radiusSmall
+                    border.color: theme.goldDark
+                    Flow {
+                        id: figures
+                        objectName: "historySummaryStrip"
+                        anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                        anchors.leftMargin: 14; anchors.rightMargin: 14
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 28
+                        Figure { objectName: "historyInvoiceTotal"; label: "إجمالي الفاتورة"; value: detailScroll.d.invoiceTotal || ""
+                                 valueColor: theme.priceSell; big: true }
+                        // Direction from the saved payments (المستلم من العميل / المدفوع للعميل / لا يوجد دفع فعلي).
+                        Figure { objectName: "historyMoved"; label: detailScroll.d.movedLabel || ""
+                                 value: detailScroll.d.movedAmount || "—"; note: detailScroll.d.paymentMethods || "" }
+                        Figure { objectName: "historyAccount"; label: "حساب العميل (هذه الفاتورة)"; value: detailScroll.d.accountText || ""
+                                 valueColor: detailRoot.directionColor(detailScroll.d.accountDirection) }
+                        Figure { objectName: "historyFinalizedAt"; label: "تاريخ ووقت الحفظ"; value: detailScroll.d.finalizedAt || "" }
+                        Figure { objectName: "historyOperation"; label: "العملية"
+                                 value: (detailScroll.d.typeText || "") + " • " + (detailScroll.d.settlementText || "") }
+                    }
+                }
+
+                // The exchanges and the invoice as saved before them: two cards side by side (owner 2026-10-28).
+                RowLayout {
+                    objectName: "historyExchangeRow"
+                    Layout.fillWidth: true
+                    layoutDirection: Qt.RightToLeft
+                    spacing: 10
+                    // ============ 4. exchanges of this invoice (inline, compact; only exchange facts)
+                    // One card per exchange: a second exchange is a third card, and so on.
                     Repeater {
                         model: historyPage.vm ? historyPage.vm.exchanges : []
-                        delegate: ColumnLayout {
-                            id: exchangeBlock
+                        delegate: Item {
+                            id: exchangeCard
                             required property var modelData
                             required property int index
-                            objectName: "historyExchange_" + index
-                            Layout.fillWidth: true
-                            spacing: 1
-                            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: theme.border
-                                        visible: exchangeBlock.index > 0 }
-                            RowLayout {
-                                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 10
-                                Txt { value: exchangeBlock.modelData.code; color: theme.gold; font.bold: true
-                                      font.pixelSize: theme.fontBodyStrong }
-                                Txt { value: exchangeBlock.modelData.time + "  •  " + exchangeBlock.modelData.actor
-                                      color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; Layout.alignment: Qt.AlignTop
+                            implicitHeight: card.Layout.preferredHeight
+                            Section {
+                              id: card
+                              objectName: "historyExchangesSection"
+                              anchors.fill: parent
+                              title: "استبدال " + exchangeCard.modelData.code
+                              accent: theme.accountPayable
+                              ColumnLayout {
+                                id: exchangeBlock
+                                property var modelData: exchangeCard.modelData
+                                property int index: exchangeCard.index
+                                objectName: "historyExchange_" + index
+                                Layout.fillWidth: true
+                                spacing: 1
+                                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: theme.border
+                                            visible: exchangeBlock.index > 0 }
+                                RowLayout {
+                                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 10
+                                    Txt { value: exchangeBlock.modelData.code; color: theme.gold; font.bold: true
+                                          font.pixelSize: theme.fontBodyStrong }
+                                    Txt { value: exchangeBlock.modelData.time + "  •  " + exchangeBlock.modelData.actor
+                                          color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+                                    Item { Layout.fillWidth: true }
+                                    Txt { value: exchangeBlock.modelData.directionText; font.bold: true
+                                          color: detailRoot.directionColor(exchangeBlock.modelData.direction) }
+                                    Txt { value: exchangeBlock.modelData.amount; font.bold: true; font.pixelSize: theme.fontSection
+                                          color: detailRoot.directionColor(exchangeBlock.modelData.direction) }
+                                }
+                                // One labelled line per fact (owner 2026-10-28: no running prose).
+                                Pair { label: "القطعة المرتجعة"; valueColor: theme.accountPayable; strong: true
+                                       value: exchangeBlock.modelData.returned.map(function(p) {
+                                           return p.item + " عيار " + p.karat + " — " + p.weight }).join("  |  ") }
+                                Pair { label: "القطعة البديلة"; valueColor: theme.priceSell; strong: true
+                                       value: exchangeBlock.modelData.replacements.map(function(p) {
+                                           return p.item + " عيار " + p.karat + " — " + p.weight
+                                                  + (p.source ? " (" + p.source + ")" : "") }).join("  |  ") }
+                                Pair { label: "فرق الوزن"; visible: value.length > 0
+                                       value: exchangeBlock.modelData.deltaText.replace("فرق الوزن ", "").replace("فرق الذهب الصافي ", "") }
+                                Pair { label: "سعر الجرام"; visible: value.length > 0
+                                       value: exchangeBlock.modelData.priceText }
+                                Pair { label: "قيمة فرق الذهب"; visible: value.length > 0
+                                       value: exchangeBlock.modelData.goldText.replace("قيمة فرق الذهب ", "") }
+                                Pair { label: "المصنعية"; visible: value.length > 0
+                                       value: exchangeBlock.modelData.makingText }
+                                Pair { objectName: "historyExchangeMoney_" + exchangeBlock.index
+                                       label: exchangeBlock.modelData.moneyTitle; visible: exchangeBlock.modelData.money.length > 0
+                                       value: exchangeBlock.modelData.money }
+                                Pair { label: "حساب العميل"; visible: value.length > 0
+                                       value: exchangeBlock.modelData.accountText.replace("حساب العميل: ", "") }
+                                Pair { objectName: "historyExchangeDisposition_" + exchangeBlock.index
+                                       label: "حالة القطعة المرتجعة"; visible: value.length > 0; valueColor: theme.amber
+                                       value: exchangeBlock.modelData.pendingText }
+                            }
+                              }
+                            }
+                        }
+
+                    // ============ 3b. the invoice as saved, before its exchange (the sections above show the current one)
+                    Section {
+                        objectName: "historyBeforeExchangeSection"
+                        Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop
+                        visible: !!historyPage.vm && historyPage.vm.exchangedInvoice
+                        title: "الفاتورة قبل الاستبدال"
+                        accent: theme.textMuted
+                        Repeater {
+                            model: historyPage.vm ? historyPage.vm.beforeExchange.rows || [] : []
+                            delegate: RowLayout {
+                                required property var modelData
+                                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 14
+                                Txt { value: modelData.item; font.bold: true }
+                                Txt { value: "عيار " + modelData.karat + " — " + modelData.weight }
+                                Txt { value: modelData.barcode; color: theme.textMuted }
                                 Item { Layout.fillWidth: true }
-                                Txt { value: exchangeBlock.modelData.directionText; font.bold: true
-                                      color: detailRoot.directionColor(exchangeBlock.modelData.direction) }
-                                Txt { value: exchangeBlock.modelData.amount; font.bold: true; font.pixelSize: theme.fontSection
-                                      color: detailRoot.directionColor(exchangeBlock.modelData.direction) }
+                                Txt { value: modelData.value }
                             }
-                            // مرتجع → بديل on one line (weights stay coloured and bold).
-                            Flow {
-                                Layout.fillWidth: true
-                                layoutDirection: Qt.RightToLeft
-                                spacing: 14
-                                Repeater {
-                                    model: exchangeBlock.modelData.returned
-                                    delegate: Txt { required property var modelData
-                                                    value: "مرتجع: " + modelData.item + " عيار " + modelData.karat + " — " + modelData.weight
-                                                    color: theme.accountPayable; font.bold: true }
-                                }
-                                Txt { value: "مقابل"; color: theme.textMuted }      // Cairo has no arrow glyph
-                                Repeater {
-                                    model: exchangeBlock.modelData.replacements
-                                    delegate: Txt { required property var modelData
-                                                    value: "بديل: " + modelData.item + " عيار " + modelData.karat + " — " + modelData.weight
-                                                          + (modelData.source ? " (" + modelData.source + ")" : "")
-                                                    color: theme.priceSell; font.bold: true }
-                                }
-                            }
-                            Txt { Layout.fillWidth: true; color: theme.textSecondary; font.pixelSize: theme.fontTableHeader
-                                  value: [exchangeBlock.modelData.deltaText, exchangeBlock.modelData.priceText,
-                                          exchangeBlock.modelData.goldText, exchangeBlock.modelData.makingText]
-                                         .filter(function(t) { return t.length > 0 }).join("  •  ") }
-                            // Real money (its direction first), the customer account apart, the pending note.
-                            Flow {
-                                Layout.fillWidth: true
-                                layoutDirection: Qt.RightToLeft
-                                spacing: 14
-                                Txt { objectName: "historyExchangeMoney_" + exchangeBlock.index
-                                      value: exchangeBlock.modelData.moneyTitle
-                                             + (exchangeBlock.modelData.money ? ": " + exchangeBlock.modelData.money : "")
-                                      color: theme.textSecondary; font.pixelSize: theme.fontTableHeader }
-                                Txt { visible: value.length > 0; value: exchangeBlock.modelData.accountText
-                                      color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
-                                Txt { objectName: "historyExchangeDisposition_" + exchangeBlock.index
-                                      value: exchangeBlock.modelData.pendingText; color: theme.amber
-                                      font.pixelSize: theme.fontTableHeader }
-                            }
+                        }
+                        Txt {
+                            objectName: "historyBeforeExchangeTotal"
+                            value: historyPage.vm && historyPage.vm.exchangedInvoice
+                                   ? "إجمالي الأصلية " + historyPage.vm.beforeExchange.total + "  •  " + historyPage.vm.beforeExchange.deltaText
+                                     + "  •  الإجمالي بعد الاستبدال " + historyPage.vm.beforeExchange.currentTotal : ""
+                            color: theme.gold; font.bold: true
                         }
                     }
                 }
@@ -1025,41 +1097,16 @@ Item {
                     }
                 }
 
-                // ============ 5. ONE final financial / transaction strip (the last element)
-                Rectangle {
-                    objectName: "historyHeaderSection"
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: figures.implicitHeight + 20
-                    color: theme.panel
-                    radius: theme.radiusSmall
-                    border.color: theme.goldDark
-                    Flow {
-                        id: figures
-                        objectName: "historySummaryStrip"
-                        anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                        anchors.leftMargin: 14; anchors.rightMargin: 14
-                        layoutDirection: Qt.RightToLeft
-                        spacing: 28
-                        Figure { objectName: "historyInvoiceTotal"; label: "إجمالي الفاتورة"; value: detailScroll.d.invoiceTotal || ""
-                                 valueColor: theme.priceSell; big: true }
-                        // Direction from the saved payments (المستلم من العميل / المدفوع للعميل / لا يوجد دفع فعلي).
-                        Figure { objectName: "historyMoved"; label: detailScroll.d.movedLabel || ""
-                                 value: detailScroll.d.movedAmount || "—"; note: detailScroll.d.paymentMethods || "" }
-                        Figure { objectName: "historyAccount"; label: "حساب العميل (هذه الفاتورة)"; value: detailScroll.d.accountText || ""
-                                 valueColor: detailRoot.directionColor(detailScroll.d.accountDirection) }
-                        Figure { objectName: "historyFinalizedAt"; label: "تاريخ ووقت الحفظ"; value: detailScroll.d.finalizedAt || "" }
-                        Figure { objectName: "historyOperation"; label: "العملية"
-                                 value: (detailScroll.d.typeText || "") + " • " + (detailScroll.d.settlementText || "") }
-                    }
-                }
-
                 // ============ 6. the original / returned / remaining of each sold piece: the LAST card, after the total strip
                 Section {
+                    id: trackingSection
                     objectName: "historyReturnTrackingSection"
                     title: "الأصلي / المرتجع / المتبقي"
                     visible: !!historyPage.vm && historyPage.vm.returnTracking.length > 0
+                    Btn { objectName: "historyTrackingToggle"; text: detailRoot.trackingExpanded ? "إخفاء" : "عرض"
+                          onClicked: detailRoot.trackingExpanded = !detailRoot.trackingExpanded }
                     Repeater {
-                        model: historyPage.vm ? historyPage.vm.returnTracking : []
+                        model: historyPage.vm && detailRoot.trackingExpanded ? historyPage.vm.returnTracking : []
                         delegate: ColumnLayout {
                             required property var modelData
                             required property int index
