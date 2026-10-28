@@ -37,8 +37,11 @@ UNIDENTIFIED, OLD_GOLD_STOCK = "UNIDENTIFIED", "OLD_GOLD_STOCK"
 # UX mirror of the service's hard rule (the service validates again on preview and finalize).
 DISCOUNT_MIN, DISCOUNT_MAX = Decimal("1.25"), Decimal("5.00")
 DISCOUNT_MIN_OLD_GOLD_ONLY = Decimal("1.00")           # owner decision 2026-10-23: buying old gold only may go down to 1%, any sale on the invoice keeps 1.25%
-DISCOUNT_WARNING = "النسبة المسموح بها من \u20661.25%\u2069 إلى \u20665%\u2069"
-DISCOUNT_WARNING_OLD_GOLD_ONLY = "النسبة المسموح بها من \u20661%\u2069 إلى \u20665%\u2069"
+# Owner decision 2026-10-28: the discount is open (0-100); one under the minimum is saved and the manager reviews it.
+DISCOUNT_WARNING = "أقل من \u20661.25%\u2069 — ستُراجَع من المدير"
+DISCOUNT_WARNING_OLD_GOLD_ONLY = "أقل من \u20661%\u2069 — ستُراجَع من المدير"
+SCRAP_KIND_KARAT = {"POUND": 21, "BAR": 24}
+SCRAP_KIND_TEXT = {"POUND": "جنيهات", "BAR": "سبائك"}
 PAYMENT_TEXT = {"PHYSICAL_CASH": "نقدي", "MOBILE_WALLET": "محفظة", "INSTAPAY": "InstaPay",
                 "BANK_TRANSFER": "تحويل بنكي"}
 ACCOUNT_TYPE_FOR_METHOD = {"MOBILE_WALLET": "MOBILE_WALLET", "INSTAPAY": "BANK", "BANK_TRANSFER": "BANK"}
@@ -163,7 +166,7 @@ SALE_KEYS = ("kind", "barcode", "itemName", "karat", "weight", "factory", "size"
              "identifiedBy", "tag")
 LEG_KEYS = ("legIndex", "method", "account", "amount", "needsAccount", "accounts", "unavailableText")
 OLD_GOLD_KEYS = ("karat", "weight", "discountType", "discountValue", "goldPrice", "grossTotal",
-                 "discountAmount", "lineTotal")
+                 "discountAmount", "kindText", "cashback", "lineTotal")
 
 
 class InvoiceViewModel(QObject):
@@ -236,6 +239,7 @@ class InvoiceViewModel(QObject):
         self._search_results, self._search_error, self._search_truncated = [], "", False
         self._search_ran, self._barcode_not_found = False, ""
         self._old_gold_karat_id = -1                  # explicit choice required for every line
+        self._scrap_kind, self._scrap_cashback = "", ""
         self._version, self._preview, self._preview_version = 0, {}, -1
         self._preview_error, self._error = "", ""
         self._busy_ops, self._success = set(), {}
@@ -575,7 +579,40 @@ class InvoiceViewModel(QObject):
     def setOldGoldKarat(self, karat_id):
         known = {int(p["karat_id"]) for p in self._board.get("prices", [])}
         self._old_gold_karat_id = karat_id if karat_id in known else -1
+        if self._scrap_kind:
+            chosen = self._karat(self._old_gold_karat_id) if self._old_gold_karat_id >= 0 else None
+            if chosen is None or int(chosen["karat"]) != SCRAP_KIND_KARAT[self._scrap_kind]:
+                self._scrap_kind, self._scrap_cashback = "", ""      # another karat: back to ordinary scrap
         self.changed.emit()
+
+    @Slot(str)
+    def setScrapKind(self, kind):
+        """The employee's choice for the next scrap line: '' ordinary (متنوع), POUND (جنيهات, always karat 21) or BAR (سبائك, always karat 24).
+        A kind fixes the karat; its cashback box replaces the discount."""
+        kind = kind if kind in SCRAP_KIND_KARAT else ""
+        if kind:
+            row = next((p for p in self._board.get("prices", []) if int(p["karat"]) == SCRAP_KIND_KARAT[kind]), None)
+            if row is None:
+                self._error = "لا يوجد سعر لعيار هذا النوع."
+                self.changed.emit()
+                return
+            self._old_gold_karat_id = int(row["karat_id"])
+        if kind != self._scrap_kind:
+            self._scrap_kind, self._scrap_cashback = kind, ""
+        self.changed.emit()
+
+    @Slot(str)
+    def setScrapCashback(self, value):
+        self._scrap_cashback = (value or "").strip()
+        self.changed.emit()
+
+    @Property(str, notify=changed)
+    def scrapKind(self):
+        return self._scrap_kind
+
+    @Property(str, notify=changed)
+    def scrapCashback(self):
+        return self._scrap_cashback
 
     @Slot(int, str)
     def addOldGold(self, karat_id, weight):
@@ -592,9 +629,20 @@ class InvoiceViewModel(QObject):
             self.changed.emit()
             return
         self._error = ""
+        kind = self._scrap_kind
+        if kind and int(karat["karat"]) != SCRAP_KIND_KARAT[kind]:
+            self._error = "السبائك عيار 24 والجنيهات عيار 21 فقط."
+            self.changed.emit()
+            return
+        cashback = (self._scrap_cashback or "0") if kind else ""
+        if kind and _decimal(cashback) is None:
+            self._error = "الكاش باك غير صحيح."
+            self.changed.emit()
+            return
         self._olds.append({"karat_id": karat_id, "karat": karat["karat"], "weight": weight,
-                           "discount_type": "NONE", "discount_value": ""})
-        self._old_gold_karat_id = -1                  # the next line needs its own explicit karat
+                           "discount_type": "NONE", "discount_value": "", "scrap_kind": kind, "cashback": cashback})
+        self._scrap_cashback = ""                     # each line has its own cashback; the chosen kind stays for the next one
+        self._old_gold_karat_id = karat_id if kind else -1   # ordinary scrap needs its own explicit karat; a kind fixes it
         self._touched()
 
     @Slot(int)
@@ -611,8 +659,8 @@ class InvoiceViewModel(QObject):
             self._touched()
 
     def _discount_range_active(self):
-        """The range applies to every old-gold purchase: 1.25–5.00% on a mixed invoice, 1.00–5.00% on an old-gold-only invoice."""
-        return True
+        """No range refuses a percent any more (open discount); the floor only marks it for the manager."""
+        return False
 
     def _discount_floor(self):
         return DISCOUNT_MIN if (self._sales or self._described) else DISCOUNT_MIN_OLD_GOLD_ONLY
@@ -633,7 +681,8 @@ class InvoiceViewModel(QObject):
                                       if number is None or not in_range else "نسبة الخصم غير صحيحة")
             self.changed.emit()
             return self._old_gold_discount
-        self._discount_warning = ""
+        self._discount_warning = ((DISCOUNT_WARNING if self._discount_floor() == DISCOUNT_MIN else DISCOUNT_WARNING_OLD_GOLD_ONLY)
+                                  if number < self._discount_floor() else "")
         value = self._trim(value)
         if value != self._old_gold_discount:
             self._old_gold_discount = value
@@ -1201,6 +1250,10 @@ class InvoiceViewModel(QObject):
             reason_code=line["reason_code"]) for line in self._described)
         olds = []
         for line in self._olds:
+            if line.get("scrap_kind"):
+                olds.append(OldGoldLineInput(line["karat_id"], line["weight"], scrap_kind=line["scrap_kind"],
+                                             cashback=line["cashback"] or "0"))
+                continue
             kind, value = line["discount_type"], line["discount_value"]
             if kind == "NONE" and self._old_gold_discount and self._nonzero(self._old_gold_discount):
                 kind, value = "PERCENT", self._old_gold_discount
@@ -1310,7 +1363,7 @@ class InvoiceViewModel(QObject):
             return
         notes = []
         if result.get("old_gold_discount_review"):
-            notes.append("تعديل خصم الكسر للمراجعة")
+            notes.append("كاش باك أو خصم كسر للمراجعة")
         if result.get("customer_created"):
             notes.append("تم تسجيل العميل الجديد")
         if result.get("unidentified_cases"):
@@ -1585,6 +1638,8 @@ class InvoiceViewModel(QObject):
                          "goldPrice": price(result.get("gold_price_per_gram")),
                          "grossTotal": money(result.get("gross_total")),
                          "discountAmount": money(result.get("discount_amount")),
+                         "kindText": SCRAP_KIND_TEXT.get(line.get("scrap_kind"), ""),
+                         "cashback": money(line["cashback"]) if line.get("scrap_kind") else "",
                          "lineTotal": money(result.get("line_total"))})
         return rows
 

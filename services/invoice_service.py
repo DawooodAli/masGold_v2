@@ -68,6 +68,10 @@ WITHIN_RANGE, OUT_OF_RANGE, NOT_CONFIGURED = "WITHIN_RANGE", "OUT_OF_RANGE", "NO
 # old-gold-only minimum, the maximum and the default come from System Settings (081), which the owner
 # made the reference for them (they were 1.00% / 5.00% / 1.50% before 081).
 SALE_DISCOUNT_MIN = Decimal("1.25")
+# Owner decision 2026-10-28: the discount is OPEN (any percent up to 100); one under the minimum above is still saved at once and goes to the
+# manager reviews. A BAR (always karat 24) or POUND (always karat 21) line has no discount, only a CASHBACK in EGP; one above the limit is reviewed.
+SCRAP_KINDS = {"BAR": 24, "POUND": 21}
+CASHBACK_REVIEW_LIMIT = Decimal("100")
 CUSTOMER_OWES, SHOP_OWES = "CUSTOMER_OWES", "SHOP_OWES"
 # Customer-facing money ends on a multiple of EGP 5 (owner rule). Internal values stay exact; only the
 # FINAL settlement amount is rounded, to the nearest 5 (half up), and the difference is recorded.
@@ -174,6 +178,8 @@ class OldGoldLineInput:
     discount_type: str | None = None
     discount_value: str | None = None
     notes: str | None = None
+    scrap_kind: str | None = None         # None = ordinary scrap; BAR (karat 24) / POUND (karat 21) = cashback instead of a discount
+    cashback: str | None = None
 
 
 @dataclass(frozen=True)
@@ -456,6 +462,12 @@ class InvoiceService:
         for line in draft.old_gold_lines:
             if isinstance(line.karat_id, bool) or int(line.karat_id) not in prices:
                 raise InvoiceError("PRICE_MISSING", "لا يوجد سعر معتمد لعيار الكسر.")
+            if line.scrap_kind:
+                if SCRAP_KINDS.get(line.scrap_kind) != int(prices[int(line.karat_id)].karat):
+                    raise InvoiceError("SCRAP_KIND_KARAT", "السبائك عيار 24 والجنيهات عيار 21 فقط.")
+                olds.append(Calc.old_gold_line(line.weight_grams, prices[int(line.karat_id)].shop_buy_price_per_gram,
+                                               cashback=line.cashback or "0"))
+                continue
             olds.append(Calc.old_gold_line(line.weight_grams,
                                            prices[int(line.karat_id)].shop_buy_price_per_gram,
                                            discount_type=line.discount_type,
@@ -647,15 +659,13 @@ class InvoiceService:
 
     @staticmethod
     def _discount_problems(calculated, draft, limits):
-        """Every old-gold line is a PERCENT inside the range of System Settings (081): up to the configured maximum on every invoice,
-        from the configured old-gold-only minimum on an old-gold-only invoice, and from `SALE_DISCOUNT_MIN` (a hard rule, no setting)
-        as soon as the invoice also sells something."""
-        maximum = limits["max_old_gold_discount_pct"]
-        minimum = SALE_DISCOUNT_MIN if calculated.sales else limits["min_old_gold_discount_pct"]
+        """Every ordinary old-gold line is a PERCENT (0-100, checked by the calculator). The range of System Settings no longer refuses a save
+        (owner decision 2026-10-28): a percent under the minimum is reviewed by the manager instead. A bar / pound line has no discount."""
         for line in calculated.olds:
-            if line.discount_type != "PERCENT" or not minimum <= line.discount_value <= maximum:
-                return [InvoiceError("OLD_GOLD_DISCOUNT_RANGE",
-                                     f"خصم الكسر يجب أن يكون بين {minimum}% و {maximum}%.")]
+            if line.cashback is not None:
+                continue
+            if line.discount_type != "PERCENT":
+                return [InvoiceError("OLD_GOLD_DISCOUNT_RANGE", "خصم الكسر مطلوب بنسبة مئوية.")]
         return []
 
     @staticmethod
@@ -789,14 +799,25 @@ class InvoiceService:
         return None
 
     @staticmethod
-    def _discount_changes(olds, draft_lines, default_percent):
+    def _discount_minimum(calculated, limits):
+        return SALE_DISCOUNT_MIN if calculated.sales else limits["min_old_gold_discount_pct"]
+
+    @staticmethod
+    def _cashback_review(olds, draft_lines):
+        """Bar / pound lines whose cashback is above the limit: they go to the manager reviews (the invoice is still saved at once)."""
+        return [{"karat_id": int(entry.karat_id), "scrap_kind": entry.scrap_kind, "weight_grams": line.weight_grams,
+                 "cashback": line.cashback, "limit": CASHBACK_REVIEW_LIMIT}
+                for line, entry in zip(olds, draft_lines) if entry.scrap_kind and line.cashback > CASHBACK_REVIEW_LIMIT]
+
+    @staticmethod
+    def _discount_changes(olds, draft_lines, default_percent, minimum=None):
         """Old-gold lines whose discount is not the configured default percentage.
 
         effect_on_net_signed = actual discount − default discount: what the change
         did to the invoice net (negative: the customer received more)."""
         changes = []
         for line, entry in zip(olds, draft_lines):
-            if line.discount_type == "PERCENT" and line.discount_value == default_percent:
+            if entry.scrap_kind or (line.discount_type == "PERCENT" and line.discount_value == default_percent):
                 continue
             default = Calc.old_gold_line(line.weight_grams, line.gold_price_per_gram,
                                          discount_type="PERCENT", discount_value=default_percent)
@@ -805,6 +826,8 @@ class InvoiceService:
                             "discount_type": line.discount_type or "NONE",
                             "discount_value": line.discount_value if line.discount_type else Decimal("0.00"),
                             "discount_amount": line.discount_amount, "default_discount_amount": default.discount_amount,
+                            "below_minimum": bool(minimum is not None and line.discount_type == "PERCENT"
+                                                  and line.discount_value < minimum),
                             "effect_on_net_signed": line.discount_amount - default.discount_amount})
         return changes
 
@@ -1050,7 +1073,9 @@ class InvoiceService:
         if making_approval and making_approver is None:
             problems.append(self._making_approval_problem(making_approval))
         discount_changes = self._discount_changes(olds, draft.old_gold_lines,
-                                                  limits["old_gold_discount_default_percent"])
+                                                  limits["old_gold_discount_default_percent"],
+                                                  self._discount_minimum(calculated, limits))
+        cashback_review = self._cashback_review(olds, draft.old_gold_lines)
         gap = calculated.gap or ZERO
         return {
             "price_token": price_set.price_token,
@@ -1067,7 +1092,8 @@ class InvoiceService:
                                 "gold_price_per_gram": _money(line.gold_price_per_gram),
                                 "gross_total": _money(line.gross_total),
                                 "discount_amount": _money(line.discount_amount),
-                                "line_total": _money(line.line_total)}
+                                "line_total": _money(line.line_total),
+                                **({"scrap_kind": d.scrap_kind, "cashback": _money(line.cashback)} if d.scrap_kind else {})}
                                for line, d in zip(olds, draft.old_gold_lines)],
             "described_lines": [{"kind": d["input"].kind, "item_name": d["item_name"],
                                  "factory_name": d["factory_name"], "karat_id": d["karat_id"],
@@ -1091,6 +1117,8 @@ class InvoiceService:
             "making_review_status": self._making_status(groups),
             "making_groups": groups,
             "old_gold_discount_changed": bool(discount_changes),
+            "old_gold_discount_below_minimum": any(c["below_minimum"] for c in discount_changes),
+            "cashback_review": bool(cashback_review),
             "old_gold_discount_default_percent": _money(limits["old_gold_discount_default_percent"]),
             "old_gold_discount_range": [_money(SALE_DISCOUNT_MIN if calculated.sales else limits["min_old_gold_discount_pct"]),
                                         _money(limits["max_old_gold_discount_pct"])],
@@ -1232,7 +1260,9 @@ class InvoiceService:
             if problems:
                 raise problems[0]
             discount_changes = self._discount_changes(olds, draft.old_gold_lines,
-                                                      limits["old_gold_discount_default_percent"])
+                                                      limits["old_gold_discount_default_percent"],
+                                                      self._discount_minimum(calculated, limits))
+            cashback_review = self._cashback_review(olds, draft.old_gold_lines)
 
             number = invoices.next_invoice_number(now.date())
             invoice_id = invoices.insert_invoice(
@@ -1317,7 +1347,9 @@ class InvoiceService:
                     weight_grams=line.weight_grams, gold_price_per_gram=line.gold_price_per_gram,
                     gross_total=line.gross_total, discount_type=line.discount_type,
                     discount_value=line.discount_value, discount_amount=line.discount_amount,
-                    line_total=line.line_total, old_gold_movement_id=movement_id, notes=draft_line.notes)
+                    line_total=line.line_total, old_gold_movement_id=movement_id, notes=draft_line.notes,
+                    scrap_kind=draft_line.scrap_kind or None,
+                    cashback_amount=line.cashback if draft_line.scrap_kind else None)
 
             # Real money: one invoice_payments row per leg, posted to its real ledger in this
             # transaction (cash_movements or bank_movements, linked by invoice_payment_id).
@@ -1379,16 +1411,20 @@ class InvoiceService:
                              "effective_sale_total": calculated.effective_sale,
                              "average_making_per_gram": None if agreed is None else agreed.average_making_per_gram},
                     created_by_user_id=actor.user_id)
-            if discount_changes:
+            if discount_changes or cashback_review:
                 # Separate from the making review: the discount never enters the making average.
                 effect = sum((c["effect_on_net_signed"] for c in discount_changes), Decimal("0.00"))
+                below = any(c["below_minimum"] for c in discount_changes)
                 invoices.insert_management_review(
                     review_type="OLD_GOLD_DISCOUNT", invoice_id=invoice_id,
-                    summary=f"تم تعديل نسبة خصم الكسر — فاتورة {number}",
+                    summary=(f"خصم كسر أقل من الحد الأدنى — فاتورة {number}" if below
+                             else f"كاش باك أعلى من {CASHBACK_REVIEW_LIMIT} ج — فاتورة {number}" if not discount_changes
+                             else f"تم تعديل نسبة خصم الكسر — فاتورة {number}"),
                     details={"invoice_number": number, "salesperson_employee_id": int(salesperson["id"]),
                              "salesperson_name": salesperson["name"], "actor_user_id": actor.user_id,
                              "default_percent": limits["old_gold_discount_default_percent"],
-                             "lines": discount_changes, "old_gold_total": settlement.old_gold_total,
+                             "lines": discount_changes, "below_minimum": below, "cashback_lines": cashback_review,
+                             "old_gold_total": settlement.old_gold_total,
                              "effect_on_net_signed": effect, "occurred_at": now},
                     created_by_user_id=actor.user_id)
 
@@ -1421,6 +1457,8 @@ class InvoiceService:
                 details["making_review"] = review
             if discount_changes:
                 details["old_gold_discount_changes"] = discount_changes
+            if cashback_review:
+                details["old_gold_cashback_review"] = cashback_review
             if case_ids:
                 details["unidentified_sale_case_ids"] = case_ids
             if created_customer:
@@ -1437,7 +1475,7 @@ class InvoiceService:
                 raise PermissionError("انتهت جلسة الدخول.")
         return {"invoice_id": invoice_id, "invoice_number": number, "finalized_at": now.isoformat(sep=" "),
                 "customer_created": created_customer, "making_review_required": bool(review),
-                "unidentified_cases": len(case_ids), "old_gold_discount_review": bool(discount_changes),
+                "unidentified_cases": len(case_ids), "old_gold_discount_review": bool(discount_changes or cashback_review),
                 **self._commercial_view(calculated)}
 
     def _audit(self, connection, actor, invoice_id, number, details, now):

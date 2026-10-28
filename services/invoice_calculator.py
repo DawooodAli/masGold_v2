@@ -54,6 +54,7 @@ class OldGoldLine:
     discount_value: Decimal | None
     discount_amount: Decimal
     line_total: Decimal
+    cashback: Decimal | None = None           # extra EGP the shop pays on a bar / pound line (never a discount)
 
 
 @dataclass(frozen=True)
@@ -157,10 +158,16 @@ class InvoiceCalculator:
         return SaleLine(weight, price, per_gram, making, gold_value, _money(gold_value + making))
 
     @staticmethod
-    def old_gold_line(weight, price, *, discount_type=None, discount_value=None):
+    def old_gold_line(weight, price, *, discount_type=None, discount_value=None, cashback=None):
         weight = _decimal(weight, WEIGHT, label="الوزن", positive=True)
         price = _decimal(price, PRICE, label="سعر الجرام", positive=True)
         gross = _money(weight * price)
+        if cashback is not None:
+            # A bar / pound line: no discount at all, the cashback is paid ON TOP of the gold value.
+            if discount_type is not None or discount_value is not None:
+                raise InvoiceCalculationError("DISCOUNT_TYPE", "لا خصم على السبائك والجنيهات؛ الكاش باك فقط.")
+            extra = _money(_decimal(cashback, MONEY, label="الكاش باك"))
+            return OldGoldLine(weight, price, gross, None, None, ZERO, gross + extra, extra)
         if discount_type is None:
             if discount_value is not None:
                 raise InvoiceCalculationError("DISCOUNT_TYPE", "حدد نوع الخصم (نسبة أو مبلغ).")

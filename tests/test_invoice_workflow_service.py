@@ -526,36 +526,61 @@ class CommercialModelTests(InvoiceServiceTestCase):
         self.assertNothingWritten(before)
 
     # ---- 9–13: old-gold discount is 1.25–5.00% (mixed AND old gold only)
-    def test_exchange_discount_must_be_between_1_25_and_5(self):
-        for percent in ("1.25", "1.50", "2.00", "5.00"):
+    def test_the_discount_is_open_and_a_percent_under_the_minimum_goes_to_the_manager(self):
+        # Owner decision 2026-10-28: no percent is refused by a range; one under the minimum is saved and reviewed.
+        for percent in ("1.25", "1.50", "5.00", "5.01", "1.24", "0", "30"):
             with self.subTest(percent=percent):
                 preview = self.service.preview(InvoiceDraft(5, "12", (scanned(),), (disc(percent),), (pay("55000"),)))
                 self.assertNotIn("OLD_GOLD_DISCOUNT_RANGE", [p["code"] for p in preview["blocking_problems"]])
-        for line in (disc("1.24"), disc("5.01"), disc("0"), old(1, "20"),
-                     old(1, "20", discount_type="AMOUNT", discount_value="1862.10")):
+        self.assertTrue(self.service.preview(InvoiceDraft(5, "12", (scanned(),), (disc("1.24"),), (pay("55000"),)))["old_gold_discount_below_minimum"])
+        self.assertFalse(self.service.preview(InvoiceDraft(5, "12", (scanned(),), (disc("2"),), (pay("55000"),)))["old_gold_discount_below_minimum"])
+        # Old gold only: the minimum is the configured 1.00; a missing or AMOUNT discount is still refused.
+        self.assertFalse(self.service.preview(InvoiceDraft(5, "12", (), (disc("1.00", "10"),), ()))["old_gold_discount_below_minimum"])
+        self.assertTrue(self.service.preview(InvoiceDraft(5, "12", (), (disc("0.99", "10"),), ()))["old_gold_discount_below_minimum"])
+        for line in (old(1, "20"), old(1, "20", discount_type="AMOUNT", discount_value="1862.10")):
             with self.subTest(line=line):
                 draft = InvoiceDraft(5, "12", (scanned(),), (line,), (pay("55000"),))
-                self.assertIn("OLD_GOLD_DISCOUNT_RANGE",
-                              [p["code"] for p in self.service.preview(draft)["blocking_problems"]])
+                self.assertIn("OLD_GOLD_DISCOUNT_RANGE", [p["code"] for p in self.service.preview(draft)["blocking_problems"]])
                 self.assertRefused("OLD_GOLD_DISCOUNT_RANGE", draft)
 
-    def test_old_gold_only_may_go_down_to_one_percent_while_a_sale_keeps_1_25(self):
-        # Owner decision 2026-10-23: buying old gold only accepts 1.00–5.00%; the mixed invoice keeps 1.25–5.00%.
-        for percent in ("1.00", "1.25", "1.50", "2.00", "5.00"):
-            with self.subTest(percent=percent):
-                preview = self.service.preview(InvoiceDraft(5, "12", (), (disc(percent, "10"),), ()))
+    def test_a_percent_under_the_minimum_is_saved_and_marked_for_the_manager(self):
+        self.finalize(InvoiceDraft(5, "12", (scanned(),), (disc("1"),), (pay("55000"),)))
+        self.assertEqual([r["review_type"] for r in self.store.reviews], ["OLD_GOLD_DISCOUNT"])
+        self.assertTrue(self.store.reviews[0]["details"]["below_minimum"])
+
+    # ---- bar / pound lines: no discount, a cashback instead (owner decision 2026-10-28)
+    def test_a_bar_or_a_pound_gets_a_cashback_on_top_and_no_discount(self):
+        pound = old(1, "10", scrap_kind="POUND", cashback="40")           # karat 21
+        bar = old(3, "10", scrap_kind="BAR", cashback="50")               # karat 24
+        for line, price in ((pound, Decimal("6207.00")), (bar, Decimal("7093.00"))):
+            with self.subTest(kind=line.scrap_kind):
+                preview = self.service.preview(InvoiceDraft(5, "12", (), (line,), ()))
+                row = preview["old_gold_lines"][0]
+                self.assertEqual((row["discount_amount"], row["scrap_kind"]), ("0.00", line.scrap_kind))
+                self.assertEqual(Decimal(row["line_total"]), Decimal(row["gross_total"]) + Decimal(line.cashback))
+                self.assertFalse(preview["cashback_review"])
                 self.assertNotIn("OLD_GOLD_DISCOUNT_RANGE", [p["code"] for p in preview["blocking_problems"]])
-                self.assertEqual(preview["old_gold_discount_range"], ["1.00", "5.00"])
-        mixed = self.service.preview(InvoiceDraft(5, "12", (scanned(),), (disc("1.24"),), (pay("55000"),)))
-        self.assertEqual(mixed["old_gold_discount_range"], ["1.25", "5.00"])
-        self.assertIn("OLD_GOLD_DISCOUNT_RANGE", [p["code"] for p in mixed["blocking_problems"]])
-        for line in (disc("0.99", "10"), disc("5.01", "10"), disc("0.5", "10"), old(1, "10"),
-                     old(1, "10", discount_type="AMOUNT", discount_value="500")):
-            with self.subTest(line=line):
-                draft = InvoiceDraft(5, "12", (), (line,), ())
-                self.assertIn("OLD_GOLD_DISCOUNT_RANGE",
-                              [p["code"] for p in self.service.preview(draft)["blocking_problems"]])
-                self.assertRefused("OLD_GOLD_DISCOUNT_RANGE", draft)
+
+    def test_a_bar_is_always_karat_24_and_a_pound_always_karat_21(self):
+        self.assertRefused("SCRAP_KIND_KARAT", InvoiceDraft(5, "12", (), (old(1, "10", scrap_kind="BAR", cashback="40"),), ()))
+        self.assertRefused("SCRAP_KIND_KARAT", InvoiceDraft(5, "12", (), (old(3, "10", scrap_kind="POUND", cashback="40"),), ()))
+
+    def test_a_cashback_above_100_is_saved_and_reviewed_by_the_manager(self):
+        ok = self.service.preview(InvoiceDraft(5, "12", (), (old(3, "10", scrap_kind="BAR", cashback="100"),), ()))
+        self.assertFalse(ok["cashback_review"])
+        over = InvoiceDraft(5, "12", (), (old(3, "10", scrap_kind="BAR", cashback="100.01"),), (pay("71030"),), settlement_choice="SETTLE")
+        self.assertTrue(self.service.preview(over)["cashback_review"])
+        self.finalize(over)
+        self.assertEqual([r["review_type"] for r in self.store.reviews], ["OLD_GOLD_DISCOUNT"])
+        self.assertEqual(self.store.reviews[0]["details"]["cashback_lines"][0]["cashback"], Decimal("100.01"))
+        saved = [v for kind, v in self.store.lines if kind == "OLD"][0]
+        self.assertEqual((saved["scrap_kind"], saved["cashback_amount"]), ("BAR", Decimal("100.01")))
+        self.assertEqual(saved["line_total"], saved["gross_total"] + Decimal("100.01"))
+
+    def test_an_ordinary_line_never_carries_the_new_columns(self):
+        self.finalize(InvoiceDraft(5, "12", (scanned(),), (disc("2"),), (pay("55000"),)))
+        saved = [v for kind, v in self.store.lines if kind == "OLD"][0]
+        self.assertEqual((saved["scrap_kind"], saved["cashback_amount"]), (None, None))
 
     def test_changed_discount_is_reviewed_and_the_same_price_keeps_the_same_average(self):
         # For the same final sale price the discount only moves the money, never the making.

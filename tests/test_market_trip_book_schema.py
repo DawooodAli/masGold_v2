@@ -66,7 +66,7 @@ class BookCoreSchemaTests(unittest.TestCase):
 
     def test_the_schema_level_follows_the_chain(self):
         from services.schema_level import REQUIRED_SCHEMA_LEVEL
-        self.assertEqual(REQUIRED_SCHEMA_LEVEL, 81)
+        self.assertEqual(REQUIRED_SCHEMA_LEVEL, 82)
 
     def test_every_alter_is_guarded_so_a_rerun_changes_nothing(self):
         for statement in re.findall(r"\"(ALTER TABLE [^\"]*)\"", self.forward):

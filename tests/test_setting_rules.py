@@ -212,7 +212,7 @@ class InvoiceRepo:
 
 def calculation(sales, discounts):
     return SimpleNamespace(sales=sales,
-                           olds=[SimpleNamespace(discount_type="PERCENT", discount_value=D(v)) for v in discounts])
+                           olds=[SimpleNamespace(discount_type="PERCENT", discount_value=D(v), cashback=None) for v in discounts])
 
 
 class InvoiceLimitsTests(unittest.TestCase):
@@ -238,19 +238,17 @@ class InvoiceLimitsTests(unittest.TestCase):
         limits = InvoiceService._limits(InvoiceRepo(settings={"min_old_gold_discount_pct": "0.50", "max_old_gold_discount_pct": "7.00"}))
         self.assertEqual((limits["min_old_gold_discount_pct"], limits["max_old_gold_discount_pct"]), (D("0.50"), D("7.00")))
 
-    def test_a_discount_is_judged_against_the_configured_range(self):
+    def test_the_discount_is_open_and_the_range_only_marks_the_manager_review(self):
+        # Owner decision 2026-10-28: no percent is refused by the range any more (the review flags one under the minimum).
         configured = InvoiceService._limits(InvoiceRepo(settings={"min_old_gold_discount_pct": "0.50", "max_old_gold_discount_pct": "7.00"}))
-        self.assertEqual(InvoiceService._discount_problems(calculation([], ["6.00"]), None, configured), [])       # old gold only: 6% is inside 0.50-7.00
-        self.assertEqual(InvoiceService._discount_problems(calculation([], ["0.50"]), None, configured), [])
+        for percent in ("6.00", "0.50", "0.00", "30.00"):
+            self.assertEqual(InvoiceService._discount_problems(calculation([], [percent]), None, configured), [])
+            self.assertEqual(InvoiceService._discount_problems(calculation(["a line"], [percent]), None, configured), [])
 
-        defaults = InvoiceService._limits(InvoiceRepo())
-        self.assertEqual(len(InvoiceService._discount_problems(calculation([], ["6.00"]), None, defaults)), 1)     # the default maximum is still 5.00
-        self.assertEqual(len(InvoiceService._discount_problems(calculation([], ["0.50"]), None, defaults)), 1)     # and the default minimum is 1.00
-
-    def test_the_mixed_invoice_minimum_is_a_hard_rule_with_no_setting(self):
-        configured = InvoiceService._limits(InvoiceRepo(settings={"min_old_gold_discount_pct": "0.00", "max_old_gold_discount_pct": "7.00"}))
-        self.assertEqual(len(InvoiceService._discount_problems(calculation(["a line"], ["0.00"]), None, configured)), 1)   # mixed: never below 1.25
-        self.assertEqual(InvoiceService._discount_problems(calculation(["a line"], ["1.25"]), None, configured), [])
+    def test_the_minimum_for_the_review_follows_the_invoice_kind(self):
+        limits = InvoiceService._limits(InvoiceRepo(settings={"min_old_gold_discount_pct": "0.50"}))
+        self.assertEqual(InvoiceService._discount_minimum(calculation(["a line"], ["1.00"]), limits), D("1.25"))   # mixed: the hard 1.25
+        self.assertEqual(InvoiceService._discount_minimum(calculation([], ["1.00"]), limits), D("0.50"))          # old gold only: the setting
 
 
 # ------------------------------------------------------------------ the settings screen must not store what would be ignored

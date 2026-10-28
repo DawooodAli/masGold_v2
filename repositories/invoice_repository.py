@@ -647,19 +647,24 @@ class InvoiceRepository(BaseRepository):
 
     def insert_old_gold_line(self, *, invoice_id, line_number, karat_id, weight_grams,
                              gold_price_per_gram, gross_total, discount_type, discount_value,
-                             discount_amount, line_total, old_gold_movement_id, notes=None):
+                             discount_amount, line_total, old_gold_movement_id, notes=None,
+                             scrap_kind=None, cashback_amount=None):
+        # The migration-082 columns are written only for a bar / pound line, so an ordinary line still saves on an older schema.
+        extra_columns = ", scrap_kind, cashback_amount" if scrap_kind else ""
+        extra_marks = ", %s, %s" if scrap_kind else ""
+        extra_values = (scrap_kind, cashback_amount) if scrap_kind else ()
         line_id, _ = self._execute(
-            """
+            f"""
             INSERT INTO invoice_lines (
                 invoice_id, record_origin, line_number, line_type, old_gold_movement_id,
                 karat_id, weight_grams, quantity, gold_price_per_gram,
-                gross_total, discount_type, discount_value, discount_amount, line_total, notes
+                gross_total, discount_type, discount_value, discount_amount, line_total, notes{extra_columns}
             )
-            VALUES (%s, 'NATIVE', %s, 'BUY_OLD_GOLD', %s, %s, %s, 1, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, 'NATIVE', %s, 'BUY_OLD_GOLD', %s, %s, %s, 1, %s, %s, %s, %s, %s, %s, %s{extra_marks})
             """,
             (_id(invoice_id), int(line_number), _id(old_gold_movement_id), int(karat_id), weight_grams,
              gold_price_per_gram, gross_total, discount_type, discount_value, discount_amount,
-             line_total, notes),
+             line_total, notes) + extra_values,
         )
         return str(line_id)
 

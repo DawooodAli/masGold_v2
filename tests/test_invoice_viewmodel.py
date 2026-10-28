@@ -652,47 +652,77 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.vm.setLegAmount(0, "5000")
         self.assertEqual((self.amounts(), self.vm.paymentWarning), ([""], "اكتب إجمالي الفاتورة أولاً."))
 
-    # ---- old-gold discount: the last valid value is kept
+    # ---- old-gold discount: open (owner decision 2026-10-28); only a malformed value is refused, one under the minimum is warned about
     def test_invalid_discount_restores_the_last_valid_value(self):
         self.sale_ready()
         self.vm.addOldGold(1, "5")
         self.preview_now()
         self.assertEqual(self.vm.oldGoldDiscountPercent, "1.5")
-        for rejected in ("1.00", "1.24", "5.01", "10.00", "abc", ""):
+        for rejected in ("abc", "", "101", "-1"):
             with self.subTest(rejected=rejected):
                 self.assertEqual(self.vm.commitOldGoldDiscount(rejected), "1.5")          # restored, not clamped
-                self.assertEqual(self.vm.discountWarning, "النسبة المسموح بها من \u20661.25%\u2069 إلى \u20665%\u2069")
+                self.assertNotEqual(self.vm.discountWarning, "")
                 self.assertEqual(self.vm._draft().old_gold_lines[0].discount_value, "1.5")
         self.assertEqual(self.vm.commitOldGoldDiscount("2.25"), "2.25")
         self.assertEqual(self.vm.discountWarning, "")
-        self.assertEqual(self.vm.commitOldGoldDiscount("0.50"), "2.25")                   # back to the new last valid
-        for boundary in ("1.25", "2.00", "5.00"):
-            self.assertEqual(self.vm.commitOldGoldDiscount(boundary), boundary.rstrip("0").rstrip("."))
-        self.assertEqual(self.vm._draft().old_gold_lines[0].discount_value, "5")
+        for open_value in ("1.00", "5.01", "10", "30"):                                   # no maximum, and a low one is saved
+            self.assertEqual(self.vm.commitOldGoldDiscount(open_value), open_value.rstrip("0").rstrip(".") if "." in open_value else open_value)
+        self.assertEqual(self.vm.commitOldGoldDiscount("1.00"), "1")
+        self.assertEqual(self.vm.discountWarning, "أقل من \u20661.25%\u2069 — ستُراجَع من المدير")
+        self.assertEqual(self.vm._draft().old_gold_lines[0].discount_value, "1")
 
-    def test_rejected_discount_is_never_previewed(self):
+    def test_a_malformed_discount_is_never_previewed(self):
         self.sale_ready()
         self.vm.addOldGold(1, "5")
         self.preview_now()
         calls = len([c for c in self.service.calls if c[0] == "preview"])
-        self.vm.commitOldGoldDiscount("1.00")
+        self.vm.commitOldGoldDiscount("abc")
         self.preview_now()
         last = [c for c in self.service.calls if c[0] == "preview"][-1][1]
-        self.assertEqual(last.old_gold_lines[0].discount_value, "1.5")                   # the rejected 1.00 never left
+        self.assertEqual(last.old_gold_lines[0].discount_value, "1.5")                   # the rejected value never left
         self.assertGreater(len([c for c in self.service.calls if c[0] == "preview"]), calls)
 
-    def test_old_gold_only_may_go_down_to_one_percent(self):
+    def test_old_gold_only_warns_under_one_percent_but_accepts_it(self):
         self.vm.setSalesperson("5")
         self.vm.addOldGold(1, "10")
-        for value in ("1", "1.25", "1.5", "2", "5"):
+        for value in ("1", "1.25", "1.5", "2", "5", "5.01", "30"):
             with self.subTest(accepted=value):
                 self.assertEqual(self.vm.commitOldGoldDiscount(value), value)
                 self.assertEqual(self.vm.discountWarning, "")
-        for value in ("0.99", "5.01", "0.5", "0"):
-            with self.subTest(rejected=value):
-                self.assertEqual(self.vm.commitOldGoldDiscount(value), "5")        # the last valid value stays
-                self.assertEqual(self.vm.discountWarning, "النسبة المسموح بها من ⁦1%⁩ إلى ⁦5%⁩")
-                self.assertNotEqual(self.vm.discountWarning, "")
+        for value in ("0.99", "0.5", "0"):
+            with self.subTest(low=value):
+                self.assertEqual(self.vm.commitOldGoldDiscount(value), value)               # saved, then reviewed by the manager
+                self.assertEqual(self.vm.discountWarning, "أقل من \u20661%\u2069 — ستُراجَع من المدير")
+
+    # ---- bar / pound lines: the employee picks the kind, the karat follows, a cashback replaces the discount
+    def test_a_pound_is_karat_21_a_bar_is_karat_24_and_each_has_a_cashback(self):
+        self.vm._board = {**self.vm._board, "prices": [*self.vm._board["prices"], {"karat_id": 3, "karat": 24, "shop_buy": "7093.00", "shop_sell": "7122.00"}]}
+        self.vm.setSalesperson("5")
+        self.vm.setScrapKind("POUND")
+        self.assertEqual((self.vm.scrapKind, self.vm.oldGoldKaratId), ("POUND", 1))      # karat 21
+        self.vm.setScrapCashback("40")
+        self.vm.addOldGold(-1, "8")
+        self.vm.setScrapKind("BAR")
+        self.assertEqual(self.vm.oldGoldKaratId, 3)                                       # karat 24
+        self.vm.setScrapCashback("50")
+        self.vm.addOldGold(-1, "10")
+        lines = self.vm._draft().old_gold_lines
+        self.assertEqual([(l.karat_id, l.scrap_kind, l.cashback, l.discount_type) for l in lines],
+                         [(1, "POUND", "40", None), (3, "BAR", "50", None)])
+        self.assertEqual(self.vm.scrapCashback, "")                                       # each line has its own cashback
+
+    def test_choosing_another_karat_puts_the_kind_back_on_ordinary_scrap(self):
+        self.vm.setScrapKind("BAR")
+        self.vm.setOldGoldKarat(2)                                                        # karat 18
+        self.assertEqual(self.vm.scrapKind, "")
+        self.vm.addOldGold(-1, "5")
+        self.assertEqual(self.vm._draft().old_gold_lines[0].scrap_kind, None)
+
+    def test_an_ordinary_line_still_gets_the_percent_discount(self):
+        self.vm.setSalesperson("5")
+        self.vm.addOldGold(1, "5")
+        line = self.vm._draft().old_gold_lines[0]
+        self.assertEqual((line.scrap_kind, line.cashback, line.discount_type, line.discount_value), (None, None, "PERCENT", "1.5"))
 
     def test_old_gold_gap_is_settled_or_put_on_the_account(self):
         self.service.preview_result = preview(payment_direction="OUT", gap_signed="-8.00", gold_value_total=None)

@@ -159,7 +159,10 @@ Item {
     function addOldGold() {
         if (invoiceVM.oldGoldKaratId < 0 || oldGoldWeight.text.length === 0)
             return
+        if (invoiceVM.scrapKind !== "")
+            invoiceVM.setScrapCashback(cashbackField.text)
         invoiceVM.addOldGold(invoiceVM.oldGoldKaratId, oldGoldWeight.text)
+        cashbackField.text = ""
         oldGoldWeight.text = ""
         oldGoldWeight.forceActiveFocus()
     }
@@ -1607,7 +1610,9 @@ Item {
 
             // ======== old gold from the customer
             Item {
+                id: oldGoldPanel
                 objectName: "oldGoldPanel"
+                readonly property bool tight: width < 560      // the scrap strip is full: shorter combo, no title, a smaller weight box
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 Layout.preferredWidth: 2
@@ -1626,8 +1631,9 @@ Item {
                             anchors.leftMargin: 6
                             anchors.rightMargin: 10
                             layoutDirection: Qt.RightToLeft
-                            spacing: 4
+                            spacing: 2
                             Label {
+                                visible: !oldGoldPanel.tight       // the strip is full when the panel is narrow; F6 still focuses the weight
                                 text: "كسر F6"
                                 color: theme.priceBuy
                                 font.family: "Cairo"
@@ -1645,11 +1651,35 @@ Item {
                                     onClicked: invoicePage.chooseKarat(modelData.karat)
                                 }
                             }
+                            // متنوع = ordinary scrap (percent discount); جنيهات (karat 21) / سبائك (karat 24) = a cashback instead of a discount.
+                            ComboBox {
+                                id: scrapKindCombo
+                                objectName: "scrapKindCombo"
+                                Layout.preferredWidth: oldGoldPanel.tight ? 62 : 92
+                                Layout.preferredHeight: 32
+                                font.family: "Cairo"
+                                font.pixelSize: 12
+                                model: [{"code": "", "text": "متنوع"}, {"code": "POUND", "text": "جنيهات"}, {"code": "BAR", "text": "سبائك"}]
+                                textRole: "text"
+                                // follows the view model (another karat chip puts it back on «متنوع»)
+                                currentIndex: invoiceVM.scrapKind === "POUND" ? 1 : invoiceVM.scrapKind === "BAR" ? 2 : 0
+                                onActivated: function(index) { invoiceVM.setScrapKind(model[index].code) }
+                            }
+                            AmountField {
+                                id: cashbackField
+                                objectName: "cashbackField"
+                                visible: invoiceVM.scrapKind !== ""
+                                Layout.preferredWidth: oldGoldPanel.tight ? 54 : 84
+                                Layout.preferredHeight: 40
+                                font.pixelSize: 15
+                                placeholderText: "كاش باك"
+                                onAccepted: oldGoldWeight.forceActiveFocus()
+                            }
                             AmountField {
                                 id: oldGoldWeight
                                 objectName: "oldGoldWeight"
                                 Layout.fillWidth: true
-                                Layout.minimumWidth: 70
+                                Layout.minimumWidth: oldGoldPanel.tight ? 44 : 70
                                 // The same height and text size as the barcode field: this is the
                                 // other field the salesman types into, and it must read the same.
                                 Layout.preferredHeight: 40
@@ -1685,7 +1715,7 @@ Item {
                                 Layout.leftMargin: 34
                                 layoutDirection: Qt.RightToLeft
                                 spacing: 6
-                                HeadCell { text: "العيار" }
+                                HeadCell { text: "العيار"; Layout.preferredWidth: 2 }
                                 HeadCell { text: "الوزن"; Layout.preferredWidth: 2 }
                                 HeadCell { text: "القيمة"; Layout.preferredWidth: 3 }
                             }
@@ -1734,7 +1764,12 @@ Item {
                                         anchors.leftMargin: 2
                                         layoutDirection: Qt.RightToLeft
                                         spacing: 6
-                                        Cell { text: model.karat; color: theme.balanceKaratColor(model.karat); font.bold: true }
+                                        Cell {
+                                            objectName: "oldGoldKarat_" + index
+                                            Layout.preferredWidth: 2
+                                            text: model.kindText.length > 0 ? model.karat + " " + model.kindText : model.karat
+                                            color: theme.balanceKaratColor(model.karat); font.bold: true
+                                        }
                                         Cell { Layout.preferredWidth: 2; text: model.weight; font.bold: true }
                                         Cell {
                                             objectName: "oldGoldLineTotal_" + index

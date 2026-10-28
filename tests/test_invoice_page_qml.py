@@ -979,41 +979,48 @@ class InvoicePageTests(unittest.TestCase):
         self.assertEqual(self.store.ledger[0]["amount_delta"], D("7000.00"))  # a balance, never a movement
         self.assertEqual(self.store.invoices[0]["sell_total"], D("67010.00"))
 
-    def test_exchange_discount_outside_1_25_to_5_blocks_save(self):
+    def test_exchange_discount_is_open_and_a_low_one_is_warned_not_blocked(self):
+        # Owner decision 2026-10-28: any percent is accepted; one under 1.25% is saved and goes to the manager reviews.
         self.select_salesperson()
         self.scan("01260925")
         self.add_old_gold("21", "5")
         self.receive("36440")
         self.settle()
         self.assertFalse(self.item("discountChangedFlag").property("visible"))
-        average, old_net = self.text("summaryAverageMaking"), self.text("summaryOldGold")
-        # 5.5% is rejected on commit: the field returns to the last valid 1.5 and nothing is recalculated.
-        self.type_into("oldGoldDiscountField", "5.5")
+        self.type_into("oldGoldDiscountField", "5.5")                                     # above the old maximum: accepted
         QTest.keyClick(self.root, Qt.Key_Return)
-        self.wait_until(lambda: self.text("oldGoldDiscountField") == "1.5", "rejected value stayed in the field")
-        self.assertEqual(self.text("discountWarning"), "النسبة المسموح بها من \u20661.25%\u2069 إلى \u20665%\u2069")
-        self.settle()
-        self.assertEqual((self.text("summaryAverageMaking"), self.text("summaryOldGold")), (average, old_net))
-        self.assertEqual(self.vm._draft().old_gold_lines[0].discount_value, "1.5")
-        # Typed but not committed, then Save: committed (and rejected) first, never saved.
+        self.wait_until(lambda: self.vm._draft().old_gold_lines[0].discount_value == "5.5", "an open discount is applied")
+        self.assertEqual(self.text("discountWarning"), "")
+        self.type_into("oldGoldDiscountField", "1")                                       # under the minimum: warned, still applied
+        QTest.keyClick(self.root, Qt.Key_Return)
+        self.wait_until(lambda: self.vm._draft().old_gold_lines[0].discount_value == "1")
+        self.assertEqual(self.text("discountWarning"), "أقل من \u20661.25%\u2069 — ستُراجَع من المدير")
+        self.type_into("oldGoldDiscountField", "abc")                                     # malformed: the last value returns
+        QTest.keyClick(self.root, Qt.Key_Return)
+        self.wait_until(lambda: self.text("oldGoldDiscountField") == "1")
+        self.assertEqual(self.vm._draft().old_gold_lines[0].discount_value, "1")
         self.name_customer()
-        self.type_into("oldGoldDiscountField", "1")
-        QTest.keyClick(self.root, Qt.Key_F9)
-        self.wait_until(lambda: self.text("oldGoldDiscountField") == "1.5")
-        # The restored 1.5 is valid, so F9 opens the confirmation with the 1.5 figures; go back.
-        dialog = self.item("confirmFinalizeDialog")
-        self.wait_until(lambda: dialog.property("opened"))
-        QTest.qWait(250)
-        QTest.keyClick(self.root, Qt.Key_Escape)
-        self.wait_until(lambda: not dialog.property("visible"))
-        self.assertEqual(self.vm._draft().old_gold_lines[0].discount_value, "1.5")
-        self.type_into("oldGoldDiscountField", "2")
-        QTest.keyClick(self.root, Qt.Key_Return)
-        self.settle()
-        self.wait_until(lambda: self.item("discountChangedFlag").property("visible"))
         self.finalize()
         self.assertEqual([r["review_type"] for r in self.store.reviews], ["OLD_GOLD_DISCOUNT"])
-        self.assertNotEqual(average, "")
+
+    def test_pound_and_bar_scrap_take_a_cashback_instead_of_a_discount(self):
+        self.select_salesperson()
+        combo = self.item("scrapKindCombo")
+        self.assertEqual(combo.property("currentIndex"), 0)                               # متنوع by default
+        self.assertFalse(self.item("cashbackField").property("visible"))
+        combo.setProperty("currentIndex", 1)
+        combo.activated.emit(1)                                                           # جنيهات
+        self.wait_until(lambda: self.item("cashbackField").property("visible"))
+        self.assertEqual((self.vm.scrapKind, self.vm.oldGoldKaratId), ("POUND", 1))
+        self.type_into("cashbackField", "40")
+        self.type_into("oldGoldWeight", "8")
+        self.click("addOldGold")
+        self.settle()
+        self.wait_until(lambda: self.vm.oldGoldCount == 1)
+        line = self.vm._draft().old_gold_lines[0]
+        self.assertEqual((line.scrap_kind, line.cashback, line.discount_type), ("POUND", "40", None))
+        self.assertIn("جنيهات", self.text("oldGoldKarat_0"))
+        self.assertEqual(self.text("cashbackField"), "")                                  # each line has its own cashback
 
     def test_live_regression_customer_account_never_moves_the_average(self):
         # 21K 3.600 g sold (22,460.40), old gold net 36,724.73, 12,800 paid to the customer → 406.76/g.
