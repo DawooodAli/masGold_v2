@@ -26,7 +26,7 @@ Rectangle {
         var key = JSON.stringify(f) + page.vm.labels.length
         if (key === appliedFilters) return
         appliedFilters = key
-        start.text = f.start; end.text = f.end
+        start.value = f.start; end.value = f.end
         labelFilter.currentIndex = Math.max(0, labelFilter.indexOfValue(f.label))
     }
 
@@ -102,6 +102,7 @@ Rectangle {
         property color accent: theme.green
         property var rows: []
         property string total: ""
+        property string bankTotal: ""            // bank / wallet movements of the period: shown below, never inside the safe total
         property string totalLabel: ""
         property string prefix: ""
         color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder
@@ -115,9 +116,10 @@ Rectangle {
                     anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; layoutDirection: Qt.RightToLeft
                     spacing: 8
                     Txt { text: "الحركة"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
-                          Layout.fillWidth: true; Layout.preferredWidth: 68 }
+                          Layout.preferredWidth: 130; Layout.maximumWidth: 130 }
+                    Txt { text: "المرجع"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; Layout.fillWidth: true }
                     Txt { text: "المبلغ"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
-                          horizontalAlignment: Text.AlignRight; Layout.fillWidth: true; Layout.preferredWidth: 32 }
+                          horizontalAlignment: Text.AlignLeft; Layout.preferredWidth: 110; Layout.maximumWidth: 110 }
                 }
             }
             ListView {
@@ -129,17 +131,18 @@ Rectangle {
                     required property var modelData
                     required property int index
                     objectName: table.prefix + "Row_" + index
-                    width: list.width; height: 34; radius: theme.radiusSmall
+                    width: list.width; height: 42; radius: theme.radiusSmall
                     color: rowArea.containsMouse && modelData.linked ? theme.panelHover : "transparent"
                     RowLayout {
                         anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; layoutDirection: Qt.RightToLeft
                         spacing: 8
-                        // الحركة — المرجع — العميل: the movement name, then what identifies it.
+                        // 1) الحركة: the movement name only.
+                        Txt { objectName: table.prefix + "Label_" + index; text: modelData.label; font.bold: true
+                              elide: Text.ElideRight; Layout.preferredWidth: 130; Layout.maximumWidth: 130; Layout.alignment: Qt.AlignVCenter }
+                        // 2) المرجع: FO / invoice number / RV..., then the customer and the detail.
                         RowLayout {
                             objectName: table.prefix + "Info_" + index
-                            Layout.fillWidth: true; Layout.preferredWidth: 68; spacing: 8; layoutDirection: Qt.RightToLeft
-                            Txt { objectName: table.prefix + "Label_" + index; text: modelData.label; font.bold: true
-                                  elide: Text.ElideNone; Layout.alignment: Qt.AlignVCenter }
+                            Layout.fillWidth: true; spacing: 8; layoutDirection: Qt.RightToLeft
                             Txt { objectName: table.prefix + "Ref_" + index; text: modelData.reference
                                   visible: text.length > 0; color: modelData.linked ? theme.gold : theme.textSecondary
                                   font.underline: modelData.linked && rowArea.containsMouse
@@ -152,12 +155,20 @@ Rectangle {
                                               enabled: modelData.customerId.length > 0
                                               cursorShape: modelData.customerId.length > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor
                                               onClicked: page.vm.openCustomer(modelData.customerId) } }
+                            Txt { objectName: table.prefix + "Detail_" + index; text: modelData.detail
+                                  visible: text.length > 0; color: theme.amber; elide: Text.ElideRight
+                                  Layout.alignment: Qt.AlignVCenter; Layout.maximumWidth: 200 }
                             Item { Layout.fillWidth: true; visible: modelData.customer.length === 0 }
                         }
-                        Txt { objectName: table.prefix + "Amount_" + index; text: modelData.amount; font.bold: true
-                              color: table.accent; horizontalAlignment: Text.AlignRight
-                              Layout.fillWidth: true; Layout.preferredWidth: 32
-                              Layout.minimumWidth: 96; Layout.alignment: Qt.AlignVCenter }
+                        // 3) المبلغ: the amount, and under it the bank / wallet it went through (never the safe).
+                        ColumnLayout {
+                            Layout.preferredWidth: 110; Layout.maximumWidth: 110; spacing: 0; Layout.alignment: Qt.AlignVCenter
+                            Txt { objectName: table.prefix + "Amount_" + index; text: modelData.amount; font.bold: true
+                                  color: table.accent; horizontalAlignment: Text.AlignLeft; Layout.fillWidth: true }
+                            Txt { objectName: table.prefix + "Account_" + index; text: "🏦 " + modelData.account
+                                  visible: modelData.external; color: theme.gold; font.pixelSize: theme.fontCaption
+                                  horizontalAlignment: Text.AlignLeft; Layout.fillWidth: true }
+                        }
                     }
                     // z: -1 keeps the row click UNDER the customer link (the link wins where they overlap).
                     MouseArea { id: rowArea; anchors.fill: parent; z: -1; hoverEnabled: true; enabled: modelData.linked
@@ -166,6 +177,12 @@ Rectangle {
                 }
                 Txt { anchors.centerIn: parent; visible: list.count === 0 && !!page.vm && !page.vm.busy
                       text: "لا توجد حركات في هذه الفترة"; color: theme.textMuted }
+            }
+            RowLayout {
+                objectName: table.prefix + "BankTotal"
+                visible: table.bankTotal.length > 0; Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                Txt { text: "🏦 عن طريق البنوك والمحافظ (خارج رصيد الخزنة)"; color: theme.gold; Layout.fillWidth: true }
+                Txt { text: table.bankTotal; color: theme.gold; font.bold: true }
             }
             // The summary bar: its amount is the strongest element of the table (~1.5× a row).
             Rectangle {
@@ -211,10 +228,10 @@ Rectangle {
                     }
                 }
                 Item { Layout.fillWidth: true }
-                Btn { objectName: "cashNewMovement"; text: "حركة نقدية جديدة"; primary: true
+                Btn { objectName: "cashNewMovement"; text: "مصروفات وإيرادات"; primary: true
                       visible: !!page.vm && page.vm.canOperate; enabled: !page.vm.saving
                       onClicked: movementDialog.begin() }
-                Btn { objectName: "cashCustomerCash"; text: "نقدية داخلة وخارجة"
+                Btn { objectName: "cashCustomerCash"; text: "حركة نقدية عملاء"
                       visible: !!page.vm && page.vm.canOperate
                       onClicked: customerCashDialog.begin() }
                 Btn { objectName: "cashRefresh"; text: "تحديث"; enabled: !!page.vm && !page.vm.busy
@@ -227,13 +244,13 @@ Rectangle {
             objectName: "cashFilters"
             Layout.fillWidth: true; spacing: 6; layoutDirection: Qt.RightToLeft
             Txt { text: "من"; height: 34; verticalAlignment: Text.AlignVCenter }
-            Field { id: start; objectName: "cashStart"; width: 115; placeholderText: "YYYY-MM-DD" }
+            DateField { id: start; objectName: "cashStart"; width: 138; height: 34 }
             Txt { text: "إلى"; height: 34; verticalAlignment: Text.AlignVCenter }
-            Field { id: end; objectName: "cashEnd"; width: 115; placeholderText: "YYYY-MM-DD" }
+            DateField { id: end; objectName: "cashEnd"; width: 138; height: 34 }
             Combo { id: labelFilter; objectName: "cashLabelFilter"; width: 160
                     model: page.vm ? page.vm.labels : []; textRole: "text"; valueRole: "code" }
             Btn { objectName: "cashApplyFilter"; text: "عرض"; enabled: !!page.vm && !page.vm.busy
-                  onClicked: page.vm.filter(start.text, end.text, labelFilter.currentValue || "") }
+                  onClicked: page.vm.filter(start.value, end.value, labelFilter.currentValue || "") }
             Txt { objectName: "cashMessage"; height: 34; verticalAlignment: Text.AlignVCenter
                   text: page.vm ? (page.vm.errorMessage || page.vm.message) : ""; visible: text.length > 0
                   color: page.vm && page.vm.errorMessage ? theme.red : theme.green }
@@ -248,12 +265,14 @@ Rectangle {
                 Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredWidth: 1
                 title: "📥 النقدية الداخلة"; accent: theme.green; totalLabel: "إجمالي النقدية الداخلة"
                 rows: page.vm ? page.vm.inRows : []; total: page.vm ? page.vm.inTotal : ""
+                bankTotal: page.vm ? page.vm.inBankTotal : ""
             }
             CashTable {
                 objectName: "cashOutTable"; prefix: "cashOut"
                 Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredWidth: 1
                 title: "📤 النقدية الخارجة"; accent: theme.accountPayable; totalLabel: "إجمالي النقدية الخارجة"
                 rows: page.vm ? page.vm.outRows : []; total: page.vm ? page.vm.outTotal : ""
+                bankTotal: page.vm ? page.vm.outBankTotal : ""
             }
         }
     }
@@ -359,7 +378,7 @@ Rectangle {
             spacing: 10
             RowLayout {
                 Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
-                Txt { text: "نقدية داخلة وخارجة"; font.bold: true; font.pixelSize: theme.fontSection; color: theme.gold }
+                Txt { text: "حركة نقدية عملاء"; font.bold: true; font.pixelSize: theme.fontSection; color: theme.gold }
                 Field { id: searchBox; objectName: "customerCashSearch"; Layout.fillWidth: true; placeholderText: "ابحث باسم العميل أو التليفون"
                         onTextEdited: page.vm.loadCustomerCash(text) }
                 Btn { objectName: "customerCashIn"; text: "نقدية داخلة"; chosen: customerCashDialog.mode === "IN"

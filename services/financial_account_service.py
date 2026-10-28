@@ -83,7 +83,7 @@ def movement_context(row):
         return "" if value in (None, "") else str(value)
     return {"reference": text("source_reference"), "invoice_number": text("invoice_number"),
             "corrected_reference": text("corrected_reference"), "customer": text("customer_name"),
-            "customer_id": text("customer_id"), "kind": text("label_key")}
+            "customer_id": text("customer_id"), "kind": text("label_key"), "detail": text("operation_reason")}
 
 
 def _text(value, *, required, label):
@@ -306,20 +306,33 @@ class FinancialAccountService:
                 raise ValueError("تاريخ البداية بعد النهاية.")
             rows = repository.cash_flow("CASH", cash["account_id"], datetime.combine(period[0], time.min),
                                         datetime.combine(period[1] + timedelta(days=1), time.min), label, CASH_ROWS)
-            banks = repository.operation_accounts() if OPERATE in actor.permissions else []
-            return cash, period, rows, banks
-        cash, period, rows, banks = self._read(actor, read)
+            account_rows = repository.operation_accounts()
+            banks = account_rows if OPERATE in actor.permissions else []
+            external = []                                          # bank / wallet movements: shown, never part of the safe's figures
+            if "BANK" in ledgers:
+                for account in account_rows:
+                    for r in repository.cash_flow("BANK", account["id"], datetime.combine(period[0], time.min),
+                                                  datetime.combine(period[1] + timedelta(days=1), time.min), label, CASH_ROWS):
+                        if r.get("label_key") not in ("TRANSFER_IN", "TRANSFER_OUT"):      # the safe's own table already shows those
+                            external.append({**r, "account_name": "محفظة" if account.get("account_type") == "MOBILE_WALLET" else "انستا", "external": True})       # the owner reads انستا (any bank) or محفظة, never the account name
+            return cash, period, rows, banks, external
+        cash, period, rows, banks, external = self._read(actor, read)
 
         def side(sign):
             chosen = [r for r in rows if (r["amount_delta"] > 0) == (sign > 0)]
-            return {"rows": [{"id": str(r["id"]), "label": self._label(r["label_key"]),
+            outside = [r for r in external if (Decimal(str(r["amount_delta"])) > 0) == (sign > 0)]
+            merged = sorted(chosen + outside, key=lambda r: (r.get("occurred_at") or datetime.min, int(r["id"])), reverse=True)
+            return {"rows": [{"id": ("B" if r.get("external") else "") + str(r["id"]), "label": self._label(r["label_key"]),
                               "amount": str(abs(Decimal(str(r["amount_delta"]))).quantize(Decimal("0.01"))),
                               "invoice_id": None if r.get("invoice_id") is None else str(r["invoice_id"]),
                               "operation_id": None if r.get("operation_id") is None else str(r["operation_id"]),
+                              "external": bool(r.get("external")), "account": r.get("account_name") or "",
                               **movement_context(r)}
-                             for r in chosen],
+                             for r in merged],
                     "total": str(abs(Decimal(str(chosen[0]["side_total"]))).quantize(Decimal("0.01"))) if chosen else "0.00",
-                    "count": int(chosen[0]["side_count"]) if chosen else 0}
+                    "count": int(chosen[0]["side_count"]) if chosen else 0,
+                    "bank_total": str(abs(sum((Decimal(str(r["amount_delta"])) for r in outside), Decimal("0"))).quantize(Decimal("0.01"))),
+                    "bank_count": len(outside)}
         return {"account": {"key": account_key("CASH", cash["account_id"]), "name": cash["name"],
                             "balance": str(Decimal(str(cash["balance"])))},
                 "start": period[0].isoformat(), "end": period[1].isoformat(),
@@ -368,7 +381,8 @@ class FinancialAccountService:
             cid = str(CustomerService._customer_id(customer_id))
         except Exception:
             raise CorrectionError("CUSTOMER_REQUIRED", "اختر عميلًا مسجلًا.") from None
-        category = "CUSTOMER_CASH_IN" if direction == "IN" else "CUSTOMER_CASH_OUT"
+        ledger_type = "CUSTOMER_CASH_IN" if direction == "IN" else "CUSTOMER_CASH_OUT"      # the customer-statement type
+        category = ledger_type
         operation = DEPOSIT if direction == "IN" else WITHDRAWAL
         state = {}
 
@@ -383,7 +397,7 @@ class FinancialAccountService:
             delta = -value if direction == "IN" else value
             current = repository.customer_balance(cid)
             label = "نقدية داخلة من العميل" if direction == "IN" else "نقدية خارجة للعميل"
-            repository.add_customer_transaction(customer_id=cid, type_code=category, amount_delta=delta, actor=actor,
+            repository.add_customer_transaction(customer_id=cid, type_code=ledger_type, amount_delta=delta, actor=actor,
                                                 operation_id=operation_id, code=code, description=f"{label} {code}", notes=text or None)
             state["after"] = current + delta
         result = self._finalize(operation, None if direction == "IN" else account, account if direction == "IN" else None,

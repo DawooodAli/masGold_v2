@@ -67,6 +67,9 @@ class CustomerCashMySqlTests(unittest.TestCase):
         result = service.customer_cash("IN", self.customer, f"CASH:{account}", "700", "اختبار", str(uuid4()))
         self.assertEqual(self.balance(), before - Decimal("700"))                                   # the statement moved toward للعميل
         out = service.customer_cash("OUT", self.customer, f"CASH:{account}", "300", "", str(uuid4()))
+        view = service.cash_view("2000-01-01", "2100-01-01")                                         # the read model names the customer on both rows
+        names = {r["customer"] for r in view["in"]["rows"] + view["out"]["rows"] if r["reference"].startswith("FO")}
+        self.assertTrue(any(n.startswith("عميل تجريبي") for n in names), names)
         self.assertEqual(self.balance(), before - Decimal("400"))
         cash_now = Decimal(str(self.scalar("SELECT COALESCE(SUM(amount_delta), 0) FROM cash_movements WHERE cash_account_id = %s", (account,))))
         self.assertEqual(cash_now, cash_before + Decimal("400"))

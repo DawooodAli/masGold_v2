@@ -121,7 +121,7 @@ class CashScreenTests(harness.InvoicePageTests):
         self.open_page()
         self.fin.changed.emit()
         self.wait_until(lambda: self.item("cashNavButton").property("visible"), "nav shown to cash viewers")
-        self.assertEqual(self.item("cashNavButton").property("text"), "💰  الخزنة")
+        self.assertEqual(self.item("cashNavButton").property("text"), "💰  حركة النقدية")
         target = os.getenv("MASGOLD_UI_REVIEW_DIR")
         for width, height in harness.SIZES:
             self.root.setWidth(width)
@@ -187,9 +187,9 @@ class CashScreenTests(harness.InvoicePageTests):
             for prefix, rows in (("cashIn", 4), ("cashOut", 5)):
                 label, amount = self.visible_item(f"{prefix}Info_0"), self.visible_item(f"{prefix}Amount_0")
                 share = label.width() / (label.width() + amount.width())
-                # The left cell now also carries the reference / customer: it keeps the larger share, and the
+                # The middle cell (reference / customer / detail) sits between the movement name and the amount column; the
                 # amount stays whole (never clipped) on the other side.
-                self.assertTrue(0.38 <= share <= 0.78, f"{prefix} info share {share:.2f} at {width}")
+                self.assertTrue(0.30 <= share <= 0.85, f"{prefix} info share {share:.2f} at {width}")
                 self.assertLessEqual(amount.property("contentWidth"), amount.property("width") + 1)
                 total, bar = self.visible_item(f"{prefix}Total"), self.visible_item(f"{prefix}TotalBar")
                 self.assert_inside_window(bar)
@@ -319,7 +319,7 @@ class CashScreenTests(harness.InvoicePageTests):
 
     def test_event_refresh_filters_and_period_preserved(self):
         self.open_page()
-        self.type_into("cashStart", "2026-09-01")
+        self.item("cashStart").setProperty("value", "2026-09-01")      # the calendar picker sets `value`
         self.choose("cashLabelFilter", 6)                                       # مصروفات? any code
         self.click("cashApplyFilter")
         self.wait_until(lambda: not self.fin.busy)

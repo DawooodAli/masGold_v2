@@ -3210,7 +3210,7 @@ ApplicationWindow {
 
                 // index 4: الخزنة — daily cash in / out and operational cash movements.
                 FinancialAccountsPage {
-                    pageTitle: "💰 الخزنة"
+                    pageTitle: "💰 حركة النقدية"
                     onInvoiceRequested: function(invoiceId) {
                         root.currentPage = 1
                         billingWorkspace.currentTab = 1
@@ -3395,7 +3395,7 @@ ApplicationWindow {
                     objectName: "cashNavButton"
                     // الخزنة: shown to users who may see the cash ledger (the service re-checks).
                     visible: typeof financialAccountsVM !== "undefined" && financialAccountsVM.canView
-                    text: "💰  الخزنة"
+                    text: "💰  حركة النقدية"
                     selected: root.currentPage === 4
 
                     onClicked:

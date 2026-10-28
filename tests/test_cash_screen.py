@@ -91,7 +91,7 @@ class CashMovementTests(FinancialTestCase):
 
     def test_no_second_customer_settlement_or_deposit_engine(self):
         self.assertEqual(set(CASH_TYPES), {"BANK_DEPOSIT", "BANK_WITHDRAWAL"})                     # the income / expense categories live in the cash_categories table (069)
-        for name in ("settle", "customer", "arboun"):
+        for name in ("settle", "arboun"):       # customer cash in / out (086) is its own flow over the same operations
             self.assertFalse(any(name in attr.lower() for attr in dir(self.fin)), name)
 
     def test_permissions(self):
@@ -119,10 +119,26 @@ class CashViewTests(FinancialTestCase):
         for row in view["in"]["rows"] + view["out"]["rows"]:
             # Stored identification only (reference, invoice, corrected transaction, customer) — never a raw code.
             self.assertEqual(set(row), {"id", "label", "amount", "invoice_id", "operation_id", "reference",
-                                        "invoice_number", "corrected_reference", "customer", "customer_id", "kind"})
+                                        "invoice_number", "corrected_reference", "customer", "customer_id", "kind", "detail",
+                                        "external", "account"})
         self.assertEqual(D(view["account"]["balance"]), self.cash())                             # authoritative
         self.assertEqual(view["account"]["key"], "CASH:1")
         self.assertNotIn("accounts", view)                                                      # no bank cards
+
+    def test_bank_movements_are_listed_with_their_account_but_never_added_to_the_safe_totals(self):
+        self.store.cash_rows = [cash_row(5, "25000", "SALE", ("25000", 1))]
+        self.store.bank_rows = [cash_row(9, "700", "CUSTOMER_CASH_IN", ("700", 1), operation_id=4),
+                                cash_row(8, "-300", "REPAIR", ("-300", 1)), cash_row(7, "50", "TRANSFER_IN", ("50", 1))]
+        for n, account in enumerate(self.store.bank_accounts.values()):          # one active account (the fake serves the same rows to each)
+            account["is_active"] = n == 0
+        next(iter(self.store.bank_accounts.values()))["name"] = "بنك مصر"
+        self.store.cash_rows[0]["occurred_at"] = datetime(2026, 10, 28, 12)
+        self.store.bank_rows[0]["occurred_at"] = datetime(2026, 10, 28, 11)    # the older one
+        view = self.fin.cash_view()
+        self.assertEqual([(r["external"], r["id"]) for r in view["in"]["rows"]], [(False, "5"), (True, "B9")])
+        self.assertIn(view["in"]["rows"][1]["account"], ("انستا", "محفظة"))
+        self.assertEqual((view["in"]["total"], view["in"]["bank_total"], view["out"]["total"], view["out"]["bank_total"]),
+                         ("25000.00", "700.00", "0.00", "300.00"))                                  # the internal transfer row is not listed
 
     def test_default_period_is_today_and_filter_is_validated(self):
         view = self.fin.cash_view()

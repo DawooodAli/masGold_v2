@@ -63,7 +63,7 @@ class FinRepo:
 
     def cash_flow(self, ledger, account_id, start, end, label="", limit=200):
         FinRepo.calls.append(("cash_flow", ledger, account_id, start, end, label, limit))
-        return copy.deepcopy(getattr(self.store, "cash_rows", []))
+        return copy.deepcopy(getattr(self.store, "bank_rows" if ledger == "BANK" else "cash_rows", []))
 
     def operation_accounts(self):
         return [{"id": a["id"], "name": a["name"], "account_type": a["account_type"]}

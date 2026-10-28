@@ -441,6 +441,7 @@ class FinancialAccountsViewModel(QObject):
                  # What identifies the movement (reference, invoice, customer): the row stays one clean line.
                  "reference": reference_text(r), "customer": r.get("customer") or "",
                  "customerId": r.get("customer_id") or "",
+                 "detail": r.get("detail") or "", "external": bool(r.get("external")), "account": r.get("account") or "",
                  "line": movement_line(r["label"], r, money(r["amount"]))}
                 for r in side.get("rows", [])]
 
@@ -459,6 +460,17 @@ class FinancialAccountsViewModel(QObject):
     @Property(str, notify=changed)
     def outTotal(self):
         return money(self._view.get("out", {}).get("total", "0"))
+
+    @Property(str, notify=changed)
+    def inBankTotal(self):
+        """Money received through banks / wallets in the period: informational, never part of the safe's total."""
+        side = self._view.get("in", {})
+        return money(side["bank_total"]) if side.get("bank_count") else ""
+
+    @Property(str, notify=changed)
+    def outBankTotal(self):
+        side = self._view.get("out", {})
+        return money(side["bank_total"]) if side.get("bank_count") else ""
 
     @Property("QVariantMap", notify=changed)
     def filters(self):
