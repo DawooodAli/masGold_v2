@@ -28,7 +28,8 @@ class SystemSettingsViewModel(QObject):
 
     @Property(bool, notify=changed)
     def canManage(self):
-        return self._can_manage
+        # From the session's rights, like the other settings cards: it must not wait for a refresh, which only runs once the card is shown.
+        return self._service is not None and self._service.can_manage()
 
     @Property(str, notify=changed)
     def message(self):
