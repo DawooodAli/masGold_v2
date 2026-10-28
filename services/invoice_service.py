@@ -45,6 +45,7 @@ from config.database_config import DatabaseConfig
 from database.connection import DatabaseConnection
 from repositories.customer_repository import CustomerRepository
 from repositories.dead_cash_repository import DeadCashRepository
+from services import customer_warning_rules as warning_rules
 from repositories.authentication_repository import AuthenticationRepository
 from repositories.invoice_repository import InvoiceRepository
 from services.authorization_service import AuthorizationService
@@ -349,7 +350,7 @@ class InvoiceService:
                 "customer_id": str(row["customer_id"]), "customer_code": row["customer_code"],
                 "name": row["name"], "mobile": row["mobile"], "place": row["place"],
                 "is_active": row["is_active"], "record_origin": row["record_origin"],
-                "customer_type_name": row.get("customer_type_name")}
+                "customer_type_name": row.get("customer_type_name"), "manual_flags": row.get("active_manual_flags")}
         if customer is None:
             raise InvoiceError("CUSTOMER_NOT_FOUND", "العميل غير موجود.")
         if customer["record_origin"] == "LEGACY_PLACEHOLDER":
@@ -1023,7 +1024,8 @@ class InvoiceService:
         rows = self._read_only(read)
         return [{"customer_id": str(r["customer_id"]), "customer_code": r["customer_code"], "name": r["name"],
                  "mobile": r["mobile"], "place": r["place"], "balance": _money(r.get("balance")),
-                 "dead_cash_warning": bool(r.get("has_active_dead_cash_warning"))} for r in rows]
+                 "dead_cash_warning": bool(r.get("has_active_dead_cash_warning")),
+                 "warnings": warning_rules.labels(r.get("active_manual_flags"))} for r in rows]
 
     def preview(self, draft: InvoiceDraft, *, _expected_actor=None):
         """Read-only recalculation for the screen; nothing is written."""
@@ -1139,6 +1141,7 @@ class InvoiceService:
             "customer_balance_before": _money(balance),
             "customer_balance_after": _money(None if balance is None else balance + calculated.account_signed),
             "dead_cash_warning_active": warning,
+            "customer_warnings": warning_rules.labels((customer or {}).get("manual_flags")),
             "requires_dead_cash_confirmation": any(p.code == "DEAD_CASH_CONFIRMATION_REQUIRED" for p in problems),
             "blocking_problems": [{"code": p.code, "message": str(p)} for p in problems
                                   if p.code != "DEAD_CASH_CONFIRMATION_REQUIRED"],

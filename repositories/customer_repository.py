@@ -44,6 +44,10 @@ class CustomerRepository(BaseRepository):
                 WHERE f.customer_id = c.id AND f.is_active = TRUE
                   AND f.flag_type = 'DEAD_CASH_WARNING'
             ) AS has_active_dead_cash_warning,
+            (
+                SELECT GROUP_CONCAT(f.flag_type) FROM customer_flags f
+                WHERE f.customer_id = c.id AND f.is_active = TRUE AND f.flag_type <> 'DEAD_CASH_WARNING'
+            ) AS active_manual_flags,
             EXISTS (
                 SELECT 1 FROM dead_cash_writeoffs d
                 WHERE d.customer_id = c.id
@@ -146,6 +150,7 @@ class CustomerRepository(BaseRepository):
             AND (%s IS NULL OR b.balance_status = %s)
             AND (%s OR c.record_origin <> 'LEGACY_PLACEHOLDER')
             AND (NOT %s OR c.record_origin = 'LEGACY_PLACEHOLDER')
+            AND c.merged_into_customer_id IS NULL
             ORDER BY c.id DESC
             LIMIT %s OFFSET %s
             """,
@@ -361,6 +366,31 @@ class CustomerRepository(BaseRepository):
             "items": items,
             "loaded_at": first["statement_loaded_at"],
         }
+
+    def active_flag_types(self, customer_id: int) -> dict:
+        """{flag_type: flag id} of the active flags, locked (the customer row is locked first)."""
+        rows = self._fetch_all(
+            "SELECT id, flag_type FROM customer_flags WHERE customer_id = %s AND is_active = TRUE FOR UPDATE",
+            (int(customer_id),))
+        return {r["flag_type"]: int(r["id"]) for r in rows}
+
+    def add_flag(self, customer_id: int, flag_type: str, reason: str, user_id) -> None:
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(
+                "INSERT INTO customer_flags (customer_id, flag_type, severity, reason, created_by_user_id) "
+                "VALUES (%s, %s, 'WARNING', %s, %s)", (int(customer_id), flag_type, reason, user_id))
+        finally:
+            cursor.close()
+
+    def deactivate_flag(self, flag_id: int, user_id, reason: str) -> None:
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(
+                "UPDATE customer_flags SET is_active = FALSE, deactivated_at = CURRENT_TIMESTAMP, deactivated_by_user_id = %s, "
+                "deactivation_reason = %s WHERE id = %s AND is_active = TRUE", (user_id, reason, int(flag_id)))
+        finally:
+            cursor.close()
 
     def get_active_customer_flags(self, customer_id: int) -> list[dict]:
         return self._fetch_all(

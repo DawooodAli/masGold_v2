@@ -321,7 +321,7 @@ class FinancialAccountService:
         def side(sign):
             chosen = [r for r in rows if (r["amount_delta"] > 0) == (sign > 0)]
             outside = [r for r in external if (Decimal(str(r["amount_delta"])) > 0) == (sign > 0)]
-            merged = sorted(chosen + outside, key=lambda r: (r.get("occurred_at") or datetime.min, int(r["id"])), reverse=True)
+            merged = sorted(chosen + outside, key=lambda r: (r.get("occurred_at") or datetime.min, int(r["id"])), reverse=True) if outside else chosen   # the safe's own order is kept unless bank rows are merged in
             return {"rows": [{"id": ("B" if r.get("external") else "") + str(r["id"]), "label": self._label(r["label_key"]),
                               "amount": str(abs(Decimal(str(r["amount_delta"]))).quantize(Decimal("0.01"))),
                               "invoice_id": None if r.get("invoice_id") is None else str(r["invoice_id"]),

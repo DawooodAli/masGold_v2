@@ -7,7 +7,7 @@ from services.customer_service import CustomerService
 from tests.auth_fakes import customers_page_service
 from tests.test_invoice_service import InvoiceServiceTestCase
 
-BILLING_FIELDS = {"customer_id", "customer_code", "name", "mobile", "place", "balance", "dead_cash_warning"}
+BILLING_FIELDS = {"customer_id", "customer_code", "name", "mobile", "place", "balance", "dead_cash_warning", "warnings"}
 
 
 class CustomersPageAuthorizationTests(unittest.TestCase):

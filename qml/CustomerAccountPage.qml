@@ -6,6 +6,8 @@ Rectangle {
     id: page
     objectName: "customerAccountPage"
     property var vm: typeof customerAccountVM !== "undefined" ? customerAccountVM : null
+    // embedded: the page sits inside the customer's file (the host draws the tabs, the balance and the write-off button).
+    property bool embedded: false
     signal invoiceRequested(string invoiceId)
     signal correctionRequested(string settlementId)
     signal depositCorrectionRequested(string depositId)
@@ -87,41 +89,37 @@ Rectangle {
             font.family: "Cairo"; contentItem: Txt { text: accountChoice.text } }
     }
     ColumnLayout {
-        anchors.fill: parent; anchors.margins: 12; spacing: 7
+        anchors.fill: parent; anchors.margins: page.embedded ? 0 : 12; spacing: 7
         RowLayout {
+            visible: !page.embedded
             Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
             Txt { text: page.vm ? page.vm.header : ""; font.bold: true; font.pixelSize: 18 }
             Btn { text: "تحديث"; enabled: page.vm && !page.vm.busy; onClicked: page.vm.refresh() }
             Btn { text: "رجوع للعملاء"; enabled: page.vm && !page.vm.busy; onClicked: page.vm.close() }
         }
         RowLayout {
+            visible: !page.embedded
             Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
             Txt { objectName: "accountBalance"; text: page.vm ? page.vm.balance : ""; color: theme.gold; font.pixelSize: 20 }
             Txt { text: "آخر حركة: " + (page.vm ? page.vm.lastMovement : "") }
+        }
+        Txt { text: page.vm ? page.vm.message : ""; visible: text.length>0; color: theme.gold }
+        RowLayout {
+            Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+            Btn { objectName: "customerAccountSettle"; text: "تسوية الحساب"; enabled: page.vm && !page.vm.busy && page.vm.canSettle
+                onClicked: { paymentDialog.open(); if (!page.vm.legs.length) page.vm.addLeg() } }
+            Btn { objectName: "customerDeposit"; text: "عربون"; visible: page.vm && page.vm.canDeposit
+                enabled: page.vm && !page.vm.busy; onClicked: depositDialog.begin("IN") }
+            Btn { objectName: "customerDepositRefund"; text: "استرداد عربون"; visible: page.vm && page.vm.canDeposit
+                enabled: page.vm && !page.vm.busy; onClicked: depositDialog.begin("OUT") }
             Btn { objectName: "customerAccountDeadCash"; text: "⛔ تحويل إلى رصيد مشطوب"
                 visible: page.deadCashAvailable
                 enabled: page.vm && !page.vm.busy && typeof customerVM !== "undefined" && !customerVM.busy
                 onClicked: page.deadCashRequested(page.vm.customerId) }
+            Item { Layout.fillWidth: true }
         }
-        Rectangle {
-            objectName: "customerCustodyCard"
-            visible: !!page.vm && page.vm.custody.length > 0
-            Layout.fillWidth: true; implicitHeight: custodyColumn.implicitHeight + 14
-            color: theme.bgSecondary; radius: 6; border.color: theme.cardBorder
-            ColumnLayout {
-                id: custodyColumn; anchors.left: parent.left; anchors.right: parent.right; anchors.margins: 8; y: 7; spacing: 3
-                Txt { objectName: "customerCustodyTotal"; font.bold: true; color: theme.amber
-                      text: page.vm ? "عهد وسلف مفتوحة (خارج الرصيد): " + page.vm.custodyTotal : "" }
-                Repeater {
-                    model: page.vm ? page.vm.custody : []
-                    delegate: Txt { required property var modelData; color: theme.textMuted; font.pixelSize: 12
-                        text: (modelData.borrowed ? "سلفة منه (علينا) • " : "عهدة عنده • ") + modelData.code + " • " + modelData.date + " • المبلغ " + modelData.amount + " • المسدد " + modelData.repaid + " • المتبقي " + modelData.owed
-                              + (modelData.note.length > 0 ? " • " + modelData.note : "") }
-                }
-            }
-        }
-        Txt { text: page.vm ? page.vm.message : ""; visible: text.length>0; color: theme.gold }
         RowLayout {
+            visible: !page.embedded
             Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
             Btn { objectName: "customerAccountStatementTab"; text: "كشف الحساب"; checkable: true
                 checked: page.vm && page.vm.activeTab===0; enabled: page.vm && !page.vm.busy
@@ -146,7 +144,7 @@ Rectangle {
             visible: page.vm && page.vm.activeTab===0
             Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 110
             clip: true; spacing: 5; model: page.vm ? page.vm.rows : []
-            ScrollBar.vertical: ScrollBar {}
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AlwaysOn }
             delegate: Rectangle {
                 required property var modelData
                 width: statement.width; height: facts.implicitHeight+16; radius: 6
@@ -191,27 +189,22 @@ Rectangle {
             visible: page.vm && page.vm.activeTab===1
             Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 110
             clip: true; spacing: 5; model: page.vm ? page.vm.invoiceRows : []
-            ScrollBar.vertical: ScrollBar {}
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AlwaysOn }
             delegate: Rectangle {
                 required property var modelData
-                width: invoiceList.width; height: invoiceFacts.implicitHeight+16
+                width: invoiceList.width; height: 40
                 color: theme.bgSecondary; radius: 6; border.color: theme.border
-                ColumnLayout {
-                    id: invoiceFacts; anchors.left: parent.left; anchors.right: parent.right
-                    anchors.margins: 8; y: 8
-                    RowLayout {
-                        Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
-                        Btn { objectName: "customerInvoice_"+modelData.invoiceId
-                            text: "فاتورة "+modelData.number
-                            onClicked: page.vm.openInvoice(modelData.invoiceId) }
-                        Txt { text: modelData.date }
-                        Txt { text: modelData.kind }
-                    }
-                    RowLayout {
-                        Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
-                        Txt { text: "إجمالي الفاتورة: "+modelData.total; color: theme.gold }
-                        Txt { text: modelData.status }
-                    }
+                // one compact line per invoice: number, date, kind, total, status
+                RowLayout {
+                    id: invoiceFacts; anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8
+                    layoutDirection: Qt.RightToLeft; spacing: 10
+                    Btn { objectName: "customerInvoice_"+modelData.invoiceId; implicitHeight: 28
+                        text: "فاتورة "+modelData.number
+                        onClicked: page.vm.openInvoice(modelData.invoiceId) }
+                    Txt { text: modelData.date; Layout.fillWidth: false; Layout.preferredWidth: 150; wrapMode: Text.NoWrap }
+                    Txt { text: modelData.kind; Layout.fillWidth: false; Layout.preferredWidth: 70; wrapMode: Text.NoWrap }
+                    Txt { text: "الإجمالي: "+modelData.total; color: theme.gold; Layout.fillWidth: false; Layout.preferredWidth: 170; wrapMode: Text.NoWrap }
+                    Txt { text: modelData.status; wrapMode: Text.NoWrap }
                 }
             }
             Txt { anchors.centerIn: parent; visible: invoiceList.count===0 && page.vm && !page.vm.busy
@@ -222,12 +215,6 @@ Rectangle {
             Btn { text: "السابق"; enabled: page.vm && !page.vm.busy && page.vm.pageNumber>1; onClicked: page.vm.page(-1) }
             Txt { text: "صفحة "+(page.vm ? page.vm.pageNumber : 1) }
             Btn { text: "التالي"; enabled: page.vm && !page.vm.busy && page.vm.hasMore; onClicked: page.vm.page(1) }
-            Btn { objectName: "customerAccountSettle"; text: "تسوية الحساب"; enabled: page.vm && !page.vm.busy && page.vm.canSettle
-                onClicked: { paymentDialog.open(); if (!page.vm.legs.length) page.vm.addLeg() } }
-            Btn { objectName: "customerDeposit"; text: "عربون"; visible: page.vm && page.vm.canDeposit
-                enabled: page.vm && !page.vm.busy; onClicked: depositDialog.begin("IN") }
-            Btn { objectName: "customerDepositRefund"; text: "استرداد عربون"; visible: page.vm && page.vm.canDeposit
-                enabled: page.vm && !page.vm.busy; onClicked: depositDialog.begin("OUT") }
         }
     }
     // عربون / استرداد عربون — cash only (الخزنة), amount and an optional note; confirmation before posting.
@@ -237,7 +224,7 @@ Rectangle {
         property bool confirming: false
         function begin(d) { direction = d; confirming = false; depositAmount.text = ""; depositNote.text = ""
             if (d === "OUT") page.vm.beginRefund(); else page.vm.beginDeposit(); open() }
-        anchors.centerIn: parent; width: Math.min(page.width-24,460)
+        parent: Overlay.overlay; anchors.centerIn: parent; width: Math.min(Overlay.overlay.width-24,460)   // centred on the window, never on the (taller) embedded page
         modal: true; title: direction === "IN" ? "عربون" : "استرداد عربون"; font.family: "Cairo"
         closePolicy: page.vm && page.vm.busy ? Popup.NoAutoClose : Popup.CloseOnEscape
         background: Rectangle { color: theme.bgPrimary; radius: 8; border.color: theme.goldDark }
@@ -277,7 +264,7 @@ Rectangle {
     }
     Dialog {
         id: paymentDialog; objectName: "customerAccountPaymentDialog"
-        anchors.centerIn: parent; width: Math.min(page.width-24,760); height: Math.min(page.height-24,500)
+        parent: Overlay.overlay; anchors.centerIn: parent; width: Math.min(Overlay.overlay.width-24,760); height: Math.min(Overlay.overlay.height-24,500)
         modal: true; title: "تسوية الحساب"; font.family: "Cairo"
         closePolicy: page.vm && page.vm.busy ? Popup.NoAutoClose : Popup.CloseOnEscape
         background: Rectangle { color: theme.bgPrimary; radius: 8; border.color: theme.goldDark }

@@ -445,7 +445,7 @@ class CommandLineTests(unittest.TestCase):
                 mock.patch("subprocess.run", side_effect=AssertionError("no process expected")):
             code, out, _ = self.run_cli(["verify"])
         self.assertEqual(code, 0)
-        self.assertIn("OK: 86 files verified", out)
+        self.assertIn("OK: 87 files verified", out)
 
     def test_end_to_end_with_fake_mysql(self):
         runner = FakeRunner(stdout=b"")

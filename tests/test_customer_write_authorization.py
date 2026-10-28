@@ -145,7 +145,7 @@ class BillingIsolationTests(InvoiceServiceTestCase):
         rows = self.service.search_customers("عميل")
         self.assertEqual([r["customer_id"] for r in rows], ["12"])
         self.assertEqual(set(rows[0]), {"customer_id", "customer_code", "name", "mobile", "place", "balance",
-                                        "dead_cash_warning"})                # the approved field set, unchanged
+                                        "dead_cash_warning", "warnings"})                # the approved field set, unchanged
         self.assertEqual(self.store.customers, before)                       # a search changes nothing
         self.assertEqual(self.authorization.checked, [])                     # and takes no write check
         # The Billing service exposes no customer edit / deactivate / reactivate operation at all.

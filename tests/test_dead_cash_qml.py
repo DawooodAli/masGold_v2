@@ -32,7 +32,8 @@ class DeadCash:
     def context(self, customer_id):
         return {"customer_id": "12", "name": "أحمد", "balance": "23000.00", "eligible": True}
 
-    def write_off(self, *args):
+    def write_off(self, *args, silent=None):
+        self.silent = silent                                                       # the dialog's «شطب صامت» choice (default checked)
         self.calls.append(("write_off",) + args)
         return {"id": "2", "code": "DC000002", "amount": "8000.00", "balance_before": "23000.00",
                 "balance_after": "15000.00", "duplicate": False}
@@ -102,7 +103,7 @@ class DeadCashPageTests(harness.InvoicePageTests):
                 for part in ("عدد مرات الشطب: 1", "إجمالي الرصيد المشطوب: 4,000 ج", "آخر تاريخ شطب:"):
                     self.assertIn(part, summary)
                 before = len(self.dead.calls)
-                button = self.scroll_to("writeOffButton")
+                button = self.scroll_to("customerAccountDeadCash")
                 self.assert_inside_window(button)
                 self.click(button)
                 dialog = self.item("writeOffDialog")
@@ -132,6 +133,7 @@ class DeadCashPageTests(harness.InvoicePageTests):
                 self.assertEqual(call[:6][:5], ("write_off", "12", "8000", "عميل مسافر ولا يمكن التحصيل",
                                                 "owner-password"))
                 self.assertEqual(call[5], "23000.00")                                     # the dialog's balance
+                self.assertIs(self.dead.silent, True)                                     # silent by default: no warning flag later
                 self.wait_until(lambda: not dialog.property("visible"), "dialog closes")
                 # History: business reference + status, reversal with reason + password.
                 self.item("customersPage").setProperty("historyTab", 2)

@@ -1587,7 +1587,8 @@ class InvoiceViewModel(QObject):
     def customerSuggestions(self):
         return [{"customerId": c["customer_id"], "name": c["name"], "mobile": c.get("mobile") or "",
                  "place": c.get("place") or "", "code": c.get("customer_code") or "",
-                 "accountText": account_text(c.get("balance")), "deadCash": bool(c.get("dead_cash_warning"))}
+                 "accountText": account_text(c.get("balance")), "deadCash": bool(c.get("dead_cash_warning")),
+                 "warnings": list(c.get("warnings") or [])}
                 for c in self._customer_suggestions]
 
     @Property("QVariantMap", notify=changed)
@@ -1599,15 +1600,16 @@ class InvoiceViewModel(QObject):
             return {"state": "EXISTING", "name": c["name"], "mobile": c.get("mobile") or "",
                     "place": c.get("place") or "", "code": c.get("customer_code") or "",
                     "accountText": account_text(balance if balance is not None else c.get("balance")),
-                    "deadCash": bool(c.get("dead_cash_warning")) or self.deadCashWarning}
+                    "deadCash": bool(c.get("dead_cash_warning")) or self.deadCashWarning,
+                    "warnings": list((self._preview.get("customer_warnings") if self.previewReady else None) or c.get("warnings") or [])}
         if self._new_customer["name"]:
             same = self._preview.get("new_customer_same_mobile", []) if self.previewReady else []
             return {"state": "NEW", "name": self._new_customer["name"], "mobile": self._new_customer["mobile"],
                     "place": self._new_customer["place"], "code": "",
                     "accountText": "عميل جديد — يُسجل عند الحفظ",
-                    "deadCash": False, "sameMobile": same[0]["name"] if same else ""}
+                    "deadCash": False, "warnings": [], "sameMobile": same[0]["name"] if same else ""}
         return {"state": "NONE", "name": "", "mobile": "", "place": "", "code": "", "accountText": "",
-                "deadCash": False}
+                "deadCash": False, "warnings": []}
 
     @Property("QVariantList", notify=changed)
     def priceRows(self):

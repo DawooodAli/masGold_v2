@@ -3776,51 +3776,6 @@ ApplicationWindow {
     }
 
     component CustomersPage: Item {
-        CustomerAccountPage {
-            anchors.fill: parent
-            z: 10
-            visible: typeof customerAccountVM !== "undefined" && customerAccountVM.isOpen && !customersPage.showProfile
-            onInvoiceRequested: function(invoiceId) {
-                root.currentPage = 1
-                billingWorkspace.currentTab = 1
-                invoiceHistoryVM.openInvoice(invoiceId)
-            }
-            onCorrectionRequested: function(settlementId) {
-                root.currentPage = 1
-                correctionVM.openCustomerSettlement(settlementId)
-            }
-            onDepositCorrectionRequested: function(depositId) {
-                root.currentPage = 1
-                correctionVM.openCustomerDeposit(depositId)
-            }
-            // The ONE write-off flow (customerVM.openWriteOff / writeOffDialog) acts on customerVM's selection,
-            // so it is pinned to the account's immutable customer id first; any mismatch refuses to open it.
-            // عكس الشطب from the write-off row itself: the ONE existing reversal dialog (reason + password).
-            onDeadCashReversalRequested: function(customerId, deadCashId, reference, amountText) {
-                if (!customerId || customerAccountVM.customerId !== customerId)
-                    return
-                if (customerVM.selectedCustomerId !== customerId && !customerVM.selectCustomer(customerId))
-                    return
-                if (customerVM.selectedCustomerId !== customerId || !customerVM.canReverseDeadCash)
-                    return
-                reverseDeadCashDialog.begin(deadCashId, reference, amountText)
-            }
-            onDeadCashRequested: function(customerId) {
-                if (!customerId || customerAccountVM.customerId !== customerId)
-                    return
-                if (customerVM.selectedCustomerId !== customerId && !customerVM.selectCustomer(customerId))
-                    return
-                if (customerVM.selectedCustomerId !== customerId || customerAccountVM.customerId !== customerId)
-                    return
-                if (!customerVM.canWriteOff)
-                    return
-                if (customerVM.openWriteOff() && customerVM.selectedCustomerId === customerId)
-                    writeOffDialog.begin()
-                else
-                    customerVM.closeWriteOff()
-            }
-        }
-
         id: customersPage
         objectName: "customersPage"
         property string pageTitle: ""
@@ -3834,6 +3789,24 @@ ApplicationWindow {
         readonly property var customer: customerVM.selectedCustomer || ({})
         readonly property var statement: customerVM.statementSummary || ({})
         readonly property var filterTypes: [{"id": 0, "label": "كل أنواع العملاء"}].concat(customerVM.customerTypes)
+
+        // كشف الحساب / الفواتير live inside the customer's file: the account view model follows the selected customer.
+        function showAccountTab(tab) {
+            customersPage.historyTab = tab
+            var id = customerVM.selectedCustomerId
+            if (id && (!customerAccountVM.isOpen || customerAccountVM.customerId !== id))
+                customerAccountVM.open(id)
+            if (customerAccountVM.isOpen)
+                customerAccountVM.setTab(tab === 3 ? 1 : 0)
+        }
+        Connections {
+            target: customerVM
+            function onSelectionChanged() {
+                if (customersPage.visible && customerVM.selectedCustomerId
+                        && (customersPage.historyTab === 0 || customersPage.historyTab === 3))
+                    customersPage.showAccountTab(customersPage.historyTab)
+            }
+        }
 
         function initialize() {
             if (visible) {
@@ -3888,7 +3861,7 @@ ApplicationWindow {
                 CustomerButton {
                     text: "\u0643\u0634\u0641 \u062d\u0633\u0627\u0628 / \u062a\u0633\u0648\u064a\u0629"
                     enabled: !!customerVM.selectedCustomerId
-                    onClicked: { customersPage.showProfile = false; customerAccountVM.open(customerVM.selectedCustomerId) }
+                    onClicked: { customersPage.showProfile = false; customersPage.revealDetails(); customersPage.showAccountTab(0) }
                 }
                 CustomerButton {
                     objectName: "addCustomerButton"
@@ -4198,7 +4171,7 @@ ApplicationWindow {
                             }
                             ColumnLayout {
                                 Layout.fillWidth: true
-                                visible: customerVM.hasSelection
+                                visible: customerVM.hasSelection || customerAccountVM.isOpen
                                 spacing: 5
                                 RowLayout {
                                     Layout.fillWidth: true
@@ -4206,6 +4179,13 @@ ApplicationWindow {
                                         text: "تعديل البيانات"
                                         enabled: !customerVM.busy
                                         onClicked: customerFormDialog.openEdit(customerVM.selectedCustomerId)
+                                    }
+                                    CustomerButton {
+                                        objectName: "customerMergeButton"
+                                        text: "دمج / حذف"
+                                        visible: customerVM.canMergeCustomers
+                                        enabled: !customerVM.busy
+                                        onClicked: if (customerVM.openMerge()) customerMergeDialog.begin()
                                     }
                                     CustomerButton {
                                         objectName: "customerStatusButton"
@@ -4220,36 +4200,20 @@ ApplicationWindow {
                                     }
                                 }
                                 CustomerLabel {
+                                    objectName: "customerCompactFacts"
                                     Layout.fillWidth: true
-                                    value: "رقم العميل: " + String(customersPage.customer.id || "")
-                                    color: theme.gold
-                                    font.pixelSize: 14
-                                    font.bold: true
+                                    value: "رقم " + String(customersPage.customer.id || "") + "  ·  " + String(customersPage.customer.customer_code || "")
+                                           + "  ·  " + String(customersPage.customer.type_label || "—")
+                                           + "  ·  " + String(customersPage.customer.mobile || "—")
+                                           + "  ·  " + String(customersPage.customer.place || "—")
+                                    color: theme.textSecondary
+                                    font.pixelSize: 12
                                 }
-                                CustomerDetail {
+                                CustomerLabel {
                                     Layout.fillWidth: true
-                                    caption: "الكود"
-                                    value: String(customersPage.customer.customer_code || "")
-                                }
-                                CustomerDetail {
-                                    Layout.fillWidth: true
-                                    caption: "النوع"
-                                    value: String(customersPage.customer.type_label || "")
-                                }
-                                CustomerDetail {
-                                    Layout.fillWidth: true
-                                    caption: "الهاتف"
-                                    value: String(customersPage.customer.mobile || "")
-                                }
-                                CustomerDetail {
-                                    Layout.fillWidth: true
-                                    caption: "المكان"
-                                    value: String(customersPage.customer.place || "")
-                                }
-                                CustomerDetail {
-                                    Layout.fillWidth: true
-                                    caption: "آخر حركة مالية"
-                                    value: String(customersPage.customer.last_transaction_text || "")
+                                    value: "آخر حركة مالية: " + String(customersPage.customer.last_transaction_text || "—")
+                                    color: theme.textMuted
+                                    font.pixelSize: 11
                                 }
                                 CustomerLabel {
                                     Layout.fillWidth: true
@@ -4294,14 +4258,6 @@ ApplicationWindow {
                                         }
                                     }
                                 }
-                                CustomerButton {
-                                    objectName: "writeOffButton"
-                                    Layout.fillWidth: true
-                                    visible: customerVM.canWriteOff
-                                    enabled: !customerVM.busy
-                                    text: "⛔ تحويل إلى رصيد مشطوب"
-                                    onClicked: if (customerVM.openWriteOff()) writeOffDialog.begin()
-                                }
                                 CustomerDetail {
                                     Layout.fillWidth: true
                                     caption: "ملاحظات"
@@ -4320,15 +4276,18 @@ ApplicationWindow {
                                     value: String(customersPage.customer.active_warning_count || 0)
                                 }
                                 RowLayout {
+                                    id: customerHistoryTabs
                                     Layout.fillWidth: true
                                     layoutDirection: Qt.RightToLeft
                                     CustomerButton {
+                                        objectName: "customerStatementTab"
                                         Layout.fillWidth: true
                                         text: "كشف الحساب"
                                         checked: customersPage.historyTab === 0
-                                        onClicked: customerAccountVM.open(customerVM.selectedCustomerId)
+                                        onClicked: customersPage.showAccountTab(0)
                                     }
                                     CustomerButton {
+                                        objectName: "customerWarningsTab"
                                         Layout.fillWidth: true
                                         text: "التحذيرات"
                                         checked: customersPage.historyTab === 1
@@ -4342,6 +4301,13 @@ ApplicationWindow {
                                         checked: customersPage.historyTab === 2
                                         onClicked: customersPage.historyTab = 2
                                     }
+                                    CustomerButton {
+                                        objectName: "customerInvoicesHistoryTab"
+                                        Layout.fillWidth: true
+                                        text: "الفواتير"
+                                        checked: customersPage.historyTab === 3
+                                        onClicked: customersPage.showAccountTab(3)
+                                    }
                                 }
                                 CustomerLabel {
                                     Layout.fillWidth: true
@@ -4349,15 +4315,109 @@ ApplicationWindow {
                                     color: theme.textMuted
                                     font.pixelSize: 10
                                 }
-                                CustomerButton {
+                            CustomerAccountPage {
+                                id: customerAccountHost
+                                embedded: true
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: Math.max(380, customerBodyScroll.availableHeight - 330)   // fills the free space of a tall window; never below 380, the lists scroll inside
+                                color: "transparent"
+                                visible: typeof customerAccountVM !== "undefined" && customerAccountVM.isOpen && (customersPage.historyTab === 0 || customersPage.historyTab === 3)
+                                        onInvoiceRequested: function(invoiceId) {
+                                            root.currentPage = 1
+                                            billingWorkspace.currentTab = 1
+                                            invoiceHistoryVM.openInvoice(invoiceId)
+                                        }
+                                        onCorrectionRequested: function(settlementId) {
+                                            root.currentPage = 1
+                                            correctionVM.openCustomerSettlement(settlementId)
+                                        }
+                                        onDepositCorrectionRequested: function(depositId) {
+                                            root.currentPage = 1
+                                            correctionVM.openCustomerDeposit(depositId)
+                                        }
+                                        // The ONE write-off flow (customerVM.openWriteOff / writeOffDialog) acts on customerVM's selection,
+                                        // so it is pinned to the account's immutable customer id first; any mismatch refuses to open it.
+                                        // عكس الشطب from the write-off row itself: the ONE existing reversal dialog (reason + password).
+                                        onDeadCashReversalRequested: function(customerId, deadCashId, reference, amountText) {
+                                            if (!customerId || customerAccountVM.customerId !== customerId)
+                                                return
+                                            if (customerVM.selectedCustomerId !== customerId && !customerVM.selectCustomer(customerId))
+                                                return
+                                            if (customerVM.selectedCustomerId !== customerId || !customerVM.canReverseDeadCash)
+                                                return
+                                            reverseDeadCashDialog.begin(deadCashId, reference, amountText)
+                                        }
+                                        onDeadCashRequested: function(customerId) {
+                                            if (!customerId || customerAccountVM.customerId !== customerId)
+                                                return
+                                            if (customerVM.selectedCustomerId !== customerId && !customerVM.selectCustomer(customerId))
+                                                return
+                                            if (customerVM.selectedCustomerId !== customerId || customerAccountVM.customerId !== customerId)
+                                                return
+                                            if (!customerVM.canWriteOff)
+                                                return
+                                            if (customerVM.openWriteOff() && customerVM.selectedCustomerId === customerId)
+                                                writeOffDialog.begin()
+                                            else
+                                                customerVM.closeWriteOff()
+                                        }
+                                    }
+                                // التحذيرات: the owner's ticks — each ticked warning shows beside the customer when the name is entered in a new invoice.
+                                CustomerCard {
+                                    objectName: "customerWarningsPanel"
                                     Layout.fillWidth: true
-                                    visible: customersPage.historyTab === 0
-                                    text: "\u0641\u062a\u062d \u0643\u0634\u0641 \u0627\u0644\u062d\u0633\u0627\u0628 \u0648\u0627\u0644\u062a\u0633\u0648\u064a\u0629"
-                                    onClicked: customerAccountVM.open(customerVM.selectedCustomerId)
+                                    visible: customersPage.historyTab === 1 && customerVM.canManageWarnings
+                                    implicitHeight: warningsColumn.implicitHeight + 20
+                                    color: theme.bgPrimary
+                                    ColumnLayout {
+                                        id: warningsColumn
+                                        anchors.fill: parent
+                                        anchors.margins: 10
+                                        spacing: 4
+                                        Repeater {
+                                            id: warningChecks
+                                            model: customerVM.warningOptions
+                                            delegate: CheckBox {
+                                                required property var modelData
+                                                objectName: "warningCheck_" + modelData.code
+                                                property string code: modelData.code
+                                                checked: modelData.checked
+                                                text: modelData.label
+                                                font.family: "Cairo"
+                                                contentItem: CustomerLabel {
+                                                    value: parent.text
+                                                    color: theme.textPrimary
+                                                    leftPadding: parent.indicator.width + 8
+                                                }
+                                            }
+                                        }
+                                        CustomerButton {
+                                            objectName: "saveWarningsButton"
+                                            text: "حفظ التحذيرات"
+                                            enabled: !customerVM.busy
+                                            onClicked: {
+                                                var picked = []
+                                                for (var i = 0; i < warningChecks.count; ++i) {
+                                                    var item = warningChecks.itemAt(i)
+                                                    if (item && item.checked) picked.push(item.code)
+                                                }
+                                                customerVM.saveWarnings(picked.join(","))
+                                            }
+                                        }
+                                    }
+                                }
+                                // الرصيد المشطوب: turn the Dead Cash warning off (the write-offs and the ledger stay as they are).
+                                CustomerButton {
+                                    objectName: "clearDeadCashWarningButton"
+                                    Layout.fillWidth: true
+                                    visible: customersPage.historyTab === 2 && customerVM.hasDeadCashWarning
+                                    enabled: !customerVM.busy
+                                    text: "تعطيل تحذير الرصيد المشطوب لهذا العميل"
+                                    onClicked: customerVM.clearDeadCashWarning()
                                 }
                                 ListView {
                                     id: customerHistory
-                                    visible: customersPage.historyTab !== 0
+                                    visible: customersPage.historyTab === 1 || customersPage.historyTab === 2
                                     objectName: "customerHistory"
                                     Layout.fillWidth: true
                                     Layout.preferredHeight: customersPage.historyTab === 0 ? 330 : 245
@@ -4792,6 +4852,7 @@ ApplicationWindow {
                 writeOffAmountRow.text = customerVM.writeOff.defaultAmount || ""
                 writeOffReasonRow.text = ""
                 writeOffPassword.text = ""
+                writeOffSilent.checked = true                  // the owner's default: no warning later
                 open()
             }
             onClosed: { writeOffPassword.text = ""; customerVM.closeWriteOff() }
@@ -4829,6 +4890,20 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     caption: "سبب شطب الرصيد *"
                     maximumLength: 1000
+                }
+                CheckBox {
+                    id: writeOffSilent
+                    objectName: "writeOffSilent"
+                    Layout.fillWidth: true
+                    visible: writeOffDialog.step === 0
+                    checked: true
+                    text: "شطب صامت: لا يظهر أي تحذير عند اختيار هذا العميل في فاتورة جديدة"
+                    font.family: "Cairo"
+                    contentItem: CustomerLabel {
+                        value: writeOffSilent.text
+                        color: theme.textPrimary
+                        leftPadding: writeOffSilent.indicator.width + 8
+                    }
                 }
                 CustomerLabel {
                     Layout.fillWidth: true
@@ -4896,9 +4971,142 @@ ApplicationWindow {
                     Layout.bottomMargin: 12
                     text: customerVM.busy ? "جارٍ التنفيذ…" : "تأكيد الشطب"
                     enabled: !customerVM.busy && writeOffPassword.text.length > 0
-                    onClicked: if (customerVM.submitWriteOff(writeOffAmountRow.text, writeOffReasonRow.text, writeOffPassword.text))
+                    onClicked: if (customerVM.submitWriteOff(writeOffAmountRow.text, writeOffReasonRow.text, writeOffPassword.text, writeOffSilent.checked))
                                    writeOffDialog.close()
                                 else writeOffPassword.text = ""
+                }
+            }
+        }
+
+        // دمج / حذف عميل: the open customer is merged INTO the picked one (all records move, this one is retired), or deleted when nothing points at it.
+        Dialog {
+            id: customerMergeDialog
+            objectName: "customerMergeDialog"
+            parent: Overlay.overlay
+            anchors.centerIn: parent
+            width: Math.min(640, root.width - 60)
+            modal: true
+            closePolicy: customerVM.busy ? Popup.NoAutoClose : Popup.CloseOnEscape
+            property string confirming: ""                 // "" | MERGE | DELETE
+            readonly property var details: customerVM.mergeDetails
+            readonly property var preview: customerVM.mergePreview(mergePicker.selectedCustomerId)
+            function begin() {
+                confirming = ""
+                mergeReasonRow.text = ""
+                mergePicker.clear()
+                open()
+            }
+            onClosed: { confirming = ""; customerVM.closeMerge() }
+            background: CustomerCard { border.color: theme.goldDark }
+            header: CustomerLabel {
+                value: "دمج / حذف العميل"
+                padding: 16
+                color: theme.gold
+                font.pixelSize: 18
+                font.bold: true
+            }
+            contentItem: ColumnLayout {
+                spacing: 10
+                CustomerDetail { Layout.fillWidth: true; caption: "العميل الحالي"; value: customerMergeDialog.details.name || "" }
+                CustomerDetail {
+                    objectName: "customerMergeUsage"
+                    Layout.fillWidth: true
+                    caption: "مرتبط به"
+                    value: {
+                        var u = customerMergeDialog.details.usage || []
+                        if (u.length === 0) return "لا شيء (لا فواتير ولا حركات)"
+                        var out = []
+                        for (var i = 0; i < u.length; ++i) out.push(u[i].label + " (" + u[i].count + ")")
+                        return out.join("، ")
+                    }
+                }
+                CustomerLabel {
+                    Layout.fillWidth: true
+                    visible: customerMergeDialog.confirming === ""
+                    value: "الدمج: كل سجلات هذا العميل (الفواتير والحساب والعربون والتسويات) تنتقل للعميل الذي تختاره، ويتعطل هذا العميل."
+                    color: theme.textSecondary
+                    font.pixelSize: 11
+                }
+                RowLayout {
+                    visible: customerMergeDialog.confirming === ""
+                    Layout.fillWidth: true
+                    spacing: 12
+                    CustomerPicker {
+                        id: mergePicker
+                        objectName: "customerMergePicker"
+                        Layout.fillWidth: true
+                        placeholderText: "اختر العميل الذي سيبقى"
+                    }
+                    CustomerLabel { Layout.preferredWidth: 100; value: "ادمجه في"; color: theme.textSecondary }
+                }
+                CustomerFormRow {
+                    id: mergeReasonRow
+                    objectName: "customerMergeReason"
+                    visible: customerMergeDialog.confirming === ""
+                    Layout.fillWidth: true
+                    caption: "سبب الدمج *"
+                    maximumLength: 500
+                }
+                CustomerLabel {
+                    objectName: "customerMergePreview"
+                    Layout.fillWidth: true
+                    visible: mergePicker.hasSelection
+                    value: customerMergeDialog.preview.valid ? customerMergeDialog.preview.text : (customerMergeDialog.preview.message || "")
+                    color: customerMergeDialog.preview.valid ? theme.amber : theme.red
+                    font.bold: customerMergeDialog.preview.valid
+                }
+                CustomerLabel {
+                    objectName: "customerDeleteHint"
+                    Layout.fillWidth: true
+                    visible: customerMergeDialog.confirming === "" && !customerMergeDialog.details.deletable
+                    value: "الحذف غير متاح: عليه سجلات. استخدم الدمج أو التعطيل."
+                    color: theme.textMuted
+                    font.pixelSize: 11
+                }
+                CustomerLabel {
+                    Layout.fillWidth: true
+                    visible: customerMergeDialog.confirming === "DELETE"
+                    value: "سيتم حذف العميل نهائيًا ولا يمكن التراجع. هل أنت متأكد؟"
+                    color: theme.red
+                    font.bold: true
+                }
+                CustomerMessageBox {
+                    visible: !customerVM.actionSuccess && customerVM.actionMessage.length > 0
+                    message: customerVM.actionMessage
+                    success: false
+                }
+            }
+            footer: RowLayout {
+                spacing: 10
+                CustomerButton {
+                    Layout.leftMargin: 16
+                    Layout.bottomMargin: 12
+                    text: customerMergeDialog.confirming === "" ? "إغلاق" : "رجوع"
+                    enabled: !customerVM.busy
+                    onClicked: customerMergeDialog.confirming === "" ? customerMergeDialog.close() : customerMergeDialog.confirming = ""
+                }
+                CustomerButton {
+                    objectName: "customerDeleteButton"
+                    Layout.bottomMargin: 12
+                    visible: customerMergeDialog.confirming !== "MERGE"
+                    text: customerMergeDialog.confirming === "DELETE" ? "تأكيد الحذف" : "حذف العميل"
+                    enabled: !customerVM.busy && !!customerMergeDialog.details.deletable
+                    onClicked: customerMergeDialog.confirming === "DELETE"
+                               ? (customerVM.submitDelete() ? customerMergeDialog.close() : customerMergeDialog.confirming = "")
+                               : customerMergeDialog.confirming = "DELETE"
+                }
+                Item { Layout.fillWidth: true }
+                CustomerButton {
+                    objectName: "customerMergeConfirm"
+                    Layout.rightMargin: 16
+                    Layout.bottomMargin: 12
+                    visible: customerMergeDialog.confirming !== "DELETE"
+                    text: customerMergeDialog.confirming === "MERGE" ? "تأكيد الدمج" : "دمج"
+                    enabled: !customerVM.busy && customerMergeDialog.preview.valid && mergeReasonRow.text.trim().length > 0
+                    onClicked: customerMergeDialog.confirming === "MERGE"
+                               ? (customerVM.submitMerge(mergePicker.selectedCustomerId, mergeReasonRow.text)
+                                  ? customerMergeDialog.close() : customerMergeDialog.confirming = "")
+                               : customerMergeDialog.confirming = "MERGE"
                 }
             }
         }

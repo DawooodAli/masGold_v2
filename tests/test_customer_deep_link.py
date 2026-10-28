@@ -122,7 +122,7 @@ class CustomerDeepLinkQmlTests(harness.InvoicePageTests):
             QTest.qWait(120)
             self.assertEqual(self.customers.selectedCustomerId,A)
             self.assertTrue(self.item('customersPage').property('visible'))
-            self.assertFalse(self.item('customerAccountPage').property('visible'))
+            self.assertEqual(self.controller.operational_viewmodels['customerAccountVM'].customerId,A)   # the account in the file is the selected customer's, never a stale one
             self.assert_inside_window(self.item('customerProfileName'))
             self.assertTrue(all(call.kwargs.get('search_text','')==''
                                 for call in self.customers._service.search_customers.call_args_list))

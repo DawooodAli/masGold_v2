@@ -336,6 +336,18 @@ class InvoicePageTests(unittest.TestCase):
                     f"ancestors (nearest first): {' < '.join(ancestors)}")
             yield child
 
+    def reveal_account(self, tab=0):
+        """Customers page: open the account tab (0 statement, 3 invoices) and let the file scroll to it, like a click on the tab."""
+        from PySide6.QtQml import QQmlExpression, QQmlEngine
+        page = self.item("customersPage")
+        QQmlExpression(QQmlEngine.contextForObject(page), page, f"showAccountTab({tab})").evaluate()
+        QTest.qWait(120)
+        body = self.item("customerBodyScroll")
+        QQmlExpression(QQmlEngine.contextForObject(body), body,        # the employee scrolls the file to the account
+                       "customerBodyScroll.contentItem.contentY = Math.max(0, Math.min(customerAccountHost.mapToItem(customerBody, 0, 0).y - 40,"
+                       " customerBodyScroll.contentItem.contentHeight - customerBodyScroll.height))").evaluate()
+        QTest.qWait(150)
+
     def visual_item(self, name, parent=None):
         parent = parent or self.root.contentItem()
         if parent.objectName() == name:

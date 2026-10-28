@@ -182,9 +182,9 @@ class DeadCashCase(unittest.TestCase):
                                customers=Customers, authorization=authorization, authentication=self.authentication)
 
     def write_off(self, amount="8000", reason="عميل مسافر ولا يمكن التحصيل", password=PASSWORD, expected=None,
-                  key=None, service=None):
+                  key=None, service=None, silent=False):
         expected = str(self.store.balance()) if expected is None else expected
-        return (service or self.service).write_off("12", amount, reason, password, expected, key or str(uuid4()))
+        return (service or self.service).write_off("12", amount, reason, password, expected, key or str(uuid4()), silent=silent)
 
     def refused(self, code, call):
         before = self.store.tables()
@@ -195,6 +195,13 @@ class DeadCashCase(unittest.TestCase):
 
 
 class WriteOffTests(DeadCashCase):
+    def test_a_silent_write_off_posts_everything_but_creates_no_warning(self):
+        result = self.write_off("8000", silent=True)                              # the owner's default in the dialog
+        self.assertEqual((result["balance_before"], result["balance_after"]), ("23000.00", "15000.00"))
+        self.assertEqual(len(self.store.writeoffs), 1)
+        self.assertEqual(self.store.flags, [])                                    # nothing warns when the customer is picked later
+        self.assertIn('"silent": true', self.store.audit[-1][2])
+
     def test_partial_write_off(self):
         result = self.write_off("8000")
         self.assertEqual((result["code"], result["balance_before"], result["balance_after"]),
@@ -412,7 +419,7 @@ class BillingWarningTests(unittest.TestCase):
         case.store.warnings[12] = {"flag_id": "1", "flag_type": "DEAD_CASH_WARNING"}      # an active warning
         rows = case.service.search_customers("عميل")
         self.assertEqual(set(rows[0]), {"customer_id", "customer_code", "name", "mobile", "place", "balance",
-                                        "dead_cash_warning"})                    # the flag only, no history
+                                        "dead_cash_warning", "warnings"})                    # the flag only, no history
         from services.invoice_service import InvoiceDraft
         from tests.test_invoice_service import cash
         from tests.test_invoice_workflow_service import scanned

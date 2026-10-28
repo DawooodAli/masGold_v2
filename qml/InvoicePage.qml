@@ -606,6 +606,24 @@ Item {
                     }
                 }
                 Rectangle {
+                    objectName: "customerWarningBanner"
+                    visible: (invoiceVM.customerInfo.warnings || []).length > 0
+                    Layout.preferredHeight: 22
+                    Layout.preferredWidth: manualWarningText.implicitWidth + 10
+                    color: "transparent"
+                    radius: 4
+                    border.color: theme.statusWarning
+                    Label {
+                        id: manualWarningText
+                        anchors.centerIn: parent
+                        text: "⚠️ " + (invoiceVM.customerInfo.warnings || []).join(" • ")
+                        color: theme.statusWarning
+                        font.family: "Cairo"
+                        font.pixelSize: 10
+                        font.bold: true
+                    }
+                }
+                Rectangle {
                     objectName: "deadCashBanner"
                     visible: invoiceVM.customerInfo.deadCash === true
                     Layout.preferredHeight: 22
@@ -2645,9 +2663,10 @@ Item {
                     }
                     Label {
                         Layout.fillWidth: true
-                        text: [modelData.mobile, modelData.place, modelData.code, modelData.deadCash ? "⚠️ سبق شطب رصيد" : ""]
+                        text: [modelData.mobile, modelData.place, modelData.code, modelData.deadCash ? "⚠️ سبق شطب رصيد" : "",
+                               (modelData.warnings || []).length > 0 ? "⚠️ " + modelData.warnings.join(" • ") : ""]
                               .filter(function(v) { return v.length > 0 }).join(" • ")
-                        color: modelData.deadCash ? theme.statusWarning : theme.textMuted
+                        color: (modelData.deadCash || (modelData.warnings || []).length > 0) ? theme.statusWarning : theme.textMuted
                         font.family: "Cairo"
                         font.pixelSize: 10
                         horizontalAlignment: Text.AlignRight

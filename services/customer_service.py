@@ -513,11 +513,49 @@ class CustomerService:
                 raise ValueError("العميل غير موجود.")
             if bool(existing["is_active"]) == is_active:
                 return
+            if is_active and self._merged_into(transaction.connection, customer_id) is not None:
+                raise ValueError("هذا العميل مدموج في عميل آخر ولا يمكن إعادة تفعيله.")
             # A nonzero balance and active flags never block this profile-only
             # change. The caller displays warnings before requesting it.
             repository.set_customer_active(
                 customer_id, is_active, updated_by_user_id=actor.user_id,
             )
+
+    def set_warnings(self, customer_id: int, codes) -> list[str]:
+        """The owner's warning checkboxes (services/customer_warning_rules.py): newly ticked ones are created, un-ticked ones are
+        closed (history kept). Needs the customer-management right, rechecked inside the transaction; the actor is the session user."""
+        from services import customer_warning_rules as rules
+        customer_id = self._customer_id(customer_id)
+        wanted = rules.clean(codes)
+        with DatabaseTransaction() as transaction:
+            actor = self._authorize_write(transaction.connection)
+            repository = CustomerRepository(transaction.connection)
+            if repository.get_customer_for_update(customer_id) is None:
+                raise ValueError("العميل غير موجود.")
+            active = repository.active_flag_types(customer_id)
+            for code in wanted:
+                if code not in active:
+                    repository.add_flag(customer_id, code, rules.LABELS[code], actor.user_id)
+            for code, flag_id in active.items():
+                if code in rules.CODES and code not in wanted:
+                    repository.deactivate_flag(flag_id, actor.user_id, "إلغاء التحذير")
+        return wanted
+
+    @staticmethod
+    def _merged_into(connection, customer_id):
+        """The surviving customer this one was merged into (migration 087); None when never merged or the database predates 087."""
+        from mysql.connector import ProgrammingError
+        cursor = connection.cursor()
+        try:
+            cursor.execute("SELECT merged_into_customer_id FROM customers WHERE id = %s", (int(customer_id),))
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return row.get("merged_into_customer_id") if isinstance(row, dict) else row[0]
+        except ProgrammingError:
+            return None
+        finally:
+            cursor.close()
 
     def deactivate_customer(self, customer_id: int, user_id: int | None = None) -> None:
         self._set_customer_active(customer_id, False, user_id)

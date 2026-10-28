@@ -60,8 +60,9 @@ class DeadCash:
         return {"customer_id": str(customer_id), "name": c["name"], "balance": str(c["balance"]),
                 "eligible": c["balance"] > 0}
 
-    def write_off(self, customer_id, amount, reason, password, expected_balance, request_key):
+    def write_off(self, customer_id, amount, reason, password, expected_balance, request_key, silent=None):
         cid = str(customer_id)
+        self.silent = silent
         self.writes.append((cid, amount, reason, password, expected_balance))
         self.ledger.customers[cid]["balance"] -= D(amount)
         self.ledger.rows[cid].append({"id": len(self.ledger.rows[cid]) + 1, "row_kind": "LEDGER",
@@ -138,6 +139,7 @@ class DeadCashAccountTests(harness.InvoicePageTests):
                 self.root.setProperty("currentPage", 3)
                 QTest.qWait(150)
                 self.open_account(A)
+                self.reveal_account(0)
                 button = self.button()
                 self.assertIsNotNone(button, "eligible debt + permission → action available")
                 self.assertIn("⛔ تحويل إلى رصيد مشطوب", button.property("text"))
@@ -208,6 +210,7 @@ class DeadCashAccountTests(harness.InvoicePageTests):
     def test_dead_cash_reversal_is_offered_on_its_own_movement_and_uses_the_existing_flow(self):
         self.reversal_fixture()
         self.open_account(A)
+        self.reveal_account(0)
         button = self.visible_item("accountDeadCashReverse_LEDGER1")
         self.assertIsNotNone(button, "an unreversed write-off row carries its reversal")
         self.assertEqual(button.property("text"), "عكس الشطب")

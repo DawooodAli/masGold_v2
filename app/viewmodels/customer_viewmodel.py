@@ -24,6 +24,7 @@ class CustomerViewModel(QObject):
     statementErrorChanged = Signal()
     deadCashChanged = Signal()                 # the write-off dialog state / summary changed
     deadCashFinalized = Signal(str)            # customer id: a write-off / reversal was posted
+    mergeChanged = Signal()                    # the merge / delete dialog state changed
 
     PAGE_SIZE = 100
     EDITABLE_FIELDS = (
@@ -43,6 +44,7 @@ class CustomerViewModel(QObject):
         self._default_service = service is None
         self._service = service if service is not None else CustomerService()
         self._session, self._dead_cash_service = None, None
+        self._merge_service, self._merge = None, {}
         self._dead_cash_summary, self._writeoff, self._writeoff_key = {}, {}, ""
         self._dead_cash_restricted = True
         self._customers = []
@@ -239,9 +241,12 @@ class CustomerViewModel(QObject):
         row = cls._qml_safe(raw)
         row["id"] = str(raw["flag_id"])
         row["severity_label"] = cls.SEVERITY_LABELS.get(raw.get("severity"), "تنبيه")
+        from services import customer_warning_rules as warning_rules
         row["type_label"] = (
             "تحذير: سبق شطب رصيد لهذا العميل"
-            if raw.get("flag_type") == "DEAD_CASH_WARNING" else "تنبيه للعميل"
+            if raw.get("flag_type") == "DEAD_CASH_WARNING"
+            else "تحذير: " + warning_rules.LABELS[raw["flag_type"]] if raw.get("flag_type") in warning_rules.LABELS
+            else "تنبيه للعميل"
         )
         return row
 
@@ -281,6 +286,12 @@ class CustomerViewModel(QObject):
             from services.dead_cash_service import DeadCashService
             self._dead_cash_service = DeadCashService(self._session)
         return self._dead_cash_service
+
+    def _merger(self):
+        if self._merge_service is None and self._session is not None:
+            from services.customer_merge_service import CustomerMergeService
+            self._merge_service = CustomerMergeService(self._session)
+        return self._merge_service
 
     def _publish_errors(self):
         self._error_message = "\n".join(self._read_errors.values())
@@ -748,6 +759,147 @@ class CustomerViewModel(QObject):
     def clearActionMessage(self):
         self._set_action("", False)
 
+    # ------------------------------------------------------------ تحذيرات العميل (checkboxes) وتعطيل تحذير الرصيد المشطوب
+    @Property("QVariantList", notify=historyChanged)
+    def warningOptions(self):
+        """The owner's warning choices with what is ticked now (from the customer's active flags)."""
+        from services import customer_warning_rules as warning_rules
+        active = {f.get("flag_type") for f in self._active_flags}
+        return [{"code": code, "label": label, "checked": code in active} for code, label in warning_rules.OPTIONS]
+
+    @Property(bool, notify=selectionChanged)
+    def canManageWarnings(self):
+        actor = self._session.current_actor() if self._session is not None else None
+        return bool(actor and "CUSTOMERS_MANAGE" in actor.permissions and self._selected_customer_id)
+
+    @Property(bool, notify=historyChanged)
+    def hasDeadCashWarning(self):
+        """The Dead Cash warning is ON for this customer and the actor may turn it off (DEAD_CASH_MANAGE)."""
+        service = self._dead_cash()
+        return bool(service and service.can_write_off() and any(f.get("flag_type") == "DEAD_CASH_WARNING" for f in self._active_flags))
+
+    @Slot(str, result=bool)
+    def saveWarnings(self, codes):
+        """`codes` = the ticked options joined by commas."""
+        if not self._selected_customer_id or self._busy:
+            return False
+        self._set_busy(True)
+        try:
+            self._service.set_warnings(self._selected_customer_id, [c for c in str(codes or "").split(",") if c])
+        except Exception as exc:
+            self._set_action(self._error_text(exc, "تعذر حفظ التحذيرات."), False)
+            return False
+        finally:
+            self._set_busy(False)
+        self._set_action("تم حفظ التحذيرات.", True)
+        self._load_customers(self._page)
+        self._load_profile(self._selected_customer_id)
+        return True
+
+    @Slot(result=bool)
+    def clearDeadCashWarning(self):
+        service = self._dead_cash()
+        if service is None or not self._selected_customer_id or self._busy:
+            return False
+        self._set_busy(True)
+        try:
+            service.clear_warning(self._selected_customer_id)
+        except Exception as exc:
+            self._set_action(self._error_text(exc, "تعذر تعطيل التحذير."), False)
+            return False
+        finally:
+            self._set_busy(False)
+        self._set_action("تم تعطيل تحذير الرصيد المشطوب.", True)
+        self._load_customers(self._page)
+        self._load_profile(self._selected_customer_id)
+        return True
+
+    # ------------------------------------------------------------ دمج / حذف عميل (migration 087)
+    @Property(bool, notify=selectionChanged)
+    def canMergeCustomers(self):
+        service = self._merger()
+        return bool(service and service.can_manage() and self._selected_customer_id)
+
+    @Property("QVariantMap", notify=mergeChanged)
+    def mergeDetails(self):
+        """The open dialog: what points at the selected customer and whether it may be deleted."""
+        return self._merge
+
+    @Slot(result=bool)
+    def openMerge(self):
+        service = self._merger()
+        if service is None or not self._selected_customer_id:
+            return False
+        try:
+            self._merge = service.usage(self._selected_customer_id)
+        except Exception as exc:
+            self._set_action(self._error_text(exc, "تعذر فتح نافذة الدمج."), False)
+            return False
+        self.mergeChanged.emit()
+        return True
+
+    @Slot()
+    def closeMerge(self):
+        self._merge = {}
+        self.mergeChanged.emit()
+
+    @Slot(str, result="QVariantMap")
+    def mergePreview(self, target_id):
+        """The review sentence for «دمج الحالي في target» (formatted here, never in QML)."""
+        service = self._merger()
+        if service is None or not self._selected_customer_id or not str(target_id or "").strip():
+            return {"valid": False}
+        try:
+            p = service.preview(self._selected_customer_id, target_id)
+        except Exception as exc:
+            return {"valid": False, "message": self._error_text(exc, "تعذر معاينة الدمج.")}
+        from decimal import Decimal
+        money = lambda v: presentation.money_text(Decimal(str(v))) + " ج"
+        moved = "، ".join(f"{m['label']} ({m['count']})" for m in p["moved"]) or "لا توجد سجلات"
+        return {"valid": True, "targetName": p["target_name"],
+                "text": f"سيتم نقل كل سجلات «{p['source_name']}» ({moved}) إلى «{p['target_name']}» ثم تعطيل «{p['source_name']}». "
+                        f"الرصيد قبل الدمج: {money(p['source_balance'])} + {money(p['target_balance'])}، "
+                        f"وبعد الدمج عند «{p['target_name']}»: {money(p['combined_balance'])}."}
+
+    @Slot(str, str, result=bool)
+    def submitMerge(self, target_id, reason):
+        service = self._merger()
+        if service is None or not self._selected_customer_id or self._busy:
+            return False
+        self._set_busy(True)
+        try:
+            result = service.merge(self._selected_customer_id, target_id, reason)
+        except Exception as exc:
+            self._set_action(self._error_text(exc, "تعذر دمج العميل."), False)
+            return False
+        finally:
+            self._set_busy(False)
+        self.closeMerge()
+        self._set_action(f"تم دمج العميل في «{result.get('target_name', '')}».", True)
+        self._load_customers(self._page)
+        self.selectCustomer(str(result["target_id"]))
+        self.deadCashFinalized.emit(str(result["target_id"]))           # the open account / invoice lists reload
+        return True
+
+    @Slot(result=bool)
+    def submitDelete(self):
+        service = self._merger()
+        if service is None or not self._selected_customer_id or self._busy:
+            return False
+        self._set_busy(True)
+        try:
+            result = service.delete(self._selected_customer_id)
+        except Exception as exc:
+            self._set_action(self._error_text(exc, "تعذر حذف العميل."), False)
+            return False
+        finally:
+            self._set_busy(False)
+        self.closeMerge()
+        self.clearSelection()
+        self._set_action(f"تم حذف العميل «{result['name']}».", True)
+        self._load_customers(self._page)
+        return True
+
     # ------------------------------------------------------------ Dead Cash (رصيد مشطوب)
     @Property("QVariantMap", notify=deadCashChanged)
     def deadCashSummary(self):
@@ -843,14 +995,14 @@ class CustomerViewModel(QObject):
         self._load_profile(str(customer_id))
         self.deadCashFinalized.emit(str(customer_id))
 
-    @Slot(str, str, str, result=bool)
-    def submitWriteOff(self, amount, reason, password):
+    @Slot(str, str, str, bool, result=bool)
+    def submitWriteOff(self, amount, reason, password, silent=True):
         w, service = self._writeoff, self._dead_cash()
         if not w or service is None or self._busy:
             return False
         self._set_busy(True)
         try:
-            result = service.write_off(w["customer_id"], amount, reason, password, w["balance"], self._writeoff_key)
+            result = service.write_off(w["customer_id"], amount, reason, password, w["balance"], self._writeoff_key, silent=bool(silent))
         except Exception as exc:
             self._set_action(self._error_text(exc, "تعذر شطب الرصيد."), False)
             return False

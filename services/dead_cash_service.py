@@ -122,7 +122,10 @@ class DeadCashService:
 
     # ------------------------------------------------------------ write-off
     def write_off(self, customer_id, amount, reason, password, expected_balance, request_key, *,
-                  _expected_actor=None):
+                  silent=True, _expected_actor=None):
+        """`silent` (the owner's default): the write-off creates NO DEAD_CASH_WARNING flag, so nothing warns when the
+        customer is picked in a new invoice; unchecked, the flag is created as before. Either way the write-off,
+        its ledger row and its audit stay."""
         session_actor = self._actor(_expected_actor, MANAGE)
         cid = str(CustomerService._customer_id(customer_id))
         value = _money(amount, "AMOUNT_INVALID", "اكتب مبلغ الشطب بالأرقام بخانتين عشريتين على الأكثر.")
@@ -135,7 +138,8 @@ class DeadCashService:
             key = str(UUID(str(request_key)))
         except (ArithmeticError, ValueError, TypeError, AttributeError):
             raise DeadCashError("REQUEST_INVALID", "أعد فتح نافذة الشطب وحاول مرة أخرى.") from None
-        digest = hashlib.sha256(json.dumps([cid, str(value), reason, str(expected)], ensure_ascii=False)
+        silent = bool(silent)
+        digest = hashlib.sha256(json.dumps([cid, str(value), reason, str(expected)] + ([] if silent else ["warn"]), ensure_ascii=False)
                                 .encode()).hexdigest()
         self._confirm_password(session_actor, password)
         with self._transaction() as connection:
@@ -163,15 +167,35 @@ class DeadCashService:
                 writeoff_transaction_id=transaction_id, reason=reason, created_by_user_id=actor.user_id,
                 request_key=key, request_hash=digest)
             code = writeoff_code(writeoff_id)
-            if repository.get_active_warning(cid, for_update=True) is None:
+            if not silent and repository.get_active_warning(cid, for_update=True) is None:
                 repository.create_warning(customer_id=cid, reason=f"سبق شطب رصيد لهذا العميل — {code}",
                                           created_by_user_id=actor.user_id, related_dead_cash_id=writeoff_id)
             self._audit(repository, actor, "DEAD_CASH_WRITTEN_OFF", writeoff_id, code, f"شطب رصيد {code}",
                         {"reference": code, "customer_id": cid, "amount": str(value), "before": str(before),
-                         "after": str(after), "reason": reason, "employee_id": actor.employee_id})
+                         "after": str(after), "reason": reason, "employee_id": actor.employee_id,
+                         "silent": silent})
             if not self._session.is_current(session_actor):
                 raise PermissionError("انتهت جلسة الدخول.")
         return self._result(writeoff_id, value, before, after)
+
+    def clear_warning(self, customer_id, *, _expected_actor=None):
+        """Turn the Dead Cash warning of a customer OFF (the owner's call): the flag row stays as history, no write-off and no ledger row is touched."""
+        session_actor = self._actor(_expected_actor, MANAGE)
+        cid = str(CustomerService._customer_id(customer_id))
+        with self._transaction() as connection:
+            actor = self._authorization.require_permission_for_write(connection, session_actor, MANAGE)
+            repository = self._repository(connection)
+            self._balances(connection).lock_balance(cid)
+            flag = repository.get_active_warning(cid, for_update=True)
+            if flag is None:
+                raise DeadCashError("NO_WARNING", "لا يوجد تحذير نشط لهذا العميل.")
+            repository.deactivate_warning(flag_id=flag["flag_id"], deactivated_by_user_id=actor.user_id,
+                                          reason="تعطيل التحذير بقرار المالك")
+            self._audit(repository, actor, "DEAD_CASH_WARNING_CLEARED", flag["flag_id"], f"C{int(cid):06d}",
+                        "تعطيل تحذير الرصيد المشطوب", {"customer_id": cid, "employee_id": actor.employee_id})
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        return {"customer_id": cid}
 
     # ------------------------------------------------------------ full reversal (a mistake)
     def reverse(self, writeoff_id, reason, password, *, _expected_actor=None):
