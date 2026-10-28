@@ -203,7 +203,8 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.vm.setSalesperson("5")
         self.vm.addBarcode("01260925")
         self.vm.addOldGold(1, "5")
-        self.vm.setPaymentDirection("OUT")
+        self.service.preview_result = preview(payment_direction="OUT", net_direction="SHOP_PAYS_CUSTOMER")
+        self.preview_now()
         self.vm.setInvoiceTotal("1000")
         self.vm.setAccountAmount("50")
         self.vm.setAccountDirection("SHOP_OWES")
@@ -213,7 +214,7 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.assertFalse(hasattr(draft, "agreed_sale_total"))
         self.assertFalse(hasattr(draft.sale_lines[0], "making_total"))
         self.assertEqual((draft.salesperson_employee_id, draft.customer_id, draft.payment_direction,
-                          draft.account_amount, draft.account_direction), (5, None, "OUT", "50", "SHOP_OWES"))
+                          draft.account_amount, draft.account_direction), (5, None, None, "50", "SHOP_OWES"))
         self.assertEqual((draft.old_gold_lines[0].discount_type, draft.old_gold_lines[0].discount_value), ("PERCENT", "1.5"))
         # 50 of the 1,000 moved to the customer account: 950 is the real money now.
         self.assertEqual([(p.method_code, p.amount, p.direction) for p in draft.payments], [("PHYSICAL_CASH", "950", None)])
@@ -426,11 +427,10 @@ class InvoiceViewModelTests(unittest.TestCase):
                                               money_received="0.00", money_paid="55000.00")
         self.vm.addOldGold(1, "20")
         self.preview_now()
-        self.assertTrue(self.vm.directionChoosable)                            # an exchange can go either way
+        self.assertFalse(self.vm.directionChoosable)                           # the direction is automatic
         self.assertEqual((self.vm.paymentDirection, self.vm.paymentLabel), ("OUT", "المدفوع للعميل"))
         self.assertEqual((self.vm.summary["dueLabel"], self.vm.summary["dueAmount"]), ("المدفوع للعميل", "55,000 ج"))
-        self.vm.setPaymentDirection("IN")
-        self.assertEqual(self.vm._draft().payment_direction, "IN")
+        self.assertIsNone(self.vm._draft().payment_direction)                  # never sent: the service decides
 
     def test_f8_fills_only_a_real_full_amount(self):
         self.sale_ready()
@@ -535,7 +535,8 @@ class InvoiceViewModelTests(unittest.TestCase):
     def test_outgoing_account_part_lowers_the_money_paid_to_the_customer(self):
         self.sale_ready()
         self.vm.addOldGold(1, "30")
-        self.vm.setPaymentDirection("OUT")
+        self.service.preview_result = preview(payment_direction="OUT", net_direction="SHOP_PAYS_CUSTOMER")
+        self.preview_now()
         self.vm.setInvoiceTotal("23000")
         self.vm.setAccountAmount("3000")
         self.assertEqual((self.vm.paymentAmount, self.vm.accountDirection), ("20000", "SHOP_OWES"))

@@ -895,9 +895,8 @@ class InvoicePageTests(unittest.TestCase):
         self.scan("01260925")
         self.add_old_gold("21", "20")                  # 124,140 − 1.5% = O 122,277.90 > gold 65,436 → OUT
         self.settle()
-        self.wait_until(lambda: self.item("directionOut").property("visible"))
-        self.assertTrue(self.item("directionOut").property("checkedLook"))
-        self.assertFalse(self.item("paymentDirectionLabel").property("visible"))
+        self.wait_until(lambda: self.text("paymentDirectionLabel") == "المدفوع للعميل")
+        self.assertFalse(self.item("directionOut").property("visible"))          # the direction is automatic
         self.receive("55000")
         self.settle()
         self.wait_until(lambda: self.text("summaryEffectiveSale") == "67,280 ج")
@@ -918,7 +917,7 @@ class InvoicePageTests(unittest.TestCase):
         self.scan("01260925")
         self.add_old_gold("21", "5")                   # O 30,569.47 < gold → IN
         self.settle()
-        self.wait_until(lambda: self.item("directionIn").property("checkedLook"))
+        self.wait_until(lambda: self.text("paymentDirectionLabel") == "المستلم من العميل")
         self.receive("36440")
         self.settle()
         self.wait_until(lambda: self.text("summaryEffectiveSale") == "67,010 ج")
@@ -1180,7 +1179,6 @@ class InvoicePageTests(unittest.TestCase):
         self.select_salesperson()
         self.scan("01260925")
         self.add_old_gold("21", "30")                                          # O (30 g) = 183,637.65
-        self.click("directionOut")
         self.receive("120000")
         self.settle()
         self.assertFalse(owes.property("enabled"))
@@ -1590,7 +1588,7 @@ class InvoicePageTests(unittest.TestCase):
                          "customerAccount", "invoiceBarcodeField", "openItemSearch", "openManualEntry",
                          "openStockSale", "karatChip_21", "oldGoldWeight", "addOldGold", "soldWeights",
                          "boughtWeights", "summaryGoldValue", "summaryEffectiveSale", "summaryAverageMaking",
-                         "oldGoldDiscountField", "summaryOldGold", "directionIn", "directionOut",
+                         "oldGoldDiscountField", "summaryOldGold",
                          "legMethod_0", "legAccount_0", "legAmount_0", "legMethod_1", "legAmount_1", "removeLeg_1",
                          "accountAmountField", "summaryDueLabel", "summaryDue", "finalizeInvoice",
                          "balanceCash", "balanceKarat_21", "balanceKarat_18", "balanceKarat_24"):

@@ -2070,7 +2070,7 @@ Item {
                                     // Direction: fixed words, or an explicit choice for an exchange.
                                     Label {
                                         objectName: "paymentDirectionLabel"
-                                        visible: legRow.legIndex === 0 && !invoiceVM.directionChoosable
+                                        visible: legRow.legIndex === 0
                                         text: invoiceVM.paymentLabel
                                         color: invoiceVM.paymentDirection === "OUT" ? theme.priceBuy : theme.priceSell
                                         font.family: "Cairo"

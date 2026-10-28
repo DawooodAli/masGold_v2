@@ -915,11 +915,8 @@ class InvoiceViewModel(QObject):
 
     @Slot(str)
     def setPaymentDirection(self, direction):
-        """Exchange only: who pays whom is the employee's explicit choice (never a sign)."""
-        direction = direction if direction in ("IN", "OUT") else ""
-        if direction != self._direction_choice:
-            self._direction_choice = direction
-            self._touched()
+        """No-op: who pays whom is decided automatically by the service, never chosen by the employee."""
+        return
 
     def _money_direction(self):
         if self.directionChoosable and self._direction_choice:
@@ -1665,8 +1662,8 @@ class InvoiceViewModel(QObject):
 
     @Property(bool, notify=changed)
     def directionChoosable(self):
-        """Only an exchange (sold pieces and old gold) can go either way."""
-        return bool((self._sales or self._described) and self._olds)
+        """The direction is always automatic now (the service decides: sold gold value against old gold); the employee never picks it."""
+        return False
 
     @Property(str, notify=changed)
     def paymentDirection(self):
