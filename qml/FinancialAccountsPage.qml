@@ -362,7 +362,7 @@ Rectangle {
                 Txt { text: "نقدية داخلة وخارجة"; font.bold: true; font.pixelSize: theme.fontSection; color: theme.gold }
                 Field { id: searchBox; objectName: "customerCashSearch"; Layout.fillWidth: true; placeholderText: "ابحث باسم العميل أو التليفون"
                         onTextEdited: page.vm.loadCustomerCash(text) }
-                Btn { objectName: "customerCashIn"; text: "نقدية داخلة"; primary: true; chosen: customerCashDialog.mode === "IN"
+                Btn { objectName: "customerCashIn"; text: "نقدية داخلة"; chosen: customerCashDialog.mode === "IN"
                       onClicked: customerCashDialog.startEntry("IN", "") }
                 Btn { objectName: "customerCashOut"; text: "نقدية خارجة"; chosen: customerCashDialog.mode === "OUT"
                       onClicked: customerCashDialog.startEntry("OUT", "") }
@@ -423,7 +423,14 @@ Rectangle {
                         id: sideCard
                         required property var modelData
                         Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredWidth: 1
-                        color: theme.bgSecondary; radius: theme.radiusSmall; border.color: sideCard.modelData.tone
+                        // Each side wears its own colour: a stronger frame plus a wash of the tone,
+                        // so the IN (blue) and OUT (orange) tables never read as the same box.
+                        color: Qt.tint(theme.bgSecondary, Qt.rgba(sideCard.modelData.tone.r,
+                                                                 sideCard.modelData.tone.g,
+                                                                 sideCard.modelData.tone.b, 0.07))
+                        radius: theme.radiusSmall
+                        border.color: sideCard.modelData.tone
+                        border.width: 2
                         readonly property var rows: !page.vm ? [] : sideCard.modelData.side === "owes" ? page.vm.customerOwes : page.vm.customerOwed
                         ColumnLayout {
                             anchors.fill: parent; anchors.margins: 8; spacing: 6
