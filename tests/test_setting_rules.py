@@ -247,8 +247,16 @@ class InvoiceLimitsTests(unittest.TestCase):
 
     def test_the_minimum_for_the_review_follows_the_invoice_kind(self):
         limits = InvoiceService._limits(InvoiceRepo(settings={"min_old_gold_discount_pct": "0.50"}))
-        self.assertEqual(InvoiceService._discount_minimum(calculation(["a line"], ["1.00"]), limits), D("1.25"))   # mixed: the hard 1.25
+        self.assertEqual(InvoiceService._discount_minimum(calculation(["a line"], ["1.00"]), limits), D("1.25"))   # mixed: its default 1.25
         self.assertEqual(InvoiceService._discount_minimum(calculation([], ["1.00"]), limits), D("0.50"))          # old gold only: the setting
+        both = InvoiceService._limits(InvoiceRepo(settings={"sale_old_gold_discount_min_pct": "2", "cashback_review_limit": "250"}))
+        self.assertEqual(InvoiceService._discount_minimum(calculation(["a line"], ["1.00"]), both), D("2"))        # mixed: now a setting
+        self.assertEqual(both["cashback_review_limit"], D("250"))
+        self.assertEqual(InvoiceService._limits(InvoiceRepo())["cashback_review_limit"], D("100"))                # default
+        entry = type("E", (), {"scrap_kind": "BAR", "karat_id": 3})()
+        line = type("L", (), {"cashback": D("120"), "weight_grams": D("5")})()
+        self.assertEqual(len(InvoiceService._cashback_review([line], [entry], D("100"))), 1)
+        self.assertEqual(InvoiceService._cashback_review([line], [entry], D("250")), [])
 
 
 # ------------------------------------------------------------------ the settings screen must not store what would be ignored
@@ -290,28 +298,44 @@ class WriteSession:
 class SetValueRefusalTests(unittest.TestCase):
 
     def service(self):
-        service = SystemSettingsService(WriteSession())
+        service = SystemSettingsService(WriteSession(), access=type("Access", (), {"verify": lambda self, password, **_: True})())
         service._write = lambda _expected, _work: "written"                                # the refusal happens BEFORE the transaction
         return service
 
+    def test_a_save_needs_the_manager_password(self):
+        service = self.service()
+        with self.assertRaises(SettingsError) as caught:
+            service.set_value("dead_stock_days", "60", "INT")                              # no password
+        self.assertEqual(caught.exception.code, "PASSWORD_REQUIRED")
+        calls = []
+
+        class Wrong:
+            def verify(self, password, **_):
+                calls.append(password)
+                raise ValueError("wrong")
+        service._access = Wrong()
+        with self.assertRaises(ValueError):
+            service.set_value("dead_stock_days", "60", "INT", password="bad")              # a wrong one never reaches the write
+        self.assertEqual(calls, ["bad"])
+
     def test_an_out_of_range_value_is_refused_with_the_range(self):
         with self.assertRaises(SettingsError) as caught:
-            self.service().set_value("dead_stock_days", "0", "INT")
+            self.service().set_value("dead_stock_days", "0", "INT", password="x")
         self.assertEqual(caught.exception.code, "VALUE_RANGE")
         self.assertIn("3650", str(caught.exception))
 
     def test_the_type_check_still_runs_first_with_its_own_message(self):
         with self.assertRaises(SettingsError) as caught:
-            self.service().set_value("dead_stock_days", "abc", "INT")
+            self.service().set_value("dead_stock_days", "abc", "INT", password="x")
         self.assertEqual(caught.exception.code, "VALUE_INVALID")
 
     def test_a_good_value_reaches_the_write(self):
-        self.assertEqual(self.service().set_value("dead_stock_days", "60", "INT"), "written")
-        self.assertEqual(self.service().set_value("max_old_gold_discount_pct", "7.50", "DECIMAL"), "written")
+        self.assertEqual(self.service().set_value("dead_stock_days", "60", "INT", password="x"), "written")
+        self.assertEqual(self.service().set_value("max_old_gold_discount_pct", "7.50", "DECIMAL", password="x"), "written")
 
     def test_a_key_outside_the_business_rules_keeps_the_old_behaviour(self):
-        self.assertEqual(self.service().set_value("shop_name", "مجوهرات ماس", "STRING"), "written")
-        self.assertEqual(self.service().set_value("some_future_key", "", "STRING"), "written")   # blank is our nine keys' business only
+        self.assertEqual(self.service().set_value("shop_name", "مجوهرات ماس", "STRING", password="x"), "written")
+        self.assertEqual(self.service().set_value("some_future_key", "", "STRING", password="x"), "written")   # blank is our nine keys' business only
 
 
 if __name__ == "__main__":

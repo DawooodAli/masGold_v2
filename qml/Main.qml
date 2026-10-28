@@ -5508,6 +5508,26 @@ ApplicationWindow {
                 value: "قيم إعدادية عامة للمحل (الاسم، الهاتف، رمز العملة…) تُستخدم في الواجهة والتقارير. كل تغيير يُسجَّل في سجل التدقيق باسمك، ولا يُحذف أي إعداد."
                 color: theme.textMuted; font.pixelSize: 11
             },
+            // The same login password the manager reviews ask for; the service checks it again, so this field is not the protection.
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                GoldPriceLabel { value: "كلمة مرور المدير للحفظ"; color: theme.gold; font.bold: true }
+                TextField {
+                    id: settingsPasswordField
+                    objectName: "settingsPasswordField"
+                    Layout.preferredWidth: 220; Layout.preferredHeight: 34
+                    font.family: "Cairo"
+                    horizontalAlignment: Text.AlignRight
+                    echoMode: TextInput.Password
+                    placeholderText: "كلمة المرور"
+                    color: theme.textPrimary
+                    background: Rectangle {
+                        color: theme.bgTertiary
+                        border.color: parent.activeFocus ? theme.gold : theme.border
+                        radius: theme.radiusSmall
+                    }
+                }
+            },
             Repeater {
                 model: systemSettings.vm ? systemSettings.vm.settings : []
                 delegate: RowLayout {
@@ -5585,7 +5605,9 @@ ApplicationWindow {
                             systemSettings.vm.save(settingRow.modelData.key, newValue,
                                                    settingRow.modelData.type,
                                                    settingRow.modelData.description,
-                                                   settingRow.modelData.public)
+                                                   settingRow.modelData.public,
+                                                   settingsPasswordField.text)
+                            settingsPasswordField.text = ""
                         }
                     }
                 }

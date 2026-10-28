@@ -24,5 +24,13 @@ SET @masgold_sql := IF(NOT EXISTS (SELECT 1 FROM information_schema.TABLE_CONSTR
  "ALTER TABLE invoice_lines ADD CONSTRAINT chk_invoice_line_native_old_gold CHECK (record_origin <> 'NATIVE' OR line_type <> 'BUY_OLD_GOLD' OR (making_per_gram IS NULL AND making_total IS NULL AND old_gold_movement_id IS NOT NULL AND discount_amount IS NOT NULL AND line_total = gross_total - discount_amount + COALESCE(cashback_amount, 0)))", 'DO 0');
 PREPARE masgold_stmt FROM @masgold_sql; EXECUTE masgold_stmt; DEALLOCATE PREPARE masgold_stmt;
 
+-- Business limits in System Settings (owner request 2026-10-28). The discount is open, so min = "below this goes to the manager reviews"; max is no longer enforced.
+INSERT INTO system_settings (setting_key, setting_value, setting_type, description, is_public) VALUES
+('sale_old_gold_discount_min_pct', '1.25', 'DECIMAL', 'أقل نسبة خصم للكسر في فاتورة فيها بيع؛ أقل منها تُراجَع من المدير', 0),
+('cashback_review_limit', '100', 'DECIMAL', 'أعلى كاش باك للسبائك/الجنيهات بدون مراجعة (ج)؛ أعلى منه يُراجَع من المدير', 0)
+ON DUPLICATE KEY UPDATE description = VALUES(description);
+UPDATE system_settings SET description = 'أقل نسبة خصم للكسر في فاتورة كسر فقط؛ أقل منها تُراجَع من المدير' WHERE setting_key = 'min_old_gold_discount_pct';
+UPDATE system_settings SET description = 'غير مفعّل — الخصم مفتوح بلا حد أعلى' WHERE setting_key = 'max_old_gold_discount_pct';
+
 INSERT INTO schema_migrations(version,name) VALUES (82,'Old-gold bar and pound lines with cashback')
  ON DUPLICATE KEY UPDATE name=VALUES(name);

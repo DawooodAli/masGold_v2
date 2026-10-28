@@ -663,7 +663,16 @@ class InvoiceViewModel(QObject):
         return False
 
     def _discount_floor(self):
-        return DISCOUNT_MIN if (self._sales or self._described) else DISCOUNT_MIN_OLD_GOLD_ONLY
+        """The minimum comes from System Settings (the service puts it in the reference); the constants are only the fallback."""
+        settings = (self._reference or {}).get("settings") or {}
+        key, fallback = (("sale_old_gold_discount_min_pct", DISCOUNT_MIN) if (self._sales or self._described)
+                         else ("min_old_gold_discount_pct", DISCOUNT_MIN_OLD_GOLD_ONLY))
+        stored = _decimal(str(settings.get(key) or ""))
+        return fallback if stored is None else stored
+
+    def _discount_warning_text(self):
+        floor = f"{self._discount_floor():.2f}".rstrip("0").rstrip(".")
+        return f"أقل من ⁦{floor}%⁩ — ستُراجَع من المدير"
 
     @Slot(str, result=str)
     def commitOldGoldDiscount(self, value):
@@ -677,12 +686,10 @@ class InvoiceViewModel(QObject):
         in_range = number is not None and (not self._discount_range_active()
                                           or self._discount_floor() <= number <= DISCOUNT_MAX)
         if number is None or number < 0 or number > 100 or not in_range:
-            self._discount_warning = ((DISCOUNT_WARNING if self._discount_floor() == DISCOUNT_MIN else DISCOUNT_WARNING_OLD_GOLD_ONLY)
-                                      if number is None or not in_range else "نسبة الخصم غير صحيحة")
+            self._discount_warning = self._discount_warning_text() if number is None or not in_range else "نسبة الخصم غير صحيحة"
             self.changed.emit()
             return self._old_gold_discount
-        self._discount_warning = ((DISCOUNT_WARNING if self._discount_floor() == DISCOUNT_MIN else DISCOUNT_WARNING_OLD_GOLD_ONLY)
-                                  if number < self._discount_floor() else "")
+        self._discount_warning = self._discount_warning_text() if number < self._discount_floor() else ""
         value = self._trim(value)
         if value != self._old_gold_discount:
             self._old_gold_discount = value

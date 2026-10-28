@@ -47,10 +47,10 @@ class SystemSettingsViewModel(QObject):
         self._run(lambda _expected_actor: self._service.overview(_expected_actor=_expected_actor),
                   self._listed, "", keep_message)
 
-    @Slot(str, str, str, str, bool)
-    def save(self, key, value, setting_type, description, is_public):
+    @Slot(str, str, str, str, bool, str)
+    def save(self, key, value, setting_type, description, is_public, password):
         self._run(lambda _expected_actor: self._service.set_value(
-            key, value, setting_type, description, is_public, _expected_actor=_expected_actor),
+            key, value, setting_type, description, is_public, password=password, _expected_actor=_expected_actor),
             lambda _result: self.refresh(True), "تم حفظ الإعداد.")
 
     def _run(self, call, done, success, keep_message=False):

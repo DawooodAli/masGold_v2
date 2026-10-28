@@ -97,8 +97,9 @@ def entry(row):
 
 class SystemSettingsService:
     def __init__(self, session, *, transaction_factory=invoice_transaction,
-                 repository=SystemSettingsRepository, authorization=None):
+                 repository=SystemSettingsRepository, authorization=None, access=None):
         self._session = session
+        self._access = access                       # the manager-review password check; ONE instance so its failure cooldown persists
         self._transaction = transaction_factory
         self._repository = repository
         self._authorization = authorization or AuthorizationService(session)
@@ -137,8 +138,9 @@ class SystemSettingsService:
             return {r["setting_key"]: repository._cast_value(r["setting_value"], r["setting_type"])
                     for r in repository.get_public()}
 
-    def set_value(self, key, value, setting_type="STRING", description=None, is_public=False, *, _expected_actor=None):
-        """Create or update one setting (MANAGE, rechecked inside the transaction)."""
+    def set_value(self, key, value, setting_type="STRING", description=None, is_public=False, *, password=None, _expected_actor=None):
+        """Create or update one setting (MANAGE, rechecked inside the transaction). It also needs the signed-in user's own login
+        password, the same one the manager reviews ask for (owner request 2026-10-28), checked here and not only on the screen."""
         actor = self._actor(_expected_actor)
         key = clean_key(key)
         setting_type = str(setting_type or "STRING").upper()
@@ -151,6 +153,12 @@ class SystemSettingsService:
             raise SettingsError("VALUE_RANGE", problem)
         description = clean_description(description)
         public = 1 if is_public else 0
+        if not password:
+            raise SettingsError("PASSWORD_REQUIRED", "أدخل كلمة مرور المدير لحفظ الإعداد.")
+        if self._access is None:
+            from services.manager_access_service import ManagerAccessService
+            self._access = ManagerAccessService(self._session)
+        self._access.verify(password, _expected_actor=_expected_actor)       # slow Argon2 work before any lock; a wrong one writes nothing
 
         def work(repository, session_actor):
             previous = repository.get_by_key(key)

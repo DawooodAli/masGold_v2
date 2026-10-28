@@ -18,8 +18,8 @@ exception: a mistyped setting must not be able to change a financial rule by acc
 Not every seeded key is wired here. `enable_book_mode` and `auto_login_enabled` stay isolated on
 purpose (BOOK is intentionally off and auto-login is governed by its environment switch), and the
 display keys (shop name, address, phone, currency symbol, date format, print copies) have no
-consumer yet. `SALE_DISCOUNT_MIN` (the 1.25% minimum on a MIXED invoice) has no key in 081 and stays
-hard-coded in `invoice_service`."""
+consumer yet. The 1.25% minimum on a MIXED invoice and the cashback review limit are keys of
+migration 082 (`sale_old_gold_discount_min_pct`, `cashback_review_limit`)."""
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable, Optional
 
@@ -37,12 +37,16 @@ SPEC: dict[str, tuple[str, Any, Any, Any]] = {
     "default_old_gold_discount_pct": (DECIMAL, Decimal("1.50"), Decimal("0"), Decimal("100")),
     "min_old_gold_discount_pct":     (DECIMAL, Decimal("1.00"), Decimal("0"), Decimal("100")),
     "max_old_gold_discount_pct":     (DECIMAL, Decimal("5.00"), Decimal("0"), Decimal("100")),
+    # Owner decision 2026-10-28: the minimum on an invoice that also SELLS, and the cashback above which a bar / pound line is reviewed.
+    "sale_old_gold_discount_min_pct": (DECIMAL, Decimal("1.25"), Decimal("0"), Decimal("100")),
+    "cashback_review_limit":         (DECIMAL, Decimal("100"), Decimal("0"), Decimal("1000000")),
 }
 
 DEFAULTS: dict[str, Any] = {key: spec[1] for key, spec in SPEC.items()}
 
 REPORT_KEYS = ("dead_stock_days", "velocity_days", "low_cover_days", "weight_band_top", "min_sales_for_velocity")
-DISCOUNT_KEYS = ("default_old_gold_discount_pct", "min_old_gold_discount_pct", "max_old_gold_discount_pct")
+DISCOUNT_KEYS = ("default_old_gold_discount_pct", "min_old_gold_discount_pct", "max_old_gold_discount_pct",
+                 "sale_old_gold_discount_min_pct", "cashback_review_limit")
 PRICE_WARNING_KEY = "price_deviation_warning_pct"
 
 

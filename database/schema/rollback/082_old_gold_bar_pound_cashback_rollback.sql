@@ -19,4 +19,5 @@ PREPARE masgold_stmt FROM @masgold_sql; EXECUTE masgold_stmt; DEALLOCATE PREPARE
 SET @masgold_sql := IF(EXISTS (SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'invoice_lines' AND COLUMN_NAME = 'scrap_kind'),
  "ALTER TABLE invoice_lines DROP COLUMN scrap_kind", 'DO 0');
 PREPARE masgold_stmt FROM @masgold_sql; EXECUTE masgold_stmt; DEALLOCATE PREPARE masgold_stmt;
+DELETE FROM system_settings WHERE setting_key IN ('sale_old_gold_discount_min_pct', 'cashback_review_limit');
 DELETE FROM schema_migrations WHERE version = 82;
