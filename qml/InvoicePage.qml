@@ -1650,6 +1650,10 @@ Item {
                                 objectName: "oldGoldWeight"
                                 Layout.fillWidth: true
                                 Layout.minimumWidth: 70
+                                // The same height and text size as the barcode field: this is the
+                                // other field the salesman types into, and it must read the same.
+                                Layout.preferredHeight: 40
+                                font.pixelSize: 16
                                 placeholderText: text.length > 0 ? ""
                                                  : (invoiceVM.oldGoldKaratId < 0 ? "العيار أولاً" : "الوزن ثم Enter")
                                 onAccepted: invoicePage.addOldGold()
