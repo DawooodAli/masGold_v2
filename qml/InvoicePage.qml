@@ -411,16 +411,21 @@ Item {
         Layout.preferredWidth: 1
         color: theme.textPrimary
         font.family: "Cairo"
-        font.pixelSize: 13
+        font.pixelSize: 15
         horizontalAlignment: Text.AlignRight
         verticalAlignment: Text.AlignVCenter
         elide: Text.ElideLeft
     }
 
     component HeadCell: Cell {
-        color: theme.textSecondary
-        font.pixelSize: 12
+        // A distinct gold header band so the two tables read at a glance.
+        color: theme.gold
+        font.pixelSize: 14
         font.bold: true
+        background: Rectangle {
+            color: theme.bgTertiary
+            radius: theme.radiusSmall
+        }
     }
 
     component KaratChip: SmallButton {
@@ -996,7 +1001,7 @@ Item {
                                             font.pixelSize: 11
                                             elide: Text.ElideRight
                                         }
-                                        Cell { Layout.preferredWidth: 1; text: model.karat }
+                                        Cell { Layout.preferredWidth: 1; text: model.karat; color: theme.balanceKaratColor(model.karat); font.bold: true }
                                         Cell { Layout.preferredWidth: 2; text: model.weight; font.bold: true }
                                         Cell { Layout.preferredWidth: 2; text: model.factory || "—"; color: theme.textSecondary }
                                         Cell {
@@ -1725,7 +1730,7 @@ Item {
                                         anchors.leftMargin: 2
                                         layoutDirection: Qt.RightToLeft
                                         spacing: 6
-                                        Cell { text: model.karat }
+                                        Cell { text: model.karat; color: theme.balanceKaratColor(model.karat); font.bold: true }
                                         Cell { Layout.preferredWidth: 2; text: model.weight; font.bold: true }
                                         Cell {
                                             objectName: "oldGoldLineTotal_" + index
