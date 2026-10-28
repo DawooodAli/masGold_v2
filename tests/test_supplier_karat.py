@@ -163,7 +163,7 @@ class AccountTests(SupplierKaratCase):
         self.posted(supplier_id=sid, karat_id=K18, rows=[{"weight": "7", "making_per_gram": "100"}])
         balance = self.balance(sid)
         self.assertEqual((balance["making"], balance["making_direction"], balance["gold_balance"]), (D("700.00"), rules.SHOP_OWES, D("7.000")))
-        self.assertEqual(position_parts(rules.SHOP_OWES, D("700"), "making"), {"lead": "علينا للمورد", "number": "700.00 ج", "tail": "مصنعيات"})
+        self.assertEqual(position_parts(rules.SHOP_OWES, D("700"), "making"), {"lead": "علينا للمورد", "number": "700 ج", "tail": "مصنعيات"})
 
     def test_the_supplier_list_shows_grams_of_the_suppliers_karat(self):
         sid = self.supplier("مورد 18", K18)

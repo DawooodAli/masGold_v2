@@ -9,7 +9,7 @@ from services.number_text import normalize_digits
 
 from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
 
-from app.formatting import money, number
+from app.formatting import money, number, whole
 
 METHODS = [{"code": "PHYSICAL_CASH", "text": "نقدي"}, {"code": "MOBILE_WALLET", "text": "محفظة"},
            {"code": "INSTAPAY", "text": "InstaPay"}, {"code": "BANK_TRANSFER", "text": "تحويل بنكي"}]
@@ -410,11 +410,11 @@ class CorrectionViewModel(QObject):
         p = self._reversal
         if not p:
             return {}
-        money_lines = [f"{m['account']}: {number(m['delta'], 2, signed=True)} ج" for m in p["money"]]
-        account_lines = [f"حساب العميل: {number(a['delta'], 2, signed=True)} ج" for a in p["account"]]
+        money_lines = [f"{m['account']}: {whole(m['delta'], signed=True)} ج" for m in p["money"]]
+        account_lines = [f"حساب العميل: {whole(a['delta'], signed=True)} ج" for a in p["account"]]
         stock = [f"قطعة {i['inventory_item_id']}: {STATUS_TEXT.get(i['from'], i['from'])} إلى "
                  f"{STATUS_TEXT.get(i['to'], i['to'])}" for i in p["inventory"]]
-        gold = [f"الكسر عيار {g['karat']}: {number(g['grams'], 3, signed=True)} جرام" for g in p["old_gold"]]
+        gold = [f"الكسر عيار {g['karat']}: {number(g['grams'], 2, signed=True)} جرام" for g in p["old_gold"]]
         extra = ([f"إغلاق {p['reviews']} فحص قطعة مرتجعة مفتوح"] if p["reviews"] else []) + \
                 ([f"إلغاء {p['cases']} حالة بيع يدوي مفتوحة"] if p["cases"] else [])
         return {"title": f"{p['source_text']} {p['reference']}", "customer": p.get("customer_name") or "بدون عميل",
@@ -439,8 +439,8 @@ class CorrectionViewModel(QObject):
                 "remainingText": "مطابق للإجمالي" if remaining == 0 else
                 (f"المتبقي {money(remaining)}" if remaining > 0 else f"أكثر من الإجمالي بـ {money(-remaining)}"),
                 "complete": remaining == 0,
-                "deltas": [f"{d['account']}: {number(d['delta'], 2, signed=True)} ج" for d in p.get("money_deltas", [])]
-                          + ([f"حساب العميل: {number(p['account_delta'], 2, signed=True)} ج"]
+                "deltas": [f"{d['account']}: {whole(d['delta'], signed=True)} ج" for d in p.get("money_deltas", [])]
+                          + ([f"حساب العميل: {whole(p['account_delta'], signed=True)} ج"]
                              if p and Decimal(p.get("account_delta") or "0") else []),
                 "problems": [x["message"] for x in p.get("problems", [])]}
 

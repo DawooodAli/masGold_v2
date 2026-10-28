@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
-from app.formatting import date_text, datetime_text, grams, money, number
+from app.formatting import date_text, datetime_text, grams3 as grams, money, number
 from services import supplier_rules as rules
 
 KIND_TEXT = {"CASH_HANDOVER": "تسليم نقدية", "CASH_RETURN": "استرجاع نقدية", "GOLD_RETURN": "استرجاع ذهب",

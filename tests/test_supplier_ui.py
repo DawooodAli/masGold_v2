@@ -24,8 +24,8 @@ class TextTests(unittest.TestCase):
         self.assertEqual(gold_position_text(rules.SHOP_OWES, D("40.050")), "علينا للمورد 40.050 جرام")
         self.assertEqual(gold_position_text(rules.SUPPLIER_OWES, D("-9.950")), "لنا عند المورد 9.950 جرام")
         self.assertEqual(gold_position_text(rules.SHOP_OWES, D("100"), 21), "علينا للمورد 100.000 جرام عيار 21")
-        self.assertEqual(making_position_text(rules.SHOP_OWES, D("6500")), "علينا للمورد 6,500.00 ج مصنعيات")
-        self.assertEqual(making_position_text(rules.SUPPLIER_OWES, D("-1500")), "لنا عند المورد 1,500.00 ج مصنعيات")
+        self.assertEqual(making_position_text(rules.SHOP_OWES, D("6500")), "علينا للمورد 6,500 ج مصنعيات")
+        self.assertEqual(making_position_text(rules.SUPPLIER_OWES, D("-1500")), "لنا عند المورد 1,500 ج مصنعيات")
         self.assertEqual(gold_position_text(rules.SHOP_OWES, D("7"), 18), "علينا للمورد 7.000 جرام عيار 18")   # physical grams
         self.assertEqual(gold_position_text(rules.SUPPLIER_OWES, D("-7"), 18), "لنا عند المورد 7.000 جرام عيار 18")
         for settled in (gold_position_text(rules.SETTLED, 0), gold_position_text(rules.SETTLED, 0, 18)):
@@ -82,9 +82,9 @@ class ViewModelTests(unittest.TestCase):
         groups = [{"weight": "40", "rate": "120", "description": ""}, {"weight": "35", "rate": "180", "description": ""},
                   {"weight": "25", "rate": "150", "description": ""}]
         preview = self.pvm.previewGroups(groups)
-        self.assertEqual((preview["valid"], preview["weightText"], preview["makingText"]), (True, "100.000", "14,850.00 ج"))
+        self.assertEqual((preview["valid"], preview["weightText"], preview["makingText"]), (True, "100.000", "14,850 ج"))
         self.assertNotIn("eq21Text", preview)                                         # no Eq21 in a supplier invoice preview
-        self.assertEqual(preview["groupMaking"], ["4,800.00 ج", "6,300.00 ج", "3,750.00 ج"])
+        self.assertEqual(preview["groupMaking"], ["4,800 ج", "6,300 ج", "3,750 ج"])
         bad = self.pvm.previewGroups([{"weight": "", "rate": "5", "description": ""}])
         self.assertEqual((bad["valid"], bad["makingText"]), (False, "—"))
         self.assertIn("وزن", bad["error"])
@@ -98,7 +98,7 @@ class ViewModelTests(unittest.TestCase):
         row = self.svm.suppliers[0]
         self.assertEqual((row["goldText"], row["goldTone"], row["makingTone"], row["stateText"]),
                          ("علينا للمورد 100.000 جرام عيار 21", "shopOwes", "shopOwes", "نشط"))
-        self.assertEqual(row["makingText"], "علينا للمورد 6,500.00 ج مصنعيات")
+        self.assertEqual(row["makingText"], "علينا للمورد 6,500 ج مصنعيات")
         self.svm._selected = sid
         self.svm._detail = self.suppliers.supplier_detail(sid)
         detail = self.svm.detail
@@ -106,8 +106,8 @@ class ViewModelTests(unittest.TestCase):
         self.assertEqual(detail["goldBreakdown"], [])                  # a lone 21K line only repeats the Eq21 headline
         self.assertEqual((detail["goldLedger"][0]["side"], detail["goldLedger"][0]["weight"], detail["goldLedger"][0]["karat"]),
                          ("علينا للمورد", "100.000", 21))
-        self.assertEqual(detail["makingLedger"][0]["amount"], "6,500.00 ج")
-        self.assertEqual(detail["makingLedger"][0]["balance"], "علينا للمورد 6,500.00 ج مصنعيات")
+        self.assertEqual(detail["makingLedger"][0]["amount"], "6,500 ج")
+        self.assertEqual(detail["makingLedger"][0]["balance"], "علينا للمورد 6,500 ج مصنعيات")
 
     def test_invoice_detail_shows_progress_and_variance_as_information(self):
         sid = self.suppliers.create_supplier("مورد", karat_id=1)
@@ -122,7 +122,7 @@ class ViewModelTests(unittest.TestCase):
                          ("100.000", "99.920", 1, True))
         self.assertEqual(detail["varianceText"], "فرق الوزن: ⁦−0.080⁩")
         self.assertEqual(detail["remainingText"], "المتبقي للإدخال (مرجعي): 0.080")
-        self.assertEqual(detail["groups"][0]["rateText"], "65.00 ج / جرام")
+        self.assertEqual(detail["groups"][0]["rateText"], "65 ج / جرام")
         self.assertEqual((detail["pieces"][0]["barcode"], detail["pieces"][0]["hasBarcode"]), ("01261008", True))
 
 
@@ -217,7 +217,7 @@ class SupplierPageTests(harness.InvoicePageTests):
         self.assertIsNone(self.visual_item("groupCategory_0"))                       # no category editor in the group row
         self.assertTrue(self.item("postInvoiceButton").property("enabled"))         # weight and rate are all an invoice needs
         self.assertEqual(self.text("invoiceTotalWeight"), "وزن المورد: 100.000")
-        self.assertEqual(self.text("invoiceTotalMaking"), "إجمالي المصنعيات: 10,800.00 ج")
+        self.assertEqual(self.text("invoiceTotalMaking"), "إجمالي المصنعيات: 10,800 ج")
         self.assertEqual(self.text("invoiceKaratText"), "عيار 18")                  # inherited, read-only: no karat dropdown
         self.assertIsNone(self.visual_item("invoiceKaratCombo"))
         self.assertIsNone(self.visual_item("invoiceTotalEq21"))                      # and no Eq21 total
@@ -363,7 +363,7 @@ class SupplierPageTests(harness.InvoicePageTests):
                 self.assertEqual(self.text("intakeKarat"), "21")
                 self.assertEqual(self.text("intakeSupplierWeight"), "100.000")
                 self.assertIsNone(self.visual_item("intakeEq21"))                          # no Eq21 tile any more
-                self.assertIn("10,800.00", self.text("intakeMaking"))
+                self.assertIn("10,800", self.text("intakeMaking"))
                 self.assertEqual(self.text("intakeActual"), "12.340")
                 self.assertEqual(self.text("intakeVariance"), "⁦−87.660⁩")
                 self.assertEqual(self.text("intakeRemaining"), "87.660")
@@ -377,8 +377,8 @@ class SupplierPageTests(harness.InvoicePageTests):
                     pending.extend(node.childItems())
                     if node.property("text"):
                         shown.add(str(node.property("text")).replace("⁦", "").replace("⁩", ""))
-                for expected in ("وزن المورد (جرام):", "60.000", "مصنعية الجرام:", "100.00 ج / جرام",
-                                 "إجمالي مصنعية المجموعة:", "6,000.00 ج", "عدد القطع:", "1",
+                for expected in ("وزن المورد (جرام):", "60.000", "مصنعية الجرام:", "100 ج / جرام",
+                                 "إجمالي مصنعية المجموعة:", "6,000 ج", "عدد القطع:", "1",
                                  "الوزن المُدخل (جرام):", "12.340", "فرق الوزن (جرام):", "−47.660",
                                  "المتبقي للإدخال (مرجعي، جرام):", "47.660", "نسبة الإدخال:", "20.6%"):
                     self.assertIn(expected, shown, (width, expected))
@@ -780,7 +780,7 @@ class SupplierPageTests(harness.InvoicePageTests):
         self.assertEqual(self.pvm.errorMessage, "")                                  # no generic load error
         self.assertFalse(self.visual_item("intakeError") and self.visual_item("intakeError").property("visible"))
         self.assertEqual((self.text("intakeKarat"), self.text("intakeSupplierWeight")), ("21", "30.000"))
-        self.assertIn("6,500.00", self.text("intakeMaking"))
+        self.assertIn("6,500", self.text("intakeMaking"))
         self.assertEqual(self.text("intakeActual"), "0.000")                         # no pieces entered
         self.assertTrue(self.item("intakeGroup_0").property("visible") and self.item("intakeGroup_1").property("visible"))
         self.assertTrue(self.item("pieceWeightField").property("visible"))           # the entry form is there

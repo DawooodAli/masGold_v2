@@ -43,7 +43,7 @@ class Karat22BillingPageTests(harness.InvoicePageTests):
         balances = self.controller.operational_viewmodels["balancesVM"]
         self.wait_until(lambda: balances.ready)
         self.assertEqual([self.text(n) for n in ("balanceCash", "balanceKarat_21", "balanceKarat_18", "balanceKarat_22",
-                                                 "balanceKarat_24")], ["0.00 ج", "100.000", "0.000", "50.000", "0.000"])
+                                                 "balanceKarat_24")], ["0 ج", "100.00", "0.00", "50.00", "0.00"])
         self.assertEqual([(self.item(b).property("caption"), self.item(b).property("karat")) for b in BOXES[1:]],
                          [("كسر", "21"), ("كسر", "18"), ("كسر", "22"), ("كسر", "24")])
         colours = [self.item(n).property("accent").name() for n in BOXES]
@@ -90,7 +90,7 @@ class Karat22BillingPageTests(harness.InvoicePageTests):
         self.wait_until(lambda: self.text("paymentDirectionLabel") == "المدفوع للعميل")
         self.receive("64045")
         self.settle()
-        self.assertEqual(self.text("boughtWeights_22"), "مشترى 22K: 10.000 جرام")
+        self.assertEqual(self.text("boughtWeights_22"), "مشترى 22K: 10.00 جرام")
         self.assertEqual(self.text("soldWeights_22"), "مباع 22K: —")
         self.assertEqual(self.text("boughtWeights_21"), "مشترى 21K: —")
         self.snapshot("old-gold-22k")
@@ -99,8 +99,8 @@ class Karat22BillingPageTests(harness.InvoicePageTests):
         self.assertEqual((movement["karat_id"], movement["gold_price_per_gram"], movement["cash_value"], movement["signed_weight"]),
                          (K22, P22[0], D("64043.88"), D("10.000")))
         self.assertEqual([m["amount_delta"] for m in self.store.cash_movements], [D("-64045.00")])
-        self.assertEqual(self.text("balanceKarat_22"), "60.000")                  # 50 + 10, 22K only
-        self.assertEqual(self.text("balanceKarat_21"), "100.000")
+        self.assertEqual(self.text("balanceKarat_22"), "60.00")                  # 50 + 10, 22K only
+        self.assertEqual(self.text("balanceKarat_21"), "100.00")
 
     def test_f7_and_manual_karat_choices_include_22k_when_a_22k_price_exists(self):
         self.select_salesperson()

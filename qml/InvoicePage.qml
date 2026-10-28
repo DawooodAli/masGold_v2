@@ -463,6 +463,10 @@ Item {
                 Label {
                     objectName: weights.objectName + "_" + modelData
                     anchors.centerIn: parent
+                    width: parent.width - 6                      // a long figure shrinks to fit its box instead of spilling out of it
+                    horizontalAlignment: Text.AlignHCenter
+                    fontSizeMode: Text.HorizontalFit
+                    minimumPixelSize: 8
                     text: weights.title + " " + modelData + "K: " + parent.value + (parent.value === "—" ? "" : " جرام")
                     color: parent.value === "—" ? theme.textDisabled : weights.accent
                     font.family: "Cairo"
@@ -822,7 +826,7 @@ Item {
                             layoutDirection: Qt.RightToLeft
                             spacing: 4
                             Label {
-                                text: "بيع"
+                                text: "الباركود"
                                 color: theme.priceSell
                                 font.family: "Cairo"
                                 font.pixelSize: 13
@@ -883,14 +887,6 @@ Item {
                         Layout.fillHeight: true
                         color: theme.bgSecondary
                         radius: 4
-
-                        Rectangle {
-                            anchors.top: parent.top
-                            width: parent.width
-                            height: 2
-                            color: theme.priceSell
-                            opacity: 0.7
-                        }
 
                         ColumnLayout {
                             anchors.fill: parent
@@ -1617,7 +1613,7 @@ Item {
 
                     Strip {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 32
+                        Layout.preferredHeight: 46                    // the same height as the sale entry strip: the chips and the weight field are not clipped and both tables start level
                         accent: theme.priceBuy
 
                         RowLayout {
@@ -1667,14 +1663,6 @@ Item {
                         Layout.fillHeight: true
                         color: theme.bgSecondary
                         radius: 4
-
-                        Rectangle {
-                            anchors.top: parent.top
-                            width: parent.width
-                            height: 2
-                            color: theme.priceBuy
-                            opacity: 0.7
-                        }
 
                         ColumnLayout {
                             anchors.fill: parent

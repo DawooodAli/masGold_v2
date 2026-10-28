@@ -350,12 +350,12 @@ class PostInvoiceLifecycleTests(unittest.TestCase):
         vm._detail = {"post_invoice": InvoiceHistoryService._post_invoice(self.Ledger(D("0.00"), self.MOVES),
                                                                           self.invoice())}
         post = InvoiceHistoryViewModel.postInvoice.fget(vm)
-        self.assertEqual(post["originalText"], "الحالة عند الإصدار: مسددة جزئيًا — 3,260.00 ج على العميل")
+        self.assertEqual(post["originalText"], "الحالة عند الإصدار: مسددة جزئيًا — 3,260 ج على العميل")
         self.assertEqual(post["currentText"], "رصيد العميل الحالي: الحساب متوازن")
         self.assertNotIn("سداد", post["currentText"])                     # never "this invoice was paid later"
         vm._detail["post_invoice"]["current_balance"] = D("2260.00")
         self.assertEqual(InvoiceHistoryViewModel.postInvoice.fget(vm)["currentText"],
-                         "رصيد العميل الحالي: 2,260.00 ج على العميل")
+                         "رصيد العميل الحالي: 2,260 ج على العميل")
         self.assertEqual([r["reference"] for r in post["rows"]], ["CS000001", "CS000002"])
         self.assertIn("نقدي", post["rows"][0]["methods"])
 

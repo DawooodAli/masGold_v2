@@ -9,7 +9,7 @@ unit wherever it sits in an Arabic sentence. No LayoutMirroring, no per-screen h
 Money: one convention everywhere — "23,000.00 ج" (two decimals, thousands separators).
 """
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 LRI, PDI = "⁦", "⁩"
 MINUS = "−"
@@ -30,7 +30,26 @@ def _decimal(value):
 def number(value, places=2, signed=False):
     """'1,250.00'; negative (or signed=True) values are isolated with a real minus sign."""
     amount = _decimal(value)
-    text = f"{abs(amount):,.{places}f}"
+    shown = abs(amount).quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)       # half-up, never banker's rounding
+    text = f"{shown:,.{places}f}"
+    if amount < 0:
+        return ltr(MINUS + text)
+    if signed and amount > 0:
+        return ltr("+" + text)
+    return text
+
+
+STEP = Decimal(5)
+
+
+def whole(value, signed=False):
+    """An AMOUNT of money for display: no fractions, in multiples of 5 EGP (half-up): '23,000'. A non-zero amount that would round to
+    zero is shown exactly ('2.00') so a real balance never reads as nothing."""
+    amount = _decimal(value)
+    five = (abs(amount) / STEP).quantize(Decimal(1), rounding=ROUND_HALF_UP) * STEP
+    if amount != 0 and five == 0:
+        return number(amount, 2, signed)
+    text = f"{five:,.0f}"
     if amount < 0:
         return ltr(MINUS + text)
     if signed and amount > 0:
@@ -39,13 +58,25 @@ def number(value, places=2, signed=False):
 
 
 def money(value, signed=False):
-    """'23,000.00 ج' — the one money format of the application."""
-    return f"{number(value, 2, signed)} ج"
+    """'23,000 ج' — the one money format of the application (whole, multiples of 5)."""
+    return f"{whole(value, signed)} ج"
+
+
+def rate(value, signed=False):
+    """A per-gram RATE (gold price, making per gram, average price per gram), never rounded to 5: '6,207 ج' or '25.50 ج'."""
+    amount = _decimal(value)
+    return f"{number(amount, 0 if amount == amount.to_integral_value() else 2, signed)} ج"
 
 
 def grams(value, signed=False):
-    """'3.600' — a gold weight; the label / column (الوزن, الإجمالي, عيار 21) already says it is grams,
+    """'3.60' — a gold weight; the label / column (الوزن, الإجمالي, عيار 21) already says it is grams,
     so the unit is not repeated on screen."""
+    return number(value, 2, signed)
+
+
+def grams3(value, signed=False):
+    """'3.600' — the EXACT posted weight (three decimals). Used only where the third decimal is an accounting figure:
+    the supplier ledgers, market-trip custody / melts / settlements and the marketer ledger. Every other screen shows `grams` (two decimals)."""
     return number(value, 3, signed)
 
 

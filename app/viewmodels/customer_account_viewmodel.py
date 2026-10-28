@@ -3,7 +3,7 @@ from uuid import uuid4
 from decimal import Decimal, InvalidOperation
 import json
 from PySide6.QtCore import QObject, Property, Signal, Slot
-from app.formatting import money
+from app.formatting import money, whole
 from app.viewmodels.correction_viewmodel import METHODS, ACCOUNT_TYPE
 from services.customer_account_service import CustomerAccountService, PERMISSION
 from services.invoice_service import PaymentInput
@@ -352,7 +352,7 @@ class CustomerAccountViewModel(QObject):
                  # customer's Dead Cash history; permission and state are re-checked by the service).
                  'deadCashId':str(r.get('dead_cash_id') or '') if r['source_type']=='DEAD_CASH_WRITE_OFF' else '',
                  'deadCashReversed':bool(r.get('dead_cash_reversed')),
-                 'amountValue':f"{abs(Decimal(str(r['amount_delta']))):,.2f}",
+                 'amountValue':whole(abs(Decimal(str(r['amount_delta'])))),
                  'description':(('استلام من العميل — ' if r['amount_delta']<0 else 'دفع للعميل — ')
                     if r['source_type']=='CUSTOMER_ACCOUNT_SETTLEMENT' else '')+(r.get('description') or ''),
                  'actor':r.get('actor_name') or '—',

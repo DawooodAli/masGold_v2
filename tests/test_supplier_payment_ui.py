@@ -117,14 +117,14 @@ class SupplierPaymentPageTests(harness.InvoicePageTests):
         self.root.setWidth(1080)
         self.root.setHeight(680)
         self.open_supplier()
-        self.assertEqual(self.text("makingPosition"), "علينا للمورد 5,000.00 ج مصنعيات")
+        self.assertEqual(self.text("makingPosition"), "علينا للمورد 5,000 ج مصنعيات")
         self.assert_inside_window(self.item("payMakingButton"))
         self.open_dialog()
-        self.assertEqual(self.text("payCurrentPosition"), "علينا للمورد 5,000.00 ج مصنعيات")
+        self.assertEqual(self.text("payCurrentPosition"), "علينا للمورد 5,000 ج مصنعيات")
         self.assertIsNotNone(self.visible_item("payBankCombo"))
         self.assertFalse(self.item("confirmPayMakingButton").property("enabled"))      # no amount yet
         self.type_in("payAmountField", "1000")
-        self.assertEqual(self.text("payResultPosition"), "علينا للمورد 4,000.00 ج مصنعيات")
+        self.assertEqual(self.text("payResultPosition"), "علينا للمورد 4,000 ج مصنعيات")
         self.assertFalse(self.item("confirmPayMakingButton").property("enabled"))     # the account must be selected
         self.pick("payBankCombo", 1)
         self.assertTrue(self.item("confirmPayMakingButton").property("enabled"))
@@ -134,7 +134,7 @@ class SupplierPaymentPageTests(harness.InvoicePageTests):
         self.wait_until(lambda: len(self.db.payments) == 1, "payment posted")
         self.closed("payMakingDialog")
         self.wait_idle()
-        self.assertEqual(self.text("makingPosition"), "علينا للمورد 4,000.00 ج مصنعيات")
+        self.assertEqual(self.text("makingPosition"), "علينا للمورد 4,000 ج مصنعيات")
         self.assertEqual([(m["account_id"], m["amount_delta"]) for m in self.db.bank_moves], [(5, D("-1000.00"))])
         self.assertEqual(self.db.cash_moves, [])
         self.assertEqual(self.svm.message, "تم تسجيل دفعة المصنعيات SM000001.")
@@ -147,7 +147,7 @@ class SupplierPaymentPageTests(harness.InvoicePageTests):
         QTest.qWait(80)
         self.assertIsNotNone(self.visible_item("payBankCombo"))
         self.type_in("payAmountField", "6000")
-        self.assertEqual(self.text("payResultPosition"), "لنا عند المورد 1,000.00 ج مصنعيات")
+        self.assertEqual(self.text("payResultPosition"), "لنا عند المورد 1,000 ج مصنعيات")
         self.assertIn("رصيد دائن", self.text("payCreditNote"))
         self.assertFalse(self.item("confirmPayMakingButton").property("enabled"))         # no account chosen yet
         self.assertEqual(self.item("payBankCombo").property("currentIndex"), 0)           # the placeholder, not the first bank
@@ -158,7 +158,7 @@ class SupplierPaymentPageTests(harness.InvoicePageTests):
         self.closed("payMakingDialog")
         self.wait_idle()
         self.assertEqual(([m["account_id"] for m in self.db.bank_moves], self.db.cash_moves), ([5], []))
-        self.assertEqual(self.text("makingPosition"), "لنا عند المورد 1,000.00 ج مصنعيات")
+        self.assertEqual(self.text("makingPosition"), "لنا عند المورد 1,000 ج مصنعيات")
         self.assertEqual(self.making(), D("-1000.00"))
         self.assertEqual(self.warnings, [])
 
@@ -318,7 +318,7 @@ class SupplierPaymentPageTests(harness.InvoicePageTests):
         self.wait_until(lambda: len(self.db.payments) == 1, "payment posted")
         self.closed("payMakingDialog")
         self.wait_idle()
-        self.assertEqual(self.text("makingPosition"), "علينا للمورد 4,000.00 ج مصنعيات")
+        self.assertEqual(self.text("makingPosition"), "علينا للمورد 4,000 ج مصنعيات")
         self.assertFalse(self.db.suppliers[int(self.supplier)]["is_active"])
         self.click("tabMaking")
         QTest.qWait(150)

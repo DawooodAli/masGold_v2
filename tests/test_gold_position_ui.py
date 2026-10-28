@@ -71,7 +71,7 @@ class GoldPositionPageTests(harness.InvoicePageTests):
         total = (shop + custody_eq + inter).quantize(D("0.001"))
         self.assertIsNone(self.visible_item("goldTotalValue"))                  # the four summary cards were removed at the owner's request
         self.assertIsNotNone(self.visible_item("goldUnknownNote"))               # the legacy receipt piece (3 g, assay unknown)
-        self.assertIn("3.000", self.text("goldUnknownNote"))
+        self.assertIn("3.00", self.text("goldUnknownNote"))
         self.assertIsNone(self.visible_item("goldDetailsPanel"))                 # details closed by default
         self.click("goldDetailsToggle")
         self.assertIsNotNone(self.visible_item("goldDetailsPanel"))

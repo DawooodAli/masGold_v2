@@ -129,7 +129,7 @@ class InventoryStockPageTests(harness.InvoicePageTests):
         inventory._service = Service()
         inventory.refresh()
         self.page(INVENTORY)
-        self.assertEqual(self.item("inventoryTotalWeight21").property("text"), "20.286 جرام")
+        self.assertEqual(self.item("inventoryTotalWeight21").property("text"), "20.29 جرام")
         self.assertIn("إجمالي الوزن المكافئ عيار 21", self.labels(self.item("inventoryPage")))
         # SOLD barcode: a read-only card with its invoice, never part of the current list
         inventory.search("01261001")
@@ -517,7 +517,7 @@ class InventoryStockPageTests(harness.InvoicePageTests):
                 self.root.setHeight(height)
                 QTest.qWait(120)
                 self.assertEqual(self.item("stockBalanceTotalCount").property("text"), "إجمالي القطع: 7")
-                self.assertEqual(self.item("stockBalanceTotalWeight").property("text"), "إجمالي الوزن المكافئ عيار 21: 1,294.558 جرام")
+                self.assertEqual(self.item("stockBalanceTotalWeight").property("text"), "إجمالي الوزن المكافئ عيار 21: 1,294.56 جرام")
                 for code in ("ALL", "NEW_STOCK", "OLD_STOCK"):
                     self.assert_inside_window(self.item("stockBalanceFilter_" + code))
                 self.assert_inside_window(self.item("stockBalanceBack"))
@@ -552,7 +552,7 @@ class InventoryStockPageTests(harness.InvoicePageTests):
         reads = store.reads
         self.scan("02261001")
         self.assertEqual((vm.remainingCount, vm.scannedCount, vm.remainingWeightText, vm.scannedWeightText),
-                         (5, 1, "52.209", "4.125"))
+                         (5, 1, "52.21", "4.13"))
         self.assertEqual((field.property("text"), field.property("activeFocus")), ("", True))   # cleared, refocused
         self.scan("02261001")
         self.assertEqual(self.item("stocktakeMessage").property("text"), "تم جرد هذا الباركود بالفعل.")

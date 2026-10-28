@@ -76,7 +76,7 @@ class HistoryLookupTests(unittest.TestCase):
         piece = vm.historyPiece
         self.assertTrue(vm.hasHistoryPiece)
         self.assertEqual((piece["itemNumber"], piece["barcode"], piece["status"], piece["weight"]),
-                         ("#7", "01261001", "مباعة", "3.600"))
+                         ("#7", "01261001", "مباعة", "3.60"))
         self.assertEqual((piece["invoiceNumber"], piece["invoiceId"], piece["customer"]),
                          ("26100203", "15", "علي عبدالرحمن"))
         vm.setFilters(2, 0)                                                     # another karat: no card

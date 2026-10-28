@@ -327,11 +327,11 @@ class DashboardViewModelTests(unittest.TestCase):
     def test_formatting_of_a_busy_day(self):
         vm = self.vm(busy_state())
         self.assertEqual((vm.invoiceCount, vm.invoiceBreakdown), (3, "بيع 2 • شراء كسر 2"))
-        self.assertEqual((vm.sellTotalText, vm.buyTotalText), ("48,250.50 ج", "31,035.00 ج"))
-        self.assertEqual(vm.soldByKarat[0], {"karat": "21", "grams": "7.100", "pieces": "3 قطعة",
-                                             "fromOldGold": "منها من الكسر 2.000"})
-        self.assertEqual(vm.oldGold[0]["balance"], "128.520")
-        self.assertEqual((vm.oldGold[0]["inText"], vm.oldGold[0]["outText"]), ("⁦+5.000⁩", "⁦−2.000⁩"))
+        self.assertEqual((vm.sellTotalText, vm.buyTotalText), ("48,250 ج", "31,035 ج"))
+        self.assertEqual(vm.soldByKarat[0], {"karat": "21", "grams": "7.10", "pieces": "3 قطعة",
+                                             "fromOldGold": "منها من الكسر 2.00"})
+        self.assertEqual(vm.oldGold[0]["balance"], "128.52")
+        self.assertEqual((vm.oldGold[0]["inText"], vm.oldGold[0]["outText"]), ("⁦+5.00⁩", "⁦−2.00⁩"))
         self.assertEqual(vm.dateText, "الأحد ⁦27-09-2026⁩")
 
     def test_empty_states(self):
@@ -350,14 +350,14 @@ class DashboardViewModelTests(unittest.TestCase):
 
     def test_formatting_of_the_new_cards(self):
         vm = self.vm(busy_state(), CUSTOMERS)
-        self.assertEqual(vm.topTypes[0], {"type": "دبلة", "pieces": "5 قطعة", "grams": "45.000", "value": "280,000.00 ج"})
+        self.assertEqual(vm.topTypes[0], {"type": "دبلة", "pieces": "5 قطعة", "grams": "45.00", "value": "280,000 ج"})
         self.assertEqual(vm.priceHint, {"available": True, "average": "6,137.50 ج",
                                         "versus": "سعر الشراء الآن أعلى منه بنسبة 2.24%",
                                         "action": "البيع مناسب نسبيًا", "tone": "sell"})
         self.assertTrue(vm.canSeeBalances)
-        self.assertEqual(vm.customerBalances, [{"name": "سليا محمد", "code": "CU0007", "balance": "25,000.00 ج",
+        self.assertEqual(vm.customerBalances, [{"name": "سليا محمد", "code": "CU0007", "balance": "25,000 ج",
                                                 "owes": True},
-                                               {"name": "منى علي", "code": "", "balance": "3,200.00 ج",
+                                               {"name": "منى علي", "code": "", "balance": "3,200 ج",
                                                 "owes": False}])          # the settled customer disappears
 
     def test_price_hint_without_history_says_the_data_is_insufficient(self):
@@ -470,7 +470,7 @@ class DashboardPageTests(page_harness.InvoicePageTests):
             self.root.setWidth(width)
             self.root.setHeight(height)
             QTest.qWait(250)
-            self.assertEqual(self.item("balanceCash").property("text"), "1,234,567.89 ج")
+            self.assertEqual(self.item("balanceCash").property("text"), "1,234,570 ج")
             boxes = []
             for name in ("balanceCash", "balanceKarat_21", "balanceKarat_18", "balanceKarat_22", "balanceKarat_24",
                          "goldPriceArea", "connectionDot", "logoutButton"):
@@ -553,7 +553,7 @@ class DashboardPageTests(page_harness.InvoicePageTests):
         self.assertEqual(self.item("customerBalancesEmpty").property("visible"), False)
         row = self.item("customerBalance_0")
         line = next(c for c in row.findChildren(object) if c.property("value") is not None and c.property("value") != "")
-        self.assertEqual(line.property("value"), "25,000.00 ج")                                         # no «على العميل» prefix, no direction wording
+        self.assertEqual(line.property("value"), "25,000 ج")                                         # no «على العميل» prefix, no direction wording
         self.assertEqual(line.property("valueColor").name(), self._theme_color("red"))
         credit = self.item("customerBalance_1")
         line2 = next(c for c in credit.findChildren(object) if c.property("value") is not None and c.property("value") != "")

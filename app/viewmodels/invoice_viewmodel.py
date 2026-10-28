@@ -11,6 +11,7 @@ that money (effective sale = O + P_in − P_out + L), then making and its averag
 The salesman sees the average making per gram, never the making total, and
 the money direction in words (المستلم من العميل / المدفوع للعميل), never a sign."""
 from decimal import Decimal, InvalidOperation
+from app.formatting import money as money_whole, whole
 from services.number_text import normalize_digits
 
 from PySide6.QtCore import QAbstractListModel, QByteArray, QModelIndex, QObject, Property, QTimer, Qt, Signal, Slot
@@ -50,7 +51,7 @@ MAKING_NOTICE = {"OUT_OF_RANGE": "السعر يحتاج مراجعة", "NOT_CONF
 def money(value):
     if value in (None, ""):
         return ""
-    return f"{Decimal(str(value)):,.2f} ج"
+    return money_whole(value)
 
 
 def price(value):
@@ -75,7 +76,7 @@ def _scrap_breakdown(row):
     return breakdown_text(row.get("physical") or 0, held, row.get("grams") or 0)
 
 def grams(value):
-    return "" if value in (None, "") else f"{Decimal(str(value)):.3f}"
+    return "" if value in (None, "") else f"{Decimal(str(value)):.2f}"
 
 
 def balance_text(value):
@@ -95,15 +96,15 @@ def account_text(value):
         return ""
     amount = Decimal(str(value))
     if amount > 0:
-        return f"عليه {amount:,.2f} ج"
+        return f"عليه {whole(amount)} ج"
     if amount < 0:
-        return f"له {-amount:,.2f} ج"
+        return f"له {whole(-amount)} ج"
     return "الحساب مسدد"
 
 
 def _weight(value):
     number = _decimal(value) if value not in (None, "") else None
-    return "" if number is None else f"{number:.3f}"
+    return "" if number is None else f"{number:.2f}"
 
 
 def _decimal(text):
@@ -1006,7 +1007,7 @@ class InvoiceViewModel(QObject):
     @Property(str, notify=changed)
     def remainingText(self):
         remaining = self._remaining_now()
-        return "" if remaining is None or remaining <= 0 else f"المتبقي: {remaining:,.2f} ج"
+        return "" if remaining is None or remaining <= 0 else f"المتبقي: {whole(remaining)} ج"
 
     @Property(bool, notify=changed)
     def canAddPayment(self):
@@ -1026,7 +1027,7 @@ class InvoiceViewModel(QObject):
     @Property(str, notify=changed)
     def requiredNowText(self):
         required = self._required_now()
-        return "" if required is None else f"المطلوب دفعه الآن: {required:,.2f} ج"
+        return "" if required is None else f"المطلوب دفعه الآن: {whole(required)} ج"
 
     def _required_problem(self):
         invalid = self._invalid_leg_problem()
@@ -1037,7 +1038,7 @@ class InvoiceViewModel(QObject):
             if remaining is None:
                 return "اكتب إجمالي الفاتورة."
             if remaining > 0:
-                return (f"المتبقي من إجمالي الفاتورة {remaining:,.2f} ج: أضف طريقة دفع "
+                return (f"المتبقي من إجمالي الفاتورة {whole(remaining)} ج: أضف طريقة دفع "
                         "أو اضغط «على العميل» / «للعميل».")
             if remaining < 0:
                 return "مجموع طرق الدفع وحساب العميل يتجاوز إجمالي الفاتورة."
@@ -1045,7 +1046,7 @@ class InvoiceViewModel(QObject):
         required = self._required_now()
         if required is None or self._legs_total() == required:
             return ""
-        return f"مجموع طرق الدفع ({self._legs_total():,.2f} ج) يجب أن يساوي المطلوب دفعه الآن ({required:,.2f} ج)."
+        return f"مجموع طرق الدفع ({whole(self._legs_total())} ج) يجب أن يساوي المطلوب دفعه الآن ({required:,.2f} ج)."
 
     @Slot()
     def payFullAmount(self):
@@ -1695,7 +1696,7 @@ class InvoiceViewModel(QObject):
         if amount is None or amount <= 0:
             return ""
         side = "على العميل" if self._derived_account_direction() == "CUSTOMER_OWES" else "للعميل"
-        return f"سيضاف {side}: {amount:,.2f} ج"
+        return f"سيضاف {side}: {whole(amount)} ج"
 
     @Property(str, notify=changed)
     def discountWarning(self):
@@ -1718,7 +1719,7 @@ class InvoiceViewModel(QObject):
                 value = _decimal(weight or "0")
                 if value is not None and str(karat) in sums:
                     sums[str(karat)] += value
-            return {karat: (f"{value:.3f}" if value else "—") for karat, value in sums.items()}
+            return {karat: (f"{value:.2f}" if value else "—") for karat, value in sums.items()}
         sold = [(line.get("karat"), line.get("weight_grams")) for line in self._sales]
         sold += [(line["karat"], line["weight"]) for line in self._described]
         return {"sold": totals(sold), "bought": totals((line["karat"], line["weight"]) for line in self._olds)}

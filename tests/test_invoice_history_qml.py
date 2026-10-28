@@ -49,7 +49,7 @@ class InvoiceHistoryPageTests(page_harness.InvoicePageTests):
             QTest.mouseDClick(self.root, Qt.LeftButton, Qt.NoModifier, point)
             self.wait_until(lambda: vm.detail, "detail not opened")
             QTest.qWait(150)
-            self.assertEqual(vm.detail["invoiceTotal"], "90,000.00 ج")
+            self.assertEqual(vm.detail["invoiceTotal"], "90,000 ج")
             for name in ("historyHeaderSection", "historyCustomerSection", "historyMoneySection",
                          "historyItemsSection", "historyPricesSection"):
                 self.assertTrue(self.item(name).property("visible"), f"{name} at {width}x{height}")

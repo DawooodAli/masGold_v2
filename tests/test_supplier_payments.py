@@ -903,15 +903,15 @@ class ViewModelTests(PaymentCase):
         self.vm.loadPaymentContext(self.supplier)
         context = self.vm.payContext
         self.assertEqual((context["supplierName"], context["currentText"]),
-                         ("مورد المصنعيات", "علينا للمورد 5,000.00 ج مصنعيات"))
+                         ("مورد المصنعيات", "علينا للمورد 5,000 ج مصنعيات"))
         self.assertEqual([b["id"] for b in context["banks"]], ["5", "6"])
         self.assertTrue(context["banks"][1]["text"].startswith("فودافون كاش — محفظة"))
         preview = self.vm.previewPayment("1000")
         self.assertEqual((preview["valid"], preview["afterText"], preview["afterTone"], preview["note"]),
-                         (True, "علينا للمورد 4,000.00 ج مصنعيات", "shopOwes", ""))
+                         (True, "علينا للمورد 4,000 ج مصنعيات", "shopOwes", ""))
         self.assertEqual(self.vm.previewPayment("5000")["afterText"], "لا توجد مستحقات مصنعية")
         credit = self.vm.previewPayment("6000")
-        self.assertEqual((credit["afterText"], credit["afterTone"]), ("لنا عند المورد 1,000.00 ج مصنعيات", "supplierOwes"))
+        self.assertEqual((credit["afterText"], credit["afterTone"]), ("لنا عند المورد 1,000 ج مصنعيات", "supplierOwes"))
         self.assertIn("رصيد دائن", credit["note"])
         self.assertNotIn("-", credit["afterText"])
         self.assertEqual(self.vm.previewPayment("")["error"], "")
@@ -924,7 +924,7 @@ class ViewModelTests(PaymentCase):
         self.assertEqual(self.posted, ["SM000001"])
         self.assertIn("SM000001", self.vm.message)
         self.assertEqual(self.vm.errorMessage, "")
-        self.assertEqual(self.vm.detail["makingText"], "علينا للمورد 4,000.00 ج مصنعيات")
+        self.assertEqual(self.vm.detail["makingText"], "علينا للمورد 4,000 ج مصنعيات")
         row = next(r for r in self.vm.detail["makingLedger"] if r["paymentId"])
         self.assertEqual((row["reference"], row["detail"], row["state"], row["canReverse"], row["reversed"]),
                          ("SM000001", "تحويل من بنك مصر", "", True, False))
@@ -961,7 +961,7 @@ class ViewModelTests(PaymentCase):
                          ("معكوسة بالعملية RV000001", True, False, "تحويل من بنك مصر"))
         undo = next(r for r in self.vm.detail["makingLedger"] if r["state"].startswith("عكس الدفعة"))
         self.assertEqual((undo["state"], undo["reference"], undo["side"]), ("عكس الدفعة SM000001", "RV000001", "علينا للمورد"))
-        self.assertEqual(self.vm.detail["makingText"], "علينا للمورد 5,000.00 ج مصنعيات")
+        self.assertEqual(self.vm.detail["makingText"], "علينا للمورد 5,000 ج مصنعيات")
         self.vm.reversePayment("1", "مرة ثانية")
         self.assertIn("تم عكس", self.vm.errorMessage)
 

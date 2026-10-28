@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
 
-from app.formatting import datetime_text, grams, ltr, money, number
+from app.formatting import datetime_text, grams, ltr, money, number, rate, whole
 from app.workers.invoice_worker import InvoiceWorker
 from services.invoice_print_service import PRINT_BUSY_TEXT, PRINT_FAILED_TEXT, PRINT_SENT_TEXT
 
@@ -35,6 +35,10 @@ STATUS_FILTERS = {"ALL": None, "SETTLED": "SETTLED", "PARTIAL": "PARTIAL", "UNSE
 
 def known_money(value):
     return UNAVAILABLE if value is None else money(value)
+
+
+def known_rate(value):
+    return UNAVAILABLE if value is None else rate(value)
 
 
 def list_line(line):
@@ -513,7 +517,7 @@ class InvoiceHistoryViewModel(QObject):
             "accountText": account_text,
             "accountDirection": "" if not account else ("CUSTOMER_OWES" if account > 0 else "SHOP_OWES"),
             "goldValue": known_money(e["gold_value"]),
-            "averageMaking": UNAVAILABLE if e["average_making"] is None else money(e["average_making"]),
+            "averageMaking": UNAVAILABLE if e["average_making"] is None else rate(e["average_making"]),
             "makingTotal": "" if not d["can_see_manager_details"] else known_money(e["making_total"]),
             "makingStatus": MAKING_STATUS_TEXT.get(e.get("making_status") or "", ""),
             "oldGoldTotal": known_money(d.get("buy_total")) if d["old_gold_lines"] else "",
@@ -646,7 +650,7 @@ class InvoiceHistoryViewModel(QObject):
                              + number(delta, max(3, len(x['valued_delta_grams'].split('.')[-1])), True),
                 "priceText": "" if not x["price_basis"] else
                 f"{'سعر بيع المحل' if x['price_basis'] == 'SHOP_SELL' else 'سعر شراء المحل'} عيار {x['price_karat']}"
-                f" {money(x['price_per_gram'])}",
+                f" {rate(x['price_per_gram'])}",
                 "goldText": "" if delta == 0 else f"قيمة فرق الذهب {money(x['gold_amount'])}",
                 "makingText": making, "direction": x["direction"], "directionText": x["direction_text"],
                 "amount": "" if x["direction"] == "NONE" else money(x["amount"]),
@@ -679,7 +683,7 @@ class InvoiceHistoryViewModel(QObject):
                                "barcode": p.get("barcode") or "", "itemId": p.get("inventory_item_id") or "",
                                "historical": historical,
                                "valuation": f"القيمة التاريخية المرتجعة: {known_money(p.get('historical_value'))}" if historical else "",
-                               "price": "" if historical else f"سعر شراء المحل عيار {p['karat']} {known_money(p['shop_buy_price_per_gram'])}",
+                               "price": "" if historical else f"سعر شراء المحل عيار {p['karat']} {known_rate(p['shop_buy_price_per_gram'])}",
                                "gold": money(p["gold_amount"]), "making": money(p["making_refund"])})
                 dispositions.append(self._disposition_text(p["disposition"]))
             legs = [f"{METHOD_TEXT.get(p['method_code'], p['method_code'])}"
@@ -722,7 +726,7 @@ class InvoiceHistoryViewModel(QObject):
                     after += f" + حساب العميل {money(account_after or '0')}"
                 detail = f"{source} {c['source_reference']}: {after} بدلاً من {before}"      # Cairo has no arrow glyph
             posted = " • ".join(f"{'النقدية' if p['ledger'] == 'CASH' else p['account_name'] or 'حساب العميل'} "
-                                f"{number(p['amount'], 2, signed=True)}" for p in c["posted"])
+                                f"{whole(p['amount'], signed=True)}" for p in c["posted"])
             rows.append({"code": c["code"], "title": title, "detail": detail, "posted": posted,
                          "reason": f"السبب: {c['reason']}", "by": f"بواسطة: {c['actor'] or '—'}",
                          "time": datetime_text(c["occurred_at"]),
@@ -743,7 +747,7 @@ class InvoiceHistoryViewModel(QObject):
             legs = " + ".join(f"{METHOD_TEXT.get(l['method_code'], l['method_code'])} {money(l['amount'])}"
                               for l in m["legs"])
             rows.append({"time": datetime_text(m["occurred_at"]), "type": m["type_name"] or m["type_code"] or "",
-                         "amount": number(m["amount"], 2, signed=True), "methods": legs,
+                         "amount": whole(m["amount"], signed=True), "methods": legs,
                          "reference": m["reference"], "actor": m["actor"] or "—"})
         # The invoice's own state at issue stays exactly as issued; later CS movements belong to the
         # customer's overall balance and are never presented as payments of this invoice.

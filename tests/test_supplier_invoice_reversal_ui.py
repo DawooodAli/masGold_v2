@@ -113,7 +113,7 @@ class InvoiceReversalPageTests(harness.InvoicePageTests):
         self.assertIn("−50.000", self.text("reverseInvoiceGoldEffect"))                      # the exact opposite entry, before anything is posted
         self.assertIn("جرام عيار 21", self.text("reverseInvoiceGoldEffect"))
         self.assertIn(GOLD_ZERO, self.text("reverseInvoiceGoldAfter"))                         # the balance after
-        self.assertIn("−5,000.00", self.text("reverseInvoiceMakingEffect"))
+        self.assertIn("−5,000", self.text("reverseInvoiceMakingEffect"))
         self.assertIn("لا توجد مستحقات مصنعية", self.text("reverseInvoiceMakingAfter"))
         self.assertFalse(self.item("confirmReverseInvoiceButton").property("enabled"))         # a reason is mandatory
         self.capture("supplier-invoice-reversal-confirmation")
@@ -124,7 +124,7 @@ class InvoiceReversalPageTests(harness.InvoicePageTests):
         self.wait_until(lambda: len(self.db.corrections) == 1, "reversed")
         self.wait_until(lambda: not self.item("reverseInvoiceDialog").property("visible"), "confirmation closed")
         self.wait_idle()
-        self.assertEqual((self.move("gold", self.supplier), self.move("making", self.supplier)), (D("0.000"), D("0.00")))
+        self.assertEqual((self.move("gold", self.supplier), self.move("making", self.supplier)), (D("0.000"), D("0")))
         self.wait_until(lambda: self.pvm.detail.get("reversed") is True, "reversed state loaded")
         QTest.qWait(150)
         self.assertTrue(self.item("invoiceReversedBanner").property("visible"))

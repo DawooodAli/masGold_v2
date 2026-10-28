@@ -108,7 +108,7 @@ class PartyPageLayoutTests(base.ReceiptPageTests):
             context.prec = 50
             expected_sample = D("2.950") * D("930.0") / D("875") + D("1.000")
         self.assertEqual(sample, expected_sample)
-        self.assertEqual(grams(sample), "4.135")
+        self.assertEqual(grams(sample), "4.14")
 
         other_karats = held_gold_21k_equivalent(
             [{"balance": D("1.250"), "fineness": D("875.0")}],

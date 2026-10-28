@@ -101,7 +101,7 @@ class StockMinLevelViewModel(QObject):
             self.choicesChanged.emit()
         self._levels = [{"id": r["id"], "type": r["type"], "karat": r["karat"],
                          "minimum": " و ".join(x for x in (f"{r['min_pieces']} قطعة" if r["min_pieces"] else "", f"{r['min_grams']:,.3f} جرام" if r["min_grams"] else "") if x),
-                         "have": f"{r['pieces']} قطعة • {r['grams']:,.3f} جرام",
+                         "have": f"{r['pieces']} قطعة • {r['grams']:,.2f} جرام",
                          "below": bool((r["min_pieces"] and r["pieces"] < r["min_pieces"]) or (r["min_grams"] and r["grams"] < r["min_grams"]))} for r in result["levels"]]
         self._loaded = True
 

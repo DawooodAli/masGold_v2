@@ -97,7 +97,7 @@ class PositionOpeningCardTests(_CardBase):
         self.type_into("openingGold21", "5000")
         self.type_into("openingGold18", "210")
         self.type_into("openingGold24", "21")
-        self.wait_until(lambda: "5,204.000" in str(self.item("openingEq21").property("text")), "the 21K equivalent is computed by itself")
+        self.wait_until(lambda: "5,204.00" in str(self.item("openingEq21").property("text")), "the 21K equivalent is computed by itself")
         self.scroll_dialog_to("positionOpeningDialog", "openingConfirm")
         self.assertFalse(self.item("openingSave").property("enabled"))
         self.click("openingConfirm")
@@ -107,7 +107,7 @@ class PositionOpeningCardTests(_CardBase):
         self.wait_until(lambda: vm.hasOpening, "recorded")
         self.assertEqual(type(self).service.saved, [({"21": "5000", "18": "210", "24": "21"}, "")])
         self.wait_until(lambda: self.visual_item("openingRecorded") is not None, "the recorded line is shown")
-        self.assertIn("5,358.286", self.item("openingRecorded").property("text"))
+        self.assertIn("5,358.29", self.item("openingRecorded").property("text"))
         self.assertFalse(self.item("openingStage2").property("visible"))                         # the card closes: nothing left to enter
         self.assertFalse(self.item("openingStage1").property("visible"))
         self.click("openingTakeNow")

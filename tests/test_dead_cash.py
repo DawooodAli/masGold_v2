@@ -377,7 +377,7 @@ class CustomerPageTests(unittest.TestCase):
                                  "last_writeoff_at": datetime(2026, 9, 30, 12, 0), "reversed_count": 1}
         summary = vm.deadCashSummary
         self.assertEqual((summary["countText"], summary["totalText"]),
-                         ("عدد مرات الشطب: 2", "إجمالي الرصيد المشطوب: 9,000.00 ج"))
+                         ("عدد مرات الشطب: 2", "إجمالي الرصيد المشطوب: 9,000 ج"))
         self.assertIn("2026-09-30", summary["lastText"])
         history = vm._dead_cash_row({"dead_cash_id": 7, "amount": D("8000"), "is_reversed": 1,
                                      "occurred_at": datetime(2026, 9, 30, 12)})
@@ -391,9 +391,9 @@ class CustomerPageTests(unittest.TestCase):
         vm._writeoff = {"customer_id": "12", "name": "أحمد", "balance": "23000.00", "eligible": True}
         self.assertEqual(vm.writeOff["defaultAmount"], "23000.00")                 # default = full amount
         preview = vm.writeOffPreview("8000")
-        self.assertEqual(preview["afterText"], "15,000.00 ج")
+        self.assertEqual(preview["afterText"], "15,000 ج")
         self.assertEqual(preview["confirmText"],
-                         "سيتم شطب 8,000.00 ج من رصيد أحمد. سيصبح الرصيد المتبقي على العميل 15,000.00 ج.")
+                         "سيتم شطب 8,000 ج من رصيد أحمد. سيصبح الرصيد المتبقي على العميل 15,000 ج.")
         for bad in ("0", "-1", "23000.01", "x", "1.005"):
             self.assertFalse(vm.writeOffPreview(bad)["valid"], bad)
 

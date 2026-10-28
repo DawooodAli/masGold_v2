@@ -575,15 +575,15 @@ class ViewModelTests(TripCase):
         self.vm.issue("", "10000", [{"karatId": K21, "weight": "20", "designation": "MELT"}], TODAY, "", self.vm.newRequestKey())
         detail = self.vm.detail
         self.assertEqual((detail["cash"]["outstanding"], detail["gold"][0]["karat"], detail["gold"][0]["outstanding"], detail["closable"]),
-                         ("10,000.00 ج", 21, "20.000", False))
-        self.assertIn("نقدية 10,000.00 ج • عيار 21 (للسبك): 20.000 جرام", detail["closeHint"])
+                         ("10,000 ج", 21, "20.000", False))
+        self.assertIn("نقدية 10,000 ج • عيار 21 (للسبك): 20.000 جرام", detail["closeHint"])
         context = self.vm.context
-        self.assertEqual(context["safeBalanceText"], "40,000.00 ج")                                              # the SHOP side
+        self.assertEqual(context["safeBalanceText"], "40,000 ج")                                              # the SHOP side
         self.assertIn("عيار 21: المتاح 75.000 جرام • محجوز لمراجعة المدير 5.000", " ".join(r["text"] for r in context["shop"]))
         self.assertEqual([k["text"] for k in context["karats"]], ["عيار 24", "عيار 21", "عيار 18"])
         row = detail["entries"][0]
         self.assertEqual((row["code"], row["kindText"], row["canReverse"]), ("MT000001-1", "إخراج عهدة", True))
-        self.assertEqual(self.vm.trips[0]["outstandingText"], "نقدية 10,000.00 ج • عيار 21 (للسبك): 20.000 جرام")
+        self.assertEqual(self.vm.trips[0]["outstandingText"], "نقدية 10,000 ج • عيار 21 (للسبك): 20.000 جرام")
 
 
 class RulesTests(unittest.TestCase):

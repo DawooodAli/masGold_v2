@@ -61,7 +61,7 @@ class GoldBuyUiTests(base.MarketTripHeatPageTests):
         self.fill_line("5", "30000")
         self.assertFalse(self.item("confirmCustodyGoldBuyButton").property("enabled"))                  # the vendor is mandatory
         self.type_in("custodyGoldBuyNameField", "تاجر السوق")
-        self.assertIn("20,000.00", self.plain(self.text("custodyGoldBuyAvailable")))
+        self.assertIn("20,000", self.plain(self.text("custodyGoldBuyAvailable")))
         self.assertIsNotNone(self.visible_item("custodyGoldBuyPreviewError"))                          # 30,000 is more than the 20,000 of cash
         self.assertFalse(self.item("confirmCustodyGoldBuyButton").property("enabled"))
         self.type_replace("custodyGoldBuyPrice_0", "12000")
@@ -70,8 +70,8 @@ class GoldBuyUiTests(base.MarketTripHeatPageTests):
         self.type_replace("custodyGoldBuyPrice_0", "20000")
         self.assertIsNone(self.visible_item("custodyGoldBuyPreviewError"))
         self.assertTrue(self.item("confirmCustodyGoldBuyButton").property("enabled"))
-        self.assertIn("20,000.00", self.plain(self.text("custodyGoldBuyTotal")))
-        self.assertIsNotNone(self.visible_item("custodyGoldBuyWarning"))                                 # still -33.33 % from the 30,000 reference
+        self.assertIn("20,000", self.plain(self.text("custodyGoldBuyTotal")))
+        self.assertIsNotNone(self.visible_item("custodyGoldBuyWarning"))                                 # still -35 % from the 30,000 reference
         self.click("confirmCustodyGoldBuyButton")
         self.wait_until(lambda: self.tvm.errorMessage != "", "price refusal")
         QTest.qWait(100)
@@ -84,7 +84,7 @@ class GoldBuyUiTests(base.MarketTripHeatPageTests):
         self.assertEqual((len(self.db.scrap), len(self.db.cash_moves), self.db.cash()), (scrap, cash_moves, safe))   # no Scrap, no Main Safe / bank movement
         self.assertEqual(self.counts(), strips)
         self.assertEqual(self.gold_row()["outstanding"], D("5.000"))
-        self.assertEqual((self.custody_cash()["spent"], self.custody_cash()["outstanding"]), (D("20000.00"), D("0.00")))
+        self.assertEqual((self.custody_cash()["spent"], self.custody_cash()["outstanding"]), (D("20000"), D("0")))
         head = next(iter(self.db.gold_buys.values()))
         self.assertEqual((head["vendor_kind"], head["vendor_name"], head["price_warning_acknowledged"]), ("THIRD_PARTY", "تاجر السوق", 1))
         what = self.plain(" ".join(self.visible_texts("entryWhat")))

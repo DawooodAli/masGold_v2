@@ -12,7 +12,7 @@ from decimal import Decimal
 from PySide6.QtCore import Property, QObject, Signal, Slot
 from PySide6.QtQml import QmlElement
 
-from app.formatting import date_text, datetime_text, grams, money, number
+from app.formatting import date_text, datetime_text, grams, money, number, rate
 from services.report_service import REPORT_TITLES, ReportService
 
 QML_IMPORT_NAME = "MasGold.Reports"
@@ -47,7 +47,7 @@ FILTER_SPECS = {
     "cashflow": [],
     "profit": [],
 }
-KIND_FORMAT = {"money": lambda v: money(v, signed=v < 0), "grams": lambda v: grams(v, signed=v < 0), "eq21": lambda v: grams(v, signed=v < 0)}
+KIND_FORMAT = {"money": lambda v: money(v, signed=v < 0), "rate": lambda v: rate(v, signed=v < 0), "grams": lambda v: grams(v, signed=v < 0), "eq21": lambda v: grams(v, signed=v < 0)}
 
 
 def _cell(kind, value):
@@ -78,7 +78,7 @@ NO_PERIOD = {"stock", "alerts", "indicators", "demand", "customers", "deadcash",
 
 
 def grams_text(value):
-    return f"{Decimal(str(value)):,.3f} جرام"
+    return f"{Decimal(str(value)):,.2f} جرام"
 
 
 def clean_label(label):

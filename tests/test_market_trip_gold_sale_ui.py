@@ -58,7 +58,7 @@ class GoldSaleUiTests(base.MarketTripHeatPageTests):
         self.assertFalse(self.item("confirmCustodyGoldSaleButton").property("enabled"))          # nothing chosen yet
         self.fill_sale("4", "24000")
         self.assertIn("المتاح 10.000 جرام عيار 21", self.plain(self.text("custodyGoldSaleAvailable")))
-        self.assertIn("24,000.00", self.plain(self.text("custodyGoldSaleTotal")))
+        self.assertIn("24,000", self.plain(self.text("custodyGoldSaleTotal")))
         self.assertIn("المرجع", self.plain(self.text("custodyGoldSaleReference")))
         self.assertIsNone(self.visible_item("custodyGoldSaleWarning"))                            # exactly the reference: no warning
         self.assertTrue(self.item("confirmCustodyGoldSaleButton").property("enabled"))
@@ -68,10 +68,10 @@ class GoldSaleUiTests(base.MarketTripHeatPageTests):
         self.wait_idle()
         self.assertEqual((len(self.db.scrap), len(self.db.cash_moves)), (scrap, cash_moves))   # no Scrap, no Main Safe / bank movement
         self.assertEqual(self.counts(), strips)                                                   # no shop balance moved, so none reloaded
-        self.assertEqual((self.outstanding_logo(), self.custody_cash()), (D("6.000"), D("24000.00")))
+        self.assertEqual((self.outstanding_logo(), self.custody_cash()), (D("6.000"), D("24000")))
         sale = next(iter(self.db.gold_sales.values()))
         self.assertEqual((sale["buyer_kind"], sale["buyer_name"], sale["total_price"], sale["price_warning_acknowledged"]),
-                         ("THIRD_PARTY", "تاجر الصاغة", D("24000.00"), 0))
+                         ("THIRD_PARTY", "تاجر الصاغة", D("24000"), 0))
         what = self.plain(" ".join(self.visible_texts("entryWhat")))
         self.assertIn("تاجر الصاغة", what)
         self.assertIn("4.000 جرام", what)

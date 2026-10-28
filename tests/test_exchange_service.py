@@ -940,14 +940,14 @@ class SettlementBarTests(ExchangeTestCase):
     def test_customer_owes_exposes_money_in(self):
         s = self.model(self.identified("301", "12.000", "10.500")).settlement
         self.assertEqual((s["direction"], s["resultLabel"], s["due"], s["needsMoney"], s["moneyLabel"]),
-                         ("CUSTOMER_OWES", "على العميل", "10,965.00 ج", True, "يستلم المحل"))
+                         ("CUSTOMER_OWES", "على العميل", "10,965 ج", True, "يستلم المحل"))
         self.assertEqual((s["accountLabel"], s["remainingText"], s["complete"]),
-                         ("على حساب العميل", "المتبقي 10,965.00 ج", False))
+                         ("على حساب العميل", "المتبقي 10,965 ج", False))
 
     def test_shop_owes_exposes_money_out(self):
         s = self.model(self.identified("302", "8.000", "7.000")).settlement
         self.assertEqual((s["resultLabel"], s["due"], s["moneyLabel"], s["accountLabel"]),
-                         ("للعميل", "13,915.00 ج", "يدفع المحل للعميل", "للعميل على حسابه"))
+                         ("للعميل", "13,915 ج", "يدفع المحل للعميل", "للعميل على حسابه"))
 
     def test_zero_shows_no_payment(self):
         vm = self.model(self.identified("300", "10.000", "8.750", making="150"))
@@ -964,7 +964,7 @@ class SettlementBarTests(ExchangeTestCase):
 
     def test_customer_account_is_explicit_and_must_complete_exactly(self):
         part = self.model(self.identified("301", "12.000", "10.500"), amount="10000")
-        self.assertEqual((part.settlement["remainingText"], part.canFinalize), ("المتبقي 965.00 ج", False))
+        self.assertEqual((part.settlement["remainingText"], part.canFinalize), ("المتبقي 965 ج", False))
         full = self.model(self.identified("301", "12.000", "10.500"), amount="10000", account="965")
         self.assertEqual((full.settlement["remainingText"], full.canFinalize), ("التسوية مكتملة", True))
         over = self.model(self.identified("301", "12.000", "10.500"), amount="12465")
@@ -1007,10 +1007,10 @@ class HistoryPresentationTests(unittest.TestCase):
                                         {"karat": 21, "weight": D("1.000")}],
                          "old_gold_lines": [{"karat": 21, "weight": D("5.000"), "line_total": D("30000.00")}]})
         sold = model.soldSummary
-        self.assertEqual((sold["count"], sold["total"]), ("3", "6.750"))
-        self.assertEqual(sold["karats"], [{"karat": "21", "weight": "4.500"}, {"karat": "18", "weight": "2.250"}])
+        self.assertEqual((sold["count"], sold["total"]), ("3", "6.75"))
+        self.assertEqual(sold["karats"], [{"karat": "21", "weight": "4.50"}, {"karat": "18", "weight": "2.25"}])
         old = model.oldGoldSummary
-        self.assertEqual((old["count"], old["total"], old["value"]), ("1", "5.000", "30,000.00 ج"))
+        self.assertEqual((old["count"], old["total"], old["value"]), ("1", "5.00", "30,000 ج"))
         self.assertEqual(self.vm({"sale_lines": [], "old_gold_lines": []}).oldGoldSummary, {})
 
     def test_exchange_is_shown_inline_with_its_own_facts_only(self):
@@ -1032,11 +1032,11 @@ class HistoryPresentationTests(unittest.TestCase):
                "making_refund_eligible": 0, "signed_amount": D("3242.00"), "money_received": D("3242.00"),
                "money_paid": D("0.00"), "account_signed": D("0.00"), "notes": None}
         (x,) = self.vm({"exchanges": [exchange_summary(row)]}).exchanges
-        self.assertEqual((x["code"], x["directionText"], x["amount"]), ("EX000002", "على العميل", "3,242.00 ج"))
+        self.assertEqual((x["code"], x["directionText"], x["amount"]), ("EX000002", "على العميل", "3,240 ج"))
         self.assertEqual(x["deltaText"], "فرق الوزن ⁦+0.500⁩")
-        self.assertEqual([p["weight"] for p in x["returned"] + x["replacements"]], ["3.500", "4.000"])
-        self.assertIn("مصنعية الذهب الزائد 125.00 ج", x["makingText"])
-        self.assertEqual((x["moneyTitle"], x["money"], x["accountText"]), ("المستلم من العميل", "نقدي: 3,242.00 ج", ""))
+        self.assertEqual([p["weight"] for p in x["returned"] + x["replacements"]], ["3.50", "4.00"])
+        self.assertIn("مصنعية الذهب الزائد 125 ج", x["makingText"])
+        self.assertEqual((x["moneyTitle"], x["money"], x["accountText"]), ("المستلم من العميل", "نقدي: 3,240 ج", ""))
 
     # ---- directional money wording (never the ambiguous «الدفع الفعلي»)
     def direction(self, received, paid):
@@ -1044,10 +1044,10 @@ class HistoryPresentationTests(unittest.TestCase):
         return InvoiceHistoryViewModel.money_direction({"money_received": D(received), "money_paid": D(paid)})
 
     def test_sale_shows_received_from_customer(self):
-        self.assertEqual(self.direction("22519.00", "0.00"), ("المستلم من العميل", "22,519.00 ج"))
+        self.assertEqual(self.direction("22519.00", "0.00"), ("المستلم من العميل", "22,520 ج"))
 
     def test_old_gold_purchase_shows_paid_to_customer(self):
-        self.assertEqual(self.direction("0.00", "20800.00"), ("المدفوع للعميل", "20,800.00 ج"))
+        self.assertEqual(self.direction("0.00", "20800.00"), ("المدفوع للعميل", "20,800 ج"))
 
     def test_mixed_invoice_follows_the_saved_money_direction(self):
         # Sale + customer old gold: the saved legs decide, not the presence of old gold.
@@ -1075,13 +1075,13 @@ class HistoryPresentationTests(unittest.TestCase):
         self.assertEqual(owes.exchanges[0]["moneyTitle"], "المستلم من العميل")
         credit = self.vm({"exchanges": [self.exchange_row("-80.00", "0.00", "80.00", payments=[("OUT", "80.00")])]})
         self.assertEqual((credit.exchanges[0]["moneyTitle"], credit.exchanges[0]["money"]),
-                         ("المدفوع للعميل", "نقدي: 80.00 ج"))
+                         ("المدفوع للعميل", "نقدي: 80 ج"))
         zero = self.vm({"exchanges": [self.exchange_row("0.00", "0.00", "0.00")]}).exchanges[0]
         self.assertEqual((zero["moneyTitle"], zero["money"], zero["amount"]), ("لا يوجد دفع فعلي", "", ""))
         # All on the customer account: no real money, and the account stays a separate line.
         on_account = self.vm({"exchanges": [self.exchange_row("-80.00", "0.00", "0.00", account="-80.00")]}).exchanges[0]
         self.assertEqual((on_account["moneyTitle"], on_account["accountText"]),
-                         ("لا يوجد دفع فعلي", "حساب العميل: للعميل 80.00 ج"))
+                         ("لا يوجد دفع فعلي", "حساب العميل: للعميل 80 ج"))
 
     def test_history_page_uses_only_directional_wording_and_the_old_gold_rules(self):
         from pathlib import Path
@@ -1166,18 +1166,18 @@ class HistoryPresentationTests(unittest.TestCase):
         # The totals come from the saved lines only: fillers never enter counts or weights.
         model = self.vm({"sale_lines": [{"karat": 21, "weight": D("3.500")}] * 3,
                          "old_gold_lines": [{"karat": 21, "weight": D("3.500"), "line_total": D("20915.98")}]})
-        self.assertEqual((model.soldSummary["count"], model.soldSummary["total"]), ("3", "10.500"))
-        self.assertEqual((model.oldGoldSummary["count"], model.oldGoldSummary["total"]), ("1", "3.500"))
+        self.assertEqual((model.soldSummary["count"], model.soldSummary["total"]), ("3", "10.50"))
+        self.assertEqual((model.oldGoldSummary["count"], model.oldGoldSummary["total"]), ("1", "3.50"))
 
     def test_weights_show_no_unit_but_money_keeps_its_currency(self):
         from app.formatting import grams, money
-        self.assertEqual(grams(D("3.500")), "3.500")
-        self.assertEqual(grams(D("7")), "7.000")
-        self.assertEqual(money(D("24000")), "24,000.00 ج")                     # currency stays
+        self.assertEqual(grams(D("3.50")), "3.50")
+        self.assertEqual(grams(D("7")), "7.00")
+        self.assertEqual(money(D("24000")), "24,000 ج")                     # currency stays
         model = self.vm({"sale_lines": [{"karat": 21, "weight": D("4.500")}, {"karat": 18, "weight": D("2.250")}],
                          "old_gold_lines": []})
-        self.assertEqual(model.soldSummary["karats"], [{"karat": "21", "weight": "4.500"},
-                                                       {"karat": "18", "weight": "2.250"}])
+        self.assertEqual(model.soldSummary["karats"], [{"karat": "21", "weight": "4.50"},
+                                                       {"karat": "18", "weight": "2.25"}])
         from pathlib import Path
         root = Path(__file__).resolve().parents[1] / "qml"
         history = (root / "InvoiceHistoryPage.qml").read_text(encoding="utf-8")
@@ -1205,8 +1205,8 @@ class HistoryPresentationTests(unittest.TestCase):
         main = (root / "qml" / "Main.qml").read_text(encoding="utf-8")
         for label in ("سعر بيع 21 / جرام", "سعر شراء 21 / جرام", '"ذهب/جرام: "', '"شراء/جرام: "', '" ج/جرام"'):
             self.assertIn(label, main)
-        self.assertEqual(grams(D("3.500")), "3.500")                                # labelled: still unitless
-        self.assertEqual(money(D("24000")), "24,000.00 ج")                          # currency unchanged
+        self.assertEqual(grams(D("3.50")), "3.50")                                # labelled: still unitless
+        self.assertEqual(money(D("24000")), "24,000 ج")                          # currency unchanged
 
     def test_top_row_cards_share_one_height_and_prices_are_readable(self):
         from pathlib import Path
@@ -1308,8 +1308,8 @@ class HistoryPresentationTests(unittest.TestCase):
         d = model.detail
         self.assertIsInstance(model, InvoiceHistoryViewModel)
         self.assertEqual((d["movedLabel"], d["movedAmount"], d["paymentMethods"]),
-                         ("المدفوع للعميل", "20,800.00 ج", "نقدي"))
-        self.assertEqual(d["accountText"], "للعميل: 80.00 ج")                     # never merged into the money
+                         ("المدفوع للعميل", "20,800 ج", "نقدي"))
+        self.assertEqual(d["accountText"], "للعميل: 80 ج")                     # never merged into the money
         self.assertEqual((d["typeText"], d["settlementText"]), ("شراء كسر", "مسددة"))
         self.assertTrue(d["isOldGoldOnly"])
         self.assertEqual(d["finalizedAt"], "⁦2026-09-28 17:54⁩")

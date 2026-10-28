@@ -69,7 +69,7 @@ class CustomerAccountPageTests(harness.InvoicePageTests):
                 self.assertEqual((vm.activeTab,vm.pageNumber,vm.filters),(1,2,filters))
                 QTest.qWait(60)
         for key in ('invoiceVM','exchangeVM','returnVM','correctionVM'):
-            state['balance']+=D('1')
+            state['balance']+=D('5')
             count=state['statement_calls']
             self.controller.operational_viewmodels[key].finalized.emit('21')
             self.wait_until(lambda:state['statement_calls']>count and not vm.busy)
@@ -78,8 +78,8 @@ class CustomerAccountPageTests(harness.InvoicePageTests):
             self.assertEqual(customer_vm.selectedCustomerId,'12')
         # A finalized event while a read is active must queue a fresh read.
         state['block']=True;vm.refresh();self.wait_until(entered.is_set)
-        state['balance']=D('987');vm.refresh();release.set()
-        self.wait_until(lambda:not vm.busy and '987' in vm.balance)
+        state['balance']=D('990');vm.refresh();release.set()
+        self.wait_until(lambda:not vm.busy and '990' in vm.balance)
         self.assertEqual((vm.activeTab,vm.pageNumber,vm.filters),(1,2,filters))
         count=state['statement_calls']
         self.controller.operational_viewmodels['reviewsVM'].inspectionResolved.emit()
@@ -96,7 +96,7 @@ class CustomerAccountPageTests(harness.InvoicePageTests):
             get_customer_profile=Mock(side_effect=lambda cid:{'customer':dict(customer,customer_id=str(cid)),'active_flags':[],
                 'transactions_page':{'items':[],'page':1,'has_more':False},'dead_cash_page':{'items':[],'page':1,'has_more':False},
                 'statement_summary':{},'statement_loaded_at':datetime(2026,9,30),'ledger_token':None}))
-        custody=[{'id':'3','code':'SA000003','date':'2026-10-23','amount':'1200.00','repaid':'200.00','owed':'1000.00','note':'عهدة مؤقتة'}]
+        custody=[{'id':'3','code':'SA000003','date':'2026-10-23','amount':'1200','repaid':'200','owed':'1000','note':'عهدة مؤقتة'}]
         class Service:
             def statement(self,*args,**kw):
                 return {'customer':customer,'rows':[],'has_more':False,'page':1,'accounts':[],'can_settle':True,'custody':custody}
@@ -107,7 +107,7 @@ class CustomerAccountPageTests(harness.InvoicePageTests):
         for size in ((1440,900),(1280,800),(1080,680)):
             self.root.setWidth(size[0]);self.root.setHeight(size[1]);QTest.qWait(120)
             self.assert_inside_window(self.visual_item('customerCustodyCard'))
-            self.assertIn('1,000.00',self.item('customerCustodyTotal').property('text'))
+            self.assertIn('1,000',self.item('customerCustodyTotal').property('text'))
         self.assertNotIn('1,000',vm.balance)                                              # the custody never enters the balance
         custody.clear();vm.refresh();self.wait_until(lambda:not vm.busy and len(vm.custody)==0)
         self.assertFalse(self.item('customerCustodyCard').property('visible'))
@@ -203,7 +203,7 @@ class CustomerAccountPageTests(harness.InvoicePageTests):
         vm.open('12')
         self.wait_until(lambda:len(vm.rows)==2 and not vm.busy)
         self.assertEqual([(r['source'],r['reference']) for r in vm.rows],[('عربون','DP000001'),('استرداد عربون','DR000002')])
-        self.assertEqual([r['balance'] for r in vm.rows],['للعميل: 5,000.00 ج','للعميل: 3,000.00 ج'])
+        self.assertEqual([r['balance'] for r in vm.rows],['للعميل: 5,000 ج','للعميل: 3,000 ج'])
         self.root.setWidth(1080);self.root.setHeight(680);QTest.qWait(120)
         self.click('customerDeposit')
         self.wait_until(lambda:self.item('customerDepositDialog').property('opened'))
@@ -229,7 +229,7 @@ class CustomerAccountPageTests(harness.InvoicePageTests):
         with vm.session._lock:
             vm.session._actor=dataclasses.replace(vm.session._actor,
                 permissions=vm.session._actor.permissions|{'CUSTOMER_ACCOUNT_SETTLE'})
-        state={'available':'2000.00','balance':'-2000.00'}
+        state={'available':'2000','balance':'-2000'}
         vm.service=Mock(statement=Mock(side_effect=lambda *a,**k:{
             'customer':{'name':'عميل','balance':D(state['balance'])},'rows':[],
             'has_more':False,'page':1,'accounts':[],'can_settle':True}))
@@ -239,7 +239,7 @@ class CustomerAccountPageTests(harness.InvoicePageTests):
         self.wait_until(lambda:not vm.busy and vm.canDeposit)
         for size in ((1440,900),(1280,800),(1080,680)):
             self.root.setWidth(size[0]); self.root.setHeight(size[1]); QTest.qWait(120)
-            for available,balance in [('2000.00','-2000.00'),('0.00','1000.00'),('0.00','0.00')]:
+            for available,balance in [('2000','-2000'),('0','1000'),('0','0')]:
                 state.update(available=available,balance=balance)
                 self.click('customerDepositRefund')
                 self.wait_until(lambda:self.item('customerDepositDialog').property('opened') and not vm.busy,
@@ -257,7 +257,7 @@ class CustomerAccountPageTests(harness.InvoicePageTests):
                 self.assertLessEqual(capacity.property('contentHeight'),capacity.height()+1)
                 self.assertEqual(self.item('customerDepositDialog').property('width'),460)
                 next_button=self.item('customerDepositNext')
-                if available=='0.00':
+                if available=='0':
                     self.assertIn('لا يوجد رصيد عربون',capacity.property('text'))
                     self.assertFalse(self.item('customerDepositAmount').property('enabled'))
                     self.item('customerDepositAmount').setProperty('text','10')
@@ -265,11 +265,11 @@ class CustomerAccountPageTests(harness.InvoicePageTests):
                     vm.depositAction('OUT','10','')
                     self.assertFalse(self.item('customerDepositConfirm').property('enabled'))
                     vm._deposits.refund.assert_not_called()
-                    if balance=='1000.00':self.assertIn('عليه 1,000.00',customer.property('text'))
+                    if balance=='1000':self.assertIn('عليه 1,000',customer.property('text'))
                 else:
                     self.type_into('customerDepositAmount','2001')
                     self.assertFalse(next_button.property('enabled'))
-                    self.assertIn('2,000.00 ج فقط',self.item('customerRefundAmountMessage').property('text'))
+                    self.assertIn('2,000 ج فقط',self.item('customerRefundAmountMessage').property('text'))
                     vm.depositAction('OUT','2001',''); vm._deposits.refund.assert_not_called()
                     self.item('customerDepositAmount').setProperty('text','2000')
                     self.assertTrue(next_button.property('enabled'))
@@ -277,7 +277,7 @@ class CustomerAccountPageTests(harness.InvoicePageTests):
                     self.assertTrue(self.item('customerDepositConfirm').property('enabled'))
                     self.assert_inside_window(self.item('customerDepositConfirm'))
                 self.item('customerDepositDialog').setProperty('visible',False); QTest.qWait(350)
-        state.update(available='2000.00',balance='-2000.00')
+        state.update(available='2000',balance='-2000')
         self.click('customerDepositRefund')
         self.wait_until(lambda:self.item('customerDepositDialog').property('opened') and not vm.busy)
         self.type_into('customerDepositAmount','2000'); self.click('customerDepositNext'); QTest.qWait(120)

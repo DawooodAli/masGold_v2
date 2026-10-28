@@ -4,11 +4,12 @@ The view model never decides a right or a number: the service rechecks the owner
 when an authorised user opens the application (`ensureDaily`); a manual sheet is a button. Every call runs off the GUI thread and its answer is ignored when the session changed meanwhile."""
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
+from app.formatting import whole
 from app.workers.invoice_worker import InvoiceWorker
 
 
 def _grams(value):
-    return f"{value:,.3f} جرام"
+    return f"{value:,.2f} جرام"
 
 
 class PositionSnapshotViewModel(QObject):
@@ -63,8 +64,8 @@ class PositionSnapshotViewModel(QObject):
         if not self._ledgers_posted:
             return ""
         scrap = self._posted.get("scrap", {})
-        parts = [f"كسر {karat}: {scrap[karat]:,.3f} جرام" for karat in (21, 18, 24) if scrap.get(karat)]
-        return "سُجّل: " + " • ".join(parts + [f"الكاش {self._posted.get('cash', 0):,.2f} ج", f"البنوك والمحافظ {self._posted.get('bank', 0):,.2f} ج"])
+        parts = [f"كسر {karat}: {scrap[karat]:,.2f} جرام" for karat in (21, 18, 24) if scrap.get(karat)]
+        return "سُجّل: " + " • ".join(parts + [f"الكاش {whole(self._posted.get('cash', 0))} ج", f"البنوك والمحافظ {self._posted.get('bank', 0):,.2f} ج"])
 
     @Property(str, notify=changed)
     def openingText(self):
@@ -72,7 +73,7 @@ class PositionSnapshotViewModel(QObject):
         if o is None:
             return ""
         return (f"سُجّل في {o['taken_at']:%Y-%m-%d %H:%M} — ذهب المحل {_grams(o['gold_shop_eq21'])} • ذهب الموردين (صافي) {_grams(o['gold_suppliers_eq21'])} • "
-                f"الكاش {o['cash_egp']:,.2f} ج • البنوك {o['bank_egp']:,.2f} ج")
+                f"الكاش {whole(o['cash_egp'])} ج • البنوك {whole(o['bank_egp'])} ج")
 
     # ------------------------------------------------------------------ actions
     @Slot()
@@ -102,7 +103,7 @@ class PositionSnapshotViewModel(QObject):
                 parsed[int(karat)] = Decimal(str(value).strip().replace(",", "") or "0")
             except (InvalidOperation, ValueError):
                 return "—"
-        return f"{rules.eq21(parsed):,.3f}"
+        return f"{rules.eq21(parsed):,.2f}"
 
     @Slot()
     def takeNow(self):

@@ -1,4 +1,4 @@
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from PySide6.QtCore import (
     QObject,
@@ -260,7 +260,7 @@ class InventoryViewModel(QObject):
     def totalWeight21Text(self):
         """إجمالي الوزن المكافئ عيار 21 (exact Decimal from the service; never a float sum)."""
         value = self._summary.get("equivalent_21_weight_grams")
-        return format(Decimal(str(value or 0)).quantize(Decimal("0.001")), ",.3f")
+        return format(Decimal(str(value or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), ",.2f")
 
     @Property(int, notify=dataChanged)
     def karatFilterId(self):
@@ -301,7 +301,7 @@ class InventoryViewModel(QObject):
         self._history_piece = {
             "itemNumber": f"#{piece['inventory_item_id']}", "barcode": piece.get("barcode_value") or "—",
             "itemType": piece.get("item_type_name") or "—", "karat": str(piece.get("karat_value") or ""),
-            "weight": f"{weight:,.3f}", "factory": piece.get("factory_code") or piece.get("factory_name") or "—",
+            "weight": f"{weight:,.2f}", "factory": piece.get("factory_code") or piece.get("factory_name") or "—",
             "category": piece.get("category_code") or "—",
             "status": STATUS_TEXT.get(piece.get("inventory_status"), piece.get("inventory_status") or ""),
             "statusCode": piece.get("inventory_status") or "", "pieceId": str(piece["inventory_item_id"]),

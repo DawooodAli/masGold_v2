@@ -131,10 +131,10 @@ class ManagerReviewPageTests(harness.InvoicePageTests):
         self.wait_until(lambda: self.visible_item("accountHistory") is not None
                         and self.visible_item("accountMovement_1") is not None, "history")
         self.assertIsNone(self.visible_item("reviewScroll"))
-        self.assertEqual(self.item("accountHistoryBalance").property("text"), "19,000.00 ج")
+        self.assertEqual(self.item("accountHistoryBalance").property("text"), "19,000 ج")
         self.assertEqual(self.reviews_vm.history.rows[0]["incoming"], True)
-        self.assertEqual(self.item("accountMovementAmount_0").property("text"), "1,000.00 ج")
-        self.assertEqual(self.item("accountMovementAmount_1").property("text"), "500.00 ج")
+        self.assertEqual(self.item("accountMovementAmount_0").property("text"), "1,000 ج")
+        self.assertEqual(self.item("accountMovementAmount_1").property("text"), "500 ج")
         self.assertIn("FC000001", self.item("accountMovementRef_0").property("text"))
         self.assertIn("26100601", self.item("accountMovementRef_0").property("text"))
         self.assertEqual(self.item("accountMovementCustomer_0").property("text"), "عميل الاختبار")

@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
 
-from app.formatting import grams, ltr, money, number
+from app.formatting import grams, ltr, money, number, rate
 from app.workers.invoice_worker import InvoiceWorker
 
 MONTHS = ("يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر")
@@ -142,7 +142,7 @@ class DashboardViewModel(QObject):
                     "versus": "بيانات غير كافية (تحتاج 10 أيام أسعار على الأقل)",
                     "action": action, "tone": hint.get("hint_tone") or "muted"}
         value = Decimal(versus)
-        return {"available": True, "average": money(average),
+        return {"available": True, "average": rate(average),
                 "versus": f"سعر الشراء الآن {'أعلى' if value > 0 else 'أقل' if value < 0 else 'مساوي'} منه بنسبة {abs(value):.2f}%",
                 "action": action, "tone": hint.get("hint_tone") or "muted"}
 
@@ -162,9 +162,9 @@ class DashboardViewModel(QObject):
         rows = []
         for r in self._data.get("scrap_today", []):
             diff = Decimal(r["diff"]) if r["diff"] is not None else None
-            rows.append({"karat": str(r["karat"]), "grams": grams(r["grams"]), "average": money(r["average"]),
-                         "price": money(r["price"]) if r["price"] is not None else "السعر غير متاح",
-                         "diff": ("" if diff is None else f"{'+' if diff > 0 else ''}{money(diff)}"), "over": bool(diff is not None and diff > 0)})
+            rows.append({"karat": str(r["karat"]), "grams": grams(r["grams"]), "average": rate(r["average"]),
+                         "price": rate(r["price"]) if r["price"] is not None else "السعر غير متاح",
+                         "diff": ("" if diff is None else f"{'+' if diff > 0 else ''}{rate(diff)}"), "over": bool(diff is not None and diff > 0)})
         return rows
 
     # ------------------------------------------------------------ dead stock (inventory permission)
@@ -234,7 +234,7 @@ class DashboardViewModel(QObject):
             moved = grams_in or grams_out
             rows.append({"karat": str(r["karat"]), "balance": grams(r["balance"]),
                          "zero": Decimal(r["balance"]) == 0,
-                         "inText": number(grams_in, 3, signed=True) if grams_in else "",
-                         "outText": number(-grams_out, 3) if grams_out else "",
+                         "inText": number(grams_in, 2, signed=True) if grams_in else "",
+                         "outText": number(-grams_out, 2) if grams_out else "",
                          "todayText": "" if moved else "لا حركة اليوم"})
         return rows

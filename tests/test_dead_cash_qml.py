@@ -99,7 +99,7 @@ class DeadCashPageTests(harness.InvoicePageTests):
                 self.assertEqual(self.item("deadCashWarningText").property("text").strip("‏"),
                                  "⚠️ سبق شطب رصيد لهذا العميل")
                 summary = self.item("deadCashSummaryText").property("text")
-                for part in ("عدد مرات الشطب: 1", "إجمالي الرصيد المشطوب: 4,000.00 ج", "آخر تاريخ شطب:"):
+                for part in ("عدد مرات الشطب: 1", "إجمالي الرصيد المشطوب: 4,000 ج", "آخر تاريخ شطب:"):
                     self.assertIn(part, summary)
                 before = len(self.dead.calls)
                 button = self.scroll_to("writeOffButton")
@@ -109,14 +109,14 @@ class DeadCashPageTests(harness.InvoicePageTests):
                 self.wait_until(lambda: dialog.property("opened"), "write-off dialog")
                 amount_field = next(c for c in self.item("writeOffAmount").childItems() if c.inherits("QQuickTextField"))
                 self.assertEqual(amount_field.property("text"), "23000.00")               # default = full balance
-                self.assertIn("23,000.00 ج", self.item("writeOffBalance").property("value"))
+                self.assertIn("23,000 ج", self.item("writeOffBalance").property("value"))
                 self.type_field("writeOffAmount", "8000")                                 # partial, editable
-                self.assertIn("15,000.00 ج", self.item("writeOffAfter").property("value"))
+                self.assertIn("15,000 ج", self.item("writeOffAfter").property("value"))
                 self.assertFalse(self.item("writeOffNext").property("enabled"))           # reason still missing
                 self.type_field("writeOffReason", "عميل مسافر ولا يمكن التحصيل")
                 self.click("writeOffNext")
                 self.assertEqual(self.item("writeOffConfirmText").property("text").strip("‏"),
-                                 "سيتم شطب 8,000.00 ج من رصيد أحمد. سيصبح الرصيد المتبقي على العميل 15,000.00 ج.")
+                                 "سيتم شطب 8,000 ج من رصيد أحمد. سيصبح الرصيد المتبقي على العميل 15,000 ج.")
                 confirm = self.item("writeOffConfirm")
                 self.assertFalse(confirm.property("enabled"))                             # password first
                 password = self.item("writeOffPassword")

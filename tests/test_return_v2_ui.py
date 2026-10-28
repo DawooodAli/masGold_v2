@@ -127,10 +127,10 @@ class ReturnPageTests(v2.ReturnV2Case):
         from PySide6.QtGui import QFontMetricsF
         from PySide6.QtTest import QTest
         self.vm.toggleLine("X91")                                     # the replacement the customer holds
-        self.wait_until(lambda: self.vm.summary.get("total") == "37,815.00 ج")
+        self.wait_until(lambda: self.vm.summary.get("total") == "37,815 ج")
         from app.formatting import money
         self.assertEqual((self.text("returnBasis"), self.text("returnRounding"), self.text("returnTotal")),
-                         ("37,816.00 ج", money("-1.00"), "37,815.00 ج"))          # the project's own money format
+                         ("37,815 ج", money("-1.00"), "37,815 ج"))          # the project's own money format
         self.vm.setAccountAmount("")
         for width, height in ((1440, 900), (1280, 800), (1080, 680)):
             with self.subTest(size=(width, height)):

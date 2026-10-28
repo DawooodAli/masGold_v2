@@ -99,7 +99,7 @@ class StocktakeAdjustViewModel(QObject):
             return
         self._message, self._is_error = f"تم اعتماد الجرد {result['code']} وشطب {result['written_off_count']} قطعة.", False
         self.changed.emit()
-        self.approved.emit(result["code"], int(result["written_off_count"]), f"{result['written_off_grams']:,.3f}")
+        self.approved.emit(result["code"], int(result["written_off_count"]), f"{result['written_off_grams']:,.2f}")
 
     def shutdown(self):
         for worker in list(self._workers):

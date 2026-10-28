@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
-from app.formatting import date_text, datetime_text, grams, ltr, money, number
+from app.formatting import date_text, datetime_text, grams3 as grams, ltr, money, number
 from app.viewmodels.supplier_viewmodel import making_position_text
 from services import settlement_rules, supplier_rules as rules
 from services.intermediary_holding_rules import CLOSURE_NOTE

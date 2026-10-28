@@ -2,7 +2,7 @@
 
 from datetime import date, datetime
 
-from app.formatting import date_text, datetime_text, number
+from app.formatting import date_text, datetime_text, number, whole
 from decimal import Decimal
 import logging
 
@@ -54,7 +54,7 @@ def qml_safe(value, key=None):
 def money_text(value, signed=False):
     if value is None:
         return "غير متاح"
-    return number(value, 2, signed)
+    return whole(value, signed)
 
 
 def balance_meaning(value):

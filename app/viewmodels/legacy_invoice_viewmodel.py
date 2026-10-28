@@ -74,7 +74,7 @@ class LegacyInvoiceViewModel(QObject):
         self._run(lambda _expected_actor: self._service.lookup(number, _expected_actor=_expected_actor), self._looked_up)
 
     def _looked_up(self, result):
-        pieces = [{"barcode": p["barcode"], "item": p["item"], "karat": p["karat"], "weight": f"{p['weight']:,.3f}", "status": p["status"] or "", "ok": p["status"] == "SOLD"} for p in result["pieces"]]
+        pieces = [{"barcode": p["barcode"], "item": p["item"], "karat": p["karat"], "weight": f"{p['weight']:,.2f}", "status": p["status"] or "", "ok": p["status"] == "SOLD"} for p in result["pieces"]]
         self._info = {"number": result["number"], "date": str(result["date"])[:10], "customer": result["customer"], "total": f"{result['total']:,.2f}", "pieces": pieces,
                       "oldGoldLines": result["old_gold_lines"], "blocked": bool(result["blocked"])}
         self.changed.emit()

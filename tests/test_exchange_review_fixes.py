@@ -124,7 +124,7 @@ class ViewModelStateTests(fx.ExchangeTestCase):
     def test_removing_the_last_replacement_clears_everything(self):
         self.add("402", "300")
         self.vm.payFullAmount()
-        self.assertEqual((self.vm.summary["finalAmount"], self.vm.amount), ("41,290.00 ج", "41290.00"))
+        self.assertEqual((self.vm.summary["finalAmount"], self.vm.amount), ("41,290 ج", "41290.00"))
         self.vm._preview_timer.stop()
         old = self.vm._preview
         key = self.vm._replacements[0]["key"]
@@ -142,8 +142,8 @@ class ViewModelStateTests(fx.ExchangeTestCase):
         self.vm.payFullAmount()
         self.vm.removeReplacement(self.vm._replacements[0]["key"])
         self.add("401", "300")
-        self.assertEqual((self.vm.amount, self.vm.summary["finalAmount"]), ("", "400.00 ج"))
-        self.assertEqual(self.vm.settlement["remainingText"], "المتبقي 400.00 ج")
+        self.assertEqual((self.vm.amount, self.vm.summary["finalAmount"]), ("", "400 ج"))
+        self.assertEqual(self.vm.settlement["remainingText"], "المتبقي 400 ج")
         self.vm.setMaking(self.vm._replacements[0]["key"], "220")           # making changed: settled again
         self.assertEqual((self.vm._preview, self.vm.amount), ({}, ""))
 
@@ -152,7 +152,7 @@ class ViewModelStateTests(fx.ExchangeTestCase):
         s = self.vm.summary
         self.assertEqual((s["complete"], s["statusText"], s["goldAmount"], s["makingRefund"], s["makingReplacement"],
                           s["makingDifference"], s["finalAmount"]),
-                         (False, "الحساب غير مكتمل", "6,979.00 ج للعميل", "1,100.00 ج", "غير محددة", "غير مكتمل", ""))
+                         (False, "الحساب غير مكتمل", "6,980 ج للعميل", "1,100 ج", "غير محددة", "غير مكتمل", ""))
         self.assertEqual(self.vm.settlement, {})
         self.assertFalse(self.vm.canFinalize)
 
@@ -248,7 +248,7 @@ class ExchangePageTests(fx.ExchangeTestCase):
         index = [l["lineId"] for l in self.vm.lines].index("9")
         self.assertEqual(self.text(f"exchangeReturnedIdentity_{index}"), "B205  •  #205")
         self.assertEqual(self.text("exchangeReplacementIdentity_0"), "B403  •  #403")
-        self.assertIn("6,979.00", self.text("exchangeGoldAmount"))
+        self.assertIn("6,980", self.text("exchangeGoldAmount"))
         self.assertEqual(self.text("exchangeMakingReplacement"), "غير محددة")
         save = self.find("exchangeSave")
         self.assertFalse(save is not None and save.property("enabled"))
@@ -256,8 +256,8 @@ class ExchangePageTests(fx.ExchangeTestCase):
         self.wait_until(lambda: self.vm.summary.get("complete"))
         # 4.5 g × 300 = 1,350; −6,979 + 1,350 − 1,100 = −6,729 → −6,730 للعميل.
         self.wait_until(lambda: self.find("exchangeFinalAmount") is not None)
-        self.assertIn("6,730.00", self.text("exchangeFinalAmount"))
-        self.assertIn("250.00", self.text("exchangeMakingDifference"))
+        self.assertIn("6,730", self.text("exchangeFinalAmount"))
+        self.assertIn("250", self.text("exchangeMakingDifference"))
         self.vm.removeReplacement(self.vm._replacements[0]["key"])
         self.wait_until(lambda: self.find("exchangeIncomplete") is not None
                         and self.text("exchangeIncomplete") == "الاستبدال غير مكتمل")

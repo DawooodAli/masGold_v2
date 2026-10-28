@@ -68,7 +68,7 @@ class PreviewTests(BookViewModelCase):
         self.assertIn("5.238", preview["lines"][0])
         self.assertIn("3.429", preview["lines"][1])
         self.assertIn("8.667", preview["totalPosted"])                                                      # 5.238 + 3.429: the document is the SUM of its posted lines
-        self.assertIn("52,000.00", preview["totalText"])
+        self.assertIn("52,000", preview["totalText"])
         done = self.service.book_buy(trip, [assay("916.7", "5", "32000"), karat(K18, "4", "20000")], "", "تاجر", TODAY, "", "", self.k(), False)
         self.assertEqual(done["document_posted"], "8.667")                                                   # the preview and the posting agree
 

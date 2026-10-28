@@ -142,7 +142,7 @@ class BookPageTests(base.MarketTripPageTests):
         self.wait_until(lambda: "100,000" in self.tvm.detail["cash"]["outstanding"], "cash in")
         self.closed("tripEntryDialog")
         self.wait_idle()
-        self.assertEqual(self.db.cash(), D("50000.00") - D("100000.00"))
+        self.assertEqual(self.db.cash(), D("50000") - D("100000"))
         # ---- BUY with an assay line: the preview states the posted equivalent and the total BEFORE saving
         self.open_book("bookBuyButton", "شراء ذهب (دفتري)")
         for name in ("bookCounterpartyCombo", "bookDateField", "bookReferenceField", "bookNotesField", "confirmBookButton", "cancelBookButton", "addBookLineButton"):
@@ -153,10 +153,10 @@ class BookPageTests(base.MarketTripPageTests):
         self.wait_until(lambda: self.item("bookPreviewTotal").property("visible"), "preview")
         self.assertIn("5.238", self.text("bookPreviewLine_0"))
         self.assertIn("5.238", self.text("bookPreviewTotal"))
-        self.assertIn("32,000.00", self.text("bookPreviewPrice"))
+        self.assertIn("32,000", self.text("bookPreviewPrice"))
         self.assertTrue(self.item("confirmBookButton").property("enabled"))
         self.submit()
-        self.assertIn("68,000.00", self.tvm.detail["cash"]["outstanding"])
+        self.assertIn("68,000", self.tvm.detail["cash"]["outstanding"])
 
         self.assertIn("25.238 جرام مكافئ عيار 21", self.balance_text())
         # ---- SELL more than the balance: the preview refuses it and the save button stays disabled

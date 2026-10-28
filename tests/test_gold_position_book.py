@@ -75,13 +75,13 @@ class PresentationTests(unittest.TestCase):
         view = gold_position_view(position)
         self.assertEqual([s["key"] for s in view["summary"]], ["shop", "custody", "intermediary", "book"])
         book = view["summary"][3]
-        self.assertEqual((book["grams"], book["eq21"]), ("غير محدد", "5.142"))
+        self.assertEqual((book["grams"], book["eq21"]), ("غير محدد", "5.14"))
         self.assertEqual(len(view["book"]), 1)
-        self.assertIn("الرصيد المرحَّل 5.142", view["book"][0]["text"])
+        self.assertIn("الرصيد المرحَّل 5.14", view["book"][0]["text"])
         self.assertIn("الوزن الفعلي غير محدد", view["book"][0]["text"])
         assayed = [r for r in view["shop"] if r["label"].startswith("ذهب مرتجع بعيار فعلي")]
-        self.assertEqual((len(assayed), assayed[0]["grams"], assayed[0]["eq21"]), (1, "1.800", "1.783"))
-        self.assertEqual(view["total"], "6.925")                                                 # 5.142 (book) + 1.783 (assayed stock)
+        self.assertEqual((len(assayed), assayed[0]["grams"], assayed[0]["eq21"]), (1, "1.80", "1.78"))
+        self.assertEqual(view["total"], "6.92")                                                 # 5.14 (book) + 1.78 (assayed stock)
         legacy = gold_position_view(build_pure())
         self.assertEqual(([s["key"] for s in legacy["summary"]], legacy["book"]), (["shop", "custody", "intermediary"], []))
 

@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
 
-from app.formatting import datetime_text, ltr, number
+from app.formatting import datetime_text, ltr, number, whole
 from app.viewmodels.account_history_viewmodel import AccountHistoryViewModel
 from app.workers.invoice_worker import InvoiceWorker
 
@@ -60,7 +60,7 @@ def _age_text(days):
 
 
 def _signed_money(value):
-    return number(value, 2, signed=True)
+    return whole(value, signed=True)
 
 
 def _signed_effect(value):
@@ -102,7 +102,7 @@ def review_details(code, details):
 
 
 def _g(value):
-    return f"{Decimal(str(value)):,.3f}"
+    return f"{Decimal(str(value)):,.2f}"
 
 
 def gold_position_view(position):
@@ -411,7 +411,7 @@ class ManagementReviewViewModel(QObject):
             weight = r.get("observed_weight_grams")
             details = " • ".join(v for v in (
                 r.get("item_type_name") or "", f"عيار {r['karat_value']}" if r.get("karat_value") else "",
-                f"{Decimal(str(weight)):.3f} جرام" if weight is not None else "", r.get("factory_name") or "",
+                f"{Decimal(str(weight)):.2f} جرام" if weight is not None else "", r.get("factory_name") or "",
                 f"مقاس {r['observed_size']}" if r.get("observed_size") else "") if v)
             rows.append({"invoiceId": _id(r.get("invoice_id")),
                          "title": f"فاتورة {r.get('invoice_number') or ''}", "time": _time(r.get("sold_at")),
@@ -452,7 +452,7 @@ class ManagementReviewViewModel(QObject):
                 "time": _time(r.get("exchanged_at") or r.get("created_at")),
                 "item": r.get("item_type_name") or r.get("item_name_snapshot") or "—",
                 "category": r.get("category_name") or "",
-                "karat": str(r.get("karat_value") or ""), "weight": f"{Decimal(str(weight)):.3f}" if weight is not None else "—",
+                "karat": str(r.get("karat_value") or ""), "weight": f"{Decimal(str(weight)):.2f}" if weight is not None else "—",
                 "factory": r.get("factory_name") or "", "size": r.get("size") or "", "notes": r.get("item_notes") or "",
                 "barcode": barcode, "barcodeText": f"الباركود المسجل: {barcode or 'غير مسجل'}",
                 "status": r.get("inventory_status") or "",
@@ -479,7 +479,7 @@ class ManagementReviewViewModel(QObject):
         for r in self._reviews.get("RETURN_APPROVAL", []):
             d = r.get("details_json") or {}
             lines = " • ".join(f"{l.get('item_name') or 'من الكسر'} عيار {l.get('karat')} — "
-                               f"{Decimal(str(l.get('weight_grams'))):.3f} جرام" for l in d.get("lines", []))
+                               f"{Decimal(str(l.get('weight_grams'))):.2f} جرام" for l in d.get("lines", []))
             rows.append({"invoiceId": _id(r.get("invoice_id")),
                          "reviewId": str(r["review_id"]), "code": d.get("return_code") or "",
                          "invoice": r.get("invoice_number") or "", "customer": r.get("customer_name_snapshot") or "بدون عميل",
@@ -619,9 +619,9 @@ class ManagementReviewViewModel(QObject):
                          "name": a["name"],
                          "typeText": ACCOUNT_TYPE_TEXT.get(a["account_type"], a["account_type"]),
                          "stateText": "نشط" if a.get("is_active", 1) else "غير نشط",
-                         "balance": f"{_num(a['balance'])} ج",
+                         "balance": f"{whole(a['balance'])} ج",
                          # Kept for a later drill-down view; not shown in the summary row.
-                         "details": f"وارد {_num(a['money_in'])} ج • منصرف {_num(a['money_out'])} ج • "
+                         "details": f"وارد {whole(a['money_in'])} ج • منصرف {whole(a['money_out'])} ج • "
                                     f"{int(a['movement_count'])} حركة",
                          "recent": recent or "لا توجد حركات"})
         return rows

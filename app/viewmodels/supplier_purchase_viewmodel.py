@@ -10,7 +10,7 @@ from uuid import UUID, uuid4, uuid5
 
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
-from app.formatting import date_text, datetime_text, grams, money, percent
+from app.formatting import date_text, datetime_text, grams3 as grams, money, percent, rate
 from services import supplier_rules as rules
 
 STATUS_TEXT = {"DRAFT": "مسودة", "POSTED": "مرحّلة", "CANCELLED": "ملغاة"}
@@ -400,7 +400,7 @@ class SupplierPurchaseViewModel(QObject):
         return {"inventoryItemId": piece["inventory_item_id"], "categoryCode": piece.get("category_code", ""),
                 "barcode": piece["barcode"] or "بدون باركود",
                 "hasBarcode": bool(piece["barcode"]), "weightText": grams(piece["weight"]),
-                "makingText": money(piece["making_per_gram"]) + " / جرام", "duplicate": bool(piece["duplicate"])}
+                "makingText": rate(piece["making_per_gram"]) + " / جرام", "duplicate": bool(piece["duplicate"])}
 
     @Property(str, notify=changed)
     def invoicesState(self):
@@ -447,11 +447,11 @@ class SupplierPurchaseViewModel(QObject):
                      "groups": [{"weight": format(g["supplier_weight"], "f"), "rate": format(g["making_per_gram"], "f"),
                                  "description": g["description"]} for g in d["groups"]]},
             "groups": [{"id": g["id"], "no": g["group_no"], "description": g["description"],
-                        "weightText": grams(g["supplier_weight"]), "rateText": money(g["making_per_gram"]) + " / جرام",
+                        "weightText": grams(g["supplier_weight"]), "rateText": rate(g["making_per_gram"]) + " / جرام",
                         "makingText": money(g["making_total"]), "pieceCount": g["piece_count"],
                         **intake_fields(g), **allowance_fields(g), **category_fields(g)} for g in d["groups"]],
             "pieces": [{"id": p["id"], "itemId": p["inventory_item_id"], "groupNo": p["group_no"],
-                        "weightText": grams(p["weight"]), "rateText": money(p["making_per_gram"]),
+                        "weightText": grams(p["weight"]), "rateText": rate(p["making_per_gram"]),
                         "itemType": p["item_type"], "size": p["size"],
                         "barcode": p["barcode"] or "بدون باركود", "hasBarcode": bool(p["barcode"]),
                         "statusText": ITEM_STATUS_TEXT.get(p["status"], p["status"])} for p in d["pieces"]],

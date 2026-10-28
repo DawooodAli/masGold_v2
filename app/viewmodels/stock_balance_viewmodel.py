@@ -2,7 +2,7 @@
 
 Display-ready values only: counts and weights arrive as exact Decimal from InventoryService and are
 formatted here; QML renders, it never sums. Nothing is loaded until the page opens."""
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
@@ -12,7 +12,7 @@ FILTERS = ("ALL", "NEW_STOCK", "OLD_STOCK")
 
 
 def weight_text(value) -> str:
-    return format(Decimal(value or 0).quantize(Decimal("0.001")), ",.3f")
+    return format(Decimal(value or 0).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), ",.2f")
 
 
 def karat_title(row) -> str:

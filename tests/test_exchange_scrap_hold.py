@@ -281,7 +281,7 @@ class ScrapPieceViewModelTests(ScrapHoldTestCase):
         self.assertEqual(vm.inspections, [])
         self.assertEqual((row["inScrap"], row["barcode"], row["itemId"], row["exchange"], row["invoice"], row["karat"],
                           row["weight"], row["scrapDestination"], row["scrapState"]),
-                         (True, "B200", "200", "EX000001", "26092701", "21", "10.000", "رصيد الكسر — عيار 21",
+                         (True, "B200", "200", "EX000001", "26092701", "21", "10.00", "رصيد الكسر — عيار 21",
                           "معلّقة لقرار المدير"))
         self.assertEqual([e["title"] for e in row["timeline"]], ["عملية استبدال", "تم تحويل القطعة إلى الكسر"])
 

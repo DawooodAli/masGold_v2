@@ -9,7 +9,7 @@ from services.number_text import normalize_digits
 
 from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
 
-from app.formatting import grams, ltr, money
+from app.formatting import grams, ltr, money, rate
 from app.workers.invoice_worker import InvoiceWorker
 
 METHODS = [{"code": "PHYSICAL_CASH", "text": "نقدي"}, {"code": "MOBILE_WALLET", "text": "محفظة"},
@@ -402,7 +402,7 @@ class ReturnViewModel(QObject):
                         "weight": self._weights.get(l["line_id"], "") if l["partial_allowed"] else grams(l["sold_grams"]),
                         "makingText": ("يُرد ما دفعه العميل" if l.get("full_refund_window", l["making_refundable"])
                                        else "سعر الشراء الحالي"),
-                        "shopBuy": money(l["shop_buy"]) if l["shop_buy"] else "—",
+                        "shopBuy": rate(l["shop_buy"]) if l["shop_buy"] else "—",
                         "estimate": money(l["estimated_gold"]) if l.get("estimated_gold") else "—"})
         return out
 
@@ -424,7 +424,7 @@ class ReturnViewModel(QObject):
                 "needsAck": bool(p.get("requires_price_acknowledgement")),
                 "lines": [{"item": l.get("item_name") or "—", "karat": str(l["karat"]), "weight": grams(l["weight_grams"]),
                            "identity": _identity(l) if l.get("inventory_item_id") else "",
-                           "price": money(l["shop_buy_price_per_gram"]) if l.get("shop_buy_price_per_gram") else "",
+                           "price": rate(l["shop_buy_price_per_gram"]) if l.get("shop_buy_price_per_gram") else "",
                            "value": money(l["historical_value"]) if l.get("historical_value") else money(l["gold_amount"]),
                            "gold": money(l["gold_amount"]), "making": money(l["making_refund"])} for l in p["lines"]]}
 

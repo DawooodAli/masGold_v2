@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
 
-from app.formatting import grams, ltr, money, number
+from app.formatting import grams, ltr, money, number, rate
 from app.workers.invoice_worker import InvoiceWorker
 
 METHODS = [{"code": "PHYSICAL_CASH", "text": "نقدي"}, {"code": "INSTAPAY", "text": "InstaPay"},
@@ -549,7 +549,7 @@ class ExchangeViewModel(QObject):
         same_karat = p["valuation_basis"] == "SAME_KARAT"
         price = ""
         if p["price_basis"]:
-            price = f"{p['price_basis_text']} عيار {p['price_karat']}: {money(p['price_per_gram'])}"
+            price = f"{p['price_basis_text']} عيار {p['price_karat']}: {rate(p['price_per_gram'])}"
         gold_signed = Decimal(p["gold_signed"])
         complete = bool(p.get("complete"))
 

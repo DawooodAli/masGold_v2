@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
-from app.formatting import date_text, datetime_text, grams, ltr, money, number
+from app.formatting import date_text, datetime_text, grams3 as grams, ltr, money, number
 from services import supplier_rules as rules
 from services.intermediary_holding_rules import (CONFIRMATION_TEXT, DECLARATION_TEXT, HOLDING_NOTE, LOGO_NOTE, LOT_TEXT, POOL_LOGO, POOL_LOT, RECEIPT_NOTE,
                                                  SETTLE_CONFIRMATION_TEXT, holding_preview)

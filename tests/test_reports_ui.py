@@ -113,7 +113,7 @@ class ReportsPageTests(harness.InvoicePageTests):
         self.assertEqual(vm.report, "sales")                                                       # the first report opens on entry
         self.assertIn("قيمة البيع", " ".join(t["label"] for t in vm.result["totals"]))
         self.assertNotIn("(فعّال)", " ".join(t["label"] for t in vm.result["totals"]))             # the word is not shown on a card (owner review)
-        self.assertIn("18,000.00 ج", " ".join(self.total_values()))                              # the independent figure of test_report_service
+        self.assertIn("18,000 ج", " ".join(self.total_values()))                              # the independent figure of test_report_service
         self.assertEqual(vm.result["tables"], [])                                                  # the documents table was removed from the screen
         self.assertIsNone(self.visible_item("reportRow_0_0"))
         self.assertIsNone(self.visible_item("reportMeaning_0"))                                    # the explanatory box was removed (owner review)

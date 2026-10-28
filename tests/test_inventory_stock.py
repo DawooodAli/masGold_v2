@@ -310,14 +310,14 @@ class StockBalanceTests(unittest.TestCase):
         vm = StockBalanceViewModel(service=service_for(Store(MIXED)))
         self.assertFalse(vm.loaded)                                    # nothing loaded until opened
         vm.refresh()
-        self.assertEqual((vm.totalCount, vm.totalWeightText, vm.isEmpty), (6, "56.334", False))
+        self.assertEqual((vm.totalCount, vm.totalWeightText, vm.isEmpty), (6, "56.33", False))
         self.assertEqual(vm.karats[0]["title"], "عيار 21")
-        self.assertEqual(vm.karats[0]["rows"][1], {"name": "سلسلة", "count": 1, "weight_text": "12.005"})
+        self.assertEqual(vm.karats[0]["rows"][1], {"name": "سلسلة", "count": 1, "weight_text": "12.01"})
         vm.setFilter("OLD_STOCK")
         self.assertEqual((vm.filter, vm.totalCount, [k["title"] for k in vm.karats]), ("OLD_STOCK", 1, ["عيار 21"]))
         big = StockBalanceViewModel(service=service_for(Store([piece(i, K21, "خاتم", "1234.567") for i in range(3)])))
         big.refresh()
-        self.assertEqual(big.totalWeightText, "3,703.701")
+        self.assertEqual(big.totalWeightText, "3,703.70")
         empty = StockBalanceViewModel(service=service_for(Store()))
         empty.refresh()
         self.assertTrue(empty.isEmpty)
@@ -331,7 +331,7 @@ class StocktakeTests(unittest.TestCase):
 
     def test_session_starts_with_current_stock_on_the_right(self):
         self.assertEqual((self.vm.remainingCount, self.vm.scannedCount), (6, 0))
-        self.assertEqual((self.vm.remainingWeightText, self.vm.scannedWeightText), ("56.334", "0.000"))
+        self.assertEqual((self.vm.remainingWeightText, self.vm.scannedWeightText), ("56.33", "0.00"))
         self.assertEqual(self.vm.withoutBarcodeCount, 1)
         self.assertEqual(self.vm.remainingRows[0]["barcode"], "01261001")
 
@@ -339,7 +339,7 @@ class StocktakeTests(unittest.TestCase):
         reads = self.store.reads
         self.assertEqual(self.vm.scan("02261001"), "OK")
         self.assertEqual((self.vm.remainingCount, self.vm.scannedCount), (5, 1))
-        self.assertEqual((self.vm.remainingWeightText, self.vm.scannedWeightText), ("52.209", "4.125"))
+        self.assertEqual((self.vm.remainingWeightText, self.vm.scannedWeightText), ("52.21", "4.13"))
         self.assertEqual(self.vm.scannedRows[0]["barcode"], "02261001")
         self.assertNotIn("02261001", [r["barcode"] for r in self.vm.remainingRows])
         self.assertEqual(self.store.reads, reads)                         # no reload per scan
@@ -363,7 +363,7 @@ class StocktakeTests(unittest.TestCase):
     def test_filters_and_scope_change_need_confirmation(self):
         k18 = next(o for o in self.vm.karatOptions if o["name"] == "عيار 18")
         self.assertTrue(self.vm.applyFilters(0, int(k18["id"]), False))
-        self.assertEqual((self.vm.remainingCount, self.vm.remainingWeightText), (2, "5.501"))
+        self.assertEqual((self.vm.remainingCount, self.vm.remainingWeightText), (2, "5.50"))
         self.assertEqual(self.vm.scan("01261001"), "UNKNOWN")               # outside the scope
         self.vm.scan("04261001")
         self.assertFalse(self.vm.applyFilters(0, 0, False))                # scans exist: refused
@@ -372,7 +372,7 @@ class StocktakeTests(unittest.TestCase):
         self.assertEqual((self.vm.remainingCount, self.vm.scannedCount), (6, 0))
         ring = next(o for o in self.vm.itemTypeOptions if o["name"] == "خاتم")
         self.vm.applyFilters(int(ring["id"]), 0, False)
-        self.assertEqual((self.vm.remainingCount, self.vm.remainingWeightText), (2, "7.725"))
+        self.assertEqual((self.vm.remainingCount, self.vm.remainingWeightText), (2, "7.73"))
 
     def test_reset_restores_the_full_set_and_keeps_filters(self):
         k21 = next(o for o in self.vm.karatOptions if o["name"] == "عيار 21")
@@ -388,7 +388,7 @@ class StocktakeTests(unittest.TestCase):
         self.assertEqual(list(totals), ["عيار 21", "عيار 18", "عيار 24"])
         self.assertEqual((totals["عيار 18"]["remaining_count"], totals["عيار 18"]["remaining_weight_text"],
                           totals["عيار 18"]["scanned_count"], totals["عيار 18"]["scanned_weight_text"]),
-                         (1, "1.001", 1, "4.500"))
+                         (1, "1.00", 1, "4.50"))
         empty = StocktakeViewModel(service=service_for(Store()))
         empty.start()
         self.assertEqual((empty.remainingCount, empty.scannedCount, empty.karatTotals), (0, 0, []))

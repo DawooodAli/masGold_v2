@@ -887,8 +887,8 @@ class ReportService:
             else:
                 s["bought"] += weight
                 s["paid"] += _dec(r["line_total"])
-        columns = [col("karat", "العيار"), col("sold", "جرامات البيع", "grams"), col("making", "متوسط المصنعية للجرام", "money"),
-                   col("bought", "جرامات الكسر المشتراة", "grams"), col("paid", "متوسط سعر شراء الكسر للجرام", "money")]
+        columns = [col("karat", "العيار"), col("sold", "جرامات البيع", "grams"), col("making", "متوسط المصنعية للجرام", "rate"),
+                   col("bought", "جرامات الكسر المشتراة", "grams"), col("paid", "متوسط سعر شراء الكسر للجرام", "rate")]
         tables = []
         for key in sorted(people, key=lambda k: (names[k], k)):
             rows, unknown = [], ZERO3
@@ -1013,9 +1013,9 @@ class ReportService:
 
         def average(b):
             return (b["paid"] / b["grams"]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if b and b["grams"] else None
-        columns = [col("karat", "العيار"), col("p_grams", "جرامات الفترة", "grams"), col("p_paid", "المدفوع في الفترة", "money"), col("p_avg", "متوسط سعر الجرام (الفترة)", "money"),
-                   col("c_grams", "الجرامات من البداية", "grams"), col("c_avg", "متوسط سعر الجرام (من البداية)", "money"), col("price", "سعر شراء المحل الحالي", "money"),
-                   col("diff", "الفرق عن السعر الحالي", "money")]
+        columns = [col("karat", "العيار"), col("p_grams", "جرامات الفترة", "grams"), col("p_paid", "المدفوع في الفترة", "money"), col("p_avg", "متوسط سعر الجرام (الفترة)", "rate"),
+                   col("c_grams", "الجرامات من البداية", "grams"), col("c_avg", "متوسط سعر الجرام (من البداية)", "rate"), col("price", "سعر شراء المحل الحالي", "rate"),
+                   col("diff", "الفرق عن السعر الحالي", "rate")]
         rows, cards = [], []
         for k in sorted(set(period) | set(cumulative), reverse=True):
             p, c = period.get(k), cumulative.get(k)
@@ -1087,7 +1087,7 @@ class ReportService:
         meaning = ["إحصاء بسيط من أرقام مبيعاتك، وليس نموذج ذكاء اصطناعي ولا وعدًا بالمستقبل: كل رقم معه عدد المشاهدات خلفه، وما لا يدعمه التاريخ لا يُحسب.",
                    "تاريخ المحل القديم بجرامات كل الأعيار معًا (بدون تفصيل عيار) وأوزانه معروفة من فبراير 2025 فقط؛ الشهر الجاري لا يدخل الحساب لأنه لم ينتهِ. المعامل الموسمي يحتاج مشاهدتين على الأقل لنفس الشهر.",
                    "علاقة السعر بالطلب ارتباط إحصائي على أشهر قليلة، ولا تثبت أن السعر هو السبب (قد يكون نمو المحل أو موسم بعينه)."] + notes
-        cols = [col("month", "الشهر"), col("bills", "عدد الفواتير", "count"), col("grams", "الجرامات المباعة", "grams"), col("price", "متوسط سعر بيع 21", "money"), col("yoy", "عن نفس الشهر العام الماضي")]
+        cols = [col("month", "الشهر"), col("bills", "عدد الفواتير", "count"), col("grams", "الجرامات المباعة", "grams"), col("price", "متوسط سعر بيع 21", "rate"), col("yoy", "عن نفس الشهر العام الماضي")]
         charts = [{"chart": "المبيعات على مدار السنة — شهريًا (خط)", "ref": {"type": "DEMAND_CHART", "id": "M"}}, {"chart": "المبيعات على مدار السنة — أسبوعيًا (خط)", "ref": {"type": "DEMAND_CHART", "id": "W"}}]
         tables = [table("charts", "الرسوم البيانية", [col("chart", "الرسم")], charts),
                   table("monthly", "المبيعات الشهرية (جرامات كل الأعيار)", cols, rows),

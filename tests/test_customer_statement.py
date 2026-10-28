@@ -396,8 +396,8 @@ class StatementViewModelTests(NoDatabaseTestCase):
 
     def test_profile_publishes_ledger_balances_and_recorded_history_wording(self):
         self.assertEqual(self.view_model.transactions[0]["id"], "6")
-        self.assertEqual(self.view_model.transactions[0]["running_balance_text"], "\u2066+45.00\u2069")  # kept LTR
-        self.assertEqual(self.view_model.statementSummary["opening_balance_text"], "0.00")
+        self.assertEqual(self.view_model.transactions[0]["running_balance_text"], "\u2066+45\u2069")  # kept LTR
+        self.assertEqual(self.view_model.statementSummary["opening_balance_text"], "0")
         self.assertIn("أول حركة مسجلة", self.view_model.statementSummary["history_basis_text"])
         self.assertEqual(self.view_model.statementSummary["current_balance"], self.view_model.selectedCustomer["balance"])
 
@@ -466,7 +466,7 @@ class StatementViewModelTests(NoDatabaseTestCase):
         self.assertEqual(self.view_model.statementFromDate, "")
         self.assertEqual(self.view_model.statementTypeCode, "")
         self.assertEqual(self.view_model.transactions, [])
-        self.assertEqual(self.view_model.statementSummary["current_balance_text"], "0.00")
+        self.assertEqual(self.view_model.statementSummary["current_balance_text"], "0")
 
     def test_presentation_uses_actual_amount_sign_and_exact_decimal_strings(self):
         row = transaction_row({

@@ -212,8 +212,8 @@ class MarketTripPageTests(harness.InvoicePageTests):
         before = self.counts()
         self.new_trip("10000", [(2, "20.000"), (3, "5.500")])                      # entry 1: 21K and 18K (entries: placeholder, 24K, 21K, 18K)
         self.assertEqual(self.counts()[0], before[0] + 1)                           # the money views reloaded once, no timer
-        self.assertEqual(self.balances.cashText, money(D("40000.00")))
-        self.assertEqual((self.db.cash(), self.db.physical(1), self.db.physical(2)), (D("40000.00"), D("80.000"), D("44.500")))
+        self.assertEqual(self.balances.cashText, money(D("40000")))
+        self.assertEqual((self.db.cash(), self.db.physical(1), self.db.physical(2)), (D("40000"), D("80.000"), D("44.500")))
         self.wait_until(lambda: self.tvm.detail.get("id"), "trip selected")
         self.assertEqual(self.text("tripTitle").replace("⁦", "").replace("⁩", ""), "عهدة MT000001")
         self.assertIsNone(self.visible_item("tripLimitation"))                                    # the long explanatory block is gone
@@ -221,11 +221,11 @@ class MarketTripPageTests(harness.InvoicePageTests):
         self.assertFalse(self.item("archivePanel").property("visible"))                           # the history is closed until asked for
         self.assertIsNotNone(self.visible_item("archiveToggle"))
         outstanding = " | ".join(self.visible_texts("figureOutstanding"))
-        for part in ("10,000.00 ج", "20.000 جرام", "5.500 جرام"):                                 # custody per karat, apart from the shop
+        for part in ("10,000 ج", "20.000 جرام", "5.500 جرام"):                                 # custody per karat, apart from the shop
             self.assertIn(part, outstanding)
         self.assertFalse(self.item("closeTripButton").property("enabled"))                        # outstanding custody
         self.assertIn("لا يمكن الإغلاق", self.text("closeHint"))
-        self.assertIn("10,000.00", self.text("closeHint"))
+        self.assertIn("10,000", self.text("closeHint"))
         self.assertEqual(self.text("tripMessage"), "تم إخراج العهدة MT000001-1")
         # ---- a partial return
         self.click("returnButton")
@@ -237,8 +237,8 @@ class MarketTripPageTests(harness.InvoicePageTests):
         self.wait_until(lambda: len(self.db.entries) == 2, "return posted")
         self.closed("tripEntryDialog")
         self.wait_idle()
-        self.assertEqual(self.db.cash(), D("43000.00"))
-        self.assertEqual(self.balances.cashText, money(D("43000.00")))
+        self.assertEqual(self.db.cash(), D("43000"))
+        self.assertEqual(self.balances.cashText, money(D("43000")))
         self.assertEqual(self.warnings, [])
 
     def test_stage_one_issue_has_no_designation_and_the_safe_is_never_overdrawn(self):
@@ -1220,7 +1220,7 @@ class MarketTripSupplierPayPageTests(MarketTripMeltingPageTests):
                 self.item(name)
         for name in ("confirmCustodyPayButton", "cancelCustodyPayButton"):
             self.assert_inside_window(self.item(name))
-        self.assertIn("10,000.00", self.text("custodyPayOutstandingText"))
+        self.assertIn("10,000", self.text("custodyPayOutstandingText"))
         self.assertFalse(self.item("confirmCustodyPayButton").property("enabled"))      # nothing chosen yet
         self.fill_pay()
         self.assertTrue(self.item("confirmCustodyPayButton").property("enabled"))
@@ -1231,7 +1231,7 @@ class MarketTripSupplierPayPageTests(MarketTripMeltingPageTests):
         self.wait_idle()
         self.snapshot("trip-after-payment")
         self.assertEqual(self.db.cash(), safe_after_issue)                              # NO second cash OUT at payment
-        self.assertIn("3,000.00", self.tvm.detail["cash"]["outstanding"])
+        self.assertIn("3,000", self.tvm.detail["cash"]["outstanding"])
         self.assertIn("SM000001", " ".join(self.visible_texts("entryWhat")))             # the SM document and the supplier are shown in the history
         self.assertIn("مورد نشط", " ".join(self.visible_texts("entryWhat")))
         self.wait_until(lambda: self.stub.reloads > reloads, "supplier view reloaded")   # the open supplier view re-reads the database
@@ -1245,7 +1245,7 @@ class MarketTripSupplierPayPageTests(MarketTripMeltingPageTests):
         self.wait_until(lambda: len(self.db.entries) == 3, "returned")
         self.closed("tripEntryDialog")
         self.wait_idle()
-        self.assertEqual(self.db.cash(), D("43000.00"))
+        self.assertEqual(self.db.cash(), D("43000"))
         self.assertTrue(self.item("closeTripButton").property("enabled"))
 
     def test_a_refused_payment_keeps_the_fields_and_a_double_click_posts_once(self):
@@ -1320,7 +1320,7 @@ class MarketTripSupplierPayPageTests(MarketTripMeltingPageTests):
         self.closed("tripReasonDialog")
         self.wait_idle()
         self.assertEqual(self.db.cash(), safe)                                           # Main Safe is untouched by the reversal
-        self.assertIn("10,000.00", self.tvm.detail["cash"]["outstanding"])               # the cash is recorded as back in custody
+        self.assertIn("10,000", self.tvm.detail["cash"]["outstanding"])               # the cash is recorded as back in custody
         self.assertIn("معكوسة بالعملية RV000001", " ".join(self.visible_texts("entryState")))
         self.wait_until(lambda: self.stub.reloads > reloads, "supplier view reloaded after the reversal")
         self.assertEqual(self.warnings, [])

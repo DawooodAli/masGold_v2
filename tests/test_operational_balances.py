@@ -85,9 +85,9 @@ class OperationalBalanceTests(unittest.TestCase):
         vm = OperationalBalanceViewModel(self.session(), service=service)
         vm._strip = service.strip()
         self.assertEqual((vm.cashText, [r["text"] for r in vm.oldGold]),
-                         ("125,300.00 ج", ["114.720", "32.500", "0.000", "8.100"]))
+                         ("125,300 ج", ["114.72", "32.50", "0.00", "8.10"]))
         vm._strip = {"cash_balance": "-61138.95", "old_gold": []}
-        self.assertEqual(vm.cashText, "⁦−61,138.95⁩ ج")
+        self.assertEqual(vm.cashText, "⁦−61,140⁩ ج")
         self.assertEqual({"cashText", "oldGold"} & set(dir(vm)), {"cashText", "oldGold"})
         self.assertFalse([name for name in dir(vm) if "bank" in name.lower() or "wallet" in name.lower()])
 
@@ -107,13 +107,13 @@ class OperationalBalanceTests(unittest.TestCase):
         vm._on_accounts(service.financial_accounts(), "")
         rows = vm.financialAccounts
         self.assertEqual([(r["title"], r["balance"]) for r in rows],
-                         [("Main Safe — نقدية", "125,300.00 ج"), ("محفظة المحل — محفظة", "7,011.00 ج")])
+                         [("Main Safe — نقدية", "125,300 ج"), ("محفظة المحل — محفظة", "7,010 ج")])
         # The summary row shows only name, type, state and balance (movements are a later drill-down).
         self.assertEqual([(r["name"], r["typeText"], r["stateText"], r["balance"]) for r in rows],
-                         [("Main Safe", "نقدية", "نشط", "125,300.00 ج"),
-                          ("محفظة المحل", "محفظة", "نشط", "7,011.00 ج")])
-        self.assertEqual(rows[1]["details"], "وارد 7,011.00 ج • منصرف 0.00 ج • 1 حركة")
-        self.assertEqual(rows[1]["recent"], "\u20662026-09-26 12:00\u2069 \u2066+7,011.00\u2069 — 26092601")
+                         [("Main Safe", "نقدية", "نشط", "125,300 ج"),
+                          ("محفظة المحل", "محفظة", "نشط", "7,010 ج")])
+        self.assertEqual(rows[1]["details"], "وارد 7,010 ج • منصرف 0 ج • 1 حركة")
+        self.assertEqual(rows[1]["recent"], "\u20662026-09-26 12:00\u2069 \u2066+7,010\u2069 — 26092601")
 
 
 class SetupRepo(Repo):

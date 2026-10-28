@@ -121,13 +121,13 @@ class CashScreenTests(harness.InvoicePageTests):
                 self.assert_inside_window(item)
             # داخل on the physical right, خارج on the left.
             self.assertGreater(inside.mapToScene(QPointF(0, 0)).x(), outside.mapToScene(QPointF(0, 0)).x())
-            self.assertEqual(self.texts("cashIn", 4), [("بيع", "25,000.00 ج"), ("سداد عميل", "5,000.00 ج"),
-                                                      ("إيراد", "2,000.00 ج"), ("سحب بنك", "10,000.00 ج")])
+            self.assertEqual(self.texts("cashIn", 4), [("بيع", "25,000 ج"), ("سداد عميل", "5,000 ج"),
+                                                      ("إيراد", "2,000 ج"), ("سحب بنك", "10,000 ج")])
             self.assertEqual([t[0] for t in self.texts("cashOut", 5)],
                              ["شراء كسر", "مصروفات", "مرتبات", "مرمة", "إيداع بنك"])
-            self.assertEqual(self.visible_item("cashInTotal").property("text"), "42,000.00 ج")
-            self.assertEqual(self.visible_item("cashOutTotal").property("text"), "49,100.00 ج")
-            self.assertEqual(self.item("cashBalance").property("text"), "82,540.00 ج")
+            self.assertEqual(self.visible_item("cashInTotal").property("text"), "42,000 ج")
+            self.assertEqual(self.visible_item("cashOutTotal").property("text"), "49,100 ج")
+            self.assertEqual(self.item("cashBalance").property("text"), "82,540 ج")
             self.assertEqual(self.item("cashAccountName").property("text"), "الخزنة الرئيسية")
             for name in ("cashBalance", "cashNewMovement", "cashRefresh", "cashStart", "cashEnd", "cashLabelFilter",
                          "cashApplyFilter", "cashInRow_0", "cashOutRow_0", "cashInTotal", "cashOutTotal"):
@@ -216,7 +216,7 @@ class CashScreenTests(harness.InvoicePageTests):
             self.type_into("cashAmount", "1500")
             self.click("cashMovementNext")
             self.assertEqual(self.item("cashConfirmText").property("text"),
-                             "سيتم تسجيل مصروفات 1,500.00 ج (خارج الخزنة الرئيسية).")
+                             "سيتم تسجيل مصروفات 1,500 ج (خارج الخزنة الرئيسية).")
             button = self.item("cashMovementConfirm")
             self.assert_inside_window(button)
             point = button.mapToScene(QPointF(button.width() / 2, button.height() / 2)).toPoint()
@@ -306,7 +306,7 @@ class CashScreenTests(harness.InvoicePageTests):
         self.choose("cashMovementType", 0)
         self.type_into("cashAmount", "2000")
         self.click("cashMovementNext")
-        self.assertEqual(self.item("cashConfirmText").property("text"), "سيتم تسجيل إيراد 2,000.00 ج (داخل الخزنة الرئيسية).")
+        self.assertEqual(self.item("cashConfirmText").property("text"), "سيتم تسجيل إيراد 2,000 ج (داخل الخزنة الرئيسية).")
         self.click("cashMovementConfirm")
         self.wait_until(lambda: self.count("cash_movement") == 1 and not self.fin.busy)
         self.assertEqual(self.last("cash_movement")[2:4], ("IN", "REVENUE"))
@@ -321,7 +321,7 @@ class CashScreenTests(harness.InvoicePageTests):
         self.choose("cashBankAccount", 0)
         self.click("cashMovementNext")
         self.assertEqual(self.item("cashConfirmText").property("text"),
-                         "سيتم إيداع 20,000.00 ج من الخزنة الرئيسية في بنك مصر.")
+                         "سيتم إيداع 20,000 ج من الخزنة الرئيسية في بنك مصر.")
         self.click("cashMovementConfirm")
         self.wait_until(lambda: self.count("cash_movement") == 2 and not self.fin.busy)
         self.assertEqual(self.last("cash_movement")[2:4] + self.last("cash_movement")[-1:],
@@ -338,11 +338,11 @@ class CashScreenTests(harness.InvoicePageTests):
         self.assertEqual(applied[1], "2026-09-01")
         for key in ("invoiceVM", "exchangeVM", "returnVM", "customerAccountVM", "correctionVM"):
             before = self.count("cash_view")
-            self.service.balance = str(80000 + before)
+            self.service.balance = str(80000 + 5 * before)
             self.controller.operational_viewmodels[key].finalized.emit("x")
             self.wait_until(lambda: self.count("cash_view") > before and not self.fin.busy, key)
             self.assertEqual(self.last("cash_view"), applied)                   # period / type kept
-            self.assertIn(f"{80000 + before:,}", self.item("cashBalance").property("text"))
+            self.assertIn(f"{80000 + 5 * before:,}", self.item("cashBalance").property("text"))
         self.root.setProperty("currentPage", 1)
         QTest.qWait(60)
         before = self.count("cash_view")

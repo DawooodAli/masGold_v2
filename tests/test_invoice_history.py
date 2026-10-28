@@ -345,7 +345,7 @@ class HistoryViewModelTests(unittest.TestCase):
         row = self.vm.results[0]
         self.assertEqual((row["number"], row["date"], row["time"], row["total"], row["moved"], row["statusText"],
                           row["typeText"]),
-                         ("26092701", "⁦2026-09-27⁩", "21:51", "90,000.00 ج", "89,000.00 ج",
+                         ("26092701", "⁦2026-09-27⁩", "21:51", "90,000 ج", "89,000 ج",
                           "مسددة جزئياً", "بيع"))
 
     def test_typing_is_debounced_into_one_search(self):
@@ -383,8 +383,8 @@ class HistoryViewModelTests(unittest.TestCase):
         d = self.vm.detail
         self.assertEqual((d["number"], d["finalizedAt"], d["invoiceTotal"], d["movedLabel"], d["movedAmount"],
                           d["accountText"], d["goldValue"], d["averageMaking"], d["makingTotal"]),
-                         ("26092701", "⁦2026-09-27 21:51⁩", "90,000.00 ج", "المستلم من العميل",
-                          "89,000.00 ج", "على العميل: 1,000.00 ج", "83,722.62 ج", "467.41 ج", "6,277.38 ج"))
+                         ("26092701", "⁦2026-09-27 21:51⁩", "90,000 ج", "المستلم من العميل",
+                          "89,000 ج", "على العميل: 1,000 ج", "83,725 ج", "467.41 ج", "6,275 ج"))
         self.assertEqual([l["kindText"] for l in self.vm.saleLines],
                          ["من المخزون — بالباركود", "بيع يدوي (غير محدد في المخزون)", "من رصيد الكسر"])
         self.assertEqual([p["method"] for p in self.vm.payments], ["نقدي", "محفظة — محفظة المحل"])

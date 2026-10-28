@@ -76,7 +76,7 @@ class CustomerPickerTests(unittest.TestCase):
         self.assertEqual(self.picker.searchText, query)
         self.assertEqual(self.picker.results[0]["id"], "9007199254740993")
         self.assertEqual(self.picker.results[0]["balance"], "8500.10")
-        self.assertIn("8,500.10", self.picker.results[0]["balance_text"])
+        self.assertIn("8,500", self.picker.results[0]["balance_text"])
         self.service.get_customer_for_selection.assert_not_called()
 
     def test_pages_use_small_service_pages_and_policy_changes_reset_to_first(self):
@@ -287,7 +287,7 @@ class CustomerPickerQmlTests(unittest.TestCase):
                 )
                 second_row = customer(
                     int(second_id), active_warning_count=2,
-                    balance=Decimal("-3200.01"), balance_status="SHOP_OWES_CUSTOMER",
+                    balance=Decimal("-3200"), balance_status="SHOP_OWES_CUSTOMER",
                 )
                 rows_by_id = {first_id: first_row, second_id: second_row}
                 for vm in (first_vm, second_vm):
@@ -309,8 +309,8 @@ class CustomerPickerQmlTests(unittest.TestCase):
                 self.assertFalse(first_vm.selectedCustomer["dead_cash_attention"])
                 self.assertTrue(first_vm.selectedCustomer["has_dead_cash_history"])
                 self.assertEqual(second_vm.selectedCustomer["active_warning_count"], 2)
-                self.assertEqual(second_vm.selectedCustomer["balance"], "-3200.01")
-                self.assertIn("3,200.01", second_vm.selectedCustomer["balance_text"])
+                self.assertEqual(second_vm.selectedCustomer["balance"], "-3200")
+                self.assertIn("3,200", second_vm.selectedCustomer["balance_text"])
 
                 self.assertTrue(QMetaObject.invokeMethod(first, "open", Qt.DirectConnection))
                 QTest.qWait(30)

@@ -875,7 +875,7 @@ ApplicationWindow {
         }
 
         function weight(value) {
-            return Number(value || 0).toFixed(3)
+            return Number(value || 0).toFixed(2)
         }
 
         function syncPrices() {
@@ -1905,7 +1905,7 @@ ApplicationWindow {
 
                     var number = Number(value || 0)
 
-                    return number.toFixed(3)
+                    return number.toFixed(2)
                 }
 
 
@@ -11334,7 +11334,7 @@ ApplicationWindow {
                                         + ": "
                                         + newInventoryItemDialog
                                           .selectedOldGoldBalance()
-                                          .toFixed(3)
+                                          .toFixed(2)
                                       )
                                     : "اختر العيار أولاً لعرض رصيد الكسر."
 
@@ -11859,7 +11859,7 @@ ApplicationWindow {
             var numberValue = Number(value)
             return isNaN(numberValue)
                 ? "—"
-                : numberValue.toFixed(3)
+                : numberValue.toFixed(2)
         }
 
         function stockClassText(value) {
@@ -12556,7 +12556,7 @@ ApplicationWindow {
                 Layout.fillWidth: true; wrapMode: Text.Wrap; font.family: "Cairo"
                 color: theme.textPrimary; horizontalAlignment: Text.AlignRight
                 text: "القطعة تخرج من البضاعة، وتدخل الكسر بنفس العيار (" + root.selectedInventoryItem.karat_value
-                      + ") ونفس الوزن (" + Number(root.selectedInventoryItem.weight_grams).toFixed(3) + " جرام). لا يمكن إرجاعها للبضاعة من هنا."
+                      + ") ونفس الوزن (" + Number(root.selectedInventoryItem.weight_grams).toFixed(2) + " جرام). لا يمكن إرجاعها للبضاعة من هنا."
             }
             RowLayout {
                 Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
@@ -13118,7 +13118,7 @@ ApplicationWindow {
                                         + Number(
                                             leftItem.weight_grams
                                             || 0
-                                        ).toFixed(3)
+                                        ).toFixed(2)
                                         + " جرام"
 
                                     color:
@@ -13227,7 +13227,7 @@ ApplicationWindow {
                                         + Number(
                                             rightItem.weight_grams
                                             || 0
-                                        ).toFixed(3)
+                                        ).toFixed(2)
                                         + " جرام"
 
                                     color:

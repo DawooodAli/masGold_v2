@@ -98,14 +98,14 @@ class SummaryTests(unittest.TestCase):
         vm._detail = {"returns": [row]}
         card = vm.returns[0]
         self.assertEqual(card["pieces"][0]["price"], "")
-        self.assertIn("18,751.00", card["valuation"])
+        self.assertIn("18,750", card["valuation"])
         self.assertIn("فرق التقريب", card["valuation"])
-        self.assertEqual(card["total"], "18,750.00 ج")
+        self.assertEqual(card["total"], "18,750 ج")
         row.update(valuation_mode="CURRENT_BUY", rounding_adjustment="0", gold_amount="18000", making_refund="750")
         row["lines"][0].update(shop_buy_price_per_gram="6000", gold_amount="18000", making_refund="750")
         card = vm.returns[0]
-        self.assertIn("6,000.00", card["pieces"][0]["price"])
-        self.assertEqual((card["pieces"][0]["gold"], card["pieces"][0]["making"]), ("18,000.00 ج", "750.00 ج"))
+        self.assertIn("6,000", card["pieces"][0]["price"])
+        self.assertEqual((card["pieces"][0]["gold"], card["pieces"][0]["making"]), ("18,000 ج", "750 ج"))
 
 
 class RefreshTests(unittest.TestCase):
@@ -166,7 +166,7 @@ class HistoryUxQmlTests(qml_fixture.InvoiceHistoryPageTests):
         self.assertEqual(vm.returns[0]["code"], "RT000006")
         QCoreApplication.processEvents()
         self.assertEqual(self.item("historyReturnHeadline_0").property("text"), "استرداد بالقيمة التاريخية")
-        self.assertEqual(self.item("historyReturnTotal_0").property("text"), "18,750.00 ج")
+        self.assertEqual(self.item("historyReturnTotal_0").property("text"), "18,750 ج")
         self.assertEqual(self.warnings, [])
 
     def test_ux_summary_historical_cards_all_sizes(self):
@@ -193,7 +193,7 @@ class HistoryUxQmlTests(qml_fixture.InvoiceHistoryPageTests):
         for width, height in ((1440, 900), (1280, 800), (1080, 680)):
             self.root.setWidth(width); self.root.setHeight(height)
             QCoreApplication.processEvents()
-            self.assertEqual(vm.returnTracking[0]["remaining"], "المتبقي: 0.000 جرام — 0.00 ج")
+            self.assertEqual(vm.returnTracking[0]["remaining"], "المتبقي: 0.00 جرام — 0 ج")
             self.assertEqual(vm.returns[0]["headline"], "استرداد بالقيمة التاريخية")
             self.assertEqual(vm.returns[0]["status"], "معكوس عبر RV000001")
             self.assertEqual(vm.returns[0]["pieces"][0]["price"], "")

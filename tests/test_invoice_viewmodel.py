@@ -194,7 +194,7 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.assertEqual(self.vm.priceRows[1]["karat"], "21")
         self.assertEqual(self.vm.oldGoldDiscountPercent, "1.5")               # settings default, editable
         self.assertEqual([t["name"] for t in self.vm.itemTypes], ["خاتم", "دبلة"])
-        self.assertEqual(self.vm.oldGoldStock, [{"karatId": 1, "karat": "21", "grams": "120.500", "breakdown": ""}])  # nothing held
+        self.assertEqual(self.vm.oldGoldStock, [{"karatId": 1, "karat": "21", "grams": "120.50", "breakdown": ""}])  # nothing held
         self.vm.setOldGoldDiscountPercent("2")
         self.vm.newInvoice()
         self.assertEqual(self.vm.oldGoldDiscountPercent, "1.5")               # each invoice starts at the default
@@ -228,11 +228,11 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.sale_ready()
         self.assertTrue(self.vm.canFinalize)
         s = self.vm.summary
-        self.assertEqual((s["goldValue"], s["effectiveSale"], s["averageMaking"]), ("65,436.00 ج", "67,011.00 ج", "150.00"))
+        self.assertEqual((s["goldValue"], s["effectiveSale"], s["averageMaking"]), ("65,435 ج", "67,010 ج", "150.00"))
         self.assertNotIn("makingTotal", s)                      # the salesman never sees total making
         self.assertEqual((s["dueLabel"], s["dueAmount"], s["paidAmount"], s["differenceAmount"]),
-                         ("المستلم من العميل", "60,000.00 ج", "60,000.00 ج", ""))
-        self.assertEqual(s["accountEffect"], "على حساب العميل (عليه) 7,011.00 ج")
+                         ("المستلم من العميل", "60,000 ج", "60,000 ج", ""))
+        self.assertEqual(s["accountEffect"], "على حساب العميل (عليه) 7,010 ج")
         self.assertEqual(self.vm.saleLinesModel.rows()[0]["lineTotal"], "67,011.00")
         self.vm.setInvoiceTotal("1")                             # edit after preview: gate closes
         self.assertFalse(self.vm.canFinalize)
@@ -241,7 +241,7 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.sale_ready()
         version = self.vm._version
         self.vm._on_preview((version - 1, preview(sale_total="1.00")), "", "", "")
-        self.assertEqual(self.vm.summary["saleTotal"], "67,011.00 ج")
+        self.assertEqual(self.vm.summary["saleTotal"], "67,010 ج")
 
     def test_blocking_problems_and_confirmation_flags(self):
         self.service.preview_result = preview(blocking_problems=[{"code": "CUSTOMER_REQUIRED",
@@ -428,7 +428,7 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.preview_now()
         self.assertTrue(self.vm.directionChoosable)                            # an exchange can go either way
         self.assertEqual((self.vm.paymentDirection, self.vm.paymentLabel), ("OUT", "المدفوع للعميل"))
-        self.assertEqual((self.vm.summary["dueLabel"], self.vm.summary["dueAmount"]), ("المدفوع للعميل", "55,000.00 ج"))
+        self.assertEqual((self.vm.summary["dueLabel"], self.vm.summary["dueAmount"]), ("المدفوع للعميل", "55,000 ج"))
         self.vm.setPaymentDirection("IN")
         self.assertEqual(self.vm._draft().payment_direction, "IN")
 
@@ -521,7 +521,7 @@ class InvoiceViewModelTests(unittest.TestCase):
             self.vm.setLegAmount(0, typed)                                      # typed digit by digit
             self.assertEqual(self.vm.accountAmount, account)
         self.assertEqual(self.vm.accountDirection, "CUSTOMER_OWES")              # follows the money (IN)
-        self.assertEqual(self.vm.accountEffectText, "سيضاف على العميل: 3,000.00 ج")
+        self.assertEqual(self.vm.accountEffectText, "سيضاف على العميل: 3,000 ج")
         draft = self.vm._draft()
         self.assertEqual(([p.amount for p in draft.payments], draft.account_amount, draft.account_direction),
                          (["20000"], "3000", "CUSTOMER_OWES"))
@@ -539,7 +539,7 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.vm.setInvoiceTotal("23000")
         self.vm.setAccountAmount("3000")
         self.assertEqual((self.vm.paymentAmount, self.vm.accountDirection), ("20000", "SHOP_OWES"))
-        self.assertEqual(self.vm.accountEffectText, "سيضاف للعميل: 3,000.00 ج")
+        self.assertEqual(self.vm.accountEffectText, "سيضاف للعميل: 3,000 ج")
         self.assertEqual(self.vm._draft().account_direction, "SHOP_OWES")
 
     def test_split_legs_must_add_up_to_what_is_required_now(self):
@@ -814,7 +814,7 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.assertEqual([(r["itemName"], r["factory"], r["size"], r["notes"], r["tag"]) for r in rows],
                          [("خاتم", "لوكس", "", "فص أزرق", ""), ("دبلة", "لوكس", "18", "نقش", "تحتاج مراجعة"),
                           ("دبلة سادة", "", "", "", "من الكسر")])
-        self.assertEqual(self.vm.weightTotals["sold"], {"18": "—", "21": "17.700", "22": "—", "24": "—"})
+        self.assertEqual(self.vm.weightTotals["sold"], {"18": "—", "21": "17.70", "22": "—", "24": "—"})
         draft = self.vm._draft()
         self.assertEqual([(d.kind, d.reason_code, d.item_type_id) for d in draft.described_sale_lines],
                          [("UNIDENTIFIED", "BARCODE_LOST", 4), ("OLD_GOLD_STOCK", None, None)])
@@ -833,8 +833,8 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.vm.addOldGold(1, "5")
         self.vm.addOldGold(1, "2.25")
         totals = self.vm.weightTotals
-        self.assertEqual(totals["sold"], {"18": "—", "21": "10.500", "22": "—", "24": "—"})
-        self.assertEqual(totals["bought"], {"18": "—", "21": "7.250", "22": "—", "24": "—"})
+        self.assertEqual(totals["sold"], {"18": "—", "21": "10.50", "22": "—", "24": "—"})
+        self.assertEqual(totals["bought"], {"18": "—", "21": "7.25", "22": "—", "24": "—"})
 
     # ------------------------------------------------------------ cascading search
 
@@ -903,11 +903,11 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.vm.searchCustomers("0100")
         suggestion = self.vm.customerSuggestions[0]
         self.assertEqual((suggestion["name"], suggestion["accountText"], suggestion["deadCash"]),
-                         ("أحمد علي", "عليه 3,250.00 ج", True))
+                         ("أحمد علي", "عليه 3,250 ج", True))
         self.vm.chooseCustomer("12")
         info = self.vm.customerInfo
         self.assertEqual((self.vm.customerId, info["state"], info["mobile"], info["place"], info["accountText"]),
-                         ("12", "EXISTING", "0100", "طنطا", "عليه 3,250.00 ج"))
+                         ("12", "EXISTING", "0100", "طنطا", "عليه 3,250 ج"))
         self.assertIsNone(self.vm._draft().new_customer)
 
     def test_new_customer_is_only_typed_until_finalize(self):
@@ -919,11 +919,11 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.assertEqual(self.vm.customerInfo["state"], "NONE")
 
     def test_formatting_helpers(self):
-        self.assertEqual(money("1234.5"), "1,234.50 ج")
-        self.assertEqual(grams("10.5"), "10.500")
-        self.assertEqual((balance_text("0"), balance_text("-12.5")), ("لا يوجد رصيد", "للعميل 12.50 ج"))
+        self.assertEqual(money("1234.5"), "1,235 ج")
+        self.assertEqual(grams("10.5"), "10.50")
+        self.assertEqual((balance_text("0"), balance_text("-12.5")), ("لا يوجد رصيد", "للعميل 15 ج"))
         self.assertEqual((account_text("3250"), account_text("-1200"), account_text("0")),
-                         ("عليه 3,250.00 ج", "له 1,200.00 ج", "الحساب مسدد"))
+                         ("عليه 3,250 ج", "له 1,200 ج", "الحساب مسدد"))
 
 
 if __name__ == "__main__":

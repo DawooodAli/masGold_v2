@@ -123,7 +123,7 @@ class ScrapReviewPageTests(harness.InvoicePageTests):
                                  "سيتم إخراج وزن القطعة من الكسر وإعادة نفس القطعة إلى المخزون بنفس الباركود."
                                  " هل تريد المتابعة؟")
                 facts = self.text("inspectionConfirmFacts")
-                for part in ("01260925", "دبلة", "عيار 21", "5.000", "EX000001"):
+                for part in ("01260925", "دبلة", "عيار 21", "5.00", "EX000001"):
                     self.assertIn(part, facts)
                 self.click("inspectionConfirmNo")
                 self.wait_until(lambda: not self.item("inspectionConfirm").property("visible"), "closed")
