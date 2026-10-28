@@ -31,7 +31,7 @@ def reversal_fields(preview):
             "canReverse": bool(preview["can_reverse"]),
             "blockers": [b["message"] for b in preview["blockers"]],
             "goldEntryText": f"حركة الذهب العكسية: {_signed(preview['gold_delta'], grams)} جرام عيار {karat}",
-            "makingEntryText": (f"حركة المصنعيات العكسية: {_signed(preview['making_delta'], money)} ج"
+            "makingEntryText": (f"حركة المصنعيات العكسية: {_signed(preview['making_delta'], money)}"
                                 if Decimal(str(preview["making_delta"])) != 0 else "لا توجد مصنعيات على هذه الفاتورة"),
             "goldBeforeText": gold_position_text(rules.direction(preview["gold_before"]), preview["gold_before"], karat),
             "goldAfterText": gold_position_text(rules.direction(preview["gold_after"]), preview["gold_after"], karat),
