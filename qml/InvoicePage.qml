@@ -162,7 +162,6 @@ Item {
         if (invoiceVM.scrapKind !== "")
             invoiceVM.setScrapCashback(cashbackField.text)
         invoiceVM.addOldGold(invoiceVM.oldGoldKaratId, oldGoldWeight.text)
-        cashbackField.text = ""
         oldGoldWeight.text = ""
         oldGoldWeight.forceActiveFocus()
     }
@@ -1673,6 +1672,8 @@ Item {
                                 Layout.preferredHeight: 40
                                 font.pixelSize: 15
                                 placeholderText: "كاش باك"
+                                text: invoiceVM.scrapCashback            // starts at the default (System Settings) and again after every added line
+                                onTextEdited: invoiceVM.setScrapCashback(text)
                                 onAccepted: oldGoldWeight.forceActiveFocus()
                             }
                             AmountField {
@@ -1959,9 +1960,10 @@ Item {
                             spacing: 6
                             FieldLabel { text: invoicePage.compact ? "الكسر" : "قيمة الكسر" }
                             Value { objectName: "summaryOldGoldGross"; text: invoiceVM.summary.oldGoldGross || "—"; color: theme.textSecondary; font.pixelSize: 15 }
-                            FieldLabel { text: "خصم %" }
+                            FieldLabel { text: "خصم %"; visible: invoiceVM.discountedOldGoldCount > 0 }
                             AmountField {
                                 id: discountField
+                                visible: invoiceVM.discountedOldGoldCount > 0
                                 objectName: "oldGoldDiscountField"
                                 // Room for 1.25 / 2.00 / 5.00 without shrinking the font (default padding
                                 // alone ate most of the old 50 px).
@@ -1984,7 +1986,7 @@ Item {
                             }
                             Label {
                                 objectName: "discountWarning"
-                                visible: text.length > 0
+                                visible: text.length > 0 && invoiceVM.discountedOldGoldCount > 0
                                 text: invoiceVM.discountWarning
                                 color: theme.statusWarning
                                 font.family: "Cairo"
@@ -1994,7 +1996,7 @@ Item {
                             Value { objectName: "summaryOldGold"; text: invoiceVM.summary.oldGoldTotal || "—"; color: theme.priceBuy }
                             Label {
                                 objectName: "discountChangedFlag"
-                                visible: invoiceVM.summary.discountChanged
+                                visible: invoiceVM.summary.discountChanged && invoiceVM.discountedOldGoldCount > 0
                                 text: invoicePage.compact ? "مُعدّل" : "خصم مُعدّل"
                                 color: theme.amber
                                 font.family: "Cairo"

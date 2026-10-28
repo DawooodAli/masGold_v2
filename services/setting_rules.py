@@ -40,13 +40,14 @@ SPEC: dict[str, tuple[str, Any, Any, Any]] = {
     # Owner decision 2026-10-28: the minimum on an invoice that also SELLS, and the cashback above which a bar / pound line is reviewed.
     "sale_old_gold_discount_min_pct": (DECIMAL, Decimal("1.25"), Decimal("0"), Decimal("100")),
     "cashback_review_limit":         (DECIMAL, Decimal("100"), Decimal("0"), Decimal("1000000")),
+    "default_cashback_amount":       (DECIMAL, Decimal("25"), Decimal("0"), Decimal("1000000")),   # the cashback box starts here (owner 2026-10-28)
 }
 
 DEFAULTS: dict[str, Any] = {key: spec[1] for key, spec in SPEC.items()}
 
 REPORT_KEYS = ("dead_stock_days", "velocity_days", "low_cover_days", "weight_band_top", "min_sales_for_velocity")
 DISCOUNT_KEYS = ("default_old_gold_discount_pct", "min_old_gold_discount_pct", "max_old_gold_discount_pct",
-                 "sale_old_gold_discount_min_pct", "cashback_review_limit")
+                 "sale_old_gold_discount_min_pct", "cashback_review_limit", "default_cashback_amount")
 PRICE_WARNING_KEY = "price_deviation_warning_pct"
 
 

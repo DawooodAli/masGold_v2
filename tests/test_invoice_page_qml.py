@@ -1020,7 +1020,7 @@ class InvoicePageTests(unittest.TestCase):
         line = self.vm._draft().old_gold_lines[0]
         self.assertEqual((line.scrap_kind, line.cashback, line.discount_type), ("POUND", "40", None))
         self.assertIn("جنيهات", self.text("oldGoldKarat_0"))
-        self.assertEqual(self.text("cashbackField"), "")                                  # each line has its own cashback
+        self.assertEqual(self.text("cashbackField"), "25")                                # the default again for the next line
 
     def test_live_regression_customer_account_never_moves_the_average(self):
         # 21K 3.600 g sold (22,460.40), old gold net 36,724.73, 12,800 paid to the customer → 406.76/g.

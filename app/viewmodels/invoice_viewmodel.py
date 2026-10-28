@@ -41,6 +41,7 @@ DISCOUNT_MIN_OLD_GOLD_ONLY = Decimal("1.00")           # owner decision 2026-10-
 DISCOUNT_WARNING = "أقل من \u20661.25%\u2069 — ستُراجَع من المدير"
 DISCOUNT_WARNING_OLD_GOLD_ONLY = "أقل من \u20661%\u2069 — ستُراجَع من المدير"
 SCRAP_KIND_KARAT = {"POUND": 21, "BAR": 24}
+DEFAULT_CASHBACK = Decimal("25")
 SCRAP_KIND_TEXT = {"POUND": "جنيهات", "BAR": "سبائك"}
 PAYMENT_TEXT = {"PHYSICAL_CASH": "نقدي", "MOBILE_WALLET": "محفظة", "INSTAPAY": "InstaPay",
                 "BANK_TRANSFER": "تحويل بنكي"}
@@ -598,8 +599,14 @@ class InvoiceViewModel(QObject):
                 return
             self._old_gold_karat_id = int(row["karat_id"])
         if kind != self._scrap_kind:
-            self._scrap_kind, self._scrap_cashback = kind, ""
+            self._scrap_kind, self._scrap_cashback = kind, self._default_cashback()
         self.changed.emit()
+
+    def _default_cashback(self):
+        """The cashback box starts at the System Setting `default_cashback_amount` (25 until the service says otherwise)."""
+        settings = (self._reference or {}).get("settings") or {}
+        number = _decimal(str(settings.get("default_cashback_amount") or ""))
+        return self._trim(str(number if number is not None else DEFAULT_CASHBACK))
 
     @Slot(str)
     def setScrapCashback(self, value):
@@ -641,7 +648,7 @@ class InvoiceViewModel(QObject):
             return
         self._olds.append({"karat_id": karat_id, "karat": karat["karat"], "weight": weight,
                            "discount_type": "NONE", "discount_value": "", "scrap_kind": kind, "cashback": cashback})
-        self._scrap_cashback = ""                     # each line has its own cashback; the chosen kind stays for the next one
+        self._scrap_cashback = self._default_cashback()   # the next line starts from the default again; the chosen kind stays
         self._old_gold_karat_id = karat_id if kind else -1   # ordinary scrap needs its own explicit karat; a kind fixes it
         self._touched()
 
@@ -1666,6 +1673,11 @@ class InvoiceViewModel(QObject):
     @Property(int, notify=changed)
     def oldGoldCount(self):
         return len(self._olds)
+
+    @Property(int, notify=changed)
+    def discountedOldGoldCount(self):
+        """Ordinary (متنوع) scrap lines: the only ones a percent discount applies to; bars and pounds carry a cashback instead."""
+        return sum(1 for line in self._olds if not line.get("scrap_kind"))
 
     @Property(int, notify=changed)
     def oldGoldKaratId(self):

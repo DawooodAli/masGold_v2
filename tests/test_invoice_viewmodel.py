@@ -709,7 +709,18 @@ class InvoiceViewModelTests(unittest.TestCase):
         lines = self.vm._draft().old_gold_lines
         self.assertEqual([(l.karat_id, l.scrap_kind, l.cashback, l.discount_type) for l in lines],
                          [(1, "POUND", "40", None), (3, "BAR", "50", None)])
-        self.assertEqual(self.vm.scrapCashback, "")                                       # each line has its own cashback
+        self.assertEqual(self.vm.scrapCashback, "25")                                     # the next line starts from the default again
+
+    def test_the_discount_belongs_to_ordinary_scrap_only_and_the_cashback_starts_at_25(self):
+        self.vm.setSalesperson("5")
+        self.vm.setScrapKind("POUND")
+        self.assertEqual(self.vm.scrapCashback, "25")                                     # the default of the setting
+        self.vm.addOldGold(-1, "10")
+        self.assertEqual((self.vm.oldGoldCount, self.vm.discountedOldGoldCount), (1, 0))  # a bar alone: no discount row
+        self.vm.setScrapKind("")
+        self.vm.setOldGoldKarat(1)
+        self.vm.addOldGold(1, "5")
+        self.assertEqual((self.vm.oldGoldCount, self.vm.discountedOldGoldCount), (2, 1))  # a متنوع line brings it back
 
     def test_choosing_another_karat_puts_the_kind_back_on_ordinary_scrap(self):
         self.vm.setScrapKind("BAR")
