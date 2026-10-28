@@ -227,6 +227,8 @@ class InvoiceViewModel(QObject):
         # types. Payment legs and the customer-account part only allocate it. While the single
         # first leg was never edited by hand it mirrors the total (the fast cash sale).
         self._invoice_total, self._leg0_auto, self._payment_warning = "", True, ""
+        # Owner 2026-10-28: no إجمالي الفاتورة box; the total IS what the payment legs and the account part add up to.
+        self._total_derived = True
         self._total_rounded_note = ""
         self._discount_warning = ""
         default_discount = self._reference["settings"].get("old_gold_discount_default_percent") or "1.50"
@@ -754,6 +756,14 @@ class InvoiceViewModel(QObject):
         """With sold pieces the employee types إجمالي الفاتورة; old gold only keeps its own flow."""
         return bool(self._sales or self._described)
 
+    def _sync_total(self):
+        """Derived total = real payment legs + customer-account part (what is printed and sent as the authoritative total)."""
+        total = self._legs_total() + self._account_value()
+        text = self._amount_text(total) if total > 0 else ""
+        if text != self._invoice_total:
+            self._making_confirmed = False        # a new price needs a new explicit approval
+        self._invoice_total = text
+
     def _total_value(self):
         value = _decimal(self._invoice_total) if self._invoice_total else None
         return value if value is not None and value > 0 else None
@@ -783,6 +793,7 @@ class InvoiceViewModel(QObject):
     def setInvoiceTotal(self, text):
         text = (text or "").strip()
         self._total_rounded_note = ""
+        self._total_derived = False
         if not text:
             self._invoice_total = ""
             self._rebalance()
@@ -844,6 +855,15 @@ class InvoiceViewModel(QObject):
         if value is None or value < 0:
             self._reject("المبلغ غير صحيح.")
             return
+        if self._total_derived:
+            if value != value.to_integral_value():
+                self._reject("المبلغ يجب أن يكون رقمًا صحيحًا بدون كسور.")
+                return
+            self._legs[index]["amount"] = amount
+            self._leg0_auto = False
+            self._sync_total()
+            self._accepted()
+            return
         total = self._total_value()
         if total is None:
             self._reject("اكتب إجمالي الفاتورة أولاً.")
@@ -897,11 +917,13 @@ class InvoiceViewModel(QObject):
     def _auto_account(self):
         """With sold pieces and the customer paying, the unpaid remainder is على العميل automatically
         (owner decision 2026-10-02): account = total − real payments, recalculated on every change."""
-        return self._total_mode() and self._money_direction() == "IN"
+        return self._total_mode() and not self._total_derived and self._money_direction() == "IN"
 
     def _rebalance(self):
         """The ONE settlement recalculation: the untouched first leg follows the total, then the
         customer account takes whatever the real payments leave (never negative, never typed)."""
+        if self._total_mode() and self._total_derived:
+            self._sync_total()
         total = self._total_value()
         if not self._total_mode() or total is None:
             if self._total_mode():
@@ -931,6 +953,14 @@ class InvoiceViewModel(QObject):
     def addPaymentLeg(self):
         """Split the money across methods (same direction), up to three legs. With a total, the new
         leg starts with exactly the current unpaid remainder (1,035 → InstaPay 1,035, على العميل 0)."""
+        if self._total_mode() and self._total_derived:
+            if len(self._legs) >= 3:
+                self._reject("الحد الأقصى ثلاث طرق دفع.")
+            else:
+                self._leg0_auto = False
+                self._legs.append({"method": "PHYSICAL_CASH", "account": "", "amount": ""})
+                self._accepted()
+            return
         if self._total_mode():
             total = self._total_value()
             if self._leg0_auto:
@@ -1011,6 +1041,20 @@ class InvoiceViewModel(QObject):
         One payment leg is lowered/raised automatically (23,000 → 20,000 + 3,000 على العميل);
         with several legs the required amount is shown and the legs must add up to it."""
         amount = (amount or "").strip()
+        if self._total_mode() and self._total_derived:
+            if amount == self._account_amount:
+                return
+            new = _decimal(amount) if amount else Decimal("0")
+            if new is None or new < 0:
+                self._reject("مبلغ الحساب غير صحيح.")
+                return
+            if new != new.to_integral_value():
+                self._reject("المبلغ يجب أن يكون رقمًا صحيحًا بدون كسور.")
+                return
+            self._account_amount = amount
+            self._sync_total()
+            self._accepted()
+            return
         if amount == self._account_amount or self._auto_account():
             return                            # automatic: total − real payments
         if self._total_mode():
@@ -1048,7 +1092,7 @@ class InvoiceViewModel(QObject):
 
     def _required_now(self):
         """With several legs and an account part: what the legs must add up to (None otherwise)."""
-        if self._total_mode():
+        if self._total_mode() and not self._total_derived:
             total = self._total_value()
             return None if total is None or not self._account_value() else max(total - self._account_value(),
                                                                                 Decimal("0"))
@@ -1071,7 +1115,7 @@ class InvoiceViewModel(QObject):
 
     @Property(bool, notify=changed)
     def canAddPayment(self):
-        if not self._total_mode():
+        if not self._total_mode() or self._total_derived:
             return len(self._legs) < 3
         total = self._total_value()
         if total is None:
@@ -1900,7 +1944,7 @@ class InvoiceViewModel(QObject):
         methods = " + ".join(dict.fromkeys(PAYMENT_TEXT[leg["method"]] for leg in self._legs
                                            if leg["amount"] and self._nonzero(leg["amount"])))
         # The dominant final figure: the real money in its direction (or the full old-gold amount).
-        due = p.get("full_amount") if p.get("full_amount") not in (None, "") else paid
+        due = paid if paid else (p.get("full_amount") if p.get("full_amount") not in (None, "") else paid)
         return {"dueLabel": DIRECTION_TEXT["OUT" if out else "IN"],
                 "dueAmount": money(due) if Decimal(str(due)) else "",
                 "paidLabel": DIRECTION_TEXT["OUT" if out else "IN"] + (f" ({methods})" if methods else ""),
@@ -1935,6 +1979,11 @@ class InvoiceViewModel(QObject):
         and the customer account, and the value the making is based on."""
         if not self.previewReady or self._preview.get("net_amount") in (None, ""):
             return ""
+        if self._total_derived:
+            # Owner 2026-10-28: what is paid (cash + bank / wallet) plus what stays on the customer account: the printed total.
+            derived = self._legs_total() + self._account_value()
+            if derived > 0:
+                return money(derived)
         if self._preview.get("difference_signed") not in (None, "") and self._preview.get("final_settlement_amount"):
             # Old gold only: the customer-facing amount (exact value rounded ONCE to EGP 5) = what is paid
             # + what goes on the customer account; the exact value stays stored unchanged.
@@ -1983,15 +2032,16 @@ class InvoiceViewModel(QObject):
 
     @Property(bool, notify=changed)
     def settlementNeedsReason(self):
-        limit = _decimal(self._reference["settings"].get("settlement_self_limit") or "50") or Decimal("50")
-        return self._settlement_choice == "SETTLE" and abs(self._residual()) > limit
+        return False                                      # no settlement reason or approval step any more (owner 2026-10-28)
 
     @Property(bool, notify=changed)
     def settlementNeedsApproval(self):
-        actor = self._session.current_actor()
-        if actor is not None and "INVOICE_SETTLEMENT_APPROVE" in actor.permissions:
-            return False                                  # the logged-in user may approve directly
-        return self.settlementNeedsReason
+        return False
+
+    @Property(str, notify=changed)
+    def settlementWarning(self):
+        """Old gold only: the paid amount is far from the table amount. A warning, never a reason to stop the save."""
+        return str((self._preview or {}).get("settlement_warning") or "")
 
     @Property(bool, notify=changed)
     def makingNeedsApproval(self):

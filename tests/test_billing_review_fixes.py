@@ -151,8 +151,8 @@ class RoundedSettlementAllocationTests(InvoiceServiceTestCase):
         with self.with_price("9142.3600"):                       # 1 g − 1.5% = 9,005.22 exact
             preview = self.service.preview(self.draft("9000"))
             self.assertEqual((preview["old_gold_total"], preview["final_settlement_amount"]), ("9005.22", "9005.00"))
-            # What is left to the customer is read against the FINAL amount: 9,005 − 9,000 = 5.00.
-            self.assertEqual((preview["gap_signed"], preview["difference_signed"]), ("-5.22", "-5.00"))
+            # The money paid settles the invoice (owner 2026-10-28): nothing is left to resolve.
+            self.assertEqual((preview["gap_signed"], preview["difference_signed"]), ("-5.22", "0.00"))
             # The exact fraction must not become a customer balance.
             self.assertRefused("ACCOUNT_AMOUNT_NOT_ROUNDED", self.draft("9000", "5.22"))
             self.assertEqual(self.store.ledger, [])

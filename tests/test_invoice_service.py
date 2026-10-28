@@ -576,7 +576,7 @@ class RuleTests(InvoiceServiceTestCase):
         self.assertRefused("ACCOUNT_DIRECTION_REQUIRED", InvoiceDraft(5, "12", (sale(),), (), (cash("67011"),),
                                                                       account_amount="7011"))
         # Old gold only: 5 g = 31,035.00 owed; nothing paid and nothing decided → refused.
-        self.assertRefused("SETTLEMENT_CHOICE_REQUIRED", InvoiceDraft(5, "12", (), (old(1, "5", **disc()),), ()))
+        self.assertRefused("PAYMENT_REQUIRED", InvoiceDraft(5, "12", (), (old(1, "5", **disc()),), ()))
         self.assertRefused("CUSTOMER_NAME_REQUIRED", InvoiceDraft(5, None, (), (old(1, "5", **disc()),), (),
                                                                   account_amount="31035",
                                                                   account_direction="SHOP_OWES"))
@@ -655,7 +655,8 @@ class RuleTests(InvoiceServiceTestCase):
                 self.finalize(draft)
         self.assertNothingWritten(before)
         # Old gold only: paying more than the old gold is worth is refused.
-        self.assertRefused("OVERPAYMENT", InvoiceDraft(5, "12", (), (old(1, "5", **disc()),), (cash("40000"),)))
+        # Old gold only: paying more than the table amount is no longer refused (owner 2026-10-28), it is only a warning.
+        self.assertIn("settlement_warning", self.service.preview(InvoiceDraft(5, "12", (), (old(1, "5", **disc()),), (cash("40000"),))))
 
     def test_empty_invoice_and_missing_price(self):
         with self.assertRaises(InvoiceError):

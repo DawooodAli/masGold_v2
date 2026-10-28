@@ -38,7 +38,6 @@ Item {
     Connections {
         target: invoiceVM
         function onDraftReset() {
-            invoiceTotalField.text = Qt.binding(function() { return invoiceVM.invoiceTotal })
             accountField.text = Qt.binding(function() { return invoiceVM.accountAmount })
             settlementReason.text = Qt.binding(function() { return invoiceVM.settlementReason })
             invoicePage.clearCustomerFields()
@@ -123,7 +122,7 @@ Item {
             combo.forceActiveFocus()
     }
     function focusPayment() {
-        const field = invoicePage.findVisual(invoicePage, invoiceVM.totalMode ? "invoiceTotalField" : "legAmount_0")
+        const field = invoicePage.findVisual(invoicePage, "legAmount_0")
         if (field)
             field.forceActiveFocus()
     }
@@ -1958,8 +1957,15 @@ Item {
                             visible: invoiceVM.oldGoldCount > 0
                             layoutDirection: Qt.RightToLeft
                             spacing: 6
-                            FieldLabel { text: invoicePage.compact ? "الكسر" : "قيمة الكسر" }
-                            Value { objectName: "summaryOldGoldGross"; text: invoiceVM.summary.oldGoldGross || "—"; color: theme.textSecondary; font.pixelSize: 15 }
+                            Label {
+                                objectName: "settlementWarningInline"
+                                visible: invoiceVM.settlementWarning.length > 0
+                                text: "⚠ " + invoiceVM.settlementWarning
+                                color: theme.statusWarning
+                                font.family: "Cairo"
+                                font.pixelSize: 13
+                                font.bold: true
+                            }
                             FieldLabel { text: "خصم %"; visible: invoiceVM.discountedOldGoldCount > 0 }
                             AmountField {
                                 id: discountField
@@ -2025,32 +2031,6 @@ Item {
                                 Layout.fillWidth: true
                                 layoutDirection: Qt.RightToLeft
                                 spacing: 6
-                                // إجمالي الفاتورة is the first thing the salesman enters: gold, large
-                                // and with a golden field so it stands out in the row.
-                                FieldLabel { text: "إجمالي الفاتورة"; color: theme.gold; font.bold: true; font.pixelSize: 15 }
-                                AmountField {
-                                    id: invoiceTotalField
-                                    objectName: "invoiceTotalField"
-                                    Layout.preferredHeight: 40
-                                    Layout.preferredWidth: invoicePage.compact ? 120 : 150
-                                    placeholderText: ""
-                                    font.bold: true
-                                    font.pixelSize: 16
-                                    background: Rectangle {
-                                        radius: theme.radiusSmall
-                                        color: theme.bgSecondary
-                                        border.color: theme.gold
-                                        border.width: invoiceTotalField.activeFocus ? 2 : 1
-                                    }
-                                    text: invoiceVM.invoiceTotal
-                                    onTextEdited: invoiceVM.setInvoiceTotal(text)
-                                    // A refused total is replaced by the last valid one when editing ends.
-                                    onEditingFinished: {
-                                        invoiceVM.commitInvoiceTotal()          // mixed invoice: nearest EGP 5, once
-                                        text = Qt.binding(function() { return invoiceVM.invoiceTotal })
-                                    }
-                                    onAccepted: invoicePage.findVisual(invoicePage, "legAmount_0").forceActiveFocus()
-                                }
                                 Label {
                                     objectName: "remainingNow"
                                     visible: text.length > 0
@@ -2204,6 +2184,7 @@ Item {
                                         Layout.minimumWidth: 0
                                         Layout.fillWidth: true
                                         objectName: "legAmount_" + legRow.legIndex
+                                        validator: RegularExpressionValidator { regularExpression: /^[0-9]{0,12}$/ }   // whole pounds only
                                         Layout.preferredWidth: invoicePage.compact ? 118 : 168
                                         placeholderText: ""
                                         font.bold: true
@@ -2317,6 +2298,7 @@ Item {
                                 Layout.minimumWidth: 0
                                 Layout.fillWidth: true
                                 objectName: "accountAmountField"
+                                validator: RegularExpressionValidator { regularExpression: /^[0-9]{0,12}$/ }   // whole pounds only
                                 Layout.preferredWidth: invoicePage.compact ? 104 : 130
                                 placeholderText: ""
                                 font.pixelSize: 14
@@ -2781,10 +2763,9 @@ Item {
             Label {
                 objectName: "settlementWaiverWarning"
                 Layout.fillWidth: true
-                visible: invoiceVM.settlementChoice === "SETTLE" && invoiceVM.hasDifference
+                visible: invoiceVM.settlementWarning.length > 0
                 wrapMode: Text.WordWrap
-                text: "⚠ الباقي " + invoiceVM.summary.differenceAmount + " ج لن يُدفع للعميل ولن يُسجَّل على حسابه — "
-                      + "بالحفظ يُعتبر تنازلًا من العميل عن هذا المبلغ."
+                text: "⚠ " + invoiceVM.settlementWarning
                 color: theme.amber
                 font.family: "Cairo"
                 font.pixelSize: 13

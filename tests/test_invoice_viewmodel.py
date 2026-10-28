@@ -646,11 +646,16 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.vm.setInvoiceTotal("11000")                                        # larger: 1,000 على العميل
         self.assertEqual((self.amounts(), self.vm.accountAmount), (["6000", "4000"], "1000"))
 
-    def test_payments_need_a_total_first(self):
+    def test_the_total_is_what_the_payments_and_the_account_add_up_to(self):
+        # Owner 2026-10-28: there is no إجمالي الفاتورة box; the total follows the legs and the account part.
         self.vm.setSalesperson("5")
         self.vm.addBarcode("01260925")
         self.vm.setLegAmount(0, "5000")
-        self.assertEqual((self.amounts(), self.vm.paymentWarning), ([""], "اكتب إجمالي الفاتورة أولاً."))
+        self.assertEqual((self.amounts(), self.vm.invoiceTotal), (["5000"], "5000"))
+        self.vm.setAccountAmount("1000")
+        self.assertEqual(self.vm.invoiceTotal, "6000")
+        self.vm.setLegAmount(0, "7000")
+        self.assertEqual(self.vm.invoiceTotal, "8000")
 
     # ---- old-gold discount: open (owner decision 2026-10-28); only a malformed value is refused, one under the minimum is warned about
     def test_invalid_discount_restores_the_last_valid_value(self):
@@ -922,20 +927,12 @@ class InvoiceViewModelTests(unittest.TestCase):
 
     # ------------------------------------------------------------ settlement
 
-    def test_above_fifty_needs_reason_and_verified_manager(self):
-        self.service.preview_result = preview(gap_signed="-120.00", settlement_needs_approval=True)
+    def test_no_settlement_reason_or_approval_and_a_large_difference_only_warns(self):
+        self.service.preview_result = preview(gap_signed="-120.00", settlement_warning="الفرق كبير")
         self.sale_ready()
-        self.vm.setSettlementChoice("SETTLE")
         self.preview_now()
-        self.assertTrue(self.vm.settlementNeedsReason and self.vm.settlementNeedsApproval)
-        self.vm.verifyApprover("manager", "wrong")
-        self.assertFalse(self.vm.approverOk)
-        self.assertIn("تعذر", self.vm.approverText)
-        self.vm.verifyApprover("manager", "ok")
-        self.assertEqual((self.vm.approverOk, self.vm.approverText), (True, "موافقة: المدير"))
-        self.vm.setSettlementReason("فكة")
-        draft = self.vm._draft()
-        self.assertEqual((draft.settlement_reason, draft.settlement_approver.user_id), ("فكة", 3))
+        self.assertFalse(self.vm.settlementNeedsReason or self.vm.settlementNeedsApproval)
+        self.assertEqual(self.vm.settlementWarning, "الفرق كبير")
 
     # ------------------------------------------------------------ customer inline
 

@@ -196,7 +196,7 @@ class SettlementTests(InvoiceServiceTestCase):
         self.assertEqual([r["review_type"] for r in self.store.reviews], [])
 
     def test_never_automatic_and_account_choice_needs_a_customer(self):
-        self.assertRefused("SETTLEMENT_CHOICE_REQUIRED", self.draft("135150"))
+        self.assertRefused("PAYMENT_REQUIRED", InvoiceDraft(5, "12", (), (disc("1.50", "22.107"),), ()))
         self.assertRefused("CUSTOMER_NAME_REQUIRED", self.draft("135150", customer=None, account_amount="9.88",
                                                                 account_direction="SHOP_OWES"))
         # The account follows the FINAL (EGP-5 rounded) amount: 135,160 − 135,150 = 10.00, never the exact 9.88.
@@ -207,54 +207,32 @@ class SettlementTests(InvoiceServiceTestCase):
                          ("BUY_BALANCE_DUE", D("-10.00")))
         self.assertEqual(self.store.adjustments, [])               # rounded UP: no same-sign audit row exists
 
-    def test_above_fifty_needs_reason_and_manager_approval(self):
-        draft = self.draft("135100", settlement_choice="SETTLE")               # 59.88
+    def test_difference_above_fifty_settles_by_the_payment_without_reason_or_approval(self):
+        # Owner 2026-10-28: no settlement step. 59.88 short: saved at once, no reason, no approval, no review.
+        draft = self.draft("135100")
         preview = self.service.preview(draft)
-        self.assertEqual({p["code"] for p in preview["blocking_problems"]},
-                         {"SETTLEMENT_REASON_REQUIRED", "SETTLEMENT_APPROVAL_REQUIRED"})
-        self.assertTrue(preview["settlement_needs_approval"])
-        self.assertRefused("SETTLEMENT_REASON_REQUIRED", draft)
-
-    def test_manager_credentials_approve_at_the_counter(self):
-        class Approvers:
-            def __init__(self, connection):
-                pass
-
-            def get_identity(self, user_id, lock=False):
-                return {"id": user_id, "is_active": True, "must_change_password": False, "employee_id": None}
-
-            def effective_permissions(self, user_id, lock=False):
-                return frozenset({"APP_LOGIN", "INVOICE_SETTLEMENT_APPROVE"})
-
-        class Credentials:
-            def verify_credentials(self, username, password):
-                if password != "manager-pass":
-                    raise AuthenticationError(GENERIC_ERROR)
-                return AuthenticationResult(3, None, "المدير", frozenset({"APP_LOGIN", "INVOICE_SETTLEMENT_APPROVE"}))
-
-        self.service._approvers, self.service._authentication = Approvers, Credentials()
-        with self.assertRaises(AuthenticationError):
-            self.service.verify_settlement_approver("manager", "wrong")
-        grant = self.service.verify_settlement_approver("manager", "manager-pass")
-        self.finalize(self.draft("135100", settlement_choice="SETTLE", settlement_reason="كسر فكة",
-                                 settlement_approver=grant))
+        self.assertEqual(preview["blocking_problems"], [])
+        self.assertFalse(preview["settlement_needs_approval"])
+        self.assertEqual(preview["settlement_warning"], "")
+        self.finalize(draft)
         adjustment = self.store.adjustments[0]
-        self.assertEqual((adjustment["approved_by_user_id"], adjustment["reason"], adjustment["amount_signed"]),
-                         (3, "كسر فكة", D("-59.88")))
-        self.assertEqual(self.store.reviews[0]["review_type"], "CASH_SETTLEMENT")
-        forged = SettlementApprover(3, "المدير")                             # not produced by verification
-        self.assertRefused("SETTLEMENT_APPROVAL_REQUIRED",
-                           self.draft("135100", settlement_choice="SETTLE", settlement_reason="x", settlement_approver=forged))
+        self.assertEqual((adjustment["amount_signed"], adjustment["approved_by_user_id"]), (D("-59.88"), None))
+        self.assertEqual(self.store.ledger, [])
+        self.assertEqual([r["review_type"] for r in self.store.reviews], [])
 
-    def test_owner_with_permission_approves_directly_and_over_500_is_refused(self):
-        self.session.logout()
-        from services.authentication_service import _VERIFIED
-        owner = frozenset(self.permissions | {"INVOICE_SETTLEMENT_APPROVE"})
-        self.session._establish(AuthenticationResult(1, None, "المالك", owner, _VERIFIED), int(self.session.generation))
-        self.authorization.permissions = owner
-        self.finalize(self.draft("135100", settlement_choice="SETTLE", settlement_reason="فكة"))
-        self.assertEqual(self.store.adjustments[0]["approved_by_user_id"], 1)
-        self.assertRefused("SETTLEMENT_OVER_LIMIT", self.draft("134500", settlement_choice="SETTLE", settlement_reason="x"))
+    def test_difference_above_five_hundred_only_warns_and_still_saves(self):
+        draft = self.draft("134500")                                        # 659.88 short
+        preview = self.service.preview(draft)
+        self.assertEqual(preview["blocking_problems"], [])
+        self.assertIn("500", preview["settlement_warning"])
+        self.finalize(draft)
+        self.assertEqual(self.store.adjustments[0]["amount_signed"], D("-659.88"))
+
+    def test_paying_more_than_the_table_amount_is_accepted(self):
+        draft = self.draft("135200")                                        # 40.12 over
+        self.assertEqual(self.service.preview(draft)["blocking_problems"], [])
+        self.finalize(draft)
+        self.assertEqual(self.store.adjustments[0]["amount_signed"], D("40.12"))
 
 
 class NewCustomerTests(InvoiceServiceTestCase):

@@ -127,6 +127,7 @@ OLD_GOLD_STOCK = "OLD_GOLD_STOCK"        # F7 بيع من الكسر
 REASONS = {"NO_BARCODE": "لم يُنشأ لها باركود", "BARCODE_LOST": "الباركود مفقود أو تالف",
            "NOT_FOUND": "لم أجد القطعة في البحث", "OTHER": "سبب آخر"}
 SETTLE, ACCOUNT = "SETTLE", "ACCOUNT"
+WARN_DIFFERENCE = Decimal("500")                  # old gold only: a paid amount this far from the table amount only warns
 # Settlement limits: the frozen `billing_settings` row (016) overrides these when it exists. The old-gold discount default is NOT here
 # anymore — it comes from System Settings (081) through `setting_rules.discount_limits`, and `_limits` keeps its historic key name
 # (`old_gold_discount_default_percent`) because the invoice screen reads it from there.
@@ -560,8 +561,13 @@ class InvoiceService:
             account_abs = abs(account_signed)
             # Rounding UP to the nearest EGP 5 pays a little more than the exact old-gold value:
             # allowed only when the money (+ account) is exactly that rounded final amount.
+            # Owner 2026-10-28: no settlement step. Money only (no account part): the amount paid IS the settlement of the
+            # invoice, whatever the difference from the table amount; a difference above the warning limit is only a warning.
+            auto_settle = account_signed == 0 and paid > 0
             allowance = ZERO
-            if paid + account_abs == final_amount > exact:
+            if auto_settle:
+                allowance = max(paid - exact, ZERO)
+            elif paid + account_abs == final_amount > exact:
                 allowance = final_amount - exact
             try:
                 settlement = Calc.settlement(sales, olds, money, rounding_allowance=allowance)
@@ -602,12 +608,12 @@ class InvoiceService:
                         "ACCOUNT_AMOUNT_NOT_ROUNDED",
                         "المبلغ المتبقي للعميل يُحسب على المبلغ النهائي بعد التقريب لأقرب 5 جنيه "
                         f"({final_amount:,.2f} ج) وليس على القيمة الفعلية."))
-                if gap and (rounding or draft.settlement_choice == SETTLE)                         and abs(gap) <= limits["settlement_approval_limit"]:
+                if gap and (auto_settle or ((rounding or draft.settlement_choice == SETTLE) and abs(gap) <= limits["settlement_approval_limit"])):
                     adjustment = gap
                     settlement = Calc.settlement(sales, olds, money, adjustment=adjustment, rounding_allowance=allowance)
             # What is still unresolved relative to the FINAL amount (what the screen shows and the
             # account button uses): final − money − account, shop-owes sign like the gap.
-            to_resolve = max(final_amount - paid - account_abs, ZERO) if gap else ZERO
+            to_resolve = max(final_amount - paid - account_abs, ZERO) if gap and not adjustment else ZERO
             difference = -to_resolve if to_resolve else ZERO
         return _Calculated(sales=sales, olds=olds, payments=payments, settlement=settlement, agreed=agreed,
                            direction=direction, gold_value=gold_value, old_total=old_total,
@@ -623,10 +629,11 @@ class InvoiceService:
         # A discount outside the allowed range is the first thing to fix (it changes O).
         problems = self._discount_problems(calculated, draft, limits) + list(calculated.problems)
         gap = calculated.gap or ZERO                     # old gold only: R − L still to decide
-        if gap and draft.settlement_choice != SETTLE and not calculated.rounding:
-            problems.append(InvoiceError("SETTLEMENT_CHOICE_REQUIRED",
-                                         "يوجد فرق على الفاتورة: سوِّه أو أضفه إلى حساب العميل."))
-        if gap and draft.settlement_choice == SETTLE:
+        if gap and calculated.adjustment == gap:
+            pass                                          # settled by the money itself: no choice, reason or approval
+        elif gap and draft.settlement_choice != SETTLE and not calculated.rounding:
+            problems.append(InvoiceError("PAYMENT_REQUIRED", "أدخل المبلغ المدفوع للعميل."))
+        elif gap and draft.settlement_choice == SETTLE:
             amount = abs(gap)
             if amount > limits["settlement_approval_limit"]:
                 problems.append(InvoiceError(
@@ -1121,8 +1128,11 @@ class InvoiceService:
             "old_gold_discount_range": [_money(self._discount_minimum(calculated, limits)),
                                         _money(limits["max_old_gold_discount_pct"])],
             "settlement_limits": {key: _money(value) for key, value in limits.items()},
-            "settlement_needs_approval": bool(gap and abs(gap) > limits["settlement_self_limit"]
-                                              and approval is None),
+            "settlement_needs_approval": False,
+            "settlement_warning": (f"المبلغ المدفوع {'أعلى' if calculated.adjustment > 0 else 'أقل'} من قيمة الكسر بعد الخصم "
+                                   f"بمقدار {abs(calculated.adjustment):,.2f} ج (أكثر من {WARN_DIFFERENCE:,.0f} ج) — "
+                                   "تحذير فقط، الحفظ ممكن.")
+                                  if abs(calculated.adjustment) > WARN_DIFFERENCE else "",
             "settlement_approved_by_actor": approval is not None and draft.settlement_approver is None,
             "new_customer_same_mobile": [{"customer_id": str(r["customer_id"]), "name": r["name"],
                                           "customer_code": r["customer_code"]} for r in same_mobile],
@@ -1371,10 +1381,11 @@ class InvoiceService:
             adjustment = calculated.adjustment
             if adjustment != 0:
                 # Old gold only: the explicit rounding settlement; never a balance, never a payment row.
-                needs_approval = abs(adjustment) > limits["settlement_self_limit"]
+                needs_approval = False                # no approval step any more (owner 2026-10-28)
                 reason = (draft.settlement_reason or "").strip() or None
-                if calculated.rounding and reason is None:
-                    reason = "تقريب المبلغ النهائي لأقرب 5 جنيه"
+                if reason is None:
+                    reason = ("تقريب المبلغ النهائي لأقرب 5 جنيه" if calculated.rounding
+                              else "فرق بين المدفوع وقيمة الكسر")
                 invoices.insert_settlement_adjustment(
                     invoice_id=invoice_id, residual_signed=residual, amount_signed=adjustment,
                     reason=reason, accepted_by_user_id=actor.user_id,
