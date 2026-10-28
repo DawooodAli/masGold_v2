@@ -214,9 +214,9 @@ Rectangle {
                 Btn { objectName: "cashNewMovement"; text: "حركة نقدية جديدة"; primary: true
                       visible: !!page.vm && page.vm.canOperate; enabled: !page.vm.saving
                       onClicked: movementDialog.begin() }
-                Btn { objectName: "cashAdvances"; text: "سلف وعهد مؤقتة"
+                Btn { objectName: "cashCustomerCash"; text: "نقدية داخلة وخارجة"
                       visible: !!page.vm && page.vm.canOperate
-                      onClicked: advancesDialog.begin() }
+                      onClicked: customerCashDialog.begin() }
                 Btn { objectName: "cashRefresh"; text: "تحديث"; enabled: !!page.vm && !page.vm.busy
                       onClicked: page.vm.refresh() }
             }
@@ -339,214 +339,133 @@ Rectangle {
         }
     }
 
-    // ------------------------------------------------------------------ سلف وعهد مؤقتة: who owes what, new advance, repayment
+    // ------------------------------------------------------------------ نقدية داخلة وخارجة: a customer pays / deposits (IN) or takes money (OUT)
+    // The money goes through ANY cash / bank / wallet account and the movement lands in the customer's statement. Two tables:
+    // the customers who owe the shop (right) and the customers the shop owes (left); the search narrows both.
     Dialog {
-        id: advancesDialog; objectName: "cashAdvancesDialog"
-        property string mode: "list"                  // list | new | repay
-        property string partyKind: "EMPLOYEE"
-        property var current: null
-        function begin() { mode = "list"; page.vm.loadAdvances(); open() }
-        function startNew() { mode = "new"; partyKind = "EMPLOYEE"; advAmount.text = ""; advNote.text = ""; employeeBox.currentIndex = -1
-                              page.vm.prepareAdvance(""); }
-        property string borrowKind: "EMPLOYEE"
-        function startBorrow() { mode = "borrow"; borrowKind = "EMPLOYEE"; borrowAmount.text = ""; borrowNote.text = ""; borrowName.text = ""; borrowEmployee.currentIndex = -1
-                                 borrowAccount.currentIndex = 0; page.vm.prepareAdvance("") }
-        function startRepay(row) { current = row; mode = "repay"; repayAmount.text = row.owed; repayNote.text = ""; page.vm.prepareAdvance("") }
-        anchors.centerIn: parent; width: Math.min(page.width - 24, 560)
-        height: Math.min(page.height - 24, 560)
+        id: customerCashDialog; objectName: "customerCashDialog"
+        property string mode: ""                      // "" (lists only) | IN | OUT
+        function begin() { mode = ""; searchBox.text = ""; page.vm.loadCustomerCash(""); open() }
+        function startEntry(direction, customerId) {
+            mode = direction; ccAmount.text = ""; ccNote.text = ""; ccAccount.currentIndex = 0; page.vm.prepareCustomerCash()
+            if (customerId) ccCustomer.setCustomerId(customerId); else ccCustomer.clear()
+            ccAmount.forceActiveFocus()
+        }
+        anchors.centerIn: parent; width: page.width - 24; height: page.height - 24
         modal: true; font.family: "Cairo"
-        closePolicy: page.vm && page.vm.advanceBusy ? Popup.NoAutoClose : Popup.CloseOnEscape
+        closePolicy: page.vm && page.vm.customerCashBusy ? Popup.NoAutoClose : Popup.CloseOnEscape
         background: Rectangle { color: theme.bgPrimary; radius: theme.radiusMedium; border.color: theme.goldDark }
         contentItem: ColumnLayout {
-            spacing: 8
-            Txt { text: advancesDialog.mode === "new" ? "سلفة / عهدة مؤقتة جديدة" : advancesDialog.mode === "borrow" ? "سلفة مستلفة (فلوس بناخدها ونرجعها)" : advancesDialog.mode === "repay" ? "سداد سلفة" : "سلف وعهد مؤقتة"
-                  font.bold: true; font.pixelSize: theme.fontSection; color: theme.gold; Layout.fillWidth: true }
+            spacing: 10
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                Txt { text: "نقدية داخلة وخارجة"; font.bold: true; font.pixelSize: theme.fontSection; color: theme.gold }
+                Field { id: searchBox; objectName: "customerCashSearch"; Layout.fillWidth: true; placeholderText: "ابحث باسم العميل أو التليفون"
+                        onTextEdited: page.vm.loadCustomerCash(text) }
+                Btn { objectName: "customerCashIn"; text: "نقدية داخلة"; primary: true; chosen: customerCashDialog.mode === "IN"
+                      onClicked: customerCashDialog.startEntry("IN", "") }
+                Btn { objectName: "customerCashOut"; text: "نقدية خارجة"; chosen: customerCashDialog.mode === "OUT"
+                      onClicked: customerCashDialog.startEntry("OUT", "") }
+                Btn { objectName: "customerCashClose"; text: "إغلاق"; enabled: !!page.vm && !page.vm.customerCashBusy; onClicked: customerCashDialog.close() }
+            }
 
-            // ---- the list
-            ColumnLayout {
-                visible: advancesDialog.mode === "list"; Layout.fillWidth: true; Layout.fillHeight: true; spacing: 8
-                RowLayout {
-                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
-                    Btn { objectName: "advanceNew"; text: "سلفة / عهدة جديدة"; primary: true; onClicked: advancesDialog.startNew() }
-                    Btn { objectName: "advanceBorrowNew"; text: "سلفة مستلفة"; onClicked: advancesDialog.startBorrow() }
-                    Item { Layout.fillWidth: true }
-                    Btn { text: "إغلاق"; onClicked: advancesDialog.close() }
-                }
-                Txt { objectName: "advanceEmpty"; visible: !!page.vm && page.vm.advances.length === 0; text: "لا توجد سلف أو عهد مسجلة."
-                      color: theme.textMuted; Layout.fillWidth: true }
-                ListView {
-                    id: advanceList; objectName: "advanceList"; Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 6
-                    model: page.vm ? page.vm.advances : []
-                    delegate: Rectangle {
-                        id: advRow
-                        required property var modelData
-                        required property int index
-                        width: advanceList.width; implicitHeight: advLine.implicitHeight + 14
-                        color: theme.bgSecondary; radius: 6; border.color: theme.cardBorder; opacity: modelData.voided ? 0.55 : 1
-                        RowLayout {
-                            id: advLine; anchors.fill: parent; anchors.margins: 7; layoutDirection: Qt.RightToLeft; spacing: 8
-                            ColumnLayout {
-                                Layout.fillWidth: true; spacing: 1
-                                Txt { objectName: "advanceParty_" + advRow.index; text: advRow.modelData.party + " — " + advRow.modelData.kind_text
-                                      font.bold: true; Layout.fillWidth: true }
-                                Txt { text: advRow.modelData.code + " • " + advRow.modelData.date + " • المبلغ " + advRow.modelData.amount + " ج • المسدد " + advRow.modelData.repaid + " ج"
-                                      color: theme.textMuted; font.pixelSize: theme.fontTableHeader; Layout.fillWidth: true; wrapMode: Text.Wrap }
-                            }
-                            Txt { objectName: "advanceOwed_" + advRow.index
-                                  text: advRow.modelData.voided ? "ملغاة" : Number(advRow.modelData.owed) === 0 ? "مسددة" : (advRow.modelData.direction === "BORROW" ? "المتبقي علينا " : "المتبقي ") + advRow.modelData.owed + " ج"
-                                  color: advRow.modelData.voided ? theme.textMuted : Number(advRow.modelData.owed) === 0 ? theme.green : theme.amber; font.bold: true }
-                            Btn { objectName: "advanceRepay_" + advRow.index; text: "سداد"; visible: !advRow.modelData.voided && Number(advRow.modelData.owed) > 0
-                                  onClicked: advancesDialog.startRepay(advRow.modelData) }
-                        }
+            // ---- the entry form (a customer, an amount in whole pounds, the account the money goes through)
+            Rectangle {
+                visible: customerCashDialog.mode !== ""; Layout.fillWidth: true
+                implicitHeight: entryCol.implicitHeight + 16
+                color: theme.bgSecondary; radius: theme.radiusSmall; border.color: customerCashDialog.mode === "IN" ? theme.priceBuy : theme.amber
+                ColumnLayout {
+                    id: entryCol
+                    anchors.fill: parent; anchors.margins: 8; spacing: 8
+                    Txt { Layout.fillWidth: true; font.bold: true; color: customerCashDialog.mode === "IN" ? theme.priceBuy : theme.amber
+                          text: customerCashDialog.mode === "IN"
+                                ? "نقدية داخلة: العميل يسدّد أو يدفع عربونًا — تزيد الحساب المختار ويقل ما عليه"
+                                : "نقدية خارجة: العميل يأخذ فلوسًا — تنقص الحساب المختار ويزيد ما عليه" }
+                    RowLayout {
+                        Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                        Txt { text: "العميل"; Layout.preferredWidth: 70 }
+                        CustomerPicker { id: ccCustomer; objectName: "customerCashCustomer"; Layout.fillWidth: true; clearable: true }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                        Txt { text: "المبلغ"; Layout.preferredWidth: 70 }
+                        Field { id: ccAmount; objectName: "customerCashAmount"; Layout.preferredWidth: 200; implicitHeight: 38; font.bold: true
+                                placeholderText: "0"; inputMethodHints: Qt.ImhDigitsOnly
+                                validator: RegularExpressionValidator { regularExpression: /^[0-9]{0,12}$/ } }      // whole pounds only
+                        Txt { text: customerCashDialog.mode === "IN" ? "يدخل في" : "يخرج من"; Layout.preferredWidth: 70 }
+                        Combo { id: ccAccount; objectName: "customerCashAccount"; Layout.preferredWidth: 240; implicitHeight: 38
+                                model: [{ "key": page.vm && page.vm.accountKey ? page.vm.accountKey : "", "name": page.vm && page.vm.accountName ? page.vm.accountName : "الخزنة" }].concat(page.vm ? page.vm.bankAccounts : [])
+                                textRole: "name"; valueRole: "key"; currentIndex: 0 }
+                        Txt { text: "ملاحظة"; Layout.preferredWidth: 60 }
+                        Field { id: ccNote; objectName: "customerCashNote"; Layout.fillWidth: true; placeholderText: "اختياري" }
+                    }
+                    Txt { Layout.fillWidth: true; wrapMode: Text.Wrap; color: theme.red; text: page.vm ? page.vm.errorMessage : ""; visible: text.length > 0 }
+                    RowLayout {
+                        Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                        Btn { objectName: "customerCashSave"; primary: true
+                              text: page.vm && page.vm.customerCashBusy ? "جارٍ التسجيل…" : "تسجيل"
+                              enabled: !!page.vm && !page.vm.customerCashBusy && ccCustomer.hasSelection && Number(ccAmount.text) > 0
+                              onClicked: page.vm.saveCustomerCash(customerCashDialog.mode, ccCustomer.selectedCustomerId,
+                                                                  String(ccAccount.currentValue || ""), ccAmount.text, ccNote.text) }
+                        Btn { text: "إلغاء"; enabled: !!page.vm && !page.vm.customerCashBusy; onClicked: customerCashDialog.mode = "" }
+                        Item { Layout.fillWidth: true }
                     }
                 }
             }
 
-            // ---- new advance
-            ColumnLayout {
-                visible: advancesDialog.mode === "new"; Layout.fillWidth: true; spacing: 8
-                RowLayout {
-                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
-                    Txt { text: "النوع"; Layout.preferredWidth: 80 }
-                    Btn { objectName: "advanceKindEmployee"; text: "سلفة موظف"; chosen: advancesDialog.partyKind === "EMPLOYEE"; Layout.fillWidth: true
-                          onClicked: advancesDialog.partyKind = "EMPLOYEE" }
-                    Btn { objectName: "advanceKindCustomer"; text: "عهدة عميل"; chosen: advancesDialog.partyKind === "CUSTOMER"; Layout.fillWidth: true
-                          onClicked: advancesDialog.partyKind = "CUSTOMER" }
-                }
-                RowLayout {
-                    visible: advancesDialog.partyKind === "EMPLOYEE"; Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
-                    Txt { text: "الموظف"; Layout.preferredWidth: 80 }
-                    Combo { id: employeeBox; objectName: "advanceEmployee"; Layout.fillWidth: true
-                            displayText: currentIndex < 0 ? "اختر الموظف" : currentText
-                            model: page.vm ? page.vm.employees : []; textRole: "name"; valueRole: "id" }
-                }
-                RowLayout {
-                    visible: advancesDialog.partyKind === "CUSTOMER"; Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
-                    Txt { text: "العميل"; Layout.preferredWidth: 80 }
-                    CustomerPicker { id: advanceCustomer; objectName: "advanceCustomer"; Layout.fillWidth: true; clearable: true }
-                }
-                RowLayout {
-                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
-                    Txt { text: "المبلغ"; Layout.preferredWidth: 80 }
-                    Field { id: advAmount; objectName: "advanceAmount"; Layout.fillWidth: true; placeholderText: "0.00"; inputMethodHints: Qt.ImhFormattedNumbersOnly }
-                }
-                RowLayout {
-                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
-                    Txt { text: "ملاحظة"; Layout.preferredWidth: 80 }
-                    Field { id: advNote; objectName: "advanceNote"; Layout.fillWidth: true; placeholderText: "اختياري" }
-                }
-                Txt { Layout.fillWidth: true; wrapMode: Text.Wrap; color: theme.red; text: page.vm ? page.vm.errorMessage : ""; visible: text.length > 0 }
-                RowLayout {
-                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
-                    Btn { objectName: "advanceSave"; primary: true; text: page.vm && page.vm.advanceBusy ? "جارٍ التسجيل…" : "تسجيل وإخراج من الخزنة"
-                          enabled: !!page.vm && !page.vm.advanceBusy && Number(advAmount.text) > 0
-                                   && (advancesDialog.partyKind === "EMPLOYEE" ? employeeBox.currentIndex >= 0 : advanceCustomer.hasSelection)
-                          onClicked: page.vm.openAdvance(advancesDialog.partyKind,
-                                       advancesDialog.partyKind === "EMPLOYEE" ? String(employeeBox.currentValue) : advanceCustomer.selectedCustomerId,
-                                       advAmount.text, advNote.text) }
-                    Btn { text: "رجوع"; enabled: !!page.vm && !page.vm.advanceBusy; onClicked: advancesDialog.mode = "list" }
-                    Item { Layout.fillWidth: true }
-                }
-            }
-
-            // ---- borrowed cash
-            ColumnLayout {
-                visible: advancesDialog.mode === "borrow"; Layout.fillWidth: true; spacing: 8
-                RowLayout {
-                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
-                    Txt { text: "استلفنا من"; Layout.preferredWidth: 80 }
-                    Btn { objectName: "borrowKindEmployee"; text: "موظف"; chosen: advancesDialog.borrowKind === "EMPLOYEE"; Layout.fillWidth: true; onClicked: advancesDialog.borrowKind = "EMPLOYEE" }
-                    Btn { objectName: "borrowKindCustomer"; text: "عميل"; chosen: advancesDialog.borrowKind === "CUSTOMER"; Layout.fillWidth: true; onClicked: advancesDialog.borrowKind = "CUSTOMER" }
-                    Btn { objectName: "borrowKindOther"; text: "شخص آخر"; chosen: advancesDialog.borrowKind === "THIRD_PARTY"; Layout.fillWidth: true; onClicked: advancesDialog.borrowKind = "THIRD_PARTY" }
-                }
-                RowLayout {
-                    visible: advancesDialog.borrowKind === "EMPLOYEE"; Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
-                    Txt { text: "الموظف"; Layout.preferredWidth: 80 }
-                    Combo { id: borrowEmployee; objectName: "borrowEmployee"; Layout.fillWidth: true
-                            displayText: currentIndex < 0 ? "اختر الموظف" : currentText
-                            model: page.vm ? page.vm.employees : []; textRole: "name"; valueRole: "id" }
-                }
-                RowLayout {
-                    visible: advancesDialog.borrowKind === "CUSTOMER"; Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
-                    Txt { text: "العميل"; Layout.preferredWidth: 80 }
-                    CustomerPicker { id: borrowCustomer; objectName: "borrowCustomer"; Layout.fillWidth: true; clearable: true }
-                }
-                RowLayout {
-                    visible: advancesDialog.borrowKind === "THIRD_PARTY"; Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
-                    Txt { text: "الاسم"; Layout.preferredWidth: 80 }
-                    Field { id: borrowName; objectName: "borrowName"; Layout.fillWidth: true; placeholderText: "اسم الشخص"; maximumLength: 100 }
-                }
-                RowLayout {
-                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
-                    Txt { text: "المبلغ"; Layout.preferredWidth: 80 }
-                    Field { id: borrowAmount; objectName: "borrowAmount"; Layout.fillWidth: true; placeholderText: "0.00"; inputMethodHints: Qt.ImhFormattedNumbersOnly }
-                }
-                RowLayout {
-                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
-                    Txt { text: "تدخل في"; Layout.preferredWidth: 80 }
-                    Combo { id: borrowAccount; objectName: "borrowAccount"; Layout.fillWidth: true
-                            model: [{ "key": page.vm && page.vm.accountKey ? page.vm.accountKey : "", "name": page.vm && page.vm.accountName ? page.vm.accountName : "الخزنة" }].concat(page.vm ? page.vm.bankAccounts : [])
-                            textRole: "name"; valueRole: "key"; currentIndex: 0 }
-                }
-                RowLayout {
-                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
-                    Txt { text: "ملاحظة"; Layout.preferredWidth: 80 }
-                    Field { id: borrowNote; objectName: "borrowNote"; Layout.fillWidth: true; placeholderText: "اختياري" }
-                }
-                Txt { Layout.fillWidth: true; wrapMode: Text.Wrap; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
-                      text: "من غير فوائد: بنرجّع نفس المبلغ. الفلوس بتدخل الحساب المختار، وبتفضل علينا لحد ما نسدد." }
-                Txt { Layout.fillWidth: true; wrapMode: Text.Wrap; color: theme.red; text: page.vm ? page.vm.errorMessage : ""; visible: text.length > 0 }
-                RowLayout {
-                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
-                    Btn { objectName: "borrowSave"; primary: true; text: page.vm && page.vm.advanceBusy ? "جارٍ التسجيل…" : "تسجيل السلفة المستلفة"
-                          enabled: !!page.vm && !page.vm.advanceBusy && Number(borrowAmount.text) > 0
-                                   && (advancesDialog.borrowKind === "EMPLOYEE" ? borrowEmployee.currentIndex >= 0
-                                       : advancesDialog.borrowKind === "CUSTOMER" ? borrowCustomer.hasSelection : borrowName.text.trim().length > 0)
-                          onClicked: page.vm.openBorrow(advancesDialog.borrowKind,
-                                       advancesDialog.borrowKind === "EMPLOYEE" ? String(borrowEmployee.currentValue) : advancesDialog.borrowKind === "CUSTOMER" ? borrowCustomer.selectedCustomerId : "",
-                                       borrowName.text, String(borrowAccount.currentValue || ""), borrowAmount.text, borrowNote.text) }
-                    Btn { text: "رجوع"; enabled: !!page.vm && !page.vm.advanceBusy; onClicked: advancesDialog.mode = "list" }
-                    Item { Layout.fillWidth: true }
-                }
-            }
-
-            // ---- repay
-            ColumnLayout {
-                visible: advancesDialog.mode === "repay"; Layout.fillWidth: true; spacing: 8
-                Txt { Layout.fillWidth: true; wrapMode: Text.Wrap
-                      text: advancesDialog.current ? advancesDialog.current.party + " — المتبقي " + advancesDialog.current.owed + " ج" : "" }
-                RowLayout {
-                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
-                    Txt { text: "المبلغ"; Layout.preferredWidth: 80 }
-                    Field { id: repayAmount; objectName: "repayAmount"; Layout.fillWidth: true; placeholderText: "0.00"; inputMethodHints: Qt.ImhFormattedNumbersOnly }
-                }
-                RowLayout {
-                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
-                    Txt { text: advancesDialog.current && advancesDialog.current.direction === "BORROW" ? "يخرج من" : "يدخل في"; Layout.preferredWidth: 80 }
-                    Combo { id: repayAccount; objectName: "repayAccount"; Layout.fillWidth: true
-                            model: [{ "key": page.vm && page.vm.accountKey ? page.vm.accountKey : "", "name": page.vm && page.vm.accountName ? page.vm.accountName : "الخزنة" }].concat(page.vm ? page.vm.bankAccounts : [])
-                            textRole: "name"; valueRole: "key"; currentIndex: 0 }
-                }
-                RowLayout {
-                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
-                    Txt { text: "ملاحظة"; Layout.preferredWidth: 80 }
-                    Field { id: repayNote; objectName: "repayNote"; Layout.fillWidth: true; placeholderText: "اختياري" }
-                }
-                Txt { Layout.fillWidth: true; wrapMode: Text.Wrap; color: theme.red; text: page.vm ? page.vm.errorMessage : ""; visible: text.length > 0 }
-                RowLayout {
-                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
-                    Btn { objectName: "repaySave"; primary: true; text: page.vm && page.vm.advanceBusy ? "جارٍ التسجيل…" : "تسجيل السداد"
-                          enabled: !!page.vm && !page.vm.advanceBusy && Number(repayAmount.text) > 0
-                          onClicked: page.vm.repayAdvance(advancesDialog.current.id, String(repayAccount.currentValue || ""), repayAmount.text, repayNote.text) }
-                    Btn { text: "رجوع"; enabled: !!page.vm && !page.vm.advanceBusy; onClicked: advancesDialog.mode = "list" }
-                    Item { Layout.fillWidth: true }
+            // ---- two tables side by side: عليهم فلوس (right) | لهم فلوس (left)
+            RowLayout {
+                Layout.fillWidth: true; Layout.fillHeight: true; layoutDirection: Qt.RightToLeft; spacing: 10
+                Repeater {
+                    model: [{ "objectName": "customerCashOwes", "title": "عليهم فلوس (للمحل)", "tone": theme.accountReceivable, "side": "owes" },
+                            { "objectName": "customerCashOwed", "title": "لهم فلوس (على المحل)", "tone": theme.accountPayable, "side": "owed" }]
+                    delegate: Rectangle {
+                        id: sideCard
+                        required property var modelData
+                        Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredWidth: 1
+                        color: theme.bgSecondary; radius: theme.radiusSmall; border.color: sideCard.modelData.tone
+                        readonly property var rows: !page.vm ? [] : sideCard.modelData.side === "owes" ? page.vm.customerOwes : page.vm.customerOwed
+                        ColumnLayout {
+                            anchors.fill: parent; anchors.margins: 8; spacing: 6
+                            RowLayout {
+                                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                                Txt { text: sideCard.modelData.title; font.bold: true; color: sideCard.modelData.tone; font.pixelSize: theme.fontSection }
+                                Item { Layout.fillWidth: true }
+                                Txt { objectName: sideCard.modelData.objectName + "Count"; text: sideCard.rows.length + " عميل"; color: theme.textMuted }
+                            }
+                            Txt { objectName: sideCard.modelData.objectName + "Empty"; visible: sideCard.rows.length === 0; Layout.fillWidth: true
+                                  text: searchBox.text.length > 0 ? "لا يوجد عميل بهذا الاسم هنا." : "لا يوجد."; color: theme.textMuted }
+                            ListView {
+                                id: sideList; objectName: sideCard.modelData.objectName
+                                Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 4
+                                model: sideCard.rows
+                                delegate: Rectangle {
+                                    id: custRow
+                                    required property var modelData
+                                    required property int index
+                                    width: sideList.width; height: 40; radius: 4; color: theme.bgPrimary
+                                    RowLayout {
+                                        anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8; layoutDirection: Qt.RightToLeft; spacing: 8
+                                        Txt { objectName: sideCard.modelData.objectName + "Name_" + custRow.index; text: custRow.modelData.name
+                                              font.bold: true; Layout.fillWidth: true }
+                                        Txt { text: custRow.modelData.last_at || ""; color: theme.textMuted; Layout.preferredWidth: 120 }
+                                        Txt { objectName: sideCard.modelData.objectName + "Amount_" + custRow.index
+                                              text: Number(custRow.modelData.amount).toLocaleString(Qt.locale("en_US"), "f", 0) + " ج"
+                                              font.bold: true; color: sideCard.modelData.tone; Layout.preferredWidth: 110 }
+                                    }
+                                    MouseArea { anchors.fill: parent
+                                                onClicked: customerCashDialog.startEntry(sideCard.modelData.side === "owes" ? "IN" : "OUT", custRow.modelData.customer_id) }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
-        // a successful save returns to the refreshed list
+        // a successful save returns to the refreshed lists
         Connections {
             target: page.vm
-            function onFinalized() { if (advancesDialog.opened && advancesDialog.mode !== "list") advancesDialog.mode = "list" }
+            function onFinalized() { if (customerCashDialog.opened) { customerCashDialog.mode = ""; page.vm.loadCustomerCash(searchBox.text) } }
         }
     }
 

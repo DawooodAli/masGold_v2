@@ -194,12 +194,18 @@ class CorrectionViewModel(QObject):
         # Start from the current effective allocation; the manager changes what was wrong.
         self._legs = []
         for leg in result["legs"]:
-            self._add_leg(leg["method_code"], leg["bank_account_id"], leg["amount"])
-        self._account = result["account"] if Decimal(result["account"]) else ""
+            self._add_leg(leg["method_code"], leg["bank_account_id"], self._plain(leg["amount"]))
+        self._account = self._plain(result["account"]) if Decimal(result["account"]) else ""
         self.legsChanged.emit()
         self._timer.start()
 
     # ------------------------------------------------------------ settlement legs
+    @staticmethod
+    def _plain(value):
+        """35200.00 -> 35200 (whole pounds read without fractions); a real fraction is kept as it is."""
+        number = Decimal(str(value))
+        return str(int(number)) if number == number.to_integral_value() else str(number)
+
     def _add_leg(self, method="PHYSICAL_CASH", bank="", amount=""):
         self._seq += 1
         self._legs.append({"key": f"c{self._seq}", "method": method, "bank": bank or "", "amount": amount})
@@ -436,8 +442,11 @@ class CorrectionViewModel(QObject):
         remaining = Decimal(s["total"]) - entered
         return {"directionText": s["direction_text"], "total": money(s["total"]), "current": current,
                 "hasCustomer": s["has_customer"],
-                "remainingText": "مطابق للإجمالي" if remaining == 0 else
-                (f"المتبقي {money(remaining)}" if remaining > 0 else f"أكثر من الإجمالي بـ {money(-remaining)}"),
+                # The customer-account field only appears when the recorded settlement already has an account part.
+                "hasAccount": bool(Decimal(s["account"])),
+                "remainingText": "مطابق للمسجّل" if remaining == 0 else
+                (f"أقل من المسجّل بـ {money(remaining)} — يُخصم الفرق" if remaining > 0
+                 else f"أكثر من المسجّل بـ {money(-remaining)} — يُضاف الفرق"),
                 "complete": remaining == 0,
                 "deltas": [f"{d['account']}: {whole(d['delta'], signed=True)} ج" for d in p.get("money_deltas", [])]
                           + ([f"حساب العميل: {whole(p['account_delta'], signed=True)} ج"]

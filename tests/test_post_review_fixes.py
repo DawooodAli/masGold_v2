@@ -116,7 +116,7 @@ class CorrectionRefreshTests(unittest.TestCase):
     def test_second_correction_needs_no_page_reentry(self):
         self.vm.open("901")
         self.vm.setMode("SETTLEMENT")
-        self.assertEqual([l["amount"] for l in self.vm.legs], ["20000.00"])
+        self.assertEqual([l["amount"] for l in self.vm.legs], ["20000"])
         self.correct("19000", "1000")
         # Correction A: saved as FC000001; the screen already shows the NEW current settlement.
         self.assertEqual(len(self.service.corrections), 1)

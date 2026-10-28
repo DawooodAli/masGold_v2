@@ -66,6 +66,7 @@ class FinancialAccountsViewModel(QObject):
         self._filters = {"start": "", "end": "", "label": ""}
         self._detail, self._request_key, self._form = {}, str(uuid4()), False
         self._advances, self._employees, self._advance_key = [], [], str(uuid4())
+        self._cc_owes, self._cc_owed, self._cc_key = [], [], str(uuid4())
 
     # ------------------------------------------------------------ plumbing
     def _service_instance(self):
@@ -287,6 +288,59 @@ class FinancialAccountsViewModel(QObject):
         self.finalized.emit(result["code"])
         self.refresh()
         self.loadAdvances()
+
+    # ------------------------------------------------------------ نقدية داخلة وخارجة (customers; owner 2026-10-28)
+    @Property("QVariantList", notify=changed)
+    def customerOwes(self):
+        """Customers who owe the shop (right table)."""
+        return self._cc_owes
+
+    @Property("QVariantList", notify=changed)
+    def customerOwed(self):
+        """Customers the shop owes (left table)."""
+        return self._cc_owed
+
+    @Property(bool, notify=changed)
+    def customerCashBusy(self):
+        return bool({"cc_save", "cc_lists"} & self._busy)
+
+    @Slot(str)
+    def loadCustomerCash(self, search=""):
+        """The two lists, narrowed by the typed name / phone / code."""
+        service = self._service_instance()
+        text = str(search or "")
+        self._start("cc_lists", lambda _expected_actor: service.customer_balances(text, _expected_actor=_expected_actor))
+
+    def _on_cc_lists(self, result, error):
+        if error:
+            self._error = error
+            return
+        self._cc_owes, self._cc_owed = result["owes"], result["owed"]
+
+    @Slot()
+    def prepareCustomerCash(self):
+        self._cc_key, self._error, self._message = str(uuid4()), "", ""
+        self.changed.emit()
+
+    @Slot(str, str, str, str, str)
+    def saveCustomerCash(self, direction, customer_id, account_key, amount, note):
+        """One customer cash movement (IN: the customer pays / deposits; OUT: he takes money). One key per attempt."""
+        if "cc_save" in self._busy or not self.canOperate:
+            return
+        service, key = self._service_instance(), self._cc_key
+        self._error = ""
+        self._start("cc_save", lambda _expected_actor: service.customer_cash(
+            direction, customer_id, account_key or self._view["account"]["key"], amount, note, key, _expected_actor=_expected_actor))
+
+    def _on_cc_save(self, result, error):
+        if error:
+            self._error = error
+            return
+        self._cc_key = str(uuid4())
+        self._message = f"تم تسجيل الحركة: {result.get('customer_name') or ''}."
+        self._message_timer.start()
+        self.finalized.emit(result["code"])
+        self.refresh()
 
     # ------------------------------------------------------------ row → existing detail / correction
     def _rows(self):

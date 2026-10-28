@@ -181,7 +181,7 @@ Item {
     ScrollView {
         id: scroll
         objectName: "correctionScroll"
-        anchors.top: modeRow.bottom; anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: actionBar.top
+        anchors.top: modeRow.bottom; anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
         anchors.margins: 12
         clip: true
         contentWidth: availableWidth
@@ -231,7 +231,7 @@ Item {
                 visible: !!correctionPage.vm && correctionPage.vm.mode === "SETTLEMENT" && !!correctionPage.st.total
                 title: "تصحيح طريقة التسوية — " + (correctionPage.st.directionText || "")
                 accent: theme.amber
-                Txt { Layout.fillWidth: true; value: "الإجمالي (لا يتغير): " + (correctionPage.st.total || ""); color: theme.textPrimary
+                Txt { Layout.fillWidth: true; value: "الإجمالي المسجّل: " + (correctionPage.st.total || ""); color: theme.textPrimary
                       font.bold: true }
                 Txt { Layout.fillWidth: true; value: "المسجل حالياً: " + (correctionPage.st.current || "")
                       wrapMode: Text.WordWrap; elide: Text.ElideNone }
@@ -246,7 +246,7 @@ Item {
                         Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 6
                         ComboBox {
                             objectName: "correctionLegMethod_" + legRow.index
-                            Layout.preferredWidth: 120; implicitHeight: 30; font.family: theme.fontFamily
+                            Layout.preferredWidth: 140; implicitHeight: 38; font.family: theme.fontFamily
                             enabled: correctionPage.editable
                             model: correctionPage.vm ? correctionPage.vm.methods : []
                             textRole: "text"; valueRole: "code"
@@ -256,17 +256,18 @@ Item {
                         }
                         ComboBox {
                             objectName: "correctionLegAccount_" + legRow.index
-                            Layout.preferredWidth: 160; implicitHeight: 30; font.family: theme.fontFamily
+                            Layout.preferredWidth: 180; implicitHeight: 38; font.family: theme.fontFamily
                             visible: legRow.modelData.needsAccount; enabled: correctionPage.editable
                             model: [{ id: "", name: "اختر الحساب" }].concat(legRow.modelData.accounts)
                             textRole: "name"; valueRole: "id"
                             currentIndex: Math.max(0, model.findIndex(function(a) { return a.id === legRow.modelData.bank }))
                             onActivated: correctionPage.vm.setLegAccount(legRow.modelData.key, currentValue)
                         }
-                        Field { objectName: "correctionLegAmount_" + legRow.index; Layout.preferredWidth: 160
+                        Field { objectName: "correctionLegAmount_" + legRow.index; Layout.preferredWidth: 220
+                                implicitHeight: 38; font.pixelSize: theme.fontBodyStrong; font.bold: true
                                 leftPadding: 8; rightPadding: 8          // room for 120,000.00 without a smaller font
                                 enabled: correctionPage.editable; text: legRow.modelData.amount
-                                validator: RegularExpressionValidator { regularExpression: /^[0-9]{0,9}([.][0-9]{0,2})?$/ }
+                                validator: RegularExpressionValidator { regularExpression: /^[0-9]{0,9}$/ }      // whole pounds only
                                 onTextEdited: correctionPage.vm.setLegAmount(legRow.modelData.key, text) }
                         Btn { objectName: "correctionLegRemove_" + legRow.index; text: "حذف"; enabled: correctionPage.editable
                               visible: correctionPage.vm && correctionPage.vm.legs.length > 1
@@ -278,12 +279,13 @@ Item {
                     Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 6
                     Btn { objectName: "correctionAddLeg"; text: "إضافة طريقة دفع"; enabled: correctionPage.editable
                           onClicked: correctionPage.vm.addLeg() }
-                    Txt { visible: !!correctionPage.st.hasCustomer; value: "حساب العميل"; color: theme.textMuted }
-                    Field { objectName: "correctionAccountAmount"; Layout.preferredWidth: 150; visible: !!correctionPage.st.hasCustomer
+                    Txt { visible: !!correctionPage.st.hasCustomer && !!correctionPage.st.hasAccount; value: "حساب العميل"; color: theme.textMuted }
+                    Field { objectName: "correctionAccountAmount"; Layout.preferredWidth: 200
+                            implicitHeight: 38; font.pixelSize: theme.fontBodyStrong; visible: !!correctionPage.st.hasCustomer && !!correctionPage.st.hasAccount
                             leftPadding: 8; rightPadding: 8
                             enabled: correctionPage.editable; text: correctionPage.vm ? correctionPage.vm.accountAmount : ""
                             placeholderText: activeFocus || text.length ? "" : "0.00"
-                            validator: RegularExpressionValidator { regularExpression: /^[0-9]{0,9}([.][0-9]{0,2})?$/ }
+                            validator: RegularExpressionValidator { regularExpression: /^[0-9]{0,9}$/ }
                             onTextEdited: correctionPage.vm.setAccountAmount(text) }
                     Item { Layout.fillWidth: true }
                     Txt { objectName: "correctionRemaining"; value: correctionPage.st.remainingText || ""; font.bold: true
@@ -294,47 +296,46 @@ Item {
                 Lines { model: correctionPage.st.deltas || []; tone: theme.textPrimary }
                 Lines { model: correctionPage.st.problems || []; tone: theme.red }
             }
-        }
-    }
 
-    // ============================================================ REASON + EXECUTE (always on screen)
-    Rectangle {
-        id: actionBar
-        objectName: "correctionActionBar"
-        visible: !!correctionPage.h.number
-        anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
-        anchors.margins: 12
-        height: visible ? barCol.implicitHeight + 14 : 0
-        radius: theme.radiusSmall
-        color: theme.panel
-        border.color: theme.red
-        ColumnLayout {
-            id: barCol
-            anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-            anchors.leftMargin: 10; anchors.rightMargin: 12
-            spacing: 6
-            RowLayout {
-                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
-                Txt { value: "سبب التصحيح (إلزامي)"; color: theme.red; font.bold: true }
-                Field { objectName: "correctionReason"; Layout.fillWidth: true; enabled: correctionPage.editable
-                        text: correctionPage.vm ? correctionPage.vm.reason : ""
-                        placeholderText: activeFocus || text.length ? "" : "مثال: تم تسجيل الفاتورة بالخطأ"
-                        onTextEdited: correctionPage.vm.setReason(text) }
-            }
-            RowLayout {
-                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
-                Btn { objectName: "correctionExecute"; primary: true; accent: theme.red
-                      text: correctionPage.vm && correctionPage.vm.saving ? "جاري التنفيذ..."
-                            : correctionPage.vm && correctionPage.vm.mode === "SETTLEMENT" ? "تنفيذ تصحيح التسوية" : "تنفيذ العكس"
-                      enabled: !!correctionPage.vm && correctionPage.vm.canExecute
-                      onClicked: correctionPage.vm.requestConfirm() }
-                Item { Layout.fillWidth: true }
-                Txt { objectName: "correctionMessage"; Layout.maximumWidth: correctionPage.width * 0.7; visible: value.length > 0
-                      value: !correctionPage.vm ? "" : correctionPage.vm.done ? correctionPage.vm.doneMessage
-                             : correctionPage.vm.errorMessage || correctionPage.vm.notice
-                               || (correctionPage.vm.mode && correctionPage.vm.reasonMissing ? "اكتب سبب التصحيح" : "")
-                      color: correctionPage.vm && (correctionPage.vm.done || (!correctionPage.vm.errorMessage && correctionPage.vm.notice))
-                             ? theme.green : theme.red }
+            // The mandatory reason, then the execute button: right under the correction card (owner 2026-10-28).
+            Rectangle {
+                id: actionBar
+                objectName: "correctionActionBar"
+                visible: !!correctionPage.h.number
+                Layout.fillWidth: true
+                Layout.preferredHeight: visible ? barCol.implicitHeight + 14 : 0
+                radius: theme.radiusSmall
+                color: theme.panel
+                border.color: theme.red
+                ColumnLayout {
+                    id: barCol
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                    anchors.leftMargin: 10; anchors.rightMargin: 12
+                    spacing: 8
+                    RowLayout {
+                        Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                        Txt { value: "سبب التصحيح (إلزامي)"; color: theme.red; font.bold: true; font.pixelSize: theme.fontBodyStrong }
+                        Field { objectName: "correctionReason"; Layout.fillWidth: true; implicitHeight: 36; enabled: correctionPage.editable
+                                text: correctionPage.vm ? correctionPage.vm.reason : ""
+                                placeholderText: activeFocus || text.length ? "" : "مثال: تم تسجيل الفاتورة بالخطأ"
+                                onTextEdited: correctionPage.vm.setReason(text) }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                        Btn { objectName: "correctionExecute"; primary: true; accent: theme.red
+                              text: correctionPage.vm && correctionPage.vm.saving ? "جاري التنفيذ..."
+                                    : correctionPage.vm && correctionPage.vm.mode === "SETTLEMENT" ? "تنفيذ تصحيح التسوية" : "تنفيذ العكس"
+                              enabled: !!correctionPage.vm && correctionPage.vm.canExecute
+                              onClicked: correctionPage.vm.requestConfirm() }
+                        Item { Layout.fillWidth: true }
+                        Txt { objectName: "correctionMessage"; Layout.maximumWidth: correctionPage.width * 0.7; visible: value.length > 0
+                              value: !correctionPage.vm ? "" : correctionPage.vm.done ? correctionPage.vm.doneMessage
+                                     : correctionPage.vm.errorMessage || correctionPage.vm.notice
+                                       || (correctionPage.vm.mode && correctionPage.vm.reasonMissing ? "اكتب سبب التصحيح" : "")
+                              color: correctionPage.vm && (correctionPage.vm.done || (!correctionPage.vm.errorMessage && correctionPage.vm.notice))
+                                     ? theme.green : theme.red }
+                    }
+                }
             }
         }
     }

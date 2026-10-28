@@ -77,7 +77,8 @@ class CashAdvanceTests(FinancialTestCase):
 
     def test_the_advance_money_is_neither_expense_nor_income_in_the_report_sources(self):
         from services.financial_account_service import ADVANCE_CATEGORIES
-        self.assertEqual(set(ADVANCE_CATEGORIES), {"STAFF_ADVANCE", "CUSTOMER_CUSTODY", "ADVANCE_REPAY", "BORROWED_CASH", "BORROW_REPAY"})
+        self.assertEqual(set(ADVANCE_CATEGORIES), {"STAFF_ADVANCE", "CUSTOMER_CUSTODY", "ADVANCE_REPAY", "BORROWED_CASH", "BORROW_REPAY",
+                                                   "CUSTOMER_CASH_IN", "CUSTOMER_CASH_OUT"})
 
 
 if __name__ == "__main__":
@@ -133,3 +134,60 @@ class BorrowedCashTests(FinancialTestCase):
         self.assertEqual(self.row()["owed"], "1000.00")
         self.service.reverse(FO, "1", "سلفة بالخطأ")
         self.assertEqual((self.row()["voided"], self.row()["owed"]), (True, "0.00"))
+
+
+class CustomerCashTests(FinancialTestCase):
+    """Customer cash in / out (migration 086): any account, any amount, and the customer's statement moves with it."""
+
+    def balance(self, customer="7"):
+        return sum((r[1] for r in self.store.ledger if str(r[0]) == customer), D("0.00"))
+
+    def test_cash_in_adds_to_the_account_and_lowers_the_customer_balance(self):
+        before = self.cash()
+        result = self.fin.customer_cash("IN", "7", "CASH:1", "700", "", str(uuid4()))
+        self.assertEqual((self.cash(), self.balance(), result["customer_name"]), (before + D("700"), D("-700"), "عميل أ"))
+        self.assertEqual(self.store.ops["1"]["category"], "CUSTOMER_CASH_IN")
+
+    def test_cash_out_takes_from_the_account_and_raises_what_the_customer_owes(self):
+        before = self.cash()
+        self.fin.customer_cash("OUT", "7", "CASH:1", "300", "", str(uuid4()))
+        self.assertEqual((self.cash(), self.balance()), (before - D("300"), D("300")))
+        self.assertEqual(self.store.ops["1"]["category"], "CUSTOMER_CASH_OUT")
+
+    def test_a_bank_or_wallet_account_works_the_same_way_and_no_cap_applies(self):
+        before = self.bank()
+        self.fin.customer_cash("IN", "7", "BANK:7", "50000", "", str(uuid4()))
+        self.assertEqual((self.bank(), self.balance()), (before + D("50000"), D("-50000")))
+        self.fin.customer_cash("OUT", "7", "BANK:7", "80000", "", str(uuid4()))
+        self.assertEqual(self.balance(), D("30000"))
+
+    def test_a_retry_posts_once_and_a_bad_customer_or_amount_posts_nothing(self):
+        key = str(uuid4())
+        self.fin.customer_cash("IN", "7", "CASH:1", "10", "", key)
+        self.assertTrue(self.fin.customer_cash("IN", "7", "CASH:1", "10", "", key)["duplicate"])
+        self.assertEqual((len(self.store.ops), len([r for r in self.store.ledger if r[2] == "FINANCIAL_OPERATION"])), (1, 1))
+        for customer, amount, code in (("99", "10", "CUSTOMER_REQUIRED"), ("7", "0", "AMOUNT_INVALID"), ("7", "-5", "AMOUNT_INVALID")):
+            self.assertFinRefused(code, lambda customer=customer, amount=amount: self.fin.customer_cash("IN", customer, "CASH:1", amount, "", str(uuid4())))
+
+    def test_the_plain_cash_movement_refuses_these_categories(self):
+        for kind, direction in (("CUSTOMER_CASH_IN", "IN"), ("CUSTOMER_CASH_OUT", "OUT")):
+            self.assertFinRefused("USE_ADVANCE", lambda kind=kind, direction=direction: self.fin.cash_movement("CASH:1", direction, kind, "5", "", str(uuid4())))
+
+    def test_the_two_lists_split_by_who_owes_whom_and_the_search_narrows_them(self):
+        self.fin.customer_cash("OUT", "7", "CASH:1", "300", "", str(uuid4()))
+        lists = self.fin.customer_balances("")
+        self.assertEqual(([r["name"] for r in lists["owes"]], lists["owed"]), (["عميل أ"], []))
+        self.fin.customer_cash("IN", "7", "CASH:1", "1000", "", str(uuid4()))
+        lists = self.fin.customer_balances("عميل")
+        self.assertEqual(([r["name"] for r in lists["owed"]], lists["owes"], lists["owed"][0]["amount"]), (["عميل أ"], [], "700.00"))
+        self.assertEqual(self.fin.customer_balances("لا يوجد"), {"owes": [], "owed": []})
+
+    def test_the_ordinary_reversal_takes_the_statement_row_back_too(self):
+        before = self.cash()
+        self.fin.customer_cash("IN", "7", "CASH:1", "700", "", str(uuid4()))
+        self.service.reverse(FO, "1", "سداد بالخطأ")
+        self.assertEqual((self.cash(), self.balance()), (before, D("0.00")))
+
+    def test_a_salesperson_cannot_post(self):
+        with self.assertRaises(PermissionError):
+            self.fin_service(SALESPERSON).customer_cash("IN", "7", "CASH:1", "10", "", str(uuid4()))

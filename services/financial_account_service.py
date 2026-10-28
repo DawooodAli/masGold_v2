@@ -50,7 +50,8 @@ CASH_LABELS = {
 BANK_LABELS = {**CASH_LABELS, "TRANSFER_IN": "إيداع في الحساب", "TRANSFER_OUT": "سحب من الحساب"}
 # The two transfers between the cash safe and a real bank / wallet account (BANK_DEPOSIT / BANK_WITHDRAWAL) and the cash directions they allow. The income / expense categories are NOT here:
 # they live in the cash_categories table (migration 069, managed in Settings) and `category_table()` is their fixed fallback.
-ADVANCE_CATEGORIES = ("STAFF_ADVANCE", "CUSTOMER_CUSTODY", "ADVANCE_REPAY", "BORROWED_CASH", "BORROW_REPAY")      # recorded only through the advance flows (they need an owner of the money)
+ADVANCE_CATEGORIES = ("STAFF_ADVANCE", "CUSTOMER_CUSTODY", "ADVANCE_REPAY", "BORROWED_CASH", "BORROW_REPAY",
+                      "CUSTOMER_CASH_IN", "CUSTOMER_CASH_OUT")      # recorded only through the advance flows (they need an owner of the money)
 CASH_TYPES = {"BANK_WITHDRAWAL": ("IN",), "BANK_DEPOSIT": ("OUT",)}
 CASH_TYPE_TEXT = {"BANK_DEPOSIT": "إيداع بنك", "BANK_WITHDRAWAL": "سحب بنك"}
 
@@ -63,7 +64,9 @@ def category_table(rows):
         rows += [{"code": "CUSTOMER_CUSTODY", "name": "عهدة مؤقتة لعميل", "direction": "OUT", "is_active": 1},       # 074
                  {"code": "ADVANCE_REPAY", "name": "سداد سلفة / عهدة", "direction": "IN", "is_active": 1},
                  {"code": "BORROWED_CASH", "name": "سلفة مستلفة", "direction": "IN", "is_active": 1},                    # 076
-                 {"code": "BORROW_REPAY", "name": "سداد سلفة مستلفة", "direction": "OUT", "is_active": 1}]
+                 {"code": "BORROW_REPAY", "name": "سداد سلفة مستلفة", "direction": "OUT", "is_active": 1},
+                 {"code": "CUSTOMER_CASH_IN", "name": "نقدية داخلة من عميل", "direction": "IN", "is_active": 1},          # 086
+                 {"code": "CUSTOMER_CASH_OUT", "name": "نقدية خارجة لعميل", "direction": "OUT", "is_active": 1}]
     return {r["code"]: {"name": r["name"], "directions": ("IN", "OUT") if r["direction"] == "BOTH" else (r["direction"],), "active": bool(r["is_active"])} for r in rows}
 
 
@@ -352,6 +355,66 @@ class FinancialAccountService:
             return self._finalize(DEPOSIT, None, cash, value, text, request_key, _expected_actor, category=kind)
         return self._finalize(WITHDRAWAL, cash, None, value, text, request_key, _expected_actor, category=kind)
 
+    # ------------------------------------------------------------ customer cash in / out (owner 2026-10-28)
+    def customer_cash(self, direction, customer_id, account_key_value, amount, note, request_key, *, _expected_actor=None):
+        """نقدية داخلة (IN) / خارجة (OUT) لعميل: the customer pays the shop (a debt payment or a deposit) or takes money from it, through any cash / bank / wallet
+        account. One transaction: the manual deposit / withdrawal on that account AND one row in the customer's statement (IN lowers his balance toward للعميل,
+        OUT raises it toward على العميل; no cap either way). Its only correction is the ordinary full reversal of the financial operation."""
+        if direction not in ("IN", "OUT"):
+            raise CorrectionError("TYPE_INVALID", "اختر نقدية داخلة أو خارجة.")
+        account = _account(account_key_value)
+        value, text = _amount(amount), _text(note, required=False, label="الملاحظة")
+        try:
+            cid = str(CustomerService._customer_id(customer_id))
+        except Exception:
+            raise CorrectionError("CUSTOMER_REQUIRED", "اختر عميلًا مسجلًا.") from None
+        category = "CUSTOMER_CASH_IN" if direction == "IN" else "CUSTOMER_CASH_OUT"
+        operation = DEPOSIT if direction == "IN" else WITHDRAWAL
+        state = {}
+
+        def before(repository):
+            row = repository.lock_customer(cid)
+            if row is None or not row["is_active"]:
+                raise CorrectionError("CUSTOMER_REQUIRED", "العميل غير موجود أو غير نشط.")
+            state["name"] = row["name"]
+
+        def link(repository, operation_id, actor, now):
+            code = operation_code(operation, operation_id)
+            delta = -value if direction == "IN" else value
+            current = repository.customer_balance(cid)
+            label = "نقدية داخلة من العميل" if direction == "IN" else "نقدية خارجة للعميل"
+            repository.add_customer_transaction(customer_id=cid, type_code=category, amount_delta=delta, actor=actor,
+                                                operation_id=operation_id, code=code, description=f"{label} {code}", notes=text or None)
+            state["after"] = current + delta
+        result = self._finalize(operation, None if direction == "IN" else account, account if direction == "IN" else None,
+                                value, text or None, request_key, _expected_actor, category=category, link=link,
+                                extra=["CUSTOMER_CASH", cid], before=before)
+        result["customer_name"] = state.get("name", "")
+        if "after" in state:
+            result["balance_after"] = str(state["after"])
+        return result
+
+    def customer_balances(self, search="", *, _expected_actor=None):
+        """The two lists of the customer cash screen: customers who owe the shop and customers the shop owes (name / phone / code search)."""
+        actor = self._actor(_expected_actor)
+        if OPERATE not in actor.permissions:
+            raise PermissionError("ليس لديك صلاحية تنفيذ العمليات المالية.")
+
+        class _Done(Exception):
+            pass
+        try:
+            with self._transaction() as connection:
+                self._authorization.require_permission_read(connection, actor, OPERATE)
+                raise _Done(self._repository(connection).customer_balances(search, CASH_ROWS))
+        except _Done as done:
+            owes, owed = done.args[0]
+
+        def row(r):
+            return {"customer_id": str(r["customer_id"]), "code": r["customer_code"], "name": r["name"], "mobile": r.get("mobile") or "",
+                    "balance": str(r["balance"]), "amount": str(abs(Decimal(str(r["balance"])))),
+                    "last_at": "" if r.get("last_at") is None else r["last_at"].strftime("%Y-%m-%d %H:%M")}
+        return {"owes": [row(r) for r in owes], "owed": [row(r) for r in owed]}
+
     # ------------------------------------------------------------ temporary advances / custody (074)
     def open_advance(self, cash_key, kind, party_id, amount, note, request_key, *, _expected_actor=None):
         """سلفة موظف (EMPLOYEE) أو عهدة مؤقتة لعميل (CUSTOMER): cash leaves the safe on that person's name and stays owed until repaid. One transaction with the withdrawal."""
@@ -502,7 +565,7 @@ class FinancialAccountService:
         return {"operation_id": str(operation_id), "employee": employee["name"]}
 
     def _finalize(self, operation_type, source, destination, amount, reason, request_key, expected_actor,
-                  category=None, link=None, extra=None):
+                  category=None, link=None, extra=None, before=None):
         session_actor = self._actor(expected_actor)
         if OPERATE not in session_actor.permissions:
             raise PermissionError("ليس لديك صلاحية تنفيذ العمليات المالية.")
@@ -516,6 +579,8 @@ class FinancialAccountService:
         with self._transaction() as connection:
             actor = self._authorization.require_permission(connection, session_actor, OPERATE)
             repository = self._repository(connection)
+            if before is not None:                                             # e.g. the customer lock, taken BEFORE the account locks like every customer-money flow
+                before(repository)
             prior = repository.by_request(key)                                 # an exact replay is answered BEFORE any state refusal (the category may have been disabled since)
             if prior:
                 if prior["request_hash"] != digest or int(prior["performed_by_user_id"]) != int(actor.user_id):

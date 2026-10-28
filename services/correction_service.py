@@ -1596,8 +1596,11 @@ class CorrectionService:
         methods, accounts, cash, account_problems = InvoiceService._payment_accounts(
             invoices, [(p, None) for p, _ in parsed], lock=lock)
         problems += [CorrectionError(getattr(p, "code", "PAYMENT_INVALID"), str(p)) for p in account_problems]
+        # Owner 2026-10-28: the corrected settlement may be above or below the recorded one; the difference
+        # is posted per account (more money in = added to that account, less = taken from it).
         new_total = sum((a for _, a in parsed), ZERO) + account
-        if not problems and new_total != state["total"]:
+        if not problems and state.get("source_type") == CS and new_total != state["total"]:
+            # A customer-account settlement keeps its fixed debt reduction: only its payment methods may change.
             problems.append(CorrectionError("TOTAL_MISMATCH",
                                             f"التسوية الجديدة {new_total:,.2f} ج لا تساوي إجمالي العملية "
                                             f"{state['total']:,.2f} ج."))
@@ -1667,7 +1670,8 @@ class CorrectionService:
                 correction_type=SETTLEMENT, source_type=source_type, source_id=source_id,
                 source_reference=state["reference"], invoice_id=state["invoice"]["invoice_id"], chain_sequence=sequence,
                 previous_correction_id=state["chain"][-1]["correction_id"] if state["chain"] else None,
-                money_direction=state["direction"], settled_total=state["total"], reason=reason, before=before,
+                money_direction=state["direction"], settled_total=sum((a for _, a in parsed), ZERO) + account,
+                reason=reason, before=before,
                 after=after, effects={"money": {f"{k[0]}:{k[1]}": str(v) for k, v in deltas.items() if v},
                                       "account": str(account_delta)},
                 performed_by_user_id=actor.user_id, performed_by_employee_id=actor.employee_id, occurred_at=now)

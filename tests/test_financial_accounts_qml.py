@@ -70,6 +70,18 @@ class Service:
         self.calls.append(("open_borrow", account_key, kind, party_id, lender_name, amount, request_key))
         return {"operation_id": "13", "code": "FO000013", "operation_type": "MANUAL_DEPOSIT", "amount": amount, "duplicate": False, "party_name": lender_name}
 
+    customer_rows = [{"customer_id": "7", "code": "C000007", "name": "أحمد سالم", "mobile": "0100", "balance": "1500.00", "amount": "1500.00", "last_at": "2026-10-28 12:05", "side": "owes"},
+                     {"customer_id": "8", "code": "C000008", "name": "منى علي", "mobile": "0111", "balance": "-700.00", "amount": "700.00", "last_at": "2026-10-27 18:30", "side": "owed"}]
+
+    def customer_balances(self, search="", *, _expected_actor=None):
+        self.calls.append(("customer_balances", search))
+        rows = [r for r in self.customer_rows if search in r["name"]]
+        return {"owes": [r for r in rows if r["side"] == "owes"], "owed": [r for r in rows if r["side"] == "owed"]}
+
+    def customer_cash(self, direction, customer_id, account_key, amount, note, request_key, *, _expected_actor=None):
+        self.calls.append(("customer_cash", direction, customer_id, account_key, amount, request_key))
+        return {"operation_id": "14", "code": "FO000014", "operation_type": "X", "amount": amount, "duplicate": False, "customer_name": "أحمد سالم"}
+
     def operation(self, operation_id, *, _expected_actor=None):
         self.calls.append(("operation", operation_id))
         return {"operation_id": operation_id, "code": "FO000006", "operation_type": "MANUAL_WITHDRAWAL",
@@ -89,11 +101,10 @@ class CashScreenTests(harness.InvoicePageTests):
         self.root.setProperty("currentPage", 4)
         self.wait_until(lambda: len(self.fin.inRows) == 4 and not self.fin.busy, "cash view")
         # The header RowLayout runs its first pass after the page becomes current: until it does,
-        # «حركة نقدية جديدة» and «سلف وعهد مؤقتة» still sit on top of each other at the row origin,
-        # and the first click lands on the wrong button (opens the advances dialog instead of the
-        # movement dialog). Wait for a real laid-out row before any test clicks a header button.
+        # «حركة نقدية جديدة» and «نقدية داخلة وخارجة» still sit on top of each other at the row origin,
+        # and the first click lands on the wrong button. Wait for a real laid-out row before any test clicks a header button.
         self.wait_until(lambda: self.item("cashNewMovement").mapToScene(QPointF(0, 0)).x()
-                        != self.item("cashAdvances").mapToScene(QPointF(0, 0)).x(),
+                        != self.item("cashCustomerCash").mapToScene(QPointF(0, 0)).x(),
                         "header row laid out")
 
     def count(self, name):
@@ -229,71 +240,49 @@ class CashScreenTests(harness.InvoicePageTests):
         self.assertEqual(self.last("cash_movement")[1:6], ("CASH:1", "OUT", "EXPENSE", "1500", ""))
         self.assertEqual(self.warnings, [])
 
-    def test_advances_dialog_opens_an_employee_advance_and_repays_it_with_real_clicks(self):
+    def test_customer_cash_screen_two_tables_search_and_entry_with_real_clicks_at_all_sizes(self):
         self.open_page()
         for width, height in harness.SIZES:
             self.root.setWidth(width)
             self.root.setHeight(height)
             QTest.qWait(120)
-            self.assert_inside_window(self.visible_item("cashAdvances"))
-            self.click("cashAdvances")
-            self.wait_until(lambda: self.item("cashAdvancesDialog").property("opened"))
-            self.wait_until(lambda: len(self.fin.advances) == 1, "advances loaded")
-            self.assertEqual(self.item("advanceParty_0").property("text"), "شلاطة — سلفة موظف")
-            self.assertEqual(self.item("advanceOwed_0").property("text"), "المتبقي 75.00 ج")
-            self.assert_inside_window(self.visible_item("advanceRepay_0"))
-            # a new employee advance
-            self.click("advanceNew")
-            self.assertFalse(self.item("advanceSave").property("enabled"))                  # no employee, no amount
-            self.choose("advanceEmployee", 0)
-            self.type_into("advanceAmount", "250")
-            self.wait_until(lambda: self.item("advanceSave").property("enabled"), "can save")
-            self.assert_inside_window(self.item("advanceSave"))
-            before = self.count("open_advance")
-            self.click("advanceSave")
-            self.wait_until(lambda: self.count("open_advance") == before + 1, "advance posted")
-            call = self.last("open_advance")
-            self.assertEqual(call[1:5], ("CASH:1", "EMPLOYEE", "1", "250"))
-            self.wait_until(lambda: self.item("advanceNew").property("visible"), "back to the list")
-            # repay it
-            self.click("advanceRepay_0")
-            self.type_into("repayAmount", "25")
-            self.assert_inside_window(self.item("repaySave"))
-            before = self.count("repay_advance")
-            self.click("repaySave")
-            self.wait_until(lambda: self.count("repay_advance") == before + 1, "repayment posted")
-            self.assertEqual(self.last("repay_advance")[1:4], ("1", "CASH:1", "25"))
-            self.wait_until(lambda: self.item("advanceNew").property("visible"), "back to the list")
-            self.item("cashAdvancesDialog").close()
-            self.wait_until(lambda: not self.item("cashAdvancesDialog").property("visible"), "dialog closes")
+            self.assert_inside_window(self.visible_item("cashCustomerCash"))
+            self.click("cashCustomerCash")
+            self.wait_until(lambda: self.item("customerCashDialog").property("opened"))
+            self.wait_until(lambda: len(self.fin.customerOwes) == 1 and len(self.fin.customerOwed) == 1, "both lists loaded")
+            # the two tables side by side: who owes the shop (right) and whom the shop owes (left)
+            self.assertEqual(self.item("customerCashOwesName_0").property("text"), "أحمد سالم")
+            self.assertEqual(self.item("customerCashOwedName_0").property("text"), "منى علي")
+            self.assertEqual(self.item("customerCashOwesAmount_0").property("text"), "1,500 ج")
+            self.assertGreater(self.item("customerCashOwes").mapToScene(QPointF(0, 0)).x(),
+                               self.item("customerCashOwed").mapToScene(QPointF(0, 0)).x())
+            # the search narrows both lists
+            self.type_into("customerCashSearch", "منى")
+            self.wait_until(lambda: any(c[1] == "منى" for c in self.service.calls if c[0] == "customer_balances") and len(self.fin.customerOwes) == 0
+                            and len(self.fin.customerOwed) == 1 and not self.fin.customerCashBusy, "search applied")
+            self.fin.loadCustomerCash("")                                                 # (clearing the box by hand does the same)
+            self.wait_until(lambda: len(self.fin.customerOwes) == 1, "search cleared")
+            # the entry form: nothing can be saved without a customer
+            self.assert_inside_window(self.visible_item("customerCashIn"))
+            self.click("customerCashIn")
+            self.type_into("customerCashAmount", "500")
+            self.assertFalse(self.item("customerCashSave").property("enabled"))
+            self.item("customerCashDialog").close()
+            self.wait_until(lambda: not self.item("customerCashDialog").property("visible"), "dialog closes")
         self.assertEqual(self.warnings, [])
 
-    def test_borrowed_cash_from_an_outside_person_with_real_clicks_at_all_sizes(self):
+    def test_customer_cash_save_posts_once_per_attempt_through_the_service(self):
         self.open_page()
-        for width, height in harness.SIZES:
-            self.root.setWidth(width)
-            self.root.setHeight(height)
-            QTest.qWait(120)
-            self.click("cashAdvances")
-            self.wait_until(lambda: self.item("cashAdvancesDialog").property("opened"))
-            self.wait_until(lambda: len(self.fin.advances) == 1, "advances loaded")
-            self.assert_inside_window(self.visible_item("advanceBorrowNew"))
-            self.click("advanceBorrowNew")
-            self.assertFalse(self.item("borrowSave").property("enabled"))                              # no name, no amount
-            self.click("borrowKindOther")
-            self.type_into("borrowName", "الحاج محمود")
-            self.type_into("borrowAmount", "1000")
-            self.wait_until(lambda: self.item("borrowSave").property("enabled"), "can save")
-            self.assert_inside_window(self.item("borrowSave"))
-            before = self.count("open_borrow")
-            self.click("borrowSave")
-            self.wait_until(lambda: self.count("open_borrow") == before + 1, "borrow posted")
-            call = self.last("open_borrow")
-            self.assertEqual(call[1:6], ("CASH:1", "THIRD_PARTY", "", "الحاج محمود", "1000"))
-            self.wait_until(lambda: self.item("advanceNew").property("visible"), "back to the list")
-            self.item("cashAdvancesDialog").close()
-            self.wait_until(lambda: not self.item("cashAdvancesDialog").property("visible"), "dialog closes")
-        self.assertEqual(self.warnings, [])
+        self.fin.prepareCustomerCash()
+        self.fin.saveCustomerCash("IN", "7", "", "500", "")
+        self.wait_until(lambda: self.count("customer_cash") == 1, "posted")
+        call = self.last("customer_cash")
+        self.assertEqual(call[1:5], ("IN", "7", "CASH:1", "500"))                   # the safe is the default account
+        self.wait_until(lambda: not self.fin.customerCashBusy, "first finished")
+        self.fin.saveCustomerCash("OUT", "8", "BANK:1", "300", "")
+        self.wait_until(lambda: self.count("customer_cash") == 2, "second posted")
+        self.assertEqual(self.last("customer_cash")[1:5], ("OUT", "8", "BANK:1", "300"))
+        self.assertNotEqual(self.service.calls[-1][-1] if False else call[5], self.last("customer_cash")[5])   # a new attempt, a new key
 
     def test_revenue_in_and_bank_deposit_forms(self):
         self.open_page()

@@ -556,10 +556,11 @@ class SettlementCorrectionTests(CorrectionTestCase):
         self.assertEqual(self.service.current_settlement("INVOICE", "500")["account"], "0.00")
 
     def test_total_preserved_and_zero_effect_refused(self):
-        self.assertRefused("TOTAL_MISMATCH", lambda: self.correct("INVOICE", "501", [("BANK_TRANSFER", "29999.99", "7")]))
         self.assertRefused("NO_EFFECT_CORRECTION", lambda: self.correct("INVOICE", "501", [("PHYSICAL_CASH", "30000.00")]))
         self.assertRefused("ACCOUNT_NEEDS_CUSTOMER", lambda: self.correct("INVOICE", "506", [("PHYSICAL_CASH", "20000.00")],
                                                                           account="10000.00"))
+        # A different total is accepted now (owner 2026-10-28): the difference is posted on the account.
+        self.correct("INVOICE", "501", [("BANK_TRANSFER", "29999.99", "7")])
 
     def test_direction_preserved_for_exchange_and_return(self):
         self.correct("RETURN", "800", [("BANK_TRANSFER", "12000.00", "7")], account="500.00")

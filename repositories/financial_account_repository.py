@@ -348,6 +348,40 @@ class FinancialAccountRepository(BaseRepository):
     def customer(self, customer_id):
         return self._fetch_one("SELECT id, name, is_active FROM customers WHERE id = %s", (int(customer_id),))
 
+    def lock_customer(self, customer_id):
+        """The customer row, locked: a customer cash movement serialises with every other balance change of that customer."""
+        return self._fetch_one("SELECT id, name, is_active FROM customers WHERE id = %s FOR UPDATE", (int(customer_id),))
+
+    def add_customer_transaction(self, *, customer_id, type_code, amount_delta, actor, operation_id, code, description, notes):
+        """The ONE customer-statement row of a customer cash movement, referencing its financial operation (so the ordinary reversal finds and negates it)."""
+        from repositories.customer_repository import CustomerRepository
+        return CustomerRepository(self.connection).add_transaction(
+            customer_id=int(customer_id), type_code=type_code, amount_delta=amount_delta, created_by_user_id=actor.user_id,
+            reference_type=SOURCE, reference_id=int(operation_id), reference_code=code, description=description, notes=notes)
+
+    def customer_balance(self, customer_id):
+        row = self._fetch_one("SELECT COALESCE(SUM(amount_delta), 0) AS balance FROM customer_transactions WHERE customer_id = %s",
+                              (int(customer_id),))
+        return Decimal(str(row["balance"]))
+
+    def customer_balances(self, search, limit):
+        """Customers with a non-zero balance (name / phone / code search): ([they owe us], [we owe them]), one statement, each side capped at `limit`."""
+        text = (search or "").strip()          # newest movement first (owner 2026-10-28), never by name
+        like = "%" + "".join("!" + c if c in "%_!" else c for c in text) + "%"
+        rows = self._fetch_all(
+            """
+            SELECT b.customer_id, b.customer_code, b.name, b.mobile, b.balance,
+                   (SELECT MAX(t.occurred_at) FROM customer_transactions t WHERE t.customer_id = b.customer_id) AS last_at,
+                   (SELECT MAX(t.id) FROM customer_transactions t WHERE t.customer_id = b.customer_id) AS last_id
+            FROM vw_customer_balances b JOIN customers c ON c.id = b.customer_id
+            WHERE b.balance <> 0 AND c.is_active = TRUE
+              AND (%s = '' OR b.name LIKE %s ESCAPE '!' OR b.mobile LIKE %s ESCAPE '!' OR b.customer_code LIKE %s ESCAPE '!')
+            ORDER BY last_at DESC, last_id DESC, b.customer_id DESC
+            """, (text, like, like, like))
+        owes = [r for r in rows if Decimal(str(r["balance"])) > 0][:limit]
+        owed = [r for r in rows if Decimal(str(r["balance"])) < 0][:limit]
+        return owes, owed
+
     def operation_category(self, operation_id):
         return self._fetch_one("SELECT id, operation_type, category FROM financial_operations WHERE id = %s", (int(operation_id),))
 

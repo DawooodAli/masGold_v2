@@ -107,6 +107,25 @@ class FinRepo:
         self._advances()
         return [{"id": e["id"], "name": e["name"]} for e in self.store.employees_list.values() if e["is_active"]]
 
+    def lock_customer(self, customer_id):
+        self._advances()
+        return self.store.customers_list.get(int(customer_id))
+
+    def customer_balance(self, customer_id):
+        return sum((r[1] for r in self.store.ledger if str(r[0]) == str(customer_id)), D("0.00"))
+
+    def add_customer_transaction(self, *, customer_id, type_code, amount_delta, actor, operation_id, code, description, notes):
+        self.store.ledger.append((str(customer_id), amount_delta, far.SOURCE, str(operation_id)))
+
+    def customer_balances(self, search, limit):
+        sums = {}
+        for row in self.store.ledger:
+            sums[str(row[0])] = sums.get(str(row[0]), D("0.00")) + row[1]
+        rows = [{"customer_id": cid, "customer_code": f"C{int(cid):06d}", "name": self.store.customers_list[int(cid)]["name"], "mobile": "", "balance": b,
+                 "last_at": datetime(2026, 10, 28, 12, 0), "last_id": 1}
+                for cid, b in sums.items() if b and int(cid) in self.store.customers_list and search in self.store.customers_list[int(cid)]["name"]]
+        return [r for r in rows if r["balance"] > 0][:limit], [r for r in rows if r["balance"] < 0][:limit]
+
     def insert_advance(self, *, kind, employee_id, customer_id, amount, operation_id, note, actor, now, direction="LEND", lender_name=None):
         advances = self._advances()
         assert (kind == "EMPLOYEE") == (employee_id is not None) and (kind == "CUSTOMER") == (customer_id is not None)   # chk_cash_advance_party
@@ -154,8 +173,8 @@ class FinRepo:
         assert amount > 0                                                         # chk_fo_amount
         if operation_type != "ACCOUNT_TRANSFER":
             assert category or (reason and reason.strip())                        # chk_fo_shape (026)
-            allowed = ((None, "REVENUE", "REPAIR", "ADVANCE_REPAY", "BORROWED_CASH") if operation_type == "MANUAL_DEPOSIT"
-                       else (None, "EXPENSE", "SALARY", "RENT", "REPAIR", "UTILITIES", "TRANSPORT", "MAINTENANCE", "HOSPITALITY", "STAFF_ADVANCE", "CUSTOMER_CUSTODY", "BORROW_REPAY"))      # 068 / 074 / 076
+            allowed = ((None, "REVENUE", "REPAIR", "ADVANCE_REPAY", "BORROWED_CASH", "CUSTOMER_CASH_IN") if operation_type == "MANUAL_DEPOSIT"
+                       else (None, "EXPENSE", "SALARY", "RENT", "REPAIR", "UTILITIES", "TRANSPORT", "MAINTENANCE", "HOSPITALITY", "STAFF_ADVANCE", "CUSTOMER_CUSTODY", "BORROW_REPAY", "CUSTOMER_CASH_OUT"))      # 068 / 074 / 076 / 086
             if getattr(self.store, "categories", None) is not None:               # 069: the category must exist in cash_categories (fk_fo_category)
                 allowed = (None, *(c["code"] for c in self.store.categories))
             assert category in allowed                                            # chk_fo_category
