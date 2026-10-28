@@ -417,8 +417,8 @@ Rectangle {
             RowLayout {
                 Layout.fillWidth: true; Layout.fillHeight: true; layoutDirection: Qt.RightToLeft; spacing: 10
                 Repeater {
-                    model: [{ "objectName": "customerCashOwes", "title": "عليهم فلوس (للمحل)", "tone": theme.accountReceivable, "side": "owes" },
-                            { "objectName": "customerCashOwed", "title": "لهم فلوس (على المحل)", "tone": theme.accountPayable, "side": "owed" }]
+                    model: [{ "objectName": "customerCashOwes", "title": "عليهم فلوس (للمحل)", "tone": theme.red, "side": "owes" },
+                            { "objectName": "customerCashOwed", "title": "لهم فلوس (على المحل)", "tone": theme.blue, "side": "owed" }]
                     delegate: Rectangle {
                         id: sideCard
                         required property var modelData
