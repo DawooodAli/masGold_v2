@@ -5536,23 +5536,23 @@ ApplicationWindow {
                     objectName: "settingRow_" + modelData.key
                     Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
 
-                    GoldPriceLabel {
-                        objectName: "settingKey_" + settingRow.modelData.key
-                        Layout.preferredWidth: 210
-                        value: settingRow.modelData.key
-                        color: theme.gold; font.bold: true
-                        elide: Text.ElideLeft
-                    }
-                    GoldPriceLabel {
-                        Layout.preferredWidth: 74
-                        value: settingRow.modelData.type_text
-                        color: theme.textSecondary; font.pixelSize: 11
-                    }
-                    GoldPriceLabel {
-                        Layout.fillWidth: true
-                        value: settingRow.modelData.description
-                        color: theme.textMuted; font.pixelSize: 11
-                        elide: Text.ElideLeft
+                    // The Arabic description is the title (it says what the value does); the technical key stays small under it.
+                    ColumnLayout {
+                        Layout.fillWidth: true; spacing: 0
+                        GoldPriceLabel {
+                            objectName: "settingTitle_" + settingRow.modelData.key
+                            Layout.fillWidth: true
+                            value: settingRow.modelData.description.length > 0 ? settingRow.modelData.description : settingRow.modelData.key
+                            color: theme.gold; font.bold: true
+                            wrapMode: Text.WordWrap
+                        }
+                        GoldPriceLabel {
+                            objectName: "settingKey_" + settingRow.modelData.key
+                            Layout.fillWidth: true
+                            value: settingRow.modelData.key + "  •  " + settingRow.modelData.type_text
+                            color: theme.textMuted; font.pixelSize: 10
+                            elide: Text.ElideLeft
+                        }
                     }
                     // STRING / INT / DECIMAL: a plain field (GoldPriceInput would block Arabic letters).
                     TextField {
