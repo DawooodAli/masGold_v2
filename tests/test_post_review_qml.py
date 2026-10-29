@@ -236,6 +236,29 @@ class ManagerReviewPageTests(harness.InvoicePageTests):
         self.wait_until(lambda: calls[-1][0] == "transfer", "transfer")
         self.assertEqual(calls[-1], ("transfer", "BANK:3", "CASH:1", "700"))
 
+        class Marketers:                                                 # a supplier who is also a marketer: one party, one cash balance
+            def marketers(self, *, _expected_actor=None):
+                return [{"id": "11", "name": "مورد ومسوقجي", "active": True, "supplier": True}]
+
+            def cash_handover_from_account(self, party, source, amount, date, reference, notes, key, *, _expected_actor=None):
+                calls.append(("marketer", party, source, amount))
+                return {"code": "MH000001"}
+        with session._lock:
+            session._actor = dataclasses.replace(session._actor, permissions=session._actor.permissions | {"INTERMEDIARY_HOLDING_MANAGE"})
+        vm._marketer_service = Marketers()
+        vm.changed.emit()
+        vm.loadMarketers()
+        self.wait_until(lambda: vm.marketers, "marketers loaded")
+        self.assertEqual(vm.marketers[0]["label"], "مورد ومسوقجي • مورد")
+        self.item("transferMode").setProperty("currentIndex", 4)                              # إلى مورد / مسوقجي
+        QTest.qWait(200)
+        self.assertTrue(self.visible_item("transferMarketer") is not None)
+        self.click(self.item("transferAmount"))
+        self.type_text("300")
+        self.click("transferConfirm")
+        self.wait_until(lambda: calls[-1][0] == "marketer", "marketer transfer")
+        self.assertEqual(calls[-1], ("marketer", "11", "BANK:3", "300"))
+
     def test_card_background_opens_the_source_but_a_button_never_navigates(self):
         self.open_reviews()
         self.click(f"reviewSource_{HUGE}")

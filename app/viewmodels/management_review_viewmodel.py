@@ -419,7 +419,7 @@ class ManagementReviewViewModel(QObject):
         self._start("marketers", lambda _expected_actor: service.marketers(_expected_actor=_expected_actor))
 
     def _on_marketers(self, result, error):
-        self._marketers = [] if error else [m for m in (result or []) if m["active"]]
+        self._marketers = [] if error else [dict(m, label=m["name"] + (" • مورد" if m.get("supplier") else "")) for m in (result or []) if m["active"]]
 
     @Property("QVariantList", notify=changed)
     def marketers(self):

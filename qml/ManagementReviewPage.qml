@@ -1214,8 +1214,8 @@ Item {
                         readonly property var banks: reviewsVM.transferAccounts.filter(function (a) { return a.bank })
                         readonly property var safeAccount: reviewsVM.transferAccounts.filter(function (a) { return !a.bank })[0]
                         readonly property var modes: reviewsVM.canUsePrivate
-                            ? [["TO", "إلى الحساب الخاص"], ["FROM", "من الحساب الخاص"], ["BANK", "إلى بنك / محفظة أخرى"], ["SAFE", "إلى الخزنة الرئيسية"]].concat(reviewsVM.canTransferToMarketer ? [["MKT", "إلى عهدة مسوقجي"]] : [])
-                            : [["BANK", "إلى بنك / محفظة أخرى"], ["SAFE", "إلى الخزنة الرئيسية"]].concat(reviewsVM.canTransferToMarketer ? [["MKT", "إلى عهدة مسوقجي"]] : [])
+                            ? [["TO", "إلى الحساب الخاص"], ["FROM", "من الحساب الخاص"], ["BANK", "إلى بنك / محفظة أخرى"], ["SAFE", "إلى الخزنة الرئيسية"]].concat(reviewsVM.canTransferToMarketer ? [["MKT", "إلى مورد / مسوقجي (عهدة نقدية)"]] : [])
+                            : [["BANK", "إلى بنك / محفظة أخرى"], ["SAFE", "إلى الخزنة الرئيسية"]].concat(reviewsVM.canTransferToMarketer ? [["MKT", "إلى مورد / مسوقجي (عهدة نقدية)"]] : [])
                         readonly property string mode: modeCombo.currentIndex >= 0 ? modes[modeCombo.currentIndex][0] : ""
                         Connections {
                             target: reviewsVM
@@ -1271,14 +1271,14 @@ Item {
                                     onCountChanged: if (currentIndex < 0 && count > 1) currentIndex = 1
                                     font.family: "Cairo"
                                 }
-                                Label { visible: transferForm.mode === "MKT"; text: "المسوقجي"; color: theme.textSecondary; font.family: "Cairo"; font.pixelSize: 12 }
+                                Label { visible: transferForm.mode === "MKT"; text: "المورد / المسوقجي"; color: theme.textSecondary; font.family: "Cairo"; font.pixelSize: 12 }
                                 ComboBox {
                                     id: transferMarketer
                                     objectName: "transferMarketer"
                                     visible: transferForm.mode === "MKT"
                                     Layout.preferredWidth: 200
                                     model: reviewsVM.marketers
-                                    textRole: "name"
+                                    textRole: "label"
                                     currentIndex: count > 0 ? 0 : -1
                                     onCountChanged: if (currentIndex < 0 && count > 0) currentIndex = 0
                                     font.family: "Cairo"
