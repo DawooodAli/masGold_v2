@@ -3,6 +3,7 @@ for the supplier role, and the form at the three target sizes - with real mouse 
 NOT part of this slice."""
 import unittest
 
+from PySide6.QtCore import QObject
 from PySide6.QtTest import QTest
 
 from tests import test_invoice_page_qml as harness
@@ -129,6 +130,20 @@ class SupplierRolePageTests(base.SupplierPageTests):
                 self.item("supplierDialog").close()
                 QTest.qWait(150)
                 self.assert_inside_window(self.item("supplierRoleFilter"))
+
+
+    def test_in_production_the_marketer_role_and_filter_are_hidden(self):
+        self.open_with_parties()
+        page = self.root.findChild(QObject, "suppliersPage")
+        page.setProperty("marketerEnabled", False)                                           # the production default (owner 2026-10-29)
+        QTest.qWait(150)
+        self.click("newSupplierButton")
+        self.assertIsNone(self.visible_item("supplierRoleIntermediary"))
+        self.item("supplierDialog").close()
+        QTest.qWait(150)
+        self.assertEqual(len(self.item("supplierRoleFilter").property("model")), 2)         # all / suppliers only
+        self.assertIsNone(self.visible_item("holdingsGroup"))
+        self.assertIsNone(self.visible_item("marketerGroup"))
 
 
 for _name in dir(base.SupplierPageTests):

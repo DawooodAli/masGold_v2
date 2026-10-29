@@ -3,7 +3,7 @@ ones over the in-memory database (tests/market_trip_fakes.py). NOT real-MySQL te
 from decimal import Decimal as D
 import unittest
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QMetaObject, QObject, Q_ARG, Qt
 from PySide6.QtTest import QTest
 
 from tests import test_invoice_page_qml as harness
@@ -188,9 +188,6 @@ class GoldSaleUiTests(base.MarketTripHeatPageTests):
         self.assertIn("معكوسة بالعملية RV000001", " ".join(self.visible_texts("entryState")))
         self.assertEqual(self.warnings, [])
 
-
-for _name in [n for n in dir(base.MarketTripHeatPageTests) if n.startswith("test_") and n not in vars(GoldSaleUiTests)]:
-    setattr(GoldSaleUiTests, _name, None)                    # the inherited UI tests run in their own modules
     def test_a_bank_sale_needs_an_account_and_leaves_the_custody_cash_with_real_clicks_at_1080(self):
         self.root.setWidth(1080)
         self.root.setHeight(680)
@@ -216,6 +213,32 @@ for _name in [n for n in dir(base.MarketTripHeatPageTests) if n.startswith("test
         self.assertEqual(self.custody_cash(), cash)                                               # the custody cash is untouched
         self.assertEqual([(m["type_code"], m["amount_delta"]) for m in self.db.bank_moves], [("TRIP_GOLD_SALE_BANK", D("24000.00"))])
         self.assertEqual(self.warnings, [])
+
+
+    def test_the_suppliers_page_opens_the_sale_and_the_buy_dialog_for_that_supplier(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.logo_trip()
+        suppliers = self.root.findChild(QObject, "suppliersPage")
+        self.root.setProperty("currentPage", 14)
+        QTest.qWait(100)
+        for kind, dialog in (("SELL", "tripGoldSaleDialog"), ("BUY", "tripGoldBuyDialog")):
+            with self.subTest(kind=kind):
+                QMetaObject.invokeMethod(suppliers, "tradeRequested", Qt.DirectConnection, Q_ARG(str, kind), Q_ARG(str, "10"))
+                self.wait_until(lambda: self.item(dialog).property("opened"), f"{dialog} opened")
+                self.assertEqual(self.root.property("currentPage"), 15)                           # the custody page
+                combo = self.item("custodyGoldSaleBuyerCombo" if kind == "SELL" else "custodyGoldBuyVendorCombo")
+                self.wait_until(lambda: combo.property("currentIndex") > 0, "the supplier is preselected")
+                self.assertIn(self.db.suppliers[10]["name"], combo.property("currentText"))
+                self.item(dialog).close()
+                QTest.qWait(150)
+                self.root.setProperty("currentPage", 14)
+                QTest.qWait(100)
+        self.assertEqual(self.warnings, [])
+
+
+for _name in [n for n in dir(base.MarketTripHeatPageTests) if n.startswith("test_") and n not in vars(GoldSaleUiTests)]:
+    setattr(GoldSaleUiTests, _name, None)                    # the inherited UI tests run in their own modules
 
 
 if __name__ == "__main__":

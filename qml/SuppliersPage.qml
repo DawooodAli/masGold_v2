@@ -10,6 +10,7 @@ import QtQuick.Layouts
 Item {
     id: page
     objectName: "suppliersPage"
+    signal tradeRequested(string kind, string supplierId)                 // a gold purchase from / sale to this supplier: the custody page opens the dialog on the open custody
     signal tripRequested(string tripId)                                    // the marketer statement opens the market-trip custody page on the source trip
     property string pageTitle: ""
 
@@ -17,11 +18,16 @@ Item {
     readonly property var pvm: typeof supplierPurchaseVM !== "undefined" ? supplierPurchaseVM : null
     // Owner 2026-10-29: every piece enters the stock from «إدخال قطعة جديدة» (the supplier group is chosen there); this page only shows invoices.
     property bool pieceEntryHere: false
+    // Owner 2026-10-29: the marketer (مسوقجي) is no longer a separate party kind: everything goes through the suppliers and the market custody.
+    // The code, the services and the history stay; this one switch hides the marketer screens (tests that drive them set it to true).
+    property bool marketerEnabled: false
+    // the custody owner may buy gold from / sell gold to a supplier (the dialogs live on the custody page; the service re-checks the right)
+    readonly property bool canTrade: !!vm && page.detail.isSupplier !== false && typeof marketTripVM !== "undefined" && marketTripVM.canManage === true
     readonly property var detail: vm ? vm.detail : ({})
     readonly property bool hasSelection: !!vm && vm.selectedSupplierId !== "" && !!detail && detail.id !== undefined
     property int tab: 0
     readonly property var mvm: vm ? vm.marketer : null                    // 055: the marketer custody account (apart from the supplier account)
-    readonly property bool goldTabVisible: page.detail.hasAccount !== false || (!!vm && vm.holdingsPanel.visible === true)
+    readonly property bool goldTabVisible: page.detail.hasAccount !== false || (page.marketerEnabled && !!vm && vm.holdingsPanel.visible === true)
     property bool holdDetails: false          // the party's Details section (codes, history) is collapsed by default
     // which holding rows have their «المزيد» row open, keyed by source (kind + pool id): kept here, not in the row, so a refresh that rebuilds the rows does not collapse it
     property var moreOpen: ({})
@@ -450,8 +456,9 @@ Item {
                         id: roleFilterCombo
                         objectName: "supplierRoleFilter"
                         Layout.fillWidth: true
-                        readonly property var choices: [{ role: "", text: "كل الأطراف" }, { role: "SUPPLIER", text: "الموردون" },
-                                                        { role: "INTERMEDIARY", text: "المسوقجية" }]
+                        readonly property var choices: page.marketerEnabled
+                            ? [{ role: "", text: "كل الأطراف" }, { role: "SUPPLIER", text: "الموردون" }, { role: "INTERMEDIARY", text: "المسوقجية" }]
+                            : [{ role: "", text: "كل الأطراف" }, { role: "SUPPLIER", text: "الموردون" }]
                         model: choices
                         textRole: "text"
                         onActivated: function (i) { if (page.vm) page.vm.setRoleFilter(choices[i].role) }
@@ -640,7 +647,7 @@ Item {
                         RowLayout {
                             objectName: "accountPositions"
                             visible: page.detail.hasAccount !== false
-                                     || (!!page.vm && page.vm.holdingsPanel.goldPositionVisible === true)
+                                     || (page.marketerEnabled && !!page.vm && page.vm.holdingsPanel.goldPositionVisible === true)
                             Layout.fillWidth: true
                             Layout.fillHeight: false
                             layoutDirection: Qt.RightToLeft
@@ -667,10 +674,10 @@ Item {
                                       wrapMode: Text.WordWrap; elide: Text.ElideNone }
                                 // the gold the shop holds at this party as an INTERMEDIARY is a separate subsection, never netted with the supplier account above
                                 Rectangle { objectName: "goldHeldDivider"; Layout.fillWidth: true; Layout.topMargin: 6; Layout.preferredHeight: 1
-                                            visible: !!page.vm && page.vm.holdingsPanel.goldPositionVisible === true
+                                            visible: page.marketerEnabled && !!page.vm && page.vm.holdingsPanel.goldPositionVisible === true
                                             color: theme.border }
                                 Txt { objectName: "goldHeldPosition"; Layout.fillWidth: true; Layout.topMargin: 2
-                                      visible: !!page.vm && page.vm.holdingsPanel.goldPositionVisible === true
+                                      visible: page.marketerEnabled && !!page.vm && page.vm.holdingsPanel.goldPositionVisible === true
                                       text: page.vm ? page.vm.holdingsPanel.goldPositionText || "" : ""
                                       color: theme.balanceKarat21; font.bold: true; font.pixelSize: theme.fontBodyStrong
                                       wrapMode: Text.WordWrap; elide: Text.ElideNone }
@@ -682,6 +689,24 @@ Item {
                                     text: "تسوية ذهب"
                                     primary: true
                                     onClicked: goldSettleDialog.openFor()
+                                }
+                                RowLayout {
+                                    Layout.alignment: Qt.AlignRight
+                                    layoutDirection: Qt.RightToLeft
+                                    spacing: 8
+                                    visible: page.canTrade
+                                    Btn {
+                                        objectName: "buyGoldFromSupplierButton"
+                                        enabled: page.hasSelection && !page.vm.busy
+                                        text: "شراء ذهب من المورد"
+                                        onClicked: page.tradeRequested("BUY", String(page.detail.id))
+                                    }
+                                    Btn {
+                                        objectName: "sellGoldToSupplierButton"
+                                        enabled: page.hasSelection && !page.vm.busy
+                                        text: "بيع ذهب للمورد"
+                                        onClicked: page.tradeRequested("SELL", String(page.detail.id))
+                                    }
                                 }
                             }
                             Card {
@@ -939,7 +964,7 @@ Item {
                                         ColumnLayout {
                                             id: holdingsGroup
                                             objectName: "holdingsGroup"
-                                            visible: !!page.vm && page.vm.holdingsPanel.visible === true
+                                            visible: page.marketerEnabled && !!page.vm && page.vm.holdingsPanel.visible === true
                                             Layout.fillWidth: true
                                             spacing: 10
                         // Shop-owned gold physically at this intermediary (048 bars, 049 LOGO). Independent of the supplier account of a dual-role party.
@@ -1170,6 +1195,7 @@ Item {
                         // Details: codes, original weights, pure grams, rounding and the whole history. Collapsed by default; no permission is bypassed.
                         Btn {
                             objectName: "holdingDetailsToggle"
+                            visible: page.marketerEnabled
                             Layout.preferredHeight: 30                    // compact action buttons, one height
                             Layout.alignment: Qt.AlignRight
                             text: page.holdDetails ? "إخفاء التفاصيل" : "التفاصيل والمراجع"
@@ -1179,7 +1205,7 @@ Item {
                         Card {
                             objectName: "holdingDetailsCard"
                             Layout.fillHeight: false
-                            visible: page.holdDetails
+                            visible: page.marketerEnabled && page.holdDetails
                             title: "تفاصيل ذهب المسوقجي ومراجعه"
                             accent: theme.textSecondary
                             Txt { objectName: "holdingsDetailsNote"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
@@ -1256,7 +1282,7 @@ Item {
                                         ColumnLayout {
                                             id: marketerGroup
                                             objectName: "marketerGroup"
-                                            visible: !!page.mvm && page.mvm.visible === true
+                                            visible: page.marketerEnabled && !!page.mvm && page.mvm.visible === true
                                             Layout.fillWidth: true
                                             spacing: 10
                                             Card {
@@ -1534,12 +1560,12 @@ Item {
                 CheckBox { id: roleSupplier; objectName: "supplierRoleSupplier"; text: "مورد"; checked: true; font.family: "Cairo"
                            contentItem: Label { text: parent.text; font: parent.font; color: theme.textSecondary
                                                 leftPadding: parent.indicator.width + 6; horizontalAlignment: Text.AlignRight } }
-                CheckBox { id: roleIntermediary; objectName: "supplierRoleIntermediary"; text: "مسوقجي"; font.family: "Cairo"
+                CheckBox { id: roleIntermediary; objectName: "supplierRoleIntermediary"; text: "مسوقجي"; font.family: "Cairo"; visible: page.marketerEnabled
                            contentItem: Label { text: parent.text; font: parent.font; color: theme.textSecondary
                                                 leftPadding: parent.indicator.width + 6; horizontalAlignment: Text.AlignRight } }
                 Item { Layout.fillWidth: true }
             }
-            Txt { objectName: "roleRequiredHint"; Layout.fillWidth: true; visible: !roleSupplier.checked && !roleIntermediary.checked
+            Txt { objectName: "roleRequiredHint"; Layout.fillWidth: true; visible: !roleSupplier.checked && !(page.marketerEnabled && roleIntermediary.checked)
                   color: theme.amber; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
                   text: "اختر دورًا واحدًا على الأقل: مورد أو مسوقجي." }
             // Each supplier is dedicated to ONE karat; its invoices inherit it. Locked once an invoice exists. A market intermediary has none.
@@ -1709,7 +1735,7 @@ Item {
                         spacing: 8
                         Btn { objectName: "payMethodCustody"; text: "عهدة السوق"; visible: payDialog.ready && payDialog.custodyChoices.length > 1
                               primary: payDialog.method === "CUSTODY"; onClicked: payDialog.method = "CUSTODY" }
-                        Btn { objectName: "payMethodMarketer"; text: "نقدية المسوقجي"; visible: payDialog.ready && payDialog.marketerChoices.length > 1
+                        Btn { objectName: "payMethodMarketer"; text: "نقدية المسوقجي"; visible: page.marketerEnabled && payDialog.ready && payDialog.marketerChoices.length > 1
                               primary: payDialog.method === "MARKETER"; onClicked: payDialog.method = "MARKETER" }
                         Btn { objectName: "payMethodBank"; text: "تحويل بنكي"; visible: payDialog.ready && payDialog.bankChoices.length > 1
                               primary: payDialog.method === "BANK"
@@ -1998,7 +2024,7 @@ Item {
         property string declarationCode: ""
         property string adjustmentSourceKind: ""
         readonly property var sourceContext: page.vm ? page.vm.supplierGoldSourceContext : ({})
-        readonly property var sources: page.vm ? page.vm.supplierGoldSources : []
+        readonly property var sources: page.vm ? page.vm.supplierGoldSources.filter(function (row) { return page.marketerEnabled || row.source_type !== "HOLDING" }) : []
         readonly property var sourceOptions: [{ key: "", text: "اختر مصدر الذهب" }].concat(sources)
         readonly property var declarationOptions: preview.options || []
         readonly property bool declarationOk: sourceContext.type !== "HOLDING" || sourceContext.isLot !== true || declarationCode !== ""
@@ -2049,7 +2075,7 @@ Item {
                   text: "تسوية ذهب للمورد " + (page.detail.name || "") }
             Txt { objectName: "goldSettleRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
                   wrapMode: Text.WordWrap; elide: Text.ElideNone
-                  text: "اختر الذهب من عهدة سوق مفتوحة أو من رصيد المسوقجي. لا تُسجَّل تسوية جديدة من كسر المحل؛ وكل رصيد وصلاحية يُعاد التحقق منهما عند التسجيل." }
+                  text: page.marketerEnabled ? "اختر الذهب من عهدة سوق مفتوحة أو من رصيد المسوقجي. لا تُسجَّل تسوية جديدة من كسر المحل؛ وكل رصيد وصلاحية يُعاد التحقق منهما عند التسجيل." : "اختر الذهب من عهدة سوق مفتوحة. التسوية تخصمه من ذهب العهدة، وكل رصيد وصلاحية يُعاد التحقق منهما عند التسجيل." }
             Flickable {
                 objectName: "goldSettleFormScroll"
                 Layout.fillWidth: true
@@ -2081,7 +2107,7 @@ Item {
                     }
                     Txt { objectName: "goldSettleNoSources"; Layout.fillWidth: true
                           visible: !!page.vm && !page.vm.supplierGoldSourcesLoading && goldSettleDialog.sources.length === 0
-                          text: "لا يوجد ذهب متاح حاليًا في عهدة مفتوحة أو لدى المسوقجي."; color: theme.textSecondary
+                          text: page.marketerEnabled ? "لا يوجد ذهب متاح حاليًا في عهدة مفتوحة أو لدى المسوقجي." : "لا يوجد ذهب متاح حاليًا في عهدة مفتوحة."; color: theme.textSecondary
                           wrapMode: Text.WordWrap; elide: Text.ElideNone }
                     Txt { objectName: "goldSettleSourcesLoading"; Layout.fillWidth: true
                           visible: !!page.vm && page.vm.supplierGoldSourcesLoading

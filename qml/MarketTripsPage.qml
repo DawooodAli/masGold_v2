@@ -17,6 +17,34 @@ Item {
     // Owner review (2026-10-20): the older custody actions (own melt / heat / bar lots / hand-over to a marketer / classify as logo) are hidden from the normal screen; the code and the
     // services stay, so a single switch brings them back. Their history stays readable and reversible from the history list.
     property bool advancedActions: false
+    // Owner 2026-10-29: the suppliers page asks for a gold purchase from / sale to a supplier; the open custody is selected here and the dialog opens with that party.
+    property string tradeKind: ""
+    property string tradeParty: ""
+    function openTrade(kind, partyId) {
+        tradeKind = kind
+        tradeParty = String(partyId)
+        runTrade()
+    }
+    function runTrade() {
+        if (tradeKind === "" || !vm) return
+        if (!(detail.id !== undefined && !!detail.open)) {
+            var trips = vm.trips || []
+            for (var i = 0; i < trips.length; ++i)
+                if (trips[i].status === "OPEN") {
+                    if (vm.selectedTripId !== String(trips[i].id)) vm.selectTrip(String(trips[i].id))
+                    break
+                }
+            return
+        }
+        var kind = tradeKind, party = tradeParty
+        tradeKind = ""
+        if (kind === "BUY") { goldBuyDialog.openFor(detail.id); goldBuyDialog.pendingVendor = party }
+        else { goldSaleDialog.openFor(detail.id); goldSaleDialog.pendingBuyer = party }
+    }
+    Connections {
+        target: page.vm
+        function onChanged() { if (page.tradeKind !== "") Qt.callLater(page.runTrade) }
+    }
     readonly property var ctx: vm ? vm.context : ({})
     readonly property bool hasSelection: !!vm && vm.selectedTripId !== "" && !!detail && detail.id !== undefined
 
@@ -2274,6 +2302,13 @@ Item {
     Popup {
         id: goldSaleDialog
         objectName: "tripGoldSaleDialog"
+        property string pendingBuyer: ""
+        function selectPendingBuyer() {
+            if (pendingBuyer === "") return
+            for (var i = 0; i < buyerChoices.length; ++i)
+                if (buyerChoices[i].id === pendingBuyer) { goldSaleBuyer.currentIndex = i; pendingBuyer = ""; return }
+        }
+        onPendingBuyerChanged: Qt.callLater(selectPendingBuyer)
         readonly property var payChoices: [{ method: "CUSTODY", text: "تدخل نقدية العهدة" }, { method: "BANK", text: "تحويل إلى حساب بنكي / محفظة (لا يمس نقدية العهدة)" }]
         readonly property var bankChoices: [{ id: "", text: "اختر الحساب" }].concat(page.ctx.banks || [])
         readonly property string payMethod: payChoices[goldSalePay.currentIndex] ? payChoices[goldSalePay.currentIndex].method : "CUSTODY"
@@ -2306,6 +2341,7 @@ Item {
             goldSaleDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
             goldSaleReference.text = ""
             goldSaleNotes.text = ""
+            pendingBuyer = ""
             goldSalePay.currentIndex = 0
             goldSaleBank.currentIndex = 0
             page.vm.clearMessage()

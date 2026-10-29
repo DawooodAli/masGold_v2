@@ -243,6 +243,9 @@ class InvoicePageTests(unittest.TestCase):
         self.controller.operational_engine.warnings.connect(
             lambda errors: self.warnings.extend(e.toString() for e in errors))
         self.vm = self.controller.operational_viewmodels["invoiceVM"]
+        suppliers_page = self.root.findChild(QObject, "suppliersPage")
+        if suppliers_page is not None:
+            suppliers_page.setProperty("marketerEnabled", True)                  # production hides the marketer screens (owner 2026-10-29); the older tests drive them
         gate = self.controller.operational_viewmodels["managerGateVM"]          # the manager lock is open for every page test; its own tests lock it
         gate._unlocked = True
         gate.changed.emit()

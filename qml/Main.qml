@@ -3309,10 +3309,15 @@ ApplicationWindow {
                         root.currentPage = 15
                         if (typeof marketTripVM !== "undefined") marketTripVM.selectTrip(tripId)
                     }
+                    onTradeRequested: function(kind, supplierId) {
+                        root.currentPage = 15
+                        marketTripsPageItem.openTrade(kind, supplierId)
+                    }
                 }
 
                 // index 15: عهدة السوق — custody of cash and Scrap taken to the market (OWNER only)
                 MarketTripsPage {
+                    id: marketTripsPageItem
                     objectName: "marketTripsPage"
                     pageTitle: "🧭 عهدة السوق"
                 }
