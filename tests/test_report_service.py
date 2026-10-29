@@ -922,30 +922,23 @@ class CashflowTests(Case):
     def rows(self, result, key):
         return {r["label"]: r for r in next(t for t in result["tables"] if t["key"] == key)["rows"]}
 
-    def test_each_name_nets_its_reversals_and_the_totals_are_hand_checked(self):
+    def test_only_the_categorised_entries_are_shown_and_each_name_nets_its_reversals(self):
         result = self.service.run("cashflow", self.PERIOD)
         rows = self.rows(result, "operating")
-        self.assertEqual((rows["المبيعات وشراء الكسر"]["in"], rows["المبيعات وشراء الكسر"]["out"], rows["المبيعات وشراء الكسر"]["net"]), (D("15000.00"), D("3000.00"), D("12000.00")))
-        self.assertEqual((rows["إيجار"]["in"], rows["إيجار"]["out"], rows["إيجار"]["net"]), (D("4000.00"), D("4000.00"), D("0.00")))        # the reversal lands on the SAME name
-        self.assertEqual((rows["كهرباء ومياه"]["out"], rows["إيراد"]["in"], rows["مصنعيات الموردين"]["out"]), (D("600.00"), D("1500.00"), D("700.00")))
+        self.assertEqual(sorted(rows), ["إيجار", "إيراد", "كهرباء ومياه"])                                      # sales, supplier making and transfers are not items of the treasury categories
+        self.assertEqual((rows["إيجار"]["in"], rows["إيجار"]["out"], rows["إيجار"]["net"]), (D("0.00"), D("0.00"), D("0.00")))        # the reversal lands on the SAME name and cancels it
+        self.assertEqual((rows["كهرباء ومياه"]["out"], rows["إيراد"]["in"]), (D("600.00"), D("1500.00")))
         values = self.totals(result)
-        self.assertEqual((values["إجمالي الداخل"], values["إجمالي الخارج"], values["الصافي"]), (D("20500.00"), D("8300.00"), D("12200.00")))     # 15000+4000+1500 / 3000+4000+600+700
-        self.assertEqual((values["مصروفات مسجلة"], values["إيرادات مسجلة"]), (D("600.00"), D("1500.00")))                      # rent 4000 - its reversal 4000 + electricity 600
-
-    def test_money_that_only_changes_place_is_apart_and_opening_balances_are_ignored(self):
-        result = self.service.run("cashflow", self.PERIOD)
-        internal = self.rows(result, "internal")
-        self.assertEqual((internal["عهدة السوق (إخراج / رجوع / إيداع)"]["out"], internal["تحويلات بين الحسابات"]["in"]), (D("20000.00"), D("100.00")))
-        self.assertEqual(self.totals(result)["صافي حركات تغيير المكان"], D("-19900.00"))
-        self.assertNotIn("حركة", " ".join(self.rows(result, "operating")))                                                  # the 50,000 opening balance is not a movement of the period
+        self.assertEqual((values["مصروفات مسجلة"], values["إيرادات مسجلة"], values["الصافي"]), (D("600.00"), D("1500.00"), D("900.00")))
+        self.assertEqual(set(values), {"الصافي", "إيرادات مسجلة", "مصروفات مسجلة"})
+        self.assertEqual([t["key"] for t in result["tables"]], ["operating"])
 
     def test_a_missing_ledger_right_is_stated_and_its_money_is_left_out(self):
         session = session_for(frozenset({"APP_LOGIN", "REPORTS_VIEW", "CASH_VIEW"}))
         cash_only = ReportService(session, transaction_factory=self.service._transaction, repository=FakeRepo, authorization=FakeAuthorization(session), today=lambda: TODAY)
         result = cash_only.run("cashflow", self.PERIOD)
-        self.assertEqual(self.rows(result, "operating")["المبيعات وشراء الكسر"]["in"], D("10000.00"))                      # the 5,000 bank payment is not included
         self.assertTrue(any(not t.get("available", True) for t in result["tables"]))
-        self.assertIn("لا تشمل", self.totals(result) and result["totals"][0]["note"])
+        self.assertIn("لا تشمل", result["totals"][0]["note"])
         nobody = session_for(frozenset({"APP_LOGIN", "REPORTS_VIEW"}))
         with self.assertRaises(PermissionError):
             ReportService(nobody, transaction_factory=self.service._transaction, repository=FakeRepo, authorization=FakeAuthorization(nobody), today=lambda: TODAY).run("cashflow", self.PERIOD)
@@ -967,7 +960,7 @@ class CashflowTransferReversalTests(Case):
         operating = next(t for t in result["tables"] if t["key"] == "operating")["rows"]
         self.assertEqual(operating, [])                                                       # nothing is income or expense
         values = {t["label"]: t["value"] for t in result["totals"]}
-        self.assertEqual((values["إجمالي الداخل"], values["إجمالي الخارج"]), (D("0.00"), D("0.00")))
+        self.assertEqual((values["مصروفات مسجلة"], values["إيرادات مسجلة"]), (D("0.00"), D("0.00")))
 
 
 class CashflowAdvanceTests(Case):
@@ -983,8 +976,6 @@ class CashflowAdvanceTests(Case):
         service = ReportService(self.service._session, transaction_factory=self.service._transaction, repository=Repo, authorization=self.service._authorization, today=lambda: TODAY)
         result = service.run("cashflow", {"from": "2026-10-01", "to": "2026-10-31"})
         self.assertEqual(next(t for t in result["tables"] if t["key"] == "operating")["rows"], [])
-        internal = next(t for t in result["tables"] if t["key"] == "internal")["rows"]
-        self.assertEqual([(r["label"], r["in"], r["out"]) for r in internal], [("سلف وعهد مؤقتة (تعود للمحل)", D("100.00"), D("375.00"))])
         values = {t["label"]: t["value"] for t in result["totals"]}
         self.assertEqual((values["مصروفات مسجلة"], values["إيرادات مسجلة"]), (D("0.00"), D("0.00")))
 

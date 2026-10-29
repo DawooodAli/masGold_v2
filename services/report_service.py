@@ -282,6 +282,7 @@ class ReportService:
         ledgers = tuple(k for right, k in (("CASH_VIEW", "CASH"), ("BANK_VIEW", "BANK")) if gate(right))
         operating, internal = {}, {}
         recorded_out = recorded_in = ZERO2
+        recorded = {}                                                                       # owner 2026-10-29: only the categorised entries of the treasury (البنود)
         for m in repo.cashflow_movements(start, end, ledgers):
             amount = _dec(m["amount"])
             if m["type_code"] == "OPENING_BALANCE":
@@ -310,10 +311,13 @@ class ReportService:
                 label = CASH_LABELS.get(category or "", "إيداع يدوي" if amount > 0 else "سحب يدوي")
                 if category:                                                              # a categorised entry counts on the side of its ORIGINAL direction; its reversal reduces that side
                     direct = m["reference_type"] == "FINANCIAL_OPERATION"
+                    item = recorded.setdefault(label, {"in": ZERO2, "out": ZERO2})
                     if (amount < 0) == direct:
                         recorded_out += -amount
+                        item["out"] += -amount
                     else:
                         recorded_in += amount
+                        item["in"] += amount
             else:
                 label = FLOW_LABELS.get(source) or m["type_name"] or "حركة أخرى"
             row = bucket.setdefault(label, {"in": ZERO2, "out": ZERO2})
@@ -325,22 +329,16 @@ class ReportService:
 
         def rows_of(bucket):
             return [{"label": k, "in": v["in"], "out": v["out"], "net": v["in"] - v["out"]} for k, v in sorted(bucket.items(), key=lambda kv: (-(kv[1]["in"] + kv[1]["out"]), kv[0]))]
-        total_in, total_out = sum((v["in"] for v in operating.values()), ZERO2), sum((v["out"] for v in operating.values()), ZERO2)
-        internal_net = sum((v["in"] - v["out"] for v in internal.values()), ZERO2)
-        tables = [table("operating", "الإيرادات والمصروفات حسب البند", cols, rows_of(operating)), table("internal", "حركات لا تُحسب إيرادًا ولا مصروفًا (تغيير مكان الفلوس)", cols, rows_of(internal))]
+        tables = [table("operating", "الإيرادات والمصروفات حسب البند", cols, rows_of(recorded))]
         missing = [name for right, name in (("CASH_VIEW", "النقدية"), ("BANK_VIEW", "البنوك والمحافظ")) if not gate(right)]
         for name in missing:
             tables.append(self._unavailable("missing_" + name, name, "ليست لديك صلاحية عرض هذا القسم: الأرقام لا تشملها."))
         note = (" • لا تشمل: " + "، ".join(missing)) if missing else ""
         totals = [total("مصروفات مسجلة", recorded_out, "money", "إيجار، مرتبات، كهرباء، نقل، صيانة، ضيافة، سلف... من حركة الخزنة" + note, "recorded", tone="payable"),
                   total("إيرادات مسجلة", recorded_in, "money", "إيرادات مسجلة يدويًا من حركة الخزنة" + note, "recorded", tone="receivable"),
-                  total("إجمالي الداخل", total_in, "money", "كل الفلوس الداخلة بلا تغيير المكان" + note, "flow", tone="receivable"),
-                  total("إجمالي الخارج", total_out, "money", "كل الفلوس الخارجة بلا تغيير المكان" + note, "flow", tone="payable"),
-                  total("الصافي", total_in - total_out, "money", "الداخل − الخارج", "flow"),
-                  total("صافي حركات تغيير المكان", internal_net, "money", "عهدة السوق والمسوقجي والتحويلات (للمعلومية)", "internal")]
-        meaning = ["الفلوس الحقيقية فقط (خزنة وبنوك ومحافظ) مسمّاة بما سجّلها. الإلغاء والتصحيح يُحسبان على نفس بند الأصل فيُخصمان منه.",
-                   "عهدة السوق والمسوقجي وتحويلات الحسابات تغيّر مكان الفلوس فقط، فتظهر في جدول منفصل ولا تدخل في الإيراد أو المصروف.",
-                   "الداخل يشمل دفعات العملاء على الفواتير والسداد، وليس هو الربح: لا توجد تكلفة في هذا التقرير."]
+                  total("الصافي", recorded_in - recorded_out, "money", "الإيرادات − المصروفات المسجلة", "recorded")]
+        meaning = ["بنود المصروفات والإيرادات المسجّلة من «حركة نقدية جديدة» في حركة النقدية فقط. الإلغاء والتصحيح يُحسبان على نفس بند الأصل فيُخصمان منه.",
+                   "المبيعات ودفعات العملاء وتحويلات الحسابات وعهدة السوق ليست من هذه البنود ولا تظهر هنا."]
         return {"meaning": meaning, "tables": tables, "totals": totals}
 
     # ------------------------------------------------------------------ 8. gold profit (owner definition): the gold at the end of the period minus the gold at its start, in 21K equivalent
