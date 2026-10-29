@@ -1684,8 +1684,34 @@ class MarketTripService:
         party_id = registry.create_supplier(label, karat_id=karat_id)
         return {"id": str(party_id), "name": label}
 
+    @staticmethod
+    def _trade_payment(payment_method, bank_account_id):
+        """(method, bank account id | None) of a gold purchase / sale (091): CUSTODY moves the custody cash, BANK moves ONE real bank movement and leaves the
+        custody cash untouched. A bank trade needs an account; a custody trade must not name one."""
+        method = str(payment_method or "CUSTODY").strip().upper()
+        if method not in ("CUSTODY", "BANK"):
+            raise TripError("PAYMENT_METHOD_INVALID", "اختر طريقة الدفع: من نقدية العهدة أو من حساب بنكي / محفظة.")
+        if method == "CUSTODY":
+            return method, None
+        try:
+            account = int(str(bank_account_id).strip())
+        except (TypeError, ValueError):
+            raise TripError("BANK_ACCOUNT_REQUIRED", "اختر الحساب البنكي أو المحفظة.") from None
+        if account <= 0:
+            raise TripError("BANK_ACCOUNT_REQUIRED", "اختر الحساب البنكي أو المحفظة.")
+        return method, account
+
+    @staticmethod
+    def _bank_trade_account(repository, account_id):
+        if not repository.has_trade_bank_schema():
+            raise TripError("SCHEMA_OUTDATED", "طريقة الدفع البنكية تحتاج تحديث قاعدة البيانات (migration 091).")
+        account = repository.bank_account(account_id, lock=True)
+        if account is None or not account["is_active"]:
+            raise TripError("BANK_ACCOUNT_NOT_FOUND", "الحساب البنكي أو المحفظة غير موجود أو غير نشط.")
+        return account
+
     def buy_gold(self, trip_id, lines, vendor_party_id, vendor_name, buy_date, reference, notes, request_key, acknowledge_price=False,
-                 *, _expected_actor=None):
+                 *, payment_method="CUSTODY", bank_account_id=None, _expected_actor=None):
         """BUY scrap gold with custody CASH (شراء ذهب نقدي): the cash leaves the custody cash and the gold (per karat, designation, actual grams)
         enters the custody gold in ONE transaction. No cash / bank / Main Safe, Scrap, supplier, inventory or lot movement is posted (the gold
         reaches the shop Scrap only through a normal custody return). The vendor identity is MANDATORY. The total (the sum of the line prices) may
@@ -1698,14 +1724,16 @@ class MarketTripService:
         bought_on = _entry_date(buy_date)
         reference_text, notes_text = _text(reference, PAYMENT_REFERENCE_MAX, "المرجع"), _text(notes, NOTES_MAX, "الملاحظات")
         key = _key(request_key)
+        method, bank_number = self._trade_payment(payment_method, bank_account_id)
         party_text = str(vendor_party_id if vendor_party_id is not None else "").strip()
-        digest = hashlib.sha256(json.dumps(
-            [GOLD_BUY, trip_number, [[l["karat_id"], l["designation"], str(l["weight"]), str(l["price"])] for l in parsed], party_text,
-             "" if party_text else str(vendor_name or "").strip(), bought_on.isoformat(), reference_text, notes_text],
-            ensure_ascii=False).encode()).hexdigest()
+        payload = [GOLD_BUY, trip_number, [[l["karat_id"], l["designation"], str(l["weight"]), str(l["price"])] for l in parsed], party_text,
+                   "" if party_text else str(vendor_name or "").strip(), bought_on.isoformat(), reference_text, notes_text]
+        if method == "BANK":
+            payload += ["BANK", bank_number]                                   # a custody purchase keeps its original digest
+        digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode()).hexdigest()
         try:
             return self._post_gold_buy(session_actor, trip_number, parsed, party_text, vendor_name, bought_on, reference_text, notes_text, key, digest,
-                                       bool(acknowledge_price))
+                                       bool(acknowledge_price), bank_number)
         except IntegrityError as exc:
             if not _is_request_key_violation(exc):
                 raise
@@ -1725,6 +1753,8 @@ class MarketTripService:
                 "reference_total": None if buy.get("reference_total") is None else str(buy["reference_total"]),
                 "deviation_percent": None if buy.get("deviation_percent") is None else str(buy["deviation_percent"]),
                 "price_warning_acknowledged": bool(buy.get("price_warning_acknowledged")),
+                "payment_method": buy.get("payment_method") or "CUSTODY",
+                "bank_account_id": None if buy.get("bank_account_id") is None else str(buy["bank_account_id"]),
                 "lines": [{"karat_value": int(l["karat_value"]), "designation": l["designation"], "weight": str(l["weight_grams"]),
                            "price": str(l["line_price"])} for l in buy.get("lines", [])]}
 
@@ -1739,7 +1769,8 @@ class MarketTripService:
             raise TripError("REQUEST_CONFLICT", "طلب العملية مستخدم لعملية مختلفة.")
         return cls._gold_buy_result(entry, buy, True)
 
-    def _post_gold_buy(self, session_actor, trip_id, parsed, party_text, vendor_name, bought_on, reference, notes, key, digest, acknowledged):
+    def _post_gold_buy(self, session_actor, trip_id, parsed, party_text, vendor_name, bought_on, reference, notes, key, digest, acknowledged,
+                       bank_account_id=None):
         with self._transaction() as connection:
             actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
             repository = self._repository(connection)
@@ -1762,11 +1793,14 @@ class MarketTripService:
             total = sum((l["price"] for l in parsed), ZERO_MONEY)
             if total >= MAX_MONEY:
                 raise TripError("PRICE_INVALID", "إجمالي الشراء كبير جدًا.")
-            custody = self._custody(repository, trip_id, current=True)         # read under the trip lock: the effective custody cash
-            available = custody["cash"]["outstanding"]
-            if total > available:
-                raise TripError("PURCHASE_EXCEEDS_CASH",
-                                f"نقدية العهدة المتاحة {available:,.2f} ج فقط: لا يمكن شراء بإجمالي {total:,.2f} ج.")
+            if bank_account_id is None:
+                custody = self._custody(repository, trip_id, current=True)     # read under the trip lock: the effective custody cash
+                available = custody["cash"]["outstanding"]
+                if total > available:
+                    raise TripError("PURCHASE_EXCEEDS_CASH",
+                                    f"نقدية العهدة المتاحة {available:,.2f} ج فقط: لا يمكن شراء بإجمالي {total:,.2f} ج.")
+            else:
+                self._bank_trade_account(repository, bank_account_id)         # 091: paid from the account, the custody cash is not touched (it may go negative)
             reference_total, deviation = self.buy_reference(self._reference_prices(), parsed, karat_values, total)
             warned = deviation is not None and abs(deviation) > setting_rules.price_warning_percent(repository)
             if warned and not acknowledged:
@@ -1776,9 +1810,14 @@ class MarketTripService:
             entry_id = repository.insert_entry(trip_id=trip_id, entry_no=entry_no, kind=GOLD_BUY, entry_date=bought_on, notes=notes, key=key,
                                                digest=digest, actor=actor, now=now)
             code = entry_code(trip_id, entry_no)
+            movement_id = None
+            if bank_account_id is not None:
+                movement_id = repository.post_bank_trade(type_code="TRIP_GOLD_BUY_BANK", account_id=bank_account_id, entry_id=entry_id, code=code, delta=-total,
+                                                         description=f"{KIND_TEXT[GOLD_BUY]} {code} — {trip_code(trip_id)} من {vendor_label}", actor=actor, now=now)
             repository.insert_gold_buy(entry_id=entry_id, vendor_kind=vendor_kind, vendor_party_id=vendor_id, vendor_name=vendor_label,
                                        vendor_key=vendor_key, total=total, reference_total=reference_total, deviation=deviation,
-                                       acknowledged=warned and acknowledged, buy_date=bought_on, reference=reference)
+                                       acknowledged=warned and acknowledged, buy_date=bought_on, reference=reference,
+                                       bank_account_id=bank_account_id, bank_movement_id=movement_id)
             for number, line in enumerate(parsed, 1):
                 repository.insert_gold_buy_line(entry_id=entry_id, line_no=number, karat_id=line["karat_id"], designation=line["designation"],
                                                 weight=line["weight"], price=line["price"])
@@ -1793,6 +1832,7 @@ class MarketTripService:
                                        "reference_total": None if reference_total is None else str(reference_total),
                                        "deviation_percent": None if deviation is None else str(deviation),
                                        "price_warning_acknowledged": bool(warned and acknowledged), "date": bought_on.isoformat(),
+                                       "payment_method": "BANK" if bank_account_id is not None else "CUSTODY", "bank_account_id": bank_account_id,
                                        "employee_id": actor.employee_id}, now=now)
             entry = repository.by_request(key)
             result = self._gold_buy_result(entry, repository.entry_gold_buy(entry_id), False)
@@ -1890,7 +1930,8 @@ class MarketTripService:
         return BUYER_THIRD_PARTY, None, label
 
     def sell_gold(self, trip_id, source_kind, karat_id, designation, lot_id, weight, price_mode, price, buyer_party_id, buyer_name,
-                  sale_date, reference, notes, request_key, acknowledge_price=False, *, _expected_actor=None):
+                  sale_date, reference, notes, request_key, acknowledge_price=False, *, payment_method="CUSTODY", bank_account_id=None,
+                  _expected_actor=None):
         """SELL custody gold for cash to a buyer at a price agreed by hand (بيع ذهب العهدة).
 
         ONE transaction posts the GOLD_SALE custody entry and its immutable sale document (the source, the agreed total, the buyer and the
@@ -1930,15 +1971,17 @@ class MarketTripService:
         sold_on = _entry_date(sale_date)
         reference_text, notes_text = _text(reference, PAYMENT_REFERENCE_MAX, "المرجع"), _text(notes, NOTES_MAX, "الملاحظات")
         key = _key(request_key)
+        method, bank_number = self._trade_payment(payment_method, bank_account_id)
         party_text = str(buyer_party_id if buyer_party_id is not None else "").strip()
-        digest = hashlib.sha256(json.dumps(
-            [GOLD_SALE, trip_number, kind, karat_number, source, lot_number, None if grams is None else str(grams),
-             str(price_mode or "").strip().upper(), normalize_digits(str(price or "")).strip().replace(",", ""), party_text,
-             "" if party_text else str(buyer_name or "").strip(), sold_on.isoformat(), reference_text, notes_text],
-            ensure_ascii=False).encode()).hexdigest()
+        payload = [GOLD_SALE, trip_number, kind, karat_number, source, lot_number, None if grams is None else str(grams),
+                   str(price_mode or "").strip().upper(), normalize_digits(str(price or "")).strip().replace(",", ""), party_text,
+                   "" if party_text else str(buyer_name or "").strip(), sold_on.isoformat(), reference_text, notes_text]
+        if method == "BANK":
+            payload += ["BANK", bank_number]                                   # a custody sale keeps its original digest
+        digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode()).hexdigest()
         try:
             return self._post_gold_sale(session_actor, trip_number, kind, karat_number, source, lot_number, grams, price_mode, price, party_text,
-                                        buyer_name, sold_on, reference_text, notes_text, key, digest, bool(acknowledge_price))
+                                        buyer_name, sold_on, reference_text, notes_text, key, digest, bool(acknowledge_price), bank_number)
         except IntegrityError as exc:
             if not _is_request_key_violation(exc):
                 raise
@@ -1962,7 +2005,9 @@ class MarketTripService:
                 "buyer_name": sale["buyer_name"],
                 "reference_price_per_gram": None if sale.get("reference_price_per_gram") is None else str(sale["reference_price_per_gram"]),
                 "deviation_percent": None if sale.get("deviation_percent") is None else str(sale["deviation_percent"]),
-                "price_warning_acknowledged": bool(sale.get("price_warning_acknowledged")), "is_lot": lot}
+                "price_warning_acknowledged": bool(sale.get("price_warning_acknowledged")), "is_lot": lot,
+                "payment_method": sale.get("payment_method") or "CUSTODY",
+                "bank_account_id": None if sale.get("bank_account_id") is None else str(sale["bank_account_id"])}
 
     @classmethod
     def _gold_sale_prior(cls, repository, key, digest, actor):
@@ -1977,7 +2022,7 @@ class MarketTripService:
         return cls._gold_sale_result(entry, sale, True)
 
     def _post_gold_sale(self, session_actor, trip_id, kind, karat_id, designation, lot_id, grams, price_mode, price, party_text, buyer_name,
-                        sold_on, reference, notes, key, digest, acknowledged):
+                        sold_on, reference, notes, key, digest, acknowledged, bank_account_id=None):
         with self._transaction() as connection:
             actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
             repository = self._repository(connection)
@@ -2025,6 +2070,8 @@ class MarketTripService:
                     raise TripError("LOT_PARTIAL_NOT_ALLOWED", "تُباع السبيكة كاملة فقط؛ الكمية المرسلة لا تطابق وزنها الكامل.")
                 grams, fineness = full, Decimal(str(lot["fineness_permille"]))
             buyer_kind, buyer_id, buyer_label = self._sale_buyer(repository, party_text, buyer_name)
+            if bank_account_id is not None:
+                self._bank_trade_account(repository, bank_account_id)         # 091: the money enters the account, the custody cash is not touched
             basis, total, per_gram = self._sale_price(grams, price_mode, price)
             reference_total, reference_per_gram, deviation = self._sale_reference(grams, karat_value, fineness, total)
             warned = deviation is not None and abs(deviation) > setting_rules.price_warning_percent(repository)
@@ -2035,6 +2082,10 @@ class MarketTripService:
             entry_id = repository.insert_entry(trip_id=trip_id, entry_no=entry_no, kind=GOLD_SALE, entry_date=sold_on, notes=notes, key=key,
                                                digest=digest, actor=actor, now=now)
             code = entry_code(trip_id, entry_no)
+            bank_movement_id = None
+            if bank_account_id is not None:
+                bank_movement_id = repository.post_bank_trade(type_code="TRIP_GOLD_SALE_BANK", account_id=bank_account_id, entry_id=entry_id, code=code, delta=total,
+                                                              description=f"{KIND_TEXT[GOLD_SALE]} {code} — {trip_code(trip_id)} إلى {buyer_label}", actor=actor, now=now)
             if kind == SALE_SOURCE_LOT:
                 movement_id = repository.insert_lot_movement(lot_id=lot_id, entry_id=entry_id, movement_type=SALE_MOVEMENT, weight_delta=-grams)
             if kind == SALE_SOURCE_BAR:
@@ -2042,7 +2093,8 @@ class MarketTripService:
             repository.insert_gold_sale(
                 entry_id=entry_id, source_kind=kind, karat_id=karat_id, designation=designation, lot=lot, weight=grams, movement_id=movement_id,
                 total=total, per_gram=per_gram, basis=basis, buyer_kind=buyer_kind, buyer_party_id=buyer_id, buyer_name=buyer_label,
-                reference_price=reference_per_gram, deviation=deviation, acknowledged=warned and acknowledged, sale_date=sold_on, reference=reference)
+                reference_price=reference_per_gram, deviation=deviation, acknowledged=warned and acknowledged, sale_date=sold_on, reference=reference,
+                bank_account_id=bank_account_id, bank_movement_id=bank_movement_id)
             what = (f"سبيكة {grams:,.3f} جرام (عيار فعلي {fineness} بالألف)" if lot is not None
                     else f"سبيكة السبك {grams:,.3f} جرام (مكافئ عيار 21)" if kind == SALE_SOURCE_BAR
                     else f"{grams:,.3f} جرام عيار {karat_value} ({DESIGNATION_TEXT[designation]})")
@@ -2055,6 +2107,7 @@ class MarketTripService:
                                        "reference_price_per_gram": None if reference_per_gram is None else str(reference_per_gram),
                                        "deviation_percent": None if deviation is None else str(deviation),
                                        "price_warning_acknowledged": bool(warned and acknowledged), "date": sold_on.isoformat(),
+                                       "payment_method": "BANK" if bank_account_id is not None else "CUSTODY", "bank_account_id": bank_account_id,
                                        "employee_id": actor.employee_id}, now=now)
             entry = repository.by_request(key)
             result = self._gold_sale_result(entry, repository.entry_gold_sale(entry_id), False)

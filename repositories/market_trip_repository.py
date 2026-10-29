@@ -523,6 +523,10 @@ class MarketTripRepository(BaseRepository):
         consumes custody cash without any Main Safe movement. `current=True` (the default, so a caller that forgets stays safe) is the DECISION form: the entry
         and leg rows are locking reads and so is the nested reversal lookup. `current=False` is the DISPLAY form: plain snapshot reads, no locking clause anywhere."""
         not_reversed = _not_reversed("e", current=current)
+        bank_trades = self.has_trade_bank_schema()
+
+        def custody_only(alias):                                           # 091: a purchase / sale paid or received through a bank account never touches the custody cash
+            return f" AND {alias}.payment_method = 'CUSTODY'" if bank_trades else ""
         row = self._fetch_one(
             f"""
             SELECT COALESCE(SUM(IF(e.entry_kind = 'ISSUE', c.amount, 0)), 0) AS issued,
@@ -540,13 +544,13 @@ class MarketTripRepository(BaseRepository):
             f"""
             SELECT COALESCE(SUM(s.total_price), 0) AS proceeds
             FROM market_trip_entries e JOIN market_trip_gold_sales s ON s.entry_id = e.id
-            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}{_share(current, 'e, s')}
+            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}{custody_only('s')}{_share(current, 'e, s')}
             """, (_id(trip_id), int(exclude_entry_id or 0)))
         bought = self._fetch_one(
             f"""
             SELECT COALESCE(SUM(b.total_price), 0) AS spent
             FROM market_trip_entries e JOIN market_trip_gold_buys b ON b.entry_id = e.id
-            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}{_share(current, 'e, b')}
+            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}{custody_only('b')}{_share(current, 'e, b')}
             """, (_id(trip_id), int(exclude_entry_id or 0)))
         trades = self._fetch_one(                                          # 056: BOOK purchases spend and BOOK sales add custody cash (the same two terms)
             f"""
@@ -629,13 +633,17 @@ class MarketTripRepository(BaseRepository):
 
     # ------------------------------------------------------------------ cash gold purchase (054)
     def insert_gold_buy(self, *, entry_id, vendor_kind, vendor_party_id, vendor_name, vendor_key, total, reference_total, deviation, acknowledged,
-                        buy_date, reference):
+                        buy_date, reference, bank_account_id=None, bank_movement_id=None):
         """The immutable purchase document: the vendor identity (mandatory), the authoritative total and the price-warning evidence."""
+        columns, values, extra = "", "", ()
+        if self.has_trade_bank_schema():
+            columns, values = ", payment_method, bank_account_id, bank_movement_id", ", %s, %s, %s"
+            extra = ("BANK" if bank_account_id is not None else "CUSTODY", bank_account_id, bank_movement_id)
         self._execute(
-            """INSERT INTO market_trip_gold_buys (entry_id, vendor_kind, vendor_party_id, vendor_name, vendor_name_key, total_price, reference_total,
-               deviation_percent, price_warning_acknowledged, buy_date, reference) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            f"""INSERT INTO market_trip_gold_buys (entry_id, vendor_kind, vendor_party_id, vendor_name, vendor_name_key, total_price, reference_total,
+               deviation_percent, price_warning_acknowledged, buy_date, reference{columns}) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s{values})""",
             (_id(entry_id), vendor_kind, vendor_party_id, vendor_name, vendor_key, total, reference_total, deviation, 1 if acknowledged else 0,
-             buy_date, reference or None))
+             buy_date, reference or None) + extra)
 
     def insert_gold_buy_line(self, *, entry_id, line_no, karat_id, designation, weight, price):
         self._execute("INSERT INTO market_trip_gold_buy_lines (entry_id, line_no, karat_id, designation, weight_grams, line_price) "
@@ -661,19 +669,23 @@ class MarketTripRepository(BaseRepository):
                                + (" FOR SHARE" if lock else ""), (int(party_id),))
 
     def insert_gold_sale(self, *, entry_id, source_kind, karat_id, designation, lot, weight, movement_id, total, per_gram, basis, buyer_kind,
-                         buyer_party_id, buyer_name, reference_price, deviation, acknowledged, sale_date, reference):
+                         buyer_party_id, buyer_name, reference_price, deviation, acknowledged, sale_date, reference, bank_account_id=None, bank_movement_id=None):
         """The immutable sale document. An aggregate line states (karat, designation); a whole lot states the lot, its stored assay and
         the exact SALE_OUT movement (the database ties them together)."""
+        columns, values, extra = "", "", ()
+        if self.has_trade_bank_schema():
+            columns, values = ", payment_method, bank_account_id, bank_movement_id", ", %s, %s, %s"
+            extra = ("BANK" if bank_account_id is not None else "CUSTODY", bank_account_id, bank_movement_id)
         self._execute(
-            """INSERT INTO market_trip_gold_sales
+            f"""INSERT INTO market_trip_gold_sales
                (entry_id, source_kind, karat_id, designation, lot_id, fineness_permille, custody_movement_id, movement_type, weight_grams,
                 weight_delta, total_price, price_per_gram, price_basis, buyer_kind, buyer_party_id, buyer_name, reference_price_per_gram,
-                deviation_percent, price_warning_acknowledged, sale_date, reference)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                deviation_percent, price_warning_acknowledged, sale_date, reference{columns})
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s{values})""",
             (_id(entry_id), source_kind, karat_id, designation, None if lot is None else int(lot["id"]),
              None if lot is None else lot["fineness_permille"], None if movement_id is None else int(movement_id),
              None if lot is None else SALE_MOVEMENT, weight, None if lot is None else -weight, total, per_gram, basis, buyer_kind,
-             buyer_party_id, buyer_name, reference_price, deviation, 1 if acknowledged else 0, sale_date, reference or None))
+             buyer_party_id, buyer_name, reference_price, deviation, 1 if acknowledged else 0, sale_date, reference or None) + extra)
 
     def entry_gold_sale(self, entry_id):
         """The sale a GOLD_SALE entry made (None for any other entry), with the source facts and the buyer."""
@@ -1223,6 +1235,24 @@ class MarketTripRepository(BaseRepository):
             row = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'market_trip_settle_moves'")
             self._settlement = bool(row and int(row["n"]))
         return self._settlement
+
+    def has_trade_bank_schema(self):
+        """True when migration 091 is present (gold purchase / sale may be paid or received through a bank account). Asked once per repository object."""
+        if not hasattr(self, "_trade_bank"):
+            row = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'market_trip_gold_buys' AND COLUMN_NAME = 'payment_method'")
+            self._trade_bank = bool(row and int(row["n"]))
+        return self._trade_bank
+
+    def post_bank_trade(self, *, type_code, account_id, entry_id, code, delta, description, actor, now):
+        """The real money movement of a gold purchase (OUT, negative) or sale (IN, positive) paid / received through a bank / wallet account (091)."""
+        movement_id, count = self._execute(
+            """
+            INSERT INTO bank_movements (bank_account_id, movement_type_id, amount_delta, reference_type, reference_id, reference_code, description, occurred_at, created_by_user_id)
+            SELECT %s, t.id, %s, %s, %s, %s, %s, %s, %s FROM bank_movement_types t WHERE t.code = %s AND t.is_active = TRUE
+            """, (int(account_id), delta, SOURCE, _id(entry_id), code, description, now, actor.user_id, type_code))
+        if count != 1:
+            raise RuntimeError(f"bank_movement_types {type_code} is missing (migration 091)")
+        return int(movement_id)
 
     def has_cash_settle_schema(self):
         """True when migration 064 is present (the custody cash settlement document exists). Asked once per repository object."""

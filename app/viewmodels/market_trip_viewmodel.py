@@ -707,15 +707,15 @@ class MarketTripViewModel(QObject):
                 "creditedText": f"{grams(credited)} جرام عيار {supplier['karat_value']}",
                 "analyticalText": number(analytical, 6), "differenceText": number(difference, 6, signed=True)}
 
-    @Slot(str, str, str, str, str, str, str, str, str, str, str, str, str, str, bool)
+    @Slot(str, str, str, str, str, str, str, str, str, str, str, str, str, str, bool, str, str)
     def sellGold(self, trip_id, source_kind, karat_id, designation, lot_id, weight, price_mode, price, buyer_party_id, buyer_name, sale_date,
-                 reference, notes, request_key, acknowledge_price):
+                 reference, notes, request_key, acknowledge_price, payment_method="CUSTODY", bank_account_id=""):
         """Sell custody gold for cash at the agreed price (بيع ذهب العهدة). Only ids and typed text are sent: the service derives the available
         grams, the total, the reference deviation, re-checks every right and posts atomically. The cash stays in custody; no supplier, Scrap or bank
         movement exists. A price far from the reference is refused (PRICE_DEVIATION) until `acknowledge_price` is true."""
         self._write("goldsale", "تم تسجيل بيع الذهب من العهدة", lambda s, a: s.sell_gold(
             trip_id, source_kind, karat_id, designation, lot_id, weight, price_mode, price, buyer_party_id, buyer_name, sale_date, reference, notes,
-            request_key, acknowledge_price, _expected_actor=a), False)
+            request_key, acknowledge_price, payment_method=payment_method, bank_account_id=bank_account_id or None, _expected_actor=a), False)
 
     @Slot(str, str, str, str, str, str, str, result="QVariantMap")
     def previewSale(self, source_kind, karat_id, designation, lot_id, weight, price_mode, price):
@@ -918,13 +918,15 @@ class MarketTripViewModel(QObject):
                            warningText=("الإجمالي بعيد عن المرجع بنسبة " + number(abs(deviation), 2) + "%: ستُطلب منك الموافقة عليه.") if warned else "")
         return {**out, "valid": True}
 
-    @Slot(str, "QVariantList", str, str, str, str, str, str, bool)
-    def buyGold(self, trip_id, lines, vendor_party_id, vendor_name, buy_date, reference, notes, request_key, acknowledge_price):
+    @Slot(str, "QVariantList", str, str, str, str, str, str, bool, str, str)
+    def buyGold(self, trip_id, lines, vendor_party_id, vendor_name, buy_date, reference, notes, request_key, acknowledge_price,
+                payment_method="CUSTODY", bank_account_id=""):
         """Buy scrap gold with custody cash (شراء ذهب نقدي). Only ids and typed text are sent: the service derives the available cash, the total,
         the reference deviation, re-checks every right and posts atomically. The vendor is MANDATORY. No supplier, Scrap or bank movement exists."""
         rows = self._buy_lines(lines)
         self._write("goldbuy", "تم تسجيل شراء الذهب النقدي", lambda s, a: s.buy_gold(
-            trip_id, rows, vendor_party_id, vendor_name, buy_date, reference, notes, request_key, acknowledge_price, _expected_actor=a), False)
+            trip_id, rows, vendor_party_id, vendor_name, buy_date, reference, notes, request_key, acknowledge_price,
+            payment_method=payment_method, bank_account_id=bank_account_id or None, _expected_actor=a), False)
 
     @Slot(str, str)
     def registerVendor(self, name, karat_id):

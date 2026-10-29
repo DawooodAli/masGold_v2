@@ -2033,6 +2033,10 @@ Item {
     Popup {
         id: goldBuyDialog
         objectName: "tripGoldBuyDialog"
+        readonly property var payChoices: [{ method: "CUSTODY", text: "من نقدية العهدة" }, { method: "BANK", text: "تحويل من حساب بنكي / محفظة (لا يمس نقدية العهدة)" }]
+        readonly property var bankChoices: [{ id: "", text: "اختر الحساب" }].concat(page.ctx.banks || [])
+        readonly property string payMethod: payChoices[goldBuyPay.currentIndex] ? payChoices[goldBuyPay.currentIndex].method : "CUSTODY"
+        readonly property string bankId: payMethod === "BANK" && bankChoices[goldBuyBank.currentIndex] ? bankChoices[goldBuyBank.currentIndex].id : ""
         property string tripId: ""
         property string requestKey: ""
         property string pendingVendor: ""
@@ -2073,6 +2077,8 @@ Item {
             goldBuyDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
             goldBuyReference.text = ""
             goldBuyNotes.text = ""
+            goldBuyPay.currentIndex = 0
+            goldBuyBank.currentIndex = 0
             buyModel.clear()
             buyModel.append({ karatIndex: 0, designationIndex: defaultDesignation(), weight: "", price: "" })
             refreshLines()
@@ -2083,10 +2089,11 @@ Item {
         }
         function submit(acknowledged) {
             page.vm.buyGold(tripId, collect(), vendorId, goldBuyName.text, goldBuyDate.text, goldBuyReference.text, goldBuyNotes.text,
-                            requestKey, acknowledged)
+                            requestKey, acknowledged, payMethod, bankId)
         }
         function complete() {
             if (!(vendorId !== "" || goldBuyName.text.trim().length > 0) || goldBuyDate.text.trim().length === 0) return false
+            if (payMethod === "BANK" && bankId === "") return false
             for (var i = 0; i < buyModel.count; ++i) {
                 var g = buyModel.get(i)
                 if (g.karatIndex > 0 && g.weight.trim().length > 0 && g.price.trim().length > 0) return true
@@ -2222,6 +2229,10 @@ Item {
                             Item { Layout.preferredHeight: 2 }
                         }
                     }
+                    Txt { Layout.fillWidth: true; text: "طريقة الدفع *" }
+                    Combo { id: goldBuyPay; objectName: "custodyGoldBuyPaymentCombo"; Layout.fillWidth: true; model: goldBuyDialog.payChoices; textRole: "text" }
+                    Txt { Layout.fillWidth: true; visible: goldBuyDialog.payMethod === "BANK"; text: "الحساب البنكي / المحفظة *" }
+                    Combo { id: goldBuyBank; objectName: "custodyGoldBuyBankCombo"; Layout.fillWidth: true; visible: goldBuyDialog.payMethod === "BANK"; model: goldBuyDialog.bankChoices; textRole: "text" }
                     Txt { Layout.fillWidth: true; text: "ملاحظات" }
                     Field { id: goldBuyNotes; objectName: "custodyGoldBuyNotesField"; Layout.fillWidth: true }
                 }
@@ -2263,6 +2274,10 @@ Item {
     Popup {
         id: goldSaleDialog
         objectName: "tripGoldSaleDialog"
+        readonly property var payChoices: [{ method: "CUSTODY", text: "تدخل نقدية العهدة" }, { method: "BANK", text: "تحويل إلى حساب بنكي / محفظة (لا يمس نقدية العهدة)" }]
+        readonly property var bankChoices: [{ id: "", text: "اختر الحساب" }].concat(page.ctx.banks || [])
+        readonly property string payMethod: payChoices[goldSalePay.currentIndex] ? payChoices[goldSalePay.currentIndex].method : "CUSTODY"
+        readonly property string bankId: payMethod === "BANK" && bankChoices[goldSaleBank.currentIndex] ? bankChoices[goldSaleBank.currentIndex].id : ""
         property string tripId: ""
         property string requestKey: ""
         readonly property var sourceChoices: [{ key: "", kind: "", karatId: "", designation: "", lotId: "", text: "اختر الذهب المباع من العهدة" }].concat(page.detail.saleSources || [])
@@ -2291,6 +2306,8 @@ Item {
             goldSaleDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
             goldSaleReference.text = ""
             goldSaleNotes.text = ""
+            goldSalePay.currentIndex = 0
+            goldSaleBank.currentIndex = 0
             page.vm.clearMessage()
             page.vm.refresh()
             page.vm.loadReferencePrices()
@@ -2299,7 +2316,7 @@ Item {
         function submit(acknowledged) {
             page.vm.sellGold(tripId, source.kind, source.karatId || "", source.designation || "", source.lotId || "", goldSaleWeight.text, mode,
                              goldSalePrice.text, buyerId, goldSaleName.text, goldSaleDate.text, goldSaleReference.text, goldSaleNotes.text,
-                             requestKey, acknowledged)
+                             requestKey, acknowledged, payMethod, bankId)
         }
         parent: Overlay.overlay
         anchors.centerIn: parent
@@ -2313,7 +2330,7 @@ Item {
             spacing: 6
             Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; text: "بيع ذهب من العهدة" }
             Txt { objectName: "custodyGoldSaleRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                  text: "يُباع ذهب موجود فعلًا في هذه العهدة بالسعر الذي اتفقت عليه، ويدخل الثمن في نقدية العهدة (لا في الخزنة ولا في حساب أي مورد). السبيكة تُباع كاملة." }
+                  text: "يُباع ذهب موجود فعلًا في هذه العهدة بالسعر الذي اتفقت عليه، ويدخل الثمن في نقدية العهدة، أو في حساب بنكي / محفظة تختاره (وعندها لا تتغير نقدية العهدة). لا يمس الخزنة ولا حساب أي مورد. السبيكة تُباع كاملة." }
             Flickable {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
@@ -2378,6 +2395,10 @@ Item {
                     Field { id: goldSaleDate; objectName: "custodyGoldSaleDateField"; Layout.fillWidth: true }
                     Txt { Layout.fillWidth: true; text: "المرجع (اختياري)" }
                     Field { id: goldSaleReference; objectName: "custodyGoldSaleReferenceField"; Layout.fillWidth: true }
+                    Txt { Layout.fillWidth: true; text: "طريقة الدفع *" }
+                    Combo { id: goldSalePay; objectName: "custodyGoldSalePaymentCombo"; Layout.fillWidth: true; model: goldSaleDialog.payChoices; textRole: "text" }
+                    Txt { Layout.fillWidth: true; visible: goldSaleDialog.payMethod === "BANK"; text: "الحساب البنكي / المحفظة *" }
+                    Combo { id: goldSaleBank; objectName: "custodyGoldSaleBankCombo"; Layout.fillWidth: true; visible: goldSaleDialog.payMethod === "BANK"; model: goldSaleDialog.bankChoices; textRole: "text" }
                     Txt { Layout.fillWidth: true; text: "ملاحظات" }
                     Field { id: goldSaleNotes; objectName: "custodyGoldSaleNotesField"; Layout.fillWidth: true }
                 }
@@ -2397,6 +2418,7 @@ Item {
                     enabled: !!goldSaleDialog.source.kind && goldSalePrice.text.trim().length > 0 && goldSaleDate.text.trim().length > 0
                              && (goldSaleDialog.isLot || goldSaleWeight.text.trim().length > 0)
                              && (goldSaleDialog.buyerId !== "" || goldSaleName.text.trim().length > 0)
+                             && (goldSaleDialog.payMethod !== "BANK" || goldSaleDialog.bankId !== "")
                              && !!page.vm && !page.vm.writing && !goldSaleDialog.preview.error
                     onClicked: goldSaleDialog.submit(false)
                 }

@@ -420,9 +420,9 @@ class TripRepo:
                 issued, returned = (issued + leg["amount"], returned) if e["entry_kind"] == "ISSUE" else (issued, returned + leg["amount"])
             if e["id"] in self.db.supplier_links:
                 paid += self.db.supplier_links[e["id"]]["amount"]
-            if e["id"] in self.db.gold_sales:
+            if e["id"] in self.db.gold_sales and self.db.gold_sales[e["id"]].get("payment_method", "CUSTODY") == "CUSTODY":
                 proceeds += self.db.gold_sales[e["id"]]["total_price"]
-            if e["id"] in self.db.gold_buys:
+            if e["id"] in self.db.gold_buys and self.db.gold_buys[e["id"]].get("payment_method", "CUSTODY") == "CUSTODY":
                 spent += self.db.gold_buys[e["id"]]["total_price"]
             trade = self.db.book_trades.get(e["id"])                                          # 056: BOOK purchases spend and BOOK sales add custody cash
             if trade is not None:
@@ -527,6 +527,17 @@ class TripRepo:
     def bank_account(self, account_id, *, lock=False):
         row = self.db.bank_accounts.get(int(account_id))
         return None if row is None else dict(row)
+
+    def has_trade_bank_schema(self):
+        return True
+
+    def post_bank_trade(self, *, type_code, account_id, entry_id, code, delta, description, actor, now):
+        self._fail("bank_trade")
+        assert (type_code == "TRIP_GOLD_BUY_BANK" and delta < 0) or (type_code == "TRIP_GOLD_SALE_BANK" and delta > 0)
+        move_id = self.db.next("bank_move")
+        self.db.bank_moves.append({"id": move_id, "account_id": int(account_id), "amount_delta": delta, "reference_type": SOURCE, "reference_id": str(entry_id),
+                                   "reference_code": code, "type_code": type_code})
+        return move_id
 
     def post_bank_in(self, *, account_id, entry_id, code, amount, description, actor, now):
         self._fail("bank_in")
@@ -853,8 +864,10 @@ class TripRepo:
 
     # ---- cash gold purchase (054): the CHECK / FK constraints of the purchase tables are mirrored as asserts
     def insert_gold_buy(self, *, entry_id, vendor_kind, vendor_party_id, vendor_name, vendor_key, total, reference_total, deviation, acknowledged,
-                        buy_date, reference):
+                        buy_date, reference, bank_account_id=None, bank_movement_id=None):
         self._fail("gold_buy")
+        assert (bank_account_id is None) == (bank_movement_id is None)                                         # chk_mtgb_payment
+        assert bank_account_id is None or int(bank_account_id) in self.db.bank_accounts                        # fk_mtgb_bank
         assert int(entry_id) in self.db.entries and self.db.entries[int(entry_id)]["entry_kind"] == "GOLD_BUY"       # fk_mtgb_entry
         assert total > 0                                                                                       # chk_mtgb_total
         assert (vendor_kind == "REGISTERED_PARTY" and vendor_party_id is not None) or (vendor_kind == "THIRD_PARTY" and vendor_party_id is None)
@@ -866,7 +879,8 @@ class TripRepo:
         self.db.gold_buys[int(entry_id)] = {
             "entry_id": int(entry_id), "vendor_kind": vendor_kind, "vendor_party_id": vendor_party_id, "vendor_name": vendor_name,
             "vendor_name_key": vendor_key, "total_price": total, "reference_total": reference_total, "deviation_percent": deviation,
-            "price_warning_acknowledged": 1 if acknowledged else 0, "buy_date": buy_date, "reference": reference}
+            "price_warning_acknowledged": 1 if acknowledged else 0, "buy_date": buy_date, "reference": reference,
+            "payment_method": "CUSTODY" if bank_account_id is None else "BANK", "bank_account_id": bank_account_id, "bank_movement_id": bank_movement_id}
 
     def insert_gold_buy_line(self, *, entry_id, line_no, karat_id, designation, weight, price):
         self._fail("gold_buy_line")
@@ -897,8 +911,10 @@ class TripRepo:
                                          "is_supplier": row.get("is_supplier", True), "is_intermediary": row.get("is_intermediary", False)}
 
     def insert_gold_sale(self, *, entry_id, source_kind, karat_id, designation, lot, weight, movement_id, total, per_gram, basis, buyer_kind,
-                         buyer_party_id, buyer_name, reference_price, deviation, acknowledged, sale_date, reference):
+                         buyer_party_id, buyer_name, reference_price, deviation, acknowledged, sale_date, reference, bank_account_id=None, bank_movement_id=None):
         self._fail("gold_sale")
+        assert (bank_account_id is None) == (bank_movement_id is None)                                         # chk_mtgs_payment
+        assert bank_account_id is None or int(bank_account_id) in self.db.bank_accounts                        # fk_mtgs_bank
         assert int(entry_id) in self.db.entries and self.db.entries[int(entry_id)]["entry_kind"] == "GOLD_SALE"      # fk_mtgsale_entry
         assert weight > 0 and total > 0                                                                       # chk_mtgsale_price
         assert (basis == "TOTAL" and per_gram is None) or (basis == "PER_GRAM" and per_gram is not None and per_gram > 0)
@@ -921,7 +937,8 @@ class TripRepo:
             "lot_id": None if lot is None else lot["id"], "fineness_permille": None if lot is None else lot["fineness_permille"],
             "custody_movement_id": movement_id, "weight_grams": weight, "total_price": total, "price_per_gram": per_gram, "price_basis": basis,
             "buyer_kind": buyer_kind, "buyer_party_id": buyer_party_id, "buyer_name": buyer_name, "reference_price_per_gram": reference_price,
-            "deviation_percent": deviation, "price_warning_acknowledged": 1 if acknowledged else 0, "sale_date": sale_date, "reference": reference}
+            "deviation_percent": deviation, "price_warning_acknowledged": 1 if acknowledged else 0, "sale_date": sale_date, "reference": reference,
+            "payment_method": "CUSTODY" if bank_account_id is None else "BANK", "bank_account_id": bank_account_id, "bank_movement_id": bank_movement_id}
 
     def entry_gold_sale(self, entry_id):
         sale = self.db.gold_sales.get(int(entry_id))

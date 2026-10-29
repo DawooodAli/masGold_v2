@@ -191,5 +191,32 @@ class GoldSaleUiTests(base.MarketTripHeatPageTests):
 
 for _name in [n for n in dir(base.MarketTripHeatPageTests) if n.startswith("test_") and n not in vars(GoldSaleUiTests)]:
     setattr(GoldSaleUiTests, _name, None)                    # the inherited UI tests run in their own modules
+    def test_a_bank_sale_needs_an_account_and_leaves_the_custody_cash_with_real_clicks_at_1080(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.logo_trip()
+        self.open_sale()
+        for name in ("custodyGoldSalePaymentCombo", "custodyGoldSaleBankCombo"):
+            self.assertIsNotNone(self.item(name))
+        self.fill_sale("4", "24000")
+        self.assertTrue(self.item("confirmCustodyGoldSaleButton").property("enabled"))
+        self.pick("custodyGoldSalePaymentCombo", 1)                                                # a bank / wallet account
+        QTest.qWait(80)
+        self.assertFalse(self.item("confirmCustodyGoldSaleButton").property("enabled"))           # no account chosen yet
+        self.pick("custodyGoldSaleBankCombo", 1)
+        QTest.qWait(80)
+        self.assertTrue(self.item("confirmCustodyGoldSaleButton").property("enabled"))
+        cash = self.custody_cash()
+        self.click("confirmCustodyGoldSaleButton")
+        self.wait_until(lambda: len(self.db.gold_sales) == 1, "bank sale posted")
+        self.closed("tripGoldSaleDialog")
+        self.wait_idle()
+        sale = next(iter(self.db.gold_sales.values()))
+        self.assertEqual((sale["payment_method"], sale["total_price"]), ("BANK", D("24000")))
+        self.assertEqual(self.custody_cash(), cash)                                               # the custody cash is untouched
+        self.assertEqual([(m["type_code"], m["amount_delta"]) for m in self.db.bank_moves], [("TRIP_GOLD_SALE_BANK", D("24000.00"))])
+        self.assertEqual(self.warnings, [])
+
+
 if __name__ == "__main__":
     unittest.main()
