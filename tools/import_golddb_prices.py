@@ -4,7 +4,7 @@
         READ ONLY. Reads the old price table (SELECT only), applies the owner-approved cleaning rules (services/price_history_rules.py) and writes three CSV files for review:
         accepted-daily.csv, rejected.csv and swapped.csv. Nothing is written to any database.
     python -m tools.import_golddb_prices apply rehearsal <output-dir>
-    python -m tools.import_golddb_prices apply dev <output-dir>
+    python -m tools.import_golddb_prices apply dev|prod <output-dir>
         Writes the cleaned daily rows into the target (`rehearsal` = masgold_rehearsal through the dedicated account and MASGOLD_REHEARSAL_PASSWORD, `dev` = masgold_v2 through the
         application configuration). REFUSES when the target's level is below 66 or the history table already holds rows (it is imported once, insert-only). The old database is only read.
 
@@ -76,8 +76,10 @@ def main(argv):
     elif target_name == "dev":
         assert cfg.database == "masgold_v2", "configured database is not masgold_v2"
         database, credentials = "masgold_v2", old_credentials
+    elif target_name == "prod":
+        database, credentials = "masgold_prod", old_credentials          # the production database, through the administrator account of the application's .env
     else:
-        print("target must be rehearsal or dev")
+        print("target must be rehearsal, dev or prod")
         return 2
     with option_file(credentials) as options:
         client = MysqlClient(DEFAULT_MYSQL, options)

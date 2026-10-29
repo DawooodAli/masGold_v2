@@ -230,14 +230,11 @@ class ReportsPageTests(harness.InvoicePageTests):
         self.wait_until(lambda: not vm.busy and vm.result.get("report") == "indicators", "indicators loaded")
         self.assertEqual(vm.result["title"], "مؤشرات الذهب")
         self.assertTrue(any("سعر شراء المحل" in t["label"] for t in vm.result["totals"]))
-        self.reveal(self.item("reportOpen_0_0"))
-        self.click("reportOpen_0_0")
-        self.wait_until(lambda: not vm.priceChart.get("loading", True) and bool(vm.priceChart.get("points")), "price chart loaded")
+        self.wait_until(lambda: not vm.priceChart.get("loading", True) and bool(vm.priceChart.get("points")), "price chart loaded by itself")
         QTest.qWait(200)
         self.assertIn("سعر الذهب اليومي", self.text("reportPriceChartTitle"))
-        self.assert_inside_window(self.item("reportPriceChartClose"))
-        self.click("reportPriceChartClose")
-        self.wait_until(lambda: not vm.priceChart, "price chart closed")
+        self.assertTrue(self.item("reportPriceChartCard").property("visible"))      # the chart is a card under the figures (karat 21 only)
+        self.assertEqual(vm.priceChart.get("karat"), "21")
         self.assertEqual(self.warnings, [])
 
     def test_the_demand_report_opens_the_monthly_and_weekly_line_chart_by_real_clicks(self):

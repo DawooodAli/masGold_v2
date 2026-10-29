@@ -734,7 +734,7 @@ class ReportService:
         """Indicative figures, NOT a forecast and NOT advice: per karat the latest SHOP_BUY / SHOP_SELL with their change, the 30-day average, the position inside the last 90 days, the daily
         volatility and a plain hint (the SHOP_BUY price in the lower quarter of its 90-day range = buying is relatively favourable; the SHOP_SELL price in the upper quarter = selling is). A figure
         that needs more history than stored is shown as unavailable. Current state: no period."""
-        karat = str(filters.get("karat") or "")
+        karat = str(filters.get("karat") or "21")                  # owner 2026-10-29: only karat 21 is shown
         if karat not in ("", "18", "21", "24"):
             raise ReportError("FILTER_INVALID", "عيار غير صحيح.")
         series_by_karat = self._price_series(repo)

@@ -25,7 +25,7 @@ FILTER_SPECS = {
     "stock": [{"key": "status", "label": "الحالة", "options": [("IN_STOCK", "متاح"), ("SOLD", "مباع"), ("RETURNED_PENDING", "مرتجع بانتظار الفحص"), ("SCRAPPED", "كسر"), ("REMOVED", "مُخرج"), ("ALL", "كل الحالات")]},
               {"key": "classification", "label": "التصنيف", "options": [("", "الكل"), ("NEW_STOCK", "جديد"), ("OLD_STOCK", "قديم")]},
               {"key": "karat", "label": "العيار", "options": [("", "الكل"), ("18", "18"), ("21", "21"), ("22", "22"), ("24", "24")]}],
-    "indicators": [{"key": "karat", "label": "العيار", "options": [("", "الكل"), ("18", "18"), ("21", "21"), ("24", "24")]}],
+    "indicators": [],
     "alerts": [{"key": "karat", "label": "العيار", "options": [("", "الكل"), ("18", "18"), ("21", "21"), ("22", "22"), ("24", "24")]}],
     "gold": [{"key": "karat", "label": "العيار", "options": [("", "الكل"), ("18", "18"), ("21", "21"), ("22", "22"), ("24", "24")]},
              {"key": "factory", "label": "المصنع", "options": [("", "الكل")], "dynamic": True},
