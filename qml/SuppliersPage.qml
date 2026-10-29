@@ -1547,7 +1547,7 @@ Item {
             Combo { id: supplierKaratCombo; objectName: "supplierKaratCombo"; Layout.fillWidth: true; visible: roleSupplier.checked
                     model: page.karatChoices; textRole: "label"; enabled: !supplierDialog.karatLocked }
             Txt { Layout.fillWidth: true; visible: supplierDialog.karatLocked && roleSupplier.checked; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
-                  wrapMode: Text.WordWrap; elide: Text.ElideNone; text: "لا يتغير عيار المورد بعد وجود فاتورة له." }
+                  wrapMode: Text.WordWrap; elide: Text.ElideNone; text: "لا يتغير عيار المورد وله فاتورة أو حركة سارية (اعكسها أولًا)." }
             Txt { Layout.fillWidth: true; text: "رقم الهاتف" }
             Field { id: phoneField; objectName: "supplierPhoneField"; Layout.fillWidth: true }
             Txt { Layout.fillWidth: true; text: "ملاحظات" }

@@ -105,6 +105,24 @@ class SupplierRepository(BaseRepository):
                 found[int(row["karat_id"])] = {"karat_id": int(row["karat_id"]), "karat_value": int(row["karat_value"])}
         return sorted(found.values(), key=lambda h: h["karat_value"])
 
+    def history_is_neutral(self, supplier_id, lock=False):
+        """True when nothing of the supplier's history is still in force: no draft invoice, every posted invoice reversed (as many
+        PURCHASE_INVOICE_REVERSAL as PURCHASE_INVOICE gold movements) and the gold (per karat) and making ledgers net to zero.
+        Only then may the dedicated karat be corrected (owner 2026-10-29); the stored movements keep their own karat."""
+        share = " FOR SHARE" if lock else ""
+        sid = _id(supplier_id)
+        draft = self._fetch_one("SELECT COUNT(*) AS n FROM supplier_purchase_invoices WHERE supplier_id = %s AND status = 'DRAFT'" + share, (sid,))
+        if int(draft["n"]):
+            return False
+        gold = self._fetch_all("SELECT SUM(weight_delta_grams) AS s FROM supplier_gold_movements WHERE supplier_id = %s GROUP BY karat_id" + share, (sid,))
+        making = self._fetch_one("SELECT COALESCE(SUM(amount_delta), 0) AS s FROM supplier_making_movements WHERE supplier_id = %s" + share, (sid,))
+        if any(r["s"] != 0 for r in gold) or making["s"] != 0:
+            return False
+        counts = self._fetch_one(
+            "SELECT COALESCE(SUM(t.code = 'PURCHASE_INVOICE'), 0) AS posted, COALESCE(SUM(t.code = 'PURCHASE_INVOICE_REVERSAL'), 0) AS reversed "
+            "FROM supplier_gold_movements m JOIN supplier_gold_movement_types t ON t.id = m.movement_type_id WHERE m.supplier_id = %s" + share, (sid,))
+        return int(counts["posted"]) == int(counts["reversed"])
+
     def update_supplier(self, *, supplier_id, name, phone, notes, user_id):
         self._execute("UPDATE suppliers SET name = %s, phone = %s, notes = %s, updated_by_user_id = %s "
                       "WHERE id = %s", (name, phone, notes, user_id, _id(supplier_id)))

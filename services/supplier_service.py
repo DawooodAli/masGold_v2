@@ -140,6 +140,7 @@ class SupplierService:
             if not rules.has_supplier_role(supplier):
                 balances = {**balances, "gold_status": "NOT_APPLICABLE"}                 # an intermediary-only party has no supplier account
             history = repository.history_karats(supplier_id)
+            neutral = repository.history_is_neutral(supplier_id)
             gold = repository.gold_ledger(supplier_id)
             making = repository.making_ledger(supplier_id)
             holdings = self._holdings_view(connection, actor, supplier_id)
@@ -150,7 +151,7 @@ class SupplierService:
                              "is_supplier": rules.has_supplier_role(supplier), "is_intermediary": bool(supplier.get("is_intermediary", False)),
                              "role_text": rules.role_text(rules.has_supplier_role(supplier), bool(supplier.get("is_intermediary", False))),
                              "karat_value": None if supplier["karat_value"] is None else int(supplier["karat_value"]),
-                             "karat_locked": bool(history),                       # an invoice exists: the karat can no longer change
+                             "karat_locked": bool(history) and not neutral,   # history still in force: the karat cannot change
                              "history_karats": [h["karat_value"] for h in history]},
                 "balances": balances,
                 "gold_ledger": [{"id": str(r["id"]), "occurred_at": r["occurred_at"], "movement": rules.gold_movement_text(r.get("movement_code"), r["movement_name"]),
@@ -326,7 +327,8 @@ class SupplierService:
                     if supplier["karat_id"] is None or int(supplier["karat_id"]) != int(karat["id"]):
                         # under the supplier row lock; the history read is a locking current read (no race with a new invoice)
                         rules.check_supplier_karat_change(supplier["karat_id"], karat["id"],
-                                                          repository.history_karats(supplier_id, lock=True))
+                                                          repository.history_karats(supplier_id, lock=True),
+                                                          neutral=repository.history_is_neutral(supplier_id, lock=True))
                         repository.set_karat(supplier_id=supplier_id, karat_id=karat["id"], user_id=actor.user_id)
                         changed_karat = int(karat["karat_value"])
                 repository.update_supplier(supplier_id=supplier_id, name=name, phone=phone, notes=notes,

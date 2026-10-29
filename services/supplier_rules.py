@@ -190,7 +190,7 @@ def normalize_groups(groups):
     return {"groups": cleaned, "total_weight": total_weight, "gross_making": gross}
 
 
-def check_supplier_karat_change(current_karat_id, wanted_karat_id, history):
+def check_supplier_karat_change(current_karat_id, wanted_karat_id, history, neutral=False):
     """May this supplier carry `wanted_karat_id`? `history` = the distinct karats ({karat_id, karat_value}) of ALL its
     invoices (drafts and cancelled included) and gold movements.
       * no history: free (choose or change);
@@ -202,8 +202,8 @@ def check_supplier_karat_change(current_karat_id, wanted_karat_id, history):
     if not ids:
         return
     if current_karat_id is not None:
-        if int(current_karat_id) != wanted:
-            raise SupplierRuleError("KARAT_LOCKED", "لا يمكن تغيير عيار المورد بعد وجود فاتورة له، حتى لو كانت مسودة أو ملغاة.")
+        if int(current_karat_id) != wanted and not neutral:
+            raise SupplierRuleError("KARAT_LOCKED", "لا يمكن تغيير عيار المورد وله فاتورة أو حركة سارية. اعكس فواتيره وتسوياته أولًا ثم عدّل العيار.")
         return
     if len(ids) > 1:
         raise SupplierRuleError(

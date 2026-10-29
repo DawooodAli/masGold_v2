@@ -206,6 +206,10 @@ class SupplierRepo:
         assert self.db.suppliers[int(supplier_id)].get("is_supplier", True)                    # chk_suppliers_intermediary_karat
         self.db.suppliers[int(supplier_id)]["karat_id"] = int(karat_id)
 
+    def history_is_neutral(self, supplier_id, lock=False):
+        """Conservative fake: history is never treated as neutral (the real repository decides on the ledgers)."""
+        return False
+
     def history_karats(self, supplier_id, lock=False):
         """The distinct karats of ALL invoices (any status) and gold movements, as the real repository."""
         sid = int(supplier_id)
