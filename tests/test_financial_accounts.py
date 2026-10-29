@@ -160,6 +160,18 @@ class FinRepo:
     def advance_by_operation(self, operation_id):
         return next((self._advance_row(a) for a in self._advances().values() if a["operation_id"] == str(operation_id)), None)
 
+    def insert_private_entry(self, *, direction, amount, operation_id, note, actor, now):
+        entries = self.store.__dict__.setdefault("private_entries_list", [])
+        assert direction in ("TO_PRIVATE", "FROM_PRIVATE") and amount > 0                                          # the table's CHECKs
+        assert not any(e["operation_id"] == str(operation_id) for e in entries)                                    # uq_private_entry_operation
+        entries.append({"id": str(len(entries) + 1), "direction": direction, "amount": amount, "operation_id": str(operation_id),
+                        "note": note, "created_at": now})
+        return str(len(entries))
+
+    def private_entries(self):
+        return [{**e, "account_name": "الأهلي", "voided": 1 if self._reversed(e["operation_id"]) else 0}
+                for e in self.store.__dict__.get("private_entries_list", [])]
+
     def advance_reversal_blockers(self, operation_id):
         row = self.advance_by_operation(operation_id)
         return ["على هذه السلفة سداد فعّال: اعكس السداد أولاً ثم اعكس السلفة."] if row and row["repaid"] > 0 and not row["voided"] else []
@@ -173,8 +185,8 @@ class FinRepo:
         assert amount > 0                                                         # chk_fo_amount
         if operation_type != "ACCOUNT_TRANSFER":
             assert category or (reason and reason.strip())                        # chk_fo_shape (026)
-            allowed = ((None, "REVENUE", "REPAIR", "ADVANCE_REPAY", "BORROWED_CASH", "CUSTOMER_CASH_IN") if operation_type == "MANUAL_DEPOSIT"
-                       else (None, "EXPENSE", "SALARY", "RENT", "REPAIR", "UTILITIES", "TRANSPORT", "MAINTENANCE", "HOSPITALITY", "STAFF_ADVANCE", "CUSTOMER_CUSTODY", "BORROW_REPAY", "CUSTOMER_CASH_OUT"))      # 068 / 074 / 076 / 086
+            allowed = ((None, "REVENUE", "REPAIR", "ADVANCE_REPAY", "BORROWED_CASH", "CUSTOMER_CASH_IN", "PRIVATE_IN") if operation_type == "MANUAL_DEPOSIT"
+                       else (None, "EXPENSE", "SALARY", "RENT", "REPAIR", "UTILITIES", "TRANSPORT", "MAINTENANCE", "HOSPITALITY", "STAFF_ADVANCE", "CUSTOMER_CUSTODY", "BORROW_REPAY", "CUSTOMER_CASH_OUT", "PRIVATE_OUT"))      # 068 / 074 / 076 / 086
             if getattr(self.store, "categories", None) is not None:               # 069: the category must exist in cash_categories (fk_fo_category)
                 allowed = (None, *(c["code"] for c in self.store.categories))
             assert category in allowed                                            # chk_fo_category

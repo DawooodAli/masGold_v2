@@ -264,6 +264,90 @@ class ManagementReviewRepository(BaseRepository):
             """, (resolution_code, resolved_by_user_id, resolved_at, notes, int(review_id)))
         return rowcount == 1
 
+    # ------------------------------------------------------------ unidentified (F5) sale cases (089)
+    def lock_unidentified_case(self, case_id):
+        return _stringify(self._fetch_one(
+            """
+            SELECT c.id AS case_id, c.case_status, c.invoice_id, c.invoice_line_id, c.reference_number AS invoice_number,
+                   c.observed_karat_id AS karat_id, k.karat_value, c.observed_weight_grams AS weight_grams
+            FROM inventory_reconciliation_cases c
+            LEFT JOIN karats k ON k.id = c.observed_karat_id
+            WHERE c.id = %s AND c.case_type = 'UNIDENTIFIED_SALE'
+            FOR UPDATE
+            """, (int(case_id),)))
+
+    def lock_stock_item_by_barcode(self, barcode):
+        """The piece carrying this ACTIVE barcode, locked, with its karat value."""
+        return _stringify(self._fetch_one(
+            """
+            SELECT ii.id AS inventory_item_id, ii.karat_id, k.karat_value, ii.weight_grams, ii.stock_classification,
+                   ii.inventory_status
+            FROM inventory_barcodes ib
+            JOIN inventory_items ii ON ii.id = ib.inventory_item_id
+            JOIN karats k ON k.id = ii.karat_id
+            WHERE ib.barcode_value = %s AND ib.barcode_status = 'ACTIVE'
+            FOR UPDATE
+            """, (str(barcode),)))
+
+    def add_case_scrap_out(self, *, karat_id, weight_grams, invoice_id, invoice_number, case_id, created_by_user_id, employee_id):
+        """The weight of an unidentified sale leaves the Scrap: the same COUNTED INVOICE_SALE_OUT an F7 sale posts."""
+        movement_id, _ = self._execute(
+            """
+            INSERT INTO old_gold_movements (
+                movement_type_id, karat_id, weight_delta_grams, balance_effect,
+                reference_type, reference_id, reference_code, notes,
+                created_by_user_id, performed_by_user_id, received_by_employee_id, movement_code
+            )
+            SELECT t.id, %s, %s, 'COUNTED', 'INVOICE', %s, %s, %s, %s, %s, %s, 'INVOICE_SALE_OUT'
+            FROM old_gold_movement_types t WHERE t.code = 'INVOICE_SALE_OUT' AND t.is_active = TRUE
+            """,
+            (int(karat_id), -abs(weight_grams), int(invoice_id), invoice_number,
+             f"مراجعة مخزون — بيع يدوي (حالة #{case_id})", created_by_user_id, created_by_user_id, employee_id))
+        if not movement_id:
+            raise RuntimeError("old-gold movement type INVOICE_SALE_OUT is missing")
+        return str(movement_id)
+
+    def settle_case(self, *, case_id, status, resolution_code, matched_item_id, notes, user_id, at):
+        """OPEN -> MATCHED / CLOSED exactly once, with its append-only event."""
+        _, rowcount = self._execute(
+            """
+            UPDATE inventory_reconciliation_cases
+            SET case_status = %s, resolution_code = %s, matched_inventory_item_id = %s, resolution_notes = %s,
+                resolved_by_user_id = %s, resolved_at = %s
+            WHERE id = %s AND case_status = 'OPEN'
+            """, (status, resolution_code, None if matched_item_id is None else int(matched_item_id), notes, user_id, at, int(case_id)))
+        if rowcount != 1:
+            return False
+        self._execute(
+            """
+            INSERT INTO inventory_reconciliation_case_events (case_id, event_type, from_status, to_status,
+                                                              matched_inventory_item_id, notes, performed_by_user_id, occurred_at)
+            VALUES (%s, %s, 'OPEN', %s, %s, %s, %s, %s)
+            """, (int(case_id), "MATCHED" if status == "MATCHED" else "CLOSED", status,
+                  None if matched_item_id is None else int(matched_item_id), notes, user_id, at))
+        return True
+
+    def lock_simple_review(self, review_id):
+        """A pricing / cash-settlement / discount review (no resolution code of its own), locked."""
+        row = self._fetch_one(
+            """
+            SELECT id AS review_id, review_type, review_status, invoice_id
+            FROM management_reviews
+            WHERE id = %s AND review_type IN ('MAKING_PRICE', 'CASH_SETTLEMENT', 'OLD_GOLD_DISCOUNT')
+            FOR UPDATE
+            """, (int(review_id),))
+        return None if row is None else _stringify(row)
+
+    def mark_reviewed(self, *, review_id, resolved_by_user_id, resolved_at):
+        _, rowcount = self._execute(
+            """
+            UPDATE management_reviews
+            SET review_status = 'RESOLVED', resolved_by_user_id = %s, resolved_at = %s
+            WHERE id = %s AND review_status = 'OPEN'
+              AND review_type IN ('MAKING_PRICE', 'CASH_SETTLEMENT', 'OLD_GOLD_DISCOUNT')
+            """, (resolved_by_user_id, resolved_at, int(review_id)))
+        return rowcount == 1
+
     def returned_lines_without_inspection(self):
         """Backfill: RETURNED exchange lines whose piece still waits (RETURNED_PENDING) without a review."""
         return [_stringify(row) for row in self._fetch_all(

@@ -380,6 +380,47 @@ class SupplierPurchaseService:
                     "making_per_gram": Decimal(str(group["making_per_gram"])),
                     "category_code": category["code"], "duplicate": False}
 
+    # ------------------------------------------------------------------ groups offered by the inventory entry (owner 2026-10-29)
+    def open_groups(self, *, _expected_actor=None):
+        """The making groups still waiting for their pieces, for the «إدخال قطعة جديدة» screen. A group is finished (and leaves the list) when
+        what is still missing from its supplier weight is within the intake tolerance, or when the owner hid it (barcodes printed elsewhere)."""
+        actor = authenticated_actor(self._session, INTAKE, "لا توجد صلاحية لإدخال قطع فواتير الموردين.", _expected_actor)
+        with self._transaction() as connection:
+            self._authorization.require_permission_read(connection, actor, INTAKE)
+            rows = self._repository(connection).open_intake_groups()
+        groups = []
+        for row in rows:
+            weight, actual = Decimal(str(row["supplier_weight_grams"])), Decimal(str(row["actual_weight"]))
+            remaining = (weight - actual).quantize(rules.WEIGHT_STEP)
+            if remaining <= rules.INTAKE_TOLERANCE:
+                continue
+            groups.append({"group_id": str(row["group_id"]), "invoice_id": str(row["invoice_id"]), "group_no": int(row["group_no"]),
+                           "description": row["description"] or "", "supplier_id": str(row["supplier_id"]),
+                           "supplier_name": row["supplier_name"], "supplier_reference": row["supplier_reference"] or "",
+                           "invoice_code": rules.invoice_code(row["invoice_id"]), "invoice_date": row["invoice_date"],
+                           "karat_id": int(row["karat_id"]), "karat_value": row["karat_value"],
+                           "supplier_weight": weight, "actual_weight": actual, "remaining": remaining,
+                           "making_per_gram": Decimal(str(row["making_per_gram"])), "piece_count": int(row["piece_count"])})
+        return groups
+
+    def close_group(self, group_id, *, _expected_actor=None):
+        """Take a group off the entry list (its barcodes were printed elsewhere). Hides it only: nothing about weights or ledgers changes."""
+        actor = authenticated_actor(self._session, INTAKE, "لا توجد صلاحية لإدخال قطع فواتير الموردين.", _expected_actor)
+        group_id = _id(group_id, "GROUP_NOT_FOUND", "مجموعة الفاتورة غير موجودة.")
+        with self._transaction() as connection:
+            actor = self._write_verified(connection, actor, INTAKE)
+            repository = self._repository(connection)
+            group = repository.lock_group(group_id)
+            if group is None:
+                raise rules.SupplierRuleError("GROUP_NOT_FOUND", "مجموعة الفاتورة غير موجودة.")
+            if repository.group_closure(group_id) is None:
+                repository.close_group_intake(group_id, actor.user_id)
+                repository.audit(actor=actor, event_type="SUPPLIER_GROUP_INTAKE_CLOSED", entity_id=int(group["invoice_id"]),
+                                 entity_type="SUPPLIER_INVOICE", reference=rules.invoice_code(group["invoice_id"]),
+                                 description="إخفاء مجموعة مورد من قائمة إدخال القطع",
+                                 metadata={"group_id": group_id, "group_no": int(group["group_no"])}, now=repository.db_now())
+        return {"group_id": str(group_id)}
+
     def _piece_result(self, repository, link, duplicate):
         piece = next((p for p in repository.pieces(link["invoice_id"], link["group_id"])
                       if int(p["id"]) == int(link["id"])), None) or {}

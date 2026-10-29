@@ -216,6 +216,35 @@ class SupplierPurchaseRepository(SupplierRepository):
             """, (_id(group_id),))
         return Decimal(str(row["actual_weight"]))
 
+    def open_intake_groups(self):
+        """Every making group of a POSTED, not reversed supplier invoice that is not hidden from the entry list, with the ACTUAL weight
+        already entered (the same inclusion rule as group_progress). Display read: the service applies the 'finished' rule."""
+        return self._fetch_all(
+            """
+            SELECT g.id AS group_id, g.invoice_id, g.group_no, g.description, g.supplier_weight_grams, g.making_per_gram,
+                   i.supplier_id, s.name AS supplier_name, i.supplier_reference, i.invoice_date, i.karat_id, k.karat_value,
+                   COALESCE(p.actual_weight, 0) AS actual_weight, COALESCE(p.piece_count, 0) AS piece_count
+            FROM supplier_invoice_groups g
+            JOIN supplier_purchase_invoices i ON i.id = g.invoice_id AND i.status = 'POSTED'
+            JOIN suppliers s ON s.id = i.supplier_id
+            JOIN karats k ON k.id = i.karat_id
+            LEFT JOIN (SELECT sp.group_id, COUNT(*) AS piece_count, SUM(ii.weight_grams) AS actual_weight
+                       FROM supplier_invoice_pieces sp JOIN inventory_items ii ON ii.id = sp.inventory_item_id
+                       GROUP BY sp.group_id) p ON p.group_id = g.id
+            WHERE NOT EXISTS (SELECT 1 FROM supplier_group_intake_closures c WHERE c.group_id = g.id)
+              AND NOT EXISTS (SELECT 1 FROM transaction_corrections rv WHERE rv.source_type = %s AND rv.source_id = i.id
+                              AND rv.correction_type = 'FULL_REVERSAL')
+            ORDER BY i.invoice_date DESC, i.id DESC, g.group_no
+            """, (PURCHASE_SOURCE,))
+
+    def group_closure(self, group_id):
+        return self._fetch_one("SELECT id FROM supplier_group_intake_closures WHERE group_id = %s FOR UPDATE", (_id(group_id),))
+
+    def close_group_intake(self, group_id, user_id):
+        new_id, _ = self._execute("INSERT INTO supplier_group_intake_closures (group_id, closed_by_user_id) VALUES (%s, %s)",
+                                  (_id(group_id), user_id))
+        return int(new_id)
+
     def piece_by_request(self, key):
         return self._fetch_one("SELECT * FROM supplier_invoice_pieces WHERE request_key = %s FOR UPDATE", (key,))
 

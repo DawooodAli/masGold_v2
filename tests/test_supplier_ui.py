@@ -151,6 +151,11 @@ class SupplierPageTests(harness.InvoicePageTests):
     def open_suppliers(self):
         self.root.setProperty("currentPage", 14)
         QTest.qWait(200)
+        # Production hides the piece form here (every piece enters from «إدخال قطعة جديدة»); the form itself is still proven by these tests.
+        for child in self.root.findChildren(QObject):
+            if child.property("pieceEntryHere") is not None:
+                child.setProperty("pieceEntryHere", True)
+        QTest.qWait(100)
 
     def wait_idle(self):
         self.wait_until(lambda: not self.svm.busy and not self.pvm.busy, "workers idle")

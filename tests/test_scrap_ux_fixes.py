@@ -272,6 +272,61 @@ class ScrapUxPageTests(harness.InvoicePageTests):
                 ("inventoryItemTypeCombo", "inventoryKaratCombo", "inventoryCategoryCombo", "inventoryFactoryCombo",
                  "inventoryEntryMethodCombo")]
 
+    def test_a_supplier_group_is_chosen_in_the_entry_dialog_saved_and_can_be_hidden(self):
+        import dataclasses
+        pvm = self.controller.operational_viewmodels["supplierPurchaseVM"]
+        session = pvm._session
+        with session._lock:
+            session._actor = dataclasses.replace(session._actor, permissions=session._actor.permissions | {"SUPPLIER_INTAKE"})
+        group = {"group_id": "7", "invoice_id": "3", "group_no": 1, "description": "", "supplier_id": "1", "supplier_name": "مورد الذهب",
+                 "supplier_reference": "A1", "invoice_code": "SP000003", "invoice_date": None, "karat_id": 1, "karat_value": 21,
+                 "supplier_weight": D("40.000"), "actual_weight": D("0.000"), "remaining": D("40.000"),
+                 "making_per_gram": D("120.00"), "piece_count": 0}
+        calls = []
+
+        class Purchases:
+            def open_groups(self, *, _expected_actor=None):
+                return [group] if not calls or calls[-1][0] != "close" else []
+
+            def add_piece(self, invoice_id, group_id, item_type_id, weight, key, **kw):
+                calls.append(("piece", invoice_id, group_id, item_type_id, weight, kw["barcode_mode"]))
+                return {"id": "1", "inventory_item_id": "9", "invoice_id": invoice_id, "group_id": group_id, "barcode": "01261001",
+                        "weight": D(weight), "making_per_gram": D("120.00"), "duplicate": False}
+
+            def close_group(self, group_id, *, _expected_actor=None):
+                calls.append(("close", group_id))
+                return {"group_id": group_id}
+        pvm._service = Purchases()
+        pvm.changed.emit()
+        for width, height in harness.SIZES:
+            with self.subTest(size=(width, height)):
+                calls.clear()
+                dialog = self.open_dialog(width, height)
+                self.choose("inventoryItemTypeCombo", 0)
+                self.choose("inventoryEntryMethodCombo", 2)
+                pvm.loadIntakeGroups()
+                self.wait_until(lambda: self.visible_item("supplierGroupCombo") is not None
+                                and self.item("supplierGroupCombo").property("count") == 1, "group listed")
+                QTest.qWait(150)
+                self.assertFalse(self.item("inventoryKaratCombo").property("enabled"))      # the karat comes from the supplier
+                self.assertEqual(self.item("inventoryKaratCombo").property("currentIndex"), 0)
+                self.assert_inside_window(self.visible_item("supplierGroupHide"))
+                self.type_into_field("inventoryWeightField", "3.600")
+                self.click("saveInventoryItemButton")
+                self.wait_until(lambda: [c for c in calls if c[0] == "piece"], "piece saved")
+                self.assertEqual([c for c in calls if c[0] == "piece"][0][1:], ("3", "7", 2, "3.600", "AUTO"))
+                self.wait_until(lambda: self.item("supplierGroupCombo").property("count") == 1, "list reloaded")
+                self.wait_until(lambda: not pvm.busy, "reload finished")
+                self.item("inventoryEntryScroll").property("contentItem").setProperty("contentY", 0.0)      # the form scrolled to the weight field after the save: scroll back up
+                QTest.qWait(150)
+                self.wait_until(lambda: not pvm.busy, "reload finished")
+                self.click("supplierGroupHide")
+                self.wait_until(lambda: ("close", "7") in calls, "group hidden")
+                self.wait_until(lambda: self.item("supplierGroupCombo").property("count") == 0, "group gone")
+                self.assertTrue(self.visible_item("supplierGroupEmpty").property("visible"))
+                dialog.close()
+        self.assertEqual(self.warnings, [])
+
     def test_save_keeps_the_dialog_open_for_the_next_piece_at_all_sizes(self):
         for width, height in harness.SIZES:
             with self.subTest(size=(width, height)):

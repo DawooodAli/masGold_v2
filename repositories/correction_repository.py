@@ -221,7 +221,7 @@ class CorrectionRepository(BaseRepository):
     def case_for(self, *, invoice_line_id=None, lifecycle_line_id=None):
         column, value = ("invoice_line_id", invoice_line_id) if invoice_line_id else ("lifecycle_line_id", lifecycle_line_id)
         return _ids(self._fetch_one(
-            f"SELECT id AS case_id, case_status FROM inventory_reconciliation_cases "
+            f"SELECT id AS case_id, case_status, resolution_code, matched_inventory_item_id FROM inventory_reconciliation_cases "
             f"WHERE case_type = 'UNIDENTIFIED_SALE' AND {column} = %s FOR UPDATE", (_id(value),)))
 
     def lock_old_gold_balance(self, karat_id):
@@ -347,18 +347,21 @@ class CorrectionRepository(BaseRepository):
             raise RuntimeError("inspection review is no longer open")
 
     def cancel_case(self, *, case_id, user_id, at, notes):
-        """The unidentified-sale case of a reversed sale: CANCELLED (never matched to a fake item)."""
-        _, rowcount = self._execute(
+        """The unidentified-sale case of a reversed sale: CANCELLED (never matched to a fake item). A case the manager already
+        settled (089) is cancelled too: its stock / Scrap effect is reversed by the same correction."""
+        row = self._fetch_one("SELECT case_status FROM inventory_reconciliation_cases WHERE id = %s FOR UPDATE", (_id(case_id),))
+        before = None if row is None else row["case_status"]
+        if before not in ("OPEN", "MATCHED", "CLOSED"):
+            raise RuntimeError("reconciliation case can no longer be cancelled")
+        self._execute(
             "UPDATE inventory_reconciliation_cases SET case_status = 'CANCELLED', resolved_by_user_id = %s, "
-            "resolved_at = %s WHERE id = %s AND case_status = 'OPEN'", (user_id, at, _id(case_id)))
-        if rowcount != 1:
-            raise RuntimeError("reconciliation case is no longer open")
+            "resolved_at = %s WHERE id = %s", (user_id, at, _id(case_id)))
         self._execute(
             """
             INSERT INTO inventory_reconciliation_case_events (case_id, event_type, from_status, to_status, notes,
                                                               performed_by_user_id, occurred_at)
-            VALUES (%s, 'CANCELLED', 'OPEN', 'CANCELLED', %s, %s, %s)
-            """, (_id(case_id), notes, user_id, at))
+            VALUES (%s, 'CANCELLED', %s, 'CANCELLED', %s, %s, %s)
+            """, (_id(case_id), before, notes, user_id, at))
 
     def mark_lines_reversed(self, *, table, line_ids, correction_id):
         assert table in ("invoice_lifecycle_lines", "invoice_return_lines")

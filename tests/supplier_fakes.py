@@ -45,6 +45,7 @@ class Db:
     def __init__(self):
         self.now = datetime(2026, 10, 8, 10, 0, 0)
         self.suppliers, self.invoices, self.groups = {}, {}, {}
+        self.closures = set()
         self.gold, self.making, self.links, self.audit_rows = [], [], [], []
         self.karats = {1: {"id": 1, "karat_value": 21, "name": "21K", "is_active": 1},
                        2: {"id": 2, "karat_value": 18, "name": "18K", "is_active": 1},
@@ -451,6 +452,32 @@ class PurchaseRepo(SupplierRepo):
         """Every piece ever linked to the group counts, whatever its inventory status (as the real repository)."""
         return sum((self.db.items[link["inventory_item_id"]]["weight_grams"]
                     for link in self.db.links if link["group_id"] == int(group_id)), D("0"))
+
+    def open_intake_groups(self):
+        closed = self.db.closures
+        rows = []
+        for invoice in sorted(self.db.invoices.values(), key=lambda i: (i["invoice_date"], i["id"]), reverse=True):
+            if invoice["status"] != "POSTED" or self.reversal(invoice["id"]) is not None:
+                continue
+            for group in self.groups(invoice["id"]):
+                if group["id"] in closed:
+                    continue
+                rows.append({"group_id": group["id"], "invoice_id": invoice["id"], "group_no": group["group_no"],
+                             "description": group.get("description"), "supplier_weight_grams": group["supplier_weight_grams"],
+                             "making_per_gram": group["making_per_gram"], "supplier_id": invoice["supplier_id"],
+                             "supplier_name": self._joined(invoice)["supplier_name"], "supplier_reference": invoice.get("supplier_reference"),
+                             "invoice_date": invoice["invoice_date"], "karat_id": invoice["karat_id"],
+                             "karat_value": self._joined(invoice)["karat_value"],
+                             "actual_weight": self.group_actual_weight(group["id"]),
+                             "piece_count": sum(1 for link in self.db.links if link["group_id"] == group["id"])})
+        return rows
+
+    def group_closure(self, group_id):
+        return {"id": 1} if int(group_id) in self.db.closures else None
+
+    def close_group_intake(self, group_id, user_id):
+        self.db.closures.add(int(group_id))
+        return 1
 
     def piece_by_request(self, key):
         return next((link for link in self.db.links if link["request_key"] == key), None)

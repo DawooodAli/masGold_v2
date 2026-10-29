@@ -76,6 +76,7 @@ Item {
 
     property string newAccountType: ""
     property bool newAccountOpen: false
+    property bool transferOpen: false
     property bool goldDetailsOpen: false
     readonly property var goldPos: reviewsVM.goldPosition
     readonly property bool goldLoaded: goldPos !== undefined && goldPos.summary !== undefined
@@ -680,6 +681,220 @@ Item {
         }
     }
 
+    // An unidentified (F5) sale waiting for the manager: link the real piece from stock, take the weight from the Scrap, or record
+    // that no source exists. Settling removes the card; the sale-out button asks twice because it changes the Scrap.
+    component CaseCard: Rectangle {
+        id: caseCard
+        property var review: ({})
+        property int rowIndex: 0
+        property string armed: ""                         // "" | "SCRAP" | "NONE": the action waiting for its second click
+        readonly property bool busy: !!review.busy || reviewsVM.inspectionBusy
+        Layout.fillWidth: true
+        implicitHeight: caseBody.implicitHeight + 20
+        color: caseArea.containsMouse ? theme.panelHover : theme.bgSecondary
+        border.color: theme.border
+        radius: 6
+        SourceArea { id: caseArea; objectName: "reviewSource_" + caseCard.review.invoiceId; invoiceId: caseCard.review.invoiceId || "" }
+        Rectangle { anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom; width: 4; radius: 2; color: theme.amber }
+        Timer { id: disarm; interval: 6000; onTriggered: caseCard.armed = "" }
+        ColumnLayout {
+            id: caseBody
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: 10
+            anchors.rightMargin: 16
+            spacing: 6
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 10
+                Label { text: caseCard.review.title + " — " + caseCard.review.reason; color: theme.textPrimary; font.family: "Cairo"; font.pixelSize: 14; font.bold: true }
+                Item { Layout.fillWidth: true }
+                Label { text: (caseCard.review.time || "") + (caseCard.review.salesperson ? " • " + caseCard.review.salesperson : ""); color: theme.textMuted; font.family: "Cairo"; font.pixelSize: 11 }
+            }
+            Label {
+                Layout.fillWidth: true
+                text: (caseCard.review.details || "") + "  •  " + (caseCard.review.customer || "") + (caseCard.review.notes ? "  •  " + caseCard.review.notes : "")
+                color: theme.textSecondary
+                font.family: "Cairo"
+                font.pixelSize: 12
+                horizontalAlignment: Text.AlignRight
+                wrapMode: Text.WordWrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                visible: reviewsVM.canResolveInspections && caseCard.review.canSettle === true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                TextField {
+                    id: caseBarcode
+                    objectName: "caseBarcode_" + caseCard.rowIndex
+                    Layout.preferredWidth: 190
+                    placeholderText: "باركود القطعة من المخزن"
+                    font.family: "Cairo"
+                    horizontalAlignment: TextInput.AlignRight
+                }
+                ActionButton {
+                    objectName: "caseMatch_" + caseCard.rowIndex
+                    text: "ربط بالقطعة"
+                    accent: theme.green
+                    enabled: !caseCard.busy && caseBarcode.text.trim().length > 0
+                    onClicked: reviewsVM.matchCaseToStock(caseCard.review.caseId, caseBarcode.text.trim())
+                }
+                Item { Layout.preferredWidth: 14 }
+                ActionButton {
+                    objectName: "caseScrap_" + caseCard.rowIndex
+                    text: caseCard.armed === "SCRAP" ? "تأكيد: سحب " + caseCard.review.weight + " جم عيار " + caseCard.review.karat + " من الكسر" : "سحب من الكسر"
+                    accent: caseCard.armed === "SCRAP" ? theme.red : theme.gold
+                    enabled: !caseCard.busy
+                    onClicked: {
+                        if (caseCard.armed === "SCRAP") {
+                            caseCard.armed = ""
+                            reviewsVM.takeCaseFromScrap(caseCard.review.caseId)
+                        } else {
+                            caseCard.armed = "SCRAP"
+                            disarm.restart()
+                        }
+                    }
+                }
+                Item { Layout.fillWidth: true }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                visible: reviewsVM.canResolveInspections && caseCard.review.canSettle === true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                TextField {
+                    id: caseReason
+                    objectName: "caseReason_" + caseCard.rowIndex
+                    Layout.fillWidth: true
+                    placeholderText: "لا يوجد مصدر للقطعة (لا في المخزن ولا في الكسر): اكتب السبب"
+                    font.family: "Cairo"
+                    horizontalAlignment: TextInput.AlignRight
+                }
+                ActionButton {
+                    objectName: "caseNoSource_" + caseCard.rowIndex
+                    text: caseCard.armed === "NONE" ? "تأكيد: بلا مصدر" : "بلا مصدر"
+                    accent: caseCard.armed === "NONE" ? theme.red : theme.textSecondary
+                    enabled: !caseCard.busy && caseReason.text.trim().length > 0
+                    onClicked: {
+                        if (caseCard.armed === "NONE") {
+                            caseCard.armed = ""
+                            reviewsVM.closeCaseNoSource(caseCard.review.caseId, caseReason.text.trim())
+                        } else {
+                            caseCard.armed = "NONE"
+                            disarm.restart()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // A pricing / settlement / discount review laid out for a quick decision: what happened on the invoice,
+    // each category with its rate and a coloured range badge, and «تمت المراجعة» to take it off the list.
+    component ReviewCard: Rectangle {
+        id: reviewCard
+        property var review: ({})
+        property int rowIndex: 0
+        readonly property var groups: review.groups || []
+        readonly property bool outside: groups.some(function (g) { return g.status === "OUT_OF_RANGE" })
+        readonly property color tone: outside ? theme.red : theme.amber
+        Layout.fillWidth: true
+        implicitHeight: cardBody.implicitHeight + 20
+        color: cardArea.containsMouse ? theme.panelHover : theme.bgSecondary
+        border.color: theme.border
+        radius: 6
+        SourceArea { id: cardArea; objectName: "reviewSource_" + reviewCard.review.invoiceId; invoiceId: reviewCard.review.invoiceId || "" }
+        Rectangle {                                   // colour stripe on the physical right edge
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            width: 4
+            radius: 2
+            color: reviewCard.tone
+        }
+        ColumnLayout {
+            id: cardBody
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: 10
+            anchors.rightMargin: 16
+            spacing: 6
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 10
+                Label { text: reviewCard.review.title || ""; color: theme.textPrimary; font.family: "Cairo"; font.pixelSize: 14; font.bold: true }
+                Rectangle {
+                    visible: (reviewCard.review.invoice || "").length > 0
+                    implicitWidth: invoiceLabel.implicitWidth + 16
+                    implicitHeight: 22
+                    radius: 11
+                    color: "transparent"
+                    border.color: theme.gold
+                    Label { id: invoiceLabel; anchors.centerIn: parent; text: "فاتورة " + (reviewCard.review.invoice || ""); color: theme.gold; font.family: "Cairo"; font.pixelSize: 12 }
+                }
+                Item { Layout.fillWidth: true }
+                Label { text: (reviewCard.review.time || "") + (reviewCard.review.by ? " • " + reviewCard.review.by : ""); color: theme.textMuted; font.family: "Cairo"; font.pixelSize: 11 }
+            }
+            Flow {
+                Layout.fillWidth: true
+                visible: reviewCard.review.price !== undefined && (reviewCard.review.price || "").length > 0
+                layoutDirection: Qt.RightToLeft
+                spacing: 16
+                Label { text: "سعر البيع الفعلي  " + reviewCard.review.price; color: theme.textPrimary; font.family: "Cairo"; font.pixelSize: 13; font.bold: true }
+                Label { visible: (reviewCard.review.salesperson || "").length > 0; text: "البائع: " + reviewCard.review.salesperson; color: theme.textSecondary; font.family: "Cairo"; font.pixelSize: 12 }
+            }
+            Repeater {
+                model: reviewCard.groups
+                RowLayout {
+                    Layout.fillWidth: true
+                    layoutDirection: Qt.RightToLeft
+                    spacing: 10
+                    Label { text: "فئة " + modelData.category; color: theme.textSecondary; font.family: "Cairo"; font.pixelSize: 12; Layout.preferredWidth: 80; horizontalAlignment: Text.AlignRight }
+                    Label { text: modelData.average + " ج / جرام"; color: theme.textPrimary; font.family: "Cairo"; font.pixelSize: 13; font.bold: true }
+                    Rectangle {
+                        readonly property color badge: modelData.status === "OUT_OF_RANGE" ? theme.red
+                                                      : modelData.status === "WITHIN_RANGE" ? theme.green : theme.textMuted
+                        implicitWidth: badgeLabel.implicitWidth + 16
+                        implicitHeight: 22
+                        radius: 11
+                        color: "transparent"
+                        border.color: badge
+                        Label { id: badgeLabel; anchors.centerIn: parent; text: modelData.statusText; color: parent.badge; font.family: "Cairo"; font.pixelSize: 11 }
+                    }
+                    Item { Layout.fillWidth: true }
+                }
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: reviewCard.groups.length === 0 && (reviewCard.review.details || "").length > 0
+                text: reviewCard.review.details || ""
+                color: theme.textSecondary
+                font.family: "Cairo"
+                font.pixelSize: 12
+                horizontalAlignment: Text.AlignRight
+                wrapMode: Text.WordWrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                Item { Layout.fillWidth: true }
+                ActionButton {
+                    objectName: "reviewDone_" + reviewCard.rowIndex
+                    visible: reviewsVM.canResolveInspections
+                    enabled: !reviewCard.review.busy && !reviewsVM.inspectionBusy
+                    text: "✓  تمت المراجعة"
+                    accent: theme.green
+                    onClicked: reviewsVM.markReviewed(reviewCard.review.reviewId)
+                }
+            }
+        }
+    }
+
     ColumnLayout {
         anchors.fill: parent
         anchors.margins: 12
@@ -977,6 +1192,210 @@ Item {
                             rowIndex: index
                         }
                     }
+                    // تحويل خاص: the owner's private account, another bank / wallet account or the main safe (the service re-checks every right).
+                    ActionButton {
+                        objectName: "privateTransferToggle"
+                        visible: reviewsVM.canTransfer
+                        text: reviewPage.transferOpen ? "إخفاء التحويل" : "⇄ تحويل خاص"
+                        accent: theme.gold
+                        onClicked: { reviewPage.transferOpen = !reviewPage.transferOpen; if (reviewPage.transferOpen) { reviewsVM.loadPrivateAccount(); reviewsVM.loadMarketers() } }
+                    }
+                    Rectangle {
+                        id: transferForm
+                        objectName: "transferForm"
+                        visible: reviewsVM.canTransfer && reviewPage.transferOpen
+                        Layout.fillWidth: true
+                        implicitHeight: transferColumn.implicitHeight + 16
+                        color: theme.bgSecondary
+                        radius: 4
+                        border.color: theme.border
+                        property string requestKey: reviewsVM.newRequestKey()
+                        property bool pending: false
+                        readonly property var banks: reviewsVM.transferAccounts.filter(function (a) { return a.bank })
+                        readonly property var safeAccount: reviewsVM.transferAccounts.filter(function (a) { return !a.bank })[0]
+                        readonly property var modes: reviewsVM.canUsePrivate
+                            ? [["TO", "إلى الحساب الخاص"], ["FROM", "من الحساب الخاص"], ["BANK", "إلى بنك / محفظة أخرى"], ["SAFE", "إلى الخزنة الرئيسية"]].concat(reviewsVM.canTransferToMarketer ? [["MKT", "إلى عهدة مسوقجي"]] : [])
+                            : [["BANK", "إلى بنك / محفظة أخرى"], ["SAFE", "إلى الخزنة الرئيسية"]].concat(reviewsVM.canTransferToMarketer ? [["MKT", "إلى عهدة مسوقجي"]] : [])
+                        readonly property string mode: modeCombo.currentIndex >= 0 ? modes[modeCombo.currentIndex][0] : ""
+                        Connections {
+                            target: reviewsVM
+                            function onChanged() {
+                                if (transferForm.pending && !reviewsVM.moneyBusy) {
+                                    transferForm.pending = false
+                                    if (!reviewsVM.accountMessageIsError && reviewsVM.accountMessage.length > 0) {
+                                        transferForm.requestKey = reviewsVM.newRequestKey()
+                                        transferAmount.text = ""
+                                        transferNote.text = ""
+                                    }
+                                }
+                            }
+                        }
+                        ColumnLayout {
+                            id: transferColumn
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.margins: 8
+                            spacing: 6
+                            RowLayout {
+                                Layout.fillWidth: true
+                                layoutDirection: Qt.RightToLeft
+                                spacing: 6
+                                Label { text: "نوع التحويل"; color: theme.gold; font.family: "Cairo"; font.pixelSize: 12; font.bold: true }
+                                ComboBox {
+                                    id: modeCombo
+                                    objectName: "transferMode"
+                                    Layout.preferredWidth: 190
+                                    model: transferForm.modes.map(function (m) { return m[1] })
+                                    currentIndex: 0
+                                    font.family: "Cairo"
+                                }
+                                Label { text: transferForm.mode === "FROM" ? "إلى حساب" : "من حساب"; color: theme.textSecondary; font.family: "Cairo"; font.pixelSize: 12 }
+                                ComboBox {
+                                    id: transferFrom
+                                    objectName: "transferFrom"
+                                    Layout.preferredWidth: 200
+                                    model: transferForm.banks.map(function (a) { return a.name })
+                                    currentIndex: model.length > 0 ? 0 : -1
+                                    onCountChanged: if (currentIndex < 0 && count > 0) currentIndex = 0
+                                    font.family: "Cairo"
+                                }
+                                Label { visible: transferForm.mode === "BANK"; text: "إلى"; color: theme.textSecondary; font.family: "Cairo"; font.pixelSize: 12 }
+                                ComboBox {
+                                    id: transferTo
+                                    objectName: "transferTo"
+                                    visible: transferForm.mode === "BANK"
+                                    Layout.preferredWidth: 200
+                                    model: transferForm.banks.map(function (a) { return a.name })
+                                    currentIndex: model.length > 1 ? 1 : -1
+                                    onCountChanged: if (currentIndex < 0 && count > 1) currentIndex = 1
+                                    font.family: "Cairo"
+                                }
+                                Label { visible: transferForm.mode === "MKT"; text: "المسوقجي"; color: theme.textSecondary; font.family: "Cairo"; font.pixelSize: 12 }
+                                ComboBox {
+                                    id: transferMarketer
+                                    objectName: "transferMarketer"
+                                    visible: transferForm.mode === "MKT"
+                                    Layout.preferredWidth: 200
+                                    model: reviewsVM.marketers
+                                    textRole: "name"
+                                    currentIndex: count > 0 ? 0 : -1
+                                    onCountChanged: if (currentIndex < 0 && count > 0) currentIndex = 0
+                                    font.family: "Cairo"
+                                }
+                                Item { Layout.fillWidth: true }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                layoutDirection: Qt.RightToLeft
+                                spacing: 6
+                                TextField {
+                                    id: transferAmount
+                                    objectName: "transferAmount"
+                                    Layout.preferredWidth: 130
+                                    font.family: "Cairo"
+                                    font.pixelSize: 12
+                                    inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                    horizontalAlignment: TextInput.AlignRight
+                                    placeholderText: text.length > 0 ? "" : "المبلغ"
+                                }
+                                TextField {
+                                    id: transferNote
+                                    objectName: "transferNote"
+                                    Layout.fillWidth: true
+                                    font.family: "Cairo"
+                                    font.pixelSize: 12
+                                    horizontalAlignment: TextInput.AlignRight
+                                    placeholderText: text.length > 0 ? "" : "ملاحظة (اختياري)"
+                                }
+                                ActionButton {
+                                    objectName: "transferConfirm"
+                                    text: "تنفيذ التحويل"
+                                    accent: theme.green
+                                    enabled: !reviewsVM.moneyBusy && transferFrom.currentIndex >= 0 && transferAmount.text.trim().length > 0
+                                             && (transferForm.mode !== "BANK" || (transferTo.currentIndex >= 0 && transferTo.currentIndex !== transferFrom.currentIndex))
+                                             && (transferForm.mode !== "SAFE" || !!transferForm.safeAccount)
+                                             && (transferForm.mode !== "MKT" || transferMarketer.currentIndex >= 0)
+                                    onClicked: {
+                                        var from = transferForm.banks[transferFrom.currentIndex].key
+                                        transferForm.pending = true
+                                        if (transferForm.mode === "MKT") {
+                                            reviewsVM.transferToMarketer(from, reviewsVM.marketers[transferMarketer.currentIndex].id, transferAmount.text.trim(), transferNote.text.trim(), transferForm.requestKey)
+                                        } else if (transferForm.mode === "TO" || transferForm.mode === "FROM") {
+                                            reviewsVM.privateTransfer(from, transferForm.mode, transferAmount.text.trim(), transferNote.text.trim(), transferForm.requestKey)
+                                        } else {
+                                            var to = transferForm.mode === "SAFE" ? transferForm.safeAccount.key : transferForm.banks[transferTo.currentIndex].key
+                                            reviewsVM.transferBetween(from, to, transferAmount.text.trim(), transferNote.text.trim(), transferForm.requestKey)
+                                        }
+                                    }
+                                }
+                            }
+                            Label {
+                                objectName: "transferMessage"
+                                Layout.fillWidth: true
+                                visible: text.length > 0
+                                text: reviewsVM.accountMessage
+                                color: reviewsVM.accountMessageIsError ? theme.red : theme.green
+                                font.family: "Cairo"
+                                font.pixelSize: 12
+                                horizontalAlignment: Text.AlignRight
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+                    }
+                    // الحساب الخاص: balance and every entry (owner only; the service refuses anyone else).
+                    Rectangle {
+                        objectName: "privateAccountPanel"
+                        visible: reviewsVM.canUsePrivate && reviewPage.transferOpen
+                        Layout.fillWidth: true
+                        implicitHeight: privateColumn.implicitHeight + 16
+                        color: theme.bgSecondary
+                        radius: 4
+                        border.color: theme.goldDark
+                        ColumnLayout {
+                            id: privateColumn
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.margins: 8
+                            spacing: 4
+                            RowLayout {
+                                Layout.fillWidth: true
+                                layoutDirection: Qt.RightToLeft
+                                spacing: 14
+                                Label { text: "الحساب الخاص"; color: theme.gold; font.family: "Cairo"; font.pixelSize: 14; font.bold: true }
+                                Label { objectName: "privateBalance"; text: "الرصيد: " + (reviewsVM.privateAccount.balance || "0.00 ج"); color: theme.textPrimary; font.family: "Cairo"; font.pixelSize: 13; font.bold: true }
+                                Label { text: "حوّلت له: " + (reviewsVM.privateAccount.totalIn || "0.00 ج"); color: theme.green; font.family: "Cairo"; font.pixelSize: 12 }
+                                Label { text: "رجع منه: " + (reviewsVM.privateAccount.totalOut || "0.00 ج"); color: theme.amber; font.family: "Cairo"; font.pixelSize: 12 }
+                                Item { Layout.fillWidth: true }
+                            }
+                            Repeater {
+                                model: reviewsVM.privateAccount.entries || []
+                                RowLayout {
+                                    required property var modelData
+                                    required property int index
+                                    objectName: "privateEntry_" + index
+                                    Layout.fillWidth: true
+                                    layoutDirection: Qt.RightToLeft
+                                    spacing: 10
+                                    opacity: modelData.voided ? 0.5 : 1
+                                    Label { text: modelData.text + (modelData.voided ? " (معكوس)" : ""); color: modelData.toPrivate ? theme.green : theme.amber; font.family: "Cairo"; font.pixelSize: 12; Layout.preferredWidth: 130; horizontalAlignment: Text.AlignRight }
+                                    Label { text: modelData.account; color: theme.textSecondary; font.family: "Cairo"; font.pixelSize: 12; Layout.preferredWidth: 120; horizontalAlignment: Text.AlignRight }
+                                    Label { text: modelData.amount; color: theme.textPrimary; font.family: "Cairo"; font.pixelSize: 12; font.bold: true; Layout.preferredWidth: 110; horizontalAlignment: Text.AlignRight }
+                                    Label { text: modelData.date; color: theme.textMuted; font.family: "Cairo"; font.pixelSize: 11 }
+                                    Label { text: modelData.note; color: theme.textMuted; font.family: "Cairo"; font.pixelSize: 11; elide: Text.ElideLeft; Layout.fillWidth: true; horizontalAlignment: Text.AlignRight }
+                                    Label { text: "الرصيد " + modelData.balance; color: theme.textSecondary; font.family: "Cairo"; font.pixelSize: 11 }
+                                }
+                            }
+                            Label {
+                                visible: (reviewsVM.privateAccount.entries || []).length === 0
+                                text: "لا توجد تحويلات على الحساب الخاص بعد."
+                                color: theme.textMuted
+                                font.family: "Cairo"
+                                font.pixelSize: 12
+                            }
+                        }
+                    }
                     // New real bank / wallet account (BANK_MANAGE; the service re-checks and audits).
                     ActionButton {
                         objectName: "newAccountToggle"
@@ -1202,15 +1621,20 @@ Item {
                     visible: (reviewsVM.selectedCategory === "" && count > 0) || reviewsVM.selectedCategory === "INVENTORY_MATCH"
                     title: "مراجعة مخزون — مبيعات يدوية"
                     count: reviewsVM.inventoryCases.length
+                    Label {
+                        objectName: "caseMessage"
+                        Layout.fillWidth: true
+                        visible: text.length > 0
+                        text: reviewsVM.inspectionMessage
+                        color: reviewsVM.inspectionMessageIsError ? theme.red : theme.green
+                        font.family: "Cairo"
+                        font.pixelSize: 12
+                        horizontalAlignment: Text.AlignRight
+                        wrapMode: Text.WordWrap
+                    }
                     Repeater {
                         model: reviewsVM.inventoryCases
-                        Row2 {
-                            invoiceId: modelData.invoiceId
-                            title: modelData.title + " — " + modelData.reason
-                            side: modelData.time + " • " + modelData.salesperson
-                            line1: modelData.details
-                            line2: modelData.customer + (modelData.notes ? " • " + modelData.notes : "")
-                        }
+                        CaseCard { review: modelData; rowIndex: index }
                     }
                 }
                 Section {
@@ -1220,7 +1644,7 @@ Item {
                     count: reviewsVM.makingReviews.length
                     Repeater {
                         model: reviewsVM.makingReviews
-                        Row2 { invoiceId: modelData.invoiceId; title: modelData.title; side: modelData.time + " • " + modelData.by; line1: modelData.details }
+                        ReviewCard { review: modelData; rowIndex: index }
                     }
                 }
                 Section {
@@ -1230,7 +1654,7 @@ Item {
                     count: reviewsVM.settlementReviews.length
                     Repeater {
                         model: reviewsVM.settlementReviews
-                        Row2 { invoiceId: modelData.invoiceId; title: modelData.title; side: modelData.time + " • " + modelData.by; line1: modelData.details }
+                        ReviewCard { review: modelData; rowIndex: index }
                     }
                 }
                 Section {
@@ -1240,7 +1664,7 @@ Item {
                     count: reviewsVM.discountReviews.length
                     Repeater {
                         model: reviewsVM.discountReviews
-                        Row2 { invoiceId: modelData.invoiceId; title: modelData.title; side: modelData.time + " • " + modelData.by; line1: modelData.details }
+                        ReviewCard { review: modelData; rowIndex: index }
                     }
                 }
             }

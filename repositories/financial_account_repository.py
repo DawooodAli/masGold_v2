@@ -301,6 +301,26 @@ class FinancialAccountRepository(BaseRepository):
                 (kind, direction, employee_id, customer_id, lender_name, amount, int(operation_id), note, actor.user_id, now))
         return str(advance_id)
 
+    # ------------------------------------------------------------ private account (090)
+    def insert_private_entry(self, *, direction, amount, operation_id, note, actor, now):
+        entry_id, _ = self._execute(
+            "INSERT INTO private_account_entries (direction, amount, operation_id, note, created_by_user_id, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
+            (direction, amount, int(operation_id), note, actor.user_id, now))
+        return str(entry_id)
+
+    def private_entries(self):
+        """Every private-account entry, oldest first, with the bank / wallet account and whether its operation was reversed (None below 090)."""
+        return self._advance_guard(
+            """
+            SELECT e.id, e.direction, e.amount, e.operation_id, e.note, e.created_at, b.name AS account_name,
+                   (SELECT COUNT(*) FROM transaction_corrections k WHERE k.source_type = 'FINANCIAL_OPERATION'
+                      AND k.source_id = e.operation_id AND k.correction_type = 'FULL_REVERSAL') AS voided
+            FROM private_account_entries e
+            JOIN financial_operations o ON o.id = e.operation_id
+            LEFT JOIN bank_accounts b ON b.id = COALESCE(o.from_bank_account_id, o.to_bank_account_id)
+            ORDER BY e.id
+            """)
+
     def insert_repayment(self, *, advance_id, amount, operation_id, actor, now):
         self._execute("INSERT INTO cash_advance_repayments (advance_id, amount, operation_id, created_by_user_id, created_at) VALUES (%s, %s, %s, %s, %s)",
                       (int(advance_id), amount, int(operation_id), actor.user_id, now))

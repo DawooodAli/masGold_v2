@@ -101,6 +101,141 @@ class ManagerReviewPageTests(harness.InvoicePageTests):
         self.assertIsNone(self.visible_item("reviewApprove"))
         self.assertEqual(self.requested, [])                            # a card is never a navigation
 
+    def test_pricing_review_card_shows_the_categories_and_تمت_المراجعة_removes_it(self):
+        self.open_reviews()
+        vm = self.reviews_vm
+        vm._reviews["MAKING_PRICE"][0]["details_json"] = {
+            "effective_sale_total": "35200.00", "salesperson_name": "محمد",
+            "groups": [{"category_code": "C", "average_making_per_gram": "407.37", "status": "OUT_OF_RANGE"},
+                       {"category_code": None, "average_making_per_gram": "407.38", "status": "NOT_CONFIGURED"}]}
+        vm.changed.emit()
+        row = vm.makingReviews[0]
+        self.assertEqual((row["reviewId"], row["price"], row["salesperson"]), ("5", "35,200.00 ج", "محمد"))
+        self.assertEqual([(g["category"], g["statusText"]) for g in row["groups"]],
+                         [("C", "خارج النطاق"), ("بدون فئة", "غير محدد النطاق")])
+        done = []
+
+        class Service:
+            def mark_reviewed(self, review_id, *, _expected_actor=None):
+                done.append(review_id)
+                return {"review_id": review_id, "review_type": "MAKING_PRICE"}
+        vm._service = Service()
+        QTest.qWait(200)
+        for width, height in harness.SIZES:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(100)
+            self.assert_inside_window(self.visible_item("reviewDone_0"))
+        self.click("reviewDone_0")
+        self.wait_until(lambda: done, "reviewed")
+        self.assertEqual(done, ["5"])
+        self.assertEqual(self.requested, [])                            # the button never navigates to the invoice
+
+    def test_an_unidentified_sale_is_settled_from_its_card_with_real_clicks(self):
+        self.open_reviews()
+        vm = self.reviews_vm
+        calls = []
+
+        class Service:
+            def match_case_to_stock(self, case_id, barcode, *, _expected_actor=None):
+                calls.append(("match", case_id, barcode))
+                return {"case_id": case_id, "resolution": "MATCH_STOCK", "status": "MATCHED"}
+
+            def take_case_from_scrap(self, case_id, *, _expected_actor=None):
+                calls.append(("scrap", case_id))
+                return {"case_id": case_id, "resolution": "FROM_SCRAP", "status": "CLOSED"}
+
+            def close_case_no_source(self, case_id, reason, *, _expected_actor=None):
+                calls.append(("none", case_id, reason))
+                return {"case_id": case_id, "resolution": "NO_SOURCE", "status": "CLOSED"}
+        vm._service = Service()
+        vm._reviews["INVENTORY_MATCH"] = [{"case_id": "70", "invoice_id": "21", "invoice_number": "26102608", "sold_at": datetime(2026, 10, 26),
+                                           "reason_code": "OTHER", "reason": "سبب آخر", "notes": "", "observed_weight_grams": D("3.000"),
+                                           "karat_value": 21, "item_type_name": "سبيكة", "salesperson_name": "علي",
+                                           "customer_name_snapshot": "عميل"}]
+        vm._counts["INVENTORY_MATCH"] = 1
+        vm.changed.emit()
+        QTest.qWait(300)
+        self.assertEqual((vm.inventoryCases[0]["caseId"], vm.inventoryCases[0]["karat"], vm.inventoryCases[0]["weight"]), ("70", "21", "3.000"))
+        for width, height in harness.SIZES:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(120)
+            for name in ("caseMatch_0", "caseScrap_0", "caseNoSource_0"):
+                self.assertIsNotNone(self.visible_item(name), name)
+        self.assertFalse(self.item("caseMatch_0").property("enabled"))                  # no barcode yet
+        self.click(self.item("caseBarcode_0"))
+        self.type_text("01261001")
+        self.click("caseMatch_0")
+        self.wait_until(lambda: calls, "linked")
+        self.assertEqual(calls[-1], ("match", "70", "01261001"))
+        self.click("caseScrap_0")                                                      # the first click only arms the button
+        self.assertEqual(len([c for c in calls if c[0] == "scrap"]), 0)
+        self.click("caseScrap_0")
+        self.wait_until(lambda: [c for c in calls if c[0] == "scrap"], "scrap")
+        self.assertEqual(self.requested, [])                                           # no button navigates to the invoice
+
+    def test_private_transfer_form_hides_the_main_safe_and_moves_money_with_real_clicks(self):
+        import dataclasses
+        self.open_reviews()
+        vm = self.reviews_vm
+        session = vm._session
+        with session._lock:
+            session._actor = dataclasses.replace(session._actor, permissions=session._actor.permissions | {"PRIVATE_ACCOUNT_MANAGE", "FINANCIAL_ACCOUNT_OPERATE"})
+        calls = []
+
+        class Fin:
+            def private_account(self, *, _expected_actor=None):
+                return {"available": True, "balance": "5000.00", "total_in": "5000.00", "total_out": "0.00",
+                        "entries": [{"id": "1", "date": "2026-10-29 12:00", "direction": "TO_PRIVATE", "text": "إلى الحساب الخاص", "account": "الأهلي",
+                                     "amount": "5000.00", "note": "", "voided": False, "balance": "5000.00", "operation": "FO000009"}]}
+
+            def private_transfer(self, key, direction, amount, note, request_key, *, _expected_actor=None):
+                calls.append(("private", key, direction, amount))
+                return {"operation_id": "9"}
+
+            def transfer(self, from_key, to_key, amount, note, request_key, *, _expected_actor=None):
+                calls.append(("transfer", from_key, to_key, amount))
+                return {"operation_id": "10"}
+        vm._fin_service = Fin()
+        accounts = [{"ledger": "CASH", "account_id": "1", "name": "Main Safe", "account_type": "CASH", "is_active": 1, "balance": D("82645"),
+                          "money_in": D("0"), "money_out": D("0"), "movement_count": 0, "recent": []},
+                         {"ledger": "BANK", "account_id": "3", "name": "الأهلي", "account_type": "BANK", "is_active": 1, "balance": D("96200"),
+                          "money_in": D("0"), "money_out": D("0"), "movement_count": 0, "recent": []},
+                         {"ledger": "BANK", "account_id": "4", "name": "محفظة", "account_type": "MOBILE_WALLET", "is_active": 1, "balance": D("28500"),
+                          "money_in": D("0"), "money_out": D("0"), "movement_count": 0, "recent": []}]
+
+        class Balances:                                                  # the refresh after a transfer re-reads the accounts
+            def financial_accounts(self, *, _expected_actor=None):
+                return accounts
+        vm._balance_service = Balances()
+        vm._on_accounts(accounts, "")
+        vm.changed.emit()
+        QTest.qWait(300)
+        self.assertEqual([a["name"] for a in vm.financialAccounts], ["الأهلي", "محفظة"])           # the main safe is not in this section
+        self.assertEqual([c["count"] for c in vm.dashboardCards if c["code"] == "ACCOUNTS"], [2])
+        for width, height in harness.SIZES:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(120)
+            self.assertIsNotNone(self.visible_item("privateTransferToggle"))
+        self.click("privateTransferToggle")
+        self.wait_until(lambda: self.visible_item("transferConfirm") is not None, "form")
+        self.wait_until(lambda: "5,000.00" in str(vm.privateAccount.get("balance", "")), "private balance")
+        self.assertFalse(self.item("transferConfirm").property("enabled"))                   # no amount yet
+        self.click(self.item("transferAmount"))
+        self.type_text("2500")
+        self.click("transferConfirm")
+        self.wait_until(lambda: calls, "private transfer")
+        self.assertEqual(calls[-1], ("private", "BANK:3", "TO", "2500"))
+        self.item("transferMode").setProperty("currentIndex", 3)                              # إلى الخزنة الرئيسية
+        QTest.qWait(150)
+        self.click(self.item("transferAmount"))
+        self.type_text("700")
+        self.click("transferConfirm")
+        self.wait_until(lambda: calls[-1][0] == "transfer", "transfer")
+        self.assertEqual(calls[-1], ("transfer", "BANK:3", "CASH:1", "700"))
+
     def test_card_background_opens_the_source_but_a_button_never_navigates(self):
         self.open_reviews()
         self.click(f"reviewSource_{HUGE}")

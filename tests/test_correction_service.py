@@ -246,7 +246,8 @@ class Repo:
     def case_for(self, *, invoice_line_id=None, lifecycle_line_id=None):
         key, value = ("invoice_line_id", invoice_line_id) if invoice_line_id else ("lifecycle_line_id", lifecycle_line_id)
         c = next((v for v in self.store.cases if v.get(key) == value), None)
-        return None if c is None else {"case_id": c["case_id"], "case_status": c["status"]}
+        return None if c is None else {"case_id": c["case_id"], "case_status": c["status"], "resolution_code": c.get("resolution"),
+                                       "matched_inventory_item_id": c.get("matched_item")}
 
     def lock_old_gold_balance(self, karat_id):
         return self.store.old_gold_balance(karat_id) - sum(
@@ -320,7 +321,7 @@ class Repo:
 
     def cancel_case(self, *, case_id, **kw):
         c = next(v for v in self.store.cases if v["case_id"] == case_id)
-        assert c["status"] == "OPEN"
+        assert c["status"] in ("OPEN", "MATCHED", "CLOSED")
         c["status"] = "CANCELLED"
 
     def mark_lines_reversed(self, *, table, line_ids, correction_id):
@@ -428,6 +429,36 @@ class InvoiceReversalTests(CorrectionTestCase):
         self.assertEqual(codes, {"REVERSAL_OLD_GOLD_SALE_IN": D("5.000"), "REVERSAL_OLD_GOLD_PURCHASE_OUT": D("-4.000")})
         self.assertEqual(self.store.old_gold_balance() - stock_before, D("1.000"))
         self.assertEqual(self.store.cases[0]["status"], "CANCELLED")                       # F5 no longer actionable
+
+    def test_a_case_the_manager_matched_to_a_stock_piece_is_undone_with_the_invoice(self):
+        self.store.items["299"] = dict(self.store.items["200"], inventory_status="SOLD")
+        self.store.cases[0].update(status="MATCHED", resolution="MATCH_STOCK", matched_item="299")
+        self.service.reverse("INVOICE", "500", REASON)
+        self.assertEqual(self.store.items["299"]["inventory_status"], "IN_STOCK")          # the linked piece is back in stock
+        self.assertEqual(self.store.cases[0]["status"], "CANCELLED")
+
+    def test_a_matched_piece_that_left_the_sold_state_blocks_the_reversal(self):
+        self.store.items["299"] = dict(self.store.items["200"], inventory_status="IN_STOCK")
+        self.store.cases[0].update(status="MATCHED", resolution="MATCH_STOCK", matched_item="299")
+        self.assertRefused("DOWNSTREAM_DEPENDENCY_EXISTS", lambda: self.service.reverse("INVOICE", "500", REASON))
+
+    def test_a_case_taken_from_scrap_returns_its_weight_with_the_reversal(self):
+        self.store.cases[0].update(status="CLOSED", resolution="FROM_SCRAP")
+        before = self.store.old_gold_balance()
+        self.service.reverse("INVOICE", "500", REASON)
+        returned = [g for _, g, c in self.store.old_gold[1:] if c == "REVERSAL_OLD_GOLD_SALE_IN"]
+        self.assertEqual(sorted(returned), [D("2.000"), D("5.000")])                      # the F7 line and the settled F5 case
+        self.assertEqual(self.store.old_gold_balance() - before, D("3.000"))             # +5 +2 -4 (the customer's purchase)
+
+    def test_a_case_closed_without_a_source_is_cancelled_and_moves_nothing(self):
+        self.store.cases[0].update(status="CLOSED", resolution="NO_SOURCE")
+        self.service.reverse("INVOICE", "500", REASON)
+        self.assertEqual(self.store.cases[0]["status"], "CANCELLED")
+        self.assertNotIn(D("2.000"), [g for _, g, c in self.store.old_gold[1:] if c == "REVERSAL_OLD_GOLD_SALE_IN"])
+
+    def test_an_old_resolved_case_without_a_stored_resolution_still_blocks(self):
+        self.store.cases[0].update(status="CLOSED")
+        self.assertRefused("DOWNSTREAM_DEPENDENCY_EXISTS", lambda: self.service.reverse("INVOICE", "500", REASON))
 
     def test_customer_old_gold_already_consumed_blocks(self):
         self.store.old_gold = [(1, D("3.000"), "OPENING_BALANCE")]                        # the 4.000 bought are gone

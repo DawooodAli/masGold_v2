@@ -230,8 +230,8 @@ class InventoryStockPageTests(harness.InvoicePageTests):
             def get_stock_summary(self):
                 return {}
 
-            def correct_item(self, item_id, item_type_id, karat_id, reason, weight_grams=None):
-                calls.append((item_id, item_type_id, karat_id, reason))
+            def correct_item(self, item_id, item_type_id, karat_id, reason, weight_grams=None, category_id=None):
+                calls.append((item_id, item_type_id, karat_id, reason, category_id))
                 return {"inventory_item_id": item_id}
         inventory = self.controller.operational_viewmodels["inventoryVM"]
         inventory._service = Service()
@@ -239,8 +239,10 @@ class InventoryStockPageTests(harness.InvoicePageTests):
         master = self.controller.operational_viewmodels["masterDataVM"]
         master._item_types = [{"id": 1, "name": "خاتم"}, {"id": 2, "name": "سلسلة"}]
         master._karats = [{"id": 1, "name": "عيار 21"}, {"id": 2, "name": "عيار 18"}]
+        master._categories = [{"id": 1, "code": "A", "name": "A"}, {"id": 2, "code": "B", "name": "B"}, {"id": 3, "code": "C", "name": "C"},
+                              {"id": 6, "code": "T", "name": "T"}]
         master.dataChanged.emit()
-        item = {"inventory_item_id": 7, "item_type_id": master.itemTypes[0]["id"], "karat_id": master.karats[0]["id"], "item_type_name": "خاتم", "karat_value": 21,
+        item = {"category_id": 1, "inventory_item_id": 7, "item_type_id": master.itemTypes[0]["id"], "karat_id": master.karats[0]["id"], "item_type_name": "خاتم", "karat_value": 21,
                 "weight_grams": 3.6, "size": "55", "factory_name": "النور", "category_code": "A", "barcode_value": "01261001", "stock_classification": "NEW_STOCK",
                 "inventory_status": "IN_STOCK", "acquisition_source": "MANUAL_ENTRY", "acquired_at": "2026-10-01 10:00:00", "notes": ""}
         self.root.setProperty("selectedInventoryItem", item)
@@ -258,6 +260,10 @@ class InventoryStockPageTests(harness.InvoicePageTests):
             self.wait_until(lambda: dialog.property("opened"), "correction dialog")
             self.assertFalse(self.item("inventoryCorrectSave").property("enabled"))                  # the reason is mandatory
             self.choose("inventoryCorrectKarat", len(master.karats) - 1)
+            category = self.item("inventoryCorrectCategory")
+            self.assertEqual(category.property("count"), 3)                                           # A, B and T only: never C
+            self.assertEqual(category.property("currentIndex"), 0)                                    # the piece's own category (A)
+            self.choose("inventoryCorrectCategory", 2)                                                # A -> T
             self.type_into("inventoryCorrectReason", "اتدخلت بعيار غلط")
             self.wait_until(lambda: self.item("inventoryCorrectSave").property("enabled"), "can save")
             self.assert_inside_window(self.item("inventoryCorrectSave"))
@@ -268,6 +274,7 @@ class InventoryStockPageTests(harness.InvoicePageTests):
         self.assertEqual(calls[-1][0], 7)
         self.assertEqual(calls[-1][2], master.karats[-1]["id"])
         self.assertEqual(calls[-1][3], "اتدخلت بعيار غلط")
+        self.assertEqual(calls[-1][4], 6)                                                              # the category moved to T
         sold = dict(item, inventory_status="SOLD")
         self.root.setProperty("selectedInventoryItem", sold)
         details.open()

@@ -970,6 +970,18 @@ class CorrectionService:
                 case = corrections.case_for(invoice_line_id=line["line_id"])
                 if case is not None and case["case_status"] == "OPEN":
                     plan.cases.append(case["case_id"])
+                elif case is not None and case["case_status"] in ("MATCHED", "CLOSED") and case.get("resolution_code"):
+                    # 089: the manager's decision is undone with the invoice, from the stored effect.
+                    if case["resolution_code"] == "MATCH_STOCK":
+                        found = corrections.lock_items([case["matched_inventory_item_id"]]).get(str(case["matched_inventory_item_id"]))
+                        if found is None or found["inventory_status"] != "SOLD":
+                            plan.blockers.append(("DOWNSTREAM_DEPENDENCY_EXISTS",
+                                                  "لا يمكن عكس الفاتورة: حالة القطعة المربوطة في مراجعة المخزون تغيرت بعد الحسم."))
+                            continue
+                        plan.inventory.append((str(case["matched_inventory_item_id"]), "SOLD", "IN_STOCK", "REVERSAL_SALE_RESTOCK"))
+                    elif case["resolution_code"] == "FROM_SCRAP":
+                        plan.old_gold.append((int(line["karat_id"]), line["karat_value"], weight, "REVERSAL_OLD_GOLD_SALE_IN"))
+                    plan.cases.append(case["case_id"])
                 elif case is not None and case["case_status"] != "CANCELLED":
                     plan.blockers.append(("DOWNSTREAM_DEPENDENCY_EXISTS",
                                           "لا يمكن عكس الفاتورة: حالة البيع اليدوي حُسمت في مراجعة المخزون."))

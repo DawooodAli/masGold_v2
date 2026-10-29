@@ -144,6 +144,8 @@ class CallSiteAuditTests(unittest.TestCase):
                   ("services/user_admin_service.py", "overview"),                  # USERS_MANAGE (read model, no hashes)
                   ("services/supplier_service.py", "_read_verified"),              # SUPPLIER_VIEW (suppliers, ledgers)
                   ("services/supplier_purchase_service.py", "_read_verified"),     # SUPPLIER_VIEW (invoices, intake)
+                  ("services/supplier_purchase_service.py", "open_groups"),         # SUPPLIER_INTAKE: the groups offered by the inventory entry (a read)
+                  ("services/financial_account_service.py", "private_account"),    # PRIVATE_ACCOUNT_MANAGE (owner): the private account report
                   ("services/system_settings_service.py", "overview"),             # SYSTEM_SETTINGS_VIEW (the settings list, 081)
                   ("services/system_settings_service.py", "public_settings")}      # SYSTEM_SETTINGS_VIEW (the public settings of the interface, 081)
 

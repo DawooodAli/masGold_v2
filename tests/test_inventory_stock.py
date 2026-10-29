@@ -89,6 +89,15 @@ class Repo:
             piece["weight_grams"] = weight_grams
         return 1
 
+    CATEGORIES = {1: "A", 2: "B", 6: "T", 3: "C"}
+
+    def get_active_category_by_id(self, category_id):
+        return {"id": category_id, "code": self.CATEGORIES[category_id]} if category_id in self.CATEGORIES and category_id != 3 else None   # C (3) is inactive
+
+    def update_item_category(self, item_id, category_id):
+        next(p for p in self.store.pieces if p["inventory_item_id"] == item_id)["category_id"] = category_id
+        return 1
+
     def audit_item_correction(self, **values):
         self.store.__dict__.setdefault("audits", []).append(values)
 
@@ -202,7 +211,22 @@ class ManualEntryTests(unittest.TestCase):
         service.correct_item(7, 99, 3, "اتدخلت بعيار غلط")
         self.assertEqual((store.pieces[0]["item_type_id"], store.pieces[0]["karat_id"]), (99, 3))
         audit = store.audits[0]
-        self.assertEqual((audit["item_id"], audit["metadata"]["reason"], audit["metadata"]["after"]), (7, "اتدخلت بعيار غلط", {"item_type_id": 99, "karat_id": 3}))
+        self.assertEqual((audit["item_id"], audit["metadata"]["reason"], audit["metadata"]["after"]), (7, "اتدخلت بعيار غلط", {"item_type_id": 99, "karat_id": 3, "category_id": None}))
+
+    def test_a_piece_in_stock_moves_between_the_categories_A_B_and_T_only(self):
+        piece = dict(MIXED[0], inventory_item_id=7, inventory_status="IN_STOCK", category_id=2)
+        store = Store([piece])
+        service = service_for(store)
+        service.correct_item(7, piece["item_type_id"], piece["karat_id"], "الفئة غلط", None, 1)       # B -> A
+        self.assertEqual(piece["category_id"], 1)
+        self.assertEqual((store.audits[0]["metadata"]["before"]["category_id"], store.audits[0]["metadata"]["after"]["category_id"]), (2, 1))
+        service.correct_item(7, piece["item_type_id"], piece["karat_id"], "الفئة غلط", None, 6)       # A -> T
+        self.assertEqual(piece["category_id"], 6)
+        with self.assertRaises(ValueError):                                                          # an inactive / other category is refused
+            service.correct_item(7, piece["item_type_id"], piece["karat_id"], "x", None, 3)
+        with self.assertRaises(ValueError):                                                          # nothing changed
+            service.correct_item(7, piece["item_type_id"], piece["karat_id"], "x", None, 6)
+        self.assertEqual(piece["category_id"], 6)
 
     def test_the_weight_of_a_piece_in_stock_can_be_corrected_with_the_same_reason_and_audit(self):
         piece = dict(MIXED[0], inventory_item_id=7, inventory_status="IN_STOCK")

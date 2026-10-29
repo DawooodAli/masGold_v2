@@ -15,6 +15,8 @@ Item {
 
     readonly property var vm: typeof supplierVM !== "undefined" ? supplierVM : null
     readonly property var pvm: typeof supplierPurchaseVM !== "undefined" ? supplierPurchaseVM : null
+    // Owner 2026-10-29: every piece enters the stock from «إدخال قطعة جديدة» (the supplier group is chosen there); this page only shows invoices.
+    property bool pieceEntryHere: false
     readonly property var detail: vm ? vm.detail : ({})
     readonly property bool hasSelection: !!vm && vm.selectedSupplierId !== "" && !!detail && detail.id !== undefined
     property int tab: 0
@@ -838,7 +840,7 @@ Item {
                                                     }
                                                     Btn {
                                                         Layout.preferredWidth: page.colActionWidth
-                                                        text: modelData.status === "POSTED" && !modelData.reversed ? "إدخال القطع" : "فتح"
+                                                        text: modelData.status === "POSTED" && !modelData.reversed ? "تفاصيل" : "فتح"
                                                         onClicked: intakeDialog.openFor(modelData.id)
                                                     }
                                                 }
@@ -3560,7 +3562,7 @@ Item {
                     Section {
                         id: pieceForm
                         objectName: "pieceForm"
-                        visible: intakeDialog.ready && intakeDialog.inv.posted && !!page.pvm && page.pvm.canIntake
+                        visible: page.pieceEntryHere && intakeDialog.ready && intakeDialog.inv.posted && !!page.pvm && page.pvm.canIntake
                         title: "إدخال قطعة"
                         hint: intakeDialog.selectedGroup === "" ? "اختر المجموعة أولًا"
                               : "إلى مجموعة " + intakeDialog.groupNo(intakeDialog.selectedGroup)

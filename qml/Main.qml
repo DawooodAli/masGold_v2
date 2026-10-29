@@ -10918,6 +10918,8 @@ ApplicationWindow {
             oldGoldConsumedWeightField.text = ""
 
             stockClassificationCombo.currentIndex = 0
+            groupSaving = false
+            groupRequestKey = ""
 
             notesField.text = ""
             inventoryEntryError.text = ""
@@ -10945,6 +10947,55 @@ ApplicationWindow {
             weightField.forceActiveFocus()
         }
 
+
+        // 088: the supplier making groups still waiting for pieces (hidden when finished or when the owner hid them).
+        readonly property var supplierIntake: typeof supplierPurchaseVM !== "undefined" ? supplierPurchaseVM : null
+        property string groupRequestKey: ""
+        property bool groupSaving: false
+        readonly property bool groupMode: stockClassificationCombo.currentIndex === 2
+        readonly property var currentGroup: groupMode && supplierGroupCombo.currentIndex >= 0
+                                            ? supplierIntake.intakeGroups[supplierGroupCombo.currentIndex] : null
+
+        // The group fixes the karat (the supplier's) and its making rate fixes the category: neither is chosen by hand.
+        function applyGroup() {
+            if (!groupMode || !currentGroup) {
+                return
+            }
+            for (var i = 0; i < masterDataVM.karats.length; i++) {
+                if (Number(masterDataVM.karats[i].id) === Number(currentGroup.karatId)) {
+                    karatCombo.currentIndex = i
+                    return
+                }
+            }
+        }
+
+        onGroupModeChanged: {
+            if (groupMode) {
+                applyGroup()
+            }
+        }
+
+        Connections {
+            target: newInventoryItemDialog.supplierIntake
+            ignoreUnknownSignals: true
+            function onStockChanged() {
+                if (!newInventoryItemDialog.groupSaving) {
+                    return
+                }
+                newInventoryItemDialog.groupSaving = false
+                newInventoryItemDialog.groupRequestKey = ""
+                inventoryVM.refresh()
+                newInventoryItemDialog.prepareNextPiece("تم إدخال القطعة من مجموعة المورد.")
+                newInventoryItemDialog.applyGroup()
+            }
+            function onChanged() {
+                var vm = newInventoryItemDialog.supplierIntake
+                if (newInventoryItemDialog.groupSaving && !vm.busy && vm.errorMessage.length > 0) {
+                    newInventoryItemDialog.groupSaving = false
+                    inventoryEntryError.text = vm.errorMessage
+                }
+            }
+        }
 
         function openForNewItem() {
 
@@ -11031,6 +11082,7 @@ ApplicationWindow {
 
             ScrollView {
                 id: inventoryEntryScroll
+                objectName: "inventoryEntryScroll"
 
                 Layout.fillWidth: true
                 Layout.fillHeight: true
@@ -11061,6 +11113,110 @@ ApplicationWindow {
 
                     // No responsible / receiving employee: manual entry and the old-gold conversion
                     // record the authenticated actor (owner decisions 2026-10-01 / 2026-10-02).
+
+
+                    // ------------------------------------------------
+                    // SUPPLIER GROUP — only for "من مجموعة مورد"
+                    // ------------------------------------------------
+
+                    Rectangle {
+                        objectName: "supplierGroupBox"
+                        visible: newInventoryItemDialog.groupMode
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: groupBoxColumn.implicitHeight + 20
+                        color: theme.bgTertiary
+                        radius: theme.radiusSmall
+                        border.color: theme.goldDark
+                        border.width: 1
+
+                        ColumnLayout {
+                            id: groupBoxColumn
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.margins: 10
+                            spacing: 6
+
+                            Label {
+                                Layout.fillWidth: true
+                                text: "مجموعة المورد *"
+                                color: theme.textSecondary
+                                font.family: "Cairo"
+                                font.pixelSize: 12
+                                horizontalAlignment: Text.AlignRight
+                            }
+                            ComboBox {
+                                id: supplierGroupCombo
+                                objectName: "supplierGroupCombo"
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 44
+                                model: newInventoryItemDialog.supplierIntake ? newInventoryItemDialog.supplierIntake.intakeGroups : []
+                                textRole: "label"
+                                currentIndex: -1
+                                font.family: "Cairo"
+                                displayText: currentIndex >= 0 ? currentText : "اختر المجموعة"
+                                property string pickedId: ""
+                                onActivated: {
+                                    pickedId = currentIndex >= 0 ? model[currentIndex].groupId : ""
+                                    newInventoryItemDialog.applyGroup()
+                                }
+                                // The list is rebuilt after every change: keep the group the employee chose while it still exists.
+                                onModelChanged: {
+                                    var rows = model || []
+                                    var keep = -1
+                                    for (var i = 0; i < rows.length; i++) {
+                                        if (rows[i].groupId === pickedId) {
+                                            keep = i
+                                        }
+                                    }
+                                    currentIndex = keep >= 0 ? keep : (rows.length > 0 ? 0 : -1)
+                                    pickedId = currentIndex >= 0 ? rows[currentIndex].groupId : ""
+                                    newInventoryItemDialog.applyGroup()
+                                }
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                visible: newInventoryItemDialog.currentGroup !== null
+                                text: newInventoryItemDialog.currentGroup ? newInventoryItemDialog.currentGroup.detail : ""
+                                color: theme.textMuted
+                                font.family: "Cairo"
+                                font.pixelSize: 11
+                                horizontalAlignment: Text.AlignRight
+                                wrapMode: Text.WordWrap
+                            }
+                            Label {
+                                objectName: "supplierGroupEmpty"
+                                Layout.fillWidth: true
+                                visible: supplierGroupCombo.count === 0
+                                text: "لا توجد مجموعات موردين بانتظار الإدخال."
+                                color: theme.statusWarning
+                                font.family: "Cairo"
+                                font.pixelSize: 12
+                                horizontalAlignment: Text.AlignRight
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: "العيار من المورد والفئة من مصنعية المجموعة تلقائياً. تختفي المجموعة عند استكمال وزنها."
+                                color: theme.textMuted
+                                font.family: "Cairo"
+                                font.pixelSize: 11
+                                horizontalAlignment: Text.AlignRight
+                                wrapMode: Text.WordWrap
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                layoutDirection: Qt.RightToLeft
+                                Button {
+                                    objectName: "supplierGroupHide"
+                                    text: "إخفاء المجموعة (تمت طباعة الباركود)"
+                                    enabled: newInventoryItemDialog.currentGroup !== null && !newInventoryItemDialog.supplierIntake.busy
+                                    font.family: "Cairo"
+                                    onClicked: newInventoryItemDialog.supplierIntake.closeIntakeGroup(newInventoryItemDialog.currentGroup.groupId)
+                                }
+                                Item { Layout.fillWidth: true }
+                            }
+                        }
+                    }
 
 
                     // ------------------------------------------------
@@ -11144,6 +11300,7 @@ ApplicationWindow {
                                 id: karatCombo
                                 objectName: "inventoryKaratCombo"
 
+                                enabled: !newInventoryItemDialog.groupMode
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 44
 
@@ -11305,6 +11462,7 @@ ApplicationWindow {
                                     id: categoryCombo
                                     objectName: "inventoryCategoryCombo"
 
+                                    enabled: !newInventoryItemDialog.groupMode
                                     Layout.fillWidth: true
                                     Layout.preferredHeight: 44
 
@@ -11441,10 +11599,9 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 44
 
-                                model: [
-                                    "إدخال يدوي — بضاعة جديدة",
-                                    "محولة من الكسر"
-                                ]
+                                model: newInventoryItemDialog.supplierIntake && newInventoryItemDialog.supplierIntake.canIntake
+                                       ? ["إدخال يدوي — بضاعة جديدة", "محولة من الكسر", "من مجموعة مورد"]
+                                       : ["إدخال يدوي — بضاعة جديدة", "محولة من الكسر"]
 
                                 currentIndex: 0
 
@@ -11452,6 +11609,11 @@ ApplicationWindow {
                                 onActivated: {
 
                                     inventoryEntryError.text = ""
+
+                                    if (currentIndex === 2) {
+                                        newInventoryItemDialog.supplierIntake.loadIntakeGroups()
+                                        newInventoryItemDialog.applyGroup()
+                                    }
 
                                     if (currentIndex === 1) {
                                         oldGoldConversionVM
@@ -11925,7 +12087,9 @@ ApplicationWindow {
                         // (a hint: the services refuse the write without the right, whatever this screen shows).
                         enabled: stockClassificationCombo.currentIndex === 0
                                  ? inventoryVM.canManage
-                                 : oldGoldConversionVM.canManage
+                                 : (stockClassificationCombo.currentIndex === 2
+                                    ? (newInventoryItemDialog.currentGroup !== null && !newInventoryItemDialog.groupSaving)
+                                    : oldGoldConversionVM.canManage)
 
                         font.family: "Cairo"
                         font.bold: true
@@ -11965,6 +12129,37 @@ ApplicationWindow {
                                 : 0
 
                             var saved = false
+
+                            if (stockClassificationCombo.currentIndex === 2) {
+                                // A piece of a supplier group: the service resolves the category from the group's making
+                                // rate and the karat from the invoice. The result arrives asynchronously (Connections above).
+                                if (barcodeField.text.length > 0
+                                        && barcodeInput.problem(barcodeField.text).length > 0) {
+                                    inventoryEntryError.text = barcodeInput.problem(barcodeField.text)
+                                    return
+                                }
+                                var group = newInventoryItemDialog.currentGroup
+                                if (!group) {
+                                    inventoryEntryError.text = "اختر مجموعة المورد."
+                                    return
+                                }
+                                if (itemTypeId <= 0) {
+                                    inventoryEntryError.text = "يجب اختيار الصنف."
+                                    return
+                                }
+                                if (newInventoryItemDialog.groupRequestKey.length === 0) {
+                                    newInventoryItemDialog.groupRequestKey = supplierPurchaseVM.newRequestKey()
+                                }
+                                newInventoryItemDialog.groupSaving = true
+                                supplierPurchaseVM.clearMessage()
+                                supplierPurchaseVM.addPiece(
+                                    group.invoiceId, group.groupId, itemTypeId, weightField.text,
+                                    newInventoryItemDialog.groupRequestKey, factoryId, sizeField.text,
+                                    barcodeField.text.length > 0 ? "MANUAL" : "AUTO",
+                                    barcodeField.text.length > 0 ? barcodeInput.canonical(barcodeField.text) : "",
+                                    notesField.text)
+                                return
+                            }
 
 
                             // A barcode is stored exactly; anything outside the barcode set is refused
@@ -12593,6 +12788,7 @@ ApplicationWindow {
             correctKaratCombo.currentIndex = correctKaratCombo.indexOfValue(Number(root.selectedInventoryItem.karat_id))
             correctReason.text = ""
             correctWeight.text = Number(root.selectedInventoryItem.weight_grams).toFixed(3)
+            correctCategoryCombo.currentIndex = correctCategoryCombo.indexOfValue(Number(root.selectedInventoryItem.category_id || 0))
             inventoryVM.clearActionMessage()
             open()
         }
@@ -12601,7 +12797,7 @@ ApplicationWindow {
             spacing: 10
             Label {
                 Layout.fillWidth: true
-                text: "تعديل الصنف والعيار — قطعة #" + root.selectedInventoryItem.inventory_item_id
+                text: "تعديل الصنف والعيار والفئة — قطعة #" + root.selectedInventoryItem.inventory_item_id
                 color: theme.gold; font.bold: true; font.pixelSize: 15; font.family: "Cairo"
                 horizontalAlignment: Text.AlignRight
             }
@@ -12623,6 +12819,18 @@ ApplicationWindow {
                     Layout.fillWidth: true; Layout.preferredHeight: 40
                     model: masterDataVM.karats; textRole: "name"; valueRole: "id"
                     displayText: currentIndex >= 0 ? currentText : "اختر العيار"
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                Label { text: "الفئة"; color: theme.textPrimary; font.family: "Cairo"; Layout.preferredWidth: 70; horizontalAlignment: Text.AlignRight }
+                ComboBox {
+                    id: correctCategoryCombo; objectName: "inventoryCorrectCategory"
+                    Layout.fillWidth: true; Layout.preferredHeight: 40
+                    // A stocked piece moves between the categories A, B and T only.
+                    model: masterDataVM.categories.filter(function (c) { return c.code === "A" || c.code === "B" || c.code === "T" })
+                    textRole: "code"; valueRole: "id"
+                    displayText: currentIndex >= 0 ? currentText : "بدون فئة"
                 }
             }
             RowLayout {
@@ -12666,7 +12874,8 @@ ApplicationWindow {
                     onClicked: {
                         if (inventoryVM.correctInventoryItem(Number(root.selectedInventoryItem.inventory_item_id),
                                                              Number(correctTypeCombo.currentValue), Number(correctKaratCombo.currentValue),
-                                                             correctReason.text, correctWeight.text)) {
+                                                             correctReason.text, correctWeight.text,
+                                                             correctCategoryCombo.currentIndex >= 0 ? Number(correctCategoryCombo.currentValue) : 0)) {
                             inventoryItemCorrectDialog.close()
                             inventoryItemDetailsDialog.close()
                         }

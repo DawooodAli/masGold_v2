@@ -173,6 +173,7 @@ class ManagementReviewViewModel(QObject):
         self._reviews, self._error, self._accounts = {}, "", []
         self._balance_service = balance_service
         self._resolving, self._inspection_message, self._inspection_error = "", "", ""
+        self._private = {}
         self._selected_category = ""
         self._position, self._position_error, self._gold_service = None, "", None
         self._history = AccountHistoryViewModel(session, parent=self)
@@ -332,6 +333,121 @@ class ManagementReviewViewModel(QObject):
     def accountMessageIsError(self):
         return bool(getattr(self, "_account_error", ""))
 
+    # ---- تحويل خاص (090): the owner's private account and transfers between accounts (the service re-checks every right)
+    def _fin(self):
+        if getattr(self, "_fin_service", None) is None:
+            from services.financial_account_service import FinancialAccountService
+            self._fin_service = FinancialAccountService(self._session)
+        return self._fin_service
+
+    @Property(bool, notify=changed)
+    def canUsePrivate(self):
+        actor = self._session.current_actor()
+        return bool(actor and "PRIVATE_ACCOUNT_MANAGE" in actor.permissions)
+
+    @Property(bool, notify=changed)
+    def canTransfer(self):
+        actor = self._session.current_actor()
+        return bool(actor and "FINANCIAL_ACCOUNT_OPERATE" in actor.permissions)
+
+    @Property("QVariantList", notify=changed)
+    def transferAccounts(self):
+        """Every ACTIVE account a transfer may use (the main safe included): key, name, ledger."""
+        return [{"key": f"{a['ledger']}:{int(a['account_id'])}", "name": a["name"], "ledger": a["ledger"],
+                 "bank": a["ledger"] == "BANK"} for a in self._accounts if a.get("is_active", 1)]
+
+    @Slot(result=str)
+    def newRequestKey(self):
+        from uuid import uuid4
+        return str(uuid4())
+
+    @Slot()
+    def loadPrivateAccount(self):
+        if not self.canUsePrivate:
+            self._private = {}
+            return
+        service = self._fin()
+        self._start("private_load", lambda _expected_actor: service.private_account(_expected_actor=_expected_actor))
+
+    def _on_private_load(self, result, error):
+        self._private = {} if error else self._private_view(result)
+        if error:
+            self._account_error = error
+
+    @staticmethod
+    def _private_view(result):
+        def money(v):
+            return f"{Decimal(str(v)):,.2f} ج"
+        return {"available": result["available"], "balance": money(result["balance"]), "totalIn": money(result["total_in"]),
+                "totalOut": money(result["total_out"]),
+                "entries": [{"id": e["id"], "date": e["date"], "text": e["text"], "account": e["account"], "amount": money(e["amount"]),
+                             "toPrivate": e["direction"] == "TO_PRIVATE", "note": e["note"], "voided": e["voided"],
+                             "balance": money(e["balance"]), "operation": e["operation"]} for e in result["entries"]]}
+
+    @Property("QVariantMap", notify=changed)
+    def privateAccount(self):
+        return getattr(self, "_private", {}) or {}
+
+    def _money_op(self, call, done_text):
+        self._account_message, self._account_error, self._done_text = "", "", done_text
+        service = self._fin()
+        self._start("money_op", lambda _expected_actor: call(service, _expected_actor))
+        self.changed.emit()
+
+    @Slot(str, str, str, str, str)
+    def privateTransfer(self, account_key, direction, amount, note, request_key):
+        self._money_op(lambda s, e: s.private_transfer(account_key, direction, amount, note, request_key, _expected_actor=e),
+                       "تم التحويل إلى الحساب الخاص." if direction == "TO" else "تم التحويل من الحساب الخاص.")
+
+    def _marketers_service(self):
+        if getattr(self, "_marketer_service", None) is None:
+            from services.marketer_custody_service import MarketerCustodyService
+            self._marketer_service = MarketerCustodyService(self._session)
+        return self._marketer_service
+
+    @Property(bool, notify=changed)
+    def canTransferToMarketer(self):
+        actor = self._session.current_actor()
+        return bool(actor and {"INTERMEDIARY_HOLDING_MANAGE", "FINANCIAL_ACCOUNT_OPERATE"} <= set(actor.permissions))
+
+    @Slot()
+    def loadMarketers(self):
+        if not self.canTransferToMarketer:
+            self._marketers = []
+            return
+        service = self._marketers_service()
+        self._start("marketers", lambda _expected_actor: service.marketers(_expected_actor=_expected_actor))
+
+    def _on_marketers(self, result, error):
+        self._marketers = [] if error else [m for m in (result or []) if m["active"]]
+
+    @Property("QVariantList", notify=changed)
+    def marketers(self):
+        return getattr(self, "_marketers", [])
+
+    @Slot(str, str, str, str, str)
+    def transferToMarketer(self, from_key, party_id, amount, note, request_key):
+        """تحويل لمسوقجي من بنك أو محفظة: bank -> Main Safe -> the marketer's cash (two audited steps; the service re-checks every right)."""
+        from datetime import date
+        today = date.today().isoformat()
+        self._money_op(lambda s, e: self._marketers_service().cash_handover_from_account(party_id, from_key, amount, today, "", note, request_key, _expected_actor=e),
+                       "تم تحويل المبلغ لعهدة المسوقجي.")
+
+    @Slot(str, str, str, str, str)
+    def transferBetween(self, from_key, to_key, amount, note, request_key):
+        self._money_op(lambda s, e: s.transfer(from_key, to_key, amount, note, request_key, _expected_actor=e), "تم التحويل بين الحسابين.")
+
+    def _on_money_op(self, result, error):
+        self._account_message, self._account_error = ("", error) if error else (self._done_text, "")
+        if not error:
+            balances = self._balances()
+            self._start("accounts", lambda _expected_actor: balances.financial_accounts(_expected_actor=_expected_actor))
+            self.loadPrivateAccount()
+
+    @Property(bool, notify=changed)
+    def moneyBusy(self):
+        return "money_op" in self._busy
+
     @Property(bool, notify=changed)
     def accountBusy(self):
         return "account_setup" in self._busy
@@ -350,7 +466,7 @@ class ManagementReviewViewModel(QObject):
         cards = [{"code": code, "title": CARD_TITLE[code], "count": self._counts.get(code, 0),
                   "pending": self._counts.get(code, 0) > 0, "selected": self._selected_category == code}
                  for code in CARD_ORDER]
-        cards.append({"code": "ACCOUNTS", "title": CARD_TITLE["ACCOUNTS"], "count": len(self._accounts),
+        cards.append({"code": "ACCOUNTS", "title": CARD_TITLE["ACCOUNTS"], "count": len([a for a in self._accounts if a["ledger"] != "CASH"]),
                       "pending": False, "selected": self._selected_category == "ACCOUNTS"})
         if self.canViewGoldPosition:
             cards.append({"code": "GOLD_POSITION", "title": CARD_TITLE["GOLD_POSITION"], "count": 0, "pending": False,
@@ -417,15 +533,75 @@ class ManagementReviewViewModel(QObject):
                          "title": f"فاتورة {r.get('invoice_number') or ''}", "time": _time(r.get("sold_at")),
                          "details": details, "reason": REASON_TEXT.get(r.get("reason_code"), r.get("reason") or ""),
                          "notes": r.get("notes") or "", "salesperson": r.get("salesperson_name") or "",
-                         "customer": r.get("customer_name_snapshot") or "بدون عميل"})
+                         "customer": r.get("customer_name_snapshot") or "بدون عميل",
+                         "caseId": str(r["case_id"]), "karat": str(r.get("karat_value") or ""),
+                         "weight": f"{Decimal(str(weight)):.3f}" if weight is not None else "",
+                         "canSettle": r.get("invoice_id") is not None, "busy": self._resolving == str(r["case_id"])})
         return rows
 
+    # ---- settle an unidentified sale: link a piece from stock / take it from the Scrap / no source (the service re-checks everything)
+    def _settle_case(self, case_id, call):
+        if getattr(self, "_resolving", ""):
+            return
+        self._resolving, self._inspection_message, self._inspection_error = str(case_id), "", ""
+        service = self._service_instance()
+        self._start("case_done", lambda _expected_actor: call(service, _expected_actor))
+        self.changed.emit()
+
+    @Slot(str, str)
+    def matchCaseToStock(self, case_id, barcode):
+        self._settle_case(case_id, lambda s, e: s.match_case_to_stock(case_id, barcode, _expected_actor=e))
+
+    @Slot(str)
+    def takeCaseFromScrap(self, case_id):
+        self._settle_case(case_id, lambda s, e: s.take_case_from_scrap(case_id, _expected_actor=e))
+
+    @Slot(str, str)
+    def closeCaseNoSource(self, case_id, reason):
+        self._settle_case(case_id, lambda s, e: s.close_case_no_source(case_id, reason, _expected_actor=e))
+
+    def _on_case_done(self, result, error):
+        self._resolving = ""
+        if error:
+            self._inspection_message, self._inspection_error = "", error
+        else:
+            self._inspection_error = ""
+            self._inspection_message = {"MATCH_STOCK": "رُبطت القطعة من المخزن وخرجت من الستوك.",
+                                        "FROM_SCRAP": "خُصم الوزن من رصيد الكسر.",
+                                        "NO_SOURCE": "سُجّل أن القطعة بلا مصدر، ولم تتحرك أي حركة مخزون."}[result["resolution"]]
+            self.inspectionResolved.emit()
+        self.openReviews()
+
     def _generic(self, code):
-        return [{"invoiceId": _id(r.get("invoice_id")),
-                 "title": r.get("summary") or "", "time": _time(r.get("created_at")),
-                 "by": r.get("created_by_name") or "", "invoice": r.get("invoice_number") or "",
-                 "details": review_details(code, r.get("details_json"))}
-                for r in self._reviews.get(code, [])]
+        rows = []
+        for r in self._reviews.get(code, []):
+            d = r.get("details_json") or {}
+            groups = [{"category": g.get("category_code") or "بدون فئة", "average": _num(g.get("average_making_per_gram")),
+                       "status": g.get("status") or "", "statusText": MAKING_STATUS_TEXT.get(g.get("status"), g.get("status") or "")}
+                      for g in (d.get("groups") or [])] if code == "MAKING_PRICE" else []
+            rows.append({"invoiceId": _id(r.get("invoice_id")), "reviewId": str(r["review_id"]),
+                         "title": r.get("summary") or "", "time": _time(r.get("created_at")),
+                         "by": r.get("created_by_name") or "", "invoice": r.get("invoice_number") or "",
+                         "details": review_details(code, r.get("details_json")),
+                         "price": f"{_num(d.get('effective_sale_total'))} ج" if d.get("effective_sale_total") else "",
+                         "salesperson": d.get("salesperson_name") or "", "groups": groups,
+                         "busy": self._resolving == str(r["review_id"])})
+        return rows
+
+    @Slot(str)
+    def markReviewed(self, review_id):
+        """«تمت المراجعة» of a pricing / settlement / discount review (the service re-checks the right)."""
+        if getattr(self, "_resolving", ""):
+            return
+        service = self._service_instance()
+        self._resolving, self._inspection_message, self._inspection_error = str(review_id), "", ""
+        self._start("review_done", lambda _expected_actor: service.mark_reviewed(str(review_id), _expected_actor=_expected_actor))
+        self.changed.emit()
+
+    def _on_review_done(self, result, error):
+        self._resolving = ""
+        self._inspection_message, self._inspection_error = ("", error) if error else ("تمت المراجعة وأُزيل البند من القائمة.", "")
+        self.openReviews()
 
     # ---- returned-item inspection (manager decision; the service re-checks everything)
     @Property("QVariantList", notify=changed)
@@ -606,6 +782,8 @@ class ManagementReviewViewModel(QObject):
         """Cash, wallet, InstaPay / bank accounts: balance, money in / out, latest movements."""
         rows = []
         for a in self._accounts:
+            if a["ledger"] == "CASH":                                  # the main safe has its own screen: this section is the banks and wallets only
+                continue
             recent = " • ".join(f"{_time(m.get('occurred_at'))} {_signed_money(m.get('amount_delta'))}"
                                 f"{' — ' + m['reference_code'] if m.get('reference_code') else ''}"
                                 for m in a.get("recent", []))

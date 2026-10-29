@@ -78,7 +78,7 @@ class CashAdvanceTests(FinancialTestCase):
     def test_the_advance_money_is_neither_expense_nor_income_in_the_report_sources(self):
         from services.financial_account_service import ADVANCE_CATEGORIES
         self.assertEqual(set(ADVANCE_CATEGORIES), {"STAFF_ADVANCE", "CUSTOMER_CUSTODY", "ADVANCE_REPAY", "BORROWED_CASH", "BORROW_REPAY",
-                                                   "CUSTOMER_CASH_IN", "CUSTOMER_CASH_OUT"})
+                                                   "CUSTOMER_CASH_IN", "CUSTOMER_CASH_OUT", "PRIVATE_OUT", "PRIVATE_IN"})
 
 
 if __name__ == "__main__":

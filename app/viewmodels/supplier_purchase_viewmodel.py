@@ -93,6 +93,7 @@ class SupplierPurchaseViewModel(QObject):
         self._error_from_write = False         # a rejected write's message is not cleared by a later successful read
         self._last_piece = {}
         self._reversal = {}
+        self._intake_groups = []
 
     # ------------------------------------------------------------ plumbing
     def _service_instance(self):
@@ -192,6 +193,39 @@ class SupplierPurchaseViewModel(QObject):
             if not self._error_from_write:
                 self._error = ""
 
+    # ------------------------------------------------------------ groups offered by «إدخال قطعة جديدة»
+    @Slot()
+    def loadIntakeGroups(self):
+        if not self.canIntake:
+            self._intake_groups = []
+            return
+        service = self._service_instance()
+        self._start("groups", lambda _expected_actor: service.open_groups(_expected_actor=_expected_actor))
+
+    def _on_groups(self, result, error):
+        if error:
+            self._intake_groups = []
+            return
+        self._intake_groups = [
+            {"groupId": g["group_id"], "invoiceId": g["invoice_id"], "karatId": g["karat_id"], "karat": str(g["karat_value"]),
+             "remaining": grams(g["remaining"]), "remainingValue": str(g["remaining"]),
+             "label": f"{g['supplier_name']} • {g['invoice_code']} • مجموعة {g['group_no']} • عيار {g['karat_value']} • المتبقي {grams(g['remaining'])} جرام",
+             "detail": f"مصنعية الجرام {rate(g['making_per_gram'])} • وزن المورد {grams(g['supplier_weight'])} • أُدخل {grams(g['actual_weight'])} ({g['piece_count']} قطعة)"
+                       + (f" • {g['description']}" if g["description"] else "")}
+            for g in result]
+
+    @Property("QVariantList", notify=changed)
+    def intakeGroups(self):
+        return self._intake_groups
+
+    @Slot(str)
+    def closeIntakeGroup(self, group_id):
+        """إخفاء المجموعة من القائمة (تمت طباعة باركودها): the service re-checks the right."""
+        def call(service, expected):
+            done = service.close_group(group_id, _expected_actor=expected)
+            return {**done, "kind": "group_closed"}
+        self._write("تم إخفاء المجموعة من قائمة الإدخال.", call)
+
     @Slot()
     def clearMessage(self):
         if self._message or self._error:
@@ -251,6 +285,9 @@ class SupplierPurchaseViewModel(QObject):
         if result.get("kind") == "piece":
             self._last_piece = result
             self.stockChanged.emit()
+            self.loadIntakeGroups()                    # the group may be finished now
+        if result.get("kind") == "group_closed":
+            self.loadIntakeGroups()
         if result.get("reversed"):
             self._message = f"{self._done_text} ({result['code']})"
             self._reversal = {}

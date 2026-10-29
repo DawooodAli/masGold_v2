@@ -447,7 +447,7 @@ class InventoryRepository(BaseRepository):
     def lock_item_for_correction(self, item_id):
         """The piece row, locked (a correction reads and writes it in one transaction)."""
         return self._fetch_one(
-            "SELECT id, inventory_status, item_type_id, karat_id, weight_grams FROM inventory_items WHERE id = %s FOR UPDATE", (int(item_id),))
+            "SELECT id, inventory_status, item_type_id, karat_id, category_id, weight_grams FROM inventory_items WHERE id = %s FOR UPDATE", (int(item_id),))
 
     def update_item_type_and_karat(self, item_id, item_type_id, karat_id, weight_grams=None):
         cursor = self.connection.cursor()
@@ -456,6 +456,15 @@ class InventoryRepository(BaseRepository):
                 cursor.execute("UPDATE inventory_items SET item_type_id = %s, karat_id = %s WHERE id = %s", (int(item_type_id), int(karat_id), int(item_id)))
             else:
                 cursor.execute("UPDATE inventory_items SET item_type_id = %s, karat_id = %s, weight_grams = %s WHERE id = %s", (int(item_type_id), int(karat_id), weight_grams, int(item_id)))
+            return cursor.rowcount
+        finally:
+            cursor.close()
+
+    def update_item_category(self, item_id, category_id):
+        """Only the category changes: the frozen acquisition making of the piece (its cost basis) is never rewritten."""
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute("UPDATE inventory_items SET category_id = %s WHERE id = %s", (int(category_id), int(item_id)))
             return cursor.rowcount
         finally:
             cursor.close()

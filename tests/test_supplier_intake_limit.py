@@ -164,6 +164,38 @@ class IntakeLimitTests(base.SupplierCase):
         self.assertEqual(detail["groups"][0]["making_total"], D("4800.00"))     # the group's making liability is unchanged
 
 
+class IntakeGroupListTests(base.SupplierCase):
+    """«إدخال قطعة جديدة» offers the posted groups that still wait for pieces (groups 40 / 35 / 25 g)."""
+
+    def setUp(self):
+        super().setUp()
+        self.invoice, _ = self.posted()
+        self.invoice_id = self.invoice["id"]
+        self.g1, self.g2, self.g3 = self.group_ids(self.invoice_id)
+
+    def listed(self):
+        return {g["group_id"]: g for g in self.purchases.open_groups()}
+
+    def test_every_posted_group_is_listed_with_its_remaining_weight(self):
+        rows = self.listed()
+        self.assertEqual(set(rows), {str(self.g1), str(self.g2), str(self.g3)})
+        self.assertEqual(rows[str(self.g1)]["remaining"], D("40.000"))
+
+    def test_a_group_leaves_the_list_when_its_weight_is_finished(self):
+        self.piece(self.invoice_id, self.g1, "39.700")                           # 0.300 missing: within the 0.333 tolerance
+        self.assertNotIn(str(self.g1), self.listed())
+        self.piece(self.invoice_id, self.g2, "30.000")                           # 5.000 missing: still offered
+        self.assertEqual(self.listed()[str(self.g2)]["remaining"], D("5.000"))
+
+    def test_hiding_a_group_removes_it_for_good_and_changes_nothing_else(self):
+        before = (len(self.db.items), len(self.db.gold), len(self.db.making))
+        self.purchases.close_group(self.g3)
+        self.purchases.close_group(self.g3)                                      # repeating is harmless
+        self.assertNotIn(str(self.g3), self.listed())
+        self.assertEqual(set(self.listed()), {str(self.g1), str(self.g2)})
+        self.assertEqual((len(self.db.items), len(self.db.gold), len(self.db.making)), before)
+
+
 class ViewModelTests(base.SupplierCase):
     def setUp(self):
         super().setUp()

@@ -26,6 +26,7 @@ Lock order: actor → review → item → the karat's Scrap ledger → the hold 
 ledger before the holds too). A hold that is no longer HELD refuses a second decision.
 """
 import json
+from decimal import Decimal
 
 from repositories.invoice_lifecycle_repository import InvoiceLifecycleRepository
 from repositories.management_review_repository import INSPECTION, ManagementReviewRepository
@@ -178,6 +179,126 @@ class ManagementReviewService:
 
     def reject_return(self, review_id, *, _expected_actor=None):
         return self._return_service().decide_approval(review_id, False, _expected_actor=_expected_actor)
+
+    # ------------------------------------------------------------ مراجعة مخزون: an unidentified (F5) sale is settled (089)
+    def match_case_to_stock(self, case_id, barcode, *, _expected_actor=None):
+        """The real piece was found in stock: link it by its barcode (IN_STOCK -> SOLD on the invoice)."""
+        return self._settle_case(case_id, "MATCH_STOCK", barcode, None, _expected_actor)
+
+    def take_case_from_scrap(self, case_id, *, _expected_actor=None):
+        """The piece came from the Scrap: the case's karat and weight leave the Scrap."""
+        return self._settle_case(case_id, "FROM_SCRAP", None, None, _expected_actor)
+
+    def close_case_no_source(self, case_id, reason, *, _expected_actor=None):
+        """The piece exists nowhere: nothing moves; the written reason is the record."""
+        return self._settle_case(case_id, "NO_SOURCE", None, reason, _expected_actor)
+
+    def _settle_case(self, case_id, resolution, barcode, reason, expected_actor):
+        session_actor = self._actor(expected_actor)
+        if not self.can_resolve(session_actor):
+            raise PermissionError("حسم مراجعة المخزون للمدير فقط.")
+        if not str(case_id or "").strip().isdigit():
+            raise InspectionError("CASE_NOT_FOUND", "حالة المراجعة غير موجودة.")
+        barcode = str(barcode or "").strip()
+        reason = str(reason or "").strip()
+        if resolution == "MATCH_STOCK" and not barcode:
+            raise InspectionError("BARCODE_REQUIRED", "أدخل باركود القطعة.")
+        if resolution == "NO_SOURCE" and not reason:
+            raise InspectionError("REASON_REQUIRED", "اكتب سبب عدم وجود مصدر للقطعة.")
+        if len(reason) > 500:
+            raise InspectionError("REASON_TOO_LONG", "السبب أطول من الحد المسموح (500 حرف).")
+        with self._transaction() as connection:
+            actor = self._authorization.require_permission(connection, session_actor, RESOLVE_PERMISSION)
+            repository = self._repository(connection)
+            case = repository.lock_unidentified_case(case_id)
+            if case is None:
+                raise InspectionError("CASE_NOT_FOUND", "حالة المراجعة غير موجودة.")
+            if case["case_status"] != "OPEN":
+                raise InspectionError("CASE_ALREADY_SETTLED", "تم حسم هذه الحالة من قبل.")
+            if case["invoice_id"] is None:
+                raise InspectionError("CASE_UNSUPPORTED", "هذه حالة بديل يدوي في استبدال، ولا تُحسم من هنا بعد.")
+            weight = Decimal(str(case["weight_grams"]))
+            now, item_id, movement_id, note = repository.db_now(), None, None, reason or None
+            if resolution == "MATCH_STOCK":
+                item = repository.lock_stock_item_by_barcode(barcode)
+                if item is None:
+                    raise InspectionError("PIECE_NOT_FOUND", "لا توجد قطعة بهذا الباركود.")
+                if item["inventory_status"] != "IN_STOCK":
+                    raise InspectionError("PIECE_NOT_IN_STOCK", "هذه القطعة ليست في المخزون (مباعة أو مستبعدة).")
+                if int(item["karat_id"]) != int(case["karat_id"]):
+                    raise InspectionError("KARAT_MISMATCH",
+                                          f"عيار القطعة {item['karat_value']} يختلف عن عيار البيع {case['karat_value']}.")
+                item_id = item["inventory_item_id"]
+                repository.set_item_status(inventory_item_id=item_id, from_status="IN_STOCK", to_status="SOLD",
+                                           updated_by_user_id=actor.user_id)
+                movement_id = repository.add_inventory_movement(
+                    item=item, movement_code="SOLD", from_status="IN_STOCK", to_status="SOLD", review_id=case["case_id"],
+                    reference_code=case["invoice_number"], reason=f"مراجعة مخزون — فاتورة {case['invoice_number']}",
+                    performed_by_user_id=actor.user_id, performed_by_employee_id=actor.employee_id)
+                note = f"باركود {barcode}" + (f" — فرق الوزن {Decimal(str(item['weight_grams'])) - weight:+.3f} جم"
+                                              if Decimal(str(item["weight_grams"])) != weight else "")
+            elif resolution == "FROM_SCRAP":
+                available = repository.lock_old_gold_balance(case["karat_id"])
+                if available < weight:
+                    raise InspectionError("SCRAP_SHORTAGE",
+                                          f"رصيد الكسر عيار {case['karat_value']} ({available:.3f} جم) أقل من وزن البيع ({weight:.3f} جم).")
+                movement_id = repository.add_case_scrap_out(
+                    karat_id=case["karat_id"], weight_grams=weight, invoice_id=case["invoice_id"],
+                    invoice_number=case["invoice_number"], case_id=case["case_id"], created_by_user_id=actor.user_id,
+                    employee_id=actor.employee_id)
+            status = "MATCHED" if resolution == "MATCH_STOCK" else "CLOSED"
+            if not repository.settle_case(case_id=case["case_id"], status=status, resolution_code=resolution,
+                                          matched_item_id=item_id, notes=note, user_id=actor.user_id, at=now):
+                raise InspectionError("CASE_ALREADY_SETTLED", "تم حسم هذه الحالة من قبل.")
+            cursor = connection.cursor()
+            try:
+                cursor.execute(
+                    "INSERT INTO audit_log (user_id, event_type, entity_type, entity_id, entity_reference, "
+                    "description, metadata_json, occurred_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    (actor.user_id, f"INVENTORY_CASE_{resolution}", "INVENTORY_RECONCILIATION_CASE", int(case["case_id"]),
+                     case["invoice_number"], "حسم مراجعة مخزون — بيع يدوي",
+                     json.dumps({"case_id": case["case_id"], "resolution": resolution, "invoice_id": case["invoice_id"],
+                                 "karat": case["karat_value"], "weight_grams": str(weight), "inventory_item_id": item_id,
+                                 "movement_id": movement_id, "notes": note}, ensure_ascii=False, default=str), now))
+            finally:
+                cursor.close()
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        return {"case_id": case["case_id"], "resolution": resolution, "status": status}
+
+    # ------------------------------------------------------------ «تمت المراجعة»: pricing / settlement / discount reviews
+    def mark_reviewed(self, review_id, *, _expected_actor=None):
+        """The manager acknowledges a pricing, cash-settlement or discount review: it leaves the open list.
+        The invoice and its figures are never touched; the review row keeps who closed it and when."""
+        session_actor = self._actor(_expected_actor)
+        if not self.can_resolve(session_actor):
+            raise PermissionError("تأكيد المراجعة للمدير فقط.")
+        if not str(review_id or "").strip().isdigit():
+            raise InspectionError("REVIEW_NOT_FOUND", "المراجعة غير موجودة.")
+        with self._transaction() as connection:
+            actor = self._authorization.require_permission(connection, session_actor, RESOLVE_PERMISSION)
+            repository = self._repository(connection)
+            review = repository.lock_simple_review(review_id)
+            if review is None:
+                raise InspectionError("REVIEW_NOT_FOUND", "المراجعة غير موجودة.")
+            if review["review_status"] != "OPEN":
+                raise InspectionError("REVIEW_ALREADY_RESOLVED", "تمت مراجعة هذا البند من قبل.")
+            now = repository.db_now()
+            if not repository.mark_reviewed(review_id=review["review_id"], resolved_by_user_id=actor.user_id, resolved_at=now):
+                raise InspectionError("REVIEW_ALREADY_RESOLVED", "تمت مراجعة هذا البند من قبل.")
+            cursor = connection.cursor()
+            try:
+                cursor.execute(
+                    "INSERT INTO audit_log (user_id, event_type, entity_type, entity_id, entity_reference, "
+                    "description, metadata_json, occurred_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    (actor.user_id, "MANAGEMENT_REVIEW_DONE", "MANAGEMENT_REVIEW", int(review["review_id"]), None,
+                     "تمت مراجعة البند", json.dumps({"review_id": review["review_id"], "review_type": review["review_type"],
+                                                     "invoice_id": review["invoice_id"]}, ensure_ascii=False, default=str), now))
+            finally:
+                cursor.close()
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        return {"review_id": review["review_id"], "review_type": review["review_type"]}
 
     # ------------------------------------------------------------ returned-item inspection
 

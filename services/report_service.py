@@ -302,6 +302,8 @@ class ReportService:
                 bucket, label = internal, INTERNAL_FLOW[reference]
             elif m["type_code"] == "TRIP_CUSTODY_BANK_IN":
                 bucket, label = internal, INTERNAL_FLOW["MARKET_TRIP_ENTRY"]
+            elif source == "FINANCIAL_OPERATION" and category in ("PRIVATE_OUT", "PRIVATE_IN"):
+                bucket, label = internal, "الحساب الخاص (المالك)"                          # the owner's own money: neither income nor expense
             elif source == "FINANCIAL_OPERATION" and category in ("STAFF_ADVANCE", "CUSTOMER_CUSTODY", "ADVANCE_REPAY", "BORROWED_CASH", "BORROW_REPAY"):
                 bucket, label = internal, "سلف وعهد مؤقتة (تعود للمحل)" if category in ("STAFF_ADVANCE", "CUSTOMER_CUSTODY", "ADVANCE_REPAY") else "سلف مستلفة (تُسدد لأصحابها)"                  # money lent and taken back: neither income nor expense
             elif source == "FINANCIAL_OPERATION":

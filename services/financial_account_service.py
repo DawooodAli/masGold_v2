@@ -50,8 +50,9 @@ CASH_LABELS = {
 BANK_LABELS = {**CASH_LABELS, "TRANSFER_IN": "إيداع في الحساب", "TRANSFER_OUT": "سحب من الحساب"}
 # The two transfers between the cash safe and a real bank / wallet account (BANK_DEPOSIT / BANK_WITHDRAWAL) and the cash directions they allow. The income / expense categories are NOT here:
 # they live in the cash_categories table (migration 069, managed in Settings) and `category_table()` is their fixed fallback.
+PRIVATE = "PRIVATE_ACCOUNT_MANAGE"      # the OWNER's right (090): the private account and its report
 ADVANCE_CATEGORIES = ("STAFF_ADVANCE", "CUSTOMER_CUSTODY", "ADVANCE_REPAY", "BORROWED_CASH", "BORROW_REPAY",
-                      "CUSTOMER_CASH_IN", "CUSTOMER_CASH_OUT")      # recorded only through the advance flows (they need an owner of the money)
+                      "CUSTOMER_CASH_IN", "CUSTOMER_CASH_OUT", "PRIVATE_OUT", "PRIVATE_IN")      # recorded only through the advance flows (they need an owner of the money)
 CASH_TYPES = {"BANK_WITHDRAWAL": ("IN",), "BANK_DEPOSIT": ("OUT",)}
 CASH_TYPE_TEXT = {"BANK_DEPOSIT": "إيداع بنك", "BANK_WITHDRAWAL": "سحب بنك"}
 
@@ -66,7 +67,9 @@ def category_table(rows):
                  {"code": "BORROWED_CASH", "name": "سلفة مستلفة", "direction": "IN", "is_active": 1},                    # 076
                  {"code": "BORROW_REPAY", "name": "سداد سلفة مستلفة", "direction": "OUT", "is_active": 1},
                  {"code": "CUSTOMER_CASH_IN", "name": "نقدية داخلة من عميل", "direction": "IN", "is_active": 1},          # 086
-                 {"code": "CUSTOMER_CASH_OUT", "name": "نقدية خارجة لعميل", "direction": "OUT", "is_active": 1}]
+                 {"code": "CUSTOMER_CASH_OUT", "name": "نقدية خارجة لعميل", "direction": "OUT", "is_active": 1},
+                 {"code": "PRIVATE_OUT", "name": "تحويل إلى الحساب الخاص", "direction": "OUT", "is_active": 1},               # 090
+                 {"code": "PRIVATE_IN", "name": "تحويل من الحساب الخاص", "direction": "IN", "is_active": 1}]
     return {r["code"]: {"name": r["name"], "directions": ("IN", "OUT") if r["direction"] == "BOTH" else (r["direction"],), "active": bool(r["is_active"])} for r in rows}
 
 
@@ -578,8 +581,53 @@ class FinancialAccountService:
                              description=f"ربط سلفة قديمة بالموظف {employee['name']}", metadata={"employee_id": int(employee_id)}, now=now)
         return {"operation_id": str(operation_id), "employee": employee["name"]}
 
+    # ------------------------------------------------------------ the owner's private account (090)
+    def private_transfer(self, account_key_value, direction, amount, note, request_key, *, _expected_actor=None):
+        """تحويل خاص: TO = from a bank / wallet account to the private account, FROM = back from it. One manual operation on the bank account
+        (PRIVATE_OUT / PRIVATE_IN) and its private-account entry, in one transaction. OWNER only (PRIVATE_ACCOUNT_MANAGE, rechecked)."""
+        account = _account(account_key_value)
+        if account[0] != "BANK":
+            raise CorrectionError("ACCOUNT_INVALID", "الحساب الخاص يتعامل مع حسابات البنوك والمحافظ فقط.")
+        if direction not in ("TO", "FROM"):
+            raise CorrectionError("TYPE_INVALID", "اختر اتجاه التحويل.")
+        value, text = _amount(amount), _text(note, required=False, label="الملاحظة")
+
+        def link(repository, operation_id, actor, now):
+            repository.insert_private_entry(direction="TO_PRIVATE" if direction == "TO" else "FROM_PRIVATE", amount=value,
+                                            operation_id=operation_id, note=text or None, actor=actor, now=now)
+        if direction == "TO":
+            return self._finalize(WITHDRAWAL, account, None, value, text or "تحويل إلى الحساب الخاص", request_key, _expected_actor,
+                                  category="PRIVATE_OUT", link=link, extra=["PRIVATE", direction], also_requires=PRIVATE)
+        return self._finalize(DEPOSIT, None, account, value, text or "تحويل من الحساب الخاص", request_key, _expected_actor,
+                              category="PRIVATE_IN", link=link, extra=["PRIVATE", direction], also_requires=PRIVATE)
+
+    def private_account(self, *, _expected_actor=None):
+        """The private account's balance and every entry with its running balance (a reversed operation is listed apart and not counted). OWNER only."""
+        session_actor = self._actor(_expected_actor)
+        if PRIVATE not in session_actor.permissions:
+            raise PermissionError("الحساب الخاص للمالك فقط.")
+        with self._transaction() as connection:
+            self._authorization.require_permission_read(connection, session_actor, PRIVATE)
+            rows = self._repository(connection).private_entries()
+        if rows is None:
+            return {"available": False, "balance": "0.00", "total_in": "0.00", "total_out": "0.00", "entries": []}
+        balance = total_in = total_out = Decimal("0.00")
+        entries = []
+        for r in rows:
+            amount, voided = Decimal(str(r["amount"])).quantize(Decimal("0.01")), bool(r["voided"])
+            to_private = r["direction"] == "TO_PRIVATE"
+            if not voided:
+                balance += amount if to_private else -amount
+                total_in, total_out = (total_in + amount, total_out) if to_private else (total_in, total_out + amount)
+            entries.append({"id": str(r["id"]), "date": r["created_at"].strftime("%Y-%m-%d %H:%M") if r["created_at"] else "",
+                            "direction": r["direction"], "text": "إلى الحساب الخاص" if to_private else "من الحساب الخاص",
+                            "account": r["account_name"] or "", "amount": str(amount), "note": r["note"] or "", "voided": voided,
+                            "balance": str(balance), "operation": operation_code(WITHDRAWAL if to_private else DEPOSIT, r["operation_id"])})
+        entries.reverse()
+        return {"available": True, "balance": str(balance), "total_in": str(total_in), "total_out": str(total_out), "entries": entries}
+
     def _finalize(self, operation_type, source, destination, amount, reason, request_key, expected_actor,
-                  category=None, link=None, extra=None, before=None):
+                  category=None, link=None, extra=None, before=None, also_requires=None):
         session_actor = self._actor(expected_actor)
         if OPERATE not in session_actor.permissions:
             raise PermissionError("ليس لديك صلاحية تنفيذ العمليات المالية.")
@@ -592,6 +640,8 @@ class FinancialAccountService:
              list(destination) if destination else None, str(amount), reason] + ([extra] if extra is not None else []), ensure_ascii=False).encode()).hexdigest()
         with self._transaction() as connection:
             actor = self._authorization.require_permission(connection, session_actor, OPERATE)
+            if also_requires:                                                  # e.g. the owner's private-account right, rechecked in this transaction
+                self._authorization.require_permission(connection, session_actor, also_requires)
             repository = self._repository(connection)
             if before is not None:                                             # e.g. the customer lock, taken BEFORE the account locks like every customer-money flow
                 before(repository)

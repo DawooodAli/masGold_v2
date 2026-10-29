@@ -329,6 +329,30 @@ class MarketerCustodyService:
         """Hand cash from the Main Safe to the marketer (held in trust: not a payment, not a supplier movement)."""
         return self._cash(CASH_HANDOVER, party_id, amount, document_date, reference, notes, request_key, _expected_actor)
 
+    def cash_handover_from_account(self, party_id, source_key, amount, document_date, reference, notes, request_key, *, _expected_actor=None):
+        """Hand cash to the marketer FROM a bank / wallet account (owner 2026-10-29). Two audited steps that reuse the existing flows: the account transfers the
+        amount to the Main Safe (an ACCOUNT_TRANSFER) and the Main Safe hands it to the marketer (the ordinary handover). Each step has its own derived
+        request key, so a retry with the same key never doubles either; when the second step fails the money is simply in the Main Safe and the message says so."""
+        from uuid import UUID, uuid5
+        from services.financial_account_service import FinancialAccountService
+        source = str(source_key or "").strip()
+        if source.upper().startswith("CASH:") or not source:
+            return self.cash_handover(party_id, amount, document_date, reference, notes, request_key, _expected_actor=_expected_actor)
+        session_actor = self._writer(_expected_actor)
+        key = _key(request_key)
+        value = positive_money(amount, "مبلغ النقدية")
+        transfer_key, handover_key = str(uuid5(UUID(key), "bank-to-safe")), str(uuid5(UUID(key), "safe-to-marketer"))
+        with self._transaction() as connection:
+            safe = self._repository(connection).main_safe()
+        if safe is None or not safe["is_active"]:
+            raise TripError("SAFE_UNAVAILABLE", "الخزنة الرئيسية غير متاحة.")
+        FinancialAccountService(self._session).transfer(source, f"CASH:{safe['id']}", str(value), "تحويل لعهدة المسوقجي", transfer_key, _expected_actor=session_actor)
+        try:
+            return self.cash_handover(party_id, str(value), document_date, reference, notes, handover_key, _expected_actor=session_actor)
+        except Exception as exc:
+            raise TripError("HANDOVER_AFTER_TRANSFER_FAILED",
+                            f"وصل المبلغ للخزنة الرئيسية لكن تسليمه للمسوقجي لم يتم ({exc}). كرّر التسليم من الخزنة.") from exc
+
     def cash_return(self, party_id, amount, document_date, reference, notes, request_key, *, _expected_actor=None):
         """The marketer returns cash to the Main Safe, never more than the cash he holds."""
         return self._cash(CASH_RETURN, party_id, amount, document_date, reference, notes, request_key, _expected_actor)
