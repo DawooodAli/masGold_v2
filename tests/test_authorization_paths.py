@@ -95,7 +95,10 @@ class AuthorizationPathTests(unittest.TestCase):
 
 class CallSiteAuditTests(unittest.TestCase):
     """The non-locking path is used only by the confirmed read-only flows; every mutation stays strict."""
-    READ_SITES = {("services/stock_min_level_service.py", "overview"),                 # SETTINGS_MANAGE (the minimum stock rules of the Settings card, 072)
+    READ_SITES = {("services/customer_merge_service.py", "usage"),                       # TRANSACTION_CORRECT (what points at a customer, merge / delete dialog; read-only)
+                  ("services/customer_merge_service.py", "preview"),                     # TRANSACTION_CORRECT (the merge review sentence; read-only)
+                  ("services/financial_account_service.py", "customer_balances"),        # FINANCIAL_ACCOUNT_OPERATE (the two customer lists of the customer cash screen; read-only)
+                  ("services/stock_min_level_service.py", "overview"),                 # SETTINGS_MANAGE (the minimum stock rules of the Settings card, 072)
                   ("services/category_cost_service.py", "costs"),                       # SETTINGS_MANAGE (the category cost list of the Settings card, 070)
                   ("services/cash_category_service.py", "categories"),                # SETTINGS_MANAGE (the category list of the Settings card, 069)
                   ("services/report_service.py", "__call__"),                          # the report's rights, re-read per request by `_Gate` (REPORTS_VIEW + the report's own view right, packet26/27)

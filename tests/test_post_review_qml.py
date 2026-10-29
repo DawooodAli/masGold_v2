@@ -371,9 +371,9 @@ class OldGoldOnlyCustomerOptionalPageTests(harness.InvoicePageTests):
     def test_an_account_part_still_asks_for_the_customer(self):
         self.prepare()
         self.receive("61000")
-        self.click("differenceToAccount")               # the account follows the FINAL amount: 140.00
+        self.type_into("accountAmountField", "140")       # the rest goes on the customer account (whole pounds, typed: no settlement button any more)
         self.settle()
-        self.wait_until(lambda: self.text("accountAmountField") == "140.00")
+        self.wait_until(lambda: self.text("accountAmountField") == "140")
         self.assertIn("اسم العميل مطلوب لإتمام الفاتورة", self.text("invoiceProblems"))
         self.assertFalse(self.item("finalizeInvoice").property("enabled"))
         self.assertEqual(self.warnings, [])

@@ -139,7 +139,7 @@ class IdempotencyContractTests(DeadCashCase):
     def test_same_key_same_payload_posts_once(self):
         key = str(uuid4())
         first = self.write_off("4000", reason="A", key=key)
-        again = self.service.write_off("12", "4000", "A", PASSWORD, "23000.00", key)     # identical retry
+        again = self.service.write_off("12", "4000", "A", PASSWORD, "23000.00", key, silent=False)     # identical retry
         self.assertEqual((again["id"], again["code"], again["duplicate"]), (first["id"], first["code"], True))
         self.assertEqual((len(self.store.writeoffs), self.store.balance()), (1, D("19000.00")))
         self.assertEqual(len([r for r in self.store.ledger if r[2] == "DEAD_CASH_WRITE_OFF"]), 1)
