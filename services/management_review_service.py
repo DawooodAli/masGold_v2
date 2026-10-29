@@ -235,13 +235,13 @@ class ManagementReviewService:
                     item=item, movement_code="SOLD", from_status="IN_STOCK", to_status="SOLD", review_id=case["case_id"],
                     reference_code=case["invoice_number"], reason=f"مراجعة مخزون — فاتورة {case['invoice_number']}",
                     performed_by_user_id=actor.user_id, performed_by_employee_id=actor.employee_id)
-                note = f"باركود {barcode}" + (f" — فرق الوزن {Decimal(str(item['weight_grams'])) - weight:+.3f} جم"
+                note = f"باركود {barcode}" + (f" — فرق الوزن {Decimal(str(item['weight_grams'])) - weight:+.3f} جرام"
                                               if Decimal(str(item["weight_grams"])) != weight else "")
             elif resolution == "FROM_SCRAP":
                 available = repository.lock_old_gold_balance(case["karat_id"])
                 if available < weight:
                     raise InspectionError("SCRAP_SHORTAGE",
-                                          f"رصيد الكسر عيار {case['karat_value']} ({available:.3f} جم) أقل من وزن البيع ({weight:.3f} جم).")
+                                          f"رصيد الكسر عيار {case['karat_value']} ({available:.3f} جرام) أقل من وزن البيع ({weight:.3f} جرام).")
                 movement_id = repository.add_case_scrap_out(
                     karat_id=case["karat_id"], weight_grams=weight, invoice_id=case["invoice_id"],
                     invoice_number=case["invoice_number"], case_id=case["case_id"], created_by_user_id=actor.user_id,

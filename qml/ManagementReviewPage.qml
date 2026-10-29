@@ -745,7 +745,7 @@ Item {
                 Item { Layout.preferredWidth: 14 }
                 ActionButton {
                     objectName: "caseScrap_" + caseCard.rowIndex
-                    text: caseCard.armed === "SCRAP" ? "تأكيد: سحب " + caseCard.review.weight + " جم عيار " + caseCard.review.karat + " من الكسر" : "سحب من الكسر"
+                    text: caseCard.armed === "SCRAP" ? "تأكيد: سحب " + caseCard.review.weight + " جرام عيار " + caseCard.review.karat + " من الكسر" : "سحب من الكسر"
                     accent: caseCard.armed === "SCRAP" ? theme.red : theme.gold
                     enabled: !caseCard.busy
                     onClicked: {

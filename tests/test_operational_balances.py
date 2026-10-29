@@ -107,13 +107,12 @@ class OperationalBalanceTests(unittest.TestCase):
         vm._on_accounts(service.financial_accounts(), "")
         rows = vm.financialAccounts
         self.assertEqual([(r["title"], r["balance"]) for r in rows],
-                         [("Main Safe — نقدية", "125,300 ج"), ("محفظة المحل — محفظة", "7,010 ج")])
+                         [("محفظة المحل — محفظة", "7,010 ج")])   # the Main Safe is not listed here (owner 2026-10-29)
         # The summary row shows only name, type, state and balance (movements are a later drill-down).
         self.assertEqual([(r["name"], r["typeText"], r["stateText"], r["balance"]) for r in rows],
-                         [("Main Safe", "نقدية", "نشط", "125,300 ج"),
-                          ("محفظة المحل", "محفظة", "نشط", "7,010 ج")])
-        self.assertEqual(rows[1]["details"], "وارد 7,010 ج • منصرف 0 ج • 1 حركة")
-        self.assertEqual(rows[1]["recent"], "\u20662026-09-26 12:00\u2069 \u2066+7,010\u2069 — 26092601")
+                         [("محفظة المحل", "محفظة", "نشط", "7,010 ج")])
+        self.assertEqual(rows[0]["details"], "وارد 7,010 ج • منصرف 0 ج • 1 حركة")
+        self.assertEqual(rows[0]["recent"], "\u20662026-09-26 12:00\u2069 \u2066+7,010\u2069 — 26092601")
 
 
 class SetupRepo(Repo):
