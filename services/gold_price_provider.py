@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
 from http.client import HTTPException, HTTPSConnection
 import json
+import itertools
 import logging
 import os
 import time
@@ -183,6 +184,10 @@ class _GoldTimoHTTPSHandler(HTTPSHandler):
         return self.do_open(_GoldTimoHTTPSConnection, request, context=self._context)
 
 
+_ROTATION = itertools.count()                                                       # a fresh provider is built per refresh, so the turn is process-wide
+KEY_FALLTHROUGH_CODES = frozenset({"HTTP_AUTH", "RATE_LIMIT"})                      # only a key-specific refusal moves on to the next key
+
+
 class GoldTimoProvider:
     source_code = "GOLDTIMO"
 
@@ -192,6 +197,7 @@ class GoldTimoProvider:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._monotonic = monotonic or time.monotonic
         self.request_diagnostics = []
+        self.used_slot = 0                                                                  # 1-based slot of the key that answered the last fetch
 
     def _request_config(self, entered_key):
         if entered_key is None:
@@ -202,10 +208,37 @@ class GoldTimoProvider:
 
     def fetch(self, *, entered_key=None) -> tuple[NormalizedQuote, ...]:
         config = self._request_config(entered_key)
-        quotes = self._fetch_quotes(config, sorted(EXPECTED_KARATS))
+        quotes = self._fetch_with_keys(config, sorted(EXPECTED_KARATS), entered_key is None)
         fetched_at = self._clock()
         quotes = [replace(quote, fetched_at=fetched_at) for quote in quotes]
         return validate_quotes(quotes, self.source_code, fetched_at)
+
+    def _fetch_with_keys(self, config, karats, rotate):
+        """One whole refresh with ONE key; a refused key (401 / 403 / 429) moves on to the next, restarting the set so every karat of a published set comes from one key and one
+        attempt. The starting key rotates between refreshes to spread the provider's quota. Other failures (network, timeout, bad data) never change key."""
+        keys = list(config.all_keys) if rotate else [config.api_key]
+        if len(keys) <= 1:
+            self.used_slot = 1
+            return self._fetch_quotes(config, karats)
+        start = next(_ROTATION) % len(keys)
+        order = [(start + i) % len(keys) for i in range(len(keys))]
+        last = None
+        for index in order:
+            attempt = config.with_key(keys[index])
+            if index:                                                                       # extra keys are stored keys
+                object.__setattr__(attempt, "credential_trace", {"credential_source": "KEYRING"})
+            else:
+                object.__setattr__(attempt, "credential_trace", config.credential_trace)
+            try:
+                quotes = self._fetch_quotes(attempt, karats)
+            except ProviderError as exc:
+                if exc.code not in KEY_FALLTHROUGH_CODES:
+                    raise
+                last = exc
+                continue
+            self.used_slot = index + 1
+            return quotes
+        raise last
 
     def probe_21(self, *, entered_key=None):
         """Fetch-only diagnostic preflight, never a complete publishable set."""

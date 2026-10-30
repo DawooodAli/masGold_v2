@@ -298,7 +298,7 @@ class GoldPricePanelTests(QtPriceTestCase):
             viewport.property("contentItem").setProperty("contentY", 0)
             QTest.qWait(100)
             for name in ("providerSource", "providerUrl", "providerTimeout", "providerRefresh",
-                         "providerStale", "providerApiKey", "testProviderConnection",
+                         "providerStale", "providerApiKey", "providerApiKey2", "providerApiKey3", "testProviderConnection",
                          "saveProviderSettings", "deleteProviderKey"):
                 self.assert_in_viewport(self.root.findChild(QObject, name), viewport)
             for item in (card, buy, sell, self.root.findChild(QObject, "goldTopStatus")):
@@ -481,7 +481,7 @@ class GoldPricePanelTests(QtPriceTestCase):
         self.assertTrue(self.controller.gold_settings.busy)
         gate.set()
         self.wait_until(lambda: not self.controller.gold_settings.busy)
-        self.assertEqual(service.test.call_args.args[-1], "unsaved-private-key")
+        self.assertEqual(service.test.call_args.args[3], "unsaved-private-key")
         self.assertNotIn("unsaved-private-key", repr(self.controller.gold_settings.data))
         self.assertNotIn("unsaved-private-key", self.controller.gold_settings.message)
         # The actual QML Save button must receive the same tested draft, not
@@ -491,7 +491,7 @@ class GoldPricePanelTests(QtPriceTestCase):
         QMetaObject.invokeMethod(self.root.findChild(QObject, "saveProviderSettings"), "clicked")
         self.wait_until(lambda: service.save.called and not self.controller.gold_settings.busy)
         self.assertEqual(key.property("text"), "")
-        self.assertEqual(service.save.call_args.args[-1], "unsaved-private-key")
+        self.assertEqual(service.save.call_args.args[5], "unsaved-private-key")
         self.assertEqual(self.warnings, [])
 
     def setUp(self):

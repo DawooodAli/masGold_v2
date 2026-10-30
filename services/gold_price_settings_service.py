@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 import logging
 
-from config.gold_price_config import GoldTimoConfig, credential_diagnostics
+from config.gold_price_config import GoldTimoConfig, KEY_SLOTS, credential_diagnostics
 from repositories.gold_price_repository import GoldPriceRepository, gold_price_transaction
 from services.authorization_service import AuthorizationService
 from services.secret_store import SecretStore, SecretStoreError
@@ -41,14 +41,14 @@ class GoldPriceSettingsService:
             repo = self.repository(connection)
             settings = repo.get_settings()
             options = repo.get_provider_options()
-        stored = bool(self.secrets.get_secret("goldtimo_api_key"))
+        slots = [bool(self.secrets.get_secret(name)) for name in KEY_SLOTS]
         config = GoldTimoConfig.from_env(self.secrets, options)
         return {"base_url": config.base_url, "timeout": format(config.timeout_seconds, "g"),
                 "refresh": str(settings["refresh_seconds"]),
-                "stale": str(settings["stale_after_seconds"]), "stored": stored,
-                "configured": bool(config.api_key)}
+                "stale": str(settings["stale_after_seconds"]), "stored": slots[0], "stored_slots": slots,
+                "stored_count": sum(slots), "configured": bool(config.api_key)}
 
-    def save(self, actor, url, timeout, refresh, stale, key):
+    def save(self, actor, url, timeout, refresh, stale, key, key2="", key3=""):
         options = self._options(url, timeout)
         try:
             refresh, stale = int(refresh), int(stale)
@@ -56,6 +56,7 @@ class GoldPriceSettingsService:
                 raise ValueError()
             entered_key = key
             key = GoldTimoConfig(api_key=key).api_key
+            more = [GoldTimoConfig(api_key=extra).api_key for extra in (key2, key3)]          # validated like the primary key
         except (ValueError, TypeError):
             raise ValueError("راجع المفتاح وفترة التحديث وحد القِدم؛ الحد الأدنى للتحديث ١٠ ثوانٍ.") from None
         with self.transaction() as connection:
@@ -65,6 +66,19 @@ class GoldPriceSettingsService:
             if not self.session.is_current(actor):
                 raise PermissionError("انتهت جلسة الدخول.")
         # DB and OS keyring cannot share a transaction. Report partial success.
+        for name, extra in zip(KEY_SLOTS[1:], more):
+            if not extra:
+                continue
+            try:
+                with self.transaction() as connection:
+                    self._authorize(connection, actor)
+                    self.secrets.set_secret(name, extra)
+                    if self.secrets.get_secret(name) != extra:
+                        raise SecretStoreError("تعذر التحقق من حفظ المفتاح بشكل صحيح.")
+                    if not self.session.is_current(actor):
+                        raise PermissionError("انتهت جلسة الدخول.")
+            except Exception:
+                raise SecretStoreError("حُفظت إعدادات الاتصال، لكن تعذر حفظ أحد المفاتيح؛ أعد إدخاله وحاول مجدداً.") from None
         if key:
             try:
                 with self.transaction() as connection:
@@ -86,22 +100,33 @@ class GoldPriceSettingsService:
     def delete(self, actor):
         with self.transaction() as connection:
             self._authorize(connection, actor)
-            self.secrets.delete_secret("goldtimo_api_key")
-        return "حُذف مفتاح API المحلي. قد يظل مفتاح بيئة التطوير متاحاً."
+            for name in KEY_SLOTS:
+                self.secrets.delete_secret(name)
+        return "حُذفت مفاتيح API المحلية. قد يظل مفتاح بيئة التطوير متاحاً."
 
-    def test(self, actor, url, timeout, key):
+    def test(self, actor, url, timeout, key, key2="", key3=""):
         options = self._options(url, timeout)
         with self.transaction() as connection:
             self._authorize(connection, actor)
             stale = self.repository(connection).get_settings()["stale_after_seconds"]
         try:
-            config = GoldTimoConfig.from_env(self.secrets, options,
-                                             entered_key=key, trace_stored=True)
+            config = GoldTimoConfig.from_env(self.secrets, options, entered_key=key, trace_stored=True,
+                                             entered_extra=(key2, key3))
         except SecretStoreError:
             raise ConnectionTestError("CREDENTIAL_STORE") from None
         except ValueError:
             raise ConnectionTestError("CONFIGURATION") from None
-        result = self.diagnostic(config, stale_after_seconds=int(stale))
+        # Every configured key is tried ON ITS OWN, so a refused key is not hidden by a working one (fetch-only; nothing is published).
+        keys = config.all_keys
+        outcomes = []
+        result, used = None, 0
+        for slot, one in enumerate(keys or ("",), 1):
+            single = config if len(keys) <= 1 else config.with_key(one)
+            attempt = self.diagnostic(single, stale_after_seconds=int(stale))
+            outcomes.append({"slot": slot, "ok": attempt["validation"] == "PASS", "error_code": attempt.get("error_code", ""), "http_status": attempt.get("http_status")})
+            if result is None or (attempt["validation"] == "PASS" and not used):
+                result = attempt
+                used = slot if attempt["validation"] == "PASS" else used
         if not self.session.is_current(actor):
             raise PermissionError("انتهت جلسة الدخول.")
         passed = result["validation"] == "PASS"
@@ -115,7 +140,8 @@ class GoldPriceSettingsService:
                    "timestamp_skew_seconds": result.get("timestamp_skew_seconds", 0),
                    "credential_source": config.credential_trace["credential_source"],
                    "configured": bool(config.api_key), "character_count": len(config.api_key),
-                   "http_status": 200, "coherent_set": "PASS" if passed else "FAIL"}
+                   "http_status": 200, "coherent_set": "PASS" if passed else "FAIL",
+                   "keys": outcomes, "key_count": len(outcomes)}
         if not passed:
             # Every endpoint answered 200 but the set was rejected (skew, stale,
             # values). Show the observations; the message is allowlisted only.

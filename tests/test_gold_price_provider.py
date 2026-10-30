@@ -291,6 +291,53 @@ class GoldTimoProviderTests(unittest.TestCase):
         with self.assertRaisesRegex(ProviderError, "size limit"):
             self.provider.fetch()
 
+    def multi_key_provider(self, refuse=()):
+        """Three keys; a request with a key in `refuse` is answered with HTTP 429."""
+        config = GoldTimoConfig(api_key="key-one", timeout_seconds=5, extra_keys=("key-two", "key-three", "key-two", "", "key-one"))
+
+        def opener(request, *, timeout):
+            if request.get_header("X-api-key") in refuse:
+                raise HTTPError(request.full_url, 429, "limit", {}, None)
+            return self.open(request, timeout=timeout)
+        return GoldTimoProvider(config, opener=opener, clock=lambda: NOW)
+
+    def test_extra_keys_are_deduplicated_and_capped_at_three_keys(self):
+        config = GoldTimoConfig(api_key="key-a", extra_keys=("key-b", "key-c", "key-d", "key-a", "key-b"))
+        self.assertEqual(config.all_keys, ("key-a", "key-b", "key-c"))
+        self.assertNotIn("key-b", repr(config))
+
+    def test_a_refused_key_moves_on_and_the_whole_set_comes_from_one_key(self):
+        provider = self.multi_key_provider(refuse={"key-one", "key-two"})
+        quotes = provider.fetch()
+        self.assertEqual(len(quotes), 3)
+        self.assertEqual(provider.used_slot, 3)
+        self.assertEqual({r.get_header("X-api-key") for r, _ in self.requests}, {"key-three"})    # every karat of the set used the same key
+        self.assertEqual(len({q.refresh_attempt_id for q in quotes}), 1)
+
+    def test_all_keys_refused_raises_the_last_refusal_and_other_failures_never_change_key(self):
+        provider = self.multi_key_provider(refuse={"key-one", "key-two", "key-three"})
+        with self.assertRaises(ProviderError) as error:
+            provider.fetch()
+        self.assertEqual(error.exception.code, "RATE_LIMIT")
+        calls = []
+
+        def broken(request, *, timeout):
+            calls.append(request.get_header("X-api-key"))
+            raise URLError("down")
+        down = GoldTimoProvider(GoldTimoConfig(api_key="key-one", extra_keys=("key-two",)), opener=broken, clock=lambda: NOW)
+        with self.assertRaises(ProviderError):
+            down.fetch()
+        self.assertEqual(len(set(calls)), 1)                                                       # a network failure is not a key problem
+
+    def test_the_starting_key_rotates_between_refreshes(self):
+        provider = self.multi_key_provider()
+        firsts = []
+        for _ in range(3):
+            self.requests.clear()
+            provider.fetch()
+            firsts.append(self.requests[0][0].get_header("X-api-key"))
+        self.assertEqual(sorted(firsts), ["key-one", "key-three", "key-two"])
+
     def test_total_time_budget_stops_before_request(self):
         times = iter([0, 6])
         provider = GoldTimoProvider(self.config, opener=self.open, monotonic=lambda: next(times))

@@ -5919,13 +5919,13 @@ ApplicationWindow {
         property var vm: typeof goldSettingsVM !== "undefined" ? goldSettingsVM : null
         sectionTitle: "إعدادات مصدر أسعار الذهب"
         onVisibleChanged: {
-            providerKey.clear()
+            providerKey.clear(); providerKey2.clear(); providerKey3.clear()
             if (visible && vm && vm.canManage) vm.load()
         }
         Component.onCompleted: { if (visible && vm && vm.canManage) vm.load() }
         Connections {
             target: providerPanel.vm
-            function onClearSecret() { providerKey.clear() }
+            function onClearSecret() { providerKey.clear(); providerKey2.clear(); providerKey3.clear() }
             function onLoaded() {
                 providerUrl.text = providerPanel.vm.data.base_url || "https://goldtimo.com/api/v1"
                 providerTimeout.text = providerPanel.vm.data.timeout || "10"
@@ -5940,6 +5940,7 @@ ApplicationWindow {
                 GoldPriceLabel {
                     objectName: "providerKeyStatus"; Layout.fillWidth: true
                     value: !providerPanel.vm || !providerPanel.vm.canManage ? "يتطلب صلاحية الإدارة" :
+                        providerPanel.vm.data.stored_count > 1 ? ("محفوظ " + providerPanel.vm.data.stored_count + " مفاتيح API (تُجرَّب بالتناوب)") :
                         providerPanel.vm.data.stored ? "مفتاح API محفوظ" :
                         providerPanel.vm.data.configured ? "مُعد من بيئة التطوير" : "لم يُحفظ مفتاح API"
                     color: providerPanel.vm && providerPanel.vm.data.stored ? theme.green : theme.textSecondary
@@ -5951,7 +5952,7 @@ ApplicationWindow {
                 columns: providerPanel.width >= 760 ? 4 : 2
                 layoutDirection: Qt.RightToLeft
                 Layout.fillWidth: true; Layout.maximumWidth: Number.POSITIVE_INFINITY
-                Layout.alignment: Qt.AlignRight; columnSpacing: 12; rowSpacing: 8
+                Layout.alignment: Qt.AlignRight; columnSpacing: 12; rowSpacing: 4
                 enabled: providerPanel.vm && providerPanel.vm.canManage && !providerPanel.vm.busy
                 GoldPriceLabel { Layout.preferredWidth: 112; value: "المصدر التلقائي" }
                 ComboBox {
@@ -5981,23 +5982,39 @@ ApplicationWindow {
                     inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
                     placeholderText: text.length ? "" : "أدخل مفتاحاً جديداً لتغييره"
                 }
+                GoldPriceLabel { Layout.preferredWidth: 112; value: "مفتاح API الثاني" }
+                GoldPriceInput {
+                    id: providerKey2; objectName: "providerApiKey2"; Layout.fillWidth: true
+                    Layout.maximumWidth: 300; Layout.preferredHeight: 34
+                    echoMode: TextInput.Password
+                    inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
+                    placeholderText: text.length ? "" : (providerPanel.vm && providerPanel.vm.data.stored_slots && providerPanel.vm.data.stored_slots[1] ? "محفوظ — أدخل مفتاحاً لتغييره" : "اختياري")
+                }
+                GoldPriceLabel { Layout.preferredWidth: 112; value: "مفتاح API الثالث" }
+                GoldPriceInput {
+                    id: providerKey3; objectName: "providerApiKey3"; Layout.fillWidth: true
+                    Layout.maximumWidth: 300; Layout.preferredHeight: 34
+                    echoMode: TextInput.Password
+                    inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText
+                    placeholderText: text.length ? "" : (providerPanel.vm && providerPanel.vm.data.stored_slots && providerPanel.vm.data.stored_slots[2] ? "محفوظ — أدخل مفتاحاً لتغييره" : "اختياري")
+                }
             },
             GoldPriceLabel {
                 Layout.fillWidth: true; font.pixelSize: 11; color: theme.textMuted
-                value: "الحفظ يحدد GoldTimo كمصدر أساسي ويحافظ على الوضع الحالي. اختبار الاتصال لا يعتمد أي أسعار."
+                value: "عند حفظ أكثر من مفتاح يتناوب عليها البرنامج ويستعمل التالي إذا رُفض أحدها. الاختبار يجرّب كل مفتاح ولا يعتمد أسعاراً."
             },
             Flow {
                 Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
                 enabled: providerPanel.vm && providerPanel.vm.canManage && !providerPanel.vm.busy
                 GoldPriceButton {
                     objectName: "testProviderConnection"; text: "اختبار الاتصال"
-                    onClicked: providerPanel.vm.test(providerUrl.text, providerTimeout.text, providerKey.text)
+                    onClicked: providerPanel.vm.test(providerUrl.text, providerTimeout.text, providerKey.text, providerKey2.text, providerKey3.text)
                 }
                 GoldPriceButton {
                     objectName: "saveProviderSettings"; text: "حفظ الإعدادات"; primaryAction: true
-                    onClicked: providerPanel.vm.save(providerUrl.text, providerTimeout.text, providerRefresh.text, providerStale.text, providerKey.text)
+                    onClicked: providerPanel.vm.save(providerUrl.text, providerTimeout.text, providerRefresh.text, providerStale.text, providerKey.text, providerKey2.text, providerKey3.text)
                 }
-                GoldPriceButton { objectName: "deleteProviderKey"; text: "حذف مفتاح API"; onClicked: providerPanel.vm.delete() }
+                GoldPriceButton { objectName: "deleteProviderKey"; text: "حذف مفاتيح API"; onClicked: providerPanel.vm.delete() }
             },
             GoldPriceLabel {
                 Layout.fillWidth: true; visible: value.length > 0
@@ -6042,6 +6059,11 @@ ApplicationWindow {
                     GoldPriceLabel {
                         objectName: "providerTestCredential"; Layout.fillWidth: true; font.pixelSize: 11; color: theme.textMuted
                         value: "مصدر المفتاح: " + (testResultCard.testResult.credential_source_text || "—")
+                    },
+                    GoldPriceLabel {
+                        objectName: "providerTestKeys"; Layout.fillWidth: true; font.pixelSize: 11; color: theme.textMuted
+                        visible: value.length > 0
+                        value: testResultCard.testResult.keys_text || ""
                     }
                 ]
             }

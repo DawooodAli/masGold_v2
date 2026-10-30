@@ -8,6 +8,9 @@ from urllib.parse import urlsplit
 from dotenv import load_dotenv
 
 
+KEY_SLOTS = ("goldtimo_api_key", "goldtimo_api_key_2", "goldtimo_api_key_3")      # owner 2026-10-31: up to three GoldTimo keys, tried in turn
+
+
 def credential_diagnostics(entered_key, stored_key, source, selected_key, *, stored_known=True):
     """Temporary credential metadata; never return the key or comparison data."""
     return {
@@ -24,6 +27,7 @@ class GoldTimoConfig:
     timeout_seconds: float = 10.0
     key_had_whitespace: bool = field(default=False, init=False, repr=False)
     credential_trace: dict = field(default_factory=dict, repr=False, compare=False)
+    extra_keys: tuple = field(default=(), repr=False)                                    # the 2nd / 3rd key; the primary one stays `api_key`
 
     def __post_init__(self):
         parsed = urlsplit(self.base_url)
@@ -43,13 +47,31 @@ class GoldTimoConfig:
                 self.api_key, None, "ENTERED" if self.api_key else "NONE",
                 self.api_key, stored_known=False))
         object.__setattr__(self, "api_key", clean_key)
+        extras = []
+        for extra in tuple(self.extra_keys or ()):
+            if not isinstance(extra, str):
+                raise ValueError("GoldTimo API key has an invalid format.")
+            extra = extra.strip()
+            if "\r" in extra or "\n" in extra:
+                raise ValueError("GoldTimo API key cannot contain embedded line breaks.")
+            if extra and extra != clean_key and extra not in extras:                     # an empty or repeated key is no extra key
+                extras.append(extra)
+        object.__setattr__(self, "extra_keys", tuple(extras[:len(KEY_SLOTS) - 1]))
         if (isinstance(self.timeout_seconds, bool)
                 or not math.isfinite(self.timeout_seconds)
                 or not 0.1 <= self.timeout_seconds <= 30):
             raise ValueError("GoldTimo timeout must be between 0.1 and 30 seconds.")
 
+    @property
+    def all_keys(self):
+        """The keys in the order they are tried: the primary one first (empty when none is configured)."""
+        return ((self.api_key,) if self.api_key else ()) + self.extra_keys
+
+    def with_key(self, key):
+        return GoldTimoConfig(base_url=self.base_url, api_key=key, timeout_seconds=self.timeout_seconds)
+
     @classmethod
-    def from_env(cls, secret_store=None, options=None, *, entered_key=None, trace_stored=False):
+    def from_env(cls, secret_store=None, options=None, *, entered_key=None, trace_stored=False, entered_extra=()):
         from services.secret_store import SecretStore, SecretStoreError
         load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
         options = options or {}
@@ -68,6 +90,20 @@ class GoldTimoConfig:
                     raise
                 # Comparing storage must never prevent a transient-key fetch.
         environment = os.getenv("MASGOLD_GOLDTIMO_API_KEY", "")
+        extras = []
+        for slot, name in enumerate(KEY_SLOTS[1:]):                                       # per slot: the entered unsaved key, else the stored one
+            typed = (entered_extra[slot] if slot < len(entered_extra) else "") or ""
+            if not isinstance(typed, str):
+                raise ValueError("GoldTimo API key has an invalid format.")
+            if typed.strip():
+                extras.append(typed.strip())
+                continue
+            try:
+                kept = (secret_store or SecretStore()).get_secret(name)
+            except SecretStoreError:
+                kept = None                                                                 # the primary key decides whether the store is required
+            if kept:
+                extras.append(kept)
         selected = entered_key or stored or environment
         source = "ENTERED" if entered_key else "KEYRING" if stored else "ENV" if environment else "NONE"
         return cls(
@@ -76,4 +112,5 @@ class GoldTimoConfig:
             timeout_seconds=float(options.get("timeout_seconds", os.getenv("MASGOLD_GOLDTIMO_TIMEOUT_SECONDS", "10"))),
             credential_trace=credential_diagnostics(entered_key, stored, source, selected,
                                                      stored_known=stored_known),
+            extra_keys=tuple(extras),
         )

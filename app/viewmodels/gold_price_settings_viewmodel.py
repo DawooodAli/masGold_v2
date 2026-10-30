@@ -139,6 +139,10 @@ class GoldPriceSettingsViewModel(QObject):
         skew = result.get("timestamp_skew_seconds")
         display["skew_text"] = "—" if skew is None else format(skew, "g")
         display["credential_source_text"] = CREDENTIAL_SOURCES.get(result.get("credential_source"), "—")
+        keys = result.get("keys") or []
+        display["keys_text"] = "" if len(keys) <= 1 else " • ".join(
+            f"المفتاح {row['slot']}: " + ("يعمل" if row["ok"] else "مرفوض" if row.get("http_status") in (401, 403) or row.get("error_code") == "HTTP_AUTH"
+                                          else "حد الاستخدام" if row.get("error_code") == "RATE_LIMIT" else "فشل") for row in keys)
         return display
 
     def _finished(self, worker):
@@ -151,16 +155,16 @@ class GoldPriceSettingsViewModel(QObject):
     @Slot()
     def load(self): self._start("load")
 
-    @Slot(str, str, str, str, str)
-    def save(self, url, timeout, refresh, stale, key):
-        self._start("save", (url, timeout, refresh, stale, key))
+    @Slot(str, str, str, str, str, str, str)
+    def save(self, url, timeout, refresh, stale, key, key2="", key3=""):
+        self._start("save", (url, timeout, refresh, stale, key, key2, key3))
 
-    @Slot(str, str, str)
-    def test(self, url, timeout, key):
+    @Slot(str, str, str, str, str)
+    def test(self, url, timeout, key, key2="", key3=""):
         # Keep the masked draft for Test -> Save. Clearing it here makes Save
         # submit an empty key and silently retain an older stored credential.
         # Save, page visibility changes and logout still clear the field.
-        self._start("test", (url, timeout, key))
+        self._start("test", (url, timeout, key, key2, key3))
 
     @Slot()
     def delete(self): self._start("delete")

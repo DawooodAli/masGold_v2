@@ -135,7 +135,7 @@ class GoldPriceSettingsTests(unittest.TestCase):
         self.secrets.set_secret.assert_not_called()
 
     def test_entered_key_wins_over_different_stored_and_environment_keys(self):
-        self.secrets.get_secret.return_value = "old-stored"
+        self.secrets.get_secret.side_effect = lambda name: "old-stored" if name == "goldtimo_api_key" else None
         with patch.dict(os.environ, {"MASGOLD_GOLDTIMO_API_KEY": "environment"}), \
              patch("config.gold_price_config.load_dotenv"):
             self.service.test(self.actor, "https://goldtimo.com/api/v1", "10", "  MiXeD_+=/  ")
@@ -222,7 +222,7 @@ class GoldPriceSettingsTests(unittest.TestCase):
         self.service.delete(self.actor)
         result = self.prices.activate_manual("6100", "6200", "after delete")
         self.assertEqual(result["mode"], "MANUAL")
-        self.secrets.delete_secret.assert_called_once_with("goldtimo_api_key")
+        self.assertEqual([c.args[0] for c in self.secrets.delete_secret.call_args_list], ["goldtimo_api_key", "goldtimo_api_key_2", "goldtimo_api_key_3"])
 
     def test_db_failure_does_not_write_credential(self):
         self.db.fail_commit = True
