@@ -8,7 +8,7 @@ Positions are never shown as an ambiguous signed number: the Arabic wording carr
 (مصنعيات) are always separate lines. Weights use the project unit جرام.
 """
 import re
-from decimal import Decimal, localcontext
+from decimal import ROUND_HALF_UP, Decimal, localcontext
 from uuid import uuid4
 
 from PySide6.QtCore import QObject, Property, Signal, Slot
@@ -27,6 +27,11 @@ PAYMENT_METHOD_TEXT = {"CASH": "نقدًا من", "BANK": "تحويل من", "CU
 TONES = {rules.SHOP_OWES: "shopOwes", rules.SUPPLIER_OWES: "supplierOwes", rules.SETTLED: "settled"}
 
 
+def whole_money(value):
+    """Owner 2026-10-30: the making position is shown in whole pounds (no piasters); the stored ledger is untouched."""
+    return money(Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
 def gold_position_text(direction, amount, karat=None):
     """'علينا للمورد 40.050 جرام' / 'لنا عند المورد 9.950 جرام عيار 21' (the magnitude only; the words give the sign)."""
     if direction == rules.SETTLED:
@@ -41,7 +46,7 @@ def making_position_text(direction, amount):
     if direction == rules.SETTLED:
         return MAKING_SETTLED_TEXT
     lead = SHOP_OWES_TEXT if direction == rules.SHOP_OWES else SUPPLIER_OWES_TEXT
-    return f"{lead} {money(abs(Decimal(str(amount))))} مصنعيات"
+    return f"{lead} {whole_money(abs(Decimal(str(amount))))} مصنعيات"
 
 
 def position_parts(direction, amount, kind, karat=None):
@@ -53,7 +58,7 @@ def position_parts(direction, amount, kind, karat=None):
     lead = SHOP_OWES_TEXT if direction == rules.SHOP_OWES else SUPPLIER_OWES_TEXT
     value = abs(Decimal(str(amount)))
     if kind == "making":
-        return {"lead": lead, "number": money(value), "tail": "مصنعيات"}
+        return {"lead": lead, "number": whole_money(value), "tail": "مصنعيات"}
     return {"lead": lead, "number": grams(value), "tail": f"جرام عيار {karat}" if karat else "جرام"}
 
 
