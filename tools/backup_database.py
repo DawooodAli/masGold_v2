@@ -6,6 +6,10 @@ usage:  python -m tools.backup_database [--database NAME] [--dest E:\\masGold_ba
 * The credentials are the application's own (.env through DatabaseConfig); the password goes to mysqldump through a temporary option file and is never printed or logged.
 * The file is written under a temporary name and renamed only after the dump finished and was checked (size and the "Dump completed" trailer), so a half-written file is never mistaken for a backup.
 * Retention: files of this database older than --keep-days are deleted, but the newest --keep-min files are always kept. Only files that match this tool's own name pattern are ever deleted.
+* --offsite FOLDER (owner request 2026-10-31): after the local backup is verified, an ENCRYPTED copy (AES-256-GCM, key from the owner's passphrase with Argon2id, see
+  services/backup_crypto.py) is written to FOLDER (a synced Google Drive / OneDrive folder, a USB drive, a network share) as <name>.sql.gz.enc, checked by decrypting it again, and the same
+  retention applies there. The passphrase is stored once by `python -m tools.set_backup_passphrase` (Windows Credential Manager); without it the offsite step FAILS loudly (exit 3) and the local
+  backup is untouched. Restore: `python -m tools.decrypt_backup FILE.sql.gz.enc OUT.sql.gz`. A lost passphrase cannot be recovered.
 * Exit code 0 = a verified backup exists now; non-zero = nothing new was verified (the Windows task shows the failure). Every run appends one line to <dest>\\backup.log (no secrets)."""
 import argparse
 import gzip
@@ -21,6 +25,8 @@ DEFAULT_DEST = Path(r"E:\masGold_backups")
 DEFAULT_MYSQLDUMP = Path(r"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysqldump.exe")
 TRAILER = b"-- Dump completed"
 NAME = re.compile(r"^(?P<db>[a-z0-9_]{1,64})_(?P<stamp>\d{8}_\d{6})\.sql\.gz$")
+ENCRYPTED_NAME = re.compile(r"^(?P<db>[a-z0-9_]{1,64})_(?P<stamp>\d{8}_\d{6})\.sql\.gz\.enc$")
+PASSPHRASE_SECRET = "backup_passphrase"
 MIN_BYTES = 2000
 
 
@@ -32,11 +38,12 @@ def backup_name(database, now):
     return f"{database}_{now:%Y%m%d_%H%M%S}.sql.gz"
 
 
-def files_for(dest, database):
+def files_for(dest, database, *, encrypted=False):
     """(path, timestamp) of this database's backups, oldest first; foreign files are ignored."""
     found = []
-    for path in Path(dest).glob(f"{database}_*.sql.gz"):
-        match = NAME.match(path.name)
+    pattern, suffix = (ENCRYPTED_NAME, ".sql.gz.enc") if encrypted else (NAME, ".sql.gz")
+    for path in Path(dest).glob(f"{database}_*{suffix}"):
+        match = pattern.match(path.name)
         if match and match.group("db") == database:
             found.append((path, datetime.strptime(match.group("stamp"), "%Y%m%d_%H%M%S")))
     return sorted(found, key=lambda item: item[1])
@@ -85,6 +92,35 @@ def run_dump(database, target, mysqldump):
             raise BackupError("mysqldump failed: " + error.replace(cfg.password, "***"))
 
 
+def offsite_copy(local, folder, database, now, keep_days, keep_min, passphrase=None):
+    """Encrypt the verified local backup into `folder`; returns a short description. The copy is accepted only after it was decrypted again end to end."""
+    from services.backup_crypto import BackupCryptoError, encrypt_file, verify_file
+    if passphrase is None:
+        from services.secret_store import SecretStore
+        passphrase = SecretStore().get_secret(PASSPHRASE_SECRET)
+    if not passphrase:
+        raise BackupError("no backup passphrase is stored; run: python -m tools.set_backup_passphrase")
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    final = folder / (Path(local).name + ".enc")
+    temp = folder / (final.name + ".partial")
+    try:
+        encrypt_file(local, temp, passphrase)
+        try:
+            verify_file(temp, passphrase)
+        except BackupCryptoError as exc:
+            raise BackupError(f"the encrypted copy failed its own check: {exc}") from None
+        os.replace(temp, final)
+        temp = None
+    finally:
+        if temp is not None and Path(temp).exists():
+            Path(temp).unlink()
+    removed = to_delete(files_for(folder, database, encrypted=True), now, keep_days, keep_min)
+    for path in removed:
+        path.unlink()
+    return f"{final.name} {final.stat().st_size} bytes, {len(removed)} old file(s) removed"
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--database", default=None)
@@ -92,6 +128,7 @@ def main(argv=None):
     parser.add_argument("--keep-days", type=int, default=30)
     parser.add_argument("--keep-min", type=int, default=7)
     parser.add_argument("--mysqldump", default=str(DEFAULT_MYSQLDUMP))
+    parser.add_argument("--offsite", default=None)
     args = parser.parse_args(argv)
     from config.database_config import DatabaseConfig
     database = args.database or DatabaseConfig.from_env().database
@@ -124,8 +161,23 @@ def main(argv=None):
             log.write(f"{now:%Y-%m-%d %H:%M:%S}  {database}  {status}  {detail}\n")
     except OSError:
         pass
+    code = 0 if status == "OK" else 1
+    if status == "OK" and args.offsite:
+        offsite_status, offsite_detail = "OFFSITE_FAILED", ""
+        try:
+            offsite_detail = offsite_copy(final, args.offsite, database, now, args.keep_days, args.keep_min)
+            offsite_status = "OFFSITE_OK"
+        except Exception as exc:                               # only our own messages; the passphrase is never part of an error
+            offsite_detail = f"{type(exc).__name__}: {exc}"[:300]
+            code = 3
+        try:
+            with open(dest / "backup.log", "a", encoding="utf-8") as log:
+                log.write(f"{datetime.now():%Y-%m-%d %H:%M:%S}  {database}  {offsite_status}  {offsite_detail}\n")
+        except OSError:
+            pass
+        print(f"{offsite_status}: {database} {offsite_detail}")
     print(f"{status}: {database} {detail}")
-    return 0 if status == "OK" else 1
+    return code
 
 
 if __name__ == "__main__":
