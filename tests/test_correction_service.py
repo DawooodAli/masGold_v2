@@ -586,6 +586,13 @@ class SettlementCorrectionTests(CorrectionTestCase):
         self.assertEqual(self.store.ledger[-1][:2], ("12", D("-5000.00")))                  # the account part released
         self.assertEqual(self.service.current_settlement("INVOICE", "500")["account"], "0.00")
 
+    def test_paid_zero_moves_the_whole_settlement_to_the_customer_account(self):
+        """Owner 2026-10-30: the customer could not pay after the invoice was printed: money 0 (the leg left at 0 is dropped), everything on his account."""
+        self.correct("INVOICE", "501", [("PHYSICAL_CASH", "0")], account="30000.00")
+        self.assertEqual(self.store.ledger[-1][1], D("30000.00"))                         # the customer now owes the whole amount
+        self.assertEqual(self.service.current_settlement("INVOICE", "501")["legs"], [])
+        self.assertRefused("PAYMENT_INVALID", lambda: self.correct("INVOICE", "500", [("PHYSICAL_CASH", "0")]))     # nothing paid and nothing on the account: refused
+
     def test_total_preserved_and_zero_effect_refused(self):
         self.assertRefused("NO_EFFECT_CORRECTION", lambda: self.correct("INVOICE", "501", [("PHYSICAL_CASH", "30000.00")]))
         self.assertRefused("ACCOUNT_NEEDS_CUSTOMER", lambda: self.correct("INVOICE", "506", [("PHYSICAL_CASH", "20000.00")],

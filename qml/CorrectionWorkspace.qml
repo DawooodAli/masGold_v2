@@ -207,12 +207,12 @@ Item {
                 Txt { Layout.fillWidth: true; value: "التاريخ: " + (correctionPage.rv.date || "")
                       + "  •  إجمالي الفاتورة الأصلي: " + (correctionPage.rv.total || "")
                       color: theme.textPrimary }
-                Txt { value: "الحركة المالية العكسية"; color: theme.textMuted; font.bold: true }
+                Txt { Layout.fillWidth: true; Layout.topMargin: 6; value: "الحركة المالية العكسية"; color: theme.textMuted; font.bold: true }
                 Lines { model: correctionPage.rv.money || []; tone: theme.textPrimary }
                 Lines { model: correctionPage.rv.account || []; tone: theme.textPrimary }
-                Txt { visible: (correctionPage.rv.stock || []).length > 0; value: "المخزون"; color: theme.textMuted; font.bold: true }
+                Txt { Layout.fillWidth: true; Layout.topMargin: 6; visible: (correctionPage.rv.stock || []).length > 0; value: "المخزون"; color: theme.textMuted; font.bold: true }
                 Lines { model: correctionPage.rv.stock || [] }
-                Txt { visible: (correctionPage.rv.gold || []).length > 0; value: "رصيد الكسر"; color: theme.textMuted; font.bold: true }
+                Txt { Layout.fillWidth: true; Layout.topMargin: 6; visible: (correctionPage.rv.gold || []).length > 0; value: "رصيد الكسر"; color: theme.textMuted; font.bold: true }
                 Lines { model: correctionPage.rv.gold || [] }
                 Lines { model: correctionPage.rv.extra || [] }
                 // Why it cannot be reversed (newest dependent transaction first).
@@ -235,7 +235,7 @@ Item {
                       font.bold: true }
                 Txt { Layout.fillWidth: true; value: "المسجل حالياً: " + (correctionPage.st.current || "")
                       wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                Txt { value: "التسوية الصحيحة"; color: theme.textMuted; font.bold: true }
+                Txt { Layout.fillWidth: true; Layout.topMargin: 6; value: "التسوية الصحيحة"; color: theme.textMuted; font.bold: true }
                 Repeater {
                     model: correctionPage.vm ? correctionPage.vm.legs : []
                     delegate: RowLayout {
@@ -275,23 +275,25 @@ Item {
                         Item { Layout.fillWidth: true }
                     }
                 }
+                Btn { objectName: "correctionAddLeg"; Layout.alignment: Qt.AlignRight; text: "+ إضافة طريقة دفع"; enabled: correctionPage.editable
+                      onClicked: correctionPage.vm.addLeg() }
+                // The part that stays on the customer's account (the rest of the total when less is paid now).
                 RowLayout {
-                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 6
-                    Btn { objectName: "correctionAddLeg"; text: "إضافة طريقة دفع"; enabled: correctionPage.editable
-                          onClicked: correctionPage.vm.addLeg() }
-                    Txt { visible: !!correctionPage.st.hasCustomer && !!correctionPage.st.hasAccount; value: "حساب العميل"; color: theme.textMuted }
-                    Field { objectName: "correctionAccountAmount"; Layout.preferredWidth: 200
-                            implicitHeight: 38; font.pixelSize: theme.fontBodyStrong; visible: !!correctionPage.st.hasCustomer && !!correctionPage.st.hasAccount
+                    Layout.fillWidth: true; Layout.topMargin: 4; layoutDirection: Qt.RightToLeft; spacing: 8
+                    visible: !!correctionPage.st.hasCustomer && !!correctionPage.st.hasAccount
+                    Txt { Layout.preferredWidth: 140; value: "على حساب العميل"; color: theme.textPrimary; font.bold: true }
+                    Field { objectName: "correctionAccountAmount"; Layout.preferredWidth: 220
+                            implicitHeight: 38; font.pixelSize: theme.fontBodyStrong
                             leftPadding: 8; rightPadding: 8
                             enabled: correctionPage.editable; text: correctionPage.vm ? correctionPage.vm.accountAmount : ""
-                            placeholderText: activeFocus || text.length ? "" : "0.00"
+                            placeholderText: activeFocus || text.length ? "" : "0"
                             validator: RegularExpressionValidator { regularExpression: /^[0-9]{0,9}$/ }
                             onTextEdited: correctionPage.vm.setAccountAmount(text) }
                     Item { Layout.fillWidth: true }
-                    Txt { objectName: "correctionRemaining"; value: correctionPage.st.remainingText || ""; font.bold: true
-                          color: correctionPage.st.complete ? theme.green : theme.amber }
                 }
-                Txt { visible: (correctionPage.st.deltas || []).length > 0; value: "الحركات التي ستُسجل"; color: theme.textMuted
+                Txt { objectName: "correctionRemaining"; Layout.fillWidth: true; Layout.topMargin: 2; value: correctionPage.st.remainingText || ""; font.bold: true
+                      color: correctionPage.st.complete ? theme.green : theme.amber }
+                Txt { Layout.fillWidth: true; Layout.topMargin: 6; visible: (correctionPage.st.deltas || []).length > 0; value: "الحركات التي ستُسجل"; color: theme.textMuted
                       font.bold: true }
                 Lines { model: correctionPage.st.deltas || []; tone: theme.textPrimary }
                 Lines { model: correctionPage.st.problems || []; tone: theme.red }

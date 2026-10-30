@@ -194,6 +194,15 @@ ApplicationWindow {
         }
     }
 
+    // The mode chips of the top bar: open the price window on the part that matches the chosen mode (nothing is switched by this call).
+    function openGoldPriceFor(code) {
+        goldPriceDialog.open()
+        if (code === "AUTO" && goldPriceVM.mode === "MANUAL")
+            goldAutoConfirmation.open()
+        else if (code === "MANUAL")
+            Qt.callLater(function() { goldBuy21.forceActiveFocus() })
+    }
+
     Dialog {
         id: goldPriceDialog
         objectName: "goldPriceDialog"
@@ -257,6 +266,26 @@ ApplicationWindow {
                                 color: goldPriceVM.status === "ERROR" ? theme.priceError : goldPriceVM.status === "STALE_ALLOWED" ? theme.priceWarning : theme.textSecondary
                             }
                             GoldPriceLabel { value: "الوضع: " + goldPriceVM.modeText }
+                            // Owner 2026-10-30: choose between the two modes right here. «يدوي» only points at the manual form below (the mode changes when a manual price is approved);
+                            // «تلقائي» asks for the usual confirmation. Nothing is switched by merely opening the dialog.
+                            RowLayout {
+                                visible: goldPriceVM.canManage
+                                spacing: 6
+                                GoldPriceButton {
+                                    objectName: "goldModeAutoChoice"
+                                    text: "تلقائي"
+                                    primaryAction: goldPriceVM.mode !== "MANUAL"
+                                    enabled: !goldPriceVM.busy
+                                    onClicked: { if (goldPriceVM.mode === "MANUAL") goldAutoConfirmation.open() }
+                                }
+                                GoldPriceButton {
+                                    objectName: "goldModeManualChoice"
+                                    text: "يدوي"
+                                    primaryAction: goldPriceVM.mode === "MANUAL"
+                                    enabled: !goldPriceVM.busy
+                                    onClicked: { goldBuy21.forceActiveFocus() }
+                                }
+                            }
                             GoldPriceLabel { value: "المصدر: " + goldPriceVM.source }
                             Item { Layout.fillWidth: true }
                         }
@@ -766,6 +795,11 @@ ApplicationWindow {
                         border.color: theme.border
                         border.width: 1
 
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: goldPriceDialog.open()
+                        }
 
                         ColumnLayout {
                             anchors.fill: parent
@@ -794,21 +828,43 @@ ApplicationWindow {
                                 }
                                 Item { Layout.fillWidth: true }
                             }
-                            GoldPriceLabel {
-                                objectName: "goldTopStatus"
+                            RowLayout {
                                 Layout.fillWidth: true
-                                value: goldPriceVM.simpleStatus
-                                color: goldPriceVM.status === "ERROR" ? theme.priceError
-                                       : goldPriceVM.status === "STALE_ALLOWED" ? theme.priceWarning : theme.textMuted
-                                font.pixelSize: 11
-                                elide: Text.ElideLeft
-                                wrapMode: Text.NoWrap
+                                layoutDirection: Qt.RightToLeft
+                                spacing: 6
+                                GoldPriceLabel {
+                                    objectName: "goldTopStatus"
+                                    Layout.fillWidth: true
+                                    value: goldPriceVM.simpleStatus
+                                    color: goldPriceVM.status === "ERROR" ? theme.priceError
+                                           : goldPriceVM.status === "STALE_ALLOWED" ? theme.priceWarning : theme.textMuted
+                                    font.pixelSize: 11
+                                    elide: Text.ElideLeft
+                                    wrapMode: Text.NoWrap
+                                }
+                                // Owner 2026-10-30: the mode choice sits next to the price in the main window. «يدوي» opens the price window on the manual form (the mode changes
+                                // only when a manual price is approved); «تلقائي» opens it on the usual confirmation. Shown for those who may manage prices.
+                                Repeater {
+                                    model: goldPriceVM.canManage ? [{ code: "AUTO", text: "تلقائي" }, { code: "MANUAL", text: "يدوي" }] : []
+                                    delegate: Rectangle {
+                                        required property var modelData
+                                        readonly property bool current: modelData.code === "MANUAL" ? goldPriceVM.mode === "MANUAL" : goldPriceVM.mode !== "MANUAL"
+                                        objectName: "goldTopMode_" + modelData.code
+                                        Layout.preferredWidth: 46
+                                        Layout.preferredHeight: 20
+                                        radius: 4
+                                        color: current ? theme.gold : "transparent"
+                                        border.color: current ? theme.gold : theme.border
+                                        GoldPriceLabel { anchors.centerIn: parent; value: parent.modelData.text; font.pixelSize: 11; wrapMode: Text.NoWrap
+                                                         color: parent.current ? theme.bgPrimary : theme.textPrimary }
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: root.openGoldPriceFor(parent.modelData.code)
+                                        }
+                                    }
+                                }
                             }
-                        }
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: goldPriceDialog.open()
                         }
                     }
 

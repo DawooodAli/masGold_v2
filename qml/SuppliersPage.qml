@@ -1945,17 +1945,17 @@ Item {
                 Layout.fillWidth: true
                 layoutDirection: Qt.RightToLeft
                 spacing: 8
-                Btn { objectName: "adjustAddButton"; text: "إضافة ذهب"; primary: adjustGroupDialog.direction === "ADD"
+                Btn { objectName: "groupAdjustAddButton"; text: "إضافة ذهب"; primary: adjustGroupDialog.direction === "ADD"
                       onClicked: adjustGroupDialog.direction = "ADD" }
-                Btn { objectName: "adjustDeductButton"; text: "خصم ذهب"; primary: adjustGroupDialog.direction === "DEDUCT"
+                Btn { objectName: "groupAdjustDeductButton"; text: "خصم ذهب"; primary: adjustGroupDialog.direction === "DEDUCT"
                       onClicked: adjustGroupDialog.direction = "DEDUCT" }
                 Item { Layout.fillWidth: true }
             }
             Txt { Layout.fillWidth: true; text: "الوزن (جرام) *" }
-            TextField { id: adjustWeight; objectName: "adjustWeightField"; Layout.fillWidth: true; placeholderText: "0.000"
+            TextField { id: adjustWeight; objectName: "groupAdjustWeightField"; Layout.fillWidth: true; placeholderText: "0.000"
                         font.family: "Cairo"; horizontalAlignment: TextInput.AlignRight; inputMethodHints: Qt.ImhFormattedNumbersOnly }
             Txt { Layout.fillWidth: true; text: "السبب *" }
-            TextField { id: adjustReason; objectName: "adjustReasonField"; Layout.fillWidth: true; placeholderText: "سبب التعديل"
+            TextField { id: adjustReason; objectName: "groupAdjustReasonField"; Layout.fillWidth: true; placeholderText: "سبب التعديل"
                         font.family: "Cairo"; horizontalAlignment: TextInput.AlignRight }
             Txt { objectName: "adjustGroupError"; Layout.fillWidth: true; visible: text !== ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone
                   text: !!page.pvm ? page.pvm.errorMessage : "" }
@@ -1963,12 +1963,12 @@ Item {
                 Layout.fillWidth: true
                 layoutDirection: Qt.RightToLeft
                 spacing: 8
-                Btn { objectName: "confirmAdjustButton"; primary: true
+                Btn { objectName: "confirmGroupAdjustButton"; primary: true
                       text: !!page.pvm && page.pvm.busy ? "جارٍ الحفظ…" : "تأكيد التعديل"
                       enabled: adjustWeight.text.trim().length > 0 && adjustReason.text.trim().length > 0 && !!page.pvm && !page.pvm.busy
                       onClicked: page.pvm.adjustGroup(adjustGroupDialog.invoiceId, adjustGroupDialog.groupId, adjustGroupDialog.direction,
                                                       adjustWeight.text, adjustReason.text, adjustGroupDialog.requestKey) }
-                Btn { objectName: "cancelAdjustButton"; text: "إلغاء"; accent: theme.textSecondary; onClicked: adjustGroupDialog.close() }
+                Btn { objectName: "cancelGroupAdjustButton"; text: "إلغاء"; accent: theme.textSecondary; onClicked: adjustGroupDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }

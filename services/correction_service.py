@@ -1587,7 +1587,7 @@ class CorrectionService:
 
     def _proposal(self, invoices, state, legs, account_amount, lock):
         """Validated new allocation: [(PaymentInput, amount)], account, per-account money map, problems."""
-        problems, parsed = [], []
+        problems, parsed, zero_legs = [], [], 0
         for leg in legs:
             try:
                 amount = _money_value(leg.amount, "PAYMENT_INVALID", "اكتب المبلغ بالأرقام.")
@@ -1595,7 +1595,7 @@ class CorrectionService:
                 problems.append(error)
                 continue
             if amount == 0:
-                problems.append(CorrectionError("PAYMENT_INVALID", "المبلغ يجب أن يكون أكبر من صفر."))
+                zero_legs += 1                     # owner 2026-10-30: a leg left at 0 means «nothing paid by this method» (the rest goes to the customer's account); it is dropped, not an error
                 continue
             parsed.append((PaymentInput(leg.method_code, str(amount), state["direction"], None,
                                         leg.bank_account_id or None), amount))
@@ -1607,6 +1607,8 @@ class CorrectionService:
                 problems.append(error)
         if state.get("source_type") == CS and account_amount not in (None, "", "0", "0.00"):
             problems.append(CorrectionError("CS_ACCOUNT_FORBIDDEN", "تصحيح تسوية الحساب يقبل طرق الدفع الفعلية فقط."))
+        if zero_legs and not parsed and not account and not problems:
+            problems.append(CorrectionError("PAYMENT_INVALID", "المبلغ يجب أن يكون أكبر من صفر."))
         if account and state["customer_id"] in (None, ""):
             problems.append(CorrectionError("ACCOUNT_NEEDS_CUSTOMER", "العملية بدون عميل مسجل؛ لا يمكن استخدام حسابه."))
         methods, accounts, cash, account_problems = InvoiceService._payment_accounts(
