@@ -835,6 +835,15 @@ class StockWeightTests(Case):
         self.assertEqual([(r["label"], r["value"]) for r in bars[0]["rows"]], [("0 – 2 جرام", 1), ("2 – 4 جرام", 1), ("4 – 6 جرام", 1)])
         self.assertEqual((bars[0]["karat"], bars[0]["kind"]), (21, "count"))
 
+    def test_only_rings_wedding_bands_and_bangles_carry_a_size(self):
+        pieces = [("3.00", "17", "سلسلة"), ("3.10", "18", "سلسلة"), ("3.00", "12", "حلق دبلة"), ("3.00", "17", "دبلة"), ("3.00", "20", "غويشة")]
+        result = self.service_with(pieces).run("stockweights", {})
+        titles = {t["title"] for t in result["tables"]}
+        self.assertIn("سلسلة — عيار 21", titles)                                  # no size for a chain, even when the stock carries one
+        self.assertIn("حلق دبلة — عيار 21", titles)                              # an earring is not a wedding band
+        self.assertIn("دبلة — عيار 21 (بالوزن والمقاس)", titles)
+        self.assertIn("غويشة — عيار 21 (بالوزن والمقاس)", titles)
+
     def test_a_type_with_sizes_is_counted_by_weight_and_size_and_karats_stay_apart(self):
         pieces = [("2.50", "57", "خاتم"), ("2.60", "57", "خاتم"), ("3.90", "58", "خاتم"), ("2.70", "", "خاتم"), ("2.00", "", "خاتم", 18)]
         result = self.service_with(pieces).run("stockweights", {})

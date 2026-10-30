@@ -50,6 +50,13 @@ HINT_TEXT = {indicators_math.BUY_FAVOURABLE: "الشراء مناسب نسبيً
              indicators_math.UNKNOWN: "بيانات غير كافية"}
 HINT_DISCLAIMER = "إرشاد مبني على حركة أسعار المحل المخزنة وليس توصية مالية"
 NO_TYPE = "بدون صنف"
+SIZED_TYPE_WORDS = frozenset({"خاتم", "خواتم", "دبلة", "دبل", "دبله", "غويشة", "غوايش", "غويشه"})   # owner 2026-10-31: only rings, wedding bands and bangles carry a size in the weight stocktake
+
+
+def is_sized_type(name):
+    """True for a ring / wedding band / bangle type; an earring such as «حلق دبلة» is not one. Chains may get lengths later (not now)."""
+    words = str(name or "").split()
+    return "حلق" not in words and any(w in SIZED_TYPE_WORDS for w in words)
 NO_EMPLOYEE = "غير محدد"
 NO_CATEGORY = "بدون حرف"
 # cash-flow report: how a ledger movement is named (by what posted it) and what is NOT income / expense (money that only changes place)
@@ -761,7 +768,7 @@ class ReportService:
                 if r["reversal_id"] or (karat and str(r["karat_value"]) != karat) or not _matches(folded, raw, r["item_type"], r["category"], r["factory"]):
                     continue
                 sold.setdefault((int(r["karat_value"]), r["item_type"] or NO_TYPE), []).append((_dec(r["weight_grams"]), str(r.get("size") or "").strip()))
-        sized_pairs = {key for key, ps in list(groups.items()) + list(sold.items()) if any(s for _, s in ps)}
+        sized_pairs = {key for key in list(groups) + list(sold) if is_sized_type(key[1])}
 
         def cell_key(key, weight, size):
             return (band_index(weight), (size or "بدون مقاس") if key in sized_pairs else "")
@@ -786,7 +793,7 @@ class ReportService:
         for (k, kind) in sorted(groups, key=lambda key: (-key[0], key[1])):
             pieces = groups[(k, kind)]
             top = max(band_index(w) for w, _ in pieces)
-            sized = any(s for _, s in pieces)
+            sized = (k, kind) in sized_pairs
             sizes = sorted({s or "بدون مقاس" for _, s in pieces}, key=lambda s: (1, ZERO3, s) if s == "بدون مقاس" else size_key(s)) if sized else []
             cells = {}
             for w, s in pieces:
@@ -843,7 +850,7 @@ class ReportService:
         if not tables:
             tables.append(table("empty", "جرد الأوزان", [col("band", "شريحة الوزن")], []))
         meaning = [f"جرد تلقائي لما هو متاح بالمخزون الآن: شرائح وزن {int(STOCK_BAND)} جرام (الحد الأدنى داخل الشريحة والأعلى خارجها) من الصفر حتى شريحة أثقل قطعة من الصنف، ولا شريحة بعدها. الأعيار منفصلة دائمًا.",
-                   "الأصناف التي لقطعها مقاس (دبل، خواتم، غوايش...) تظهر بالوزن والمقاس معًا؛ ويُعرف ذلك من بيانات المخزون نفسها. التقرير يعدّ فقط ولا يقرّر.",
+                   "الخواتم والدبل والغوايش فقط تظهر بالوزن والمقاس معًا؛ ولا مقاس لغيرها (السلاسل قد يُضاف لها الطول لاحقًا). التقرير يعدّ فقط ولا يقرّر.",
                    f"«أوزان قد تكون ناقصة»: شريحة وزن (ومقاس للأصناف ذات المقاس) بيعت منها {min_sales} مرات فأكثر في آخر {velocity_days} يومًا ومخزونها نفد أو يكفي أقل من {low_cover_days} يومًا بمعدل البيع. تحذير من مبيعات المحل نفسه، وليس أمر شراء، وحدّاه في إعدادات النظام."]
         return {"meaning": meaning, "tables": tables, "totals": cards, "bars": bars}
 
