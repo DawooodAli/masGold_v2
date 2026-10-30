@@ -11480,7 +11480,9 @@ ApplicationWindow {
                                     currentIndex: -1
 
                                     displayText:
-                                        currentIndex >= 0
+                                        newInventoryItemDialog.groupMode && newInventoryItemDialog.currentGroup
+                                        ? newInventoryItemDialog.currentGroup.categoryText
+                                        : currentIndex >= 0
                                         ? (
                                             currentText
                                             + " — "

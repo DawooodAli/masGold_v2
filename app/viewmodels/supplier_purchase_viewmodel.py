@@ -210,6 +210,7 @@ class SupplierPurchaseViewModel(QObject):
         self._intake_groups = [
             {"groupId": g["group_id"], "invoiceId": g["invoice_id"], "karatId": g["karat_id"], "karat": str(g["karat_value"]),
              "remaining": grams(g["remaining"]), "remainingValue": str(g["remaining"]),
+             "categoryText": (g.get("category_code", "") + (" — " + g["category_name"] if g.get("category_name") else "")) or "غير محددة",
              "label": f"{g['supplier_name']} • {g['invoice_code']} • مجموعة {g['group_no']} • عيار {g['karat_value']} • المتبقي {grams(g['remaining'])} جرام",
              "detail": f"مصنعية الجرام {rate(g['making_per_gram'])} • وزن المورد {grams(g['supplier_weight'])} • أُدخل {grams(g['actual_weight'])} ({g['piece_count']} قطعة)"
                        + (f" • {g['description']}" if g["description"] else "")}

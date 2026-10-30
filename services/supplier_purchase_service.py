@@ -391,14 +391,19 @@ class SupplierPurchaseService:
         actor = authenticated_actor(self._session, INTAKE, "لا توجد صلاحية لإدخال قطع فواتير الموردين.", _expected_actor)
         with self._transaction() as connection:
             self._authorization.require_permission_read(connection, actor, INTAKE)
-            rows = self._repository(connection).open_intake_groups()
+            repository = self._repository(connection)
+            rows = repository.open_intake_groups()
+            categories = repository.purchase_categories()
         groups = []
         for row in rows:
             weight, actual = Decimal(str(row["supplier_weight_grams"])), Decimal(str(row["actual_weight"]))
             remaining = (weight - actual).quantize(rules.WEIGHT_STEP)
             if remaining <= rules.INTAKE_TOLERANCE:
                 continue
-            groups.append({"group_id": str(row["group_id"]), "invoice_id": str(row["invoice_id"]), "group_no": int(row["group_no"]),
+            resolution = rules.resolve_category(row["making_per_gram"], categories)
+            groups.append({"category_code": "" if resolution["category"] is None else resolution["category"]["code"],
+                           "category_name": "" if resolution["category"] is None else resolution["category"]["name"],
+                           "group_id": str(row["group_id"]), "invoice_id": str(row["invoice_id"]), "group_no": int(row["group_no"]),
                            "description": row["description"] or "", "supplier_id": str(row["supplier_id"]),
                            "supplier_name": row["supplier_name"], "supplier_reference": row["supplier_reference"] or "",
                            "invoice_code": rules.invoice_code(row["invoice_id"]), "invoice_date": row["invoice_date"],
