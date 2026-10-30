@@ -47,6 +47,7 @@ def recorded(call):
     repo = MarketTripRepository(connection)
     repo._settlement = False                                              # 060: the capability probe and the settlement reads are covered by their own tests
     repo._cash_settle = False                                                      # 064: the capability probe is not the subject of this test
+    repo._trade_bank = False
     repo._bar_fee = False                                                         # 080: the capability probe is not the subject of this test
     call(repo)
     return connection.statements
