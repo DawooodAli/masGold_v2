@@ -169,6 +169,56 @@ Item {
         }
     }
 
+    // ---------------------------------------------------------------- the pieces (barcodes) of one weight band of the weight stocktake
+    Popup {
+        id: piecesDialog
+        objectName: "reportPiecesDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(640, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 520, 520)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        onClosed: reportsVM.closePieces()
+        Connections {
+            target: reportsVM
+            function onChanged() { if (!!reportsVM.pieces.open && !piecesDialog.opened) piecesDialog.open() }
+        }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 8
+            Label { objectName: "reportPiecesTitle"; Layout.fillWidth: true; text: reportsVM.pieces.title || ""; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; horizontalAlignment: Text.AlignRight }
+            Label { objectName: "reportPiecesLoading"; Layout.fillWidth: true; visible: !!reportsVM.pieces.loading; color: theme.textMuted; text: "جارٍ التحميل…"; horizontalAlignment: Text.AlignRight }
+            Label { objectName: "reportPiecesError"; Layout.fillWidth: true; visible: !!reportsVM.pieces.error; color: theme.red; text: reportsVM.pieces.error || ""; wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignRight }
+            Label { objectName: "reportPiecesTotal"; Layout.fillWidth: true; visible: !reportsVM.pieces.loading && !reportsVM.pieces.error; color: theme.textSecondary
+                    text: (reportsVM.pieces.count || "0") + " قطعة • " + (reportsVM.pieces.weight || ""); horizontalAlignment: Text.AlignRight }
+            ListView {
+                objectName: "reportPiecesList"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                spacing: 3
+                model: reportsVM.pieces.rows || []
+                ScrollBar.vertical: ScrollBar {}
+                delegate: Label {
+                    required property var modelData
+                    width: ListView.view.width - 12
+                    horizontalAlignment: Text.AlignRight
+                    color: theme.textSecondary
+                    textFormat: Text.PlainText
+                    text: modelData.barcode + "  •  " + modelData.weight + "  •  مقاس " + modelData.size + "  •  " + modelData.category + "  •  " + modelData.factory
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                Btn { objectName: "reportPiecesClose"; text: "إغلاق"; accent: theme.textSecondary; onClicked: piecesDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- the monthly sales chart of one item type (follows the report's filters)
     Popup {
         id: chartDialog

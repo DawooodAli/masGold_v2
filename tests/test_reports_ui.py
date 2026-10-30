@@ -237,6 +237,26 @@ class ReportsPageTests(harness.InvoicePageTests):
         self.assertEqual(vm.priceChart.get("karat"), "21")
         self.assertEqual(self.warnings, [])
 
+    def test_a_weight_band_opens_its_pieces_with_barcodes_by_a_real_click(self):
+        vm = self.open_reports()
+        self.wait_report(vm)
+        vm.select("stockweights")
+        self.wait_until(lambda: not vm.busy and vm.result.get("report") == "stockweights" and vm.result["tables"], "weight stocktake loaded")
+        QTest.qWait(200)
+        table = vm.result["tables"][0]
+        index = next(i for i, r in enumerate(table["rows"]) if r["refText"] == "عرض القطع")
+        name = f"reportOpen_0_{index}"
+        self.reveal(self.item(name))
+        self.click(name)
+        self.wait_until(lambda: not vm.pieces.get("loading", True) and bool(vm.pieces.get("rows")), "pieces loaded")
+        QTest.qWait(200)
+        self.wait_until(lambda: self.item("reportPiecesDialog").property("opened"), "pieces dialog opened")
+        self.assertTrue(vm.pieces["rows"][0]["barcode"].startswith("B"))
+        self.assert_inside_window(self.item("reportPiecesClose"))
+        self.click("reportPiecesClose")
+        self.wait_until(lambda: not vm.pieces, "pieces closed")
+        self.assertEqual(self.warnings, [])
+
     def test_the_demand_report_opens_the_monthly_and_weekly_line_chart_by_real_clicks(self):
         vm = self.open_reports()
         self.wait_report(vm)

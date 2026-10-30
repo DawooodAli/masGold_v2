@@ -109,7 +109,7 @@ def result_view(built):
             continue
         cols = t["columns"]
         rows = [{"cells": [_cell(c["kind"], r.get(c["key"])) for c in cols], "ref": r.get("ref") or {}, "dim": bool(r.get("state", "") and ("معكوس" in str(r.get("state")) or "ملغاة" in str(r.get("state")))),
-                 "refText": {"INVOICE": "فتح الفاتورة", "CUSTOMER": "فتح العميل", "TRIP": "فتح الرحلة", "CHART": "رسم بياني", "PRICE_CHART": "رسم بياني", "DEMAND_CHART": "رسم بياني"}.get((r.get("ref") or {}).get("type"), "")} for r in t["rows"]]
+                 "refText": {"INVOICE": "فتح الفاتورة", "CUSTOMER": "فتح العميل", "TRIP": "فتح الرحلة", "CHART": "رسم بياني", "PRICE_CHART": "رسم بياني", "DEMAND_CHART": "رسم بياني", "PIECES": "عرض القطع"}.get((r.get("ref") or {}).get("type"), "")} for r in t["rows"]]
         tables.append({"key": t["key"], "title": t["title"], "available": True, "reason": "", "columns": [{"title": c["title"], "kind": c["kind"]} for c in cols], "rows": rows,
                        "paged": t["paged"], "rowCount": t.get("row_count", len(rows)), "page": t.get("page", 1), "pageSize": t.get("page_size", len(rows)), "hasMore": t.get("has_more", False),
                        "note": t.get("note", ""), "karat": int(t.get("karat") or 0)})
@@ -132,6 +132,7 @@ class ReportsViewModel(QObject):
         self._request, self._latest, self._busy = 0, 0, False
         self._workers = set()
         self._chart, self._chart_request = {}, 0
+        self._pieces, self._pieces_request = {}, 0
         self._price_chart, self._price_request = {}, 0
         self._demand_chart, self._demand_request = {}, 0
         self._period_edited = False                                           # False: the period is the automatic one (month start .. today)
@@ -282,6 +283,49 @@ class ReportsViewModel(QObject):
     def chart(self):
         return self._chart
 
+    @Property("QVariantMap", notify=changed)
+    def pieces(self):
+        return self._pieces
+
+    @Slot()
+    def closePieces(self):
+        self._pieces_request += 1                                             # a late answer for a closed list is never shown
+        self._pieces = {}
+        self.changed.emit()
+
+    @Slot(str, str)
+    def showPieces(self, item_type, extra):
+        """The pieces (barcodes) of one weight band of the weight stocktake: `extra` is «karat|band»."""
+        if self._report != "stockweights" or self._service is None or self._session is None:
+            return
+        karat, _, band = str(extra).partition("|")
+        actor = self._session.current_actor()
+        if actor is None:
+            return
+        self._pieces_request += 1
+        request, filters, report = self._pieces_request, dict(self._filters), self._report
+        self._pieces = {"loading": True, "open": True, "title": f"{item_type} — عيار {karat}", "error": "", "rows": []}
+        from app.workers.invoice_worker import InvoiceWorker
+        worker = InvoiceWorker(lambda _expected_actor: self._service.stock_pieces(filters, item_type, karat, band, _expected_actor=_expected_actor), self._session, actor, request, "report", self)
+        worker.completed.connect(lambda r, generation, operation, result, error, code, kind: self._pieces_completed(r, generation, report, result, error, item_type, karat))
+        worker.finished.connect(lambda w=worker: self._workers.discard(w))
+        self._workers.add(worker)
+        worker.start()
+        self.changed.emit()
+
+    def _pieces_completed(self, request, generation, report, result, error, item_type, karat):
+        actor = self._session.current_actor() if self._session is not None else None
+        if actor is None or str(actor.generation) != generation or request != self._pieces_request or report != self._report:
+            return
+        title = f"{item_type} — عيار {karat}"
+        if error:
+            self._pieces = {"loading": False, "open": True, "title": title, "error": error, "rows": []}
+        else:
+            self._pieces = {"loading": False, "open": True, "error": "", "title": f"{result['type']} — عيار {result['karat']} — {result['band']}", "count": str(len(result["pieces"])),
+                            "weight": grams_text(result["weight"]),
+                            "rows": [{"barcode": p["barcode"] or "بدون باركود", "weight": grams_text(p["weight"]), "size": p["size"] or "—", "category": p["category"] or "—", "factory": p["factory"] or "—"} for p in result["pieces"]]}
+        self.changed.emit()
+
     @Slot()
     def closeChart(self):
         self._chart_request += 1                                              # a late answer for a closed chart is never shown
@@ -396,6 +440,8 @@ class ReportsViewModel(QObject):
     def open(self, kind, identifier, extra):
         if kind == "CHART":
             self.showChart(str(identifier), str(extra or ""))
+        elif kind == "PIECES":
+            self.showPieces(str(identifier), str(extra or ""))
         elif kind == "PRICE_CHART":
             self.showPriceChart(str(identifier), 90)
         elif kind == "DEMAND_CHART":

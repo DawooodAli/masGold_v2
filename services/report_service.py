@@ -806,6 +806,8 @@ class ReportService:
             for i in range(top + 1):                                                          # every band up to the heaviest piece, empty ones included; nothing beyond
                 c = cells.get(i, {"count": 0, "weight": ZERO3, "sizes": {}})
                 row = {"band": band_label(i), "count": c["count"], "weight": c["weight"]}
+                if c["count"]:
+                    row["ref"] = {"type": "PIECES", "id": kind, "extra": f"{k}|{i}"}                 # owner 2026-10-31: the pieces (barcodes) of this band
                 warn = flagged.get((k, kind), {}).get(i)
                 row["alert"] = "" if not warn else ("⚠ ناقص" + (" — مقاس " + "، ".join(sorted({x for x in warn if x})) if any(warn) else ""))
                 for s in sizes:
@@ -1386,6 +1388,39 @@ class ReportService:
                 months[key]["weight"] += _dec(r["weight_grams"])
         points = [{"month": m, "count": v["count"], "weight": v["weight"]} for m, v in months.items()]
         return {"type": label, "points": points, "count": sum(p["count"] for p in points), "weight": sum((p["weight"] for p in points), ZERO3), "applied": self._applied(filters)}
+
+    def stock_pieces(self, filters, item_type, karat, band, *, _expected_actor=None):
+        """The IN_STOCK pieces of ONE karat / item type / two-gram weight band of the weight stocktake (barcode, weight, size, category, factory), under the report's own text filter.
+        Needs the inventory right, re-read inside the transaction."""
+        filters = dict(filters or {})
+        actor = self._session.require_authenticated()
+        if _expected_actor is not None and not self._session.is_current(_expected_actor):
+            raise PermissionError("انتهت جلسة الدخول.")
+        try:
+            karat_value, band_number = int(karat), int(band)
+        except (TypeError, ValueError):
+            raise ReportError("FILTER_INVALID", "شريحة غير صحيحة.")
+        raw, folded = _text_filter(filters)
+        label = str(item_type or "").strip() or NO_TYPE
+        with self._transaction() as connection:
+            gate = _Gate(self._authorization, connection, actor)
+            if not (gate(BASE_PERMISSION) and gate("INVENTORY_VIEW")):
+                raise PermissionError("ليس لديك صلاحية عرض هذه القطع.")
+            stock = self._repository(connection).stock_items(("IN_STOCK",))
+            if not self._session.is_current(actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        pieces = []
+        for r in stock:
+            weight = _dec(r["weight_grams"])
+            if int(r["karat_value"]) != karat_value or (r["item_type"] or NO_TYPE) != label or int(weight // STOCK_BAND) != band_number:
+                continue
+            if not _matches(folded, raw, r["item_type"], r["category"], r["factory"]):
+                continue
+            pieces.append({"barcode": r.get("barcode") or "", "weight": weight, "size": str(r.get("size") or "").strip(), "category": r.get("category") or "", "factory": r.get("factory") or ""})
+        pieces.sort(key=lambda p: (p["weight"], p["barcode"]))
+        low = band_number * int(STOCK_BAND)
+        return {"type": label, "karat": karat_value, "band": f"{low} – {low + int(STOCK_BAND)} جرام", "pieces": pieces,
+                "weight": sum((p["weight"] for p in pieces), ZERO3)}
 
     @staticmethod
     def _weight_filter(value, label):

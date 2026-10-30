@@ -835,6 +835,21 @@ class StockWeightTests(Case):
         self.assertEqual([(r["label"], r["value"]) for r in bars[0]["rows"]], [("0 – 2 جرام", 1), ("2 – 4 جرام", 1), ("4 – 6 جرام", 1)])
         self.assertEqual((bars[0]["karat"], bars[0]["kind"]), (21, "count"))
 
+    def test_a_band_row_opens_its_pieces_with_their_barcodes(self):
+        class Repo(FakeRepo):
+            def stock_items(self, statuses):
+                base = {"item_id": 1, "size": "", "karat_value": 21, "item_type": "خاتم", "category": "B", "factory": "م", "inventory_status": "IN_STOCK"}
+                return [{**base, "weight_grams": D("2.40"), "barcode": "A1", "size": "57"}, {**base, "weight_grams": D("2.60"), "barcode": "A2"},
+                        {**base, "weight_grams": D("4.10"), "barcode": "A3"}, {**base, "weight_grams": D("2.50"), "barcode": "A4", "karat_value": 18}]
+        service = ReportService(self.session, transaction_factory=self.service._transaction, repository=Repo, authorization=self.authorization, today=lambda: TODAY)
+        table = service.run("stockweights", {})["tables"][0]
+        row = next(r for r in table["rows"] if r["band"] == "2 – 4 جرام")
+        self.assertEqual(row["ref"], {"type": "PIECES", "id": "خاتم", "extra": "21|1"})
+        self.assertNotIn("ref", next(r for r in table["rows"] if r["band"] == "الإجمالي"))
+        opened = service.stock_pieces({}, "خاتم", "21", "1")
+        self.assertEqual([p["barcode"] for p in opened["pieces"]], ["A1", "A2"])                  # that karat, that type, that band only
+        self.assertEqual(opened["weight"], D("5.000"))
+
     def test_only_rings_wedding_bands_and_bangles_carry_a_size(self):
         pieces = [("3.00", "17", "سلسلة"), ("3.10", "18", "سلسلة"), ("3.00", "12", "حلق دبلة"), ("3.00", "17", "دبلة"), ("3.00", "20", "غويشة")]
         result = self.service_with(pieces).run("stockweights", {})
