@@ -24,7 +24,7 @@ from uuid import UUID
 from mysql.connector import IntegrityError
 
 from repositories.barcode_repository import BarcodeRepository
-from repositories.supplier_purchase_repository import SupplierPurchaseRepository
+from repositories.supplier_purchase_repository import ADJUSTMENT_MOVEMENT, ADJUSTMENT_SOURCE, SupplierPurchaseRepository
 from services import supplier_rules as rules
 from services.authorization_service import AuthorizationService
 from services.correction_rules import correction_code
@@ -35,7 +35,8 @@ from services.supplier_service import VIEW, authenticated_actor, clean_text
 
 EDIT, POST, INTAKE = "SUPPLIER_INVOICE_EDIT", "SUPPLIER_INVOICE_POST", "SUPPLIER_INTAKE"
 REVERSE, CORRECT = "SUPPLIER_INVOICE_REVERSE", "TRANSACTION_CORRECT"      # full reversal of a posted invoice (052): OWNER only, plus the generic correction right
-REFERENCE_MAX, NOTES_MAX = 100, 1000
+ADJUST = "SUPPLIER_INVOICE_ADJUST"          # 092: add / deduct gold on a making group of a posted invoice (OWNER / MANAGER)
+REFERENCE_MAX, NOTES_MAX, REASON_MAX = 100, 1000, 500
 INTAKE_SOURCE = "SUPPLIER_PURCHASE"          # توريد مورد: never MARKET_PURCHASE (gold bought on the market)
 
 _INVENTORY_MESSAGES = {
@@ -108,6 +109,9 @@ class SupplierPurchaseService:
 
     def can_intake(self):
         return self._can(INTAKE)
+
+    def can_adjust(self):
+        return self._can(ADJUST)
 
     def can_reverse(self):
         return self._can(REVERSE) and self._can(CORRECT)
@@ -453,10 +457,14 @@ class SupplierPurchaseService:
                 raise rules.SupplierRuleError("INVOICE_NOT_FOUND", "فاتورة المورد غير موجودة.")
             reversal = repository.reversal(invoice_id)
             groups = repository.groups(invoice_id)
+            adjustments = repository.adjustments(invoice_id)
             progress = {int(r["group_id"]): r for r in repository.group_progress(invoice_id)}
             pieces = repository.pieces(invoice_id)
             categories = repository.purchase_categories()        # a read: it belongs inside the transaction (the connection is closed after it)
         group_rows, total_actual, total_count = [], Decimal("0"), 0
+        adjusted = {}
+        for a in adjustments:
+            adjusted[int(a["group_id"])] = adjusted.get(int(a["group_id"]), Decimal("0")) + Decimal(str(a["delta_grams"]))
         for group in groups:
             resolution = rules.resolve_category(group["making_per_gram"], categories)
             stats = progress.get(int(group["id"]), {})
@@ -467,6 +475,8 @@ class SupplierPurchaseService:
             group_rows.append({
                 "id": str(group["id"]), "group_no": int(group["group_no"]), "description": group["description"] or "",
                 "supplier_weight": Decimal(str(group["supplier_weight_grams"])),
+                "adjustment": adjusted.get(int(group["id"]), Decimal("0")),
+                "effective_weight": Decimal(str(group["supplier_weight_grams"])) + adjusted.get(int(group["id"]), Decimal("0")),
                 "making_per_gram": Decimal(str(group["making_per_gram"])),
                 "making_total": Decimal(str(group["making_total"])), "piece_count": count,
                 # the category the group's making rate resolves to under the existing rules (nothing is stored)
@@ -483,6 +493,8 @@ class SupplierPurchaseService:
         return {**self._header_result(invoice),
                 "supplier_name": invoice["supplier_name"], "karat_value": int(invoice["karat_value"]),
                 "reversed": reversal is not None,
+                "adjustments": [{"id": str(a["id"]), "group_id": str(a["group_id"]), "delta": Decimal(str(a["delta_grams"])),
+                                 "reason": a["reason"], "at": a["created_at"], "by": a["username"] or ""} for a in adjustments],
                 "reversal_code": None if reversal is None else correction_code("FULL_REVERSAL", reversal["correction_id"]),
                 "reversal_reason": None if reversal is None else reversal["reason"],
                 "reversed_at": None if reversal is None else reversal["occurred_at"],
@@ -493,6 +505,66 @@ class SupplierPurchaseService:
                             "making_per_gram": Decimal(str(p["making_per_gram"])), "item_type": p["item_type_name"],
                             "size": p["size"] or "", "status": p["inventory_status"],
                             "barcode": p["barcode_value"] or ""} for p in pieces]}
+
+    # ------------------------------------------------------------------ gold adjustment of a group of a posted invoice (092)
+    def adjust_group(self, invoice_id, group_id, direction, weight, reason, request_key, *, _expected_actor=None):
+        """The supplier's weight of ONE making group of a POSTED invoice was wrong: ADD gold (the shop owes the supplier more) or DEDUCT gold (the shop owes
+        less). One immutable adjustment row + ONE supplier gold movement in the invoice's karat; making, header and the original movements are untouched.
+        The group's weight can never be deducted below zero. Mistakes are fixed by an opposite adjustment."""
+        session_actor = authenticated_actor(self._session, ADJUST, "لا توجد صلاحية لتعديل أوزان فواتير الموردين.", _expected_actor)
+        invoice_id = _id(invoice_id, "INVOICE_NOT_FOUND", "فاتورة المورد غير موجودة.")
+        group_id = _id(group_id, "GROUP_NOT_FOUND", "مجموعة الفاتورة غير موجودة.")
+        key = _key(request_key)
+        direction = str(direction or "").strip().upper()
+        if direction not in ("ADD", "DEDUCT"):
+            raise rules.SupplierRuleError("DIRECTION_INVALID", "اختر إضافة ذهب أو خصم ذهب.")
+        weight = rules.parse_weight(weight, "وزن التعديل")
+        reason = clean_text(reason, REASON_MAX, "السبب", required=True)
+        delta = weight if direction == "ADD" else -weight
+        with self._transaction() as connection:
+            actor = self._write_verified(connection, session_actor, ADJUST)
+            repository = self._repository(connection)
+            if not repository.has_adjustment_schema():
+                raise rules.SupplierRuleError("SCHEMA_OUTDATED", "قاعدة البيانات تحتاج تحديث 092 قبل تعديل الأوزان.")
+            prior = repository.adjustment_by_request(key)
+            if prior is not None:
+                if (int(prior["invoice_id"]), int(prior["group_id"]), Decimal(str(prior["delta_grams"])),
+                        int(prior["created_by_user_id"])) != (invoice_id, group_id, delta, int(actor.user_id)):
+                    raise rules.SupplierRuleError("REQUEST_CONFLICT", "طلب التعديل مستخدم لعملية مختلفة.")
+                return {"id": str(prior["id"]), "duplicate": True, "delta": delta}
+            invoice = repository.get_invoice(invoice_id, lock=True)
+            if invoice is None:
+                raise rules.SupplierRuleError("INVOICE_NOT_FOUND", "فاتورة المورد غير موجودة.")
+            if invoice["status"] != rules.POSTED:
+                raise rules.SupplierRuleError("INVOICE_NOT_POSTED", "يُعدَّل وزن فاتورة مرحّلة فقط.")
+            if repository.reversal(invoice_id, lock=True) is not None:
+                raise rules.SupplierRuleError("INVOICE_REVERSED", "الفاتورة معكوسة ولا يمكن تعديلها.")
+            repository.get_supplier(invoice["supplier_id"], lock=True)
+            group = repository.lock_group(group_id)
+            if group is None or int(group["invoice_id"]) != invoice_id:
+                raise rules.SupplierRuleError("GROUP_NOT_FOUND", "مجموعة الفاتورة غير موجودة.")
+            existing = sum((Decimal(str(a["delta_grams"])) for a in repository.adjustments(invoice_id, lock=True)
+                            if int(a["group_id"]) == group_id), Decimal("0"))
+            if Decimal(str(group["supplier_weight_grams"])) + existing + delta < 0:
+                raise rules.SupplierRuleError("ADJUSTMENT_EXCEEDS_GROUP", "الخصم أكبر من وزن المجموعة الحالي.")
+            gold_type = repository.gold_type_id(ADJUSTMENT_MOVEMENT)
+            if gold_type is None:
+                raise RuntimeError("supplier movement type GROUP_ADJUSTMENT is missing (migration 092)")
+            now = repository.db_now()
+            adjustment_id = repository.insert_adjustment(invoice_id=invoice_id, group_id=group_id, delta=delta, reason=reason,
+                                                         key=key, user_id=actor.user_id, now=now)
+            code = rules.invoice_code(invoice_id)
+            label = f"تعديل وزن مجموعة {int(group['group_no'])} - فاتورة {code}"
+            repository.insert_gold_movement(
+                supplier_id=invoice["supplier_id"], type_id=gold_type, karat_id=invoice["karat_id"], weight_delta=delta,
+                eq21_delta=rules.equivalent_21(delta, invoice["karat_value"]), source_type=ADJUSTMENT_SOURCE,
+                source_id=adjustment_id, reference=code, description=label, now=now, user_id=actor.user_id)
+            repository.audit(actor=actor, event_type="SUPPLIER_INVOICE_GROUP_ADJUSTED", entity_id=invoice_id,
+                             entity_type="SUPPLIER_INVOICE", reference=code, description=label,
+                             metadata={"group_id": group_id, "delta": str(delta), "reason": reason}, now=now)
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+            return {"id": str(adjustment_id), "duplicate": False, "delta": delta}
 
     # ------------------------------------------------------------------ full reversal of a posted invoice (052)
     def _correction_service(self):

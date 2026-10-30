@@ -47,6 +47,7 @@ class Db:
         self.suppliers, self.invoices, self.groups = {}, {}, {}
         self.closures = set()
         self.gold, self.making, self.links, self.audit_rows = [], [], [], []
+        self.adjustments = []                     # 092: group gold adjustments
         self.karats = {1: {"id": 1, "karat_value": 21, "name": "21K", "is_active": 1},
                        2: {"id": 2, "karat_value": 18, "name": "18K", "is_active": 1},
                        3: {"id": 3, "karat_value": 24, "name": "24K", "is_active": 1}}
@@ -68,7 +69,7 @@ class Db:
         self.item_types = {1: "خاتم", 2: "سلسلة"}
         self.item_type_defaults = {}              # item type id -> its default_category_id (never allowed to win over the group)
         self.sequences = {"supplier": 0, "invoice": 0, "group": 0, "gold": 0, "making": 0, "link": 0, "item": 100,
-                          "barcode": 0, "payment": 0, "cash_move": 0, "bank_move": 0, "correction": 0,
+                          "barcode": 0, "payment": 0, "adjustment": 0, "cash_move": 0, "bank_move": 0, "correction": 0,
                           "marketer_document": 0, "marketer_cash_move": 0}
         self.fail_after_item = False             # raise after the inventory item is written (atomicity tests)
         self.transactions = 0
@@ -404,9 +405,26 @@ class PurchaseRepo(SupplierRepo):
                       == ("SUPPLIER_PURCHASE_INVOICE", int(invoice_id), 1)), None)
         return None if found is None else dict(found)
 
+    # ------------------------------------------------------------ group gold adjustments (092)
+    def has_adjustment_schema(self):
+        return True
+
+    def adjustment_by_request(self, key):
+        return next((dict(a) for a in self.db.adjustments if a["request_key"] == key), None)
+
+    def insert_adjustment(self, *, invoice_id, group_id, delta, reason, key, user_id, now):
+        rows = self.db.adjustments
+        new_id = self.db.next("adjustment")
+        rows.append({"id": new_id, "invoice_id": int(invoice_id), "group_id": int(group_id), "delta_grams": delta, "reason": reason,
+                     "request_key": key, "created_by_user_id": user_id, "created_at": now, "username": "u"})
+        return new_id
+
+    def adjustments(self, invoice_id, lock=False):
+        return [dict(a) for a in self.db.adjustments if a["invoice_id"] == int(invoice_id)]
+
     # ------------------------------------------------------------ ledgers (insert only)
     def gold_type_id(self, code):
-        return {"PURCHASE_INVOICE": 1, "PURCHASE_INVOICE_REVERSAL": 2}.get(code)
+        return {"PURCHASE_INVOICE": 1, "PURCHASE_INVOICE_REVERSAL": 2, "GROUP_ADJUSTMENT": 5}.get(code)
 
     def making_type_id(self, code):
         return {"PURCHASE_INVOICE": 1, "PURCHASE_INVOICE_REVERSAL": 4}.get(code)

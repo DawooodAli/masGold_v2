@@ -219,7 +219,8 @@ def check_supplier_karat_change(current_karat_id, wanted_karat_id, history, neut
 GOLD_MOVEMENT_TEXT = {"PURCHASE_INVOICE": "فاتورة شراء",
                       "PURCHASE_INVOICE_REVERSAL": "عكس فاتورة شراء",
                       "SETTLEMENT": "تسوية ذهب مورد",
-                      "SETTLEMENT_REVERSAL": "عكس تسوية ذهب مورد"}
+                      "SETTLEMENT_REVERSAL": "عكس تسوية ذهب مورد",
+                      "GROUP_ADJUSTMENT": "تعديل وزن مجموعة"}
 
 
 def gold_movement_text(code, stored_name):

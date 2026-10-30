@@ -927,6 +927,10 @@ class CorrectionService:
             plan.blockers.append(("INVOICE_HAS_INTAKE",
                                   f"لا يمكن عكس الفاتورة لأن {len(pieces)} قطعة أُدخلت منها إلى المخزون. "
                                   "القطع المُدخلة لها هوية وباركود في المخزون ولا تُعكس تلقائيًا."))
+        net = sum((Decimal(str(a["delta_grams"])) for a in repo.adjustments(source_id, lock=lock)), Decimal("0"))
+        if net != 0:
+            plan.blockers.append(("INVOICE_HAS_ADJUSTMENTS",
+                                  f"على الفاتورة تعديلات أوزان صافيها {net:+.3f} جرام. اعكس أثرها بتعديل معاكس يجعل الصافي صفرًا ثم اعكس الفاتورة."))
         gold, making = repo.posted_gold_movement(source_id), repo.posted_making_movement(source_id)
         if gold is None:
             plan.blockers.append(("INVOICE_MOVEMENT_MISSING", "حركة الذهب الأصلية للفاتورة غير موجودة."))

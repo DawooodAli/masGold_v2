@@ -9,6 +9,8 @@ ACTIVE_BARCODE_JOIN = ("LEFT JOIN inventory_barcodes ib ON ib.inventory_item_id 
                        "AND ib.barcode_status = 'ACTIVE'")
 PURCHASE_SOURCE = "SUPPLIER_PURCHASE_INVOICE"     # the movement source of a posted invoice AND the correction source of its reversal (052)
 PURCHASE_MOVEMENT = "PURCHASE_INVOICE"
+ADJUSTMENT_MOVEMENT = "GROUP_ADJUSTMENT"           # 092: gold added to / deducted from a making group of a posted invoice
+ADJUSTMENT_SOURCE = "SUPPLIER_INVOICE_ADJUSTMENT"
 REVERSAL_MOVEMENT = "PURCHASE_INVOICE_REVERSAL"   # the movement type (both ledgers) of the exact opposite entry posted by a full reversal
 
 
@@ -153,6 +155,35 @@ class SupplierPurchaseRepository(SupplierRepository):
             "FROM supplier_making_movements m JOIN supplier_making_movement_types t ON t.id = m.movement_type_id "
             "WHERE m.source_type = %s AND m.source_id = %s AND t.code = %s",
             (PURCHASE_SOURCE, _id(invoice_id), PURCHASE_MOVEMENT))
+
+    # ------------------------------------------------------------------ group gold adjustments (092)
+    _adjustment_schema = None
+
+    def has_adjustment_schema(self):
+        if self._adjustment_schema is None:
+            row = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() "
+                                  "AND TABLE_NAME = 'supplier_invoice_group_adjustments'")
+            self._adjustment_schema = bool(row and int(row["n"]))
+        return self._adjustment_schema
+
+    def adjustment_by_request(self, key):
+        return self._fetch_one("SELECT * FROM supplier_invoice_group_adjustments WHERE request_key = %s", (key,))
+
+    def insert_adjustment(self, *, invoice_id, group_id, delta, reason, key, user_id, now):
+        new_id, _ = self._execute(
+            "INSERT INTO supplier_invoice_group_adjustments (invoice_id, group_id, delta_grams, reason, request_key, "
+            "created_by_user_id, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (_id(invoice_id), _id(group_id), delta, reason, key, user_id, now))
+        return int(new_id)
+
+    def adjustments(self, invoice_id, lock=False):
+        """Every adjustment of the invoice, oldest first (empty before migration 092)."""
+        if not self.has_adjustment_schema():
+            return []
+        return self._fetch_all(
+            "SELECT a.id, a.group_id, a.delta_grams, a.reason, a.created_at, u.username FROM supplier_invoice_group_adjustments a "
+            "LEFT JOIN users u ON u.id = a.created_by_user_id WHERE a.invoice_id = %s ORDER BY a.id" + (" FOR SHARE" if lock else ""),
+            (_id(invoice_id),))
 
     # ------------------------------------------------------------------ ledgers (insert only)
     def gold_type_id(self, code):

@@ -79,6 +79,7 @@ class SupplierPurchaseViewModel(QObject):
     invoicePosted = Signal(str)          # invoice id: supplier balances changed
     stockChanged = Signal()              # a piece (and its barcode) was added to inventory
     draftSaved = Signal(str)             # a draft invoice was saved (the dialog can close)
+    invoiceAdjusted = Signal(str)        # a group of a posted invoice was adjusted (092): the dialog closes and the supplier balances reload
     invoiceReversed = Signal(str)        # a posted invoice was fully reversed (052): the confirmation dialog can close
 
     def __init__(self, session, service=None, parent=None):
@@ -292,6 +293,8 @@ class SupplierPurchaseViewModel(QObject):
             self._message = f"{self._done_text} ({result['code']})"
             self._reversal = {}
             self.invoiceReversed.emit(result["id"])
+        if result.get("adjusted"):
+            self.invoiceAdjusted.emit(result["id"])
         if result.get("posted"):
             self.invoicePosted.emit(result["id"])
         elif result.get("status") == "DRAFT" and result.get("id"):
@@ -369,6 +372,14 @@ class SupplierPurchaseViewModel(QObject):
             return {"id": str(invoice_id), "reversed": True, "code": done["code"]}
         self._write("تم عكس فاتورة المورد.", call)
 
+    @Slot(str, str, str, str, str, str)
+    def adjustGroup(self, invoice_id, group_id, direction, weight, reason, request_key):
+        """ADD / DEDUCT gold on one group of a posted invoice; the service re-checks the right, the invoice state and the amount in its transaction."""
+        def call(service, expected):
+            done = service.adjust_group(invoice_id, group_id, direction, weight, reason, request_key, _expected_actor=expected)
+            return {"id": str(invoice_id), "adjusted": True, "delta": str(done["delta"])}
+        self._write("تم تعديل وزن المجموعة.", call)
+
     @Slot(str, str, int, str, str, int, str, str, str, str)
     def addPiece(self, invoice_id, group_id, item_type_id, weight, request_key, factory_id, size,
                  barcode_mode, barcode, notes):
@@ -400,6 +411,10 @@ class SupplierPurchaseViewModel(QObject):
     @Property(bool, notify=changed)
     def canIntake(self):
         return self._can("SUPPLIER_INTAKE")
+
+    @Property(bool, notify=changed)
+    def canAdjust(self):
+        return self._can("SUPPLIER_INVOICE_ADJUST")
 
     @Property(bool, notify=changed)
     def canReverse(self):
@@ -485,6 +500,9 @@ class SupplierPurchaseViewModel(QObject):
                                  "description": g["description"]} for g in d["groups"]]},
             "groups": [{"id": g["id"], "no": g["group_no"], "description": g["description"],
                         "weightText": grams(g["supplier_weight"]), "rateText": rate(g["making_per_gram"]) + " / جرام",
+                        "adjusted": g.get("adjustment", 0) != 0,
+                        "adjustmentText": ("+" if g.get("adjustment", 0) > 0 else "") + grams(g.get("adjustment", 0)),
+                        "effectiveText": grams(g.get("effective_weight", g["supplier_weight"])),
                         "makingText": money(g["making_total"]), "pieceCount": g["piece_count"],
                         **intake_fields(g), **allowance_fields(g), **category_fields(g)} for g in d["groups"]],
             "pieces": [{"id": p["id"], "itemId": p["inventory_item_id"], "groupNo": p["group_no"],

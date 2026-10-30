@@ -79,6 +79,7 @@ Item {
         function onInvoicePosted(invoiceId) { newInvoiceDialog.close(); intakeDialog.openFor(invoiceId) }
         function onDraftSaved(invoiceId) { newInvoiceDialog.close() }
         function onInvoiceReversed(invoiceId) { reverseInvoiceDialog.close(); if (page.vm) page.vm.refresh() }
+        function onInvoiceAdjusted(invoiceId) { adjustGroupDialog.close(); if (page.vm) page.vm.refresh() }
     }
 
     Rectangle { anchors.fill: parent; color: theme.bgPrimary }
@@ -1910,6 +1911,70 @@ Item {
     // ---------------------------------------------------------------- reverse a posted supplier purchase invoice (OWNER only, 052)
     // The preview comes from the service (the exact opposite entries and the supplier's balances before / after); QML does no arithmetic.
     Popup {
+        id: adjustGroupDialog
+        objectName: "adjustGroupDialog"
+        property string invoiceId: ""
+        property string groupId: ""
+        property string groupNo: ""
+        property string requestKey: ""
+        property string direction: "ADD"
+        function openFor(inv, group) {
+            invoiceId = inv.id
+            groupId = String(group.id)
+            groupNo = String(group.no)
+            direction = "ADD"
+            adjustWeight.text = ""
+            adjustReason.text = ""
+            requestKey = page.pvm ? page.pvm.newRequestKey() : ""
+            if (page.pvm) page.pvm.clearMessage()
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(460, page.width - 24)
+        modal: true
+        padding: 16
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 8
+            Txt { Layout.fillWidth: true; text: "تعديل وزن المجموعة " + adjustGroupDialog.groupNo; color: theme.gold; font.bold: true }
+            Txt { Layout.fillWidth: true; color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "إضافة ذهب تزيد اللي علينا للمورد، وخصم ذهب يُنقص اللي علينا له. المصنعية لا تتغير." }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn { objectName: "adjustAddButton"; text: "إضافة ذهب"; primary: adjustGroupDialog.direction === "ADD"
+                      onClicked: adjustGroupDialog.direction = "ADD" }
+                Btn { objectName: "adjustDeductButton"; text: "خصم ذهب"; primary: adjustGroupDialog.direction === "DEDUCT"
+                      onClicked: adjustGroupDialog.direction = "DEDUCT" }
+                Item { Layout.fillWidth: true }
+            }
+            Txt { Layout.fillWidth: true; text: "الوزن (جرام) *" }
+            TextField { id: adjustWeight; objectName: "adjustWeightField"; Layout.fillWidth: true; placeholderText: "0.000"
+                        font.family: "Cairo"; horizontalAlignment: TextInput.AlignRight; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+            Txt { Layout.fillWidth: true; text: "السبب *" }
+            TextField { id: adjustReason; objectName: "adjustReasonField"; Layout.fillWidth: true; placeholderText: "سبب التعديل"
+                        font.family: "Cairo"; horizontalAlignment: TextInput.AlignRight }
+            Txt { objectName: "adjustGroupError"; Layout.fillWidth: true; visible: text !== ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: !!page.pvm ? page.pvm.errorMessage : "" }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn { objectName: "confirmAdjustButton"; primary: true
+                      text: !!page.pvm && page.pvm.busy ? "جارٍ الحفظ…" : "تأكيد التعديل"
+                      enabled: adjustWeight.text.trim().length > 0 && adjustReason.text.trim().length > 0 && !!page.pvm && !page.pvm.busy
+                      onClicked: page.pvm.adjustGroup(adjustGroupDialog.invoiceId, adjustGroupDialog.groupId, adjustGroupDialog.direction,
+                                                      adjustWeight.text, adjustReason.text, adjustGroupDialog.requestKey) }
+                Btn { objectName: "cancelAdjustButton"; text: "إلغاء"; accent: theme.textSecondary; onClicked: adjustGroupDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    Popup {
         id: reverseInvoiceDialog
         objectName: "reverseInvoiceDialog"
         property string invoiceId: ""
@@ -3549,6 +3614,10 @@ Item {
                                                   color: theme.bgPrimary; font.bold: true; font.pixelSize: theme.fontTableHeader
                                                   elide: Text.ElideNone }
                                         }
+                                        Btn { objectName: "adjustGroupButton"
+                                              visible: intakeDialog.ready && intakeDialog.inv.posted === true && !!page.pvm && page.pvm.canAdjust
+                                              text: "تعديل وزن المجموعة"; enabled: !page.pvm.busy
+                                              onClicked: adjustGroupDialog.openFor(intakeDialog.inv, modelData) }
                                         Txt { visible: !groupCard.selected; text: "اضغط للاختيار"; color: theme.textMuted
                                               font.pixelSize: theme.fontTableHeader }
                                     }
@@ -3562,6 +3631,8 @@ Item {
                                                value: modelData.categoryResolved ? modelData.categoryText : "غير محددة"
                                                valueColor: modelData.categoryResolved ? theme.textPrimary : theme.amber }
                                         Pair { label: "وزن المورد (جرام)"; value: modelData.weightText; strong: true }
+                                        Pair { visible: modelData.adjusted === true; label: "تعديل الوزن (جرام)"; value: modelData.adjustmentText; strong: true; valueColor: theme.amber }
+                                        Pair { visible: modelData.adjusted === true; label: "الوزن بعد التعديل (جرام)"; value: modelData.effectiveText; strong: true }
                                         Pair { label: "مصنعية الجرام"; value: page.ltr(modelData.rateText); strong: true }
                                         Pair { label: "إجمالي مصنعية المجموعة"; value: page.ltr(modelData.makingText); strong: true }
                                     }
