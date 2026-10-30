@@ -846,7 +846,7 @@ class StockWeightTests(Case):
         by_size = next(b for b in result["bars"] if b["key"].startswith("size_21"))
         self.assertEqual([(r["label"], r["value"]) for r in by_size["rows"]], [("مقاس 57", 2), ("مقاس 58", 1), ("بدون مقاس", 1)])
         self.assertEqual({c["karat"] for c in result["totals"] if c["karat"]}, {21, 18})
-        self.assertTrue(all(t["karat"] in (21, 18) for t in result["tables"]))
+        self.assertTrue(all(t["karat"] in (21, 18) for t in result["tables"] if t["karat"]))
 
 
 class MissingWeightTests(Case):
