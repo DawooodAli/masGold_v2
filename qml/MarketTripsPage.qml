@@ -25,21 +25,56 @@ Item {
         tradeParty = String(partyId)
         runTrade()
     }
+    property string tradeTrip: ""
     function runTrade() {
         if (tradeKind === "" || !vm) return
-        if (!(detail.id !== undefined && !!detail.open)) {
+        if (tradeTrip === "") {
+            var open = []
             var trips = vm.trips || []
             for (var i = 0; i < trips.length; ++i)
-                if (trips[i].status === "OPEN") {
-                    if (vm.selectedTripId !== String(trips[i].id)) vm.selectTrip(String(trips[i].id))
-                    break
-                }
+                if (trips[i].status === "OPEN") open.push(trips[i])
+            if (open.length === 0) { tradeKind = ""; return }
+            if (open.length > 1) {                                                        // the owner chooses which custody takes the trade
+                if (!tripPicker.opened) { tripPicker.choices = open; tripPicker.open() }
+                return
+            }
+            tradeTrip = String(open[0].id)
+        }
+        if (!(detail.id !== undefined && String(detail.id) === tradeTrip && !!detail.open)) {
+            if (vm.selectedTripId !== tradeTrip) vm.selectTrip(tradeTrip)
             return
         }
         var kind = tradeKind, party = tradeParty
         tradeKind = ""
+        tradeTrip = ""
         if (kind === "BUY") { goldBuyDialog.openFor(detail.id); goldBuyDialog.pendingVendor = party }
         else { goldSaleDialog.openFor(detail.id); goldSaleDialog.pendingBuyer = party }
+    }
+    Popup {
+        id: tripPicker
+        objectName: "tradeTripPicker"
+        property var choices: []
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: 360
+        modal: true
+        padding: 14
+        onClosed: if (page.tradeTrip === "") page.tradeKind = ""
+        background: Rectangle { radius: 6; color: theme.panel; border.color: theme.gold; border.width: 1 }
+        contentItem: ColumnLayout {
+            spacing: 8
+            Txt { Layout.fillWidth: true; text: "اختر العهدة"; color: theme.gold; font.bold: true }
+            Repeater {
+                model: tripPicker.choices
+                Btn {
+                    required property var modelData
+                    objectName: "tradeTripChoice"
+                    Layout.fillWidth: true
+                    text: "عهدة " + page.ltr(modelData.code)
+                    onClicked: { page.tradeTrip = String(modelData.id); tripPicker.close(); page.runTrade() }
+                }
+            }
+        }
     }
     Connections {
         target: page.vm

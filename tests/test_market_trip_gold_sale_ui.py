@@ -237,6 +237,25 @@ class GoldSaleUiTests(base.MarketTripHeatPageTests):
         self.assertEqual(self.warnings, [])
 
 
+    def test_with_two_open_custodies_the_owner_chooses_which_one_takes_the_trade(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.logo_trip()
+        self.new_trip("", [(2, "5.000")], designation="LOGO")
+        QTest.qWait(200)
+        suppliers = self.root.findChild(QObject, "suppliersPage")
+        self.root.setProperty("currentPage", 14)
+        QTest.qWait(100)
+        QMetaObject.invokeMethod(suppliers, "tradeRequested", Qt.DirectConnection, Q_ARG(str, "SELL"), Q_ARG(str, "10"))
+        self.wait_until(lambda: self.item("tradeTripPicker").property("opened"), "the custody picker")
+        self.assertFalse(self.item("tripGoldSaleDialog").property("opened"))
+        self.assertEqual(len(self.item("tradeTripPicker").property("choices").toVariant() if hasattr(self.item("tradeTripPicker").property("choices"), "toVariant") else self.item("tradeTripPicker").property("choices")), 2)
+        self.click("tradeTripChoice")
+        self.wait_until(lambda: self.item("tripGoldSaleDialog").property("opened"), "sale dialog after the choice")
+        self.assertEqual(self.root.property("currentPage"), 14)
+        self.assertEqual(self.warnings, [])
+
+
 for _name in [n for n in dir(base.MarketTripHeatPageTests) if n.startswith("test_") and n not in vars(GoldSaleUiTests)]:
     setattr(GoldSaleUiTests, _name, None)                    # the inherited UI tests run in their own modules
 
