@@ -760,10 +760,6 @@ class ReportService:
             volatility = indicators_math.volatility(series, 1)
             cards.append(total(f"عيار {k} — التذبذب اليومي (30 يوم)", "بيانات غير كافية" if volatility is None else f"{volatility:,.2f}%", "text",
                                "متوسط تحرك السعر في اليوم" if volatility is not None else "تحتاج 8 أيام على الأقل", group, karat=k))
-            code, buy_position, sell_position = indicators_math.hint(series)
-            basis = ("سعر الشراء في الربع الأدنى من نطاقه" if code == indicators_math.BUY_FAVOURABLE else "سعر البيع في الربع الأعلى من نطاقه" if code == indicators_math.SELL_FAVOURABLE
-                     else "السعران داخل النطاق المعتاد" if code == indicators_math.NEUTRAL else "")
-            cards.append(total(f"عيار {k} — إرشاد", HINT_TEXT[code], "text", (basis + " • " if basis else "") + HINT_DISCLAIMER, group, karat=k))
             coverage.append({"karat": f"عيار {k}", "days": len(series), "first": series[0][0], "last": latest[0], "ref": {"type": "PRICE_CHART", "id": str(k)}})
         cols = [col("karat", "العيار"), col("days", "أيام الأسعار المتاحة", "count"), col("first", "أقدم يوم", "date"), col("last", "آخر يوم", "date")]
         tables = [table("coverage", "الأسعار المخزنة (للرسم البياني)", cols, coverage)]

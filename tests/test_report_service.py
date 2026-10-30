@@ -824,7 +824,7 @@ class IndicatorTests(Case):
         self.assertEqual(buy["value"], D(6390))                                   # day 40: 6000 + 10 * 39
         self.assertIn("آخر سعر 2026-03-12", buy["note"])
         self.assertEqual(values["عيار 21 — سعر بيع المحل"]["value"], D(6440))
-        self.assertIn("وليس توصية مالية", values["عيار 21 — إرشاد"]["note"])
+        self.assertNotIn("عيار 21 — إرشاد", values)                               # the guidance now lives on the home page only
         self.assertTrue(all(t.get("karat") == 21 for t in result["totals"]))             # the other karats have no stored prices: no cards, never zeros
         self.assertEqual(result["tables"][0]["rows"][0]["days"], 43)                      # 3 legacy + 40 live days
 
