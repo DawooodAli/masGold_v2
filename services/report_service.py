@@ -307,6 +307,8 @@ class ReportService:
                 bucket, label = internal, "الحساب الخاص (المالك)"                          # the owner's own money: neither income nor expense
             elif source == "FINANCIAL_OPERATION" and category in ("STAFF_ADVANCE", "CUSTOMER_CUSTODY", "ADVANCE_REPAY", "BORROWED_CASH", "BORROW_REPAY"):
                 bucket, label = internal, "سلف وعهد مؤقتة (تعود للمحل)" if category in ("STAFF_ADVANCE", "CUSTOMER_CUSTODY", "ADVANCE_REPAY") else "سلف مستلفة (تُسدد لأصحابها)"                  # money lent and taken back: neither income nor expense
+            elif source == "FINANCIAL_OPERATION" and "عميل" in CASH_LABELS.get(category or "", ""):
+                bucket, label = internal, "نقدية العملاء (ليست إيرادًا ولا مصروفًا)"                  # owner 2026-10-30: cash that comes from / goes to a customer is not income or expense
             elif source == "FINANCIAL_OPERATION":
                 label = CASH_LABELS.get(category or "", "إيداع يدوي" if amount > 0 else "سحب يدوي")
                 if category:                                                              # a categorised entry counts on the side of its ORIGINAL direction; its reversal reduces that side
@@ -334,12 +336,16 @@ class ReportService:
         for name in missing:
             tables.append(self._unavailable("missing_" + name, name, "ليست لديك صلاحية عرض هذا القسم: الأرقام لا تشملها."))
         note = (" • لا تشمل: " + "، ".join(missing)) if missing else ""
+        bars = [{"key": "expenses", "title": "المصروفات حسب البند", "tone": "payable",
+                 "rows": sorted(({"label": k, "value": v["out"] - v["in"]} for k, v in recorded.items() if v["out"] - v["in"] > 0), key=lambda r: (-r["value"], r["label"]))},
+                {"key": "income", "title": "الإيرادات حسب البند", "tone": "receivable",
+                 "rows": sorted(({"label": k, "value": v["in"] - v["out"]} for k, v in recorded.items() if v["in"] - v["out"] > 0), key=lambda r: (-r["value"], r["label"]))}]
         totals = [total("مصروفات مسجلة", recorded_out, "money", "إيجار، مرتبات، كهرباء، نقل، صيانة، ضيافة، سلف... من حركة الخزنة" + note, "recorded", tone="payable"),
                   total("إيرادات مسجلة", recorded_in, "money", "إيرادات مسجلة يدويًا من حركة الخزنة" + note, "recorded", tone="receivable"),
                   total("الصافي", recorded_in - recorded_out, "money", "الإيرادات − المصروفات المسجلة", "recorded")]
         meaning = ["بنود المصروفات والإيرادات المسجّلة من «حركة نقدية جديدة» في حركة النقدية فقط. الإلغاء والتصحيح يُحسبان على نفس بند الأصل فيُخصمان منه.",
-                   "المبيعات ودفعات العملاء وتحويلات الحسابات وعهدة السوق ليست من هذه البنود ولا تظهر هنا."]
-        return {"meaning": meaning, "tables": tables, "totals": totals}
+                   "المبيعات ودفعات العملاء وتحويلات الحسابات وعهدة السوق ليست من هذه البنود ولا تظهر هنا. والنقدية الداخلة من عميل أو الخارجة لعميل لا تُحسب إيرادًا ولا مصروفًا."]
+        return {"meaning": meaning, "tables": tables, "totals": totals, "bars": bars}
 
     # ------------------------------------------------------------------ 8. gold profit (owner definition): the gold at the end of the period minus the gold at its start, in 21K equivalent
     def _profit(self, repo, gate, filters, start, end):

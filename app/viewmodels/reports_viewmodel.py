@@ -86,6 +86,16 @@ def clean_label(label):
     return str(label).replace(" (فعّال)", "").replace("(فعّال)", "").replace("  ", " ").strip()
 
 
+def _bars(groups):
+    """Bar-chart data: each bar's length is its share of the group's largest value (strings for the money, a ratio for the length)."""
+    out = []
+    for g in groups or []:
+        top = max((r["value"] for r in g["rows"]), default=0)
+        out.append({"key": g["key"], "title": g["title"], "tone": g.get("tone", ""),
+                    "rows": [{"label": r["label"], "text": _cell("money", r["value"]), "ratio": float(r["value"] / top) if top else 0.0} for r in g["rows"]]})
+    return out
+
+
 def result_view(built):
     """The display form of one `ReportService` result: strings only, plus the open-source references and the paging state."""
     tables = []
@@ -103,7 +113,7 @@ def result_view(built):
                        "note": t.get("note", ""), "karat": int(t.get("karat") or 0)})
     return {"report": built["report"], "title": built["title"], "filters": built["filters"], "meaning": built["meaning"], "applied": built.get("applied", []), "tables": tables,
             "totals": [{"label": clean_label(x["label"]), "value": _cell(x["kind"], x["value"]) if x["kind"] != "text" else str(x["value"]), "note": x["note"], "group": x.get("group", ""), "karat": int(x.get("karat") or 0), "tone": x.get("tone") or ""}
-                       for x in built["totals"]], "options": built.get("options", {}), "error": ""}
+                       for x in built["totals"]], "options": built.get("options", {}), "error": "", "bars": _bars(built.get("bars"))}
 
 
 @QmlElement

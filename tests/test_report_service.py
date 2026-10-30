@@ -932,6 +932,26 @@ class CashflowTests(Case):
         self.assertEqual((values["مصروفات مسجلة"], values["إيرادات مسجلة"], values["الصافي"]), (D("600.00"), D("1500.00"), D("900.00")))
         self.assertEqual(set(values), {"الصافي", "إيرادات مسجلة", "مصروفات مسجلة"})
         self.assertEqual([t["key"] for t in result["tables"]], ["operating"])
+        bars = {b["key"]: b for b in result["bars"]}                                                           # one bar chart per side, by the stored category
+        self.assertEqual([(r["label"], r["value"]) for r in bars["expenses"]["rows"]], [("كهرباء ومياه", D("600.00"))])
+        self.assertEqual([(r["label"], r["value"]) for r in bars["income"]["rows"]], [("إيراد", D("1500.00"))])
+
+    def test_cash_from_or_to_a_customer_is_neither_income_nor_expense(self):
+        base = {"transfer_group_id": None, "type_name": "x", "corrected_category": None, "correction_source": None, "corrected_operation_type": None, "reference_type": "FINANCIAL_OPERATION"}
+        rows = [dict(base, type_code="WITHDRAWAL", amount=D("-300.00"), category="CUST_OUT"), dict(base, type_code="DEPOSIT", amount=D("200.00"), category="CUST_IN"),
+                dict(base, type_code="WITHDRAWAL", amount=D("-50.00"), category="RENT")]
+
+        class Repo(FakeRepo):
+            def cashflow_movements(self, start, end, ledgers=("CASH", "BANK")):
+                return rows
+
+            def cash_categories(self):
+                return [{"code": "CUST_OUT", "name": "نقدية خارجة لعميل"}, {"code": "CUST_IN", "name": "نقدية داخلة من عميل"}]
+        service = ReportService(self.service._session, transaction_factory=self.service._transaction, repository=Repo, authorization=self.service._authorization, today=lambda: TODAY)
+        result = service.run("cashflow", self.PERIOD)
+        self.assertEqual(sorted(self.rows(result, "operating")), ["إيجار"])
+        values = self.totals(result)
+        self.assertEqual((values["مصروفات مسجلة"], values["إيرادات مسجلة"]), (D("50.00"), D("0.00")))
 
     def test_a_missing_ledger_right_is_stated_and_its_money_is_left_out(self):
         session = session_for(frozenset({"APP_LOGIN", "REPORTS_VIEW", "CASH_VIEW"}))

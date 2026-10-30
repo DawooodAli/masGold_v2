@@ -575,6 +575,43 @@ Item {
                 }
             }
 
+            // ---------------------------------------------------------------- bar charts (the cash-flow report: one chart for the expenses and one for the income, by their stored category)
+            Repeater {
+                model: reportsVM.result.bars || []
+                delegate: ColumnLayout {
+                    id: barGroup
+                    required property var modelData
+                    objectName: "reportBars_" + modelData.key
+                    Layout.fillWidth: true
+                    spacing: 4
+                    Txt { Layout.fillWidth: true; text: barGroup.modelData.title; color: barGroup.modelData.tone === "payable" ? theme.priceSell : theme.priceBuy; font.bold: true
+                          font.pixelSize: theme.fontSection }
+                    Txt { Layout.fillWidth: true; visible: barGroup.modelData.rows.length === 0; text: "لا توجد حركات في هذه الفترة."; color: theme.textMuted }
+                    Repeater {
+                        model: barGroup.modelData.rows
+                        delegate: RowLayout {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 8
+                            Txt { Layout.preferredWidth: 150; text: parent.modelData.label; elide: Text.ElideLeft }
+                            Item {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 22
+                                Rectangle {
+                                    anchors.right: parent.right
+                                    height: parent.height
+                                    width: Math.max(3, parent.width * parent.parent.modelData.ratio)
+                                    radius: 3
+                                    color: barGroup.modelData.tone === "payable" ? theme.priceSell : theme.priceBuy
+                                }
+                            }
+                            Txt { Layout.preferredWidth: 110; text: parent.modelData.text; font.bold: true; horizontalAlignment: Text.AlignLeft }
+                        }
+                    }
+                }
+            }
+
             // ---------------------------------------------------------------- tables
             Repeater {
                 model: reportsVM.result.tables || []

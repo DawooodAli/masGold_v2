@@ -561,6 +561,11 @@ Item {
                   text: "تصحيح / عكس"
                   visible: !!detailRoot.d.canCorrect && typeof correctionVM !== "undefined"
                   onClicked: correctionVM.open(detailRoot.d.invoiceId) }
+            // تغيير البائع: a manager corrects a wrong seller name (TRANSACTION_CORRECT, re-checked by the seller service); nothing else on the invoice changes.
+            Btn { objectName: "historyChangeSeller"
+                  text: "تغيير البائع"
+                  visible: !!detailRoot.d.canChangeSeller
+                  onClicked: sellerDialog.begin() }
             Btn { objectName: "historyReprint"; primary: true
                   text: historyPage.vm && historyPage.vm.reprintBusy ? "جاري الطباعة..." : "إعادة طباعة"
                   visible: !!detailRoot.d.canReprint
@@ -1170,6 +1175,53 @@ Item {
             }
             Item { Layout.fillWidth: true }
             Txt { value: totalsRoot.extra; visible: value.length > 0; color: theme.textPrimary }
+        }
+    }
+
+    Popup {
+        id: sellerDialog
+        objectName: "historySellerDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(440, historyPage.width - 24)
+        modal: true
+        padding: 16
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        function begin() {
+            sellerReason.text = ""
+            if (historyPage.vm) historyPage.vm.loadSellers()
+            open()
+        }
+        Connections {
+            target: historyPage.vm
+            function onChanged() { if (historyPage.vm && historyPage.vm.sellerChanged && sellerDialog.opened) sellerDialog.close() }
+        }
+        contentItem: ColumnLayout {
+            spacing: 8
+            Txt { Layout.fillWidth: true; value: "تغيير البائع"; color: theme.gold; font.bold: true }
+            Txt { Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.textSecondary
+                  value: "البائع الحالي: " + ((historyPage.vm && historyPage.vm.detail.salesperson) || "—") + ". يتغير اسم البائع فقط؛ باقي الفاتورة كما هي." }
+            Txt { Layout.fillWidth: true; value: "البائع الجديد *" }
+            ComboBox { id: sellerCombo; objectName: "historySellerCombo"; Layout.fillWidth: true
+                       model: historyPage.vm ? historyPage.vm.sellerChoices : []
+                       textRole: "name"; font.family: "Cairo" }
+            Txt { Layout.fillWidth: true; value: "السبب *" }
+            TextField { id: sellerReason; objectName: "historySellerReason"; Layout.fillWidth: true; placeholderText: "مثلاً: اسم البائع اتكتب بالغلط"
+                        font.family: "Cairo"; horizontalAlignment: TextInput.AlignRight }
+            Txt { objectName: "historySellerMessage"; Layout.fillWidth: true; wrapMode: Text.WordWrap
+                  visible: value.length > 0; color: theme.red
+                  value: !!historyPage.vm && !historyPage.vm.sellerChanged ? historyPage.vm.sellerMessage : "" }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn { objectName: "historySellerSave"; primary: true; text: "حفظ"
+                      enabled: sellerCombo.currentIndex >= 0 && sellerReason.text.trim().length > 0 && !!historyPage.vm
+                      onClicked: historyPage.vm.changeSeller(String(historyPage.vm.sellerChoices[sellerCombo.currentIndex].id), sellerReason.text) }
+                Btn { objectName: "historySellerCancel"; text: "إلغاء"; onClicked: sellerDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
         }
     }
 }

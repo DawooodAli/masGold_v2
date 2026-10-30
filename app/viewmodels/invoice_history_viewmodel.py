@@ -72,6 +72,7 @@ class InvoiceHistoryViewModel(QObject):
         self._detail, self._error, self._detail_error = {}, "", ""
         self._detail_id = None
         self._reprint = {}
+        self._sellers, self._seller_service, self._seller_message, self._seller_ok = [], None, "", False
         self._lookup_message = ""
         # Typing in the search box: one query after a short pause, never one per keystroke.
         self._debounce = QTimer(self)
@@ -405,6 +406,53 @@ class InvoiceHistoryViewModel(QObject):
             return
         self._detail = result
 
+    # ------------------------------------------------------------ change the seller (a manager's correction of a wrong name)
+    def _seller_instance(self):
+        if self._seller_service is None:
+            from services.invoice_seller_service import InvoiceSellerService
+            self._seller_service = InvoiceSellerService(self._session)
+        return self._seller_service
+
+    @Slot()
+    def loadSellers(self):
+        self._seller_message, self._seller_ok = "", False
+        service = self._seller_instance()
+        self._start("sellers", lambda _expected_actor: service.employees(_expected_actor=_expected_actor))
+
+    def _on_sellers(self, result, error):
+        self._sellers = [] if error else list(result)
+        if error:
+            self._seller_message = str(error)
+
+    @Slot(str, str)
+    def changeSeller(self, employee_id, reason):
+        if not self._detail or not self._detail.get("can_change_seller") or "seller" in self._busy:
+            return
+        service, invoice_id = self._seller_instance(), self._detail["invoice_id"]
+        self._seller_message, self._seller_ok = "", False
+        self._start("seller", lambda _expected_actor: service.change(invoice_id, employee_id, reason, _expected_actor=_expected_actor))
+
+    def _on_seller(self, result, error):
+        if error:
+            self._seller_message, self._seller_ok = str(error), False
+            return
+        self._seller_message, self._seller_ok = "تم تغيير البائع.", True
+        if self._detail_id:
+            self.openInvoice(self._detail_id)
+        self._run_search(self._page)
+
+    @Property("QVariantList", notify=changed)
+    def sellerChoices(self):
+        return self._sellers
+
+    @Property(str, notify=changed)
+    def sellerMessage(self):
+        return self._seller_message
+
+    @Property(bool, notify=changed)
+    def sellerChanged(self):
+        return self._seller_ok
+
     # ------------------------------------------------------------ reprint (read-only)
     @Slot()
     def reprint(self):
@@ -547,6 +595,7 @@ class InvoiceHistoryViewModel(QObject):
             "canExchange": bool(d.get("can_exchange")),
             "canReturn": bool(d.get("can_return")),
             "canCorrect": bool(d.get("can_correct")),
+            "canChangeSeller": bool(d.get("can_change_seller")),
             "reversedText": f"تم عكس الفاتورة — {d['reversed_by']}" if d.get("reversed_by") else "",
             "showManager": bool(d["can_see_manager_details"]),
         }
