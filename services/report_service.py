@@ -33,10 +33,10 @@ MAX_ROWS = 50000
 ZERO = Decimal("0")
 ZERO3, ZERO2 = Decimal("0.000"), Decimal("0.00")
 BASE_PERMISSION = "REPORTS_VIEW"
-REPORT_PERMISSIONS = {"sales": ("INVOICE_VIEW",), "stock": ("INVENTORY_VIEW",), "alerts": ("INVENTORY_VIEW",), "indicators": (), "gold": (), "employees": ("INVOICE_VIEW",), "makingprofit": ("INVOICE_VIEW", "INVENTORY_VIEW"), "scrapcost": ("INVOICE_VIEW",), "demand": ("INVOICE_VIEW",), "customers": ("CUSTOMERS_VIEW",), "deadcash": ("CUSTOMERS_VIEW",),
+REPORT_PERMISSIONS = {"sales": ("INVOICE_VIEW",), "stock": ("INVENTORY_VIEW",), "alerts": ("INVENTORY_VIEW",), "stockweights": ("INVENTORY_VIEW",), "indicators": (), "gold": (), "employees": ("INVOICE_VIEW",), "makingprofit": ("INVOICE_VIEW", "INVENTORY_VIEW"), "scrapcost": ("INVOICE_VIEW",), "demand": ("INVOICE_VIEW",), "customers": ("CUSTOMERS_VIEW",), "deadcash": ("CUSTOMERS_VIEW",),
                       "suppliers": ("SUPPLIER_VIEW",), "treasury": (), "cashflow": (), "market": ("MARKET_TRIP_MANAGE",),
                       "profit": ("MANAGEMENT_REVIEW", "MARKET_TRIP_MANAGE", "INTERMEDIARY_HOLDING_VIEW")}                      # treasury: CASH_VIEW and / or BANK_VIEW per section
-REPORT_TITLES = {"sales": "المبيعات والمرتجعات", "stock": "المخزون المتاح", "alerts": "تنبيهات المخزون", "indicators": "مؤشرات الذهب", "gold": "حركة الأصناف", "employees": "أداء الموظفين", "makingprofit": "ربح المصنعية", "scrapcost": "تكلفة الكسر", "demand": "الموسمية والطلب", "customers": "العملاء", "deadcash": "الديون المعدومة (Dead Cash)", "suppliers": "الموردون", "treasury": "الخزنة والبنوك", "cashflow": "المصروفات والإيرادات", "market": "عهدة السوق والخسائر", "profit": "ربح الذهب (مكافئ 21)"}
+REPORT_TITLES = {"sales": "المبيعات والمرتجعات", "stock": "المخزون المتاح", "alerts": "تنبيهات المخزون", "stockweights": "جرد الأوزان والمقاسات", "indicators": "مؤشرات الذهب", "gold": "حركة الأصناف", "employees": "أداء الموظفين", "makingprofit": "ربح المصنعية", "scrapcost": "تكلفة الكسر", "demand": "الموسمية والطلب", "customers": "العملاء", "deadcash": "الديون المعدومة (Dead Cash)", "suppliers": "الموردون", "treasury": "الخزنة والبنوك", "cashflow": "المصروفات والإيرادات", "market": "عهدة السوق والخسائر", "profit": "ربح الذهب (مكافئ 21)"}
 KIND_TEXT = {"SALE": "بيع", "MIXED": "بيع مع شراء كسر", "OLD_GOLD_PURCHASE": "شراء كسر", "RETURN": "مرتجع", "EXCHANGE": "استبدال"}
 STATUS_TEXT = {"IN_STOCK": "متاح", "SOLD": "مباع", "SCRAPPED": "كسر", "REMOVED": "مُخرج", "RETURNED_PENDING": "مرتجع بانتظار الفحص", "CONVERTED_TO_OLD_GOLD": "حُوّل إلى كسر"}
 CLASS_TEXT = {"NEW_STOCK": "جديد", "OLD_STOCK": "قديم"}
@@ -44,7 +44,7 @@ LINE_TEXT = {"SELL_INVENTORY": "بيع قطعة", "SELL_OLD_GOLD": "بيع من 
 REF_TEXT = {"INVOICE": "فاتورة", "RETURN": "مرتجع", "EXCHANGE": "استبدال", "CUSTOMER_ACCOUNT_SETTLEMENT": "تحصيل / تسوية حساب", "CUSTOMER_DEPOSIT": "عربون",
             "CUSTOMER_DEPOSIT_REFUND": "رد عربون", "FULL_REVERSAL": "عكس", "SETTLEMENT_CORRECTION": "تصحيح تسوية", "DEAD_CASH_WRITE_OFF": "شطب رصيد",
             "DEAD_CASH_REVERSAL": "عكس شطب", "UNKNOWN": "غير محدد"}
-NO_PERIOD = frozenset({"stock", "alerts", "indicators", "demand", "customers", "deadcash", "suppliers"})          # reports of the CURRENT state: the period is neither offered nor printed
+NO_PERIOD = frozenset({"stock", "alerts", "stockweights", "indicators", "demand", "customers", "deadcash", "suppliers"})          # reports of the CURRENT state: the period is neither offered nor printed
 PRICE_KARATS = (24, 21, 18)                                                                    # the karats the price indicators are shown for (the provider's three)
 HINT_TEXT = {indicators_math.BUY_FAVOURABLE: "الشراء مناسب نسبيًا", indicators_math.SELL_FAVOURABLE: "البيع مناسب نسبيًا", indicators_math.NEUTRAL: "محايد",
              indicators_math.UNKNOWN: "بيانات غير كافية"}
@@ -60,6 +60,7 @@ CORRECTION_FLOW = {"INVOICE": "INVOICE", "EXCHANGE": "INVOICE_LIFECYCLE", "RETUR
 INTERNAL_FLOW = {"MARKET_TRIP_ENTRY": "عهدة السوق (إخراج / رجوع / إيداع)", "MARKETER_DOCUMENT": "عهدة المسوقجي", "ACCOUNT_TRANSFER": "تحويلات بين الحسابات"}
 DEAD_STOCK_DAYS = 180                  # DEFAULT for how long a piece may sit in stock without a sale before it is dead stock; the effective figure comes from System Settings (081)
 VELOCITY_DAYS, RECENT_DAYS = 90, 30    # the window the sales rate is measured on (081), and the "recent" figure shown beside it (a hard rule, no setting)
+STOCK_BAND = Decimal("2")                  # the weight band of the automatic weight stocktake (owner 2026-10-30): 0 - 2, 2 - 4 ... grams
 WEIGHT_BAND_TOP = 10                  # DEFAULT: weight bands are one gram wide (1 – 2, 2 – 3 ...); every piece of WEIGHT_BAND_TOP grams or more is in the last band (081)
 LOW_COVER_DAYS, MIN_SALES = 14, 3      # DEFAULTS: an item sold at least MIN_SALES times in the window whose stock covers fewer than LOW_COVER_DAYS days of sales is about to run out (081)
 UNKNOWN_TEXT = "غير معلوم"
@@ -721,6 +722,130 @@ class ReportService:
         meaning = [f"راكد = قطعة متاحة منذ {dead_stock_days} يومًا أو أكثر ولم تظهر في أي فاتورة. قارب النفاد = صنف بيع {min_sales} مرات فأكثر في آخر {velocity_days} يومًا والمتاح منه يكفي أقل من {low_cover_days} يومًا بمعدل البيع.",
                    "جداول الأوزان لكل عيار وكل صنف: شرائح وزنها جرام واحد (الحد الأدنى داخل الشريحة والأعلى خارجها) معلومات للمقارنة ولا تنبّه ولا تقرّر. التقرير تنبيه وليس قرارًا: لا يقترح سعرًا ولا يغيّر شيئًا. الأعيار منفصلة دائمًا."]
         return {"meaning": meaning, "tables": tables, "totals": cards}
+
+    # ------------------------------------------------------------------ 2d. automatic stocktake by weight (and size) - owner request 2026-10-30
+    def _stockweights(self, repo, gate, filters, start, end):
+        """جرد تلقائي بالأوزان: the stock IN_STOCK counted per KARAT (never mixed) and per item TYPE in TWO-gram weight bands (0 - 2, 2 - 4 ... up to the band of the heaviest piece of that type; nothing
+        after it). The lower limit is inside the band. A type whose pieces carry a size (rings, wedding bands, bangles: detected from the stock itself, nothing is configured) gets a weight x size
+        matrix instead. Every table has a total row and a bar chart of the counts. Current state, no period; it only counts."""
+        karat = str(filters.get("karat") or "")
+        if karat not in ("", "18", "21", "22", "24"):
+            raise ReportError("FILTER_INVALID", "عيار غير صحيح.")
+        raw, folded = _text_filter(filters)
+        stock = [r for r in repo.stock_items(("IN_STOCK",)) if (not karat or str(r["karat_value"]) == karat) and _matches(folded, raw, r["item_type"], r["category"], r["factory"])]
+        groups = {}
+        for r in stock:
+            groups.setdefault((int(r["karat_value"]), r["item_type"] or NO_TYPE), []).append((_dec(r["weight_grams"]), str(r["size"] or "").strip()))
+
+        def band_index(weight):
+            return int(weight // STOCK_BAND)
+
+        def band_label(index):
+            return f"{index * int(STOCK_BAND)} – {(index + 1) * int(STOCK_BAND)} جرام"
+
+        def size_key(size):
+            try:
+                return (0, Decimal(size), size)
+            except Exception:
+                return (1, ZERO3, size)
+        # ---- the weights that may be MISSING (owner 2026-10-30): a weight band (and size) that SOLD at least `min_sales` times in the last `velocity_days` but whose stock is gone or covers
+        # fewer than `low_cover_days` at the sales rate. It is a warning from the shop's own sales, not an order; it needs the invoice right.
+        limits = setting_rules.report_thresholds(repo)
+        velocity_days, low_cover_days, min_sales = limits["velocity_days"], limits["low_cover_days"], limits["min_sales_for_velocity"]
+        has_sales = gate("INVOICE_VIEW")
+        sold = {}
+        if has_sales:
+            today = self._today()
+            since = datetime.combine(today - timedelta(days=velocity_days), time.min)
+            for r in repo.gold_sold_pieces(since, datetime.combine(today + timedelta(days=1), time.min)):
+                if r["reversal_id"] or (karat and str(r["karat_value"]) != karat) or not _matches(folded, raw, r["item_type"], r["category"], r["factory"]):
+                    continue
+                sold.setdefault((int(r["karat_value"]), r["item_type"] or NO_TYPE), []).append((_dec(r["weight_grams"]), str(r.get("size") or "").strip()))
+        sized_pairs = {key for key, ps in list(groups.items()) + list(sold.items()) if any(s for _, s in ps)}
+
+        def cell_key(key, weight, size):
+            return (band_index(weight), (size or "بدون مقاس") if key in sized_pairs else "")
+        missing = {}                                                                          # (karat, type) -> [{band, size, sold, stock, cover}]
+        flagged = {}                                                                          # (karat, type) -> {band index: [size, ...]}
+        for key in sold:
+            sold_cells, stock_cells = {}, {}
+            for w, s in sold[key]:
+                sold_cells[cell_key(key, w, s)] = sold_cells.get(cell_key(key, w, s), 0) + 1
+            for w, s in groups.get(key, []):
+                stock_cells[cell_key(key, w, s)] = stock_cells.get(cell_key(key, w, s), 0) + 1
+            for cell, n in sold_cells.items():
+                have = stock_cells.get(cell, 0)
+                if n < min_sales:
+                    continue
+                cover = Decimal(have) * velocity_days / Decimal(n)
+                if have == 0 or cover < low_cover_days:
+                    missing.setdefault(key, []).append({"band": cell[0], "size": cell[1], "sold": n, "stock": have, "cover": cover})
+                    flagged.setdefault(key, {}).setdefault(cell[0], []).append(cell[1])
+        tables, cards, bars = [], [], []
+        per_karat = {}
+        for (k, kind) in sorted(groups, key=lambda key: (-key[0], key[1])):
+            pieces = groups[(k, kind)]
+            top = max(band_index(w) for w, _ in pieces)
+            sized = any(s for _, s in pieces)
+            sizes = sorted({s or "بدون مقاس" for _, s in pieces}, key=lambda s: (1, ZERO3, s) if s == "بدون مقاس" else size_key(s)) if sized else []
+            cells = {}
+            for w, s in pieces:
+                c = cells.setdefault(band_index(w), {"count": 0, "weight": ZERO3, "sizes": {}})
+                c["count"] += 1
+                c["weight"] += w
+                if sized:
+                    c["sizes"][s or "بدون مقاس"] = c["sizes"].get(s or "بدون مقاس", 0) + 1
+            rows = []
+            for i in range(top + 1):                                                          # every band up to the heaviest piece, empty ones included; nothing beyond
+                c = cells.get(i, {"count": 0, "weight": ZERO3, "sizes": {}})
+                row = {"band": band_label(i), "count": c["count"], "weight": c["weight"]}
+                warn = flagged.get((k, kind), {}).get(i)
+                row["alert"] = "" if not warn else ("⚠ ناقص" + (" — مقاس " + "، ".join(sorted({x for x in warn if x})) if any(warn) else ""))
+                for s in sizes:
+                    row["s_" + s] = c["sizes"].get(s, 0)
+                rows.append(row)
+            totals_row = {"band": "الإجمالي", "count": sum(r["count"] for r in rows), "weight": sum((r["weight"] for r in rows), ZERO3), "alert": ""}
+            for s in sizes:
+                totals_row["s_" + s] = sum(r["s_" + s] for r in rows)
+            rows.append(totals_row)
+            columns = [col("band", "شريحة الوزن")] + [col("s_" + s, f"مقاس {s}" if s != "بدون مقاس" else s, "count") for s in sizes] + [col("count", "العدد", "count"), col("weight", "الوزن (جرام)", "grams")] + ([col("alert", "تنبيه")] if has_sales else [])
+            tables.append(table(f"w_{k}_{len(tables)}", f"{kind} — عيار {k}" + (" (بالوزن والمقاس)" if sized else ""), columns, rows, karat=k))
+            bars.append({"key": f"band_{k}_{len(bars)}", "title": f"{kind} — عيار {k}: عدد القطع حسب شريحة الوزن", "karat": k, "kind": "count",
+                         "rows": [{"label": r["band"], "value": r["count"]} for r in rows[:-1]]})
+            if sized:
+                bars.append({"key": f"size_{k}_{len(bars)}", "title": f"{kind} — عيار {k}: عدد القطع حسب المقاس", "karat": k, "kind": "count",
+                             "rows": [{"label": f"مقاس {s}" if s != "بدون مقاس" else s, "value": totals_row["s_" + s]} for s in sizes]})
+            p = per_karat.setdefault(k, {"count": 0, "weight": ZERO3, "max": ZERO3})
+            p["count"] += totals_row["count"]
+            p["weight"] += totals_row["weight"]
+            p["max"] = max(p["max"], max(w for w, _ in pieces))
+        for k in sorted(per_karat, reverse=True):
+            p = per_karat[k]
+            cards.append(total(f"عيار {k}", f"{p['count']} قطعة", "text", f"{p['weight']:,.3f} جرام • أثقل قطعة {p['max']:,.3f} جرام", "stockweights", karat=k))
+        miss_cols = [col("type", "الصنف"), col("band", "شريحة الوزن"), col("size", "المقاس"), col("sold", f"مباع آخر {velocity_days} يوم", "count"), col("stock", "المتاح", "count"), col("cover", "يكفي (يوم)")]
+        flagged_total = 0
+        if has_sales:
+            for k in sorted({k for k, _ in missing}, reverse=True):
+                rows = []
+                for (kk, kind), items in sorted(missing.items(), key=lambda kv: kv[0][1]):
+                    if kk != k:
+                        continue
+                    for m in sorted(items, key=lambda m: (m["band"], m["size"])):
+                        rows.append({"type": kind, "band": band_label(m["band"]), "size": m["size"] or "—", "sold": m["sold"], "stock": m["stock"],
+                                     "cover": "نفد" if m["stock"] == 0 else f"{int(m['cover'])}"})
+                flagged_total += len(rows)
+                tables.append(table(f"missing_{k}", f"أوزان قد تكون ناقصة — عيار {k}", miss_cols, rows, karat=k))
+            if not missing:
+                tables.append(table("missing", "أوزان قد تكون ناقصة", miss_cols, []))
+            cards.append(total("أوزان قد تكون ناقصة", flagged_total, "count", f"شرائح بيعت {min_sales} مرات فأكثر في آخر {velocity_days} يوم ومخزونها نفد أو يكفي أقل من {low_cover_days} يوم", "missing", tone="deadcash"))
+        else:
+            tables.append(self._unavailable("missing", "أوزان قد تكون ناقصة", "تحتاج صلاحية عرض الفواتير لمعرفة ما يُباع."))
+        if not tables:
+            tables.append(table("empty", "جرد الأوزان", [col("band", "شريحة الوزن")], []))
+        meaning = [f"جرد تلقائي لما هو متاح بالمخزون الآن: شرائح وزن {int(STOCK_BAND)} جرام (الحد الأدنى داخل الشريحة والأعلى خارجها) من الصفر حتى شريحة أثقل قطعة من الصنف، ولا شريحة بعدها. الأعيار منفصلة دائمًا.",
+                   "الأصناف التي لقطعها مقاس (دبل، خواتم، غوايش...) تظهر بالوزن والمقاس معًا؛ ويُعرف ذلك من بيانات المخزون نفسها. التقرير يعدّ فقط ولا يقرّر.",
+                   f"«أوزان قد تكون ناقصة»: شريحة وزن (ومقاس للأصناف ذات المقاس) بيعت منها {min_sales} مرات فأكثر في آخر {velocity_days} يومًا ومخزونها نفد أو يكفي أقل من {low_cover_days} يومًا بمعدل البيع. تحذير من مبيعات المحل نفسه، وليس أمر شراء، وحدّاه في إعدادات النظام."]
+        return {"meaning": meaning, "tables": tables, "totals": cards, "bars": bars}
 
     # ------------------------------------------------------------------ 2c. gold price indicators (owner request): standard formulas over the shop's own stored daily prices
     @staticmethod

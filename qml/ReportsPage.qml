@@ -348,7 +348,7 @@ Item {
                   text: "للعرض فقط — الأرقام من دفاتر البرنامج وكل إجمالي يشمل كامل نتائج الفلتر وليس الصفحة المعروضة فقط." }
             // الأزرار في ثلاث مجموعات: الذهب • النقدية • العام
             Repeater {
-                model: [{ "name": "الذهب", "keys": ["stock", "alerts", "indicators", "gold", "scrapcost", "demand", "profit", "market"] },
+                model: [{ "name": "الذهب", "keys": ["stock", "alerts", "stockweights", "indicators", "gold", "scrapcost", "demand", "profit", "market"] },
                         { "name": "النقدية", "keys": ["treasury", "cashflow", "makingprofit", "deadcash"] },
                         { "name": "عام", "keys": [] }]
                 delegate: RowLayout {
@@ -357,7 +357,7 @@ Item {
                     required property int index
                     readonly property var members: reportsVM.reports.filter(function(r) {
                         if (groupRow.index < 2) return groupRow.modelData.keys.indexOf(r.key) >= 0
-                        return groupRow.modelData.keys.length === 0 && ["stock", "alerts", "indicators", "gold", "scrapcost", "demand", "profit", "market", "treasury", "cashflow", "makingprofit", "deadcash"].indexOf(r.key) < 0
+                        return groupRow.modelData.keys.length === 0 && ["stock", "alerts", "stockweights", "indicators", "gold", "scrapcost", "demand", "profit", "market", "treasury", "cashflow", "makingprofit", "deadcash"].indexOf(r.key) < 0
                     })
                     visible: members.length > 0
                     Layout.fillWidth: true
@@ -584,7 +584,7 @@ Item {
                     objectName: "reportBars_" + modelData.key
                     Layout.fillWidth: true
                     spacing: 4
-                    Txt { Layout.fillWidth: true; text: barGroup.modelData.title; color: barGroup.modelData.tone === "payable" ? theme.priceSell : theme.priceBuy; font.bold: true
+                    Txt { Layout.fillWidth: true; text: barGroup.modelData.title; color: barGroup.modelData.karat > 0 ? page.karatColor(barGroup.modelData.karat) : barGroup.modelData.tone === "payable" ? theme.priceSell : theme.priceBuy; font.bold: true
                           font.pixelSize: theme.fontSection }
                     Txt { Layout.fillWidth: true; visible: barGroup.modelData.rows.length === 0; text: "لا توجد حركات في هذه الفترة."; color: theme.textMuted }
                     Repeater {
@@ -601,9 +601,9 @@ Item {
                                 Rectangle {
                                     anchors.right: parent.right
                                     height: parent.height
-                                    width: Math.max(3, parent.width * parent.parent.modelData.ratio)
+                                    width: Math.max(parent.parent.modelData.ratio > 0 ? 3 : 0, parent.width * parent.parent.modelData.ratio)
                                     radius: 3
-                                    color: barGroup.modelData.tone === "payable" ? theme.priceSell : theme.priceBuy
+                                    color: barGroup.modelData.karat > 0 ? page.karatColor(barGroup.modelData.karat) : barGroup.modelData.tone === "payable" ? theme.priceSell : theme.priceBuy
                                 }
                             }
                             Txt { Layout.preferredWidth: 110; text: parent.modelData.text; font.bold: true; horizontalAlignment: Text.AlignLeft }

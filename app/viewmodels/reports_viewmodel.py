@@ -26,6 +26,7 @@ FILTER_SPECS = {
               {"key": "classification", "label": "التصنيف", "options": [("", "الكل"), ("NEW_STOCK", "جديد"), ("OLD_STOCK", "قديم")]},
               {"key": "karat", "label": "العيار", "options": [("", "الكل"), ("18", "18"), ("21", "21"), ("22", "22"), ("24", "24")]}],
     "indicators": [],
+    "stockweights": [{"key": "karat", "label": "العيار", "options": [("", "الكل"), ("18", "18"), ("21", "21"), ("22", "22"), ("24", "24")]}],
     "alerts": [{"key": "karat", "label": "العيار", "options": [("", "الكل"), ("18", "18"), ("21", "21"), ("22", "22"), ("24", "24")]}],
     "gold": [{"key": "karat", "label": "العيار", "options": [("", "الكل"), ("18", "18"), ("21", "21"), ("22", "22"), ("24", "24")]},
              {"key": "factory", "label": "المصنع", "options": [("", "الكل")], "dynamic": True},
@@ -74,7 +75,7 @@ def month_period(today):
 
 
 HIDDEN_ON_SCREEN = {("sales", "documents"), ("stock", "items"), ("stock", "summary"), ("suppliers", "movements"), ("treasury", "movements"), ("market", "summary")}
-NO_PERIOD = {"stock", "alerts", "indicators", "demand", "customers", "deadcash", "suppliers"}                      # reports of the CURRENT state: the period fields are not offered
+NO_PERIOD = {"stock", "alerts", "stockweights", "indicators", "demand", "customers", "deadcash", "suppliers"}                      # reports of the CURRENT state: the period fields are not offered
 
 
 def grams_text(value):
@@ -91,8 +92,9 @@ def _bars(groups):
     out = []
     for g in groups or []:
         top = max((r["value"] for r in g["rows"]), default=0)
-        out.append({"key": g["key"], "title": g["title"], "tone": g.get("tone", ""),
-                    "rows": [{"label": r["label"], "text": _cell("money", r["value"]), "ratio": float(r["value"] / top) if top else 0.0} for r in g["rows"]]})
+        counts = g.get("kind") == "count"
+        out.append({"key": g["key"], "title": g["title"], "tone": g.get("tone", ""), "karat": int(g.get("karat") or 0),
+                    "rows": [{"label": r["label"], "text": f"{int(r['value'])} قطعة" if counts else _cell("money", r["value"]), "ratio": float(r["value"] / top) if top else 0.0} for r in g["rows"]]})
     return out
 
 

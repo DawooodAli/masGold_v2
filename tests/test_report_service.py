@@ -806,7 +806,7 @@ class SafetyTests(Case):
             service.run("sales", {})
 
     def test_available_reports_follow_the_rights(self):
-        self.assertEqual([r["key"] for r in self.service.available_reports()], ["sales", "stock", "alerts", "indicators", "gold", "employees", "makingprofit", "scrapcost", "demand", "customers", "deadcash", "suppliers", "treasury", "cashflow", "market"])
+        self.assertEqual([r["key"] for r in self.service.available_reports()], ["sales", "stock", "alerts", "stockweights", "indicators", "gold", "employees", "makingprofit", "scrapcost", "demand", "customers", "deadcash", "suppliers", "treasury", "cashflow", "market"])
         self.session = session_for({"APP_LOGIN", "REPORTS_VIEW", "CUSTOMERS_VIEW"})
         limited = ReportService(self.session, repository=FakeRepo, authorization=FakeAuthorization(self.session))
         self.assertEqual([r["key"] for r in limited.available_reports()], ["indicators", "customers", "deadcash"])
@@ -814,6 +814,75 @@ class SafetyTests(Case):
     def test_the_reads_are_one_snapshot_per_report(self):
         self.service.run("sales", {})
         self.assertEqual(self.opened, 1)
+
+
+class StockWeightTests(Case):
+    def service_with(self, pieces):
+        def row(weight, size, kind, karat=21):
+            return {"item_id": 1, "weight_grams": D(weight), "size": size, "karat_value": karat, "item_type": kind, "category": "B", "factory": "مصنع", "inventory_status": "IN_STOCK"}
+
+        class Repo(FakeRepo):
+            def stock_items(self, statuses):
+                return [row(*p) for p in pieces]
+        return ReportService(self.session, transaction_factory=self.service._transaction, repository=Repo, authorization=self.authorization, today=lambda: TODAY)
+
+    def test_two_gram_bands_run_up_to_the_heaviest_piece_and_stop(self):
+        result = self.service_with([("1.50", "", "سلسلة"), ("2.00", "", "سلسلة"), ("5.10", "", "سلسلة")]).run("stockweights", {})
+        table = result["tables"][0]
+        self.assertEqual([(r["band"], r["count"]) for r in table["rows"]], [("0 – 2 جرام", 1), ("2 – 4 جرام", 1), ("4 – 6 جرام", 1), ("الإجمالي", 3)])   # 2.00 is inside 2 - 4; nothing after 4 - 6
+        self.assertEqual(table["rows"][-1]["weight"], D("8.600"))
+        bars = result["bars"]
+        self.assertEqual([(r["label"], r["value"]) for r in bars[0]["rows"]], [("0 – 2 جرام", 1), ("2 – 4 جرام", 1), ("4 – 6 جرام", 1)])
+        self.assertEqual((bars[0]["karat"], bars[0]["kind"]), (21, "count"))
+
+    def test_a_type_with_sizes_is_counted_by_weight_and_size_and_karats_stay_apart(self):
+        pieces = [("2.50", "57", "خاتم"), ("2.60", "57", "خاتم"), ("3.90", "58", "خاتم"), ("2.70", "", "خاتم"), ("2.00", "", "خاتم", 18)]
+        result = self.service_with(pieces).run("stockweights", {})
+        sized = next(t for t in result["tables"] if t["title"].startswith("خاتم — عيار 21"))
+        self.assertIn("بالوزن والمقاس", sized["title"])
+        self.assertEqual([c["key"] for c in sized["columns"]], ["band", "s_57", "s_58", "s_بدون مقاس", "count", "weight", "alert"])
+        row = next(r for r in sized["rows"] if r["band"] == "2 – 4 جرام")
+        self.assertEqual((row["s_57"], row["s_58"], row["s_بدون مقاس"], row["count"]), (2, 1, 1, 4))
+        by_size = next(b for b in result["bars"] if b["key"].startswith("size_21"))
+        self.assertEqual([(r["label"], r["value"]) for r in by_size["rows"]], [("مقاس 57", 2), ("مقاس 58", 1), ("بدون مقاس", 1)])
+        self.assertEqual({c["karat"] for c in result["totals"] if c["karat"]}, {21, 18})
+        self.assertTrue(all(t["karat"] in (21, 18) for t in result["tables"]))
+
+
+class MissingWeightTests(Case):
+    def run_report(self, stock, sales, permissions=None):
+        def piece(weight, size="", kind="خاتم", karat=21):
+            return {"item_id": 1, "weight_grams": D(weight), "size": size, "karat_value": karat, "item_type": kind, "category": "B", "factory": "م", "inventory_status": "IN_STOCK"}
+
+        class Repo(FakeRepo):
+            def stock_items(self, statuses):
+                return [piece(*p) for p in stock]
+
+            def gold_sold_pieces(self, start, end):
+                return [dict(piece(*p), reversal_id=None, doc_date=at(5)) for p in sales]
+        service = ReportService(self.session, transaction_factory=self.service._transaction, repository=Repo, authorization=self.authorization, today=lambda: TODAY)
+        return service.run("stockweights", {})
+
+    def test_a_band_and_size_that_sell_but_are_out_or_nearly_out_is_warned(self):
+        sales = [("2.5", "57")] * 3 + [("5.0", "58")] * 4 + [("2.2", "59")]                  # 57 x3 and 58 x4 reach the 3-sales rule; 59 sold once does not
+        stock = [("2.4", "57")] * 1 + [("5.2", "58")] * 30 + [("9.0", "60")]               # 57: 1 piece covers 30 days (> 14) -> fine; 58: plenty; 5.0-6 / 57 has none
+        result = self.run_report(stock + [("2.1", "57")] * 2, sales + [("4.5", "57")] * 3)
+        rows = next(t for t in result["tables"] if t["key"] == "missing_21")["rows"]
+        self.assertEqual([(r["band"], r["size"], r["stock"], r["cover"]) for r in rows], [("4 – 6 جرام", "57", 0, "نفد")])                    # only the band that sold and has NO stock
+        main = next(t for t in result["tables"] if t["title"].startswith("خاتم — عيار 21"))
+        flagged = [r["band"] for r in main["rows"] if r["alert"]]
+        self.assertEqual(flagged, ["4 – 6 جرام"])
+        self.assertEqual(next(c for c in result["totals"] if c["label"] == "أوزان قد تكون ناقصة")["value"], 1)
+
+    def test_without_the_invoice_right_the_warning_is_unavailable_not_empty(self):
+        class NoInvoices(Case):
+            permissions = frozenset({"APP_LOGIN", "REPORTS_VIEW", "INVENTORY_VIEW"})
+        case = NoInvoices()
+        case.setUp()
+        result = case.service.run("stockweights", {})
+        missing = next(t for t in result["tables"] if t["key"] == "missing")
+        self.assertFalse(missing.get("available", True))
+        self.assertTrue(all(c["key"] != "alert" for t in result["tables"] for c in t["columns"]))
 
 
 class IndicatorTests(Case):
