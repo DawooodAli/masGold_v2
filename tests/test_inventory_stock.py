@@ -118,6 +118,21 @@ class Repo:
         self.store.movements.append({"kind": "SCRAPPED", "reason": reason})
         return 501
 
+    def barcode_taken(self, value):
+        return value in {"USED1"} | {p.get("barcode_value") for p in self.store.pieces}
+
+    def replace_active_barcode(self, item_id, new_value, user_id, reason):
+        next(p for p in self.store.pieces if p["inventory_item_id"] == item_id)["barcode_value"] = new_value
+
+    def mark_item_removed(self, item_id, user_id):
+        piece = next(p for p in self.store.pieces if p["inventory_item_id"] == item_id)
+        piece["inventory_status"] = "REMOVED"
+        return 1
+
+    def add_removed_movement(self, *, item, reason, user_id):
+        self.store.movements.append({"kind": "STOCKTAKE_WRITE_OFF", "reason": reason})
+        return 502
+
     def add_scrap_in_from_stock(self, *, item, notes, user_id):
         self.store.__dict__.setdefault("scrap_in", []).append((item["karat_id"], item["weight_grams"], notes))
         return 601
@@ -253,6 +268,38 @@ class ManualEntryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             service.convert_item_to_scrap(7, "تاني")                                            # no longer in stock: never twice
         self.assertEqual(len(store.scrap_in), 1)
+
+    def test_the_barcode_of_a_piece_in_stock_can_change_to_an_unused_value_only(self):
+        piece = dict(MIXED[0], inventory_item_id=7, inventory_status="IN_STOCK", barcode_value="OLD1")
+        sold = dict(MIXED[0], inventory_item_id=8, inventory_status="SOLD", barcode_value="S1")
+        store = Store([piece, sold])
+        service = service_for(store)
+        for bad in (("", "x"), ("NEW1", " "), ("USED1", "x"), ("OLD1", "x")):
+            with self.assertRaises(ValueError):
+                service.change_barcode(7, *bad)
+        with self.assertRaises(ValueError):
+            service.change_barcode(8, "NEW2", "x")                                              # a sold piece keeps its barcode
+        service.change_barcode(7, "NEW1", "الملصق تالف")
+        self.assertEqual((piece["barcode_value"], store.audits[0]["metadata"]["old_barcode"]), ("NEW1", "OLD1"))
+        with self.assertRaises(PermissionError):
+            service_for(store, session_for(frozenset({"APP_LOGIN"}))).change_barcode(7, "NEW3", "x")
+
+    def test_removing_pieces_is_all_or_none_with_a_reason_and_one_audit_each(self):
+        pieces = [dict(MIXED[0], inventory_item_id=7, inventory_status="IN_STOCK"), dict(MIXED[0], inventory_item_id=8, inventory_status="IN_STOCK"),
+                  dict(MIXED[0], inventory_item_id=9, inventory_status="SOLD")]
+        store = Store(pieces)
+        service = service_for(store)
+        with self.assertRaises(ValueError):
+            service.remove_items([7, 8], "  ")                                                   # the reason is mandatory
+        with self.assertRaises(ValueError):
+            service.remove_items([], "x")
+        service.remove_items([7, 8], "أُدخلت بالخطأ")
+        self.assertEqual([p["inventory_status"] for p in pieces], ["REMOVED", "REMOVED", "SOLD"])
+        self.assertEqual([a["event_type"] for a in store.audits], ["INVENTORY_ITEM_REMOVED"] * 2)
+        with self.assertRaises(ValueError):
+            service.remove_items([9], "مباعة")                                                   # a sold piece is never removed
+        with self.assertRaises(PermissionError):
+            service_for(store, session_for(frozenset({"APP_LOGIN"}))).remove_items([7], "x")
 
     def test_converting_to_scrap_needs_both_the_stock_and_the_scrap_rights(self):
         store = Store([dict(MIXED[0], inventory_item_id=7, inventory_status="IN_STOCK")])

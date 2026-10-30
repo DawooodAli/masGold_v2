@@ -484,6 +484,64 @@ class InventoryService:
                           "inventory_movement_id": movement_id, "old_gold_movement_id": scrap_id})
         return {"inventory_item_id": item_id, "old_gold_movement_id": scrap_id}
 
+    def change_barcode(self, item_id, new_barcode, reason):
+        """تعديل باركود قطعة بالمخزون (owner 2026-10-30): only a piece still IN_STOCK; the old barcode stays as history (REPLACED), the new value must never have been used, mandatory reason,
+        audited with the old and the new value. INVENTORY_MANAGE rechecked here."""
+        session_actor = self._require_actor()
+        item_id = self._required_id(item_id, "Item is required.")
+        new_barcode = self._clean_optional_text(new_barcode, 100, "الباركود طويل جدًا.")
+        if not new_barcode:
+            raise ValueError("اكتب الباركود الجديد.")
+        reason = self._clean_optional_text(reason, 500, "Reason is too long.")
+        if not reason:
+            raise ValueError("اكتب سبب تعديل الباركود.")
+        with self._transaction() as transaction:
+            connection = transaction.connection
+            user_id = int(self._authorize_write(connection, session_actor).user_id)
+            repository = self._repository(connection)
+            item = repository.lock_item_for_scrap(item_id)
+            if item is None:
+                raise ValueError("القطعة غير موجودة.")
+            if item["inventory_status"] != "IN_STOCK":
+                raise ValueError("يمكن تعديل باركود قطعة بالمخزون فقط.")
+            if item.get("barcode_value") == new_barcode:
+                raise ValueError("الباركود الجديد هو نفسه الحالي.")
+            if repository.barcode_taken(new_barcode):
+                raise ValueError("هذا الباركود مستخدم من قبل ولا يمكن إعادة استخدامه.")
+            repository.replace_active_barcode(item_id, new_barcode, user_id, f"تعديل الباركود — {reason}")
+            repository.audit_item_correction(
+                user_id=user_id, item_id=item_id, description=f"تعديل باركود القطعة #{item_id}", event_type="INVENTORY_BARCODE_CHANGED",
+                metadata={"reason": reason, "old_barcode": item.get("barcode_value"), "new_barcode": new_barcode})
+        return {"inventory_item_id": item_id}
+
+    def remove_items(self, item_ids, reason):
+        """حذف قطع من المخزون (owner 2026-10-30): pieces still IN_STOCK leave the stock (status REMOVED, a STOCKTAKE_WRITE_OFF movement) in ONE transaction, all or none, with a mandatory
+        reason and one audit row per piece. INVENTORY_MANAGE rechecked here. Nothing is physically deleted: history stays and «إعادة القطعة للمخزون» can bring a piece back."""
+        session_actor = self._require_actor()
+        ids = sorted({self._required_id(i, "Item is required.") for i in (item_ids or [])})
+        if not ids:
+            raise ValueError("حدّد قطعة واحدة على الأقل.")
+        reason = self._clean_optional_text(reason, 500, "Reason is too long.")
+        if not reason:
+            raise ValueError("اكتب سبب الحذف.")
+        with self._transaction() as transaction:
+            connection = transaction.connection
+            user_id = int(self._authorize_write(connection, session_actor).user_id)
+            repository = self._repository(connection)
+            for item_id in ids:                                           # ascending ids: a fixed lock order
+                item = repository.lock_item_for_scrap(item_id)
+                if item is None:
+                    raise ValueError("القطعة غير موجودة.")
+                if item["inventory_status"] != "IN_STOCK":
+                    raise ValueError(f"القطعة #{item_id} ليست بالمخزون (مباعة أو مستبعدة)، لا يمكن حذفها.")
+                if repository.mark_item_removed(item_id, user_id) != 1:
+                    raise ValueError(f"القطعة #{item_id} لم تعد بالمخزون.")
+                movement_id = repository.add_removed_movement(item=item, reason=f"حذف من المخزون — {reason}", user_id=user_id)
+                repository.audit_item_correction(
+                    user_id=user_id, item_id=item_id, description=f"حذف القطعة #{item_id} من المخزون", event_type="INVENTORY_ITEM_REMOVED",
+                    metadata={"reason": reason, "weight_grams": str(item["weight_grams"]), "barcode": item.get("barcode_value"), "inventory_movement_id": movement_id})
+        return {"removed": len(ids)}
+
     def _automatic_barcode(self, connection):
         """The next canonical NNYYMMDD barcode (the day's sequence row is locked until the caller's transaction ends)."""
         from datetime import date

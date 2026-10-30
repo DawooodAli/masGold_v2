@@ -465,6 +465,40 @@ class InventoryViewModel(QObject):
             self.actionChanged.emit()
             return False
 
+    @Slot(int, str, str, result=bool)
+    def changeInventoryBarcode(self, item_id, new_barcode, reason):
+        """تعديل باركود قطعة بالمخزون (the service authorizes, refuses a used value, requires the reason and audits)."""
+        try:
+            self._service.change_barcode(item_id, new_barcode, reason)
+            self._action_message = "تم تعديل الباركود."
+            self._action_success = True
+            self.refresh()
+            self.actionChanged.emit()
+            return True
+        except Exception as exc:
+            self._action_message = (str(exc) if isinstance(exc, (ValueError, PermissionError)) and any("\u0600" <= ch <= "\u06ff" for ch in str(exc))
+                                    else "تعذر تعديل الباركود؛ حدّث البيانات وأعد المحاولة.")
+            self._action_success = False
+            self.actionChanged.emit()
+            return False
+
+    @Slot("QVariantList", str, result=bool)
+    def removeInventoryItems(self, item_ids, reason):
+        """حذف القطع المحددة من المخزون (the service authorizes, requires the reason, all or none)."""
+        try:
+            done = self._service.remove_items([int(i) for i in item_ids], reason)
+            self._action_message = f"تم حذف {done['removed']} قطعة من المخزون."
+            self._action_success = True
+            self.refresh()
+            self.actionChanged.emit()
+            return True
+        except Exception as exc:
+            self._action_message = (str(exc) if isinstance(exc, (ValueError, PermissionError)) and any("؀" <= ch <= "ۿ" for ch in str(exc))
+                                    else "تعذر حذف القطع؛ حدّث البيانات وأعد المحاولة.")
+            self._action_success = False
+            self.actionChanged.emit()
+            return False
+
     @Slot(int, int, int, str, str, int, result=bool)
     def correctInventoryItem(self, item_id, item_type_id, karat_id, reason, weight, category_id=0):
         """تعديل صنف وعيار ووزن قطعة بالمخزون (the service authorizes, requires the reason and audits)."""

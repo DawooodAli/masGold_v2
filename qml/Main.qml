@@ -2499,6 +2499,16 @@ ApplicationWindow {
                                         inventoryPage.clearSelection()
                                 }
 
+                                Button {
+                                    objectName: "inventoryRemoveSelectedButton"
+                                    text: "🗑  حذف المحدد"
+                                    font.family: "Cairo"
+                                    font.bold: true
+                                    // Convenience only: the service re-checks INVENTORY_MANAGE.
+                                    enabled: inventoryPage.selectedItemIds.length > 0 && !inventoryVM.busy
+                                    onClicked: inventoryRemoveDialog.begin(inventoryPage.selectedItemIds)
+                                }
+
 
                                 Item {
                                     Layout.fillWidth: true
@@ -2761,6 +2771,19 @@ ApplicationWindow {
 
                             clip: true
                             spacing: 8
+
+                            // Owner 2026-10-30: the default wheel scrolling was jumpy. A fixed step (about 3 rows per notch, proportional on a touchpad, no kinetic drift), stops at both ends, and a visible bar.
+                            boundsBehavior: Flickable.StopAtBounds
+                            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                            WheelHandler {
+                                objectName: "inventoryListWheel"
+                                acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                                onWheel: function(event) {
+                                    var step = -event.angleDelta.y * 1.25
+                                    var maxY = Math.max(0, inventoryList.contentHeight - inventoryList.height)
+                                    inventoryList.contentY = Math.max(0, Math.min(maxY, inventoryList.contentY + step))
+                                }
+                            }
 
                             model:
                                 inventoryPage.filteredItems()
@@ -10786,13 +10809,13 @@ ApplicationWindow {
         width:
             Math.min(
                 root.width - 60,
-                720
+                820
             )
 
         height:
             Math.min(
-                root.height - 60,
-                680
+                root.height - 40,
+                820
             )
 
         x:
@@ -11119,6 +11142,60 @@ ApplicationWindow {
                     // No responsible / receiving employee: manual entry and the old-gold conversion
                     // record the authenticated actor (owner decisions 2026-10-01 / 2026-10-02).
 
+
+                    // Entry method first (owner 2026-10-30): it is the first choice the employee makes.
+                    ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 5
+
+
+                            Label {
+                                Layout.fillWidth: true
+
+                                text: "طريقة الإدخال *"
+
+                                color: theme.textSecondary
+
+                                font.family: "Cairo"
+                                font.pixelSize: 12
+
+                                horizontalAlignment:
+                                    Text.AlignRight
+                            }
+
+
+                            ComboBox {
+                                id: stockClassificationCombo
+                                objectName: "inventoryEntryMethodCombo"
+
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 44
+
+                                model: newInventoryItemDialog.supplierIntake && newInventoryItemDialog.supplierIntake.canIntake
+                                       ? ["إدخال يدوي — بضاعة جديدة", "محولة من الكسر", "من مجموعة مورد"]
+                                       : ["إدخال يدوي — بضاعة جديدة", "محولة من الكسر"]
+
+                                currentIndex: 0
+
+
+                                onActivated: {
+
+                                    inventoryEntryError.text = ""
+
+                                    if (currentIndex === 2) {
+                                        newInventoryItemDialog.supplierIntake.loadIntakeGroups()
+                                        newInventoryItemDialog.applyGroup()
+                                    }
+
+                                    if (currentIndex === 1) {
+                                        oldGoldConversionVM
+                                        .refreshBalances()
+                                    } else {
+                                        oldGoldConsumedWeightField.text = ""
+                                    }
+                                }
+                            }
+                        }
 
                     // ------------------------------------------------
                     // SUPPLIER GROUP — only for "من مجموعة مورد"
@@ -11579,58 +11656,6 @@ ApplicationWindow {
                         spacing: 12
 
 
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 5
-
-
-                            Label {
-                                Layout.fillWidth: true
-
-                                text: "طريقة الإدخال *"
-
-                                color: theme.textSecondary
-
-                                font.family: "Cairo"
-                                font.pixelSize: 12
-
-                                horizontalAlignment:
-                                    Text.AlignRight
-                            }
-
-
-                            ComboBox {
-                                id: stockClassificationCombo
-                                objectName: "inventoryEntryMethodCombo"
-
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 44
-
-                                model: newInventoryItemDialog.supplierIntake && newInventoryItemDialog.supplierIntake.canIntake
-                                       ? ["إدخال يدوي — بضاعة جديدة", "محولة من الكسر", "من مجموعة مورد"]
-                                       : ["إدخال يدوي — بضاعة جديدة", "محولة من الكسر"]
-
-                                currentIndex: 0
-
-
-                                onActivated: {
-
-                                    inventoryEntryError.text = ""
-
-                                    if (currentIndex === 2) {
-                                        newInventoryItemDialog.supplierIntake.loadIntakeGroups()
-                                        newInventoryItemDialog.applyGroup()
-                                    }
-
-                                    if (currentIndex === 1) {
-                                        oldGoldConversionVM
-                                        .refreshBalances()
-                                    } else {
-                                        oldGoldConsumedWeightField.text = ""
-                                    }
-                                }
-                            }
-                        }
 
 
                         ColumnLayout {
@@ -12756,6 +12781,14 @@ ApplicationWindow {
                     }
 
                     Button {
+                        objectName: "inventoryItemBarcodeOpen"
+                        text: "تعديل الباركود"
+                        visible: inventoryVM.canManage
+                                 && root.selectedInventoryItem.inventory_status === "IN_STOCK"
+                        onClicked: inventoryBarcodeDialog.begin()
+                    }
+
+                    Button {
                         objectName: "inventoryItemCorrectOpen"
                         text: "تعديل الصنف والعيار"
                         visible: inventoryVM.canManage
@@ -13035,6 +13068,153 @@ ApplicationWindow {
                     }
                 }
                 Button { text: "إلغاء"; onClicked: inventoryItemScrapDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    Popup {
+        id: inventoryBarcodeDialog
+        objectName: "inventoryBarcodeDialog"
+        modal: true
+        dim: true
+        padding: 16
+        width: Math.min(root.width - 60, 460)
+        x: Math.round((root.width - width) / 2)
+        y: Math.round((root.height - height) / 2)
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgPrimary; radius: 10; border.color: theme.goldDark }
+
+        function begin() {
+            newBarcodeField.text = ""
+            barcodeReasonField.text = ""
+            inventoryVM.clearActionMessage()
+            open()
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 10
+            Label {
+                Layout.fillWidth: true
+                text: "تعديل باركود القطعة #" + root.selectedInventoryItem.inventory_item_id
+                color: theme.gold; font.bold: true; font.pixelSize: 15; font.family: "Cairo"
+                horizontalAlignment: Text.AlignRight
+            }
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap; font.family: "Cairo"
+                color: theme.textPrimary; horizontalAlignment: Text.AlignRight
+                text: "الباركود الحالي: " + (root.selectedInventoryItem.barcode_value || "—") + ". يبقى القديم في السجل ولا يمكن إعادة استخدامه لقطعة أخرى."
+            }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                Label { text: "الباركود الجديد"; color: theme.textPrimary; font.family: "Cairo"; Layout.preferredWidth: 100; horizontalAlignment: Text.AlignRight }
+                TextField {
+                    id: newBarcodeField; objectName: "inventoryNewBarcode"
+                    Layout.fillWidth: true; Layout.preferredHeight: 40
+                    font.family: "Cairo"; color: theme.textPrimary; horizontalAlignment: TextInput.AlignRight
+                    background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.border }
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                Label { text: "السبب"; color: theme.textPrimary; font.family: "Cairo"; Layout.preferredWidth: 100; horizontalAlignment: Text.AlignRight }
+                TextField {
+                    id: barcodeReasonField; objectName: "inventoryBarcodeReason"
+                    Layout.fillWidth: true; Layout.preferredHeight: 40
+                    placeholderText: "مثلاً: الملصق تالف"
+                    font.family: "Cairo"; color: theme.textPrimary; horizontalAlignment: TextInput.AlignRight
+                    background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.border }
+                }
+            }
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap; font.family: "Cairo"
+                visible: text.length > 0 && !inventoryVM.actionSuccess
+                text: inventoryVM.actionMessage
+                color: theme.red; horizontalAlignment: Text.AlignRight
+            }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                Button {
+                    objectName: "inventoryBarcodeSave"
+                    text: "حفظ الباركود"
+                    enabled: newBarcodeField.text.trim().length > 0 && barcodeReasonField.text.trim().length > 0
+                    onClicked: {
+                        if (inventoryVM.changeInventoryBarcode(Number(root.selectedInventoryItem.inventory_item_id), newBarcodeField.text, barcodeReasonField.text)) {
+                            inventoryBarcodeDialog.close()
+                            inventoryItemDetailsDialog.close()
+                        }
+                    }
+                }
+                Button { text: "إلغاء"; onClicked: inventoryBarcodeDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    Popup {
+        id: inventoryRemoveDialog
+        objectName: "inventoryRemoveDialog"
+        property var ids: []
+        modal: true
+        dim: true
+        padding: 16
+        width: Math.min(root.width - 60, 460)
+        x: Math.round((root.width - width) / 2)
+        y: Math.round((root.height - height) / 2)
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgPrimary; radius: 10; border.color: theme.goldDark }
+
+        function begin(selected) {
+            ids = selected.slice()
+            removeReason.text = ""
+            inventoryVM.clearActionMessage()
+            open()
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 10
+            Label {
+                Layout.fillWidth: true
+                text: "حذف " + inventoryRemoveDialog.ids.length + " قطعة من المخزون"
+                color: theme.gold; font.bold: true; font.pixelSize: 15; font.family: "Cairo"
+                horizontalAlignment: Text.AlignRight
+            }
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap; font.family: "Cairo"
+                color: theme.textPrimary; horizontalAlignment: Text.AlignRight
+                text: "القطع المحددة تخرج من المخزون ولا تظهر في البحث أو الجرد. السجل يبقى محفوظاً ويمكن إعادة القطعة للمخزون من تفاصيلها. القطع المباعة لا تُحذف."
+            }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                Label { text: "السبب"; color: theme.textPrimary; font.family: "Cairo"; Layout.preferredWidth: 70; horizontalAlignment: Text.AlignRight }
+                TextField {
+                    id: removeReason; objectName: "inventoryRemoveReason"
+                    Layout.fillWidth: true; Layout.preferredHeight: 40
+                    placeholderText: "مثلاً: أُدخلت بالخطأ"
+                    font.family: "Cairo"; color: theme.textPrimary; horizontalAlignment: TextInput.AlignRight
+                    background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.border }
+                }
+            }
+            Label {
+                Layout.fillWidth: true; wrapMode: Text.Wrap; font.family: "Cairo"
+                visible: text.length > 0 && !inventoryVM.actionSuccess
+                text: inventoryVM.actionMessage
+                color: theme.red; horizontalAlignment: Text.AlignRight
+            }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                Button {
+                    objectName: "inventoryRemoveConfirm"
+                    text: "تأكيد الحذف"
+                    enabled: removeReason.text.trim().length > 0
+                    onClicked: {
+                        if (inventoryVM.removeInventoryItems(inventoryRemoveDialog.ids, removeReason.text)) {
+                            inventoryPage.clearSelection()
+                            inventoryRemoveDialog.close()
+                        }
+                    }
+                }
+                Button { text: "إلغاء"; onClicked: inventoryRemoveDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }

@@ -415,6 +415,44 @@ class InventoryRepository(BaseRepository):
         finally:
             cursor.close()
 
+    def barcode_taken(self, barcode_value):
+        """A barcode value is never reused, not even one retired from another piece."""
+        return self._fetch_one("SELECT 1 AS x FROM inventory_barcodes WHERE barcode_value = %s LIMIT 1", (str(barcode_value),)) is not None
+
+    def replace_active_barcode(self, item_id, new_value, user_id, reason):
+        """The active barcode becomes REPLACED (kept as history) and the new value becomes the ONE active barcode."""
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute("UPDATE inventory_barcodes SET barcode_status = 'REPLACED', retired_at = NOW() WHERE inventory_item_id = %s AND barcode_status = 'ACTIVE'", (int(item_id),))
+            cursor.execute("INSERT INTO inventory_barcodes (inventory_item_id, barcode_value, barcode_status, assigned_by_user_id, reason) VALUES (%s, %s, 'ACTIVE', %s, %s)",
+                           (int(item_id), str(new_value), user_id, reason))
+            return cursor.lastrowid
+        finally:
+            cursor.close()
+
+    def mark_item_removed(self, item_id, user_id):
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(f"UPDATE inventory_items ii SET ii.inventory_status = 'REMOVED', ii.updated_by_user_id = %s WHERE ii.id = %s AND {CURRENT_STOCK}", (user_id, int(item_id)))
+            return cursor.rowcount
+        finally:
+            cursor.close()
+
+    def add_removed_movement(self, *, item, reason, user_id):
+        """The same STOCKTAKE_WRITE_OFF movement an approved stocktake posts, so «إعادة القطعة للمخزون» can undo a mistaken removal."""
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(
+                "INSERT INTO inventory_movements (inventory_item_id, movement_type_id, from_stock_classification, to_stock_classification, from_inventory_status, to_inventory_status, "
+                "from_weight_grams, to_weight_grams, reason, reference_type, reference_id, occurred_at, performed_by_user_id, performed_by_employee_id) "
+                "SELECT %s, t.id, %s, %s, 'IN_STOCK', 'REMOVED', %s, %s, %s, 'INVENTORY_CONVERSION', %s, NOW(), %s, NULL FROM inventory_movement_types t WHERE t.code = 'STOCKTAKE_WRITE_OFF' AND t.is_active = TRUE",
+                (int(item["id"]), item["stock_classification"], item["stock_classification"], item["weight_grams"], item["weight_grams"], reason, int(item["id"]), user_id))
+            if cursor.rowcount != 1:
+                raise RuntimeError("inventory movement type STOCKTAKE_WRITE_OFF is missing")
+            return cursor.lastrowid
+        finally:
+            cursor.close()
+
     def add_scrapped_movement(self, *, item, reason, user_id):
         cursor = self.connection.cursor()
         try:
