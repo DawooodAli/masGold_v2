@@ -226,7 +226,7 @@ class GoldSaleUiTests(base.MarketTripHeatPageTests):
             with self.subTest(kind=kind):
                 QMetaObject.invokeMethod(suppliers, "tradeRequested", Qt.DirectConnection, Q_ARG(str, kind), Q_ARG(str, "10"))
                 self.wait_until(lambda: self.item(dialog).property("opened"), f"{dialog} opened")
-                self.assertEqual(self.root.property("currentPage"), 15)                           # the custody page
+                self.assertEqual(self.root.property("currentPage"), 14)                           # stays on the suppliers page
                 combo = self.item("custodyGoldSaleBuyerCombo" if kind == "SELL" else "custodyGoldBuyVendorCombo")
                 self.wait_until(lambda: combo.property("currentIndex") > 0, "the supplier is preselected")
                 self.assertIn(self.db.suppliers[10]["name"], combo.property("currentText"))

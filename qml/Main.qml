@@ -3310,7 +3310,7 @@ ApplicationWindow {
                         if (typeof marketTripVM !== "undefined") marketTripVM.selectTrip(tripId)
                     }
                     onTradeRequested: function(kind, supplierId) {
-                        root.currentPage = 15
+                        // the dialog is a popup on the overlay: it opens right here, the supplier stays on his own page
                         marketTripsPageItem.openTrade(kind, supplierId)
                     }
                 }
