@@ -659,7 +659,8 @@ MANAGER_RIGHTS = frozenset(ALL | {"SUPPLIER_MAKING_PAY", "TRANSACTION_CORRECT"})
 CASHIER_RIGHTS = frozenset({"APP_LOGIN", "SUPPLIER_VIEW"})
 MAKING_TYPES = {1: ("PURCHASE_INVOICE", "Supplier Purchase Invoice Making"), 2: ("PAYMENT", "Supplier Making Payment"),
                 3: ("PAYMENT_REVERSAL", "Supplier Making Payment Reversal"),
-                4: ("PURCHASE_INVOICE_REVERSAL", "Supplier Purchase Invoice Making Reversal")}
+                4: ("PURCHASE_INVOICE_REVERSAL", "Supplier Purchase Invoice Making Reversal"),
+                5: ("RECEIPT", "Supplier Making Receipt"), 6: ("RECEIPT_REVERSAL", "Supplier Making Receipt Reversal")}
 GOLD_TYPES = {1: ("PURCHASE_INVOICE", "Supplier Purchase Invoice"), 2: ("PURCHASE_INVOICE_REVERSAL", "Supplier Purchase Invoice Reversal")}
 MAKING_TYPE_ID = {code: type_id for type_id, (code, _) in MAKING_TYPES.items()}
 
@@ -687,8 +688,9 @@ class PaymentRepo(PurchaseRepo):
         return None if row is None else dict(row)
 
     def insert_header(self, *, supplier_id, method, cash_account_id, bank_account_id, amount, payment_date, reference,
-                      notes, before, after, key, digest, actor, now, marketer_party_id=None, self_payment_confirmed=False):
-        assert amount > 0 and after == before - amount                                  # chk_smp_amount / chk_smp_balance
+                      notes, before, after, key, digest, actor, now, marketer_party_id=None, self_payment_confirmed=False, direction="PAY"):
+        assert amount > 0 and after == (before + amount if direction == "RECEIVE" else before - amount)   # chk_smp_amount / chk_smp_balance (093)
+        assert direction == "PAY" or method in ("CASH", "BANK")                          # chk_smp_direction
         assert ((method == "CASH" and cash_account_id is not None and bank_account_id is None
                  and marketer_party_id is None and not self_payment_confirmed)
                 or (method == "BANK" and bank_account_id is not None and cash_account_id is None
@@ -701,20 +703,21 @@ class PaymentRepo(PurchaseRepo):
         self._fail("header")
         payment_id = self.db.next("payment")
         self.db.payments[payment_id] = {
-            "id": payment_id, "supplier_id": int(supplier_id), "payment_method": method, "cash_account_id": cash_account_id,
+            "id": payment_id, "supplier_id": int(supplier_id), "payment_method": method, "direction": direction, "cash_account_id": cash_account_id,
             "bank_account_id": bank_account_id, "marketer_party_id": marketer_party_id,
             "self_payment_confirmed": bool(self_payment_confirmed), "amount": amount, "payment_date": payment_date, "reference": reference,
             "notes": notes, "balance_before": before, "balance_after": after, "request_key": key, "request_hash": digest,
             "performed_by_user_id": actor.user_id, "performed_by_employee_id": actor.employee_id, "occurred_at": now}
         return payment_id
 
-    def post_money(self, *, ledger, account_id, payment_id, code, amount, description, notes, actor, now):
+    def post_money(self, *, ledger, account_id, payment_id, code, amount, description, notes, actor, now, receipt=False):
         self._fail("money")
         table = self.db.cash_moves if ledger == "CASH" else self.db.bank_moves
         movement_id = self.db.next("cash_move" if ledger == "CASH" else "bank_move")
-        table.append({"id": movement_id, "account_id": int(account_id), "amount_delta": -amount,
+        table.append({"id": movement_id, "account_id": int(account_id), "amount_delta": amount if receipt else -amount,
                       "reference_type": "SUPPLIER_MAKING_PAYMENT", "reference_id": str(payment_id),
-                      "reference_code": code, "type_code": "SUPPLIER_MAKING_PAYMENT", "description": description})
+                      "reference_code": code, "type_code": "SUPPLIER_MAKING_RECEIPT" if receipt else "SUPPLIER_MAKING_PAYMENT",
+                      "description": description})
         return movement_id
 
     def making_type_id(self, code):

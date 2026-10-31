@@ -86,13 +86,13 @@ def movement_side_text(delta):
 def making_row(r):
     """One making-ledger row for the view. A payment row names its method and account and, once reversed, the RV that
     reversed it; a reversal row names the payment it restores. The original payment row is never altered or hidden."""
-    is_payment = r.get("movement_code") == "PAYMENT" and bool(r.get("payment_id"))
+    is_payment = r.get("movement_code") in ("PAYMENT", "RECEIPT") and bool(r.get("payment_id"))
     reversed_by = r.get("reversed_by") if is_payment else None
     detail = f"{PAYMENT_METHOD_TEXT[r['payment_method']]} {r['payment_account'] or ''}".strip() if is_payment else ""
     if is_payment and reversed_by:
         state = f"معكوسة بالعملية {reversed_by}"
-    elif r.get("movement_code") == "PAYMENT_REVERSAL" and r.get("reverses_reference"):
-        state = f"عكس الدفعة {r['reverses_reference']}"
+    elif r.get("movement_code") in ("PAYMENT_REVERSAL", "RECEIPT_REVERSAL") and r.get("reverses_reference"):
+        state = f"عكس {'الاستلام' if r.get('movement_code') == 'RECEIPT_REVERSAL' else 'الدفعة'} {r['reverses_reference']}"
     elif r.get("invoice_reversed_by"):                                  # a purchase-invoice row once the invoice was reversed (052)
         state = f"معكوسة بالعملية {r['invoice_reversed_by']}"
     elif r.get("reverses_invoice"):                                     # the exact opposite entry a reversal posted
@@ -456,6 +456,49 @@ class SupplierViewModel(QObject):
             self._marketer.refresh_if_party(result["marketer_party_id"])
         self.refresh()
         self.paymentPosted.emit(result["code"])
+
+    @Slot(str, result="QVariantMap")
+    def previewReceipt(self, amount):
+        """The making position after RECEIVING `amount` from the supplier (exact; the figures come from supplier_rules)."""
+        context = self._pay_context
+        text = str(amount or "").strip()
+        empty = {"valid": False, "error": "", "afterText": "", "afterParts": {}, "afterTone": "settled", "note": ""}
+        if not context or not text:
+            return empty
+        try:
+            value = rules.parse_amount(text)
+        except rules.SupplierRuleError as exc:
+            return {**empty, "error": str(exc)}
+        after = rules.making_after_receipt(context["making"], value)
+        direction = rules.direction(after)
+        return {"valid": True, "error": "", "afterText": making_position_text(direction, after),
+                "afterParts": position_parts(direction, after, "making"), "afterTone": TONES[direction],
+                "note": ("المبلغ أكبر مما على المورد: يصبح رصيد المصنعيات «علينا للمورد»."
+                         if after > 0 and Decimal(str(context["making"])) <= 0 and Decimal(str(context["making"])) + value > 0 else "")}
+
+    @Slot(str, str, str, str, str, str, str, str)
+    def receiveMaking(self, supplier_id, method, account_id, amount, receipt_date, reference, notes, request_key):
+        if "receive" in self._busy:
+            return                                                     # a double click never submits twice
+        self._message = self._error = ""
+        service = self._payment_service()
+        self._start("receive", lambda _expected_actor: service.receive(
+            supplier_id, method, account_id, amount, receipt_date, reference, notes, request_key,
+            _expected_actor=_expected_actor))
+        self.changed.emit()
+
+    def _on_receive(self, result, error):
+        if error:
+            self._error = error                                        # the dialog stays open with every field kept
+            return
+        self._message = (f"استلام المصنعيات {result['code']} مسجل من قبل (لم يُسجل مرة ثانية)." if result.get("duplicate")
+                         else f"تم تسجيل استلام المصنعيات {result['code']}.")
+        self.refresh()
+        self.paymentPosted.emit(result["code"])
+
+    @Property(bool, notify=changed)
+    def receiving(self):
+        return "receive" in self._busy
 
     @Slot(str, str)
     def reversePayment(self, payment_id, reason):
@@ -1200,6 +1243,7 @@ class SupplierViewModel(QObject):
                 "currentParts": position_parts(direction, context["making"], "making"),
                 "currentText": making_position_text(direction, context["making"]),
                 "currentTone": TONES[direction],
+                "mainSafe": context.get("main_safe"),
                 "custodies": [{"id": t["id"], "text": f"{t['code']} — متاح {money(t['cash'])} ج"} for t in context["custodies"]],
                 "marketers": [{"id": m["id"], "text": f"{m['name']}{' (موقوف)' if not m['active'] else ''} — متاح {money(m['cash'])} ج",
                                "self": m["self"]} for m in context["marketers"]],

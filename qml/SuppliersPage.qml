@@ -729,6 +729,14 @@ Item {
                                     primary: true
                                     onClicked: payDialog.openFor()
                                 }
+                                Btn {
+                                    objectName: "receiveMakingButton"
+                                    Layout.alignment: Qt.AlignRight
+                                    visible: !!page.vm && page.vm.canPayMaking
+                                    enabled: page.hasSelection && !page.vm.busy
+                                    text: "استلام مصنعيات من المورد"
+                                    onClicked: receiveDialog.openFor()
+                                }
                             }
                         }
 
@@ -1849,6 +1857,174 @@ Item {
                 }
                 Btn { objectName: "cancelPayMakingButton"; text: "إلغاء"; accent: theme.textSecondary
                       enabled: !!page.vm && !page.vm.paying; onClicked: payDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- making RECEIPT (استلام مصنعيات): the supplier sends money back
+    // Cash goes into the Main Safe, a transfer into the selected bank / wallet account. Figures come from supplierVM; the service re-checks every right.
+    Popup {
+        id: receiveDialog
+        objectName: "receiveMakingDialog"
+        property string requestKey: ""
+        property string method: "CASH"
+        property var preview: ({ valid: false, error: "", afterText: "", afterParts: ({}), afterTone: "settled", note: "" })
+        readonly property var ctx: page.vm ? page.vm.payContext : ({})
+        readonly property bool ready: !!ctx && ctx.supplierId !== undefined
+        readonly property bool hasSafe: ready && !!ctx.mainSafe
+        readonly property var bankChoices: [{ id: "", text: "اختر الحساب البنكي" }].concat(ready ? (ctx.banks || []) : [])
+        readonly property string accountId: method === "CASH" ? (hasSafe ? ctx.mainSafe.id : "")
+                                            : (recvBankCombo.currentIndex > 0 ? bankChoices[recvBankCombo.currentIndex].id : "")
+        readonly property bool canSubmit: ready && preview.valid === true && accountId !== ""
+                                          && recvDateField.text.trim().length > 0 && !!page.vm && !page.vm.receiving
+        function recompute() {
+            if (page.vm) preview = page.vm.previewReceipt(recvAmountField.text)
+        }
+        function openFor() {
+            if (!page.vm || !page.hasSelection) return
+            requestKey = page.vm.newRequestKey()
+            method = "CASH"
+            recvBankCombo.currentIndex = 0
+            recvAmountField.text = ""
+            recvDateField.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
+            recvReferenceField.text = ""
+            recvNotesField.text = ""
+            preview = ({ valid: false, error: "", afterText: "", afterParts: ({}), afterTone: "settled", note: "" })
+            page.vm.loadPaymentContext(page.detail.id)
+            open()
+        }
+        Connections {
+            target: page.vm
+            function onPaymentPosted() { if (receiveDialog.opened) receiveDialog.close() }
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(520, page.width - 24)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 560, 540)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 6
+            Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection
+                  text: "استلام مصنعيات — " + (receiveDialog.ready ? receiveDialog.ctx.supplierName : (page.detail.name || "")) }
+            Flickable {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentHeight: recvColumn.implicitHeight
+                clip: true
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: recvColumn
+                    width: parent.width - 12
+                    spacing: 6
+                    Txt { Layout.fillWidth: true; visible: !receiveDialog.ready; text: "جارٍ تحميل موقف المصنعيات…"
+                          color: theme.textMuted }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        visible: receiveDialog.ready
+                        implicitHeight: recvCurrent.implicitHeight + 14
+                        radius: 4
+                        color: theme.bgTertiary
+                        border.color: theme.border
+                        ColumnLayout {
+                            id: recvCurrent
+                            anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                            anchors.leftMargin: 10; anchors.rightMargin: 10
+                            spacing: 2
+                            Txt { Layout.fillWidth: true; text: "موقف المصنعيات الحالي"; color: theme.textMuted
+                                  font.pixelSize: theme.fontTableHeader }
+                            Txt { objectName: "recvCurrentPosition"; Layout.fillWidth: true; text: receiveDialog.ctx.currentText || ""
+                                  color: page.toneColor(receiveDialog.ctx.currentTone); font.bold: true
+                                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                        }
+                    }
+                    Txt { Layout.fillWidth: true; text: "طريقة الاستلام *" }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        Btn { objectName: "recvMethodCash"; text: "نقدًا إلى خزنة المحل"; visible: receiveDialog.hasSafe
+                              primary: receiveDialog.method === "CASH"; onClicked: receiveDialog.method = "CASH" }
+                        Btn { objectName: "recvMethodBank"; text: "تحويل إلى حساب بنكي"; visible: receiveDialog.ready && receiveDialog.bankChoices.length > 1
+                              primary: receiveDialog.method === "BANK"; onClicked: receiveDialog.method = "BANK" }
+                        Item { Layout.fillWidth: true }
+                    }
+                    Txt { Layout.fillWidth: true; visible: receiveDialog.method === "BANK"; text: "الحساب البنكي *" }
+                    Combo {
+                        id: recvBankCombo
+                        objectName: "recvBankCombo"
+                        Layout.fillWidth: true
+                        visible: receiveDialog.method === "BANK"
+                        model: receiveDialog.bankChoices
+                        textRole: "text"
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "المبلغ (ج) *" }
+                            Field { id: recvAmountField; objectName: "recvAmountField"; Layout.fillWidth: true
+                                    inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                    onTextChanged: receiveDialog.recompute() }
+                        }
+                        ColumnLayout {
+                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
+                            Txt { Layout.fillWidth: true; text: "تاريخ الاستلام (yyyy-MM-dd) *" }
+                            Field { id: recvDateField; objectName: "recvDateField"; Layout.fillWidth: true }
+                        }
+                    }
+                    Txt { Layout.fillWidth: true; visible: recvAmountField.text.trim().length > 0 && receiveDialog.preview.error !== ""
+                          text: receiveDialog.preview.error; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                    Txt { Layout.fillWidth: true; text: "المرجع" }
+                    Field { id: recvReferenceField; objectName: "recvReferenceField"; Layout.fillWidth: true }
+                    Txt { Layout.fillWidth: true; text: "ملاحظات" }
+                    Field { id: recvNotesField; objectName: "recvNotesField"; Layout.fillWidth: true }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: recvAfter.implicitHeight + 14
+                        radius: 4
+                        color: theme.bgTertiary
+                        border.color: receiveDialog.preview.valid ? page.toneColor(receiveDialog.preview.afterTone) : theme.border
+                        ColumnLayout {
+                            id: recvAfter
+                            anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                            anchors.leftMargin: 10; anchors.rightMargin: 10
+                            spacing: 2
+                            Txt { Layout.fillWidth: true; text: "موقف المصنعيات بعد الاستلام"; color: theme.textMuted
+                                  font.pixelSize: theme.fontTableHeader }
+                            Txt { objectName: "recvResultPosition"; Layout.fillWidth: true
+                                  text: receiveDialog.preview.valid ? receiveDialog.preview.afterText : "—"
+                                  color: receiveDialog.preview.valid ? page.toneColor(receiveDialog.preview.afterTone) : theme.textMuted
+                                  font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { Layout.fillWidth: true; visible: receiveDialog.preview.note !== ""
+                                  text: receiveDialog.preview.note; color: theme.amber; font.pixelSize: theme.fontTableHeader
+                                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                        }
+                    }
+                }
+            }
+            Txt { objectName: "recvError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmReceiveMakingButton"
+                    text: !!page.vm && page.vm.receiving ? "جارٍ الحفظ…" : "تسجيل الاستلام"
+                    primary: true
+                    enabled: receiveDialog.canSubmit
+                    onClicked: page.vm.receiveMaking(receiveDialog.ctx.supplierId, receiveDialog.method, receiveDialog.accountId,
+                                                     recvAmountField.text, recvDateField.text, recvReferenceField.text,
+                                                     recvNotesField.text, receiveDialog.requestKey)
+                }
+                Btn { objectName: "cancelReceiveMakingButton"; text: "إلغاء"; accent: theme.textSecondary
+                      enabled: !!page.vm && !page.vm.receiving; onClicked: receiveDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }

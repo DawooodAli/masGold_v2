@@ -9,6 +9,8 @@ from repositories.supplier_repository import SupplierRepository, _id
 
 SOURCE = "SUPPLIER_MAKING_PAYMENT"          # transaction_corrections.source_type, cash/bank reference_type, making source_type
 PAYMENT_MOVEMENT, REVERSAL_MOVEMENT = "PAYMENT", "PAYMENT_REVERSAL"
+RECEIPT_MOVEMENT, RECEIPT_REVERSAL_MOVEMENT = "RECEIPT", "RECEIPT_REVERSAL"      # 093: money received FROM the supplier (same SM document, direction RECEIVE)
+RECEIPT_TYPE = "SUPPLIER_MAKING_RECEIPT"                                           # cash / bank movement type of a receipt
 BAR_FEE_MOVEMENT, BAR_FEE_REVERSAL_MOVEMENT = "BAR_FEE", "BAR_FEE_REVERSAL"
 MAIN_SAFE = "MAIN_SAFE"
 CORRECTION_REFERENCE = "TRANSACTION_CORRECTION"
@@ -45,8 +47,19 @@ class SupplierPaymentRepository(SupplierRepository):
 
     # ------------------------------------------------------------------ the payment
     def insert_header(self, *, supplier_id, method, cash_account_id, bank_account_id, amount, payment_date, reference,
-                      notes, before, after, key, digest, actor, now, marketer_party_id=None, self_payment_confirmed=False):
+                      notes, before, after, key, digest, actor, now, marketer_party_id=None, self_payment_confirmed=False, direction="PAY"):
         require_no_marketer_key(self._fetch_one, key)                    # 055: a marketer document owns this key -> REQUEST_CONFLICT, nothing is written
+        if direction == "RECEIVE":
+            payment_id, _ = self._execute(
+                """
+                INSERT INTO supplier_making_payments (supplier_id, payment_method, direction, cash_account_id, bank_account_id,
+                    amount, payment_date, reference, notes, balance_before, balance_after, request_key, request_hash,
+                    performed_by_user_id, performed_by_employee_id, occurred_at)
+                VALUES (%s, %s, 'RECEIVE', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (_id(supplier_id), method, cash_account_id, bank_account_id, amount, payment_date, reference, notes, before,
+                 after, key, digest, actor.user_id, actor.employee_id, now))
+            return int(payment_id)
         payment_id, _ = self._execute(
             """
             INSERT INTO supplier_making_payments (supplier_id, payment_method, cash_account_id, bank_account_id, marketer_party_id,
@@ -60,8 +73,9 @@ class SupplierPaymentRepository(SupplierRepository):
              after, key, digest, actor.user_id, actor.employee_id, now))
         return int(payment_id)
 
-    def post_money(self, *, ledger, account_id, payment_id, code, amount, description, notes, actor, now):
-        """The real money OUT (a negative balance is allowed; no new funds policy). Returns the movement id."""
+    def post_money(self, *, ledger, account_id, payment_id, code, amount, description, notes, actor, now, receipt=False):
+        """The real money OUT (a negative balance is allowed; no new funds policy), or IN for a receipt. Returns the movement id."""
+        type_code, signed = (RECEIPT_TYPE, amount) if receipt else (SOURCE, -amount)
         table, column, types = (("cash_movements", "cash_account_id", "cash_movement_types") if ledger == CASH
                                 else ("bank_movements", "bank_account_id", "bank_movement_types"))
         movement_id, count = self._execute(
@@ -70,9 +84,9 @@ class SupplierPaymentRepository(SupplierRepository):
                 description, notes, occurred_at, created_by_user_id)
             SELECT %s, t.id, %s, %s, %s, %s, %s, %s, %s, %s FROM {types} t WHERE t.code = %s AND t.is_active = TRUE
             """,
-            (int(account_id), -amount, SOURCE, _id(payment_id), code, description, notes, now, actor.user_id, SOURCE))
+            (int(account_id), signed, SOURCE, _id(payment_id), code, description, notes, now, actor.user_id, type_code))
         if count != 1:
-            raise RuntimeError(f"{types} {SOURCE} is missing (migration 036)")
+            raise RuntimeError(f"{types} {type_code} is missing (migration 036 / 093)")
         return int(movement_id)
 
     def making_type_id(self, code):

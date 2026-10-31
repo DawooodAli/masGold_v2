@@ -28,8 +28,8 @@ from mysql.connector import IntegrityError
 
 from repositories.financial_account_repository import FinancialAccountRepository
 from repositories.market_trip_repository import entry_code, trip_code
-from repositories.supplier_payment_repository import (BANK, CASH, PAYMENT_MOVEMENT, SOURCE, SupplierPaymentRepository,
-                                                      payment_code)
+from repositories.supplier_payment_repository import (BANK, CASH, PAYMENT_MOVEMENT, RECEIPT_MOVEMENT, SOURCE,
+                                                      SupplierPaymentRepository, payment_code)
 from services import supplier_rules as rules
 from services.authorization_service import AuthorizationService
 from services.correction_rules import correction_code
@@ -135,6 +135,7 @@ class SupplierPaymentService:
             if supplier is None:
                 raise rules.SupplierRuleError("SUPPLIER_NOT_FOUND", "المورد غير موجود.")
             banks = repository.active_bank_accounts()
+            safe = repository.main_safe()
             balance = rules.money_amount(repository.making_balance(supplier_id))
             custodies, marketers = [], []
             if TRIP_PERMISSION in actor.permissions:
@@ -162,6 +163,7 @@ class SupplierPaymentService:
         return {"supplier": {"id": str(supplier["id"]), "code": rules.supplier_code(supplier["id"]),
                              "name": supplier["name"], "active": bool(supplier["is_active"])},
                 "making": balance, "making_direction": rules.direction(balance),
+                "main_safe": None if safe is None or not safe["is_active"] else {"id": str(safe["id"]), "name": safe["name"]},
                 "custodies": custodies, "marketers": marketers,
                 "banks": [{"id": str(b["id"]), "name": b["name"], "account_type": b["account_type"],
                            "label": b["account_label"] or ""} for b in banks]}
@@ -191,7 +193,8 @@ class SupplierPaymentService:
                                  else row["marketer_name"] if marketer
                                  else row["bank_account_name"] if bank else row["cash_account_name"]),
                 "custody_reference": entry_code(row["custody_trip_id"], row["custody_entry_no"]) if custody else "",
-                "amount": row["amount"], "payment_date": row["payment_date"], "reference": row["reference"] or "",
+                "direction": row.get("direction") or "PAY", "amount": row["amount"], "payment_date": row["payment_date"],
+                "reference": row["reference"] or "",
                 "notes": row["notes"] or "", "balance_before": row["balance_before"],
                 "balance_after": row["balance_after"], "actor": row["actor_name"] or "",
                 "occurred_at": row["occurred_at"],
@@ -259,6 +262,85 @@ class SupplierPaymentService:
             # Two requests with the same key passed their checks together (different suppliers do not share a lock): the
             # database let one commit and refused this one, whose transaction is rolled back. Decide from a FRESH read.
             return self._replay(session_actor, key, digest, exc)
+
+    # ------------------------------------------------------------------ the receipt (093): the supplier sends money back
+    def receive(self, supplier_id, method, account_id, amount, receipt_date, reference, notes, request_key, *, _expected_actor=None):
+        """Money RECEIVED from a supplier against making (EGP): cash into a cash account, or a bank / wallet account. Same SM document
+        as a payment with the opposite direction: ONE money IN movement and ONE positive making movement (the supplier's debt falls).
+        Uses the payment right (SUPPLIER_MAKING_PAY), rechecked in the transaction; idempotent on the request key."""
+        session_actor = authenticated_actor(self._session, PAY, "ليس لديك صلاحية تسجيل مصنعيات الموردين.", _expected_actor)
+        supplier_id = _supplier_id(supplier_id)
+        method = str(method or "").strip().upper()
+        if method not in (CASH, BANK):
+            raise rules.SupplierRuleError("METHOD_INVALID", "اختر نقدًا إلى الخزنة أو تحويلًا إلى حساب بنكي.")
+        value = rules.parse_amount(amount)
+        received_on = _payment_date(receipt_date)
+        reference_text = clean_text(reference, REFERENCE_MAX, "المرجع")
+        notes_text = clean_text(notes, NOTES_MAX, "الملاحظات")
+        key = _key(request_key)
+        selected = (_source_id(account_id, "CASH_ACCOUNT_REQUIRED", "اختر الخزنة.") if method == CASH else _bank_id(account_id))
+        digest = hashlib.sha256(json.dumps(
+            ["RECEIVE", supplier_id, method, selected, str(value), received_on.isoformat(), reference_text, notes_text],
+            ensure_ascii=False).encode()).hexdigest()
+        try:
+            return self._post_receipt(session_actor, supplier_id, method, selected, value, received_on, reference_text,
+                                      notes_text, key, digest)
+        except IntegrityError as exc:
+            if not _is_request_key_violation(exc):
+                raise
+            return self._replay(session_actor, key, digest, exc)
+
+    def _post_receipt(self, session_actor, supplier_id, method, account_id, value, received_on, reference_text, notes_text, key, digest):
+        with self._transaction() as connection:
+            actor = self._authorization.require_permission_for_write(connection, session_actor, PAY)
+            repository, accounts = self._repository(connection), self._accounts(connection)
+            supplier = repository.get_supplier(supplier_id, lock=True)
+            if supplier is None:
+                raise rules.SupplierRuleError("SUPPLIER_NOT_FOUND", "المورد غير موجود.")
+            rules.require_supplier_role(supplier)
+            prior = repository.by_request(key)
+            if prior is not None:
+                if prior["request_hash"] != digest or int(prior["performed_by_user_id"]) != int(actor.user_id):
+                    raise rules.SupplierRuleError("REQUEST_CONFLICT", "طلب الاستلام مستخدم لعملية مختلفة.")
+                return self._result(prior, duplicate=True)
+            account = accounts.account(method, account_id, lock=True)
+            if account is None:
+                raise rules.SupplierRuleError("ACCOUNT_NOT_FOUND", "الحساب النقدي غير موجود." if method == CASH else "الحساب البنكي غير موجود.")
+            if not account["is_active"]:
+                raise rules.SupplierRuleError("ACCOUNT_INACTIVE", f"الحساب «{account['name']}» غير نشط.")
+            making_type = repository.making_type_id(RECEIPT_MOVEMENT)
+            if making_type is None:
+                raise RuntimeError("supplier making movement type RECEIPT is missing (migration 093)")
+            before = rules.money_amount(repository.making_balance_current(supplier_id))
+            after = rules.making_after_receipt(before, value)
+            now = repository.db_now()
+            payment_id = repository.insert_header(
+                supplier_id=supplier_id, method=method, cash_account_id=int(account["id"]) if method == CASH else None,
+                bank_account_id=int(account["id"]) if method == BANK else None, amount=value, payment_date=received_on,
+                reference=reference_text, notes=notes_text, before=before, after=after, key=key, digest=digest,
+                actor=actor, now=now, direction="RECEIVE")
+            code = payment_code(payment_id)
+            label = f"استلام مصنعيات من المورد {code}"
+            money_id = repository.post_money(
+                ledger=method, account_id=account["id"], payment_id=payment_id, code=code, amount=value,
+                description=f"{label} — {supplier['name']}", notes=notes_text, actor=actor, now=now, receipt=True)
+            repository.insert_leg(payment_id=payment_id, kind="MONEY",
+                                  cash_movement_id=money_id if method == CASH else None,
+                                  bank_movement_id=money_id if method == BANK else None)
+            making_id = repository.insert_making_movement(
+                supplier_id=supplier_id, type_id=making_type, amount_delta=value, source_type=SOURCE,
+                source_id=payment_id, reference=code, description=label, now=now, user_id=actor.user_id)
+            repository.insert_leg(payment_id=payment_id, kind="MAKING", making_movement_id=making_id)
+            repository.audit(actor=actor, event_type="SUPPLIER_MAKING_RECEIPT", entity_id=payment_id, entity_type=SOURCE,
+                             reference=code, description=f"{label} {value:,.2f} ج",
+                             metadata={"supplier_id": supplier_id, "method": method, "account_id": int(account["id"]),
+                                       "amount": str(value), "before": str(before), "after": str(after),
+                                       "receipt_date": received_on.isoformat(), "reference": reference_text,
+                                       "employee_id": actor.employee_id}, now=now)
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        return {"id": str(payment_id), "code": code, "supplier_id": str(supplier_id), "method": method, "direction": "RECEIVE",
+                "amount": str(value), "balance_before": str(before), "balance_after": str(after), "duplicate": False}
 
     def _post(self, session_actor, supplier_id, method, bank_id, marketer_id, confirm_same_party, value, paid_on,
               reference_text, notes_text, key, digest):

@@ -152,6 +152,12 @@ def making_after_payment(before, amount):
     return (Decimal(str(before)) - Decimal(str(amount))).quantize(MONEY_STEP)
 
 
+def making_after_receipt(before, amount):
+    """The making position after RECEIVING `amount` from the supplier: before + amount, exact (the supplier's debt to the shop falls;
+    it may cross zero into the shop owing the supplier)."""
+    return (Decimal(str(before)) + Decimal(str(amount))).quantize(MONEY_STEP)
+
+
 def group_making_total(weight, rate):
     """Contractual group making = supplier group weight x EGP/gram, rounded once to 0.01 (Decimal only)."""
     return (Decimal(weight) * Decimal(rate)).quantize(MONEY_STEP, rounding=ROUND_HALF_UP)

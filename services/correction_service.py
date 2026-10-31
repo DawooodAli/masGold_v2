@@ -787,8 +787,11 @@ class CorrectionService:
         if source_type == SPI:
             self._plan_supplier_invoice(connection, plan, source, source_id, lock)
         if source_type == SMP:
-            from repositories.supplier_payment_repository import REVERSAL_MOVEMENT, SupplierPaymentRepository
+            from repositories.supplier_payment_repository import (RECEIPT_REVERSAL_MOVEMENT, REVERSAL_MOVEMENT,
+                                                                  SupplierPaymentRepository)
             payments = SupplierPaymentRepository(connection)
+            if (source.get("direction") or "PAY") == "RECEIVE":      # 093: a receipt is reversed with its own movement type
+                REVERSAL_MOVEMENT = RECEIPT_REVERSAL_MOVEMENT
             movement = payments.payment_making_movement(source_id)
             if movement is None:
                 plan.blockers.append(("PAYMENT_MOVEMENT_MISSING", "حركة المصنعيات الأصلية للدفعة غير موجودة."))

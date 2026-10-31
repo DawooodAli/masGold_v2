@@ -232,7 +232,7 @@ class SupplierRepository(BaseRepository):
                 FROM supplier_making_movements m
                 JOIN supplier_making_movement_types t ON t.id = m.movement_type_id
                 LEFT JOIN users u ON u.id = m.created_by_user_id
-                LEFT JOIN supplier_making_payments p ON t.code = 'PAYMENT' AND m.source_type = 'SUPPLIER_MAKING_PAYMENT'
+                LEFT JOIN supplier_making_payments p ON t.code IN ('PAYMENT', 'RECEIPT') AND m.source_type = 'SUPPLIER_MAKING_PAYMENT'
                      AND p.id = m.source_id
                 LEFT JOIN cash_accounts ca ON ca.id = p.cash_account_id
                 LEFT JOIN bank_accounts ba ON ba.id = p.bank_account_id
@@ -242,7 +242,7 @@ class SupplierRepository(BaseRepository):
                 LEFT JOIN transaction_corrections c ON c.correction_type = 'FULL_REVERSAL'
                      AND ((c.source_type = 'SUPPLIER_MAKING_PAYMENT' AND c.source_id = p.id)
                           OR (tl.entry_id IS NOT NULL AND c.source_type = 'MARKET_TRIP_ENTRY' AND c.source_id = tl.entry_id))
-                LEFT JOIN transaction_corrections rc ON t.code = 'PAYMENT_REVERSAL' AND m.source_type = 'TRANSACTION_CORRECTION'
+                LEFT JOIN transaction_corrections rc ON t.code IN ('PAYMENT_REVERSAL', 'RECEIPT_REVERSAL') AND m.source_type = 'TRANSACTION_CORRECTION'
                      AND rc.id = m.source_id
                 LEFT JOIN market_trip_supplier_payments rl ON rc.source_type = 'MARKET_TRIP_ENTRY' AND rl.entry_id = rc.source_id
                 LEFT JOIN market_trip_entries re ON re.id = rl.entry_id
