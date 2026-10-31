@@ -536,8 +536,14 @@ Item {
                            value: dashboard.vm ? dashboard.vm.priceChart.lowText + " / " + dashboard.vm.priceChart.highText : "" }
                     Txt { visible: !!dashboard.vm && dashboard.vm.priceChart.available; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost
                           value: "أخضر: شراء المحل • ذهبي: بيع المحل" }
-                    Action { objectName: "dashboardOpenInvesting"; text: "شارت الذهب المباشر (Investing.com)"; page: -1
-                             onClicked: Qt.openUrlExternally("https://www.investing.com/commodities/gold") }
+                }
+
+                // --- الشارت المباشر للذهب (TradingView XAUUSD داخل البرنامج؛ رابط بديل لو المتصفح المضمّن غير متاح)
+                Card {
+                    objectName: "liveGoldChartCard"
+                    title: "الشارت المباشر للذهب (XAUUSD)"
+                    accent: theme.gold
+                    GoldWebChart { Layout.fillWidth: true; Layout.preferredHeight: 340 }
                 }
             }
 

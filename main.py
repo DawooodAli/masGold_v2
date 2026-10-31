@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -179,6 +180,7 @@ class ApplicationController(QObject):
     def _engine(self):
         engine = QQmlApplicationEngine(self)
         engine.rootContext().setContextProperty("appSession", self.session)
+        engine.rootContext().setContextProperty("webChartEnabled", WEB_CHART_ENABLED)
         engine.rootContext().setContextProperty("authenticationVM", self.authentication)
         engine.quit.connect(self.app.quit)
         return engine
@@ -431,6 +433,7 @@ class ApplicationController(QObject):
             from app.barcode_input import BarcodeInput
             self.barcode_input = BarcodeInput(engine)
             engine.rootContext().setContextProperty("barcodeInput", self.barcode_input)
+            engine.rootContext().setContextProperty("webChartEnabled", WEB_CHART_ENABLED)
             engine.rootContext().setContextProperty("goldPriceVM", self.gold_prices)
             engine.rootContext().setContextProperty("goldSettingsVM", self.gold_settings)
             for name, viewmodel in self.operational_viewmodels.items():
@@ -474,7 +477,24 @@ class ApplicationController(QObject):
             self.operational_viewmodels = {}
 
 
+WEB_CHART_ENABLED = False                                                                  # the embedded browser (live gold chart) started successfully in this process
+
+
+def _start_web_engine():
+    """QtWebEngine must be initialised before the application object exists. Any failure leaves the live chart off (a link is shown instead); a test platform never starts it."""
+    global WEB_CHART_ENABLED
+    if os.environ.get("QT_QPA_PLATFORM", "") in ("offscreen", "minimal"):
+        return
+    try:
+        from PySide6.QtWebEngineQuick import QtWebEngineQuick
+        QtWebEngineQuick.initialize()
+        WEB_CHART_ENABLED = True
+    except Exception:                                                                       # noqa: BLE001 - the chart is optional
+        WEB_CHART_ENABLED = False
+
+
 def main():
+    _start_web_engine()
     QQuickStyle.setStyle("Material")
     app = QGuiApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)

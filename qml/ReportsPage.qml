@@ -572,8 +572,6 @@ Item {
                                 onClicked: reportsVM.showPriceChart(reportsVM.priceChart.karat, modelData.days)
                             }
                         }
-                        Btn { objectName: "reportOpenInvesting"; text: "شارت مباشر (Investing.com)"; accent: theme.textSecondary
-                              onClicked: Qt.openUrlExternally("https://www.investing.com/commodities/gold") }
                         Item { Layout.fillWidth: true }
                         Label { color: theme.textMuted; font.pixelSize: theme.fontTableHeader; text: "ذهبي = بيع المحل • أخضر مزرق = شراء المحل • رمادي متقطع = متوسط 30 يوم" }
                     }
@@ -625,6 +623,16 @@ Item {
                         Label { color: theme.textSecondary; text: (reportsVM.priceChart.first || "") + " → " + (reportsVM.priceChart.last || "") + "  •  أدنى " + (reportsVM.priceChart.lowText || "") + " • أعلى " + (reportsVM.priceChart.highText || "") }
                     }
                 }
+            }
+
+            // ---------------------------------------------------------------- the live gold chart (TradingView XAUUSD embedded; a link when the embedded browser is unavailable), indicators report only
+            ColumnLayout {
+                objectName: "reportLiveGoldChart"
+                visible: reportsVM.report === "indicators"
+                Layout.fillWidth: true
+                spacing: 4
+                Label { Layout.fillWidth: true; text: "الشارت المباشر للذهب (XAUUSD)"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; horizontalAlignment: Text.AlignRight }
+                GoldWebChart { Layout.fillWidth: true; Layout.preferredHeight: 380 }
             }
 
             // ---------------------------------------------------------------- bar charts (the cash-flow report: one chart for the expenses and one for the income, by their stored category)
