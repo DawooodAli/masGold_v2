@@ -651,7 +651,7 @@ class ReportService:
             p["oldest"] = max(p["oldest"], g["oldest"])
         dead_cols = [col("type", "الصنف"), col("factory", "المصنع"), col("count", "عدد القطع", "count"), col("weight", "الوزن (جرام)", "grams"), col("oldest", "أقدم قطعة (يوم)", "count")]
         for k in sorted(per_karat, reverse=True):
-            rows = [{"type": t, "factory": f, "count": g["count"], "weight": g["weight"], "oldest": g["oldest"]}
+            rows = [{"type": t, "factory": f, "count": g["count"], "weight": g["weight"], "oldest": g["oldest"], "ref": {"type": "PIECES", "id": t, "extra": f"{k}|{f}||dead"}}
                     for (kk, t, f), g in sorted(dead.items(), key=lambda kv: (-kv[1]["weight"], kv[0][1])) if kk == k]
             tables.append(table(f"dead_{k}", f"قطع راكدة (أكثر من {dead_stock_days} يوم) — عيار {k}", dead_cols, rows, karat=k))
             cards.append(total(f"راكد عيار {k}", f"{per_karat[k]['weight']:,.3f} جرام", "text", f"{per_karat[k]['count']} قطعة • أقدمها {per_karat[k]['oldest']} يوم", "dead", karat=k))
@@ -688,7 +688,8 @@ class ReportService:
                         col("stock", "المتاح", "count"), col("cover", "يكفي (يوم)")]
             low_karats = sorted({k for k, *_ in low}, reverse=True)
             for k in low_karats:
-                rows = [{"type": t, "factory": f, "size": sz or "—", "sold30": v["sold30"], "sold90": v["sold90"], "stock": v["stock"], "cover": "نفد" if v["stock"] == 0 else f"{int(v['cover'])}"}
+                rows = [{"type": t, "factory": f, "size": sz or "—", "sold30": v["sold30"], "sold90": v["sold90"], "stock": v["stock"], "cover": "نفد" if v["stock"] == 0 else f"{int(v['cover'])}",
+                         "ref": {"type": "PIECES", "id": t, "extra": f"{k}|{f}|{sz}|stock"} if v["stock"] else None}
                         for (kk, t, f, sz), v in sorted(low.items(), key=lambda kv: (kv[1]["cover"], kv[0][1])) if kk == k]
                 tables.append(table(f"low_{k}", f"قاربت على النفاد — عيار {k}", low_cols, rows, karat=k))
                 cards.append(total(f"قارب النفاد عيار {k}", f"{len(rows)} صنف", "text", f"من أصناف بيعت {min_sales} مرات فأكثر وتكفي أقل من {low_cover_days} يوم", "low", karat=k))
@@ -1452,6 +1453,47 @@ class ReportService:
         pieces.sort(key=lambda p: (p["weight"], p["barcode"]))
         low = band_number * int(STOCK_BAND)
         return {"type": label, "karat": karat_value, "band": f"{low} – {low + int(STOCK_BAND)} جرام", "pieces": pieces,
+                "weight": sum((p["weight"] for p in pieces), ZERO3)}
+
+    def alert_pieces(self, item_type, extra, *, _expected_actor=None):
+        """The IN_STOCK pieces behind one row of the inventory alerts: `extra` is «karat|factory|size|mode» with mode `dead` (never invoiced and older than the dead-stock days) or `stock`
+        (every piece of that type / factory / size). Needs the inventory right, re-read inside the transaction."""
+        actor = self._session.require_authenticated()
+        if _expected_actor is not None and not self._session.is_current(_expected_actor):
+            raise PermissionError("انتهت جلسة الدخول.")
+        parts = str(extra or "").split("|")
+        if len(parts) != 4 or parts[3] not in ("dead", "stock"):
+            raise ReportError("FILTER_INVALID", "صف غير صحيح.")
+        try:
+            karat_value = int(parts[0])
+        except ValueError:
+            raise ReportError("FILTER_INVALID", "عيار غير صحيح.")
+        factory, size, mode = parts[1], parts[2].strip(), parts[3]
+        label = str(item_type or "").strip() or NO_TYPE
+        with self._transaction() as connection:
+            gate = _Gate(self._authorization, connection, actor)
+            if not (gate(BASE_PERMISSION) and gate("INVENTORY_VIEW")):
+                raise PermissionError("ليس لديك صلاحية عرض هذه القطع.")
+            repo = self._repository(connection)
+            stock = repo.stock_items(("IN_STOCK",))
+            days = setting_rules.report_thresholds(repo)["dead_stock_days"]
+            if not self._session.is_current(actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+        cutoff = self._today() - timedelta(days=days)
+        pieces = []
+        for r in stock:
+            if int(r["karat_value"]) != karat_value or (r["item_type"] or NO_TYPE) != label or (r["factory"] or "بدون مصنع") != factory:
+                continue
+            if mode == "stock" and str(r.get("size") or "").strip() != size:
+                continue
+            if mode == "dead":
+                acquired = _dateish(r["acquired_at"])
+                if r["invoice_id"] is not None or acquired is None or acquired.date() > cutoff:
+                    continue
+            pieces.append({"barcode": r.get("barcode") or "", "weight": _dec(r["weight_grams"]), "size": str(r.get("size") or "").strip(),
+                           "category": r.get("category") or "", "factory": r.get("factory") or ""})
+        pieces.sort(key=lambda p: (-p["weight"], p["barcode"]))
+        return {"type": label, "karat": karat_value, "band": ("قطع راكدة" if mode == "dead" else "المتاح") + " — " + factory, "pieces": pieces,
                 "weight": sum((p["weight"] for p in pieces), ZERO3)}
 
     @staticmethod

@@ -850,6 +850,22 @@ class StockWeightTests(Case):
         self.assertEqual([p["barcode"] for p in opened["pieces"]], ["A1", "A2"])                  # that karat, that type, that band only
         self.assertEqual(opened["weight"], D("5.000"))
 
+    def test_an_alert_row_opens_the_pieces_behind_it(self):
+        class Repo(FakeRepo):
+            def stock_items(self, statuses):
+                base = {"item_id": 1, "size": "", "karat_value": 21, "item_type": "خاتم", "category": "B", "factory": "لوكس", "inventory_status": "IN_STOCK", "invoice_id": None,
+                        "acquired_at": datetime(2020, 1, 1)}
+                return [{**base, "weight_grams": D("2.40"), "barcode": "A1"}, {**base, "weight_grams": D("3.00"), "barcode": "A2", "invoice_id": 9},
+                        {**base, "weight_grams": D("1.00"), "barcode": "A3", "factory": "ستار"}]
+        service = ReportService(self.session, transaction_factory=self.service._transaction, repository=Repo, authorization=self.authorization, today=lambda: TODAY)
+        row = service.run("alerts", {})["tables"][0]["rows"][0]
+        self.assertEqual(row["ref"], {"type": "PIECES", "id": "خاتم", "extra": f"21|{row['factory']}||dead"})
+        dead = service.alert_pieces("خاتم", "21|لوكس||dead")
+        self.assertEqual([p["barcode"] for p in dead["pieces"]], ["A1"])                   # never invoiced and old; the invoiced piece and the other factory are not
+        every = service.alert_pieces("خاتم", "21|لوكس||stock")
+        self.assertEqual([p["barcode"] for p in every["pieces"]], ["A2", "A1"])
+
+
     def test_only_rings_wedding_bands_and_bangles_carry_a_size(self):
         pieces = [("3.00", "17", "سلسلة"), ("3.10", "18", "سلسلة"), ("3.00", "12", "حلق دبلة"), ("3.00", "17", "دبلة"), ("3.00", "20", "غويشة")]
         result = self.service_with(pieces).run("stockweights", {})

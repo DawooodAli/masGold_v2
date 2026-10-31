@@ -306,7 +306,7 @@ class ReportsViewModel(QObject):
     @Slot(str, str)
     def showPieces(self, item_type, extra):
         """The pieces (barcodes) of one weight band of the weight stocktake: `extra` is «karat|band»."""
-        if self._report != "stockweights" or self._service is None or self._session is None:
+        if self._report not in ("stockweights", "alerts") or self._service is None or self._session is None:
             return
         karat, _, band = str(extra).partition("|")
         actor = self._session.current_actor()
@@ -316,7 +316,8 @@ class ReportsViewModel(QObject):
         request, filters, report = self._pieces_request, dict(self._filters), self._report
         self._pieces = {"loading": True, "open": True, "title": f"{item_type} — عيار {karat}", "error": "", "rows": []}
         from app.workers.invoice_worker import InvoiceWorker
-        worker = InvoiceWorker(lambda _expected_actor: self._service.stock_pieces(filters, item_type, karat, band, _expected_actor=_expected_actor), self._session, actor, request, "report", self)
+        worker = InvoiceWorker(lambda _expected_actor: (self._service.alert_pieces(item_type, extra, _expected_actor=_expected_actor) if report == "alerts"
+                                                          else self._service.stock_pieces(filters, item_type, karat, band, _expected_actor=_expected_actor)), self._session, actor, request, "report", self)
         worker.completed.connect(lambda r, generation, operation, result, error, code, kind: self._pieces_completed(r, generation, report, result, error, item_type, karat))
         worker.finished.connect(lambda w=worker: self._workers.discard(w))
         self._workers.add(worker)
