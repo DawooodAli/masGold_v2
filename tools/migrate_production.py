@@ -8,6 +8,7 @@ usage:
 * `apply` first takes a verified backup (`tools.backup_database`, into E:\\masGold_backups), then applies ONLY the pending files in order, each verified against SHA256SUMS. Forward only: never DROP,
   never rebuild. It stops at the first failure and says which file failed. Nothing but `masgold_prod` is ever touched; the live session must really be `masgold_prod`.
 * Uses the administrator credentials of the application's .env (the same ones as the other tools); the password is never printed."""
+import os
 import sys
 from pathlib import Path
 
@@ -52,7 +53,7 @@ def main(argv):
             print("refused: the pending files are not the contiguous continuation of the chain")
             return 2
         from tools import backup_database
-        if backup_database.main(["--database", TARGET]) != 0:
+        if backup_database.main(["--database", TARGET] + (["--dest", os.environ["MASGOLD_BACKUP_DEST"]] if os.environ.get("MASGOLD_BACKUP_DEST") else [])) != 0:
             print("refused: the backup was not verified, nothing was changed")
             return 1
         for f in pending:
