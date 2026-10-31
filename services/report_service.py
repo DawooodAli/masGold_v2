@@ -1184,7 +1184,7 @@ class ReportService:
             return (b["paid"] / b["grams"]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if b and b["grams"] else None
         columns = [col("karat", "العيار"), col("p_grams", "جرامات الفترة", "grams"), col("p_paid", "المدفوع في الفترة", "money"), col("p_avg", "متوسط سعر الجرام (الفترة)", "rate"),
                    col("c_grams", "الجرامات من البداية", "grams"), col("c_avg", "متوسط سعر الجرام (من البداية)", "rate"), col("price", "سعر شراء المحل الحالي", "rate"),
-                   col("diff", "الفرق عن السعر الحالي", "rate")]
+                   col("diff", "الفرق عن السعر الحالي", "rate"), col("unreal", "كسب / خسارة لو بعت الآن", "money"), col("state", "الموقف")]
         rows, cards = [], []
         for k in sorted(set(period) | set(cumulative), reverse=True):
             p, c = period.get(k), cumulative.get(k)
@@ -1192,7 +1192,9 @@ class ReportService:
             price = latest.get(k)
             rows.append({"karat": f"عيار {k}", "p_grams": p["grams"] if p else ZERO3, "p_paid": p["paid"] if p else ZERO2, "p_avg": p_avg if p_avg is not None else "—",
                          "c_grams": c["grams"] if c else ZERO3, "c_avg": c_avg if c_avg is not None else "—", "price": price[1] if price else "—",
-                         "diff": (p_avg - price[1]) if p_avg is not None and price else "—"})
+                         "diff": (p_avg - price[1]) if p_avg is not None and price else "—",
+                         "unreal": (p["grams"] * price[1] - p["paid"]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if p and price else "—",
+                         "state": ("—" if not p or not price else "فوق التعادل: ممكن تعوّض فلوسك" if price[1] >= p_avg else f"تحت التعادل: يلزم سعر {p_avg:,.2f} للتعادل")})
             if p_avg is not None:
                 note = f"{p['grams']:,.3f} جرام بقيمة {p['paid']:,.2f} ج" + (f" • من البداية {c_avg:,.2f}" if c_avg is not None else "")
                 cards.append(total(f"متوسط تكلفة كسر عيار {k}", f"{p_avg:,.2f} ج/جرام", "text", note, f"scrap{k}", karat=k))
@@ -1201,7 +1203,57 @@ class ReportService:
                    "الفرق عن السعر الحالي = متوسط الفترة − آخر سعر شراء مخزن: الموجب يعني أن الشراء كان بأعلى من سعر اليوم. هو مقارنة أسعار وليس تقييمًا للمخزون."]
         if reversed_invoices:
             cards.append(total("فواتير معكوسة غير محسوبة", len(reversed_invoices), "count", "", "summary"))
-        return {"meaning": meaning, "tables": [table("scrapcost", "تكلفة الكسر المشترى", columns, rows)], "totals": cards}
+        tables = [table("scrapcost", "تكلفة الكسر المشترى", columns, rows)]
+        meaning.append("«كسب / خسارة لو بعت الآن» = جرامات الفترة × سعر شراء المحل الحالي − ما دُفع فيها (غير محقق). «الموقف»: سعر التعادل = متوسط تكلفة الجرام.")
+        if gate("MARKET_TRIP_MANAGE") and repo.has_table("market_trip_entries"):
+            tables.append(self._scrap_market_result(repo, gate, start, end, karat, cumulative, latest, average))
+        return {"meaning": meaning, "tables": tables, "totals": cards}
+
+    def _scrap_market_result(self, repo, gate, start, end, karat, cumulative, latest, average):
+        """What went to the market in the period and how it came out, per karat: the scrap issued to a custody (cost = grams x the cumulative average cost of that karat), what came back
+        to the shop (valued at the CURRENT shop buy price), the proceeds of custody gold sales, and the melt / crucible / market loss (valued at the current 21K shop buy price). The
+        approximate realised result = sales proceeds + current value of the returned gold - cost of the issued gold; gold still in custody unsold is NOT in it. Owner-approved method 2026-11-01."""
+        first, until = start.date(), (end - timedelta(days=1)).date() + timedelta(days=1)
+        out, back = {}, {}
+        if repo.has_table("market_trip_entry_gold"):
+            for r in repo.trip_gold_legs(first, until):
+                k = int(r["karat_value"])
+                if r["reversal_id"] or (karat and str(k) != karat):
+                    continue
+                bucket = out if r["entry_kind"] == "ISSUE" else back
+                bucket[k] = bucket.get(k, ZERO3) + _dec(r["weight_grams"])
+        proceeds, sold_grams = ZERO2, ZERO3
+        if repo.has_table("market_trip_gold_sales"):
+            for r in repo.trip_gold_sales(first, until):
+                if not r["reversal_id"]:
+                    proceeds += _dec(r["total_price"])
+                    sold_grams += _dec(r["weight_grams"])
+        loss_grams = ZERO3
+        for row in self._market(repo, gate, {}, start, end)["tables"][0]["rows"]:
+            if row["label"] == "إجمالي الفقد والخسية":
+                loss_grams = _dec(row["grams"])
+        columns = [col("karat", "البند"), col("out", "خرج للعهدة (جرام)", "grams"), col("cost", "تكلفته (متوسط التكلفة)", "money"), col("back", "جرامات", "grams"),
+                   col("back_value", "القيمة / العائد", "money")]
+        rows, cost_total, back_total = [], ZERO2, ZERO2
+        for k in sorted(set(out) | set(back), reverse=True):
+            avg = average(cumulative.get(k))
+            price = latest.get(k)
+            cost = (out.get(k, ZERO3) * avg).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if avg is not None else None
+            value = (back.get(k, ZERO3) * price[1]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if price else None
+            cost_total += cost or ZERO2
+            back_total += value or ZERO2
+            rows.append({"karat": f"عيار {k} (راجع للمحل بالسعر الحالي)", "out": out.get(k, ZERO3), "cost": cost if cost is not None else "غير معلوم", "back": back.get(k, ZERO3),
+                         "back_value": value if value is not None else "غير معلوم"})
+        price21 = latest.get(21)
+        loss_value = (loss_grams * price21[1]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if price21 else None
+        rows.append({"karat": "عائد بيع ذهب العهدة", "out": ZERO3, "cost": ZERO2, "back": sold_grams, "back_value": proceeds})
+        rows.append({"karat": "الفاقد والخسية (مكافئ 21، بسعر 21 الحالي)", "out": ZERO3, "cost": ZERO2, "back": loss_grams, "back_value": loss_value if loss_value is not None else "غير معلوم"})
+        net = proceeds + back_total - cost_total
+        rows.append({"karat": "النتيجة التقريبية المحققة", "out": ZERO3, "cost": cost_total, "back": ZERO3, "back_value": net})
+        result = table("scrap_market", "ما خرج للسوق ونتيجته (تقريبي)", columns, rows)
+        result["note"] = ("النتيجة = عائد البيع + قيمة الراجع للمحل بالسعر الحالي − تكلفة ما خرج (متوسط تكلفة الكسر من البداية). الذهب الذي ما زال في العهدة ولم يُبَع لا يدخل فيها، "
+                          "والفاقد يظهر منفصلًا لأنه ناقص من الراجع أصلًا.")
+        return result
 
     # ------------------------------------------------------------------ 3e. demand and seasonality (owner request): sold grams per month, a simple seasonal forecast and the price association
     def _demand(self, repo, gate, filters, start, end):

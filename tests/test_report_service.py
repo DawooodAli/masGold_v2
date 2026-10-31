@@ -38,6 +38,20 @@ class FakeRepo:
     def has_table(self, name):
         return self.tables.get(name, True)
 
+    def trip_melts(self, start, end_exclusive):
+        return []
+
+    def trip_settle_lines(self, start, end_exclusive):
+        return []
+
+    def trip_gold_legs(self, start, end_exclusive):
+        return [{"entry_id": 1, "entry_kind": "ISSUE", "doc_date": date(2026, 10, 10), "karat_value": 21, "weight_grams": D("10.000"), "reversal_id": None},
+                {"entry_id": 2, "entry_kind": "RETURN", "doc_date": date(2026, 10, 12), "karat_value": 21, "weight_grams": D("2.000"), "reversal_id": None},
+                {"entry_id": 3, "entry_kind": "ISSUE", "doc_date": date(2026, 10, 13), "karat_value": 21, "weight_grams": D("99.000"), "reversal_id": 7}]
+
+    def trip_gold_sales(self, start, end_exclusive):
+        return [{"entry_id": 4, "doc_date": date(2026, 10, 14), "total_price": D("50000.00"), "weight_grams": D("7.000"), "reversal_id": None}]
+
     # ---- cash flow: sales 10,000 + 5,000 (bank) in and 3,000 scrap out; rent 4,000 out then reversed; revenue 1,500; electricity 600; supplier 700; custody 20,000 out; a transfer; an opening balance
     def cashflow_movements(self, start, end, ledgers=("CASH", "BANK")):
         def move(ledger, amount, reference=None, type_code="X", category=None, transfer=None, correction=None, corrected=None, name="حركة"):
@@ -1194,6 +1208,21 @@ class ScrapCostTests(Case):
         self.assertEqual(self.service.run("scrapcost", {**self.PERIOD, "karat": "18"})["tables"][0]["rows"][0]["karat"], "عيار 18")
         with self.assertRaises(ReportError):
             self.service.run("scrapcost", {**self.PERIOD, "karat": "19"})
+
+    def test_unrealised_gain_and_the_break_even_state_with_hand_numbers(self):
+        r = self.row(self.service.run("scrapcost", self.PERIOD), 21)
+        self.assertEqual(r["unreal"], D("4850.00"))                                        # 15 g x 6390 - 91000
+        self.assertEqual(r["state"], "فوق التعادل: ممكن تعوّض فلوسك")                       # 6390 >= the period average 6066.67
+
+    def test_the_market_result_uses_the_average_cost_and_leaves_out_a_reversed_issue(self):
+        result = self.service.run("scrapcost", self.PERIOD)
+        table = next(t for t in result["tables"] if t["key"] == "scrap_market")
+        rows = {r["karat"]: r for r in table["rows"]}
+        k21 = rows["عيار 21 (راجع للمحل بالسعر الحالي)"]
+        self.assertEqual((k21["out"], k21["cost"], k21["back"], k21["back_value"]), (D("10.000"), D("59714.30"), D("2.000"), D("12780.00")))   # 10 x 5971.43; 2 x 6390
+        self.assertEqual(rows["عائد بيع ذهب العهدة"]["back_value"], D("50000.00"))
+        self.assertEqual(rows["النتيجة التقريبية المحققة"]["back_value"], D("3065.70"))     # 50000 + 12780 - 59714.30
+
 
     def test_it_needs_the_invoice_right(self):
         session = session_for(frozenset({"APP_LOGIN", "REPORTS_VIEW"}))

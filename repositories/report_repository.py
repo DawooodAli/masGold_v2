@@ -40,6 +40,24 @@ class ReportRepository(BaseRepository):
             WHERE e.entry_date >= %s AND e.entry_date < %s ORDER BY e.entry_date, e.id, l.line_no
             """, (start, end_exclusive))
 
+    def trip_gold_legs(self, start, end_exclusive):
+        """The physical gold legs of the custody entries that move scrap between the shop and a market custody (ISSUE out, RETURN / ST_RET_MKT back), by entry date, per karat."""
+        return self._fetch_all(
+            f"""
+            SELECT e.id AS entry_id, e.entry_kind, e.entry_date AS doc_date, k.karat_value, g.weight_grams, c.id AS reversal_id
+            FROM market_trip_entry_gold g JOIN market_trip_entries e ON e.id = g.entry_id JOIN karats k ON k.id = g.karat_id {self._TRIP_REVERSAL}
+            WHERE e.entry_kind IN ('ISSUE', 'RETURN', 'ST_RET_MKT') AND e.entry_date >= %s AND e.entry_date < %s ORDER BY e.entry_date, e.id
+            """, (start, end_exclusive))
+
+    def trip_gold_sales(self, start, end_exclusive):
+        """The sales of custody gold (GOLD_SALE) by sale date: the agreed total price that entered the custody cash."""
+        return self._fetch_all(
+            f"""
+            SELECT e.id AS entry_id, s.sale_date AS doc_date, s.total_price, s.weight_grams, c.id AS reversal_id
+            FROM market_trip_gold_sales s JOIN market_trip_entries e ON e.id = s.entry_id {self._TRIP_REVERSAL}
+            WHERE s.sale_date >= %s AND s.sale_date < %s ORDER BY s.sale_date, e.id
+            """, (start, end_exclusive))
+
     # ------------------------------------------------------------------ sales and returns (documents by their own effective date)
     def sales_invoices(self, start, end_exclusive):
         """Finalized / voided invoices by `invoice_date`. money_in / money_out are the stored payments exactly as Invoice History sums them; account_delta is what the invoice
