@@ -215,6 +215,16 @@ class GoldSettlePageTests(base.MarketTripHeatPageTests):
         self.reveal(self.item("custodyGoldSettleButton"))
         self.assertFalse(self.item("custodyGoldSettleButton").property("enabled"))
 
+    @staticmethod
+    def texts_under(item):
+        """Every text of an item and of all its descendants (the figure chips are nested one level down)."""
+        found = []
+        for child in item.childItems():
+            if child.property("text") is not None:
+                found.append(str(child.property("text")))
+            found.extend(GoldSettlePageTests.texts_under(child))
+        return found
+
     def test_a_settled_custody_shows_the_delivered_grams_and_closes_only_at_exactly_zero(self):
         self.logo_trip()
         self.tvm._service.settle_supplier_gold("1", "11", "1", "LOGO", "10", TODAY, "", "", lkey(1))
@@ -222,7 +232,7 @@ class GoldSettlePageTests(base.MarketTripHeatPageTests):
         self.wait_idle()
         self.assertEqual(self.tvm.detail["gold"][0]["settled"], "10.000")
         row = self.item("custodyGoldRow_21_LOGO")                                                  # the custody figure row shows the delivered grams
-        self.assertIn("سُلِّم لمورد 10.000 جرام", " ".join(str(child.property("text")) for child in row.childItems()))
+        self.assertIn("سُلِّم لمورد 10.000 جرام", " ".join(self.texts_under(row)))
         self.assertEqual(self.settled_logo(), D("0.000"))
         self.assertTrue(self.item("closeTripButton").property("enabled"))                          # exactly zero outstanding: it closes
         self.assertFalse(self.item("custodyGoldSettleButton").property("enabled"))                 # nothing left to deliver

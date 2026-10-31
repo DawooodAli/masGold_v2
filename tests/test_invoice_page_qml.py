@@ -1088,7 +1088,7 @@ class InvoicePageTests(unittest.TestCase):
     def test_confirmation_offers_save_only_save_and_print_and_cancel(self):
         dialog = self.open_confirmation()
         self.assertEqual([self.text(n) for n in ("confirmFinalize", "confirmSaveAndPrint", "confirmBack")],
-                         ["حفظ فقط (Enter)", "حفظ وطباعة", "إلغاء (Esc)"])
+                         ["حفظ فقط", "حفظ وطباعة (Enter)", "إلغاء (Esc)"])
         for name in ("confirmFinalize", "confirmSaveAndPrint", "confirmBack"):
             self.assert_inside_window(self.item(name))
         self.snapshot("save-confirmation")

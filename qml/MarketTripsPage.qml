@@ -268,7 +268,27 @@ Item {
         Txt { Layout.preferredWidth: 150; text: parent.label; font.bold: true; elide: Text.ElideNone }
         Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: parent.issued; elide: Text.ElideNone }
         Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: parent.returned; elide: Text.ElideNone }
-        Txt { Layout.fillWidth: true; Layout.preferredWidth: 1; text: parent.melted; elide: Text.ElideNone; wrapMode: Text.WordWrap }
+        // owner review 2026-10-31: every figure of this column is its OWN tinted chip (never one joined line), so it reads at a glance:
+        // incoming (+) green, a payment / settlement / sale / melt amber.
+        ColumnLayout {
+            objectName: "figureChips"
+            Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.alignment: Qt.AlignTop
+            spacing: 4
+            Repeater {
+                model: parent.parent.melted === "" ? [] : parent.parent.melted.split(" • ")
+                delegate: Rectangle {
+                    readonly property bool incoming: modelData.indexOf("+") >= 0
+                    readonly property color tone: modelData === "—" || modelData.indexOf("0.000") === 0 ? theme.textMuted : (incoming ? theme.green : theme.amber)
+                    Layout.fillWidth: true
+                    implicitHeight: chipText.implicitHeight + 8
+                    radius: theme.radiusSmall
+                    color: "transparent"
+                    border.width: 1
+                    border.color: tone
+                    Txt { id: chipText; anchors.fill: parent; anchors.margins: 4; text: modelData; color: parent.tone; elide: Text.ElideNone; wrapMode: Text.WordWrap }
+                }
+            }
+        }
         Txt { objectName: "figureOutstanding"; Layout.fillWidth: true; Layout.preferredWidth: 1; text: parent.outstanding
               font.bold: true; color: parent.zero ? theme.textMuted : theme.amber; elide: Text.ElideNone }
     }

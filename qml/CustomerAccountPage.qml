@@ -51,6 +51,7 @@ Rectangle {
     }
     component Btn: Button {
         id: accountButton
+        property bool goldOutline: false
         font.family: "Cairo"
         font.pixelSize: theme.fontBody
         implicitHeight: 32
@@ -60,9 +61,9 @@ Rectangle {
             text: accountButton.text
             font.family: accountButton.font.family
             font.pixelSize: accountButton.font.pixelSize
-            font.bold: accountButton.checked
+            font.bold: accountButton.checked || accountButton.goldOutline
             color: !accountButton.enabled ? theme.textDisabled
-                   : accountButton.checked ? (accountButton.hovered ? theme.goldBright : theme.gold)
+                   : accountButton.checked || accountButton.goldOutline ? (accountButton.hovered ? theme.goldBright : theme.gold)
                    : accountButton.hovered ? theme.textPrimary : theme.textSecondary
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
@@ -75,7 +76,7 @@ Rectangle {
                    : accountButton.down ? theme.bgPrimary : accountButton.hovered ? theme.panelHover : theme.bgTertiary
             border.width: 1
             border.color: !accountButton.enabled ? theme.border
-                          : accountButton.checked ? (accountButton.down ? theme.goldBright : theme.gold)
+                          : accountButton.checked || accountButton.goldOutline ? (accountButton.down ? theme.goldBright : theme.gold)
                           : (accountButton.hovered || accountButton.activeFocus) ? theme.goldDark : theme.border
             Behavior on color { ColorAnimation { duration: 120 } }
             Behavior on border.color { ColorAnimation { duration: 120 } }
@@ -95,7 +96,8 @@ Rectangle {
             Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
             Txt { text: page.vm ? page.vm.header : ""; font.bold: true; font.pixelSize: 18 }
             Btn { text: "تحديث"; enabled: page.vm && !page.vm.busy; onClicked: page.vm.refresh() }
-            Btn { text: "رجوع للعملاء"; enabled: page.vm && !page.vm.busy; onClicked: page.vm.close() }
+            Item { Layout.fillWidth: true }
+            Btn { goldOutline: true; text: "رجوع للعملاء"; enabled: page.vm && !page.vm.busy; onClicked: page.vm.close() }
         }
         RowLayout {
             visible: !page.embedded

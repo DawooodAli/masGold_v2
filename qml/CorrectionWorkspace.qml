@@ -68,6 +68,7 @@ Item {
         id: btn
         property bool primary: false
         property bool selected: false
+        property bool goldOutline: false
         property color accent: theme.gold
         readonly property bool tinted: btn.accent.toString() !== theme.gold.toString()
         font.family: theme.fontFamily
@@ -79,8 +80,9 @@ Item {
             text: btn.text
             font.family: btn.font.family
             font.pixelSize: btn.font.pixelSize
-            font.bold: btn.primary || btn.selected
+            font.bold: btn.primary || btn.selected || btn.goldOutline
             color: !btn.enabled ? theme.textDisabled
+                   : btn.goldOutline ? (btn.hovered ? theme.goldBright : theme.gold)
                    : btn.primary || btn.selected ? (btn.tinted ? btn.accent
                                                      : btn.hovered ? theme.goldBright : theme.gold)
                    : btn.hovered ? theme.textPrimary : theme.textSecondary
@@ -97,6 +99,7 @@ Item {
                    : btn.down ? theme.bgPrimary : btn.hovered ? theme.panelHover : theme.bgTertiary
             border.width: 1
             border.color: !btn.enabled ? theme.border
+                          : btn.goldOutline ? (btn.down ? theme.goldBright : theme.gold)
                           : btn.primary || btn.selected ? (btn.down ? theme.goldBright : btn.accent)
                           : (btn.hovered || btn.activeFocus) ? theme.goldDark : theme.border
             Behavior on color { ColorAnimation { duration: 120 } }
@@ -131,8 +134,6 @@ Item {
         anchors.margins: 12
         layoutDirection: Qt.RightToLeft
         spacing: 10
-        Btn { objectName: "correctionBack"; text: "رجوع  ⁦Esc⁩"; enabled: !!correctionPage.vm && !correctionPage.vm.saving
-              onClicked: correctionPage.vm.close() }
         Txt { objectName: "correctionTitle"; color: theme.red; font.bold: true; font.pixelSize: theme.fontPageTitle
               Layout.fillWidth: true
               value: correctionPage.h.title || "تصحيح / عكس" }
@@ -141,6 +142,9 @@ Item {
               customerId: correctionPage.h.customerId || ""
               onCustomerRequested: function(customerId) { correctionPage.customerRequested(customerId) } }
         Item { Layout.fillWidth: true }
+        Item { Layout.preferredWidth: 18 }
+        Btn { objectName: "correctionBack"; goldOutline: true; text: "رجوع  ⁦Esc⁩"; enabled: !!correctionPage.vm && !correctionPage.vm.saving
+              onClicked: correctionPage.vm.close() }
     }
 
     // Which transaction: the invoice itself, or one of its Exchanges / Returns.

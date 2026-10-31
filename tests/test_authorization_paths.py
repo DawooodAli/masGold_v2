@@ -139,6 +139,7 @@ class CallSiteAuditTests(unittest.TestCase):
                   ("services/customer_service.py", "_authorize_page_read"),        # CUSTOMERS_VIEW (Customers page)
                   ("services/invoice_service.py", "search_customers"),             # invoice permissions (Billing picker)
                   ("services/dead_cash_service.py", "context"),                    # DEAD_CASH_MANAGE (dialog balance)
+                  ("services/dead_cash_service.py", "writeoff_summary"),           # DEAD_CASH_VIEW (customers page list of written-off balances)
                   ("services/customer_service.py", "_dead_cash_visible"),          # DEAD_CASH_VIEW (detail gate)
                   ("services/customer_service.py", "get_dead_cash_history"),       # DEAD_CASH_VIEW (history)
                   ("services/user_admin_service.py", "overview"),                  # USERS_MANAGE (read model, no hashes)

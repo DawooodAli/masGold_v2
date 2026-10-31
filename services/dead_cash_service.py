@@ -120,6 +120,29 @@ class DeadCashService:
         except _Discard as done:
             return done.args[0]
 
+    def writeoff_summary(self, *, _expected_actor=None):
+        """Every customer with an active write-off and the grand totals (DEAD_CASH_VIEW, non-locking read)."""
+        actor = self._session.require_authenticated()
+        if _expected_actor is not None and not self._session.is_current(_expected_actor):
+            raise PermissionError("انتهت جلسة الدخول.")
+        if VIEW not in actor.permissions:
+            raise PermissionError("لا توجد صلاحية لعرض الديون المعدومة.")
+        try:
+            with self._transaction() as connection:
+                self._authorization.require_permission_read(connection, actor, VIEW)
+                rows = self._repository(connection).writeoff_totals_by_customer()
+                items, total, recovered = [], Decimal("0"), Decimal("0")
+                for row in rows:
+                    amount, back = Decimal(str(row["written_off"])), Decimal(str(row["recovered"]))
+                    total, recovered = total + amount, recovered + back
+                    items.append({"customer_id": str(row["customer_id"]), "name": row["name"], "code": row["customer_code"],
+                                  "count": int(row["writeoffs"]), "written_off": str(amount), "recovered": str(back),
+                                  "remaining": str(amount - back)})
+                raise _Discard({"items": items, "written_off": str(total), "recovered": str(recovered),
+                                "remaining": str(total - recovered)})
+        except _Discard as done:
+            return done.args[0]
+
     # ------------------------------------------------------------ write-off
     def write_off(self, customer_id, amount, reason, password, expected_balance, request_key, *,
                   silent=True, _expected_actor=None):

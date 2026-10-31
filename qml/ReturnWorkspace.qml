@@ -90,6 +90,7 @@ Item {
     component Btn: Button {
         id: btn
         property bool primary: false
+        property bool goldOutline: false
         font.family: theme.fontFamily
         font.pixelSize: theme.fontBody
         implicitHeight: 30
@@ -99,9 +100,9 @@ Item {
             text: btn.text
             font.family: btn.font.family
             font.pixelSize: btn.font.pixelSize
-            font.bold: btn.primary
+            font.bold: btn.primary || btn.goldOutline
             color: !btn.enabled ? theme.textDisabled
-                   : btn.primary ? (btn.hovered ? theme.goldBright : theme.gold)
+                   : btn.primary || btn.goldOutline ? (btn.hovered ? theme.goldBright : theme.gold)
                    : btn.hovered ? theme.textPrimary : theme.textSecondary
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
@@ -115,7 +116,7 @@ Item {
                    : btn.down ? theme.bgPrimary : btn.hovered ? theme.panelHover : theme.bgTertiary
             border.width: 1
             border.color: !btn.enabled ? theme.border
-                          : btn.primary ? (btn.down ? theme.goldBright : theme.gold)
+                          : btn.primary || btn.goldOutline ? (btn.down ? theme.goldBright : theme.gold)
                           : (btn.hovered || btn.activeFocus) ? theme.goldDark : theme.border
             Behavior on color { ColorAnimation { duration: 120 } }
             Behavior on border.color { ColorAnimation { duration: 120 } }
@@ -170,8 +171,6 @@ Item {
         anchors.margins: 12
         layoutDirection: Qt.RightToLeft
         spacing: 10
-        Btn { objectName: "returnBack"; text: "رجوع  ⁦Esc⁩"; enabled: !!returnPage.vm && !returnPage.vm.saving
-              onClicked: returnPage.vm.close() }
         Txt { objectName: "returnTitle"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontPageTitle
               value: returnPage.h.number ? "مرتجع — فاتورة " + returnPage.h.number : "مرتجع" }
         CustomerNameLink { objectName: "returnCustomerName"; visible: !!returnPage.h.number
@@ -183,6 +182,9 @@ Item {
         Item { Layout.fillWidth: true }
         Txt { objectName: "returnDeadline"; visible: !!returnPage.h.number; value: returnPage.h.deadlineText || ""
               color: returnPage.h.expired ? theme.red : theme.textMuted; font.pixelSize: theme.fontTableHeader }
+        Item { Layout.preferredWidth: 18 }
+        Btn { objectName: "returnBack"; goldOutline: true; text: "رجوع  ⁦Esc⁩"; enabled: !!returnPage.vm && !returnPage.vm.saving
+              onClicked: returnPage.vm.close() }
     }
 
     // Eligibility: the making window, the manager approval and the deadline — never inferred by the employee.

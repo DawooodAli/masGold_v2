@@ -32,6 +32,7 @@ PAGE_SIZE = 50
 MAX_ROWS = 50000
 ZERO = Decimal("0")
 ZERO3, ZERO2 = Decimal("0.000"), Decimal("0.00")
+LEGACY_MAKING_COST = Decimal("300")                                   # EGP per gram: the making cost assumed for a piece with no stored cost (owner decision 2026-10-31)
 BASE_PERMISSION = "REPORTS_VIEW"
 REPORT_PERMISSIONS = {"sales": ("INVOICE_VIEW",), "stock": ("INVENTORY_VIEW",), "alerts": ("INVENTORY_VIEW",), "stockweights": ("INVENTORY_VIEW",), "indicators": (), "gold": (), "employees": ("INVOICE_VIEW",), "makingprofit": ("INVOICE_VIEW", "INVENTORY_VIEW"), "scrapcost": ("INVOICE_VIEW",), "demand": ("INVOICE_VIEW",), "customers": ("CUSTOMERS_VIEW",), "deadcash": ("CUSTOMERS_VIEW",),
                       "suppliers": ("SUPPLIER_VIEW",), "treasury": (), "cashflow": (), "market": ("MARKET_TRIP_MANAGE",),
@@ -1046,7 +1047,7 @@ class ReportService:
         return {"meaning": meaning, "tables": tables, "totals": cards, "options": options}
 
     # ------------------------------------------------------------------ 3c. making profit (owner request): the making charged on a sale against the making COST of the piece
-    def _makingprofit(self, repo, gate, filters, start, end):
+    def _makingprofit(self, repo, gate, filters, start, end):   # LEGACY_MAKING_COST: owner decision 2026-10-31
         """For every identified piece SOLD in the period (SELL_INVENTORY lines of FINALIZED, not fully reversed invoices): the making charged on the line minus the making COST of the piece =
         its profit or loss on the making. The cost is the piece's stored acquisition making per gram (the real one of a supplier intake, or the category cost frozen at stock entry); a piece
         without one is ESTIMATED from the category's CURRENT cost and its margin is shown apart as an estimate; a piece with neither, or a sale line whose making is unknown (legacy), is counted
@@ -1084,8 +1085,7 @@ class ReportService:
             elif r["category_id"] and int(r["category_id"]) in current:
                 per_gram, estimated = current[int(r["category_id"])], True
             else:
-                s["left_out"] += 1                                                                          # no cost anywhere: left out of the margin
-                continue
+                per_gram, estimated = LEGACY_MAKING_COST, True                                              # old stock with no stored cost: the owner's default (300 EGP/g), shown as an estimate
             cost = (per_gram * weight).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             s["sold"] += sold
             s["cost"] += cost

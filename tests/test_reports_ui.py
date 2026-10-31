@@ -315,12 +315,12 @@ class ReportsPageTests(harness.InvoicePageTests):
             for key in [r["key"] for r in vm.reports]:
                 vm.select(key)
                 self.wait_until(lambda key=key: not vm.busy and vm.result.get("report") == key, f"{key} loaded")
-                self.assertEqual((vm.filters["from"], vm.filters["to"]), ("2026-10-01", "2026-10-20"), key)         # month start .. today on EVERY report
+                self.assertEqual((vm.filters["from"], vm.filters["to"]), ("2026-10-14", "2026-10-20") if key == "scrapcost" else ("2026-10-01", "2026-10-20"), key)         # month start .. today; the scrap cost report: the last 7 days
             module._today = lambda: date(2026, 11, 3)
             for key in [r["key"] for r in vm.reports]:
                 vm.select(key)
                 self.wait_until(lambda key=key: not vm.busy and vm.result.get("report") == key, f"{key} reloaded")
-                self.assertEqual((vm.filters["from"], vm.filters["to"]), ("2026-11-01", "2026-11-03"), key)         # and it follows the calendar on each of them
+                self.assertEqual((vm.filters["from"], vm.filters["to"]), ("2026-10-28", "2026-11-03") if key == "scrapcost" else ("2026-11-01", "2026-11-03"), key)         # and it follows the calendar on each of them
         finally:
             module._today = real
 

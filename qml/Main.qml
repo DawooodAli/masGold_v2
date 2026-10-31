@@ -3958,6 +3958,12 @@ ApplicationWindow {
                     enabled: !customerVM.busy
                     onClicked: customerVM.refresh()
                 }
+                CustomerButton {
+                    objectName: "writeoffListButton"
+                    text: "المشطوب"
+                    enabled: !customerVM.busy
+                    onClicked: { customerVM.loadWriteoffList(); writeoffListDialog.open() }
+                }
                 Item { Layout.fillWidth: true }
                 CustomerLabel {
                     value: customerVM.busy ? "جارٍ التحميل…" : "بيانات العملاء وحساباتهم"
@@ -4837,6 +4843,81 @@ ApplicationWindow {
                             customerFormDialog.close()
                     }
                 }
+            }
+        }
+
+        Dialog {
+            id: writeoffListDialog
+            objectName: "writeoffListDialog"
+            parent: Overlay.overlay
+            anchors.centerIn: parent
+            width: Math.min(640, root.width - 60)
+            height: Math.min(520, root.height - 60)
+            modal: true
+            closePolicy: Popup.CloseOnEscape
+            background: CustomerCard { border.color: theme.goldDark }
+            header: CustomerLabel {
+                value: "العملاء المشطوب رصيدهم"
+                padding: 16
+                color: theme.gold
+                font.pixelSize: 18
+                font.bold: true
+            }
+            contentItem: ColumnLayout {
+                spacing: 8
+                CustomerLabel {
+                    objectName: "writeoffListError"
+                    Layout.fillWidth: true
+                    visible: !!customerVM.writeoffList.error
+                    value: customerVM.writeoffList.error || ""
+                    color: theme.red
+                }
+                CustomerLabel {
+                    Layout.fillWidth: true
+                    visible: !customerVM.writeoffList.error && (customerVM.writeoffList.items || []).length === 0
+                    value: "لا يوجد عملاء مشطوب رصيدهم."
+                }
+                ListView {
+                    objectName: "writeoffListView"
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    spacing: 6
+                    model: customerVM.writeoffList.items || []
+                    delegate: Rectangle {
+                        width: ListView.view.width
+                        height: 44
+                        color: "transparent"
+                        border.color: theme.goldDark
+                        border.width: 1
+                        radius: 6
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.margins: 8
+                            CustomerLabel { value: modelData.remaining; color: theme.amber; font.bold: true }
+                            CustomerLabel { value: "مشطوب " + modelData.written_off + (modelData.recovered !== "0.00 ج" ? " • مُحصَّل " + modelData.recovered : "") }
+                            Item { Layout.fillWidth: true }
+                            CustomerLabel { value: modelData.name + " (" + modelData.code + ")"; font.bold: true }
+                        }
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: (customerVM.writeoffList.items || []).length > 0
+                    CustomerLabel { objectName: "writeoffListTotal"; value: "الإجمالي المتبقي مشطوباً: " + (customerVM.writeoffList.remaining || ""); color: theme.gold; font.bold: true }
+                    Item { Layout.fillWidth: true }
+                    CustomerLabel { value: "إجمالي المشطوب: " + (customerVM.writeoffList.written_off || "") + " • " + (customerVM.writeoffList.count || 0) + " عميل" }
+                }
+            }
+            footer: RowLayout {
+                CustomerButton {
+                    Layout.leftMargin: 16
+                    Layout.bottomMargin: 12
+                    objectName: "writeoffListClose"
+                    text: "إغلاق"
+                    onClicked: writeoffListDialog.close()
+                }
+                Item { Layout.fillWidth: true }
             }
         }
 

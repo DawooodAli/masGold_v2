@@ -1106,13 +1106,13 @@ class MakingProfitTests(Case):
         self.assertEqual((a["pieces"], a["grams"], a["sold"], a["cost"], a["margin"], a["estimated"], a["left_out"]), (3, D("18.000"), D("3000.00"), D("1750.00"), D("1250.00"), D("250.00"), 1))
         self.assertEqual(self.rows(result, 18)["B"]["margin"], D("-200.00"))                                    # 800 - 250 x 4 = a LOSS
         letterless = self.rows(result, 21)["بدون حرف"]
-        self.assertEqual((letterless["pieces"], letterless["sold"], letterless["margin"], letterless["left_out"]), (1, D("0.00"), D("0.00"), 1))          # no cost anywhere: left out, never zero profit
+        self.assertEqual((letterless["pieces"], letterless["sold"], letterless["margin"], letterless["left_out"]), (1, D("400.00"), D("-200.00"), 0))          # no stored cost anywhere: the default 300 EGP/g (2 g -> 600) applies, shown as an estimate
 
     def test_cards_and_the_reversed_invoice(self):
         result = self.service.run("makingprofit", self.PERIOD)
         values = self.totals(result)
-        self.assertEqual((values["الفرق على المصنعية"], values["مصنعية البيع المحسوبة"], values["قطع بدون حساب"], values["فواتير معكوسة غير محسوبة"]), (D("1050.00"), D("3800.00"), 2, 1))
-        self.assertIn("منه تقديري 250.00", next(t["note"] for t in result["totals"] if t["label"] == "الفرق على المصنعية"))
+        self.assertEqual((values["الفرق على المصنعية"], values["مصنعية البيع المحسوبة"], values["قطع بدون حساب"], values["فواتير معكوسة غير محسوبة"]), (D("850.00"), D("4200.00"), 1, 1))
+        self.assertIn("منه تقديري 50.00", next(t["note"] for t in result["totals"] if t["label"] == "الفرق على المصنعية"))
         self.assertEqual([t["karat"] for t in result["tables"]], [21, 18])           # one table per karat, never mixed
 
     def test_filters_and_their_options(self):
@@ -1128,7 +1128,7 @@ class MakingProfitTests(Case):
         with mock.patch.object(FakeRepo, "category_costs", lambda self: None):
             result = self.service.run("makingprofit", self.PERIOD)
         a = self.rows(result, 21)["A"]
-        self.assertEqual((a["cost"], a["margin"], a["estimated"], a["left_out"]), (D("1000.00"), D("1000.00"), D("0.00"), 2))
+        self.assertEqual((a["cost"], a["margin"], a["estimated"], a["left_out"]), (D("2500.00"), D("500.00"), D("-500.00"), 1))        # no stored cost and no category cost: the default 300 EGP/g
         self.assertTrue(any("طبّق التحديثات" in line for line in result["meaning"]))
 
     def test_it_needs_both_the_invoice_and_the_inventory_right(self):

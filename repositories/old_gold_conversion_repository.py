@@ -322,7 +322,8 @@ class OldGoldConversionRepository:
                     notes,
                     created_by_user_id,
                     entered_by_employee_id,
-                    updated_by_user_id
+                    updated_by_user_id,
+                    acquisition_making_per_gram
                 )
                 VALUES (
                     %s,
@@ -338,8 +339,9 @@ class OldGoldConversionRepository:
                     %s,
                     %s,
                     %s,
-                    %s
-                )
+                    %s,
+                    20
+                )     -- a piece made from the shop's own scrap carries a fixed making cost of 20 EGP/g (owner decision 2026-10-31)
                 """,
                 (
                     int(item_type_id),

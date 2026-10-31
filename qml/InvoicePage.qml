@@ -2839,30 +2839,33 @@ Item {
             layoutDirection: Qt.RightToLeft
             spacing: 8
             Item { Layout.preferredWidth: 6; Layout.preferredHeight: 52 }
-            // Enter keeps meaning exactly what it always meant: save, no side effect.
-            // Printing needs an explicit click — never a side effect of mashing Enter.
+            // Owner decision (2026-10-31): when the invoice is printable, «حفظ وطباعة» is the DEFAULT action
+            // (the highlighted button and Enter); «حفظ فقط» stays one click away. An old-gold-only
+            // invoice has nothing to print, so its single button is a plain save.
             PrimaryButton {
                 id: confirmButton
-                objectName: "confirmFinalize"
-                text: invoiceVM.printable ? "حفظ فقط (Enter)" : "حفظ (Enter)"
+                objectName: invoiceVM.printable ? "confirmSaveAndPrint" : "confirmFinalize"
+                text: invoiceVM.printable ? "حفظ وطباعة (Enter)" : "حفظ (Enter)"
                 Layout.preferredWidth: 150
                 enabled: confirmDialog.acknowledged
-                onClicked: confirmDialog.confirm(false)
-                Keys.onReturnPressed: confirmDialog.confirm(false)
-                Keys.onEnterPressed: confirmDialog.confirm(false)
-            }
-            SmallButton {
-                objectName: "confirmSaveAndPrint"
-                visible: invoiceVM.printable           // old gold only: save only, there is nothing to print
-                text: "حفظ وطباعة"
-                Layout.preferredWidth: 100
-                enabled: confirmDialog.acknowledged
-                onClicked: {
+                function act() {
+                    if (!invoiceVM.printable) { confirmDialog.confirm(false); return }
                     // No Bill printer: say so and save nothing (حفظ فقط still works).
                     billPrinterMissing.text = invoiceVM.billPrinterProblem()
                     if (billPrinterMissing.text.length === 0)
                         confirmDialog.confirm(true)
                 }
+                onClicked: act()
+                Keys.onReturnPressed: act()
+                Keys.onEnterPressed: act()
+            }
+            SmallButton {
+                objectName: invoiceVM.printable ? "confirmFinalize" : "confirmSaveOnlyHidden"
+                visible: invoiceVM.printable           // old gold only: save only, there is nothing to print
+                text: "حفظ فقط"
+                Layout.preferredWidth: 100
+                enabled: confirmDialog.acknowledged
+                onClicked: confirmDialog.confirm(false)
             }
             Button {
                 objectName: "confirmBack"

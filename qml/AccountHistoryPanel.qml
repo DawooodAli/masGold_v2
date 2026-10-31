@@ -42,8 +42,6 @@ ColumnLayout {
         Layout.fillWidth: true
         layoutDirection: Qt.RightToLeft
         spacing: 10
-        HistoryButton { objectName: "accountHistoryBack"; text: "رجوع ▸"; accent: theme.textSecondary
-                        onClicked: panel.history.close() }
         Label { objectName: "accountHistoryTitle"; text: "حركات الحساب — " + panel.history.accountName
                 color: theme.gold; font.family: "Cairo"; font.pixelSize: 15; font.bold: true }
         Label { text: "الرصيد الحالي"; color: theme.textMuted; font.family: "Cairo"; font.pixelSize: 12 }
@@ -60,6 +58,9 @@ ColumnLayout {
                 onClicked: panel.history.setDirection(modelData[0])
             }
         }
+        Item { Layout.preferredWidth: 18 }
+        HistoryButton { objectName: "accountHistoryBack"; text: "رجوع  ⁦Esc⁩"; accent: theme.gold
+                        onClicked: panel.history.close() }
     }
 
     Label {

@@ -6,7 +6,7 @@ shown as a failure, never as an empty report.
 
 The type registers itself for QML (`import MasGold.Reports 1.0`) when this module is imported (main.py's view-model builder imports `customer_picker_viewmodel`, which imports
 this module), so the application entry point needs no change; the page gives it the real `AppSession` exactly like the customer picker."""
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
@@ -72,6 +72,16 @@ def _today():
 def month_period(today):
     """The default period of every report: the first day of the CURRENT month up to today (it moves by itself with the calendar)."""
     return today.replace(day=1).isoformat(), today.isoformat()
+
+
+WEEK_REPORTS = {"scrapcost"}                                                  # owner request 2026-10-31: these reports default to the last 7 days
+
+
+def default_period(report, today):
+    """The automatic period of a report: the current month so far, or (WEEK_REPORTS) the last 7 days ending today."""
+    if report in WEEK_REPORTS:
+        return (today - timedelta(days=6)).isoformat(), today.isoformat()
+    return month_period(today)
 
 
 HIDDEN_ON_SCREEN = {("sales", "documents"), ("stock", "items"), ("stock", "summary"), ("suppliers", "movements"), ("treasury", "movements"), ("market", "summary")}
@@ -382,7 +392,7 @@ class ReportsViewModel(QObject):
             return
         self._report, self._result, self._error, self._message = report, {}, "", ""
         self._period_edited = False
-        self._filters = {"from": month_period(_today())[0], "to": month_period(_today())[1], "text": ""}
+        self._filters = {"from": default_period(report, _today())[0], "to": default_period(report, _today())[1], "text": ""}
         for spec in FILTER_SPECS.get(report, []):
             self._filters[spec["key"]] = "" if spec.get("type") == "text" else spec["options"][0][0]
         self.changed.emit()
@@ -402,7 +412,7 @@ class ReportsViewModel(QObject):
         re-read when it moved (a new day or a new month). An edited period is left alone."""
         if not self._report or self._period_edited:
             return
-        first, last = month_period(_today())
+        first, last = default_period(self._report, _today())
         if (self._filters.get("from"), self._filters.get("to")) != (first, last):
             self._filters["from"], self._filters["to"] = first, last
             self.changed.emit()
@@ -417,7 +427,7 @@ class ReportsViewModel(QObject):
         if not self._report or self._service is None or self._session is None:
             return
         if not self._period_edited:                                           # an automatic period is re-evaluated at every read (a session kept open past midnight / month end)
-            self._filters["from"], self._filters["to"] = month_period(_today())
+            self._filters["from"], self._filters["to"] = default_period(self._report, _today())
         report, filters = self._report, {**self._filters, "page": max(1, int(page))}
         self._error, self._message, self._busy = "", "", True
         self._request += 1

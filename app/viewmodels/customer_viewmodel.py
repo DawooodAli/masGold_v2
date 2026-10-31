@@ -1,6 +1,7 @@
 """Customer profile editing and read-only account presentation for QML."""
 
 from copy import deepcopy
+from decimal import Decimal
 
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
@@ -47,6 +48,7 @@ class CustomerViewModel(QObject):
         self._merge_service, self._merge = None, {}
         self._dead_cash_summary, self._writeoff, self._writeoff_key = {}, {}, ""
         self._dead_cash_restricted = True
+        self._writeoff_list = {"items": [], "error": ""}
         self._customers = []
         self._customer_types = []
         self._page = 1
@@ -927,6 +929,35 @@ class CustomerViewModel(QObject):
         from decimal import Decimal
         return bool(service and service.can_write_off() and self._selected_customer_id and balance is not None
                     and Decimal(str(balance)) > 0)
+
+    @Property("QVariantMap", notify=deadCashChanged)
+    def writeoffList(self):
+        """The customers whose receivable was written off with the grand totals (formatted for display)."""
+        return self._writeoff_list
+
+    @Slot(result=bool)
+    def loadWriteoffList(self):
+        """Read-only: fills `writeoffList`; the service checks DEAD_CASH_VIEW itself (the button is only a convenience)."""
+        service = self._dead_cash()
+        if service is None or self._busy:
+            return False
+        try:
+            data = service.writeoff_summary()
+        except Exception as exc:
+            self._writeoff_list = {"items": [], "error": self._error_text(exc, "تعذر تحميل العملاء المشطوب رصيدهم."),
+                                   "written_off": "", "recovered": "", "remaining": ""}
+            self.deadCashChanged.emit()
+            return False
+
+        def money(value):
+            return f"{Decimal(value):,.2f} ج"
+        items = [{"customer_id": r["customer_id"], "name": r["name"], "code": r["code"], "count": r["count"],
+                  "written_off": money(r["written_off"]), "recovered": money(r["recovered"]),
+                  "remaining": money(r["remaining"])} for r in data["items"]]
+        self._writeoff_list = {"items": items, "error": "", "count": len(items), "written_off": money(data["written_off"]),
+                               "recovered": money(data["recovered"]), "remaining": money(data["remaining"])}
+        self.deadCashChanged.emit()
+        return True
 
     @Property(bool, notify=deadCashChanged)
     def canReverseDeadCash(self):

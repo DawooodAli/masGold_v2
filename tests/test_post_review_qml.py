@@ -582,7 +582,7 @@ class OldGoldOnlyCustomerOptionalPageTests(harness.InvoicePageTests):
         self.assertTrue(self.vm.printable)
         dialog = self.open_confirmation()
         self.assertEqual([self.text(n) for n in ("confirmFinalize", "confirmSaveAndPrint")],
-                         ["حفظ فقط (Enter)", "حفظ وطباعة"])
+                         ["حفظ فقط", "حفظ وطباعة (Enter)"])
         self.click("confirmSaveAndPrint")
         self.wait_until(lambda: self.vm.hasSuccess and self.vm.printSucceeded)
         self.assertEqual(self.printer.calls, ["901"])
@@ -597,7 +597,7 @@ class OldGoldOnlyCustomerOptionalPageTests(harness.InvoicePageTests):
         self.assertTrue(self.vm.printable)
         dialog = self.open_confirmation()
         self.assertEqual([self.text(n) for n in ("confirmFinalize", "confirmSaveAndPrint")],
-                         ["حفظ فقط (Enter)", "حفظ وطباعة"])
+                         ["حفظ فقط", "حفظ وطباعة (Enter)"])
         self.click("confirmSaveAndPrint")
         self.wait_until(lambda: self.vm.hasSuccess and self.vm.printSucceeded)
         self.assertEqual(self.printer.calls, ["901"])

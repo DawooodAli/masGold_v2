@@ -124,6 +124,21 @@ class DeadCashRepository(BaseRepository):
         )
         return Decimal(str(row["total"]))
 
+    def writeoff_totals_by_customer(self):
+        """Per customer: the ACTIVE (not reversed) receivable write-offs, what was recovered since, one plain statement."""
+        return self._fetch_all(
+            """
+            SELECT w.customer_id, c.name, c.customer_code, COUNT(*) AS writeoffs, SUM(w.amount) AS written_off,
+                   COALESCE(SUM(r.recovered), 0) AS recovered
+            FROM dead_cash_writeoffs w
+            JOIN customers c ON c.id = w.customer_id
+            LEFT JOIN (SELECT dead_cash_writeoff_id, SUM(amount) AS recovered FROM dead_cash_recoveries GROUP BY dead_cash_writeoff_id) r
+                   ON r.dead_cash_writeoff_id = w.id
+            WHERE w.is_reversed = FALSE AND w.writeoff_direction = 'CUSTOMER_OWES_SHOP'
+            GROUP BY w.customer_id, c.name, c.customer_code
+            ORDER BY written_off DESC, c.name, w.customer_id
+            """)
+
     # ------------------------------------------------------------ warning flags
 
     def get_active_warning(self, customer_id, for_update=False):

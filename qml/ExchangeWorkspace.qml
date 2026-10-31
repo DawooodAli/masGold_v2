@@ -108,6 +108,7 @@ Item {
     component Btn: Button {
         id: btn
         property bool primary: false
+        property bool goldOutline: false
         font.family: theme.fontFamily
         font.pixelSize: theme.fontBody
         implicitHeight: 30
@@ -117,9 +118,9 @@ Item {
             text: btn.text
             font.family: btn.font.family
             font.pixelSize: btn.font.pixelSize
-            font.bold: btn.primary
+            font.bold: btn.primary || btn.goldOutline
             color: !btn.enabled ? theme.textDisabled
-                   : btn.primary ? (btn.hovered ? theme.goldBright : theme.gold)
+                   : btn.primary || btn.goldOutline ? (btn.hovered ? theme.goldBright : theme.gold)
                    : btn.hovered ? theme.textPrimary : theme.textSecondary
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
@@ -133,7 +134,7 @@ Item {
                    : btn.down ? theme.bgPrimary : btn.hovered ? theme.panelHover : theme.bgTertiary
             border.width: 1
             border.color: !btn.enabled ? theme.border
-                          : btn.primary ? (btn.down ? theme.goldBright : theme.gold)
+                          : btn.primary || btn.goldOutline ? (btn.down ? theme.goldBright : theme.gold)
                           : (btn.hovered || btn.activeFocus) ? theme.goldDark : theme.border
             Behavior on color { ColorAnimation { duration: 120 } }
             Behavior on border.color { ColorAnimation { duration: 120 } }
@@ -202,8 +203,6 @@ Item {
         anchors.margins: 12
         layoutDirection: Qt.RightToLeft
         spacing: 10
-        Btn { objectName: "exchangeBack"; text: "رجوع  ⁦Esc⁩"; enabled: !!exchangePage.vm && !exchangePage.vm.saving
-              onClicked: exchangePage.vm.close() }
         Txt { objectName: "exchangeTitle"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontPageTitle
               value: exchangePage.h.number ? "استبدال — فاتورة " + exchangePage.h.number : "استبدال" }
         CustomerNameLink { objectName: "exchangeCustomerName"; visible: !!exchangePage.h.number
@@ -213,6 +212,9 @@ Item {
         Item { Layout.fillWidth: true }
         Txt { visible: !!exchangePage.h.windowText; value: exchangePage.h.windowText || ""
               color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+        Item { Layout.preferredWidth: 18 }
+        Btn { objectName: "exchangeBack"; goldOutline: true; text: "رجوع  ⁦Esc⁩"; enabled: !!exchangePage.vm && !exchangePage.vm.saving
+              onClicked: exchangePage.vm.close() }
     }
 
     Txt { objectName: "exchangeState"; anchors.centerIn: parent
