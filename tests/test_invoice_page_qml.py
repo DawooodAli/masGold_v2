@@ -257,7 +257,13 @@ class InvoicePageTests(unittest.TestCase):
 
     def assert_provider_settings_loaded(self):
         settings = self.controller.gold_settings
+        page = self.root.findChild(QObject, "settingsPage")
+        previous = page.property("openSection") if page is not None else ""
+        if page is not None:
+            page.setProperty("openSection", "gold")                                  # the provider settings load when their card is opened
         self.wait_until(lambda: not settings.busy and bool(settings.data), "offline provider settings not loaded")
+        if page is not None:
+            page.setProperty("openSection", previous)
         self.assertIs(settings.service, self.provider_settings)
         self.assertGreater(self.provider_settings.load_calls, 0)
         self.assertFalse(settings.isError, settings.message)
@@ -1229,6 +1235,7 @@ class InvoicePageTests(unittest.TestCase):
     def test_settings_printing_has_two_independent_printers(self):
         printing = self.controller.operational_viewmodels["printerSettingsVM"]
         self.root.setProperty("currentPage", 6)
+        self.root.findChild(QObject, "settingsPage").setProperty("openSection", "printing")
         self.wait_until(lambda: self.visual_item("billPrinterCombo") is not None)
         self.assert_provider_settings_loaded()
         self.scroll_settings_to("billPrinterCombo")

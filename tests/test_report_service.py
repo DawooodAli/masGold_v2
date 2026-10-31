@@ -986,6 +986,15 @@ class EmployeeKpiTests(Case):
         note = next(t["note"] for t in result["tables"] if t["title"] == "علي")
         self.assertIn("5.000", note)                                                                                  # the unknown making is stated, never a zero
 
+    def test_a_bar_chart_compares_the_employees_per_karat_for_sales_and_scrap_purchases(self):
+        bars = {b["key"]: b for b in self.service.run("employees", self.PERIOD)["bars"]}
+        sold21 = bars["emp_sold_21"]
+        self.assertEqual(sold21["karat"], 21)                                                                         # one chart per karat: never added across karats
+        self.assertEqual(sold21["rows"][0], {"label": "علي", "value": D("20.000")})                                   # the largest first
+        self.assertEqual([r["value"] for r in sold21["rows"]], sorted((r["value"] for r in sold21["rows"]), reverse=True))
+        self.assertIn("emp_bought_21", bars)
+        self.assertEqual(next(r["value"] for r in bars["emp_bought_21"]["rows"] if r["label"] == "علي"), D("8.000"))
+
     def test_a_reversed_invoice_is_not_counted_and_the_cards_say_so(self):
         values = self.totals(self.service.run("employees", self.PERIOD))
         self.assertEqual((values["موظفون لهم حركة"], values["فواتير معكوسة غير محسوبة"]), (3, 1))

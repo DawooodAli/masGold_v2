@@ -1,4 +1,5 @@
 """قفل مراجعات المدير والتقارير: the service (the user's own password, persistent cooldown) and the real screen (locked on entry, wrong password refused, right password opens, locks again after leaving)."""
+from PySide6.QtCore import QObject
 import unittest
 
 from PySide6.QtTest import QTest
@@ -125,6 +126,7 @@ class GateScreenTests(harness.InvoicePageTests):
         self.gate._service = type("S", (), {"change_password": lambda s, current, new, confirm, **k: calls.append((current, new, confirm)) or {"changed": True},
                                             "verify": lambda s, *a, **k: True})()
         self.root.setProperty("currentPage", 6)
+        self.root.findChild(QObject, "settingsPage").setProperty("openSection", "password")
         self.wait_until(lambda: self.visual_item("settingsPassword") is not None, "the card exists")
         self.scroll_settings_to("settingsPassword")
         self.assertFalse(self.item("passwordChange").property("enabled"))                          # nothing typed yet

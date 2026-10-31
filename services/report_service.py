@@ -1044,7 +1044,15 @@ class ReportService:
         cards = [total("موظفون لهم حركة", len(people), "count", "", "summary")]
         if reversed_invoices:
             cards.append(total("فواتير معكوسة غير محسوبة", len(reversed_invoices), "count", "", "summary"))
-        return {"meaning": meaning, "tables": tables, "totals": cards, "options": options}
+        # owner request 2026-10-31: a bar chart that COMPARES the employees, for the sales and for the scrap purchases, one chart per karat (karats are never added together)
+        bars = []
+        for k in sorted({kk for (_, kk) in stats}, reverse=True):
+            for field, what in (("sold", "جرامات البيع"), ("bought", "جرامات الكسر المشتراة")):
+                rows = [{"label": names[key], "value": stats[(key, k)][field]} for key in sorted(people, key=lambda x: (names[x], x)) if (key, k) in stats]
+                rows = sorted(rows, key=lambda r: r["value"], reverse=True)
+                if any(r["value"] for r in rows):
+                    bars.append({"key": f"emp_{field}_{k}", "title": f"مقارنة الموظفين — عيار {k}: {what}", "karat": k, "kind": "grams", "rows": rows})
+        return {"meaning": meaning, "tables": tables, "totals": cards, "options": options, "bars": bars}
 
     # ------------------------------------------------------------------ 3c. making profit (owner request): the making charged on a sale against the making COST of the piece
     def _makingprofit(self, repo, gate, filters, start, end):   # LEGACY_MAKING_COST: owner decision 2026-10-31

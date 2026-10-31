@@ -1,5 +1,6 @@
 """Settings → تصنيفات المصروفات والإيرادات on the real Main.qml with real clicks: the list, adding a category, renaming, disabling / enabling and the two-click delete (offered only for an
 unused category). The service is a recorder (no database); a user without SETTINGS_MANAGE is not offered the card."""
+from PySide6.QtCore import QObject
 from unittest import mock
 import unittest
 
@@ -68,6 +69,7 @@ class _Base(harness.InvoicePageTests):
     def open_settings(self):
         # The card lives on the Settings page itself (moved out of the cash screen's dialog).
         self.root.setProperty("currentPage", 6)
+        self.root.findChild(QObject, "settingsPage").setProperty("openSection", "categories")
         self.wait_until(lambda: self.visual_item("settingsCashCategories") is not None, "the card exists")
         vm = self.controller.operational_viewmodels["cashCategoryVM"]
         self.wait_until(lambda: vm.loaded, "the categories loaded")
@@ -127,6 +129,7 @@ class CashCategoryHiddenTests(_Base):
 
     def test_a_user_without_the_settings_right_is_not_offered_the_card(self):
         self.root.setProperty("currentPage", 6)
+        self.root.findChild(QObject, "settingsPage").setProperty("openSection", "categories")
         QTest.qWait(400)
         QTest.qWait(200)
         card = self.visual_item("settingsCashCategories")

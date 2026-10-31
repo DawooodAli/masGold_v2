@@ -18,6 +18,8 @@ Item {
     readonly property var pvm: typeof supplierPurchaseVM !== "undefined" ? supplierPurchaseVM : null
     // Owner 2026-10-29: every piece enters the stock from «إدخال قطعة جديدة» (the supplier group is chosen there); this page only shows invoices.
     property bool pieceEntryHere: false
+    // Owner request 2026-10-31: edit / stop / delete of a supplier live behind the Settings card «إدارة الموردين» (this flag), never on the everyday supplier page.
+    property bool manageMode: false
     // Owner 2026-10-29: the marketer (مسوقجي) is no longer a separate party kind: everything goes through the suppliers and the market custody.
     // The code, the services and the history stay; this one switch hides the marketer screens (tests that drive them set it to true).
     property bool marketerEnabled: false
@@ -50,7 +52,7 @@ Item {
     function loadSelectedInvoices() {
         if (visible && vm && vm.canView && pvm && vm.selectedSupplierId !== "") pvm.showSupplier(vm.selectedSupplierId)
     }
-    onVisibleChanged: if (visible && vm && vm.canView) { vm.clearMessage(); vm.refresh(); loadSelectedInvoices() }
+    onVisibleChanged: { if (!visible) manageMode = false; if (visible && vm && vm.canView) { vm.clearMessage(); vm.refresh(); loadSelectedInvoices() } }
     Component.onCompleted: if (visible && vm && vm.canView) { vm.refresh(); loadSelectedInvoices() }
 
     Connections {
@@ -612,20 +614,20 @@ Item {
                             }
                             Btn {
                                 objectName: "editSupplierButton"
-                                visible: !!page.vm && page.vm.canManage
+                                visible: page.manageMode && !!page.vm && page.vm.canManage
                                 text: "تعديل"
                                 onClicked: supplierDialog.openFor(page.detail)
                             }
                             Btn {
                                 objectName: "toggleSupplierButton"
-                                visible: !!page.vm && page.vm.canManage
+                                visible: page.manageMode && !!page.vm && page.vm.canManage
                                 text: page.detail.active ? "إيقاف" : "تفعيل"
                                 accent: page.detail.active ? theme.amber : theme.green
                                 onClicked: page.vm.setSupplierActive(page.detail.id, !page.detail.active)
                             }
                             Btn {
                                 objectName: "deleteSupplierButton"
-                                visible: !!page.vm && page.vm.canManage
+                                visible: page.manageMode && !!page.vm && page.vm.canManage
                                 text: "حذف"
                                 accent: theme.red
                                 onClicked: deleteConfirm.open()

@@ -3382,6 +3382,7 @@ ApplicationWindow {
 
                 // index 14: الموردون — supplier positions (gold / making), purchase invoices and barcode intake
                 SuppliersPage {
+                    id: suppliersPageItem
                     objectName: "suppliersPage"
                     pageTitle: "🤝 الموردون"
                     onTripRequested: function(tripId) {
@@ -6152,7 +6153,13 @@ ApplicationWindow {
     }
 
     component SettingsPage: Item {
+        id: settingsPageRoot
+        objectName: "settingsPage"
         property string pageTitle: ""
+        // Owner request 2026-10-31: every settings area is a CARD; opening a card shows only its settings, with the unified «رجوع Esc» button.
+        // "" = the cards; "gold" / "printing" / "password" / "categories" = that area.
+        property string openSection: ""
+        Shortcut { sequence: "Esc"; enabled: settingsPageRoot.visible && settingsPageRoot.openSection !== ""; onActivated: settingsPageRoot.openSection = "" }
         Rectangle { anchors.fill: parent; color: theme.bgPrimary }
         onVisibleChanged: {
             if (!visible)
@@ -6171,7 +6178,7 @@ ApplicationWindow {
         Connections {
             target: typeof invoiceVM !== "undefined" ? invoiceVM : null
             ignoreUnknownSignals: true
-            function onPrintingSettingsRequested() { printingScroll.restart() }
+            function onPrintingSettingsRequested() { settingsPageRoot.openSection = "printing"; printingScroll.restart() }
         }
         Timer {
             id: settingsResultScroll
@@ -6204,12 +6211,22 @@ ApplicationWindow {
                 width: Math.min(settingsScroll.availableWidth, 1180)
                 x: settingsScroll.availableWidth - width
                 spacing: 12
+                RowLayout {
+                    objectName: "settingsSectionBar"
+                    Layout.fillWidth: true; visible: settingsPageRoot.openSection !== ""; layoutDirection: Qt.RightToLeft; spacing: 10
+                    GoldPriceLabel {
+                        Layout.fillWidth: true; color: theme.gold; font.pixelSize: 19; font.bold: true
+                        value: ({"gold": "مصدر أسعار الذهب", "printing": "الطباعة", "password": "كلمة المرور", "categories": "تصنيفات المصروفات والإيرادات"})[settingsPageRoot.openSection] || ""
+                    }
+                    GoldPriceButton { objectName: "settingsSectionBack"; text: "رجوع  ⁦Esc⁩"; onClicked: settingsPageRoot.openSection = "" }
+                }
                 GoldPriceLabel {
-                    Layout.fillWidth: true; value: "الإعدادات والبيانات الأساسية"
+                    Layout.fillWidth: true; value: "الإعدادات والبيانات الأساسية"; visible: settingsPageRoot.openSection === ""
                     color: theme.gold; font.pixelSize: 19; font.bold: true
                 }
-                GoldPriceLabel { Layout.fillWidth: true; value: "إدارة بيانات المحل ومصدر أسعار الذهب"; color: theme.textMuted }
+                GoldPriceLabel { Layout.fillWidth: true; visible: settingsPageRoot.openSection === ""; value: "إدارة بيانات المحل ومصدر أسعار الذهب"; color: theme.textMuted }
                 GridLayout {
+                    visible: settingsPageRoot.openSection === ""
                     Layout.fillWidth: true; columns: width < 520 ? 1 : (width < 700 ? 2 : 4)
                     layoutDirection: Qt.RightToLeft; columnSpacing: 10; rowSpacing: 10
                     SettingsCard {
@@ -6252,8 +6269,46 @@ ApplicationWindow {
                         accentColor: theme.blue; clickable: true; Layout.preferredHeight: 92
                         onClicked: systemSettingsDialog.open()
                     }
+                    SettingsCard {
+                        objectName: "settingsSuppliersCard"
+                        visible: typeof supplierVM !== "undefined" && supplierVM.canManage
+                        title: "إدارة الموردين"; value: ""
+                        subtitle: "تعديل مورد أو إيقافه أو حذفه"
+                        accentColor: theme.accountReceivable; clickable: true; Layout.preferredHeight: 92
+                        onClicked: { suppliersPageItem.manageMode = true; supplierVM.refresh(); root.currentPage = 14 }
+                    }
+                    SettingsCard {
+                        objectName: "settingsGoldCard"
+                        title: "أسعار الذهب"; value: "GoldTimo"
+                        subtitle: "مصدر الأسعار ومفاتيح API واختبار الاتصال"
+                        accentColor: theme.priceSell; clickable: true; Layout.preferredHeight: 92
+                        onClicked: settingsPageRoot.openSection = "gold"
+                    }
+                    SettingsCard {
+                        objectName: "settingsPrintingCard"
+                        title: "الطباعة"; value: ""
+                        subtitle: "طابعة الفواتير وطابعة الملصقات"
+                        accentColor: theme.blue; clickable: true; Layout.preferredHeight: 92
+                        onClicked: settingsPageRoot.openSection = "printing"
+                    }
+                    SettingsCard {
+                        objectName: "settingsPasswordCard"
+                        title: "كلمة المرور"; value: ""
+                        subtitle: "تغيير كلمة مرور حسابك"
+                        accentColor: theme.green; clickable: true; Layout.preferredHeight: 92
+                        onClicked: settingsPageRoot.openSection = "password"
+                    }
+                    SettingsCard {
+                        objectName: "settingsCategoriesCard"
+                        visible: typeof cashCategoryVM !== "undefined" && cashCategoryVM.canManage
+                        title: "تصنيفات المصروفات"; value: ""
+                        subtitle: "تصنيفات المصروفات والإيرادات"
+                        accentColor: theme.gold; clickable: true; Layout.preferredHeight: 92
+                        onClicked: settingsPageRoot.openSection = "categories"
+                    }
                 }
                 SettingsSectionCard {
+                    visible: settingsPageRoot.openSection === ""
                     Layout.fillWidth: true
                     accentColor: masterDataVM.errorMessage.length > 0 ? theme.priceError : theme.green
                     content: RowLayout {
@@ -6267,11 +6322,11 @@ ApplicationWindow {
                         GoldPriceButton { text: "تحديث"; onClicked: masterDataVM.refresh() }
                     }
                 }
-                GoldProviderSettings { id: goldProvider; Layout.fillWidth: true }
-                PrintingSettings { id: printingSettings; Layout.fillWidth: true }
-                PasswordSettings { id: passwordSettings; Layout.fillWidth: true }
+                GoldProviderSettings { id: goldProvider; Layout.fillWidth: true; visible: settingsPageRoot.openSection === "gold" }
+                PrintingSettings { id: printingSettings; Layout.fillWidth: true; visible: settingsPageRoot.openSection === "printing" }
+                PasswordSettings { id: passwordSettings; Layout.fillWidth: true; visible: settingsPageRoot.openSection === "password" }
                 // تصنيفات المصروفات والإيرادات: نُقلت من الخزنة (حوار بزر 🗂) إلى هنا كما طلب المالك.
-                CashCategorySettings { Layout.fillWidth: true }
+                CashCategorySettings { id: cashCategoriesSection; Layout.fillWidth: true; visible: settingsPageRoot.openSection === "categories" && !!cashCategoriesSection.vm && cashCategoriesSection.vm.canManage }
             }
         }
     }

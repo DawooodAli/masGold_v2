@@ -56,6 +56,7 @@ class SupplierPaymentPageTests(harness.InvoicePageTests):
 
     def open_supplier(self):
         self.root.setProperty("currentPage", 14)
+        self.root.findChild(QObject, "suppliersPage").setProperty("manageMode", True)           # edit / stop / delete live behind the Settings card
         QTest.qWait(200)
         self.svm.refresh()
         self.wait_idle()

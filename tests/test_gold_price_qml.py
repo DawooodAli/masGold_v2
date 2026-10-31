@@ -285,6 +285,7 @@ class GoldPricePanelTests(QtPriceTestCase):
         QMetaObject.invokeMethod(self.dialog, "close")
         self.wait_until(lambda: not self.dialog.property("visible"))
         self.root.setProperty("currentPage", 6)
+        self.root.findChild(QObject, "settingsPage").setProperty("openSection", "gold")
         self.wait_until(lambda: self.controller.gold_settings.data.get("stored", False))
         viewport = self.root.findChild(QObject, "settingsScroll")
         card = self.root.findChild(QObject, "goldPriceArea")
@@ -303,9 +304,14 @@ class GoldPricePanelTests(QtPriceTestCase):
                 self.assert_in_viewport(self.root.findChild(QObject, name), viewport)
             for item in (card, buy, sell, self.root.findChild(QObject, "goldTopStatus")):
                 self.assert_in_viewport(item)
-            for name in ("settingsCategories", "settingsFactories", "settingsItemTypes"):
-                self.assert_in_viewport(self.root.findChild(QObject, name + "Subtitle"),
+            page = self.root.findChild(QObject, "settingsPage")
+            page.setProperty("openSection", "")                                  # the cards are shown when no section is open
+            QTest.qWait(60)
+            for name in ("settingsCategories", "settingsFactories", "settingsItemTypes", "settingsGoldCard"):
+                self.assert_in_viewport(self.root.findChild(QObject, name + "Subtitle") or self.root.findChild(QObject, name),
                                         self.root.findChild(QObject, name))
+            page.setProperty("openSection", "gold")
+            QTest.qWait(60)
             if target:
                 shot = self.root.grabWindow()
                 self.assertTrue(shot.save(str(Path(target) / f"settings-{width}x{height}.png")))
@@ -340,6 +346,7 @@ class GoldPricePanelTests(QtPriceTestCase):
         QMetaObject.invokeMethod(self.dialog, "close")
         self.wait_until(lambda: not self.dialog.property("visible"))
         self.root.setProperty("currentPage", 6)
+        self.root.findChild(QObject, "settingsPage").setProperty("openSection", "gold")
         self.wait_until(lambda: self.controller.gold_settings.data.get("stored", False))
         # Smallest supported window, page at the top: the card must scroll into view by itself.
         self.root.setWidth(1080); self.root.setHeight(680)
@@ -413,6 +420,7 @@ class GoldPricePanelTests(QtPriceTestCase):
         QMetaObject.invokeMethod(self.dialog, "close")
         self.wait_until(lambda: not self.dialog.property("visible"))
         self.root.setProperty("currentPage", 6)
+        self.root.findChild(QObject, "settingsPage").setProperty("openSection", "gold")
         self.wait_until(lambda: self.controller.gold_settings.data.get("stored", False))
         QMetaObject.invokeMethod(self.root.findChild(QObject, "testProviderConnection"), "clicked")
         self.wait_until(lambda: bool(self.controller.gold_settings.result) and not self.controller.gold_settings.busy)
@@ -458,6 +466,7 @@ class GoldPricePanelTests(QtPriceTestCase):
         QMetaObject.invokeMethod(self.dialog, "close")
         self.wait_until(lambda: not self.dialog.property("visible"))
         self.root.setProperty("currentPage", 6)
+        self.root.findChild(QObject, "settingsPage").setProperty("openSection", "gold")
         self.wait_until(lambda: self.controller.gold_settings.data.get("stored", False))
         panel = self.root.findChild(QObject, "goldProviderSettings")
         key = self.root.findChild(QObject, "providerApiKey")

@@ -150,6 +150,7 @@ class SupplierPageTests(harness.InvoicePageTests):
 
     def open_suppliers(self):
         self.root.setProperty("currentPage", 14)
+        self.root.findChild(QObject, "suppliersPage").setProperty("manageMode", True)           # edit / stop / delete live behind the Settings card
         QTest.qWait(200)
         # Production hides the piece form here (every piece enters from «إدخال قطعة جديدة»); the form itself is still proven by these tests.
         for child in self.root.findChildren(QObject):
