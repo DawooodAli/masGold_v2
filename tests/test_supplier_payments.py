@@ -281,8 +281,9 @@ class PaymentPostingTests(PaymentCase):
         # CASH is now a valid method but requires a cash_account_id
         self.refused("CASH_ACCOUNT_REQUIRED", lambda: self.pay("300", method="CASH", bank=None))
         self.assertEqual((self.db.payments, self.db.cash_moves, self.db.bank_moves), ({}, [], []))
-        source = (ROOT / "services" / "supplier_payment_service.py").read_text(encoding="utf-8")
-        self.assertNotIn("main_safe()", source)
+        import inspect
+        from services.supplier_payment_service import SupplierPaymentService
+        self.assertNotIn("main_safe()", inspect.getsource(SupplierPaymentService._post))     # the payment posting never resolves the safe (the receipt dialog does)
 
     def test_a_bank_payment_needs_an_existing_active_account(self):
         self.refused("ACCOUNT_REQUIRED", lambda: self.pay(method="BANK", bank=None))
