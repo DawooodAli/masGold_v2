@@ -47,6 +47,9 @@ class FakeDashboardRepo:
         self.state["reads"].append("month_prev" if previous else "month")
         return self.state["month_prev" if previous else "month"]
 
+    def sales_by_day(self, days=14):
+        return []
+
     def month_start(self):
         self.state["reads"].append("month_start")
         return self.state["month_info"]
@@ -602,6 +605,17 @@ class DashboardPageTests(page_harness.InvoicePageTests):
 
 
 load_tests = _only_dashboard_tests
+
+
+
+
+class SalesDaysTests(unittest.TestCase):
+    def test_every_day_of_the_window_has_a_bar_and_a_missing_day_is_zero(self):
+        from datetime import date
+        from services.dashboard_service import SALES_DAYS, DashboardService
+        rows = DashboardService.sales_days([{"day": date(2026, 11, 1), "total": "1500.50"}], date(2026, 11, 1))
+        self.assertEqual(len(rows), SALES_DAYS)
+        self.assertEqual((rows[-1]["day"], rows[-1]["total"], rows[0]["total"]), ("2026-11-01", "1500.50", "0.00"))
 
 
 if __name__ == "__main__":

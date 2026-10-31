@@ -572,6 +572,8 @@ Item {
                                 onClicked: reportsVM.showPriceChart(reportsVM.priceChart.karat, modelData.days)
                             }
                         }
+                        Btn { objectName: "reportOpenInvesting"; text: "شارت مباشر (Investing.com)"; accent: theme.textSecondary
+                              onClicked: Qt.openUrlExternally("https://www.investing.com/commodities/gold") }
                         Item { Layout.fillWidth: true }
                         Label { color: theme.textMuted; font.pixelSize: theme.fontTableHeader; text: "ذهبي = بيع المحل • أخضر مزرق = شراء المحل • رمادي متقطع = متوسط 30 يوم" }
                     }

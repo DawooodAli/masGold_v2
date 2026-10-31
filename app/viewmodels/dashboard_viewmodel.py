@@ -131,6 +131,25 @@ class DashboardViewModel(QObject):
                  "grams": grams(r["grams"]), "value": money(r["value"])}
                 for r in self._data.get("top_types", [])]
 
+    @Property("QVariantList", notify=changed)
+    def salesDays(self):
+        """The sale value of the last days as bar rows: label (day/month), money text and the share of the largest day."""
+        rows = self._data.get("sales_days") or []
+        top = max((Decimal(r["total"]) for r in rows), default=Decimal("0"))
+        return [{"label": r["day"][8:10] + "/" + r["day"][5:7], "text": money(r["total"]) if Decimal(r["total"]) else "—",
+                 "ratio": float(Decimal(r["total"]) / top) if top else 0.0} for r in rows]
+
+    @Property("QVariantMap", notify=changed)
+    def priceChart(self):
+        """The stored daily 21K shop BUY / SELL prices of the last days, as plain floats for drawing only (the figures shown as text come formatted)."""
+        series = self._data.get("price_series") or []
+        if len(series) < 2:
+            return {"available": False, "buy": [], "sell": [], "low": 0.0, "high": 0.0, "first": "", "last": "", "lowText": "", "highText": ""}
+        buys, sells = [float(r["buy"]) for r in series], [float(r["sell"]) for r in series]
+        low, high = min(buys + sells), max(buys + sells)
+        return {"available": True, "buy": buys, "sell": sells, "low": low, "high": high, "first": series[0]["day"], "last": series[-1]["day"],
+                "lowText": rate(str(low)), "highText": rate(str(high))}
+
     @Property("QVariantMap", notify=changed)
     def priceHint(self):
         """The 21K price indicator card: the 30-day average of the shop BUY price, the current price against it and the plain hint."""

@@ -32,6 +32,8 @@ DASHBOARD_KARATS = (21, 18, 22, 24)
 SALES_PERMISSIONS = frozenset({"INVOICE_CREATE", "INVOICE_FINALIZE"})
 STOCK_PERMISSIONS = frozenset({"INVENTORY_VIEW", "INVENTORY_MANAGE"})
 OVERDUE_DAYS = 30
+SALES_DAYS = 14                                                                # the bar chart of the sales value, last N days
+PRICE_DAYS = 30                                                                # the 21K price line chart, last N stored days
 GRAMS, MONEY = Decimal("0.001"), Decimal("0.01")
 HINT_TEXT = {indicators_math.BUY_FAVOURABLE: "الشراء مناسب نسبيًا", indicators_math.SELL_FAVOURABLE: "البيع مناسب نسبيًا", indicators_math.NEUTRAL: "محايد",
              indicators_math.UNKNOWN: "بيانات غير كافية"}
@@ -171,6 +173,15 @@ class DashboardService:
                 "vs_average30_percent": str(average[1]) if average else None,
                 "hint_text": HINT_TEXT[code], "hint_tone": HINT_TONE[code]}
 
+    @staticmethod
+    def sales_days(rows, today=None):
+        """One entry per day of the last SALES_DAYS days (oldest first, today last); a day without a sale is a zero bar. `today` is the database's day when known."""
+        from datetime import date, timedelta
+        by_day = {(r["day"].date() if hasattr(r["day"], "date") else r["day"]): Decimal(str(r["total"])) for r in rows or []}
+        end = today or (max(by_day) if by_day else date.today())
+        end = end.date() if hasattr(end, "date") else end
+        return [{"day": (end - timedelta(days=n)).isoformat(), "total": str(by_day.get(end - timedelta(days=n), Decimal("0")).quantize(MONEY))} for n in range(SALES_DAYS - 1, -1, -1)]
+
     def today(self, *, _expected_actor=None):
         actor = self._actor(_expected_actor)
 
@@ -186,7 +197,7 @@ class DashboardService:
                 result.update(scrap=dashboard.today_scrap_purchases(), scrap_prices=dashboard.latest_shop_buy_prices(),
                               invoices=dashboard.today_invoices(), sold=dashboard.today_sold_by_karat(),
                               month=dashboard.month_sold_by_karat(), prev_year=dashboard.month_sold_by_karat(previous=True),
-                              month_info=dashboard.month_start(), top_types=dashboard.month_top_types())
+                              month_info=dashboard.month_start(), top_types=dashboard.month_top_types(), sales_days=dashboard.sales_by_day(SALES_DAYS), sales_today=dashboard.db_today())
             if STOCK_PERMISSIONS & set(verified.permissions):                  # the minimum-stock shortages follow the CURRENT inventory grants
                 result["below_min"] = dashboard.below_min_levels()
                 result["dead_days"] = int(setting_rules.report_thresholds(dashboard)["dead_stock_days"])
@@ -221,7 +232,9 @@ class DashboardService:
         day_of = lambda value: value.date() if hasattr(value, "date") else value
         live = [(day_of(r["day"]), Decimal(str(r["buy"])), Decimal(str(r["sell"]))) for r in raw.get("price_daily") or []]
         legacy = [(day_of(r["day"]), Decimal(str(r["buy"])), Decimal(str(r["sell"]))) for r in raw.get("price_legacy") or []]
-        snapshot["price_hint"] = self.price_hint(indicators_math.merge_series(legacy, live))
+        merged = indicators_math.merge_series(legacy, live)
+        snapshot["price_hint"] = self.price_hint(merged)
+        snapshot["price_series"] = [{"day": d.isoformat(), "buy": str(b), "sell": str(s)} for d, b, s in list(merged)[-PRICE_DAYS:]]
         snapshot["can_see_balances"] = bool(raw.get("can_see_balances"))
         if snapshot["can_see_balances"]:
             snapshot["customer_balances"] = self.balances(raw.get("customer_balances"))
@@ -243,5 +256,6 @@ class DashboardService:
                       for karat in sorted(sold, key=lambda k: (k not in DASHBOARD_KARATS,
                                                               DASHBOARD_KARATS.index(k) if k in DASHBOARD_KARATS else k))],
                 month=self.month_summary(raw["month"], raw["prev_year"]), month_day=int((raw.get("month_info") or {}).get("day") or 0),
-                top_types=self.top_types(raw.get("top_types")), scrap_today=self.scrap_today(raw.get("scrap"), raw.get("scrap_prices")))
+                top_types=self.top_types(raw.get("top_types")), scrap_today=self.scrap_today(raw.get("scrap"), raw.get("scrap_prices")),
+                sales_days=self.sales_days(raw.get("sales_days"), raw.get("sales_today")))
         return snapshot

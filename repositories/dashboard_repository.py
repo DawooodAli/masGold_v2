@@ -65,6 +65,19 @@ class DashboardRepository(BaseRepository):
             ORDER BY k.karat_value
             """)
 
+    def sales_by_day(self, days=14):
+        """The sale value (EGP, invoice sell_total) of each of the last `days` days including today, fully reversed invoices left out. Days without a sale are simply absent."""
+        return self._fetch_all(
+            """
+            SELECT DATE(i.finalized_at) AS day, COALESCE(SUM(i.sell_total), 0) AS total
+            FROM invoices i
+            WHERE i.invoice_status = 'FINALIZED' AND i.sell_total > 0
+              AND i.finalized_at >= CURDATE() - INTERVAL %s DAY AND i.finalized_at < CURDATE() + INTERVAL 1 DAY
+              AND NOT EXISTS (SELECT 1 FROM transaction_corrections c WHERE c.source_type = 'INVOICE' AND c.source_id = i.id AND c.correction_type = 'FULL_REVERSAL')
+            GROUP BY DATE(i.finalized_at)
+            ORDER BY day
+            """, (int(days) - 1,))
+
     def month_start(self):
         return self._fetch_one("SELECT DATE_FORMAT(CURDATE(), '%Y-%m-01') AS first, DAY(CURDATE()) AS day, CURDATE() AS today")
 

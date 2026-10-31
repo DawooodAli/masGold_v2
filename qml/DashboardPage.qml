@@ -103,7 +103,7 @@ Item {
         property int page: 0
         Layout.fillWidth: true
         implicitHeight: 38
-        onClicked: dashboard.navigateTo(action.page)
+        onClicked: if (action.page >= 0) dashboard.navigateTo(action.page)
         contentItem: Label {
             text: action.text
             font.family: theme.fontFamily; font.pixelSize: (theme.fontBody + dashboard.boost); font.bold: true
@@ -474,6 +474,70 @@ Item {
                             visible: !dashboard.vm || dashboard.vm.deadStock.rows.length === 0 }
                     Action { objectName: "dashboardOpenDeadStock"; text: "فتح التقارير (تنبيهات المخزون)"; page: 5
                              visible: !!dashboard.vm && dashboard.vm.deadStock.rows.length > 0 }
+                }
+
+                // --- المبيعات آخر 14 يومًا (billing permission): one bar per day, the length is the share of the best day
+                Card {
+                    objectName: "salesDaysCard"
+                    visible: dashboard.sales
+                    title: "المبيعات آخر 14 يومًا (جنيه)"
+                    accent: theme.priceSell
+                    Repeater {
+                        model: dashboard.vm ? dashboard.vm.salesDays : []
+                        delegate: RowLayout {
+                            required property var modelData
+                            required property int index
+                            objectName: "salesDay_" + index
+                            Layout.fillWidth: true
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 6
+                            Txt { Layout.preferredWidth: 46; value: modelData.label; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
+                            Item {
+                                Layout.fillWidth: true; Layout.preferredHeight: 12
+                                Rectangle { anchors.right: parent.right; height: parent.height; radius: 3; color: theme.priceSell
+                                            width: Math.max(modelData.ratio > 0 ? 3 : 0, parent.width * modelData.ratio) }
+                            }
+                            Txt { Layout.preferredWidth: 96; value: modelData.text; font.pixelSize: theme.fontCaption + dashboard.boost; horizontalAlignment: Text.AlignLeft }
+                        }
+                    }
+                }
+
+                // --- سعر عيار 21 آخر 30 يومًا (the stored daily prices; shop BUY green, shop SELL amber) + a link to a live external chart
+                Card {
+                    id: priceChartCard
+                    objectName: "priceChartCard"
+                    title: "سعر عيار 21 — آخر 30 يومًا"
+                    accent: theme.priceBuy
+                    Canvas {
+                        id: priceLine
+                        objectName: "dashboardPriceCanvas"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 150
+                        readonly property var chart: dashboard.vm ? dashboard.vm.priceChart : ({})
+                        onChartChanged: requestPaint()
+                        onWidthChanged: requestPaint()
+                        onPaint: {
+                            var ctx = getContext("2d"); ctx.reset()
+                            var c = chart; if (!c || !c.available) return
+                            var span = Math.max(1e-9, c.high - c.low), n = c.buy.length
+                            function xs(i) { return width - 4 - (width - 8) * (n - 1 - i) / (n - 1) }
+                            function ys(v) { return height - 6 - (height - 12) * (v - c.low) / span }
+                            var lines = [[c.sell, "" + theme.priceSell], [c.buy, "" + theme.priceBuy]]
+                            for (var k = 0; k < lines.length; k++) {
+                                ctx.strokeStyle = lines[k][1]; ctx.lineWidth = 2; ctx.beginPath()
+                                for (var i = 0; i < n; i++) { if (i === 0) ctx.moveTo(xs(i), ys(lines[k][0][i])); else ctx.lineTo(xs(i), ys(lines[k][0][i])) }
+                                ctx.stroke()
+                            }
+                        }
+                    }
+                    Txt { objectName: "priceChartEmpty"; Layout.fillWidth: true; visible: !dashboard.vm || !dashboard.vm.priceChart.available
+                          value: "لا توجد أسعار مخزنة كافية للرسم"; color: theme.textMuted }
+                    Line { visible: !!dashboard.vm && dashboard.vm.priceChart.available; label: "أدنى / أعلى"
+                           value: dashboard.vm ? dashboard.vm.priceChart.lowText + " / " + dashboard.vm.priceChart.highText : "" }
+                    Txt { visible: !!dashboard.vm && dashboard.vm.priceChart.available; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost
+                          value: "أخضر: شراء المحل • ذهبي: بيع المحل" }
+                    Action { objectName: "dashboardOpenInvesting"; text: "شارت الذهب المباشر (Investing.com)"; page: -1
+                             onClicked: Qt.openUrlExternally("https://www.investing.com/commodities/gold") }
                 }
             }
 
