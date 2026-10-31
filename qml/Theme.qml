@@ -2,20 +2,30 @@ import QtQuick
 
 QtObject {
 
-    // Main prototype-inspired dark palette
+    // Owner request 2026-10-31: the application look is chosen in Settings > المظهر (a local choice of this workstation, kept by themeVM).
+    // Every theme is a DARK palette: only the backgrounds, the borders and the accent («gold» = the accent of the brand) change, so the
+    // semantic colours below (shop buy / shop sell, karats, status, account direction) mean the same thing in every theme.
+    readonly property string mode: typeof themeVM !== "undefined" ? themeVM.name : "gold"
+    readonly property var palettes: ({
+        "gold":   { bg0: "#11151A", bg1: "#181D23", bg2: "#20262E", hover: "#222A33", line: "#303842", card: "#3B4552", a0: "#D0A64A", a1: "#E2BC63", a2: "#A98132" },
+        "blue":   { bg0: "#0E141D", bg1: "#141C28", bg2: "#1B2536", hover: "#1F2B3E", line: "#2B3A52", card: "#37486A", a0: "#6FA8F0", a1: "#8FBDF5", a2: "#4A7FC4" },
+        "green":  { bg0: "#0F1612", bg1: "#151F19", bg2: "#1C2A22", hover: "#213229", line: "#2B3E33", card: "#375043", a0: "#58C28E", a1: "#7AD6A8", a2: "#3E9A6D" },
+        "violet": { bg0: "#14111B", bg1: "#1B1725", bg2: "#241F31", hover: "#2A2338", line: "#3A3150", card: "#4A3F66", a0: "#B08CE8", a1: "#C7A8F2", a2: "#8A66C4" }
+    })
+    readonly property var pal: palettes[mode] || palettes["gold"]
 
-    readonly property color bgPrimary: "#11151A"
-    readonly property color bgSecondary: "#181D23"
-    readonly property color bgTertiary: "#20262E"
+    readonly property color bgPrimary: pal.bg0
+    readonly property color bgSecondary: pal.bg1
+    readonly property color bgTertiary: pal.bg2
 
-    readonly property color panel: "#181D23"
-    readonly property color panelHover: "#222A33"
+    readonly property color panel: pal.bg1
+    readonly property color panelHover: pal.hover
 
-    readonly property color border: "#303842"
+    readonly property color border: pal.line
 
-    readonly property color gold: "#D0A64A"
-    readonly property color goldBright: "#E2BC63"
-    readonly property color goldDark: "#A98132"
+    readonly property color gold: pal.a0
+    readonly property color goldBright: pal.a1
+    readonly property color goldDark: pal.a2
 
     readonly property color textPrimary: "#F1F2F4"
     readonly property color textSecondary: "#CDD1D6"
@@ -27,7 +37,7 @@ QtObject {
     readonly property color amber: "#E7AA5B"
     readonly property color red: "#E17C81"
     readonly property color priceBuy: "#73CBB0"
-    readonly property color priceSell: goldBright
+    readonly property color priceSell: "#E2BC63"          // SHOP_SELL is always gold / amber, whatever the theme accent
     readonly property color priceWarning: "#EC9066"
     readonly property color priceError: red
 
@@ -64,7 +74,7 @@ QtObject {
     readonly property int radiusMedium: 10
     // Cards (owner review 2026-10-22): separated, rounded, with a lighter border than a field's
     readonly property int radiusCard: 16
-    readonly property color cardBorder: "#3B4552"
+    readonly property color cardBorder: pal.card
 
     // Typography scale (Cairo, pixels). The sizes already used most across the app, named so
     // new screens use a few deliberate steps instead of ad-hoc numbers. Existing pages are

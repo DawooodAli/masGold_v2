@@ -231,6 +231,9 @@ class ApplicationController(QObject):
             self.operational_viewmodels.setdefault("invoiceHistoryVM", self._history_factory(self.session))
             self.operational_viewmodels.setdefault("reviewsVM", self._review_factory(self.session))
             self.operational_viewmodels.setdefault("printerSettingsVM", self._printer_settings_factory(self.session))
+            if "themeVM" not in self.operational_viewmodels:
+                from app.viewmodels.theme_viewmodel import ThemeViewModel
+                self.operational_viewmodels["themeVM"] = ThemeViewModel()
             self.operational_viewmodels.setdefault("balancesVM", self._balance_factory(self.session))
             self.operational_viewmodels.setdefault("dashboardVM", self._dashboard_factory(self.session))
             self._attach_position_snapshots()

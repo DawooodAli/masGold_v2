@@ -6216,7 +6216,7 @@ ApplicationWindow {
                     Layout.fillWidth: true; visible: settingsPageRoot.openSection !== ""; layoutDirection: Qt.RightToLeft; spacing: 10
                     GoldPriceLabel {
                         Layout.fillWidth: true; color: theme.gold; font.pixelSize: 19; font.bold: true
-                        value: ({"gold": "مصدر أسعار الذهب", "printing": "الطباعة", "password": "كلمة المرور", "categories": "تصنيفات المصروفات والإيرادات"})[settingsPageRoot.openSection] || ""
+                        value: ({"gold": "مصدر أسعار الذهب", "printing": "الطباعة", "password": "كلمة المرور", "categories": "تصنيفات المصروفات والإيرادات", "theme": "المظهر"})[settingsPageRoot.openSection] || ""
                     }
                     GoldPriceButton { objectName: "settingsSectionBack"; text: "رجوع  ⁦Esc⁩"; onClicked: settingsPageRoot.openSection = "" }
                 }
@@ -6278,6 +6278,14 @@ ApplicationWindow {
                         onClicked: { suppliersPageItem.manageMode = true; supplierVM.refresh(); root.currentPage = 14 }
                     }
                     SettingsCard {
+                        objectName: "settingsThemeCard"
+                        visible: typeof themeVM !== "undefined"
+                        title: "المظهر"; value: ""
+                        subtitle: "اختيار ألوان البرنامج"
+                        accentColor: theme.gold; clickable: true; Layout.preferredHeight: 92
+                        onClicked: settingsPageRoot.openSection = "theme"
+                    }
+                    SettingsCard {
                         objectName: "settingsGoldCard"
                         title: "أسعار الذهب"; value: "GoldTimo"
                         subtitle: "مصدر الأسعار ومفاتيح API واختبار الاتصال"
@@ -6325,6 +6333,44 @@ ApplicationWindow {
                 GoldProviderSettings { id: goldProvider; Layout.fillWidth: true; visible: settingsPageRoot.openSection === "gold" }
                 PrintingSettings { id: printingSettings; Layout.fillWidth: true; visible: settingsPageRoot.openSection === "printing" }
                 PasswordSettings { id: passwordSettings; Layout.fillWidth: true; visible: settingsPageRoot.openSection === "password" }
+                SettingsSectionCard {
+                    objectName: "settingsThemeSection"
+                    Layout.fillWidth: true
+                    visible: settingsPageRoot.openSection === "theme" && typeof themeVM !== "undefined"
+                    sectionTitle: "المظهر"
+                    content: [
+                        GoldPriceLabel { Layout.fillWidth: true; color: theme.textMuted; value: "اختر ألوان البرنامج. يُحفظ الاختيار على هذا الجهاز فقط ويتغير شكل البرنامج كله فورًا." },
+                        Flow {
+                            Layout.fillWidth: true; spacing: 10; layoutDirection: Qt.RightToLeft
+                            Repeater {
+                                model: typeof themeVM !== "undefined" ? themeVM.themes : []
+                                delegate: Rectangle {
+                                    id: themeChoice
+                                    required property var modelData
+                                    readonly property var colors: theme.palettes[modelData.code]
+                                    readonly property bool selected: typeof themeVM !== "undefined" && themeVM.name === modelData.code
+                                    objectName: "themeChoice_" + modelData.code
+                                    width: 190; height: 96; radius: theme.radiusCard
+                                    color: colors.bg1
+                                    border.width: selected ? 2 : 1
+                                    border.color: selected ? colors.a0 : colors.card
+                                    Column {
+                                        anchors.centerIn: parent; spacing: 8
+                                        Row {
+                                            anchors.horizontalCenter: parent.horizontalCenter; spacing: 6
+                                            Rectangle { width: 22; height: 22; radius: 11; color: themeChoice.colors.bg0; border.color: themeChoice.colors.line }
+                                            Rectangle { width: 22; height: 22; radius: 11; color: themeChoice.colors.bg2; border.color: themeChoice.colors.line }
+                                            Rectangle { width: 22; height: 22; radius: 11; color: themeChoice.colors.a0 }
+                                            Rectangle { width: 22; height: 22; radius: 11; color: themeChoice.colors.a1 }
+                                        }
+                                        GoldPriceLabel { anchors.horizontalCenter: parent.horizontalCenter; value: themeChoice.modelData.label + (themeChoice.selected ? "  ✓" : ""); color: themeChoice.colors.a1; font.bold: true }
+                                    }
+                                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: themeVM.setTheme(themeChoice.modelData.code) }
+                                }
+                            }
+                        }
+                    ]
+                }
                 // تصنيفات المصروفات والإيرادات: نُقلت من الخزنة (حوار بزر 🗂) إلى هنا كما طلب المالك.
                 CashCategorySettings { id: cashCategoriesSection; Layout.fillWidth: true; visible: settingsPageRoot.openSection === "categories" && !!cashCategoriesSection.vm && cashCategoriesSection.vm.canManage }
             }
