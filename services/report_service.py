@@ -148,6 +148,15 @@ def _dateish(value):
     return value
 
 
+def top_rows(pairs, limit=10):
+    """Bar rows from (label, value) pairs: values aggregated per label, only non-zero, largest magnitude first, at most `limit`."""
+    totals = {}
+    for label, value in pairs:
+        if value:
+            totals[label] = totals.get(label, 0) + value
+    return [{"label": k, "value": v} for k, v in sorted(totals.items(), key=lambda kv: (-abs(kv[1]), kv[0])) if v][:limit]
+
+
 def col(key, title, kind="text"):
     return {"key": key, "title": title, "kind": kind}
 
@@ -449,7 +458,9 @@ class ReportService:
                   gram_card("خسية البوتقة", crucible, "مكافئ عيار 21", "losses"),
                   gram_card("خسية السوق", market, "مكافئ عيار 21", "losses"),
                   total("إجمالي الفقد والخسية", f"{grand:,.3f} جرام", "text", "فاقد السبك + خسية البوتقة + خسية السوق" + (f" • {reversed_count} مستند معكوس غير محسوب" if reversed_count else "") + incomplete, "grand", tone="deadcash")]
-        return {"meaning": meaning, "tables": tables, "totals": totals}
+        bars = [{"key": "market_loss", "title": "الفقد والخسية (جرام مكافئ عيار 21)", "kind": "grams", "tone": "payable",
+                 "rows": [r for r in ({"label": "فاقد السبك", "value": melt_total}, {"label": "خسية البوتقة", "value": crucible}, {"label": "خسية السوق", "value": market}) if r["value"]]}]
+        return {"meaning": meaning, "tables": tables, "totals": totals, "bars": [b for b in bars if b["rows"]]}
 
     # ------------------------------------------------------------------ 1. sales and returns
     def _sales(self, repo, gate, filters, start, end):
@@ -546,7 +557,10 @@ class ReportService:
                    "المرتجع: قيمته كما سُجّلت في مستند المرتجع، وأثره على الحساب يظهر بإشارة حساب العميل (سالب = للعميل).",
                    "المستند المعكوس يظهر برقم العكس وتاريخه ولا يدخل إجماليات الفعّال.",
                    "«غير معلوم»: فاتورة قديمة لم يثبت مصدرها هذا التقسيم أو لا دليل على دفعها؛ يُعرض غير معلوم ولا يُحسب صفرًا، والإجمالي المتأثر موسوم «جزئي»."]
-        return {"meaning": meaning, "tables": [table("documents", "المستندات", cols, rows, paged=True)], "totals": totals}
+        bars = [{"key": "sales_compare", "title": "مقارنة قيمة المستندات الفعّالة (جنيه)", "tone": "receivable",
+                 "rows": [r for r in ({"label": "البيع", "value": sales_total}, {"label": "شراء الكسر", "value": known(eff, "oldgold")},
+                                      {"label": "المرتجع", "value": returns_total}) if r["value"]]}]
+        return {"meaning": meaning, "tables": [table("documents", "المستندات", cols, rows, paged=True)], "totals": totals, "bars": bars if bars[0]["rows"] else []}
 
     # ------------------------------------------------------------------ 2. available stock
     def _stock(self, repo, gate, filters, start, end):
@@ -595,7 +609,12 @@ class ReportService:
         meaning = ["المخزون المتاح = القطع بحالة «متاح» (الافتراضي)؛ يمكن عرض الحالات الأخرى لمراجعة القطع المباعة أو المرتجعة.",
                    "الأوزان تُجمع داخل كل عيار فقط؛ لا يوجد إجمالي وزن لعيارات مختلفة. هذا التقرير للقطع المشغولة، وكسر المحل في تقرير «حركة المخزون والذهب».",
                    "الفاتورة المرتبطة: آخر فاتورة غير مسودة تحمل هذه القطعة في أحد أسطرها (الرابط `invoice_lines.inventory_item_id`)؛ ليست بالضرورة فاتورة أصل اقتناء القطعة، وتفتح من شاشة الفواتير."]
-        return {"meaning": meaning, "tables": [table("summary", "الملخص حسب العيار والتصنيف والحالة", scols, summary), table("items", "القطع", dcols, rows, paged=True)], "totals": totals}
+        bars = [{"key": "stock_weight", "title": "وزن المخزون حسب العيار (جرام، لا يُجمع بين الأعيار)", "kind": "grams",
+                 "rows": [{"label": f"عيار {k}", "value": v["weight"]} for k, v in sorted(per_karat.items(), reverse=True) if v["weight"]]},
+                {"key": "stock_count", "title": "عدد قطع المخزون حسب العيار", "kind": "count",
+                 "rows": [{"label": f"عيار {k}", "value": v["count"]} for k, v in sorted(per_karat.items(), reverse=True) if v["count"]]}]
+        return {"meaning": meaning, "tables": [table("summary", "الملخص حسب العيار والتصنيف والحالة", scols, summary), table("items", "القطع", dcols, rows, paged=True)], "totals": totals,
+                "bars": [b for b in bars if b["rows"]]}
 
     # ------------------------------------------------------------------ 2b. inventory alerts (dead stock and items about to run out) - plain rules over our own data, no forecast
     def _alerts(self, repo, gate, filters, start, end):
@@ -1125,7 +1144,12 @@ class ReportService:
                  total("قطع بدون حساب", tot_left, "count", "بلا تكلفة أو مصنعية بيعها مجهولة", "margin")]
         if reversed_invoices:
             cards.append(total("فواتير معكوسة غير محسوبة", len(reversed_invoices), "count", "", "margin"))
-        return {"meaning": meaning, "tables": tables, "totals": cards, "options": options}
+        bars = []
+        for k in sorted({kk for kk, _ in stats}, reverse=True):
+            rows_k = top_rows(((f"حرف {code}", s["margin"]) for (kk, code), s in stats.items() if kk == k), 12)
+            if rows_k:
+                bars.append({"key": f"making_margin_{k}", "title": f"الفرق على المصنعية حسب الحرف — عيار {k} (جنيه)", "karat": k, "rows": rows_k})
+        return {"meaning": meaning, "tables": tables, "totals": cards, "options": options, "bars": bars}
 
     # ------------------------------------------------------------------ 3d. scrap cost (owner request): what the shop really paid per gram for the scrap it bought
     def _scrapcost(self, repo, gate, filters, start, end):
@@ -1504,7 +1528,10 @@ class ReportService:
         meaning = ["الإشارة: «عليه» مستحق للمحل، «له» مستحق للعميل. المصدر دفتر حساب العميل نفسه الذي يقرأه كشف الحساب.",
                    "السطور هي بنود الحساب المفتوحة بمنطق الأقدم أولًا: كل تحصيل أو مرتجع أو عربون يُخصم من أقدم بند مفتوح لأن التحصيل لا يُربط بفاتورة بعينها. مجموع بنود العميل = رصيده الحالي.",
                    "الأرقام هي رصيد اليوم، ولا تتأثر بتاريخ الفترة."]
-        return {"meaning": meaning, "tables": [table("customers", "الأرصدة المفتوحة حسب العميل والفاتورة", cols, rows, paged=True)], "totals": totals}
+        bars = [{"key": "customers_owe", "title": "أكبر العملاء مديونية للمحل (جنيه)", "tone": "receivable", "rows": top_rows((r["name"], r["owes"]) for r in rows if r["owes"])},
+                {"key": "customers_credit", "title": "أكبر أرصدة العملاء الدائنة (لهم عندنا، جنيه)", "tone": "payable", "rows": top_rows((r["name"], r["credit"]) for r in rows if r["credit"])}]
+        return {"meaning": meaning, "tables": [table("customers", "الأرصدة المفتوحة حسب العميل والفاتورة", cols, rows, paged=True)], "totals": totals,
+                "bars": [b for b in bars if b["rows"]]}
 
     # ------------------------------------------------------------------ 4b. Dead Cash (its own report, beside the customers)
     def _deadcash(self, repo, gate, filters, start, end):
@@ -1538,7 +1565,9 @@ class ReportService:
         if reversed_count:
             totals.append(total("شطب معكوس (غير محسوب)", reversed_total, "money", f"{reversed_count} شطب", "deadcash"))
         meaning = ["الدين المعدوم هو رصيد على العميل شطبه المحل؛ الشطب المعكوس يبقى في القائمة بحالة «معكوس» ولا يدخل الإجماليات."]
-        return {"meaning": meaning, "tables": [table("deadcash", "الديون المعدومة", cols, rows, paged=True)], "totals": totals}
+        bars = [{"key": "deadcash_top", "title": "أكبر الديون المعدومة حسب العميل (جنيه)", "tone": "payable",
+                 "rows": top_rows((r["name"], r["amount"]) for r in rows if r["state"] == "ساري")}]
+        return {"meaning": meaning, "tables": [table("deadcash", "الديون المعدومة", cols, rows, paged=True)], "totals": totals, "bars": [b for b in bars if b["rows"]]}
 
     @staticmethod
     def _document_label(row):
@@ -1614,7 +1643,10 @@ class ReportService:
             totals.append(total(f"ذهب عيار {k}", f"{abs(net):,.3f} جرام", "text", "علينا للموردين" if net > 0 else "لنا عند الموردين" if net < 0 else "متوازن", "gold", karat=k))
         meaning = ["علينا = مستحق للمورد، لنا = مستحق لنا عند المورد. الذهب بجرام فعلي بعيار حساب كل مورد ولا يُحوَّل إلى عيار 21، والمصنعيات بالجنيه حساب مستقل ولا يُجمع مع الذهب.",
                    "الأرصدة مجموع دفتر المورد حتى نهاية التاريخ (اليوم افتراضيًا). حركات الدفتر الكاملة (فواتير ومدفوعات وتسويات وعكسها) في ملف CSV."]
-        return {"meaning": meaning, "tables": [table("suppliers", "أرصدة الموردين", cols, rows), table("movements", "الحركات", dcols, det, paged=True)], "totals": totals}
+        bars = [{"key": "suppliers_making_owed", "title": "مصنعيات علينا حسب المورد (جنيه)", "tone": "payable", "rows": top_rows((r["supplier"], r["making_owed"]) for r in rows if r["making_owed"])},
+                {"key": "suppliers_making_credit", "title": "مصنعيات لنا عند الموردين (جنيه)", "tone": "receivable", "rows": top_rows((r["supplier"], r["making_credit"]) for r in rows if r["making_credit"])}]
+        return {"meaning": meaning, "tables": [table("suppliers", "أرصدة الموردين", cols, rows), table("movements", "الحركات", dcols, det, paged=True)], "totals": totals,
+                "bars": [b for b in bars if b["rows"]]}
 
     # ------------------------------------------------------------------ 6. treasury
     def _treasury(self, repo, gate, filters, start, end):
@@ -1691,4 +1723,7 @@ class ReportService:
         tables = [table("accounts", "الحسابات (أرصدة كاملة للفترة — لا يغيّرها البحث)", scols, summary), table("movements", "الحركات", dcols, det, paged=True)]
         for label in missing:
             tables.append(self._unavailable("missing_" + label, f"الحسابات ({label})", "ليست لديك صلاحية عرض هذا القسم."))
-        return {"meaning": meaning, "tables": tables, "totals": totals}
+        bars = [{"key": "treasury_closing", "title": "رصيد آخر الفترة حسب الحساب (جنيه)", "rows": top_rows(((r["account"], r["closing"]) for r in summary), 15)},
+                {"key": "treasury_flow", "title": "الداخل والخارج حسب الحساب (جنيه، بلا التحويلات الداخلية)", "tone": "payable",
+                 "rows": top_rows(((f"{r['account']} — خارج", r["out"]) for r in summary), 10)}]
+        return {"meaning": meaning, "tables": tables, "totals": totals, "bars": [b for b in bars if b["rows"]]}

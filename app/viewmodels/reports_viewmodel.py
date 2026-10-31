@@ -101,10 +101,10 @@ def _bars(groups):
     """Bar-chart data: each bar's length is its share of the group's largest value (strings for the money, a ratio for the length)."""
     out = []
     for g in groups or []:
-        top = max((r["value"] for r in g["rows"]), default=0)
+        top = max((abs(r["value"]) for r in g["rows"]), default=0)
         counts, grams = g.get("kind") == "count", g.get("kind") == "grams"
         out.append({"key": g["key"], "title": g["title"], "tone": g.get("tone", ""), "karat": int(g.get("karat") or 0),
-                    "rows": [{"label": r["label"], "text": f"{int(r['value'])} قطعة" if counts else grams_text(r["value"]) if grams else _cell("money", r["value"]), "ratio": float(r["value"] / top) if top else 0.0} for r in g["rows"]]})
+                    "rows": [{"label": r["label"], "text": f"{int(r['value'])} قطعة" if counts else grams_text(r["value"]) if grams else _cell("money", r["value"]), "ratio": float(abs(r["value"]) / top) if top else 0.0} for r in g["rows"]]})
     return out
 
 
