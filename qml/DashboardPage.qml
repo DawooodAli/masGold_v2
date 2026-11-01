@@ -330,45 +330,6 @@ Item {
                     Empty { objectName: "monthEmpty"; value: "لا مبيعات هذا الشهر بعد"; visible: !dashboard.vm || dashboard.vm.monthByKarat.length === 0 }
                 }
 
-                // --- أكثر الأصناف مبيعًا هذا الشهر (billing permission): one row per item type, never summed across types (owner request 2026-10-25)
-                Card {
-                    objectName: "topTypesCard"
-                    visible: dashboard.sales
-                    title: "أكثر الأصناف مبيعًا هذا الشهر"
-                    accent: theme.priceSell
-                    Repeater {
-                        model: dashboard.vm ? dashboard.vm.topTypes : []
-                        delegate: ColumnLayout {
-                            required property var modelData
-                            required property int index
-                            objectName: "topType_" + index
-                            Layout.fillWidth: true
-                            spacing: 0
-                            Line { label: modelData.type; value: modelData.value; strong: true }
-                            Txt { Layout.fillWidth: true; value: modelData.pieces + " • " + modelData.grams
-                                  color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
-                        }
-                    }
-                    Empty { objectName: "topTypesEmpty"; value: "لا مبيعات هذا الشهر بعد"
-                            visible: !dashboard.vm || dashboard.vm.topTypes.length === 0 }
-                }
-
-                // --- تحت الحد الأدنى للمخزون (inventory permission): the rules the owner set in Settings
-                Card {
-                    objectName: "belowMinCard"
-                    visible: !!dashboard.vm && dashboard.vm.canSeeStock
-                    title: "تحت الحد الأدنى للمخزون"
-                    accent: !!dashboard.vm && dashboard.vm.belowMin.length > 0 ? theme.amber : theme.textMuted
-                    badge: dashboard.vm && dashboard.vm.belowMin.length > 0 ? String(dashboard.vm.belowMin.length) : ""
-                    Repeater {
-                        model: dashboard.vm ? dashboard.vm.belowMin : []
-                        delegate: Line { required property var modelData; label: modelData.title; value: modelData.short; valueColor: theme.amber; strong: true }
-                    }
-                    Empty { objectName: "belowMinEmpty"; value: "كل الأصناف فوق حدها الأدنى ✓ (أو لم تُحدَّد حدود في الإعدادات)"; visible: !dashboard.vm || dashboard.vm.belowMin.length === 0
-                            wrapMode: Text.WordWrap }
-                    Action { objectName: "dashboardOpenAlerts"; text: "فتح التقارير (تنبيهات المخزون)"; page: 5; visible: !!dashboard.vm && dashboard.vm.belowMin.length > 0 }
-                }
-
                 // --- أرصدة العملاء (customers permission): who owes and who is owed, from the customer ledger.
                 // Only customers with account activity from the first day of the current month; a settled account disappears on its own.
                 Card {
@@ -451,31 +412,6 @@ Item {
                             visible: !dashboard.vm || dashboard.vm.scrapToday.length === 0 }
                 }
 
-                // --- قطع راكدة (inventory permission): IN_STOCK pieces never on an invoice for N days, per karat
-                Card {
-                    objectName: "deadStockCard"
-                    visible: !!dashboard.vm && dashboard.vm.canSeeStock
-                    title: "قطع راكدة (أكثر من " + (dashboard.vm ? dashboard.vm.deadStock.days : 0) + " يوم)"
-                    accent: !!dashboard.vm && dashboard.vm.deadStock.rows.length > 0 ? theme.amber : theme.textMuted
-                    Repeater {
-                        model: dashboard.vm ? dashboard.vm.deadStock.rows : []
-                        delegate: ColumnLayout {
-                            required property var modelData
-                            required property int index
-                            objectName: "deadStock_" + index
-                            Layout.fillWidth: true
-                            spacing: 0
-                            Line { label: "عيار " + modelData.karat + "  •  " + modelData.pieces; value: modelData.grams; strong: true
-                                   valueColor: theme.balanceKaratColor(modelData.karat) }
-                            Txt { Layout.fillWidth: true; value: modelData.oldest; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
-                        }
-                    }
-                    Empty { objectName: "deadStockEmpty"; value: "لا توجد قطع راكدة ✓"
-                            visible: !dashboard.vm || dashboard.vm.deadStock.rows.length === 0 }
-                    Action { objectName: "dashboardOpenDeadStock"; text: "فتح التقارير (تنبيهات المخزون)"; page: 5
-                             visible: !!dashboard.vm && dashboard.vm.deadStock.rows.length > 0 }
-                }
-
                 // --- المبيعات آخر 14 يومًا (billing permission): one bar per day, the length is the share of the best day
                 Card {
                     objectName: "salesDaysCard"
@@ -528,6 +464,15 @@ Item {
                                 for (var i = 0; i < n; i++) { if (i === 0) ctx.moveTo(xs(i), ys(lines[k][0][i])); else ctx.lineTo(xs(i), ys(lines[k][0][i])) }
                                 ctx.stroke()
                             }
+                            // 30-day moving average of the shop BUY price (dashed, muted); days without enough history are a gap
+                            ctx.strokeStyle = "" + theme.textPrimary; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]); ctx.beginPath()
+                            var pen = false
+                            for (var j = 0; j < n; j++) {
+                                var m = c.ma ? c.ma[j] : null
+                                if (m === null || m === undefined) { pen = false; continue }
+                                if (!pen) { ctx.moveTo(xs(j), ys(m)); pen = true } else ctx.lineTo(xs(j), ys(m))
+                            }
+                            ctx.stroke()
                         }
                     }
                     Txt { objectName: "priceChartEmpty"; Layout.fillWidth: true; visible: !dashboard.vm || !dashboard.vm.priceChart.available
@@ -535,7 +480,7 @@ Item {
                     Line { visible: !!dashboard.vm && dashboard.vm.priceChart.available; label: "أدنى / أعلى"
                            value: dashboard.vm ? dashboard.vm.priceChart.lowText + " / " + dashboard.vm.priceChart.highText : "" }
                     Txt { visible: !!dashboard.vm && dashboard.vm.priceChart.available; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost
-                          value: "أخضر: شراء المحل • ذهبي: بيع المحل" }
+                          value: "أخضر: شراء المحل • ذهبي: بيع المحل • منقّط: المتوسط المتحرك 30 يوم (شراء)" }
                 }
 
                 // --- الشارت المباشر للذهب (TradingView XAUUSD داخل البرنامج؛ رابط بديل لو المتصفح المضمّن غير متاح)

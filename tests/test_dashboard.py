@@ -363,6 +363,11 @@ class DashboardViewModelTests(unittest.TestCase):
                                                {"name": "منى علي", "code": "", "balance": "3,200 ج",
                                                 "owes": False}])          # the settled customer disappears
 
+    def test_the_price_series_carries_a_30_day_moving_average_of_the_buy_price(self):
+        series = make_service(busy_state())[0].today()["price_series"]
+        self.assertEqual([r["ma"] for r in series[:9]], [None] * 9)                      # fewer than 10 stored days: no average yet, a gap
+        self.assertEqual((series[9]["ma"], series[11]["ma"]), ("6112.50", "6137.50"))    # trailing average of the shop BUY price ending that day
+
     def test_price_hint_without_history_says_the_data_is_insufficient(self):
         self.assertEqual(self.vm(empty_state()).priceHint,
                          {"available": False, "average": "—",
@@ -406,7 +411,7 @@ class DashboardPageTests(page_harness.InvoicePageTests):
             QTest.qWait(250)
             page = self.item("dashboardPage")
             for name in ("todayCard", "soldWeightCard", "priceCard", "oldGoldCard",
-                         "priceHintCard", "topTypesCard", "invoiceCount", "sellTotal", "dashboardPriceSell"):
+                         "priceHintCard", "invoiceCount", "sellTotal", "dashboardPriceSell"):
                 item = self.item(name)
                 self.assertTrue(item.property("visible"), f"{name} hidden at {width}x{height}")
                 left = item.mapToItem(page, QPointF(0, 0)).x()
@@ -436,17 +441,15 @@ class DashboardPageTests(page_harness.InvoicePageTests):
             self.root.setHeight(height)
             QTest.qWait(250)
             page = self.item("dashboardPage")
-            for name in ("monthCard", "belowMinCard"):
+            for name in ("monthCard",):
                 item = self.item(name)
                 self.assertTrue(item.property("visible"), f"{name} hidden at {width}x{height}")
                 left = item.mapToItem(page, QPointF(0, 0)).x()
                 self.assertGreaterEqual(left, -1, name)
                 self.assertLessEqual(left + item.property("width"), page.property("width") + 1, name)
             wide = bool(page.property("wide"))                                                               # three columns on a wide page, two on a narrow one
-            rows = ([("priceCard", "priceHintCard", "todayCard"), ("soldWeightCard", "oldGoldCard", "monthCard"),
-                     ("topTypesCard", "belowMinCard")] if wide else
-                    [("priceCard", "priceHintCard"), ("todayCard", "soldWeightCard"), ("oldGoldCard", "monthCard"),
-                     ("topTypesCard", "belowMinCard")])
+            rows = ([("priceCard", "priceHintCard", "todayCard"), ("soldWeightCard", "oldGoldCard", "monthCard")] if wide else
+                    [("priceCard", "priceHintCard"), ("todayCard", "soldWeightCard"), ("oldGoldCard", "monthCard")])
             for row in rows:
                 heights = {name: round(self.item(name).property("height")) for name in row}
                 self.assertEqual(len(set(heights.values())), 1, f"cards of one row differ in height at {width}x{height}: {heights}")
@@ -537,7 +540,7 @@ class DashboardPageTests(page_harness.InvoicePageTests):
     def test_dashboard_hides_sales_without_billing_permission(self):
         self.open_dashboard({**self.dashboard.snapshot, "can_see_sales": False, "can_see_balances": True,
                              "customer_balances": []})
-        for name in ("todayCard", "soldWeightCard", "monthCard", "topTypesCard"):
+        for name in ("todayCard", "soldWeightCard", "monthCard"):
             self.assertFalse(self.item(name).property("visible"), name)
         for name in ("priceCard", "oldGoldCard", "priceHintCard", "customerBalancesCard"):
             self.assertTrue(self.item(name).property("visible"), name)                                   # the price and balance cards are for every user
@@ -549,7 +552,6 @@ class DashboardPageTests(page_harness.InvoicePageTests):
         self.assertEqual((self.item("priceHintAverage").property("value"), self.item("priceHintVersus").property("value")),
                          ("6,137.50 ج", "سعر الشراء الآن أعلى منه بنسبة 2.24%"))
         self.assertEqual(self.item("priceHintAction").property("value"), "البيع مناسب نسبيًا")
-        self.assertIsNotNone(self.item("topType_0"))                                                     # the first best-selling type row exists
         self.assertEqual(vm.topTypes[0]["type"], "دبلة")
         # the customer balances card: the amount only, distinguished by colour (RED owes / BLUE credit)
         self.assertTrue(self.item("customerBalancesCard").property("visible"))
@@ -563,7 +565,7 @@ class DashboardPageTests(page_harness.InvoicePageTests):
         self.assertEqual(line2.property("valueColor").name(), self._theme_color("blue"))
 
     def test_overdue_scrap_and_dead_stock_cards(self):
-        """Owner request 2026-10-26: the overdue debts, today's scrap price and the dead stock, readable at every target size."""
+        """Owner request 2026-10-26: the overdue debts and today's scrap price (the dead-stock card was removed 2026-11-01), readable at every target size."""
         service, _ = make_service(busy_state(), CUSTOMERS | {"INVENTORY_VIEW"})
         self.open_dashboard(service.today())
         for width, height in page_harness.SIZES:
@@ -571,7 +573,7 @@ class DashboardPageTests(page_harness.InvoicePageTests):
             self.root.setHeight(height)
             QTest.qWait(250)
             page = self.item("dashboardPage")
-            for name in ("overdueCard", "scrapTodayCard", "deadStockCard"):
+            for name in ("overdueCard", "scrapTodayCard"):
                 item = self.item(name)
                 self.assertTrue(item.property("visible"), f"{name} hidden at {width}x{height}")
                 left = item.mapToItem(page, QPointF(0, 0)).x()
@@ -580,15 +582,12 @@ class DashboardPageTests(page_harness.InvoicePageTests):
         self.assertEqual(self.item("overdueRow_0") is not None, True)
         self.assertEqual(self.item("overdueEmpty").property("visible"), False)
         self.assertIsNotNone(self.item("scrapToday_0"))
-        self.assertIsNotNone(self.item("deadStock_0"))
-        self.assertEqual(self.item("deadStockEmpty").property("visible"), False)
         self.assertEqual(self.warnings, [])
 
     def test_new_cards_follow_the_grants(self):
         service, _ = make_service(busy_state(), BILLING)
         self.open_dashboard(service.today())
-        for name in ("overdueCard", "deadStockCard"):
-            self.assertFalse(self.item(name).property("visible"), name)
+        self.assertFalse(self.item("overdueCard").property("visible"))
         self.assertTrue(self.item("scrapTodayCard").property("visible"))
 
     def _theme_color(self, name):

@@ -144,10 +144,11 @@ class DashboardViewModel(QObject):
         """The stored daily 21K shop BUY / SELL prices of the last days, as plain floats for drawing only (the figures shown as text come formatted)."""
         series = self._data.get("price_series") or []
         if len(series) < 2:
-            return {"available": False, "buy": [], "sell": [], "low": 0.0, "high": 0.0, "first": "", "last": "", "lowText": "", "highText": ""}
+            return {"available": False, "buy": [], "sell": [], "ma": [], "low": 0.0, "high": 0.0, "first": "", "last": "", "lowText": "", "highText": ""}
         buys, sells = [float(r["buy"]) for r in series], [float(r["sell"]) for r in series]
-        low, high = min(buys + sells), max(buys + sells)
-        return {"available": True, "buy": buys, "sell": sells, "low": low, "high": high, "first": series[0]["day"], "last": series[-1]["day"],
+        averages = [float(r["ma"]) if r.get("ma") is not None else None for r in series]      # None = not enough stored days yet (drawn as a gap)
+        low, high = min(buys + sells + [a for a in averages if a is not None]), max(buys + sells + [a for a in averages if a is not None])
+        return {"available": True, "buy": buys, "sell": sells, "ma": averages, "low": low, "high": high, "first": series[0]["day"], "last": series[-1]["day"],
                 "lowText": rate(str(low)), "highText": rate(str(high))}
 
     @Property("QVariantMap", notify=changed)

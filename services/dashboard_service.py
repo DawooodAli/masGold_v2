@@ -234,7 +234,15 @@ class DashboardService:
         legacy = [(day_of(r["day"]), Decimal(str(r["buy"])), Decimal(str(r["sell"]))) for r in raw.get("price_legacy") or []]
         merged = indicators_math.merge_series(legacy, live)
         snapshot["price_hint"] = self.price_hint(merged)
-        snapshot["price_series"] = [{"day": d.isoformat(), "buy": str(b), "sell": str(s)} for d, b, s in list(merged)[-PRICE_DAYS:]]
+        merged = list(merged)
+        first_shown = max(0, len(merged) - PRICE_DAYS)
+
+        def average30(index):
+            """The 30-day moving average of the shop BUY price ending at that day (None without enough stored days)."""
+            found = indicators_math.moving_average(merged[:index + 1], 1, 30)
+            return str(found[0]) if found else None
+        snapshot["price_series"] = [{"day": d.isoformat(), "buy": str(b), "sell": str(s), "ma": average30(first_shown + i)}
+                                    for i, (d, b, s) in enumerate(merged[first_shown:])]
         snapshot["can_see_balances"] = bool(raw.get("can_see_balances"))
         if snapshot["can_see_balances"]:
             snapshot["customer_balances"] = self.balances(raw.get("customer_balances"))
