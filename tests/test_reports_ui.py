@@ -22,6 +22,10 @@ class ReportsPageTests(harness.InvoicePageTests):
         FakeRepo.legacy = False
         FakeRepo.recons, FakeRepo.recon_docs, FakeRepo.groups, FakeRepo.calls = [], [], None, []
         self.broken = False
+        from app.viewmodels import reports_viewmodel as _vm_module
+        _real_today = _vm_module._today
+        _vm_module._today = lambda: TODAY                                                          # the fixtures are dated around TODAY, not the real clock
+        self.addCleanup(setattr, _vm_module, "_today", _real_today)
 
         @contextmanager
         def snapshot():
