@@ -307,7 +307,9 @@ class GoldTimoProvider:
         attempt_id = str(uuid4())
         if not config.api_key:
             raise ProviderError("GoldTimo API key is not configured.", code="KEY_MISSING")
-        deadline = self._monotonic() + config.timeout_seconds
+        # The timeout is PER REQUEST: a whole set (one request per karat) may take up to timeout x karats. GoldTimo answers in 0.7-5 s, so a single 10 s budget for three
+        # sequential requests failed about one refresh in four (owner 2026-11-01: Test Connection, one request, passed while the top bar said «تعذر التحديث»).
+        deadline = self._monotonic() + config.timeout_seconds * len(karats)
         quotes = []
         for karat in karats:
             remaining = deadline - self._monotonic()
@@ -320,7 +322,7 @@ class GoldTimoProvider:
                 method="GET",
             )
             try:
-                with self._open(request, timeout=remaining) as response:
+                with self._open(request, timeout=min(remaining, config.timeout_seconds)) as response:
                     self._log_request(karat, response.status, config)
                     if response.status != 200:
                         raise self._http_error(response.status)

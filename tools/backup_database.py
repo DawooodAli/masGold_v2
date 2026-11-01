@@ -21,7 +21,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-DEFAULT_DEST = Path(r"E:\masGold_backups")
+DEFAULT_DEST = Path(r"E:\masGold_backups")                          # the fallback; the folder the owner chose in Settings (config/backup_settings.py) wins when --dest is not given
 DEFAULT_MYSQLDUMP = Path(r"C:\Program Files\MySQL\MySQL Server 8.0\bin\mysqldump.exe")
 TRAILER = b"-- Dump completed"
 NAME = re.compile(r"^(?P<db>[a-z0-9_]{1,64})_(?P<stamp>\d{8}_\d{6})\.sql\.gz$")
@@ -124,7 +124,7 @@ def offsite_copy(local, folder, database, now, keep_days, keep_min, passphrase=N
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--database", default=None)
-    parser.add_argument("--dest", default=str(DEFAULT_DEST))
+    parser.add_argument("--dest", default=None)
     parser.add_argument("--keep-days", type=int, default=30)
     parser.add_argument("--keep-min", type=int, default=7)
     parser.add_argument("--mysqldump", default=str(DEFAULT_MYSQLDUMP))
@@ -135,7 +135,8 @@ def main(argv=None):
     if not re.fullmatch(r"[a-z0-9_]{1,64}", database):
         print("invalid database name")
         return 2
-    dest = Path(args.dest)
+    from config import backup_settings
+    dest = Path(args.dest) if args.dest else backup_settings.destination()
     now = datetime.now()
     status, detail = "FAILED", ""
     temp = None

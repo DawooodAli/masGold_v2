@@ -211,6 +211,9 @@ class ApplicationController(QObject):
         if self.operational_viewmodels.get("stocktakeAdjustVM") is None:
             from app.viewmodels.stocktake_adjust_viewmodel import create_stocktake_adjust_viewmodel
             self.operational_viewmodels["stocktakeAdjustVM"] = create_stocktake_adjust_viewmodel(self.session)
+        if self.operational_viewmodels.get("backupLocationVM") is None:
+            from app.viewmodels.backup_location_viewmodel import create_backup_location_viewmodel
+            self.operational_viewmodels["backupLocationVM"] = create_backup_location_viewmodel(self.session)
         if self.operational_viewmodels.get("currencyRatesVM") is None:
             from app.viewmodels.currency_rates_viewmodel import create_currency_rates_viewmodel
             self.operational_viewmodels["currencyRatesVM"] = create_currency_rates_viewmodel(self.session)

@@ -339,7 +339,7 @@ class GoldTimoProviderTests(unittest.TestCase):
         self.assertEqual(sorted(firsts), ["key-one", "key-three", "key-two"])
 
     def test_total_time_budget_stops_before_request(self):
-        times = iter([0, 6])
+        times = iter([0, 16])                                                                # the budget is timeout x karats (3), not one timeout for the whole set
         provider = GoldTimoProvider(self.config, opener=self.open, monotonic=lambda: next(times))
         with self.assertRaisesRegex(ProviderError, "timed out"):
             provider.fetch()

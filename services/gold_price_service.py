@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from hashlib import sha256
 import json
 from threading import Lock
+import logging
 from types import MappingProxyType
 from typing import Mapping
 
@@ -540,10 +541,12 @@ class GoldPriceService:
             except PermissionError:
                 raise
             except QuoteValidationError as exc:
+                logging.getLogger(__name__).error("gold price refresh rejected: %s code=%s", type(exc).__name__, getattr(exc, "code", ""))
                 self._record_rejection(source["code"], exc)
                 self._last_error = "رفض تحديث الأسعار بعد التحقق؛ تم الاحتفاظ بآخر مجموعة سليمة."
                 self._failed_group = active[0]["quote_group_id"] if self._coherent(active) else None
-            except Exception:
+            except Exception as exc:
+                logging.getLogger(__name__).error("gold price refresh failed: %s code=%s %s", type(exc).__name__, getattr(exc, "code", ""), str(exc)[:200])
                 self._last_error = "فشل التحديث التلقائي؛ تم الاحتفاظ بآخر مجموعة أسعار سليمة."
                 self._failed_group = active[0]["quote_group_id"] if self._coherent(active) else None
             return self.snapshot()

@@ -5811,6 +5811,51 @@ ApplicationWindow {
         ]
     }
 
+    // Settings → النسخ الاحتياطي التلقائي: the folder of the daily database backups (any drive; the scheduled tasks read it on their next run).
+    component BackupLocationSettings: SettingsSectionCard {
+        id: backupCard
+        objectName: "settingsBackupLocation"
+        sectionTitle: "النسخ الاحتياطي التلقائي"
+        accentColor: theme.gold
+        readonly property var vm: typeof backupLocationVM !== "undefined" ? backupLocationVM : null
+        visible: !!vm && vm.canManage
+        Component.onCompleted: if (vm && vm.canManage) vm.refresh()
+        content: [
+            GoldPriceLabel {
+                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                value: "فولدر النسخ الاحتياطي اليومي لقاعدة البيانات. يمكن تغييره لأي درايف (مثل D: أو فلاشة أو درايف شبكة). النسخة القادمة المجدولة تُكتب في المكان الجديد، وأي نسخ قديمة تبقى في مكانها."
+                color: theme.textMuted; font.pixelSize: 11
+            },
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                GoldPriceLabel { Layout.preferredWidth: 110; value: "الفولدر الحالي"; color: theme.textSecondary }
+                GoldPriceInput { id: backupFolder; objectName: "backupFolder"; Layout.fillWidth: true; Layout.preferredHeight: 34
+                                 text: backupCard.vm ? backupCard.vm.folder : ""; placeholderText: "D:\\masGold_backups" }
+            },
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                GoldPriceButton {
+                    objectName: "backupSave"; text: "حفظ"; enabled: !!backupCard.vm && !backupCard.vm.busy && backupFolder.text.trim().length > 0
+                    onClicked: backupCard.vm.save(backupFolder.text)
+                }
+                GoldPriceButton {
+                    objectName: "backupTest"; text: "اختبار المكان"; enabled: !!backupCard.vm && !backupCard.vm.busy && backupFolder.text.trim().length > 0
+                    onClicked: backupCard.vm.test(backupFolder.text)
+                }
+                GoldPriceButton {
+                    objectName: "backupDefault"; text: "الافتراضي"; enabled: !!backupCard.vm && !backupCard.vm.busy
+                    onClicked: backupFolder.text = backupCard.vm.defaultFolder
+                }
+                Item { Layout.fillWidth: true }
+            },
+            GoldPriceLabel {
+                objectName: "backupMessage"; Layout.fillWidth: true; visible: value.length > 0; wrapMode: Text.WordWrap
+                value: backupCard.vm ? backupCard.vm.message : ""
+                color: backupCard.vm && backupCard.vm.messageIsError ? theme.priceError : theme.green
+            }
+        ]
+    }
+
     // Settings → أسعار العملات (GoldTimo /rates): the home-page currency card. It reuses the GoldTimo keys saved above; here: show it or not, how often to refresh and which currencies.
     component CurrencyRatesSettings: SettingsSectionCard {
         id: fxCard
@@ -6390,6 +6435,14 @@ ApplicationWindow {
                         accentColor: theme.gold; clickable: true; Layout.preferredHeight: 92
                         onClicked: settingsPageRoot.openSection = "categories"
                     }
+                    SettingsCard {
+                        objectName: "settingsBackupCard"
+                        visible: typeof backupLocationVM !== "undefined" && backupLocationVM.canManage
+                        title: "النسخ الاحتياطي"; value: ""
+                        subtitle: "مكان النسخ الاحتياطي التلقائي"
+                        accentColor: theme.gold; clickable: true; Layout.preferredHeight: 92
+                        onClicked: settingsPageRoot.openSection = "backup"
+                    }
                 }
                 SettingsSectionCard {
                     visible: settingsPageRoot.openSection === ""
@@ -6449,6 +6502,7 @@ ApplicationWindow {
                     ]
                 }
                 // تصنيفات المصروفات والإيرادات: نُقلت من الخزنة (حوار بزر 🗂) إلى هنا كما طلب المالك.
+                BackupLocationSettings { id: backupSection; Layout.fillWidth: true; visible: settingsPageRoot.openSection === "backup" && !!backupSection.vm && backupSection.vm.canManage }
                 CashCategorySettings { id: cashCategoriesSection; Layout.fillWidth: true; visible: settingsPageRoot.openSection === "categories" && !!cashCategoriesSection.vm && cashCategoriesSection.vm.canManage }
             }
         }

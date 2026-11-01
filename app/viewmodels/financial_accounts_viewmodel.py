@@ -67,6 +67,7 @@ class FinancialAccountsViewModel(QObject):
         self._detail, self._request_key, self._form = {}, str(uuid4()), False
         self._advances, self._employees, self._advance_key = [], [], str(uuid4())
         self._cc_owes, self._cc_owed, self._cc_settled, self._cc_key = [], [], [], str(uuid4())
+        self._tr_key = str(uuid4())
 
     # ------------------------------------------------------------ plumbing
     def _service_instance(self):
@@ -304,6 +305,34 @@ class FinancialAccountsViewModel(QObject):
     def customerSettled(self):
         """Customers whose balance is zero, listed only while a search is typed (cash in / out is entered for them too)."""
         return self._cc_settled
+
+    @Property(bool, notify=changed)
+    def transferBusy(self):
+        return "tr_save" in self._busy
+
+    @Slot()
+    def prepareTransfer(self):
+        self._tr_key, self._error, self._message = str(uuid4()), "", ""
+        self.changed.emit()
+
+    @Slot(str, str, str, str)
+    def saveTransfer(self, from_key, to_key, amount, note):
+        """Money moving between the Main Safe, banks and wallets (one TRxxxxxx document, one key per attempt; the service rechecks the right and the accounts)."""
+        if "tr_save" in self._busy or not self.canOperate:
+            return
+        service, key = self._service_instance(), self._tr_key
+        self._error = ""
+        self._start("tr_save", lambda _expected_actor: service.transfer(from_key, to_key, amount, note, key, _expected_actor=_expected_actor))
+
+    def _on_tr_save(self, result, error):
+        if error:
+            self._error = error
+            return
+        self._tr_key = str(uuid4())
+        self._message = f"تم التحويل {result.get('code') or ''}."
+        self._message_timer.start()
+        self.finalized.emit(result["code"])
+        self.refresh()
 
     @Property(bool, notify=changed)
     def customerCashBusy(self):

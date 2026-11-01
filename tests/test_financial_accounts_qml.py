@@ -78,6 +78,10 @@ class Service:
         rows = [r for r in self.customer_rows if search in r["name"]]
         return {"owes": [r for r in rows if r["side"] == "owes"], "owed": [r for r in rows if r["side"] == "owed"], "settled": []}
 
+    def transfer(self, from_key, to_key, amount, note, request_key, *, _expected_actor=None):
+        self.calls.append(("transfer", from_key, to_key, amount, note, request_key))
+        return {"operation_id": "15", "code": "TR000015", "operation_type": "ACCOUNT_TRANSFER", "amount": amount, "duplicate": False}
+
     def customer_cash(self, direction, customer_id, account_key, amount, note, request_key, *, _expected_actor=None):
         self.calls.append(("customer_cash", direction, customer_id, account_key, amount, request_key))
         return {"operation_id": "14", "code": "FO000014", "operation_type": "X", "amount": amount, "duplicate": False, "customer_name": "أحمد سالم"}
@@ -283,6 +287,29 @@ class CashScreenTests(harness.InvoicePageTests):
         self.wait_until(lambda: self.count("customer_cash") == 2, "second posted")
         self.assertEqual(self.last("customer_cash")[1:5], ("OUT", "8", "BANK:1", "300"))
         self.assertNotEqual(self.service.calls[-1][-1] if False else call[5], self.last("customer_cash")[5])   # a new attempt, a new key
+
+    def test_transfer_between_the_safe_and_a_bank_with_real_clicks_at_all_sizes(self):
+        self.open_page()
+        for width, height in harness.SIZES:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(120)
+            self.assert_inside_window(self.visible_item("cashTransfer"))
+        self.click("cashTransfer")
+        self.wait_until(lambda: self.item("transferDialog").property("opened"), "dialog opens")
+        self.assert_inside_window(self.visible_item("transferSave"))
+        self.assertFalse(self.item("transferSave").property("enabled"))                 # no amount yet
+        self.type_into("transferAmount", "700")
+        self.wait_until(lambda: self.item("transferSave").property("enabled"), "amount typed")
+        self.choose("transferTo", 0)                                                  # the same account on both sides
+        self.assertTrue(self.item("transferSame").property("visible"))
+        self.assertFalse(self.item("transferSave").property("enabled"))
+        self.choose("transferTo", 1)
+        self.click("transferSave")
+        self.wait_until(lambda: self.count("transfer") == 1, "transfer posted")
+        self.assertEqual(self.last("transfer")[1:5], ("CASH:1", "BANK:1", "700", ""))
+        self.wait_until(lambda: not self.item("transferDialog").property("visible"), "dialog closes after saving")
+        self.assertEqual(self.warnings, [])
 
     def test_revenue_in_and_bank_deposit_forms(self):
         self.open_page()

@@ -36,7 +36,7 @@ Rectangle {
         function onInvoiceRequested(invoiceId) { page.invoiceRequested(invoiceId) }
         function onCorrectionRequested(operationId) { detailDialog.close(); page.correctionRequested(operationId) }
         function onCustomerRequested(customerId) { page.customerRequested(customerId) }
-        function onFinalized(code) { movementDialog.close() }
+        function onFinalized(code) { movementDialog.close(); transferDialog.close() }
     }
 
     component Txt: Label {
@@ -234,6 +234,9 @@ Rectangle {
                 Btn { objectName: "cashCustomerCash"; text: "حركة نقدية عملاء"
                       visible: !!page.vm && page.vm.canOperate
                       onClicked: customerCashDialog.begin() }
+                Btn { objectName: "cashTransfer"; text: "⇄ تحويل بين الحسابات"
+                      visible: !!page.vm && page.vm.canOperate
+                      onClicked: transferDialog.begin() }
                 Btn { objectName: "cashRefresh"; text: "تحديث"; enabled: !!page.vm && !page.vm.busy
                       onClicked: page.vm.refresh() }
             }
@@ -354,6 +357,61 @@ Rectangle {
                 Item { Layout.fillWidth: true }
                 Btn { objectName: "cashMovementCancel"; text: "إلغاء"; enabled: !!page.vm && !page.vm.saving
                       onClicked: movementDialog.close() }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ تحويل بين الحسابات: Main Safe <-> banks <-> wallets (one TR document, never income or expense)
+    Dialog {
+        id: transferDialog; objectName: "transferDialog"
+        readonly property var accounts: [{ "key": page.vm && page.vm.accountKey ? page.vm.accountKey : "", "name": page.vm && page.vm.accountName ? page.vm.accountName : "الخزنة" }].concat(page.vm ? page.vm.bankAccounts : [])
+        function begin() { trAmount.text = ""; trNote.text = ""; trFrom.currentIndex = 0; trTo.currentIndex = accounts.length > 1 ? 1 : 0; page.vm.prepareTransfer(); open(); trAmount.forceActiveFocus() }
+        anchors.centerIn: parent; width: Math.min(page.width - 24, 640); modal: true; font.family: "Cairo"
+        closePolicy: page.vm && page.vm.transferBusy ? Popup.NoAutoClose : Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgPrimary; radius: theme.radiusMedium; border.color: theme.goldDark }
+        contentItem: ColumnLayout {
+            spacing: 10
+            Txt { text: "تحويل بين الحسابات"; font.bold: true; font.pixelSize: theme.fontSection; color: theme.gold; Layout.fillWidth: true }
+            Txt { Layout.fillWidth: true; wrapMode: Text.Wrap; color: theme.textMuted; font.pixelSize: theme.fontCaption
+                  text: "تحويل مبلغ من حساب إلى آخر (الخزنة الرئيسية أو بنك أو محفظة). ليس إيرادًا ولا مصروفًا، ويظهر في حركة الحسابين." }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                Txt { text: "من حساب"; Layout.preferredWidth: 80 }
+                Combo { id: trFrom; objectName: "transferFrom"; Layout.fillWidth: true; implicitHeight: 38
+                        model: transferDialog.accounts; textRole: "name"; valueRole: "key" }
+            }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                Txt { text: "إلى حساب"; Layout.preferredWidth: 80 }
+                Combo { id: trTo; objectName: "transferTo"; Layout.fillWidth: true; implicitHeight: 38
+                        model: transferDialog.accounts; textRole: "name"; valueRole: "key" }
+            }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                Txt { text: "المبلغ"; Layout.preferredWidth: 80 }
+                Field { id: trAmount; objectName: "transferAmount"; Layout.preferredWidth: 200; implicitHeight: 38; font.bold: true
+                        placeholderText: "0"; inputMethodHints: Qt.ImhDigitsOnly
+                        validator: RegularExpressionValidator { regularExpression: /^[0-9]{0,12}$/ } }
+                Txt { text: "ج"; color: theme.textMuted }
+                Item { Layout.fillWidth: true }
+            }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                Txt { text: "ملاحظة"; Layout.preferredWidth: 80 }
+                Field { id: trNote; objectName: "transferNote"; Layout.fillWidth: true; placeholderText: "اختياري" }
+            }
+            Txt { objectName: "transferSame"; Layout.fillWidth: true; color: theme.amber; text: "اختر حسابين مختلفين."
+                  visible: trFrom.currentIndex === trTo.currentIndex }
+            Txt { objectName: "transferError"; Layout.fillWidth: true; wrapMode: Text.Wrap; color: theme.red
+                  text: page.vm ? page.vm.errorMessage : ""; visible: text.length > 0 }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                Btn { objectName: "transferSave"; primary: true
+                      text: page.vm && page.vm.transferBusy ? "جارٍ التحويل…" : "تحويل"
+                      enabled: !!page.vm && !page.vm.transferBusy && trFrom.currentIndex !== trTo.currentIndex && Number(trAmount.text) > 0
+                      onClicked: page.vm.saveTransfer(String(trFrom.currentValue || ""), String(trTo.currentValue || ""), trAmount.text, trNote.text) }
+                Btn { objectName: "transferCancel"; text: "إلغاء"; enabled: !!page.vm && !page.vm.transferBusy; onClicked: transferDialog.close() }
+                Item { Layout.fillWidth: true }
             }
         }
     }
