@@ -2275,16 +2275,37 @@ Item {
 
                     // Line 3: the customer account. Owner request (2026-11-02): kept on the FAR physical LEFT of the money block, away from the payment amount fields,
                     // because the staff typed the paid amount here by mistake.
-                    Item {
+                    Rectangle {
+                        objectName: "accountBox"
                         Layout.fillWidth: true
-                        Layout.topMargin: 10
-                        implicitHeight: accountFlow.implicitHeight
+                        Layout.topMargin: 14
+                        implicitHeight: accountTitle.implicitHeight + accountFlow.implicitHeight + 20
+                        color: "transparent"
+                        radius: 6
+                        border.width: 1
+                        border.color: theme.accountReceivable
+                        Label {
+                            id: accountTitle
+                            objectName: "accountTitle"
+                            anchors.left: parent.left
+                            anchors.leftMargin: 10
+                            anchors.top: parent.top
+                            anchors.topMargin: 4
+                            text: "حساب العميل — مديونية أو رصيد على الحساب، وليس مبلغًا مدفوعًا"
+                            color: theme.accountReceivable
+                            font.family: "Cairo"
+                            font.pixelSize: 12
+                            font.bold: true
+                        }
                         RowLayout {
                             id: accountFlow
                             objectName: "accountRow"
-                            // Content-sized and pinned to the physical left, apart from the payment legs.
+                            // Content-sized, inside the framed box, pinned to the physical left, apart from the payment legs.
                             anchors.left: parent.left
-                            width: Math.min(implicitWidth, parent.width)
+                            anchors.leftMargin: 10
+                            anchors.top: accountTitle.bottom
+                            anchors.topMargin: 4
+                            width: Math.min(implicitWidth, parent.width - 20)
                             layoutDirection: Qt.RightToLeft
                             spacing: 8
                             // حساب العميل: a separate ledger entry with its own direction; it never changes
