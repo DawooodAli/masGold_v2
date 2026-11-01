@@ -1225,10 +1225,9 @@ class ScrapCostTests(Case):
     def row(self, result, karat_):
         return next(r for r in result["tables"][0]["rows"] if r["karat"] == f"عيار {karat_}")
 
-    def test_weighted_average_for_the_period_and_from_the_start_with_hand_numbers(self):
+    def test_weighted_average_for_the_period_with_hand_numbers(self):
         r = self.row(self.service.run("scrapcost", self.PERIOD), 21)
         self.assertEqual((r["p_grams"], r["p_paid"], r["p_avg"]), (D("15.000"), D("91000.00"), D("6066.67")))             # (60000 + 31000) / (10 + 5)
-        self.assertEqual((r["c_grams"], r["c_avg"]), (D("35.000"), D("5971.43")))                                         # (118000 + 91000) / (20 + 15)
         self.assertEqual((r["price"], r["diff"]), (D("6390.00"), D("-323.33")))                                           # latest stored SHOP_BUY 6390; the period average is cheaper by 323.33
 
     def test_karats_stay_apart_a_missing_price_is_a_dash_and_the_reversed_purchase_is_counted(self):
@@ -1239,16 +1238,6 @@ class ScrapCostTests(Case):
         self.assertEqual(values["فواتير معكوسة غير محسوبة"], 1)
         self.assertEqual([t["karat"] for t in result["totals"] if t["karat"]], [21, 18])                                  # one coloured card per karat
         self.assertIn("6,066.67", values["متوسط تكلفة كسر عيار 21"])
-
-    def test_the_sell_signal_compares_the_current_price_with_the_break_even_and_says_when_history_is_missing(self):
-        result = self.service.run("scrapcost", self.PERIOD)
-        table = next(t for t in result["tables"] if t["key"] == "scrap_signal")
-        r = next(x for x in table["rows"] if x["karat"] == "عيار 21")
-        self.assertEqual((r["price"], r["breakeven"]), (D("6390.00"), D("6066.67")))                        # break-even = the period average cost
-        self.assertEqual(r["gap"], "+5.33%")                                                                  # (6390 - 6066.67) / 6066.67
-        self.assertTrue(r["advice"].startswith(("وقت مناسب للبيع", "فوق التعادل")), r["advice"])
-        self.assertNotIn("عيار 18", [x["karat"] for x in table["rows"]])                                    # no stored price for 18 in the fixture: no guess
-        self.assertTrue(any("ليس توصية مالية" in m for m in result["meaning"]))
 
     def test_the_accumulation_buckets_by_month_week_or_year_and_runs_per_karat(self):
         wide = {"from": "2025-01-01", "to": "2026-10-31"}
@@ -1262,10 +1251,9 @@ class ScrapCostTests(Case):
         self.assertTrue(all(len(r["bucket"]) == 4 for r in years))
         weeks = next(t for t in self.service.run("scrapcost", {**wide, "group": "week"})["tables"] if t["key"] == "scrap_accumulation")["rows"]
         self.assertTrue(all(r["bucket"].startswith("أسبوع يبدأ ") for r in weeks))
-        self.assertTrue(all(r["run_gain"] == "—" for r in months if r["karat"] == "عيار 18"))                # no stored price for 18: never a zero
         charts = {b["key"]: b for b in self.service.run("scrapcost", wide)["bars"]}
-        self.assertEqual(sorted(charts), ["scrap_gain_21", "scrap_run_21"])                                  # karat 18 has no price: no chart, no invented zero
-        self.assertEqual((charts["scrap_run_21"]["karat"], charts["scrap_run_21"]["rows"][-1]["value"]), (21, k21[-1]["run_gain"]))
+        self.assertEqual(sorted(charts), ["scrap_avg_18", "scrap_avg_21"])                                   # one average-price chart per karat
+        self.assertEqual((charts["scrap_avg_21"]["karat"], charts["scrap_avg_21"]["rows"][-1]["value"]), (21, k21[-1]["avg"]))
         with self.assertRaises(ReportError):
             self.service.run("scrapcost", {**wide, "group": "day"})
 
@@ -1275,10 +1263,10 @@ class ScrapCostTests(Case):
         self.assertEqual({r["trip"] for r in table["rows"]}, {"MT000001"})                                  # one block per custody trip
         rows = {r["karat"]: r for r in table["rows"]}
         k21 = rows["عيار 21 (راجع للمحل بالسعر الحالي)"]
-        self.assertEqual((k21["out"], k21["cost"], k21["back"], k21["back_value"]), (D("10.000"), D("59714.30"), D("2.000"), D("12780.00")))   # 10 x 5971.43; 2 x 6390
+        self.assertEqual((k21["out"], k21["cost"], k21["back"], k21["back_value"]), (D("10.000"), D("60666.70"), D("2.000"), D("12780.00")))   # 10 x 6066.67; 2 x 6390
         self.assertEqual(rows["عائد بيع ذهب العهدة"]["back_value"], D("50000.00"))
         self.assertLessEqual(rows["الفاقد والخسية (مكافئ 21، بسعر 21 الحالي)"]["back_value"], 0)                 # a loss is shown as a negative value, never a positive one
-        self.assertEqual(rows["النتيجة التقريبية المحققة"]["back_value"], D("3065.70"))     # 50000 + 12780 - 59714.30
+        self.assertEqual(rows["النتيجة التقريبية المحققة"]["back_value"], D("2113.30"))     # 50000 + 12780 - 60666.70
 
     def test_every_custody_trip_gets_its_own_block_and_result(self):
         class TwoTrips(FakeRepo):
@@ -1293,22 +1281,25 @@ class ScrapCostTests(Case):
         service = ReportService(self.session, transaction_factory=self.service._transaction, repository=TwoTrips, authorization=self.authorization, today=lambda: TODAY)
         rows = next(t for t in service.run("scrapcost", self.PERIOD)["tables"] if t["key"] == "scrap_market")["rows"]
         result = {r["trip"]: r["back_value"] for r in rows if r["karat"] == "النتيجة التقريبية المحققة"}
-        self.assertEqual(result, {"MT000001": D("70000.00") - D("59714.30"), "MT000002": D("6390.00") - D("23885.72")})   # trip 1: sold 70000, cost 10 x 5971.43; trip 2: 1 g back at 6390, cost 4 x 5971.43
+        self.assertEqual(result, {"MT000001": D("70000.00") - D("60666.70"), "MT000002": D("6390.00") - D("24266.68")})   # trip 1: sold 70000, cost 10 x 6066.67; trip 2: 1 g back at 6390, cost 4 x 6066.67
 
-    def test_a_period_without_purchases_has_no_period_figures_but_keeps_the_cumulative_ones(self):
+    def test_a_period_without_purchases_has_no_rows_and_older_purchases_never_count(self):
         result = self.service.run("scrapcost", {"from": "2026-11-01", "to": "2026-11-30"})
-        r = self.row(result, 21)
-        self.assertEqual((r["p_grams"], r["p_avg"], r["diff"]), (D("0.000"), "—", "—"))
-        self.assertEqual(r["c_avg"], D("5971.43"))                                                                        # (118000 + 60000 + 31000) / 35: nothing after October
+        self.assertEqual(result["tables"][0]["rows"], [])
         self.assertEqual(self.service.run("scrapcost", {**self.PERIOD, "karat": "18"})["tables"][0]["rows"][0]["karat"], "عيار 18")
         with self.assertRaises(ReportError):
             self.service.run("scrapcost", {**self.PERIOD, "karat": "19"})
 
-    def test_unrealised_gain_and_the_break_even_state_with_hand_numbers(self):
-        r = self.row(self.service.run("scrapcost", self.PERIOD), 21)
-        self.assertEqual(r["unreal"], D("4850.00"))                                        # 15 g x 6390 - 91000
-        self.assertEqual(r["state"], "فوق التعادل: ممكن تعوّض فلوسك")                       # 6390 >= the period average 6066.67
-
+    def test_pound_and_bar_purchases_stay_out_of_the_scrap_average_and_have_their_own_table(self):
+        class WithCoins(FakeRepo):
+            def scrap_cost_lines(self, end_exclusive):
+                return super().scrap_cost_lines(end_exclusive) + [{"invoice_id": 99, "doc_date": datetime(2026, 10, 20), "karat_value": 21, "weight_grams": D("2.000"),
+                                                                     "line_total": D("12800.00"), "scrap_kind": "POUND", "reversal_id": None}]
+        service = ReportService(self.session, transaction_factory=self.service._transaction, repository=WithCoins, authorization=self.authorization, today=lambda: TODAY)
+        result = service.run("scrapcost", self.PERIOD)
+        self.assertEqual(self.row(result, 21)["p_avg"], D("6066.67"))                                          # unchanged by the coins
+        coins = next(t for t in result["tables"] if t["key"] == "scrap_coins")["rows"]
+        self.assertEqual([(r["kind"], r["karat"], r["grams"], r["avg"]) for r in coins], [("جنيه ذهب", "عيار 21", D("2.000"), D("6400.00"))])
 
     def test_it_needs_the_invoice_right(self):
         session = session_for(frozenset({"APP_LOGIN", "REPORTS_VIEW"}))

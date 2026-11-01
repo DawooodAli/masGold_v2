@@ -17,7 +17,7 @@ class ScrapCostMySqlTests(unittest.TestCase):
         cls.h = BookCoreMySqlTests("test_the_migration_is_registered_and_the_objects_exist")
         cls.service = ReportService(cls.h.session, today=date.today)
 
-    def test_cumulative_grams_and_average_equal_an_independent_sql_aggregate(self):
+    def test_period_grams_and_average_equal_an_independent_sql_aggregate(self):
         result = self.service.run("scrapcost", {"from": "2020-01-01", "to": "2030-12-31"})
         reported = {int(r["karat"].split()[-1]): r for r in result["tables"][0]["rows"]}
         rows = self.h.query(
@@ -28,8 +28,8 @@ class ScrapCostMySqlTests(unittest.TestCase):
         for r in rows:
             grams, paid = D(str(r["grams"])), D(str(r["paid"]))
             row = reported[int(r["karat_value"])]
-            self.assertEqual(row["c_grams"], grams)
-            self.assertEqual(row["c_avg"], (paid / grams).quantize(D("0.01")))
+            self.assertEqual(row["p_grams"], grams)
+            self.assertEqual(row["p_avg"], (paid / grams).quantize(D("0.01")))
 
     def test_the_report_writes_nothing(self):
         before = self.h.counts(("invoices", "invoice_lines", "gold_price_quotes"))

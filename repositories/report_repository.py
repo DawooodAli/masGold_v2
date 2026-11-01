@@ -231,7 +231,7 @@ class ReportRepository(BaseRepository):
         line_total is the value paid for the line (before the invoice's final EGP-5 rounding). Plain SELECT: the service splits the period from the cumulative figures."""
         return self._fetch_all(
             """
-            SELECT iv.id AS invoice_id, iv.invoice_date AS doc_date, k.karat_value, il.weight_grams, il.line_total, rc.id AS reversal_id
+            SELECT iv.id AS invoice_id, iv.invoice_date AS doc_date, k.karat_value, il.weight_grams, il.line_total, il.scrap_kind, rc.id AS reversal_id
             FROM invoice_lines il
             JOIN invoices iv ON iv.id = il.invoice_id
             JOIN karats k ON k.id = il.karat_id

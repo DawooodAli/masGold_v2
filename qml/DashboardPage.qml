@@ -253,6 +253,11 @@ Item {
                            value: dashboard.vm ? dashboard.vm.sellTotalText : "" }
                     Line { objectName: "buyTotal"; label: "قيمة شراء الكسر"; valueColor: theme.priceBuy
                            value: dashboard.vm ? dashboard.vm.buyTotalText : "" }
+                    Repeater {
+                        model: dashboard.vm ? dashboard.vm.makingAverages : []
+                        delegate: Line { required property var modelData; objectName: "makingAvg_" + modelData.key
+                                         label: modelData.label; value: modelData.text; valueColor: theme.priceSell }
+                    }
                     Txt { objectName: "unidentifiedToday"; Layout.fillWidth: true
                           visible: dashboard.vm && dashboard.vm.unidentifiedCount > 0
                           value: dashboard.vm ? "⚠ قطع بيع يدوية تحتاج مطابقة: " + dashboard.vm.unidentifiedCount : ""
@@ -404,7 +409,7 @@ Item {
                             Line { label: "عيار " + modelData.karat + "  •  " + modelData.grams; value: modelData.average; strong: true
                                    valueColor: theme.balanceKaratColor(modelData.karat) }
                             Txt { Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                  value: "سعر الشراء الآن " + modelData.price + (modelData.diff ? "  •  الفرق " + modelData.diff : "")
+                                  value: "سعر الشراء الآن " + modelData.price + (modelData.diff ? "  •  الفرق " + modelData.diff : "") + (modelData.discount ? "  •  " + modelData.discount : "")
                                   color: modelData.over ? theme.amber : theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
                         }
                     }

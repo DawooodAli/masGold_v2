@@ -2273,15 +2273,17 @@ Item {
                         color: theme.border
                     }
 
-                    // Line 3, directly under the payment legs: the customer account, on the right.
+                    // Line 3: the customer account. Owner request (2026-11-02): kept on the FAR physical LEFT of the money block, away from the payment amount fields,
+                    // because the staff typed the paid amount here by mistake.
                     Item {
                         Layout.fillWidth: true
+                        Layout.topMargin: 10
                         implicitHeight: accountFlow.implicitHeight
                         RowLayout {
                             id: accountFlow
                             objectName: "accountRow"
-                            // Content-sized and pinned to the right, next to إجمالي الفاتورة.
-                            anchors.right: parent.right
+                            // Content-sized and pinned to the physical left, apart from the payment legs.
+                            anchors.left: parent.left
                             width: Math.min(implicitWidth, parent.width)
                             layoutDirection: Qt.RightToLeft
                             spacing: 8

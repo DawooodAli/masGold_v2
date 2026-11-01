@@ -185,7 +185,19 @@ class DashboardViewModel(QObject):
             diff = Decimal(r["diff"]) if r["diff"] is not None else None
             rows.append({"karat": str(r["karat"]), "grams": grams(r["grams"]), "average": rate(r["average"]),
                          "price": rate(r["price"]) if r["price"] is not None else "السعر غير متاح",
-                         "diff": ("" if diff is None else f"{'+' if diff > 0 else ''}{rate(diff)}"), "over": bool(diff is not None and diff > 0)})
+                         "diff": ("" if diff is None else f"{'+' if diff > 0 else ''}{rate(diff)}"), "over": bool(diff is not None and diff > 0),
+                         "discount": "" if r.get("discount") is None else f"نسبة الخصم {Decimal(r['discount']):.2f}%"})
+        return rows
+
+    @Property("QVariantList", notify=changed)
+    def makingAverages(self):
+        """Today's average making per gram: pieces, bullion and coins, scrap sales (label + text; «—» without a sale, «غير معلوم» when the making is unknown)."""
+        data = self._data.get("making_averages") or {}
+        rows = []
+        for key, label in (("PIECES", "متوسط مصنعية المشغولات"), ("BULLION", "متوسط مصنعية السبائك والجنيهات"), ("SCRAP", "متوسط مصنعية بيع الكسر")):
+            item = data.get(key) or {}
+            text = "—" if not item.get("grams") or not Decimal(item["grams"]) else "غير معلوم" if item.get("unknown") else rate(item["average"]) + " / جرام"
+            rows.append({"key": key, "label": label, "text": text})
         return rows
 
     # ------------------------------------------------------------ currency rates (GoldTimo /rates; every logged-in user, public market prices)

@@ -79,6 +79,10 @@ class FakeDashboardRepo:
         self.state["reads"].append("scrap")
         return self.state["scrap"]
 
+    def today_making_groups(self):
+        self.state["reads"].append("making")
+        return self.state.get("making_groups", [])
+
     def latest_shop_buy_prices(self):
         self.state["reads"].append("scrap_prices")
         return self.state["scrap_prices"]
@@ -203,7 +207,7 @@ class DashboardServiceTests(unittest.TestCase):
     def test_one_small_set_of_queries_per_refresh(self):
         state = busy_state()
         make_service(state)[0].today()
-        self.assertEqual(sorted(state["reads"]), ["flow", "invoices", "month", "month_prev", "month_start",
+        self.assertEqual(sorted(state["reads"]), ["flow", "invoices", "making", "month", "month_prev", "month_start",
                                                   "price_daily", "price_legacy", "scrap", "scrap_prices", "sold", "top_types"])
 
     def test_no_money_received_cash_or_bank_balances_on_the_dashboard(self):
@@ -292,10 +296,19 @@ class DashboardNewCardsServiceTests(unittest.TestCase):
         overdue = make_service(state, CUSTOMERS)[0].today()["overdue"]
         self.assertEqual((overdue["total"], overdue["customers"], overdue["rows"]), ("0.00", 0, []))
 
+    def test_making_averages_are_weighted_per_group_and_never_invent_zero(self):
+        state = busy_state()
+        state["making_groups"] = [{"grp": "PIECES", "grams": D("10"), "known_grams": D("8"), "making": D("400")},
+                                  {"grp": "SCRAP", "grams": D("5"), "known_grams": D("0"), "making": D("0")}]
+        got = make_service(state, BILLING)[0].today()["making_averages"]
+        self.assertEqual(got["PIECES"]["average"], "50.00")
+        self.assertEqual((got["BULLION"]["average"], got["BULLION"]["unknown"]), (None, False))      # no sale today
+        self.assertEqual((got["SCRAP"]["average"], got["SCRAP"]["unknown"]), (None, True))          # making unknown
+
     def test_scrap_today_is_per_karat_with_the_price_difference(self):
         rows = make_service(busy_state(), BILLING)[0].today()["scrap_today"]
-        self.assertEqual(rows[0], {"karat": 21, "grams": "10.000", "average": "6100.00", "price": "6207.00", "diff": "-107.00"})
-        self.assertEqual(rows[1], {"karat": 18, "grams": "4.000", "average": "5000.00", "price": None, "diff": None})       # no stored price: never invented
+        self.assertEqual(rows[0], {"karat": 21, "grams": "10.000", "average": "6100.00", "price": "6207.00", "diff": "-107.00", "discount": "1.72"})
+        self.assertEqual(rows[1], {"karat": 18, "grams": "4.000", "average": "5000.00", "price": None, "diff": None, "discount": None})       # no stored price: never invented
         none = make_service(empty_state(), BILLING)[0].today()
         self.assertEqual(none["scrap_today"], [])
         state = busy_state()

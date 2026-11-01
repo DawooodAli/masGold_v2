@@ -99,6 +99,26 @@ class DashboardRepository(BaseRepository):
                 return None
             raise
 
+    def today_making_groups(self):
+        """Today's sale lines of FINALIZED, not fully reversed invoices in three groups - BULLION (item type سبيكة / جنية), SCRAP (sold from old-gold stock) and PIECES (every other piece):
+        total grams, grams whose making is KNOWN and the making charged on them (a line with unknown making never counts as zero)."""
+        return self._fetch_all(
+            f"""
+            SELECT CASE WHEN l.line_type = 'SELL_OLD_GOLD' THEN 'SCRAP'
+                        WHEN it.name IN ('سبيكة', 'جنية', 'جنيه') THEN 'BULLION' ELSE 'PIECES' END AS grp,
+                   COALESCE(SUM(l.weight_grams), 0) AS grams,
+                   COALESCE(SUM(CASE WHEN l.making_total IS NOT NULL THEN l.weight_grams END), 0) AS known_grams,
+                   COALESCE(SUM(l.making_total), 0) AS making
+            FROM invoice_lines l
+            JOIN invoices i ON i.id = l.invoice_id
+            LEFT JOIN inventory_items ii ON ii.id = l.inventory_item_id
+            LEFT JOIN item_types it ON it.id = ii.item_type_id
+            WHERE i.invoice_status = 'FINALIZED' AND {_TODAY}
+              AND l.line_type IN ('SELL_INVENTORY', 'SELL_UNIDENTIFIED', 'SELL_OLD_GOLD')
+              AND NOT EXISTS (SELECT 1 FROM transaction_corrections c WHERE c.source_type = 'INVOICE' AND c.source_id = i.id AND c.correction_type = 'FULL_REVERSAL')
+            GROUP BY grp
+            """)
+
     def today_old_gold_flow(self):
         """COUNTED old-gold grams that came IN (+) and went OUT (−) today, per karat."""
         return self._fetch_all(

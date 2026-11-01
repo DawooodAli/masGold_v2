@@ -1221,7 +1221,7 @@ class ReportService:
         group = str(filters.get("group") or "month")
         if group not in ("week", "month", "year"):
             raise ReportError("FILTER_INVALID", "تجميع غير صحيح.")
-        period, cumulative, reversed_invoices, in_period = {}, {}, set(), []
+        period, cumulative, reversed_invoices, in_period, coins = {}, {}, set(), [], {}
         for r in repo.scrap_cost_lines(end):
             if r["reversal_id"]:
                 if _dateish(r["doc_date"]) >= start:
@@ -1231,12 +1231,19 @@ class ReportService:
             if karat and str(k) != karat:
                 continue
             grams, paid = _dec(r["weight_grams"]), _dec(r["line_total"])
-            if _dateish(r["doc_date"]) >= start:
-                in_period.append((k, _dateish(r["doc_date"]).date(), grams, paid))
-            for bucket in ((cumulative, period) if _dateish(r["doc_date"]) >= start else (cumulative,)):
-                b = bucket.setdefault(k, {"grams": ZERO3, "paid": ZERO2})
-                b["grams"] += grams
-                b["paid"] += paid
+            if _dateish(r["doc_date"]) < start:
+                continue
+            if r.get("scrap_kind"):                                                # pound coins / bars are bought at the market price plus a premium, not as scrap: never in the scrap average
+                c = coins.setdefault((str(r["scrap_kind"]), k), {"grams": ZERO3, "paid": ZERO2})
+                c["grams"] += grams
+                c["paid"] += paid
+                continue
+                                                                      # owner 2026-11-02: only the selected period counts (older, imported history mixed other prices in)
+            in_period.append((k, _dateish(r["doc_date"]).date(), grams, paid))
+            b = period.setdefault(k, {"grams": ZERO3, "paid": ZERO2})
+            b["grams"] += grams
+            b["paid"] += paid
+        cumulative = period                                                        # kept as the name the market / signal helpers take: it is now the period itself
         latest = {}
         if repo.has_table("gold_price_quotes"):
             for r in repo.gold_price_daily():                                      # ascending by day: the last one per karat is the latest stored price
@@ -1245,27 +1252,31 @@ class ReportService:
         def average(b):
             return (b["paid"] / b["grams"]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if b and b["grams"] else None
         columns = [col("karat", "العيار"), col("p_grams", "جرامات الفترة", "grams"), col("p_paid", "المدفوع في الفترة", "money"), col("p_avg", "متوسط سعر الجرام (الفترة)", "rate"),
-                   col("c_grams", "الجرامات من البداية", "grams"), col("c_avg", "متوسط سعر الجرام (من البداية)", "rate"), col("price", "سعر شراء المحل الحالي", "rate"),
-                   col("diff", "الفرق عن السعر الحالي", "rate"), col("unreal", "كسب / خسارة لو بعت الآن", "money"), col("state", "الموقف")]
+                   col("price", "سعر شراء المحل الحالي", "rate"),
+                   col("diff", "الفرق عن السعر الحالي", "rate")]
         rows, cards = [], []
         for k in sorted(set(period) | set(cumulative), reverse=True):
-            p, c = period.get(k), cumulative.get(k)
-            p_avg, c_avg = average(p), average(c)
+            p = period.get(k)
+            p_avg = average(p)
             price = latest.get(k)
             rows.append({"karat": f"عيار {k}", "p_grams": p["grams"] if p else ZERO3, "p_paid": p["paid"] if p else ZERO2, "p_avg": p_avg if p_avg is not None else "—",
-                         "c_grams": c["grams"] if c else ZERO3, "c_avg": c_avg if c_avg is not None else "—", "price": price[1] if price else "—",
-                         "diff": (p_avg - price[1]) if p_avg is not None and price else "—",
-                         "unreal": (p["grams"] * price[1] - p["paid"]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if p and price else "—",
-                         "state": ("—" if not p or not price else "فوق التعادل: ممكن تعوّض فلوسك" if price[1] >= p_avg else f"تحت التعادل: يلزم سعر {p_avg:,.2f} للتعادل")})
+                         "price": price[1] if price else "—",
+                         "diff": (p_avg - price[1]) if p_avg is not None and price else "—"})
             if p_avg is not None:
-                note = f"{p['grams']:,.3f} جرام بقيمة {p['paid']:,.2f} ج" + (f" • من البداية {c_avg:,.2f}" if c_avg is not None else "")
+                note = f"{p['grams']:,.3f} جرام بقيمة {p['paid']:,.2f} ج"
                 cards.append(total(f"متوسط تكلفة كسر عيار {k}", f"{p_avg:,.2f} ج/جرام", "text", note, "scrapavg", karat=k))
-        meaning = ["متوسط مرجح: كل ما دفعناه ÷ كل جرامات الكسر المشتراة من العملاء، لكل عيار على حدة (لا يُجمع بين الأعيار). «من البداية» من أول فاتورة شراء مخزنة حتى نهاية الفترة.",
+        meaning = ["متوسط مرجح: كل ما دفعناه ÷ كل جرامات الكسر المشتراة من العملاء، لكل عيار على حدة (لا يُجمع بين الأعيار). يُحسب من مشتريات الفترة المختارة فقط.",
                    "القيمة هي إجمالي بند شراء الكسر (بعد خصم الكسر) قبل تقريب الفاتورة النهائي. الفواتير المعكوسة بالكامل لا تُحسب.",
                    "الفرق عن السعر الحالي = متوسط الفترة − آخر سعر شراء مخزن: الموجب يعني أن الشراء كان بأعلى من سعر اليوم. هو مقارنة أسعار وليس تقييمًا للمخزون."]
         if reversed_invoices:
             cards.append(total("فواتير معكوسة غير محسوبة", len(reversed_invoices), "count", "", "summary"))
         tables = [table("scrapcost", "تكلفة الكسر المشترى", columns, rows)]
+        coin_rows = [{"kind": {"POUND": "جنيه ذهب", "BAR": "سبيكة"}.get(kind, kind), "karat": f"عيار {k}", "grams": c["grams"], "paid": c["paid"],
+                      "avg": (c["paid"] / c["grams"]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if c["grams"] else "—"}
+                     for (kind, k), c in sorted(coins.items(), key=lambda kv: (kv[0][0], -kv[0][1])) if not karat or str(k) == karat]
+        if coin_rows:
+            tables.append(table("scrap_coins", "الجنيهات والسبائك المشتراة (منفصلة عن الكسر)", [col("kind", "النوع"), col("karat", "العيار"), col("grams", "الجرامات", "grams"),
+                                                                                         col("paid", "المدفوع (شامل الزيادة)", "money"), col("avg", "متوسط سعر الجرام", "rate")], coin_rows))
         if gate("MARKET_TRIP_MANAGE") and repo.has_table("market_trip_entries"):
             tables.append(self._scrap_market_result(repo, gate, start, end, karat, cumulative, latest, average))
         accumulation = self._scrap_accumulation(in_period, group, latest)
@@ -1273,24 +1284,14 @@ class ReportService:
             label = {"week": "الأسبوع", "month": "الشهر", "year": "السنة"}[group]
             tables.append(table("scrap_accumulation", f"التجميع حسب {label} (يتراكم داخل الفترة المختارة)", [
                 col("bucket", label), col("karat", "العيار"), col("grams", "جرامات", "grams"), col("paid", "المدفوع", "money"), col("avg", "متوسط سعر الجرام", "rate"),
-                col("gain", "كسب / خسارة لو بعت الآن", "money"), col("run_grams", "الجرامات المتراكمة", "grams"), col("run_paid", "المدفوع المتراكم", "money"),
-                col("run_gain", "الكسب / الخسارة المتراكمة", "money")], accumulation))
+                col("run_grams", "الجرامات المتراكمة", "grams"), col("run_paid", "المدفوع المتراكم", "money")], accumulation))
             meaning.append("«التجميع» يجمع مشتريات الكسر في أسابيع أو شهور أو سنين (اختر من فلتر التجميع) ويتراكم داخل الفترة التي اخترتها؛ كل عيار على حدة ولا يُجمع بين الأعيار. الكسب / الخسارة بسعر شراء المحل الحالي (غير محقق).")
-        signal = self._scrap_sell_signal(repo, sorted(set(period) | set(cumulative), reverse=True), period, cumulative, average)
-        if signal:
-            tables.append(table("scrap_signal", "مؤشر البيع: هل الوقت مناسب؟", [col("karat", "العيار"), col("price", "سعر شراء المحل الآن", "rate"), col("breakeven", "التعادل (متوسط تكلفتك)", "rate"),
-                                col("gap", "الفرق عن التعادل"), col("trend", "اتجاه السعر"), col("position", "مكانه في آخر 90 يوم"), col("advice", "الإرشاد")], signal))
-            meaning.append("«مؤشر البيع» إرشاد مبني على أسعار المحل المخزنة: سعر الشراء الحالي مقابل متوسط تكلفتك، واتجاهه (7 أيام ومتوسط 30 يوم) ومكانه بين أدنى وأعلى سعر في آخر 90 يوم. وليس توصية مالية ولا توقعًا.")
-        meaning.append("«كسب / خسارة لو بعت الآن» = جرامات الفترة × سعر شراء المحل الحالي − ما دُفع فيها (غير محقق). «الموقف»: سعر التعادل = متوسط تكلفة الجرام.")
+        meaning.append("الجنيهات والسبائك المشتراة (scrap_kind) تُعرض في جدول منفصل ولا تدخل في متوسط الكسر: تُشترى بسعر السوق مع زيادة وبلا خصم كسر، فتشوّه متوسط الكسر العادي.")
         bars = []
         for k in sorted({int(r["karat"].split()[-1]) for r in accumulation}, reverse=True):
-            mine = [r for r in accumulation if r["karat"] == f"عيار {k}"][-SCRAP_CHART_BUCKETS:]         # chronological, the last buckets only
-            gains = [{"label": r["bucket"], "value": r["gain"]} for r in mine if r["gain"] != "—"]
-            running = [{"label": r["bucket"], "value": r["run_gain"]} for r in mine if r["run_gain"] != "—"]
-            if gains:
-                bars.append({"key": f"scrap_gain_{k}", "title": f"الكسب / الخسارة لكل فترة — عيار {k} (جنيه، بسعر شراء المحل الآن)", "karat": k, "rows": gains})
-            if running:
-                bars.append({"key": f"scrap_run_{k}", "title": f"الكسب / الخسارة المتراكمة — عيار {k} (جنيه)", "karat": k, "rows": running})
+            mine = [r for r in accumulation if r["karat"] == f"عيار {k}" and r["avg"] != "—"][-SCRAP_CHART_BUCKETS:]         # chronological, the last buckets only
+            if mine:
+                bars.append({"key": f"scrap_avg_{k}", "title": f"متوسط سعر شراء الجرام لكل فترة — عيار {k} (جنيه)", "karat": k, "rows": [{"label": r["bucket"], "value": r["avg"]} for r in mine]})
         return {"meaning": meaning, "tables": tables, "totals": cards, "bars": bars}
 
     # ------------------------------------------------------------------ 3e. demand and seasonality (owner request): sold grams per month, a simple seasonal forecast and the price association
@@ -1350,7 +1351,7 @@ class ReportService:
                          "back_value": loss_value if loss_value is not None else "غير معلوم"})
             rows.append({"trip": code, "karat": "النتيجة التقريبية المحققة", "out": ZERO3, "cost": cost_total, "back": ZERO3, "back_value": t["proceeds"] + back_total - cost_total})
         result = table("scrap_market", "ما خرج للسوق ونتيجته — كل خرجة لوحدها (تقريبي)", columns, rows)
-        result["note"] = ("لكل خرجة: النتيجة = عائد البيع + قيمة الراجع للمحل بالسعر الحالي − تكلفة ما خرج (متوسط تكلفة الكسر من البداية). الذهب الذي ما زال في العهدة ولم يُبَع لا يدخل فيها، "
+        result["note"] = ("لكل خرجة: النتيجة = عائد البيع + قيمة الراجع للمحل بالسعر الحالي − تكلفة ما خرج (متوسط تكلفة كسر الفترة المختارة). الذهب الذي ما زال في العهدة ولم يُبَع لا يدخل فيها، "
                           "والفاقد يظهر منفصلًا لأنه ناقص من الراجع أصلًا. تُحسب المستندات بتاريخها داخل الفترة المختارة.")
         return result
 

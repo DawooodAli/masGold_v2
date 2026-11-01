@@ -159,7 +159,22 @@ class DashboardService:
             now = price.get(int(r["karat_value"]))
             out.append({"karat": int(r["karat_value"]), "grams": str(weight.quantize(GRAMS)), "average": str(average),
                         "price": str(now.quantize(MONEY, rounding=ROUND_HALF_UP)) if now is not None else None,
-                        "diff": str((average - now).quantize(MONEY, rounding=ROUND_HALF_UP)) if now is not None else None})
+                        "diff": str((average - now).quantize(MONEY, rounding=ROUND_HALF_UP)) if now is not None else None,
+                        "discount": str(((now - average) * 100 / now).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)) if now else None})
+        return out
+
+    @staticmethod
+    def making_averages(rows):
+        """Today's average MAKING per gram of the three sale groups (weighted: making charged / grams whose making is known). A group with no sale today has average None;
+        a group whose making is unknown has average None and unknown True (never turned into zero)."""
+        found = {r["grp"]: r for r in rows or []}
+        out = {}
+        for key in ("PIECES", "BULLION", "SCRAP"):
+            r = found.get(key)
+            grams, known = (Decimal(str(r["grams"])), Decimal(str(r["known_grams"]))) if r else (Decimal(0), Decimal(0))
+            out[key] = {"grams": str(grams.quantize(GRAMS)),
+                        "average": str((Decimal(str(r["making"])) / known).quantize(MONEY, rounding=ROUND_HALF_UP)) if r and known else None,
+                        "unknown": bool(grams and not known)}
         return out
 
     @staticmethod
@@ -195,7 +210,7 @@ class DashboardService:
             result = {"old_gold_balance": balances.old_gold_counted(), "old_gold_flow": dashboard.today_old_gold_flow(),
                       "price_daily": dashboard.price_daily_21(), "price_legacy": dashboard.price_history_legacy_21()}
             if sales:
-                result.update(scrap=dashboard.today_scrap_purchases(), scrap_prices=dashboard.latest_shop_buy_prices(),
+                result.update(making_groups=dashboard.today_making_groups(), scrap=dashboard.today_scrap_purchases(),scrap_prices=dashboard.latest_shop_buy_prices(),
                               invoices=dashboard.today_invoices(), sold=dashboard.today_sold_by_karat(),
                               month=dashboard.month_sold_by_karat(), prev_year=dashboard.month_sold_by_karat(previous=True),
                               month_info=dashboard.month_start(), top_types=dashboard.month_top_types(), sales_days=dashboard.sales_by_day(SALES_DAYS), sales_today=dashboard.db_today())
@@ -267,6 +282,6 @@ class DashboardService:
                       for karat in sorted(sold, key=lambda k: (k not in DASHBOARD_KARATS,
                                                               DASHBOARD_KARATS.index(k) if k in DASHBOARD_KARATS else k))],
                 month=self.month_summary(raw["month"], raw["prev_year"]), month_day=int((raw.get("month_info") or {}).get("day") or 0),
-                top_types=self.top_types(raw.get("top_types")), scrap_today=self.scrap_today(raw.get("scrap"), raw.get("scrap_prices")),
+                top_types=self.top_types(raw.get("top_types")), making_averages=self.making_averages(raw.get("making_groups")), scrap_today=self.scrap_today(raw.get("scrap"), raw.get("scrap_prices")),
                 sales_days=self.sales_days(raw.get("sales_days"), raw.get("sales_today")))
         return snapshot
