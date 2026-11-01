@@ -419,9 +419,9 @@ class SchemaVersionExpectationTests(unittest.TestCase):
             text = (ROOT / "tests" / name).read_text(encoding="utf-8")
             self.assertNotRegex(text, r"==\s*30\b|\"masgold_v2\",\s*30\)|migration 25", name)
 
-    def test_the_repository_chain_ends_at_090(self):
+    def test_the_repository_chain_ends_at_093(self):
         chain = sorted(p.name for p in (ROOT / "database" / "schema").glob("0[0-9][0-9]_*.sql"))
-        self.assertEqual([int(n[:3]) for n in chain], list(range(1, 93)))
+        self.assertEqual([int(n[:3]) for n in chain], list(range(1, 94)))
 
 
 if __name__ == "__main__":
