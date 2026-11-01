@@ -214,7 +214,7 @@ class RepositorySqlTests(unittest.TestCase):
 
     def test_the_current_form_of_custody_cash_and_gold_locks_every_nested_lookup(self):
         statements = self.run_all(current=True)
-        self.assertEqual(len(statements), 12)                                      # 5 cash reads (incl. the BOOK trades, 056) + 7 gold reads (legs, melts, heats, settlements, holdings, sales, purchases)
+        self.assertEqual(len(statements), 11)                                      # 4 cash reads + 7 gold reads (legs, melts, heats, settlements, holdings, sales, purchases)
         for sql in statements:
             self.assertEqual(len(NESTED_CURRENT.findall(sql)), 1, sql)
             self.assertNotRegex(sql, NESTED_SNAPSHOT.pattern)
@@ -225,7 +225,7 @@ class RepositorySqlTests(unittest.TestCase):
 
     def test_the_display_form_is_a_snapshot_lookup_with_no_locking_clause_at_all(self):
         statements = self.run_all(current=False)
-        self.assertEqual(len(statements), 12)
+        self.assertEqual(len(statements), 11)
         for sql in statements:
             self.assertRegex(sql, NESTED_SNAPSHOT.pattern)
             self.assertNotRegex(sql, NESTED_CURRENT.pattern)

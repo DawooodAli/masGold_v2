@@ -12,8 +12,6 @@ Item {
 
     readonly property var vm: typeof marketTripVM !== "undefined" ? marketTripVM : null
     readonly property var detail: vm ? vm.detail : ({})
-    readonly property var recon: vm ? vm.reconciliation : ({})                       // R1: the READ-ONLY reconciliation preview of the selected BOOK trip
-    property bool reconMore: false
     // Owner review (2026-10-20): the older custody actions (own melt / heat / bar lots / hand-over to a marketer / classify as logo) are hidden from the normal screen; the code and the
     // services stay, so a single switch brings them back. Their history stays readable and reversible from the history list.
     property bool advancedActions: false
@@ -112,11 +110,8 @@ Item {
 
     Connections {
         target: page.vm
-        function onEntryPosted(code) { entryDialog.close(); bookDialog.close(); stockDialog.close(); meltDialog.close(); settleMeltDialog.close(); barMarketerDialog.close(); classifyLogoDialog.close(); cashSettleDialog.close(); barFeeDialog.close(); disposeDialog.close(); adjustDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close(); payDialog.close(); goldSettleDialog.close(); goldSaleDialog.close(); goldBuyDialog.close(); lotSettleDialog.close(); lotHoldDialog.close(); logoHoldDialog.close() }
-        function onActionDone(operation) { reasonDialog.close(); if (operation === "reconcile") reconApprovalDialog.close() }
-        function onChanged() {
-            if (reconApprovalDialog.opened && (page.vm.selectedTripId !== reconApprovalDialog.tripId || !page.vm.reconciliationEnabled)) reconApprovalDialog.close()
-        }
+        function onEntryPosted(code) { entryDialog.close(); meltDialog.close(); settleMeltDialog.close(); barMarketerDialog.close(); classifyLogoDialog.close(); cashSettleDialog.close(); barFeeDialog.close(); disposeDialog.close(); adjustDialog.close(); lotReturnDialog.close(); lotIssueDialog.close(); heatDialog.close(); payDialog.close(); goldSettleDialog.close(); goldSaleDialog.close(); goldBuyDialog.close(); lotSettleDialog.close(); lotHoldDialog.close(); logoHoldDialog.close() }
+        function onActionDone(operation) { reasonDialog.close() }
     }
 
     Rectangle { anchors.fill: parent; color: theme.bgPrimary }
@@ -342,8 +337,6 @@ Item {
                         onClicked: page.vm.showTripTab("ARCHIVE")
                     }
                 }
-                Btn { objectName: "bookReportButton"; Layout.fillWidth: true; text: "تقرير الفاقد والزيادة المثبتة"; accent: theme.textSecondary
-                      enabled: !!page.vm; onClicked: reportDialog.openFor() }
                 ListView {
                     id: tripList
                     objectName: "tripList"
@@ -369,8 +362,6 @@ Item {
                                 Layout.fillWidth: true
                                 layoutDirection: Qt.RightToLeft
                                 Txt { text: page.ltr(modelData.code); font.bold: true; elide: Text.ElideNone }
-                                Txt { objectName: "tripModeBadge"; visible: modelData.modeText !== ""; text: modelData.modeText; color: theme.gold
-                                      font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
                                 Item { Layout.fillWidth: true }
                                 Txt { text: modelData.statusText; color: modelData.status === "OPEN" ? theme.green : theme.textMuted
                                       elide: Text.ElideNone }
@@ -455,7 +446,7 @@ Item {
             Txt { objectName: "tripMessage"; Layout.fillWidth: true; visible: !!page.vm && page.vm.message !== ""
                   text: page.vm ? page.vm.message : ""; color: theme.green; wrapMode: Text.WordWrap; elide: Text.ElideNone }
             Txt { objectName: "tripError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== "" && !entryDialog.visible && !reasonDialog.visible && !meltDialog.visible
-                           && !lotReturnDialog.visible && !lotIssueDialog.visible && !heatDialog.visible && !payDialog.visible && !goldSettleDialog.visible && !lotSettleDialog.visible && !lotHoldDialog.visible && !logoHoldDialog.visible && !bookDialog.visible
+                           && !lotReturnDialog.visible && !lotIssueDialog.visible && !heatDialog.visible && !payDialog.visible && !goldSettleDialog.visible && !lotSettleDialog.visible && !lotHoldDialog.visible && !logoHoldDialog.visible
                   text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
 
             Txt {
@@ -486,98 +477,7 @@ Item {
                               font.pixelSize: theme.fontSection; elide: Text.ElideNone }
                         Txt { objectName: "tripStatus"; text: page.detail.statusText || ""; color: page.detail.open ? theme.green : theme.textMuted
                               font.bold: true; elide: Text.ElideNone }
-                        Txt { objectName: "tripMode"; visible: !!page.detail.isBook; text: "دفتري"; color: theme.gold; font.bold: true; elide: Text.ElideNone }
                         Item { Layout.fillWidth: true }
-                    }
-                    // A BOOK trip: ONE gold number, the book balance in 21K equivalent (an accounting figure, not physical stock)
-                    Section {
-                        objectName: "bookBalanceSection"
-                        title: "رصيد دفتري (مكافئ عيار 21)"
-                        accent: theme.gold
-                        visible: !!page.detail.isBook
-                        Txt { objectName: "bookBalancePosted"; Layout.fillWidth: true; text: (page.detail.book && page.detail.book.balanceText) || ""
-                              color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; elide: Text.ElideNone }
-                        Txt { objectName: "bookBalanceAnalytical"; Layout.fillWidth: true
-                              text: "القيمة التحليلية الدقيقة: " + page.ltr((page.detail.book && page.detail.book.analytical) || "") + " • المتاح للحركة: " + ((page.detail.book && page.detail.book.available) || "")
-                              color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                        Txt { objectName: "bookBalanceDrift"; Layout.fillWidth: true; text: (page.detail.book && page.detail.book.driftText) || ""
-                              color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                        Txt { objectName: "bookBalanceNote"; Layout.fillWidth: true; text: (page.detail.book && page.detail.book.note) || ""
-                              color: theme.amber; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                        Repeater {
-                            model: (page.detail.book && page.detail.book.stockItems) || []
-                            delegate: Txt { objectName: "bookStockItem"; Layout.fillWidth: true; text: "مخزون مرتجع بعيار فعلي: " + modelData.text
-                                            color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                        }
-                    }
-                    // R1: the READ-ONLY reconciliation preview (مطابقة العهدة). It records, approves, saves and closes nothing; the trip closure stays unavailable.
-                    Section {
-                        objectName: "bookReconSection"
-                        title: "مطابقة العهدة (معاينة فقط)"
-                        accent: theme.gold
-                        visible: !!page.detail.isBook
-                        Txt { objectName: "bookReconLoading"; Layout.fillWidth: true; visible: !!page.recon.loading
-                              text: "جارٍ تحميل المطابقة…"; color: theme.textMuted; elide: Text.ElideNone }
-                        Txt { objectName: "bookReconError"; Layout.fillWidth: true; visible: !!page.recon.error; text: page.recon.error || ""
-                              color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 4
-                            visible: !!page.recon.tripId && !page.recon.error && !page.recon.loading
-                            Txt { Layout.fillWidth: true; text: "الرصيد التحليلي غير المسوّى"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
-                            Txt { objectName: "bookReconA"; Layout.fillWidth: true; text: page.ltr(page.recon.aText || ""); color: theme.gold; font.bold: true
-                                  font.pixelSize: theme.fontSection; elide: Text.ElideNone }
-                            Txt { objectName: "bookReconANote"; Layout.fillWidth: true; text: page.recon.aNote || ""; color: theme.textSecondary
-                                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                            Txt { Layout.fillWidth: true; text: "الرصيد المرحّل"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
-                            Txt { objectName: "bookReconB"; Layout.fillWidth: true; text: page.ltr(page.recon.bText || ""); color: theme.textPrimary; elide: Text.ElideNone }
-                            Txt { Layout.fillWidth: true; text: "قيمة الفاقد المقترحة عند الاعتماد"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
-                            Txt { objectName: "bookReconLoss"; Layout.fillWidth: true; text: page.ltr(page.recon.lossText || ""); color: theme.amber; font.bold: true; elide: Text.ElideNone }
-                            Txt { objectName: "bookReconLossNote"; Layout.fillWidth: true; text: page.recon.lossNote || ""; color: theme.textMuted
-                                  font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                            Txt { Layout.fillWidth: true; text: "فرق تقريب الترحيل"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
-                            Txt { objectName: "bookReconRounding"; Layout.fillWidth: true; text: page.ltr(page.recon.roundingText || "") + "  —  " + (page.recon.roundingNote || "")
-                                  color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                            Txt { objectName: "bookReconEffect"; Layout.fillWidth: true; visible: !!page.recon.effectText; text: page.recon.effectText || ""; color: theme.amber
-                                  font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                            Txt { objectName: "bookReconStatus"; Layout.fillWidth: true; text: page.recon.statusText || ""
-                                  color: page.recon.trustworthy ? theme.green : theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                            Repeater {
-                                model: page.recon.diagnostics || []
-                                delegate: Txt { objectName: "bookReconDiagnostic"; Layout.fillWidth: true; text: modelData.text; color: theme.red
-                                                font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                            }
-                            Txt { objectName: "bookReconClosureNote"; Layout.fillWidth: true; text: page.recon.closureNote || ""; color: theme.amber
-                                  font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                            Btn { objectName: "openReconciliationApproval"; Layout.fillWidth: true; text: "مراجعة واعتماد التسوية"; primary: true
-                                  visible: !!page.vm && page.vm.reconciliationEnabled
-                                  enabled: !!page.vm && !page.vm.busy && !!page.detail.open && !!page.recon.trustworthy && !!page.recon.lossAvailable
-                                  onClicked: reconApprovalDialog.openFor() }
-                            Txt { objectName: "reconciliationReceipt"; Layout.fillWidth: true; visible: !!page.vm && page.vm.lastReconciliation.trip_id === page.vm.selectedTripId
-                                  text: page.vm && page.vm.lastReconciliation.code ? "المستند " + page.ltr(page.vm.lastReconciliation.code) + " • التاريخ " + page.ltr(page.vm.lastReconciliation.effective_date) + "\nالرصيد التحليلي " + page.ltr(page.vm.lastReconciliation.a_star) + " • المرحّل " + page.ltr(page.vm.lastReconciliation.b_star)
-                                       + " • الفاقد " + page.ltr(page.vm.lastReconciliation.loss_posted) + " • فرق التقريب " + page.ltr(page.vm.lastReconciliation.rounding_settlement)
-                                       + " جرام مكافئ عيار 21\nالسبب: " + (page.vm.lastReconciliation.reason || "بدون سبب")
-                                       + (page.vm.lastReconciliation.note ? " — " + page.vm.lastReconciliation.note : "") : ""
-                                  color: theme.green; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                            Btn { objectName: "bookReconMoreToggle"; Layout.fillWidth: true; accent: theme.textMuted
-                                  text: page.reconMore ? "إخفاء التفاصيل الحسابية" : "تفاصيل حسابية وحدود الفحص"; onClicked: page.reconMore = !page.reconMore }
-                            ColumnLayout {
-                                objectName: "bookReconMore"
-                                Layout.fillWidth: true
-                                spacing: 3
-                                visible: page.reconMore
-                                Txt { objectName: "bookReconDetails"; Layout.fillWidth: true; text: page.ltr(page.recon.detailsText || ""); color: theme.textSecondary
-                                      font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                Txt { Layout.fillWidth: true; text: page.recon.countsText || ""; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
-                                Txt { Layout.fillWidth: true; visible: !!page.recon.cashText; text: page.recon.cashText || ""; color: theme.textMuted
-                                      font.pixelSize: theme.fontTableHeader; elide: Text.ElideNone }
-                                Repeater {
-                                    model: page.recon.coverage || []
-                                    delegate: Txt { objectName: "bookReconCoverage"; Layout.fillWidth: true; text: "• " + modelData; color: theme.textMuted
-                                                    font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                }
-                            }
-                        }
                     }
                     // THE primary panel of the page: what is outside the shop now (cash and every karat / designation), right under the title.
                     Section {
@@ -625,49 +525,49 @@ Item {
                         Layout.fillWidth: true
                         layoutDirection: Qt.RightToLeft
                         spacing: 8
-                        Btn { objectName: "lotIssueButton"; text: "إخراج سبكة من المحل"; visible: page.advancedActions && !!page.detail.open && !page.detail.isBook
+                        Btn { objectName: "lotIssueButton"; text: "إخراج سبكة من المحل"; visible: page.advancedActions && !!page.detail.open
                               enabled: !!page.vm && !page.vm.writing && page.vm.shopLots.length > 0
                               onClicked: lotIssueDialog.openFor(page.detail.id) }
-                        Btn { objectName: "lotReturnButton"; text: "رجوع ناتج السبك"; visible: page.advancedActions && !!page.detail.open && !page.detail.isBook
+                        Btn { objectName: "lotReturnButton"; text: "رجوع ناتج السبك"; visible: page.advancedActions && !!page.detail.open
                               enabled: !!page.detail.lotReturnAvailable && !!page.vm && !page.vm.writing
                               onClicked: lotReturnDialog.openFor(page.detail.id) }
-                        Btn { objectName: "meltButton"; text: "سبك"; visible: page.advancedActions && !!page.detail.open && !page.detail.isBook
+                        Btn { objectName: "meltButton"; text: "سبك"; visible: page.advancedActions && !!page.detail.open
                               enabled: !!page.detail.meltAvailable && !!page.vm && !page.vm.writing
                               onClicked: meltDialog.openFor(page.detail.id) }
-                        Btn { objectName: "settleMeltButton"; text: "تسجيل سبك (بعد الرجوع)"; visible: !!page.detail.open && !page.detail.isBook
+                        Btn { objectName: "settleMeltButton"; text: "تسجيل سبك (بعد الرجوع)"; visible: !!page.detail.open
                               enabled: !!page.detail.settleMeltAvailable && !!page.vm && !page.vm.writing
                               onClicked: settleMeltDialog.openFor(page.detail.id) }
-                        Btn { objectName: "heatButton"; text: "حمّية اللوجو"; visible: page.advancedActions && !!page.detail.open && !page.detail.isBook
+                        Btn { objectName: "heatButton"; text: "حمّية اللوجو"; visible: page.advancedActions && !!page.detail.open
                               enabled: !!page.detail.heatAvailable && !!page.vm && !page.vm.writing
                               onClicked: heatDialog.openFor(page.detail.id) }
-                        Btn { objectName: "classifyLogoButton"; text: "اعتبار المتبقي لوجو"; visible: page.advancedActions && !!page.detail.open && !page.detail.isBook
+                        Btn { objectName: "classifyLogoButton"; text: "اعتبار المتبقي لوجو"; visible: page.advancedActions && !!page.detail.open
                               enabled: !!page.detail.classifyLogoAvailable && !!page.vm && !page.vm.writing
                               onClicked: classifyLogoDialog.openFor(page.detail.id) }
-                        Btn { objectName: "custodyGoldBuyButton"; text: "شراء ذهب نقدي"; visible: !!page.detail.open && !page.detail.isBook
+                        Btn { objectName: "custodyGoldBuyButton"; text: "شراء ذهب نقدي"; visible: !!page.detail.open
                               enabled: !!page.detail.buyAvailable && !!page.vm && !page.vm.writing
                               onClicked: goldBuyDialog.openFor(page.detail.id) }
-                        Btn { objectName: "custodySaleButton"; text: "بيع ذهب من العهدة"; visible: !!page.detail.open && !page.detail.isBook
+                        Btn { objectName: "custodySaleButton"; text: "بيع ذهب من العهدة"; visible: !!page.detail.open
                               enabled: !!page.detail.saleAvailable && !!page.vm && !page.vm.writing
                               onClicked: goldSaleDialog.openFor(page.detail.id) }
-                        Btn { objectName: "custodyDisposeButton"; text: "مرتجع سوق / خسية"; visible: !!page.detail.open && !page.detail.isBook
+                        Btn { objectName: "custodyDisposeButton"; text: "مرتجع سوق / خسية"; visible: !!page.detail.open
                               enabled: !!page.detail.disposeAvailable && !!page.vm && !page.vm.writing
                               onClicked: disposeDialog.openFor(page.detail.id) }
-                        Btn { objectName: "custodyAdjustButton"; text: "تصحيح وزن الإخراج"; visible: !!page.detail.open && !page.detail.isBook
+                        Btn { objectName: "custodyAdjustButton"; text: "تصحيح وزن الإخراج"; visible: !!page.detail.open
                               enabled: !!page.detail.adjustAvailable && !!page.vm && !page.vm.writing
                               onClicked: adjustDialog.openFor(page.detail.id) }
-                        Btn { objectName: "custodyGoldSettleButton"; text: "تسوية ذهب من العهدة"; visible: !!page.detail.open && !page.detail.isBook
+                        Btn { objectName: "custodyGoldSettleButton"; text: "تسوية ذهب من العهدة"; visible: !!page.detail.open
                               enabled: !!page.detail.goldSettleAvailable && !!page.vm && !page.vm.writing
                               onClicked: goldSettleDialog.openFor(page.detail.id) }
-                        Btn { objectName: "custodyLotSettleButton"; text: "تسوية سبكة من العهدة"; visible: page.advancedActions && !!page.detail.open && !page.detail.isBook
+                        Btn { objectName: "custodyLotSettleButton"; text: "تسوية سبكة من العهدة"; visible: page.advancedActions && !!page.detail.open
                               enabled: !!page.detail.lotSettleAvailable && !!page.vm && !page.vm.writing
                               onClicked: lotSettleDialog.openFor(page.detail.id) }
                         Btn { objectName: "barMarketerButton"; text: "تسليم سبيكة لمسوقجي"; visible: page.advancedActions && !!page.detail.barMarketerVisible
                               enabled: !!page.detail.barMarketerAvailable && !!page.vm && !page.vm.writing
                               onClicked: barMarketerDialog.openFor(page.detail.id) }
-                        Btn { objectName: "custodyLotHoldButton"; text: "تسليم ذهب لمسوقجي"; visible: page.advancedActions && !!page.detail.holdVisible && !page.detail.isBook
+                        Btn { objectName: "custodyLotHoldButton"; text: "تسليم ذهب لمسوقجي"; visible: page.advancedActions && !!page.detail.holdVisible
                               enabled: !!page.detail.holdAvailable && !!page.vm && !page.vm.writing
                               onClicked: lotHoldDialog.openFor(page.detail.id) }
-                        Btn { objectName: "custodyLogoHoldButton"; text: "تسليم لوجو لمسوقجي"; visible: page.advancedActions && !!page.detail.holdVisible && !page.detail.isBook
+                        Btn { objectName: "custodyLogoHoldButton"; text: "تسليم لوجو لمسوقجي"; visible: page.advancedActions && !!page.detail.holdVisible
                               enabled: !!page.detail.logoHoldAvailable && !!page.vm && !page.vm.writing
                               onClicked: logoHoldDialog.openFor(page.detail.id) }
                     }
@@ -705,13 +605,13 @@ Item {
                         Layout.fillWidth: true
                         layoutDirection: Qt.RightToLeft
                         spacing: 8
-                        Btn { objectName: "custodyCashSettleButton"; text: "تسوية نقدية العهدة"; visible: !!page.detail.open && !page.detail.isBook
+                        Btn { objectName: "custodyCashSettleButton"; text: "تسوية نقدية العهدة"; visible: !!page.detail.open
                               enabled: !!page.detail.cashSettleAvailable && !!page.vm && !page.vm.writing
                               onClicked: cashSettleDialog.openFor(page.detail.id) }
                         Btn { objectName: "custodyPayButton"; text: "دفع مصنعيات من العهدة"; visible: !!page.detail.open
                               enabled: !!page.detail.payAvailable && !!page.vm && !page.vm.writing
                               onClicked: payDialog.openFor(page.detail.id) }
-                        Btn { objectName: "custodyBarFeeButton"; text: "أجر السبيكة"; visible: !!page.detail.open && !page.detail.isBook
+                        Btn { objectName: "custodyBarFeeButton"; text: "أجر السبيكة"; visible: !!page.detail.open
                               enabled: !!page.vm && !page.vm.writing
                               onClicked: barFeeDialog.openFor(page.detail.id) }
                     }
@@ -720,37 +620,10 @@ Item {
                         Layout.fillWidth: true
                         layoutDirection: Qt.RightToLeft
                         spacing: 8
-                        Btn { objectName: "bookIssueButton"; text: "إخراج ذهب من الكسر (دفتري)"; visible: !!page.detail.open && !!page.detail.isBook
-                              enabled: !!page.vm && !page.vm.writing
-                              onClicked: bookDialog.openFor("BK_ISSUE", page.detail.id) }
-                        Btn { objectName: "bookBuyButton"; text: "شراء ذهب (دفتري)"; visible: !!page.detail.open && !!page.detail.isBook
-                              enabled: !!page.vm && !page.vm.writing
-                              onClicked: bookDialog.openFor("BK_BUY", page.detail.id) }
-                        Btn { objectName: "bookSellButton"; text: "بيع ذهب (دفتري)"; visible: !!page.detail.open && !!page.detail.isBook
-                              enabled: !!page.vm && !page.vm.writing
-                              onClicked: bookDialog.openFor("BK_SELL", page.detail.id) }
-                        Btn { objectName: "bookReturnButton"; text: "رجوع ذهب للمحل (دفتري)"; visible: !!page.detail.open && !!page.detail.isBook
-                              enabled: !!page.vm && !page.vm.writing
-                              onClicked: bookDialog.openFor("BK_RETURN", page.detail.id) }
-                        Btn { objectName: "bookIssueStockButton"; text: "إخراج مخزون مرتجع للعهدة"; visible: !!page.detail.open && !!page.detail.isBook
-                              enabled: !!page.vm && !page.vm.writing && !!page.detail.book && (page.detail.book.shopStock || []).length > 0
-                              onClicked: stockDialog.openFor(page.detail.id) }
-                        Btn { objectName: "bookDeliverSupplierButton"; text: "تسليم ذهب لمورد (دفتري)"; visible: !!page.detail.open && !!page.detail.isBook
-                              enabled: !!page.vm && !page.vm.writing
-                              onClicked: bookDialog.openFor("BK_DLV_SUP", page.detail.id) }
-                        Btn { objectName: "bookDeliverMarketerButton"; text: "تسليم ذهب لمسوقجي (دفتري)"; visible: !!page.detail.open && !!page.detail.isBook
-                              enabled: !!page.vm && !page.vm.writing
-                              onClicked: bookDialog.openFor("BK_DLV_MKT", page.detail.id) }
-                        Btn { objectName: "bookReceiveMarketerButton"; text: "استلام ذهب من مسوقجي (دفتري)"; visible: !!page.detail.open && !!page.detail.isBook
-                              enabled: !!page.vm && !page.vm.writing
-                              onClicked: bookDialog.openFor("BK_RECEIVE", page.detail.id) }
-                        Btn { objectName: "bookGainButton"; text: "تسجيل زيادة مثبتة"; visible: !!page.detail.open && !!page.detail.isBook
-                              enabled: !!page.vm && !page.vm.writing && !page.detail.reconciled
-                              onClicked: bookDialog.openFor("BK_GAIN", page.detail.id) }
-                        Btn { objectName: "issueMoreButton"; text: page.detail.isBook ? "تحويل نقدية من الخزنة للعهدة" : "إخراج عهدة"; visible: !!page.detail.open
+                        Btn { objectName: "issueMoreButton"; text: "إخراج عهدة"; visible: !!page.detail.open
                               enabled: !!page.vm && !page.vm.writing
                               onClicked: entryDialog.openFor("ISSUE", page.detail.id) }
-                        Btn { objectName: "returnButton"; text: page.detail.isBook ? "إرجاع نقدية إلى الخزنة" : "تسجيل رجوع"; visible: !!page.detail.open
+                        Btn { objectName: "returnButton"; text: "تسجيل رجوع"; visible: !!page.detail.open
                               enabled: !!page.vm && !page.vm.writing
                               onClicked: entryDialog.openFor("RETURN", page.detail.id) }
                         Btn { objectName: "closeTripButton"; text: "إغلاق العهدة"; visible: !!page.detail.open; accent: theme.green
@@ -1003,7 +876,7 @@ Item {
         readonly property var designationChoices: [{ id: "", text: "اختر الوجهة" }].concat(page.ctx.designations || [])
         readonly property var lineChoices: [{ key: "", text: "اختر من العهدة" }].concat(page.detail.returnLines || [])
         readonly property bool withLots: !isReturn && tripId === ""        // only a NEW custody can start with existing shop bars
-        readonly property bool cashOnly: tripId !== "" && !!page.detail.isBook   // a BOOK trip takes and returns CASH here; its gold has its own dialog
+        readonly property bool cashOnly: false
         readonly property bool hasQuantity: cashField.text.trim().length > 0 || hasGold() || (withLots && lotLines().length > 0)
         function lotLines() {
             var rows = []
@@ -1205,397 +1078,6 @@ Item {
                 }
                 Btn { objectName: "cancelTripEntryButton"; text: "إلغاء"; accent: theme.textSecondary
                       enabled: !!page.vm && !page.vm.writing; onClicked: entryDialog.close() }
-                Item { Layout.fillWidth: true }
-            }
-        }
-    }
-
-    // ---------------------------------------------------------------- BOOK operations (056): issue from Scrap / buy / sell / return to the shop
-    // A BOOK trip keeps ONE gold number, the book balance in 21K equivalent. Every line states its physical facts (weight and a master karat OR an assay in
-    // permille); every figure below is computed by the service rules through marketTripVM (never QML arithmetic). Normal use never reaches this dialog: no
-    // production path creates a BOOK trip, so its buttons exist only on a BOOK trip.
-    Popup {
-        id: stockDialog
-        objectName: "tripStockDialog"
-        property string tripId: ""
-        property string requestKey: ""
-        readonly property var itemChoices: [{ entryId: "", lineNo: "", grams: "", text: "اختر بند المخزون" }].concat(page.detail.book ? (page.detail.book.shopStock || []) : [])
-        function collect() {
-            var rows = []
-            for (var i = 0; i < stockModel.count; ++i) {
-                var r = stockModel.get(i)
-                var c = itemChoices[r.itemIndex]
-                if (c && c.entryId !== "") rows.push({ entryId: c.entryId, lineNo: c.lineNo, grams: r.grams })
-            }
-            return rows
-        }
-        function complete() {
-            if (stockDate.text.trim().length === 0) return false
-            for (var i = 0; i < stockModel.count; ++i) {
-                var r = stockModel.get(i)
-                if (r.itemIndex > 0 && r.grams.trim().length > 0) return true
-            }
-            return false
-        }
-        function openFor(trip) {
-            if (!page.vm) return
-            tripId = trip
-            requestKey = page.vm.newRequestKey()
-            stockDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
-            stockNotes.text = ""
-            stockModel.clear()
-            stockModel.append({ itemIndex: 0, grams: "" })
-            page.vm.clearMessage()
-            open()
-        }
-        parent: Overlay.overlay
-        anchors.centerIn: parent
-        width: Math.min(620, page.width - 24)
-        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 560, 560)
-        modal: true
-        padding: 14
-        closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
-        ListModel { id: stockModel }
-        contentItem: ColumnLayout {
-            spacing: 6
-            Txt { objectName: "stockDialogTitle"; Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection
-                  text: "إخراج مخزون مرتجع بعيار فعلي إلى العهدة (دفتري)" }
-            Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                  text: "يخرج الوزن المختار من بند المخزون بنفس عياره الفعلي ويدخل الرصيد الدفتري بحصته من المكافئ المرحَّل المخزَّن للبند (تخصيص، دون تقريب جديد للبند كله). الإخراج الجزئي مسموح؛ إخراج الباقي كله يأخذ المتبقي المرحَّل بالضبط." }
-            Flickable {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                contentHeight: stockForm.implicitHeight
-                clip: true
-                ScrollBar.vertical: ScrollBar {}
-                ColumnLayout {
-                    id: stockForm
-                    width: parent.width - 12
-                    spacing: 6
-                    Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
-                    Field { id: stockDate; objectName: "stockDateField"; Layout.fillWidth: true }
-                    Repeater {
-                        model: stockModel
-                        delegate: RowLayout {
-                            Layout.fillWidth: true
-                            layoutDirection: Qt.RightToLeft
-                            spacing: 6
-                            Combo {
-                                objectName: "stockItem_" + index
-                                Layout.fillWidth: true
-                                model: stockDialog.itemChoices
-                                textRole: "text"
-                                currentIndex: itemIndex
-                                onActivated: function (i) { stockModel.setProperty(index, "itemIndex", i) }
-                            }
-                            Field {
-                                objectName: "stockGrams_" + index
-                                Layout.preferredWidth: 120
-                                placeholderText: "الوزن (جرام)"
-                                text: grams
-                                inputMethodHints: Qt.ImhFormattedNumbersOnly
-                                onTextEdited: stockModel.setProperty(index, "grams", text)
-                            }
-                            Btn {
-                                objectName: "stockAll_" + index
-                                text: "الكل"
-                                accent: theme.textSecondary
-                                enabled: itemIndex > 0
-                                onClicked: stockModel.setProperty(index, "grams", stockDialog.itemChoices[itemIndex].grams)
-                            }
-                        }
-                    }
-                    Btn { objectName: "addStockLineButton"; text: "＋ بند آخر"; accent: theme.textSecondary; enabled: stockModel.count < 8
-                          onClicked: stockModel.append({ itemIndex: 0, grams: "" }) }
-                    Txt { Layout.fillWidth: true; text: "ملاحظات" }
-                    Field { id: stockNotes; objectName: "stockNotesField"; Layout.fillWidth: true }
-                }
-            }
-            Txt { objectName: "stockDialogError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
-                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-            RowLayout {
-                Layout.fillWidth: true
-                layoutDirection: Qt.RightToLeft
-                spacing: 8
-                Btn { objectName: "confirmStockButton"; text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "تسجيل"; primary: true
-                      enabled: stockDialog.complete() && !!page.vm && !page.vm.writing
-                      onClicked: page.vm.bookIssueStock(stockDialog.tripId, stockDialog.collect(), stockDate.text, stockNotes.text, stockDialog.requestKey) }
-                Btn { objectName: "cancelStockButton"; text: "إغلاق"; onClicked: stockDialog.close() }
-            }
-        }
-    }
-
-    Popup {
-        id: bookDialog
-        objectName: "tripBookDialog"
-        property string kind: "BK_ISSUE"
-        property string tripId: ""
-        property string requestKey: ""
-        readonly property bool priced: kind === "BK_BUY" || kind === "BK_SELL"
-        readonly property bool hasCounterparty: priced
-        readonly property bool toSupplier: kind === "BK_DLV_SUP"
-        readonly property bool toMarketer: kind === "BK_DLV_MKT" || kind === "BK_RECEIVE"
-        readonly property bool isGain: kind === "BK_GAIN"
-        readonly property bool singleLine: toSupplier || toMarketer || isGain
-        readonly property var targetChoices: [{ id: "", text: toSupplier ? "اختر المورد" : "اختر المسوقجي" }].concat(
-                                                 !page.detail.book ? [] : toSupplier ? (page.detail.book.suppliers || [])
-                                                 : (page.detail.book.marketers || []).filter(function (m) { return kind === "BK_RECEIVE" || m.active }))
-        readonly property string targetId: targetChoices[bookTarget.currentIndex] ? targetChoices[bookTarget.currentIndex].id : ""
-        readonly property string creditText: toSupplier && page.vm ? page.vm.previewSupplierCredit(targetId, lineRows) : ""
-        readonly property var karatChoices: [{ id: "", text: "اختر العيار" }].concat(page.ctx.karats || [])
-        readonly property var basisChoices: kind === "BK_ISSUE" ? [{ id: "MASTER_KARAT", text: "عيار معياري" }]
-                                                                   : [{ id: "MASTER_KARAT", text: "عيار معياري" }, { id: "FINENESS", text: "عيار فعلي (بالألف)" }]
-        readonly property var partyChoices: [{ id: "", text: kind === "BK_BUY" ? "بائع غير مسجل (اكتب اسمه)" : "طرف آخر غير مسجل (اكتب اسمه)" }].concat(page.detail.saleBuyers || [])
-        readonly property string partyId: partyChoices[bookParty.currentIndex] ? partyChoices[bookParty.currentIndex].id : ""
-        readonly property bool needsConfirmation: !!page.vm && page.vm.errorCode === "PRICE_DEVIATION"
-        property var lineRows: []
-        readonly property var preview: {
-            var known = page.detail.id !== undefined && page.detail.isBook === true
-            return known && page.vm ? page.vm.previewBook(kind, lineRows) : ({})
-        }
-        readonly property string title: kind === "BK_ISSUE" ? "إخراج ذهب من كسر المحل (دفتري)" : kind === "BK_BUY" ? "شراء ذهب (دفتري)"
-                                      : kind === "BK_SELL" ? "بيع ذهب (دفتري)" : kind === "BK_DLV_SUP" ? "تسليم ذهب لمورد (دفتري)"
-                                      : kind === "BK_DLV_MKT" ? "تسليم ذهب لمسوقجي (دفتري)" : kind === "BK_RECEIVE" ? "استلام ذهب من مسوقجي (دفتري)"
-                                      : kind === "BK_GAIN" ? "تسجيل زيادة مثبتة (دفتري)" : "رجوع ذهب للمحل (دفتري)"
-        readonly property string rule: kind === "BK_ISSUE" ? "يخرج الذهب من كسر المحل المتاح بنفس العيار المعياري (دون المحجوز لمراجعة المدير) ويدخل الرصيد الدفتري بمكافئ عيار 21."
-                                     : kind === "BK_BUY" ? "تُدفع قيمة الذهب من نقدية هذه العهدة (لا من الخزنة) ويدخل الرصيد الدفتري بمكافئ عيار 21. اسم البائع إجباري."
-                                     : kind === "BK_SELL" ? "يُباع الذهب بحد أقصى الرصيد الدفتري ويدخل ثمنه نقدية هذه العهدة. اسم المشتري إجباري."
-                                     : kind === "BK_DLV_SUP" ? "يخرج الذهب من الرصيد الدفتري ويُحتسب للمورد في حسابه بعياره هو (لا مكافئ 21). لا حركة خزنة أو كسر. سطر واحد لكل تسليم."
-                                     : kind === "BK_DLV_MKT" ? "يخرج الذهب من الرصيد الدفتري ويُضاف مكافئه المرحَّل (عيار 21) إلى استحقاق المسوقجي من ذهب المحل. سطر واحد لكل تسليم."
-                                     : kind === "BK_RECEIVE" ? "يدخل الذهب الرصيد الدفتري ويُخصم مكافئه المرحَّل (عيار 21) من استحقاق المسوقجي، بحد أقصى ما يحمله. سطر واحد لكل استلام."
-                                     : kind === "BK_GAIN" ? "لذهب زائد ثابت فعلًا بالوزن أو الفحص: يُحسب مكافئه من وزنه وعياره هو (لا يُكتب رقم ولا يُستنتج من عجز الدفتر) ويدخل مدخلات الرصيد الدفتري. شرح الزيادة ومرجع الدليل وتأكيدك إجباريان. لا حركة خزنة أو كسر أو مخزون، ولا يُخصم من فاقد."
-                                     : "العيار المعياري يعود إلى كسر المحل بنفس العيار؛ أي عيار فعلي آخر يصبح بند مخزون مرتجع محدد الهوية بوزنه وعياره وأصله."
-        function collect() {
-            var rows = []
-            for (var i = 0; i < bookModel.count; ++i) {
-                var g = bookModel.get(i)
-                var basis = basisChoices[g.basisIndex] ? basisChoices[g.basisIndex].id : "MASTER_KARAT"
-                rows.push({ basis: basis, karatId: basis === "MASTER_KARAT" && g.karatIndex > 0 ? karatChoices[g.karatIndex].id : "",
-                            fineness: basis === "FINENESS" ? g.fineness : "", weight: g.weight, price: priced ? g.price : "" })
-            }
-            return rows
-        }
-        function refreshLines() { lineRows = collect() }
-        function openFor(what, trip) {
-            if (!page.vm) return
-            kind = what
-            tripId = trip
-            requestKey = page.vm.newRequestKey()
-            bookParty.currentIndex = 0
-            bookTarget.currentIndex = 0
-            bookName.text = ""
-            bookDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
-            bookReference.text = ""
-            gainExplanation.text = ""
-            gainConfirmed.checked = false
-            bookNotes.text = ""
-            bookModel.clear()
-            bookModel.append({ basisIndex: 0, karatIndex: 0, fineness: "", weight: "", price: "" })
-            refreshLines()
-            page.vm.clearMessage()
-            page.vm.refresh()
-            if (priced) page.vm.loadReferencePrices()
-            open()
-        }
-        function complete() {
-            if (bookDate.text.trim().length === 0) return false
-            if (hasCounterparty && !(partyId !== "" || bookName.text.trim().length > 0)) return false
-            if ((toSupplier || toMarketer) && targetId === "") return false
-            if (isGain && (gainExplanation.text.trim().length === 0 || bookReference.text.trim().length === 0 || !gainConfirmed.checked)) return false
-            for (var i = 0; i < bookModel.count; ++i) {
-                var g = bookModel.get(i)
-                var basis = basisChoices[g.basisIndex] ? basisChoices[g.basisIndex].id : "MASTER_KARAT"
-                if (g.weight.trim().length > 0 && (basis === "FINENESS" ? g.fineness.trim().length > 0 : g.karatIndex > 0) && (!priced || g.price.trim().length > 0))
-                    return true
-            }
-            return false
-        }
-        function submit(acknowledged) {
-            if (kind === "BK_ISSUE") page.vm.bookIssue(tripId, collect(), bookDate.text, bookNotes.text, requestKey)
-            else if (kind === "BK_BUY") page.vm.bookBuy(tripId, collect(), partyId, bookName.text, bookDate.text, bookReference.text, bookNotes.text, requestKey, acknowledged)
-            else if (kind === "BK_SELL") page.vm.bookSell(tripId, collect(), partyId, bookName.text, bookDate.text, bookReference.text, bookNotes.text, requestKey, acknowledged)
-            else if (kind === "BK_DLV_SUP") page.vm.bookDeliverSupplier(tripId, targetId, collect(), bookDate.text, bookReference.text, bookNotes.text, requestKey)
-            else if (kind === "BK_DLV_MKT") page.vm.bookDeliverMarketer(tripId, targetId, collect(), bookDate.text, bookNotes.text, requestKey)
-            else if (kind === "BK_RECEIVE") page.vm.bookReceiveMarketer(tripId, targetId, collect(), bookDate.text, bookNotes.text, requestKey)
-            else if (kind === "BK_GAIN") page.vm.bookGain(tripId, collect(), gainExplanation.text, bookReference.text, gainConfirmed.checked, bookDate.text, bookNotes.text, requestKey)
-            else page.vm.bookReturn(tripId, collect(), bookDate.text, bookNotes.text, requestKey)
-        }
-        parent: Overlay.overlay
-        anchors.centerIn: parent
-        width: Math.min(640, page.width - 24)
-        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 680, 680)
-        modal: true
-        padding: 14
-        closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
-        ListModel { id: bookModel }
-        contentItem: ColumnLayout {
-            spacing: 6
-            Txt { objectName: "bookDialogTitle"; Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; text: bookDialog.title }
-            Txt { objectName: "bookDialogRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                  text: bookDialog.rule }
-            Flickable {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                contentHeight: bookForm.implicitHeight
-                clip: true
-                ScrollBar.vertical: ScrollBar {}
-                ColumnLayout {
-                    id: bookForm
-                    width: parent.width - 12
-                    spacing: 6
-                    Txt { Layout.fillWidth: true; visible: bookDialog.hasCounterparty; text: bookDialog.kind === "BK_BUY" ? "البائع *" : "المشتري *" }
-                    Combo { id: bookParty; objectName: "bookCounterpartyCombo"; Layout.fillWidth: true; visible: bookDialog.hasCounterparty
-                            model: bookDialog.partyChoices; textRole: "text" }
-                    Txt { Layout.fillWidth: true; visible: bookDialog.toSupplier || bookDialog.toMarketer; text: bookDialog.toSupplier ? "المورد *" : "المسوقجي *" }
-                    Combo { id: bookTarget; objectName: "bookTargetCombo"; Layout.fillWidth: true; visible: bookDialog.toSupplier || bookDialog.toMarketer
-                            model: bookDialog.targetChoices; textRole: "text"; onActivated: bookDialog.refreshLines() }
-                    Txt { Layout.fillWidth: true; visible: bookDialog.hasCounterparty && bookDialog.partyId === ""; text: "الاسم *" }
-                    Field { id: bookName; objectName: "bookNameField"; Layout.fillWidth: true; visible: bookDialog.hasCounterparty && bookDialog.partyId === "" }
-                    RowLayout {
-                        Layout.fillWidth: true
-                        layoutDirection: Qt.RightToLeft
-                        spacing: 8
-                        ColumnLayout {
-                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
-                            Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
-                            Field { id: bookDate; objectName: "bookDateField"; Layout.fillWidth: true }
-                        }
-                        ColumnLayout {
-                            Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2; visible: bookDialog.hasCounterparty || bookDialog.toSupplier || bookDialog.isGain
-                            Txt { Layout.fillWidth: true; text: bookDialog.isGain ? "مرجع الدليل (إيصال وزن / شهادة فحص) *" : "المرجع (اختياري)" }
-                            Field { id: bookReference; objectName: "bookReferenceField"; Layout.fillWidth: true }
-                        }
-                    }
-                    Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true
-                          text: bookDialog.priced ? "الذهب: أسلوب العيار والعيار والوزن الفعلي وثمن السطر" : "الذهب: أسلوب العيار والعيار والوزن الفعلي" }
-                    Repeater {
-                        model: bookModel
-                        delegate: RowLayout {
-                            Layout.fillWidth: true
-                            layoutDirection: Qt.RightToLeft
-                            spacing: 6
-                            Combo {
-                                objectName: "bookBasis_" + index
-                                Layout.preferredWidth: 150
-                                model: bookDialog.basisChoices
-                                textRole: "text"
-                                currentIndex: basisIndex
-                                onActivated: function (i) { bookModel.setProperty(index, "basisIndex", i); bookDialog.refreshLines() }
-                            }
-                            Combo {
-                                objectName: "bookKarat_" + index
-                                Layout.preferredWidth: 110
-                                visible: bookDialog.basisChoices[basisIndex] && bookDialog.basisChoices[basisIndex].id === "MASTER_KARAT"
-                                model: bookDialog.karatChoices
-                                textRole: "text"
-                                currentIndex: karatIndex
-                                onActivated: function (i) { bookModel.setProperty(index, "karatIndex", i); bookDialog.refreshLines() }
-                            }
-                            Field {
-                                objectName: "bookFineness_" + index
-                                Layout.preferredWidth: 110
-                                visible: bookDialog.basisChoices[basisIndex] && bookDialog.basisChoices[basisIndex].id === "FINENESS"
-                                placeholderText: "العيار (‰)"
-                                text: fineness
-                                inputMethodHints: Qt.ImhFormattedNumbersOnly
-                                onTextEdited: { bookModel.setProperty(index, "fineness", text); bookDialog.refreshLines() }
-                            }
-                            Field {
-                                objectName: "bookWeight_" + index
-                                Layout.fillWidth: true
-                                placeholderText: "الوزن (جرام)"
-                                text: weight
-                                inputMethodHints: Qt.ImhFormattedNumbersOnly
-                                onTextEdited: { bookModel.setProperty(index, "weight", text); bookDialog.refreshLines() }
-                            }
-                            Field {
-                                objectName: "bookPrice_" + index
-                                Layout.fillWidth: true
-                                visible: bookDialog.priced
-                                placeholderText: "الثمن (ج)"
-                                text: price
-                                inputMethodHints: Qt.ImhFormattedNumbersOnly
-                                onTextEdited: { bookModel.setProperty(index, "price", text); bookDialog.refreshLines() }
-                            }
-                        }
-                    }
-                    Btn { objectName: "addBookLineButton"; text: "＋ سطر آخر"; accent: theme.textSecondary
-                          enabled: bookModel.count < 8
-                          visible: !bookDialog.singleLine
-                          onClicked: { bookModel.append({ basisIndex: 0, karatIndex: 0, fineness: "", weight: "", price: "" }); bookDialog.refreshLines() } }
-                    Rectangle {
-                        Layout.fillWidth: true
-                        implicitHeight: bookPreviewColumn.implicitHeight + 14
-                        radius: theme.radiusSmall
-                        color: theme.bgTertiary
-                        border.color: bookDialog.preview.warning ? theme.amber : theme.border
-                        ColumnLayout {
-                            id: bookPreviewColumn
-                            anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-                            anchors.leftMargin: 10; anchors.rightMargin: 10; anchors.topMargin: 7
-                            spacing: 3
-                            Txt { objectName: "bookPreviewBalance"; Layout.fillWidth: true; visible: !!bookDialog.preview.balanceText
-                                  text: bookDialog.preview.balanceText || ""; color: theme.amber; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                            Repeater {
-                                model: bookDialog.preview.lines || []
-                                delegate: Txt { objectName: "bookPreviewLine_" + index; Layout.fillWidth: true; text: modelData; color: theme.textSecondary
-                                                font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                            }
-                            Txt { objectName: "bookPreviewTotal"; Layout.fillWidth: true; visible: !!bookDialog.preview.totalPosted
-                                  text: bookDialog.preview.totalPosted || ""; color: theme.gold; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                            Txt { objectName: "bookPreviewPrice"; Layout.fillWidth: true; visible: !!bookDialog.preview.totalText
-                                  text: "إجمالي الثمن: " + (bookDialog.preview.totalText || "") + (bookDialog.preview.referenceText ? " • " + bookDialog.preview.referenceText : "")
-                                        + (bookDialog.preview.deviationText ? " • الفرق " + bookDialog.preview.deviationText : "")
-                                  color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                            Txt { objectName: "bookPreviewCredit"; Layout.fillWidth: true; visible: bookDialog.creditText !== ""
-                                  text: bookDialog.creditText; color: theme.gold; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                            Txt { objectName: "bookPreviewWarning"; Layout.fillWidth: true; visible: bookDialog.preview.warning === true
-                                  text: bookDialog.preview.warningText || ""; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                            Txt { objectName: "bookPreviewError"; Layout.fillWidth: true; visible: !!bookDialog.preview.error
-                                  text: bookDialog.preview.error || ""; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                            Item { Layout.preferredHeight: 2 }
-                        }
-                    }
-                    Txt { Layout.fillWidth: true; visible: bookDialog.isGain; text: "شرح الزيادة *" }
-                    Field { id: gainExplanation; objectName: "gainExplanationField"; Layout.fillWidth: true; visible: bookDialog.isGain; maximumLength: 500 }
-                    CheckBox { id: gainConfirmed; objectName: "gainConfirmedCheck"; Layout.fillWidth: true; visible: bookDialog.isGain; enabled: !!page.vm && !page.vm.writing; font.family: "Cairo"
-                               indicator: Rectangle { implicitWidth: 18; implicitHeight: 18; x: gainConfirmed.width - width; y: (gainConfirmed.height - height) / 2; radius: 3
-                                           border.color: theme.gold; color: gainConfirmed.checked ? theme.gold : theme.bgPrimary
-                                           Canvas { anchors.fill: parent; property bool checked: gainConfirmed.checked; onCheckedChanged: requestPaint()
-                                                    onPaint: { var c = getContext("2d"); c.clearRect(0, 0, width, height); if (checked) { c.strokeStyle = theme.bgPrimary; c.lineWidth = 2; c.beginPath(); c.moveTo(4, 9); c.lineTo(8, 13); c.lineTo(14, 5); c.stroke(); } } } }
-                               text: "أؤكد أن هذه الزيادة ثابتة بالوزن أو الفحص المذكور، وليست تغطية لعجز في الدفتر"
-                               contentItem: Txt { text: gainConfirmed.text; wrapMode: Text.WordWrap; elide: Text.ElideNone; rightPadding: gainConfirmed.indicator.width + 8; leftPadding: 0 } }
-                    Txt { Layout.fillWidth: true; text: "ملاحظات" }
-                    Field { id: bookNotes; objectName: "bookNotesField"; Layout.fillWidth: true }
-                }
-            }
-            Txt { objectName: "bookDialogError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
-                  text: page.vm ? page.vm.errorMessage : ""; color: bookDialog.needsConfirmation ? theme.amber : theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-            RowLayout {
-                Layout.fillWidth: true
-                layoutDirection: Qt.RightToLeft
-                spacing: 8
-                Btn {
-                    objectName: "confirmBookButton"
-                    visible: !bookDialog.needsConfirmation
-                    text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "تسجيل"
-                    primary: true
-                    enabled: bookDialog.complete() && !!page.vm && !page.vm.writing && !bookDialog.preview.error
-                    onClicked: bookDialog.submit(false)
-                }
-                Btn {
-                    objectName: "acknowledgeBookPriceButton"
-                    visible: bookDialog.needsConfirmation
-                    text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "أؤكد الأسعار وأسجّل"
-                    primary: true
-                    accent: theme.amber
-                    enabled: !!page.vm && !page.vm.writing
-                    onClicked: bookDialog.submit(true)
-                }
-                Btn { objectName: "cancelBookButton"; text: "إلغاء"; accent: theme.textSecondary
-                      enabled: !!page.vm && !page.vm.writing; onClicked: bookDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }
@@ -3707,210 +3189,6 @@ Item {
                 Btn { objectName: "cancelLotReturnButton"; text: "إلغاء"; accent: theme.textSecondary
                       enabled: !!page.vm && !page.vm.writing; onClicked: lotReturnDialog.close() }
                 Item { Layout.fillWidth: true }
-            }
-        }
-    }
-
-    // ---------------------------------------------------------------- reason (reopen a closed trip / reverse an entry)
-    Dialog {
-        id: reconApprovalDialog
-        objectName: "reconciliationApprovalDialog"
-        property string tripId: ""
-        property string requestKey: ""
-        readonly property var approval: page.vm ? page.vm.reconciliationApproval : ({})
-        readonly property bool ready: !!approval.sourceDigest && approval.tripId === tripId && tripId === page.vm.selectedTripId
-        readonly property var reason: approval.reasons ? approval.reasons[reconReason.currentIndex] : null
-        function openFor() {
-            tripId = page.vm.selectedTripId
-            requestKey = page.vm.newRequestKey()
-            reconReason.currentIndex = 0
-            reconNote.text = ""
-            reconDate.text = ""
-            reconComplete.checked = false
-            reconLoss.checked = false
-            reconRounding.checked = false
-            page.vm.clearMessage()
-            page.vm.prepareReconciliation()
-            open()
-        }
-        onReadyChanged: {
-            reconComplete.checked = false; reconLoss.checked = false; reconRounding.checked = false
-        }
-        parent: Overlay.overlay
-        anchors.centerIn: parent
-        width: Math.min(660, page.width - 24)
-        height: Math.min(620, page.height - 36)
-        modal: true
-        padding: 16
-        closePolicy: page.vm && page.vm.writing ? Popup.NoAutoClose : Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
-        contentItem: ColumnLayout {
-            spacing: 8
-            Txt { objectName: "reconciliationApprovalTitle"; Layout.fillWidth: true; text: "اعتماد تسوية العهدة"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
-            Flickable {
-                id: approvalScroll
-                objectName: "approvalScroll"
-                Layout.fillWidth: true; Layout.fillHeight: true; clip: true
-                contentWidth: width; contentHeight: approvalForm.implicitHeight
-                boundsBehavior: Flickable.StopAtBounds
-                ScrollBar.vertical: ScrollBar { }
-                ColumnLayout {
-                    id: approvalForm
-                    width: approvalScroll.width
-                    spacing: 8
-                    Txt { Layout.fillWidth: true; text: "راجع اكتمال تسجيل الحركات قبل الاعتماد. الاعتماد يسجّل الفاقد المعترف به وفرق التقريب؛ لا يغلق العهدة ولا ينقل ذهبًا أو نقدية."; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                    Txt { objectName: "reconciliationApprovalError"; visible: text.length > 0; Layout.fillWidth: true; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                          text: reconApprovalDialog.approval.error || (page.vm ? page.vm.errorMessage : "") }
-                    Txt { Layout.fillWidth: true; visible: !!reconApprovalDialog.approval.loading; text: reconApprovalDialog.approval.loading ? "جارٍ إعداد المعاينة…" : ""; color: theme.textMuted }
-                    ColumnLayout {
-                        Layout.fillWidth: true; visible: reconApprovalDialog.ready; spacing: 8
-                        Txt { objectName: "approvalFigures"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.gold
-                              text: "الرصيد التحليلي: " + page.ltr(reconApprovalDialog.approval.a || "") + "\nالرصيد المرحّل: " + page.ltr(reconApprovalDialog.approval.b || "") + "\nالفاقد المرحّل: " + page.ltr(reconApprovalDialog.approval.loss || "") + "\nفرق التقريب (ليس فاقدًا ولا زيادة): " + page.ltr(reconApprovalDialog.approval.rounding || "") + "\nجميع القيم بجرام مكافئ عيار 21" }
-                        Txt { Layout.fillWidth: true; text: reconApprovalDialog.approval.reasonRequired ? "سبب التسوية (إلزامي)" : "سبب التسوية (اختياري)" }
-                        Combo { id: reconReason; objectName: "approvalReason"; Layout.fillWidth: true; model: reconApprovalDialog.approval.reasons || []; textRole: "text"; enabled: !page.vm.writing }
-                        Txt { Layout.fillWidth: true; text: reconApprovalDialog.reason && reconApprovalDialog.reason.noteRequired ? "ملاحظة توضيحية (إلزامية)" : "ملاحظة توضيحية (اختيارية)" }
-                        Field { id: reconNote; objectName: "approvalNote"; Layout.fillWidth: true; maximumLength: 1000; enabled: !page.vm.writing }
-                        Txt { Layout.fillWidth: true; text: "التاريخ الفعلي — اتركه فارغًا لاعتماد يوم الخادم" }
-                        Field { id: reconDate; objectName: "approvalDate"; Layout.fillWidth: true; placeholderText: reconApprovalDialog.approval.defaultDate || "YYYY-MM-DD"; maximumLength: 10; enabled: !page.vm.writing }
-                        Txt { Layout.fillWidth: true; text: "أقدم تاريخ مسموح: " + page.ltr(reconApprovalDialog.approval.dateFloor || "") + " • اليوم: " + page.ltr(reconApprovalDialog.approval.defaultDate || ""); color: theme.textMuted; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                        CheckBox { id: reconComplete; objectName: "approvalRecordingComplete"; Layout.fillWidth: true; enabled: !page.vm.writing; font.family: "Cairo"
-                                   indicator: Rectangle { implicitWidth: 18; implicitHeight: 18; x: reconComplete.width - width; y: (reconComplete.height - height) / 2; radius: 3
-                                               border.color: theme.gold; color: reconComplete.checked ? theme.gold : theme.bgPrimary
-                                               Canvas { anchors.fill: parent; property bool checked: reconComplete.checked; onCheckedChanged: requestPaint()
-                                                        onPaint: { var c = getContext("2d"); c.clearRect(0, 0, width, height); if (checked) { c.strokeStyle = theme.bgPrimary; c.lineWidth = 2; c.beginPath(); c.moveTo(4, 9); c.lineTo(8, 13); c.lineTo(14, 5); c.stroke(); } } } }
-                                   text: (reconApprovalDialog.approval.confirmations || {}).recording_complete || ""; contentItem: Txt { text: reconComplete.text; wrapMode: Text.WordWrap; elide: Text.ElideNone; rightPadding: reconComplete.indicator.width + 8; leftPadding: 0 } }
-                        CheckBox { id: reconLoss; objectName: "approvalLossRecognised"; Layout.fillWidth: true; enabled: !page.vm.writing; font.family: "Cairo"
-                                   indicator: Rectangle { implicitWidth: 18; implicitHeight: 18; x: reconLoss.width - width; y: (reconLoss.height - height) / 2; radius: 3
-                                               border.color: theme.gold; color: reconLoss.checked ? theme.gold : theme.bgPrimary
-                                               Canvas { anchors.fill: parent; property bool checked: reconLoss.checked; onCheckedChanged: requestPaint()
-                                                        onPaint: { var c = getContext("2d"); c.clearRect(0, 0, width, height); if (checked) { c.strokeStyle = theme.bgPrimary; c.lineWidth = 2; c.beginPath(); c.moveTo(4, 9); c.lineTo(8, 13); c.lineTo(14, 5); c.stroke(); } } } }
-                                   text: (reconApprovalDialog.approval.confirmations || {}).loss_recognised_as_posted || ""; contentItem: Txt { text: reconLoss.text; wrapMode: Text.WordWrap; elide: Text.ElideNone; rightPadding: reconLoss.indicator.width + 8; leftPadding: 0 } }
-                        CheckBox { id: reconRounding; objectName: "approvalRoundingSeparate"; Layout.fillWidth: true; enabled: !page.vm.writing; font.family: "Cairo"
-                                   indicator: Rectangle { implicitWidth: 18; implicitHeight: 18; x: reconRounding.width - width; y: (reconRounding.height - height) / 2; radius: 3
-                                               border.color: theme.gold; color: reconRounding.checked ? theme.gold : theme.bgPrimary
-                                               Canvas { anchors.fill: parent; property bool checked: reconRounding.checked; onCheckedChanged: requestPaint()
-                                                        onPaint: { var c = getContext("2d"); c.clearRect(0, 0, width, height); if (checked) { c.strokeStyle = theme.bgPrimary; c.lineWidth = 2; c.beginPath(); c.moveTo(4, 9); c.lineTo(8, 13); c.lineTo(14, 5); c.stroke(); } } } }
-                                   text: (reconApprovalDialog.approval.confirmations || {}).rounding_separate || ""; contentItem: Txt { text: reconRounding.text; wrapMode: Text.WordWrap; elide: Text.ElideNone; rightPadding: reconRounding.indicator.width + 8; leftPadding: 0 } }
-                    }
-                }
-            }
-            RowLayout {
-                Layout.alignment: Qt.AlignRight
-                Btn { objectName: "refreshApprovalPreview"; text: "إعادة قراءة المعاينة"; visible: !reconApprovalDialog.ready && !reconApprovalDialog.approval.loading; enabled: !page.vm.writing; onClicked: page.vm.prepareReconciliation() }
-                Btn { objectName: "confirmReconciliationApproval"; text: page.vm && page.vm.writing ? "جارٍ الاعتماد…" : "اعتماد التسوية"; primary: true
-                      enabled: reconApprovalDialog.ready && !page.vm.writing && reconComplete.checked && reconLoss.checked && reconRounding.checked
-                               && (!reconApprovalDialog.approval.reasonRequired || !!(reconApprovalDialog.reason && reconApprovalDialog.reason.id !== ""))
-                               && (!(reconApprovalDialog.reason && reconApprovalDialog.reason.noteRequired) || reconNote.text.trim().length > 0)
-                      onClicked: page.vm.approveReconciliation(reconApprovalDialog.tripId, reconApprovalDialog.reason ? reconApprovalDialog.reason.id : "", reconNote.text, reconDate.text,
-                                {recording_complete: reconComplete.checked, loss_recognised_as_posted: reconLoss.checked, rounding_separate: reconRounding.checked}, reconApprovalDialog.requestKey) }
-                Btn { objectName: "cancelReconciliationApproval"; text: "إلغاء"; enabled: !page.vm.writing; onClicked: reconApprovalDialog.close() }
-            }
-        }
-    }
-
-    // ---- the detail report of reconciliations and evidenced gains (read only; the totals are provisional and never final)
-    Popup {
-        id: reportDialog
-        objectName: "bookReportDialog"
-        function openFor() {
-            if (!page.vm) return
-            var today = Qt.formatDate(new Date(), "yyyy-MM-dd")
-            reportTo.text = today
-            reportFrom.text = Qt.formatDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1), "yyyy-MM-dd")
-            page.vm.loadReport(reportFrom.text, reportTo.text)
-            open()
-        }
-        parent: Overlay.overlay
-        anchors.centerIn: parent
-        width: Math.min(760, page.width - 24)
-        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 640, 640)
-        modal: true
-        padding: 14
-        closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
-        contentItem: ColumnLayout {
-            spacing: 6
-            Txt { objectName: "reportTitle"; Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection
-                  text: "تقرير الفاقد والزيادة المثبتة — العهد الدفترية" }
-            RowLayout {
-                Layout.fillWidth: true
-                layoutDirection: Qt.RightToLeft
-                spacing: 8
-                Txt { text: "من" }
-                Field { id: reportFrom; objectName: "reportFromField"; Layout.preferredWidth: 140; maximumLength: 10 }
-                Txt { text: "إلى" }
-                Field { id: reportTo; objectName: "reportToField"; Layout.preferredWidth: 140; maximumLength: 10 }
-                Btn { objectName: "reportApplyButton"; text: "عرض"; primary: true; enabled: !!page.vm && !page.vm.report.loading
-                      onClicked: page.vm.loadReport(reportFrom.text, reportTo.text) }
-                Item { Layout.fillWidth: true }
-                Btn { objectName: "reportCloseButton"; text: "إغلاق"; accent: theme.textSecondary; onClicked: reportDialog.close() }
-            }
-            Txt { objectName: "reportLoading"; Layout.fillWidth: true; visible: !!page.vm && !!page.vm.report.loading; color: theme.textMuted; text: "جارٍ التحميل…" }
-            Txt { objectName: "reportError"; Layout.fillWidth: true; visible: !!page.vm && !!page.vm.report.error; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                  text: page.vm ? (page.vm.report.error || "") : "" }
-            Txt { objectName: "reportEmpty"; Layout.fillWidth: true; visible: !!page.vm && page.vm.report.empty === true && !page.vm.report.loading; color: theme.textMuted
-                  text: "لا توجد تسويات أو زيادات مثبتة في هذه الفترة." }
-            Txt { objectName: "reportTotals"; Layout.fillWidth: true; visible: !!page.vm && !!page.vm.report.totalsText; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                  text: page.vm ? (page.vm.report.totalsText || "") : "" }
-            Flickable {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                contentHeight: reportColumn.implicitHeight
-                clip: true
-                ScrollBar.vertical: ScrollBar {}
-                ColumnLayout {
-                    id: reportColumn
-                    width: parent.width - 12
-                    spacing: 5
-                    Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; visible: !!page.vm && (page.vm.report.reconciliations || []).length > 0; text: "التسويات" }
-                    Repeater {
-                        model: page.vm ? (page.vm.report.reconciliations || []) : []
-                        delegate: Rectangle {
-                            id: reportReconRow
-                            required property var modelData
-                            objectName: "reportReconciliationRow"
-                            Layout.fillWidth: true
-                            implicitHeight: reportReconColumn.implicitHeight + 12
-                            radius: theme.radiusSmall; color: theme.panel; border.color: theme.border
-                            opacity: modelData.reversed ? 0.6 : 1
-                            ColumnLayout {
-                                id: reportReconColumn
-                                anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                                anchors.leftMargin: 10; anchors.rightMargin: 12
-                                spacing: 1
-                                Txt { Layout.fillWidth: true; font.bold: true; text: page.ltr(reportReconRow.modelData.tripCode) + " • " + page.ltr(reportReconRow.modelData.code) }
-                                Txt { Layout.fillWidth: true; color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone; text: reportReconRow.modelData.text }
-                                Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                                      text: "التاريخ الفعلي " + reportReconRow.modelData.date + " • سُجّلت " + reportReconRow.modelData.recorded
-                                            + (reportReconRow.modelData.state !== "" ? " • " + reportReconRow.modelData.state : "") }
-                            }
-                        }
-                    }
-                    Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; visible: !!page.vm && (page.vm.report.gains || []).length > 0; text: "الزيادات المثبتة" }
-                    Repeater {
-                        model: page.vm ? (page.vm.report.gains || []) : []
-                        delegate: Rectangle {
-                            id: reportGainRow
-                            required property var modelData
-                            objectName: "reportGainRow"
-                            Layout.fillWidth: true
-                            implicitHeight: reportGainColumn.implicitHeight + 12
-                            radius: theme.radiusSmall; color: theme.panel; border.color: theme.border
-                            opacity: modelData.reversed ? 0.6 : 1
-                            ColumnLayout {
-                                id: reportGainColumn
-                                anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                                anchors.leftMargin: 10; anchors.rightMargin: 12
-                                spacing: 1
-                                Txt { Layout.fillWidth: true; font.bold: true; text: page.ltr(reportGainRow.modelData.tripCode) + " • " + page.ltr(reportGainRow.modelData.code) }
-                                Txt { Layout.fillWidth: true; color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone; text: reportGainRow.modelData.text }
-                                Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                                      text: "التاريخ الفعلي " + reportGainRow.modelData.date + " • سُجّلت " + reportGainRow.modelData.recorded
-                                            + (reportGainRow.modelData.state !== "" ? " • " + reportGainRow.modelData.state : "") }
-                            }
-                        }
-                    }
-                }
             }
         }
     }

@@ -1,4 +1,4 @@
-"""The refusal type of the market-trip services, in a module of its own so the pure BOOK rules (services.book_rules) and the services share ONE class."""
+"""The refusal type of the market-trip services, in a module of its own so the pure rules (services.eq21_math) and the services share ONE class."""
 
 
 class TripError(ValueError):

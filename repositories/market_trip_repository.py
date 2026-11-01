@@ -11,7 +11,6 @@ from mysql.connector import Error as MySqlError
 from repositories.base_repository import BaseRepository
 from repositories.invoice_repository import _id
 from repositories.request_keys import require_no_marketer_key
-from services import book_rules
 
 SOURCE = "MARKET_TRIP_ENTRY"            # transaction_corrections.source_type and the cash / Scrap reference_type
 MAIN_SAFE = "MAIN_SAFE"
@@ -29,8 +28,6 @@ SHOP_RETURN_MOVEMENT = "SHOP_RETURN"                      # custody-side lot mov
 SHOP_RETURN_IN, SHOP_RETURN_REVERSAL = "TRIP_RETURN", "RETURN_REVERSAL"      # shop-side lot ledger movement types
 SHOP_ISSUE_MOVEMENT = "SHOP_ISSUE"                                 # custody-side lot movement of a LOT_ISSUE (positive grams)
 SHOP_ISSUE_OUT, SHOP_ISSUE_REVERSAL = "TRIP_ISSUE", "ISSUE_REVERSAL"         # shop-side movements of a reissue and of its reversal
-BK_ISSUE, BK_BUY, BK_SELL, BK_RETURN = book_rules.BK_ISSUE, book_rules.BK_BUY, book_rules.BK_SELL, book_rules.BK_RETURN     # Phase 1 BOOK entry kinds
-LEGACY, BOOK = book_rules.LEGACY, book_rules.BOOK
 OPEN, CLOSED = "OPEN", "CLOSED"
 CASH_TYPE = {ISSUE: "TRIP_CASH_ISSUE", RETURN: "TRIP_CASH_RETURN"}
 SCRAP_TYPE = {ISSUE: "TRIP_CUSTODY_OUT", RETURN: "TRIP_CUSTODY_RETURN_IN"}
@@ -146,14 +143,10 @@ class MarketTripRepository(BaseRepository):
                                "FROM vw_old_gold_available ORDER BY karat_value DESC")
 
     # ------------------------------------------------------------------ trips
-    def insert_trip(self, *, notes, actor, now, mode=LEGACY):
-        """A new OPEN trip. The mode is written ONLY for BOOK (a LEGACY trip takes the column DEFAULT, so the statement of every normal creation is the one it always was)."""
-        if mode == BOOK:
-            trip_id, _ = self._execute("INSERT INTO market_trips (status, accounting_mode, notes, created_by_user_id, created_at, status_changed_at) "
-                                       "VALUES ('OPEN', 'BOOK', %s, %s, %s, %s)", (notes, actor.user_id, now, now))
-        else:
-            trip_id, _ = self._execute("INSERT INTO market_trips (status, notes, created_by_user_id, created_at, status_changed_at) "
-                                       "VALUES ('OPEN', %s, %s, %s, %s)", (notes, actor.user_id, now, now))
+    def insert_trip(self, *, notes, actor, now):
+        """A new OPEN trip (every trip is a plain custody; the accounting_mode column keeps its LEGACY default)."""
+        trip_id, _ = self._execute("INSERT INTO market_trips (status, notes, created_by_user_id, created_at, status_changed_at) "
+                                   "VALUES ('OPEN', %s, %s, %s, %s)", (notes, actor.user_id, now, now))
         return int(trip_id)
 
     def trip(self, trip_id, lock=False):
@@ -213,19 +206,12 @@ class MarketTripRepository(BaseRepository):
 
     def insert_entry(self, *, trip_id, entry_no, kind, entry_date, notes, key, digest, actor, now):
         require_no_marketer_key(self._fetch_one, key)                    # 055: a marketer document owns this key -> REQUEST_CONFLICT, nothing is written
-        # 056: the ONE insert path of every entry kind checks the kind against the TRIP's mode (the caller holds the trip lock); the database repeats the rule
-        # (chk_mte_mode_kind + the composite foreign key), so a BOOK trip can never receive a legacy-only entry nor a LEGACY trip a book entry.
-        mode = book_rules.trip_mode(self.trip(trip_id))
-        book_rules.require_kind_in_mode(kind, mode)
-        columns, marks, values = "", "", ()
-        if mode == BOOK:
-            columns, marks, values = ", trip_mode", ", %s", (BOOK,)
         entry_id, _ = self._execute(
             f"""
             INSERT INTO market_trip_entries (trip_id, entry_no, entry_kind, entry_date, notes, request_key, request_hash,
-                performed_by_user_id, performed_by_employee_id, occurred_at{columns})
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s{marks})
-            """, (_id(trip_id), entry_no, kind, entry_date, notes, key, digest, actor.user_id, actor.employee_id, now, *values))
+                performed_by_user_id, performed_by_employee_id, occurred_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (_id(trip_id), entry_no, kind, entry_date, notes, key, digest, actor.user_id, actor.employee_id, now))
         return int(entry_id)
 
     def post_cash(self, *, kind, account_id, entry_id, code, amount, description, actor, now):
@@ -552,14 +538,7 @@ class MarketTripRepository(BaseRepository):
             FROM market_trip_entries e JOIN market_trip_gold_buys b ON b.entry_id = e.id
             WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}{custody_only('b')}{_share(current, 'e, b')}
             """, (_id(trip_id), int(exclude_entry_id or 0)))
-        trades = self._fetch_one(                                          # 056: BOOK purchases spend and BOOK sales add custody cash (the same two terms)
-            f"""
-            SELECT COALESCE(SUM(IF(t.entry_kind = 'BK_SELL', t.total_price, 0)), 0) AS proceeds,
-                   COALESCE(SUM(IF(t.entry_kind = 'BK_BUY', t.total_price, 0)), 0) AS spent
-            FROM market_trip_entries e JOIN market_trip_book_trades t ON t.entry_id = e.id
-            WHERE e.trip_id = %s AND e.id <> %s AND {not_reversed}{_share(current, 'e, t')}
-            """, (_id(trip_id), int(exclude_entry_id or 0)))
-        base = (row["issued"], row["returned"], paid["paid"], sold["proceeds"] + trades["proceeds"], bought["spent"] + trades["spent"])
+        base = (row["issued"], row["returned"], paid["paid"], sold["proceeds"], bought["spent"])
         has_settle, has_fee = self.has_cash_settle_schema(), self.has_bar_fee_schema()
         if not has_settle and not has_fee:
             return base
@@ -937,11 +916,6 @@ class MarketTripRepository(BaseRepository):
             row["settle_lines"] = self.entry_settle_lines(row["id"]) if row["entry_kind"] in ("ST_RET_MKT", "ST_LOSS") else []
             row["settle_adjust"] = self.entry_settle_adjust(row["id"]) if row["entry_kind"] == "ST_ADJUST" else None
             row["bar_fee"] = self.entry_bar_fee(row["id"]) if row["entry_kind"] == "ST_BAR_FEE" else None
-            if str(row["entry_kind"]).startswith("BK_"):                       # 056: only BOOK entries carry book lines / a trade
-                row["book_lines"] = self.entry_book_lines(row["id"])
-                row["book_trade"] = self.entry_book_trade(row["id"])
-                row["gain"] = self.gain_of_entry(row["id"]) if row["entry_kind"] == "BK_GAIN" else None
-                row["recon"] = self.reconciliation_display(row["id"]) if row["entry_kind"] == "BK_RECON" else None
             row["holding"] = self.entry_holding(row["id"])
             row["logo_holding"] = self.entry_logo_holding(row["id"])
             row["gold"] = self._fetch_all(
@@ -949,253 +923,12 @@ class MarketTripRepository(BaseRepository):
                 "JOIN karats k ON k.id = g.karat_id WHERE g.entry_id = %s ORDER BY k.karat_value DESC, g.designation", (int(row["id"]),))
         return rows
 
-    # ------------------------------------------------------------------ BOOK core (056): book lines, trade documents, assayed return stock
-    def insert_book_line(self, *, entry_id, line_no, trip_id, kind, line, line_price=None, scrap_movement_id=None, posting_basis=None, stock_item=None):
-        """One stored line of a BOOK entry: the physical facts, the six-decimal analytical evidence, the POSTED equivalent and its signed form
-        (`line` is a services.book_rules.Line, computed once from the facts). A Phase 2 line (058) may carry an ALLOCATED posting basis and the stock item it
-        consumed; every other line keeps the statement it always had (so nothing references a 058 column before that migration)."""
-        if posting_basis is not None or stock_item is not None:
-            self._execute(
-                """INSERT INTO market_trip_book_lines (entry_id, line_no, trip_id, trip_mode, entry_kind, direction, weight_grams, basis, karat_id, karat_value,
-                   fineness_permille, eq21_analytical, eq21_posted, posting_difference, signed_eq21_posted, posting_basis, line_price, scrap_movement_id,
-                   stock_item_entry_id, stock_item_line_no)
-                   VALUES (%s, %s, %s, 'BOOK', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                (_id(entry_id), int(line_no), _id(trip_id), kind, line.direction, line.weight, line.basis, line.karat_id, line.karat_value, line.fineness,
-                 line.analytical_evidence, line.posted, line.difference, line.signed, posting_basis or book_rules.INDEPENDENT_BASIS, line_price,
-                 None if scrap_movement_id is None else int(scrap_movement_id), None if stock_item is None else _id(stock_item[0]),
-                 None if stock_item is None else int(stock_item[1])))
-            return
-        self._execute(
-            """INSERT INTO market_trip_book_lines (entry_id, line_no, trip_id, trip_mode, entry_kind, direction, weight_grams, basis, karat_id, karat_value,
-               fineness_permille, eq21_analytical, eq21_posted, posting_difference, signed_eq21_posted, line_price, scrap_movement_id)
-               VALUES (%s, %s, %s, 'BOOK', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-            (_id(entry_id), int(line_no), _id(trip_id), kind, line.direction, line.weight, line.basis, line.karat_id, line.karat_value, line.fineness,
-             line.analytical_evidence, line.posted, line.difference, line.signed, line_price, None if scrap_movement_id is None else int(scrap_movement_id)))
-
-    def insert_book_trade(self, *, entry_id, kind, counterparty_kind, party_id, name, name_key, total, reference_total, deviation, acknowledged, trade_date, reference):
-        """The immutable purchase / sale document: the counterparty identity (mandatory), the authoritative total and the price-warning evidence."""
-        self._execute(
-            """INSERT INTO market_trip_book_trades (entry_id, entry_kind, counterparty_kind, party_id, counterparty_name, counterparty_name_key, total_price,
-               reference_total, deviation_percent, price_warning_acknowledged, trade_date, reference) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-            (_id(entry_id), kind, counterparty_kind, party_id, name, name_key, total, reference_total, deviation, 1 if acknowledged else 0, trade_date,
-             reference or None))
-
-    def book_lines(self, trip_id, exclude_entry_id=None, *, current=False):
-        """The EFFECTIVE book lines of one trip (the entries that were not reversed): the input of the exact balance.
-        `current=True` is for DECISIONS made under the trip lock: the entry and line rows are locking reads AND the nested reversal lookup is a current read.
-        `current=False` is the DISPLAY form: a plain snapshot read throughout (no locking clause anywhere, the reversal lookup is the connection's snapshot too), so the
-        balance, the entry history and the stock items read in one REPEATABLE READ transaction always come from the same state."""
-        return self._fetch_all(
-            f"""
-            SELECT l.entry_id, l.line_no, l.entry_kind, l.direction, l.weight_grams, l.basis, l.karat_id, l.karat_value, l.fineness_permille,
-                   l.eq21_posted, l.signed_eq21_posted
-            FROM market_trip_entries e JOIN market_trip_book_lines l ON l.entry_id = e.id
-            WHERE e.trip_id = %s AND e.id <> %s AND {_not_reversed('e', current=current)}
-            ORDER BY l.entry_id, l.line_no{" FOR SHARE OF e, l" if current else ""}
-            """, (_id(trip_id), int(exclude_entry_id or 0)))
-
-    def reconciliation_source(self, trip_id, *, approval=False):
-        """DISPLAY ONLY (R1 reconciliation preview). Everything the pure preview compares, from ONE trip and a fixed number of queries (five), every one a plain
-        snapshot read: NO locking clause anywhere (outer queries, subqueries or reversal lookups) and no write. Run inside the caller's single read transaction so all five
-        come from the same snapshot. The rows are the STORED facts: nothing is aggregated away and no list limit exists.
-
-          entries  every entry of the trip (cash kinds and unknown kinds included, so the preview can classify them) with the correction that reversed it, if any
-          lines    every book line whose OWN trip_id is the trip (selected independently of the entries, so a line of a missing entry is visible as an orphan)
-          scrap    the ORIGINAL Scrap legs that reference an entry of the trip (reverse direction: a leg that no line claims is visible)
-          trades   the trade headers of the trip's entries
-          stock    the RECEIVE / RECEIVE_REVERSAL stock records of the trip's entries
-
-        A section whose read fails is NOT turned into an empty list: its name is returned in `incomplete` and the preview refuses to trust itself."""
-        trip = _id(trip_id)
-        result = {"trip_id": int(trip), "entries": [], "lines": [], "scrap": [], "trades": [], "stock": [], "incomplete": []}
-        queries = (
-            ("entries", "SOURCE_ENTRIES_UNREADABLE",
-             """
-             SELECT e.id, e.trip_id, e.trip_mode, e.entry_no, e.entry_kind, c.id AS correction_id
-             FROM market_trip_entries e
-             LEFT JOIN transaction_corrections c ON c.source_type = '""" + SOURCE + """' AND c.source_id = e.id AND c.correction_type = 'FULL_REVERSAL'
-             WHERE e.trip_id = %s ORDER BY e.id
-             """),
-            ("lines", "SOURCE_LINES_UNREADABLE",
-             """
-             SELECT l.entry_id, l.line_no, l.trip_id, l.trip_mode, l.entry_kind, l.direction, l.weight_grams, l.basis, l.karat_id, l.karat_value, l.fineness_permille,
-                    l.eq21_analytical, l.eq21_posted, l.posting_difference, l.signed_eq21_posted, l.line_price, l.scrap_movement_id
-             FROM market_trip_book_lines l WHERE l.trip_id = %s ORDER BY l.entry_id, l.line_no
-             """),
-            ("scrap", "SOURCE_LEGS_UNREADABLE",
-             """
-             SELECT m.id, m.karat_id, m.weight_delta_grams, m.movement_code, m.reference_id
-             FROM old_gold_movements m JOIN market_trip_entries e ON e.id = m.reference_id
-             WHERE m.reference_type = '""" + SOURCE + """' AND e.trip_id = %s AND m.movement_code IN ('TRIP_CUSTODY_OUT', 'TRIP_CUSTODY_RETURN_IN')
-             ORDER BY m.id
-             """),
-            ("trades", "SOURCE_TRADES_UNREADABLE",
-             """
-             SELECT t.entry_id, t.entry_kind, t.total_price
-             FROM market_trip_book_trades t JOIN market_trip_entries e ON e.id = t.entry_id WHERE e.trip_id = %s ORDER BY t.entry_id
-             """),
-            ("stock", "SOURCE_STOCK_UNREADABLE",
-             """
-             SELECT s.item_entry_id, s.item_line_no, s.movement_type, s.grams_delta, s.eq21_posted_delta
-             FROM shop_assayed_stock_movements s JOIN market_trip_entries e ON e.id = s.item_entry_id
-             WHERE e.trip_id = %s AND s.movement_type IN ('RECEIVE', 'RECEIVE_REVERSAL') ORDER BY s.id
-             """),
-        )
-        extra = self._line_extra()                                         # 058 columns of a line, or their pre-058 constants
-        for name, code, sql in queries:
-            if name == "lines":
-                sql = sql.replace("l.line_price, l.scrap_movement_id" + chr(10), "l.line_price, l.scrap_movement_id" + extra + chr(10))
-            if approval and name == "entries":
-                sql = sql.replace("e.entry_kind, c.id AS correction_id", "e.entry_kind, e.entry_date, c.id AS correction_id, c.correction_type")
-            if approval and name == "stock":
-                sql = sql.replace("SELECT s.item_entry_id", "SELECT s.id, s.item_entry_id")
-            try:
-                result[name] = self._fetch_all(sql, (trip,))
-            except MySqlError as exc:
-                result["incomplete"].append((code, f"{type(exc).__name__}"))
-        try:                                                               # 058: the Phase 2 legs (three plain reads; none before 058)
-            result.update(self.phase2_source(trip, current=False))
-        except MySqlError as exc:
-            result["incomplete"].append(("SOURCE_PHASE2_UNREADABLE", f"{type(exc).__name__}"))
-        return result
-
-    # ------------------------------------------------------------------ BOOK reconciliation document (057): DECISION reads and the immutable insert
-    def reconciliation_source_current(self, trip_id):
-        """DECISION form of `reconciliation_source` (R2-S1 settlement): the SAME five sections, but every one a LOCKING read taken under the trip lock (FOR SHARE), so a
-        reconciliation is built from CURRENT committed rows and never from a snapshot that an earlier plain read of this transaction pinned. Differences from the display
-        form, all deliberate: the entries carry `entry_date` and the type of the reversing correction (the date window and the reversal state of the digest) and the stock
-        records carry their `s.id` (the identity of a stock record inside the snapshot). A failing read is NOT turned into an incomplete section: the error propagates and the
-        transaction rolls back (a deadlock or lock timeout must never be swallowed). The locks taken here are a starting point that still needs a concurrent-transaction test on
-        a real engine; nothing in this method proves their effect."""
-        # Joined entries must also use CURRENT reads after waiting for the trip lock.
-        # Leaving e outside OF can mix current legs with a pinned entry snapshot.
-        trip = _id(trip_id)
-        extra = self._line_extra()                                         # the 058 capability is asked FIRST (one statement), then the five sections
-        result = {"trip_id": int(trip), "entries": [], "lines": [], "scrap": [], "trades": [], "stock": [], "incomplete": []}
-        result["entries"] = self._fetch_all(
-            """
-            SELECT e.id, e.trip_id, e.trip_mode, e.entry_no, e.entry_kind, e.entry_date, c.id AS correction_id, c.correction_type AS correction_type
-            FROM market_trip_entries e
-            LEFT JOIN transaction_corrections c ON c.source_type = '""" + SOURCE + """' AND c.source_id = e.id AND c.correction_type = 'FULL_REVERSAL'
-            WHERE e.trip_id = %s ORDER BY e.id FOR SHARE OF e, c
-            """, (trip,))
-        result["lines"] = self._fetch_all(
-            """
-            SELECT l.entry_id, l.line_no, l.trip_id, l.trip_mode, l.entry_kind, l.direction, l.weight_grams, l.basis, l.karat_id, l.karat_value, l.fineness_permille,
-                   l.eq21_analytical, l.eq21_posted, l.posting_difference, l.signed_eq21_posted, l.line_price, l.scrap_movement_id""" + extra + """
-            FROM market_trip_book_lines l WHERE l.trip_id = %s ORDER BY l.entry_id, l.line_no FOR SHARE
-            """, (trip,))
-        result["scrap"] = self._fetch_all(
-            """
-            SELECT m.id, m.karat_id, m.weight_delta_grams, m.movement_code, m.reference_id
-            FROM old_gold_movements m JOIN market_trip_entries e ON e.id = m.reference_id
-            WHERE m.reference_type = '""" + SOURCE + """' AND e.trip_id = %s AND m.movement_code IN ('TRIP_CUSTODY_OUT', 'TRIP_CUSTODY_RETURN_IN')
-            ORDER BY m.id FOR SHARE OF m, e
-            """, (trip,))
-        result["trades"] = self._fetch_all(
-            """
-            SELECT t.entry_id, t.entry_kind, t.total_price
-            FROM market_trip_book_trades t JOIN market_trip_entries e ON e.id = t.entry_id WHERE e.trip_id = %s ORDER BY t.entry_id FOR SHARE OF t, e
-            """, (trip,))
-        result["stock"] = self._fetch_all(
-            """
-            SELECT s.id, s.item_entry_id, s.item_line_no, s.movement_type, s.grams_delta, s.eq21_posted_delta
-            FROM shop_assayed_stock_movements s JOIN market_trip_entries e ON e.id = s.item_entry_id
-            WHERE e.trip_id = %s AND s.movement_type IN ('RECEIVE', 'RECEIVE_REVERSAL') ORDER BY s.id FOR SHARE OF s, e
-            """, (trip,))
-        result.update(self.phase2_source(trip, current=True))              # 058: the Phase 2 legs, locked like the other sections
-        return result
-
-    def effective_reconciliation_entries(self, trip_id):
-        """The reconciliation documents (BK_RECON entries) of the trip that were NOT reversed: a CURRENT locking read (the entry rows and the nested reversal lookup). It reads
-        `market_trip_entries` and `transaction_corrections` ONLY - never the 057 table - so it is safe on a database that has not applied migration 057 (it finds nothing)."""
-        return self._fetch_all(
-            f"""
-            SELECT e.id, e.entry_no FROM market_trip_entries e
-            WHERE e.trip_id = %s AND e.entry_kind = 'BK_RECON' AND {_not_reversed('e', current=True)} ORDER BY e.id FOR SHARE
-            """, (_id(trip_id),))
-
-    def next_reconciliation_generation(self, trip_id):
-        """1 + the highest generation ever recorded for the trip (a reversed reconciliation still holds its generation). A locking read; the caller holds the trip lock."""
-        row = self._fetch_one("SELECT COALESCE(MAX(generation), 0) + 1 AS n FROM market_trip_reconciliations WHERE trip_id = %s FOR SHARE", (_id(trip_id),))
-        return int(row["n"])
-
-    def insert_reconciliation(self, *, entry_id, trip_id, generation, effective_date, date_floor, date_floor_source, a_star_units, a_star, b_star, loss_posted,
-                              rounding_settlement, delta_units, rho_units, sum_abs_units, entry_count, line_count, reversed_count, source_digest, snapshot_digest,
-                              snapshot_text, reason_code, note, user_id, confirmed_at, algorithm, source_algorithm, snapshot_format, unit_denominator):
-        """The immutable reconciliation record. Every figure is passed exactly as computed (integers for the lattice columns, Decimal for the posted ones): nothing is rounded,
-        cut or defaulted here."""
-        self._execute(
-            """INSERT INTO market_trip_reconciliations (entry_id, entry_kind, trip_id, trip_mode, generation, algorithm, source_algorithm, snapshot_format, effective_date,
-               date_floor, date_floor_source, unit_denominator, a_star_units, a_star, b_star, loss_posted, rounding_settlement, delta_units, rho_units, sum_abs_units,
-               entry_count, line_count, reversed_count, source_digest, snapshot_digest, snapshot, reason_code, note, confirmed_by_user_id, confirmed_at)
-               VALUES (%s, 'BK_RECON', %s, 'BOOK', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-            (_id(entry_id), _id(trip_id), int(generation), algorithm, source_algorithm, snapshot_format, effective_date, date_floor, date_floor_source, int(unit_denominator),
-             a_star_units, a_star, b_star, loss_posted, rounding_settlement, delta_units, rho_units, sum_abs_units, entry_count, line_count, reversed_count,
-             source_digest, snapshot_digest, snapshot_text, reason_code, note, user_id, confirmed_at))
-
-    def book_report_rows(self, date_from, date_to):
-        """DISPLAY ONLY (plain reads, no lock): the reconciliations (057) and evidenced gains (059) whose EFFECTIVE date (the entry date) is inside the inclusive range,
-        newest first, each with its recorded time, trip, figures and - when reversed - the reversal reference. Reversed documents are LISTED (never dropped); how they
-        enter period totals is not decided here. A section whose table does not exist yet is empty, never an error."""
-        def has(table):
-            row = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s", (table,))
-            return bool(row and int(row["n"]))
-        reversal = ("LEFT JOIN transaction_corrections c ON c.source_type = '" + SOURCE + "' AND c.source_id = e.id AND c.correction_type = 'FULL_REVERSAL'")
-        out = {"reconciliations": [], "gains": []}
-        if has("market_trip_reconciliations"):
-            out["reconciliations"] = self._fetch_all(
-                "SELECT e.id AS entry_id, e.trip_id, e.entry_no, e.entry_date, r.generation, r.a_star, r.b_star, r.loss_posted, r.rounding_settlement, r.reason_code, r.note, "
-                "r.confirmed_at, u.username AS confirmed_by, c.id AS reversal_id, c.reason AS reversal_reason, c.occurred_at AS reversal_at "
-                "FROM market_trip_reconciliations r JOIN market_trip_entries e ON e.id = r.entry_id LEFT JOIN users u ON u.id = r.confirmed_by_user_id " + reversal +
-                " WHERE e.entry_date >= %s AND e.entry_date <= %s ORDER BY e.entry_date DESC, e.id DESC", (date_from, date_to))
-        if has("market_trip_gains"):
-            out["gains"] = self._fetch_all(
-                "SELECT e.id AS entry_id, e.trip_id, e.entry_no, e.entry_date, g.explanation, g.evidence_reference, g.confirmed_at, u.username AS confirmed_by, "
-                "l.weight_grams, l.basis, l.karat_value, l.fineness_permille, l.eq21_posted, l.eq21_analytical, "
-                "c.id AS reversal_id, c.reason AS reversal_reason, c.occurred_at AS reversal_at "
-                "FROM market_trip_gains g JOIN market_trip_entries e ON e.id = g.entry_id JOIN market_trip_book_lines l ON l.entry_id = e.id AND l.line_no = 1 "
-                "LEFT JOIN users u ON u.id = g.confirmed_by_user_id " + reversal +
-                " WHERE e.entry_date >= %s AND e.entry_date <= %s ORDER BY e.entry_date DESC, e.id DESC", (date_from, date_to))
-        return out
-
-    def reconciliation_display(self, entry_id):
-        """DISPLAY ONLY: the stored figures of a BK_RECON entry for the documents list (plain read, no lock; None when the 057 table is absent or the row is missing)."""
-        exists = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'market_trip_reconciliations'")
-        if not (exists and int(exists["n"])):
-            return None
-        return self._fetch_one("SELECT r.generation, r.effective_date, r.a_star, r.b_star, r.loss_posted, r.rounding_settlement, r.reason_code, r.note, r.confirmed_at, "
-                               "r.source_algorithm, u.username AS confirmed_by FROM market_trip_reconciliations r LEFT JOIN users u ON u.id = r.confirmed_by_user_id "
-                               "WHERE r.entry_id = %s", (_id(entry_id),))
-
-    def reconciliation_of_entry(self, entry_id):
-        """The stored reconciliation of a BK_RECON entry with its entry number (a locking read: a replay must see the row that the first request committed)."""
-        return self._fetch_one(
-            "SELECT r.*, e.entry_no FROM market_trip_reconciliations r JOIN market_trip_entries e ON e.id = r.entry_id WHERE r.entry_id = %s FOR SHARE OF r", (_id(entry_id),))
-
     def entry_reversal_id(self, entry_id):
         """The FULL_REVERSAL correction of an entry, or None (a locking read)."""
         row = self._fetch_one("SELECT c.id FROM transaction_corrections c WHERE c.source_type = '" + SOURCE + "' AND c.source_id = %s AND c.correction_type = 'FULL_REVERSAL' FOR SHARE",
                               (_id(entry_id),))
         return None if row is None else row["id"]
 
-    def book_groups_by_trip(self):
-        """DISPLAY ONLY (Gold Position). The effective book lines of EVERY trip grouped by (trip, direction, basis, karat / assay): the factor is identical inside a
-        group, so the exact analytical value follows from SUM(weight). One aggregate query, no locks, snapshot reversal lookup. Returns {trip_id: rows}."""
-        rows = self._fetch_all(
-            f"""
-            SELECT e.trip_id, l.direction, l.basis, l.karat_value, l.fineness_permille, COALESCE(SUM(l.weight_grams), 0) AS weight_grams,
-                   COALESCE(SUM(l.eq21_posted), 0) AS eq21_posted, COUNT(*) AS `lines`
-            FROM market_trip_entries e JOIN market_trip_book_lines l ON l.entry_id = e.id
-            WHERE {_not_reversed('e')}
-            GROUP BY e.trip_id, l.direction, l.basis, l.karat_value, l.fineness_permille
-            """)
-        grouped = {}
-        for row in rows:
-            grouped.setdefault(int(row["trip_id"]), []).append(row)
-        return grouped
-
-    # ------------------------------------------------------------------ BOOK Phase 2 (058): stock reissue, supplier and marketer delivery, marketer receipt
     def has_phase2_schema(self):
         """True when migration 058 is present (its supplier link table exists). Asked once per repository object; every Phase 2 read is guarded by it so a
         database before 058 keeps every existing path working (it cannot hold a Phase 2 row)."""
@@ -1203,29 +936,6 @@ class MarketTripRepository(BaseRepository):
             row = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'market_trip_book_supplier_links'")
             self._phase2 = bool(row and int(row["n"]))
         return self._phase2
-
-    def _line_extra(self):
-        return (", l.posting_basis, l.stock_item_entry_id, l.stock_item_line_no" if self.has_phase2_schema()
-                else ", 'INDEPENDENT' AS posting_basis, NULL AS stock_item_entry_id, NULL AS stock_item_line_no")
-
-    def has_gain_schema(self):
-        """True when migration 059 is present (the gain record table exists). Only asked after 058 was found (a database without 058 cannot hold 059)."""
-        if not hasattr(self, "_gain"):
-            row = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'market_trip_gains'")
-            self._gain = bool(row and int(row["n"]))
-        return self._gain
-
-    def insert_gain(self, *, entry_id, trip_id, explanation, evidence_reference, user_id, confirmed_at):
-        """059: the owner's explanation, evidence reference and explicit confirmation of a BK_GAIN entry (insert-only, 1:1 with the entry)."""
-        self._execute("INSERT INTO market_trip_gains (entry_id, entry_kind, trip_id, trip_mode, explanation, evidence_reference, confirmed_by_user_id, confirmed_at) "
-                      "VALUES (%s, 'BK_GAIN', %s, 'BOOK', %s, %s, %s, %s)", (_id(entry_id), _id(trip_id), explanation, evidence_reference, int(user_id), confirmed_at))
-
-    def gain_of_entry(self, entry_id):
-        """The gain record of one BK_GAIN entry (None before 059 or when absent)."""
-        if not self.has_phase2_schema() or not self.has_gain_schema():
-            return None
-        return self._fetch_one("SELECT g.entry_id, g.trip_id, g.explanation, g.evidence_reference, g.confirmed_by_user_id, g.confirmed_at, u.username AS confirmed_by "
-                               "FROM market_trip_gains g LEFT JOIN users u ON u.id = g.confirmed_by_user_id WHERE g.entry_id = %s", (_id(entry_id),))
 
     # ------------------------------------------------------------------ settlement (060): melt recorded after the owner returns
     def has_settlement_schema(self):
@@ -1444,29 +1154,6 @@ class MarketTripRepository(BaseRepository):
             "FROM market_trip_bar_supplier_links l JOIN suppliers s ON s.id = l.supplier_id JOIN supplier_gold_settlements g ON g.id = l.settlement_id "
             "WHERE l.entry_id = %s", (_id(entry_id),))
 
-    def insert_book_supplier_link(self, *, entry_id, trip_id, settlement_id, supplier_id, weight):
-        self._execute("INSERT INTO market_trip_book_supplier_links (entry_id, entry_kind, trip_id, settlement_id, source_kind, supplier_id, weight_grams) "
-                      "VALUES (%s, 'BK_DLV_SUP', %s, %s, 'TRIP_BOOK', %s, %s)", (_id(entry_id), _id(trip_id), _id(settlement_id), _id(supplier_id), weight))
-
-    def entry_book_supplier(self, entry_id):
-        """The supplier delivery of a BK_DLV_SUP entry: its SG document, supplier and the STORED supplier gold movement (what a reversal restores)."""
-        if not self.has_phase2_schema():
-            return None
-        return self._fetch_one(
-            """SELECT k.entry_id, k.settlement_id, k.supplier_id, k.weight_grams, s.name AS supplier_name, g.delivered_karat_id, g.delivered_karat_value,
-                      g.delivered_fineness_permille, g.target_karat_id, g.target_karat_value, g.credited_weight_grams, g.credited_analytical_grams,
-                      g.rounding_difference_grams, m.id AS gold_movement_id, m.karat_id AS gold_karat_id, m.weight_delta_grams, m.equivalent_21_delta_grams
-               FROM market_trip_book_supplier_links k JOIN supplier_gold_settlements g ON g.id = k.settlement_id JOIN suppliers s ON s.id = k.supplier_id
-               LEFT JOIN supplier_gold_settlement_legs lg ON lg.settlement_id = g.id AND lg.leg_kind = 'GOLD'
-               LEFT JOIN supplier_gold_movements m ON m.id = lg.supplier_gold_movement_id
-               WHERE k.entry_id = %s""", (_id(entry_id),))
-
-    def entry_stock_issues(self, entry_id):
-        """The stock ISSUE rows a BK_ISS_STK entry posted (one per consumed item, STORED grams and allocated posted share)."""
-        return self._fetch_all(
-            "SELECT item_entry_id, item_line_no, grams_delta, eq21_posted_delta, eq21_analytical, posting_difference, eq21_independent, posting_basis "
-            "FROM shop_assayed_stock_movements WHERE source_entry_id = %s AND movement_type = 'ISSUE' ORDER BY item_entry_id, item_line_no", (_id(entry_id),))
-
     def entry_marketer_leg(self, entry_id):
         """The marketer 21K leg of a BK_DLV_MKT / BK_RECEIVE entry (None before 058 or for any other entry)."""
         if not self.has_phase2_schema():
@@ -1474,131 +1161,6 @@ class MarketTripRepository(BaseRepository):
         return self._fetch_one(
             "SELECT m.id, m.party_id, s.name AS party_name, m.trip_entry_kind, m.movement_type, m.weight_grams, m.weight_delta FROM marketer_gold_movements m "
             "JOIN suppliers s ON s.id = m.party_id WHERE m.trip_entry_id = %s AND m.movement_type IN ('TRIP_BOOK_IN', 'TRIP_BOOK_OUT')", (_id(entry_id),))
-
-    def phase2_source(self, trip_id, *, current):
-        """The Phase 2 evidence of one trip for the reconciliation reads (display: plain snapshot; decision: locking). Three fixed queries, none before 058:
-          stock_issues  the stock ISSUE / ISSUE_REVERSAL rows whose SOURCE entry is in this trip (the BK_ISS_STK legs)
-          suppliers     the TRIP_BOOK supplier links of this trip with their SG facts (the BK_DLV_SUP legs)
-          marketer      the marketer trip-entry legs of this trip's entries (the BK_DLV_MKT / BK_RECEIVE legs)
-        plus two sections for the allocation check of every stock item a BK_ISS_STK line of this trip names (one query each, never one per line):
-          stock_origins the item's own BK_RETURN line (facts and stored posted amount)
-          stock_history EVERY movement of those items, of any trip, in id order (receipt, issues, their compensations) with the stored evidence
-        and, from 059, `gains`: the gain records of this trip's BK_GAIN entries (the key is ABSENT before 059: no gain can exist there)."""
-        out = {"stock_issues": [], "suppliers": [], "marketer": [], "stock_origins": [], "stock_history": []}
-        if not self.has_phase2_schema():
-            return out
-        trip = _id(trip_id)
-        lock = (lambda of: f" FOR SHARE OF {of}") if current else (lambda of: "")
-        out["stock_issues"] = self._fetch_all(
-            "SELECT s.id, s.item_entry_id, s.item_line_no, s.source_entry_id, s.movement_type, s.grams_delta, s.eq21_posted_delta, s.posting_basis, "
-            "s.eq21_analytical, s.posting_difference, s.eq21_independent "
-            "FROM shop_assayed_stock_movements s JOIN market_trip_entries e ON e.id = s.source_entry_id "
-            "WHERE e.trip_id = %s AND s.movement_type IN ('ISSUE', 'ISSUE_REVERSAL') ORDER BY s.id" + lock("s, e"), (trip,))
-        items = ("SELECT DISTINCT b.stock_item_entry_id, b.stock_item_line_no FROM market_trip_book_lines b "
-                 "WHERE b.trip_id = %s AND b.entry_kind = 'BK_ISS_STK' AND b.stock_item_entry_id IS NOT NULL")
-        out["stock_origins"] = self._fetch_all(
-            "SELECT o.entry_id, o.line_no, o.entry_kind, o.basis, o.weight_grams, o.fineness_permille, o.eq21_posted FROM market_trip_book_lines o "
-            f"WHERE (o.entry_id, o.line_no) IN ({items}) ORDER BY o.entry_id, o.line_no" + lock("o"), (trip,))
-        out["stock_history"] = self._fetch_all(
-            "SELECT h.id, h.item_entry_id, h.item_line_no, h.movement_type, h.source_entry_id, h.correction_id, h.grams_delta, h.eq21_posted_delta, "
-            "h.eq21_analytical, h.posting_difference, h.eq21_independent, h.posting_basis FROM shop_assayed_stock_movements h "
-            f"WHERE (h.item_entry_id, h.item_line_no) IN ({items}) ORDER BY h.id" + lock("h"), (trip,))
-        out["suppliers"] = self._fetch_all(
-            "SELECT k.entry_id, k.settlement_id, k.supplier_id, k.weight_grams, g.delivered_karat_id, g.delivered_karat_value, g.delivered_fineness_permille, "
-            "g.target_karat_value, g.credited_weight_grams FROM market_trip_book_supplier_links k JOIN supplier_gold_settlements g ON g.id = k.settlement_id "
-            "WHERE k.trip_id = %s ORDER BY k.entry_id" + lock("k, g"), (trip,))
-        out["marketer"] = self._fetch_all(
-            "SELECT m.id, m.party_id, m.trip_entry_id, m.trip_entry_kind, m.movement_type, m.weight_grams, m.weight_delta "
-            "FROM marketer_gold_movements m JOIN market_trip_entries e ON e.id = m.trip_entry_id WHERE e.trip_id = %s ORDER BY m.id" + lock("m, e"), (trip,))
-        if self.has_gain_schema():
-            out["gains"] = self._fetch_all(
-                "SELECT g.entry_id, g.explanation, g.evidence_reference, g.confirmed_by_user_id, g.confirmed_at FROM market_trip_gains g WHERE g.trip_id = %s "
-                "ORDER BY g.entry_id" + lock("g"), (trip,))
-        return out
-
-    def effective_reconciliations_display(self):
-        """DISPLAY ONLY (Gold Position). Every BK_RECON entry that was NOT reversed (snapshot reversal lookup, no locks), each with its stored record (057) joined 1:1 by
-        its primary key, so no source line is multiplied. A missing record comes back with NULL record fields (the caller refuses it, never reads it as zero).
-        A database without the 057 table cannot hold a record: the entries are still read (a BK_RECON entry there is reported, never ignored)."""
-        exists = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'market_trip_reconciliations'")
-        if exists and int(exists["n"]):
-            record = ("r.entry_id AS record_entry_id, r.entry_kind AS record_kind, r.trip_id AS record_trip_id, r.trip_mode AS record_mode, r.generation, "
-                      "r.a_star_units, r.b_star, r.loss_posted, r.rounding_settlement", "LEFT JOIN market_trip_reconciliations r ON r.entry_id = e.id")
-        else:
-            record = ("NULL AS record_entry_id, NULL AS record_kind, NULL AS record_trip_id, NULL AS record_mode, NULL AS generation, NULL AS a_star_units, "
-                      "NULL AS b_star, NULL AS loss_posted, NULL AS rounding_settlement", "")
-        return self._fetch_all(
-            f"""
-            SELECT e.id AS entry_id, e.trip_id, e.trip_mode, e.entry_kind, e.entry_no, {record[0]}
-            FROM market_trip_entries e {record[1]}
-            WHERE e.entry_kind = 'BK_RECON' AND {_not_reversed('e')}
-            ORDER BY e.trip_id, e.id
-            """)
-
-    def entry_book_lines(self, entry_id):
-        """The stored lines of a BOOK entry with the signed grams of their Scrap movement (what a reversal negates: the exact stored figures)."""
-        return self._fetch_all(
-            "SELECT l.line_no, l.entry_kind, l.direction, l.weight_grams, l.basis, l.karat_id, l.karat_value, l.fineness_permille, l.eq21_analytical, l.eq21_posted, "
-            "l.posting_difference, l.signed_eq21_posted, l.line_price, l.scrap_movement_id, m.weight_delta_grams "
-            "FROM market_trip_book_lines l LEFT JOIN old_gold_movements m ON m.id = l.scrap_movement_id WHERE l.entry_id = %s ORDER BY l.line_no", (_id(entry_id),))
-
-    def entry_book_trade(self, entry_id):
-        """The purchase / sale document a BK_BUY / BK_SELL entry made (None for any other entry)."""
-        return self._fetch_one("SELECT * FROM market_trip_book_trades WHERE entry_id = %s", (_id(entry_id),))
-
-    def insert_stock_movement(self, *, item_entry_id, item_line_no, movement_type, grams_delta, posted_delta, analytical, difference, independent, posting_basis,
-                              source_entry_id, correction_id, user_id):
-        """One row of the assayed return stock ledger (insert-only). The grams and the posted equivalent travel together; the figures are STORED, never recomputed."""
-        movement_id, _ = self._execute(
-            """INSERT INTO shop_assayed_stock_movements (item_entry_id, item_line_no, movement_type, grams_delta, eq21_posted_delta, eq21_analytical,
-               posting_difference, eq21_independent, posting_basis, source_entry_id, correction_id, created_by_user_id)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-            (_id(item_entry_id), int(item_line_no), movement_type, grams_delta, posted_delta, analytical, difference, independent, posting_basis,
-             _id(source_entry_id), None if correction_id is None else _id(correction_id), user_id))
-        return int(movement_id)
-
-    def stock_item(self, entry_id, line_no, lock=False):
-        """One assayed-stock item (a BK_RETURN FINENESS line) with its physical facts, posted amount and origin. lock=True takes the item row FIRST
-        (the stock lock order: trip -> item rows ascending -> Scrap / cash)."""
-        return self._fetch_one(
-            "SELECT l.entry_id, l.line_no, l.trip_id, e.entry_no, l.weight_grams, l.fineness_permille, l.eq21_analytical, l.eq21_posted, l.posting_difference "
-            "FROM market_trip_book_lines l JOIN market_trip_entries e ON e.id = l.entry_id "
-            "WHERE l.entry_id = %s AND l.line_no = %s AND l.entry_kind = 'BK_RETURN' AND l.basis = 'FINENESS'" + (" FOR UPDATE OF l" if lock else ""),
-            (_id(entry_id), int(line_no)))
-
-    def stock_balance(self, entry_id, line_no):
-        """(grams, posted equivalent) CURRENTLY in the shop for one item: the SUM of every movement (a locking read for a decision)."""
-        row = self._fetch_one(
-            "SELECT COALESCE(SUM(grams_delta), 0) AS grams, COALESCE(SUM(eq21_posted_delta), 0) AS posted FROM shop_assayed_stock_movements "
-            "WHERE item_entry_id = %s AND item_line_no = %s FOR SHARE", (_id(entry_id), int(line_no)))
-        return row["grams"], row["posted"]
-
-    def entry_stock_items(self, entry_id):
-        """The assayed-stock items a BK_RETURN entry created (its FINENESS lines)."""
-        return self._fetch_all(
-            "SELECT l.line_no, l.weight_grams, l.fineness_permille, l.eq21_analytical, l.eq21_posted, l.posting_difference FROM market_trip_book_lines l "
-            "WHERE l.entry_id = %s AND l.entry_kind = 'BK_RETURN' AND l.basis = 'FINENESS' ORDER BY l.line_no", (_id(entry_id),))
-
-    def stock_movements_of_entry(self, entry_id):
-        """Every stock movement that REFERS to an item of this entry other than its own receive / receive-reversal (an issue from the item): what depends on it."""
-        return self._fetch_all(
-            "SELECT m.id, m.item_line_no, m.movement_type, m.grams_delta, m.eq21_posted_delta, m.source_entry_id FROM shop_assayed_stock_movements m "
-            "WHERE m.item_entry_id = %s AND m.movement_type NOT IN ('RECEIVE', 'RECEIVE_REVERSAL') ORDER BY m.id FOR SHARE", (_id(entry_id),))
-
-    def assayed_stock_items(self):
-        """DISPLAY ONLY (Gold Position and the trip screens): every assayed-stock item with grams or posted equivalent still in the shop, with its facts
-        and origin, in ONE aggregate query without locks."""
-        return self._fetch_all(
-            """
-            SELECT l.entry_id, l.line_no, e.trip_id, e.entry_no, l.fineness_permille, l.weight_grams AS original_weight, l.eq21_posted AS original_posted,
-                   COALESCE(SUM(m.grams_delta), 0) AS grams, COALESCE(SUM(m.eq21_posted_delta), 0) AS posted
-            FROM shop_assayed_stock_movements m
-            JOIN market_trip_book_lines l ON l.entry_id = m.item_entry_id AND l.line_no = m.item_line_no
-            JOIN market_trip_entries e ON e.id = l.entry_id
-            GROUP BY l.entry_id, l.line_no, e.trip_id, e.entry_no, l.fineness_permille, l.weight_grams, l.eq21_posted
-            HAVING SUM(m.grams_delta) <> 0 OR SUM(m.eq21_posted_delta) <> 0
-            ORDER BY e.trip_id, e.entry_no, l.line_no
-            """)
 
     # ------------------------------------------------------------------ as a correction source
     def entry_source(self, entry_id, lock=False):

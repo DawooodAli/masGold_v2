@@ -16,7 +16,6 @@ from repositories.market_trip_repository import (CASH_TYPE, CREATE_MOVEMENT, DES
                                                  SHOP_ISSUE_MOVEMENT, SHOP_ISSUE_OUT, SHOP_ISSUE_REVERSAL, SHOP_RETURN_IN, SHOP_RETURN_MOVEMENT,
                                                  SHOP_RETURN_REVERSAL, SOURCE, UNCLASSIFIED)
 from repositories.request_keys import RequestKeyInUse
-from services import book_rules
 from services.authentication_service import AuthenticationResult, _VERIFIED
 from tests.auth_fakes import FakeAuthorization
 
@@ -236,8 +235,7 @@ class TripRepo:
         self._fail("entry")
         marketer_key_guard(self.db, key)
         assert kind in ("ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT", "SUPPLIER_PAY", "GOLD_SETTLE", "LOT_SETTLE", "LOT_HOLD", "HOLD_RETURN", "LOGO_HOLD", "HOLD_BACK", "GOLD_SALE", "GOLD_BUY", "BK_ISSUE", "BK_BUY", "BK_SELL", "BK_RETURN", "BK_RECON", "BK_ISS_STK", "BK_DLV_SUP", "BK_DLV_MKT", "BK_RECEIVE", "BK_GAIN", "ST_MELT", "ST_BAR_SUP", "ST_BAR_MKT", "ST_LOGO", "ST_EXPENSE", "ST_CASH_BANK", "ST_CASH_OFF", "ST_RET_MKT", "ST_LOSS", "ST_ADJUST")      # chk_mte_kind (059: BK_GAIN; 060: ST_MELT; 061: ST_BAR_SUP)
-        mode = book_rules.trip_mode(self.db.trips[int(trip_id)])
-        book_rules.require_kind_in_mode(kind, mode)                                          # the repository check (the database repeats it: chk_mte_mode_kind + fk_mte_trip_mode)
+        mode = "LEGACY"
         if any(e["request_key"] == key for e in self.db.entries.values()):
             raise _dup("uq_mte_request")
         if any((e["trip_id"], e["entry_no"]) == (int(trip_id), entry_no) for e in self.db.entries.values()):
@@ -1565,10 +1563,10 @@ class Customers:
 
 
 def build(permissions=OWNER, user_id=7, granted=None, session=None, book=False):
-    """(db, session, authorization, MarketTripBookService, CorrectionService) over one fake database. `book=True` builds the service the way a test (or the future
-    release step) may: it can then CREATE a BOOK trip; every other build keeps the production behaviour (BOOK_NOT_ACTIVE)."""
+    """(db, session, authorization, MarketTripBookService, CorrectionService) over one fake database. `book` is ignored (the BOOK mode was removed).
+    """
     from services.correction_service import CorrectionService
-    from services.market_trip_book_service import MarketTripBookService as MarketTripService
+    from services.market_trip_service import MarketTripService
     db = Db()
     session = session or session_for(permissions, user_id)
     authorization = FakeAuthorization(session, granted)
@@ -1576,7 +1574,7 @@ def build(permissions=OWNER, user_id=7, granted=None, session=None, book=False):
                                     invoice_repository=Invoices, correction_repository=Corrections, customer_repository=Customers)
     service = MarketTripService(session, transaction_factory=db.transaction, repository=TripRepo, accounts=AccountsRepo, scrap=ScrapRepo,
                                 authorization=authorization, corrections=corrections, supplier_payments=SupplierPayRepo,
-                                gold_settlements=SettlementRepo, holdings=HoldingRepo, book_creation_enabled=book)
+                                gold_settlements=SettlementRepo, holdings=HoldingRepo)
     return db, session, authorization, service, corrections
 
 

@@ -81,6 +81,13 @@ class TotalsTests(MarketCase):
         self.assertEqual([x["group"] for x in result["totals"]], ["losses", "losses", "losses", "grand"])   # each loss alone in its card, the grand total in its own row
         self.assertEqual(self.summary(result)["إجمالي الفقد والخسية"], D("3.406"))                 # the table stays in the result for the CSV
 
+    def test_the_total_loss_is_also_charted_over_time_in_date_order(self):
+        bars = {b["key"]: b for b in self.service.run("market", MONTH)["bars"]}
+        rows = [(r["label"], r["value"]) for r in bars["market_loss_time"]["rows"]]
+        self.assertEqual(rows, [("2026-10-03", D("0.766")), ("2026-10-06", D("-0.160")), ("2026-10-08", D("2.000")), ("2026-10-09", D("0.800"))])   # chronological; a gain stays negative; reversed documents are out
+        long = {b["key"]: b for b in self.service.run("market", {"from": "2025-01-01", "to": "2026-10-31"})["bars"]}
+        self.assertEqual([r["label"] for r in long["market_loss_time"]["rows"]], ["2026-10"])                                                        # a long period is monthly
+
     def test_a_market_return_is_not_a_loss(self):
         s = self.summary(self.service.run("market", {"from": "2026-10-10", "to": "2026-10-10"}))
         self.assertEqual(s["إجمالي الفقد والخسية"], D("0.000"))

@@ -20,7 +20,7 @@ from repositories.invoice_lifecycle_repository import exchange_code
 from repositories.invoice_return_repository import return_code
 from repositories.market_trip_repository import entry_code, trip_code
 from repositories.report_repository import ReportRepository
-from services import book_rules
+from services import eq21_math
 from services import position_snapshot_rules as snapshot_math
 from services import price_indicators as indicators_math
 from services import setting_rules
@@ -146,6 +146,20 @@ def _dateish(value):
     if isinstance(value, date):
         return datetime.combine(value, time.min)
     return value
+
+
+def time_slot(value, start, end):
+    """The chart bucket of a date: a day (YYYY-MM-DD) for a period of 35 days or less, else a month (YYYY-MM). Returns (label, unit word)."""
+    daily = (end - start).days <= 35
+    return _dateish(value).strftime("%Y-%m-%d" if daily else "%Y-%m"), ("اليوم" if daily else "الشهر")
+
+
+def time_rows(slots, *, positive=None):
+    """Chronological bar rows from {label: value}; never re-sorted by size, zero buckets left out. `positive` True keeps only values above zero."""
+    return [{"label": k, "value": v} for k, v in sorted(slots.items()) if v and (positive is None or v > 0)]
+
+
+SCRAP_CHART_BUCKETS = 12                                      # the accumulation charts show the last N buckets of each karat
 
 
 def top_rows(pairs, limit=10):
@@ -301,6 +315,8 @@ class ReportService:
         operating, internal = {}, {}
         recorded_out = recorded_in = ZERO2
         recorded = {}                                                                       # owner 2026-10-29: only the categorised entries of the treasury (البنود)
+        by_time = {}                                                                        # the same recorded entries over TIME (a day each for a short period, else a month each)
+        daily = (end - start).days <= 35
         for m in repo.cashflow_movements(start, end, ledgers):
             amount = _dec(m["amount"])
             if m["type_code"] == "OPENING_BALANCE":
@@ -332,12 +348,18 @@ class ReportService:
                 if category:                                                              # a categorised entry counts on the side of its ORIGINAL direction; its reversal reduces that side
                     direct = m["reference_type"] == "FINANCIAL_OPERATION"
                     item = recorded.setdefault(label, {"in": ZERO2, "out": ZERO2})
+                    when = m.get("occurred_at")
+                    slot = by_time.setdefault(_dateish(when).strftime("%Y-%m-%d" if daily else "%Y-%m"), {"in": ZERO2, "out": ZERO2}) if when else None
                     if (amount < 0) == direct:
                         recorded_out += -amount
                         item["out"] += -amount
+                        if slot:
+                            slot["out"] += -amount
                     else:
                         recorded_in += amount
                         item["in"] += amount
+                        if slot:
+                            slot["in"] += amount
             else:
                 label = FLOW_LABELS.get(source) or m["type_name"] or "حركة أخرى"
             row = bucket.setdefault(label, {"in": ZERO2, "out": ZERO2})
@@ -358,6 +380,13 @@ class ReportService:
                  "rows": sorted(({"label": k, "value": v["out"] - v["in"]} for k, v in recorded.items() if v["out"] - v["in"] > 0), key=lambda r: (-r["value"], r["label"]))},
                 {"key": "income", "title": "الإيرادات حسب البند", "tone": "receivable",
                  "rows": sorted(({"label": k, "value": v["in"] - v["out"]} for k, v in recorded.items() if v["in"] - v["out"] > 0), key=lambda r: (-r["value"], r["label"]))}]
+        unit = "اليوم" if daily else "الشهر"
+        timeline = sorted(by_time.items())                                                  # chronological, never re-sorted by size
+        if len(timeline) >= 1:
+            bars = [{"key": "cashflow_in_time", "title": f"الإيرادات المسجلة حسب {unit}", "tone": "receivable", "rows": [{"label": k, "value": v["in"]} for k, v in timeline if v["in"]]},
+                    {"key": "cashflow_out_time", "title": f"المصروفات المسجلة حسب {unit}", "tone": "payable", "rows": [{"label": k, "value": v["out"]} for k, v in timeline if v["out"]]},
+                    {"key": "cashflow_net_time", "title": f"الصافي (إيرادات − مصروفات) حسب {unit}", "rows": [{"label": k, "value": v["in"] - v["out"]} for k, v in timeline if v["in"] != v["out"]]}] + bars
+            bars = [b for b in bars if b["rows"]]
         totals = [total("مصروفات مسجلة", recorded_out, "money", "إيجار، مرتبات، كهرباء، نقل، صيانة، ضيافة، سلف... من حركة الخزنة" + note, "recorded", tone="payable"),
                   total("إيرادات مسجلة", recorded_in, "money", "إيرادات مسجلة يدويًا من حركة الخزنة" + note, "recorded", tone="receivable"),
                   total("الصافي", recorded_in - recorded_out, "money", "الإيرادات − المصروفات المسجلة", "recorded")]
@@ -394,7 +423,7 @@ class ReportService:
                   total("ذهب آخر الفترة", f"{_dec(closing['gold_total_eq21']):,.3f} جرام", "text", f"جرد {day(closing)}", "ends"),
                   total("الكاش (الخزنة) — التغير", money_text(diff["cash_egp"]), "text", f"أول {_dec(opening['cash_egp']):,.2f} → آخر {_dec(closing['cash_egp']):,.2f} ج (للمعلومية)", "cash"),
                   total("البنوك والمحافظ — التغير", money_text(diff["bank_egp"]), "text", f"أول {_dec(opening['bank_egp']):,.2f} → آخر {_dec(closing['bank_egp']):,.2f} ج (للمعلومية)", "cash")]
-        labels = (("gold_shop_eq21", "مخزون وكسر وسبائك المحل"), ("gold_custody_eq21", "عهدة السوق"), ("gold_intermediary_eq21", "ذهب المسوقجية"), ("gold_book_eq21", "رحلات الدفتر"),
+        labels = (("gold_shop_eq21", "مخزون وكسر وسبائك المحل"), ("gold_custody_eq21", "عهدة السوق"), ("gold_intermediary_eq21", "ذهب المسوقجية"),
                   ("gold_suppliers_eq21", "ذهب الموردين (صافي)"), ("gold_total_eq21", "الإجمالي"))
         rows = [{"part": label, "opening": _dec(opening[key]), "closing": _dec(closing[key]), "change": diff[key]} for key, label in labels]
         unknown = _dec(closing.get("unknown_grams") or 0)
@@ -417,6 +446,13 @@ class ReportService:
         melt_weight = melt_fineness = crucible = market = ZERO3
         reversed_count = 0
         unavailable = []
+        by_time = {}                                                                        # the total loss over TIME (a day each for a short period, else a month each)
+        daily = (end - start).days <= 35
+
+        def stamp(row, grams_):
+            if row.get("doc_date"):
+                slot = _dateish(row["doc_date"]).strftime("%Y-%m-%d" if daily else "%Y-%m")
+                by_time[slot] = by_time.get(slot, ZERO3) + grams_
         if repo.has_table("market_trip_settle_melts"):
             for m in repo.trip_melts(first, until):
                 if m["reversal_id"]:
@@ -424,6 +460,7 @@ class ReportService:
                     continue
                 melt_weight += _dec(m["weight_loss_eq21"])
                 melt_fineness += _dec(m["fineness_loss_eq21"])
+                stamp(m, _dec(m["weight_loss_eq21"]) + _dec(m["fineness_loss_eq21"]))
         else:
             unavailable.append("السبك")
         if repo.has_table("market_trip_settle_lines"):
@@ -435,7 +472,8 @@ class ReportService:
                     continue
                 grams_ = _dec(l["weight_grams"])
                 if l["source"] != "BAR":
-                    grams_ = book_rules.post(book_rules.analytical(grams_, book_rules.MASTER_KARAT, int(l["karat_value"])))
+                    grams_ = eq21_math.post(eq21_math.analytical(grams_, eq21_math.MASTER_KARAT, int(l["karat_value"])))
+                stamp(l, grams_)
                 if l["classification"] == "CRUCIBLE":
                     crucible += grams_
                 else:
@@ -460,6 +498,8 @@ class ReportService:
                   total("إجمالي الفقد والخسية", f"{grand:,.3f} جرام", "text", "فاقد السبك + خسية البوتقة + خسية السوق" + (f" • {reversed_count} مستند معكوس غير محسوب" if reversed_count else "") + incomplete, "grand", tone="deadcash")]
         bars = [{"key": "market_loss", "title": "الفقد والخسية (جرام مكافئ عيار 21)", "kind": "grams", "tone": "payable",
                  "rows": [r for r in ({"label": "فاقد السبك", "value": melt_total}, {"label": "خسية البوتقة", "value": crucible}, {"label": "خسية السوق", "value": market}) if r["value"]]}]
+        bars.append({"key": "market_loss_time", "title": f"الفقد والخسية حسب {'اليوم' if daily else 'الشهر'} (جرام مكافئ عيار 21)", "kind": "grams", "tone": "payable",
+                     "rows": [{"label": k, "value": v} for k, v in sorted(by_time.items()) if v]})          # chronological, never re-sorted by size
         return {"meaning": meaning, "tables": tables, "totals": totals, "bars": [b for b in bars if b["rows"]]}
 
     # ------------------------------------------------------------------ 1. sales and returns
@@ -557,10 +597,20 @@ class ReportService:
                    "المرتجع: قيمته كما سُجّلت في مستند المرتجع، وأثره على الحساب يظهر بإشارة حساب العميل (سالب = للعميل).",
                    "المستند المعكوس يظهر برقم العكس وتاريخه ولا يدخل إجماليات الفعّال.",
                    "«غير معلوم»: فاتورة قديمة لم يثبت مصدرها هذا التقسيم أو لا دليل على دفعها؛ يُعرض غير معلوم ولا يُحسب صفرًا، والإجمالي المتأثر موسوم «جزئي»."]
+        sold_t, back_t, unit = {}, {}, time_slot(start, start, end)[1]
+        for d in eff:                                                                       # the effective documents over TIME, by their own effective date
+            label = time_slot(d["date"], start, end)[0]
+            if d["sales"] is not None:
+                sold_t[label] = sold_t.get(label, ZERO2) + d["sales"]
+            if d["returns"] is not None:
+                back_t[label] = back_t.get(label, ZERO2) + d["returns"]
+        time_bars = [{"key": "sales_time", "title": f"قيمة البيع حسب {unit} (جنيه)", "tone": "receivable", "rows": time_rows(sold_t)},
+                     {"key": "returns_time", "title": f"قيمة المرتجع حسب {unit} (جنيه)", "tone": "payable", "rows": time_rows(back_t)}]
         bars = [{"key": "sales_compare", "title": "مقارنة قيمة المستندات الفعّالة (جنيه)", "tone": "receivable",
                  "rows": [r for r in ({"label": "البيع", "value": sales_total}, {"label": "شراء الكسر", "value": known(eff, "oldgold")},
                                       {"label": "المرتجع", "value": returns_total}) if r["value"]]}]
-        return {"meaning": meaning, "tables": [table("documents", "المستندات", cols, rows, paged=True)], "totals": totals, "bars": bars if bars[0]["rows"] else []}
+        return {"meaning": meaning, "tables": [table("documents", "المستندات", cols, rows, paged=True)], "totals": totals,
+                "bars": [b for b in time_bars if b["rows"]] + (bars if bars[0]["rows"] else [])}
 
     # ------------------------------------------------------------------ 2. available stock
     def _stock(self, repo, gate, filters, start, end):
@@ -1091,7 +1141,8 @@ class ReportService:
         options = {"category": [{"value": "", "text": "الكل"}, {"value": "0", "text": NO_CATEGORY}] + [{"value": str(c["id"]), "text": c["code"]} for c in repo.item_categories()]}
         if wanted:
             filters["category_name"] = next((o["text"] for o in options["category"] if o["value"] == wanted), wanted)
-        stats, reversed_invoices = {}, set()
+        stats, reversed_invoices, by_time = {}, set(), {}
+        daily = (end - start).days <= 35                                                                    # the margin over TIME: a day each for a short period, else a month each
         for r in repo.making_profit_lines(start, end):
             if r["reversal_id"]:
                 reversed_invoices.add(int(r["invoice_id"]))
@@ -1118,6 +1169,9 @@ class ReportService:
             s["sold"] += sold
             s["cost"] += cost
             s["margin"] += sold - cost
+            if r.get("doc_date"):
+                slot = (int(r["karat_value"]), _dateish(r["doc_date"]).strftime("%Y-%m-%d" if daily else "%Y-%m"))
+                by_time[slot] = by_time.get(slot, ZERO2) + sold - cost
             if estimated:
                 s["estimated"] += sold - cost
                 s["estimated_pieces"] += 1
@@ -1147,6 +1201,9 @@ class ReportService:
             cards.append(total("فواتير معكوسة غير محسوبة", len(reversed_invoices), "count", "", "margin"))
         bars = []
         for k in sorted({kk for kk, _ in stats}, reverse=True):
+            timeline = [{"label": day, "value": v} for (kk, day), v in sorted(by_time.items(), key=lambda kv: kv[0][1]) if kk == k and v]        # chronological, never re-sorted by size
+            if timeline:
+                bars.append({"key": f"making_time_{k}", "title": f"الفرق على المصنعية حسب {'اليوم' if daily else 'الشهر'} — عيار {k} (جنيه)", "karat": k, "rows": timeline})
             rows_k = top_rows(((f"حرف {code}", s["margin"]) for (kk, code), s in stats.items() if kk == k), 12)
             if rows_k:
                 bars.append({"key": f"making_margin_{k}", "title": f"الفرق على المصنعية حسب الحرف — عيار {k} (جنيه)", "karat": k, "rows": rows_k})
@@ -1161,7 +1218,10 @@ class ReportService:
         karat = str(filters.get("karat") or "")
         if karat not in ("", "18", "21", "22", "24"):
             raise ReportError("FILTER_INVALID", "عيار غير صحيح.")
-        period, cumulative, reversed_invoices = {}, {}, set()
+        group = str(filters.get("group") or "month")
+        if group not in ("week", "month", "year"):
+            raise ReportError("FILTER_INVALID", "تجميع غير صحيح.")
+        period, cumulative, reversed_invoices, in_period = {}, {}, set(), []
         for r in repo.scrap_cost_lines(end):
             if r["reversal_id"]:
                 if _dateish(r["doc_date"]) >= start:
@@ -1171,6 +1231,8 @@ class ReportService:
             if karat and str(k) != karat:
                 continue
             grams, paid = _dec(r["weight_grams"]), _dec(r["line_total"])
+            if _dateish(r["doc_date"]) >= start:
+                in_period.append((k, _dateish(r["doc_date"]).date(), grams, paid))
             for bucket in ((cumulative, period) if _dateish(r["doc_date"]) >= start else (cumulative,)):
                 b = bucket.setdefault(k, {"grams": ZERO3, "paid": ZERO2})
                 b["grams"] += grams
@@ -1204,58 +1266,163 @@ class ReportService:
         if reversed_invoices:
             cards.append(total("فواتير معكوسة غير محسوبة", len(reversed_invoices), "count", "", "summary"))
         tables = [table("scrapcost", "تكلفة الكسر المشترى", columns, rows)]
-        meaning.append("«كسب / خسارة لو بعت الآن» = جرامات الفترة × سعر شراء المحل الحالي − ما دُفع فيها (غير محقق). «الموقف»: سعر التعادل = متوسط تكلفة الجرام.")
         if gate("MARKET_TRIP_MANAGE") and repo.has_table("market_trip_entries"):
             tables.append(self._scrap_market_result(repo, gate, start, end, karat, cumulative, latest, average))
-        return {"meaning": meaning, "tables": tables, "totals": cards}
+        accumulation = self._scrap_accumulation(in_period, group, latest)
+        if accumulation:
+            label = {"week": "الأسبوع", "month": "الشهر", "year": "السنة"}[group]
+            tables.append(table("scrap_accumulation", f"التجميع حسب {label} (يتراكم داخل الفترة المختارة)", [
+                col("bucket", label), col("karat", "العيار"), col("grams", "جرامات", "grams"), col("paid", "المدفوع", "money"), col("avg", "متوسط سعر الجرام", "rate"),
+                col("gain", "كسب / خسارة لو بعت الآن", "money"), col("run_grams", "الجرامات المتراكمة", "grams"), col("run_paid", "المدفوع المتراكم", "money"),
+                col("run_gain", "الكسب / الخسارة المتراكمة", "money")], accumulation))
+            meaning.append("«التجميع» يجمع مشتريات الكسر في أسابيع أو شهور أو سنين (اختر من فلتر التجميع) ويتراكم داخل الفترة التي اخترتها؛ كل عيار على حدة ولا يُجمع بين الأعيار. الكسب / الخسارة بسعر شراء المحل الحالي (غير محقق).")
+        signal = self._scrap_sell_signal(repo, sorted(set(period) | set(cumulative), reverse=True), period, cumulative, average)
+        if signal:
+            tables.append(table("scrap_signal", "مؤشر البيع: هل الوقت مناسب؟", [col("karat", "العيار"), col("price", "سعر شراء المحل الآن", "rate"), col("breakeven", "التعادل (متوسط تكلفتك)", "rate"),
+                                col("gap", "الفرق عن التعادل"), col("trend", "اتجاه السعر"), col("position", "مكانه في آخر 90 يوم"), col("advice", "الإرشاد")], signal))
+            meaning.append("«مؤشر البيع» إرشاد مبني على أسعار المحل المخزنة: سعر الشراء الحالي مقابل متوسط تكلفتك، واتجاهه (7 أيام ومتوسط 30 يوم) ومكانه بين أدنى وأعلى سعر في آخر 90 يوم. وليس توصية مالية ولا توقعًا.")
+        meaning.append("«كسب / خسارة لو بعت الآن» = جرامات الفترة × سعر شراء المحل الحالي − ما دُفع فيها (غير محقق). «الموقف»: سعر التعادل = متوسط تكلفة الجرام.")
+        bars = []
+        for k in sorted({int(r["karat"].split()[-1]) for r in accumulation}, reverse=True):
+            mine = [r for r in accumulation if r["karat"] == f"عيار {k}"][-SCRAP_CHART_BUCKETS:]         # chronological, the last buckets only
+            gains = [{"label": r["bucket"], "value": r["gain"]} for r in mine if r["gain"] != "—"]
+            running = [{"label": r["bucket"], "value": r["run_gain"]} for r in mine if r["run_gain"] != "—"]
+            if gains:
+                bars.append({"key": f"scrap_gain_{k}", "title": f"الكسب / الخسارة لكل فترة — عيار {k} (جنيه، بسعر شراء المحل الآن)", "karat": k, "rows": gains})
+            if running:
+                bars.append({"key": f"scrap_run_{k}", "title": f"الكسب / الخسارة المتراكمة — عيار {k} (جنيه)", "karat": k, "rows": running})
+        return {"meaning": meaning, "tables": tables, "totals": cards, "bars": bars}
 
+    # ------------------------------------------------------------------ 3e. demand and seasonality (owner request): sold grams per month, a simple seasonal forecast and the price association
     def _scrap_market_result(self, repo, gate, start, end, karat, cumulative, latest, average):
-        """What went to the market in the period and how it came out, per karat: the scrap issued to a custody (cost = grams x the cumulative average cost of that karat), what came back
-        to the shop (valued at the CURRENT shop buy price), the proceeds of custody gold sales, and the melt / crucible / market loss (valued at the current 21K shop buy price). The
-        approximate realised result = sales proceeds + current value of the returned gold - cost of the issued gold; gold still in custody unsold is NOT in it. Owner-approved method 2026-11-01."""
+        """What went to the market and how it came out, ONE CUSTODY TRIP AT A TIME (owner 2026-11-01): per trip and karat the scrap issued (cost = grams x the cumulative average cost of that
+        karat), what came back to the shop (valued at the CURRENT shop buy price), the proceeds of the custody gold sales of that trip and its melt / crucible / market loss (valued at the current
+        21K shop buy price). Approximate realised result of the trip = sales proceeds + current value of the returned gold - cost of the issued gold; gold still in custody unsold is NOT in it.
+        Documents sit in the period by their own entry date; a reversed document is left out."""
         first, until = start.date(), (end - timedelta(days=1)).date() + timedelta(days=1)
-        out, back = {}, {}
+        trips = {}
+
+        def trip(r):
+            return trips.setdefault(int(r["trip_id"]), {"out": {}, "back": {}, "proceeds": ZERO2, "sold": ZERO3, "loss": ZERO3})
         if repo.has_table("market_trip_entry_gold"):
             for r in repo.trip_gold_legs(first, until):
                 k = int(r["karat_value"])
                 if r["reversal_id"] or (karat and str(k) != karat):
                     continue
-                bucket = out if r["entry_kind"] == "ISSUE" else back
-                bucket[k] = bucket.get(k, ZERO3) + _dec(r["weight_grams"])
-        proceeds, sold_grams = ZERO2, ZERO3
+                side = trip(r)["out" if r["entry_kind"] == "ISSUE" else "back"]
+                side[k] = side.get(k, ZERO3) + _dec(r["weight_grams"])
         if repo.has_table("market_trip_gold_sales"):
             for r in repo.trip_gold_sales(first, until):
                 if not r["reversal_id"]:
-                    proceeds += _dec(r["total_price"])
-                    sold_grams += _dec(r["weight_grams"])
-        loss_grams = ZERO3
-        for row in self._market(repo, gate, {}, start, end)["tables"][0]["rows"]:
-            if row["label"] == "إجمالي الفقد والخسية":
-                loss_grams = _dec(row["grams"])
-        columns = [col("karat", "البند"), col("out", "خرج للعهدة (جرام)", "grams"), col("cost", "تكلفته (متوسط التكلفة)", "money"), col("back", "جرامات", "grams"),
+                    t = trip(r)
+                    t["proceeds"] += _dec(r["total_price"])
+                    t["sold"] += _dec(r["weight_grams"])
+        if repo.has_table("market_trip_settle_melts"):
+            for m in repo.trip_melts(first, until):
+                if not m["reversal_id"]:
+                    trip(m)["loss"] += _dec(m["weight_loss_eq21"]) + _dec(m["fineness_loss_eq21"])
+        if repo.has_table("market_trip_settle_lines"):
+            for l in repo.trip_settle_lines(first, until):
+                if l["entry_kind"] != "ST_LOSS" or l["reversal_id"]:
+                    continue
+                grams_ = _dec(l["weight_grams"])
+                if l["source"] != "BAR":
+                    grams_ = eq21_math.post(eq21_math.analytical(grams_, eq21_math.MASTER_KARAT, int(l["karat_value"])))
+                trip(l)["loss"] += grams_
+        columns = [col("trip", "الخرجة"), col("karat", "البند"), col("out", "خرج للعهدة (جرام)", "grams"), col("cost", "تكلفته (متوسط التكلفة)", "money"), col("back", "جرامات", "grams"),
                    col("back_value", "القيمة / العائد", "money")]
-        rows, cost_total, back_total = [], ZERO2, ZERO2
-        for k in sorted(set(out) | set(back), reverse=True):
-            avg = average(cumulative.get(k))
-            price = latest.get(k)
-            cost = (out.get(k, ZERO3) * avg).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if avg is not None else None
-            value = (back.get(k, ZERO3) * price[1]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if price else None
-            cost_total += cost or ZERO2
-            back_total += value or ZERO2
-            rows.append({"karat": f"عيار {k} (راجع للمحل بالسعر الحالي)", "out": out.get(k, ZERO3), "cost": cost if cost is not None else "غير معلوم", "back": back.get(k, ZERO3),
-                         "back_value": value if value is not None else "غير معلوم"})
         price21 = latest.get(21)
-        loss_value = (loss_grams * price21[1]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if price21 else None
-        rows.append({"karat": "عائد بيع ذهب العهدة", "out": ZERO3, "cost": ZERO2, "back": sold_grams, "back_value": proceeds})
-        rows.append({"karat": "الفاقد والخسية (مكافئ 21، بسعر 21 الحالي)", "out": ZERO3, "cost": ZERO2, "back": loss_grams, "back_value": loss_value if loss_value is not None else "غير معلوم"})
-        net = proceeds + back_total - cost_total
-        rows.append({"karat": "النتيجة التقريبية المحققة", "out": ZERO3, "cost": cost_total, "back": ZERO3, "back_value": net})
-        result = table("scrap_market", "ما خرج للسوق ونتيجته (تقريبي)", columns, rows)
-        result["note"] = ("النتيجة = عائد البيع + قيمة الراجع للمحل بالسعر الحالي − تكلفة ما خرج (متوسط تكلفة الكسر من البداية). الذهب الذي ما زال في العهدة ولم يُبَع لا يدخل فيها، "
-                          "والفاقد يظهر منفصلًا لأنه ناقص من الراجع أصلًا.")
+        rows = []
+        for trip_id in sorted(trips):
+            t, code = trips[trip_id], f"MT{trip_id:06d}"
+            cost_total, back_total = ZERO2, ZERO2
+            for k in sorted(set(t["out"]) | set(t["back"]), reverse=True):
+                avg, price = average(cumulative.get(k)), latest.get(k)
+                cost = (t["out"].get(k, ZERO3) * avg).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if avg is not None else None
+                value = (t["back"].get(k, ZERO3) * price[1]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if price else None
+                cost_total += cost or ZERO2
+                back_total += value or ZERO2
+                rows.append({"trip": code, "karat": f"عيار {k} (راجع للمحل بالسعر الحالي)", "out": t["out"].get(k, ZERO3), "cost": cost if cost is not None else "غير معلوم",
+                             "back": t["back"].get(k, ZERO3), "back_value": value if value is not None else "غير معلوم"})
+            loss_value = (-t["loss"] * price21[1]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if price21 else None          # shown as a NEGATIVE value (a loss), a gain positive
+            rows.append({"trip": code, "karat": "عائد بيع ذهب العهدة", "out": ZERO3, "cost": ZERO2, "back": t["sold"], "back_value": t["proceeds"]})
+            rows.append({"trip": code, "karat": "الفاقد والخسية (مكافئ 21، بسعر 21 الحالي)", "out": ZERO3, "cost": ZERO2, "back": t["loss"],
+                         "back_value": loss_value if loss_value is not None else "غير معلوم"})
+            rows.append({"trip": code, "karat": "النتيجة التقريبية المحققة", "out": ZERO3, "cost": cost_total, "back": ZERO3, "back_value": t["proceeds"] + back_total - cost_total})
+        result = table("scrap_market", "ما خرج للسوق ونتيجته — كل خرجة لوحدها (تقريبي)", columns, rows)
+        result["note"] = ("لكل خرجة: النتيجة = عائد البيع + قيمة الراجع للمحل بالسعر الحالي − تكلفة ما خرج (متوسط تكلفة الكسر من البداية). الذهب الذي ما زال في العهدة ولم يُبَع لا يدخل فيها، "
+                          "والفاقد يظهر منفصلًا لأنه ناقص من الراجع أصلًا. تُحسب المستندات بتاريخها داخل الفترة المختارة.")
         return result
 
-    # ------------------------------------------------------------------ 3e. demand and seasonality (owner request): sold grams per month, a simple seasonal forecast and the price association
+    @staticmethod
+    def _scrap_accumulation(lines, group, latest):
+        """Purchases of the period bucketed by week (starting Saturday), month or year, per karat, with the running totals of each karat across the buckets. The gain is the grams x the latest stored
+        SHOP_BUY of that karat - what was paid (unrealised); a karat with no stored price shows a dash and never a zero."""
+        def key(day):
+            if group == "year":
+                return day.strftime("%Y"), day.strftime("%Y")
+            if group == "month":
+                return day.strftime("%Y-%m"), day.strftime("%Y-%m")
+            monday_shift = (day.weekday() - 5) % 7                         # Python: Monday = 0, Saturday = 5
+            first = day - timedelta(days=monday_shift)
+            return first.isoformat(), f"أسبوع يبدأ {first.isoformat()}"
+        buckets = {}
+        for k, day, grams, paid in lines:
+            sort_key, label = key(day)
+            b = buckets.setdefault((k, sort_key), {"label": label, "grams": ZERO3, "paid": ZERO2})
+            b["grams"] += grams
+            b["paid"] += paid
+        rows, running = [], {}
+        for (k, sort_key) in sorted(buckets, key=lambda x: (x[1], -x[0])):
+            b = buckets[(k, sort_key)]
+            price = latest.get(k)
+            gain = (b["grams"] * price[1] - b["paid"]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if price else None
+            run = running.setdefault(k, {"grams": ZERO3, "paid": ZERO2, "gain": ZERO2, "known": True})
+            run["grams"] += b["grams"]
+            run["paid"] += b["paid"]
+            if gain is None:
+                run["known"] = False
+            else:
+                run["gain"] += gain
+            rows.append({"bucket": b["label"], "karat": f"عيار {k}", "grams": b["grams"], "paid": b["paid"],
+                         "avg": (b["paid"] / b["grams"]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if b["grams"] else "—", "gain": gain if gain is not None else "—",
+                         "run_grams": run["grams"], "run_paid": run["paid"], "run_gain": run["gain"] if run["known"] else "—"})
+        return rows
+
+    def _scrap_sell_signal(self, repo, karats, period, cumulative, average):
+        """Per karat an INDICATION of whether now is a reasonable time to sell the scrap bought: the current SHOP_BUY price against the average cost (the break-even: the period average, else the
+        cumulative one), the trend (7-day change and the 30-day average) and the position inside the last 90 days. Rule based on the stored prices only; a missing history is stated, never guessed."""
+        series_by_karat = self._price_series(repo)
+        out = []
+        for k in karats:
+            series = series_by_karat.get(k) or []
+            base = average(period.get(k)) or average(cumulative.get(k))
+            if not series or base is None:
+                continue
+            price = Decimal(series[-1][1])
+            gap_pct = ((price - base) / base * 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            above = price >= base
+            week = indicators_math.change(series, 1, 7)
+            avg30 = indicators_math.moving_average(series, 1, 30)
+            position = indicators_math.range_position(series, 1, indicators_math.HINT_DAYS)
+            rising = (week is not None and week[0] > 0) or (avg30 is not None and avg30[1] is not None and avg30[1] > 0)
+            falling = (week is not None and week[0] < 0) and (avg30 is None or avg30[1] is None or avg30[1] <= 0)
+            trend = "صاعد" if rising and not falling else "نازل" if falling else "متذبذب / غير واضح" if week is not None or avg30 is not None else "بيانات غير كافية"
+            high = position is not None and position[0] >= 1 - indicators_math.QUARTER
+            where = "غير متاح" if position is None else ("الربع الأعلى" if high else "الربع الأدنى" if position[0] <= indicators_math.QUARTER else "في المنتصف") + f" ({position[0] * 100:,.0f}%)"
+            if above and (high or trend == "نازل"):
+                advice = "وقت مناسب للبيع: السعر فوق التعادل" + (" وقريب من أعلى آخر 90 يوم." if high else " والسعر بدأ ينزل.")
+            elif above and trend == "صاعد":
+                advice = "فوق التعادل والسعر صاعد: البيع يحقق ربح، ولو تستنى قد يزيد؛ ممكن تبيع جزءًا."
+            elif above:
+                advice = "فوق التعادل: البيع الآن يغطي فلوسك والسعر مش في قمته."
+            elif trend == "صاعد":
+                advice = f"تحت التعادل والسعر صاعد: استنى، يلزم {base:,.2f} للتعادل."
+            else:
+                advice = f"تحت التعادل: البيع الآن خسارة، يلزم {base:,.2f} للتعادل."
+            out.append({"karat": f"عيار {k}", "price": price, "breakeven": base, "gap": f"{'+' if gap_pct > 0 else ''}{gap_pct:,.2f}%", "trend": trend, "position": where, "advice": advice})
+        return out
+
     def _demand(self, repo, gate, filters, start, end):
         """The shop's SOLD GRAMS per month (the old shop's imported history up to the day before the owner's initial balance, then the new system), the seasonal index of every calendar month that was
         seen at least twice, a forecast of the next three months and the association between the monthly 21K selling price and the grams. A small explainable statistic (services/demand_forecast.py),
@@ -1737,7 +1904,12 @@ class ReportService:
             totals.append(total(f"ذهب عيار {k}", f"{abs(net):,.3f} جرام", "text", "علينا للموردين" if net > 0 else "لنا عند الموردين" if net < 0 else "متوازن", "gold", karat=k))
         meaning = ["علينا = مستحق للمورد، لنا = مستحق لنا عند المورد. الذهب بجرام فعلي بعيار حساب كل مورد ولا يُحوَّل إلى عيار 21، والمصنعيات بالجنيه حساب مستقل ولا يُجمع مع الذهب.",
                    "الأرصدة مجموع دفتر المورد حتى نهاية التاريخ (اليوم افتراضيًا). حركات الدفتر الكاملة (فواتير ومدفوعات وتسويات وعكسها) في ملف CSV."]
-        bars = [{"key": "suppliers_making_owed", "title": "مصنعيات علينا حسب المورد (جنيه)", "tone": "payable", "rows": top_rows((r["supplier"], r["making_owed"]) for r in rows if r["making_owed"])},
+        making_t, unit = {}, time_slot(start, start, end)[1]
+        for m in making:                                                                    # the making account over TIME: positive = the shop owes more, negative = paid / received
+            label = time_slot(m["occurred_at"], start, end)[0]
+            making_t[label] = making_t.get(label, ZERO2) + _dec(m["amount"])
+        time_bars = [{"key": "suppliers_making_time", "title": f"حركة المصنعيات حسب {unit} (جنيه؛ موجب = زاد علينا، سالب = سُدّد)", "rows": time_rows(making_t)}]
+        bars = time_bars + [{"key": "suppliers_making_owed", "title": "مصنعيات علينا حسب المورد (جنيه)", "tone": "payable", "rows": top_rows((r["supplier"], r["making_owed"]) for r in rows if r["making_owed"])},
                 {"key": "suppliers_making_credit", "title": "مصنعيات لنا عند الموردين (جنيه)", "tone": "receivable", "rows": top_rows((r["supplier"], r["making_credit"]) for r in rows if r["making_credit"])}]
         return {"meaning": meaning, "tables": [table("suppliers", "أرصدة الموردين", cols, rows), table("movements", "الحركات", dcols, det, paged=True)], "totals": totals,
                 "bars": [b for b in bars if b["rows"]]}
@@ -1756,6 +1928,7 @@ class ReportService:
         summary, det = [], []
         money_in = money_out = ZERO2
         net_transfers = ZERO2
+        in_t, out_t, unit = {}, {}, time_slot(start, start, end)[1]                         # the money in / out over TIME (internal transfers excluded)
         tot = {"CASH": ZERO2, "BANK": ZERO2}
         for kind, label, accounts, before, moves in sections:
             opening = {int(r["account_id"]): _dec(r["total"]) for r in before}
@@ -1777,6 +1950,11 @@ class ReportService:
                     else:
                         inn += amount if amount > 0 else ZERO2
                         out += -amount if amount < 0 else ZERO2
+                        label_t = time_slot(m["occurred_at"], start, end)[0]
+                        if amount > 0:
+                            in_t[label_t] = in_t.get(label_t, ZERO2) + amount
+                        else:
+                            out_t[label_t] = out_t.get(label_t, ZERO2) - amount
                     if _matches(folded, raw, m["reference_code"], m["description"], m["type_name"]):
                         det.append({"date": _dateish(m["occurred_at"]), "account": f"{label}: {a['name']}", "type": m["type_name"] + (" (تحويل داخلي)" if transfer else ""), "amount": amount,
                                     "reference": m["reference_code"] or "", "description": m["description"] or "", "_transfer": transfer,
@@ -1817,7 +1995,9 @@ class ReportService:
         tables = [table("accounts", "الحسابات (أرصدة كاملة للفترة — لا يغيّرها البحث)", scols, summary), table("movements", "الحركات", dcols, det, paged=True)]
         for label in missing:
             tables.append(self._unavailable("missing_" + label, f"الحسابات ({label})", "ليست لديك صلاحية عرض هذا القسم."))
-        bars = [{"key": "treasury_closing", "title": "رصيد آخر الفترة حسب الحساب (جنيه)", "rows": top_rows(((r["account"], r["closing"]) for r in summary), 15)},
+        bars = [{"key": "treasury_in_time", "title": f"الداخل حسب {unit} (جنيه، بلا التحويلات الداخلية)", "tone": "receivable", "rows": time_rows(in_t)},
+                {"key": "treasury_out_time", "title": f"الخارج حسب {unit} (جنيه، بلا التحويلات الداخلية)", "tone": "payable", "rows": time_rows(out_t)},
+                {"key": "treasury_closing", "title": "رصيد آخر الفترة حسب الحساب (جنيه)", "rows": top_rows(((r["account"], r["closing"]) for r in summary), 15)},
                 {"key": "treasury_flow", "title": "الداخل والخارج حسب الحساب (جنيه، بلا التحويلات الداخلية)", "tone": "payable",
                  "rows": top_rows(((f"{r['account']} — خارج", r["out"]) for r in summary), 10)}]
         return {"meaning": meaning, "tables": tables, "totals": totals, "bars": [b for b in bars if b["rows"]]}

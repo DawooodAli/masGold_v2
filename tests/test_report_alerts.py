@@ -153,7 +153,7 @@ class RunningOutTests(AlertsCase):
         cards = {x["label"]: (x["value"], x["group"], x["karat"]) for x in result["totals"] if x["group"] == "low"}
         self.assertEqual(cards["قارب النفاد عيار 21"], ("1 صنف", "low", 21))
         self.assertEqual(cards["قارب النفاد عيار 24"], ("1 صنف", "low", 24))
-        self.assertEqual(set(self.table(result, "low_21")["rows"][0]), {"type", "factory", "size", "sold30", "sold90", "stock", "cover"})
+        self.assertEqual(set(self.table(result, "low_21")["rows"][0]), {"type", "factory", "size", "sold30", "sold90", "stock", "cover", "ref"})
 
     def test_the_invoice_right_is_needed_for_the_sales_rate_and_dead_stock_stays(self):
         session = session_for(ALL_RIGHTS - {"INVOICE_VIEW"})

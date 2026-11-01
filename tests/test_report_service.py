@@ -38,25 +38,25 @@ class FakeRepo:
     def has_table(self, name):
         return self.tables.get(name, True)
 
+    def trip_gold_legs(self, start, end_exclusive):
+        return [{"entry_id": 1, "trip_id": 1, "entry_no": 1, "entry_kind": "ISSUE", "doc_date": date(2026, 10, 10), "karat_value": 21, "weight_grams": D("10.000"), "reversal_id": None},
+                {"entry_id": 2, "trip_id": 1, "entry_no": 2, "entry_kind": "RETURN", "doc_date": date(2026, 10, 12), "karat_value": 21, "weight_grams": D("2.000"), "reversal_id": None},
+                {"entry_id": 3, "trip_id": 1, "entry_no": 3, "entry_kind": "ISSUE", "doc_date": date(2026, 10, 13), "karat_value": 21, "weight_grams": D("99.000"), "reversal_id": 7}]
+
+    def trip_gold_sales(self, start, end_exclusive):
+        return [{"entry_id": 4, "trip_id": 1, "entry_no": 4, "doc_date": date(2026, 10, 14), "total_price": D("50000.00"), "weight_grams": D("7.000"), "reversal_id": None}]
+
     def trip_melts(self, start, end_exclusive):
         return []
 
     def trip_settle_lines(self, start, end_exclusive):
         return []
 
-    def trip_gold_legs(self, start, end_exclusive):
-        return [{"entry_id": 1, "entry_kind": "ISSUE", "doc_date": date(2026, 10, 10), "karat_value": 21, "weight_grams": D("10.000"), "reversal_id": None},
-                {"entry_id": 2, "entry_kind": "RETURN", "doc_date": date(2026, 10, 12), "karat_value": 21, "weight_grams": D("2.000"), "reversal_id": None},
-                {"entry_id": 3, "entry_kind": "ISSUE", "doc_date": date(2026, 10, 13), "karat_value": 21, "weight_grams": D("99.000"), "reversal_id": 7}]
-
-    def trip_gold_sales(self, start, end_exclusive):
-        return [{"entry_id": 4, "doc_date": date(2026, 10, 14), "total_price": D("50000.00"), "weight_grams": D("7.000"), "reversal_id": None}]
-
     # ---- cash flow: sales 10,000 + 5,000 (bank) in and 3,000 scrap out; rent 4,000 out then reversed; revenue 1,500; electricity 600; supplier 700; custody 20,000 out; a transfer; an opening balance
     def cashflow_movements(self, start, end, ledgers=("CASH", "BANK")):
         def move(ledger, amount, reference=None, type_code="X", category=None, transfer=None, correction=None, corrected=None, name="حركة"):
             return {"ledger": ledger, "account_id": 1, "type_code": type_code, "type_name": name, "amount": D(amount), "transfer_group_id": transfer, "reference_type": reference,
-                    "reference_id": 1, "category": category, "correction_source": correction, "corrected_category": corrected}
+                    "reference_id": 1, "category": category, "correction_source": correction, "corrected_category": corrected, "occurred_at": datetime(2026, 10, 10 if ledger == "CASH" else 12)}
         rows = [move("CASH", "10000", "INVOICE"), move("CASH", "-3000", "INVOICE"), move("BANK", "5000", "INVOICE"),
                 move("CASH", "-4000", "FINANCIAL_OPERATION", category="RENT"), move("CASH", "1500", "FINANCIAL_OPERATION", category="REVENUE"),
                 move("CASH", "-600", "FINANCIAL_OPERATION", category="UTILITIES"),
@@ -90,7 +90,7 @@ class FakeRepo:
     def making_profit_lines(self, start, end):
         def line(invoice, karat_, weight, making, category, code, piece_cost=None, reversal=None):
             return {"invoice_id": invoice, "karat_value": karat_, "weight_grams": D(weight), "making_total": None if making is None else D(making), "item_id": invoice * 10, "category_id": category,
-                    "category_code": code, "piece_cost": None if piece_cost is None else D(piece_cost), "reversal_id": reversal}
+                    "category_code": code, "piece_cost": None if piece_cost is None else D(piece_cost), "reversal_id": reversal, "doc_date": date(2026, 10, 10)}
         return [line(1, 21, "10.000", "2000.00", 1, "A", "100.00"), line(1, 21, "5.000", "1000.00", 1, "A"), line(2, 18, "4.000", "800.00", 2, "B", "250.00"),
                 line(3, 21, "3.000", None, 1, "A"), line(4, 21, "2.000", "400.00", None, None), line(99, 21, "50.000", "9999.00", 1, "A", "100.00", reversal=5)]
 
@@ -377,6 +377,16 @@ class Case(unittest.TestCase):
 
 
 class SalesTests(Case):
+    def test_sales_and_returns_are_also_charted_over_time_and_add_up_to_the_totals(self):
+        bars = {b["key"]: b for b in self.service.run("sales", {"from": "2026-10-01", "to": "2026-10-31"})["bars"]}
+        for key, expected in (("sales_time", D("18000")), ("returns_time", D("2000"))):
+            labels = [r["label"] for r in bars[key]["rows"]]
+            self.assertEqual(labels, sorted(labels))                                                      # chronological
+            self.assertTrue(all(len(x) == 10 for x in labels))                                           # a short period is daily
+            self.assertEqual(sum((r["value"] for r in bars[key]["rows"]), D("0")), expected)          # the same figures as the cards
+        long = {b["key"]: b for b in self.service.run("sales", {"from": "2025-01-01", "to": "2026-10-31"})["bars"]}
+        self.assertTrue(all(len(r["label"]) == 7 for r in long["sales_time"]["rows"]))                 # a long period is monthly
+
     def test_effective_reversed_and_voided_documents_are_separated(self):
         result = self.service.run("sales", {"from": "2026-10-01", "to": "2026-10-31"})
         t = self.totals(result)
@@ -709,6 +719,13 @@ class SupplierTests(Case):
         self.assertEqual([c["key"] for c in next(t for t in result["tables"] if t["key"] == "suppliers")["columns"]],
                          ["supplier", "karat", "gold_owed", "gold_credit", "making_owed", "making_credit"])
 
+    def test_the_making_account_is_charted_over_time_from_the_periods_own_movements(self):
+        result = self.run_suppliers()
+        bar = next(b for b in result["bars"] if b["key"] == "suppliers_making_time")
+        labels = [r["label"] for r in bar["rows"]]
+        self.assertEqual(labels, sorted(labels))
+        self.assertEqual(sum((r["value"] for r in bar["rows"]), D("0")), D("100.00"))                  # the PERIOD movements only: +200 - 100 (the 500 before the period is the opening balance), signed
+
     def test_cards_are_the_making_totals_and_one_gold_card_per_karat(self):
         result = self.run_suppliers()
         cards = {x["label"]: (x["value"], x["note"], x["group"], x["tone"], x["karat"]) for x in result["totals"]}
@@ -738,6 +755,15 @@ class SupplierTests(Case):
 
 
 class TreasuryTests(Case):
+    def test_money_in_and_out_are_charted_over_time_without_internal_transfers(self):
+        result = self.service.run("treasury", {"from": "2026-10-01", "to": "2026-10-31"})
+        bars = {b["key"]: b for b in result["bars"]}
+        values = self.totals(result)
+        self.assertEqual(sum((r["value"] for r in bars["treasury_in_time"]["rows"]), D("0")), values["الإيرادات"])
+        self.assertEqual(sum((r["value"] for r in bars["treasury_out_time"]["rows"]), D("0")), values["المصروفات"])
+        labels = [r["label"] for r in bars["treasury_in_time"]["rows"]]
+        self.assertEqual(labels, sorted(labels))
+
     def test_opening_period_closing_and_internal_transfers(self):
         result = self.service.run("treasury", {"from": "2026-10-01", "to": "2026-10-31"})
         cash, bank = self.rows(result, "accounts")
@@ -1067,6 +1093,8 @@ class CashflowTests(Case):
         bars = {b["key"]: b for b in result["bars"]}                                                           # one bar chart per side, by the stored category
         self.assertEqual([(r["label"], r["value"]) for r in bars["expenses"]["rows"]], [("كهرباء ومياه", D("600.00"))])
         self.assertEqual([(r["label"], r["value"]) for r in bars["income"]["rows"]], [("إيراد", D("1500.00"))])
+        self.assertEqual([(r["label"], r["value"]) for r in bars["cashflow_net_time"]["rows"]], [("2026-10-10", D("900.00"))])      # the same entries over time: one day here (a short period is daily)
+        self.assertEqual([b["key"] for b in result["bars"]][:3], ["cashflow_in_time", "cashflow_out_time", "cashflow_net_time"])
 
     def test_cash_from_or_to_a_customer_is_neither_income_nor_expense(self):
         base = {"transfer_group_id": None, "type_name": "x", "corrected_category": None, "correction_source": None, "corrected_operation_type": None, "reference_type": "FINANCIAL_OPERATION"}
@@ -1147,6 +1175,14 @@ class MakingProfitTests(Case):
         letterless = self.rows(result, 21)["بدون حرف"]
         self.assertEqual((letterless["pieces"], letterless["sold"], letterless["margin"], letterless["left_out"]), (1, D("400.00"), D("-200.00"), 0))          # no stored cost anywhere: the default 300 EGP/g (2 g -> 600) applies, shown as an estimate
 
+    def test_the_margin_is_also_charted_over_time_per_karat(self):
+        bars = {b["key"]: b for b in self.service.run("makingprofit", self.PERIOD)["bars"]}
+        self.assertEqual([(r["label"], r["value"]) for r in bars["making_time_21"]["rows"]], [("2026-10-10", D("1050.00"))])      # 1250 (A) - 200 (no letter), the same day; a short period is daily
+        self.assertEqual([(r["label"], r["value"]) for r in bars["making_time_18"]["rows"]], [("2026-10-10", D("-200.00"))])      # a loss stays negative
+        self.assertEqual(bars["making_time_21"]["karat"], 21)
+        year = self.service.run("makingprofit", {"from": "2025-01-01", "to": "2026-10-31"})["bars"]
+        self.assertEqual([r["label"] for r in next(b for b in year if b["key"] == "making_time_21")["rows"]], ["2026-10"])        # a long period is monthly
+
     def test_cards_and_the_reversed_invoice(self):
         result = self.service.run("makingprofit", self.PERIOD)
         values = self.totals(result)
@@ -1200,6 +1236,61 @@ class ScrapCostTests(Case):
         self.assertEqual([t["karat"] for t in result["totals"] if t["karat"]], [21, 18])                                  # one coloured card per karat
         self.assertIn("6,066.67", values["متوسط تكلفة كسر عيار 21"])
 
+    def test_the_sell_signal_compares_the_current_price_with_the_break_even_and_says_when_history_is_missing(self):
+        result = self.service.run("scrapcost", self.PERIOD)
+        table = next(t for t in result["tables"] if t["key"] == "scrap_signal")
+        r = next(x for x in table["rows"] if x["karat"] == "عيار 21")
+        self.assertEqual((r["price"], r["breakeven"]), (D("6390.00"), D("6066.67")))                        # break-even = the period average cost
+        self.assertEqual(r["gap"], "+5.33%")                                                                  # (6390 - 6066.67) / 6066.67
+        self.assertTrue(r["advice"].startswith(("وقت مناسب للبيع", "فوق التعادل")), r["advice"])
+        self.assertNotIn("عيار 18", [x["karat"] for x in table["rows"]])                                    # no stored price for 18 in the fixture: no guess
+        self.assertTrue(any("ليس توصية مالية" in m for m in result["meaning"]))
+
+    def test_the_accumulation_buckets_by_month_week_or_year_and_runs_per_karat(self):
+        wide = {"from": "2025-01-01", "to": "2026-10-31"}
+        months = next(t for t in self.service.run("scrapcost", wide)["tables"] if t["key"] == "scrap_accumulation")["rows"]
+        k21 = [r for r in months if r["karat"] == "عيار 21"]
+        self.assertEqual(k21[-1]["run_grams"], D("35.000"))                                                  # (20 + 10 + 5) over the whole period
+        self.assertEqual(k21[-1]["run_paid"], D("209000.00"))                                                # 118000 + 60000 + 31000
+        self.assertEqual(sum((r["paid"] for r in k21), D("0")), k21[-1]["run_paid"])                         # the running total is the sum of the buckets
+        self.assertTrue(all(r["bucket"][:2] == "20" and len(r["bucket"]) == 7 for r in k21))                 # YYYY-MM
+        years = next(t for t in self.service.run("scrapcost", {**wide, "group": "year"})["tables"] if t["key"] == "scrap_accumulation")["rows"]
+        self.assertTrue(all(len(r["bucket"]) == 4 for r in years))
+        weeks = next(t for t in self.service.run("scrapcost", {**wide, "group": "week"})["tables"] if t["key"] == "scrap_accumulation")["rows"]
+        self.assertTrue(all(r["bucket"].startswith("أسبوع يبدأ ") for r in weeks))
+        self.assertTrue(all(r["run_gain"] == "—" for r in months if r["karat"] == "عيار 18"))                # no stored price for 18: never a zero
+        charts = {b["key"]: b for b in self.service.run("scrapcost", wide)["bars"]}
+        self.assertEqual(sorted(charts), ["scrap_gain_21", "scrap_run_21"])                                  # karat 18 has no price: no chart, no invented zero
+        self.assertEqual((charts["scrap_run_21"]["karat"], charts["scrap_run_21"]["rows"][-1]["value"]), (21, k21[-1]["run_gain"]))
+        with self.assertRaises(ReportError):
+            self.service.run("scrapcost", {**wide, "group": "day"})
+
+    def test_the_market_result_uses_the_average_cost_and_leaves_out_a_reversed_issue(self):
+        result = self.service.run("scrapcost", self.PERIOD)
+        table = next(t for t in result["tables"] if t["key"] == "scrap_market")
+        self.assertEqual({r["trip"] for r in table["rows"]}, {"MT000001"})                                  # one block per custody trip
+        rows = {r["karat"]: r for r in table["rows"]}
+        k21 = rows["عيار 21 (راجع للمحل بالسعر الحالي)"]
+        self.assertEqual((k21["out"], k21["cost"], k21["back"], k21["back_value"]), (D("10.000"), D("59714.30"), D("2.000"), D("12780.00")))   # 10 x 5971.43; 2 x 6390
+        self.assertEqual(rows["عائد بيع ذهب العهدة"]["back_value"], D("50000.00"))
+        self.assertLessEqual(rows["الفاقد والخسية (مكافئ 21، بسعر 21 الحالي)"]["back_value"], 0)                 # a loss is shown as a negative value, never a positive one
+        self.assertEqual(rows["النتيجة التقريبية المحققة"]["back_value"], D("3065.70"))     # 50000 + 12780 - 59714.30
+
+    def test_every_custody_trip_gets_its_own_block_and_result(self):
+        class TwoTrips(FakeRepo):
+            def trip_gold_legs(self, start, end_exclusive):
+                base = {"entry_no": 1, "karat_value": 21, "reversal_id": None, "doc_date": date(2026, 10, 10)}
+                return [{**base, "entry_id": 1, "trip_id": 1, "entry_kind": "ISSUE", "weight_grams": D("10.000")},
+                        {**base, "entry_id": 2, "trip_id": 2, "entry_kind": "ISSUE", "weight_grams": D("4.000")},
+                        {**base, "entry_id": 3, "trip_id": 2, "entry_kind": "RETURN", "weight_grams": D("1.000")}]
+
+            def trip_gold_sales(self, start, end_exclusive):
+                return [{"entry_id": 4, "trip_id": 1, "entry_no": 2, "doc_date": date(2026, 10, 14), "total_price": D("70000.00"), "weight_grams": D("10.000"), "reversal_id": None}]
+        service = ReportService(self.session, transaction_factory=self.service._transaction, repository=TwoTrips, authorization=self.authorization, today=lambda: TODAY)
+        rows = next(t for t in service.run("scrapcost", self.PERIOD)["tables"] if t["key"] == "scrap_market")["rows"]
+        result = {r["trip"]: r["back_value"] for r in rows if r["karat"] == "النتيجة التقريبية المحققة"}
+        self.assertEqual(result, {"MT000001": D("70000.00") - D("59714.30"), "MT000002": D("6390.00") - D("23885.72")})   # trip 1: sold 70000, cost 10 x 5971.43; trip 2: 1 g back at 6390, cost 4 x 5971.43
+
     def test_a_period_without_purchases_has_no_period_figures_but_keeps_the_cumulative_ones(self):
         result = self.service.run("scrapcost", {"from": "2026-11-01", "to": "2026-11-30"})
         r = self.row(result, 21)
@@ -1213,15 +1304,6 @@ class ScrapCostTests(Case):
         r = self.row(self.service.run("scrapcost", self.PERIOD), 21)
         self.assertEqual(r["unreal"], D("4850.00"))                                        # 15 g x 6390 - 91000
         self.assertEqual(r["state"], "فوق التعادل: ممكن تعوّض فلوسك")                       # 6390 >= the period average 6066.67
-
-    def test_the_market_result_uses_the_average_cost_and_leaves_out_a_reversed_issue(self):
-        result = self.service.run("scrapcost", self.PERIOD)
-        table = next(t for t in result["tables"] if t["key"] == "scrap_market")
-        rows = {r["karat"]: r for r in table["rows"]}
-        k21 = rows["عيار 21 (راجع للمحل بالسعر الحالي)"]
-        self.assertEqual((k21["out"], k21["cost"], k21["back"], k21["back_value"]), (D("10.000"), D("59714.30"), D("2.000"), D("12780.00")))   # 10 x 5971.43; 2 x 6390
-        self.assertEqual(rows["عائد بيع ذهب العهدة"]["back_value"], D("50000.00"))
-        self.assertEqual(rows["النتيجة التقريبية المحققة"]["back_value"], D("3065.70"))     # 50000 + 12780 - 59714.30
 
 
     def test_it_needs_the_invoice_right(self):
@@ -1488,7 +1570,7 @@ class StaticSqlTests(unittest.TestCase):
         called = set(re.findall(r"repo\.(\w+)\(", service))
         called |= {"cash_accounts", "cash_before", "cash_movements", "bank_accounts", "bank_before", "bank_movements"}      # reached through getattr(repo, <name>) in the treasury report
         self.assertEqual([name for name in sorted(called) if not hasattr(ReportRepository, name)], [])
-        for name in ("sales_invoices", "book_groups_current", "book_effective_reconciliations", "book_recon_documents"):
+        for name in ("sales_invoices",):
             self.assertTrue(hasattr(ReportRepository, name), name)
 
     def test_the_sales_query_returns_the_evidence_counts_the_service_reads(self):

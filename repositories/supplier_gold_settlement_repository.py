@@ -64,22 +64,6 @@ class SupplierGoldSettlementRepository(SupplierRepository):
              digest, actor.user_id, actor.employee_id, now))
         return int(settlement_id)
 
-    def insert_book_header(self, *, supplier_id, delivered_karat, fineness, target_karat, delivered_weight, credited, analytical, difference,
-                           settlement_date, reference, notes, key, digest, actor, now):
-        """The SG header of a delivery from a BOOK trip (058, source TRIP_BOOK): the delivered physical facts are a master karat OR an assay (never both)."""
-        require_no_marketer_key(self._fetch_one, key)
-        settlement_id, _ = self._execute(
-            """
-            INSERT INTO supplier_gold_settlements (supplier_id, source_kind, delivered_karat_id, delivered_karat_value, delivered_fineness_permille, target_karat_id,
-                target_karat_value, delivered_weight_grams, credited_weight_grams, credited_analytical_grams, rounding_difference_grams,
-                settlement_date, reference, notes, request_key, request_hash, performed_by_user_id, performed_by_employee_id, occurred_at)
-            VALUES (%s, 'TRIP_BOOK', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            (_id(supplier_id), None if delivered_karat is None else int(delivered_karat["id"]), None if delivered_karat is None else int(delivered_karat["karat_value"]),
-             fineness, int(target_karat["id"]), int(target_karat["karat_value"]), delivered_weight, credited, analytical, difference, settlement_date, reference,
-             notes, key, digest, actor.user_id, actor.employee_id, now))
-        return int(settlement_id)
-
     def insert_lot_header(self, *, supplier_id, lot, target_karat, credited, analytical, difference,
                           settlement_date, reference, notes, key, digest, actor, now):
         require_no_marketer_key(self._fetch_one, key)                    # 055: a marketer document owns this key -> REQUEST_CONFLICT, nothing is written

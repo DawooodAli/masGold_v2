@@ -40,24 +40,6 @@ class ReportRepository(BaseRepository):
             WHERE e.entry_date >= %s AND e.entry_date < %s ORDER BY e.entry_date, e.id, l.line_no
             """, (start, end_exclusive))
 
-    def trip_gold_legs(self, start, end_exclusive):
-        """The physical gold legs of the custody entries that move scrap between the shop and a market custody (ISSUE out, RETURN / ST_RET_MKT back), by entry date, per karat."""
-        return self._fetch_all(
-            f"""
-            SELECT e.id AS entry_id, e.entry_kind, e.entry_date AS doc_date, k.karat_value, g.weight_grams, c.id AS reversal_id
-            FROM market_trip_entry_gold g JOIN market_trip_entries e ON e.id = g.entry_id JOIN karats k ON k.id = g.karat_id {self._TRIP_REVERSAL}
-            WHERE e.entry_kind IN ('ISSUE', 'RETURN', 'ST_RET_MKT') AND e.entry_date >= %s AND e.entry_date < %s ORDER BY e.entry_date, e.id
-            """, (start, end_exclusive))
-
-    def trip_gold_sales(self, start, end_exclusive):
-        """The sales of custody gold (GOLD_SALE) by sale date: the agreed total price that entered the custody cash."""
-        return self._fetch_all(
-            f"""
-            SELECT e.id AS entry_id, s.sale_date AS doc_date, s.total_price, s.weight_grams, c.id AS reversal_id
-            FROM market_trip_gold_sales s JOIN market_trip_entries e ON e.id = s.entry_id {self._TRIP_REVERSAL}
-            WHERE s.sale_date >= %s AND s.sale_date < %s ORDER BY s.sale_date, e.id
-            """, (start, end_exclusive))
-
     # ------------------------------------------------------------------ sales and returns (documents by their own effective date)
     def sales_invoices(self, start, end_exclusive):
         """Finalized / voided invoices by `invoice_date`. money_in / money_out are the stored payments exactly as Invoice History sums them; account_delta is what the invoice
@@ -208,7 +190,7 @@ class ReportRepository(BaseRepository):
         the invoice (if any). making_total is NULL where the sale making is unknown. Plain SELECT: the service groups per karat and category."""
         return self._fetch_all(
             """
-            SELECT iv.id AS invoice_id, k.karat_value, il.weight_grams, il.making_total, ii.id AS item_id, ii.category_id, c.code AS category_code,
+            SELECT iv.id AS invoice_id, iv.invoice_date AS doc_date, k.karat_value, il.weight_grams, il.making_total, ii.id AS item_id, ii.category_id, c.code AS category_code,
                    ii.acquisition_making_per_gram AS piece_cost, rc.id AS reversal_id
             FROM invoice_lines il
             JOIN invoices iv ON iv.id = il.invoice_id
@@ -308,58 +290,23 @@ class ReportRepository(BaseRepository):
             WHERE im.occurred_at >= %s AND im.occurred_at < %s ORDER BY im.occurred_at, im.id
             """, (start, end_exclusive))
 
-    def assayed_opening(self, start):
-        row = self._fetch_one("SELECT COALESCE(SUM(grams_delta), 0) AS grams, COALESCE(SUM(eq21_posted_delta), 0) AS posted FROM shop_assayed_stock_movements WHERE created_at < %s", (start,))
-        return row or {"grams": 0, "posted": 0}
-
-    def assayed_movements(self, start, end_exclusive):
-        return self._fetch_all(
-            """
-            SELECT s.id, s.item_entry_id, s.item_line_no, s.movement_type, s.grams_delta, s.eq21_posted_delta, s.source_entry_id, s.correction_id, s.created_at,
-                   l.fineness_permille, e.trip_id, e.entry_no
-            FROM shop_assayed_stock_movements s
-            JOIN market_trip_book_lines l ON l.entry_id = s.item_entry_id AND l.line_no = s.item_line_no
-            JOIN market_trip_entries e ON e.id = s.source_entry_id
-            WHERE s.created_at >= %s AND s.created_at < %s ORDER BY s.created_at, s.id
-            """, (start, end_exclusive))
-
-    def book_groups_current(self):
-        """The CURRENT effective BOOK source of every trip, grouped (the Gold Position's own display read: one aggregate query, snapshot reversal lookup, no lock)."""
-        from repositories.market_trip_repository import MarketTripRepository
-        return MarketTripRepository(self.connection).book_groups_by_trip()
-
-    def book_effective_reconciliations(self):
-        """The effective (not reversed) BK_RECON entries with their stored record - the Gold Position's own display read (a database before 057 returns entries with NULL record
-        fields, which the merge refuses; it never reads them as zero)."""
-        from repositories.market_trip_repository import MarketTripRepository
-        return MarketTripRepository(self.connection).effective_reconciliations_display()
-
-    def book_recon_documents(self, start, end_exclusive):
-        """Every BK_RECON document dated inside the period, reversed ones too, with its record figures and its CURRENT reversal (display, no lock)."""
-        exists = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'market_trip_reconciliations'")
-        if exists and int(exists["n"]):
-            record, join = "r.b_star, r.loss_posted, r.rounding_settlement", "LEFT JOIN market_trip_reconciliations r ON r.entry_id = e.id"
-        else:
-            record, join = "NULL AS b_star, NULL AS loss_posted, NULL AS rounding_settlement", ""
+    def trip_gold_legs(self, start, end_exclusive):
+        """The physical gold legs of the custody entries that move scrap between the shop and a market custody (ISSUE out, RETURN / ST_RET_MKT back), by entry date, per karat."""
         return self._fetch_all(
             f"""
-            SELECT e.id AS entry_id, e.trip_id, e.entry_no, e.entry_date, {record}, c.id AS reversal_id
-            FROM market_trip_entries e {join}
-            LEFT JOIN transaction_corrections c ON c.source_type = 'MARKET_TRIP_ENTRY' AND c.source_id = e.id AND c.correction_type = 'FULL_REVERSAL'
-            WHERE e.entry_kind = 'BK_RECON' AND e.entry_date >= %s AND e.entry_date < %s ORDER BY e.entry_date, e.id
+            SELECT e.id AS entry_id, e.trip_id, e.entry_no, e.entry_kind, e.entry_date AS doc_date, k.karat_value, g.weight_grams, c.id AS reversal_id
+            FROM market_trip_entry_gold g JOIN market_trip_entries e ON e.id = g.entry_id JOIN karats k ON k.id = g.karat_id {self._TRIP_REVERSAL}
+            WHERE e.entry_kind IN ('ISSUE', 'RETURN', 'ST_RET_MKT') AND e.entry_date >= %s AND e.entry_date < %s ORDER BY e.entry_date, e.id
             """, (start, end_exclusive))
 
-    def book_lines(self, end_exclusive):
-        """Every BOOK line of entries dated before `end_exclusive` (opening / period / closing are derived in the service) with the reversal of its entry, if any."""
+    def trip_gold_sales(self, start, end_exclusive):
+        """The sales of custody gold (GOLD_SALE) by sale date: the agreed total price that entered the custody cash."""
         return self._fetch_all(
-            """
-            SELECT l.entry_id, l.line_no, l.trip_id, e.entry_no, e.entry_kind, e.entry_date, e.occurred_at, l.direction, l.weight_grams, l.basis, l.karat_value,
-                   l.fineness_permille, l.eq21_posted, l.signed_eq21_posted, c.id AS reversal_id
-            FROM market_trip_book_lines l
-            JOIN market_trip_entries e ON e.id = l.entry_id
-            LEFT JOIN transaction_corrections c ON c.source_type = 'MARKET_TRIP_ENTRY' AND c.source_id = e.id AND c.correction_type = 'FULL_REVERSAL'
-            WHERE e.entry_date < %s ORDER BY e.entry_date, l.entry_id, l.line_no
-            """, (end_exclusive,))
+            f"""
+            SELECT e.id AS entry_id, e.trip_id, e.entry_no, s.sale_date AS doc_date, s.total_price, s.weight_grams, c.id AS reversal_id
+            FROM market_trip_gold_sales s JOIN market_trip_entries e ON e.id = s.entry_id {self._TRIP_REVERSAL}
+            WHERE s.sale_date >= %s AND s.sale_date < %s ORDER BY s.sale_date, e.id
+            """, (start, end_exclusive))
 
     def marketer_gold(self, end_exclusive):
         """Every marketer 21K gold movement created before `end_exclusive` (the entitlement ledger; opening and period are derived in the service)."""
@@ -482,7 +429,7 @@ class ReportRepository(BaseRepository):
             if ledger not in ledgers:
                 continue
             parts.append(f"""
-            SELECT '{ledger}' AS ledger, m.{column} AS account_id, t.code AS type_code, t.name AS type_name, m.amount_delta AS amount, m.transfer_group_id, m.reference_type, m.reference_id,
+            SELECT '{ledger}' AS ledger, m.{column} AS account_id, t.code AS type_code, t.name AS type_name, m.amount_delta AS amount, m.occurred_at, m.transfer_group_id, m.reference_type, m.reference_id,
                    fo.category AS category, c.source_type AS correction_source, fo2.category AS corrected_category, fo2.operation_type AS corrected_operation_type
             FROM {movements} m JOIN {types} t ON t.id = m.movement_type_id
             LEFT JOIN financial_operations fo ON m.reference_type = 'FINANCIAL_OPERATION' AND fo.id = m.reference_id

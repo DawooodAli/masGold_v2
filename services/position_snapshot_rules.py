@@ -36,7 +36,7 @@ def suppliers_eq21(rows):
 def build_snapshot(summary, supplier_rows, cash, bank):
     """summary = GoldPositionService.position()["summary"]; returns the snapshot figures (parts, total, unknown grams, cash, bank)."""
     parts = {"gold_shop_eq21": _q(summary["shop_eq21"]), "gold_custody_eq21": _q(summary["custody_eq21"]),
-             "gold_intermediary_eq21": _q(summary["intermediary_eq21"]), "gold_book_eq21": _q(summary["book_eq21"]),
+             "gold_intermediary_eq21": _q(summary["intermediary_eq21"]), "gold_book_eq21": Decimal("0.000"),
              "gold_suppliers_eq21": suppliers_eq21(supplier_rows)}
     return {**parts, "gold_total_eq21": sum(parts.values(), Decimal(0)), "unknown_grams": _q(summary.get("unknown_grams") or 0),
             "cash_egp": _money(cash), "bank_egp": _money(bank)}

@@ -12,7 +12,7 @@ import unittest
 
 from repositories.market_trip_repository import MarketTripRepository
 from services.correction_service import CorrectionError
-from services.market_trip_book_service import MarketTripBookService
+from services.market_trip_service import MarketTripService as MarketTripBookService
 from services.market_trip_service import TripError
 import tests.test_market_trip_book_mysql as shared_module        # a MODULE alias: importing the TestCase class by name would make unittest collect its 19 tests here too
 from tests.test_market_trip_book_mysql import DATE, TARGET

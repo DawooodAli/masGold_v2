@@ -102,8 +102,6 @@ class CallSiteAuditTests(unittest.TestCase):
                   ("services/category_cost_service.py", "costs"),                       # SETTINGS_MANAGE (the category cost list of the Settings card, 070)
                   ("services/cash_category_service.py", "categories"),                # SETTINGS_MANAGE (the category list of the Settings card, 069)
                   ("services/report_service.py", "__call__"),                          # the report's rights, re-read per request by `_Gate` (REPORTS_VIEW + the report's own view right, packet26/27)
-                  ("services/market_trip_book_service.py", "book_report"),            # MARKET_TRIP_MANAGE (059 read-only gain / reconciliation report)
-                  ("services/market_trip_book_service.py", "closure_preview"),       # MARKET_TRIP_MANAGE (059 read-only closure readiness)
                   ("services/market_trip_service.py", "preview_settle_melt"),         # MARKET_TRIP_MANAGE (060 read-only figures of a melt before it is recorded)
                   ("services/marketer_custody_service.py", "account"),                  # INTERMEDIARY_HOLDING_VIEW (marketer account, read-only)
                   ("services/marketer_custody_service.py", "marketers"),                # INTERMEDIARY_HOLDING_VIEW (marketer list, read-only)
@@ -123,9 +121,6 @@ class CallSiteAuditTests(unittest.TestCase):
                   ("services/market_trip_service.py", "context"),                  # MARKET_TRIP_MANAGE (entry dialog data)
                   ("services/market_trip_service.py", "trips"),                    # MARKET_TRIP_MANAGE (trip list)
                   ("services/market_trip_service.py", "trip_page"),                # MARKET_TRIP_MANAGE (paginated active / archived trip list, read-only)
-                  ("services/market_trip_book_service.py", "book_preview"),        # MARKET_TRIP_MANAGE (BOOK dialog preview, read-only)
-                  ("services/market_trip_book_service.py", "reconciliation_approval_preview"), # approval dialog, read-only
-                  ("services/market_trip_book_service.py", "reconciliation_preview"),   # MARKET_TRIP_MANAGE (R1 read-only reconciliation preview of a BOOK trip: snapshot reads, no write)
                   ("services/market_trip_service.py", "trip_detail"),              # MARKET_TRIP_MANAGE (custody and history)
                   ("services/market_trip_service.py", "shop_lots"),                # MARKET_TRIP_MANAGE (shop-side lot stock)
                   ("services/market_trip_service.py", "sale_price_check"),         # MARKET_TRIP_MANAGE (read-only sale price preview)
@@ -173,8 +168,6 @@ class CallSiteAuditTests(unittest.TestCase):
         writers = ("insert", "update_", "delete", "post", "lock", "write", "record", "reverse", "close", "reopen", "commit")
         cases = (
             ("services/market_trip_service.py", "trip_page", {"PERMISSION"}),
-            ("services/market_trip_book_service.py", "book_preview", {"PERMISSION"}),
-            ("services/market_trip_book_service.py", "reconciliation_preview", {"PERMISSION"}),
             ("services/market_trip_service.py", "supplier_settlement_sources", {"PERMISSION", "GOLD_SETTLE_PERMISSION"}),
             ("services/holding_settlement_service.py", "settlement_sources", {"SETTLE_PERMISSION", "MANAGE_PERMISSION"}),
         )

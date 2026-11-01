@@ -68,10 +68,9 @@ class DisplayFormTests(unittest.TestCase):
                 self.assertIsNone(LOCKING.search(sql), (name, sql))
                 self.assertIn("transaction_corrections", sql, name)                   # the reversal filter is still there, as a plain snapshot lookup
 
-    def test_the_display_form_covers_every_query_of_the_custody_including_the_book_trades(self):
+    def test_the_display_form_covers_every_query_of_the_custody(self):
         cash = recorded(lambda r: r.custody_cash(5, current=False))
-        self.assertEqual(len(cash), 5)
-        self.assertTrue(any("market_trip_book_trades" in s for s in cash))
+        self.assertEqual(len(cash), 4)
         gold = recorded(lambda r: r.custody_gold(5, current=False))
         self.assertEqual(len(gold), 7)
 
@@ -119,7 +118,7 @@ class CallerAuditTests(unittest.TestCase):
 
     def test_the_service_helper_is_called_without_current_only_by_display_functions(self):
         seen = set()
-        for path in ("services/market_trip_service.py", "services/market_trip_book_service.py"):
+        for path in ("services/market_trip_service.py",):
             for function, line, keywords in self.calls(path, "_custody"):
                 current = keywords.get("current")
                 if isinstance(current, ast.Constant) and current.value is True:
@@ -129,7 +128,7 @@ class CallerAuditTests(unittest.TestCase):
         self.assertTrue(seen)
 
     def test_every_direct_repository_custody_read_in_services_is_explicit_or_the_locking_default(self):
-        for path in ("services/market_trip_service.py", "services/market_trip_book_service.py", "services/correction_service.py", "services/intermediary_holding_service.py"):
+        for path in ("services/market_trip_service.py", "services/correction_service.py", "services/intermediary_holding_service.py"):
             for attr in ("custody_cash", "custody_gold", "custody_lots"):
                 for function, line, keywords in self.calls(path, attr):
                     current = keywords.get("current")
