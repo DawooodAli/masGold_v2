@@ -113,7 +113,11 @@ class FinancialAccountRepository(BaseRepository):
                      WHEN fo.id IS NOT NULL THEN fo.operation_type
                      WHEN o.movement_code = 'OPENING_BALANCE' THEN 'OPENING_BALANCE'
                      ELSE 'UNKNOWN' END AS source_type,
-                CASE WHEN i.id IS NOT NULL THEN IF(o.amount_delta > 0, 'SALE', 'OLD_GOLD_PURCHASE')
+                CASE WHEN i.id IS NOT NULL THEN IF(o.amount_delta > 0,
+                         IF(EXISTS (SELECT 1 FROM invoice_lines bl WHERE bl.invoice_id = i.id AND bl.line_type = 'BUY_OLD_GOLD')
+                            AND EXISTS (SELECT 1 FROM invoice_lines sl WHERE sl.invoice_id = i.id
+                                        AND sl.line_type IN ('SELL_INVENTORY', 'SELL_UNIDENTIFIED', 'SELL_OLD_GOLD')),
+                            'MIXED', 'SALE'), 'OLD_GOLD_PURCHASE')
                      WHEN x.id IS NOT NULL THEN 'EXCHANGE'
                      WHEN r.id IS NOT NULL THEN 'RETURN'
                      WHEN cs.id IS NOT NULL THEN IF(o.amount_delta > 0, 'CUSTOMER_PAYMENT', 'CUSTOMER_PAYOUT')

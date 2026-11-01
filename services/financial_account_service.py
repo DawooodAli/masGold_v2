@@ -37,7 +37,7 @@ CASH_ROWS = 200                         # per table on the cash screen (the peri
 
 # The ONE employee-facing name of every cash movement (read-model label_key → Arabic). Never built in QML.
 CASH_LABELS = {
-    "SALE": "بيع", "OLD_GOLD_PURCHASE": "شراء كسر", "EXCHANGE": "استبدال", "RETURN": "مرتجع",
+    "SALE": "بيع", "MIXED": "بيع مع كسر", "OLD_GOLD_PURCHASE": "شراء كسر", "EXCHANGE": "استبدال", "RETURN": "مرتجع",
     "CUSTOMER_PAYMENT": "سداد عميل", "CUSTOMER_PAYOUT": "دفع لعميل", "DEPOSIT": "عربون",
     "DEPOSIT_REFUND": "استرداد عربون", "SUPPLIER_PAYMENT": "دفعة مصنعيات مورد",
     "TRIP_CASH_ISSUE": "إخراج عهدة السوق", "TRIP_CASH_RETURN": "رجوع عهدة السوق", "REVERSAL": "إلغاء عملية",

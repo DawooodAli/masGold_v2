@@ -21,7 +21,7 @@ def reference_text(row):
     ledger movement, composed from the stored references only (no guessing; empty when nothing is stored)."""
     reference, invoice = row.get("reference") or "", row.get("invoice_number") or ""
     kind = row.get("kind") or ""
-    if kind in ("SALE", "OLD_GOLD_PURCHASE"):
+    if kind in ("SALE", "MIXED", "OLD_GOLD_PURCHASE"):
         return f"فاتورة {ltr(invoice or reference)}" if (invoice or reference) else ""
     if kind in ("CORRECTION", "REVERSAL"):
         target = row.get("corrected_reference") or invoice
