@@ -76,7 +76,7 @@ class Service:
     def customer_balances(self, search="", *, _expected_actor=None):
         self.calls.append(("customer_balances", search))
         rows = [r for r in self.customer_rows if search in r["name"]]
-        return {"owes": [r for r in rows if r["side"] == "owes"], "owed": [r for r in rows if r["side"] == "owed"]}
+        return {"owes": [r for r in rows if r["side"] == "owes"], "owed": [r for r in rows if r["side"] == "owed"], "settled": []}
 
     def customer_cash(self, direction, customer_id, account_key, amount, note, request_key, *, _expected_actor=None):
         self.calls.append(("customer_cash", direction, customer_id, account_key, amount, request_key))

@@ -390,22 +390,28 @@ class FinancialAccountRepository(BaseRepository):
         return Decimal(str(row["balance"]))
 
     def customer_balances(self, search, limit):
-        """Customers with a non-zero balance (name / phone / code search): ([they owe us], [we owe them]), one statement, each side capped at `limit`."""
-        text = (search or "").strip()          # newest movement first (owner 2026-10-28), never by name
-        like = "%" + "".join("!" + c if c in "%_!" else c for c in text) + "%"
+        """Customers by balance (name / phone / code search): ([they owe us], [we owe them], [settled]), one statement, each list capped at `limit`. Without a search only customers with a
+        non-zero balance are listed; WHEN SEARCHING a customer whose balance is zero is listed too (owner 2026-11-01: cash in / out is entered for him, so he must be found)."""
+        from utils.search_normalization import mysql_search_expression, normalize_mobile_search, normalize_search_text
+        raw = (search or "").strip()          # newest movement first (owner 2026-10-28), never by name
+        escape = lambda value: "%" + "".join("!" + c if c in "%_!" else c for c in value) + "%"
+        text, mobile = normalize_search_text(raw), normalize_mobile_search(raw)        # the Customers screen's Arabic folding: هبة = هبه, أحمد = احمد, marks ignored
+        name_sql, name_params = mysql_search_expression("b.name")
+        mobile_sql, mobile_params = mysql_search_expression("b.mobile", mobile=True)
         rows = self._fetch_all(
-            """
+            f"""
             SELECT b.customer_id, b.customer_code, b.name, b.mobile, b.balance,
                    (SELECT MAX(t.occurred_at) FROM customer_transactions t WHERE t.customer_id = b.customer_id) AS last_at,
                    (SELECT MAX(t.id) FROM customer_transactions t WHERE t.customer_id = b.customer_id) AS last_id
             FROM vw_customer_balances b JOIN customers c ON c.id = b.customer_id
-            WHERE b.balance <> 0 AND c.is_active = TRUE
-              AND (%s = '' OR b.name LIKE %s ESCAPE '!' OR b.mobile LIKE %s ESCAPE '!' OR b.customer_code LIKE %s ESCAPE '!')
+            WHERE (b.balance <> 0 OR %s) AND c.merged_into_customer_id IS NULL
+              AND (%s OR {name_sql} LIKE %s ESCAPE '!' OR (%s AND {mobile_sql} LIKE %s ESCAPE '!') OR b.customer_code LIKE %s ESCAPE '!')
             ORDER BY last_at DESC, last_id DESC, b.customer_id DESC
-            """, (text, like, like, like))
+            """, (bool(raw), not raw, *name_params, escape(text), bool(mobile), *mobile_params, escape(mobile), escape(raw)))
         owes = [r for r in rows if Decimal(str(r["balance"])) > 0][:limit]
         owed = [r for r in rows if Decimal(str(r["balance"])) < 0][:limit]
-        return owes, owed
+        settled = [r for r in rows if Decimal(str(r["balance"])) == 0][:limit]
+        return owes, owed, settled
 
     def operation_category(self, operation_id):
         return self._fetch_one("SELECT id, operation_type, category FROM financial_operations WHERE id = %s", (int(operation_id),))

@@ -180,7 +180,10 @@ class CustomerCashTests(FinancialTestCase):
         self.fin.customer_cash("IN", "7", "CASH:1", "1000", "", str(uuid4()))
         lists = self.fin.customer_balances("عميل")
         self.assertEqual(([r["name"] for r in lists["owed"]], lists["owes"], lists["owed"][0]["amount"]), (["عميل أ"], [], "700.00"))
-        self.assertEqual(self.fin.customer_balances("لا يوجد"), {"owes": [], "owed": []})
+        self.assertEqual(self.fin.customer_balances("لا يوجد"), {"owes": [], "owed": [], "settled": []})
+        self.fin.customer_cash("OUT", "7", "CASH:1", "700", "", str(uuid4()))                          # back to zero: hidden without a search, found when searched (owner 2026-11-01)
+        self.assertEqual(self.fin.customer_balances("")["owes"] + self.fin.customer_balances("")["owed"], [])
+        self.assertEqual([r["name"] for r in self.fin.customer_balances("عميل")["settled"]], ["عميل أ"])
 
     def test_the_ordinary_reversal_takes_the_statement_row_back_too(self):
         before = self.cash()

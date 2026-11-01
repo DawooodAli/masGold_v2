@@ -123,8 +123,8 @@ class FinRepo:
             sums[str(row[0])] = sums.get(str(row[0]), D("0.00")) + row[1]
         rows = [{"customer_id": cid, "customer_code": f"C{int(cid):06d}", "name": self.store.customers_list[int(cid)]["name"], "mobile": "", "balance": b,
                  "last_at": datetime(2026, 10, 28, 12, 0), "last_id": 1}
-                for cid, b in sums.items() if b and int(cid) in self.store.customers_list and search in self.store.customers_list[int(cid)]["name"]]
-        return [r for r in rows if r["balance"] > 0][:limit], [r for r in rows if r["balance"] < 0][:limit]
+                for cid, b in sums.items() if (b or search) and int(cid) in self.store.customers_list and search in self.store.customers_list[int(cid)]["name"]]
+        return [r for r in rows if r["balance"] > 0][:limit], [r for r in rows if r["balance"] < 0][:limit], [r for r in rows if r["balance"] == 0][:limit]
 
     def insert_advance(self, *, kind, employee_id, customer_id, amount, operation_id, note, actor, now, direction="LEND", lender_name=None):
         advances = self._advances()
@@ -601,3 +601,20 @@ class StatementQueryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CustomerCashSearchFoldingTests(unittest.TestCase):
+    """The customer cash lists search with the Customers screen's Arabic folding (هبة = هبه), never a raw LIKE on the stored spelling."""
+
+    def test_the_name_search_is_folded_and_inactive_customers_with_a_balance_are_not_hidden(self):
+        from repositories.financial_account_repository import FinancialAccountRepository
+        seen = {}
+        repo = FinancialAccountRepository.__new__(FinancialAccountRepository)
+        repo._fetch_all = lambda query, params=(): seen.update(query=query, params=params) or []
+        repo.customer_balances("هبه  سَعيد", 50)
+        self.assertIn("REGEXP_REPLACE", seen["query"])
+        self.assertNotIn("is_active", seen["query"])
+        self.assertIn("%هبه سعيد%", seen["params"])                       # the typed text is folded the same way the stored name is
+        self.assertEqual(seen["params"][:2], (True, False))                # searching lists zero balances too; a non-empty search is not the 'no filter' branch
+        repo.customer_balances("", 50)
+        self.assertEqual(seen["params"][:2], (False, True))

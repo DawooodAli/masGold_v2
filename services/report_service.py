@@ -1501,6 +1501,7 @@ class ReportService:
             season_rows.append({"season": name, "years": len(entry["years"]), "uplift": f"×{entry['mean']:.2f}" if entry["mean"] is not None else "غير مقاس",
                                 "detail": " • ".join(f"{y['year']}: ×{y['uplift']:.2f}" for y in entry["years"]) or "التاريخ لا يغطي الموسم وما حوله",
                                 "next": f"{window['start']:%Y-%m-%d} → {window['end']:%Y-%m-%d}" if window else "—"})
+        tables.insert(2, self._month_vs_last_year(repo, today))
         weekday = season_math.weekday_pattern(values, first_day, last_day)
         parts = season_math.month_pattern(values, first_day, last_day)
         tables.append(table("seasons", "مواسم الأعياد والمناسبات (متوسط البيع اليومي مقابل الأيام المحيطة)",
@@ -1520,6 +1521,30 @@ class ReportService:
         meaning.append("مواسم الأعياد وعيد الأم تُحسب على أيام كل سنة الفعلية (التقويم الهجري الجدولي، قد يختلف يومًا أو يومين عن الرؤية، ونوافذها أسبوع أو أكثر): متوسط البيع اليومي داخل النافذة ÷ متوسط الأيام المحيطة بها (28 يومًا قبلها وبعدها دون أي نافذة موسم أخرى). "
                        "لكل موسم سنتان على الأكثر من التاريخ الحالي، فالأرقام مؤشر لا وعد. النمط الأسبوعي والشهري من الأيام التي فيها أوزان معروفة حتى أمس؛ اليوم الذي لا فواتير فيه صفر حقيقي.")
         return {"meaning": meaning, "tables": tables, "totals": cards}
+
+    def _month_vs_last_year(self, repo, today):
+        """The month so far against the SAME span of the same month LAST YEAR, per KARAT (never summed across karats): sold grams and lines, the previous grams and the change (the home-page card moved here, owner 2026-11-01)."""
+        first = today.replace(day=1)
+        previous_first = first.replace(year=first.year - 1)
+        next_month = (previous_first.replace(day=28) + timedelta(days=4)).replace(day=1)
+        previous_end = min(previous_first + timedelta(days=today.day), next_month)
+        now = {int(r["karat_value"]): r for r in repo.sold_by_karat(first, today + timedelta(days=1))}
+        before = {int(r["karat_value"]): Decimal(str(r["grams"])) for r in repo.sold_by_karat(previous_first, previous_end)}
+        rows = []
+        for karat in sorted(set(now) | set(before)):
+            grams = Decimal(str(now[karat]["grams"])) if karat in now else Decimal(0)
+            last = before.get(karat, Decimal(0))
+            if last:
+                percent = (grams - last) / last * 100
+                change = f"{'▲' if percent > 0 else '▼' if percent < 0 else '='} {abs(percent):.0f}%"
+            else:
+                change = "لا مبيعات في الفترة المقابلة"
+            rows.append({"karat": f"عيار {karat}", "grams": grams.quantize(Decimal("0.001")), "pieces": int(now[karat]["pieces"]) if karat in now else 0,
+                         "previous": last.quantize(Decimal("0.001")), "change": change})
+        title = f"مبيعات شهر {today:%m/%Y} حتى يوم {today.day} مقابل نفس الفترة من السنة الماضية (لكل عيار)"
+        return table("month_vs_year", title, [col("karat", "العيار"), col("grams", "الجرامات المباعة", "grams"), col("pieces", "عدد البنود", "count"),
+                                              col("previous", "نفس الفترة السنة الماضية", "grams"), col("change", "التغير")], rows,
+                     note="" if rows else "لا مبيعات في الفترتين.")
 
     def _demand_daily(self, repo):
         """The sold grams per DAY: the old shop's imported history up to the day before the owner's initial balance, then the new system from that day. Returns (daily, legacy rows or None, opening date or None)."""

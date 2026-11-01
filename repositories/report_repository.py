@@ -154,6 +154,21 @@ class ReportRepository(BaseRepository):
             ORDER BY iv.invoice_date, iv.id, il.id
             """, (start, end_exclusive))
 
+    def sold_by_karat(self, start, end_exclusive):
+        """Grams and lines SOLD (sale, unidentified sale and old-gold sale lines of FINALIZED, not fully reversed invoices dated in [start, end_exclusive)) per karat."""
+        return self._fetch_all(
+            """
+            SELECT k.karat_value, COALESCE(SUM(il.weight_grams), 0) AS grams, COUNT(*) AS pieces
+            FROM invoice_lines il
+            JOIN invoices iv ON iv.id = il.invoice_id
+            JOIN karats k ON k.id = il.karat_id
+            WHERE il.line_type IN ('SELL_INVENTORY', 'SELL_UNIDENTIFIED', 'SELL_OLD_GOLD') AND iv.invoice_status = 'FINALIZED'
+              AND iv.invoice_date >= %s AND iv.invoice_date < %s
+              AND NOT EXISTS (SELECT 1 FROM transaction_corrections c WHERE c.source_type = 'INVOICE' AND c.source_id = iv.id AND c.correction_type = 'FULL_REVERSAL')
+            GROUP BY k.karat_value
+            ORDER BY k.karat_value
+            """, (start, end_exclusive))
+
     def scrap_purchases(self, start, end_exclusive):
         """COUNTED customer scrap purchases (and their reversals) per karat in the period: the number of purchase movements and the signed grams."""
         return self._fetch_all(

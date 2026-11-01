@@ -309,25 +309,25 @@ Item {
                     Empty { value: "جاري التحميل..."; visible: !dashboard.vm || !dashboard.vm.ready }
                 }
 
-                // --- مبيعات الشهر (billing permission): the month so far per karat against the same span of the same month LAST YEAR (owner request 2026-10-25)
+                // --- أسعار العملات (GoldTimo /rates, public market prices: every logged-in user): how many pounds one unit of each chosen currency is worth. Choices live in Settings.
                 Card {
-                    objectName: "monthCard"
-                    visible: dashboard.sales
-                    title: dashboard.vm ? dashboard.vm.monthTitle : "مبيعات الشهر"
-                    accent: theme.priceSell
+                    objectName: "ratesCard"
+                    visible: !!dashboard.vm && dashboard.vm.currencyRates.offered
+                    title: "أسعار العملات (بالجنيه)"
+                    accent: theme.priceBuy
                     Repeater {
-                        model: dashboard.vm ? dashboard.vm.monthByKarat : []
-                        delegate: ColumnLayout {
-                            required property var modelData
-                            Layout.fillWidth: true
-                            spacing: 0
-                            Line { label: "عيار " + modelData.karat + "  •  " + modelData.pieces; value: modelData.grams; strong: true
-                                   valueColor: theme.balanceKaratColor(modelData.karat) }
-                            Txt { Layout.fillWidth: true; value: modelData.versus; font.pixelSize: theme.fontCaption + dashboard.boost
-                                  color: modelData.direction === "up" ? theme.green : modelData.direction === "down" ? theme.amber : theme.textMuted }
-                        }
+                        model: dashboard.vm ? dashboard.vm.currencyRates.rows : []
+                        delegate: Line { required property var modelData
+                                         objectName: "rateRow_" + modelData.code
+                                         label: modelData.name + "  •  " + modelData.code; value: modelData.price; strong: true }
                     }
-                    Empty { objectName: "monthEmpty"; value: "لا مبيعات هذا الشهر بعد"; visible: !dashboard.vm || dashboard.vm.monthByKarat.length === 0 }
+                    Empty { objectName: "ratesEmpty"; Layout.fillWidth: true; wrapMode: Text.WordWrap
+                            value: dashboard.vm && dashboard.vm.currencyRates.error.length > 0 ? dashboard.vm.currencyRates.error : "لا توجد أسعار عملات الآن"
+                            visible: !!dashboard.vm && dashboard.vm.currencyRates.rows.length === 0 }
+                    Txt { objectName: "ratesUpdated"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost
+                          visible: !!dashboard.vm && dashboard.vm.currencyRates.rows.length > 0
+                          value: "GoldTimo • آخر تحديث " + (dashboard.vm ? dashboard.vm.currencyRates.updated : "")
+                                 + (dashboard.vm && dashboard.vm.currencyRates.error.length > 0 ? " • " + dashboard.vm.currencyRates.error : "") }
                 }
 
                 // --- أرصدة العملاء (customers permission): who owes and who is owed, from the customer ledger.

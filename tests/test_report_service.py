@@ -68,6 +68,10 @@ class FakeRepo:
     # ---- demand: the old shop sold 100 g every month from 2025-02 to 2026-08 (200 g in both Februaries) plus a row AFTER the opening that must be ignored; the new system sold 120 g on 2026-09-10
     opening = date(2026, 9, 1)
 
+    def sold_by_karat(self, start, end_exclusive):
+        FakeRepo.calls.append(("sold_by_karat", start, end_exclusive))
+        return [{"karat_value": 21, "grams": D("120.500"), "pieces": 5}] if start.year == 2026 else [{"karat_value": 21, "grams": D("100.000"), "pieces": 4}]
+
     def sales_history_legacy(self):
         rows = [{"day": date(2025 + (m - 1) // 12, (m - 1) % 12 + 1, 15), "bills": 10, "bills_with_weight": 10, "grams": D("200") if (m - 1) % 12 + 1 == 2 else D("100")} for m in range(2, 21)]
         return rows + [{"day": date(2026, 9, 15), "bills": 5, "bills_with_weight": 5, "grams": D("9999")}]
@@ -1330,6 +1334,14 @@ class DemandTests(Case):
         self.assertEqual(monthly["سبتمبر 2026"]["grams"], D("120.000"))                              # the 9,999 g legacy row after the opening is ignored
         self.assertEqual(monthly["سبتمبر 2026"]["yoy"], "+20.0%")                                     # against 100 g of September 2025
         self.assertEqual(monthly["فبراير 2026"]["yoy"], "+0.0%")                                      # 200 g both Februaries
+
+    def test_the_month_so_far_is_compared_with_the_same_span_last_year_per_karat(self):
+        rows = self.rows(self.service.run("demand", {}), "month_vs_year")
+        self.assertEqual(rows, [{"karat": "عيار 21", "grams": D("120.500"), "pieces": 5, "previous": D("100.000"), "change": "▲ 20%"}])         # 120.5 against 100 g
+        spans = [(c[1], c[2]) for c in FakeRepo.calls if c[0] == "sold_by_karat"][-2:]
+        first, today = date(2026, 9, 1), self.service._today()
+        self.assertEqual(spans[0][0], today.replace(day=1))
+        self.assertEqual(spans[1][0], today.replace(day=1, year=today.year - 1))                      # the same month last year, from its first day
 
     def test_cards_seasonal_indices_and_a_low_confidence_forecast_with_hand_numbers(self):
         result = self.service.run("demand", {})

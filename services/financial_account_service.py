@@ -424,13 +424,13 @@ class FinancialAccountService:
                 self._authorization.require_permission_read(connection, actor, OPERATE)
                 raise _Done(self._repository(connection).customer_balances(search, CASH_ROWS))
         except _Done as done:
-            owes, owed = done.args[0]
+            owes, owed, settled = done.args[0]
 
         def row(r):
             return {"customer_id": str(r["customer_id"]), "code": r["customer_code"], "name": r["name"], "mobile": r.get("mobile") or "",
                     "balance": str(r["balance"]), "amount": str(abs(Decimal(str(r["balance"])))),
                     "last_at": "" if r.get("last_at") is None else r["last_at"].strftime("%Y-%m-%d %H:%M")}
-        return {"owes": [row(r) for r in owes], "owed": [row(r) for r in owed]}
+        return {"owes": [row(r) for r in owes], "owed": [row(r) for r in owed], "settled": [row(r) for r in settled]}
 
     # ------------------------------------------------------------ temporary advances / custody (074)
     def open_advance(self, cash_key, kind, party_id, amount, note, request_key, *, _expected_actor=None):

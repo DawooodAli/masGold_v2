@@ -26,10 +26,13 @@ class SupplierRepository(BaseRepository):
             where.append("s.is_supplier = 1")
         elif role == "INTERMEDIARY":
             where.append("s.is_intermediary = 1")
-        if search:
-            where.append("(s.name LIKE %s OR s.phone LIKE %s)")
-            like = f"%{search}%"
-            params += [like, like]
+        if search and search.strip():
+            from utils.search_normalization import mysql_search_expression, normalize_mobile_search, normalize_search_text
+            escape = lambda value: "%" + value.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%"
+            name_sql, name_params = mysql_search_expression("s.name")                    # Arabic folding (هبة = هبه, أحمد = احمد), as in Customers
+            phone_sql, phone_params = mysql_search_expression("s.phone", mobile=True)
+            where.append(f"({name_sql} LIKE %s ESCAPE '!' OR s.phone LIKE %s ESCAPE '!' OR {phone_sql} LIKE %s ESCAPE '!')")
+            params += [*name_params, escape(normalize_search_text(search)), escape(search.strip()), *phone_params, escape(normalize_mobile_search(search))]
         if active is not None:
             where.append("s.is_active = %s")
             params.append(1 if active else 0)

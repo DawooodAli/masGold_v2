@@ -27,7 +27,8 @@ class DashboardViewModel(QObject):
     def _service_instance(self):
         if self._service is None:
             from services.dashboard_service import DashboardService
-            self._service = DashboardService(self._session)
+            from services import currency_rates
+            self._service = DashboardService(self._session, currency_rates=lambda: currency_rates.shared().snapshot())
         return self._service
 
     @Slot()
@@ -186,6 +187,14 @@ class DashboardViewModel(QObject):
                          "price": rate(r["price"]) if r["price"] is not None else "السعر غير متاح",
                          "diff": ("" if diff is None else f"{'+' if diff > 0 else ''}{rate(diff)}"), "over": bool(diff is not None and diff > 0)})
         return rows
+
+    # ------------------------------------------------------------ currency rates (GoldTimo /rates; every logged-in user, public market prices)
+    @Property("QVariantMap", notify=changed)
+    def currencyRates(self):
+        data = self._data.get("currency_rates") or {}
+        return {"offered": "currency_rates" in self._data and bool(data.get("enabled", False)), "available": bool(data.get("available")),
+                "rows": [{"code": r["code"], "name": r["name"], "price": rate(r["price"])} for r in data.get("rows", [])],
+                "updated": data.get("updated", ""), "error": data.get("error", "")}
 
     # ------------------------------------------------------------ dead stock (inventory permission)
     @Property("QVariantMap", notify=changed)

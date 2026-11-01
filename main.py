@@ -211,6 +211,9 @@ class ApplicationController(QObject):
         if self.operational_viewmodels.get("stocktakeAdjustVM") is None:
             from app.viewmodels.stocktake_adjust_viewmodel import create_stocktake_adjust_viewmodel
             self.operational_viewmodels["stocktakeAdjustVM"] = create_stocktake_adjust_viewmodel(self.session)
+        if self.operational_viewmodels.get("currencyRatesVM") is None:
+            from app.viewmodels.currency_rates_viewmodel import create_currency_rates_viewmodel
+            self.operational_viewmodels["currencyRatesVM"] = create_currency_rates_viewmodel(self.session)
         if self.operational_viewmodels.get("categoryCostVM") is None:
             from app.viewmodels.category_cost_viewmodel import create_category_cost_viewmodel
             self.operational_viewmodels["categoryCostVM"] = (self._cost_factory or create_category_cost_viewmodel)(self.session)
@@ -494,6 +497,8 @@ def _start_web_engine():
 
 
 def main():
+    from app import error_log
+    error_log.install()                                      # unexpected failures go to %LOCALAPPDATA%\masGold v2\logs\errors.log, not only to a console nobody sees
     _start_web_engine()
     QQuickStyle.setStyle("Material")
     app = QGuiApplication(sys.argv)

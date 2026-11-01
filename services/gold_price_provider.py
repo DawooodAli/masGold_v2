@@ -240,6 +240,64 @@ class GoldTimoProvider:
             return quotes
         raise last
 
+    def fetch_rates(self, *, entered_key=None):
+        """GET /rates (free plan): currency exchange rates against USD, as {"rates": {code: Decimal}, "fetched_at": datetime}. Fetch-only: nothing is stored. The same keys as the price fetch
+        (a refused key moves on to the next); a failure keeps the provider's error code."""
+        config = self._request_config(entered_key)
+        keys = list(config.all_keys) if entered_key is None else [config.api_key]
+        keys = [key for key in keys if key]
+        if not keys:
+            raise ProviderError("GoldTimo API key is not configured.", code="KEY_MISSING")
+        last = None
+        if entered_key is None and len(keys) > 1:                                          # spread the requests over every stored key, like the price refresh does
+            start = next(_ROTATION) % len(keys)
+            keys = keys[start:] + keys[:start]
+        for key in keys:
+            try:
+                return self._get_rates(config, key)
+            except ProviderError as exc:
+                if exc.code not in KEY_FALLTHROUGH_CODES:
+                    raise
+                last = exc
+        raise last
+
+    def _get_rates(self, config, key):
+        deadline = self._monotonic() + config.timeout_seconds
+        request = Request(f"{config.base_url.rstrip('/')}/rates",
+                          headers={"x-api-key": key.strip(), "Accept": "application/json", "User-Agent": "masGold/2 GoldTimoProvider"}, method="GET")
+        try:
+            with self._open(request, timeout=config.timeout_seconds) as response:
+                if response.status != 200:
+                    raise self._http_error(response.status)
+                body = response.read(MAX_RESPONSE_BYTES + 1)
+            if len(body) > MAX_RESPONSE_BYTES:
+                raise ProviderError("GoldTimo response exceeds the size limit.")
+            if self._monotonic() >= deadline:
+                raise ProviderError("GoldTimo request timed out.", code="TIMEOUT")
+            payload = json.loads(body, parse_float=Decimal, parse_int=Decimal, parse_constant=_reject_constant, object_pairs_hook=_unique_object)
+        except HTTPError as exc:
+            raise self._http_error(exc.code) from None                                       # an error body / URL may echo credentials: only the status is kept
+        except TimeoutError:
+            raise ProviderError("GoldTimo request timed out.", code="TIMEOUT") from None
+        except URLError as exc:
+            raise ProviderError("GoldTimo request failed or timed out.", code="TIMEOUT" if isinstance(exc.reason, TimeoutError) else "NETWORK") from None
+        except (OSError, HTTPException):
+            raise ProviderError("GoldTimo request failed or timed out.") from None
+        except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
+            raise QuoteValidationError("GoldTimo returned invalid JSON.", code="INVALID_JSON") from None
+        except (ValueError, UnicodeEncodeError):
+            raise ProviderError("GoldTimo API key has an invalid header format.", code="CONFIGURATION") from None
+        rates = payload.get("rates") if isinstance(payload, dict) else None
+        if not isinstance(rates, dict) or str(payload.get("base", "")).upper() != "USD":
+            raise QuoteValidationError("GoldTimo rates response has an unexpected shape.", code="INVALID_RATES")
+        clean = {}
+        for code, value in rates.items():
+            if isinstance(code, str) and isinstance(value, Decimal) and value.is_finite() and value > 0:
+                clean[code.upper()] = value
+        if "EGP" not in clean:
+            raise QuoteValidationError("GoldTimo rates response has no EGP rate.", code="INVALID_RATES")
+        return {"rates": clean, "fetched_at": self._clock()}
+
     def probe_21(self, *, entered_key=None):
         """Fetch-only diagnostic preflight, never a complete publishable set."""
         return self._fetch_quotes(self._request_config(entered_key), (21,))[0]

@@ -437,11 +437,13 @@ Rectangle {
                 Layout.fillWidth: true; Layout.fillHeight: true; layoutDirection: Qt.RightToLeft; spacing: 10
                 Repeater {
                     model: [{ "objectName": "customerCashOwes", "title": "عليهم فلوس (للمحل)", "tone": theme.red, "side": "owes" },
-                            { "objectName": "customerCashOwed", "title": "لهم فلوس (على المحل)", "tone": theme.blue, "side": "owed" }]
+                            { "objectName": "customerCashOwed", "title": "لهم فلوس (على المحل)", "tone": theme.blue, "side": "owed" },
+                            { "objectName": "customerCashSettled", "title": "رصيدهم صفر", "tone": theme.gold, "side": "settled" }]
                     delegate: Rectangle {
                         id: sideCard
                         required property var modelData
                         Layout.fillWidth: true; Layout.fillHeight: true; Layout.preferredWidth: 1
+                        visible: sideCard.modelData.side !== "settled" || (searchBox.text.length > 0 && sideCard.rows.length > 0)      // a zero balance is listed only while searching
                         // Each side wears its own colour: a stronger frame plus a wash of the tone,
                         // so the IN (blue) and OUT (orange) tables never read as the same box.
                         color: Qt.tint(theme.bgSecondary, Qt.rgba(sideCard.modelData.tone.r,
@@ -450,7 +452,7 @@ Rectangle {
                         radius: theme.radiusSmall
                         border.color: sideCard.modelData.tone
                         border.width: 2
-                        readonly property var rows: !page.vm ? [] : sideCard.modelData.side === "owes" ? page.vm.customerOwes : page.vm.customerOwed
+                        readonly property var rows: !page.vm ? [] : sideCard.modelData.side === "owes" ? page.vm.customerOwes : sideCard.modelData.side === "owed" ? page.vm.customerOwed : page.vm.customerSettled
                         ColumnLayout {
                             anchors.fill: parent; anchors.margins: 8; spacing: 6
                             RowLayout {
@@ -460,7 +462,7 @@ Rectangle {
                                 Txt { objectName: sideCard.modelData.objectName + "Count"; text: sideCard.rows.length + " عميل"; color: theme.textMuted }
                             }
                             Txt { objectName: sideCard.modelData.objectName + "Empty"; visible: sideCard.rows.length === 0; Layout.fillWidth: true
-                                  text: searchBox.text.length > 0 ? "لا يوجد عميل بهذا الاسم هنا." : "لا يوجد."; color: theme.textMuted }
+                                  text: searchBox.text.length > 0 ? "لا يوجد عميل له رصيد (عليه أو له) بهذا الاسم أو الرقم هنا." : "لا يوجد."; color: theme.textMuted }
                             ListView {
                                 id: sideList; objectName: sideCard.modelData.objectName
                                 Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 4

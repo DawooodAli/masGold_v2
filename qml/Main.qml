@@ -5811,6 +5811,82 @@ ApplicationWindow {
         ]
     }
 
+    // Settings → أسعار العملات (GoldTimo /rates): the home-page currency card. It reuses the GoldTimo keys saved above; here: show it or not, how often to refresh and which currencies.
+    component CurrencyRatesSettings: SettingsSectionCard {
+        id: fxCard
+        objectName: "settingsCurrencyRates"
+        sectionTitle: "أسعار العملات (GoldTimo)"
+        accentColor: theme.priceBuy
+        readonly property var vm: typeof currencyRatesVM !== "undefined" ? currencyRatesVM : null
+        visible: !!vm && vm.canManage
+        Component.onCompleted: if (vm && vm.canManage) vm.refresh()
+        function chosenCodes() {
+            var out = []
+            for (var i = 0; i < fxList.count; i++) { var item = fxList.itemAt(i); if (item && item.checked) out.push(item.code) }
+            return out.join(",")
+        }
+        content: [
+            GoldPriceLabel {
+                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                value: "تعرض الرئيسية سعر الجنيه مقابل العملات المختارة من GoldTimo (الخطة المجانية). تستخدم نفس مفتاح GoldTimo المحفوظ أعلاه؛ الحد الأدنى للتحديث 10 دقائق لأن الخطة المجانية 100 طلب في الساعة لكل المفاتيح."
+                color: theme.textMuted; font.pixelSize: 11
+            },
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                CheckBox { id: fxEnabled; objectName: "fxEnabled"; text: "إظهار كارت أسعار العملات في الرئيسية"; font.family: "Cairo"
+                           checked: !!fxCard.vm && fxCard.vm.enabled }
+                Item { Layout.fillWidth: true }
+            },
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                GoldPriceLabel { Layout.preferredWidth: 150; value: "التحديث كل (دقيقة)"; color: theme.textSecondary }
+                GoldPriceInput { id: fxMinutes; objectName: "fxMinutes"; Layout.preferredWidth: 100; Layout.preferredHeight: 34
+                                 text: fxCard.vm ? fxCard.vm.minutes : "30" }
+                Item { Layout.fillWidth: true }
+            },
+            Flow {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                Repeater {
+                    id: fxList
+                    model: fxCard.vm ? fxCard.vm.currencies : []
+                    delegate: CheckBox {
+                        required property var modelData
+                        readonly property string code: modelData.code
+                        objectName: "fxCode_" + modelData.code
+                        text: modelData.name + " (" + modelData.code + ")"; checked: modelData.checked; font.family: "Cairo"
+                    }
+                }
+            },
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                GoldPriceButton {
+                    objectName: "fxSave"; text: "حفظ"; enabled: !!fxCard.vm && !fxCard.vm.busy
+                    onClicked: fxCard.vm.save(fxEnabled.checked, fxMinutes.text, fxCard.chosenCodes())
+                }
+                GoldPriceButton {
+                    objectName: "fxTest"; text: "اختبار الاتصال"; enabled: !!fxCard.vm && !fxCard.vm.busy
+                    onClicked: fxCard.vm.test()
+                }
+                Item { Layout.fillWidth: true }
+            },
+            Repeater {
+                model: fxCard.vm ? fxCard.vm.testRows : []
+                delegate: RowLayout {
+                    required property var modelData
+                    objectName: "fxTestRow_" + modelData.code
+                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                    GoldPriceLabel { Layout.preferredWidth: 170; value: modelData.name + " • " + modelData.code; color: theme.textSecondary }
+                    GoldPriceLabel { value: modelData.price + " ج"; font.bold: true; color: theme.priceBuy }
+                }
+            },
+            GoldPriceLabel {
+                objectName: "fxMessage"; Layout.fillWidth: true; visible: value.length > 0; wrapMode: Text.WordWrap
+                value: fxCard.vm ? fxCard.vm.message + (fxCard.vm.testUpdated.length > 0 ? " • آخر تحديث " + fxCard.vm.testUpdated : "") : ""
+                color: fxCard.vm && fxCard.vm.messageIsError ? theme.priceError : theme.green
+            }
+        ]
+    }
+
     // Settings → الحد الأدنى للمخزون: how many pieces / grams of an item type and karat the owner wants to keep (the inventory alerts list what is below).
     component StockMinLevelSettings: SettingsSectionCard {
         id: levels
@@ -6331,6 +6407,7 @@ ApplicationWindow {
                     }
                 }
                 GoldProviderSettings { id: goldProvider; Layout.fillWidth: true; visible: settingsPageRoot.openSection === "gold" }
+                CurrencyRatesSettings { id: currencyRatesSection; Layout.fillWidth: true; visible: settingsPageRoot.openSection === "gold" && !!currencyRatesSection.vm && currencyRatesSection.vm.canManage }
                 PrintingSettings { id: printingSettings; Layout.fillWidth: true; visible: settingsPageRoot.openSection === "printing" }
                 PasswordSettings { id: passwordSettings; Layout.fillWidth: true; visible: settingsPageRoot.openSection === "password" }
                 SettingsSectionCard {

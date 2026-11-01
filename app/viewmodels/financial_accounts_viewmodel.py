@@ -66,7 +66,7 @@ class FinancialAccountsViewModel(QObject):
         self._filters = {"start": "", "end": "", "label": ""}
         self._detail, self._request_key, self._form = {}, str(uuid4()), False
         self._advances, self._employees, self._advance_key = [], [], str(uuid4())
-        self._cc_owes, self._cc_owed, self._cc_key = [], [], str(uuid4())
+        self._cc_owes, self._cc_owed, self._cc_settled, self._cc_key = [], [], [], str(uuid4())
 
     # ------------------------------------------------------------ plumbing
     def _service_instance(self):
@@ -300,6 +300,11 @@ class FinancialAccountsViewModel(QObject):
         """Customers the shop owes (left table)."""
         return self._cc_owed
 
+    @Property("QVariantList", notify=changed)
+    def customerSettled(self):
+        """Customers whose balance is zero, listed only while a search is typed (cash in / out is entered for them too)."""
+        return self._cc_settled
+
     @Property(bool, notify=changed)
     def customerCashBusy(self):
         return bool({"cc_save", "cc_lists"} & self._busy)
@@ -315,7 +320,7 @@ class FinancialAccountsViewModel(QObject):
         if error:
             self._error = error
             return
-        self._cc_owes, self._cc_owed = result["owes"], result["owed"]
+        self._cc_owes, self._cc_owed, self._cc_settled = result["owes"], result["owed"], result.get("settled", [])
 
     @Slot()
     def prepareCustomerCash(self):

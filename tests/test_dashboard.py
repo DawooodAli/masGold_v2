@@ -152,6 +152,10 @@ def busy_state():
     return state
 
 
+CURRENCY_RATES = {"enabled": True, "available": True, "updated": "12:00", "error": "",
+                  "rows": [{"code": "USD", "name": "دولار أمريكي", "price": "48.52"}, {"code": "SAR", "name": "ريال سعودي", "price": "12.94"}]}
+
+
 def make_service(state, permissions=BILLING):
     session = AppSession()
     session._establish(AuthenticationResult(1, 5, "موظف", permissions, _VERIFIED), int(session.generation))
@@ -161,7 +165,8 @@ def make_service(state, permissions=BILLING):
         yield state
     from tests.auth_fakes import FakeAuthorization
     return DashboardService(session, transaction_factory=transaction, repository=FakeDashboardRepo,
-                            balance_repository=FakeBalanceRepo, report_repository=FakeReportRepo, authorization=FakeAuthorization(session)), session
+                            balance_repository=FakeBalanceRepo, report_repository=FakeReportRepo, authorization=FakeAuthorization(session),
+                            currency_rates=lambda: CURRENCY_RATES), session
 
 
 class DashboardServiceTests(unittest.TestCase):
@@ -441,15 +446,15 @@ class DashboardPageTests(page_harness.InvoicePageTests):
             self.root.setHeight(height)
             QTest.qWait(250)
             page = self.item("dashboardPage")
-            for name in ("monthCard",):
+            for name in ("ratesCard",):
                 item = self.item(name)
                 self.assertTrue(item.property("visible"), f"{name} hidden at {width}x{height}")
                 left = item.mapToItem(page, QPointF(0, 0)).x()
                 self.assertGreaterEqual(left, -1, name)
                 self.assertLessEqual(left + item.property("width"), page.property("width") + 1, name)
             wide = bool(page.property("wide"))                                                               # three columns on a wide page, two on a narrow one
-            rows = ([("priceCard", "priceHintCard", "todayCard"), ("soldWeightCard", "oldGoldCard", "monthCard")] if wide else
-                    [("priceCard", "priceHintCard"), ("todayCard", "soldWeightCard"), ("oldGoldCard", "monthCard")])
+            rows = ([("priceCard", "priceHintCard", "todayCard"), ("soldWeightCard", "oldGoldCard", "ratesCard")] if wide else
+                    [("priceCard", "priceHintCard"), ("todayCard", "soldWeightCard"), ("oldGoldCard", "ratesCard")])
             for row in rows:
                 heights = {name: round(self.item(name).property("height")) for name in row}
                 self.assertEqual(len(set(heights.values())), 1, f"cards of one row differ in height at {width}x{height}: {heights}")
@@ -458,9 +463,9 @@ class DashboardPageTests(page_harness.InvoicePageTests):
                 row1 = {name: self.item(name).mapToItem(page, QPointF(0, 0)).x() for name in ("priceCard", "priceHintCard", "todayCard")}
                 self.assertGreater(row1["priceCard"], row1["priceHintCard"], f"the gold price card is not the rightmost at {width}x{height}")        # the price on the physical right (owner review)
                 self.assertGreater(row1["priceHintCard"], row1["todayCard"])
-                row2 = {name: self.item(name).mapToItem(page, QPointF(0, 0)).x() for name in ("soldWeightCard", "oldGoldCard", "monthCard")}
+                row2 = {name: self.item(name).mapToItem(page, QPointF(0, 0)).x() for name in ("soldWeightCard", "oldGoldCard", "ratesCard")}
                 self.assertGreater(row2["soldWeightCard"], row2["oldGoldCard"])
-                self.assertGreater(row2["oldGoldCard"], row2["monthCard"])
+                self.assertGreater(row2["oldGoldCard"], row2["ratesCard"])
             self.assertGreaterEqual(self.item("invoiceCount").property("font").pixelSize(), 26)             # the key figure is bigger than before
         self.assertEqual(self.warnings, [])
 
@@ -540,7 +545,7 @@ class DashboardPageTests(page_harness.InvoicePageTests):
     def test_dashboard_hides_sales_without_billing_permission(self):
         self.open_dashboard({**self.dashboard.snapshot, "can_see_sales": False, "can_see_balances": True,
                              "customer_balances": []})
-        for name in ("todayCard", "soldWeightCard", "monthCard"):
+        for name in ("todayCard", "soldWeightCard"):
             self.assertFalse(self.item(name).property("visible"), name)
         for name in ("priceCard", "oldGoldCard", "priceHintCard", "customerBalancesCard"):
             self.assertTrue(self.item(name).property("visible"), name)                                   # the price and balance cards are for every user
