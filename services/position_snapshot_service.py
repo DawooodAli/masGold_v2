@@ -3,6 +3,7 @@
 OWNER only: the three gold-position rights (a partial gold figure would mislead) are rechecked in the transaction; the initial balance also needs SETTINGS_MANAGE. The gold parts come from
 `GoldPositionService.position()` (the reviewed consolidated read); the supplier gold, cash and bank are plain ledger sums read in the writing transaction. A DAILY snapshot is taken at most once per
 calendar day (the first time an authorised user opens the application) and only after the initial balance exists; a MANUAL one can be taken any time. Snapshots are insert-only."""
+from contextlib import contextmanager
 from decimal import Decimal, InvalidOperation
 
 from repositories.position_snapshot_repository import PositionSnapshotRepository
@@ -23,10 +24,33 @@ class SnapshotError(ValueError):
         self.code = code
 
 
+@contextmanager
+def snapshot_transaction():
+    """`invoice_transaction` with an explicit REPEATABLE READ snapshot: every plain read of the sheet sees the database as of one instant."""
+    from config.database_config import DatabaseConfig
+    from database.connection import DatabaseConnection
+    connection = DatabaseConnection(DatabaseConfig.from_env()).connect()
+    try:
+        cursor = connection.cursor()
+        try:
+            cursor.execute("SET SESSION innodb_lock_wait_timeout = 10")
+        finally:
+            cursor.close()
+        connection.start_transaction(isolation_level="REPEATABLE READ")
+        yield connection
+        connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
 class PositionSnapshotService:
-    def __init__(self, session, *, transaction_factory=invoice_transaction, repository=PositionSnapshotRepository, authorization=None, position_service=None):
+    def __init__(self, session, *, transaction_factory=invoice_transaction, repository=PositionSnapshotRepository, authorization=None, position_service=None, snapshot_factory=None):
         self._session = session
         self._transaction = transaction_factory
+        self._snapshot = snapshot_factory or (snapshot_transaction if transaction_factory is invoice_transaction else transaction_factory)
         self._repository = repository
         self._authorization = authorization or AuthorizationService(session)
         self._position = position_service or GoldPositionService(session)
@@ -155,8 +179,7 @@ class PositionSnapshotService:
         session_actor = self._actor(_expected_actor)
         if not self.can_snapshot():
             raise PermissionError("لقطة الرصيد للمالك فقط.")
-        summary = self._position.position(_expected_actor=session_actor)["summary"]
-        with self._transaction() as connection:
+        with self._snapshot() as connection:                         # ONE REPEATABLE READ snapshot for the gold position, the supplier gold, the cash and the bank
             actor = session_actor
             for code in REQUIRED_PERMISSIONS:
                 actor = self._authorization.require_permission(connection, session_actor, code)
@@ -164,6 +187,7 @@ class PositionSnapshotService:
             if repository.opening() is None:
                 raise SnapshotError("NO_OPENING", "سجّل الرصيد الافتتاحي أولًا من الإعدادات.")
             now = repository.now()
+            summary = self._position.position(_expected_actor=session_actor, connection=connection)["summary"]
             cash, bank = repository.cash_and_bank()
             values = {**rules.build_snapshot(summary, repository.supplier_gold(), cash, bank), "snapshot_kind": kind, "taken_at": now, "created_by_user_id": actor.user_id}
             snapshot_id = repository.insert(values)

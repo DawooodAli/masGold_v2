@@ -24,8 +24,10 @@ class Store:
 class FakeRepo:
     store = None
 
+    connections = []
+
     def __init__(self, connection=None):
-        pass
+        FakeRepo.connections.append(connection)
 
     def now(self):
         return self.store.now
@@ -70,8 +72,11 @@ class FakeRepo:
 class FakePosition:
     calls = 0
 
-    def position(self, *, _expected_actor=None):
+    connections = []
+
+    def position(self, *, _expected_actor=None, connection=None):
         FakePosition.calls += 1
+        FakePosition.connections.append(connection)
         return {"summary": SUMMARY}
 
 
@@ -80,6 +85,7 @@ class ServiceTests(unittest.TestCase):
         self.store = Store()
         FakeRepo.store = self.store
         FakePosition.calls = 0
+        FakePosition.connections, FakeRepo.connections = [], []
         self.session = session_for(permissions)
 
         @contextmanager
@@ -157,6 +163,16 @@ class ServiceTests(unittest.TestCase):
                          (D("1000.000"), D("-30.000"), D("1040.000"), D("1000.00"), D("500.00")))        # 1000 + 50 + 20 - 30 supplier
         self.store.now = datetime(2026, 10, 23, 8, 0, 0)
         self.assertTrue(service.ensure_daily()["taken"])                                                 # the next day gets its own sheet
+
+    def test_the_gold_position_cash_bank_and_suppliers_are_read_on_one_connection(self):
+        service = self.build()
+        self.post_ledgers(service)
+        service.set_opening({"21": "5000"}, "0")
+        FakePosition.connections, FakeRepo.connections = [], []
+        service.take("MANUAL")
+        self.assertEqual(len(FakePosition.connections), 1)
+        self.assertIsNotNone(FakePosition.connections[0])
+        self.assertEqual({id(c) for c in FakeRepo.connections}, {id(FakePosition.connections[0])})      # one snapshot, never a second transaction
 
     def test_a_user_without_the_owner_rights_takes_nothing_and_is_not_bothered(self):
         service = self.build(frozenset({"APP_LOGIN", "REPORTS_VIEW"}))

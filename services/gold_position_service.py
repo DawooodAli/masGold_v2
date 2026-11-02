@@ -271,31 +271,36 @@ class GoldPositionService:
         actor = self._session.current_actor()
         return actor is not None and set(REQUIRED_PERMISSIONS) <= set(actor.permissions)
 
-    def position(self, *, _expected_actor=None):
+    def position(self, *, _expected_actor=None, connection=None):
+        """`connection` (optional): read inside the CALLER's open transaction, so the position and the caller's other reads share one snapshot; the caller owns commit / rollback."""
         actor = self._session.require_authenticated()
         if _expected_actor is not None and not self._session.is_current(_expected_actor):
             raise PermissionError("انتهت جلسة الدخول.")
         if not set(REQUIRED_PERMISSIONS) <= set(actor.permissions):
             raise PermissionError("موضع الذهب للمالك فقط.")
+        if connection is not None:
+            return self._read(connection, actor)
         try:
-            with self._transaction() as connection:
-                for code in REQUIRED_PERMISSIONS:
-                    self._authorization.require_permission_read(connection, actor, code)
-                trips_repo, holdings, inventory = self._trips(connection), self._holdings(connection), self._inventory(connection)
-                marketers = self._marketers(connection)                    # the SAME connection / snapshot as every other source
-                # ONE snapshot, no locks: eight aggregate queries whatever the number of trips (never a query per trip, never the cash or a document history)
-                gold_by_trip, lots_by_trip = trips_repo.custody_gold_by_trip(), trips_repo.custody_lots_by_trip()
-                bar_by_trip = trips_repo.settle_bar_by_trip()               # 060: the BAR pool of every trip (one aggregate query; {} before 060)
-                trips, trip_rows = [], trips_repo.all_trip_ids()
-                for row in trip_rows:                                       # EVERY trip: no list limit on a physical total
-                    custody = custody_view(("0.00", "0.00"), gold_by_trip.get(int(row["id"]), []), lots_by_trip.get(int(row["id"]), []), trip_id=row["id"],
-                                           bar=bar_by_trip.get(int(row["id"]), 0))
-                    if any(_dec(g["outstanding"]) != 0 for g in custody["gold"]) or custody["lots"] or custody["bar"] != 0:
-                        trips.append({"id": row["id"], "code": f"MT{int(row['id']):06d}", "status": row["status"], "custody": custody})
-                result = build_position(
-                    scrap=trips_repo.shop_scrap(), shop_lots=trips_repo.shop_lots(), receipt_stock=holdings.receipt_stock(),
-                    inventory=inventory.get_stock_weight_by_karat(), returned_pending=inventory.get_returned_pending_weight_by_karat(),
-                    trips=trips, pools=holdings.open_pools(), logo_pools=holdings.logo_open_pools(), marketer_gold=marketers.party_gold_balances())
-                raise _Discard(result)
+            with self._transaction() as own:
+                raise _Discard(self._read(own, actor))
         except _Discard as done:
             return done.args[0]
+
+    def _read(self, connection, actor):
+        for code in REQUIRED_PERMISSIONS:
+            self._authorization.require_permission_read(connection, actor, code)
+        trips_repo, holdings, inventory = self._trips(connection), self._holdings(connection), self._inventory(connection)
+        marketers = self._marketers(connection)                    # the SAME connection / snapshot as every other source
+        # ONE snapshot, no locks: eight aggregate queries whatever the number of trips (never a query per trip, never the cash or a document history)
+        gold_by_trip, lots_by_trip = trips_repo.custody_gold_by_trip(), trips_repo.custody_lots_by_trip()
+        bar_by_trip = trips_repo.settle_bar_by_trip()               # 060: the BAR pool of every trip (one aggregate query; {} before 060)
+        trips, trip_rows = [], trips_repo.all_trip_ids()
+        for row in trip_rows:                                       # EVERY trip: no list limit on a physical total
+            custody = custody_view(("0.00", "0.00"), gold_by_trip.get(int(row["id"]), []), lots_by_trip.get(int(row["id"]), []), trip_id=row["id"],
+                                   bar=bar_by_trip.get(int(row["id"]), 0))
+            if any(_dec(g["outstanding"]) != 0 for g in custody["gold"]) or custody["lots"] or custody["bar"] != 0:
+                trips.append({"id": row["id"], "code": f"MT{int(row['id']):06d}", "status": row["status"], "custody": custody})
+        return build_position(
+            scrap=trips_repo.shop_scrap(), shop_lots=trips_repo.shop_lots(), receipt_stock=holdings.receipt_stock(),
+            inventory=inventory.get_stock_weight_by_karat(), returned_pending=inventory.get_returned_pending_weight_by_karat(),
+            trips=trips, pools=holdings.open_pools(), logo_pools=holdings.logo_open_pools(), marketer_gold=marketers.party_gold_balances())
