@@ -148,6 +148,41 @@ class InvoiceHistoryPageTests(page_harness.InvoicePageTests):
         self.assertFalse(vm.reprintFailed)
         self.assertEqual(self.warnings, [])
 
+    def test_history_piece_barcode_correction_button_and_dialog_at_every_size(self):
+        vm = self.open_history()
+        vm.openInvoice(vm.results[0]["invoiceId"])
+        self.wait_until(lambda: vm.detail, "detail not opened")
+        vm._detail["can_correct"] = True
+        vm._detail["sale_lines"][0].update(kind="INVENTORY", inventory_item_id="7", line_id="9", barcode="37260106", notes="")
+        vm.changed.emit()
+        calls = []
+        vm.correctPiece = lambda *args: calls.append(args)             # the service is covered by tests/test_invoice_piece_correction.py
+        for width, height in ((1440, 900), (1280, 800), (1080, 680)):
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(250)
+            button = self.visual_item("historyPieceCorrect_0")
+            self.assertIsNotNone(button, f"no correction button at {width}x{height}")
+            self.assert_inside_window(button)
+            self.click(button)
+            QTest.qWait(120)
+            dialog = self.item("historyPieceDialog")
+            self.wait_until(lambda: dialog.property("opened"), f"dialog not opened at {width}x{height}")
+            save = self.item("historyPieceSave")
+            for name in ("historyPieceBarcode", "historyPieceReason", "historyPieceConfirm", "historyPieceSave", "historyPieceCancel"):
+                self.assert_inside_window(self.item(name))
+            self.assertFalse(save.property("enabled"))
+            self.item("historyPieceBarcode").setProperty("text", "40260107")
+            self.item("historyPieceReason").setProperty("text", "سبب")
+            self.assertFalse(save.property("enabled"))                  # the confirmation is still missing
+            self.click("historyPieceConfirm")
+            QTest.qWait(60)
+            self.assertTrue(save.property("enabled"))
+            self.click("historyPieceCancel")
+            self.wait_until(lambda: not dialog.property("visible"), f"dialog not closed at {width}x{height}")
+        self.assertEqual(calls, [])
+        self.assertEqual(self.warnings, [])
+
     def test_history_keyboard_enter_opens_the_selected_invoice(self):
         vm = self.open_history()
         self.click("historyRow_0")

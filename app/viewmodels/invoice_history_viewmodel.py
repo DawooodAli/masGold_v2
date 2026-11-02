@@ -73,6 +73,7 @@ class InvoiceHistoryViewModel(QObject):
         self._detail_id = None
         self._reprint = {}
         self._sellers, self._seller_service, self._seller_message, self._seller_ok = [], None, "", False
+        self._piece_service, self._piece_message, self._piece_ok = None, "", False
         self._lookup_message = ""
         # Typing in the search box: one query after a short pause, never one per keystroke.
         self._debounce = QTimer(self)
@@ -453,6 +454,43 @@ class InvoiceHistoryViewModel(QObject):
     def sellerChanged(self):
         return self._seller_ok
 
+    # ------------------------------------------------------------ correct the barcode of a sold piece (a manager's correction; the service rechecks TRANSACTION_CORRECT)
+    def _piece_instance(self):
+        if self._piece_service is None:
+            from services.invoice_piece_correction_service import InvoicePieceCorrectionService
+            self._piece_service = InvoicePieceCorrectionService(self._session)
+        return self._piece_service
+
+    @Slot()
+    def resetPieceCorrection(self):
+        self._piece_message, self._piece_ok = "", False
+        self.changed.emit()
+
+    @Slot(str, str, str, bool)
+    def correctPiece(self, line_id, barcode, reason, confirmed):
+        if not self._detail or not self._detail.get("can_correct") or "piece" in self._busy:
+            return
+        service, number = self._piece_instance(), self._detail["invoice_number"]
+        self._piece_message, self._piece_ok = "", False
+        self._start("piece", lambda _expected_actor: service.correct(number, line_id, barcode, reason, bool(confirmed), _expected_actor=_expected_actor))
+
+    def _on_piece(self, result, error):
+        if error:
+            self._piece_message, self._piece_ok = str(error), False
+            return
+        self._piece_message, self._piece_ok = f"تم تصحيح الباركود: {result['old_barcode'] or '—'} ← {result['new_barcode']}", True
+        if self._detail_id:
+            self.openInvoice(self._detail_id)
+        self._run_search(self._page)
+
+    @Property(str, notify=changed)
+    def pieceMessage(self):
+        return self._piece_message
+
+    @Property(bool, notify=changed)
+    def pieceCorrected(self):
+        return self._piece_ok
+
     # ------------------------------------------------------------ reprint (read-only)
     @Slot()
     def reprint(self):
@@ -612,6 +650,8 @@ class InvoiceHistoryViewModel(QObject):
                          "karat": str(line["karat"]), "weight": grams(line["weight"]), "qty": str(line["quantity"]),
                          "size": line.get("size") or "—", "notes": line.get("notes") or "",
                          "barcode": line.get("barcode") or "", "kindText": kind,
+                         "lineId": str(line.get("line_id") or ""),
+                         "identified": line["kind"] == "INVENTORY" and bool(line.get("inventory_item_id")) and not str(line.get("notes") or "").startswith("بديل"),
                          "manual": line["kind"] == "MANUAL", "fromOldGold": line["kind"] == "OLD_GOLD_STOCK"})
         return rows
 
@@ -847,10 +887,12 @@ class InvoiceHistoryViewModel(QObject):
                 if account_before not in (None, "0.00") or account_after not in (None, "0.00"):
                     before += f" + حساب العميل {money(account_before or '0')}"
                     after += f" + حساب العميل {money(account_after or '0')}"
-                detail = f"{source} {c['source_reference']}: {after} بدلاً من {before}"      # Cairo has no arrow glyph
+                detail = f"{source} {c['source_reference']}"
             posted = " • ".join(f"{'النقدية' if p['ledger'] == 'CASH' else p['account_name'] or 'حساب العميل'} "
                                 f"{whole(p['amount'], signed=True)}" for p in c["posted"])
             rows.append({"code": c["code"], "title": title, "detail": detail, "posted": posted,
+                         "before": "" if c["correction_type"] == "FULL_REVERSAL" else before,
+                         "after": "" if c["correction_type"] == "FULL_REVERSAL" else after,
                          "reason": f"السبب: {c['reason']}", "by": f"بواسطة: {c['actor'] or '—'}",
                          "time": datetime_text(c["occurred_at"]),
                          "isReversal": c["correction_type"] == "FULL_REVERSAL"})

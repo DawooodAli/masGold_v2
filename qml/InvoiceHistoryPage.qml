@@ -721,6 +721,7 @@ Item {
                         Head { value: "المقاس"; Layout.preferredWidth: detailRoot.tableCompact ? 36 : 50 }
                         Head { value: "النوع"; Layout.preferredWidth: detailRoot.tableCompact ? 70 : 150 }
                         Head { value: "الباركود"; Layout.preferredWidth: detailRoot.tableCompact ? 50 : 80 }
+                        Item { visible: !!detailRoot.d.canCorrect; Layout.preferredWidth: detailRoot.tableCompact ? 50 : 60 }
                         Head { value: "ملاحظات"; Layout.preferredWidth: detailRoot.tableCompact ? 60 : 110 }
                     }
                     Repeater {
@@ -762,6 +763,10 @@ Item {
                                       font.pixelSize: theme.fontTableHeader; Layout.preferredWidth: detailRoot.tableCompact ? 50 : 80
                                       ToolTip.visible: barcodeHover.hovered && truncated; ToolTip.text: value
                                       HoverHandler { id: barcodeHover } }
+                                Item { visible: !!detailRoot.d.canCorrect; Layout.preferredWidth: detailRoot.tableCompact ? 50 : 60; Layout.fillHeight: true
+                                       Btn { objectName: "historyPieceCorrect_" + soldRow.index; text: "تصحيح"; anchors.fill: parent
+                                             visible: soldRow.modelData.identified && soldRow.modelData.lineId.length > 0
+                                             onClicked: pieceDialog.begin(soldRow.modelData) } }
                                 // Notes: one line (never a giant row), elided, full text in the tooltip.
                                 Txt { objectName: "historySoldNotes_" + soldRow.index; value: soldRow.modelData.notes || "—"
                                       color: theme.textMuted; font.pixelSize: theme.fontTableHeader
@@ -991,12 +996,28 @@ Item {
                                       color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
                                 Item { Layout.fillWidth: true }
                             }
-                            Txt { Layout.fillWidth: true; value: correctionBlock.modelData.detail; color: theme.textSecondary
-                                  wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                            Txt { Layout.fillWidth: true; visible: value.length > 0; value: correctionBlock.modelData.posted
-                                  color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+                            Txt { Layout.fillWidth: true; value: correctionBlock.modelData.detail; color: theme.textPrimary
+                                  font.pixelSize: theme.fontBodyStrong; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Repeater {
+                                model: correctionBlock.modelData.after.length > 0
+                                       ? [{ "label": "قبل", "text": correctionBlock.modelData.before, "color": theme.textSecondary },
+                                          { "label": "بعد", "text": correctionBlock.modelData.after, "color": theme.gold }]
+                                       : []
+                                delegate: RowLayout {
+                                    required property var modelData
+                                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 10
+                                    Txt { Layout.preferredWidth: 46; value: modelData.label; color: theme.textMuted
+                                          font.pixelSize: theme.fontBody }
+                                    Txt { Layout.fillWidth: true; value: modelData.text; color: modelData.color
+                                          font.pixelSize: theme.fontSection; font.bold: true
+                                          wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                }
+                            }
+                            Txt { Layout.fillWidth: true; visible: value.length > 0
+                                  value: "الأثر على الحسابات:  " + correctionBlock.modelData.posted
+                                  color: theme.textSecondary; font.pixelSize: theme.fontBody; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                             Txt { Layout.fillWidth: true; value: correctionBlock.modelData.reason; color: theme.textPrimary
-                                  font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                  font.pixelSize: theme.fontBody; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                         }
                     }
                 }
@@ -1065,39 +1086,52 @@ Item {
                                       value: returnBlock.modelData.total; font.bold: true; font.pixelSize: theme.fontSection
                                       color: theme.accountPayable }
                             }
+                            // One labelled line per fact (owner 2026-11-02: no running prose), the same `Pair` as the exchange card.
                             Repeater {
                                 model: returnBlock.modelData.pieces
-                                delegate: Txt { required property var modelData
-                                                Layout.fillWidth: true
-                                                value: "مرتجع: " + modelData.item + " عيار " + modelData.karat + " — " + modelData.weight
-                                                       + (modelData.partial ? " من " + modelData.sold : "")
-                                                       + (modelData.barcode ? " — " + modelData.barcode : "")
-                                                       + (modelData.itemId ? " (#" + modelData.itemId + ")" : "")
-                                                       + (modelData.historical ? "  •  " + modelData.valuation
-                                                          : "  •  " + modelData.price + "  •  ذهب " + modelData.gold
-                                                            + "  •  مصنعية " + modelData.making)
-                                                wrapMode: Text.WordWrap
-                                                color: theme.accountPayable }
+                                delegate: ColumnLayout {
+                                    id: pieceBlock
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    spacing: 1
+                                    Pair { label: "القطعة المرتجعة"; valueColor: theme.accountPayable; strong: true
+                                           value: pieceBlock.modelData.item + " عيار " + pieceBlock.modelData.karat + " — " + pieceBlock.modelData.weight
+                                                  + (pieceBlock.modelData.partial ? " من " + pieceBlock.modelData.sold : "") }
+                                    Pair { label: "الباركود"; visible: value.length > 0
+                                           value: (pieceBlock.modelData.barcode || "")
+                                                  + (pieceBlock.modelData.itemId ? " (#" + pieceBlock.modelData.itemId + ")" : "") }
+                                    Pair { label: "القيمة التاريخية"; visible: pieceBlock.modelData.historical
+                                           value: pieceBlock.modelData.valuation.replace("القيمة التاريخية المرتجعة: ", "") }
+                                    Pair { label: "سعر الاسترداد"; visible: !pieceBlock.modelData.historical && value.length > 0
+                                           value: pieceBlock.modelData.price }
+                                    Pair { label: "قيمة الذهب"; visible: !pieceBlock.modelData.historical
+                                           value: pieceBlock.modelData.gold }
+                                    Pair { label: "المصنعية المستردة"; visible: !pieceBlock.modelData.historical
+                                           value: pieceBlock.modelData.making }
+                                }
                             }
                             Txt { objectName: "historyReturnValuation_" + returnBlock.index
-                                  Layout.fillWidth: true; value: returnBlock.modelData.valuation
-                                  wrapMode: Text.WordWrap; color: theme.accountPayable }
+                                  Layout.fillWidth: true; value: returnBlock.modelData.valuation.split("  •  ").join("
+")
+                                  wrapMode: Text.WordWrap; color: theme.accountPayable; font.pixelSize: theme.fontBodyStrong }
                             Txt { objectName: "historyReturnStatus_" + returnBlock.index
                                   Layout.fillWidth: true; value: returnBlock.modelData.status
                                   wrapMode: Text.WordWrap; color: theme.amber }
-                            Flow {
-                                Layout.fillWidth: true
-                                layoutDirection: Qt.RightToLeft
-                                spacing: 14
-                                Txt { objectName: "historyReturnMoney_" + returnBlock.index; visible: value.length > 0
-                                      value: returnBlock.modelData.money; color: theme.textSecondary
-                                      font.pixelSize: theme.fontTableHeader }
-                                Txt { visible: value.length > 0; value: returnBlock.modelData.accountText
-                                      color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
-                                Txt { objectName: "historyReturnDisposition_" + returnBlock.index
-                                      visible: value.length > 0; value: returnBlock.modelData.dispositionText
-                                      color: theme.amber; font.pixelSize: theme.fontTableHeader }
+                            Repeater {
+                                objectName: "historyReturnMoney_" + returnBlock.index
+                                model: returnBlock.modelData.money.length > 0
+                                       ? returnBlock.modelData.money.substring(returnBlock.modelData.money.indexOf(": ") + 2).split(" • ") : []
+                                delegate: Pair { required property var modelData; required property int index
+                                                 label: index === 0 ? returnBlock.modelData.money.substring(0, returnBlock.modelData.money.indexOf(": ")) : ""
+                                                 value: modelData; strong: true }
                             }
+                            Pair { label: "حساب العميل"; visible: value.length > 0
+                                   value: returnBlock.modelData.accountText.replace("للعميل على حسابه ", "") }
+                            Txt { objectName: "historyReturnDisposition_" + returnBlock.index
+                                  Layout.fillWidth: true; visible: value.length > 0
+                                  value: returnBlock.modelData.dispositionText.split("  •  ").join("
+")
+                                  color: theme.amber; font.pixelSize: theme.fontBody; wrapMode: Text.WordWrap }
                         }
                     }
                 }
@@ -1220,6 +1254,60 @@ Item {
                       enabled: sellerCombo.currentIndex >= 0 && sellerReason.text.trim().length > 0 && !!historyPage.vm
                       onClicked: historyPage.vm.changeSeller(String(historyPage.vm.sellerChoices[sellerCombo.currentIndex].id), sellerReason.text) }
                 Btn { objectName: "historySellerCancel"; text: "إلغاء"; onClicked: sellerDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    Popup {
+        id: pieceDialog
+        objectName: "historyPieceDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(460, historyPage.width - 24)
+        modal: true
+        padding: 16
+        closePolicy: Popup.CloseOnEscape
+        property var line: ({})
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        function begin(line) {
+            pieceDialog.line = line
+            pieceBarcode.text = ""; pieceReason.text = ""; pieceConfirm.checked = false
+            if (historyPage.vm) historyPage.vm.resetPieceCorrection()
+            open()
+            pieceBarcode.forceActiveFocus()
+        }
+        Connections {
+            target: historyPage.vm
+            function onChanged() { if (historyPage.vm && historyPage.vm.pieceCorrected && pieceDialog.opened) pieceDialog.close() }
+        }
+        contentItem: ColumnLayout {
+            spacing: 8
+            Txt { Layout.fillWidth: true; value: "تصحيح باركود قطعة مباعة"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
+            Pair { label: "القطعة"; strong: true
+                   value: (pieceDialog.line.item || "—") + " — عيار " + (pieceDialog.line.karat || "") + " — " + (pieceDialog.line.weight || "") }
+            Pair { label: "الباركود المسجل (الخطأ)"; valueColor: theme.red; strong: true; value: pieceDialog.line.barcode || "—" }
+            Txt { Layout.fillWidth: true; value: "الباركود الصحيح (القطعة التي خرجت فعلًا) *" }
+            BarcodeField { id: pieceBarcode; objectName: "historyPieceBarcode"; Layout.fillWidth: true; Layout.preferredHeight: 40
+                           placeholderText: "امسح أو اكتب الباركود الصحيح"; font.family: "Cairo"; horizontalAlignment: TextInput.AlignRight }
+            Txt { Layout.fillWidth: true; value: "السبب *" }
+            TextField { id: pieceReason; objectName: "historyPieceReason"; Layout.fillWidth: true; placeholderText: "مثلاً: اتمسح باركود قطعة غير التي سُلّمت"
+                        font.family: "Cairo"; horizontalAlignment: TextInput.AlignRight }
+            Txt { Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.textSecondary
+                  value: "يجب أن تكون القطعة الصحيحة بالمخزون ونفس العيار والوزن. السعر والإجمالي والمدفوع لا يتغيرون؛ القطعة المسجلة بالخطأ ترجع للمخزون." }
+            CheckBox { id: pieceConfirm; objectName: "historyPieceConfirm"; Layout.fillWidth: true
+                       text: "أؤكد أن القطعة الصحيحة هي التي سُلّمت للعميل"; font.family: "Cairo" }
+            Txt { objectName: "historyPieceMessage"; Layout.fillWidth: true; wrapMode: Text.WordWrap
+                  visible: value.length > 0; color: theme.red
+                  value: !!historyPage.vm && !historyPage.vm.pieceCorrected ? historyPage.vm.pieceMessage : "" }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn { objectName: "historyPieceSave"; primary: true; text: "تصحيح الباركود"
+                      enabled: !!historyPage.vm && pieceBarcode.text.trim().length > 0 && pieceReason.text.trim().length > 0 && pieceConfirm.checked
+                      onClicked: historyPage.vm.correctPiece(pieceDialog.line.lineId, pieceBarcode.text, pieceReason.text, pieceConfirm.checked) }
+                Btn { objectName: "historyPieceCancel"; text: "إلغاء"; onClicked: pieceDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }
