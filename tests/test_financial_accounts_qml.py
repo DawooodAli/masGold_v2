@@ -299,12 +299,12 @@ class CashScreenTests(harness.InvoicePageTests):
         self.wait_until(lambda: self.item("transferDialog").property("opened"), "dialog opens")
         self.assert_inside_window(self.visible_item("transferSave"))
         self.assertFalse(self.item("transferSave").property("enabled"))                 # no amount yet
-        self.type_into("transferAmount", "700")
+        self.type_into("cashTransferAmount", "700")
         self.wait_until(lambda: self.item("transferSave").property("enabled"), "amount typed")
-        self.choose("transferTo", 0)                                                  # the same account on both sides
+        self.choose("cashTransferTo", 0)                                                  # the same account on both sides
         self.assertTrue(self.item("transferSame").property("visible"))
         self.assertFalse(self.item("transferSave").property("enabled"))
-        self.choose("transferTo", 1)
+        self.choose("cashTransferTo", 1)
         self.click("transferSave")
         self.wait_until(lambda: self.count("transfer") == 1, "transfer posted")
         self.assertEqual(self.last("transfer")[1:5], ("CASH:1", "BANK:1", "700", ""))

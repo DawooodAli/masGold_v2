@@ -377,19 +377,19 @@ Rectangle {
             RowLayout {
                 Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
                 Txt { text: "من حساب"; Layout.preferredWidth: 80 }
-                Combo { id: trFrom; objectName: "transferFrom"; Layout.fillWidth: true; implicitHeight: 38
+                Combo { id: trFrom; objectName: "cashTransferFrom"; Layout.fillWidth: true; implicitHeight: 38
                         model: transferDialog.accounts; textRole: "name"; valueRole: "key" }
             }
             RowLayout {
                 Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
                 Txt { text: "إلى حساب"; Layout.preferredWidth: 80 }
-                Combo { id: trTo; objectName: "transferTo"; Layout.fillWidth: true; implicitHeight: 38
+                Combo { id: trTo; objectName: "cashTransferTo"; Layout.fillWidth: true; implicitHeight: 38
                         model: transferDialog.accounts; textRole: "name"; valueRole: "key" }
             }
             RowLayout {
                 Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
                 Txt { text: "المبلغ"; Layout.preferredWidth: 80 }
-                Field { id: trAmount; objectName: "transferAmount"; Layout.preferredWidth: 200; implicitHeight: 38; font.bold: true
+                Field { id: trAmount; objectName: "cashTransferAmount"; Layout.preferredWidth: 200; implicitHeight: 38; font.bold: true
                         placeholderText: "0"; inputMethodHints: Qt.ImhDigitsOnly
                         validator: RegularExpressionValidator { regularExpression: /^[0-9]{0,12}$/ } }
                 Txt { text: "ج"; color: theme.textMuted }
@@ -398,7 +398,7 @@ Rectangle {
             RowLayout {
                 Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
                 Txt { text: "ملاحظة"; Layout.preferredWidth: 80 }
-                Field { id: trNote; objectName: "transferNote"; Layout.fillWidth: true; placeholderText: "اختياري" }
+                Field { id: trNote; objectName: "cashTransferNote"; Layout.fillWidth: true; placeholderText: "اختياري" }
             }
             Txt { objectName: "transferSame"; Layout.fillWidth: true; color: theme.amber; text: "اختر حسابين مختلفين."
                   visible: trFrom.currentIndex === trTo.currentIndex }
