@@ -4201,6 +4201,23 @@ ApplicationWindow {
                                 font.pixelSize: 18
                                 font.bold: true
                             }
+                            // رصيد قديم من دفتر ورقي: right under the customer's name (owner request); the dialog lives in the account page below.
+                            RowLayout {
+                                Layout.fillWidth: true
+                                visible: typeof customerAccountVM !== "undefined" && customerAccountVM.isOpen && customerAccountVM.canLegacy
+                                CustomerButton {
+                                    objectName: "customerProfileLegacy"
+                                    text: "إضافة رصيد قديم"
+                                    enabled: !customerVM.busy && !customerAccountVM.busy
+                                    onClicked: customerAccountHost.openLegacy()
+                                }
+                                CustomerLabel {
+                                    Layout.fillWidth: true
+                                    value: "رصيد من دفتر ورقي على العميل أو له، بدون أي حركة في الخزنة أو البنوك."
+                                    color: theme.textMuted
+                                    font.pixelSize: 11
+                                }
+                            }
                             CustomerMessageBox { message: customerVM.profileErrorMessage }
                             CustomerLabel {
                                 Layout.fillWidth: true
@@ -5804,6 +5821,59 @@ ApplicationWindow {
         ]
     }
 
+    // Settings → تقارير الأيباد: the reports server that runs inside the program (it starts with the program); the address to open on the iPad through Tailscale.
+    component WebReportsSettings: SettingsSectionCard {
+        id: webCard
+        objectName: "settingsWebReports"
+        sectionTitle: "تقارير الأيباد"
+        accentColor: theme.priceBuy
+        readonly property var vm: typeof webReportsVM !== "undefined" ? webReportsVM : null
+        visible: !!vm && vm.canManage
+        content: [
+            GoldPriceLabel {
+                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                value: "التقارير على الأيباد (عرض فقط) تشتغل تلقائيًا مع البرنامج. افتح العنوان التالي من Safari على الأيباد (Tailscale شغال على الكمبيوتر والأيباد بنفس الحساب) ثم «إضافة للشاشة الرئيسية». الدخول بنفس حساب البرنامج."
+                color: theme.textMuted; font.pixelSize: 11
+            },
+            GoldPriceLabel {
+                objectName: "webReportsStatus"; Layout.fillWidth: true; wrapMode: Text.WordWrap
+                value: webCard.vm ? "الحالة: " + webCard.vm.status : ""
+                color: webCard.vm && webCard.vm.running ? theme.green : theme.textSecondary
+            },
+            Repeater {
+                model: webCard.vm ? webCard.vm.addresses : []
+                delegate: RowLayout {
+                    required property string modelData
+                    required property int index
+                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                    GoldPriceLabel { Layout.preferredWidth: 110; value: index === 0 ? "العنوان الثابت" : "عنوان بديل"; color: theme.textSecondary }
+                    GoldPriceInput { objectName: "webReportsAddress_" + index; Layout.fillWidth: true; Layout.preferredHeight: 34; readOnly: true; text: modelData }
+                    GoldPriceButton { objectName: "webReportsCopy_" + index; text: "نسخ"; onClicked: webCard.vm.copy(modelData) }
+                }
+            },
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                GoldPriceButton {
+                    objectName: "webReportsHttps"; text: "تفعيل HTTPS"; visible: !!webCard.vm && webCard.vm.running && !webCard.vm.httpsActive
+                    onClicked: webCard.vm.enableHttps()
+                }
+                GoldPriceLabel { objectName: "webReportsHttpsMessage"; Layout.fillWidth: true; visible: !!webCard.vm && webCard.vm.httpsMessage.length > 0; wrapMode: Text.WordWrap
+                                 value: webCard.vm ? webCard.vm.httpsMessage : ""; color: theme.textSecondary; font.pixelSize: 11 }
+                GoldPriceButton {
+                    objectName: "webReportsToggle"; text: webCard.vm && webCard.vm.enabled ? "إيقاف التشغيل التلقائي" : "تشغيل"
+                    enabled: !!webCard.vm
+                    onClicked: webCard.vm.setEnabled(!webCard.vm.enabled)
+                }
+                Item { Layout.fillWidth: true }
+            },
+            GoldPriceLabel {
+                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                value: "لو الأيباد ما فتحش العنوان: تأكد إن Tailscale شغال على الاتنين، وإن Windows Firewall يسمح للبرنامج بالاتصالات الواردة على شبكة Tailscale. الخادم لا يستمع إلا على هذا الكمبيوتر وشبكة Tailscale الخاصة بك."
+                color: theme.textMuted; font.pixelSize: 11
+            }
+        ]
+    }
+
     // Settings → أسعار العملات (GoldTimo /rates): the home-page currency card. It reuses the GoldTimo keys saved above; here: show it or not, how often to refresh and which currencies.
     component CurrencyRatesSettings: SettingsSectionCard {
         id: fxCard
@@ -6285,7 +6355,7 @@ ApplicationWindow {
                     Layout.fillWidth: true; visible: settingsPageRoot.openSection !== ""; layoutDirection: Qt.RightToLeft; spacing: 10
                     GoldPriceLabel {
                         Layout.fillWidth: true; color: theme.gold; font.pixelSize: 19; font.bold: true
-                        value: ({"gold": "مصدر أسعار الذهب", "printing": "الطباعة", "password": "كلمة المرور", "categories": "تصنيفات المصروفات والإيرادات", "theme": "المظهر"})[settingsPageRoot.openSection] || ""
+                        value: ({"gold": "مصدر أسعار الذهب", "printing": "الطباعة", "password": "كلمة المرور", "categories": "تصنيفات المصروفات والإيرادات", "theme": "المظهر", "webreports": "تقارير الأيباد"})[settingsPageRoot.openSection] || ""
                     }
                     GoldPriceButton { objectName: "settingsSectionBack"; text: "رجوع  ⁦Esc⁩"; onClicked: settingsPageRoot.openSection = "" }
                 }
@@ -6391,6 +6461,14 @@ ApplicationWindow {
                         accentColor: theme.gold; clickable: true; Layout.preferredHeight: 92
                         onClicked: settingsPageRoot.openSection = "backup"
                     }
+                    SettingsCard {
+                        objectName: "settingsWebReportsCard"
+                        visible: typeof webReportsVM !== "undefined" && webReportsVM.canManage
+                        title: "تقارير الأيباد"; value: ""
+                        subtitle: "عنوان التقارير على الأيباد"
+                        accentColor: theme.priceBuy; clickable: true; Layout.preferredHeight: 92
+                        onClicked: settingsPageRoot.openSection = "webreports"
+                    }
                 }
                 SettingsSectionCard {
                     visible: settingsPageRoot.openSection === ""
@@ -6450,6 +6528,7 @@ ApplicationWindow {
                     ]
                 }
                 // تصنيفات المصروفات والإيرادات: نُقلت من الخزنة (حوار بزر 🗂) إلى هنا كما طلب المالك.
+                WebReportsSettings { id: webReportsSection; Layout.fillWidth: true; visible: settingsPageRoot.openSection === "webreports" && !!webReportsSection.vm && webReportsSection.vm.canManage }
                 BackupLocationSettings { id: backupSection; Layout.fillWidth: true; visible: settingsPageRoot.openSection === "backup" && !!backupSection.vm && backupSection.vm.canManage }
                 CashCategorySettings { id: cashCategoriesSection; Layout.fillWidth: true; visible: settingsPageRoot.openSection === "categories" && !!cashCategoriesSection.vm && cashCategoriesSection.vm.canManage }
             }
@@ -12589,7 +12668,6 @@ ApplicationWindow {
 
                             if (saved) {
 
-                                inventoryVM.refresh()
                                 oldGoldConversionVM.refreshBalances()
 
                                 // Stay open for the next piece (closed only by ✕ / إلغاء).
@@ -12598,6 +12676,10 @@ ApplicationWindow {
                                     ? inventoryVM.actionMessage
                                     : oldGoldConversionVM.actionMessage
                                 )
+
+                                // The stock list behind the dialog (hundreds of rows) is rebuilt AFTER the message and the next piece
+                                // are on screen, so the employee never waits for it.
+                                Qt.callLater(function() { inventoryVM.refresh() })
                             }
                         }
                     }
@@ -13168,6 +13250,7 @@ ApplicationWindow {
             correctReason.text = ""
             correctWeight.text = Number(root.selectedInventoryItem.weight_grams).toFixed(3)
             correctCategoryCombo.currentIndex = correctCategoryCombo.indexOfValue(Number(root.selectedInventoryItem.category_id || 0))
+            correctFactoryCombo.currentIndex = correctFactoryCombo.indexOfValue(Number(root.selectedInventoryItem.factory_id || 0))
             inventoryVM.clearActionMessage()
             open()
         }
@@ -13176,7 +13259,7 @@ ApplicationWindow {
             spacing: 10
             Label {
                 Layout.fillWidth: true
-                text: "تعديل الصنف والعيار والفئة — قطعة #" + root.selectedInventoryItem.inventory_item_id
+                text: "تعديل الصنف والعيار والفئة والمصنع — قطعة #" + root.selectedInventoryItem.inventory_item_id
                 color: theme.gold; font.bold: true; font.pixelSize: 15; font.family: "Cairo"
                 horizontalAlignment: Text.AlignRight
             }
@@ -13210,6 +13293,16 @@ ApplicationWindow {
                     model: masterDataVM.categories
                     textRole: "code"; valueRole: "id"
                     displayText: currentIndex >= 0 ? currentText : "بدون فئة"
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                Label { text: "المصنع"; color: theme.textPrimary; font.family: "Cairo"; Layout.preferredWidth: 70; horizontalAlignment: Text.AlignRight }
+                ComboBox {
+                    id: correctFactoryCombo; objectName: "inventoryCorrectFactory"
+                    Layout.fillWidth: true; Layout.preferredHeight: 40
+                    model: masterDataVM.factories; textRole: "name"; valueRole: "id"
+                    displayText: currentIndex >= 0 ? currentText : "بدون مصنع"
                 }
             }
             RowLayout {
@@ -13254,7 +13347,8 @@ ApplicationWindow {
                         if (inventoryVM.correctInventoryItem(Number(root.selectedInventoryItem.inventory_item_id),
                                                              Number(correctTypeCombo.currentValue), Number(correctKaratCombo.currentValue),
                                                              correctReason.text, correctWeight.text,
-                                                             correctCategoryCombo.currentIndex >= 0 ? Number(correctCategoryCombo.currentValue) : 0)) {
+                                                             correctCategoryCombo.currentIndex >= 0 ? Number(correctCategoryCombo.currentValue) : 0,
+                                                             correctFactoryCombo.currentIndex >= 0 ? Number(correctFactoryCombo.currentValue) : 0)) {
                             inventoryItemCorrectDialog.close()
                             inventoryItemDetailsDialog.close()
                         }

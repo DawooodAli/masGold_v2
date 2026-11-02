@@ -539,11 +539,7 @@ class InvoiceService:
             making = effective - gold_value
             if effective <= 0:
                 problems.append(InvoiceError("PAYMENT_REQUIRED", "أدخل المبلغ الفعلي المستلم من العميل أو المدفوع له."))
-            elif making < 0:
-                problems.append(InvoiceError(
-                    "SALE_BELOW_GOLD", f"المبلغ الفعلي يجعل سعر البيع ({effective:,.2f} ج) أقل من قيمة الذهب "
-                                       f"({gold_value:,.2f} ج)."))
-            else:
+            else:                                  # a total below the gold value is saved too: its making is negative and the manager reviews it
                 agreed = Calc.agreed_sale(specs, effective)
                 sales = [Calc.sale_line(weight, price, making_total=making)
                          for (weight, price), making in zip(specs, agreed.allocations)]
@@ -765,9 +761,12 @@ class InvoiceService:
             approval_below = None if row is None else row.get("manager_approval_below_per_gram")
             average = (making / weight).quantize(Decimal("0.01")) if weight > 0 else Decimal("0.00")
             # Strictly BELOW the category threshold needs a manager (250 passes, 249.99 does not).
-            needs_approval = (approval_below is not None and weight > 0
+            below_gold = making < 0
+            needs_approval = (approval_below is not None and weight > 0 and not below_gold
                               and average < Decimal(str(approval_below)))
-            if low is None and high is None:
+            if below_gold:
+                status = OUT_OF_RANGE              # sold below the gold value: saved, never blocked, always reviewed by the manager (owner 2026-11-03)
+            elif low is None and high is None:
                 status = NOT_CONFIGURED
             elif (low is not None and average < Decimal(str(low))) or (
                     high is not None and average > Decimal(str(high))):
@@ -776,6 +775,7 @@ class InvoiceService:
                 status = WITHIN_RANGE
             result.append({"category_id": category_id, "category_code": None if row is None else row.get("code"),
                            "status": status, "average_making_per_gram": str(average), "weight_grams": str(weight),
+                           "below_gold": below_gold, "making_total": str(making),
                            "sale_making_min_per_gram": None if low is None else str(low),
                            "sale_making_max_per_gram": None if high is None else str(high),
                            "manager_approval_below_per_gram": None if approval_below is None else str(approval_below),
@@ -1110,6 +1110,7 @@ class InvoiceService:
                                 for d, line in zip(described, sales[len(items):])],
             **self._commercial_view(calculated),
             "making_review_required": bool(review),
+            "below_gold": any(g.get("below_gold") for g in groups),
             "making_needs_approval": bool(making_approval and making_approver is None),
             # The logged-in user may approve, but must confirm explicitly (never implied by the right).
             "making_can_confirm": bool(making_approval and "INVOICE_SETTLEMENT_APPROVE" in actor_now.permissions),
@@ -1412,9 +1413,11 @@ class InvoiceService:
             if review:
                 invoices.insert_management_review(
                     review_type="MAKING_PRICE", invoice_id=invoice_id,
-                    summary=(f"مصنعية أقل من حد موافقة المدير — فاتورة {number}" if making_approval
+                    summary=(f"بيع بأقل من قيمة الذهب — فاتورة {number}" if any(g.get("below_gold") for g in groups)
+                             else f"مصنعية أقل من حد موافقة المدير — فاتورة {number}" if making_approval
                              else f"مصنعية خارج النطاق — فاتورة {number}"),
-                    details={"groups": groups, "salesperson_employee_id": int(salesperson["id"]),
+                    details={"groups": groups, "below_gold": any(g.get("below_gold") for g in groups),
+                             "salesperson_employee_id": int(salesperson["id"]),
                              "making_approved_by_user_id": making_approver,
                              "making_approval_kind": None if not making_approval else (
                                  "CONFIRMED_BY_ACTOR" if draft.making_confirmed and making_approver == actor.user_id

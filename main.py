@@ -175,6 +175,12 @@ class ApplicationController(QObject):
         app.aboutToQuit.connect(self.gold_prices.shutdown)
         app.aboutToQuit.connect(self.gold_settings.shutdown)
         app.aboutToQuit.connect(self._shutdown_operational)
+        # The iPad reports server lives inside the program: it starts with it (the real application only, never a test platform) and stops with it.
+        from webapp.embedded import create_embedded_reports
+        self.web_reports = create_embedded_reports(self.session, self)
+        app.aboutToQuit.connect(self.web_reports.stop)
+        if QGuiApplication.platformName() not in ("offscreen", "minimal") and os.environ.get("MASGOLD_WEB_REPORTS", "1") != "0":
+            QTimer.singleShot(0, self.web_reports.start)
         QTimer.singleShot(0, self.authentication.checkStartup)
 
     def _engine(self):
@@ -442,6 +448,7 @@ class ApplicationController(QObject):
             engine.rootContext().setContextProperty("webChartEnabled", WEB_CHART_ENABLED)
             engine.rootContext().setContextProperty("goldPriceVM", self.gold_prices)
             engine.rootContext().setContextProperty("goldSettingsVM", self.gold_settings)
+            engine.rootContext().setContextProperty("webReportsVM", self.web_reports)
             for name, viewmodel in self.operational_viewmodels.items():
                 viewmodel.setParent(engine)
                 engine.rootContext().setContextProperty(name, viewmodel)

@@ -48,6 +48,7 @@ FILTER_SPECS = {
     "market": [],
     "cashflow": [],
     "profit": [],
+    "goldflow": [],
 }
 KIND_FORMAT = {"money": lambda v: money(v, signed=v < 0), "rate": lambda v: rate(v, signed=v < 0), "grams": lambda v: grams(v, signed=v < 0), "eq21": lambda v: grams(v, signed=v < 0)}
 
@@ -109,11 +110,21 @@ def _bars(groups):
     return out
 
 
-def result_view(built):
+def _lines(groups):
+    """Line-chart data for the Canvas: plain floats (the picture only), the exact figures stay in the tables."""
+    out = []
+    for g in groups or []:
+        values = [float(v) for s in g["series"] for v in s["values"] if v is not None]
+        out.append({"key": g["key"], "title": g["title"], "labels": list(g["labels"]), "low": min(values) if values else 0.0, "high": max(values) if values else 0.0,
+                    "series": [{"name": s["name"], "tone": s.get("tone", ""), "values": [None if v is None else float(v) for v in s["values"]]} for s in g["series"]]})
+    return out
+
+
+def result_view(built, hidden=HIDDEN_ON_SCREEN):
     """The display form of one `ReportService` result: strings only, plus the open-source references and the paging state."""
     tables = []
     for t in built["tables"]:
-        if (built["report"], t["key"]) in HIDDEN_ON_SCREEN:
+        if (built["report"], t["key"]) in hidden:
             continue                                                               # owner review: the sales documents table is not shown (the totals are; the CSV still has every row)
         if not t.get("available", True):
             tables.append({"key": t["key"], "title": t["title"], "available": False, "reason": t.get("reason", ""), "columns": [], "rows": [], "paged": False})
@@ -126,7 +137,7 @@ def result_view(built):
                        "note": t.get("note", ""), "karat": int(t.get("karat") or 0)})
     return {"report": built["report"], "title": built["title"], "filters": built["filters"], "meaning": built["meaning"], "applied": built.get("applied", []), "tables": tables,
             "totals": [{"label": clean_label(x["label"]), "value": _cell(x["kind"], x["value"]) if x["kind"] != "text" else str(x["value"]), "note": x["note"], "group": x.get("group", ""), "karat": int(x.get("karat") or 0), "tone": x.get("tone") or ""}
-                       for x in built["totals"]], "options": built.get("options", {}), "error": "", "bars": _bars(built.get("bars"))}
+                       for x in built["totals"]], "options": built.get("options", {}), "error": "", "bars": _bars(built.get("bars")), "lines": _lines(built.get("lines"))}
 
 
 @QmlElement

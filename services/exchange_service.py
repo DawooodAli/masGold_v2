@@ -273,7 +273,8 @@ def calculate(returned, replacements, *, price_set, within_window):
     if within_window:
         if any(p.making_total is None for p in returned):
             raise ExchangeError("HISTORICAL_MAKING_MISSING", HISTORICAL_MAKING_MISSING_TEXT)
-        refund = sum((p.making_total for p in returned), ZERO).quantize(MONEY, rounding=ROUND_HALF_UP)
+        # A piece sold below the gold value has a NEGATIVE making: nothing of it is refunded (never a negative refund).
+        refund = sum((max(p.making_total, ZERO) for p in returned), ZERO).quantize(MONEY, rounding=ROUND_HALF_UP)
         eligible = refund > 0
     # Replacement making: typed per piece, on the piece's own physical weight.
     missing = any(p.making_per_gram is None for p in replacements)

@@ -51,12 +51,10 @@ class Karat22SaleAndPurchaseTests(Karat22Case):
         self.assertEqual(len(snapshot), 1)                                     # the snapshot keeps the quote id of the 22K quote
         self.assertEqual((snapshot[0]["quote_id"], snapshot[0]["shop_sell_price_per_gram"]), (50 + K22, P22[1]))
 
-    def test_a_22k_sale_below_the_gold_value_is_refused_like_any_other_karat(self):
-        before = copy.deepcopy(self.store.tables())
-        with self.assertRaises(InvoiceError) as context:
-            self.finalize(InvoiceDraft(5, "12", (sale("110"),), (), (cash("65000"),)))      # gold alone is 65,285.00
-        self.assertEqual(context.exception.code, "SALE_BELOW_GOLD")
-        self.assertEqual(self.store.tables(), before)
+    def test_a_22k_sale_below_the_gold_value_is_saved_with_a_negative_making_like_any_other_karat(self):
+        self.finalize(InvoiceDraft(5, "12", (sale("110"),), (), (cash("65000"),)))          # gold alone is 65,285.00
+        line = [v for kind, v in self.store.lines if kind == "SALE"][0]
+        self.assertEqual(line["making_total"], D("-285.00"))
 
     def test_old_gold_purchase_22k_uses_the_derived_buy_price_and_rounds_once_to_egp5(self):
         gross = money(D("10") * P22[0])                                        # 65,019.17

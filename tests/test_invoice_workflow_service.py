@@ -42,9 +42,10 @@ class DerivedSaleTests(InvoiceServiceTestCase):
         self.assertEqual(agreed.average_making_per_gram, D("127.41"))
         self.assertEqual(sum(agreed.allocations), D("1762.45"))
         self.assertEqual(agreed.allocations[0], D("1337.79"))          # 1762.45 × 10.5 / 13.833, rounded down
-        with self.assertRaises(InvoiceCalculationError) as below:
-            Calc.agreed_sale([("10.500", "6232.0000")], "60000")
-        self.assertEqual(below.exception.code, "AGREED_BELOW_GOLD")
+        # A total below the gold value is allowed (owner 2026-11-03): its making is NEGATIVE and the manager reviews the invoice.
+        below = Calc.agreed_sale([("10.500", "6232.0000")], "60000")
+        self.assertEqual((below.gold_value_total, below.making_total, below.allocations), (D("65436.00"), D("-5436.00"), (D("-5436.00"),)))
+        self.assertEqual(below.average_making_per_gram, D("-517.71"))
 
     def test_the_real_money_is_the_sale_price(self):
         draft = InvoiceDraft(5, "12", (scanned("100"), scanned("101")), (), (cash("85000"),))

@@ -93,6 +93,11 @@ class CustomerAccountRepository(CorrectionRepository):
                                'ORDER BY id FOR UPDATE', (_id(customer_id),))
         return sum((Decimal(r['amount_delta']) for r in rows), Decimal('0.00'))
 
+    def legacy_entry(self, customer_id, key):
+        """The ledger row an earlier call with the same request key posted for an OLD (paper) balance, or None (a locking read, after lock_balance)."""
+        return self._fetch_one('SELECT id, amount_delta, created_by_user_id, metadata_json FROM customer_transactions WHERE customer_id=%s AND reference_type=%s AND reference_code=%s FOR UPDATE',
+                               (_id(customer_id), 'LEGACY_PAPER_BALANCE', str(key)))
+
     def by_request(self, key):
         return self._fetch_one('SELECT * FROM customer_account_settlements WHERE request_key=%s FOR UPDATE', (key,))
 

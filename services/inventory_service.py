@@ -402,7 +402,7 @@ class InventoryService:
         return inventory_item_id
 
 
-    def correct_item(self, item_id, item_type_id, karat_id, reason, weight_grams=None, category_id=None):
+    def correct_item(self, item_id, item_type_id, karat_id, reason, weight_grams=None, category_id=None, factory_id=None):
         """تعديل صنف وعيار (ووزن) قطعة مدخلة بالخطأ: only a piece still IN_STOCK, with a mandatory reason, audited with the before / after values. Never a sold, returned or removed piece
         (its invoices keep the values they were sold with). The barcode and every movement stay; the weight changes only when a new weight is given (the Scrap that the piece came from is
         corrected separately by the manager's Scrap adjustment)."""
@@ -415,6 +415,7 @@ class InventoryService:
             raise ValueError("اكتب سبب التعديل.")
         new_weight = None if weight_grams in (None, "") else self._parse_weight(weight_grams)
         new_category = None if category_id in (None, "", 0, "0") else self._required_id(category_id, "Category is required.")
+        new_factory = None if factory_id in (None, "", 0, "0") else self._required_id(factory_id, "Factory is required.")
         with self._transaction() as transaction:
             connection = transaction.connection
             user_id = int(self._authorize_write(connection, session_actor).user_id)
@@ -427,8 +428,12 @@ class InventoryService:
             weight_changed = new_weight is not None and Decimal(str(item["weight_grams"])) != new_weight
             old_category = None if item.get("category_id") is None else int(item["category_id"])
             category_changed = new_category is not None and new_category != old_category
-            if int(item["item_type_id"]) == item_type_id and int(item["karat_id"]) == karat_id and not weight_changed and not category_changed:
-                raise ValueError("لم يتغير الصنف ولا العيار ولا الوزن ولا الفئة.")
+            old_factory = None if item.get("factory_id") is None else int(item["factory_id"])
+            factory_changed = new_factory is not None and new_factory != old_factory
+            if int(item["item_type_id"]) == item_type_id and int(item["karat_id"]) == karat_id and not weight_changed and not category_changed and not factory_changed:
+                raise ValueError("لم يتغير الصنف ولا العيار ولا الوزن ولا الفئة ولا المصنع.")
+            if factory_changed and repository.get_active_factory_by_id(new_factory) is None:
+                raise ValueError("المصنع غير موجود أو غير نشط.")
             if category_changed:                                       # the new category must exist and be active
                 category = repository.get_active_category_by_id(new_category)
                 if category is None:                                   # owner 2026-11-02: any ACTIVE category, not only A / B / T
@@ -442,10 +447,13 @@ class InventoryService:
             repository.update_item_type_and_karat(item_id, item_type_id, karat_id, new_weight if weight_changed else None)
             if category_changed:
                 repository.update_item_category(item_id, new_category)
+            if factory_changed:
+                repository.update_item_factory(item_id, new_factory)
             repository.audit_item_correction(
                 user_id=user_id, item_id=item_id, description=f"تعديل صنف / عيار القطعة #{item_id}",
-                metadata={"reason": reason, "before": {"item_type_id": int(item["item_type_id"]), "karat_id": int(item["karat_id"]), "category_id": old_category},
-                          "after": {"item_type_id": item_type_id, "karat_id": karat_id, "category_id": new_category if category_changed else old_category},
+                metadata={"reason": reason, "before": {"item_type_id": int(item["item_type_id"]), "karat_id": int(item["karat_id"]), "category_id": old_category, "factory_id": old_factory},
+                          "after": {"item_type_id": item_type_id, "karat_id": karat_id, "category_id": new_category if category_changed else old_category,
+                                    "factory_id": new_factory if factory_changed else old_factory},
                           "weight_grams": str(item["weight_grams"]),
                           "new_weight_grams": str(new_weight) if weight_changed else None})
         return {"inventory_item_id": item_id}

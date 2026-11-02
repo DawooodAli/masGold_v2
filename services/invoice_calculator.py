@@ -108,7 +108,7 @@ class AgreedSale:
     allocations: tuple            # making per sale line, in line order
 
 
-def _decimal(value, scale, *, label, positive=False, allow_none=False):
+def _decimal(value, scale, *, label, positive=False, allow_none=False, signed=False):
     if value is None and allow_none:
         return None
     # float and bool are never accepted for authoritative amounts.
@@ -124,7 +124,7 @@ def _decimal(value, scale, *, label, positive=False, allow_none=False):
     if result != result.quantize(scale, rounding=ROUND_HALF_UP):
         raise InvoiceCalculationError("PRECISION", f"عدد الخانات العشرية في {label} أكبر من المسموح.")
     result = result.quantize(scale)
-    if result < 0 or (positive and result == 0):
+    if (result < 0 and not signed) or (positive and result == 0):
         condition = "أكبر من صفر" if positive else "صفراً أو أكثر"
         raise InvoiceCalculationError("OUT_OF_RANGE", f"يجب أن تكون قيمة {label} {condition}.")
     return result
@@ -152,7 +152,8 @@ class InvoiceCalculator:
         if per_gram is not None:
             making = _money(weight * per_gram)
         else:
-            making = _money(_decimal(making_total, MONEY, label="إجمالي المصنعية"))
+            # signed: a sale agreed below the gold value derives a NEGATIVE total making (owner 2026-11-03; the manager reviews it).
+            making = _money(_decimal(making_total, MONEY, label="إجمالي المصنعية", signed=True))
         gold_value = _money(weight * price)
         # Stored components always add up to the stored total.
         return SaleLine(weight, price, per_gram, making, gold_value, _money(gold_value + making))
@@ -206,10 +207,7 @@ class InvoiceCalculator:
             weights.append(weight)
             gold += _money(weight * price)
         gold = _money(gold)
-        making = agreed - gold
-        if making < 0:
-            raise InvoiceCalculationError(
-                "AGREED_BELOW_GOLD", f"الإجمالي المتفق عليه أقل من قيمة الذهب ({gold:,.2f} ج).")
+        making = agreed - gold                     # negative when the agreed total is below the gold value (the manager reviews it)
         total_weight = sum(weights, Decimal("0.000"))
         allocations = [(making * w / total_weight).quantize(MONEY, rounding=ROUND_DOWN) for w in weights[:-1]]
         allocations.append(making - sum(allocations, ZERO))

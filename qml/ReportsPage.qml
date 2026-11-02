@@ -398,7 +398,7 @@ Item {
                   text: "للعرض فقط — الأرقام من دفاتر البرنامج وكل إجمالي يشمل كامل نتائج الفلتر وليس الصفحة المعروضة فقط." }
             // الأزرار في ثلاث مجموعات: الذهب • النقدية • العام
             Repeater {
-                model: [{ "name": "الذهب", "keys": ["stock", "alerts", "stockweights", "indicators", "gold", "scrapcost", "demand", "profit", "market"] },
+                model: [{ "name": "الذهب", "keys": ["goldflow", "stock", "alerts", "stockweights", "indicators", "gold", "scrapcost", "demand", "profit", "market"] },
                         { "name": "النقدية", "keys": ["treasury", "cashflow", "makingprofit", "deadcash"] },
                         { "name": "عام", "keys": [] }]
                 delegate: RowLayout {
@@ -407,7 +407,7 @@ Item {
                     required property int index
                     readonly property var members: reportsVM.reports.filter(function(r) {
                         if (groupRow.index < 2) return groupRow.modelData.keys.indexOf(r.key) >= 0
-                        return groupRow.modelData.keys.length === 0 && ["stock", "alerts", "stockweights", "indicators", "gold", "scrapcost", "demand", "profit", "market", "treasury", "cashflow", "makingprofit", "deadcash"].indexOf(r.key) < 0
+                        return groupRow.modelData.keys.length === 0 && ["goldflow", "stock", "alerts", "stockweights", "indicators", "gold", "scrapcost", "demand", "profit", "market", "treasury", "cashflow", "makingprofit", "deadcash"].indexOf(r.key) < 0
                     })
                     visible: members.length > 0
                     Layout.fillWidth: true
@@ -633,6 +633,77 @@ Item {
                 spacing: 4
                 Label { Layout.fillWidth: true; text: "الشارت المباشر للذهب (XAUUSD)"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; horizontalAlignment: Text.AlignRight }
                 GoldWebChart { Layout.fillWidth: true; Layout.preferredHeight: 380 }
+            }
+
+            // ---------------------------------------------------------------- line charts (the gold-in-the-shop report: one point per day, does the gold grow or shrink)
+            Repeater {
+                model: reportsVM.result.lines || []
+                delegate: ColumnLayout {
+                    id: lineGroup
+                    required property var modelData
+                    objectName: "reportLines_" + modelData.key
+                    Layout.fillWidth: true
+                    spacing: 4
+                    Txt { Layout.fillWidth: true; text: lineGroup.modelData.title; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 14
+                        Repeater {
+                            model: lineGroup.modelData.series
+                            delegate: RowLayout {
+                                required property var modelData
+                                spacing: 5
+                                Rectangle { Layout.preferredWidth: 14; Layout.preferredHeight: 4; radius: 2; color: parent.modelData.tone === "total" ? theme.priceBuy : theme.gold }
+                                Txt { text: parent.modelData.name; color: theme.textSecondary }
+                            }
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
+                    Canvas {
+                        id: lineCanvas
+                        objectName: "reportLineCanvas_" + lineGroup.modelData.key
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 300
+                        onWidthChanged: requestPaint()
+                        Connections { target: reportsVM; function onChanged() { lineCanvas.requestPaint() } }
+                        onPaint: {
+                            var ctx = getContext("2d")
+                            ctx.reset()
+                            var labels = lineGroup.modelData.labels || []
+                            if (labels.length < 2) return
+                            var series = lineGroup.modelData.series || []
+                            var low = lineGroup.modelData.low, high = lineGroup.modelData.high
+                            var pad = (high - low) * 0.1; if (pad <= 0) pad = Math.max(1, Math.abs(high) * 0.05)
+                            low -= pad; high += pad
+                            var left = 64, right = 10, top = 10, bottom = 24
+                            var w = width - left - right, h = height - top - bottom
+                            function x(i) { return left + w * i / (labels.length - 1) }
+                            function y(v) { return top + h * (1 - (v - low) / (high - low)) }
+                            ctx.strokeStyle = "#303842"; ctx.fillStyle = "#858D97"; ctx.font = "11px sans-serif"; ctx.lineWidth = 1
+                            for (var g = 0; g <= 4; ++g) {
+                                var gv = low + (high - low) * g / 4
+                                ctx.beginPath(); ctx.moveTo(left, y(gv)); ctx.lineTo(left + w, y(gv)); ctx.stroke()
+                                ctx.fillText(gv.toFixed(1), 4, y(gv) + 4)
+                            }
+                            var step = Math.max(1, Math.ceil(labels.length / 12))
+                            for (var i = 0; i < labels.length; i += step) ctx.fillText(labels[i], x(i) - 12, height - 6)
+                            for (var si = 0; si < series.length; ++si) {
+                                var color = series[si].tone === "total" ? "#5EC3CE" : "#DDB961"
+                                var values = series[si].values
+                                ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath()
+                                var started = false
+                                for (var k = 0; k < values.length; ++k) {
+                                    if (values[k] === null || values[k] === undefined) { started = false; continue }
+                                    if (!started) { ctx.moveTo(x(k), y(values[k])); started = true } else ctx.lineTo(x(k), y(values[k]))
+                                }
+                                ctx.stroke()
+                                ctx.fillStyle = color
+                                for (var j = 0; j < values.length; ++j) if (values[j] !== null && values[j] !== undefined) { ctx.beginPath(); ctx.arc(x(j), y(values[j]), 2.5, 0, 6.2832); ctx.fill() }
+                            }
+                        }
+                    }
+                }
             }
 
             // ---------------------------------------------------------------- bar charts (the cash-flow report: one chart for the expenses and one for the income, by their stored category)

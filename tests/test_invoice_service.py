@@ -581,9 +581,22 @@ class RuleTests(InvoiceServiceTestCase):
                                                                   account_amount="31035",
                                                                   account_direction="SHOP_OWES"))
 
-    def test_money_below_the_gold_value_or_missing_is_refused(self):
+    def test_missing_money_is_refused(self):
         self.assertRefused("PAYMENT_REQUIRED", InvoiceDraft(5, "12", (sale(),), (), ()))
-        self.assertRefused("SALE_BELOW_GOLD", InvoiceDraft(5, "12", (sale(),), (), (cash("65000"),)))
+
+    def test_money_below_the_gold_value_is_saved_with_a_negative_making_and_goes_to_the_manager_review(self):
+        draft = InvoiceDraft(5, "12", (sale(),), (), (cash("65000"),))                  # the gold alone is 65,285.00 (a 22K piece in other fixtures; here the fixture's own gold value)
+        preview = self.service.preview(draft)
+        self.assertTrue(preview["below_gold"] and preview["making_review_required"])
+        self.assertFalse(preview["making_needs_approval"])
+        self.finalize(draft)
+        lines = [v for kind, v in self.store.lines if kind == "SALE"]
+        self.assertLess(lines[0]["making_total"], 0)
+        self.assertEqual(lines[0]["line_total"], D("65000.00"))
+        review = [r for r in self.store.reviews if r["review_type"] == "MAKING_PRICE"]
+        self.assertEqual(len(review), 1)
+        self.assertTrue(review[0]["details"]["below_gold"])
+        self.assertIn("بيع بأقل من قيمة الذهب", review[0]["summary"])
 
     def test_inactive_placeholder_and_missing_customers_are_rejected(self):
         for customer, code in (("13", "CUSTOMER_INACTIVE"), ("977", "CUSTOMER_PLACEHOLDER"),

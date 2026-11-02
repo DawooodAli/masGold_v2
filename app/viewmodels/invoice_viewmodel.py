@@ -1965,7 +1965,8 @@ class InvoiceViewModel(QObject):
                 "effectiveSale": money(p.get("effective_sale_total")),
                 "averageMaking": price(p.get("average_making_per_gram")),
                 "makingStatus": p.get("making_review_status") or "",
-                "makingNotice": MAKING_NOTICE.get(p.get("making_review_status"), ""),
+                "makingNotice": ("بيع أقل من قيمة الذهب — يُحفظ ويُرسل لمراجعة المدير" if p.get("below_gold")
+                                 else MAKING_NOTICE.get(p.get("making_review_status"), "")),
                 "oldGoldGross": money(gross) if p.get("old_gold_lines") else "",
                 "discountChanged": bool(p.get("old_gold_discount_changed")),
                 "differenceAmount": "" if not difference else f"{abs(difference):,.2f}",

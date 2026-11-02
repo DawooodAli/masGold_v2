@@ -21,6 +21,8 @@ Rectangle {
     color: theme.bgPrimary
     Theme { id: theme }
     property string appliedFilters: ""
+    // The customers page puts the «إضافة رصيد قديم» button under the customer's name and opens this page's dialog from there.
+    function openLegacy() { if (page.vm && page.vm.canLegacy && !page.vm.busy) legacyDialog.begin() }
     function syncFilters() {
         if (!page.vm) return
         var f=page.vm.filters
@@ -37,7 +39,7 @@ Rectangle {
         function onInvoiceRequested(invoiceId) { page.invoiceRequested(invoiceId) }
         function onCorrectionRequested(settlementId) { page.correctionRequested(settlementId) }
         function onDepositCorrectionRequested(depositId) { page.depositCorrectionRequested(depositId) }
-        function onFinalized(customerId) { depositDialog.close() }
+        function onFinalized(customerId) { depositDialog.close(); legacyDialog.close() }
     }
     component Txt: Label {
         color: theme.textPrimary; font.family: "Cairo"; font.pixelSize: 13
@@ -114,6 +116,8 @@ Rectangle {
                 enabled: page.vm && !page.vm.busy; onClicked: depositDialog.begin("IN") }
             Btn { objectName: "customerDepositRefund"; text: "استرداد عربون"; visible: page.vm && page.vm.canDeposit
                 enabled: page.vm && !page.vm.busy; onClicked: depositDialog.begin("OUT") }
+            Btn { objectName: "customerLegacyBalance"; text: "إضافة رصيد قديم"; visible: page.vm && page.vm.canLegacy && !page.embedded
+                enabled: page.vm && !page.vm.busy; onClicked: legacyDialog.begin() }
             Btn { objectName: "customerAccountDeadCash"; text: "⛔ تحويل إلى رصيد مشطوب"
                 visible: page.deadCashAvailable
                 enabled: page.vm && !page.vm.busy && typeof customerVM !== "undefined" && !customerVM.busy
@@ -261,6 +265,39 @@ Rectangle {
                     onClicked: depositDialog.confirming = false }
                 Item { Layout.fillWidth: true }
                 Btn { text: "إغلاق"; enabled: page.vm && !page.vm.busy; onClicked: depositDialog.close() }
+            }
+        }
+    }
+    // رصيد قديم من دفتر ورقي: an OLD balance put on the customer's account WITHOUT any cash / bank / wallet movement; confirmation before posting.
+    Dialog {
+        id: legacyDialog; objectName: "customerLegacyDialog"
+        property bool confirming: false
+        function begin() { confirming = false; legacyAmount.text = ""; legacyDate.text = ""; legacyNote.text = ""; legacyDirection.currentIndex = 0; page.vm.beginLegacy(); open() }
+        parent: Overlay.overlay; anchors.centerIn: parent; width: Math.min(Overlay.overlay.width-24,460)
+        modal: true; title: "إضافة رصيد قديم"; font.family: "Cairo"
+        closePolicy: page.vm && page.vm.busy ? Popup.NoAutoClose : Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgPrimary; radius: 8; border.color: theme.goldDark }
+        contentItem: ColumnLayout {
+            Txt { text: "رصيد قديم من الدفاتر الورقية يُسجَّل على حساب العميل فقط، ولا يؤثر على الخزنة أو البنوك أو المحافظ."; color: theme.textSecondary }
+            Txt { objectName: "customerLegacyCurrent"; text: page.vm ? "الرصيد الحالي: " + page.vm.balance : ""; color: theme.gold; font.bold: true }
+            ComboBox { id: legacyDirection; objectName: "customerLegacyDirection"; Layout.fillWidth: true; font.family: "Cairo"; enabled: !legacyDialog.confirming
+                model: [{ "code": "OWES", "text": "على العميل (مديونية)" }, { "code": "CREDIT", "text": "للعميل (له عندنا)" }]; textRole: "text"; valueRole: "code" }
+            Field { id: legacyAmount; objectName: "customerLegacyAmount"; Layout.fillWidth: true; placeholderText: "المبلغ"; enabled: !legacyDialog.confirming && page.vm && !page.vm.busy }
+            Field { id: legacyDate; objectName: "customerLegacyDate"; Layout.fillWidth: true; placeholderText: "تاريخ الدين القديم YYYY-MM-DD (اختياري)"; enabled: !legacyDialog.confirming }
+            Field { id: legacyNote; objectName: "customerLegacyNote"; Layout.fillWidth: true; placeholderText: "البيان (إجباري) مثلاً: دفتر ورقي 2023"; enabled: !legacyDialog.confirming }
+            Txt { objectName: "customerLegacyConfirmText"; visible: legacyDialog.confirming; color: theme.amber
+                text: "سيتم تسجيل " + legacyAmount.text + " ج " + (legacyDirection.currentValue === "OWES" ? "على العميل" : "للعميل") + " كرصيد قديم، بدون أي حركة نقدية." }
+            Txt { objectName: "customerLegacyError"; text: page.vm ? page.vm.message : ""; visible: text.length > 0; color: theme.red }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                Btn { objectName: "customerLegacyNext"; text: "متابعة"; visible: !legacyDialog.confirming
+                    enabled: page.vm && !page.vm.busy && legacyAmount.text.trim().length > 0 && legacyNote.text.trim().length > 0
+                    onClicked: legacyDialog.confirming = true }
+                Btn { objectName: "customerLegacyConfirm"; text: "تأكيد"; visible: legacyDialog.confirming; enabled: page.vm && !page.vm.busy
+                    onClicked: page.vm.legacyAction(legacyDirection.currentValue, legacyAmount.text, legacyDate.text, legacyNote.text) }
+                Btn { text: "تعديل"; visible: legacyDialog.confirming; enabled: page.vm && !page.vm.busy; onClicked: legacyDialog.confirming = false }
+                Item { Layout.fillWidth: true }
+                Btn { text: "إغلاق"; enabled: page.vm && !page.vm.busy; onClicked: legacyDialog.close() }
             }
         }
     }

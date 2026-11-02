@@ -9,6 +9,7 @@ from services.customer_account_service import CustomerAccountService, PERMISSION
 from services.invoice_service import PaymentInput
 from services.number_text import normalize_digits
 
+from services.customer_account_service import LEGACY_DESCRIPTION          # the description add_legacy_balance writes: the statement names such a row «رصيد قديم»
 LABELS = {'INVOICE':'فاتورة','EXCHANGE':'استبدال','RETURN':'مرتجع',
           'FULL_REVERSAL':'عكس','SETTLEMENT_CORRECTION':'تصحيح تسوية',
           'CUSTOMER_ACCOUNT_SETTLEMENT':'تسوية حساب','CUSTOMER_DEPOSIT':'عربون',
@@ -81,6 +82,11 @@ class CustomerAccountViewModel(QObject):
                 self.refresh()
             elif operation=='refund_status':
                 self._refund_status=result
+            elif operation=='legacy':
+                self._message='تمت إضافة الرصيد القديم. الرصيد الآن: '+balance_text(result['balance_after'])+(' (طلب مكرر لم يُنفَّذ مرة ثانية)' if result.get('duplicate') else '')
+                self._legacy_key=str(uuid4())
+                self.finalized.emit(self._customer_id)
+                self.refresh()
             else:
                 self._message='تمت تسوية الحساب '+result['code']
                 self._legs=[]; self._request_key=str(uuid4()); self.legsChanged.emit()
@@ -238,6 +244,26 @@ class CustomerAccountViewModel(QObject):
         call=service.deposit if direction=='IN' else service.refund
         self._run('deposit',lambda _expected_actor:call(cid,amount,note,key,_expected_actor=_expected_actor))
 
+    @Property(bool,notify=changed)
+    def canLegacy(self):
+        a=self.session.current_actor()
+        from services.customer_account_service import LEGACY_PERMISSION
+        return bool(self._data.get('customer')) and bool(a and LEGACY_PERMISSION in a.permissions)
+
+    @Slot()
+    def beginLegacy(self):
+        """Opening the «رصيد قديم» form starts a fresh request key (kept across retries of the same entry)."""
+        if not self._busy:
+            self._legacy_key=str(uuid4()); self._error=''; self._message=''; self.changed.emit()
+
+    @Slot(str,str,str,str)
+    def legacyAction(self,direction,amount,old_date,note):
+        """Put an OLD (paper ledger) balance on this customer's account: no cash / bank movement (the service re-checks CUSTOMER_BALANCE_ADJUST)."""
+        if not self.canLegacy or self._busy or direction not in ('OWES','CREDIT'):return
+        service,cid,key=self.service,self._customer_id,getattr(self,'_legacy_key',None) or str(uuid4())
+        self._legacy_key=key
+        self._run('legacy',lambda _expected_actor:service.add_legacy_balance(cid,direction,normalize_digits(str(amount)),note,normalize_digits(str(old_date)),key,_expected_actor=_expected_actor))
+
     @Slot(str)
     def openDepositCorrection(self, deposit_id):
         if self.canCorrect and deposit_id and any(str(r.get('deposit_id') or '')==deposit_id for r in self._data.get('rows',[])):
@@ -344,7 +370,8 @@ class CustomerAccountViewModel(QObject):
     @Property('QVariantList',notify=changed)
     def rows(self):
         return [{'key':r['row_kind']+str(r['id']),'date':str(r['occurred_at']),
-                 'source':LABELS[r['source_type']],'reference':r.get('source_reference') or '—',
+                 'source':('رصيد قديم' if r['source_type']=='UNKNOWN' and str(r.get('description') or '').startswith(LEGACY_DESCRIPTION) else LABELS[r['source_type']]),
+                 'reference':r.get('source_reference') or '—',
                  'invoiceId':str(r.get('invoice_id') or ''),'invoiceNumber':str(r.get('invoice_number') or ''),
                  'settlementId':str(r.get('settlement_id') or ''),
                  'depositId':str(r.get('deposit_id') or ''),

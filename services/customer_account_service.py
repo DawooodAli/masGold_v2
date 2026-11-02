@@ -13,6 +13,9 @@ from services.customer_service import CustomerService
 from datetime import datetime, time, timedelta
 
 PERMISSION = 'CUSTOMER_ACCOUNT_SETTLE'
+LEGACY_PERMISSION = 'CUSTOMER_BALANCE_ADJUST'                 # the OWNER's right to put a balance on a customer's account (existing since 005)
+LEGACY_REFERENCE = 'LEGACY_PAPER_BALANCE'
+LEGACY_DESCRIPTION = 'رصيد قديم من دفتر ورقي'
 
 
 class CustomerAccountService:
@@ -22,6 +25,66 @@ class CustomerAccountService:
         self.session, self.transaction = session, transaction_factory
         self.repository, self.invoices, self.customers = repository, invoices, customers
         self.authorization = authorization or AuthorizationService(session)
+
+    def can_add_legacy_balance(self):
+        actor = self.session.current_actor()
+        return bool(actor and LEGACY_PERMISSION in actor.permissions)
+
+    def add_legacy_balance(self, customer_id, direction, amount, note, old_date, request_key, *, _expected_actor=None):
+        """رصيد قديم: put an OLD balance (from the paper ledgers) on a customer's account, never touching the cash, bank or wallet.
+
+        direction OWES = على العميل (+), CREDIT = للعميل (-). One ledger row (type LEGACY_ADJUSTMENT, reference LEGACY_PAPER_BALANCE, the request key as its code) and one audit row, in ONE
+        transaction under the customer's lock; the row is immutable like every ledger row (a mistake is corrected by an opposite entry). A retry with the same request key returns the first result.
+        OWNER only (CUSTOMER_BALANCE_ADJUST, rechecked in the transaction); the note is mandatory; the old date is optional text kept in the description (never in the future)."""
+        actor = self.session.require_authenticated()
+        if _expected_actor is not None and not self.session.is_current(_expected_actor):
+            raise PermissionError('انتهت جلسة الدخول.')
+        if LEGACY_PERMISSION not in actor.permissions:
+            raise PermissionError('إضافة رصيد قديم للمالك فقط.')
+        cid = str(CustomerService._customer_id(customer_id))
+        if direction not in ('OWES', 'CREDIT'):
+            raise CorrectionError('DIRECTION_INVALID', 'اختر: على العميل أو للعميل.')
+        value = _money_value(amount)
+        if value <= 0:
+            raise CorrectionError('AMOUNT_INVALID', 'المبلغ يجب أن يكون أكبر من صفر.')
+        value = value.quantize(Decimal('0.01'))
+        note = (note or '').strip()
+        if not note:
+            raise CorrectionError('NOTE_REQUIRED', 'اكتب بيان الرصيد القديم (مثلاً: دفتر ورقي سنة كذا).')
+        if len(note) > 1000:
+            raise CorrectionError('NOTE_TOO_LONG', 'البيان طويل جداً.')
+        day = CustomerService._statement_date(old_date or '', 'تاريخ الرصيد القديم')
+        if day is not None and day > datetime.now().date():
+            raise CorrectionError('DATE_FUTURE', 'تاريخ الرصيد القديم لا يكون في المستقبل.')
+        try:
+            key = str(UUID(str(request_key)))
+        except (ValueError, TypeError, AttributeError):
+            raise CorrectionError('REQUEST_INVALID', 'أعد فتح النافذة وحاول مرة أخرى.') from None
+        signed = value if direction == 'OWES' else -value
+        digest = hashlib.sha256(json.dumps([cid, direction, str(value), note, day.isoformat() if day else ''], ensure_ascii=False).encode()).hexdigest()
+        description = LEGACY_DESCRIPTION + (' — بتاريخ ' + day.isoformat() if day else '')
+        with self.transaction() as connection:
+            verified = self.authorization.require_permission_for_write(connection, actor, LEGACY_PERMISSION)
+            repo = self.repository(connection)
+            before = repo.lock_balance(cid)                                   # the customer and his ledger rows, locked
+            prior = repo.legacy_entry(cid, key)
+            if prior:
+                stored = prior.get('metadata_json')
+                stored = json.loads(stored) if isinstance(stored, str) else (stored or {})
+                if stored.get('request_hash') != digest or int(prior['created_by_user_id']) != int(verified.user_id):
+                    raise CorrectionError('REQUEST_CONFLICT', 'طلب الرصيد القديم مستخدم لعملية مختلفة.')
+                return {'id': str(prior['id']), 'balance_before': str(before - Decimal(str(prior['amount_delta']))), 'balance_after': str(before), 'duplicate': True}
+            transaction_id = self.customers(connection).add_transaction(
+                customer_id=int(cid), type_code='LEGACY_ADJUSTMENT', amount_delta=signed, created_by_user_id=verified.user_id, reference_type=LEGACY_REFERENCE, reference_code=key,
+                description=description, notes=note, metadata={'request_hash': digest, 'old_date': day.isoformat() if day else None, 'direction': direction})
+            after = before + signed
+            repo._execute('INSERT INTO audit_log (user_id,event_type,entity_type,entity_id,entity_reference,description,metadata_json) VALUES (%s,%s,%s,%s,%s,%s,%s)',
+                          (verified.user_id, 'CUSTOMER_LEGACY_BALANCE_ADDED', 'CUSTOMER', int(cid), 'LB%06d' % int(transaction_id), 'إضافة رصيد قديم لحساب عميل',
+                           json.dumps({'customer_id': cid, 'direction': direction, 'amount': str(value), 'before': str(before), 'after': str(after), 'old_date': day.isoformat() if day else None,
+                                       'note': note, 'employee_id': verified.employee_id}, ensure_ascii=False)))
+            if not self.session.is_current(actor):
+                raise PermissionError('انتهت جلسة الدخول.')
+        return {'id': str(transaction_id), 'balance_before': str(before), 'balance_after': str(after), 'duplicate': False}
 
     def customer_invoices(self, customer_id, start='', end='', invoice_type='', search='', page=1,
                           *, _expected_actor=None):

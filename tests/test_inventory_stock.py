@@ -98,6 +98,13 @@ class Repo:
         next(p for p in self.store.pieces if p["inventory_item_id"] == item_id)["category_id"] = category_id
         return 1
 
+    def get_active_factory_by_id(self, factory_id):
+        return {"id": factory_id} if factory_id in (4, 5) else None                 # 9 is inactive / unknown
+
+    def update_item_factory(self, item_id, factory_id):
+        next(p for p in self.store.pieces if p["inventory_item_id"] == item_id)["factory_id"] = factory_id
+        return 1
+
     def audit_item_correction(self, **values):
         self.store.__dict__.setdefault("audits", []).append(values)
 
@@ -226,7 +233,7 @@ class ManualEntryTests(unittest.TestCase):
         service.correct_item(7, 99, 3, "اتدخلت بعيار غلط")
         self.assertEqual((store.pieces[0]["item_type_id"], store.pieces[0]["karat_id"]), (99, 3))
         audit = store.audits[0]
-        self.assertEqual((audit["item_id"], audit["metadata"]["reason"], audit["metadata"]["after"]), (7, "اتدخلت بعيار غلط", {"item_type_id": 99, "karat_id": 3, "category_id": None}))
+        self.assertEqual((audit["item_id"], audit["metadata"]["reason"], audit["metadata"]["after"]), (7, "اتدخلت بعيار غلط", {"item_type_id": 99, "karat_id": 3, "category_id": None, "factory_id": None}))
 
     def test_a_piece_in_stock_moves_to_any_active_category(self):
         piece = dict(MIXED[0], inventory_item_id=7, inventory_status="IN_STOCK", category_id=2)
@@ -242,6 +249,20 @@ class ManualEntryTests(unittest.TestCase):
         with self.assertRaises(ValueError):                                                          # nothing changed
             service.correct_item(7, piece["item_type_id"], piece["karat_id"], "x", None, 6)
         self.assertEqual(piece["category_id"], 6)
+
+    def test_the_factory_of_a_piece_in_stock_can_be_corrected_and_is_audited(self):
+        piece = dict(MIXED[0], inventory_item_id=7, inventory_status="IN_STOCK", factory_id=4)
+        store = Store([piece])
+        service = service_for(store)
+        service.correct_item(7, piece["item_type_id"], piece["karat_id"], "المصنع غلط", None, None, 5)
+        self.assertEqual(piece["factory_id"], 5)
+        meta = store.audits[0]["metadata"]
+        self.assertEqual((meta["before"]["factory_id"], meta["after"]["factory_id"]), (4, 5))
+        with self.assertRaises(ValueError):                                         # an unknown / inactive factory
+            service.correct_item(7, piece["item_type_id"], piece["karat_id"], "x", None, None, 9)
+        with self.assertRaises(ValueError):                                         # nothing changed
+            service.correct_item(7, piece["item_type_id"], piece["karat_id"], "x", None, None, 5)
+        self.assertEqual(piece["factory_id"], 5)
 
     def test_the_weight_of_a_piece_in_stock_can_be_corrected_with_the_same_reason_and_audit(self):
         piece = dict(MIXED[0], inventory_item_id=7, inventory_status="IN_STOCK")

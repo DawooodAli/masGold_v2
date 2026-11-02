@@ -1027,6 +1027,49 @@ class ProfitTests(Case):
         self.assertFalse(self.service.run("profit", self.PERIOD)["tables"][0]["available"])
 
 
+class GoldFlowTests(Case):
+    permissions = ALL | {"MANAGEMENT_REVIEW"}
+    PERIOD = {"from": "2026-10-01", "to": "2026-10-31"}
+
+    def setUp(self):
+        super().setUp()
+        FakeRepo.sheets = None
+
+    def test_the_line_shows_the_shop_gold_and_the_money_converted_at_the_buy_price_of_21(self):
+        result = self.service.run("goldflow", self.PERIOD)
+        group = result["lines"][0]
+        self.assertEqual(group["labels"], ["10-01", "10-15"])                          # the first sheet of each day inside the period
+        price = D("6390")                                                              # no stored price after 12 March: the latest earlier one stands for the day
+        first_money, last_money = (D(230000) / price).quantize(D("0.001")), (D(240000) / price).quantize(D("0.001"))
+        series = {s["name"]: s["values"] for s in group["series"]}
+        self.assertEqual(series["الذهب الفعلي"], [D("4900.000"), D("4960.000")])
+        self.assertEqual(series["الذهب + الفلوس بالذهب"], [D("4900.000") + first_money, D("4960.000") + last_money])
+        values = self.totals(result)
+        self.assertEqual(values["الذهب الفعلي: زاد"], "+60.000 جرام")
+        self.assertIn("الذهب زاد", values)
+        rows = result["tables"][0]["rows"]
+        self.assertEqual((rows[0]["change"], rows[1]["change"]), (None, rows[1]["total"] - rows[0]["total"]))
+
+    def test_a_fall_reads_as_negative_and_one_sheet_is_never_a_flat_line(self):
+        base = FakeRepo.position_snapshots(FakeRepo())
+        FakeRepo.sheets = base[:1]
+        result = self.service.run("goldflow", self.PERIOD)
+        self.assertFalse(result["tables"][0]["available"])
+        self.assertEqual(result["lines"], [])
+        FakeRepo.sheets = [dict(base[0], gold_total_eq21=D("5000.000"), cash_egp=D(0), bank_egp=D(0)),
+                           dict(base[1], gold_total_eq21=D("4900.000"), cash_egp=D(0), bank_egp=D(0))]
+        values = self.totals(self.service.run("goldflow", self.PERIOD))
+        self.assertIn("الذهب نقص", values)
+        self.assertEqual(values["الذهب نقص"], "-100.000 جرام")
+
+    def test_the_report_is_owner_only(self):
+        session = session_for(ALL)
+        limited = ReportService(session, transaction_factory=self.service._transaction, repository=FakeRepo, authorization=FakeAuthorization(session), today=lambda: TODAY)
+        self.assertNotIn("goldflow", [r["key"] for r in limited.available_reports()])
+        with self.assertRaises(PermissionError):
+            limited.run("goldflow", self.PERIOD)
+
+
 class EmployeeKpiTests(Case):
     PERIOD = {"from": "2026-10-01", "to": "2026-10-31"}
 
