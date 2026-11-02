@@ -326,6 +326,9 @@ class OldGoldConversionService:
                     user_id=user_id,
                 )
 
+                if not barcode_value:
+                    barcode_value = repository.allocate_automatic_barcode()      # a piece converted from the Scrap gets its barcode like every other entry (owner 2026-11-02)
+
                 if barcode_value:
                     repository.assign_barcode(
                         inventory_item_id=result_item_id,

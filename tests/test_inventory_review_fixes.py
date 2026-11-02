@@ -140,6 +140,12 @@ class ConversionActorTests(unittest.TestCase):
             def create_conversion_batch(self, **kwargs):
                 return self._record("create_conversion_batch", kwargs)
 
+            def allocate_automatic_barcode(self):
+                return "01261102"
+
+            def assign_barcode(self, **kwargs):
+                return self._record("assign_barcode", kwargs)
+
         @contextmanager
         def transaction():
             yield type("T", (), {"connection": None})()
@@ -148,10 +154,12 @@ class ConversionActorTests(unittest.TestCase):
                     item_type_id=1, karat_id=1, category_id=0, factory_id=0,
                     result_weight_grams="3.500", consumed_old_gold_grams="3.600", size="", barcode_value="",
                     notes="")
-        self.assertEqual(sorted(writes), ["create_conversion_batch", "create_inventory_movement",
+        self.assertEqual(sorted(writes), ["assign_barcode", "create_conversion_batch", "create_inventory_movement",
                                           "create_new_inventory_item", "create_old_gold_out_movement"])
+        self.assertEqual(writes["assign_barcode"]["barcode_value"], "01261102")        # a blank barcode is generated, like every other stock entry
         for name, values in writes.items():
-            self.assertEqual((values.get("employee_id"), values.get("user_id")), (None, 1), name)
+            if name != "assign_barcode":
+                self.assertEqual((values.get("employee_id"), values.get("user_id")), (None, 1), name)
 
     def test_without_an_actor_the_conversion_is_refused(self):
         from services.old_gold_conversion_service import OldGoldConversionService

@@ -362,6 +362,12 @@ class OldGoldConversionRepository:
         finally:
             cursor.close()
 
+    def allocate_automatic_barcode(self):
+        """The next canonical NNYYMMDD barcode (the day's sequence row stays locked until the caller's transaction ends)."""
+        from datetime import date
+        from repositories.barcode_repository import BarcodeRepository
+        return BarcodeRepository(self.connection).allocate_barcode_value(date.today())
+
     def assign_barcode(
         self,
         *,
