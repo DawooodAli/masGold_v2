@@ -61,6 +61,7 @@ QtObject {
     readonly property color accountPayable: "#EC9066"
 
     readonly property color redBackground: "#2D1A1D"
+    readonly property color greenBackground: "#16301F"
 
     // Semantic status colours (use these instead of picking amber / red per screen):
     //   statusWarning = a real warning, error or condition that needs the employee's attention (RED)

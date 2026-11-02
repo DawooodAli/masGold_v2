@@ -557,14 +557,23 @@ class InventoryStockPageTests(harness.InvoicePageTests):
         field = self.item("stocktakeScanField")
         self.wait_until(lambda: field.property("activeFocus"), "autofocus")
         reads = store.reads
+        page = self.item("stocktakePage")
         self.scan("02261001")
+        self.assertEqual(page.property("flashKind"), "ok")                    # a good scan flashes green (two blinks), then stays lit
+        self.wait_until(lambda: page.property("flashLit"), "flash settles lit")
+        QTest.qWait(700)
+        self.assertEqual((page.property("flashKind"), page.property("flashLit")), ("ok", True))
         self.assertEqual((vm.remainingCount, vm.scannedCount, vm.remainingWeightText, vm.scannedWeightText),
                          (5, 1, "52.21", "4.13"))
         self.assertEqual((field.property("text"), field.property("activeFocus")), ("", True))   # cleared, refocused
         self.scan("02261001")
         self.assertEqual(self.item("stocktakeMessage").property("text"), "تم جرد هذا الباركود بالفعل.")
+        self.assertEqual(page.property("flashKind"), "bad")                   # already counted: red
         self.scan("06261001")                                                 # SOLD
         self.assertEqual(self.item("stocktakeMessage").property("text"), "هذا الباركود غير موجود ضمن الجرد الحالي.")
+        self.assertEqual(page.property("flashKind"), "bad")                   # not in the count: red
+        QTest.qWait(700)
+        self.assertTrue(page.property("flashLit"))                            # and it stays lit after the blinks
         self.assertEqual((vm.remainingCount, vm.scannedCount, store.reads), (5, 1, reads))
         self.assertTrue(field.property("activeFocus"))
         for width, height in harness.SIZES:
@@ -588,6 +597,7 @@ class InventoryStockPageTests(harness.InvoicePageTests):
         self.wait_until(lambda: not confirm.property("visible"), "confirmed")
         self.assertEqual((vm.remainingCount, vm.scannedCount), (6, 0))
         self.assertTrue(field.property("activeFocus"))
+        self.assertEqual((page.property("flashKind"), page.property("flashLit")), ("", False))   # a reset clears the colour
         # filters: karat 18 (no scans yet → no confirmation)
         combo = self.item("stocktakeKaratFilter")
         options = [o["name"] for o in vm.karatOptions]

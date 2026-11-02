@@ -47,11 +47,31 @@ Item {
     onVisibleChanged: {
         if (visible && vm) {
             vm.start()
+            clearFlash()
             scanField.forceActiveFocus()
         }
     }
 
     function refocus() { scanField.text = ""; scanField.forceActiveFocus() }
+
+    // Scan feedback (owner 2026-11-02): a good scan flashes the scanner card GREEN, any problem (unknown, already counted, invalid)
+    // flashes it RED; two blinks, then the colour stays until the next scan / reset.
+    property string flashKind: ""                       // "", "ok" or "bad"
+    property bool flashLit: false
+    function flash(kind) { flashKind = kind; flashAnimation.restart() }
+    function clearFlash() { flashAnimation.stop(); flashKind = ""; flashLit = false }
+    SequentialAnimation {
+        id: flashAnimation
+        PropertyAction { target: page; property: "flashLit"; value: true }
+        PauseAnimation { duration: 130 }
+        PropertyAction { target: page; property: "flashLit"; value: false }
+        PauseAnimation { duration: 130 }
+        PropertyAction { target: page; property: "flashLit"; value: true }
+        PauseAnimation { duration: 130 }
+        PropertyAction { target: page; property: "flashLit"; value: false }
+        PauseAnimation { duration: 130 }
+        PropertyAction { target: page; property: "flashLit"; value: true }
+    }
 
     function idAt(options, index) { return index >= 0 && options.length > index ? Number(options[index].id) : 0 }
 
@@ -65,6 +85,7 @@ Item {
             confirmDialog.open()
             return
         }
+        clearFlash()
         refocus()
     }
 
@@ -185,11 +206,12 @@ Item {
         // ------------------------------------------------ scanner + scope
         Rectangle {
             Layout.fillWidth: true
+            objectName: "stocktakeScanCard"
             Layout.preferredHeight: controls.implicitHeight + 20
-            color: theme.bgSecondary
+            color: page.flashLit ? (page.flashKind === "ok" ? theme.greenBackground : theme.redBackground) : theme.bgSecondary
             radius: theme.radiusSmall
-            border.color: theme.border
-            border.width: 1
+            border.color: page.flashLit ? (page.flashKind === "ok" ? theme.green : theme.red) : theme.border
+            border.width: page.flashLit ? 2 : 1
 
             GridLayout {
                 id: controls
@@ -211,7 +233,9 @@ Item {
                     horizontalAlignment: TextInput.AlignRight
                     onAccepted: {
                         if (!page.vm) return
-                        page.vm.scan(text)
+                        const result = page.vm.scan(text)
+                        if (result === "OK") page.flash("ok")
+                        else if (result !== "EMPTY") page.flash("bad")
                         page.refocus()                    // no mouse between scans
                     }
                 }
@@ -244,6 +268,7 @@ Item {
                             confirmDialog.open()
                             return
                         }
+                        page.clearFlash()
                         page.refocus()
                     }
                 }
@@ -400,6 +425,7 @@ Item {
                         else
                             page.vm.applyFilters(page.idAt(page.vm.itemTypeOptions, itemTypeFilter.currentIndex),
                                                  page.idAt(page.vm.karatOptions, karatFilter.currentIndex), true)
+                        page.clearFlash()
                         confirmDialog.close()
                     }
                 }
