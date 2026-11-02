@@ -228,7 +228,7 @@ class ManualEntryTests(unittest.TestCase):
         audit = store.audits[0]
         self.assertEqual((audit["item_id"], audit["metadata"]["reason"], audit["metadata"]["after"]), (7, "اتدخلت بعيار غلط", {"item_type_id": 99, "karat_id": 3, "category_id": None}))
 
-    def test_a_piece_in_stock_moves_between_the_categories_A_B_and_T_only(self):
+    def test_a_piece_in_stock_moves_to_any_active_category(self):
         piece = dict(MIXED[0], inventory_item_id=7, inventory_status="IN_STOCK", category_id=2)
         store = Store([piece])
         service = service_for(store)
@@ -237,7 +237,7 @@ class ManualEntryTests(unittest.TestCase):
         self.assertEqual((store.audits[0]["metadata"]["before"]["category_id"], store.audits[0]["metadata"]["after"]["category_id"]), (2, 1))
         service.correct_item(7, piece["item_type_id"], piece["karat_id"], "الفئة غلط", None, 6)       # A -> T
         self.assertEqual(piece["category_id"], 6)
-        with self.assertRaises(ValueError):                                                          # an inactive / other category is refused
+        with self.assertRaises(ValueError):                                                          # an inactive category (C here) is refused
             service.correct_item(7, piece["item_type_id"], piece["karat_id"], "x", None, 3)
         with self.assertRaises(ValueError):                                                          # nothing changed
             service.correct_item(7, piece["item_type_id"], piece["karat_id"], "x", None, 6)

@@ -129,8 +129,8 @@ class InventoryStockPageTests(harness.InvoicePageTests):
         inventory._service = Service()
         inventory.refresh()
         self.page(INVENTORY)
-        self.assertEqual(self.item("inventoryTotalWeight21").property("text"), "20.29 جرام")
-        self.assertIn("إجمالي الوزن المكافئ عيار 21", self.labels(self.item("inventoryPage")))
+        self.assertIsNone(self.root.findChild(QObject, "inventoryTotalWeight21"))      # the equivalent-weight card was removed (owner 2026-11-02)
+        self.assertNotIn("إجمالي الوزن المكافئ عيار 21", self.labels(self.item("inventoryPage")))
         # SOLD barcode: a read-only card with its invoice, never part of the current list
         inventory.search("01261001")
         self.wait_until(lambda: inventory.hasHistoryPiece, "history card")
@@ -261,9 +261,9 @@ class InventoryStockPageTests(harness.InvoicePageTests):
             self.assertFalse(self.item("inventoryCorrectSave").property("enabled"))                  # the reason is mandatory
             self.choose("inventoryCorrectKarat", len(master.karats) - 1)
             category = self.item("inventoryCorrectCategory")
-            self.assertEqual(category.property("count"), 3)                                           # A, B and T only: never C
+            self.assertEqual(category.property("count"), 4)                                           # every active category: A, B, C and T
             self.assertEqual(category.property("currentIndex"), 0)                                    # the piece's own category (A)
-            self.choose("inventoryCorrectCategory", 2)                                                # A -> T
+            self.choose("inventoryCorrectCategory", 3)                                                # A -> T
             self.type_into("inventoryCorrectReason", "اتدخلت بعيار غلط")
             self.wait_until(lambda: self.item("inventoryCorrectSave").property("enabled"), "can save")
             self.assert_inside_window(self.item("inventoryCorrectSave"))

@@ -5,7 +5,6 @@ from services.number_text import normalize_digits
 
 from mysql.connector import IntegrityError
 
-CORRECTABLE_CATEGORIES = ("A", "B", "T")        # the categories a stocked piece may be moved between by hand
 
 
 class InventoryService:
@@ -430,10 +429,10 @@ class InventoryService:
             category_changed = new_category is not None and new_category != old_category
             if int(item["item_type_id"]) == item_type_id and int(item["karat_id"]) == karat_id and not weight_changed and not category_changed:
                 raise ValueError("لم يتغير الصنف ولا العيار ولا الوزن ولا الفئة.")
-            if category_changed:                                       # owner 2026-10-29: a piece moves between the categories A, B and T only
+            if category_changed:                                       # the new category must exist and be active
                 category = repository.get_active_category_by_id(new_category)
-                if category is None or category["code"] not in CORRECTABLE_CATEGORIES:
-                    raise ValueError("يمكن تحويل القطعة بين الفئات A و B و T فقط.")
+                if category is None:                                   # owner 2026-11-02: any ACTIVE category, not only A / B / T
+                    raise ValueError("الفئة غير موجودة أو غير نشطة.")
             new_type = repository.get_active_item_type_by_id(item_type_id)
             if new_type is None:
                 raise ValueError("Item type is not active or does not exist.")

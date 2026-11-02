@@ -2149,58 +2149,6 @@ ApplicationWindow {
 
 
                     // =================================================
-                    // TOTAL WEIGHT
-                    // =================================================
-
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 56
-
-                        color: theme.bgSecondary
-
-                        radius: theme.radiusSmall
-
-                        border.color: theme.border
-                        border.width: 1
-
-
-                        RowLayout {
-                            anchors.fill: parent
-
-                            anchors.leftMargin: 16
-                            anchors.rightMargin: 16
-
-
-                            Label {
-                                text:
-                                    "إجمالي الوزن المكافئ عيار 21"
-
-                                color: theme.textMuted
-
-                                font.family: "Cairo"
-                            }
-
-
-                            Item {
-                                Layout.fillWidth: true
-                            }
-
-
-                            Label {
-                                objectName: "inventoryTotalWeight21"
-                                text: inventoryVM.totalWeight21Text + " جرام"
-
-                                color: theme.gold
-
-                                font.family: "Cairo"
-                                font.pixelSize: 18
-                                font.bold: true
-                            }
-                        }
-                    }
-
-
-                    // =================================================
                     // SEARCH
                     // =================================================
 
@@ -13258,8 +13206,8 @@ ApplicationWindow {
                 ComboBox {
                     id: correctCategoryCombo; objectName: "inventoryCorrectCategory"
                     Layout.fillWidth: true; Layout.preferredHeight: 40
-                    // A stocked piece moves between the categories A, B and T only.
-                    model: masterDataVM.categories.filter(function (c) { return c.code === "A" || c.code === "B" || c.code === "T" })
+                    // Every active category (owner 2026-11-02): the piece may be moved to any letter.
+                    model: masterDataVM.categories
                     textRole: "code"; valueRole: "id"
                     displayText: currentIndex >= 0 ? currentText : "بدون فئة"
                 }
