@@ -21,8 +21,8 @@ FILES = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", 
          "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"), "/icon.svg": ("icon.svg", "image/svg+xml")}
 COOKIE = "mgsid"
 # read-only extras: path -> method of `webapp.extras.Extras` (reviews and transfers_overview take no parameters)
-NO_PARAMS = frozenset({"today", "reviews", "transfers_overview"})
-ROUTES = {"/api/today": "today", "/api/statement": "statement", "/api/piece": "piece", "/api/reviews": "reviews", "/api/transfers": "transfers_overview"}
+NO_PARAMS = frozenset({"today", "reviews", "transfers_overview", "attention"})
+ROUTES = {"/api/today": "today", "/api/statement": "statement", "/api/piece": "piece", "/api/reviews": "reviews", "/api/transfers": "transfers_overview", "/api/attention": "attention", "/api/activity": "activity"}
 MAX_BODY = 4096
 CSP = ("default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; "
        "connect-src 'self'; frame-src https://s.tradingview.com https://www.tradingview.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
@@ -124,7 +124,7 @@ def make_handler(api):
             except ValueError:
                 length = 0
             raw = self.rfile.read(length) if 0 < length <= MAX_BODY else b""          # the body is read BEFORE any refusal, so the client never sees a reset connection
-            if url.path not in ("/api/login", "/api/logout", "/api/deadcash/writeoff", "/api/transfer", "/api/legacy_balance", "/api/review_done") or not self._same_origin_post():
+            if url.path not in ("/api/login", "/api/logout", "/api/deadcash/writeoff", "/api/transfer", "/api/legacy_balance", "/api/review_done", "/api/settle") or not self._same_origin_post():
                 self._json(403, {"error": "مرفوض."})
                 return
             try:
@@ -140,6 +140,8 @@ def make_handler(api):
                     self._json(200, api.write_off(self._token(), body))
                 elif url.path == "/api/legacy_balance":
                     self._json(200, api.extras.legacy_balance(self._token(), body))
+                elif url.path == "/api/settle":
+                    self._json(200, api.extras.settle(self._token(), body))
                 elif url.path == "/api/review_done":
                     self._json(200, api.extras.review_done(self._token(), body))
                 elif url.path == "/api/transfer":

@@ -78,7 +78,7 @@ class ExtrasTests(unittest.TestCase):
         self.assertIn("الذهب في المحل (مكافئ 21)", labels)
         banks = next(c for c in data["cards"] if c["label"] == "رصيد البنوك والمحافظ")
         self.assertIn("3,300", banks["value"])                                         # only the ACTIVE bank / wallet accounts are added
-        self.assertEqual(data["prices"], [{"karat": "21", "buy": "6,139", "sell": "6,163"}])
+        self.assertEqual(data["prices"], [{"karat": "21", "buy": "6,139", "sell": "6,163", "buyRaw": "6139.0000", "sellRaw": "6163.0000"}])
         self.assertEqual(data["priceStatus"], "FRESH")
 
         class Denied(Position):
@@ -280,3 +280,81 @@ class LegacyBalanceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SettleAttentionActivityTests(unittest.TestCase):
+    """تسوية حساب from the iPad, the attention list and the owner's activity list (fakes only)."""
+
+    def setUp(self):
+        self.calls, outer = [], self
+
+        class Account:
+            def __init__(self, session):
+                pass
+
+            def statement(self, customer, *args, _expected_actor=None):
+                return {"customer": {"name": "عميل", "balance": "500.00"}, "rows": [], "has_more": False, "page": 1, "can_settle": True,
+                        "accounts": [{"id": 4, "name": "فودافون", "account_type": "MOBILE_WALLET"}]}
+
+            def finalize(self, customer, payments, key, note, *, _expected_actor=None):
+                outer.calls.append((customer, [(p.method_code, p.amount, p.direction, p.bank_account_id) for p in payments], key, note))
+                return {"id": "7", "code": "CS000007", "balance_after": "200.00"}
+
+        class Reviews:
+            def __init__(self, session):
+                pass
+
+            def open_reviews(self, *, _expected_actor=None):
+                return {"MAKING_PRICE": [{"review_id": 1}], "CASH_SETTLEMENT": [{"review_id": 2}], "INVENTORY_MATCH": []}
+
+        class Audit:
+            def __init__(self, session):
+                pass
+
+            def recent(self, text, *, _expected_actor=None):
+                return [{"occurred_at": "2026-11-03 10:00:00", "user_name": "علي", "event_type": "X", "entity_reference": "CS1", "description": text or "d"}]
+        for name, fake in (("CustomerAccountService", Account), ("ManagementReviewService", Reviews), ("AuditViewService", Audit)):
+            patcher = mock.patch("webapp.extras." + name, fake)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.api = make_api(OWNER | {"CUSTOMER_ACCOUNT_SETTLE", "USERS_MANAGE", "MANAGEMENT_REVIEW"})
+        self.token = self.api.login("admin", "secret")
+
+    def body(self, **kw):
+        values = {"customer": "17", "account": "", "amount": "300", "note": "n", "password": "secret", "request_key": "11111111-1111-4111-8111-111111111111"}
+        values.update(kw)
+        return values
+
+    def test_settlement_is_one_leg_with_the_direction_of_the_balance_after_the_password(self):
+        result = self.api.extras.settle(self.token, self.body())
+        self.assertEqual(result["code"], "CS000007")
+        self.assertEqual(self.calls[0][1], [("PHYSICAL_CASH", "300", "IN", None)])
+        self.api.extras.settle(self.token, self.body(account="4"))
+        self.assertEqual(self.calls[1][1], [("MOBILE_WALLET", "300", "IN", "4")])
+        with self.assertRaises(ApiError) as bad:
+            self.api.extras.settle(self.token, self.body(account="99"))
+        self.assertEqual(bad.exception.status, 400)
+        with self.assertRaises(ApiError) as wrong:
+            self.api.extras.settle(self.token, self.body(password="bad"))
+        self.assertEqual((wrong.exception.status, len(self.calls)), (400, 2))
+        plain = make_api(OWNER)
+        with self.assertRaises(ApiError) as denied:
+            plain.extras.settle(plain.login("admin", "secret"), self.body())
+        self.assertEqual(denied.exception.status, 403)
+
+    def test_the_statement_offers_the_settlement_form(self):
+        data = self.api.extras.statement(self.token, {"customer": "17"})
+        self.assertEqual((data["settle"]["can"], data["settle"]["direction"], data["settle"]["accounts"]), (True, "IN", [{"id": "4", "name": "فودافون"}]))
+
+    def test_attention_counts_the_open_reviews(self):
+        data = self.api.extras.attention(self.token)
+        self.assertEqual(data["reviews"], 2)
+        self.assertEqual(data["items"][0]["module"], "reviews")
+
+    def test_activity_lists_rows_for_the_owner_and_refuses_others(self):
+        data = self.api.extras.activity(self.token, {"text": "CS"})
+        self.assertEqual(data["rows"][0]["user"], "علي")
+        with mock.patch("webapp.extras.AuditViewService.recent", side_effect=PermissionError("للمالك فقط")):
+            with self.assertRaises(ApiError) as denied:
+                self.api.extras.activity(self.token, {})
+        self.assertEqual(denied.exception.status, 403)

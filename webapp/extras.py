@@ -16,6 +16,7 @@ from app.formatting import money
 from app.viewmodels.customer_account_viewmodel import CustomerAccountViewModel, balance_text
 from app.viewmodels.inventory_viewmodel import STATUS_TEXT
 from app.viewmodels.reports_viewmodel import _cell
+from services.audit_view_service import AuditViewService
 from services.authentication_service import AuthenticationError
 from services.correction_service import CorrectionError
 from services.customer_account_service import CustomerAccountService
@@ -23,6 +24,7 @@ from services.financial_account_service import FinancialAccountService
 from services.gold_position_service import GoldPositionService
 from services.gold_price_service import GoldPriceService
 from services.inventory_service import InventoryService
+from services.invoice_service import PaymentInput
 from services.management_review_service import InspectionError, ManagementReviewService
 from webapp.errors import ApiError
 
@@ -75,7 +77,8 @@ class Extras:
             status = snapshot.get("status", "")
             for p in snapshot.get("prices", []):
                 if str(p["karat"]) in ("18", "21", "24"):
-                    prices.append({"karat": str(p["karat"]), "buy": f"{Decimal(p['shop_buy_price_per_gram']):,.0f}", "sell": f"{Decimal(p['shop_sell_price_per_gram']):,.0f}"})
+                    prices.append({"karat": str(p["karat"]), "buy": f"{Decimal(p['shop_buy_price_per_gram']):,.0f}", "sell": f"{Decimal(p['shop_sell_price_per_gram']):,.0f}",
+                                   "buyRaw": str(Decimal(p['shop_buy_price_per_gram'])), "sellRaw": str(Decimal(p['shop_sell_price_per_gram']))})
         except Exception:
             logger.exception("today: prices failed")
         return {"date": today, "cards": cards, "prices": prices, "priceStatus": status}
@@ -102,7 +105,103 @@ class Extras:
         customer = result["customer"]
         return {"customer": {"id": text("customer"), "name": customer.get("name") or "", "code": customer.get("customer_code") or "", "mobile": customer.get("mobile") or "",
                              "balance": balance_text(customer.get("balance") or 0)},
-                "rows": rows, "page": int(result.get("page") or 1), "hasMore": bool(result.get("has_more"))}
+                "rows": rows, "page": int(result.get("page") or 1), "hasMore": bool(result.get("has_more")),
+                "settle": self._settle_info(result)}
+
+    @staticmethod
+    def _settle_info(result):
+        """What the settlement form needs: the side of the balance, the exact amount and the real accounts (cash, or an active bank / wallet account)."""
+        balance = Decimal(str(result["customer"].get("balance") or 0))
+        if not result.get("can_settle") or not balance:
+            return {"can": False}
+        return {"can": True, "direction": "IN" if balance > 0 else "OUT", "directionText": "نستلم من العميل" if balance > 0 else "ندفع للعميل",
+                "amount": str(abs(balance)), "amountText": _cell("money", abs(balance)),
+                "accounts": [{"id": str(a["id"]), "name": a["name"]} for a in result.get("accounts") or []]}
+
+    def settle(self, token, body):
+        """تسوية حساب عميل (CSxxxxxx) from the iPad: ONE real payment leg (cash or one bank / wallet account) against the balance; the current password is re-verified, the right is rechecked by the
+        service in its transaction, the oversettlement and direction rules are the service's, and the client request key makes a retry idempotent."""
+        entry = self._api._entry(token)
+        actor = entry.session.current_actor()
+        text = lambda name: str(body.get(name) if body.get(name) is not None else "")
+        password = body.get("password")
+        if "CUSTOMER_ACCOUNT_SETTLE" not in actor.permissions:
+            raise ApiError(403, "ليس لديك صلاحية تسوية الحساب.")
+        try:
+            self._api._authentication.verify_user_password(int(actor.user_id), password if isinstance(password, str) else "")
+        except AuthenticationError:
+            raise ApiError(400, "كلمة المرور غير صحيحة أو انتظر قليلاً ثم أعد المحاولة.") from None
+        finally:
+            password = None
+        service = CustomerAccountService(entry.session)
+        try:
+            current = service.statement(text("customer"), "", "", "", "", 1, _expected_actor=actor)
+            info = self._settle_info(current)
+            if not info["can"]:
+                raise ApiError(409, "الحساب متوازن أو لا يمكنك تسويته.")
+            account = text("account")
+            if account:
+                chosen = next((a for a in current.get("accounts") or [] if str(a["id"]) == account), None)
+                if chosen is None:
+                    raise ApiError(400, "اختر حسابًا صحيحًا.")
+                method = "MOBILE_WALLET" if chosen.get("account_type") == "MOBILE_WALLET" else "BANK_TRANSFER"
+                leg = PaymentInput(method, text("amount"), info["direction"], None, account)
+            else:
+                leg = PaymentInput("PHYSICAL_CASH", text("amount"), info["direction"], None, None)
+            result = service.finalize(text("customer"), (leg,), text("request_key"), text("note"), _expected_actor=actor)
+        except ApiError:
+            raise
+        except PermissionError as exc:
+            raise ApiError(403, str(exc)) from None
+        except CorrectionError as exc:
+            raise ApiError(409 if getattr(exc, "code", "") == "REQUEST_CONFLICT" else 400, str(exc)) from None
+        except ValueError as exc:
+            raise ApiError(400, str(exc) or "بيانات غير صحيحة.") from None
+        except Exception:
+            logger.exception("customer settlement failed")
+            raise ApiError(500, "تعذرت التسوية؛ راجع حساب العميل ثم أعد المحاولة.") from None
+        return {"code": result["code"], "balanceAfter": balance_text(result["balance_after"])}
+
+    # ------------------------------------------------------------------ what needs attention now (also polled by the open page), read only
+    def attention(self, token):
+        entry = self._api._entry(token)
+        session, actor = entry.session, entry.session.current_actor()
+        items, reviews = [], 0
+        try:
+            data = ManagementReviewService(session).open_reviews(_expected_actor=actor)
+            reviews = sum(len(rows or []) for rows in data.values())
+            if reviews:
+                items.append({"label": "مراجعات بانتظارك", "value": str(reviews), "module": "reviews", "tone": "payable"})
+        except PermissionError:
+            pass
+        except Exception:
+            logger.exception("attention: reviews failed")
+        for key, label, module, tone, wanted in (("alerts", "تحت الحد الأدنى للمخزون", "inventory", "payable", "تحت الحد الأدنى"),
+                                                 ("customers", "ديون العملاء", "customers", "receivable", "إجمالي اللي عليهم")):
+            try:
+                built = self._api.report(token, key, {})
+                total = next((t for t in built["totals"] if t["label"].startswith(wanted)), None)
+                if total and str(total["value"]).strip() not in ("", "0", "0.00", "٠"):
+                    items.append({"label": label, "value": str(total["value"]), "module": module, "tone": tone})
+            except ApiError:
+                pass
+            except Exception:
+                logger.exception("attention: %s failed", key)
+        return {"items": items, "reviews": reviews}
+
+    # ------------------------------------------------------------------ the recent activity (audit_log), owner only, read only
+    def activity(self, token, params):
+        entry = self._api._entry(token)
+        try:
+            rows = AuditViewService(entry.session).recent(str(params.get("text") or ""), _expected_actor=entry.session.current_actor())
+        except PermissionError as exc:
+            raise ApiError(403, str(exc) or "سجل النشاط للمالك فقط.") from None
+        except Exception:
+            logger.exception("activity failed")
+            raise ApiError(500, "تعذر تحميل سجل النشاط؛ أعد المحاولة.") from None
+        return {"rows": [{"date": str(r["occurred_at"])[:16], "user": r.get("user_name") or "—", "event": r["event_type"], "reference": r.get("entity_reference") or "",
+                          "text": r.get("description") or ""} for r in rows]}
+
 
     # ------------------------------------------------------------------ a stock piece by barcode or item number (any status), read only
     def piece(self, token, params):

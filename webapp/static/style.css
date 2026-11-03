@@ -99,3 +99,5 @@ label.confirm input { width: 22px; height: 22px; }
 .card.gold .value { color: var(--gold); }
 .refreshrow { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .refreshrow .stamp { color: var(--muted); font-size: 12px; }
+
+button.card { text-align: inherit; font: inherit; color: inherit; cursor: pointer; }

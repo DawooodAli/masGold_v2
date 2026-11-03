@@ -45,6 +45,8 @@ MODULES = (
     # cards without reports: the page draws them itself (`kind`), shown only to a user holding one of `needs`
     {"key": "transfers", "title": "التحويلات", "subtitle": "بين البنوك والمحافظ والحساب الخاص", "icon": "🔁", "kind": "transfers", "needs": ("FINANCIAL_ACCOUNT_OPERATE",)},
     {"key": "reviews", "title": "مراجعات المدير", "subtitle": "ما ينتظر المراجعة", "icon": "🔔", "kind": "reviews", "needs": ("MANAGEMENT_REVIEW", "INVENTORY_RECONCILE")},
+    {"key": "calc", "title": "حاسبة الذهب", "subtitle": "وزن وعيار يطلع قيمة الشراء والبيع بالأسعار الحية", "icon": "🧮", "kind": "calc", "needs": ("APP_LOGIN",)},
+    {"key": "activity", "title": "سجل النشاط", "subtitle": "من فعل ماذا ومتى (للمالك)", "icon": "🕵️", "kind": "activity", "needs": ("USERS_MANAGE",)},
 )
 
 

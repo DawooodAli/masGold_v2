@@ -69,7 +69,8 @@ async function boot() {
     return;
   }
   state.module = state.overview.modules.length === 1 ? state.overview.modules[0].key : "";      // the home page of cards (a single card opens straight away)
-  if (state.module) openModule(state.module); else { render(); loadToday(); }
+  startAttentionPolling();
+  if (state.module) openModule(state.module); else { render(); loadToday(); loadAttention(false); }
 }
 
 function currentModule() { return state.overview.modules.find((m) => m.key === state.module) || null; }
@@ -109,6 +110,7 @@ function renderReportCards(module) {
 
 function goHome() {
   loadToday();
+  loadAttention(false);
   state.special = null; state.stmt = null; state.legacy = null; state.module = ""; state.report = ""; state.result = null; state.error = ""; state.chart = null; state.writeoff = null; state.invoice = null; state.custInvoices = null; state.busy = false;
   render();
 }
@@ -159,9 +161,10 @@ function render() {
     : grid && inReport ? el("button", { class: "btn", text: "← " + module.title, onclick: backToList }) : el("button", { class: "btn", text: "← الرئيسية", onclick: goHome });
   const top = el("div", { class: "top" }, el("h1", { text: module ? module.title : "مجوهرات ماس" }), back,
     el("span", { class: "who", text: state.overview.user }), el("button", { class: "btn", text: "خروج", onclick: logout }));
-  if (!module) { app.replaceChildren(...[top, renderToday(), renderHome()].filter(Boolean)); return; }
-  if (module.kind === "reviews" || module.kind === "transfers") {
-    const view = state.special ? (module.kind === "reviews" ? renderReviews(state.special) : renderTransfers(state.special)) : el("div", { class: "loading", text: "جارٍ التحميل…" });
+  if (!module) { app.replaceChildren(...[top, renderAttention(), renderToday(), renderHome()].filter(Boolean)); return; }
+  if (module.kind && module.kind !== "reports") {
+    const draw = { reviews: renderReviews, transfers: renderTransfers, calc: renderCalc, activity: renderActivity }[module.kind];
+    const view = state.special ? draw(state.special) : el("div", { class: "loading", text: "جارٍ التحميل…" });
     app.replaceChildren(...[top, view, state.custInvoices ? renderCustomerInvoices(state.custInvoices) : null, state.invoice ? renderInvoice(state.invoice) : null].filter(Boolean));
     return;
   }
@@ -181,6 +184,23 @@ function render() {
 }
 
 // ---------------------------------------------------------------- one report
+async function shareText(title, text) {
+  if (navigator.share) { try { await navigator.share({ title, text }); return; } catch (e) { if (e && e.name === "AbortError") return; } }
+  try { await navigator.clipboard.writeText(text); alert("تم نسخ الملخص."); } catch (e) { alert(text); }
+}
+
+async function shareReport() {
+  const params = new URLSearchParams({ key: state.report });
+  for (const [k, v] of Object.entries(state.filters)) if (v !== "" && v !== undefined && k !== "page") params.set(k, v);
+  try {
+    const response = await fetch("/api/export?" + params.toString(), { credentials: "same-origin", headers: { "X-Requested-With": "masgold" } });
+    if (!response.ok) throw new Error("export");
+    const file = new File([await response.blob()], state.report + ".csv", { type: "text/csv" });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: "تقرير " + state.report }); return; }
+  } catch (e) { if (e && e.name === "AbortError") return; }
+  downloadCsv();
+}
+
 function downloadCsv() {
   const params = new URLSearchParams({ key: state.report });
   for (const [k, v] of Object.entries(state.filters)) if (v !== "" && v !== undefined && k !== "page") params.set(k, v);
@@ -292,7 +312,8 @@ function renderCustomerSearch() {
 function renderResult(result) {
   const out = el("div", {});
   out.append(el("h2", { text: result.title, style: "margin-bottom:10px" }));
-  out.append(el("div", { class: "group", style: "margin-bottom:8px" }, el("button", { class: "btn small", text: "تنزيل CSV", onclick: () => downloadCsv() })));
+  out.append(el("div", { class: "group", style: "margin-bottom:8px" }, el("button", { class: "btn small", text: "تنزيل CSV", onclick: () => downloadCsv() }),
+    navigator.share ? el("button", { class: "btn small", text: "مشاركة", onclick: () => shareReport() }) : null));
   if (result.periodUsed) out.append(quickPeriods());
   out.append(renderFilters(result));
   if (result.applied && result.applied.length) out.append(el("div", { class: "note-box", text: result.applied.join(" • ") }));
@@ -609,7 +630,9 @@ function renderInvoice(v) {
     }
   }
   return el("div", { class: "overlay top2" }, el("div", { class: "sheet" },
-    el("div", { class: "top" }, el("h1", { text: d && d.number ? "فاتورة " + d.number : "فاتورة" }), el("button", { class: "btn", text: "إغلاق", onclick: () => { state.invoice = null; render(); } })), body));
+    el("div", { class: "top" }, el("h1", { text: d && d.number ? "فاتورة " + d.number : "فاتورة" }),
+      d && d.number ? el("button", { class: "btn", text: "مشاركة", onclick: () => shareText("فاتورة " + d.number, ["فاتورة " + d.number, d.typeText, d.finalizedAt, "الإجمالي: " + d.invoiceTotal, d.directionText, "حساب العميل: " + d.accountText].filter(Boolean).join("\n")) }) : null,
+      el("button", { class: "btn", text: "إغلاق", onclick: () => { state.invoice = null; render(); } })), body));
 }
 
 async function openCustomerInvoices(row, page) {
@@ -652,6 +675,41 @@ function renderCustomerInvoices(c) {
 }
 
 // ---------------------------------------------------------------- today's figures on the home page (each part is left out by the server when the user may not see it)
+// ---------------------------------------------------------------- what needs attention now (polled while the page is open; a notification only while the page is open)
+async function loadAttention(quiet) {
+  try {
+    const next = await call("/api/attention");
+    const before = state.attention ? state.attention.reviews : null;
+    state.attention = next;
+    document.title = (next.reviews ? "(" + next.reviews + ") " : "") + "تقارير مجوهرات ماس";
+    if (quiet && before !== null && next.reviews > before && "Notification" in window && Notification.permission === "granted") {
+      try { new Notification("مراجعة جديدة بانتظارك", { body: "عدد المراجعات المعلقة: " + next.reviews }); } catch (e) { /* not supported here */ }
+    }
+  } catch (e) {
+    if (e.status === 401) { showLogin("انتهت الجلسة، سجّل الدخول من جديد."); return; }
+    return;
+  }
+  if (!state.module && !state.special) render();
+}
+
+function startAttentionPolling() {
+  if (state.attentionTimer) return;
+  state.attentionTimer = setInterval(() => { if (state.overview) loadAttention(true); }, 60000);
+}
+
+function renderAttention() {
+  const a = state.attention;
+  if (!a) return null;
+  const box = el("div", { class: "todaybox" });
+  box.append(el("div", { class: "section", text: "الأهم دلوقتي" }));
+  if (!a.items.length) box.append(el("div", { class: "note-box", text: "لا يوجد شيء يحتاج انتباهك الآن ✅" }));
+  else box.append(el("div", { class: "cards" }, a.items.map((i) => el("button", { class: "card " + (i.tone || ""), onclick: () => openModule(i.module) }, el("div", { class: "label", text: i.label }), el("div", { class: "value", text: i.value })))));
+  if ("Notification" in window && Notification.permission === "default") {
+    box.append(el("button", { class: "btn small", text: "🔔 فعّل تنبيه المراجعات الجديدة (والصفحة مفتوحة)", onclick: async () => { try { await Notification.requestPermission(); } catch (e) { /* ignored */ } render(); } }));
+  }
+  return box;
+}
+
 async function loadToday() {
   try {
     state.today = await call("/api/today");
@@ -680,8 +738,8 @@ function renderToday() {
 }
 
 // ---------------------------------------------------------------- a customer's statement (read only)
-async function openStatement(row, page) {
-  const v = { row, page: page || 1, loading: true, error: "", data: null };
+async function openStatement(row, page, message) {
+  const v = { row, page: page || 1, loading: true, error: "", data: null, message: message || "" };
   state.stmt = v;
   render();
   try {
@@ -702,6 +760,8 @@ function renderStatement(v) {
   if (d && !v.loading) {
     body.append(el("div", { class: "cards" }, el("div", { class: "card" }, el("div", { class: "label", text: "رصيد العميل" }), el("div", { class: "value", text: d.customer.balance }),
       el("div", { class: "note", text: [d.customer.code, d.customer.mobile].filter(Boolean).join(" • ") }))));
+    if (v.message) body.append(el("div", { class: "msg ok", text: v.message }));
+    if (d.settle && d.settle.can) body.append(renderSettle(v, d));
     if (!d.rows.length) body.append(el("div", { class: "note-box", text: "لا توجد حركات." }));
     else {
       body.append(el("div", { class: "tablewrap" }, el("table", {}, el("thead", {}, el("tr", {}, ["التاريخ", "المصدر", "المرجع", "الأثر", "الرصيد بعدها", "البيان", ""].map((t) => el("th", { text: t })))),
@@ -715,6 +775,39 @@ function renderStatement(v) {
   }
   return el("div", { class: "overlay" }, el("div", { class: "sheet" },
     el("div", { class: "top" }, el("h1", { text: "كشف حساب " + v.row.name }), el("button", { class: "btn", text: "إغلاق", onclick: () => { state.stmt = null; render(); } })), body));
+}
+
+function renderSettle(v, d) {
+  const st = d.settle;
+  const f = v.settleForm || (v.settleForm = { account: "", amount: st.amount, note: "", key: newKey(), open: false });
+  if (!f.open) return el("button", { class: "btn", text: "تسوية الحساب (" + st.directionText + ")", onclick: () => { f.open = true; render(); } });
+  const account = el("select", { onchange: (e) => { f.account = e.target.value; } }, el("option", { value: "", text: "نقدي (الخزنة)" }),
+    st.accounts.map((a) => el("option", { value: a.id, text: a.name, selected: f.account === a.id })));
+  const amount = el("input", { type: "text", inputmode: "decimal", value: f.amount, oninput: (e) => { f.amount = e.target.value; sync(); } });
+  const note = el("input", { type: "text", value: f.note, oninput: (e) => { f.note = e.target.value; } });
+  const password = el("input", { type: "password", autocomplete: "current-password", placeholder: "كلمة مرورك الحالية" });
+  const confirm = el("input", { type: "checkbox" });
+  const go = el("button", { class: "btn primary", text: "تنفيذ التسوية", disabled: true });
+  function sync() { go.disabled = !(confirm.checked && password.value && f.amount.trim()); }
+  [confirm, password].forEach((n) => { n.addEventListener("input", sync); n.addEventListener("change", sync); });
+  go.addEventListener("click", async () => {
+    const pw = password.value; password.value = "";
+    go.disabled = true; v.error = "";
+    try {
+      const r = await call("/api/settle", { method: "POST", body: JSON.stringify({ customer: v.row.id, account: f.account, amount: f.amount, note: f.note, password: pw, request_key: f.key }) });
+      v.settleForm = null;
+      openStatement(v.row, 1, "تمت التسوية " + r.code + " — الرصيد بعدها: " + r.balanceAfter);
+      return;
+    } catch (e) {
+      if (e.status === 401) { showLogin("انتهت الجلسة، سجّل الدخول من جديد."); return; }
+      v.error = e.message;
+    }
+    render();
+  });
+  return el("div", { class: "searchbox" }, el("div", { class: "section", text: "تسوية الحساب — " + st.directionText + " (الرصيد " + st.amountText + ")" }),
+    el("div", { class: "filters" }, field("طريقة الدفع", account), field("المبلغ (ج)", amount), field("ملاحظة", note), field("كلمة المرور", password)),
+    el("label", { class: "confirm" }, confirm, " أؤكد المبلغ وطريقة الدفع"), go,
+    el("div", { class: "note-box", text: "التسوية حركة فلوس حقيقية تتسجل باسمك ولا تُعدَّل لاحقًا (التصحيح من البرنامج). لا يمكن أن تزيد عن الرصيد." }));
 }
 
 // ---------------------------------------------------------------- the inventory card: find a piece by barcode or item number
@@ -758,11 +851,12 @@ function renderPieceSearch() {
 
 // ---------------------------------------------------------------- cards that draw themselves: the manager reviews (read only) and the transfers
 async function loadSpecial(kind) {
-  const s = { kind, loading: true, error: "", data: null, message: "", form: null };
+  const s = { kind, loading: true, error: "", data: null, message: "", form: null, text: "" };
   state.special = s;
   render();
   try {
-    s.data = await call(kind === "reviews" ? "/api/reviews" : "/api/transfers");
+    if (kind === "calc") { if (!state.today) await loadToday(); s.data = {}; }
+    else s.data = await call(kind === "reviews" ? "/api/reviews" : kind === "activity" ? "/api/activity" : "/api/transfers");
   } catch (e) {
     if (e.status === 401) { showLogin("انتهت الجلسة، سجّل الدخول من جديد."); return; }
     s.error = e.message;
@@ -800,6 +894,55 @@ function renderReviews(s) {
           render();
         } }) : null)))))));
     }
+  }
+  return body;
+}
+
+function renderCalc(s) {
+  const prices = state.today ? state.today.prices : [];
+  const body = el("div", {});
+  if (!prices.length) { body.append(el("div", { class: "msg warn", text: "لا توجد أسعار حية الآن." })); return body; }
+  const f = s.form || (s.form = { karat: prices.find((p) => p.karat === "21") ? "21" : prices[0].karat, weight: "" });
+  const out = el("div", { class: "cards" });
+  const draw = () => {
+    const p = prices.find((x) => x.karat === f.karat);
+    const w = Number(String(f.weight).replace(",", "."));
+    out.replaceChildren(...(p && w > 0 ? [
+      el("div", { class: "card receivable" }, el("div", { class: "label", text: "قيمة الشراء (شراء المحل)" }), el("div", { class: "value", text: (w * Number(p.buyRaw)).toLocaleString("en-US", { maximumFractionDigits: 0 }) + " ج" }),
+        el("div", { class: "note", text: "سعر الجرام " + p.buy })),
+      el("div", { class: "card gold" }, el("div", { class: "label", text: "قيمة البيع (بيع المحل)" }), el("div", { class: "value", text: (w * Number(p.sellRaw)).toLocaleString("en-US", { maximumFractionDigits: 0 }) + " ج" }),
+        el("div", { class: "note", text: "سعر الجرام " + p.sell }))] : []));
+  };
+  const karat = el("select", { onchange: (e) => { f.karat = e.target.value; draw(); } }, prices.map((p) => el("option", { value: p.karat, text: "عيار " + p.karat, selected: p.karat === f.karat })));
+  const weight = el("input", { type: "text", inputmode: "decimal", value: f.weight, placeholder: "الوزن بالجرام", oninput: (e) => { f.weight = e.target.value; draw(); } });
+  body.append(el("div", { class: "filters" }, field("العيار", karat), field("الوزن (جرام)", weight)), out,
+    el("div", { class: "note-box", text: "تقدير سريع بالأسعار الحية للجرام فقط: لا يشمل مصنعية ولا خصم كسر ولا تقريب الفاتورة، وليس سعر فاتورة." }));
+  draw();
+  return body;
+}
+
+async function searchActivity(s) {
+  s.loading = true; s.error = "";
+  render();
+  try { s.data = await call("/api/activity?text=" + encodeURIComponent(s.text)); } catch (e) {
+    if (e.status === 401) { showLogin("انتهت الجلسة، سجّل الدخول من جديد."); return; }
+    s.error = e.message;
+  }
+  s.loading = false;
+  render();
+}
+
+function renderActivity(s) {
+  const body = el("div", {});
+  const input = el("input", { type: "text", value: s.text, placeholder: "ابحث بالمستخدم أو الحدث أو المرجع", oninput: (e) => { s.text = e.target.value; } });
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") searchActivity(s); });
+  body.append(el("div", { class: "filters" }, field("بحث", input), el("button", { class: "btn primary", text: "بحث", onclick: () => searchActivity(s) })));
+  if (s.loading) body.append(el("div", { class: "loading", text: "جارٍ التحميل…" }));
+  if (s.error) body.append(el("div", { class: "msg err", text: s.error }));
+  if (s.data) {
+    if (!s.data.rows.length) body.append(el("div", { class: "note-box", text: "لا توجد حركات." }));
+    else body.append(simpleTable(["الوقت", "المستخدم", "الحدث", "المرجع", "البيان"], s.data.rows.map((r) => [r.date, r.user, r.event, r.reference, r.text])));
+    body.append(el("div", { class: "note-box", text: "آخر 100 حركة من سجل التدقيق. للقراءة فقط." }));
   }
   return body;
 }
