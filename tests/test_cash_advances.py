@@ -154,6 +154,12 @@ class CustomerCashTests(FinancialTestCase):
         self.assertEqual((self.cash(), self.balance()), (before - D("300"), D("300")))
         self.assertEqual(self.store.ops["1"]["category"], "CUSTOMER_CASH_OUT")
 
+    def test_disabling_the_category_in_settings_does_not_break_the_customer_flow(self):
+        self.store.categories = [{"code": c, "name": c, "direction": d, "is_active": 0} for c, d in (("CUSTOMER_CASH_IN", "IN"), ("CUSTOMER_CASH_OUT", "OUT"))]
+        before = self.cash()
+        self.fin.customer_cash("OUT", "7", "CASH:1", "300", "", str(uuid4()))
+        self.assertEqual((self.cash(), self.balance()), (before - D("300"), D("300")))
+
     def test_a_bank_or_wallet_account_works_the_same_way_and_no_cap_applies(self):
         before = self.bank()
         self.fin.customer_cash("IN", "7", "BANK:7", "50000", "", str(uuid4()))

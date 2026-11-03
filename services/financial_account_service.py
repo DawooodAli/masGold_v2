@@ -654,7 +654,8 @@ class FinancialAccountService:
                 self._load_categories(repository)
                 chosen = self._categories.get(category)
                 wanted = "IN" if operation_type == DEPOSIT else "OUT"
-                if chosen is None or not chosen["active"] or wanted not in chosen["directions"]:
+                owned = category in ADVANCE_CATEGORIES                          # recorded only through its own flow (customer cash, advances, private account): disabling it in Settings must not break that flow
+                if chosen is None or wanted not in chosen["directions"] or (not chosen["active"] and not owned):
                     raise CorrectionError("TYPE_INVALID", "نوع الحركة لا يناسب الاتجاه المختار.")
             accounts = {}
             for side in sorted({s for s in (source, destination) if s}):       # deterministic lock order
