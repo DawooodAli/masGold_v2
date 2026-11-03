@@ -123,6 +123,59 @@ def _account(key):
     return parsed
 
 
+def fold_invoice_reversals(rows, external):
+    """Owner 2026-11-04 (paper books): cancelling a whole SALE brings it back to point zero. The outgoing table shows the WHOLE invoice refunded
+    (what was paid back + what was still owed), the incoming table shows what was still owed (cancelled off the customer) and every bank / wallet
+    refund as a transfer to the customer, so in - out stays the safe's real movement. Display only: nothing posted changes.
+    `rows` are safe movements, `external` bank / wallet ones; each reversal member carries `rev_cleared` (the stored customer credit of that
+    correction). Only a full reversal of an INVOICE whose money legs all went OUT is folded; everything else is left untouched."""
+    ZERO = Decimal("0")
+    groups = {}
+    for r in rows + external:
+        if r.get("label_key") == "REVERSAL" and r.get("corrected_source_type") == "INVOICE" and r.get("source_reference"):
+            groups.setdefault(r["source_reference"], []).append(r)
+    drop, replace, extra_in = set(), {}, {}
+    for code, members in groups.items():
+        if any(Decimal(str(m["amount_delta"])) >= 0 for m in members):
+            continue
+        cash = [m for m in members if not m.get("external")]
+        bank = [m for m in members if m.get("external")]
+        cleared = max((Decimal(str(m.get("rev_cleared") or 0)) for m in members), default=ZERO)
+        paid_cash = sum((-Decimal(str(m["amount_delta"])) for m in cash), ZERO)
+        paid_bank = sum((-Decimal(str(m["amount_delta"])) for m in bank), ZERO)
+        head = (cash or bank)[0]
+        whole = paid_cash + paid_bank + cleared
+        for m in members:
+            drop.add((bool(m.get("external")), m["id"]))
+        base = {k: head.get(k) for k in ("occurred_at", "invoice_id", "invoice_number", "source_reference", "customer_name", "customer_id",
+                                         "reference_type", "reference_id", "corrected_reference", "corrected_source_type", "operation_id")}
+        out_row = {**base, "id": "R" + str(head["id"]), "amount_delta": -whole, "label_key": "REVERSAL", "label_text": "استرداد فاتورة (إلغاء بيع)",
+                   "synthetic_out": True, "side_total": 0, "side_count": 0, "external": False}
+        ins = []
+        if cleared > 0:
+            ins.append({**base, "id": "Rc" + str(head["id"]), "amount_delta": cleared, "label_key": "REVERSAL", "label_text": "ما كان على العميل (اتلغى)",
+                        "no_money": True, "side_total": 0, "side_count": 0, "external": False})
+        for n, m in enumerate(bank):
+            ins.append({**base, "id": "Rb" + str(n) + "_" + str(m["id"]), "amount_delta": -Decimal(str(m["amount_delta"])), "label_key": "REVERSAL",
+                        "label_text": "تحويل من " + (m.get("account_name") or "الحساب") + " لعميل", "no_money": True, "side_total": 0, "side_count": 0,
+                        "external": False})
+        replace[(bool(head.get("external")), head["id"])] = [out_row] + ins
+        group_cash = len(cash)
+        for r in rows:                                          # the window totals of the remaining rows still count the folded cash legs
+            if (Decimal(str(r["amount_delta"])) < 0) and (False, r["id"]) not in {(False, c["id"]) for c in cash} and r.get("side_total"):
+                r["side_total"] = Decimal(str(r["side_total"])) + paid_cash
+                r["side_count"] = int(r.get("side_count") or 0) - group_cash
+    new_rows, new_external = [], []
+    for source, target in ((rows, new_rows), (external, new_external)):
+        for r in source:
+            key = (bool(r.get("external")), r["id"])
+            if key in replace:
+                target.extend(replace[key]) if not r.get("external") else new_rows.extend(replace[key])
+            elif key not in drop:
+                target.append(r)
+    return new_rows, new_external
+
+
 class FinancialAccountService:
     def __init__(self, session, *, transaction_factory=invoice_transaction, repository=FinancialAccountRepository,
                  authorization=None):
@@ -363,6 +416,15 @@ class FinancialAccountService:
                             r["clears_customer"] = True
                 except Exception:
                     pass
+            if hasattr(repository, "correction_account_cleared"):
+                try:                                               # display only: never break the screen
+                    reversals = [r for r in rows + external if r.get("label_key") == "REVERSAL" and r.get("corrected_source_type") == "INVOICE"
+                                 and r.get("reference_type") == "TRANSACTION_CORRECTION" and r.get("reference_id") is not None]
+                    cleared = repository.correction_account_cleared([r["reference_id"] for r in reversals])
+                    for r in reversals:
+                        r["rev_cleared"] = cleared.get(int(r["reference_id"]), 0)
+                except Exception:
+                    pass
             links = {}
             if hasattr(repository, "payment_invoice_links"):
                 try:                                               # display only: never break the screen
@@ -375,6 +437,10 @@ class FinancialAccountService:
                 r["linked_invoices"] = " ، ".join(links.get((r.get("reference_type"), int(r["reference_id"])), [])) if r.get("reference_id") is not None and r.get("reference_type") else ""
             return cash, period, rows, banks, external, debts
         cash, period, rows, banks, external, debts = self._read(actor, read)
+        try:
+            rows, external = fold_invoice_reversals(rows, external)
+        except Exception:                                      # display only: the unfolded view is still correct
+            pass
 
         first_leg = {}                                         # a split payment (cash + انستا / محفظة): the rest is shown ONCE, on the first leg of the invoice
         for r in rows + external:
@@ -488,7 +554,9 @@ class FinancialAccountService:
                              "external": False, "side_total": 0, "side_count": 0} for r in paid_outside if Decimal(str(r["amount_delta"])) > cancelled.get(r["id"], ZERO)]
                 chosen = chosen + virtual
                 chosen.sort(key=lambda r: (r.get("occurred_at") or datetime.min, str(r["id"])), reverse=True)
-                extra, added = sum((-v["amount_delta"] for v in virtual), ZERO) - sum(hidden_cash_out.values(), ZERO), len(virtual) - len(hidden_cash_out)
+                extra, added = (sum((-v["amount_delta"] for v in virtual), ZERO) - sum(hidden_cash_out.values(), ZERO)
+                                + sum((-r["amount_delta"] for r in rows if r.get("synthetic_out")), ZERO),
+                                len(virtual) - len(hidden_cash_out) + sum(1 for r in rows if r.get("synthetic_out")))
             merged = sorted(chosen + outside, key=lambda r: (r.get("occurred_at") or datetime.min, str(r["id"]).zfill(20)), reverse=True) if outside else chosen   # the safe's own order is kept unless bank rows are merged in
             return {"rows": [{"id": ("B" if r.get("external") else "") + str(r["id"]), "label": r.get("label_text") or self._label(r["label_key"]),
                               "amount": str(abs(Decimal(str(r["amount_delta"]))).quantize(Decimal("0.01"))),

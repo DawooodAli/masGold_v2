@@ -244,6 +244,38 @@ class CashViewTests(FinancialTestCase):
         self.assertEqual(view["out"]["rows"], [])
         self.assertEqual((view["in"]["total"], view["out"]["total"]), ("53700.00", "0.00"))
 
+    def reversal_row(self, i, delta, ref=40):
+        row = cash_row(i, delta, "REVERSAL", (delta, 1), invoice_id=21)
+        row["reference_type"], row["reference_id"], row["source_reference"] = "TRANSACTION_CORRECTION", ref, "RV000040"
+        row["corrected_source_type"] = "INVOICE"
+        return row
+
+    def test_cancelling_a_whole_sale_shows_the_full_refund_out_and_what_was_owed_in(self):
+        self.store.cash_rows = [self.reversal_row(7, "-30000")]
+        self.store.correction_credits = {40: D("10000")}            # 40,000 invoice: 30,000 paid, 10,000 was still on the customer
+        view = self.fin.cash_view()
+        self.assertEqual([(r["label"], r["amount"]) for r in view["out"]["rows"]], [("استرداد فاتورة (إلغاء بيع)", "40000.00")])
+        self.assertEqual([(r["label"], r["amount"]) for r in view["in"]["rows"]], [("ما كان على العميل (اتلغى)", "10000.00")])
+        self.assertEqual((view["in"]["total"], view["out"]["total"], view["in"]["count"], view["out"]["count"]), ("10000.00", "40000.00", 1, 1))
+
+    def test_cancelling_a_sale_refunded_by_wallet_shows_the_transfer_in_and_nets_to_the_cash_only(self):
+        self.store.cash_rows = [self.reversal_row(7, "-10000")]
+        self.store.bank_rows = [self.reversal_row(9, "-20000")]
+        for n, account in enumerate(self.store.bank_accounts.values()):
+            account["is_active"] = n == 0
+        self.store.correction_credits = {40: D("10000")}
+        view = self.fin.cash_view()
+        self.assertEqual([r["amount"] for r in view["out"]["rows"]], ["40000.00"])
+        self.assertEqual(sorted(r["amount"] for r in view["in"]["rows"]), ["10000.00", "20000.00"])
+        self.assertEqual((view["in"]["total"], view["out"]["total"]), ("30000.00", "40000.00"))      # 10,000 really left the safe
+
+    def test_cancelling_a_fully_paid_sale_is_just_the_refund(self):
+        self.store.cash_rows = [self.reversal_row(7, "-40000")]
+        view = self.fin.cash_view()
+        self.assertEqual([r["amount"] for r in view["out"]["rows"]], ["40000.00"])
+        self.assertEqual(view["in"]["rows"], [])
+        self.assertEqual((view["in"]["total"], view["out"]["total"]), ("0.00", "40000.00"))
+
     def test_a_split_cash_and_wallet_payment_shows_the_rest_once(self):
         self.store.cash_rows = [cash_row(5, "20000", "SALE", ("20000", 1), invoice_id=21)]
         self.store.bank_rows = [cash_row(9, "10000", "SALE", ("10000", 1), invoice_id=21)]
