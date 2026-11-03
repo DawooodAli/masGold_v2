@@ -386,6 +386,22 @@ class FinancialAccountService:
                 return [("ON_CUSTOMER", value)] * (value > 0)
             return []
 
+        # Owner 2026-11-04: a settlement correction that only moves cash into a bank / wallet account is NOT shown as a correction: the invoice stays
+        # as it was and the outgoing table says where the money went («انستا»), as if it had never been edited.
+        groups = {}
+        for r in rows + external:
+            if r.get("label_key") == "CORRECTION" and r.get("source_reference"):
+                groups.setdefault(r["source_reference"], []).append(r)
+        hidden_cash_out, hidden_bank_in = {}, set()
+        for code, members in groups.items():
+            cash_out = [r for r in members if not r.get("external") and Decimal(str(r["amount_delta"])) < 0]
+            bank_in = [r for r in members if r.get("external") and Decimal(str(r["amount_delta"])) > 0]
+            if (len(cash_out) + len(bank_in) == len(members) and cash_out and bank_in
+                    and sum((-Decimal(str(r["amount_delta"])) for r in cash_out), ZERO) == sum((Decimal(str(r["amount_delta"])) for r in bank_in), ZERO)):
+                for r in cash_out:
+                    hidden_cash_out[r["id"]] = -Decimal(str(r["amount_delta"]))
+                hidden_bank_in.update(r["id"] for r in bank_in)
+
         absorbed, hidden = {}, set()                           # the later legs of a document are folded into its first leg
         for r in rows + external:
             key = doc_key(r)
@@ -395,8 +411,8 @@ class FinancialAccountService:
                 hidden.add((bool(r.get("external")), r["id"]))
 
         def side(sign):
-            chosen = [r for r in rows if (r["amount_delta"] > 0) == (sign > 0)]
-            outside = [r for r in external if (Decimal(str(r["amount_delta"])) > 0) == (sign > 0)]
+            chosen = [r for r in rows if (r["amount_delta"] > 0) == (sign > 0) and r["id"] not in hidden_cash_out]
+            outside = [r for r in external if (Decimal(str(r["amount_delta"])) > 0) == (sign > 0) and not (sign > 0 and r["id"] in hidden_bank_in)]
             original_outside = list(outside)
             if sign > 0:
                 def whole(r):                                      # ONE incoming row per document: the first leg carries the other legs too
@@ -405,7 +421,7 @@ class FinancialAccountService:
                           for r in chosen if (bool(r.get("external")), r["id"]) not in hidden]
                 outside = [{**r, "amount_delta": whole(r)} if whole(r) != Decimal(str(r["amount_delta"])) else r
                            for r in outside if (bool(r.get("external")), r["id"]) not in hidden]
-                extra, added = sum((add_in(r) for r in rows + external), ZERO) + sum((Decimal(str(r["amount_delta"])) for r in rows if r.get("no_money")), ZERO) + sum((Decimal(str(r["amount_delta"])) for r in paid_outside), ZERO), 0
+                extra, added = sum((add_in(r) for r in rows + external), ZERO) + sum((Decimal(str(r["amount_delta"])) for r in rows if r.get("no_money")), ZERO) + sum((Decimal(str(r["amount_delta"])) for r in paid_outside if r["id"] not in hidden_bank_in), ZERO), 0
             else:
                 virtual = [{**r, "id": "D" + str(n) + "_" + str(r["id"]), "amount_delta": -amount, "label_key": label_key, "external": False, "side_total": 0, "side_count": 0}
                            for r in rows + external for n, (label_key, amount) in enumerate(out_parts(r))]
@@ -413,7 +429,7 @@ class FinancialAccountService:
                              "external": False, "side_total": 0, "side_count": 0} for r in paid_outside]
                 chosen = chosen + virtual
                 chosen.sort(key=lambda r: (r.get("occurred_at") or datetime.min, str(r["id"])), reverse=True)
-                extra, added = sum((-v["amount_delta"] for v in virtual), ZERO), len(virtual)
+                extra, added = sum((-v["amount_delta"] for v in virtual), ZERO) - sum(hidden_cash_out.values(), ZERO), len(virtual) - len(hidden_cash_out)
             merged = sorted(chosen + outside, key=lambda r: (r.get("occurred_at") or datetime.min, str(r["id"]).zfill(20)), reverse=True) if outside else chosen   # the safe's own order is kept unless bank rows are merged in
             return {"rows": [{"id": ("B" if r.get("external") else "") + str(r["id"]), "label": r.get("label_text") or self._label(r["label_key"]),
                               "amount": str(abs(Decimal(str(r["amount_delta"]))).quantize(Decimal("0.01"))),
@@ -423,8 +439,8 @@ class FinancialAccountService:
                               "linked_invoices": r.get("linked_invoices") or "",
                               **movement_context(r)}
                              for r in merged],
-                    "total": str((abs(Decimal(str(next((r["side_total"] for r in chosen if r.get("side_total")), 0)))) + extra).quantize(Decimal("0.01"))) if chosen or extra else "0.00",
-                    "count": (int(next((r["side_count"] for r in chosen if r.get("side_count")), 0)) + added + (sum(1 for r in chosen if r.get("no_money")) if sign > 0 else 0)) if chosen else 0,
+                    "total": str((abs(Decimal(str(next((r["side_total"] for r in rows if (r["amount_delta"] > 0) == (sign > 0) and r.get("side_total")), 0)))) + extra).quantize(Decimal("0.01"))) if chosen or extra else "0.00",
+                    "count": (int(next((r["side_count"] for r in rows if (r["amount_delta"] > 0) == (sign > 0) and r.get("side_count")), 0)) + added + (sum(1 for r in chosen if r.get("no_money")) if sign > 0 else 0)) if chosen else 0,
                     "bank_total": str(abs(sum((Decimal(str(r["amount_delta"])) for r in original_outside), Decimal("0"))).quantize(Decimal("0.01"))),
                     "bank_count": len(original_outside)}
         return {"account": {"key": account_key("CASH", cash["account_id"]), "name": cash["name"],
