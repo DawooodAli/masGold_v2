@@ -207,6 +207,20 @@ class CashViewTests(FinancialTestCase):
         self.assertEqual([(r["label"], r["amount"]) for r in view["out"]["rows"]], [("انستا", "53700.00")])
         self.assertEqual((view["in"]["total"], view["out"]["total"], view["out"]["count"]), ("53700.00", "53700.00", 1))
 
+    def test_a_correction_from_wallet_to_cash_cancels_the_wallet_out(self):
+        fc_in = cash_row(6, "53700", "CORRECTION", ("53700", 1), invoice_id=21)
+        fc_out = cash_row(10, "-53700", "CORRECTION", ("-53700", 1), invoice_id=21)
+        fc_in["source_reference"] = fc_out["source_reference"] = "FC000030"
+        original = cash_row(9, "53700", "SALE", ("53700", 1), invoice_id=21)
+        self.store.cash_rows = [fc_in]
+        self.store.bank_rows = [fc_out, original]
+        for n, account in enumerate(self.store.bank_accounts.values()):
+            account["is_active"] = n == 0
+        view = self.fin.cash_view()
+        self.assertEqual([(r["label"], r["amount"]) for r in view["in"]["rows"]], [("بيع", "53700.00")])
+        self.assertEqual(view["out"]["rows"], [])
+        self.assertEqual((view["in"]["total"], view["out"]["total"]), ("53700.00", "0.00"))        # the 53,700 really is cash now
+
     def test_a_split_cash_and_wallet_payment_shows_the_rest_once(self):
         self.store.cash_rows = [cash_row(5, "20000", "SALE", ("20000", 1), invoice_id=21)]
         self.store.bank_rows = [cash_row(9, "10000", "SALE", ("10000", 1), invoice_id=21)]
