@@ -83,8 +83,24 @@ Control {
     }
 
     function runSearch() {
+        liveSearchTimer.stop()
         resultsList.currentIndex = -1
         pickerVM.search(searchField.text)
+    }
+
+    // Search as you type: a short pause after the last keystroke runs the same search; while a search is still running the timer waits and retries.
+    Timer {
+        id: liveSearchTimer
+        interval: 300
+        repeat: false
+        onTriggered: {
+            if (picker.busy) {
+                restart()
+                return
+            }
+            if (searchField.text !== pickerVM.searchText)
+                picker.runSearch()
+        }
     }
 
     function chooseHighlighted() {
@@ -235,7 +251,7 @@ Control {
                     selectByMouse: true
                     color: pickerTheme.textPrimary
                     placeholderTextColor: pickerTheme.textMuted
-                    enabled: !picker.busy
+                    onTextEdited: liveSearchTimer.restart()
                     onAccepted: picker.runSearch()
                     Keys.onDownPressed: {
                         if (pickerVM.results.length) {
