@@ -66,7 +66,7 @@ class FinRepo:
         return copy.deepcopy(getattr(self.store, "bank_rows" if ledger == "BANK" else "cash_rows", []))
 
     def invoice_account_debits(self, invoice_ids):
-        return {str(k): v for k, v in getattr(self.store, "invoice_debts", {}).items() if int(k) in {int(i) for i in invoice_ids}}
+        return {("INVOICE", str(k)): v for k, v in getattr(self.store, "invoice_debts", {}).items()} | {("INVOICE_LIFECYCLE", str(k)): v for k, v in getattr(self.store, "exchange_debts", {}).items()}
 
     def operation_accounts(self):
         return [{"id": a["id"], "name": a["name"], "account_type": a["account_type"]}

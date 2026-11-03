@@ -295,6 +295,14 @@ class FinancialAccountService:
         if first and last and first > last:
             raise ValueError("تاريخ البداية بعد النهاية.")
 
+        def doc_key(r):
+            if Decimal(str(r["amount_delta"])) <= 0:
+                return None
+            if r.get("label_key") in ("SALE", "MIXED") and r.get("invoice_id") is not None:
+                return ("INVOICE", str(r["invoice_id"]))
+            if r.get("label_key") == "EXCHANGE" and r.get("reference_id") is not None:
+                return ("INVOICE_LIFECYCLE", str(r["reference_id"]))
+            return None
         def read(repository, ledgers):
             if label not in ("",) + tuple(self._all_labels()):
                 raise ValueError("نوع الحركة غير صحيح.")
@@ -319,8 +327,7 @@ class FinancialAccountService:
                         if r.get("label_key") not in ("TRANSFER_IN", "TRANSFER_OUT"):      # the safe's own table already shows those
                             external.append({**r, "account_name": "محفظة" if account.get("account_type") == "MOBILE_WALLET" else "انستا", "external": True})       # the owner reads انستا (any bank) or محفظة, never the account name
             try:
-                debts = repository.invoice_account_debits([r["invoice_id"] for r in rows + external
-                                                           if r.get("label_key") in ("SALE", "MIXED") and r.get("invoice_id") is not None])
+                debts = repository.invoice_account_debits([k for k in (doc_key(r) for r in rows + external) if k])
             except Exception:                                      # display only: never break the screen
                 debts = {}
             return cash, period, rows, banks, external, debts
@@ -328,14 +335,14 @@ class FinancialAccountService:
 
         first_leg = {}                                         # a split payment (cash + انستا / محفظة): the rest is shown ONCE, on the first leg of the invoice
         for r in rows + external:
-            if (r.get("label_key") in ("SALE", "MIXED") and Decimal(str(r["amount_delta"])) > 0 and r.get("invoice_id") is not None
-                    and str(r["invoice_id"]) not in first_leg):
-                first_leg[str(r["invoice_id"])] = (bool(r.get("external")), r["id"])
+            if doc_key(r) and doc_key(r) not in first_leg:
+                first_leg[doc_key(r)] = (bool(r.get("external")), r["id"])
 
         def owed(r):
             """Owner 2026-11-03 (paper books): a sale paid in part shows its WHOLE value in the incoming table and what stayed on the customer in the outgoing one."""
-            if r.get("invoice_id") is not None and first_leg.get(str(r["invoice_id"])) == (bool(r.get("external")), r["id"]):
-                return debts.get(str(r["invoice_id"]), Decimal("0"))
+            key = doc_key(r)
+            if key and first_leg.get(key) == (bool(r.get("external")), r["id"]):
+                return debts.get(key, Decimal("0"))
             return Decimal("0")
 
         def side(sign):

@@ -210,16 +210,19 @@ class FinancialAccountRepository(BaseRepository):
             (int(account_id), start, end, label, label, int(limit)))
         return rows
 
-    def invoice_account_debits(self, invoice_ids):
-        """{invoice_id: amount left ON the customer} = the positive customer-ledger entry each invoice wrote (owner 2026-11-03, display only)."""
-        ids = sorted({int(i) for i in invoice_ids})
-        if not ids:
-            return {}
-        marks = ",".join(["%s"] * len(ids))
-        rows = self._fetch_all(
-            "SELECT reference_id, SUM(amount_delta) AS debt FROM customer_transactions "
-            f"WHERE reference_type = 'INVOICE' AND amount_delta > 0 AND reference_id IN ({marks}) GROUP BY reference_id", tuple(ids))
-        return {str(r["reference_id"]): Decimal(str(r["debt"])) for r in rows}
+    def invoice_account_debits(self, keys):
+        """{(reference_type, id): amount left ON the customer} for INVOICE / INVOICE_LIFECYCLE (exchange) documents (display only)."""
+        out = {}
+        for kind in ("INVOICE", "INVOICE_LIFECYCLE"):
+            ids = sorted({int(i) for t, i in keys if t == kind})
+            if not ids:
+                continue
+            marks = ",".join(["%s"] * len(ids))
+            for r in self._fetch_all(
+                    "SELECT reference_id, SUM(amount_delta) AS debt FROM customer_transactions "
+                    f"WHERE reference_type = '{kind}' AND amount_delta > 0 AND reference_id IN ({marks}) GROUP BY reference_id", tuple(ids)):
+                out[(kind, str(r["reference_id"]))] = Decimal(str(r["debt"]))
+        return out
 
     def operation_accounts(self):
         """Active bank / wallet accounts by name only (no balance): the إيداع / سحب بنك selector."""
