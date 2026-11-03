@@ -276,6 +276,30 @@ class CashViewTests(FinancialTestCase):
         self.assertEqual(view["in"]["rows"], [])
         self.assertEqual((view["in"]["total"], view["out"]["total"]), ("0.00", "40000.00"))
 
+    def lower_exchange(self, i, delta):
+        row = cash_row(i, delta, "EXCHANGE", (delta, 1), invoice_id=21)
+        row["reference_type"], row["reference_id"], row["source_reference"] = "INVOICE_LIFECYCLE", 902, "EX000902"
+        return row
+
+    def test_an_exchange_to_a_lower_invoice_paid_back_in_cash_shows_the_whole_old_refund_out(self):
+        self.store.cash_rows = [self.lower_exchange(7, "-10000")]
+        self.store.exchange_debts = {902: (D("40000"), D("0"))}      # old pieces 40,000, new invoice 30,000, 10,000 paid back in cash
+        view = self.fin.cash_view()
+        self.assertEqual([(r["label"], r["amount"]) for r in view["out"]["rows"]], [("استرداد فاتورة قديمة", "40000.00")])
+        self.assertEqual([(r["label"], r["amount"]) for r in view["in"]["rows"]], [("استبدال (الفاتورة الجديدة)", "30000.00")])
+        self.assertEqual((view["in"]["total"], view["out"]["total"]), ("30000.00", "40000.00"))        # 10,000 really left the safe
+
+    def test_an_exchange_to_a_lower_invoice_paid_back_by_wallet_shows_the_transfer_in(self):
+        self.store.cash_rows = []
+        self.store.bank_rows = [self.lower_exchange(9, "-10000")]
+        for n, account in enumerate(self.store.bank_accounts.values()):
+            account["is_active"] = n == 0
+        self.store.exchange_debts = {902: (D("40000"), D("0"))}
+        view = self.fin.cash_view()
+        self.assertEqual([r["amount"] for r in view["out"]["rows"]], ["40000.00"])
+        self.assertEqual(sorted((r["label"], r["amount"]) for r in view["in"]["rows"]), [("استبدال (الفاتورة الجديدة)", "30000.00"), ("تحويل لعميل فرق فاتورة", "10000.00")])
+        self.assertEqual((view["in"]["total"], view["out"]["total"]), ("40000.00", "40000.00"))        # nothing left the safe
+
     def test_a_split_cash_and_wallet_payment_shows_the_rest_once(self):
         self.store.cash_rows = [cash_row(5, "20000", "SALE", ("20000", 1), invoice_id=21)]
         self.store.bank_rows = [cash_row(9, "10000", "SALE", ("10000", 1), invoice_id=21)]

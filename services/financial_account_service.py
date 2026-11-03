@@ -150,15 +150,15 @@ def fold_invoice_reversals(rows, external):
         base = {k: head.get(k) for k in ("occurred_at", "invoice_id", "invoice_number", "source_reference", "customer_name", "customer_id",
                                          "reference_type", "reference_id", "corrected_reference", "corrected_source_type", "operation_id")}
         out_row = {**base, "id": "R" + str(head["id"]), "amount_delta": -whole, "label_key": "REVERSAL", "label_text": "استرداد فاتورة (إلغاء بيع)",
-                   "synthetic_out": True, "side_total": 0, "side_count": 0, "external": False}
+                   "synthetic_out": True, "side_total": 0, "side_count": 0, "external": False, "folded": True}
         ins = []
         if cleared > 0:
             ins.append({**base, "id": "Rc" + str(head["id"]), "amount_delta": cleared, "label_key": "REVERSAL", "label_text": "ما كان على العميل (اتلغى)",
-                        "no_money": True, "side_total": 0, "side_count": 0, "external": False})
+                        "no_money": True, "side_total": 0, "side_count": 0, "external": False, "folded": True})
         for n, m in enumerate(bank):
             ins.append({**base, "id": "Rb" + str(n) + "_" + str(m["id"]), "amount_delta": -Decimal(str(m["amount_delta"])), "label_key": "REVERSAL",
                         "label_text": "تحويل من " + (m.get("account_name") or "الحساب") + " لعميل", "no_money": True, "side_total": 0, "side_count": 0,
-                        "external": False})
+                        "external": False, "folded": True})
         replace[(bool(head.get("external")), head["id"])] = [out_row] + ins
         group_cash = len(cash)
         for r in rows:                                          # the window totals of the remaining rows still count the folded cash legs
@@ -171,6 +171,59 @@ def fold_invoice_reversals(rows, external):
             key = (bool(r.get("external")), r["id"])
             if key in replace:
                 target.extend(replace[key]) if not r.get("external") else new_rows.extend(replace[key])
+            elif key not in drop:
+                target.append(r)
+    return new_rows, new_external
+
+
+def fold_exchange_refunds(rows, external):
+    """Owner 2026-11-04 (paper books): an exchange whose NEW invoice is lower than the old one (the shop pays the customer the difference) reads as a
+    return of the whole old invoice plus a new sale: the outgoing table shows the old invoice refunded in full (the cash paid is inside it), the
+    incoming table shows the new invoice, every bank / wallet payment as «تحويل لعميل فرق فاتورة», and the part left to the customer's account.
+    Display only. Each member carries `ex_value` = (value of the returned pieces as sold, signed customer-account part)."""
+    ZERO = Decimal("0")
+    groups = {}
+    for r in rows + external:
+        if r.get("label_key") == "EXCHANGE" and Decimal(str(r["amount_delta"])) < 0 and r.get("ex_value") and r.get("reference_id") is not None:
+            groups.setdefault(str(r["reference_id"]), []).append(r)
+    drop, replace = set(), {}
+    for code, members in groups.items():
+        old, account = members[0]["ex_value"]
+        cash = [m for m in members if not m.get("external")]
+        bank = [m for m in members if m.get("external")]
+        paid_cash = sum((-Decimal(str(m["amount_delta"])) for m in cash), ZERO)
+        paid_bank = sum((-Decimal(str(m["amount_delta"])) for m in bank), ZERO)
+        credit = max(-Decimal(str(account)), ZERO)
+        difference = paid_cash + paid_bank + credit
+        new_value = Decimal(str(old)) - difference
+        if old <= 0 or new_value <= 0:
+            continue
+        head = (cash or bank)[0]
+        for m in members:
+            drop.add((bool(m.get("external")), m["id"]))
+        base = {k: head.get(k) for k in ("occurred_at", "invoice_id", "invoice_number", "source_reference", "customer_name", "customer_id",
+                                         "reference_type", "reference_id", "operation_id")}
+        out_row = {**base, "id": "Xo" + str(head["id"]), "amount_delta": -Decimal(str(old)), "label_key": "EXCHANGE", "label_text": "استرداد فاتورة قديمة",
+                   "synthetic_out": True, "side_total": 0, "side_count": 0, "external": False, "folded": True}
+        ins = [{**base, "id": "Xn" + str(head["id"]), "amount_delta": new_value, "label_key": "EXCHANGE", "label_text": "استبدال (الفاتورة الجديدة)",
+                "no_money": True, "side_total": 0, "side_count": 0, "external": False, "folded": True}]
+        for n, m in enumerate(bank):
+            ins.append({**base, "id": "Xb" + str(n) + "_" + str(m["id"]), "amount_delta": -Decimal(str(m["amount_delta"])), "label_key": "EXCHANGE",
+                        "label_text": "تحويل لعميل فرق فاتورة", "no_money": True, "side_total": 0, "side_count": 0, "external": False, "folded": True})
+        if credit > 0:
+            ins.append({**base, "id": "Xc" + str(head["id"]), "amount_delta": credit, "label_key": "EXCHANGE", "label_text": "فرق للعميل على حسابه",
+                        "no_money": True, "side_total": 0, "side_count": 0, "external": False, "folded": True})
+        replace[(bool(head.get("external")), head["id"])] = [out_row] + ins
+        for r in rows:                                          # the window totals of the other outgoing rows still count the folded cash legs
+            if Decimal(str(r["amount_delta"])) < 0 and (False, r["id"]) not in {(False, c["id"]) for c in cash} and r.get("side_total"):
+                r["side_total"] = Decimal(str(r["side_total"])) + paid_cash
+                r["side_count"] = int(r.get("side_count") or 0) - len(cash)
+    new_rows, new_external = [], []
+    for source, target in ((rows, new_rows), (external, new_external)):
+        for r in source:
+            key = (bool(r.get("external")), r["id"])
+            if key in replace:
+                new_rows.extend(replace[key])
             elif key not in drop:
                 target.append(r)
     return new_rows, new_external
@@ -349,7 +402,7 @@ class FinancialAccountService:
             raise ValueError("تاريخ البداية بعد النهاية.")
 
         def doc_key(r):
-            if Decimal(str(r["amount_delta"])) <= 0:
+            if r.get("folded") or Decimal(str(r["amount_delta"])) <= 0:
                 return None
             if r.get("label_key") in ("SALE", "MIXED") and r.get("invoice_id") is not None:
                 return ("INVOICE", str(r["invoice_id"]))
@@ -425,6 +478,14 @@ class FinancialAccountService:
                         r["rev_cleared"] = cleared.get(int(r["reference_id"]), 0)
                 except Exception:
                     pass
+            try:                                                   # display only: never break the screen
+                lower = [r for r in rows + external if r.get("label_key") == "EXCHANGE" and Decimal(str(r["amount_delta"])) < 0
+                         and r.get("reference_id") is not None]
+                values = repository.invoice_account_debits([("INVOICE_LIFECYCLE", r["reference_id"]) for r in lower]) if lower else {}
+                for r in lower:
+                    r["ex_value"] = values.get(("INVOICE_LIFECYCLE", str(r["reference_id"])))
+            except Exception:
+                pass
             links = {}
             if hasattr(repository, "payment_invoice_links"):
                 try:                                               # display only: never break the screen
@@ -439,6 +500,7 @@ class FinancialAccountService:
         cash, period, rows, banks, external, debts = self._read(actor, read)
         try:
             rows, external = fold_invoice_reversals(rows, external)
+            rows, external = fold_exchange_refunds(rows, external)
         except Exception:                                      # display only: the unfolded view is still correct
             pass
 
