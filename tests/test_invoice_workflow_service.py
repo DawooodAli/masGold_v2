@@ -162,15 +162,13 @@ class OldGoldStockSaleTests(InvoiceServiceTestCase):
     def test_insufficient_stock_shows_available_grams(self):
         draft = InvoiceDraft(5, "12", (), (), (cash("700000"),), described_sale_lines=(from_stock(weight_grams="100.500"),))
         preview = self.service.preview(draft)
-        problem = [p for p in preview["blocking_problems"] if p["code"] == "OLD_GOLD_STOCK_INSUFFICIENT"][0]
-        self.assertIn("المتاح 100.000 جرام", problem["message"])
-        self.assertRefused("OLD_GOLD_STOCK_INSUFFICIENT", draft)
+        self.assertNotIn("OLD_GOLD_STOCK_INSUFFICIENT", [p["code"] for p in preview["blocking_problems"]])    # owner 2026-11-03: Scrap may go negative
 
     def test_old_gold_bought_on_the_same_invoice_does_not_count(self):
         # Opening COUNTED 21K = 100 g; the customer brings 50 g, the shop sells 120 g from stock.
         draft = InvoiceDraft(5, "12", (), (old(1, "50", discount_type="PERCENT", discount_value="1.50"),),
                              (cash("760000"),), described_sale_lines=(from_stock(weight_grams="120.000"),))
-        self.assertRefused("OLD_GOLD_STOCK_INSUFFICIENT", draft)
+        self.assertNotIn("OLD_GOLD_STOCK_INSUFFICIENT", [p["code"] for p in self.service.preview(draft)["blocking_problems"]])
 
 
 class SettlementTests(InvoiceServiceTestCase):

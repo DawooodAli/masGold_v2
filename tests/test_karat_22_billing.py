@@ -120,8 +120,8 @@ class Karat22ScrapSaleTests(Karat22Case):
 
     def test_f7_refuses_more_22k_grams_than_the_counted_balance(self):
         f7 = DescribedSaleInput(OLD_GOLD_STOCK, K22, "100.001", item_type_id=4, description="دبلة سادة")
-        self.assertRefused("OLD_GOLD_STOCK_INSUFFICIENT",
-                           InvoiceDraft(5, "12", (), (), (cash("700000"),), described_sale_lines=(f7,)))
+        preview = self.service.preview(InvoiceDraft(5, "12", (), (), (cash("700000"),), described_sale_lines=(f7,)))
+        self.assertNotIn("OLD_GOLD_STOCK_INSUFFICIENT", [p["code"] for p in preview["blocking_problems"]])      # owner 2026-11-03
 
 
 class HistoricalRegressionTests(Karat22Case):

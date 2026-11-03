@@ -891,12 +891,9 @@ class InvoiceService:
             if line["input"].kind == OLD_GOLD_STOCK:
                 requested[line["karat_id"]] = requested.get(line["karat_id"], Decimal("0.000")) + Decimal(
                     str(line["input"].weight_grams).strip())
-        shortages = []
-        for karat_id, grams in sorted(requested.items()):
-            available = balances.get(karat_id, Decimal("0.000"))
-            if grams > available:
-                shortages.append((karat_id, available, grams))
-        return shortages
+        # Owner 2026-11-03: Scrap may go NEGATIVE through a sale (goods are sometimes bought outside and sold from Scrap before the price is agreed with the other
+        # shop), so an F7 request above the counted balance is no longer a shortage; the negative balance is the visible record to be settled later.
+        return []
 
     # ------------------------------------------------------------ preview
 

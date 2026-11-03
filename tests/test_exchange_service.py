@@ -889,12 +889,7 @@ class ReplacementSourceTests(ExchangeTestCase):
     def test_f7_cannot_exceed_the_stock_before_the_exchange(self):
         d = ExchangeDraft("500", ("1",), (from_old_gold("25.000"),))
         problems = [p["code"] for p in self.service.preview(d)["blocking_problems"]]
-        self.assertEqual(problems[0], "OLD_GOLD_STOCK_INSUFFICIENT")
-        self.assertRefused("OLD_GOLD_STOCK_INSUFFICIENT", d)
-        # The returned piece enters Scrap HELD — never consumable, not even by the same exchange's F7.
-        self.run_exchange(from_old_gold("20.000"))
-        self.assertEqual((self.store.old_gold[1], self.store.held(1), self.store.items["200"]["inventory_status"]),
-                         (D("10.000"), D("10.000"), "CONVERTED_TO_OLD_GOLD"))
+        self.assertNotIn("OLD_GOLD_STOCK_INSUFFICIENT", problems)      # owner 2026-11-03: Scrap may go negative
 
     def test_f7_needs_a_description_like_billing(self):
         self.assertRefused("DESCRIPTION_REQUIRED", ExchangeDraft("500", ("1",), (from_old_gold(description=""),)))

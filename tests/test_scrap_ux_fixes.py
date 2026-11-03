@@ -32,11 +32,8 @@ class HeldScrapMessageTests(ex.ExchangeTestCase):
 
     def test_physical_5_held_5_requesting_4_990_explains_the_hold(self):
         self.hold("5.000", "5.000")
-        expected = ("رصيد الكسر المتاح عيار 21 غير كافٍ: المطلوب 4.990 جرام والمتاح 0.000 جرام. "
-                    "يوجد 5.000 جرام محجوز لمراجعة المدير ولا يمكن استخدامه حتى اعتماد القرار.")
         problems = self.service.preview(self.f7("4.990"))["blocking_problems"]
-        self.assertEqual((problems[0]["code"], problems[0]["message"]), ("OLD_GOLD_STOCK_INSUFFICIENT", expected))
-        self.assertRefused("OLD_GOLD_STOCK_INSUFFICIENT", self.f7("4.990"), expected)    # finalize: same words
+        self.assertNotIn("OLD_GOLD_STOCK_INSUFFICIENT", [p["code"] for p in problems])      # owner 2026-11-03: Scrap may go negative
 
     def test_physical_10_held_5_requesting_4_990_is_allowed(self):
         self.hold("10.000", "5.000")
@@ -46,7 +43,7 @@ class HeldScrapMessageTests(ex.ExchangeTestCase):
     def test_without_a_hold_the_normal_message_stays(self):
         self.store.old_gold[1] = D("2.000")
         problems = self.service.preview(self.f7("4.990"))["blocking_problems"]
-        self.assertEqual(problems[0]["message"], "رصيد الكسر عيار 21 غير كافٍ: المتاح 2.000 جرام والمطلوب 4.990 جرام.")
+        self.assertNotIn("OLD_GOLD_STOCK_INSUFFICIENT", [p["code"] for p in problems])
 
     def test_exchange_f7_list_shows_physical_held_available(self):
         self.hold("5.000", "5.000")

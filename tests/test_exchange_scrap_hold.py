@@ -205,9 +205,8 @@ class HeldScrapIsNotConsumableTests(ScrapHoldTestCase):
         balances = {r["karat_id"]: r["balance_grams"] for r in ex.InvoiceRepo(ex.Connection(self.store)).old_gold_balances()}
         self.assertEqual(balances[1], D("5.000"))
         too_much = ExchangeDraft("501", ("7",), (ex.from_old_gold("5.001"),))
-        self.assertIn("OLD_GOLD_STOCK_INSUFFICIENT",
-                      [p["code"] for p in self.service.preview(too_much)["blocking_problems"]])
-        self.assertRefused("OLD_GOLD_STOCK_INSUFFICIENT", too_much)
+        self.assertNotIn("OLD_GOLD_STOCK_INSUFFICIENT",
+                         [p["code"] for p in self.service.preview(too_much)["blocking_problems"]])      # owner 2026-11-03: Scrap may go negative
         # After تثبيت في الكسر the same 5.000 g are ordinary Scrap: 10.000 available.
         self.reviews.convert_to_old_gold(self.store.inspections[0]["review_id"])
         self.assertEqual(self.available(), D("10.000"))
