@@ -343,6 +343,16 @@ class FinancialAccountService:
                         debts[("INVOICE_LIFECYCLE", str(x["id"]))] = (old, account_part)
                 except Exception:
                     pass
+            if hasattr(repository, "correction_account_debits"):
+                try:                                               # display only: never break the screen
+                    candidates = [r for r in rows if r.get("label_key") == "CORRECTION" and Decimal(str(r["amount_delta"])) < 0
+                                  and r.get("reference_type") == "TRANSACTION_CORRECTION" and r.get("reference_id") is not None]
+                    on_account = repository.correction_account_debits([r["reference_id"] for r in candidates])
+                    for r in candidates:                           # cash left the safe because that part of the invoice now stays ON the customer
+                        if on_account.get(int(r["reference_id"])) == -Decimal(str(r["amount_delta"])):
+                            r["label_key"] = "ON_CUSTOMER"
+                except Exception:
+                    pass
             links = {}
             if hasattr(repository, "payment_invoice_links"):
                 try:                                               # display only: never break the screen

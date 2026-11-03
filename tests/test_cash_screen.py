@@ -221,6 +221,17 @@ class CashViewTests(FinancialTestCase):
         self.assertEqual(view["out"]["rows"], [])
         self.assertEqual((view["in"]["total"], view["out"]["total"]), ("53700.00", "0.00"))        # the 53,700 really is cash now
 
+    def test_a_correction_that_leaves_part_on_the_customer_shows_it_as_on_the_customer(self):
+        original = cash_row(5, "53700", "SALE", ("53700", 1), invoice_id=21)
+        fc = cash_row(6, "-13700", "CORRECTION", ("-13700", 1), invoice_id=21)
+        fc["reference_type"], fc["reference_id"], fc["source_reference"] = "TRANSACTION_CORRECTION", 30, "FC000030"
+        self.store.cash_rows = [original, fc]
+        self.store.correction_debts = {30: D("13700")}
+        view = self.fin.cash_view()
+        self.assertEqual([(r["label"], r["amount"]) for r in view["in"]["rows"]], [("بيع", "53700.00")])
+        self.assertEqual([(r["label"], r["amount"]) for r in view["out"]["rows"]], [("على العميل", "13700.00")])
+        self.assertEqual((view["in"]["total"], view["out"]["total"]), ("53700.00", "13700.00"))
+
     def test_a_split_cash_and_wallet_payment_shows_the_rest_once(self):
         self.store.cash_rows = [cash_row(5, "20000", "SALE", ("20000", 1), invoice_id=21)]
         self.store.bank_rows = [cash_row(9, "10000", "SALE", ("10000", 1), invoice_id=21)]
