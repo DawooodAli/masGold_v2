@@ -37,7 +37,7 @@ CASH_ROWS = 200                         # per table on the cash screen (the peri
 
 # The ONE employee-facing name of every cash movement (read-model label_key → Arabic). Never built in QML.
 CASH_LABELS = {
-    "ON_CUSTOMER": "على العميل", "SALE": "بيع", "MIXED": "بيع مع كسر", "OLD_GOLD_PURCHASE": "شراء كسر", "EXCHANGE": "استبدال", "RETURN": "مرتجع",
+    "ON_CUSTOMER": "على العميل", "EXCHANGE_REFUND": "استرداد فاتورة قديمة", "SALE": "بيع", "MIXED": "بيع مع كسر", "OLD_GOLD_PURCHASE": "شراء كسر", "EXCHANGE": "استبدال", "RETURN": "مرتجع",
     "CUSTOMER_PAYMENT": "سداد عميل", "CUSTOMER_PAYOUT": "دفع لعميل", "DEPOSIT": "عربون",
     "DEPOSIT_REFUND": "استرداد عربون", "SUPPLIER_PAYMENT": "دفعة مصنعيات مورد",
     "TRIP_CASH_ISSUE": "إخراج عهدة السوق", "TRIP_CASH_RETURN": "رجوع عهدة السوق", "REVERSAL": "إلغاء عملية",
@@ -338,25 +338,39 @@ class FinancialAccountService:
             if doc_key(r) and doc_key(r) not in first_leg:
                 first_leg[doc_key(r)] = (bool(r.get("external")), r["id"])
 
-        def owed(r):
-            """Owner 2026-11-03 (paper books): a sale paid in part shows its WHOLE value in the incoming table and what stayed on the customer in the outgoing one."""
+        ZERO = Decimal("0")
+
+        def add_in(r):
+            """Owner 2026-11-03 (paper books): the incoming row carries the document's WHOLE value. A sale paid in part: + what stayed on the customer.
+            An exchange: + the old pieces' value + the customer-account part (the old value comes back out below)."""
             key = doc_key(r)
             if key and first_leg.get(key) == (bool(r.get("external")), r["id"]):
-                return debts.get(key, Decimal("0"))
-            return Decimal("0")
+                value = debts.get(key, ZERO)
+                return value[0] + value[1] if isinstance(value, tuple) else value
+            return ZERO
+
+        def out_parts(r):
+            key = doc_key(r)
+            if key and first_leg.get(key) == (bool(r.get("external")), r["id"]):
+                value = debts.get(key, ZERO)
+                if isinstance(value, tuple):
+                    return [("EXCHANGE_REFUND", value[0])] * (value[0] > 0) + [("ON_CUSTOMER", value[1])] * (value[1] > 0)
+                return [("ON_CUSTOMER", value)] * (value > 0)
+            return []
 
         def side(sign):
             chosen = [r for r in rows if (r["amount_delta"] > 0) == (sign > 0)]
             outside = [r for r in external if (Decimal(str(r["amount_delta"])) > 0) == (sign > 0)]
             if sign > 0:
-                chosen = [{**r, "amount_delta": Decimal(str(r["amount_delta"])) + owed(r)} if owed(r) else r for r in chosen]
-                outside = [{**r, "amount_delta": Decimal(str(r["amount_delta"])) + owed(r)} if owed(r) else r for r in outside]
+                chosen = [{**r, "amount_delta": Decimal(str(r["amount_delta"])) + add_in(r)} if add_in(r) else r for r in chosen]
+                outside = [{**r, "amount_delta": Decimal(str(r["amount_delta"])) + add_in(r)} if add_in(r) else r for r in outside]
+                extra, added = sum((add_in(r) for r in rows + external), ZERO), 0
             else:
-                virtual = [{**r, "id": "D" + str(r["id"]), "amount_delta": -owed(r), "label_key": "ON_CUSTOMER", "external": False, "side_total": 0, "side_count": 0}
-                           for r in rows + external if owed(r)]
+                virtual = [{**r, "id": "D" + str(n) + "_" + str(r["id"]), "amount_delta": -amount, "label_key": label_key, "external": False, "side_total": 0, "side_count": 0}
+                           for r in rows + external for n, (label_key, amount) in enumerate(out_parts(r))]
                 chosen = chosen + virtual
                 chosen.sort(key=lambda r: (r.get("occurred_at") or datetime.min, str(r["id"])), reverse=True)
-            extra = sum((owed(r) for r in rows + external), Decimal("0"))
+                extra, added = sum((-v["amount_delta"] for v in virtual), ZERO), len(virtual)
             merged = sorted(chosen + outside, key=lambda r: (r.get("occurred_at") or datetime.min, str(r["id"]).zfill(20)), reverse=True) if outside else chosen   # the safe's own order is kept unless bank rows are merged in
             return {"rows": [{"id": ("B" if r.get("external") else "") + str(r["id"]), "label": self._label(r["label_key"]),
                               "amount": str(abs(Decimal(str(r["amount_delta"]))).quantize(Decimal("0.01"))),
@@ -366,7 +380,7 @@ class FinancialAccountService:
                               **movement_context(r)}
                              for r in merged],
                     "total": str((abs(Decimal(str(next((r["side_total"] for r in chosen if r.get("side_total")), 0)))) + extra).quantize(Decimal("0.01"))) if chosen else "0.00",
-                    "count": (int(next((r["side_count"] for r in chosen if r.get("side_count")), 0)) + sum(1 for r in rows + external if sign < 0 and owed(r))) if chosen else 0,
+                    "count": (int(next((r["side_count"] for r in chosen if r.get("side_count")), 0)) + added) if chosen else 0,
                     "bank_total": str(abs(sum((Decimal(str(r["amount_delta"])) for r in outside), Decimal("0"))).quantize(Decimal("0.01"))),
                     "bank_count": len(outside)}
         return {"account": {"key": account_key("CASH", cash["account_id"]), "name": cash["name"],

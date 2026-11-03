@@ -211,17 +211,25 @@ class FinancialAccountRepository(BaseRepository):
         return rows
 
     def invoice_account_debits(self, keys):
-        """{(reference_type, id): amount left ON the customer} for INVOICE / INVOICE_LIFECYCLE (exchange) documents (display only)."""
+        """Display only. INVOICE -> the amount left ON the customer; INVOICE_LIFECYCLE (exchange) -> (value of the returned pieces as sold, the exchange's
+        signed customer-account part)."""
         out = {}
-        for kind in ("INVOICE", "INVOICE_LIFECYCLE"):
-            ids = sorted({int(i) for t, i in keys if t == kind})
-            if not ids:
-                continue
+        ids = sorted({int(i) for t, i in keys if t == "INVOICE"})
+        if ids:
             marks = ",".join(["%s"] * len(ids))
             for r in self._fetch_all(
                     "SELECT reference_id, SUM(amount_delta) AS debt FROM customer_transactions "
-                    f"WHERE reference_type = '{kind}' AND amount_delta > 0 AND reference_id IN ({marks}) GROUP BY reference_id", tuple(ids)):
-                out[(kind, str(r["reference_id"]))] = Decimal(str(r["debt"]))
+                    f"WHERE reference_type = 'INVOICE' AND amount_delta > 0 AND reference_id IN ({marks}) GROUP BY reference_id", tuple(ids)):
+                out[("INVOICE", str(r["reference_id"]))] = Decimal(str(r["debt"]))
+        ids = sorted({int(i) for t, i in keys if t == "INVOICE_LIFECYCLE"})
+        if ids:
+            marks = ",".join(["%s"] * len(ids))
+            for r in self._fetch_all(
+                    "SELECT t.id, t.account_signed, COALESCE((SELECT SUM(il.line_total) FROM invoice_lifecycle_lines l "
+                    "JOIN invoice_lines il ON il.invoice_id = t.source_invoice_id AND il.inventory_item_id = l.inventory_item_id "
+                    "AND il.line_type = 'SELL_INVENTORY' WHERE l.lifecycle_transaction_id = t.id AND l.line_role = 'RETURNED'), 0) AS old_value "
+                    f"FROM invoice_lifecycle_transactions t WHERE t.id IN ({marks})", tuple(ids)):
+                out[("INVOICE_LIFECYCLE", str(r["id"]))] = (Decimal(str(r["old_value"])), Decimal(str(r["account_signed"])))
         return out
 
     def operation_accounts(self):

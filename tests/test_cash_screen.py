@@ -134,14 +134,15 @@ class CashViewTests(FinancialTestCase):
         self.assertEqual((view["in"]["total"], view["out"]["total"], view["in"]["count"], view["out"]["count"]), ("31600.00", "1600.00", 1, 1))
         self.assertEqual(D(view["account"]["balance"]), self.cash())                             # the real balance is untouched
 
-    def test_an_exchange_paid_in_part_shows_its_whole_difference_in_and_the_rest_out(self):
+    def test_an_exchange_shows_the_new_value_in_the_old_value_refunded_out_and_the_rest_on_the_customer(self):
         row = cash_row(6, "20000", "EXCHANGE", ("20000", 1), invoice_id=21)
         row["reference_id"] = 902
         self.store.cash_rows = [row]
-        self.store.exchange_debts = {902: D("5000")}
+        self.store.exchange_debts = {902: (D("100000"), D("5000"))}      # the old pieces were sold for 100,000; 5,000 stayed on the customer
         view = self.fin.cash_view()
-        self.assertEqual([r["amount"] for r in view["in"]["rows"]], ["25000.00"])
-        self.assertEqual([(r["label"], r["amount"]) for r in view["out"]["rows"]], [("على العميل", "5000.00")])
+        self.assertEqual([r["amount"] for r in view["in"]["rows"]], ["125000.00"])
+        self.assertEqual(sorted((r["label"], r["amount"]) for r in view["out"]["rows"]), [("استرداد فاتورة قديمة", "100000.00"), ("على العميل", "5000.00")])
+        self.assertEqual((view["in"]["total"], view["out"]["total"], view["out"]["count"]), ("125000.00", "105000.00", 2))   # 125,000 - 105,000 = the 20,000 really paid
 
     def test_a_split_cash_and_wallet_payment_shows_the_rest_once(self):
         self.store.cash_rows = [cash_row(5, "20000", "SALE", ("20000", 1), invoice_id=21)]
