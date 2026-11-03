@@ -31,6 +31,7 @@ from webapp.errors import ApiError
 logger = logging.getLogger("webapp")
 MAX_TEXT = 100
 SALES_CARDS = ("قيمة البيع", "قيمة شراء الكسر", "قيمة المرتجع", "المحصَّل")
+SCRAP_KARATS = (18, 21, 22, 24)
 SIMPLE_REVIEWS = ("MAKING_PRICE", "CASH_SETTLEMENT", "OLD_GOLD_DISCOUNT")                 # the reviews a manager closes with «تمت المراجعة»
 REVIEW_TITLES = (("MAKING_PRICE", "مراجعة سعر ومصنعية"), ("CASH_SETTLEMENT", "تسوية فرق نقدي"), ("OLD_GOLD_DISCOUNT", "خصم كسر"),
                  ("INVENTORY_MATCH", "قطع يدوية تحتاج مطابقة بالمخزون"), ("INSPECTION", "فحص بضاعة مرتجعة"), ("RETURN_APPROVAL", "موافقات مرتجع بعد 72 ساعة"))
@@ -64,9 +65,16 @@ class Extras:
             pass
         except Exception:
             logger.exception("today: balances failed")
+        stock_cards = []
         try:
-            summary = GoldPositionService(session).position(_expected_actor=actor)["summary"]
-            cards.append({"label": "الذهب في المحل (مكافئ 21)", "value": f"{Decimal(str(summary['total_eq21'])):,.3f} جرام", "note": "مخزون وكسر وعهدة ومسوقجية", "tone": "gold"})
+            position = GoldPositionService(session).position(_expected_actor=actor)
+            summary = position["summary"]
+            stock_cards.append({"label": "الذهب في المحل (مكافئ 21)", "value": f"{Decimal(str(summary['total_eq21'])):,.3f} جرام", "note": "مخزون وكسر وعهدة ومسوقجية", "tone": "gold"})
+            by_karat = {int(r["karat"]): r for r in position.get("shop", {}).get("scrap", [])}
+            for karat in SCRAP_KARATS:
+                row = by_karat.get(karat)
+                grams = Decimal(str(row["physical"])) if row else Decimal("0")
+                cards.append({"label": f"كسر عيار {karat}", "value": f"{grams:,.3f} جرام", "note": "", "tone": "gold"})
         except PermissionError:
             pass
         except Exception:
@@ -81,7 +89,7 @@ class Extras:
                                    "buyRaw": str(Decimal(p['shop_buy_price_per_gram'])), "sellRaw": str(Decimal(p['shop_sell_price_per_gram']))})
         except Exception:
             logger.exception("today: prices failed")
-        return {"date": today, "cards": cards, "prices": prices, "priceStatus": status}
+        return {"date": today, "cards": cards, "stockCards": stock_cards, "prices": prices, "priceStatus": status}
 
     # ------------------------------------------------------------------ a customer's statement (كشف الحساب), read only
     def statement(self, token, params):

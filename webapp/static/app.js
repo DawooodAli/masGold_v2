@@ -78,6 +78,7 @@ function currentModule() { return state.overview.modules.find((m) => m.key === s
 function openModule(key) {
   state.cs = null; state.ps = null; state.special = null; state.module = key; state.report = ""; state.result = null; state.filters = {}; state.page = 1; state.error = ""; state.chart = null; state.writeoff = null;
   const module = currentModule();
+  if (key === "inventory") loadToday();
   if (module.kind && module.kind !== "reports") { loadSpecial(module.kind); return; }
   const first = module.groups[0].reports[0];
   const today = state.overview.today;
@@ -175,6 +176,10 @@ function render() {
   // the search boxes belong to the card, not to a report: they stay even when a report is loading or fails
   const search = state.module === "customers" ? renderCustomerSearch() : state.module === "inventory" ? renderPieceSearch() : null;
   const body = el("div", {});
+  if (state.module === "inventory" && state.today && state.today.stockCards && state.today.stockCards.length) {
+    body.append(el("div", { class: "cards" }, state.today.stockCards.map((c) => el("div", { class: "card " + (c.tone || "") }, el("div", { class: "label", text: c.label }), el("div", { class: "value", text: c.value }),
+      c.note ? el("div", { class: "note", text: c.note }) : null))));
+  }
   if (state.error) body.append(el("div", { class: "msg err", text: state.error }));
   if (state.busy) body.append(el("div", { class: "loading", text: "جارٍ التحميل…" }));
   if (state.result) body.append(renderResult(state.result));
@@ -718,7 +723,7 @@ async function loadToday() {
     if (e.status === 401) { showLogin("انتهت الجلسة، سجّل الدخول من جديد."); return; }
     state.today = null;
   }
-  if (!state.module) render();
+  if (!state.module || (state.module === "inventory" && !state.special)) render();
 }
 
 function renderToday() {

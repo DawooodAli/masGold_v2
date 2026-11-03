@@ -60,7 +60,7 @@ class ExtrasTests(unittest.TestCase):
                 pass
 
             def position(self, *, _expected_actor=None):
-                return {"summary": {"total_eq21": D("5190.123")}}
+                return {"summary": {"total_eq21": D("5190.123")}, "shop": {"scrap": [{"karat": 21, "physical": "12.500"}]}}
 
         class Prices:
             def __init__(self, session):
@@ -75,7 +75,10 @@ class ExtrasTests(unittest.TestCase):
         self.assertIn("قيمة البيع اليوم", labels)
         self.assertIn("رصيد الخزنة", labels)
         self.assertIn("رصيد البنوك والمحافظ", labels)
-        self.assertIn("الذهب في المحل (مكافئ 21)", labels)
+        self.assertNotIn("الذهب في المحل (مكافئ 21)", labels)
+        self.assertEqual([c["label"] for c in data["stockCards"]], ["الذهب في المحل (مكافئ 21)"])
+        scrap = {c["label"]: c["value"] for c in data["cards"] if c["label"].startswith("كسر")}
+        self.assertEqual(scrap, {"كسر عيار 18": "0.000 جرام", "كسر عيار 21": "12.500 جرام", "كسر عيار 22": "0.000 جرام", "كسر عيار 24": "0.000 جرام"})
         banks = next(c for c in data["cards"] if c["label"] == "رصيد البنوك والمحافظ")
         self.assertIn("3,300", banks["value"])                                         # only the ACTIVE bank / wallet accounts are added
         self.assertEqual(data["prices"], [{"karat": "21", "buy": "6,139", "sell": "6,163", "buyRaw": "6139.0000", "sellRaw": "6163.0000"}])
@@ -85,7 +88,7 @@ class ExtrasTests(unittest.TestCase):
             def position(self, *, _expected_actor=None):
                 raise PermissionError("owner only")
         with mock.patch("webapp.extras.GoldPositionService", Denied), mock.patch("webapp.extras.GoldPriceService", Prices):
-            self.assertNotIn("الذهب في المحل (مكافئ 21)", [c["label"] for c in self.extras.today(self.token)["cards"]])
+            self.assertEqual(self.extras.today(self.token)["stockCards"], [])
 
     # ---- statement
     def test_a_customer_statement_is_shown_with_the_desktop_labels(self):
