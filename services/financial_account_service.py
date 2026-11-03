@@ -386,12 +386,25 @@ class FinancialAccountService:
                 return [("ON_CUSTOMER", value)] * (value > 0)
             return []
 
+        absorbed, hidden = {}, set()                           # the later legs of a document are folded into its first leg
+        for r in rows + external:
+            key = doc_key(r)
+            if key and key[0] != "X" and first_leg.get(key) != (bool(r.get("external")), r["id"]) and not r.get("no_money"):
+                head = first_leg[key]
+                absorbed[head] = absorbed.get(head, ZERO) + Decimal(str(r["amount_delta"]))
+                hidden.add((bool(r.get("external")), r["id"]))
+
         def side(sign):
             chosen = [r for r in rows if (r["amount_delta"] > 0) == (sign > 0)]
             outside = [r for r in external if (Decimal(str(r["amount_delta"])) > 0) == (sign > 0)]
+            original_outside = list(outside)
             if sign > 0:
-                chosen = [{**r, "amount_delta": Decimal(str(r["amount_delta"])) + add_in(r)} if add_in(r) else r for r in chosen]
-                outside = [{**r, "amount_delta": Decimal(str(r["amount_delta"])) + add_in(r)} if add_in(r) else r for r in outside]
+                def whole(r):                                      # ONE incoming row per document: the first leg carries the other legs too
+                    return Decimal(str(r["amount_delta"])) + add_in(r) + absorbed.get((bool(r.get("external")), r["id"]), ZERO)
+                chosen = [{**r, "amount_delta": whole(r)} if whole(r) != Decimal(str(r["amount_delta"])) else r
+                          for r in chosen if (bool(r.get("external")), r["id"]) not in hidden]
+                outside = [{**r, "amount_delta": whole(r)} if whole(r) != Decimal(str(r["amount_delta"])) else r
+                           for r in outside if (bool(r.get("external")), r["id"]) not in hidden]
                 extra, added = sum((add_in(r) for r in rows + external), ZERO) + sum((Decimal(str(r["amount_delta"])) for r in rows if r.get("no_money")), ZERO) + sum((Decimal(str(r["amount_delta"])) for r in paid_outside), ZERO), 0
             else:
                 virtual = [{**r, "id": "D" + str(n) + "_" + str(r["id"]), "amount_delta": -amount, "label_key": label_key, "external": False, "side_total": 0, "side_count": 0}
@@ -412,8 +425,8 @@ class FinancialAccountService:
                              for r in merged],
                     "total": str((abs(Decimal(str(next((r["side_total"] for r in chosen if r.get("side_total")), 0)))) + extra).quantize(Decimal("0.01"))) if chosen or extra else "0.00",
                     "count": (int(next((r["side_count"] for r in chosen if r.get("side_count")), 0)) + added + (sum(1 for r in chosen if r.get("no_money")) if sign > 0 else 0)) if chosen else 0,
-                    "bank_total": str(abs(sum((Decimal(str(r["amount_delta"])) for r in outside), Decimal("0"))).quantize(Decimal("0.01"))),
-                    "bank_count": len(outside)}
+                    "bank_total": str(abs(sum((Decimal(str(r["amount_delta"])) for r in original_outside), Decimal("0"))).quantize(Decimal("0.01"))),
+                    "bank_count": len(original_outside)}
         return {"account": {"key": account_key("CASH", cash["account_id"]), "name": cash["name"],
                             "balance": str(Decimal(str(cash["balance"])))},
                 "start": period[0].isoformat(), "end": period[1].isoformat(),

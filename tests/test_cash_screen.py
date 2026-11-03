@@ -182,6 +182,17 @@ class CashViewTests(FinancialTestCase):
         self.assertEqual([(r["label"], r["amount"], r["invoice_id"]) for r in view["out"]["rows"]], [("انستا", "53700.00", "21")])
         self.assertEqual((view["in"]["total"], view["out"]["total"]), ("53700.00", "53700.00"))
 
+    def test_cash_plus_wallet_plus_rest_is_one_incoming_row_and_nets_to_the_cash_only(self):
+        self.store.cash_rows = [cash_row(5, "20000", "SALE", ("20000", 1), invoice_id=21)]
+        self.store.bank_rows = [cash_row(9, "20000", "SALE", ("20000", 1), invoice_id=21)]
+        for n, account in enumerate(self.store.bank_accounts.values()):
+            account["is_active"] = n == 0
+        self.store.invoice_debts = {21: D("13700")}
+        view = self.fin.cash_view()
+        self.assertEqual([r["amount"] for r in view["in"]["rows"]], ["53700.00"])
+        self.assertEqual(sorted((r["label"], r["amount"]) for r in view["out"]["rows"]), [("انستا", "20000.00"), ("على العميل", "13700.00")])
+        self.assertEqual((view["in"]["total"], view["out"]["total"]), ("53700.00", "33700.00"))       # the difference, 20,000, is the cash really received
+
     def test_a_split_cash_and_wallet_payment_shows_the_rest_once(self):
         self.store.cash_rows = [cash_row(5, "20000", "SALE", ("20000", 1), invoice_id=21)]
         self.store.bank_rows = [cash_row(9, "10000", "SALE", ("10000", 1), invoice_id=21)]
@@ -189,7 +200,7 @@ class CashViewTests(FinancialTestCase):
             account["is_active"] = n == 0
         self.store.invoice_debts = {21: D("1600")}
         view = self.fin.cash_view()
-        self.assertEqual(sorted(r["amount"] for r in view["in"]["rows"]), ["10000.00", "21600.00"])
+        self.assertEqual([r["amount"] for r in view["in"]["rows"]], ["31600.00"])      # ONE incoming row: the whole invoice
         self.assertEqual(sorted(r["amount"] for r in view["out"]["rows"]), ["10000.00", "1600.00"])      # the wallet leg + what stayed on the customer
 
     def test_bank_movements_are_listed_with_their_account_but_never_added_to_the_safe_totals(self):
