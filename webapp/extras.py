@@ -23,12 +23,13 @@ from services.financial_account_service import FinancialAccountService
 from services.gold_position_service import GoldPositionService
 from services.gold_price_service import GoldPriceService
 from services.inventory_service import InventoryService
-from services.management_review_service import ManagementReviewService
+from services.management_review_service import InspectionError, ManagementReviewService
 from webapp.errors import ApiError
 
 logger = logging.getLogger("webapp")
 MAX_TEXT = 100
 SALES_CARDS = ("قيمة البيع", "قيمة شراء الكسر", "قيمة المرتجع", "المحصَّل")
+SIMPLE_REVIEWS = ("MAKING_PRICE", "CASH_SETTLEMENT", "OLD_GOLD_DISCOUNT")                 # the reviews a manager closes with «تمت المراجعة»
 REVIEW_TITLES = (("MAKING_PRICE", "مراجعة سعر ومصنعية"), ("CASH_SETTLEMENT", "تسوية فرق نقدي"), ("OLD_GOLD_DISCOUNT", "خصم كسر"),
                  ("INVENTORY_MATCH", "قطع يدوية تحتاج مطابقة بالمخزون"), ("INSPECTION", "فحص بضاعة مرتجعة"), ("RETURN_APPROVAL", "موافقات مرتجع بعد 72 ساعة"))
 
@@ -139,6 +140,7 @@ class Extras:
         except Exception:
             logger.exception("reviews failed")
             raise ApiError(500, "تعذر تحميل المراجعات؛ أعد المحاولة.") from None
+        can_resolve = service.can_resolve(actor)
         sections, total = [], 0
         for key, title in REVIEW_TITLES:
             rows = data.get(key) or []
@@ -148,9 +150,34 @@ class Extras:
             shown = []
             for r in rows[:50]:
                 shown.append({"text": str(r.get("summary") or r.get("reason") or r.get("notes") or "—"), "invoiceNumber": str(r.get("invoice_number") or ""),
-                              "invoiceId": str(r.get("invoice_id") or ""), "date": str(r.get("created_at") or r.get("sold_at") or ""), "by": str(r.get("created_by_name") or "")})
+                              "invoiceId": str(r.get("invoice_id") or ""), "date": str(r.get("created_at") or r.get("sold_at") or ""), "by": str(r.get("created_by_name") or ""),
+                              "reviewId": str(r.get("review_id")) if key in SIMPLE_REVIEWS and can_resolve and r.get("review_id") is not None else ""})
             sections.append({"key": key, "title": title, "count": len(rows), "rows": shown})
         return {"total": total, "sections": sections}
+
+    def review_done(self, token, body):
+        """«تمت المراجعة» on a pricing / cash-settlement / discount review: the current password is re-verified, MANAGEMENT_REVIEW is rechecked by the service in its transaction."""
+        entry = self._api._entry(token)
+        actor = entry.session.current_actor()
+        password = body.get("password")
+        if "MANAGEMENT_REVIEW" not in actor.permissions:
+            raise ApiError(403, "تأكيد المراجعة للمدير فقط.")
+        try:
+            self._api._authentication.verify_user_password(int(actor.user_id), password if isinstance(password, str) else "")
+        except AuthenticationError:
+            raise ApiError(400, "كلمة المرور غير صحيحة أو انتظر قليلاً ثم أعد المحاولة.") from None
+        finally:
+            password = None
+        try:
+            ManagementReviewService(entry.session).mark_reviewed(str(body.get("review_id") or ""), _expected_actor=actor)
+        except PermissionError as exc:
+            raise ApiError(403, str(exc)) from None
+        except InspectionError as exc:
+            raise ApiError(409, str(exc)) from None
+        except Exception:
+            logger.exception("review done failed")
+            raise ApiError(500, "تعذر تسجيل المراجعة؛ حدّث الصفحة ثم أعد المحاولة.") from None
+        return {"ok": True}
 
     # ------------------------------------------------------------------ CSV of a report (every row of the current filters), read only
     def export(self, token, params):

@@ -40,6 +40,9 @@ class FakeFinancial:
         return {"operation_id": "10", "code": "MD000010", "duplicate": False}
 
 
+from services.management_review_service import InspectionError
+
+
 class ExtrasTests(unittest.TestCase):
     def setUp(self):
         FakeFinancial.calls, FakeFinancial.fail = [], None
@@ -129,6 +132,9 @@ class ExtrasTests(unittest.TestCase):
             def __init__(self, session):
                 pass
 
+            def can_resolve(self, actor=None):
+                return True
+
             def open_reviews(self, *, _expected_actor=None):
                 return {"MAKING_PRICE": [{"review_id": 1, "invoice_id": 21, "invoice_number": "26092700", "summary": "بيع بأقل من قيمة الذهب", "created_at": "2026-11-02", "created_by_name": "علي"}],
                         "CASH_SETTLEMENT": [], "INVENTORY_MATCH": [{"case_id": 3, "invoice_number": "26092701", "reason": "باركود تالف", "sold_at": "2026-11-01"}]}
@@ -137,6 +143,32 @@ class ExtrasTests(unittest.TestCase):
         self.assertEqual(data["total"], 2)
         self.assertEqual([s["key"] for s in data["sections"]], ["MAKING_PRICE", "INVENTORY_MATCH"])
         self.assertEqual(data["sections"][0]["rows"][0]["text"], "بيع بأقل من قيمة الذهب")
+        self.assertEqual([r["reviewId"] for sec in data["sections"] for r in sec["rows"]], ["1", ""])     # only the simple reviews can be closed from the iPad
+
+    def test_review_done_needs_the_password_and_reaches_the_service_with_the_session_actor(self):
+        calls, outer = [], self
+
+        class Reviews:
+            def __init__(self, session):
+                pass
+
+            def mark_reviewed(self, review_id, *, _expected_actor=None):
+                calls.append((review_id, _expected_actor.user_id))
+                if outer.refuse:
+                    raise outer.refuse
+        self.refuse = None
+        with mock.patch("webapp.extras.ManagementReviewService", Reviews):
+            with self.assertRaises(ApiError) as wrong:
+                self.extras.review_done(self.token, {"review_id": "5", "password": "bad"})
+            self.assertEqual((wrong.exception.status, calls), (400, []))
+            self.assertEqual(self.extras.review_done(self.token, {"review_id": "5", "password": "secret", "user_id": "999"}), {"ok": True})
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0][0], "5")
+            self.assertNotEqual(calls[0][1], "999")
+            self.refuse = InspectionError("REVIEW_ALREADY_RESOLVED", "تمت مراجعة هذا البند من قبل.")
+            with self.assertRaises(ApiError) as again:
+                self.extras.review_done(self.token, {"review_id": "5", "password": "secret"})
+            self.assertEqual(again.exception.status, 409)
 
     # ---- csv
     def test_a_report_downloads_as_csv_with_every_row(self):

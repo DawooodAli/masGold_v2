@@ -44,7 +44,7 @@ MODULES = (
     {"key": "inventory", "title": "المخزون", "subtitle": "البحث عن قطعة بالباركود، والنواقص وجرد الأوزان", "icon": "💎", "reports": ("stock", "alerts", "stockweights")},
     # cards without reports: the page draws them itself (`kind`), shown only to a user holding one of `needs`
     {"key": "transfers", "title": "التحويلات", "subtitle": "بين البنوك والمحافظ والحساب الخاص", "icon": "🔁", "kind": "transfers", "needs": ("FINANCIAL_ACCOUNT_OPERATE",)},
-    {"key": "reviews", "title": "مراجعات المدير", "subtitle": "ما ينتظر المراجعة (عرض فقط)", "icon": "🔔", "kind": "reviews", "needs": ("MANAGEMENT_REVIEW", "INVENTORY_RECONCILE")},
+    {"key": "reviews", "title": "مراجعات المدير", "subtitle": "ما ينتظر المراجعة", "icon": "🔔", "kind": "reviews", "needs": ("MANAGEMENT_REVIEW", "INVENTORY_RECONCILE")},
 )
 
 

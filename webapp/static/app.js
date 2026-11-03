@@ -777,12 +777,28 @@ function renderReviews(s) {
   if (s.error) body.append(el("div", { class: "msg err", text: s.error }));
   if (s.data) {
     body.append(el("div", { class: "cards" }, el("div", { class: "card" + (s.data.total ? " payable" : " receivable") }, el("div", { class: "label", text: "بانتظار المراجعة" }), el("div", { class: "value", text: String(s.data.total) }),
-      el("div", { class: "note", text: "للقراءة فقط — الاعتماد من البرنامج على الكمبيوتر" }))));
+      el("div", { class: "note", text: "«تمت المراجعة» للتسعير والتسوية والخصم؛ باقي الأنواع من البرنامج على الكمبيوتر" }))));
+    const pw = el("input", { type: "password", autocomplete: "current-password", placeholder: "كلمة مرورك الحالية لتأكيد المراجعة" });
+    if (s.message) body.append(el("div", { class: "msg ok", text: s.message }));
+    if (s.data.sections.some((x) => x.rows.some((r) => r.reviewId))) body.append(el("div", { class: "filters" }, field("كلمة المرور", pw)));
     if (!s.data.sections.length) body.append(el("div", { class: "note-box", text: "لا توجد مراجعات معلقة." }));
     for (const sec of s.data.sections) {
       body.append(el("div", { class: "section", text: sec.title + " (" + sec.count + ")" }));
       body.append(el("div", { class: "tablewrap" }, el("table", {}, el("tbody", {}, sec.rows.map((r) => el("tr", {}, el("td", { text: r.text }), el("td", { text: r.invoiceNumber }), el("td", { text: r.date }), el("td", { text: r.by }),
-        el("td", {}, r.invoiceId ? el("button", { class: "btn small", text: "فتح الفاتورة", onclick: () => openInvoice(r.invoiceId) }) : null)))))));
+        el("td", {}, r.invoiceId ? el("button", { class: "btn small", text: "فتح الفاتورة", onclick: () => openInvoice(r.invoiceId) }) : null),
+        el("td", {}, r.reviewId ? el("button", { class: "btn small primary", text: "تمت المراجعة", onclick: async (ev) => {
+          const word = pw.value; if (!word) { s.error = "اكتب كلمة المرور أولاً."; render(); return; }
+          pw.value = ""; ev.target.disabled = true; s.error = ""; s.message = "";
+          try {
+            await call("/api/review_done", { method: "POST", body: JSON.stringify({ review_id: r.reviewId, password: word }) });
+            s.message = "تم تسجيل المراجعة.";
+            s.data = await call("/api/reviews");
+          } catch (e) {
+            if (e.status === 401) { showLogin("انتهت الجلسة، سجّل الدخول من جديد."); return; }
+            s.error = e.message;
+          }
+          render();
+        } }) : null)))))));
     }
   }
   return body;

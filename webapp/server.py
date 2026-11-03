@@ -124,7 +124,7 @@ def make_handler(api):
             except ValueError:
                 length = 0
             raw = self.rfile.read(length) if 0 < length <= MAX_BODY else b""          # the body is read BEFORE any refusal, so the client never sees a reset connection
-            if url.path not in ("/api/login", "/api/logout", "/api/deadcash/writeoff", "/api/transfer", "/api/legacy_balance") or not self._same_origin_post():
+            if url.path not in ("/api/login", "/api/logout", "/api/deadcash/writeoff", "/api/transfer", "/api/legacy_balance", "/api/review_done") or not self._same_origin_post():
                 self._json(403, {"error": "مرفوض."})
                 return
             try:
@@ -140,6 +140,8 @@ def make_handler(api):
                     self._json(200, api.write_off(self._token(), body))
                 elif url.path == "/api/legacy_balance":
                     self._json(200, api.extras.legacy_balance(self._token(), body))
+                elif url.path == "/api/review_done":
+                    self._json(200, api.extras.review_done(self._token(), body))
                 elif url.path == "/api/transfer":
                     self._json(200, api.extras.transfer(self._token(), body))
                 else:
