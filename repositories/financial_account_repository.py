@@ -256,6 +256,49 @@ class FinancialAccountRepository(BaseRepository):
             ORDER BY t.occurred_at DESC, t.id DESC
             """, (start, end))
 
+    def payment_invoice_links(self, keys):
+        """Display only: {(reference_type, reference_id): [invoice numbers]} for customer payments (settlements / customer cash in). A payment is not
+        stored against an invoice, so the customer's ledger is read OLDEST FIRST: each credit consumes the oldest open debit (an invoice, the original
+        invoice of an exchange, or an older balance that has no invoice)."""
+        keys = [(t, int(i)) for t, i in keys]
+        if not keys:
+            return {}
+        marks = ",".join(["(%s, %s)"] * len(keys))
+        flat = [v for k in keys for v in k]
+        customers = {int(r["customer_id"]) for r in self._fetch_all(
+            f"SELECT DISTINCT customer_id FROM customer_transactions WHERE (reference_type, reference_id) IN ({marks})", tuple(flat))}
+        out = {}
+        for customer in customers:
+            ledger = self._fetch_all(
+                """
+                SELECT ct.id, ct.amount_delta, ct.reference_type, ct.reference_id,
+                       CASE WHEN ct.reference_type = 'INVOICE' THEN i.invoice_number
+                            WHEN ct.reference_type = 'INVOICE_LIFECYCLE' THEN xi.invoice_number END AS invoice_number
+                FROM customer_transactions ct
+                LEFT JOIN invoices i ON ct.reference_type = 'INVOICE' AND i.id = ct.reference_id
+                LEFT JOIN invoice_lifecycle_transactions x ON ct.reference_type = 'INVOICE_LIFECYCLE' AND x.id = ct.reference_id
+                LEFT JOIN invoices xi ON xi.id = x.source_invoice_id
+                WHERE ct.customer_id = %s ORDER BY ct.id
+                """, (customer,))
+            queue = []                                             # [number or None, remaining]
+            for row in ledger:
+                delta = Decimal(str(row["amount_delta"]))
+                if delta > 0:
+                    queue.append([row["invoice_number"], delta])
+                    continue
+                left, used = -delta, []
+                while left > 0 and queue:
+                    take = min(left, queue[0][1])
+                    if queue[0][0] and queue[0][0] not in used:
+                        used.append(queue[0][0])
+                    queue[0][1] -= take
+                    left -= take
+                    if queue[0][1] <= 0:
+                        queue.pop(0)
+                if row["reference_id"] is not None:
+                    out[(row["reference_type"], int(row["reference_id"]))] = used
+        return out
+
     def operation_accounts(self):
         """Active bank / wallet accounts by name only (no balance): the إيداع / سحب بنك selector."""
         return self._fetch_all("SELECT id, name, account_type FROM bank_accounts WHERE is_active = TRUE "

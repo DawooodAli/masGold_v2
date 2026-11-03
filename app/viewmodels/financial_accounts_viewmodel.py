@@ -23,6 +23,9 @@ def reference_text(row):
     kind = row.get("kind") or ""
     if kind in ("SALE", "MIXED", "OLD_GOLD_PURCHASE"):
         return f"فاتورة {ltr(invoice or reference)}" if (invoice or reference) else ""
+    linked = row.get("linked_invoices") or ""
+    if kind in ("CUSTOMER_PAYMENT", "CUSTOMER_CASH_IN") and linked:
+        return " — ".join(part for part in (ltr(reference) if reference else "", f"سداد فاتورة {linked}") if part)
     if kind in ("CORRECTION", "REVERSAL"):
         target = row.get("corrected_reference") or invoice
         head = (f"فاتورة {ltr(target)}" if target and target == invoice else ltr(target)) if target else ""

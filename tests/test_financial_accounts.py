@@ -71,6 +71,9 @@ class FinRepo:
     def exchanges_without_money(self, start, end):
         return copy.deepcopy(getattr(self.store, "no_money_exchanges", []))
 
+    def payment_invoice_links(self, keys):
+        return {tuple(k): v for k, v in getattr(self.store, "payment_links", {}).items()}
+
     def operation_accounts(self):
         return [{"id": a["id"], "name": a["name"], "account_type": a["account_type"]}
                 for a in self.store.bank_accounts.values() if a["is_active"]]

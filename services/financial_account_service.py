@@ -343,6 +343,16 @@ class FinancialAccountService:
                         debts[("INVOICE_LIFECYCLE", str(x["id"]))] = (old, account_part)
                 except Exception:
                     pass
+            links = {}
+            if hasattr(repository, "payment_invoice_links"):
+                try:                                               # display only: never break the screen
+                    links = repository.payment_invoice_links([(r["reference_type"], r["reference_id"]) for r in rows + external
+                                                               if r.get("label_key") in ("CUSTOMER_PAYMENT", "CUSTOMER_CASH_IN")
+                                                               and r.get("reference_type") and r.get("reference_id") is not None])
+                except Exception:
+                    links = {}
+            for r in rows + external:
+                r["linked_invoices"] = " ، ".join(links.get((r.get("reference_type"), int(r["reference_id"])), [])) if r.get("reference_id") is not None and r.get("reference_type") else ""
             return cash, period, rows, banks, external, debts
         cash, period, rows, banks, external, debts = self._read(actor, read)
 
@@ -397,6 +407,7 @@ class FinancialAccountService:
                               "invoice_id": None if r.get("invoice_id") is None else str(r["invoice_id"]),
                               "operation_id": None if r.get("operation_id") is None else str(r["operation_id"]),
                               "external": bool(r.get("external")), "account": r.get("account_name") or "",
+                              "linked_invoices": r.get("linked_invoices") or "",
                               **movement_context(r)}
                              for r in merged],
                     "total": str((abs(Decimal(str(next((r["side_total"] for r in chosen if r.get("side_total")), 0)))) + extra).quantize(Decimal("0.01"))) if chosen or extra else "0.00",

@@ -120,7 +120,7 @@ class CashViewTests(FinancialTestCase):
             # Stored identification only (reference, invoice, corrected transaction, customer) — never a raw code.
             self.assertEqual(set(row), {"id", "label", "amount", "invoice_id", "operation_id", "reference",
                                         "invoice_number", "corrected_reference", "customer", "customer_id", "kind", "detail",
-                                        "external", "account"})
+                                        "external", "account", "linked_invoices"})
         self.assertEqual(D(view["account"]["balance"]), self.cash())                             # authoritative
         self.assertEqual(view["account"]["key"], "CASH:1")
         self.assertNotIn("accounts", view)                                                      # no bank cards
@@ -163,6 +163,14 @@ class CashViewTests(FinancialTestCase):
         self.assertEqual([(r["label"], r["amount"]) for r in view["in"]["rows"]], [("استبدال", "142005.00")])
         self.assertEqual(sorted(r["amount"] for r in view["out"]["rows"]), ["127000.00", "15005.00"])
         self.assertEqual((view["in"]["total"], view["out"]["total"], view["in"]["count"], view["out"]["count"]), ("142005.00", "142005.00", 1, 2))
+
+    def test_a_customer_payment_names_the_invoice_it_settles(self):
+        row = cash_row(8, "1600", "CUSTOMER_PAYMENT", ("1600", 1))
+        row["reference_type"], row["reference_id"] = "CUSTOMER_ACCOUNT_SETTLEMENT", 3
+        self.store.cash_rows = [row]
+        self.store.payment_links = {("CUSTOMER_ACCOUNT_SETTLEMENT", 3): ["26110313", "26110309"]}
+        view = self.fin.cash_view()
+        self.assertEqual(view["in"]["rows"][0]["linked_invoices"], "26110313 ، 26110309")
 
     def test_a_split_cash_and_wallet_payment_shows_the_rest_once(self):
         self.store.cash_rows = [cash_row(5, "20000", "SALE", ("20000", 1), invoice_id=21)]
