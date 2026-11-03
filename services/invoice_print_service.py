@@ -143,8 +143,36 @@ class InvoicePrintService:
             if invoice is None:
                 raise PrintError("INVOICE_NOT_FOUND", "الفاتورة غير موجودة.")
             invoice["payment_accounts"] = invoices.get_payment_accounts(invoice_id)
-            return invoice
+            return self._after_exchanges(invoices, invoice_id, invoice)
         return self._read(read)
+
+    @staticmethod
+    def _after_exchanges(invoices, invoice_id, invoice):
+        """The reprint shows the CURRENT pieces: an effective exchange takes its returned pieces off the sale rows, puts its replacements in their place and
+        adds its signed difference to the printed total. The stored invoice is never touched; a reversed exchange no longer counts; any failure keeps the
+        original content (the print never fails because of this)."""
+        connection = getattr(invoices, "connection", None)
+        if connection is None or invoice.get("record_origin") == "LEGACY":
+            return invoice
+        try:
+            from repositories.invoice_lifecycle_repository import InvoiceLifecycleRepository
+            exchanges = InvoiceLifecycleRepository(connection).exchange_notes([invoice_id]).get(str(invoice_id), [])
+            if not exchanges:
+                return invoice
+            gone = {str(i) for x in exchanges for i in x["returned"]}
+            lines = [l for l in invoice["lines"] if str(l.get("inventory_item_id")) not in gone]
+            for x in exchanges:
+                for r in x["replacements"]:
+                    lines.append({"line_type": "SELL_INVENTORY", "item_name_snapshot": r["name"], "factory_snapshot": None, "weight_grams": r["weight"],
+                                  "karat_value": r["karat"], "quantity": 1, "notes": "", "inventory_item_id": r["item_id"]})
+            result = dict(invoice, lines=lines)
+            if invoice.get("net_direction") not in ("SETTLED", "SHOP_PAYS_CUSTOMER"):
+                total = Decimal(str(invoice["net_amount"])) + sum((Decimal(str(x["signed_amount"])) for x in exchanges), Decimal("0"))
+                if total > 0:
+                    result["net_amount"] = total
+            return result
+        except Exception:
+            return invoice
 
     def _settings_instance(self):
         if self._settings is None:

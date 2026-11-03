@@ -987,3 +987,39 @@ class HeaderSeparatorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReprintAfterExchangeTests(unittest.TestCase):
+    """The reprint shows the pieces CURRENT after an effective exchange, with the exchange difference in the total; the stored invoice is untouched."""
+
+    class Repo:
+        def __init__(self, connection):
+            pass
+
+        def exchange_notes(self, ids):
+            return {"42": [{"occurred_at": None, "signed_amount": D("15005.00"), "returned": ["7"],
+                            "replacements": [{"item_id": "9", "karat": 21, "weight": D("15.000"), "name": "أسورة"}]}]}
+
+    class Invoices:
+        connection = object()
+
+    def invoice(self):
+        old = sale_line(0, line_id="1", inventory_item_id="7", item_name_snapshot="أسورة", weight_grams=D("12.760"))
+        keep = sale_line(1, line_id="2", inventory_item_id="8", item_name_snapshot="خاتم")
+        return invoice_row(lines=[old, keep], net_amount=D("127000.00"))
+
+    def test_returned_piece_is_replaced_and_the_total_includes_the_difference(self):
+        with patch("repositories.invoice_lifecycle_repository.InvoiceLifecycleRepository", self.Repo):
+            result = InvoicePrintService._after_exchanges(self.Invoices(), "42", self.invoice())
+        self.assertEqual([(l["item_name_snapshot"], l["weight_grams"]) for l in result["lines"]], [("خاتم", D("3.600")), ("أسورة", D("15.000"))])
+        self.assertEqual(result["net_amount"], D("142005.00"))
+        self.assertEqual(bill_overlay.build_overlay(result).rows[1].weight, "15.000")
+
+    def test_without_an_exchange_or_with_a_failure_the_invoice_is_unchanged(self):
+        class Boom(self.Repo):
+            def exchange_notes(self, ids):
+                raise RuntimeError("x")
+        original = self.invoice()
+        with patch("repositories.invoice_lifecycle_repository.InvoiceLifecycleRepository", Boom):
+            self.assertIs(InvoicePrintService._after_exchanges(self.Invoices(), "42", original), original)
+        self.assertIs(InvoicePrintService._after_exchanges(object(), "42", original), original)
