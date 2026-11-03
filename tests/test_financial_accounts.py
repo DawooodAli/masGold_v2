@@ -77,6 +77,9 @@ class FinRepo:
     def correction_account_debits(self, correction_ids):
         return dict(getattr(self.store, "correction_debts", {}))
 
+    def correction_account_cleared(self, correction_ids):
+        return dict(getattr(self.store, "correction_credits", {}))
+
     def operation_accounts(self):
         return [{"id": a["id"], "name": a["name"], "account_type": a["account_type"]}
                 for a in self.store.bank_accounts.values() if a["is_active"]]

@@ -309,6 +309,16 @@ class FinancialAccountRepository(BaseRepository):
             "SELECT reference_id, SUM(amount_delta) AS debt FROM customer_transactions "
             f"WHERE reference_type = 'TRANSACTION_CORRECTION' AND amount_delta > 0 AND reference_id IN ({marks}) GROUP BY reference_id", tuple(ids))}
 
+    def correction_account_cleared(self, correction_ids):
+        """Display only: {correction id: amount a settlement correction took OFF the customer} (negative customer-ledger entries, as a positive figure)."""
+        ids = sorted({int(i) for i in correction_ids})
+        if not ids:
+            return {}
+        marks = ",".join(["%s"] * len(ids))
+        return {int(r["reference_id"]): Decimal(str(r["credit"])) for r in self._fetch_all(
+            "SELECT reference_id, -SUM(amount_delta) AS credit FROM customer_transactions "
+            f"WHERE reference_type = 'TRANSACTION_CORRECTION' AND amount_delta < 0 AND reference_id IN ({marks}) GROUP BY reference_id", tuple(ids))}
+
     def operation_accounts(self):
         """Active bank / wallet accounts by name only (no balance): the إيداع / سحب بنك selector."""
         return self._fetch_all("SELECT id, name, account_type FROM bank_accounts WHERE is_active = TRUE "

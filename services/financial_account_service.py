@@ -353,6 +353,16 @@ class FinancialAccountService:
                             r["label_key"] = "ON_CUSTOMER"
                 except Exception:
                     pass
+            if hasattr(repository, "correction_account_cleared"):
+                try:                                               # display only: never break the screen
+                    paying = [r for r in rows if r.get("label_key") == "CORRECTION" and Decimal(str(r["amount_delta"])) > 0
+                              and r.get("reference_type") == "TRANSACTION_CORRECTION" and r.get("reference_id") is not None]
+                    taken = repository.correction_account_cleared([r["reference_id"] for r in paying])
+                    for r in paying:                               # the customer paid what stayed on him: cash came in, his debt went down
+                        if taken.get(int(r["reference_id"])) == Decimal(str(r["amount_delta"])):
+                            r["clears_customer"] = True
+                except Exception:
+                    pass
             links = {}
             if hasattr(repository, "payment_invoice_links"):
                 try:                                               # display only: never break the screen
@@ -393,6 +403,7 @@ class FinancialAccountService:
                 value = debts.get(key, ZERO)
                 if isinstance(value, tuple):
                     return [("EXCHANGE_REFUND", value[0])] * (value[0] > 0) + [("ON_CUSTOMER", value[1])] * (value[1] > 0)
+                value -= on_customer_cancelled.get(key, ZERO)
                 return [("ON_CUSTOMER", value)] * (value > 0)
             return []
 
@@ -438,6 +449,16 @@ class FinancialAccountService:
                 for r in cash_in:
                     hidden_cash_in[r["id"]] = Decimal(str(r["amount_delta"]))
                 hidden_bank_out.update(r["id"] for r in bank_out)
+
+        on_customer_cancelled = {}                              # an invoice's «على العميل» that a correction paid in cash: it leaves the outgoing table
+        for r in rows:
+            if r.get("clears_customer"):
+                key = ("INVOICE", str(r.get("invoice_id")))
+                value = debts.get(key, ZERO)
+                amount = Decimal(str(r["amount_delta"]))
+                if key in first_leg and not isinstance(value, tuple) and value - on_customer_cancelled.get(key, ZERO) >= amount:
+                    on_customer_cancelled[key] = on_customer_cancelled.get(key, ZERO) + amount
+                    hidden_cash_in[r["id"]] = amount
 
         absorbed, hidden = {}, set()                           # the later legs of a document are folded into its first leg
         for r in rows + external:
