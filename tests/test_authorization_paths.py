@@ -105,7 +105,7 @@ class CallSiteAuditTests(unittest.TestCase):
                   ("services/market_trip_service.py", "preview_settle_melt"),         # MARKET_TRIP_MANAGE (060 read-only figures of a melt before it is recorded)
                   ("services/marketer_custody_service.py", "account"),                  # INTERMEDIARY_HOLDING_VIEW (marketer account, read-only)
                   ("services/marketer_custody_service.py", "marketers"),                # INTERMEDIARY_HOLDING_VIEW (marketer list, read-only)
-                  ("services/gold_position_service.py", "position"),                # MANAGEMENT_REVIEW + MARKET_TRIP_MANAGE + INTERMEDIARY_HOLDING_VIEW (read-only)
+                  ("services/gold_position_service.py", "_read"),                    # MANAGEMENT_REVIEW + MARKET_TRIP_MANAGE + INTERMEDIARY_HOLDING_VIEW (read-only)
                   ("services/financial_account_service.py", "_read"),              # Cash: any view permission
                   ("services/supplier_payment_service.py", "payment_context"),      # SUPPLIER_MAKING_PAY (payment dialog)
                   ("services/supplier_payment_service.py", "payment_detail"),       # SUPPLIER_VIEW (payment document)
