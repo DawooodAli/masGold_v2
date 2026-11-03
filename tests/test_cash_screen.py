@@ -154,6 +154,16 @@ class CashViewTests(FinancialTestCase):
         self.assertEqual([(r["label"], r["amount"]) for r in view["out"]["rows"]], [("سداد العميل (انستا / محفظة)", "1600.00")])
         self.assertEqual((view["in"]["total"], view["out"]["total"]), ("1600.00", "1600.00"))
 
+    def test_an_exchange_settled_separately_still_shows_its_values_without_touching_the_safe(self):
+        self.store.cash_rows = []
+        self.store.no_money_exchanges = [{"id": 2, "invoice_id": 21, "invoice_number": "26110301", "occurred_at": datetime(2026, 11, 3, 12),
+                                          "account_signed": D("15005"), "signed_amount": D("15005"), "customer_name": "الهام فتوح", "customer_id": 7,
+                                          "old_value": D("127000")}]
+        view = self.fin.cash_view()
+        self.assertEqual([(r["label"], r["amount"]) for r in view["in"]["rows"]], [("استبدال", "142005.00")])
+        self.assertEqual(sorted(r["amount"] for r in view["out"]["rows"]), ["127000.00", "15005.00"])
+        self.assertEqual((view["in"]["total"], view["out"]["total"], view["in"]["count"], view["out"]["count"]), ("142005.00", "142005.00", 1, 2))
+
     def test_a_split_cash_and_wallet_payment_shows_the_rest_once(self):
         self.store.cash_rows = [cash_row(5, "20000", "SALE", ("20000", 1), invoice_id=21)]
         self.store.bank_rows = [cash_row(9, "10000", "SALE", ("10000", 1), invoice_id=21)]

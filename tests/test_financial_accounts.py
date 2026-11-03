@@ -68,6 +68,9 @@ class FinRepo:
     def invoice_account_debits(self, invoice_ids):
         return {("INVOICE", str(k)): v for k, v in getattr(self.store, "invoice_debts", {}).items()} | {("INVOICE_LIFECYCLE", str(k)): v for k, v in getattr(self.store, "exchange_debts", {}).items()}
 
+    def exchanges_without_money(self, start, end):
+        return copy.deepcopy(getattr(self.store, "no_money_exchanges", []))
+
     def operation_accounts(self):
         return [{"id": a["id"], "name": a["name"], "account_type": a["account_type"]}
                 for a in self.store.bank_accounts.values() if a["is_active"]]

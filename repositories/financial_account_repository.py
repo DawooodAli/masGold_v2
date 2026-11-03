@@ -232,6 +232,30 @@ class FinancialAccountRepository(BaseRepository):
                 out[("INVOICE_LIFECYCLE", str(r["id"]))] = (Decimal(str(r["old_value"])), Decimal(str(r["account_signed"])))
         return out
 
+    def exchanges_without_money(self, start, end):
+        """Display only: effective exchanges of the period in which the customer owes (signed_amount > 0) that posted NO cash / bank movement (the owner
+        settled them separately through customer settlements): the old pieces' value as sold and the customer-account part."""
+        return self._fetch_all(
+            """
+            SELECT t.id, t.source_invoice_id AS invoice_id, i.invoice_number, t.occurred_at, t.account_signed, t.signed_amount,
+                   COALESCE(c.name, isnap.customer_name_snapshot) AS customer_name, COALESCE(c.id, isnap.customer_id) AS customer_id,
+                   COALESCE((SELECT SUM(il.line_total) FROM invoice_lifecycle_lines l
+                             JOIN invoice_lines il ON il.invoice_id = t.source_invoice_id AND il.inventory_item_id = l.inventory_item_id
+                              AND il.line_type = 'SELL_INVENTORY'
+                             WHERE l.lifecycle_transaction_id = t.id AND l.line_role = 'RETURNED'), 0) AS old_value
+            FROM invoice_lifecycle_transactions t
+            JOIN invoices i ON i.id = t.source_invoice_id
+            LEFT JOIN customers c ON c.id = t.customer_id
+            LEFT JOIN invoice_customer_snapshots isnap ON isnap.invoice_id = t.source_invoice_id
+            WHERE t.transaction_type = 'EXCHANGE' AND t.signed_amount > 0 AND t.occurred_at >= %s AND t.occurred_at < %s
+              AND NOT EXISTS (SELECT 1 FROM cash_movements m WHERE m.reference_type = 'INVOICE_LIFECYCLE' AND m.reference_id = t.id)
+              AND NOT EXISTS (SELECT 1 FROM bank_movements m WHERE m.reference_type = 'INVOICE_LIFECYCLE' AND m.reference_id = t.id)
+              AND NOT EXISTS (SELECT 1 FROM invoice_events e WHERE e.invoice_id = t.source_invoice_id AND e.event_type = 'REVERSED'
+                              AND JSON_UNQUOTE(JSON_EXTRACT(e.details_json, '$.source_type')) = 'EXCHANGE'
+                              AND JSON_UNQUOTE(JSON_EXTRACT(e.details_json, '$.source_id')) = CAST(t.id AS CHAR))
+            ORDER BY t.occurred_at DESC, t.id DESC
+            """, (start, end))
+
     def operation_accounts(self):
         """Active bank / wallet accounts by name only (no balance): the إيداع / سحب بنك selector."""
         return self._fetch_all("SELECT id, name, account_type FROM bank_accounts WHERE is_active = TRUE "

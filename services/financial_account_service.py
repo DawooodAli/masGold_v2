@@ -330,6 +330,19 @@ class FinancialAccountService:
                 debts = repository.invoice_account_debits([k for k in (doc_key(r) for r in rows + external) if k])
             except Exception:                                      # display only: never break the screen
                 debts = {}
+            if label in ("", "EXCHANGE") and hasattr(repository, "exchanges_without_money"):
+                try:                                               # display only: never break the screen
+                    for x in repository.exchanges_without_money(datetime.combine(period[0], time.min), datetime.combine(period[1] + timedelta(days=1), time.min)):
+                        old, account_part = Decimal(str(x["old_value"])), Decimal(str(x["account_signed"]))
+                        if old + account_part <= 0:
+                            continue
+                        rows.append({"id": "X" + str(x["id"]), "amount_delta": old + account_part, "label_key": "EXCHANGE", "invoice_id": x["invoice_id"],
+                                     "invoice_number": x["invoice_number"], "operation_id": None, "reference_id": x["id"], "occurred_at": x["occurred_at"],
+                                     "source_reference": "EX" + str(x["id"]).zfill(6), "customer_name": x["customer_name"], "customer_id": x["customer_id"],
+                                     "side_total": 0, "side_count": 0, "no_money": True})
+                        debts[("INVOICE_LIFECYCLE", str(x["id"]))] = (old, account_part)
+                except Exception:
+                    pass
             return cash, period, rows, banks, external, debts
         cash, period, rows, banks, external, debts = self._read(actor, read)
 
@@ -347,6 +360,8 @@ class FinancialAccountService:
             """Owner 2026-11-03 (paper books): the incoming row carries the document's WHOLE value. A sale paid in part: + what stayed on the customer.
             An exchange: + the old pieces' value + the customer-account part (the old value comes back out below)."""
             key = doc_key(r)
+            if r.get("no_money"):
+                return ZERO
             if key and first_leg.get(key) == (bool(r.get("external")), r["id"]):
                 value = debts.get(key, ZERO)
                 return value[0] + value[1] if isinstance(value, tuple) else value
@@ -367,7 +382,7 @@ class FinancialAccountService:
             if sign > 0:
                 chosen = [{**r, "amount_delta": Decimal(str(r["amount_delta"])) + add_in(r)} if add_in(r) else r for r in chosen]
                 outside = [{**r, "amount_delta": Decimal(str(r["amount_delta"])) + add_in(r)} if add_in(r) else r for r in outside]
-                extra, added = sum((add_in(r) for r in rows + external), ZERO) + sum((Decimal(str(r["amount_delta"])) for r in paid_outside), ZERO), 0
+                extra, added = sum((add_in(r) for r in rows + external), ZERO) + sum((Decimal(str(r["amount_delta"])) for r in rows if r.get("no_money")), ZERO) + sum((Decimal(str(r["amount_delta"])) for r in paid_outside), ZERO), 0
             else:
                 virtual = [{**r, "id": "D" + str(n) + "_" + str(r["id"]), "amount_delta": -amount, "label_key": label_key, "external": False, "side_total": 0, "side_count": 0}
                            for r in rows + external for n, (label_key, amount) in enumerate(out_parts(r))]
@@ -385,7 +400,7 @@ class FinancialAccountService:
                               **movement_context(r)}
                              for r in merged],
                     "total": str((abs(Decimal(str(next((r["side_total"] for r in chosen if r.get("side_total")), 0)))) + extra).quantize(Decimal("0.01"))) if chosen or extra else "0.00",
-                    "count": (int(next((r["side_count"] for r in chosen if r.get("side_count")), 0)) + added) if chosen else 0,
+                    "count": (int(next((r["side_count"] for r in chosen if r.get("side_count")), 0)) + added + (sum(1 for r in chosen if r.get("no_money")) if sign > 0 else 0)) if chosen else 0,
                     "bank_total": str(abs(sum((Decimal(str(r["amount_delta"])) for r in outside), Decimal("0"))).quantize(Decimal("0.01"))),
                     "bank_count": len(outside)}
         return {"account": {"key": account_key("CASH", cash["account_id"]), "name": cash["name"],
