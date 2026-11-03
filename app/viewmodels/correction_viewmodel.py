@@ -440,7 +440,7 @@ class CorrectionViewModel(QObject):
             current += f" + حساب العميل {money(s['account'])}"
         entered = sum((_decimal(l["amount"]) for l in self._legs), Decimal("0.00")) + _decimal(self._account)
         remaining = Decimal(s["total"]) - entered
-        return {"directionText": s["direction_text"], "total": money(s["total"]), "current": current,
+        return {"directionText": s["direction_text"], "total": money(s["total"]), "current": current, "combinedNote": s.get("combined_note", ""),
                 "hasCustomer": s["has_customer"],
                 # Owner 2026-10-30: the customer-account field is offered whenever the operation has a registered customer, so a sale paid in cash can be corrected to
                 # «paid 0 / on the customer's account» (the service re-checks the customer and the direction).

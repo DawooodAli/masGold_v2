@@ -237,6 +237,8 @@ Item {
                 accent: theme.amber
                 Txt { Layout.fillWidth: true; value: "الإجمالي المسجّل: " + (correctionPage.st.total || ""); color: theme.textPrimary
                       font.bold: true }
+                Txt { Layout.fillWidth: true; visible: !!correctionPage.st.combinedNote; value: "بعد الاستبدال — " + (correctionPage.st.combinedNote || "")
+                      color: theme.textMuted; wrapMode: Text.WordWrap }
                 Txt { Layout.fillWidth: true; value: "المسجل حالياً: " + (correctionPage.st.current || "")
                       wrapMode: Text.WordWrap; elide: Text.ElideNone }
                 Txt { Layout.fillWidth: true; Layout.topMargin: 6; value: "التسوية الصحيحة"; color: theme.textMuted; font.bold: true }

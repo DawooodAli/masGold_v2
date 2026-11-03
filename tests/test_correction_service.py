@@ -705,3 +705,35 @@ class RollbackTests(CorrectionTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CombinedSettlementTests(CorrectionTestCase):
+    """Owner 2026-11-03: an invoice with an effective Exchange is settled as ONE amount (original + exchange difference)."""
+
+    def setUp(self):
+        super().setUp()
+        self.store.exchanges["902"] = {
+            "lifecycle_id": "902", "source_invoice_id": "501", "customer_id": "12", "signed_amount": D("4000.00"),
+            "lines": [{"line_id": "9021", "line_role": "RETURNED", "identification_method": None, "inventory_item_id": "201",
+                       "karat_id": 1, "karat_value": 21, "weight_grams": D("10.000")}],
+            "payments": [{"method_code": "PHYSICAL_CASH", "bank_account_id": None, "direction": "IN", "amount": D("3000.00")}]}
+        self.store.money.append(("CASH", 1, D("3000.00"), "INVOICE_LIFECYCLE", "902"))
+        self.store.ledger.append(("12", D("1000.00"), "INVOICE_LIFECYCLE", "902"))
+
+    def test_the_view_shows_the_combined_total_and_legs(self):
+        view = self.service.current_settlement("INVOICE", "501")
+        self.assertEqual((view["total"], view["account"]), ("34000.00", "1000.00"))
+        self.assertEqual([(l["method_code"], l["amount"]) for l in view["legs"]], [("PHYSICAL_CASH", "33000.00")])
+
+    def test_one_new_distribution_is_split_between_the_exchange_and_the_invoice(self):
+        cash0, bank0 = self.store.balance("CASH", 1), self.store.balance("BANK", 7)
+        self.service.correct_settlement("INVOICE", "501", [SettlementLeg("PHYSICAL_CASH", "20000.00"), SettlementLeg("BANK_TRANSFER", "14000.00", "7")], "0",
+                                        "توزيع جديد بعد الاستبدال")
+        self.assertEqual((self.store.balance("CASH", 1) - cash0, self.store.balance("BANK", 7) - bank0), (D("-13000.00"), D("14000.00")))
+        self.assertEqual(sorted((c["source_type"], c["source_id"]) for c in self.store.corrections), [("EXCHANGE", "902"), ("INVOICE", "501")])
+        after = self.service.current_settlement("INVOICE", "501")
+        self.assertEqual((after["total"], after["account"]), ("34000.00", "0.00"))
+
+    def test_an_identical_distribution_is_refused(self):
+        self.assertRefused("NO_EFFECT_CORRECTION", lambda: self.service.correct_settlement(
+            "INVOICE", "501", [SettlementLeg("PHYSICAL_CASH", "33000.00")], "1000.00", "x"))

@@ -1399,7 +1399,7 @@ class CorrectionService:
                                    bank_movement_id=movement_id if ledger == "BANK" else None)
 
     # ------------------------------------------------------------ SETTLEMENT CORRECTION
-    def _settlement_state(self, connection, source_type, source_id, lock):
+    def _settlement_state(self, connection, source_type, source_id, lock, combine=True):
         """The current EFFECTIVE settlement of a source: direction, legs, account part, total, chain."""
         corrections = self._corrections(connection)
         if source_type in (FO, CD, SMP, MTE, SGS, HRC, SPI, MKD):
@@ -1445,9 +1445,50 @@ class CorrectionService:
         total = sum((l["amount"] for l in money_legs), ZERO) + account
         if total <= 0:
             raise CorrectionError("NO_SETTLEMENT", "لا توجد تسوية مالية لتصحيحها.")
-        return {"source_type": source_type, "invoice": invoice, "reference": reference, "direction": direction, "sign": sign,
-                "customer_id": customer_id, "legs": money_legs, "account": account, "account_signed": account_signed,
-                "total": total, "chain": chain, "chain_ids": chain_ids}
+        state = {"source_type": source_type, "source_id": str(source_id), "invoice": invoice, "reference": reference, "direction": direction, "sign": sign,
+                 "customer_id": customer_id, "legs": money_legs, "account": account, "account_signed": account_signed,
+                 "total": total, "chain": chain, "chain_ids": chain_ids}
+        if source_type == "INVOICE" and combine:
+            state = self._combined_state(connection, state, lock)
+        return state
+
+    def _combined_state(self, connection, state, lock):
+        """Owner 2026-11-03: an invoice with an effective Exchange is settled as ONE amount (original + exchange difference). The combined state holds the
+        parts (exchanges first, the invoice last) and the merged legs; an Exchange with no money, a reversed one or one in the other direction is left out
+        (the plain invoice state then stays as it was)."""
+        invoice = state["invoice"]
+        exchanges, _ = self._corrections(connection).lifecycle_of_invoice(invoice["invoice_id"])
+        parts = []
+        for x in exchanges:
+            if reversal_of(invoice, "EXCHANGE", x["lifecycle_id"]):
+                continue
+            try:
+                part = self._settlement_state(connection, "EXCHANGE", x["lifecycle_id"], lock, combine=False)
+            except CorrectionError:
+                continue
+            if part["direction"] == state["direction"]:
+                parts.append(part)
+        if not parts:
+            return state
+        everything = parts + [state]
+        merged = {}
+        for part in everything:
+            for leg in part["legs"]:
+                key = (leg["method_code"], str(leg.get("bank_account_id") or ""))
+                merged[key] = merged.get(key, ZERO) + Decimal(str(leg["amount"]))
+        legs = [{"method_code": k[0], "bank_account_id": k[1] or None, "amount": v} for k, v in merged.items() if v]
+        account = sum((p["account"] for p in everything), ZERO)
+        return dict(state, parts=everything, legs=legs, account=account, account_signed=sum((p["account_signed"] for p in everything), ZERO),
+                    total=sum((p["total"] for p in everything), ZERO),
+                    combined_note="الأصل " + f"{state['total']:,.2f}" + " ج + " + " + ".join(f"{p['reference']} {p['total']:,.2f} ج" for p in parts))
+
+    def _current_money(self, corrections, state):
+        """What the settlement (or every part of a combined one) posted per real account."""
+        total = {}
+        for part in state.get("parts") or [state]:
+            for key, value in corrections.money_by_account(part["source_type"], part["source_id"], part["chain_ids"]).items():
+                total[key] = total.get(key, ZERO) + Decimal(str(value))
+        return total
 
     @staticmethod
     def _normalized(legs, account):
@@ -1471,7 +1512,7 @@ class CorrectionService:
         names = {str(a["id"]): a["name"] for a in accounts}
         return {"reference": state["reference"], "direction": state["direction"],
                 "direction_text": "المستلم من العميل" if state["direction"] == "IN" else "المدفوع للعميل",
-                "total": str(state["total"]), "account": str(state["account"]),
+                "total": str(state["total"]), "account": str(state["account"]), "combined_note": state.get("combined_note", ""),
                 "has_customer": state.get("source_type") != CS and state["customer_id"] not in (None, ""), "next_sequence": len(state["chain"]) + 1,
                 "legs": [{"method_code": l["method_code"], "method_text": METHOD_TEXT.get(l["method_code"], l["method_code"]),
                           "bank_account_id": str(l["bank_account_id"]) if l.get("bank_account_id") else "",
@@ -1534,7 +1575,7 @@ class CorrectionService:
             invoices, corrections = self._invoices(connection), self._corrections(connection)
             state = self._settlement_state(connection, source_type, source_id, lock=False)
             _, account, new_money, problems = self._proposal(invoices, state, legs, account_amount, lock=False)
-            current = corrections.money_by_account(source_type, source_id, state["chain_ids"])
+            current = self._current_money(corrections, state)
             return state, account, new_money, current, problems, invoices.active_bank_accounts()
         state, account, new_money, current, problems, accounts = self._read(read)
         view = self._settlement_view(state, accounts)
@@ -1556,63 +1597,115 @@ class CorrectionService:
         source_type, reason = self._source_type(source_type), _reason(reason)
         with self._transaction() as connection:
             actor = self._authorization.require_permission(connection, session_actor, CORRECT_PERMISSION)
-            corrections, invoices, customers = (self._corrections(connection), self._invoices(connection),
-                                                self._customers(connection))
             state = self._settlement_state(connection, source_type, source_id, lock=True)
-            sequence = len(state["chain"]) + 1
-            if expected_sequence is not None and int(expected_sequence) != sequence:
-                raise CorrectionError("STALE_CORRECTION", "تم تصحيح هذه التسوية للتو من جهاز آخر؛ أعد التحميل.")
-            parsed, account, new_money, problems = self._proposal(invoices, state, legs, account_amount, lock=True)
-            if account:
-                customer = invoices.lock_customer(state["customer_id"])
-                if customer is None or not customer["is_active"] or customer["record_origin"] == "LEGACY_PLACEHOLDER":
-                    problems.append(CorrectionError("CUSTOMER_INACTIVE", "حساب العميل غير متاح."))
-            if problems:
-                raise problems[0]
-            current = corrections.money_by_account(source_type, source_id, state["chain_ids"])
-            deltas = {key: new_money.get(key, ZERO) - Decimal(str(current.get(key, ZERO)))
-                      for key in set(current) | set(new_money)}
-            account_delta = state["sign"] * account - state["account_signed"]
-            now = corrections.db_now()
-            before = {"legs": [dict(l, amount=str(l["amount"])) for l in state["legs"]], "account": str(state["account"])}
-            after = {"legs": [{"method_code": p.method_code, "bank_account_id": p.bank_account_id, "amount": str(a)}
-                              for p, a in parsed], "account": str(account)}
-            correction_id = corrections.insert_correction(
-                correction_type=SETTLEMENT, source_type=source_type, source_id=source_id,
-                source_reference=state["reference"], invoice_id=state["invoice"]["invoice_id"], chain_sequence=sequence,
-                previous_correction_id=state["chain"][-1]["correction_id"] if state["chain"] else None,
-                money_direction=state["direction"], settled_total=sum((a for _, a in parsed), ZERO) + account,
-                reason=reason, before=before,
-                after=after, effects={"money": {f"{k[0]}:{k[1]}": str(v) for k, v in deltas.items() if v},
-                                      "account": str(account_delta)},
-                performed_by_user_id=actor.user_id, performed_by_employee_id=actor.employee_id, occurred_at=now)
-            code = correction_code(SETTLEMENT, correction_id)
-            text = f"تصحيح تسوية {code} — {SOURCE_TEXT[source_type]} {state['reference']}"
-            for payment, amount in parsed:
-                corrections.insert_leg(correction_id=correction_id, leg_role="EFFECTIVE", leg_kind="MONEY", amount=amount,
-                                       payment_method_code=payment.method_code,
-                                       bank_account_id=None if payment.bank_account_id in (None, "") else int(payment.bank_account_id))
-            if account:
-                corrections.insert_leg(correction_id=correction_id, leg_role="EFFECTIVE", leg_kind="ACCOUNT", amount=account)
-            self._post_money(corrections, correction_id, code, deltas, "SETTLEMENT_CORRECTION", text, now, actor)
-            if account_delta:
-                transaction_id = customers.add_transaction(
-                    customer_id=int(state["customer_id"]), type_code="SETTLEMENT_CORRECTION", amount_delta=account_delta,
-                    created_by_user_id=actor.user_id, reference_type="TRANSACTION_CORRECTION", reference_id=correction_id,
-                    reference_code=code, description=text)
-                corrections.insert_leg(correction_id=correction_id, leg_role="POSTED", leg_kind="ACCOUNT",
-                                       amount=account_delta, customer_transaction_id=transaction_id)
-            event = {"correction_code": code, "correction_id": correction_id, "correction_type": SETTLEMENT,
-                     "source_type": source_type, "source_id": str(source_id), "source_reference": state["reference"],
-                     "chain_sequence": sequence, "reason": reason, "before": before, "after": after}
-            if source_type != CS:
-                invoices.insert_event(invoice_id=state["invoice"]["invoice_id"], event_type="SETTLEMENT_CORRECTED",
-                                      performed_by_user_id=actor.user_id, details=event)
-            self._audit(connection, actor, "SETTLEMENT_CORRECTED", correction_id, code,
-                        {**event, "money_deltas": {f"{k[0]}:{k[1]}": v for k, v in deltas.items() if v},
-                         "account_delta": account_delta}, now)
+            if state.get("parts"):
+                result = self._post_combined(connection, actor, state, legs, account_amount, reason, expected_sequence)
+            else:
+                result = self._post_settlement(connection, actor, state, legs, account_amount, reason, expected_sequence)
             if not self._session.is_current(session_actor):
                 raise PermissionError("انتهت جلسة الدخول.")
+        return result
+
+    def _post_combined(self, connection, actor, state, legs, account_amount, reason, expected_sequence):
+        """ONE new distribution of the combined settlement, posted as an ordinary settlement correction on each part that changes: every Exchange keeps as much of
+        its current legs as the new distribution allows and the invoice takes the rest, so nothing is invented and each part keeps its own chain."""
+        invoices = self._invoices(connection)
+        if expected_sequence is not None and int(expected_sequence) != len(state["chain"]) + 1:
+            raise CorrectionError("STALE_CORRECTION", "تم تصحيح هذه التسوية للتو من جهاز آخر؛ أعد التحميل.")
+        parsed, account, new_money, problems = self._proposal(invoices, state, legs, account_amount, lock=True)
+        if account:
+            customer = invoices.lock_customer(state["customer_id"])
+            if customer is None or not customer["is_active"] or customer["record_origin"] == "LEGACY_PLACEHOLDER":
+                problems.append(CorrectionError("CUSTOMER_INACTIVE", "حساب العميل غير متاح."))
+        if problems:
+            raise problems[0]
+        target = {}
+        for payment, amount in parsed:
+            key = (payment.method_code, str(payment.bank_account_id or ""))
+            target[key] = target.get(key, ZERO) + amount
+        left_account, last = account, len(state["parts"]) - 1
+        result = None
+        for index, part in enumerate(state["parts"]):
+            current = {}
+            for leg in part["legs"]:
+                key = (leg["method_code"], str(leg.get("bank_account_id") or ""))
+                current[key] = current.get(key, ZERO) + Decimal(str(leg["amount"]))
+            if index == last:
+                take, take_account = dict(target), left_account
+            else:
+                take = {k: min(v, target.get(k, ZERO)) for k, v in current.items() if target.get(k, ZERO) > 0}
+                take_account = min(part["account"], left_account)
+            for key, value in take.items():
+                target[key] = target.get(key, ZERO) - value
+            left_account -= take_account
+            take = {k: v for k, v in take.items() if v > 0}
+            if sum(take.values(), ZERO) + take_account <= 0:
+                raise CorrectionError("PAYMENT_INVALID", "التوزيع الجديد لا يترك مبلغًا للفاتورة الأصلية؛ عدّل المبالغ.")
+            new_legs = [{"method_code": k[0], "bank_account_id": k[1] or None, "amount": v} for k, v in take.items()]
+            if self._normalized(new_legs, take_account) == self._normalized(part["legs"], part["account"]):
+                continue
+            part_legs = [SettlementLeg(k[0], str(v), k[1] or None) for k, v in take.items()]
+            result = self._post_settlement(connection, actor, part, part_legs, str(take_account), reason, None)
+        if result is None:
+            raise CorrectionError("NO_EFFECT_CORRECTION", "التسوية الجديدة مطابقة للحالية؛ لا يوجد تصحيح.")
+        return result
+
+    def _post_settlement(self, connection, actor, state, legs, account_amount, reason, expected_sequence):
+        source_type, source_id = state["source_type"], state["source_id"]
+        corrections, invoices, customers = (self._corrections(connection), self._invoices(connection),
+                                            self._customers(connection))
+        sequence = len(state["chain"]) + 1
+        if expected_sequence is not None and int(expected_sequence) != sequence:
+            raise CorrectionError("STALE_CORRECTION", "تم تصحيح هذه التسوية للتو من جهاز آخر؛ أعد التحميل.")
+        parsed, account, new_money, problems = self._proposal(invoices, state, legs, account_amount, lock=True)
+        if account:
+            customer = invoices.lock_customer(state["customer_id"])
+            if customer is None or not customer["is_active"] or customer["record_origin"] == "LEGACY_PLACEHOLDER":
+                problems.append(CorrectionError("CUSTOMER_INACTIVE", "حساب العميل غير متاح."))
+        if problems:
+            raise problems[0]
+        current = self._current_money(corrections, state)
+        deltas = {key: new_money.get(key, ZERO) - Decimal(str(current.get(key, ZERO)))
+                  for key in set(current) | set(new_money)}
+        account_delta = state["sign"] * account - state["account_signed"]
+        now = corrections.db_now()
+        before = {"legs": [dict(l, amount=str(l["amount"])) for l in state["legs"]], "account": str(state["account"])}
+        after = {"legs": [{"method_code": p.method_code, "bank_account_id": p.bank_account_id, "amount": str(a)}
+                          for p, a in parsed], "account": str(account)}
+        correction_id = corrections.insert_correction(
+            correction_type=SETTLEMENT, source_type=source_type, source_id=source_id,
+            source_reference=state["reference"], invoice_id=state["invoice"]["invoice_id"], chain_sequence=sequence,
+            previous_correction_id=state["chain"][-1]["correction_id"] if state["chain"] else None,
+            money_direction=state["direction"], settled_total=sum((a for _, a in parsed), ZERO) + account,
+            reason=reason, before=before,
+            after=after, effects={"money": {f"{k[0]}:{k[1]}": str(v) for k, v in deltas.items() if v},
+                                  "account": str(account_delta)},
+            performed_by_user_id=actor.user_id, performed_by_employee_id=actor.employee_id, occurred_at=now)
+        code = correction_code(SETTLEMENT, correction_id)
+        text = f"تصحيح تسوية {code} — {SOURCE_TEXT[source_type]} {state['reference']}"
+        for payment, amount in parsed:
+            corrections.insert_leg(correction_id=correction_id, leg_role="EFFECTIVE", leg_kind="MONEY", amount=amount,
+                                   payment_method_code=payment.method_code,
+                                   bank_account_id=None if payment.bank_account_id in (None, "") else int(payment.bank_account_id))
+        if account:
+            corrections.insert_leg(correction_id=correction_id, leg_role="EFFECTIVE", leg_kind="ACCOUNT", amount=account)
+        self._post_money(corrections, correction_id, code, deltas, "SETTLEMENT_CORRECTION", text, now, actor)
+        if account_delta:
+            transaction_id = customers.add_transaction(
+                customer_id=int(state["customer_id"]), type_code="SETTLEMENT_CORRECTION", amount_delta=account_delta,
+                created_by_user_id=actor.user_id, reference_type="TRANSACTION_CORRECTION", reference_id=correction_id,
+                reference_code=code, description=text)
+            corrections.insert_leg(correction_id=correction_id, leg_role="POSTED", leg_kind="ACCOUNT",
+                                   amount=account_delta, customer_transaction_id=transaction_id)
+        event = {"correction_code": code, "correction_id": correction_id, "correction_type": SETTLEMENT,
+                 "source_type": source_type, "source_id": str(source_id), "source_reference": state["reference"],
+                 "chain_sequence": sequence, "reason": reason, "before": before, "after": after}
+        if source_type != CS:
+            invoices.insert_event(invoice_id=state["invoice"]["invoice_id"], event_type="SETTLEMENT_CORRECTED",
+                                  performed_by_user_id=actor.user_id, details=event)
+        self._audit(connection, actor, "SETTLEMENT_CORRECTED", correction_id, code,
+                    {**event, "money_deltas": {f"{k[0]}:{k[1]}": v for k, v in deltas.items() if v},
+                     "account_delta": account_delta}, now)
         return {"correction_id": correction_id, "code": code, "sequence": sequence, "source_reference": state["reference"]}
 
     @staticmethod
