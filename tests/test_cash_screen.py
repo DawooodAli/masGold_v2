@@ -144,6 +144,16 @@ class CashViewTests(FinancialTestCase):
         self.assertEqual(sorted((r["label"], r["amount"]) for r in view["out"]["rows"]), [("استرداد فاتورة قديمة", "100000.00"), ("على العميل", "5000.00")])
         self.assertEqual((view["in"]["total"], view["out"]["total"], view["out"]["count"]), ("125000.00", "105000.00", 2))   # 125,000 - 105,000 = the 20,000 really paid
 
+    def test_a_later_wallet_payment_of_the_customer_is_shown_in_and_out_so_the_safe_nets_to_zero(self):
+        self.store.cash_rows = []
+        self.store.bank_rows = [cash_row(9, "1600", "CUSTOMER_PAYMENT", ("1600", 1))]
+        for n, account in enumerate(self.store.bank_accounts.values()):
+            account["is_active"] = n == 0
+        view = self.fin.cash_view()
+        self.assertEqual([r["amount"] for r in view["in"]["rows"]], ["1600.00"])
+        self.assertEqual([(r["label"], r["amount"]) for r in view["out"]["rows"]], [("سداد العميل (انستا / محفظة)", "1600.00")])
+        self.assertEqual((view["in"]["total"], view["out"]["total"]), ("1600.00", "1600.00"))
+
     def test_a_split_cash_and_wallet_payment_shows_the_rest_once(self):
         self.store.cash_rows = [cash_row(5, "20000", "SALE", ("20000", 1), invoice_id=21)]
         self.store.bank_rows = [cash_row(9, "10000", "SALE", ("10000", 1), invoice_id=21)]
