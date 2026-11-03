@@ -65,6 +65,9 @@ class FinRepo:
         FinRepo.calls.append(("cash_flow", ledger, account_id, start, end, label, limit))
         return copy.deepcopy(getattr(self.store, "bank_rows" if ledger == "BANK" else "cash_rows", []))
 
+    def invoice_account_debits(self, invoice_ids):
+        return {str(k): v for k, v in getattr(self.store, "invoice_debts", {}).items() if int(k) in {int(i) for i in invoice_ids}}
+
     def operation_accounts(self):
         return [{"id": a["id"], "name": a["name"], "account_type": a["account_type"]}
                 for a in self.store.bank_accounts.values() if a["is_active"]]

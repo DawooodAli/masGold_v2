@@ -125,6 +125,25 @@ class CashViewTests(FinancialTestCase):
         self.assertEqual(view["account"]["key"], "CASH:1")
         self.assertNotIn("accounts", view)                                                      # no bank cards
 
+    def test_a_sale_paid_in_part_shows_its_whole_value_in_and_the_rest_out_on_the_customer(self):
+        self.store.cash_rows = [cash_row(5, "30000", "SALE", ("30000", 1), invoice_id=21)]
+        self.store.invoice_debts = {21: D("1600")}
+        view = self.fin.cash_view()
+        self.assertEqual([(r["label"], r["amount"]) for r in view["in"]["rows"]], [("بيع", "31600.00")])
+        self.assertEqual([(r["label"], r["amount"], r["invoice_id"]) for r in view["out"]["rows"]], [("على العميل", "1600.00", "21")])
+        self.assertEqual((view["in"]["total"], view["out"]["total"], view["in"]["count"], view["out"]["count"]), ("31600.00", "1600.00", 1, 1))
+        self.assertEqual(D(view["account"]["balance"]), self.cash())                             # the real balance is untouched
+
+    def test_a_split_cash_and_wallet_payment_shows_the_rest_once(self):
+        self.store.cash_rows = [cash_row(5, "20000", "SALE", ("20000", 1), invoice_id=21)]
+        self.store.bank_rows = [cash_row(9, "10000", "SALE", ("10000", 1), invoice_id=21)]
+        for n, account in enumerate(self.store.bank_accounts.values()):
+            account["is_active"] = n == 0
+        self.store.invoice_debts = {21: D("1600")}
+        view = self.fin.cash_view()
+        self.assertEqual(sorted(r["amount"] for r in view["in"]["rows"]), ["10000.00", "21600.00"])
+        self.assertEqual([r["amount"] for r in view["out"]["rows"]], ["1600.00"])
+
     def test_bank_movements_are_listed_with_their_account_but_never_added_to_the_safe_totals(self):
         self.store.cash_rows = [cash_row(5, "25000", "SALE", ("25000", 1))]
         self.store.bank_rows = [cash_row(9, "700", "CUSTOMER_CASH_IN", ("700", 1), operation_id=4),
