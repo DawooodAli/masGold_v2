@@ -151,7 +151,7 @@ class CashViewTests(FinancialTestCase):
             account["is_active"] = n == 0
         view = self.fin.cash_view()
         self.assertEqual([r["amount"] for r in view["in"]["rows"]], ["1600.00"])
-        self.assertEqual([(r["label"], r["amount"]) for r in view["out"]["rows"]], [("سداد العميل (انستا / محفظة)", "1600.00")])
+        self.assertEqual([(r["label"], r["amount"]) for r in view["out"]["rows"]], [("انستا", "1600.00")])
         self.assertEqual((view["in"]["total"], view["out"]["total"]), ("1600.00", "1600.00"))
 
     def test_an_exchange_settled_separately_still_shows_its_values_without_touching_the_safe(self):
@@ -172,6 +172,16 @@ class CashViewTests(FinancialTestCase):
         view = self.fin.cash_view()
         self.assertEqual(view["in"]["rows"][0]["linked_invoices"], "26110313 ، 26110309")
 
+    def test_a_sale_paid_by_wallet_shows_the_invoice_in_and_the_wallet_out(self):
+        self.store.cash_rows = []
+        self.store.bank_rows = [cash_row(9, "53700", "SALE", ("53700", 1), invoice_id=21)]
+        for n, account in enumerate(self.store.bank_accounts.values()):
+            account["is_active"] = n == 0
+        view = self.fin.cash_view()
+        self.assertEqual([r["amount"] for r in view["in"]["rows"]], ["53700.00"])
+        self.assertEqual([(r["label"], r["amount"], r["invoice_id"]) for r in view["out"]["rows"]], [("انستا", "53700.00", "21")])
+        self.assertEqual((view["in"]["total"], view["out"]["total"]), ("53700.00", "53700.00"))
+
     def test_a_split_cash_and_wallet_payment_shows_the_rest_once(self):
         self.store.cash_rows = [cash_row(5, "20000", "SALE", ("20000", 1), invoice_id=21)]
         self.store.bank_rows = [cash_row(9, "10000", "SALE", ("10000", 1), invoice_id=21)]
@@ -180,7 +190,7 @@ class CashViewTests(FinancialTestCase):
         self.store.invoice_debts = {21: D("1600")}
         view = self.fin.cash_view()
         self.assertEqual(sorted(r["amount"] for r in view["in"]["rows"]), ["10000.00", "21600.00"])
-        self.assertEqual([r["amount"] for r in view["out"]["rows"]], ["1600.00"])
+        self.assertEqual(sorted(r["amount"] for r in view["out"]["rows"]), ["10000.00", "1600.00"])      # the wallet leg + what stayed on the customer
 
     def test_bank_movements_are_listed_with_their_account_but_never_added_to_the_safe_totals(self):
         self.store.cash_rows = [cash_row(5, "25000", "SALE", ("25000", 1))]
@@ -195,7 +205,7 @@ class CashViewTests(FinancialTestCase):
         self.assertEqual([(r["external"], r["id"]) for r in view["in"]["rows"]], [(False, "5"), (True, "B9")])
         self.assertIn(view["in"]["rows"][1]["account"], ("انستا", "محفظة"))
         self.assertEqual((view["in"]["total"], view["in"]["bank_total"], view["out"]["total"], view["out"]["bank_total"]),
-                         ("25000.00", "700.00", "0.00", "300.00"))                                  # the internal transfer row is not listed
+                         ("25700.00", "700.00", "700.00", "300.00"))                                  # the internal transfer row is not listed
 
     def test_default_period_is_today_and_filter_is_validated(self):
         view = self.fin.cash_view()

@@ -362,9 +362,9 @@ class FinancialAccountService:
                 first_leg[doc_key(r)] = (bool(r.get("external")), r["id"])
 
         ZERO = Decimal("0")
-        # Owner 2026-11-04: a customer's later payment into a bank / wallet account is shown in BOTH tables (paid in; cleared off the customer out),
+        # Owner 2026-11-04: money received into a bank / wallet account (a sale paid by انستا, a later customer payment...) is shown in BOTH tables (the document in; where the money went out),
         # so in - out stays the safe's real movement
-        paid_outside = [r for r in external if r.get("label_key") == "CUSTOMER_PAYMENT" and Decimal(str(r["amount_delta"])) > 0]
+        paid_outside = [r for r in external if Decimal(str(r["amount_delta"])) > 0]
 
         def add_in(r):
             """Owner 2026-11-03 (paper books): the incoming row carries the document's WHOLE value. A sale paid in part: + what stayed on the customer.
@@ -396,13 +396,13 @@ class FinancialAccountService:
             else:
                 virtual = [{**r, "id": "D" + str(n) + "_" + str(r["id"]), "amount_delta": -amount, "label_key": label_key, "external": False, "side_total": 0, "side_count": 0}
                            for r in rows + external for n, (label_key, amount) in enumerate(out_parts(r))]
-                virtual += [{**r, "id": "P" + str(r["id"]), "amount_delta": -Decimal(str(r["amount_delta"])), "label_key": "CUSTOMER_PAID_OUTSIDE",
+                virtual += [{**r, "id": "P" + str(r["id"]), "amount_delta": -Decimal(str(r["amount_delta"])), "label_key": "CUSTOMER_PAID_OUTSIDE", "label_text": r.get("account_name") or "",
                              "external": False, "side_total": 0, "side_count": 0} for r in paid_outside]
                 chosen = chosen + virtual
                 chosen.sort(key=lambda r: (r.get("occurred_at") or datetime.min, str(r["id"])), reverse=True)
                 extra, added = sum((-v["amount_delta"] for v in virtual), ZERO), len(virtual)
             merged = sorted(chosen + outside, key=lambda r: (r.get("occurred_at") or datetime.min, str(r["id"]).zfill(20)), reverse=True) if outside else chosen   # the safe's own order is kept unless bank rows are merged in
-            return {"rows": [{"id": ("B" if r.get("external") else "") + str(r["id"]), "label": self._label(r["label_key"]),
+            return {"rows": [{"id": ("B" if r.get("external") else "") + str(r["id"]), "label": r.get("label_text") or self._label(r["label_key"]),
                               "amount": str(abs(Decimal(str(r["amount_delta"]))).quantize(Decimal("0.01"))),
                               "invoice_id": None if r.get("invoice_id") is None else str(r["invoice_id"]),
                               "operation_id": None if r.get("operation_id") is None else str(r["operation_id"]),
