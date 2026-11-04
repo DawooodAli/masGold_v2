@@ -51,6 +51,7 @@ MODULES = (
     {"key": "transfers", "title": "التحويلات", "subtitle": "بين البنوك والمحافظ والحساب الخاص", "icon": "🔁", "kind": "transfers", "needs": ("FINANCIAL_ACCOUNT_OPERATE",)},
     {"key": "reviews", "title": "مراجعات المدير", "subtitle": "ما ينتظر المراجعة", "icon": "🔔", "kind": "reviews", "needs": ("MANAGEMENT_REVIEW", "INVENTORY_RECONCILE")},
     {"key": "currency", "title": "أسعار العملات", "subtitle": "الدولار واليورو والريال وغيرها مقابل الجنيه", "icon": "💱", "kind": "currency", "needs": ("APP_LOGIN",)},
+    {"key": "stocktake", "title": "جرد بالكاميرا", "subtitle": "امسح القطع بكاميرا الأيباد وتظهر في جرد الكمبيوتر", "icon": "📷", "kind": "stocktake", "needs": ("INVENTORY_VIEW",)},
     {"key": "calc", "title": "حاسبة الذهب", "subtitle": "وزن وعيار يطلع قيمة الشراء والبيع بالأسعار الحية", "icon": "🧮", "kind": "calc", "needs": ("APP_LOGIN",)},
     {"key": "activity", "title": "سجل النشاط", "subtitle": "من فعل ماذا ومتى (للمالك)", "icon": "🕵️", "kind": "activity", "needs": ("USERS_MANAGE",)},
 )

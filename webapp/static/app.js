@@ -192,6 +192,7 @@ function render() {
   if (!state.overview) return;
   state.redraws = [];                                                    // the charts of the previous render are gone
   const module = currentModule();
+  if (!module || module.kind !== "stocktake") stopCamera();              // leaving the card releases the camera
   const grid = isGrid(module), inReport = !!state.report;
   const back = !module || state.overview.modules.length < 2 ? null
     : grid && inReport ? el("button", { class: "btn", text: "← " + module.title, onclick: backToList }) : el("button", { class: "btn", text: "← الرئيسية", onclick: goHome });
@@ -199,7 +200,7 @@ function render() {
     el("span", { class: "who", text: state.overview.user }), el("button", { class: "btn", text: "خروج", onclick: logout }));
   if (!module) { app.replaceChildren(...[top, renderAttention(), renderToday(), renderHome()].filter(Boolean)); return; }
   if (module.kind && module.kind !== "reports") {
-    const draw = { reviews: renderReviews, transfers: renderTransfers, calc: renderCalc, activity: renderActivity, bankflow: renderBankflow, cashflow: renderCashflow, currency: renderCurrency }[module.kind];
+    const draw = { reviews: renderReviews, transfers: renderTransfers, calc: renderCalc, stocktake: renderStocktake, activity: renderActivity, bankflow: renderBankflow, cashflow: renderCashflow, currency: renderCurrency }[module.kind];
     const view = state.special ? draw(state.special) : el("div", { class: "loading", text: "جارٍ التحميل…" });
     app.replaceChildren(...[top, view, state.custInvoices ? renderCustomerInvoices(state.custInvoices) : null, state.invoice ? renderInvoice(state.invoice) : null].filter(Boolean));
     return;
@@ -896,6 +897,7 @@ async function loadSpecial(kind) {
   render();
   try {
     if (kind === "calc") { if (!state.today) await loadToday(); s.data = {}; }
+    else if (kind === "stocktake") s.data = await call("/api/stocktake_status");
     else s.data = await call(kind === "reviews" ? "/api/reviews" : kind === "activity" ? "/api/activity" : kind === "bankflow" ? "/api/bankflow" : kind === "cashflow" ? "/api/cashflow" : kind === "currency" ? "/api/currency" : "/api/transfers");
   } catch (e) {
     if (e.status === 401) { showLogin("انتهت الجلسة، سجّل الدخول من جديد."); return; }
@@ -971,6 +973,91 @@ function renderReviews(s) {
     }
   }
   return body;
+}
+
+// ---------------------------------------------------------------- the camera as a stocktake scanner (owner request 2026-11-04): the codes go to the desktop's open الجرد بالباركود session
+const camera = { stream: null, reader: null, last: "", lastAt: 0, audio: null, busy: false };
+
+function stopCamera() {
+  if (camera.reader) { try { camera.reader.reset(); } catch (e) { /* already stopped */ } camera.reader = null; }
+  if (camera.stream) { camera.stream.getTracks().forEach((t) => t.stop()); camera.stream = null; }
+}
+
+function loadZxing() {
+  if (window.ZXing) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const tag = document.createElement("script");
+    tag.src = "/zxing.min.js";
+    tag.onload = () => resolve();
+    tag.onerror = () => reject(new Error("تعذر تحميل قارئ الباركود."));
+    document.head.append(tag);
+  });
+}
+
+function beep(ok) {
+  try {
+    camera.audio = camera.audio || new (window.AudioContext || window.webkitAudioContext)();
+    const osc = camera.audio.createOscillator(), gain = camera.audio.createGain();
+    osc.frequency.value = ok ? 880 : 220; gain.gain.value = 0.15;
+    osc.connect(gain); gain.connect(camera.audio.destination);
+    osc.start(); osc.stop(camera.audio.currentTime + (ok ? 0.12 : 0.35));
+  } catch (e) { /* no sound */ }
+  if (navigator.vibrate) navigator.vibrate(ok ? 60 : [120, 60, 120]);
+}
+
+function renderStocktake(s) {
+  if (s.view) return s.view;
+  const status = el("div", { class: "msg" });
+  const last = el("div", { class: "card" }, el("div", { class: "label", text: "آخر مسح" }), el("div", { class: "value", text: "—" }), el("div", { class: "note", text: "" }));
+  const counts = el("div", { class: "note-box", text: "" });
+  const video = el("video", { playsinline: true, muted: true, autoplay: true, class: "scanvideo" });
+  video.muted = true;
+  const note = (text, kind) => { status.className = "msg " + (kind || ""); status.textContent = text; };
+  const show = (code, answer) => {
+    const ok = answer.result === "OK";
+    last.className = "card " + (ok ? "receivable" : "deadcash");
+    last.children[1].textContent = code;
+    last.children[2].textContent = answer.message || answer.result;
+    counts.textContent = answer.scanned !== undefined ? "تم جرد " + answer.scanned + " قطعة (" + answer.weight + " جرام) • متبقي " + answer.remaining : "";
+    beep(ok);
+  };
+  async function send(code) {
+    const now = Date.now();
+    if (code === camera.last && now - camera.lastAt < 2500) return;     // the same label held in front of the lens counts once
+    camera.last = code; camera.lastAt = now;
+    try {
+      show(code, await call("/api/stocktake_scan", { method: "POST", body: JSON.stringify({ code }) }));
+    } catch (e) {
+      if (e.status === 401) { stopCamera(); showLogin("انتهت الجلسة، سجّل الدخول من جديد."); return; }
+      note(e.message, "err");
+    }
+  }
+  const start = el("button", { class: "btn primary", text: "تشغيل الكاميرا" });
+  start.addEventListener("click", async () => {
+    if (!window.isSecureContext) { note("الكاميرا تحتاج رابط HTTPS: فعّل «HTTPS» من إعدادات البرنامج على الكمبيوتر.", "err"); return; }
+    start.disabled = true;
+    try {
+      await loadZxing();
+      stopCamera();
+      const Z = window.ZXing;
+      const hints = new Map([[Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.CODE_128, Z.BarcodeFormat.EAN_13, Z.BarcodeFormat.EAN_8, Z.BarcodeFormat.CODE_39, Z.BarcodeFormat.ITF, Z.BarcodeFormat.QR_CODE]], [Z.DecodeHintType.TRY_HARDER, true]]);
+      camera.reader = new Z.BrowserMultiFormatReader(hints, 250);
+      await camera.reader.decodeFromConstraints({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } } }, video, (result) => { if (result) send(result.getText()); });
+      note("الكاميرا شغالة: قرّب الباركود من العدسة.", "");
+    } catch (e) {
+      note(e && e.name === "NotAllowedError" ? "لم يُسمح باستخدام الكاميرا: اسمح بها من إعدادات سفاري." : (e && e.message) || "تعذر تشغيل الكاميرا.", "err");
+    }
+    start.disabled = false;
+  });
+  const stop = el("button", { class: "btn", text: "إيقاف الكاميرا", onclick: () => { stopCamera(); note("الكاميرا متوقفة.", ""); } });
+  const manual = el("input", { type: "text", inputmode: "numeric", placeholder: "أو اكتب الباركود", autocomplete: "off" });
+  const sendManual = el("button", { class: "btn", text: "إرسال", onclick: () => { const v = manual.value.trim(); if (v) { manual.value = ""; camera.last = ""; send(v); } } });
+  const open = s.data && s.data.open;
+  note(open ? "الجرد مفتوح على الكمبيوتر: كل قطعة تمسحها تظهر هناك." : "افتح «الجرد بالباركود» على الكمبيوتر أولاً، ثم شغّل الكاميرا.", open ? "" : "warn");
+  s.view = el("div", {}, status, el("div", { class: "filters" }, start, stop), video, last, counts,
+    el("div", { class: "filters" }, field("باركود يدوي", manual), sendManual),
+    el("div", { class: "note-box", text: "الكاميرا تحتاج HTTPS. المسح لا يغيّر المخزون: هو يعدّ القطعة في جلسة الجرد المفتوحة على الكمبيوتر فقط، والاعتماد يتم من هناك." }));
+  return s.view;
 }
 
 function renderCalc(s) {

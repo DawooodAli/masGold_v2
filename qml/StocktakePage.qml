@@ -47,9 +47,18 @@ Item {
     onVisibleChanged: {
         if (visible && vm) {
             vm.start()
+            vm.screenOpened()
             clearFlash()
             scanField.forceActiveFocus()
+        } else if (!visible && vm) {
+            vm.screenClosed()
         }
+    }
+    // A scan that came from the iPad camera flashes the scanner card like a local one.
+    Connections {
+        target: page.vm
+        ignoreUnknownSignals: true
+        function onWebScanned(result) { page.flash(result === "OK" ? "ok" : "bad") }
     }
 
     function refocus() { scanField.text = ""; scanField.forceActiveFocus() }

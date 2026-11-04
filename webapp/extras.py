@@ -27,6 +27,7 @@ from services.gold_price_service import GoldPriceService
 from services.inventory_service import InventoryService
 from services.invoice_service import PaymentInput
 from services.management_review_service import InspectionError, ManagementReviewService
+from webapp import stocktake_link
 from webapp.errors import ApiError
 
 logger = logging.getLogger("webapp")
@@ -382,6 +383,25 @@ class Extras:
             "status": STATUS_TEXT.get(found.get("inventory_status"), found.get("inventory_status") or ""), "statusCode": found.get("inventory_status") or "",
             "invoiceId": str(sale["invoice_id"]) if sale.get("invoice_id") is not None else "", "invoiceNumber": sale.get("invoice_number") or "",
             "invoiceDate": str(sale.get("invoice_date") or ""), "customer": sale.get("customer_name") or ""}}
+
+    # ------------------------------------------------------------------ the iPad camera as a stocktake scanner (owner request 2026-11-04): no database write, the desktop session counts it
+    def stocktake_status(self, token):
+        entry = self._api._entry(token)
+        if "INVENTORY_VIEW" not in entry.session.current_actor().permissions:
+            raise ApiError(403, "ليس لديك صلاحية المخزون.")
+        return {"open": stocktake_link.is_open()}
+
+    def stocktake_scan(self, token, body):
+        entry = self._api._entry(token)
+        if "INVENTORY_VIEW" not in entry.session.current_actor().permissions:
+            raise ApiError(403, "ليس لديك صلاحية المخزون.")
+        code = str(body.get("code") or "").strip()[:MAX_TEXT]
+        if not code:
+            raise ApiError(400, "لم يصل باركود.")
+        answer = stocktake_link.scan(code)
+        if answer is None:
+            return {"result": "CLOSED", "message": "افتح «الجرد بالباركود» على الكمبيوتر أولاً."}
+        return answer
 
     # ------------------------------------------------------------------ the open manager reviews (read only: the approvals stay on the desktop)
     def reviews(self, token):

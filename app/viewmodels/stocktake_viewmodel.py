@@ -4,9 +4,12 @@ The expected pieces of the chosen scope are loaded ONCE (the same current-stock 
 بيان المخزون). Each scan is resolved against an in-memory barcode index: a match moves exactly one
 piece from المتبقي to تم الجرد and both totals change incrementally (exact Decimal). Nothing in the
 database changes — no status, weight, barcode or movement. Closing / reset / a new scope discards it."""
+from concurrent.futures import Future
 from decimal import Decimal
 
 from PySide6.QtCore import QObject, Property, QSettings, Signal, Slot
+
+from webapp import stocktake_link
 
 from app.barcode_input import canonical_barcode
 from app.viewmodels.stock_balance_viewmodel import weight_text
@@ -21,6 +24,8 @@ MAX_BATCH = 200
 class StocktakeViewModel(QObject):
     changed = Signal()
     messageChanged = Signal()
+    webScanRequested = Signal(object)         # (code, Future) from an iPad camera, handled on the GUI thread
+    webScanned = Signal(str)                  # the result of a scan that came from the iPad (the page flashes like a local scan)
 
     def __init__(self, service=None, parent=None):
         super().__init__(parent)
@@ -38,6 +43,41 @@ class StocktakeViewModel(QObject):
         # starts a fresh one. The right table (المتبقي) and every total always cover the whole count. 0 = no batches (every scan stays in the table).
         self._batch_size = self._stored_batch_size()
         self._archived = 0                          # scanned pieces that belong to finished batches (the oldest ones)
+        self._screen_open = False
+        self.webScanRequested.connect(self._on_web_scan)
+
+    # ------------------------------------------------------------ the iPad camera
+    def _web_scan_blocking(self, code):
+        """Runs on an HTTP server thread: queue the scan for the GUI thread and wait for its answer."""
+        future = Future()
+        self.webScanRequested.emit((code, future))
+        try:
+            return future.result(timeout=5)
+        except Exception:
+            return {"result": "UNAVAILABLE", "message": "الجرد على الكمبيوتر لا يرد الآن."}
+
+    def _on_web_scan(self, request):
+        code, future = request
+        future.set_result(self._web_scan_inline(code))
+
+    def _web_scan_inline(self, code):
+        """The scan itself, always on the GUI thread."""
+        if not (self._screen_open and self._loaded):
+            return {"result": "CLOSED", "message": "شاشة الجرد مقفولة على الكمبيوتر."}
+        result = self.scan(str(code))
+        self.webScanned.emit(result)
+        return {"result": result, "message": self._message, "scanned": len(self._scanned), "remaining": len(self._remaining),
+                "weight": weight_text(self._scanned_weight)}
+
+    @Slot()
+    def screenOpened(self):
+        self._screen_open = True
+        stocktake_link.set_handler(self._web_scan_blocking)
+
+    @Slot()
+    def screenClosed(self):
+        self._screen_open = False
+        stocktake_link.clear_handler(self._web_scan_blocking)
 
     # ------------------------------------------------------------ batches
     @staticmethod

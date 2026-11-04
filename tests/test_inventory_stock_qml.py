@@ -751,6 +751,23 @@ class InventoryStockPageTests(harness.InvoicePageTests):
         self.assertEqual((vm.scannedCount, len(vm.scannedRows)), (3, 0))
         self.assertEqual(self.warnings, [])
 
+    def test_the_stocktake_screen_takes_scans_from_the_ipad_and_flashes(self):
+        from webapp import stocktake_link
+        vm = self.controller.operational_viewmodels["stocktakeVM"]
+        vm._service = service_for(Store(MIXED))
+        self.page(INVENTORY)
+        self.click("openStocktakeButton")
+        self.wait_until(lambda: self.root.property("currentPage") == STOCKTAKE and vm.loaded, "stocktake opened")
+        self.wait_until(stocktake_link.is_open, "the screen registered for the iPad")
+        page = self.item("stocktakePage")
+        self.assertEqual(vm._web_scan_inline("02261001")["result"], "OK")
+        self.assertEqual((vm.scannedCount, page.property("flashKind")), (1, "ok"))
+        self.assertEqual(vm._web_scan_inline("02261001")["result"], "DUPLICATE")
+        self.assertEqual(page.property("flashKind"), "bad")
+        self.click("stocktakeBack")
+        self.wait_until(lambda: not stocktake_link.is_open(), "the screen withdrew from the iPad")
+        self.assertEqual(self.warnings, [])
+
     def test_stocktake_empty_inventory(self):
         vm = self.controller.operational_viewmodels["stocktakeVM"]
         vm._service = service_for(Store())
