@@ -748,7 +748,8 @@ class InvoicePageTests(unittest.TestCase):
         self.assertEqual((movement["code"], movement["signed_weight"]), ("INVOICE_SALE_OUT", D("-3.200")))
         self.assertEqual(self.store.lines[0][0], "SELL_OLD_GOLD")
 
-    def test_insufficient_old_gold_stock_blocks_and_shows_available_grams(self):
+    def test_old_gold_sale_above_the_counted_balance_is_not_blocked(self):
+        # Owner 2026-11-03: Scrap may go negative through an F7 sale, so no shortage problem is shown.
         self.select_salesperson()
         QTest.keyClick(self.root, Qt.Key_F7)
         self.wait_until(lambda: self.item("stockSalePanel").property("visible"))
@@ -759,8 +760,7 @@ class InvoicePageTests(unittest.TestCase):
         self.wait_until(lambda: self.vm.saleCount == 1)
         self.receive("1000000")
         self.settle()
-        self.wait_until(lambda: "المتاح 100.000 جرام" in self.text("invoiceProblems"))
-        self.assertFalse(self.item("finalizeInvoice").property("enabled"))
+        self.assertNotIn("المتاح 100.000 جرام", self.text("invoiceProblems"))
 
     # ------------------------------------------------------------ 9, 15: weights and old-gold discount
 
