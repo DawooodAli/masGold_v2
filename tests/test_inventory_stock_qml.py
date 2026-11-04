@@ -165,6 +165,37 @@ class InventoryStockPageTests(harness.InvoicePageTests):
         self.assertEqual(stocktake.property("text"), "01261001")
         self.assertEqual(self.warnings, [])
 
+    def test_the_reset_button_clears_the_search_the_filters_and_the_history_card(self):
+        calls = []
+
+        class Service:
+            def get_stock_items(self, **kwargs):
+                calls.append(kwargs)
+                return []
+
+            def get_stock_summary(self):
+                return {"total_items": 0, "equivalent_21_weight_grams": D("0")}
+
+            def find_piece(self, text):
+                return {"inventory_item_id": "7", "inventory_status": "SOLD", "weight_grams": D("3.600"), "karat_id": 1, "item_type_id": 1, "item_type_name": "خاتم",
+                        "karat_value": 21, "factory_code": "NR", "category_code": "A", "barcode_value": "01261001", "sale": None}
+        inventory = self.controller.operational_viewmodels["inventoryVM"]
+        inventory._service = Service()
+        inventory.refresh()
+        self.page(INVENTORY)
+        inventory.search("01261001")
+        self.wait_until(lambda: inventory.hasHistoryPiece, "history card")
+        inventory.setFilters(1, 2)
+        for width, height in harness.SIZES:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(80)
+            self.assert_inside_window(self.item("inventoryResetFilters"))
+        self.click("inventoryResetFilters")
+        self.wait_until(lambda: calls[-1] == {"search": "", "karat_id": None, "item_type_id": None} and not inventory.hasHistoryPiece, "reset")
+        self.assertEqual(self.item("inventoryKaratFilter").property("currentIndex"), 0)
+        self.assertEqual(self.warnings, [])
+
     def test_inventory_header_actions_fit(self):
         self.page(INVENTORY)
         for width, height in harness.SIZES:

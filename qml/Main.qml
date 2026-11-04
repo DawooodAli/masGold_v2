@@ -2456,6 +2456,24 @@ ApplicationWindow {
 
 
                                 Button {
+                                    objectName: "inventoryResetFilters"
+                                    text: "↺ إعادة ضبط"
+                                    font.family: "Cairo"
+                                    onClicked: {
+                                        inventoryKaratFilter.currentIndex = 0
+                                        inventoryItemTypeFilter.currentIndex = 0
+                                        inventoryPage.entryDateFilter = ""
+                                        entryDateFilterField.text = ""
+                                        inventoryPage.barcodeFilterMode = 0
+                                        inventorySearchField.text = ""
+                                        inventoryVM.clearSearch()
+                                        inventoryVM.setFilters(0, 0)
+                                        inventoryPage.clearSelection()
+                                    }
+                                }
+
+
+                                Button {
                                     text: "🧾 سجل الطباعة"
 
                                     font.family: "Cairo"
