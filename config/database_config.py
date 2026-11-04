@@ -2,11 +2,14 @@ from dataclasses import dataclass
 from pathlib import Path
 import os
 import re
+import sys
 
 from dotenv import load_dotenv
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+FROZEN = bool(getattr(sys, "frozen", False))
+# A packaged build (PyInstaller folder) keeps its settings file NEXT TO the executable, never inside the bundle; from source it is the project folder.
+PROJECT_ROOT = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent.parent
 
 
 def env_file_path(environ=None):
@@ -16,7 +19,7 @@ def env_file_path(environ=None):
     name = str(environ.get("MASGOLD_ENV_FILE", "") or "").strip()
     if name and re.fullmatch(r"\.env(\.[A-Za-z0-9_-]{1,30})?", name):
         return PROJECT_ROOT / name
-    return PROJECT_ROOT / ".env"
+    return PROJECT_ROOT / (".env.production" if FROZEN else ".env")      # the packaged program is the production program
 
 
 ENV_FILE = env_file_path()

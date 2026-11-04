@@ -25,3 +25,7 @@ Note for password.txt
 
 # Local OpenCode tool config (no secrets, not versioned)
 opencode.json
+
+# PyInstaller output (build_exe.bat)
+/dist/
+/build/

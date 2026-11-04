@@ -73,7 +73,8 @@ class GoldTimoConfig:
     @classmethod
     def from_env(cls, secret_store=None, options=None, *, entered_key=None, trace_stored=False, entered_extra=()):
         from services.secret_store import SecretStore, SecretStoreError
-        load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
+        from config.database_config import PROJECT_ROOT
+        load_dotenv(PROJECT_ROOT / ".env", override=False)
         options = options or {}
         if entered_key is not None and not isinstance(entered_key, str):
             raise ValueError("GoldTimo API key has an invalid format.")
