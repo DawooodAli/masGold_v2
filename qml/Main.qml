@@ -118,17 +118,18 @@ ApplicationWindow {
     component GoldPriceButton: Button {
         id: priceButton
         property bool primaryAction: false
+        readonly property bool active: primaryAction || (checkable && checked)   // a chosen toggle looks like the primary button
         implicitHeight: 36
         leftPadding: 12
         rightPadding: 12
         font.family: "Cairo"
         contentItem: GoldPriceLabel {
             value: priceButton.text
-            color: !priceButton.enabled ? theme.textMuted : priceButton.primaryAction ? theme.bgPrimary : theme.textPrimary
+            color: !priceButton.enabled ? theme.textMuted : priceButton.active ? theme.bgPrimary : theme.textPrimary
         }
         background: Rectangle {
-            color: priceButton.primaryAction && priceButton.enabled ? (priceButton.down ? theme.goldDark : theme.gold) : theme.bgTertiary
-            border.color: priceButton.primaryAction ? theme.goldDark : theme.border
+            color: priceButton.active && priceButton.enabled ? (priceButton.down ? theme.goldDark : theme.gold) : theme.bgTertiary
+            border.color: priceButton.active ? theme.goldDark : theme.border
             radius: theme.radiusSmall
         }
     }

@@ -131,7 +131,11 @@ class ScreenTests(harness.InvoicePageTests):
         self.wait_until(lambda: len(self.adjust_vm.balances) == 1, "balances loaded")
         self.assertFalse(self.item("scrapAdjustSave").property("enabled"))                          # karat, grams and reason are missing
         self.choose("scrapAdjustKarat", 0)
+        self.assertTrue(self.item("scrapAdjustIn").property("active"))                               # the chosen direction is highlighted
+        self.assertFalse(self.item("scrapAdjustOut").property("active"))
         self.click("scrapAdjustOut")
+        self.assertTrue(self.item("scrapAdjustOut").property("active"))
+        self.assertFalse(self.item("scrapAdjustIn").property("active"))
         self.type_into("scrapAdjustGrams", "12.500")
         self.type_into("scrapAdjustReason", "قطعة اتحسبت مرتين")
         self.wait_until(lambda: self.item("scrapAdjustSave").property("enabled"), "ready")
