@@ -1,19 +1,65 @@
 """قفل مراجعات المدير والتقارير (view model): `unlocked` is false until the signed-in user types their own login password; the page locks again 60 seconds after the employee leaves it (the timer lives in
 Main.qml) or at logout (this view model belongs to one login). The password check runs off the GUI thread (Argon2 is deliberately slow) and the password is never kept."""
-from PySide6.QtCore import Property, QObject, Signal, Slot
+import time
+
+from PySide6.QtCore import Property, QEvent, QObject, QTimer, Signal, Slot
 
 from app.workers.invoice_worker import InvoiceWorker
+
+IDLE_LOCK_SECONDS = 300          # owner 2026-11-04: an unlocked manager page left untouched for 5 minutes locks itself
+_ACTIVITY = {QEvent.MouseButtonPress, QEvent.MouseMove, QEvent.Wheel, QEvent.KeyPress, QEvent.TouchBegin}
+
+
+class _ActivityFilter(QObject):
+    """Application-wide: any mouse / keyboard / touch event counts as the employee being there (a barcode scanner types keys)."""
+
+    def __init__(self, gate):
+        super().__init__(gate)
+        self._gate = gate
+
+    def eventFilter(self, watched, event):
+        if event.type() in _ACTIVITY:
+            self._gate.touch()
+        return False
 
 
 class ManagerGateViewModel(QObject):
     changed = Signal()
 
-    def __init__(self, session=None, service=None, parent=None):
+    def __init__(self, session=None, service=None, parent=None, clock=time.monotonic):
         super().__init__(parent)
         self._session, self._service = session, service
         self._unlocked, self._busy, self._message = False, False, ""
         self._change_busy, self._change_message, self._change_error = False, "", False
         self._request, self._workers = 0, set()
+        self._clock = clock
+        self._last_activity = self._clock()
+        self._timer = self._filter = None
+
+    # ------------------------------------------------------------ idle lock
+    @Slot()
+    def touch(self):
+        """The employee did something (mouse, keys, touch): the idle clock restarts."""
+        self._last_activity = self._clock()
+
+    @Slot(result=bool)
+    def checkIdle(self):
+        """Locks when the page is unlocked and nothing was touched for IDLE_LOCK_SECONDS. True when it locked."""
+        if self._unlocked and self._clock() - self._last_activity >= IDLE_LOCK_SECONDS:
+            self.lock()
+            return True
+        return False
+
+    def start_idle_watch(self, app):
+        """Real application only: watch every input event and check every 15 seconds."""
+        if self._timer is not None:
+            return
+        self._filter = _ActivityFilter(self)
+        app.installEventFilter(self._filter)
+        self._timer = QTimer(self)
+        self._timer.setInterval(15000)
+        self._timer.timeout.connect(self.checkIdle)
+        self._timer.start()
 
     @Property(bool, notify=changed)
     def unlocked(self):
@@ -105,6 +151,7 @@ class ManagerGateViewModel(QObject):
             self._unlocked, self._message = False, error
         else:
             self._unlocked, self._message = True, ""
+            self._last_activity = self._clock()
         self.changed.emit()
 
     @Slot()
@@ -121,4 +168,12 @@ class ManagerGateViewModel(QObject):
 
 def create_manager_gate_viewmodel(session):
     from services.manager_access_service import ManagerAccessService
-    return ManagerGateViewModel(session, ManagerAccessService(session))
+    gate = ManagerGateViewModel(session, ManagerAccessService(session))
+    try:
+        from PySide6.QtGui import QGuiApplication
+        app = QGuiApplication.instance()
+        if app is not None and QGuiApplication.platformName() not in ("offscreen", "minimal", ""):
+            gate.start_idle_watch(app)                       # never on the offscreen / test platforms
+    except Exception:
+        pass
+    return gate
