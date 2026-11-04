@@ -21,8 +21,8 @@ FILES = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", 
          "/manifest.webmanifest": ("manifest.webmanifest", "application/manifest+json"), "/icon.svg": ("icon.svg", "image/svg+xml")}
 COOKIE = "mgsid"
 # read-only extras: path -> method of `webapp.extras.Extras` (reviews and transfers_overview take no parameters)
-NO_PARAMS = frozenset({"today", "reviews", "transfers_overview", "attention"})
-ROUTES = {"/api/today": "today", "/api/statement": "statement", "/api/piece": "piece", "/api/reviews": "reviews", "/api/transfers": "transfers_overview", "/api/attention": "attention", "/api/activity": "activity"}
+NO_PARAMS = frozenset({"today", "reviews", "transfers_overview", "attention", "tiles", "bankflow", "cashflow", "currency"})
+ROUTES = {"/api/today": "today", "/api/statement": "statement", "/api/piece": "piece", "/api/reviews": "reviews", "/api/transfers": "transfers_overview", "/api/attention": "attention", "/api/tiles": "tiles", "/api/bankflow": "bankflow", "/api/cashflow": "cashflow", "/api/currency": "currency", "/api/activity": "activity"}
 MAX_BODY = 4096
 CSP = ("default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; "
        "connect-src 'self'; frame-src https://s.tradingview.com https://www.tradingview.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")

@@ -114,8 +114,9 @@ class ApiTests(unittest.TestCase):
     def test_the_home_page_has_one_card_per_module_the_user_may_use(self):
         api = make_api()
         modules = api.overview(api.login("admin", "secret"))["modules"]
-        self.assertEqual([m["key"] for m in modules], ["reports", "customers", "treasury", "daily", "inventory", "reviews", "calc"])
-        reports, customers, treasury, daily, inventory, reviews, _calc = modules
+        self.assertEqual([m["key"] for m in modules], ["reports", "customers", "treasury", "daily", "suppliers", "goldprofit", "staff", "cashflow", "bankflow", "inventory", "reviews", "currency", "calc"])
+        by_key = {m["key"]: m for m in modules}
+        reports, customers, treasury, daily, inventory, reviews = (by_key[k] for k in ("reports", "customers", "treasury", "daily", "inventory", "reviews"))
         self.assertEqual([r["key"] for g in inventory["groups"] for r in g["reports"]], ["stock", "alerts", "stockweights"])
         self.assertEqual((reviews["kind"], reviews["groups"], customers["kind"]), ("reviews", [], "reports"))
         transfers = make_api(OWNER | {"FINANCIAL_ACCOUNT_OPERATE"})
@@ -130,7 +131,8 @@ class ApiTests(unittest.TestCase):
         self.assertNotIn("customers", shown)                                       # a report belongs to ONE card
         self.assertNotIn("deadcash", shown)
         self.assertFalse({"sales", "treasury", "cashflow", "stock", "alerts", "stockweights"} & set(shown))              # claimed by their own cards
-        self.assertIn("goldflow", shown)
+        self.assertNotIn("goldflow", shown)                                        # now on the «ربح الذهب» card
+        self.assertEqual([r["key"] for g in by_key["goldprofit"]["groups"] for r in g["reports"]], ["profit", "goldflow"])
         self.assertEqual(customers["count"], 2)
         self.assertTrue(all(m["title"] and m["icon"] and m["subtitle"] for m in modules))
         no_customers = make_api(OWNER - {"CUSTOMERS_VIEW"})

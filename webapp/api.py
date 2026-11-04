@@ -39,12 +39,18 @@ GROUPS = (("الذهب", ("goldflow", "stock", "alerts", "stockweights", "indica
 MODULES = (
     {"key": "reports", "title": "التقارير", "subtitle": "الذهب والمخزون والنقدية والمبيعات", "icon": "📊", "rest": True},
     {"key": "customers", "title": "العملاء", "subtitle": "من عليه فلوس ومن له، وكشف الحساب وشطب الرصيد", "icon": "👥", "reports": ("customers", "deadcash")},
-    {"key": "treasury", "title": "حركة الخزنة", "subtitle": "حركة الخزنة والبنوك والمصروفات والإيرادات", "icon": "🏦", "reports": ("treasury", "cashflow"), "period": "today"},
+    {"key": "treasury", "title": "الخزنة والمصروفات", "subtitle": "حركة الخزنة والبنوك والمصروفات والإيرادات", "icon": "🏦", "reports": ("treasury", "cashflow"), "period": "today"},
     {"key": "daily", "title": "البيع والشراء اليومي", "subtitle": "فواتير اليوم أو أي فترة تختارها، وفتح الفاتورة", "icon": "🧾", "reports": ("sales",), "period": "today"},
+    {"key": "suppliers", "title": "الموردين", "subtitle": "أرصدة الذهب (بعيار كل مورد) والمصنعيات", "icon": "🏭", "reports": ("suppliers",)},
+    {"key": "goldprofit", "title": "ربح الذهب", "subtitle": "هل الذهب في المحل زاد أم نقص (للمالك)", "icon": "📈", "reports": ("profit", "goldflow")},
+    {"key": "staff", "title": "الموظفون والمصنعية", "subtitle": "أداء الموظفين وربح المصنعية وتكلفة الكسر", "icon": "🧑‍💼", "reports": ("employees", "makingprofit", "scrapcost")},
+    {"key": "cashflow", "title": "حركة الخزنة اليوم", "subtitle": "الداخل للخزنة والخارج منها على مدار اليوم", "icon": "💵", "kind": "cashflow", "needs": ("CASH_VIEW",)},
+    {"key": "bankflow", "title": "حركة البنوك اليوم", "subtitle": "الداخل للبنوك والمحافظ والخارج منها على مدار اليوم", "icon": "🏧", "kind": "bankflow", "needs": ("BANK_VIEW",)},
     {"key": "inventory", "title": "المخزون", "subtitle": "البحث عن قطعة بالباركود، والنواقص وجرد الأوزان", "icon": "💎", "reports": ("stock", "alerts", "stockweights")},
     # cards without reports: the page draws them itself (`kind`), shown only to a user holding one of `needs`
     {"key": "transfers", "title": "التحويلات", "subtitle": "بين البنوك والمحافظ والحساب الخاص", "icon": "🔁", "kind": "transfers", "needs": ("FINANCIAL_ACCOUNT_OPERATE",)},
     {"key": "reviews", "title": "مراجعات المدير", "subtitle": "ما ينتظر المراجعة", "icon": "🔔", "kind": "reviews", "needs": ("MANAGEMENT_REVIEW", "INVENTORY_RECONCILE")},
+    {"key": "currency", "title": "أسعار العملات", "subtitle": "الدولار واليورو والريال وغيرها مقابل الجنيه", "icon": "💱", "kind": "currency", "needs": ("APP_LOGIN",)},
     {"key": "calc", "title": "حاسبة الذهب", "subtitle": "وزن وعيار يطلع قيمة الشراء والبيع بالأسعار الحية", "icon": "🧮", "kind": "calc", "needs": ("APP_LOGIN",)},
     {"key": "activity", "title": "سجل النشاط", "subtitle": "من فعل ماذا ومتى (للمالك)", "icon": "🕵️", "kind": "activity", "needs": ("USERS_MANAGE",)},
 )

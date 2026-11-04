@@ -6,6 +6,7 @@ The old (paper ledger) balance of a customer is the third write: it puts a balan
 Transfers move real money between BANK / wallet accounts and to / from the owner's private account through the existing `FinancialAccountService.transfer` / `private_transfer`: the user's CURRENT
 password is re-verified first (the shared `AuthenticationService`, its failure cooldown), FINANCIAL_ACCOUNT_OPERATE (and PRIVATE_ACCOUNT_MANAGE for the private account) is rechecked by the service in its
 transaction, only active bank / wallet accounts that the service itself listed are accepted (never the main safe), and the client request key makes a retry idempotent."""
+from datetime import timedelta
 from decimal import Decimal
 import logging
 from pathlib import Path
@@ -90,6 +91,152 @@ class Extras:
         except Exception:
             logger.exception("today: prices failed")
         return {"date": today, "cards": cards, "stockCards": stock_cards, "prices": prices, "priceStatus": status}
+
+    # ------------------------------------------------------------------ live figures on the module cards of the home page (owner request 2026-11-04), read only
+    def tiles(self, token):
+        """{module key: {lines: [{label, value, tone}], badge, spark: [0..1 ratios of the last 7 days]}} built from the existing reports and services, every part inside its own try: a part the
+        user may not see, or one that fails, is simply left out (never a zero). The card keeps working without any of it."""
+        entry = self._api._entry(token)
+        session, actor = entry.session, entry.session.current_actor()
+        today = self._api._today()
+        week = {"from": (today - timedelta(days=6)).isoformat(), "to": today.isoformat()}
+        month = {"from": today.replace(day=1).isoformat(), "to": today.isoformat()}
+        out = {}
+
+        def run(key, params):
+            try:
+                return self._api.report(token, key, params)
+            except ApiError:
+                return None
+            except Exception:
+                logger.exception("tiles: %s failed", key)
+                return None
+
+        def pick(report, *prefixes):
+            found = []
+            for prefix in prefixes:
+                row = next((t for t in (report or {}).get("totals", []) if str(t["label"]).startswith(prefix)), None)
+                if row:
+                    found.append(row)
+            return found
+
+        def line(row, label=None, tone=None):
+            note = str(row.get("note") or "")
+            return {"label": label or row["label"], "value": str(row["value"]) + (" • " + note if note and len(note) < 18 else ""), "tone": tone if tone is not None else row.get("tone") or ""}
+
+        def put(key, **parts):
+            slot = out.setdefault(key, {"lines": [], "badge": "", "spark": []})
+            for name, value in parts.items():
+                if value:
+                    slot[name] = (slot[name] + value) if name == "lines" else value
+
+        def spark(report, bar_key):
+            bar = next((b for b in (report or {}).get("bars", []) if b["key"] == bar_key), None)
+            if not bar:
+                return []
+            by_day = {r["label"]: float(r["ratio"]) for r in bar["rows"]}
+            days = [(today - timedelta(days=6 - i)).isoformat() for i in range(7)]
+            values = [by_day.get(d, 0.0) for d in days]
+            return values if any(values) else []
+
+        # customers
+        report = run("customers", {})
+        rows = pick(report, "إجمالي اللي عليهم", "إجمالي اللي علينا")
+        put("customers", lines=[line(r) for r in rows])
+        # daily sales and scrap purchases (today), with the week's line
+        report = run("sales", {"from": today.isoformat(), "to": today.isoformat()})
+        put("daily", lines=[line(r, tone="receivable" if r["label"].startswith("قيمة البيع") else "") for r in pick(report, "قيمة البيع", "قيمة شراء الكسر", "المحصَّل")])
+        put("daily", spark=spark(run("sales", week), "sales_time"))
+        # treasury and transfers
+        try:
+            accounts = [a for a in FinancialAccountService(session).accounts(_expected_actor=actor)["accounts"] if a["is_active"]]
+        except Exception:
+            accounts = []
+        for ledger, label in (("CASH", "رصيد الخزنة"), ("BANK", "رصيد البنوك والمحافظ")):
+            rows = [a for a in accounts if a["ledger"] == ledger]
+            if rows:
+                put("treasury", lines=[{"label": label, "value": _cell("money", sum((Decimal(a["balance"]) for a in rows), Decimal("0"))), "tone": ""}])
+        banks = [a for a in accounts if a["ledger"] == "BANK"][:4]
+        put("transfers", lines=[{"label": a["name"], "value": _cell("money", Decimal(a["balance"])), "tone": ""} for a in banks])
+        if accounts:
+            put("treasury", spark=spark(run("treasury", week), "treasury_in_time"))
+        # inventory: the karat cards of the stock report and the shortage count
+        report = run("stock", {})
+        pieces = [t for t in (report or {}).get("totals", []) if str(t["label"]).startswith("عيار")][:3]
+        put("inventory", lines=[{"label": t["label"], "value": str(t["value"]) + " • " + str(t.get("note") or ""), "tone": ""} for t in pieces])
+        report = run("alerts", {})
+        short = pick(report, "تحت الحد الأدنى")
+        if short and str(short[0]["value"]).strip() not in ("", "0", "٠"):
+            put("inventory", lines=[{"label": "تحت الحد الأدنى", "value": str(short[0]["value"]), "tone": "payable"}])
+        for name, method in (("bankflow", self.bankflow), ("cashflow", self.cashflow)):
+            try:
+                flow = method(token)
+                put(name, lines=[{"label": "الداخل اليوم", "value": flow["totalIn"], "tone": "receivable"}, {"label": "الخارج اليوم", "value": flow["totalOut"], "tone": "payable"}])
+            except ApiError:
+                pass
+        fx = self.currency(token)
+        if fx["enabled"] and fx["rows"]:
+            put("currency", lines=[{"label": r["name"], "value": r["price"] + " ج", "tone": ""} for r in fx["rows"][:3]])
+        # manager reviews: the open count as a badge
+        try:
+            data = ManagementReviewService(session).open_reviews(_expected_actor=actor)
+            count = sum(len(rows or []) for rows in data.values())
+            put("reviews", badge=str(count) if count else "", lines=[{"label": "بانتظار المراجعة", "value": str(count), "tone": "payable" if count else "receivable"}])
+        except Exception:
+            pass
+        # suppliers
+        report = run("suppliers", {})
+        put("suppliers", lines=[line(t) for t in (report or {}).get("totals", [])[:4]])
+        # gold profit of the month (owner)
+        report = run("profit", month)
+        put("goldprofit", lines=[line(t) for t in (report or {}).get("totals", [])[:1]])
+        # staff / making
+        report = run("makingprofit", month)
+        put("staff", lines=[line(t) for t in (report or {}).get("totals", [])[:2]])
+        return {"tiles": out}
+
+    # ------------------------------------------------------------------ money in / out of the bank and wallet accounts over TODAY (owner request 2026-11-04), read only
+    def bankflow(self, token):
+        return self._flow(token, "بنكي", "BANK")
+
+    def cashflow(self, token):
+        """The same for the cash accounts (the main safe): money IN and OUT of today."""
+        return self._flow(token, "نقدي", "CASH")
+
+    def _flow(self, token, prefix, ledger):
+        """Per active bank / wallet account the money IN and OUT of today (internal transfers apart, as in the treasury report) and the totals; the numbers are the treasury report's own account rows
+        (`ReportService.run('treasury')`, the CURRENT BANK_VIEW right rechecked there), so they equal that report exactly."""
+        entry = self._api._entry(token)
+        today = self._api._today().isoformat()
+        try:
+            built = entry.service.run("treasury", {"from": today, "to": today}, _expected_actor=entry.session.current_actor())
+        except PermissionError as exc:
+            raise ApiError(403, str(exc) or "ليس لديك صلاحية عرض الحركة.") from None
+        except Exception:
+            logger.exception("%s flow failed", ledger)
+            raise ApiError(500, "تعذر تحميل الحركة؛ أعد المحاولة.") from None
+        rows = next((t["rows"] for t in built["tables"] if t["key"] == "accounts"), [])
+        banks = [r for r in rows if str(r["account"]).startswith(prefix)]
+        zero = Decimal("0")
+        accounts = [{"name": str(r["account"]).split(":", 1)[-1].strip(), "in": _cell("money", r["in"]), "out": _cell("money", r["out"]),
+                     "transferIn": _cell("money", r["t_in"]), "transferOut": _cell("money", r["t_out"]), "closing": _cell("money", r["closing"])} for r in banks]
+        return {"date": today, "accounts": accounts, "totalIn": _cell("money", sum((Decimal(str(r["in"])) for r in banks), zero)),
+                "totalOut": _cell("money", sum((Decimal(str(r["out"])) for r in banks), zero)),
+                "transferIn": _cell("money", sum((Decimal(str(r["t_in"])) for r in banks), zero)), "transferOut": _cell("money", sum((Decimal(str(r["t_out"])) for r in banks), zero))}
+
+    # ------------------------------------------------------------------ currency rates (the program's shared cached GoldTimo /rates read), display only
+    def currency(self, token):
+        """{enabled, available, rows: [{code, name, price}], updated, error}: the same cached snapshot as the desktop home page (it follows the Settings choice of currencies and refresh); nothing is
+        stored or posted and a provider failure only changes `error`."""
+        self._api._entry(token)
+        try:
+            from services import currency_rates
+            data = currency_rates.shared().snapshot()
+        except Exception:
+            logger.exception("currency failed")
+            return {"enabled": True, "available": False, "rows": [], "updated": "", "error": "تعذر قراءة أسعار العملات."}
+        return {"enabled": bool(data.get("enabled")), "available": bool(data.get("available")), "updated": str(data.get("updated") or ""), "error": str(data.get("error") or ""),
+                "rows": [{"code": str(r["code"]), "name": str(r["name"]), "price": f"{Decimal(r['price']):,.2f}"} for r in data.get("rows") or []]}
 
     # ------------------------------------------------------------------ a customer's statement (كشف الحساب), read only
     def statement(self, token, params):

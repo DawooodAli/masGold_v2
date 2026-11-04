@@ -101,3 +101,14 @@ label.confirm input { width: 22px; height: 22px; }
 .refreshrow .stamp { color: var(--muted); font-size: 12px; }
 
 button.card { text-align: inherit; font: inherit; color: inherit; cursor: pointer; }
+
+.tile .head { display: flex; align-items: center; gap: 10px; width: 100%; }
+.tile .head .name { flex: 1; }
+.badge { background: var(--red); color: #fff; border-radius: 999px; min-width: 26px; padding: 2px 9px; text-align: center; font-size: 14px; font-weight: 700; }
+.tile .lines { display: flex; flex-direction: column; gap: 4px; width: 100%; margin-top: 4px; }
+.tile .tl { display: flex; justify-content: space-between; gap: 10px; font-size: 14px; border-top: 1px solid var(--border); padding-top: 4px; }
+.tile .tl .k { color: var(--soft); }
+.tile .tl .v { font-weight: 700; unicode-bidi: plaintext; }
+.tile .tl.receivable .v { color: var(--buy); } .tile .tl.payable .v { color: var(--sell); } .tile .tl.gold .v { color: var(--gold); } .tile .tl.deadcash .v { color: var(--red); }
+.tile.live { min-height: 190px; }
+.tile .spark { width: 100%; height: 28px; color: var(--buy); margin-top: 2px; }

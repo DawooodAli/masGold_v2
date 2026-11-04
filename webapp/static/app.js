@@ -3,7 +3,7 @@
 // Data is inserted with textContent only (no innerHTML), so no report text can inject markup.
 
 const app = document.getElementById("app");
-const state = { legacy: null, today: null, special: null, ps: null, stmt: null, cs: null, invoice: null, custInvoices: null, module: "", redraws: [], overview: null, report: "", filters: {}, result: null, page: 1, busy: false, error: "" };
+const state = { tiles: null, legacy: null, today: null, special: null, ps: null, stmt: null, cs: null, invoice: null, custInvoices: null, module: "", redraws: [], overview: null, report: "", filters: {}, result: null, page: 1, busy: false, error: "" };
 
 function el(tag, props, ...children) {
   const node = document.createElement(tag);
@@ -70,7 +70,7 @@ async function boot() {
   }
   state.module = state.overview.modules.length === 1 ? state.overview.modules[0].key : "";      // the home page of cards (a single card opens straight away)
   startAttentionPolling();
-  if (state.module) openModule(state.module); else { render(); loadToday(); loadAttention(false); }
+  if (state.module) openModule(state.module); else { render(); loadToday(); loadTiles(); loadAttention(false); }
 }
 
 function currentModule() { return state.overview.modules.find((m) => m.key === state.module) || null; }
@@ -111,6 +111,7 @@ function renderReportCards(module) {
 
 function goHome() {
   loadToday();
+  loadTiles();
   loadAttention(false);
   state.special = null; state.stmt = null; state.legacy = null; state.module = ""; state.report = ""; state.result = null; state.error = ""; state.chart = null; state.writeoff = null; state.invoice = null; state.custInvoices = null; state.busy = false;
   render();
@@ -119,7 +120,41 @@ function goHome() {
 function renderHome() {
   return el("div", {}, el("h2", { text: "الرئيسية", style: "margin-bottom:12px" }),
     el("div", { class: "tiles" }, state.overview.modules.map((m) =>
-      el("button", { class: "tile", onclick: () => openModule(m.key) }, el("span", { class: "icon", text: m.icon }), el("span", { class: "name", text: m.title }), el("span", { class: "sub", text: m.subtitle })))));
+      renderTile(m))));
+}
+
+// A module card with its live figures (lines), an alert badge and a 7-day line, all from /api/tiles; without them it is the plain card.
+function renderTile(m) {
+  const info = state.tiles && state.tiles[m.key];
+  const head = el("span", { class: "head" }, el("span", { class: "icon", text: m.icon }), el("span", { class: "name", text: m.title }),
+    info && info.badge ? el("span", { class: "badge", text: info.badge }) : null);
+  const parts = [head, el("span", { class: "sub", text: m.subtitle })];
+  if (info && info.lines && info.lines.length) {
+    parts.push(el("span", { class: "lines" }, info.lines.map((l) => el("span", { class: "tl " + (l.tone || "") }, el("span", { class: "k", text: l.label }), el("span", { class: "v", text: l.value })))));
+  }
+  if (info && info.spark && info.spark.length) parts.push(renderSpark(info.spark));
+  return el("button", { class: "tile" + (info && info.lines && info.lines.length ? " live" : ""), onclick: () => openModule(m.key) }, parts);
+}
+
+function renderSpark(values) {
+  const NS = "http://www.w3.org/2000/svg", w = 120, h = 28, step = w / Math.max(values.length - 1, 1);
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`); svg.setAttribute("class", "spark"); svg.setAttribute("aria-hidden", "true");
+  const line = document.createElementNS(NS, "polyline");
+  line.setAttribute("points", values.map((v, i) => `${(i * step).toFixed(1)},${(h - 3 - v * (h - 8)).toFixed(1)}`).join(" "));
+  line.setAttribute("fill", "none"); line.setAttribute("stroke", "currentColor"); line.setAttribute("stroke-width", "2"); line.setAttribute("stroke-linejoin", "round");
+  svg.append(line);
+  return svg;
+}
+
+async function loadTiles() {
+  try {
+    state.tiles = (await call("/api/tiles")).tiles;
+  } catch (e) {
+    if (e.status === 401) { showLogin("انتهت الجلسة، سجّل الدخول من جديد."); return; }
+    state.tiles = null;
+  }
+  if (!state.module && !state.special) render();
 }
 
 async function logout() {
@@ -164,7 +199,7 @@ function render() {
     el("span", { class: "who", text: state.overview.user }), el("button", { class: "btn", text: "خروج", onclick: logout }));
   if (!module) { app.replaceChildren(...[top, renderAttention(), renderToday(), renderHome()].filter(Boolean)); return; }
   if (module.kind && module.kind !== "reports") {
-    const draw = { reviews: renderReviews, transfers: renderTransfers, calc: renderCalc, activity: renderActivity }[module.kind];
+    const draw = { reviews: renderReviews, transfers: renderTransfers, calc: renderCalc, activity: renderActivity, bankflow: renderBankflow, cashflow: renderCashflow, currency: renderCurrency }[module.kind];
     const view = state.special ? draw(state.special) : el("div", { class: "loading", text: "جارٍ التحميل…" });
     app.replaceChildren(...[top, view, state.custInvoices ? renderCustomerInvoices(state.custInvoices) : null, state.invoice ? renderInvoice(state.invoice) : null].filter(Boolean));
     return;
@@ -730,7 +765,7 @@ function renderToday() {
   const t = state.today;
   if (!t || (!t.cards.length && !t.prices.length)) return null;
   const box = el("div", { class: "todaybox" });
-  box.append(el("div", { class: "refreshrow" }, el("button", { class: "btn small", text: "↻ تحديث", onclick: () => loadToday() }), el("span", { class: "stamp", text: "آخر تحديث " + (state.todayAt || "") })));
+  box.append(el("div", { class: "refreshrow" }, el("button", { class: "btn small", text: "↻ تحديث", onclick: () => { loadToday(); loadTiles(); } }), el("span", { class: "stamp", text: "آخر تحديث " + (state.todayAt || "") })));
   if (t.prices.length) {
     box.append(el("div", { class: "prices" }, el("span", { class: "name", text: "سعر الذهب اليوم" }),
       t.prices.map((p) => el("span", { class: "price" }, el("b", { text: "عيار " + p.karat }), el("span", { class: "buy", text: " شراء " + p.buy }), el("span", { class: "sell", text: "  بيع " + p.sell })))));
@@ -861,13 +896,48 @@ async function loadSpecial(kind) {
   render();
   try {
     if (kind === "calc") { if (!state.today) await loadToday(); s.data = {}; }
-    else s.data = await call(kind === "reviews" ? "/api/reviews" : kind === "activity" ? "/api/activity" : "/api/transfers");
+    else s.data = await call(kind === "reviews" ? "/api/reviews" : kind === "activity" ? "/api/activity" : kind === "bankflow" ? "/api/bankflow" : kind === "cashflow" ? "/api/cashflow" : kind === "currency" ? "/api/currency" : "/api/transfers");
   } catch (e) {
     if (e.status === 401) { showLogin("انتهت الجلسة، سجّل الدخول من جديد."); return; }
     s.error = e.message;
   }
   s.loading = false;
   render();
+}
+
+function renderCurrency(s) {
+  const body = el("div", {});
+  if (s.loading) body.append(el("div", { class: "loading", text: "جارٍ التحميل…" }));
+  if (s.error) body.append(el("div", { class: "msg err", text: s.error }));
+  const d = s.data;
+  if (d) {
+    if (!d.enabled) body.append(el("div", { class: "msg warn", text: "أسعار العملات متوقفة من الإعدادات." }));
+    else if (!d.available) body.append(el("div", { class: "msg warn", text: d.error || "أسعار العملات غير متاحة الآن." }));
+    else {
+      body.append(el("div", { class: "cards" }, d.rows.map((r) => el("div", { class: "card gold" }, el("div", { class: "label", text: r.name + " (" + r.code + ")" }), el("div", { class: "value", text: r.price + " ج" }),
+        el("div", { class: "note", text: "الجنيه المصري مقابل وحدة واحدة" })))));
+      body.append(el("div", { class: "note-box", text: "آخر تحديث " + d.updated + (d.error ? " • " + d.error : "") + ". سعر السوق للعرض فقط، وليس سعر بنك." }));
+    }
+  }
+  return body;
+}
+
+function renderBankflow(s) { return renderFlow(s, "البنوك والمحافظ"); }
+function renderCashflow(s) { return renderFlow(s, "الخزنة"); }
+
+function renderFlow(s, what) {
+  const body = el("div", {});
+  if (s.loading) body.append(el("div", { class: "loading", text: "جارٍ التحميل…" }));
+  if (s.error) body.append(el("div", { class: "msg err", text: s.error }));
+  const d = s.data;
+  if (d) {
+    body.append(el("div", { class: "cards" },
+      el("div", { class: "card receivable" }, el("div", { class: "label", text: "الداخل إلى " + what + " اليوم" }), el("div", { class: "value", text: d.totalIn }), el("div", { class: "note", text: "بلا التحويلات بين الحسابات" })),
+      el("div", { class: "card payable" }, el("div", { class: "label", text: "الخارج من " + what + " اليوم" }), el("div", { class: "value", text: d.totalOut }), el("div", { class: "note", text: "بلا التحويلات بين الحسابات" }))));
+    body.append(simpleTable(["الحساب", "الداخل", "الخارج", "تحويل داخل", "تحويل خارج", "الرصيد الآن"], d.accounts.map((r) => [r.name, r.in, r.out, r.transferIn, r.transferOut, r.closing])));
+    body.append(el("div", { class: "note-box", text: "اليوم " + d.date + ". التحويل بين حسابين لا يُحسب داخلًا ولا خارجًا." }));
+  }
+  return body;
 }
 
 function renderReviews(s) {
