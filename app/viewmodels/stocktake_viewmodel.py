@@ -6,7 +6,7 @@ piece from المتبقي to تم الجرد and both totals change incrementall
 database changes — no status, weight, barcode or movement. Closing / reset / a new scope discards it."""
 from decimal import Decimal
 
-from PySide6.QtCore import QObject, Property, Signal, Slot
+from PySide6.QtCore import QObject, Property, QSettings, Signal, Slot
 
 from app.barcode_input import canonical_barcode
 from app.viewmodels.stock_balance_viewmodel import weight_text
@@ -15,6 +15,7 @@ from services.inventory_service import InventoryService
 DUPLICATE = "تم جرد هذا الباركود بالفعل."
 UNKNOWN = "هذا الباركود غير موجود ضمن الجرد الحالي."
 ZERO = Decimal("0.000")
+MAX_BATCH = 200
 
 
 class StocktakeViewModel(QObject):
@@ -33,6 +34,53 @@ class StocktakeViewModel(QObject):
         self._loaded = False
         self._error = ""
         self._message, self._message_kind = "", ""
+        # Batches (owner 2026-11-04): the LEFT table (تم الجرد) shows only the current batch of N scanned pieces; the Nth scan fills it, the next scan
+        # starts a fresh one. The right table (المتبقي) and every total always cover the whole count. 0 = no batches (every scan stays in the table).
+        self._batch_size = self._stored_batch_size()
+        self._archived = 0                          # scanned pieces that belong to finished batches (the oldest ones)
+
+    # ------------------------------------------------------------ batches
+    @staticmethod
+    def _real_window():
+        """The saved choice is read / written only in the real application (never on the offscreen / test platforms)."""
+        try:
+            from PySide6.QtGui import QGuiApplication
+            return QGuiApplication.instance() is not None and QGuiApplication.platformName() not in ("offscreen", "minimal", "")
+        except Exception:
+            return False
+
+    @classmethod
+    def _stored_batch_size(cls):
+        if not cls._real_window():
+            return 0
+        try:
+            return max(0, min(MAX_BATCH, int(QSettings("masGold", "v2").value("stocktake/batch_size", 0))))
+        except Exception:
+            return 0
+
+    def _in_batch(self):
+        """How many of the scanned pieces belong to the current batch (all of them when batches are off)."""
+        return len(self._scanned) - self._archived
+
+    @Slot(int)
+    def setBatchSize(self, size):
+        """The owner's batch size (0 = off). What is already scanned counts as finished batches; only the table changes."""
+        self._batch_size = max(0, min(MAX_BATCH, int(size)))
+        if self._real_window():
+            try:
+                QSettings("masGold", "v2").setValue("stocktake/batch_size", self._batch_size)
+            except Exception:
+                pass
+        self._archived = len(self._scanned) if self._batch_size > 0 else 0
+        self.changed.emit()
+
+    @Slot()
+    def startNextBatch(self):
+        """Close the current batch early: the left table is emptied, the scanned pieces stay counted."""
+        if self._batch_size > 0 and self._in_batch():
+            self._archived = len(self._scanned)
+            self._set_message("بدأت دفعة جديدة.", "ok")
+            self.changed.emit()
 
     # ------------------------------------------------------------ session
     def _load_source(self):
@@ -46,6 +94,7 @@ class StocktakeViewModel(QObject):
         self._by_barcode = {r["barcode_value"]: str(r["inventory_item_id"]) for r in rows if r.get("barcode_value")}
         self._remaining = list(self._rows)
         self._scanned = []
+        self._archived = 0
         self._remaining_weight = sum((r["weight_grams"] for r in rows), ZERO)
         self._scanned_weight = ZERO
         self._loaded = True
@@ -98,11 +147,14 @@ class StocktakeViewModel(QObject):
             self._set_message(DUPLICATE, "warning")
             return "DUPLICATE"
         weight = self._rows[item_id]["weight_grams"]
+        if self._batch_size > 0 and self._in_batch() >= self._batch_size:
+            self._archived = len(self._scanned)             # the previous batch was full: this scan opens the next one
         self._remaining.remove(item_id)
         self._scanned.insert(0, item_id)
         self._remaining_weight -= weight
         self._scanned_weight += weight
-        self._set_message("✓ " + barcode, "ok")
+        full = self._batch_size > 0 and self._in_batch() >= self._batch_size
+        self._set_message(f"✓ {barcode} — اكتملت الدفعة {self._batches_finished()}، المسح التالي يبدأ دفعة جديدة" if full else "✓ " + barcode, "ok")
         self.changed.emit()
         return "OK"
 
@@ -120,11 +172,39 @@ class StocktakeViewModel(QObject):
 
     @Property("QVariantList", notify=changed)
     def remainingRows(self):
-        return [self._display(i) for i in self._remaining]
+        return [dict(self._display(i), number=n) for n, i in enumerate(self._remaining, 1)]
+
+    def _batches_finished(self):
+        if self._batch_size <= 0:
+            return 0
+        return (self._archived + (self._batch_size if self._in_batch() >= self._batch_size else 0)) // self._batch_size
 
     @Property("QVariantList", notify=changed)
     def scannedRows(self):
-        return [self._display(i) for i in self._scanned]
+        shown = self._scanned[: self._in_batch()] if self._batch_size > 0 else self._scanned
+        count = len(shown)
+        return [dict(self._display(i), number=count - n) for n, i in enumerate(shown)]       # numbered in scan order inside the batch
+
+    @Property(int, notify=changed)
+    def batchSize(self):
+        return self._batch_size
+
+    @Property(bool, notify=changed)
+    def batchMode(self):
+        return self._batch_size > 0
+
+    @Property(int, notify=changed)
+    def batchShown(self):
+        return self._in_batch() if self._batch_size > 0 else len(self._scanned)
+
+    @Property(str, notify=changed)
+    def batchText(self):
+        if self._batch_size <= 0:
+            return ""
+        done = len(self._scanned) - self._in_batch()
+        batches = done // self._batch_size
+        return (f"الدفعة الحالية {self._in_batch()} من {self._batch_size}"
+                + (f" • دفعات منتهية {batches} ({done} قطعة)" if done else ""))
 
     @Property(int, notify=changed)
     def remainingCount(self):

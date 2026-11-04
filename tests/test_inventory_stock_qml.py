@@ -727,6 +727,30 @@ class InventoryStockPageTests(harness.InvoicePageTests):
         self.assertEqual((vm.remainingCount, first in [r["id"] for r in vm.remainingRows]), (before - 1, False))
         self.assertEqual(self.warnings, [])
 
+    def test_stocktake_batches_with_real_clicks_at_all_sizes(self):
+        vm = self.controller.operational_viewmodels["stocktakeVM"]
+        vm._service = service_for(Store(MIXED))
+        self.page(INVENTORY)
+        self.click("openStocktakeButton")
+        self.wait_until(lambda: self.root.property("currentPage") == STOCKTAKE and vm.loaded, "stocktake opened")
+        for width, height in harness.SIZES:
+            with self.subTest(size=(width, height)):
+                self.root.setWidth(width)
+                self.root.setHeight(height)
+                QTest.qWait(150)
+                for name in ("stocktakeBatchSize", "stocktakeScanField"):
+                    self.assert_inside_window(self.item(name))
+        vm.setBatchSize(2)
+        self.wait_until(lambda: self.item("stocktakeBatchText").property("text") != "", "batch text")
+        self.scan("01261001")
+        self.scan("02261001")
+        self.scan("03261001")
+        self.assertEqual((vm.scannedCount, len(vm.scannedRows)), (3, 1))     # the left table holds the third batch only
+        self.wait_until(lambda: self.visual_item("stocktakeNextBatch") is not None, "next batch button")
+        self.click("stocktakeNextBatch")                                    # closes the batch early
+        self.assertEqual((vm.scannedCount, len(vm.scannedRows)), (3, 0))
+        self.assertEqual(self.warnings, [])
+
     def test_stocktake_empty_inventory(self):
         vm = self.controller.operational_viewmodels["stocktakeVM"]
         vm._service = service_for(Store())

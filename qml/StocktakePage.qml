@@ -141,6 +141,7 @@ Item {
             RowLayout {
                 Layout.fillWidth: true
                 layoutDirection: Qt.RightToLeft
+                Txt { Layout.preferredWidth: 34; text: "#"; color: theme.textMuted }
                 Txt { Layout.preferredWidth: 120; text: "الباركود"; color: theme.textMuted }
                 Txt { Layout.fillWidth: true; text: "الصنف"; color: theme.textMuted }
                 Txt { Layout.preferredWidth: 72; text: "الوزن"; color: theme.textMuted }
@@ -160,6 +161,7 @@ Item {
                     required property var modelData
                     width: ListView.view.width
                     layoutDirection: Qt.RightToLeft
+                    Txt { Layout.preferredWidth: 34; text: modelData.number; color: theme.textMuted }
                     Txt { Layout.preferredWidth: 120; text: modelData.barcode
                           color: modelData.has_barcode ? theme.textPrimary : theme.amber }
                     Txt { Layout.fillWidth: true; text: modelData.item_type; color: theme.textPrimary }
@@ -289,6 +291,52 @@ Item {
                            : page.vm.messageKind === "ok" ? theme.green
                            : page.vm.messageKind === "warning" ? theme.amber : theme.red
                     font.bold: true
+                }
+            }
+        }
+
+        // ------------------------------------------------ batches (owner 2026-11-04): the size is the owner's, 0 = every scan stays in the left table
+        Rectangle {
+            Layout.fillWidth: true
+            objectName: "stocktakeBatchBar"
+            Layout.preferredHeight: 38
+            color: theme.bgSecondary
+            radius: theme.radiusSmall
+            border.color: theme.border
+            RowLayout {
+                id: batchRow
+                anchors.fill: parent
+                anchors.margins: 4
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Txt { text: "حجم الدفعة"; color: theme.textSecondary }
+                SpinBox {
+                    id: batchSizeBox
+                    objectName: "stocktakeBatchSize"
+                    from: 0
+                    to: 200
+                    editable: true
+                    Layout.preferredHeight: 30
+                    value: page.vm ? page.vm.batchSize : 0
+                    font.family: theme.fontFamily
+                    onValueModified: { if (page.vm) page.vm.setBatchSize(value); page.refocus() }
+                }
+                Txt { text: "(0 = بدون دفعات)"; color: theme.textMuted; font.pixelSize: theme.fontCaption }
+                Txt {
+                    objectName: "stocktakeBatchText"
+                    Layout.fillWidth: true
+                    text: page.vm ? page.vm.batchText : ""
+                    color: theme.gold
+                    font.bold: true
+                }
+                Button {
+                    objectName: "stocktakeNextBatch"
+                    visible: !!page.vm && page.vm.batchMode
+                    enabled: !!page.vm && page.vm.batchShown > 0
+                    Layout.preferredHeight: 30
+                    text: "ابدأ دفعة جديدة"
+                    font.family: theme.fontFamily
+                    onClicked: { page.vm.startNextBatch(); page.refocus() }
                 }
             }
         }
