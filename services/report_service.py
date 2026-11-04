@@ -1162,18 +1162,22 @@ class ReportService:
             names[key] = r["employee"] or NO_EMPLOYEE
             people.add(key)
             weight = _dec(r["weight_grams"])
-            s = stats.setdefault((key, int(r["karat_value"])), {"sold": ZERO3, "making": ZERO2, "making_weight": ZERO3, "unknown": ZERO3, "bought": ZERO3, "paid": ZERO2})
+            s = stats.setdefault((key, int(r["karat_value"])), {"sold": ZERO3, "making": ZERO2, "making_weight": ZERO3, "unknown": ZERO3, "bought": ZERO3, "paid": ZERO2, "small": 0, "small_making": ZERO2})
             if r["line_type"] in self.SELL_LINES:
                 s["sold"] += weight
                 if r["making_total"] is None:
                     s["unknown"] += weight
+                elif weight < Decimal("1"):                  # owner 2026-11-04: a piece under 1 g carries a making PER PIECE; it never enters the per-gram average
+                    s["small"] += 1
+                    s["small_making"] += _dec(r["making_total"])
                 else:
                     s["making"] += _dec(r["making_total"])
                     s["making_weight"] += weight
             else:
                 s["bought"] += weight
                 s["paid"] += _dec(r["line_total"])
-        columns = [col("karat", "العيار"), col("sold", "جرامات البيع", "grams"), col("making", "متوسط المصنعية للجرام", "rate"),
+        columns = [col("karat", "العيار"), col("sold", "جرامات البيع", "grams"), col("making", "متوسط المصنعية للجرام (من جرام فأكثر)", "rate"),
+                   col("small", "قطع أقل من جرام (العدد • متوسط المصنعية للقطعة)"),
                    col("bought", "جرامات الكسر المشتراة", "grams"), col("paid", "متوسط سعر شراء الكسر للجرام", "rate")]
         tables = []
         for key in sorted(people, key=lambda k: (names[k], k)):
@@ -1183,12 +1187,13 @@ class ReportService:
                 unknown += s["unknown"]
                 rows.append({"karat": f"عيار {k}", "sold": s["sold"],
                              "making": (s["making"] / s["making_weight"]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if s["making_weight"] else "غير معلوم" if s["sold"] else "—",
+                             "small": (f"{s['small']} • {(s['small_making'] / s['small']).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,.2f} ج/قطعة" if s["small"] else "—"),
                              "bought": s["bought"], "paid": (s["paid"] / s["bought"]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if s["bought"] else "—"})
             note = f"المصنعية غير معروفة في {unknown:,.3f} جرام مباع: لا تدخل في المتوسط." if unknown else ""
             tables.append(table(f"employee_{key}", names[key], columns, rows, note=note))
         if not tables:
             tables.append(table("employees", "أداء الموظفين", columns, []))
-        meaning = ["لكل موظف وكل عيار على حدة (لا يُجمع بين الأعيار). المتوسطان موزونان بالوزن: المصنعية ÷ الجرامات المباعة المعروفة المصنعية، وسعر الشراء ÷ جرامات الكسر المشتراة.",
+        meaning = ["لكل موظف وكل عيار على حدة (لا يُجمع بين الأعيار). المتوسطان موزونان بالوزن: المصنعية ÷ الجرامات المباعة المعروفة المصنعية، وسعر الشراء ÷ جرامات الكسر المشتراة. القطع الأقل من جرام تُباع بمصنعية للقطعة، فتظهر في عمود مستقل ولا تدخل متوسط الجرام.",
                    "الفواتير النهائية فقط بتاريخها، والمعكوسة بالكامل لا تُحسب. المرتجعات لا تُخصم (هذا نشاط البيع)."]
         cards = [total("موظفون لهم حركة", len(people), "count", "", "summary")]
         if reversed_invoices:

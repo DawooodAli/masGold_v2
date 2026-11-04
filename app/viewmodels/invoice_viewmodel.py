@@ -1930,7 +1930,7 @@ class InvoiceViewModel(QObject):
         empty = {"saleTotal": "", "oldGoldTotal": "", "netText": "", "netDirection": "", "receivedText": "",
                  "paidText": "", "residualText": "", "residualDirection": "", "statusText": "",
                  "dueLabel": self.paymentLabel, "dueAmount": "", "paidLabel": self.paymentLabel, "paidAmount": "",
-                 "remainingLabel": "على حساب العميل", "remainingAmount": "", "goldValue": "", "averageMaking": "",
+                 "remainingLabel": "على حساب العميل", "remainingAmount": "", "goldValue": "", "averageMaking": "", "smallPieceText": "",
                  "effectiveSale": "", "makingNotice": "", "makingStatus": "", "oldGoldGross": "",
                  "discountChanged": False, "differenceAmount": "", "differenceSigned": "", "accountEffect": "",
                  "settleAmount": ""}
@@ -1964,6 +1964,8 @@ class InvoiceViewModel(QObject):
                 "goldValue": money(p.get("gold_value_total")),
                 "effectiveSale": money(p.get("effective_sale_total")),
                 "averageMaking": price(p.get("average_making_per_gram")),
+                "smallPieceText": ("" if not p.get("small_piece_count") else
+                                   f"{p['small_piece_count']} قطعة أقل من جرام • متوسط {money(p.get('small_piece_average_making'))} ج/قطعة"),
                 "makingStatus": p.get("making_review_status") or "",
                 "makingNotice": ("بيع أقل من قيمة الذهب — يُحفظ ويُرسل لمراجعة المدير" if p.get("below_gold")
                                  else MAKING_NOTICE.get(p.get("making_review_status"), "")),

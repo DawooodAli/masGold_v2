@@ -41,14 +41,24 @@ SPEC: dict[str, tuple[str, Any, Any, Any]] = {
     "sale_old_gold_discount_min_pct": (DECIMAL, Decimal("1.25"), Decimal("0"), Decimal("100")),
     "cashback_review_limit":         (DECIMAL, Decimal("100"), Decimal("0"), Decimal("1000000")),
     "default_cashback_amount":       (DECIMAL, Decimal("25"), Decimal("0"), Decimal("1000000")),   # the cashback box starts here (owner 2026-10-28)
+    # Owner decision 2026-11-04: a piece UNDER 1 g (fixed, `SMALL_PIECE_GRAMS`) is sold for a making PER PIECE, not per gram; the accepted range in EGP per piece.
+    "small_piece_making_min":        (DECIMAL, Decimal("300"), Decimal("0"), Decimal("1000000")),
+    "small_piece_making_max":        (DECIMAL, Decimal("450"), Decimal("0"), Decimal("1000000")),
 }
 
 DEFAULTS: dict[str, Any] = {key: spec[1] for key, spec in SPEC.items()}
 
 REPORT_KEYS = ("dead_stock_days", "velocity_days", "low_cover_days", "weight_band_top", "min_sales_for_velocity")
 DISCOUNT_KEYS = ("default_old_gold_discount_pct", "min_old_gold_discount_pct", "max_old_gold_discount_pct",
-                 "sale_old_gold_discount_min_pct", "cashback_review_limit", "default_cashback_amount")
+                 "sale_old_gold_discount_min_pct", "cashback_review_limit", "default_cashback_amount",
+                 "small_piece_making_min", "small_piece_making_max")
 PRICE_WARNING_KEY = "price_deviation_warning_pct"
+SMALL_PIECE_GRAMS = Decimal("1")          # fixed by the owner (2026-11-04): strictly under this weight a piece is priced per piece
+
+
+def is_small_piece(weight) -> bool:
+    """A sold piece strictly under one gram: its making is a fixed amount PER PIECE, so it never enters a per-gram average."""
+    return Decimal(str(weight)) < SMALL_PIECE_GRAMS
 
 
 def effective(raw: dict[str, Any], keys: Optional[Iterable[str]] = None) -> dict[str, Any]:

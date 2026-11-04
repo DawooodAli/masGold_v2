@@ -741,14 +741,18 @@ class InvoiceService:
         return SettlementApprover(int(result.user_id), result.display_name, _APPROVER_PROOF)
 
     @staticmethod
-    def _making_groups(sales, categories, category_ranges):
+    def _making_groups(sales, categories, category_ranges, small_range=None):
         """Sale making per category: WITHIN_RANGE, OUT_OF_RANGE or NOT_CONFIGURED.
 
         Sale lines only (the old-gold side never enters). A piece without a
         category, or a category without a range, is NOT_CONFIGURED, never a pass.
         Internal control only: never changes price, balance or validity."""
         groups = {}
+        small = []
         for line, category_id in zip(sales, categories):
+            if setting_rules.is_small_piece(line.weight_grams):
+                small.append(line)          # under 1 g: a making per PIECE, judged apart below (owner 2026-11-04)
+                continue
             key = None if category_id is None else int(category_id)
             group = groups.setdefault(key, [Decimal("0"), Decimal("0.000")])
             group[0] += line.making_total
@@ -780,7 +784,40 @@ class InvoiceService:
                            "sale_making_max_per_gram": None if high is None else str(high),
                            "manager_approval_below_per_gram": None if approval_below is None else str(approval_below),
                            "needs_approval": needs_approval})
+        if small:
+            result.append(InvoiceService._small_piece_group(small, small_range))
         return result
+
+    @staticmethod
+    def _small_piece_group(lines, small_range):
+        """The pieces under 1 g of an invoice: ONE group judged per PIECE against the owner's range (EGP per piece).
+        Never a manager approval, never mixed into a per-gram average; a negative making is still 'below gold'."""
+        low, high = ((None, None) if small_range is None else small_range)
+        making = sum((line.making_total for line in lines), Decimal("0"))
+        weight = sum((line.weight_grams for line in lines), Decimal("0.000"))
+        count = len(lines)
+        below_gold = any(line.making_total < 0 for line in lines)
+        outside = any((low is not None and line.making_total < low) or (high is not None and line.making_total > high)
+                      for line in lines)
+        if below_gold or outside:
+            status = OUT_OF_RANGE
+        elif low is None and high is None:
+            status = NOT_CONFIGURED
+        else:
+            status = WITHIN_RANGE
+        return {"category_id": None, "category_code": None, "small_piece": True, "pieces": count, "status": status,
+                "average_making_per_gram": None, "average_making_per_piece": str((making / count).quantize(Decimal("0.01"))),
+                "weight_grams": str(weight), "below_gold": below_gold, "making_total": str(making),
+                "sale_making_min_per_gram": None, "sale_making_max_per_gram": None,
+                "sale_making_min_per_piece": None if low is None else str(low),
+                "sale_making_max_per_piece": None if high is None else str(high),
+                "manager_approval_below_per_gram": None, "needs_approval": False}
+
+    @staticmethod
+    def _small_range(limits):
+        """(min, max) EGP per piece for a piece under 1 g, from the System Settings carried in `limits`."""
+        low, high = limits.get("small_piece_making_min"), limits.get("small_piece_making_max")
+        return (None if low is None else Decimal(str(low)), None if high is None else Decimal(str(high)))
 
     @staticmethod
     def _making_approval_problem(groups):
@@ -1071,7 +1108,8 @@ class InvoiceService:
                                          shortage_message(karat, grams, available, held.get(karat_id))))
         categories = [i.get("category_id") for i in items] + [d["category_id"] for d in described]
         # Making review only on a valid derived price (re-run on every financial change).
-        groups = self._making_groups(sales, categories, category_ranges) if calculated.agreed else []
+        groups = (self._making_groups(sales, categories, category_ranges, self._small_range(limits))
+                  if calculated.agreed else [])
         review = [g for g in groups if g["status"] == OUT_OF_RANGE or g["needs_approval"]]
         making_approval = [g for g in groups if g["needs_approval"]]
         if making_approval and making_approver is None:
@@ -1163,10 +1201,16 @@ class InvoiceService:
     def _commercial_view(calculated):
         settlement, agreed = calculated.settlement, calculated.agreed
         has_sales = calculated.gap is None
-        weight = sum((line.weight_grams for line in calculated.sales), Decimal("0.000"))
-        average = None
+        # The shown average covers the pieces of 1 g and more only: a piece under 1 g carries a fixed making per piece
+        # (owner 2026-11-04), which is reported apart and never distorts the per-gram figure.
+        regular = [line for line in calculated.sales if not setting_rules.is_small_piece(line.weight_grams)]
+        small = [line for line in calculated.sales if setting_rules.is_small_piece(line.weight_grams)]
+        weight = sum((line.weight_grams for line in regular), Decimal("0.000"))
+        average = small_average = None
         if has_sales and calculated.making_total is not None and weight > 0 and calculated.effective_sale > 0:
-            average = (calculated.making_total / weight).quantize(Decimal("0.01"))
+            average = (sum((line.making_total for line in regular), Decimal("0")) / weight).quantize(Decimal("0.01"))
+        if has_sales and calculated.making_total is not None and small and calculated.effective_sale > 0:
+            small_average = (sum((line.making_total for line in small), Decimal("0")) / len(small)).quantize(Decimal("0.01"))
         # F8: the full amount exists only when nothing is sold (the old-gold value minus the account part),
         # rounded to the nearest EGP 5 — the customer-facing money; the exact value stays alongside.
         full = raw = None
@@ -1180,6 +1224,8 @@ class InvoiceService:
             # Internal / audit only; the salesman sees the average.
             "making_total": _money(calculated.making_total),
             "average_making_per_gram": _money(average),
+            "small_piece_count": len(small),
+            "small_piece_average_making": _money(small_average),
             "account_signed": _money(calculated.account_signed),
             "account_amount": _money(abs(calculated.account_signed)),
             "gap_signed": _money(calculated.gap),
@@ -1258,7 +1304,8 @@ class InvoiceService:
             methods, accounts, cash_account, payment_problems = self._payment_accounts(invoices, payments, lock=True)
             problems += payment_problems
             categories = [i.get("category_id") for i in items] + [d["category_id"] for d in described]
-            groups = (self._making_groups(sales, categories, invoices.category_ranges(categories))
+            groups = (self._making_groups(sales, categories, invoices.category_ranges(categories),
+                                          self._small_range(limits))
                       if agreed is not None else [])
             review = [g for g in groups if g["status"] == OUT_OF_RANGE or g["needs_approval"]]
             making_approval = [g for g in groups if g["needs_approval"]]

@@ -87,9 +87,12 @@ def review_details(code, details):
                 f"الأثر على الصافي: {_signed_effect(details.get('effect_on_net_signed'))}"
                 + (f" • البائع {details['salesperson_name']}" if details.get("salesperson_name") else ""))
     if code == "MAKING_PRICE":
-        groups = " • ".join(f"فئة {g.get('category_code') or 'بدون فئة'}: {_num(g.get('average_making_per_gram'))}/جرام "
-                            f"({MAKING_STATUS_TEXT.get(g.get('status'), g.get('status') or '')})"
-                            for g in details.get("groups") or [])
+        groups = " • ".join(
+            (f"قطع أقل من جرام ({g.get('pieces')}): {_num(g.get('average_making_per_piece'))}/قطعة "
+             if g.get("small_piece") else
+             f"فئة {g.get('category_code') or 'بدون فئة'}: {_num(g.get('average_making_per_gram'))}/جرام ")
+            + f"({MAKING_STATUS_TEXT.get(g.get('status'), g.get('status') or '')})"
+            for g in details.get("groups") or [])
         head = (f"سعر البيع الفعلي {_num(details.get('effective_sale_total'))} ج"
                 if details.get("effective_sale_total") else "")
         return " • ".join(v for v in (head, groups, details.get("salesperson_name") or "") if v)
@@ -564,7 +567,9 @@ class ManagementReviewViewModel(QObject):
         rows = []
         for r in self._reviews.get(code, []):
             d = r.get("details_json") or {}
-            groups = [{"category": g.get("category_code") or "بدون فئة", "average": _num(g.get("average_making_per_gram")),
+            groups = [{"category": "قطع أقل من جرام" if g.get("small_piece") else g.get("category_code") or "بدون فئة",
+                       "average": (_num(g.get("average_making_per_piece")) + "/قطعة") if g.get("small_piece")
+                       else _num(g.get("average_making_per_gram")),
                        "status": g.get("status") or "", "statusText": MAKING_STATUS_TEXT.get(g.get("status"), g.get("status") or "")}
                       for g in (d.get("groups") or [])] if code == "MAKING_PRICE" else []
             rows.append({"invoiceId": _id(r.get("invoice_id")), "reviewId": str(r["review_id"]),

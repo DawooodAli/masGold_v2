@@ -1934,6 +1934,21 @@ Item {
                                     }
                                 }
                             }
+                            Rectangle {
+                                objectName: "summarySmallPieces"
+                                visible: invoiceVM.summary.smallPieceText.length > 0
+                                Layout.preferredHeight: 30
+                                Layout.preferredWidth: smallPiecesLabel.implicitWidth + 14
+                                radius: theme.radiusSmall
+                                color: theme.bgTertiary
+                                border.color: theme.goldDark
+                                FieldLabel {
+                                    id: smallPiecesLabel
+                                    anchors.centerIn: parent
+                                    text: invoiceVM.summary.smallPieceText
+                                    color: theme.textSecondary
+                                }
+                            }
                             SmallButton {
                                 objectName: "requestMakingApproval"
                                 visible: invoiceVM.makingNeedsApproval
