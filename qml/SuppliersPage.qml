@@ -2138,9 +2138,9 @@ Item {
                 Layout.fillWidth: true
                 layoutDirection: Qt.RightToLeft
                 spacing: 8
-                Btn { objectName: "accountAdjustAddButton"; text: "زيادة علينا للمورد"; primary: accountAdjustDialog.direction === "ADD"
+                Btn { objectName: "accountAdjustAddButton"; text: "إضافة"; primary: accountAdjustDialog.direction === "ADD"
                       onClicked: accountAdjustDialog.direction = "ADD" }
-                Btn { objectName: "accountAdjustDeductButton"; text: "نقص من علينا للمورد"; primary: accountAdjustDialog.direction === "DEDUCT"
+                Btn { objectName: "accountAdjustDeductButton"; text: "تنزيل"; primary: accountAdjustDialog.direction === "DEDUCT"
                       onClicked: accountAdjustDialog.direction = "DEDUCT" }
                 Item { Layout.fillWidth: true }
             }
