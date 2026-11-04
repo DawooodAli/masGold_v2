@@ -248,7 +248,7 @@ class PostingAndReversalTests(SettlementVmCase):
                         "source_kind": kwargs["source_kind"]}
 
             def trip_detail(_self, trip_id, _expected_actor=None):
-                return {"trip": {"status": "OPEN"}, "mode": "LEGACY",
+                return {"trip": {"status": "OPEN"},
                         "custody": {"gold": [{"karat_id": 1, "designation": "UNCLASSIFIED",
                                               "outstanding": live["available"], "karat_value": 21}],
                                     "bar": D("0"), "lots": []}}

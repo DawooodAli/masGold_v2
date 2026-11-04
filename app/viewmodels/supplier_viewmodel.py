@@ -572,7 +572,7 @@ class SupplierViewModel(QObject):
                                                                   _expected_actor=expected_actor)
             return {"source": source, "holding": holding, "supplier_id": supplier_id}
         trip = self._market_trip_settlement_service().trip_detail(source["trip_id"], _expected_actor=expected_actor)
-        if trip["trip"]["status"] != "OPEN" or trip["mode"] != "LEGACY":
+        if trip["trip"]["status"] != "OPEN":
             raise ValueError("العهدة لم تعد مفتوحة أو لا تدعم التسوية الفعلية.")
         custody = trip["custody"]
         kind = source["source_type"]

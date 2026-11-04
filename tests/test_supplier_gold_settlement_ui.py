@@ -45,7 +45,7 @@ class TripSettlementStub:
         return self.sources
 
     def trip_detail(self, trip_id, _expected_actor=None):
-        return {"trip": {"status": "OPEN"}, "mode": "LEGACY",
+        return {"trip": {"status": "OPEN"},
                 "custody": {"gold": [{"karat_id": 1, "designation": self.sources[0]["designation"], "outstanding": self.availability,
                                       "karat_value": 21}], "bar": D("0"), "lots": []}}
 
