@@ -226,7 +226,8 @@ GOLD_MOVEMENT_TEXT = {"PURCHASE_INVOICE": "فاتورة شراء",
                       "PURCHASE_INVOICE_REVERSAL": "عكس فاتورة شراء",
                       "SETTLEMENT": "تسوية ذهب مورد",
                       "SETTLEMENT_REVERSAL": "عكس تسوية ذهب مورد",
-                      "GROUP_ADJUSTMENT": "تعديل وزن مجموعة"}
+                      "GROUP_ADJUSTMENT": "تعديل وزن مجموعة",
+                      "ACCOUNT_ADJUSTMENT": "تسوية فروق ذهب"}
 
 
 def gold_movement_text(code, stored_name):

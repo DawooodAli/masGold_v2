@@ -79,6 +79,7 @@ class SupplierPurchaseViewModel(QObject):
     invoicePosted = Signal(str)          # invoice id: supplier balances changed
     stockChanged = Signal()              # a piece (and its barcode) was added to inventory
     draftSaved = Signal(str)             # a draft invoice was saved (the dialog can close)
+    accountAdjusted = Signal(str)        # a gold / making account difference was posted (096): the dialog closes and the supplier balances reload
     invoiceAdjusted = Signal(str)        # a group of a posted invoice was adjusted (092): the dialog closes and the supplier balances reload
     invoiceReversed = Signal(str)        # a posted invoice was fully reversed (052): the confirmation dialog can close
 
@@ -296,6 +297,8 @@ class SupplierPurchaseViewModel(QObject):
             self.invoiceReversed.emit(result["id"])
         if result.get("adjusted"):
             self.invoiceAdjusted.emit(result["id"])
+        if result.get("account_adjusted"):
+            self.accountAdjusted.emit(result["id"])
         if result.get("posted"):
             self.invoicePosted.emit(result["id"])
         elif result.get("status") == "DRAFT" and result.get("id"):
@@ -381,6 +384,14 @@ class SupplierPurchaseViewModel(QObject):
             return {"id": str(invoice_id), "adjusted": True, "delta": str(done["delta"])}
         self._write("تم تعديل وزن المجموعة.", call)
 
+    @Slot(str, str, str, str, str, str)
+    def adjustAccount(self, supplier_id, kind, direction, amount, reason, request_key):
+        """«تسوية فروق الذهب / المصنعيات»: ADD / DEDUCT on the supplier account only; the service re-checks the owner right and every rule in its transaction."""
+        def call(service, expected):
+            done = service.adjust_account(supplier_id, kind, direction, amount, reason, request_key, _expected_actor=expected)
+            return {"id": str(supplier_id), "account_adjusted": True, "delta": str(done["delta"])}
+        self._write("تمت تسوية الفروق.", call)
+
     @Slot(str, str, int, str, str, int, str, str, str, str)
     def addPiece(self, invoice_id, group_id, item_type_id, weight, request_key, factory_id, size,
                  barcode_mode, barcode, notes):
@@ -412,6 +423,10 @@ class SupplierPurchaseViewModel(QObject):
     @Property(bool, notify=changed)
     def canIntake(self):
         return self._can("SUPPLIER_INTAKE")
+
+    @Property(bool, notify=changed)
+    def canAdjustAccount(self):
+        return self._can("SUPPLIER_ACCOUNT_ADJUST")
 
     @Property(bool, notify=changed)
     def canAdjust(self):

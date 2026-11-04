@@ -230,7 +230,8 @@ class SupplierService:
                    else r.get("bank_account_name") if method == "BANK" else r.get("cash_account_name"))
         if method == "MARKETER" and r.get("self_payment_confirmed"):
             account = f"{account} (بتأكيد الطرف نفسه)"
-        return {"id": str(r["id"]), "occurred_at": r["occurred_at"], "movement": r["movement_name"],
+        return {"id": str(r["id"]), "occurred_at": r["occurred_at"],
+                "movement": "تسوية فروق مصنعيات" if r.get("movement_code") == "ACCOUNT_ADJUSTMENT" else r["movement_name"],
                 "movement_code": r.get("movement_code"),
                 "amount_delta": Decimal(str(r["amount_delta"])),
                 "balance_after": Decimal(str(r["balance_after"])),

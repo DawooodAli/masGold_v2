@@ -11,6 +11,7 @@ PURCHASE_SOURCE = "SUPPLIER_PURCHASE_INVOICE"     # the movement source of a pos
 PURCHASE_MOVEMENT = "PURCHASE_INVOICE"
 ADJUSTMENT_MOVEMENT = "GROUP_ADJUSTMENT"           # 092: gold added to / deducted from a making group of a posted invoice
 ADJUSTMENT_SOURCE = "SUPPLIER_INVOICE_ADJUSTMENT"
+ACCOUNT_ADJUSTMENT_MOVEMENT, ACCOUNT_ADJUSTMENT_SOURCE = "ACCOUNT_ADJUSTMENT", "SUPPLIER_ACCOUNT_ADJUSTMENT"      # 096: gold / making account differences
 REVERSAL_MOVEMENT = "PURCHASE_INVOICE_REVERSAL"   # the movement type (both ledgers) of the exact opposite entry posted by a full reversal
 
 
@@ -184,6 +185,24 @@ class SupplierPurchaseRepository(SupplierRepository):
             "SELECT a.id, a.group_id, a.delta_grams, a.reason, a.created_at, u.username FROM supplier_invoice_group_adjustments a "
             "LEFT JOIN users u ON u.id = a.created_by_user_id WHERE a.invoice_id = %s ORDER BY a.id" + (" FOR SHARE" if lock else ""),
             (_id(invoice_id),))
+
+    _account_adjustment_schema = None
+
+    def has_account_adjustment_schema(self):
+        if self._account_adjustment_schema is None:
+            row = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() "
+                                  "AND TABLE_NAME = 'supplier_account_adjustments'")
+            self._account_adjustment_schema = bool(row and int(row["n"]))
+        return self._account_adjustment_schema
+
+    def account_adjustment_by_request(self, key):
+        return self._fetch_one("SELECT * FROM supplier_account_adjustments WHERE request_key = %s", (key,))
+
+    def insert_account_adjustment(self, *, supplier_id, kind, karat_id, delta, reason, key, user_id, now):
+        new_id, _ = self._execute(
+            "INSERT INTO supplier_account_adjustments (supplier_id, kind, karat_id, delta, reason, request_key, created_by_user_id, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)", (_id(supplier_id), kind, karat_id, delta, reason, key, user_id, now))
+        return int(new_id)
 
     # ------------------------------------------------------------------ ledgers (insert only)
     def gold_type_id(self, code):

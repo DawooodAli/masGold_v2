@@ -48,6 +48,7 @@ class Db:
         self.closures = set()
         self.gold, self.making, self.links, self.audit_rows = [], [], [], []
         self.adjustments = []                     # 092: group gold adjustments
+        self.account_adjustments = []             # 096: account differences
         self.karats = {1: {"id": 1, "karat_value": 21, "name": "21K", "is_active": 1},
                        2: {"id": 2, "karat_value": 18, "name": "18K", "is_active": 1},
                        3: {"id": 3, "karat_value": 24, "name": "24K", "is_active": 1}}
@@ -69,7 +70,7 @@ class Db:
         self.item_types = {1: "خاتم", 2: "سلسلة"}
         self.item_type_defaults = {}              # item type id -> its default_category_id (never allowed to win over the group)
         self.sequences = {"supplier": 0, "invoice": 0, "group": 0, "gold": 0, "making": 0, "link": 0, "item": 100,
-                          "barcode": 0, "payment": 0, "adjustment": 0, "cash_move": 0, "bank_move": 0, "correction": 0,
+                          "barcode": 0, "payment": 0, "adjustment": 0, "account_adjustment": 0, "cash_move": 0, "bank_move": 0, "correction": 0,
                           "marketer_document": 0, "marketer_cash_move": 0}
         self.fail_after_item = False             # raise after the inventory item is written (atomicity tests)
         self.transactions = 0
@@ -422,12 +423,26 @@ class PurchaseRepo(SupplierRepo):
     def adjustments(self, invoice_id, lock=False):
         return [dict(a) for a in self.db.adjustments if a["invoice_id"] == int(invoice_id)]
 
+    # ------------------------------------------------------------ account differences (096)
+    def has_account_adjustment_schema(self):
+        return True
+
+    def account_adjustment_by_request(self, key):
+        return next((dict(a) for a in self.db.account_adjustments if a["request_key"] == key), None)
+
+    def insert_account_adjustment(self, *, supplier_id, kind, karat_id, delta, reason, key, user_id, now):
+        assert (kind == "GOLD") == (karat_id is not None) and delta != 0 and reason.strip()           # chk_saa_kind / chk_saa_delta / chk_saa_reason
+        new_id = self.db.next("account_adjustment")
+        self.db.account_adjustments.append({"id": new_id, "supplier_id": int(supplier_id), "kind": kind, "karat_id": karat_id, "delta": delta,
+                                            "reason": reason, "request_key": key, "created_by_user_id": user_id})
+        return new_id
+
     # ------------------------------------------------------------ ledgers (insert only)
     def gold_type_id(self, code):
-        return {"PURCHASE_INVOICE": 1, "PURCHASE_INVOICE_REVERSAL": 2, "GROUP_ADJUSTMENT": 5}.get(code)
+        return {"PURCHASE_INVOICE": 1, "PURCHASE_INVOICE_REVERSAL": 2, "GROUP_ADJUSTMENT": 5, "ACCOUNT_ADJUSTMENT": 6}.get(code)
 
     def making_type_id(self, code):
-        return {"PURCHASE_INVOICE": 1, "PURCHASE_INVOICE_REVERSAL": 4}.get(code)
+        return {"PURCHASE_INVOICE": 1, "PURCHASE_INVOICE_REVERSAL": 4, "ACCOUNT_ADJUSTMENT": 7}.get(code)
 
     def insert_gold_movement(self, *, supplier_id, type_id, karat_id, weight_delta, eq21_delta, source_type,
                              source_id, reference, description, now, user_id):
@@ -660,7 +675,8 @@ CASHIER_RIGHTS = frozenset({"APP_LOGIN", "SUPPLIER_VIEW"})
 MAKING_TYPES = {1: ("PURCHASE_INVOICE", "Supplier Purchase Invoice Making"), 2: ("PAYMENT", "Supplier Making Payment"),
                 3: ("PAYMENT_REVERSAL", "Supplier Making Payment Reversal"),
                 4: ("PURCHASE_INVOICE_REVERSAL", "Supplier Purchase Invoice Making Reversal"),
-                5: ("RECEIPT", "Supplier Making Receipt"), 6: ("RECEIPT_REVERSAL", "Supplier Making Receipt Reversal")}
+                5: ("RECEIPT", "Supplier Making Receipt"), 6: ("RECEIPT_REVERSAL", "Supplier Making Receipt Reversal"),
+                7: ("ACCOUNT_ADJUSTMENT", "Supplier Making Account Adjustment")}
 GOLD_TYPES = {1: ("PURCHASE_INVOICE", "Supplier Purchase Invoice"), 2: ("PURCHASE_INVOICE_REVERSAL", "Supplier Purchase Invoice Reversal")}
 MAKING_TYPE_ID = {code: type_id for type_id, (code, _) in MAKING_TYPES.items()}
 

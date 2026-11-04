@@ -82,6 +82,7 @@ Item {
         function onDraftSaved(invoiceId) { newInvoiceDialog.close() }
         function onInvoiceReversed(invoiceId) { reverseInvoiceDialog.close(); if (page.vm) page.vm.refresh() }
         function onInvoiceAdjusted(invoiceId) { adjustGroupDialog.close(); if (page.vm) page.vm.refresh() }
+        function onAccountAdjusted(supplierId) { accountAdjustDialog.close(); if (page.vm) page.vm.refresh() }
     }
 
     Rectangle { anchors.fill: parent; color: theme.bgPrimary }
@@ -693,6 +694,14 @@ Item {
                                     primary: true
                                     onClicked: goldSettleDialog.openFor()
                                 }
+                                Btn {
+                                    objectName: "adjustGoldDifferenceButton"
+                                    Layout.alignment: Qt.AlignRight
+                                    visible: !!page.pvm && page.pvm.canAdjustAccount && page.detail.isSupplier !== false
+                                    enabled: page.hasSelection && !page.vm.busy && page.detail.karatResolved === true
+                                    text: "تسوية فروق الذهب"
+                                    onClicked: accountAdjustDialog.openFor("GOLD")
+                                }
                                 RowLayout {
                                     Layout.alignment: Qt.AlignRight
                                     layoutDirection: Qt.RightToLeft
@@ -736,6 +745,14 @@ Item {
                                     enabled: page.hasSelection && !page.vm.busy
                                     text: "استلام مصنعيات من المورد"
                                     onClicked: receiveDialog.openFor()
+                                }
+                                Btn {
+                                    objectName: "adjustMakingDifferenceButton"
+                                    Layout.alignment: Qt.AlignRight
+                                    visible: !!page.pvm && page.pvm.canAdjustAccount
+                                    enabled: page.hasSelection && !page.vm.busy
+                                    text: "تسوية فروق المصنعيات"
+                                    onClicked: accountAdjustDialog.openFor("MAKING")
                                 }
                             }
                         }
@@ -2081,6 +2098,71 @@ Item {
                 }
                 Btn { text: "إلغاء"; accent: theme.textSecondary; enabled: !!page.vm && !page.vm.reversing
                       onClicked: reverseDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- account differences (096): «تسوية فروق الذهب / المصنعيات», owner only
+    Popup {
+        id: accountAdjustDialog
+        objectName: "accountAdjustDialog"
+        property string kind: "GOLD"
+        property string direction: "ADD"
+        property string requestKey: ""
+        function openFor(kindValue) {
+            kind = kindValue
+            direction = "ADD"
+            accountAdjustAmount.text = ""
+            accountAdjustReason.text = ""
+            requestKey = page.pvm ? page.pvm.newRequestKey() : ""
+            if (page.pvm) page.pvm.clearMessage()
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(460, page.width - 24)
+        modal: true
+        padding: 16
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 8
+            Txt { Layout.fillWidth: true; font.bold: true; color: theme.gold
+                  text: (accountAdjustDialog.kind === "GOLD" ? "تسوية فروق الذهب — " : "تسوية فروق المصنعيات — ") + (page.detail.name || "") }
+            Txt { Layout.fillWidth: true; color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: accountAdjustDialog.kind === "GOLD"
+                        ? "تعديل في حساب الذهب عند المورد فقط (بعيار المورد). لا يتحرك الكسر ولا الخزنة ولا المخزون."
+                        : "تعديل في حساب مصنعيات المورد فقط. لا تتحرك الخزنة ولا البنك." }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn { objectName: "accountAdjustAddButton"; text: "زيادة علينا للمورد"; primary: accountAdjustDialog.direction === "ADD"
+                      onClicked: accountAdjustDialog.direction = "ADD" }
+                Btn { objectName: "accountAdjustDeductButton"; text: "نقص من علينا للمورد"; primary: accountAdjustDialog.direction === "DEDUCT"
+                      onClicked: accountAdjustDialog.direction = "DEDUCT" }
+                Item { Layout.fillWidth: true }
+            }
+            Txt { Layout.fillWidth: true; text: accountAdjustDialog.kind === "GOLD" ? "الوزن (جرام) *" : "المبلغ (ج) *" }
+            TextField { id: accountAdjustAmount; objectName: "accountAdjustAmountField"; Layout.fillWidth: true
+                        placeholderText: accountAdjustDialog.kind === "GOLD" ? "0.000" : "0.00"
+                        font.family: "Cairo"; horizontalAlignment: TextInput.AlignRight; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+            Txt { Layout.fillWidth: true; text: "السبب *" }
+            TextField { id: accountAdjustReason; objectName: "accountAdjustReasonField"; Layout.fillWidth: true; placeholderText: "سبب التسوية"
+                        font.family: "Cairo"; horizontalAlignment: TextInput.AlignRight }
+            Txt { objectName: "accountAdjustError"; Layout.fillWidth: true; visible: text !== ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: !!page.pvm ? page.pvm.errorMessage : "" }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn { objectName: "confirmAccountAdjustButton"; primary: true
+                      text: !!page.pvm && page.pvm.busy ? "جارٍ الحفظ…" : "تأكيد التسوية"
+                      enabled: accountAdjustAmount.text.trim().length > 0 && accountAdjustReason.text.trim().length > 0 && !!page.pvm && !page.pvm.busy
+                      onClicked: page.pvm.adjustAccount(String(page.detail.id), accountAdjustDialog.kind, accountAdjustDialog.direction,
+                                                        accountAdjustAmount.text, accountAdjustReason.text, accountAdjustDialog.requestKey) }
+                Btn { objectName: "cancelAccountAdjustButton"; text: "إلغاء"; accent: theme.textSecondary; onClicked: accountAdjustDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }

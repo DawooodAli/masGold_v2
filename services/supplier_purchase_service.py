@@ -24,7 +24,8 @@ from uuid import UUID
 from mysql.connector import IntegrityError
 
 from repositories.barcode_repository import BarcodeRepository
-from repositories.supplier_purchase_repository import ADJUSTMENT_MOVEMENT, ADJUSTMENT_SOURCE, SupplierPurchaseRepository
+from repositories.supplier_purchase_repository import (ACCOUNT_ADJUSTMENT_MOVEMENT, ACCOUNT_ADJUSTMENT_SOURCE, ADJUSTMENT_MOVEMENT,
+                                                       ADJUSTMENT_SOURCE, SupplierPurchaseRepository)
 from services import supplier_rules as rules
 from services.authorization_service import AuthorizationService
 from services.correction_rules import correction_code
@@ -35,6 +36,7 @@ from services.supplier_service import VIEW, authenticated_actor, clean_text
 
 EDIT, POST, INTAKE = "SUPPLIER_INVOICE_EDIT", "SUPPLIER_INVOICE_POST", "SUPPLIER_INTAKE"
 REVERSE, CORRECT = "SUPPLIER_INVOICE_REVERSE", "TRANSACTION_CORRECT"      # full reversal of a posted invoice (052): OWNER only, plus the generic correction right
+ACCOUNT_ADJUST = "SUPPLIER_ACCOUNT_ADJUST"       # 096: gold / making ACCOUNT differences, no stock or money movement (OWNER only)
 ADJUST = "SUPPLIER_INVOICE_ADJUST"          # 092: add / deduct gold on a making group of a posted invoice (OWNER / MANAGER)
 REFERENCE_MAX, NOTES_MAX, REASON_MAX = 100, 1000, 500
 INTAKE_SOURCE = "SUPPLIER_PURCHASE"          # توريد مورد: never MARKET_PURCHASE (gold bought on the market)
@@ -570,6 +572,69 @@ class SupplierPurchaseService:
             if not self._session.is_current(session_actor):
                 raise PermissionError("انتهت جلسة الدخول.")
             return {"id": str(adjustment_id), "duplicate": False, "delta": delta}
+
+    # ------------------------------------------------------------------ account differences (096)
+    def adjust_account(self, supplier_id, kind, direction, amount, reason, request_key, *, _expected_actor=None):
+        """«تسوية فروق الذهب / المصنعيات»: the gold (physical grams of the supplier's OWN karat) or the making (EGP) a supplier holds for the shop differs from the
+        real invoices. ADD = the shop owes the supplier MORE, DEDUCT = LESS. One immutable row + ONE ledger movement; no Scrap, cash, bank, inventory or
+        invoice is touched. OWNER only (rechecked in the transaction); a mistake is fixed by an opposite adjustment; idempotent on the request key."""
+        session_actor = authenticated_actor(self._session, ACCOUNT_ADJUST, "تسوية فروق حساب المورد للمالك فقط.", _expected_actor)
+        supplier_id = _id(supplier_id, "SUPPLIER_NOT_FOUND", "المورد غير موجود.")
+        key = _key(request_key)
+        kind = str(kind or "").strip().upper()
+        if kind not in ("GOLD", "MAKING"):
+            raise rules.SupplierRuleError("KIND_INVALID", "اختر تسوية ذهب أو تسوية مصنعيات.")
+        direction = str(direction or "").strip().upper()
+        if direction not in ("ADD", "DEDUCT"):
+            raise rules.SupplierRuleError("DIRECTION_INVALID", "اختر زيادة أو نقص.")
+        value = rules.parse_weight(amount, "الوزن") if kind == "GOLD" else rules.parse_amount(amount, "المبلغ")
+        reason = clean_text(reason, REASON_MAX, "السبب", required=True)
+        delta = value if direction == "ADD" else -value
+        with self._transaction() as connection:
+            actor = self._write_verified(connection, session_actor, ACCOUNT_ADJUST)
+            repository = self._repository(connection)
+            if not repository.has_account_adjustment_schema():
+                raise rules.SupplierRuleError("SCHEMA_OUTDATED", "قاعدة البيانات تحتاج تحديث 096 قبل تسوية الفروق.")
+            prior = repository.account_adjustment_by_request(key)
+            if prior is not None:
+                if (int(prior["supplier_id"]), prior["kind"], Decimal(str(prior["delta"])), int(prior["created_by_user_id"])) != (
+                        supplier_id, kind, delta, int(actor.user_id)):
+                    raise rules.SupplierRuleError("REQUEST_CONFLICT", "طلب التسوية مستخدم لعملية مختلفة.")
+                return {"id": str(prior["id"]), "duplicate": True, "kind": kind, "delta": delta}
+            supplier = repository.get_supplier(supplier_id, lock=True)
+            if supplier is None:
+                raise rules.SupplierRuleError("SUPPLIER_NOT_FOUND", "المورد غير موجود.")
+            karat_id = None
+            if kind == "GOLD":
+                rules.require_supplier_role(supplier)
+                if supplier["karat_id"] is None:
+                    raise rules.SupplierRuleError("SUPPLIER_KARAT_MISSING", "عيار هذا المورد غير محدد: حدّده من تعديل المورد أولًا.")
+                karat_id = int(supplier["karat_id"])
+            now = repository.db_now()
+            code = rules.supplier_code(supplier_id)
+            adjustment_id = repository.insert_account_adjustment(supplier_id=supplier_id, kind=kind, karat_id=karat_id, delta=delta,
+                                                                 reason=reason, key=key, user_id=actor.user_id, now=now)
+            label = ("تسوية فروق ذهب" if kind == "GOLD" else "تسوية فروق مصنعيات") + f" — {reason}"
+            if kind == "GOLD":
+                type_id = repository.gold_type_id(ACCOUNT_ADJUSTMENT_MOVEMENT)
+                if type_id is None:
+                    raise RuntimeError("supplier gold movement type ACCOUNT_ADJUSTMENT is missing (migration 096)")
+                repository.insert_gold_movement(
+                    supplier_id=supplier_id, type_id=type_id, karat_id=karat_id, weight_delta=delta,
+                    eq21_delta=rules.equivalent_21(delta, supplier["karat_value"]), source_type=ACCOUNT_ADJUSTMENT_SOURCE,
+                    source_id=adjustment_id, reference=code, description=label, now=now, user_id=actor.user_id)
+            else:
+                type_id = repository.making_type_id(ACCOUNT_ADJUSTMENT_MOVEMENT)
+                if type_id is None:
+                    raise RuntimeError("supplier making movement type ACCOUNT_ADJUSTMENT is missing (migration 096)")
+                repository.insert_making_movement(
+                    supplier_id=supplier_id, type_id=type_id, amount_delta=delta, source_type=ACCOUNT_ADJUSTMENT_SOURCE,
+                    source_id=adjustment_id, reference=code, description=label, now=now, user_id=actor.user_id)
+            repository.audit(actor=actor, event_type="SUPPLIER_ACCOUNT_ADJUSTED", entity_id=supplier_id, reference=code, description=label,
+                             metadata={"kind": kind, "delta": str(delta), "reason": reason, "adjustment_id": adjustment_id}, now=now)
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+            return {"id": str(adjustment_id), "duplicate": False, "kind": kind, "delta": delta}
 
     # ------------------------------------------------------------------ full reversal of a posted invoice (052)
     def _correction_service(self):
