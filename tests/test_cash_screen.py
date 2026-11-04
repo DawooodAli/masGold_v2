@@ -150,9 +150,10 @@ class CashViewTests(FinancialTestCase):
         for n, account in enumerate(self.store.bank_accounts.values()):
             account["is_active"] = n == 0
         view = self.fin.cash_view()
-        self.assertEqual([r["amount"] for r in view["in"]["rows"]], ["1600.00"])
+        # Owner 2026-11-04: a payment received in a wallet is written only in the outgoing table
+        self.assertEqual([r["amount"] for r in view["in"]["rows"]], [])
         self.assertEqual([(r["label"], r["amount"]) for r in view["out"]["rows"]], [("انستا", "1600.00")])
-        self.assertEqual((view["in"]["total"], view["out"]["total"]), ("1600.00", "1600.00"))
+        self.assertEqual((view["in"]["total"], view["out"]["total"]), ("0.00", "1600.00"))
 
     def test_an_exchange_settled_separately_still_shows_its_values_without_touching_the_safe(self):
         self.store.cash_rows = []
@@ -320,10 +321,9 @@ class CashViewTests(FinancialTestCase):
         self.store.cash_rows[0]["occurred_at"] = datetime(2026, 10, 28, 12)
         self.store.bank_rows[0]["occurred_at"] = datetime(2026, 10, 28, 11)    # the older one
         view = self.fin.cash_view()
-        self.assertEqual([(r["external"], r["id"]) for r in view["in"]["rows"]], [(False, "5"), (True, "B9")])
-        self.assertIn(view["in"]["rows"][1]["account"], ("انستا", "محفظة"))
+        self.assertEqual([(r["external"], r["id"]) for r in view["in"]["rows"]], [(False, "5")])     # the wallet deposit is written in the outgoing table only
         self.assertEqual((view["in"]["total"], view["in"]["bank_total"], view["out"]["total"], view["out"]["bank_total"]),
-                         ("25700.00", "700.00", "700.00", "300.00"))                                  # the internal transfer row is not listed
+                         ("25000.00", "0.00", "700.00", "300.00"))                                  # the internal transfer row is not listed
 
     def test_default_period_is_today_and_filter_is_validated(self):
         view = self.fin.cash_view()

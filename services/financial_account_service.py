@@ -596,6 +596,10 @@ class FinancialAccountService:
                 absorbed[head] = absorbed.get(head, ZERO) + Decimal(str(r["amount_delta"]))
                 hidden.add((bool(r.get("external")), r["id"]))
 
+        # Owner 2026-11-04: a customer payment / settlement correction received in a bank / wallet account is written ONLY in the outgoing table («انستا»);
+        # the incoming table keeps the invoices (whole value) and the real safe money.
+        hidden_bank_in.update(r["id"] for r in paid_outside if not doc_key(r) and not r.get("folded"))
+
         def side(sign):
             chosen = [r for r in rows if (r["amount_delta"] > 0) == (sign > 0) and r["id"] not in hidden_cash_out and r["id"] not in hidden_cash_in]
             outside = [r for r in external if (Decimal(str(r["amount_delta"])) > 0) == (sign > 0) and not (sign > 0 and r["id"] in hidden_bank_in) and not (sign < 0 and r["id"] in hidden_bank_out)]
