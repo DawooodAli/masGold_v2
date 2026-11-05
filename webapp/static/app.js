@@ -1068,7 +1068,9 @@ function renderStocktake(s) {
     canvas.width = Math.round(w * scale); canvas.height = Math.round(h * scale);
     part.drawImage(video, 0, 0, canvas.width, canvas.height);
     try {
-      return [reader.decode(new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(canvas)))).getText()];
+      const text = reader.decode(new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(canvas)))).getText();
+      // a texture (a tiled floor, a fabric) can "read" as a barcode: only a plausible shop barcode counts, anything else is ignored silently
+      return /^[0-9A-Za-z\-._\/]{6,}$/.test(text) ? [text] : [];
     } catch (e) { return []; }                                        // nothing readable in this frame
   }
   const start = el("button", { class: "btn primary", text: "تشغيل الكاميرا" });
@@ -1080,7 +1082,7 @@ function renderStocktake(s) {
       await loadZxing();
       stopCamera();
       const Z = window.ZXing;
-      const hints = new Map([[Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.CODE_128, Z.BarcodeFormat.EAN_13, Z.BarcodeFormat.EAN_8, Z.BarcodeFormat.CODE_39, Z.BarcodeFormat.ITF, Z.BarcodeFormat.QR_CODE]]]);
+      const hints = new Map([[Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.CODE_128, Z.BarcodeFormat.CODE_39]]]);
       const reader = new Z.MultiFormatReader();
       reader.setHints(hints);
       camera.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
