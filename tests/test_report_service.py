@@ -1136,7 +1136,10 @@ class CashflowTests(Case):
         values = self.totals(result)
         self.assertEqual((values["مصروفات مسجلة"], values["إيرادات مسجلة"], values["الصافي"]), (D("600.00"), D("1500.00"), D("900.00")))
         self.assertEqual(set(values), {"الصافي", "إيرادات مسجلة", "مصروفات مسجلة"})
-        self.assertEqual([t["key"] for t in result["tables"]], ["operating"])
+        self.assertEqual([t["key"] for t in result["tables"]], ["operating", "on_account"])
+        # owner 2026-11-05: only the invoice that left something on the customer's account (INV0001: 10,000 sold, 6,000 paid, 4,000 on account) is listed, with its FULL total
+        ledger = next(t for t in result["tables"] if t["key"] == "on_account")["rows"]
+        self.assertEqual([(r["number"], r["total"], r["out"], r["in"], r["offset"]) for r in ledger], [("INV0001", D("10000.00"), D("4000.00"), D("0.00"), D("6000.00"))])
         bars = {b["key"]: b for b in result["bars"]}                                                           # one bar chart per side, by the stored category
         self.assertEqual([(r["label"], r["value"]) for r in bars["expenses"]["rows"]], [("كهرباء ومياه", D("600.00"))])
         self.assertEqual([(r["label"], r["value"]) for r in bars["income"]["rows"]], [("إيراد", D("1500.00"))])

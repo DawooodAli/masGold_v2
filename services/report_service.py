@@ -373,6 +373,27 @@ class ReportService:
         def rows_of(bucket):
             return [{"label": k, "in": v["in"], "out": v["out"], "net": v["in"] - v["out"]} for k, v in sorted(bucket.items(), key=lambda kv: (-(kv[1]["in"] + kv[1]["out"]), kv[0]))]
         tables = [table("operating", "الإيرادات والمصروفات حسب البند", cols, rows_of(recorded))]
+        reader = getattr(repo, "sales_invoices", None)
+        if reader and gate("INVOICE_VIEW"):
+            # owner 2026-11-05: an invoice that moved no (or only part of its) money still shows with its FULL total: the part left on the customer's account is the «خارج»
+            # (the customer owes it), the real money received / paid is the matching «المقاصة». Display only: no cash movement is invented, nothing here is income or expense.
+            ledger_rows = []
+            for r in reader(start, end):
+                if r["origin"] == "LEGACY" or r["status"] != "FINALIZED" or r["reversal_id"] is not None:
+                    continue
+                sell, buy = _dec(r["sell_total"] or 0), _dec(r["buy_total"] or 0)
+                total_amount = sell if r["kind"] == "SALE" else buy if r["kind"] == "OLD_GOLD_PURCHASE" else abs(sell - buy)
+                account, money = _dec(r["account_delta"]), _dec(r["money_in"]) - _dec(r["money_out"])
+                if account == 0 and money != 0:
+                    continue                                                                   # fully settled in real money: it is already in the treasury movements
+                if account == 0:
+                    account = total_amount if r["kind"] != "OLD_GOLD_PURCHASE" else -total_amount
+                ledger_rows.append({"number": r["number"], "customer": r["customer_name"] or "", "total": total_amount, "in": -account if account < 0 else ZERO2,
+                                    "out": account if account > 0 else ZERO2, "offset": money})
+            if ledger_rows:
+                tables.append(table("on_account", "فواتير على حساب العميل (مقاصة)",
+                                    [col("number", "رقم الفاتورة"), col("customer", "العميل"), col("total", "إجمالي الفاتورة", "money"), col("out", "خارج (على العميل)", "money"),
+                                     col("in", "داخل (للعميل)", "money"), col("offset", "المقاصة (نقدي فعلي)", "money")], ledger_rows))
         missing = [name for right, name in (("CASH_VIEW", "النقدية"), ("BANK_VIEW", "البنوك والمحافظ")) if not gate(right)]
         for name in missing:
             tables.append(self._unavailable("missing_" + name, name, "ليست لديك صلاحية عرض هذا القسم: الأرقام لا تشملها."))
