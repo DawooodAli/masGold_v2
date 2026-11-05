@@ -1060,27 +1060,16 @@ function renderStocktake(s) {
       return false;
     }
   }
-  // Up to THREE labels per picture (owner 2026-11-05): the left, middle and right parts (smaller pictures decode much faster than the whole frame), then the whole frame
-  // when nothing was read. No turning of the picture (owner 2026-11-05: it was the slow part) and no TRY_HARDER.
+  // ONE label per picture (owner 2026-11-05): a single read of the whole frame, no parts, no turning of the picture, no TRY_HARDER - the fastest setting.
   async function scanFrame(Z, reader, video, canvas, part) {
     const w = video.videoWidth, h = video.videoHeight;
     if (!w || !h) return [];
-    const found = new Set();
-    const read = () => {
-      try { found.add(reader.decode(new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(canvas)))).getText()); } catch (e) { /* nothing readable here */ }
-    };
-    const region = (x, y, rw, rh) => {
-      const scale = Math.min(1, 800 / Math.max(rw, rh));
-      const cw = Math.round(rw * scale), ch = Math.round(rh * scale);
-      canvas.width = cw; canvas.height = ch;
-      part.drawImage(video, x, y, rw, rh, 0, 0, cw, ch);
-      read();
-    };
-    region(0, 0, w * 0.4, h);
-    region(w * 0.3, 0, w * 0.4, h);
-    region(w * 0.6, 0, w * 0.4, h);
-    if (!found.size) region(0, 0, w, h);
-    return [...found].slice(0, 3);
+    const scale = Math.min(1, 800 / Math.max(w, h));
+    canvas.width = Math.round(w * scale); canvas.height = Math.round(h * scale);
+    part.drawImage(video, 0, 0, canvas.width, canvas.height);
+    try {
+      return [reader.decode(new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(canvas)))).getText()];
+    } catch (e) { return []; }                                        // nothing readable in this frame
   }
   const start = el("button", { class: "btn primary", text: "تشغيل الكاميرا" });
   start.addEventListener("click", async () => {
@@ -1111,7 +1100,7 @@ function renderStocktake(s) {
           if (good + bad) { beep(bad === 0); }
         } finally { camera.busy = false; }
       }, 150);
-      note("الكاميرا شغالة: حتى 3 باركود في نفس الصورة.", "");
+      note("الكاميرا شغالة: باركود واحد في كل مرة.", "");
     } catch (e) {
       note(e && e.name === "NotAllowedError" ? "لم يُسمح باستخدام الكاميرا: اسمح بها من إعدادات سفاري." : (e && e.message) || "تعذر تشغيل الكاميرا.", "err");
     }
