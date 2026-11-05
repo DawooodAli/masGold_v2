@@ -1055,25 +1055,27 @@ function renderStocktake(s) {
       return false;
     }
   }
-  // Several labels in one picture (owner 2026-11-05): the frame is read whole and in overlapping parts, every distinct code is sent once.
+  // ONE label per picture, in any position (owner 2026-11-05): the whole frame is read upright first (the reader also handles a label turned 180 degrees), and only when
+  // nothing reads the frame is turned 90 degrees and read again (a standing label). No TRY_HARDER: that was the slow part.
   async function scanFrame(Z, reader, video, canvas, part) {
     const w = video.videoWidth, h = video.videoHeight;
     if (!w || !h) return [];
-    // At most TWO labels (owner 2026-11-05): the left and the right part first; only when neither reads anything, the whole frame once.
-    const found = new Set();
-    const tryRegion = (x, y, rw, rh) => {
-      const scale = Math.min(1, 800 / rw);                                 // a smaller picture decodes much faster
-      canvas.width = Math.round(rw * scale); canvas.height = Math.round(rh * scale);
-      part.drawImage(video, x, y, rw, rh, 0, 0, canvas.width, canvas.height);
-      try {
-        const bitmap = new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(canvas)));
-        found.add(reader.decode(bitmap).getText());
-      } catch (e) { /* nothing readable in this part */ }
+    const scale = Math.min(1, 800 / Math.max(w, h));
+    const sw = Math.round(w * scale), sh = Math.round(h * scale);
+    const read = () => {
+      try { return reader.decode(new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(canvas)))).getText(); } catch (e) { return null; }
     };
-    tryRegion(0, 0, w * 0.55, h);
-    tryRegion(w * 0.45, 0, w * 0.55, h);
-    if (!found.size) tryRegion(0, 0, w, h);
-    return [...found].slice(0, 2);
+    canvas.width = sw; canvas.height = sh;
+    part.setTransform(1, 0, 0, 1, 0, 0);
+    part.drawImage(video, 0, 0, sw, sh);
+    let text = read();
+    if (text === null) {
+      canvas.width = sh; canvas.height = sw;
+      part.setTransform(0, 1, -1, 0, sh, 0);                               // quarter turn
+      part.drawImage(video, 0, 0, sw, sh);
+      text = read();
+    }
+    return text === null ? [] : [text];
   }
   const start = el("button", { class: "btn primary", text: "تشغيل الكاميرا" });
   start.addEventListener("click", async () => {
@@ -1099,10 +1101,10 @@ function renderStocktake(s) {
           const codes = await scanFrame(Z, reader, video, canvas, part);
           let good = 0, bad = 0;
           for (const r of await Promise.all(codes.map((code) => send(code, true)))) { if (r === true) good++; else if (r === false) bad++; }
-          if (good + bad) { beep(bad === 0); if (codes.length > 1) note("قرأ " + codes.length + " باركود في صورة واحدة: " + good + " تم، " + bad + " مرفوض.", bad ? "warn" : ""); }
+          if (good + bad) { beep(bad === 0); }
         } finally { camera.busy = false; }
       }, 150);
-      note("الكاميرا شغالة: ممكن باركودين في نفس الصورة.", "");
+      note("الكاميرا شغالة: باركود واحد في كل مرة، بأي اتجاه.", "");
     } catch (e) {
       note(e && e.name === "NotAllowedError" ? "لم يُسمح باستخدام الكاميرا: اسمح بها من إعدادات سفاري." : (e && e.message) || "تعذر تشغيل الكاميرا.", "err");
     }
