@@ -995,15 +995,34 @@ function loadZxing() {
   });
 }
 
-function beep(ok) {
+// Sound (owner 2026-11-05): a good scan = two rising pleasant beeps, a wrong / already counted / unknown one = three low harsh warning buzzes.
+// Safari keeps the audio locked until a tap, so the context is created and resumed inside the «تشغيل الكاميرا» click (unlockAudio).
+function unlockAudio() {
   try {
     camera.audio = camera.audio || new (window.AudioContext || window.webkitAudioContext)();
+    if (camera.audio.state !== "running") camera.audio.resume();
     const osc = camera.audio.createOscillator(), gain = camera.audio.createGain();
-    osc.frequency.value = ok ? 880 : 220; gain.gain.value = 0.15;
-    osc.connect(gain); gain.connect(camera.audio.destination);
-    osc.start(); osc.stop(camera.audio.currentTime + (ok ? 0.12 : 0.35));
+    gain.gain.value = 0.001; osc.connect(gain); gain.connect(camera.audio.destination);
+    osc.start(); osc.stop(camera.audio.currentTime + 0.05);
   } catch (e) { /* no sound */ }
-  if (navigator.vibrate) navigator.vibrate(ok ? 60 : [120, 60, 120]);
+}
+
+function tone(freq, start, length, type, volume) {
+  const ctx = camera.audio, osc = ctx.createOscillator(), gain = ctx.createGain();
+  osc.type = type; osc.frequency.value = freq;
+  gain.gain.setValueAtTime(volume, ctx.currentTime + start);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + length);
+  osc.connect(gain); gain.connect(ctx.destination);
+  osc.start(ctx.currentTime + start); osc.stop(ctx.currentTime + start + length + 0.02);
+}
+
+function beep(ok) {
+  try {
+    unlockAudio();
+    if (ok) { tone(988, 0, 0.1, "sine", 0.5); tone(1319, 0.11, 0.14, "sine", 0.5); }
+    else { tone(220, 0, 0.18, "square", 0.45); tone(196, 0.22, 0.18, "square", 0.45); tone(165, 0.44, 0.3, "square", 0.45); }
+  } catch (e) { /* no sound */ }
+  if (navigator.vibrate) navigator.vibrate(ok ? 60 : [150, 80, 150, 80, 150]);
 }
 
 function renderStocktake(s) {
@@ -1060,6 +1079,7 @@ function renderStocktake(s) {
   start.addEventListener("click", async () => {
     if (!window.isSecureContext) { note("الكاميرا تحتاج رابط HTTPS: فعّل «HTTPS» من إعدادات البرنامج على الكمبيوتر.", "err"); return; }
     start.disabled = true;
+    unlockAudio();                                                       // inside the tap: Safari allows sound from now on
     try {
       await loadZxing();
       stopCamera();
