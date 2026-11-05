@@ -232,6 +232,25 @@ class FinancialAccountRepository(BaseRepository):
                 out[("INVOICE_LIFECYCLE", str(r["id"]))] = (Decimal(str(r["old_value"])), Decimal(str(r["account_signed"])))
         return out
 
+    def invoices_without_money(self, start, end):
+        """Display only (owner 2026-11-05): effective native sale / mixed invoices of the period that left a debt ON the customer and posted NO cash / bank movement (sold wholly on
+        account): the debt is the document's value."""
+        return self._fetch_all(
+            """
+            SELECT i.id AS invoice_id, i.invoice_number, i.invoice_date AS occurred_at, isnap.customer_name_snapshot AS customer_name, i.customer_id,
+                   (SELECT COALESCE(SUM(ct.amount_delta), 0) FROM customer_transactions ct WHERE ct.reference_type = 'INVOICE' AND ct.reference_id = i.id AND ct.amount_delta > 0) AS debt,
+                   EXISTS (SELECT 1 FROM invoice_lines il WHERE il.invoice_id = i.id AND il.line_type = 'BUY_OLD_GOLD') AS has_buy
+            FROM invoices i
+            LEFT JOIN invoice_customer_snapshots isnap ON isnap.invoice_id = i.id
+            WHERE i.invoice_status = 'FINALIZED' AND i.record_origin <> 'LEGACY' AND i.invoice_date >= %s AND i.invoice_date < %s
+              AND EXISTS (SELECT 1 FROM invoice_lines il WHERE il.invoice_id = i.id AND il.line_type IN ('SELL_INVENTORY', 'SELL_OLD_GOLD', 'SELL_UNIDENTIFIED'))
+              AND NOT EXISTS (SELECT 1 FROM cash_movements m WHERE m.reference_type = 'INVOICE' AND m.reference_id = i.id)
+              AND NOT EXISTS (SELECT 1 FROM bank_movements m WHERE m.reference_type = 'INVOICE' AND m.reference_id = i.id)
+              AND NOT EXISTS (SELECT 1 FROM transaction_corrections c WHERE c.source_type = 'INVOICE' AND c.source_id = i.id AND c.correction_type = 'FULL_REVERSAL')
+              AND EXISTS (SELECT 1 FROM customer_transactions ct WHERE ct.reference_type = 'INVOICE' AND ct.reference_id = i.id AND ct.amount_delta > 0)
+            ORDER BY i.invoice_date DESC, i.id DESC
+            """, (start, end))
+
     def exchanges_without_money(self, start, end):
         """Display only: effective exchanges of the period in which the customer owes (signed_amount > 0) that posted NO cash / bank movement (the owner
         settled them separately through customer settlements): the old pieces' value as sold and the customer-account part."""

@@ -165,6 +165,15 @@ class CashViewTests(FinancialTestCase):
         self.assertEqual(sorted(r["amount"] for r in view["out"]["rows"]), ["127000.00", "15005.00"])
         self.assertEqual((view["in"]["total"], view["out"]["total"], view["in"]["count"], view["out"]["count"]), ("142005.00", "142005.00", 1, 2))
 
+    def test_an_invoice_sold_wholly_on_account_shows_its_full_value_in_and_on_the_customer_out(self):
+        self.store.cash_rows = []
+        self.store.no_money_invoices = [{"invoice_id": 31, "invoice_number": "26110503", "occurred_at": datetime(2026, 11, 5, 16, 18), "customer_name": "ام محمد عادل",
+                                         "customer_id": 9, "debt": D("48000"), "has_buy": 0}]
+        view = self.fin.cash_view()
+        self.assertEqual([(r["label"], r["amount"], r["invoice_id"]) for r in view["in"]["rows"]], [("بيع", "48000.00", "31")])
+        self.assertEqual([(r["label"], r["amount"]) for r in view["out"]["rows"]], [("على العميل", "48000.00")])
+        self.assertEqual((view["in"]["total"], view["out"]["total"]), ("48000.00", "48000.00"))
+
     def test_a_customer_payment_names_the_invoice_it_settles(self):
         row = cash_row(8, "1600", "CUSTOMER_PAYMENT", ("1600", 1))
         row["reference_type"], row["reference_id"] = "CUSTOMER_ACCOUNT_SETTLEMENT", 3

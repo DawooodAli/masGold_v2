@@ -71,6 +71,9 @@ class FinRepo:
     def exchanges_without_money(self, start, end):
         return copy.deepcopy(getattr(self.store, "no_money_exchanges", []))
 
+    def invoices_without_money(self, start, end):
+        return copy.deepcopy(getattr(self.store, "no_money_invoices", []))
+
     def payment_invoice_links(self, keys):
         return {tuple(k): v for k, v in getattr(self.store, "payment_links", {}).items()}
 

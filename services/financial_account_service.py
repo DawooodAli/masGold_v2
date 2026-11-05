@@ -449,6 +449,19 @@ class FinancialAccountService:
                         debts[("INVOICE_LIFECYCLE", str(x["id"]))] = (old, account_part)
                 except Exception:
                     pass
+            if label in ("", "SALE", "MIXED") and hasattr(repository, "invoices_without_money"):
+                try:                                               # display only: never break the screen
+                    for x in repository.invoices_without_money(datetime.combine(period[0], time.min), datetime.combine(period[1] + timedelta(days=1), time.min)):
+                        kind = "MIXED" if x["has_buy"] else "SALE"
+                        if label and label != kind:
+                            continue
+                        debt = Decimal(str(x["debt"]))
+                        rows.append({"id": "V" + str(x["invoice_id"]), "amount_delta": debt, "label_key": kind, "invoice_id": x["invoice_id"], "invoice_number": x["invoice_number"],
+                                     "operation_id": None, "reference_id": x["invoice_id"], "occurred_at": x["occurred_at"], "source_reference": x["invoice_number"],
+                                     "customer_name": x["customer_name"], "customer_id": x["customer_id"], "side_total": 0, "side_count": 0, "no_money": True})
+                        debts[("INVOICE", str(x["invoice_id"]))] = debt
+                except Exception:
+                    pass
             if hasattr(repository, "correction_account_debits"):
                 try:                                               # display only: never break the screen
                     candidates = [r for r in rows if r.get("label_key") == "CORRECTION" and Decimal(str(r["amount_delta"])) < 0
