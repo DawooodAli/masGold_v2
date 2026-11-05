@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from math import ceil
 import re
 
@@ -93,7 +93,7 @@ class PrototypeZplPrinter:
             return ""
 
         try:
-            return f"{Decimal(str(value)):.3f}"
+            return str(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))      # owner 2026-11-05: the printed label shows two decimals
         except Exception:
             return str(value)
 
