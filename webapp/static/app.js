@@ -1030,6 +1030,9 @@ function renderStocktake(s) {
   const status = el("div", { class: "msg" });
   const last = el("div", { class: "card" }, el("div", { class: "label", text: "آخر مسح" }), el("div", { class: "value", text: "—" }), el("div", { class: "note", text: "" }));
   const counts = el("div", { class: "note-box", text: "" });
+  const perf = el("div", { class: "note", text: "" });                  // where the time goes: reading the picture / the round trip to the desktop
+  const timing = { read: 0, trip: 0, frames: 0 };
+  const showPerf = () => { perf.textContent = "زمن قراءة الصورة " + timing.read + " م.ث • زمن الإرسال للكمبيوتر " + timing.trip + " م.ث • فريمات " + timing.frames; };
   const video = el("video", { playsinline: true, muted: true, autoplay: true, class: "scanvideo" });
   video.muted = true;
   const note = (text, kind) => { status.className = "msg " + (kind || ""); status.textContent = text; };
@@ -1046,7 +1049,9 @@ function renderStocktake(s) {
     if (now - (camera.seen.get(code) || 0) < 2500) return null;        // the same label held in front of the lens counts once
     camera.seen.set(code, now);
     try {
+      const t0 = performance.now();
       const answer = await call("/api/stocktake_scan", { method: "POST", body: JSON.stringify({ code }) });
+      timing.trip = Math.round(performance.now() - t0); showPerf();
       show(code, answer, quiet);
       return answer.result === "OK";
     } catch (e) {
@@ -1098,7 +1103,9 @@ function renderStocktake(s) {
         if (camera.busy || !camera.reader) return;                        // never queue frames: a slow frame just skips the next tick
         camera.busy = true;
         try {
+          const t0 = performance.now();
           const codes = await scanFrame(Z, reader, video, canvas, part);
+          timing.read = Math.round(performance.now() - t0); timing.frames++; if (timing.frames % 5 === 0 || codes.length) showPerf();
           let good = 0, bad = 0;
           for (const r of await Promise.all(codes.map((code) => send(code, true)))) { if (r === true) good++; else if (r === false) bad++; }
           if (good + bad) { beep(bad === 0); }
@@ -1115,7 +1122,7 @@ function renderStocktake(s) {
   const sendManual = el("button", { class: "btn", text: "إرسال", onclick: () => { const v = manual.value.trim(); if (v) { manual.value = ""; camera.seen.delete(v); send(v); } } });
   const open = s.data && s.data.open;
   note(open ? "الجرد مفتوح على الكمبيوتر: كل قطعة تمسحها تظهر هناك." : "افتح «الجرد بالباركود» على الكمبيوتر أولاً، ثم شغّل الكاميرا.", open ? "" : "warn");
-  s.view = el("div", {}, status, el("div", { class: "filters" }, start, stop), video, last, counts,
+  s.view = el("div", {}, status, el("div", { class: "filters" }, start, stop), video, last, counts, perf,
     el("div", { class: "filters" }, field("باركود يدوي", manual), sendManual),
     el("div", { class: "note-box", text: "الكاميرا تحتاج HTTPS. المسح لا يغيّر المخزون: هو يعدّ القطعة في جلسة الجرد المفتوحة على الكمبيوتر فقط، والاعتماد يتم من هناك." }));
   return s.view;
