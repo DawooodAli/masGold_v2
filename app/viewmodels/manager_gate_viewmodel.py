@@ -6,7 +6,7 @@ from PySide6.QtCore import Property, QEvent, QObject, QTimer, Signal, Slot
 
 from app.workers.invoice_worker import InvoiceWorker
 
-IDLE_LOCK_SECONDS = 300          # owner 2026-11-04: an unlocked manager page left untouched for 5 minutes locks itself
+IDLE_LOCK_SECONDS = 900          # owner 2026-11-05 (was 5 minutes): an unlocked manager page left untouched for 15 minutes locks itself
 _ACTIVITY = {QEvent.MouseButtonPress, QEvent.MouseMove, QEvent.Wheel, QEvent.KeyPress, QEvent.TouchBegin}
 
 
