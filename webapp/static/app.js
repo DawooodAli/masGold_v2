@@ -1060,27 +1060,31 @@ function renderStocktake(s) {
       return false;
     }
   }
-  // ONE label per picture, in any position (owner 2026-11-05): the whole frame is read upright first (the reader also handles a label turned 180 degrees), and only when
-  // nothing reads the frame is turned 90 degrees and read again (a standing label). No TRY_HARDER: that was the slow part.
+  // Up to THREE labels per picture (owner 2026-11-05): the left, middle and right parts (smaller pictures decode much faster than the whole frame), then the whole frame
+  // when nothing was read, and a quarter-turned frame (a standing label) on every second try only. No TRY_HARDER.
+  let tick = 0;
   async function scanFrame(Z, reader, video, canvas, part) {
     const w = video.videoWidth, h = video.videoHeight;
     if (!w || !h) return [];
-    const scale = Math.min(1, 800 / Math.max(w, h));
-    const sw = Math.round(w * scale), sh = Math.round(h * scale);
+    tick++;
+    const found = new Set();
     const read = () => {
-      try { return reader.decode(new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(canvas)))).getText(); } catch (e) { return null; }
+      try { found.add(reader.decode(new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(canvas)))).getText()); } catch (e) { /* nothing readable here */ }
     };
-    canvas.width = sw; canvas.height = sh;
-    part.setTransform(1, 0, 0, 1, 0, 0);
-    part.drawImage(video, 0, 0, sw, sh);
-    let text = read();
-    if (text === null) {
-      canvas.width = sh; canvas.height = sw;
-      part.setTransform(0, 1, -1, 0, sh, 0);                               // quarter turn
-      part.drawImage(video, 0, 0, sw, sh);
-      text = read();
-    }
-    return text === null ? [] : [text];
+    const region = (x, y, rw, rh, turned) => {
+      const scale = Math.min(1, 800 / Math.max(rw, rh));
+      const cw = Math.round(rw * scale), ch = Math.round(rh * scale);
+      if (turned) { canvas.width = ch; canvas.height = cw; part.setTransform(0, 1, -1, 0, ch, 0); }
+      else { canvas.width = cw; canvas.height = ch; part.setTransform(1, 0, 0, 1, 0, 0); }
+      part.drawImage(video, x, y, rw, rh, 0, 0, cw, ch);
+      read();
+    };
+    region(0, 0, w * 0.4, h, false);
+    region(w * 0.3, 0, w * 0.4, h, false);
+    region(w * 0.6, 0, w * 0.4, h, false);
+    if (!found.size) region(0, 0, w, h, false);
+    if (!found.size && tick % 2 === 0) region(0, 0, w, h, true);
+    return [...found].slice(0, 3);
   }
   const start = el("button", { class: "btn primary", text: "تشغيل الكاميرا" });
   start.addEventListener("click", async () => {
@@ -1111,7 +1115,7 @@ function renderStocktake(s) {
           if (good + bad) { beep(bad === 0); }
         } finally { camera.busy = false; }
       }, 150);
-      note("الكاميرا شغالة: باركود واحد في كل مرة، بأي اتجاه.", "");
+      note("الكاميرا شغالة: حتى 3 باركود في نفس الصورة.", "");
     } catch (e) {
       note(e && e.name === "NotAllowedError" ? "لم يُسمح باستخدام الكاميرا: اسمح بها من إعدادات سفاري." : (e && e.message) || "تعذر تشغيل الكاميرا.", "err");
     }
