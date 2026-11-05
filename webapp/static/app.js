@@ -1040,17 +1040,21 @@ function renderStocktake(s) {
   async function scanFrame(Z, reader, video, canvas, part) {
     const w = video.videoWidth, h = video.videoHeight;
     if (!w || !h) return [];
-    const regions = [[0, 0, w, h], [0, 0, w * 0.6, h], [w * 0.4, 0, w * 0.6, h], [0, 0, w, h * 0.6], [0, h * 0.4, w, h * 0.6]];
+    // At most TWO labels (owner 2026-11-05): the left and the right part first; only when neither reads anything, the whole frame once.
     const found = new Set();
-    for (const [x, y, rw, rh] of regions) {
-      canvas.width = Math.round(rw); canvas.height = Math.round(rh);
+    const tryRegion = (x, y, rw, rh) => {
+      const scale = Math.min(1, 800 / rw);                                 // a smaller picture decodes much faster
+      canvas.width = Math.round(rw * scale); canvas.height = Math.round(rh * scale);
       part.drawImage(video, x, y, rw, rh, 0, 0, canvas.width, canvas.height);
       try {
         const bitmap = new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(canvas)));
         found.add(reader.decode(bitmap).getText());
       } catch (e) { /* nothing readable in this part */ }
-    }
-    return [...found];
+    };
+    tryRegion(0, 0, w * 0.55, h);
+    tryRegion(w * 0.45, 0, w * 0.55, h);
+    if (!found.size) tryRegion(0, 0, w, h);
+    return [...found].slice(0, 2);
   }
   const start = el("button", { class: "btn primary", text: "تشغيل الكاميرا" });
   start.addEventListener("click", async () => {
@@ -1060,25 +1064,25 @@ function renderStocktake(s) {
       await loadZxing();
       stopCamera();
       const Z = window.ZXing;
-      const hints = new Map([[Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.CODE_128, Z.BarcodeFormat.EAN_13, Z.BarcodeFormat.EAN_8, Z.BarcodeFormat.CODE_39, Z.BarcodeFormat.ITF, Z.BarcodeFormat.QR_CODE]], [Z.DecodeHintType.TRY_HARDER, true]]);
+      const hints = new Map([[Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.CODE_128, Z.BarcodeFormat.EAN_13, Z.BarcodeFormat.EAN_8, Z.BarcodeFormat.CODE_39, Z.BarcodeFormat.ITF, Z.BarcodeFormat.QR_CODE]]]);
       const reader = new Z.MultiFormatReader();
       reader.setHints(hints);
-      camera.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+      camera.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
       video.srcObject = camera.stream;
       await video.play();
       const canvas = document.createElement("canvas"), part = canvas.getContext("2d", { willReadFrequently: true });
       camera.reader = reader;
       camera.timer = setInterval(async () => {
-        if (camera.busy || !camera.reader) return;
+        if (camera.busy || !camera.reader) return;                        // never queue frames: a slow frame just skips the next tick
         camera.busy = true;
         try {
           const codes = await scanFrame(Z, reader, video, canvas, part);
           let good = 0, bad = 0;
-          for (const code of codes) { const r = await send(code, true); if (r === true) good++; else if (r === false) bad++; }
+          for (const r of await Promise.all(codes.map((code) => send(code, true)))) { if (r === true) good++; else if (r === false) bad++; }
           if (good + bad) { beep(bad === 0); if (codes.length > 1) note("قرأ " + codes.length + " باركود في صورة واحدة: " + good + " تم، " + bad + " مرفوض.", bad ? "warn" : ""); }
         } finally { camera.busy = false; }
-      }, 300);
-      note("الكاميرا شغالة: ممكن أكتر من باركود في نفس الصورة.", "");
+      }, 150);
+      note("الكاميرا شغالة: ممكن باركودين في نفس الصورة.", "");
     } catch (e) {
       note(e && e.name === "NotAllowedError" ? "لم يُسمح باستخدام الكاميرا: اسمح بها من إعدادات سفاري." : (e && e.message) || "تعذر تشغيل الكاميرا.", "err");
     }
