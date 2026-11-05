@@ -1061,29 +1061,25 @@ function renderStocktake(s) {
     }
   }
   // Up to THREE labels per picture (owner 2026-11-05): the left, middle and right parts (smaller pictures decode much faster than the whole frame), then the whole frame
-  // when nothing was read, and a quarter-turned frame (a standing label) on every second try only. No TRY_HARDER.
-  let tick = 0;
+  // when nothing was read. No turning of the picture (owner 2026-11-05: it was the slow part) and no TRY_HARDER.
   async function scanFrame(Z, reader, video, canvas, part) {
     const w = video.videoWidth, h = video.videoHeight;
     if (!w || !h) return [];
-    tick++;
     const found = new Set();
     const read = () => {
       try { found.add(reader.decode(new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(canvas)))).getText()); } catch (e) { /* nothing readable here */ }
     };
-    const region = (x, y, rw, rh, turned) => {
+    const region = (x, y, rw, rh) => {
       const scale = Math.min(1, 800 / Math.max(rw, rh));
       const cw = Math.round(rw * scale), ch = Math.round(rh * scale);
-      if (turned) { canvas.width = ch; canvas.height = cw; part.setTransform(0, 1, -1, 0, ch, 0); }
-      else { canvas.width = cw; canvas.height = ch; part.setTransform(1, 0, 0, 1, 0, 0); }
+      canvas.width = cw; canvas.height = ch;
       part.drawImage(video, x, y, rw, rh, 0, 0, cw, ch);
       read();
     };
-    region(0, 0, w * 0.4, h, false);
-    region(w * 0.3, 0, w * 0.4, h, false);
-    region(w * 0.6, 0, w * 0.4, h, false);
-    if (!found.size) region(0, 0, w, h, false);
-    if (!found.size && tick % 2 === 0) region(0, 0, w, h, true);
+    region(0, 0, w * 0.4, h);
+    region(w * 0.3, 0, w * 0.4, h);
+    region(w * 0.6, 0, w * 0.4, h);
+    if (!found.size) region(0, 0, w, h);
     return [...found].slice(0, 3);
   }
   const start = el("button", { class: "btn primary", text: "تشغيل الكاميرا" });
