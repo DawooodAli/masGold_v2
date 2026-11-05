@@ -976,10 +976,11 @@ function renderReviews(s) {
 }
 
 // ---------------------------------------------------------------- the camera as a stocktake scanner (owner request 2026-11-04): the codes go to the desktop's open الجرد بالباركود session
-const camera = { stream: null, reader: null, last: "", lastAt: 0, audio: null, busy: false };
+const camera = { stream: null, reader: null, timer: null, seen: new Map(), audio: null, busy: false };
 
 function stopCamera() {
-  if (camera.reader) { try { camera.reader.reset(); } catch (e) { /* already stopped */ } camera.reader = null; }
+  if (camera.timer) { clearInterval(camera.timer); camera.timer = null; }
+  camera.reader = null; camera.busy = false;
   if (camera.stream) { camera.stream.getTracks().forEach((t) => t.stop()); camera.stream = null; }
 }
 
@@ -1013,24 +1014,43 @@ function renderStocktake(s) {
   const video = el("video", { playsinline: true, muted: true, autoplay: true, class: "scanvideo" });
   video.muted = true;
   const note = (text, kind) => { status.className = "msg " + (kind || ""); status.textContent = text; };
-  const show = (code, answer) => {
+  const show = (code, answer, quiet) => {
     const ok = answer.result === "OK";
     last.className = "card " + (ok ? "receivable" : "deadcash");
     last.children[1].textContent = code;
     last.children[2].textContent = answer.message || answer.result;
     counts.textContent = answer.scanned !== undefined ? "تم جرد " + answer.scanned + " قطعة (" + answer.weight + " جرام) • متبقي " + answer.remaining : "";
-    beep(ok);
+    if (!quiet) beep(ok);
   };
-  async function send(code) {
+  async function send(code, quiet) {
     const now = Date.now();
-    if (code === camera.last && now - camera.lastAt < 2500) return;     // the same label held in front of the lens counts once
-    camera.last = code; camera.lastAt = now;
+    if (now - (camera.seen.get(code) || 0) < 2500) return null;        // the same label held in front of the lens counts once
+    camera.seen.set(code, now);
     try {
-      show(code, await call("/api/stocktake_scan", { method: "POST", body: JSON.stringify({ code }) }));
+      const answer = await call("/api/stocktake_scan", { method: "POST", body: JSON.stringify({ code }) });
+      show(code, answer, quiet);
+      return answer.result === "OK";
     } catch (e) {
-      if (e.status === 401) { stopCamera(); showLogin("انتهت الجلسة، سجّل الدخول من جديد."); return; }
+      if (e.status === 401) { stopCamera(); showLogin("انتهت الجلسة، سجّل الدخول من جديد."); return null; }
       note(e.message, "err");
+      return false;
     }
+  }
+  // Several labels in one picture (owner 2026-11-05): the frame is read whole and in overlapping parts, every distinct code is sent once.
+  async function scanFrame(Z, reader, video, canvas, part) {
+    const w = video.videoWidth, h = video.videoHeight;
+    if (!w || !h) return [];
+    const regions = [[0, 0, w, h], [0, 0, w * 0.6, h], [w * 0.4, 0, w * 0.6, h], [0, 0, w, h * 0.6], [0, h * 0.4, w, h * 0.6]];
+    const found = new Set();
+    for (const [x, y, rw, rh] of regions) {
+      canvas.width = Math.round(rw); canvas.height = Math.round(rh);
+      part.drawImage(video, x, y, rw, rh, 0, 0, canvas.width, canvas.height);
+      try {
+        const bitmap = new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(canvas)));
+        found.add(reader.decode(bitmap).getText());
+      } catch (e) { /* nothing readable in this part */ }
+    }
+    return [...found];
   }
   const start = el("button", { class: "btn primary", text: "تشغيل الكاميرا" });
   start.addEventListener("click", async () => {
@@ -1041,9 +1061,24 @@ function renderStocktake(s) {
       stopCamera();
       const Z = window.ZXing;
       const hints = new Map([[Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.CODE_128, Z.BarcodeFormat.EAN_13, Z.BarcodeFormat.EAN_8, Z.BarcodeFormat.CODE_39, Z.BarcodeFormat.ITF, Z.BarcodeFormat.QR_CODE]], [Z.DecodeHintType.TRY_HARDER, true]]);
-      camera.reader = new Z.BrowserMultiFormatReader(hints, 250);
-      await camera.reader.decodeFromConstraints({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } } }, video, (result) => { if (result) send(result.getText()); });
-      note("الكاميرا شغالة: قرّب الباركود من العدسة.", "");
+      const reader = new Z.MultiFormatReader();
+      reader.setHints(hints);
+      camera.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+      video.srcObject = camera.stream;
+      await video.play();
+      const canvas = document.createElement("canvas"), part = canvas.getContext("2d", { willReadFrequently: true });
+      camera.reader = reader;
+      camera.timer = setInterval(async () => {
+        if (camera.busy || !camera.reader) return;
+        camera.busy = true;
+        try {
+          const codes = await scanFrame(Z, reader, video, canvas, part);
+          let good = 0, bad = 0;
+          for (const code of codes) { const r = await send(code, true); if (r === true) good++; else if (r === false) bad++; }
+          if (good + bad) { beep(bad === 0); if (codes.length > 1) note("قرأ " + codes.length + " باركود في صورة واحدة: " + good + " تم، " + bad + " مرفوض.", bad ? "warn" : ""); }
+        } finally { camera.busy = false; }
+      }, 300);
+      note("الكاميرا شغالة: ممكن أكتر من باركود في نفس الصورة.", "");
     } catch (e) {
       note(e && e.name === "NotAllowedError" ? "لم يُسمح باستخدام الكاميرا: اسمح بها من إعدادات سفاري." : (e && e.message) || "تعذر تشغيل الكاميرا.", "err");
     }
@@ -1051,7 +1086,7 @@ function renderStocktake(s) {
   });
   const stop = el("button", { class: "btn", text: "إيقاف الكاميرا", onclick: () => { stopCamera(); note("الكاميرا متوقفة.", ""); } });
   const manual = el("input", { type: "text", inputmode: "numeric", placeholder: "أو اكتب الباركود", autocomplete: "off" });
-  const sendManual = el("button", { class: "btn", text: "إرسال", onclick: () => { const v = manual.value.trim(); if (v) { manual.value = ""; camera.last = ""; send(v); } } });
+  const sendManual = el("button", { class: "btn", text: "إرسال", onclick: () => { const v = manual.value.trim(); if (v) { manual.value = ""; camera.seen.delete(v); send(v); } } });
   const open = s.data && s.data.open;
   note(open ? "الجرد مفتوح على الكمبيوتر: كل قطعة تمسحها تظهر هناك." : "افتح «الجرد بالباركود» على الكمبيوتر أولاً، ثم شغّل الكاميرا.", open ? "" : "warn");
   s.view = el("div", {}, status, el("div", { class: "filters" }, start, stop), video, last, counts,
