@@ -1,4 +1,4 @@
-"""رصيد القفل (persistence only): the weight-only clasp ledger per karat. Every write runs on the caller transaction; nothing here commits and no row is ever updated or deleted."""
+"""رصيد الرفايع (persistence only): the weight-only clasp ledger per karat. Every write runs on the caller transaction; nothing here commits and no row is ever updated or deleted."""
 import json
 from decimal import Decimal
 

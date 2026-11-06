@@ -62,7 +62,7 @@ class ClaspStockTests(unittest.TestCase):
     def setUp(self):
         self.ledger = Ledger()
         self.service = service_for(self.ledger)
-        self.service.receive(1, "50.000", "قفل جديد", str(uuid4()))
+        self.service.receive(1, "50.000", "رفايع جديدة", str(uuid4()))
 
     def test_entry_and_adjustments_post_signed_grams_with_reason_and_audit(self):
         self.service.adjust(1, "OUT", "12.250", "اتباع بدون فاتورة", str(uuid4()))
@@ -89,12 +89,12 @@ class ClaspStockTests(unittest.TestCase):
 
     def test_an_exact_retry_replays_and_a_different_payload_is_refused(self):
         key = str(uuid4())
-        first = self.service.receive(1, "3.000", "قفل", key)
-        again = self.service.receive(1, "3.000", "قفل", key)
+        first = self.service.receive(1, "3.000", "رفايع", key)
+        again = self.service.receive(1, "3.000", "رفايع", key)
         self.assertTrue(again["replayed"])
         self.assertEqual((again["movement_id"], len(self.ledger.movements)), (first["movement_id"], 2))
         with self.assertRaises(ClaspStockError) as caught:
-            self.service.receive(1, "4.000", "قفل", key)
+            self.service.receive(1, "4.000", "رفايع", key)
         self.assertEqual(caught.exception.code, "REQUEST_CONFLICT")
 
     def test_only_the_manage_right_writes_and_a_viewer_may_read(self):

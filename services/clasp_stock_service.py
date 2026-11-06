@@ -1,4 +1,4 @@
-"""رصيد القفل: the clasp (قفل) is a loose part with no barcode, so it is kept as WEIGHT ONLY per karat (migration 098, insert-only signed ledger, balance = SUM). The employee
+"""رصيد الرفايع: the rafayea (رفايع, loose parts) is a loose part with no barcode, so it is kept as WEIGHT ONLY per karat (migration 098, insert-only signed ledger, balance = SUM). The employee
 enters the weight («إضافة وزن») or corrects it («زيادة» / «نقص» with a mandatory reason). A removal can never take the balance below zero. Right CLASP_STOCK_MANAGE is rechecked in
 the transaction (the actor is the AppSession user); one request key makes a retry harmless. The invoice sale of a clasp is a separate slice."""
 import uuid
@@ -50,11 +50,11 @@ class ClaspStockService:
         if _expected_actor is not None and not self._session.is_current(_expected_actor):
             raise PermissionError("انتهت جلسة الدخول.")
         if PERMISSION not in actor.permissions and "INVENTORY_VIEW" not in actor.permissions:
-            raise PermissionError("ليس لديك صلاحية عرض رصيد القفل.")
+            raise PermissionError("ليس لديك صلاحية عرض رصيد الرفايع.")
         with self._transaction() as connection:
             repository = self._repository(connection)
             if not repository.has_schema():
-                raise ClaspStockError("SCHEMA_OUTDATED", "قاعدة البيانات تحتاج تحديث 098 قبل استخدام رصيد القفل.")
+                raise ClaspStockError("SCHEMA_OUTDATED", "قاعدة البيانات تحتاج تحديث 098 قبل استخدام رصيد الرفايع.")
             balances = repository.balances()
             recent = repository.recent()
         return {"balances": [{"karat_id": str(r["karat_id"]), "name": r["karat_name"], "karat_value": r["karat_value"], "grams": str(Decimal(str(r["grams"])).quantize(THOUSANDTH))} for r in balances],
@@ -75,7 +75,7 @@ class ClaspStockService:
         if expected_actor is not None and not self._session.is_current(expected_actor):
             raise PermissionError("انتهت جلسة الدخول.")
         if PERMISSION not in session_actor.permissions:
-            raise PermissionError("ليس لديك صلاحية تعديل رصيد القفل.")
+            raise PermissionError("ليس لديك صلاحية تعديل رصيد الرفايع.")
         try:
             karat = int(str(karat_id))
         except (TypeError, ValueError):
@@ -95,7 +95,7 @@ class ClaspStockService:
             actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
             repository = self._repository(connection)
             if not repository.has_schema():
-                raise ClaspStockError("SCHEMA_OUTDATED", "قاعدة البيانات تحتاج تحديث 098 قبل استخدام رصيد القفل.")
+                raise ClaspStockError("SCHEMA_OUTDATED", "قاعدة البيانات تحتاج تحديث 098 قبل استخدام رصيد الرفايع.")
             row = repository.karat(karat)
             if row is None or not row["is_active"]:
                 raise ClaspStockError("KARAT_INVALID", "العيار غير موجود أو غير نشط.")
@@ -103,12 +103,12 @@ class ClaspStockService:
             prior = repository.by_key(key)
             if prior is not None:                                                    # an exact retry answers with the original, a different payload is refused
                 if int(prior["karat_id"]) != karat or Decimal(str(prior["delta_grams"])) != delta or prior["movement_code"] != code or int(prior["created_by_user_id"]) != int(actor.user_id):
-                    raise ClaspStockError("REQUEST_CONFLICT", "طلب القفل مستخدم لعملية مختلفة.")
+                    raise ClaspStockError("REQUEST_CONFLICT", "طلب الرفايع مستخدم لعملية مختلفة.")
                 return {"movement_id": str(prior["id"]), "karat": row["karat_value"], "delta": str(delta), "balance_after": str(before), "replayed": True}
             if delta < 0 and value > before:
-                raise ClaspStockError("CLASP_SHORTAGE", f"رصيد القفل عيار {row['karat_value']} {before:,.3f} جرام فقط، لا يكفي لنقص {value:,.3f}.")
+                raise ClaspStockError("CLASP_SHORTAGE", f"رصيد الرفايع عيار {row['karat_value']} {before:,.3f} جرام فقط، لا يكفي لنقص {value:,.3f}.")
             movement_id = repository.insert(karat_id=karat, code=code, delta=delta, reason=reason, request_key=key, user_id=actor.user_id)
-            repository.audit(user_id=actor.user_id, movement_id=movement_id, description=f"{LABELS[code]} قفل عيار {row['karat_value']} بمقدار {value:,.3f} جرام",
+            repository.audit(user_id=actor.user_id, movement_id=movement_id, description=f"{LABELS[code]} رفايع عيار {row['karat_value']} بمقدار {value:,.3f} جرام",
                              metadata={"code": code, "karat": row["karat_value"], "grams": str(value), "reason": reason, "balance_before": str(before), "balance_after": str(before + delta)})
             if not self._session.is_current(session_actor):
                 raise PermissionError("انتهت جلسة الدخول.")
