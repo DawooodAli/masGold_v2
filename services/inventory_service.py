@@ -736,13 +736,15 @@ class InventoryService:
     # BARCODE STOCKTAKE — الجرد بالباركود (read only)
     # ========================================================
 
-    def get_stocktake_source(self, item_type_id=None, karat_id=None) -> list[dict]:
+    def get_stocktake_source(self, item_type_id=None, karat_id=None, factory_id=None) -> list[dict]:
         """The expected pieces of one counting scope — the same current-stock predicate as the
         balance. Loaded once per session; scans are resolved against this set in memory."""
         item_type_id = self._optional_id(item_type_id)
         karat_id = self._optional_id(karat_id)
+        factory_id = self._optional_id(factory_id)
         with self._transaction() as transaction:
-            rows = self._repository(transaction.connection).get_stocktake_source(item_type_id, karat_id)
+            repository = self._repository(transaction.connection)
+            rows = repository.get_stocktake_source(item_type_id, karat_id, factory_id) if factory_id is not None else repository.get_stocktake_source(item_type_id, karat_id)
         for row in rows:
             row["weight_grams"] = Decimal(row["weight_grams"]).quantize(Decimal("0.001"))
         return rows

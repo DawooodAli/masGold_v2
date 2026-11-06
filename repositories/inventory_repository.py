@@ -261,7 +261,7 @@ class InventoryRepository(BaseRepository):
     # BARCODE STOCKTAKE — الجرد بالباركود (read only source set)
     # ========================================================
 
-    def get_stocktake_source(self, item_type_id: int | None = None, karat_id: int | None = None) -> list[dict]:
+    def get_stocktake_source(self, item_type_id: int | None = None, karat_id: int | None = None, factory_id: int | None = None) -> list[dict]:
         """The pieces expected on the shelf for one counting scope (same predicate as the balance)."""
         params = []
         where = CURRENT_STOCK
@@ -271,6 +271,9 @@ class InventoryRepository(BaseRepository):
         if karat_id is not None:
             where += " AND ii.karat_id = %s"
             params.append(karat_id)
+        if factory_id is not None:
+            where += " AND ii.factory_id = %s"
+            params.append(factory_id)
         return self._fetch_all(
             f"""
             SELECT
@@ -301,6 +304,7 @@ class InventoryRepository(BaseRepository):
                 "SELECT id, name FROM item_types WHERE is_active = TRUE ORDER BY sort_order, name"),
             "karats": self._fetch_all(
                 "SELECT id, karat_value, name FROM karats WHERE is_active = TRUE ORDER BY sort_order, karat_value"),
+            "factories": self._fetch_all("SELECT id, name FROM factories WHERE is_active = TRUE ORDER BY name"),
         }
 
     def get_stock_weight_by_karat(self) -> list[dict]:

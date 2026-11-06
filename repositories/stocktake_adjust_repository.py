@@ -15,7 +15,7 @@ class StocktakeAdjustRepository(BaseRepository):
     def adjustment_by_key(self, request_key):
         return self._fetch_one("SELECT id, code, request_hash, written_off_count, written_off_grams FROM stocktake_adjustments WHERE request_key = %s", (request_key,))
 
-    def scope_pieces(self, item_type_id, karat_id):
+    def scope_pieces(self, item_type_id, karat_id, factory_id=None):
         """Every piece IN_STOCK of the scope, LOCKED (the same predicate as the stocktake source)."""
         where, params = "ii.inventory_status = 'IN_STOCK'", []
         if item_type_id is not None:
@@ -24,6 +24,9 @@ class StocktakeAdjustRepository(BaseRepository):
         if karat_id is not None:
             where += " AND ii.karat_id = %s"
             params.append(karat_id)
+        if factory_id is not None:
+            where += " AND ii.factory_id = %s"
+            params.append(factory_id)
         return self._fetch_all(
             f"""
             SELECT ii.id, ii.karat_id, k.karat_value, ii.weight_grams, ii.stock_classification,

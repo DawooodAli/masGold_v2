@@ -46,9 +46,10 @@ Item {
     // Opening the screen begins a fresh session and puts the cursor in the scanner field.
     onVisibleChanged: {
         if (visible && vm) {
-            vm.start()
+            vm.resume()                        // a count in progress survives a visit to another page
             vm.screenOpened()
             clearFlash()
+            syncFilters()
             scanField.forceActiveFocus()
         } else if (!visible && vm) {
             vm.screenClosed()
@@ -88,8 +89,9 @@ Item {
         if (!vm) return
         var itemTypeId = idAt(vm.itemTypeOptions, itemTypeFilter.currentIndex)
         var karatId = idAt(vm.karatOptions, karatFilter.currentIndex)
-        if (itemTypeId === vm.itemTypeId && karatId === vm.karatId) return
-        if (!vm.applyFilters(itemTypeId, karatId, false)) {
+        var factoryId = idAt(vm.factoryOptions, factoryFilter.currentIndex)
+        if (itemTypeId === vm.itemTypeId && karatId === vm.karatId && factoryId === vm.factoryId) return
+        if (!vm.applyScope(itemTypeId, karatId, factoryId, false)) {
             confirmDialog.action = "filters"           // scans exist: confirm before a new scope
             confirmDialog.open()
             return
@@ -100,7 +102,8 @@ Item {
 
     function syncFilters() {
         if (!vm) return
-        var types = vm.itemTypeOptions, karats = vm.karatOptions
+        var types = vm.itemTypeOptions, karats = vm.karatOptions, factories = vm.factoryOptions
+        for (var f = 0; f < factories.length; f++) if (Number(factories[f].id) === vm.factoryId) factoryFilter.currentIndex = f
         for (var i = 0; i < types.length; i++) if (Number(types[i].id) === vm.itemTypeId) itemTypeFilter.currentIndex = i
         for (var j = 0; j < karats.length; j++) if (Number(karats[j].id) === vm.karatId) karatFilter.currentIndex = j
     }
@@ -255,6 +258,15 @@ Item {
                     objectName: "stocktakeItemTypeFilter"
                     Layout.preferredWidth: 180
                     model: page.vm ? page.vm.itemTypeOptions : []
+                    textRole: "name"
+                    font.family: theme.fontFamily
+                    onActivated: page.requestFilters()
+                }
+                ComboBox {
+                    id: factoryFilter
+                    objectName: "stocktakeFactoryFilter"
+                    Layout.preferredWidth: 170
+                    model: page.vm ? page.vm.factoryOptions : []
                     textRole: "name"
                     font.family: theme.fontFamily
                     onActivated: page.requestFilters()
@@ -480,8 +492,9 @@ Item {
                         if (confirmDialog.action === "reset")
                             page.vm.reset(true)
                         else
-                            page.vm.applyFilters(page.idAt(page.vm.itemTypeOptions, itemTypeFilter.currentIndex),
-                                                 page.idAt(page.vm.karatOptions, karatFilter.currentIndex), true)
+                            page.vm.applyScope(page.idAt(page.vm.itemTypeOptions, itemTypeFilter.currentIndex),
+                                               page.idAt(page.vm.karatOptions, karatFilter.currentIndex),
+                                               page.idAt(page.vm.factoryOptions, factoryFilter.currentIndex), true)
                         page.clearFlash()
                         confirmDialog.close()
                     }

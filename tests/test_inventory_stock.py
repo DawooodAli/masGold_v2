@@ -48,15 +48,17 @@ class Repo:
             g["weight_grams"] += p["weight_grams"]
         return [groups[k] for k in sorted(groups)]
 
-    def get_stocktake_source(self, item_type_id=None, karat_id=None):
+    def get_stocktake_source(self, item_type_id=None, karat_id=None, factory_id=None):
         return [dict(p) for p in self._current()
                 if (item_type_id is None or p["item_type_id"] == item_type_id)
-                and (karat_id is None or p["karat_id"] == karat_id)]
+                and (karat_id is None or p["karat_id"] == karat_id)
+                and (factory_id is None or p.get("factory_id") == factory_id)]
 
     def get_stocktake_filters(self):
         types = sorted({(p["item_type_id"], p["item_type_name"]) for p in self.store.pieces}, key=lambda t: t[1])
         return {"item_types": [{"id": i, "name": n} for i, n in types],
-                "karats": [{"id": k[0], "karat_value": k[1], "name": f"{k[1]}K"} for k in (K21, K18, K24)]}
+                "karats": [{"id": k[0], "karat_value": k[1], "name": f"{k[1]}K"} for k in (K21, K18, K24)],
+                "factories": [{"id": 4, "name": "مصنع أ"}, {"id": 5, "name": "مصنع ب"}]}
 
     # manual entry
     def get_active_item_type_by_id(self, item_type_id):
@@ -465,6 +467,25 @@ class StocktakeTests(unittest.TestCase):
         ring = next(o for o in self.vm.itemTypeOptions if o["name"] == "خاتم")
         self.vm.applyFilters(int(ring["id"]), 0, False)
         self.assertEqual((self.vm.remainingCount, self.vm.remainingWeightText), (2, "7.73"))
+
+    def test_the_factory_filter_narrows_the_scope_and_is_in_the_approval_payload(self):
+        self.store.pieces[0]["factory_id"] = 4
+        self.vm.start()
+        factory = next(o for o in self.vm.factoryOptions if o["name"] == "مصنع أ")
+        self.assertTrue(self.vm.applyScope(0, 0, int(factory["id"]), False))
+        self.assertEqual(self.vm.remainingCount, 1)
+        self.assertEqual(self.vm.approvalPayload()["factory"], factory["id"])
+        self.assertTrue(self.vm.applyScope(0, 0, 0, False))
+        self.assertEqual(self.vm.remainingCount, 6)
+
+    def test_a_count_in_progress_survives_leaving_the_screen(self):
+        self.vm.scan("01261001")
+        self.vm.screenClosed()
+        self.vm.resume()
+        self.assertEqual(self.vm.scannedCount, 1)
+        self.vm.reset(True)
+        self.vm.resume()                                                   # nothing scanned: a fresh session
+        self.assertEqual(self.vm.scannedCount, 0)
 
     def test_reset_restores_the_full_set_and_keeps_filters(self):
         k21 = next(o for o in self.vm.karatOptions if o["name"] == "عيار 21")

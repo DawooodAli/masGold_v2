@@ -31,7 +31,8 @@ class StocktakeViewModel(QObject):
         super().__init__(parent)
         self._service = service or InventoryService()
         self._item_types, self._karats = [], []
-        self._item_type_id, self._karat_id = 0, 0
+        self._item_type_id, self._karat_id, self._factory_id = 0, 0, 0
+        self._factories = []
         self._rows = {}                  # inventory_item_id -> source row (Decimal weight)
         self._by_barcode = {}            # barcode -> inventory_item_id
         self._remaining, self._scanned = [], []      # ordered ids; scanned is newest first
@@ -125,7 +126,8 @@ class StocktakeViewModel(QObject):
     # ------------------------------------------------------------ session
     def _load_source(self):
         try:
-            rows = self._service.get_stocktake_source(self._item_type_id or None, self._karat_id or None)
+            rows = (self._service.get_stocktake_source(self._item_type_id or None, self._karat_id or None, self._factory_id)
+                    if self._factory_id else self._service.get_stocktake_source(self._item_type_id or None, self._karat_id or None))
         except Exception as exc:
             rows, self._error = [], "تعذر تحميل الجرد: " + str(exc)
         else:
@@ -142,6 +144,15 @@ class StocktakeViewModel(QObject):
         self.changed.emit()
 
     @Slot()
+    def resume(self):
+        """Coming back to the screen: a count that already has scans is KEPT (the employee only left for another page); otherwise a fresh session starts.
+        Only reset, a new scope, approval or logout discard it."""
+        if self._loaded and self._scanned:
+            self.changed.emit()
+            return
+        self.start()
+
+    @Slot()
     def start(self):
         """Opening the screen begins a fresh session (filters loaded once, then the source set)."""
         if not self._item_types and not self._karats:
@@ -149,6 +160,7 @@ class StocktakeViewModel(QObject):
                 filters = self._service.get_stocktake_filters()
                 self._item_types = [{"id": str(r["id"]), "name": r["name"]} for r in filters["item_types"]]
                 self._karats = [{"id": str(r["id"]), "name": f"عيار {r['karat_value']}"} for r in filters["karats"]]
+                self._factories = [{"id": str(r["id"]), "name": r["name"]} for r in filters.get("factories", [])]
             except Exception as exc:
                 self._error = "تعذر تحميل الجرد: " + str(exc)
         self._load_source()
@@ -156,9 +168,14 @@ class StocktakeViewModel(QObject):
     @Slot(int, int, bool, result=bool)
     def applyFilters(self, item_type_id, karat_id, confirmed):
         """A new scope rebuilds the session; refused (returns False) while scans exist unless confirmed."""
+        return self.applyScope(item_type_id, karat_id, self._factory_id, confirmed)
+
+    @Slot(int, int, int, bool, result=bool)
+    def applyScope(self, item_type_id, karat_id, factory_id, confirmed):
+        """Type, karat and factory together (0 = all)."""
         if self._scanned and not confirmed:
             return False
-        self._item_type_id, self._karat_id = max(int(item_type_id), 0), max(int(karat_id), 0)
+        self._item_type_id, self._karat_id, self._factory_id = max(int(item_type_id), 0), max(int(karat_id), 0), max(int(factory_id), 0)
         self._load_source()
         return True
 
@@ -300,7 +317,7 @@ class StocktakeViewModel(QObject):
     @Slot(result="QVariantMap")
     def approvalPayload(self):
         """What the approval needs: the scope and the two id lists of this session (the service re-derives every figure from the locked database rows)."""
-        return {"itemType": str(self._item_type_id), "karat": str(self._karat_id), "scanned": list(self._scanned), "remaining": list(self._remaining)}
+        return {"itemType": str(self._item_type_id), "karat": str(self._karat_id), "factory": str(self._factory_id), "scanned": list(self._scanned), "remaining": list(self._remaining)}
 
     @Property(bool, notify=changed)
     def hasScanned(self):
@@ -319,12 +336,20 @@ class StocktakeViewModel(QObject):
         return [{"id": "0", "name": "كل الأصناف"}] + self._item_types
 
     @Property("QVariantList", notify=changed)
+    def factoryOptions(self):
+        return [{"id": "0", "name": "كل المصانع"}] + self._factories
+
+    @Property("QVariantList", notify=changed)
     def karatOptions(self):
         return [{"id": "0", "name": "كل العيارات"}] + self._karats
 
     @Property(int, notify=changed)
     def itemTypeId(self):
         return self._item_type_id
+
+    @Property(int, notify=changed)
+    def factoryId(self):
+        return self._factory_id
 
     @Property(int, notify=changed)
     def karatId(self):

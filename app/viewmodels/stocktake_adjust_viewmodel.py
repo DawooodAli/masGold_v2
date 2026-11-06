@@ -46,8 +46,9 @@ class StocktakeAdjustViewModel(QObject):
     @Slot("QVariantMap", str, str, bool)
     def approve(self, payload, reason, note, confirmed):
         data = dict(payload or {})
+        extra = {"factory_id": data["factory"]} if str(data.get("factory") or "0") not in ("", "0") else {}
         self._start(lambda _expected_actor, key: self._service.approve(data.get("itemType"), data.get("karat"), data.get("scanned") or [], data.get("remaining") or [], reason, note,
-                                                                         bool(confirmed), key, _expected_actor=_expected_actor))
+                                                                         bool(confirmed), key, _expected_actor=_expected_actor, **extra))
 
     @Slot("QVariantList", str, str, bool)
     def writeOff(self, piece_ids, reason, note, confirmed):

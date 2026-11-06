@@ -84,15 +84,15 @@ class StocktakeAdjustService:
                 raise PermissionError("انتهت جلسة الدخول.")
         return {"piece_id": raw, "restored": True}
 
-    def approve(self, item_type_id, karat_id, scanned_ids, remaining_ids, reason_code, note, confirmed, request_key, *, _expected_actor=None):
+    def approve(self, item_type_id, karat_id, scanned_ids, remaining_ids, reason_code, note, confirmed, request_key, *, factory_id=None, _expected_actor=None):
         """The whole counted scope: scanned + remaining must be exactly the pieces IN_STOCK of the scope."""
-        return self._post("SCOPE", item_type_id, karat_id, scanned_ids, remaining_ids, reason_code, note, confirmed, request_key, _expected_actor)
+        return self._post("SCOPE", item_type_id, karat_id, scanned_ids, remaining_ids, reason_code, note, confirmed, request_key, _expected_actor, factory_id)
 
     def write_off_pieces(self, piece_ids, reason_code, note, confirmed, request_key, *, _expected_actor=None):
         """Selected pieces only (a row deleted from المتبقي): each must still be IN_STOCK; no scope is claimed, so the stored reconciliation has found = 0."""
         return self._post("PIECES", None, None, [], piece_ids, reason_code, note, confirmed, request_key, _expected_actor)
 
-    def _post(self, mode, item_type_id, karat_id, scanned_ids, remaining_ids, reason_code, note, confirmed, request_key, _expected_actor):
+    def _post(self, mode, item_type_id, karat_id, scanned_ids, remaining_ids, reason_code, note, confirmed, request_key, _expected_actor, factory_id=None):
         session_actor = self._session.require_authenticated()
         if _expected_actor is not None and not self._session.is_current(_expected_actor):
             raise PermissionError("انتهت جلسة الدخول.")
@@ -109,7 +109,7 @@ class StocktakeAdjustService:
         key = str(request_key or "").strip()
         if not 8 <= len(key) <= 64:
             raise StocktakeError("REQUEST_KEY_INVALID", "مفتاح الطلب غير صالح.")
-        type_id, karat = _optional_id(item_type_id), _optional_id(karat_id)
+        type_id, karat, factory = _optional_id(item_type_id), _optional_id(karat_id), _optional_id(factory_id)
         scanned, remaining = _ids(scanned_ids), _ids(remaining_ids)
         if not remaining:
             raise StocktakeError("NOTHING_TO_WRITE_OFF", "لا توجد قطع متبقية لشطبها.")
@@ -117,8 +117,10 @@ class StocktakeAdjustService:
             raise StocktakeError("NOTHING_FOUND", "لم يتم مسح أي قطعة: لا يمكن اعتماد جرد فارغ.")
         if set(scanned) & set(remaining):
             raise StocktakeError("IDS_INVALID", "بيانات الجرد غير صالحة، أعد الجرد.")
-        digest = hashlib.sha256(json.dumps({"mode": mode, "type": type_id, "karat": karat, "scanned": sorted(scanned), "remaining": sorted(remaining), "reason": reason, "note": note},
-                                           sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+        payload = {"mode": mode, "type": type_id, "karat": karat, "scanned": sorted(scanned), "remaining": sorted(remaining), "reason": reason, "note": note}
+        if factory is not None:
+            payload["factory"] = factory                                    # the hash of a scope without a factory stays what it always was
+        digest = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
         off_ids = set(remaining)
         with self._transaction() as connection:
             actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
@@ -131,7 +133,7 @@ class StocktakeAdjustService:
                     raise StocktakeError("REQUEST_CONFLICT", "مفتاح الطلب مستخدم لطلب مختلف.")
                 return {"code": existing["code"], "id": str(existing["id"]), "written_off_count": int(existing["written_off_count"]),
                         "written_off_grams": Decimal(str(existing["written_off_grams"])), "replayed": True}
-            pieces = {int(r["id"]): r for r in (repository.scope_pieces(type_id, karat) if mode == "SCOPE" else repository.pieces_by_ids(sorted(off_ids)))}
+            pieces = {int(r["id"]): r for r in (repository.scope_pieces(type_id, karat, factory) if mode == "SCOPE" else repository.pieces_by_ids(sorted(off_ids)))}
             if set(pieces) != set(scanned) | off_ids:
                 raise StocktakeError("STOCK_CHANGED", "المخزون تغيّر أثناء الجرد (قطعة اتباعت أو اتضافت). أعد الجرد ثم اعتمده.")
             if mode == "SCOPE" and any(not pieces[i].get("barcode_value") for i in off_ids):

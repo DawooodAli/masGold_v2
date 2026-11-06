@@ -32,7 +32,7 @@ class Repo:
     def adjustment_by_key(self, key):
         return self.store.adjustments.get(key)
 
-    def scope_pieces(self, item_type_id, karat_id):
+    def scope_pieces(self, item_type_id, karat_id, factory_id=None):
         return [{"id": i, "karat_id": 2 if k == "21" else 1, "karat_value": int(k), "weight_grams": D(w), "stock_classification": "NEW_STOCK", "barcode_value": f"B{i}"}
                 for i, (k, w) in sorted(self.store.pieces.items()) if i not in self.store.removed and (karat_id is None or karat_id == (2 if k == "21" else 1))]
 
@@ -177,7 +177,7 @@ class ApprovalTests(unittest.TestCase):
         service = self.build()
         original = Repo.scope_pieces
 
-        def without_barcode(self, item_type_id, karat_id):
+        def without_barcode(self, item_type_id, karat_id, factory_id=None):
             return [dict(r, barcode_value=None) if r["id"] == 4 else r for r in original(self, item_type_id, karat_id)]
         Repo.scope_pieces = without_barcode
         try:
