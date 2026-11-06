@@ -214,6 +214,9 @@ class ApplicationController(QObject):
         if self.operational_viewmodels.get("oldGoldAdjustVM") is None:
             from app.viewmodels.old_gold_adjustment_viewmodel import create_old_gold_adjustment_viewmodel
             self.operational_viewmodels["oldGoldAdjustVM"] = create_old_gold_adjustment_viewmodel(self.session)
+        if self.operational_viewmodels.get("claspStockVM") is None:
+            from app.viewmodels.clasp_stock_viewmodel import create_clasp_stock_viewmodel
+            self.operational_viewmodels["claspStockVM"] = create_clasp_stock_viewmodel(self.session)
         if self.operational_viewmodels.get("stocktakeAdjustVM") is None:
             from app.viewmodels.stocktake_adjust_viewmodel import create_stocktake_adjust_viewmodel
             self.operational_viewmodels["stocktakeAdjustVM"] = create_stocktake_adjust_viewmodel(self.session)

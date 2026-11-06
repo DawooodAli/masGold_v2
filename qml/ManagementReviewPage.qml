@@ -17,6 +17,8 @@ Item {
     signal openingBalanceRequested()
     signal legacyVoidRequested()
     signal scrapAdjustRequested()
+    signal claspRequested()
+    property bool claspAvailable: false
     signal inventoryRequested()
     property bool legacyVoidAvailable: false
     property bool scrapAdjustAvailable: false
@@ -930,6 +932,13 @@ Item {
                 text: "⚖  تعديل رصيد الكسر"
                 accent: theme.amber
                 onClicked: reviewPage.scrapAdjustRequested()
+            }
+            ActionButton {
+                objectName: "reviewsOpenClasp"
+                visible: reviewPage.claspAvailable
+                text: "🧷  رصيد الرفايع"
+                accent: theme.amber
+                onClicked: reviewPage.claspRequested()
             }
             ActionButton {
                 objectName: "reviewsOpenOpening"

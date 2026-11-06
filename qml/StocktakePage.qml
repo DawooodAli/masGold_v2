@@ -9,6 +9,8 @@ Item {
     objectName: "stocktakePage"
 
     signal backRequested()
+    signal claspRequested()
+    property bool claspAvailable: false
 
     readonly property var vm: typeof stocktakeVM !== "undefined" ? stocktakeVM : null
     readonly property var adjustVM: typeof stocktakeAdjustVM !== "undefined" ? stocktakeAdjustVM : null
@@ -279,6 +281,13 @@ Item {
                     textRole: "name"
                     font.family: theme.fontFamily
                     onActivated: page.requestFilters()
+                }
+                Button {
+                    objectName: "stocktakeClasp"
+                    visible: page.claspAvailable
+                    text: "🧷  رصيد الرفايع"
+                    font.family: theme.fontFamily
+                    onClicked: page.claspRequested()
                 }
                 Button {
                     objectName: "stocktakeReset"

@@ -2074,7 +2074,14 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         layoutDirection: Qt.RightToLeft
                         spacing: 8
-                        visible: (typeof categoryCostVM !== "undefined" && categoryCostVM.canManage) || (typeof stockMinLevelVM !== "undefined" && stockMinLevelVM.canManage)
+                        visible: (typeof categoryCostVM !== "undefined" && categoryCostVM.canManage) || (typeof stockMinLevelVM !== "undefined" && stockMinLevelVM.canManage) || (typeof claspStockVM !== "undefined" && claspStockVM.canView)
+                        Button {
+                            objectName: "openClaspStockButton"
+                            visible: typeof claspStockVM !== "undefined" && claspStockVM.canView
+                            text: "🧷  رصيد الرفايع"
+                            font.family: "Cairo"
+                            onClicked: claspStockDialog.open()
+                        }
                         Button {
                             objectName: "openCategoryCostsButton"
                             visible: typeof categoryCostVM !== "undefined" && categoryCostVM.canManage
@@ -3320,6 +3327,8 @@ ApplicationWindow {
                     onLegacyVoidRequested: legacyVoidDialog.open()
                     scrapAdjustAvailable: typeof oldGoldAdjustVM !== "undefined" && oldGoldAdjustVM.canAdjust
                     onScrapAdjustRequested: scrapAdjustDialog.open()
+                    claspAvailable: typeof claspStockVM !== "undefined" && claspStockVM.canManage
+                    onClaspRequested: claspStockDialog.open()
                     onReportsRequested: root.currentPage = 5
                     onOpeningBalanceRequested: positionOpeningDialog.open()
                     onInvoiceRequested: function(invoiceId) {
@@ -3337,6 +3346,8 @@ ApplicationWindow {
 
                 // index 12: الجرد بالباركود — transient barcode counting session (read only)
                 StocktakePage {
+                    claspAvailable: typeof claspStockVM !== "undefined" && claspStockVM.canView
+                    onClaspRequested: claspStockDialog.open()
                     onBackRequested: root.currentPage = 2
                 }
 
@@ -9540,6 +9551,81 @@ ApplicationWindow {
             visible: value.length > 0
             value: scrapAdjustDialog.vm ? scrapAdjustDialog.vm.message : ""
             color: scrapAdjustDialog.vm && scrapAdjustDialog.vm.messageIsError ? theme.red : theme.green
+        }
+    }
+
+    // رصيد الرفايع: loose parts without a barcode (قفل، دلاية...) kept as grams per karat. Opened from the inventory page, the stocktake and مراجعات المدير; the service rechecks CLASP_STOCK_MANAGE.
+    SettingsDialog {
+        id: claspStockDialog
+        objectName: "claspStockDialog"
+        dialogTitle: "رصيد الرفايع"
+        readonly property var vm: typeof claspStockVM !== "undefined" ? claspStockVM : null
+        property string kind: "ENTRY"
+        onOpened: { claspGrams.text = ""; claspNote.text = ""; kind = "ENTRY"; claspKarat.currentIndex = -1; if (vm) vm.refresh() }
+        Connections { target: claspStockDialog.vm; ignoreUnknownSignals: true
+                      function onSaved() { claspGrams.text = ""; claspNote.text = "" } }
+        GoldPriceLabel {
+            Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.textMuted; font.pixelSize: 11
+            value: "أي حاجة ملهاش باركود (قفل، دلاية، رفايع...) بتتحسب وزن بس لكل عيار. كل حركة بتتسجل باسمك وبنوعها/سببها، والنقص لا يزيد عن الرصيد."
+        }
+        Repeater {
+            model: claspStockDialog.vm ? claspStockDialog.vm.balances : []
+            delegate: GoldPriceLabel {
+                required property var modelData
+                Layout.fillWidth: true; color: theme.textPrimary
+                value: modelData.name + " — الرصيد " + modelData.grams + " جرام"
+            }
+        }
+        RowLayout {
+            Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+            visible: !!claspStockDialog.vm && claspStockDialog.vm.canManage
+            GoldPriceLabel { value: "العيار"; color: theme.textSecondary; Layout.preferredWidth: 80 }
+            ComboBox {
+                id: claspKarat; objectName: "claspKarat"; Layout.preferredWidth: 260; Layout.preferredHeight: 38
+                model: claspStockDialog.vm ? claspStockDialog.vm.balances : []; textRole: "name"; valueRole: "karat_id"
+                currentIndex: -1; displayText: currentIndex >= 0 ? currentText : "اختر العيار"; font.family: "Cairo"
+            }
+            Item { Layout.fillWidth: true }
+        }
+        RowLayout {
+            Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+            visible: !!claspStockDialog.vm && claspStockDialog.vm.canManage
+            GoldPriceLabel { value: "الحركة"; color: theme.textSecondary; Layout.preferredWidth: 80 }
+            GoldPriceButton { objectName: "claspKindEntry"; text: "إضافة وزن"; checkable: true; checked: claspStockDialog.kind === "ENTRY"; onClicked: claspStockDialog.kind = "ENTRY" }
+            GoldPriceButton { objectName: "claspKindIn"; text: "زيادة"; checkable: true; checked: claspStockDialog.kind === "IN"; onClicked: claspStockDialog.kind = "IN" }
+            GoldPriceButton { objectName: "claspKindOut"; text: "نقص"; checkable: true; checked: claspStockDialog.kind === "OUT"; onClicked: claspStockDialog.kind = "OUT" }
+            Item { Layout.fillWidth: true }
+        }
+        RowLayout {
+            Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+            visible: !!claspStockDialog.vm && claspStockDialog.vm.canManage
+            GoldPriceLabel { value: "الوزن (جرام)"; color: theme.textSecondary; Layout.preferredWidth: 80 }
+            TextField { id: claspGrams; objectName: "claspGrams"; Layout.preferredWidth: 180; horizontalAlignment: TextInput.AlignRight; font.family: "Cairo"; placeholderText: "0.000" }
+            Item { Layout.fillWidth: true }
+        }
+        TextField { id: claspNote; objectName: "claspNote"; Layout.fillWidth: true; visible: !!claspStockDialog.vm && claspStockDialog.vm.canManage
+                    placeholderText: "النوع أو السبب (إجباري) — مثلًا: قفل"; horizontalAlignment: TextInput.AlignRight; font.family: "Cairo"; maximumLength: 500 }
+        GoldPriceButton {
+            objectName: "claspSave"
+            text: "تسجيل"
+            visible: !!claspStockDialog.vm && claspStockDialog.vm.canManage
+            enabled: !!claspStockDialog.vm && !claspStockDialog.vm.busy && claspKarat.currentIndex >= 0 && Number(claspGrams.text) > 0 && claspNote.text.trim().length > 0
+            onClicked: claspStockDialog.vm.save(String(claspKarat.currentValue), claspStockDialog.kind, claspGrams.text, claspNote.text)
+        }
+        GoldPriceLabel {
+            objectName: "claspMessage"
+            Layout.fillWidth: true; wrapMode: Text.WordWrap; font.bold: true
+            visible: value.length > 0
+            value: claspStockDialog.vm ? claspStockDialog.vm.message : ""
+            color: claspStockDialog.vm && claspStockDialog.vm.messageIsError ? theme.red : theme.green
+        }
+        Repeater {
+            model: claspStockDialog.vm ? claspStockDialog.vm.recent : []
+            delegate: GoldPriceLabel {
+                required property var modelData
+                Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.textMuted; font.pixelSize: 11
+                value: modelData.at + " • " + modelData.kind + " " + modelData.delta + " جرام عيار " + modelData.karat + " • " + modelData.reason + " • " + modelData.user
+            }
         }
     }
 

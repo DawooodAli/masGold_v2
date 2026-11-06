@@ -5,6 +5,9 @@ from decimal import Decimal as D
 from uuid import uuid4
 
 from services.clasp_stock_service import ClaspStockError, ClaspStockService
+from PySide6.QtTest import QTest
+
+from tests import test_invoice_page_qml as harness
 from tests.auth_fakes import FakeAuthorization
 from tests.test_inventory_stock import session_for
 
@@ -107,3 +110,51 @@ class ClaspStockTests(unittest.TestCase):
             nobody.overview()
         self.assertFalse(nobody.can_manage())
         self.assertTrue(self.service.can_manage())
+
+
+class ScreenTests(harness.InvoicePageTests):
+    def setUp(self):
+        super().setUp()
+        self.ledger = Ledger()
+
+        @contextmanager
+        def transaction():
+            yield type("C", (), {"ledger": self.ledger})()
+        self.grant("CLASP_STOCK_MANAGE")
+        session = self.controller.session
+        service = ClaspStockService(session, transaction_factory=transaction, repository=Repo, authorization=FakeAuthorization(session))
+        service.receive(1, "50.000", "رفايع جديدة", str(uuid4()))
+        self.clasp_vm = self.controller.operational_viewmodels["claspStockVM"]
+        self.clasp_vm._service = service
+        self.clasp_vm.changed.emit()
+
+    def test_the_manager_enters_and_removes_weight_with_real_clicks_at_all_sizes(self):
+        self.open_settings_dialog(10, "reviewsOpenClasp", "claspStockDialog")
+        self.wait_until(lambda: len(self.clasp_vm.balances) == 1, "balances loaded")
+        self.assertFalse(self.item("claspSave").property("enabled"))
+        self.choose("claspKarat", 0)
+        self.click("claspKindOut")
+        self.type_into("claspGrams", "12.500")
+        self.type_into("claspNote", "قفل اتباع")
+        self.wait_until(lambda: self.item("claspSave").property("enabled"), "ready")
+        for width, height in harness.SIZES:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(150)
+            self.scroll_dialog_to("claspStockDialog", "claspSave")
+            self.assert_inside_window(self.item("claspSave"))
+        self.click("claspSave")
+        self.wait_until(lambda: len(self.ledger.movements) == 2, "posted")
+        self.assertEqual((self.ledger.movements[-1]["delta"], self.ledger.movements[-1]["reason"]), (D("-12.500"), "قفل اتباع"))
+        self.wait_until(lambda: "تم تسجيل نقص" in str(self.item("claspMessage").property("text")), "the result is shown")
+        self.assertEqual(self.warnings, [])
+
+
+for _cls in (ScreenTests,):
+    for _name in dir(harness.InvoicePageTests):
+        if _name.startswith("test_") and _name not in _cls.__dict__:
+            setattr(_cls, _name, None)
+
+
+if __name__ == "__main__":
+    unittest.main()

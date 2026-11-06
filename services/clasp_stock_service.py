@@ -40,6 +40,10 @@ class ClaspStockService:
         self._repository = repository
         self._authorization = authorization or AuthorizationService(session)
 
+    def can_view(self):
+        actor = self._session.current_actor()
+        return actor is not None and (PERMISSION in actor.permissions or "INVENTORY_VIEW" in actor.permissions)
+
     def can_manage(self):
         actor = self._session.current_actor()
         return actor is not None and PERMISSION in actor.permissions
