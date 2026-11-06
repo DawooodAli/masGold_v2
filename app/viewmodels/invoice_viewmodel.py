@@ -33,7 +33,7 @@ PRICE_STATUS_TEXT = {"FRESH": "", "STALE_ALLOWED": "السعر قديم", "STALE
 # Why the exact inventory piece could not be identified (a piece found through F3 is a normal sale).
 REASONS = (("NO_BARCODE", "لم يُنشأ لها باركود"), ("BARCODE_LOST", "الباركود مفقود أو تالف"),
            ("NOT_FOUND", "لم أجد القطعة في البحث"), ("OTHER", "سبب آخر"))
-UNIDENTIFIED, OLD_GOLD_STOCK = "UNIDENTIFIED", "OLD_GOLD_STOCK"
+UNIDENTIFIED, OLD_GOLD_STOCK, RAFAYEA = "UNIDENTIFIED", "OLD_GOLD_STOCK", "RAFAYEA"
 # UX mirror of the service's hard rule (the service validates again on preview and finalize).
 DISCOUNT_MIN, DISCOUNT_MAX = Decimal("1.25"), Decimal("5.00")
 DISCOUNT_MIN_OLD_GOLD_ONLY = Decimal("1.00")           # owner decision 2026-10-23: buying old gold only may go down to 1%, any sale on the invoice keeps 1.25%
@@ -543,6 +543,8 @@ class InvoiceViewModel(QObject):
             return "اكتب السبب في الملاحظات عند اختيار «سبب آخر»."
         if kind == OLD_GOLD_STOCK and item_type is None and not (description or "").strip():
             return "اختر الصنف أو اكتب الوصف."
+        if kind == RAFAYEA and not (description or "").strip():
+            return "اكتب نوع الرفايع (قفل، دلاية...)."
         factory = self._lookup("factories", factory_id) if factory_id > 0 else None
         self._described.append({
             "kind": kind, "item_type_id": item_type_id if item_type else None,
@@ -566,6 +568,11 @@ class InvoiceViewModel(QObject):
         """F7: sold from the bulk old-gold stock (grams per karat)."""
         return self._described_line(OLD_GOLD_STOCK, item_type_id, karat_id, factory_id, weight, size, notes,
                                     description=description)
+
+    @Slot(str, int, str, str, result=str)
+    def addRafayeaLine(self, description, karat_id, weight, notes):
+        """رفايع: a loose part without a barcode (قفل، دلاية...) sold by weight from the clasp stock; the typed kind is mandatory."""
+        return self._described_line(RAFAYEA, 0, karat_id, 0, weight, "", notes, description=description)
 
     @Slot(int)
     def removeSaleLine(self, index):
@@ -1686,7 +1693,7 @@ class InvoiceViewModel(QObject):
                          "weight": _weight(line["weight"]), "factory": line["factory_name"],
                          "size": line["size"] or "", "notes": line["notes"],
                          "lineTotal": price(result.get("line_total")), "identifiedBy": "",
-                         "tag": "تحتاج مراجعة" if line["kind"] == UNIDENTIFIED else "من الكسر"})
+                         "tag": "تحتاج مراجعة" if line["kind"] == UNIDENTIFIED else ("رفايع" if line["kind"] == RAFAYEA else "من الكسر")})
         return rows
 
     def _old_gold_rows(self):

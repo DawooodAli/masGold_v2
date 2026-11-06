@@ -80,6 +80,8 @@ class Store:
         self.settings = {"settlement_self_limit": D("50.00"), "settlement_approval_limit": D("500.00"),
                          "old_gold_discount_default_percent": D("1.50")}
         self.old_gold_opening = {1: D("100.000"), 2: D("0.000"), 3: D("0.000")}
+        self.clasp_opening = {1: D("10.000")}                  # rafayea (098): 10 g of karat 1
+        self.clasp = []                                        # SALE_OUT movements posted by an invoice
         self.cases, self.case_events, self.adjustments, self.reviews, self.new_customers = [], [], [], [], []
         self.locked_karats = []
         self.sql = []
@@ -174,6 +176,15 @@ class InvoiceRepo:
     def lock_old_gold_balance(self, karat_id):
         self.store.locked_karats.append(int(karat_id))
         return self._counted(int(karat_id))
+
+    def clasp_balance(self, karat_id, *, lock=False):
+        if lock:
+            self.store.locked_karats.append(("CLASP", int(karat_id)))
+        return self.store.clasp_opening.get(int(karat_id), D("0.000")) - sum((m["weight_grams"] for m in self.store.clasp if m["karat_id"] == int(karat_id)), D("0.000"))
+
+    def add_clasp_sale_out(self, **values):
+        self.store.clasp.append(values)
+        return str(900 + len(self.store.clasp))
 
     def sellable_facets(self, *, item_type_id=None, karat_id=None, exclude_ids=()):
         excluded = {str(int(i)) for i in exclude_ids}

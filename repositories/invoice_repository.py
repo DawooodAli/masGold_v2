@@ -26,7 +26,7 @@ _BIGINT_FIELDS = frozenset({
 # History list: the invoice kind from its saved lines (the same rule as the detail page).
 HISTORY_KIND_FOR_TYPE = {"SELL": "SALE", "BUY": "OLD_GOLD_PURCHASE", "MIXED": "MIXED"}
 # The saved line types behind BOTH the kind probe and the history list's gold gram columns, defined once:
-_HISTORY_SOLD_LINE_TYPES = ("'SELL_INVENTORY'", "'SELL_UNIDENTIFIED'", "'SELL_OLD_GOLD'")
+_HISTORY_SOLD_LINE_TYPES = ("'SELL_INVENTORY'", "'SELL_UNIDENTIFIED'", "'SELL_OLD_GOLD'", "'SELL_RAFAYEA'")
 _HISTORY_BUY_LINE_TYPE = "'BUY_OLD_GOLD'"
 _HISTORY_SOLD = ("EXISTS (SELECT 1 FROM invoice_lines hl WHERE hl.invoice_id = i.id "
                  f"AND hl.line_type IN ({', '.join(_HISTORY_SOLD_LINE_TYPES)}))")
@@ -361,6 +361,20 @@ class InvoiceRepository(BaseRepository):
             "WHERE karat_id = %s AND hold_status = 'HELD'", (int(karat_id),))
         return Decimal(str(row["held"])) if row else Decimal("0.000")
 
+    # ------------------------------------------------------------ rafayea (clasp) stock, migration 098 / 099
+    def clasp_balance(self, karat_id, *, lock=False):
+        """The rafayea grams of a karat (SUM of the signed ledger); lock=True takes the ledger rows FOR UPDATE (the lock every consumer takes)."""
+        rows = self._fetch_all("SELECT delta_grams FROM clasp_stock_movements WHERE karat_id = %s" + (" FOR UPDATE" if lock else ""), (int(karat_id),))
+        return sum((Decimal(str(r["delta_grams"])) for r in rows), Decimal("0.000"))
+
+    def add_clasp_sale_out(self, *, karat_id, weight_grams, invoice_line_id, invoice_number, note, created_by_user_id):
+        """One SALE_OUT movement tied to its invoice line (the request key is derived from the line, so a line can never post twice)."""
+        movement_id, _ = self._execute(
+            "INSERT INTO clasp_stock_movements (karat_id, movement_code, delta_grams, reason, reference_type, reference_id, request_key, created_by_user_id, created_at) "
+            "VALUES (%s, 'SALE_OUT', %s, %s, 'INVOICE_LINE', %s, %s, %s, NOW())",
+            (int(karat_id), -Decimal(str(weight_grams)), f"فاتورة {invoice_number}: {note}"[:500], _id(invoice_line_id), f"SALE-LINE-{int(invoice_line_id)}", created_by_user_id))
+        return str(movement_id)
+
     def add_invoice_sale_out_movement(self, *, karat_id, weight_grams, gold_price_per_gram, cash_value,
                                       price_quote_id, movement_group_id, invoice_id, invoice_number,
                                       customer_id, created_by_user_id, employee_id, notes=None):
@@ -574,9 +588,9 @@ class InvoiceRepository(BaseRepository):
                                    item_name, factory_name, size, gold_price_per_gram, making_total,
                                    gross_total, line_total, old_gold_movement_id=None, notes=None):
         """SELL_UNIDENTIFIED (F5) or SELL_OLD_GOLD (F7): never an inventory identity."""
-        if line_type not in ("SELL_UNIDENTIFIED", "SELL_OLD_GOLD"):
+        if line_type not in ("SELL_UNIDENTIFIED", "SELL_OLD_GOLD", "SELL_RAFAYEA"):
             raise ValueError("Unsupported described sale line.")
-        method = "MANUAL" if line_type == "SELL_UNIDENTIFIED" else "OLD_GOLD_STOCK"
+        method = {"SELL_UNIDENTIFIED": "MANUAL", "SELL_OLD_GOLD": "OLD_GOLD_STOCK", "SELL_RAFAYEA": "CLASP_STOCK"}[line_type]
         line_id, _ = self._execute(
             """
             INSERT INTO invoice_lines (

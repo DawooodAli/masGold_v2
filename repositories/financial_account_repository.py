@@ -116,7 +116,7 @@ class FinancialAccountRepository(BaseRepository):
                 CASE WHEN i.id IS NOT NULL THEN IF(o.amount_delta > 0,
                          IF(EXISTS (SELECT 1 FROM invoice_lines bl WHERE bl.invoice_id = i.id AND bl.line_type = 'BUY_OLD_GOLD')
                             AND EXISTS (SELECT 1 FROM invoice_lines sl WHERE sl.invoice_id = i.id
-                                        AND sl.line_type IN ('SELL_INVENTORY', 'SELL_UNIDENTIFIED', 'SELL_OLD_GOLD')),
+                                        AND sl.line_type IN ('SELL_INVENTORY', 'SELL_UNIDENTIFIED', 'SELL_OLD_GOLD', 'SELL_RAFAYEA')),
                             'MIXED', 'SALE'), 'OLD_GOLD_PURCHASE')
                      WHEN x.id IS NOT NULL THEN 'EXCHANGE'
                      WHEN r.id IS NOT NULL THEN 'RETURN'
@@ -243,7 +243,7 @@ class FinancialAccountRepository(BaseRepository):
             FROM invoices i
             LEFT JOIN invoice_customer_snapshots isnap ON isnap.invoice_id = i.id
             WHERE i.invoice_status = 'FINALIZED' AND i.record_origin <> 'LEGACY' AND i.invoice_date >= %s AND i.invoice_date < %s
-              AND EXISTS (SELECT 1 FROM invoice_lines il WHERE il.invoice_id = i.id AND il.line_type IN ('SELL_INVENTORY', 'SELL_OLD_GOLD', 'SELL_UNIDENTIFIED'))
+              AND EXISTS (SELECT 1 FROM invoice_lines il WHERE il.invoice_id = i.id AND il.line_type IN ('SELL_INVENTORY', 'SELL_OLD_GOLD', 'SELL_UNIDENTIFIED', 'SELL_RAFAYEA'))
               AND NOT EXISTS (SELECT 1 FROM cash_movements m WHERE m.reference_type = 'INVOICE' AND m.reference_id = i.id)
               AND NOT EXISTS (SELECT 1 FROM bank_movements m WHERE m.reference_type = 'INVOICE' AND m.reference_id = i.id)
               AND NOT EXISTS (SELECT 1 FROM transaction_corrections c WHERE c.source_type = 'INVOICE' AND c.source_id = i.id AND c.correction_type = 'FULL_REVERSAL')

@@ -22,7 +22,7 @@ from services.invoice_service import invoice_transaction
 PAGE_SIZE = 50
 INVOICE_TYPES = ("SELL", "BUY", "MIXED")
 SETTLEMENT_STATUSES = ("SETTLED", "PARTIAL", "UNSETTLED", "OVERPAID")
-SALE_LINE_TYPES = ("SELL_INVENTORY", "SELL_UNIDENTIFIED", "SELL_OLD_GOLD")
+SALE_LINE_TYPES = ("SELL_INVENTORY", "SELL_UNIDENTIFIED", "SELL_OLD_GOLD", "SELL_RAFAYEA")
 LEGACY_LABEL = "فاتورة قديمة — بيانات تاريخية جزئية"
 VIEW_PERMISSION, REPRINT_PERMISSION, MANAGER_PERMISSION = "INVOICE_VIEW", "INVOICE_REPRINT", "MANAGEMENT_REVIEW"
 # Exchange V1: a separate permission; viewing history never grants it.
@@ -491,7 +491,7 @@ class InvoiceHistoryService:
     def _sale_line(line):
         """Everything a future exchange / return needs, straight from the line's own snapshots."""
         kind = {"SELL_INVENTORY": "INVENTORY", "SELL_UNIDENTIFIED": "MANUAL",
-                "SELL_OLD_GOLD": "OLD_GOLD_STOCK"}[line["line_type"]]
+                "SELL_OLD_GOLD": "OLD_GOLD_STOCK", "SELL_RAFAYEA": "CLASP_STOCK"}[line["line_type"]]
         weight, price = _decimal(line["weight_grams"]), _decimal(line.get("gold_price_per_gram"))
         return {"line_id": line["line_id"], "line_number": line.get("line_number"), "line_type": line["line_type"],
                 "kind": kind, "identification_method": line.get("identification_method"),

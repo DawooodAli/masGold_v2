@@ -19,7 +19,7 @@ class SaleBelowGoldSchemaTests(unittest.TestCase):
 
     def test_the_chain_replays_and_095_requires_094(self):
         self.assertEqual(self.model.problems, [])
-        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 98)
+        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 99)
         self.assertIn("MIGRATION_095_REFUSED_missing_094", self.forward)
         self.assertRegex(self.forward, r"INSERT INTO schema_migrations\(version,name\) VALUES \(95,")
         self.assertLessEqual(len(re.search(r"VALUES \(95,'([^']*)'", self.forward).group(1)), 150)

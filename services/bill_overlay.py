@@ -27,7 +27,7 @@ import os
 PAPER_WIDTH_MM, PAPER_HEIGHT_MM = 210.0, 148.0          # A5 landscape — unchanged from the prototype
 MAX_SALE_ITEMS = 10                                       # the prototype's one-sheet rule
 MAX_SALE_ITEMS_TEXT = "الحد الأقصى للفاتورة 10 أصناف بيع"
-SALE_LINE_TYPES = ("SELL_INVENTORY", "SELL_UNIDENTIFIED", "SELL_OLD_GOLD")
+SALE_LINE_TYPES = ("SELL_INVENTORY", "SELL_UNIDENTIFIED", "SELL_OLD_GOLD", "SELL_RAFAYEA")
 
 # ---------------------------------------------------------------- prototype geometry (mm on its PDF page)
 # Fonts: Segoe UI / Segoe UI Bold (segoeui.ttf / segoeuib.ttf) for Arabic and English alike.
@@ -137,7 +137,7 @@ class BillOverlay:
 
 METHOD_TEXT = {"PHYSICAL_CASH": "نقدي", "MOBILE_WALLET": "محفظة", "INSTAPAY": "InstaPay",
                "BANK_TRANSFER": "تحويل بنكي"}
-LINE_TYPE_TEXT = {"SELL_INVENTORY": "بيع", "SELL_UNIDENTIFIED": "بيع", "SELL_OLD_GOLD": "بيع من الكسر"}
+LINE_TYPE_TEXT = {"SELL_INVENTORY": "بيع", "SELL_UNIDENTIFIED": "بيع", "SELL_OLD_GOLD": "بيع من الكسر", "SELL_RAFAYEA": "بيع رفايع"}
 
 
 def amount_text(value):

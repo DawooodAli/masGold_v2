@@ -112,8 +112,19 @@ Item {
             return
         closeOverlays()
         stockPanel.reset()
+        stockPanel.rafayea = false
         stockPanel.visible = true
         stockType.forceActiveFocus()                    // the first field; الوصف comes last
+    }
+    // رفايع: the same panel in its weight-only mode (no type / factory / size; the typed kind is mandatory and the grams leave the clasp stock).
+    function openRafayea() {
+        if (!visible || confirmDialog.opened)
+            return
+        closeOverlays()
+        stockPanel.reset()
+        stockPanel.rafayea = true
+        stockPanel.visible = true
+        stockDescription.forceActiveFocus()
     }
 
     function focusLastLegMethod() {
@@ -902,6 +913,11 @@ Item {
                                 text: "من الكسر F7"
                                 onClicked: invoicePage.openStockSale()
                             }
+                            SmallButton {
+                                objectName: "openRafayea"
+                                text: "رفايع"
+                                onClicked: invoicePage.openRafayea()
+                            }
                             Item { Layout.fillWidth: true }
                         }
                     }
@@ -1487,6 +1503,7 @@ Item {
                     id: stockPanel
                     objectName: "stockSalePanel"
                     property int karatId: -1
+                    property bool rafayea: false
                     function reset() {
                         stockType.currentIndex = -1
                         stockFactory.currentIndex = -1
@@ -1500,8 +1517,9 @@ Item {
                     function add() {
                         var typeId = stockType.currentIndex >= 0 ? invoiceVM.itemTypes[stockType.currentIndex].id : 0
                         var factoryId = stockFactory.currentIndex >= 0 ? invoiceVM.factories[stockFactory.currentIndex].id : 0
-                        var error = invoiceVM.addOldGoldStockLine(typeId, stockDescription.text, karatId, factoryId,
-                                                                  stockWeight.text, stockSize.text, stockNotes.text)
+                        var error = rafayea ? invoiceVM.addRafayeaLine(stockDescription.text, karatId, stockWeight.text, stockNotes.text)
+                                            : invoiceVM.addOldGoldStockLine(typeId, stockDescription.text, karatId, factoryId,
+                                                                            stockWeight.text, stockSize.text, stockNotes.text)
                         stockError.text = error
                         if (error.length === 0) {
                             visible = false
@@ -1524,7 +1542,7 @@ Item {
                             Layout.fillWidth: true
                             layoutDirection: Qt.RightToLeft
                             Label {
-                                text: "بيع من الكسر — يُخصم الوزن من رصيد الكسر"
+                                text: stockPanel.rafayea ? "بيع رفايع — يُخصم الوزن من رصيد الرفايع" : "بيع من الكسر — يُخصم الوزن من رصيد الكسر"
                                 color: theme.priceBuy
                                 font.family: "Cairo"
                                 font.pixelSize: 13
@@ -1538,6 +1556,7 @@ Item {
                             layoutDirection: Qt.RightToLeft
                             spacing: 6
                             // Entry order: الصنف → العيار → الوزن → المصنع → المقاس → الملاحظات → الوصف → إضافة
+                            visible: !stockPanel.rafayea
                             FieldLabel { text: "الصنف" }
                             ChoiceCombo { id: stockType; objectName: "stockType"; Layout.preferredWidth: 130; model: invoiceVM.itemTypes; placeholder: "اختياري" }
                             Item { Layout.fillWidth: true }
@@ -1558,6 +1577,7 @@ Item {
                             }
                             Label {
                                 objectName: "stockAvailable"
+                                visible: !stockPanel.rafayea
                                 text: {
                                     var rows = invoiceVM.oldGoldStock
                                     for (var i = 0; i < rows.length; ++i)
@@ -1576,7 +1596,7 @@ Item {
                         Label {
                             objectName: "stockHeldBreakdown"
                             Layout.fillWidth: true
-                            visible: text.length > 0
+                            visible: text.length > 0 && !stockPanel.rafayea
                             text: {
                                 var rows = invoiceVM.oldGoldStock
                                 for (var i = 0; i < rows.length; ++i)
@@ -1596,10 +1616,10 @@ Item {
                             spacing: 6
                             FieldLabel { text: "الوزن" }
                             AmountField { id: stockWeight; objectName: "stockWeight"; Layout.preferredWidth: 70; placeholderText: ""; onAccepted: stockPanel.add() }
-                            FieldLabel { text: "المصنع" }
-                            ChoiceCombo { id: stockFactory; objectName: "stockFactory"; Layout.preferredWidth: 110; model: invoiceVM.factories; placeholder: "اختياري" }
-                            FieldLabel { text: "المقاس" }
-                            AmountField { id: stockSize; objectName: "stockSize"; Layout.preferredWidth: 46; placeholderText: ""; inputMethodHints: Qt.ImhNone }
+                            FieldLabel { visible: !stockPanel.rafayea; text: "المصنع" }
+                            ChoiceCombo { id: stockFactory; objectName: "stockFactory"; visible: !stockPanel.rafayea; Layout.preferredWidth: 110; model: invoiceVM.factories; placeholder: "اختياري" }
+                            FieldLabel { visible: !stockPanel.rafayea; text: "المقاس" }
+                            AmountField { id: stockSize; objectName: "stockSize"; visible: !stockPanel.rafayea; Layout.preferredWidth: 46; placeholderText: ""; inputMethodHints: Qt.ImhNone }
                             Item { Layout.fillWidth: true }
                         }
                         RowLayout {
@@ -1616,7 +1636,7 @@ Item {
                             layoutDirection: Qt.RightToLeft
                             spacing: 6
                             FieldLabel { text: "الوصف" }
-                            TextInputField { id: stockDescription; objectName: "stockDescription"; Layout.fillWidth: true; placeholderText: text.length > 0 ? "" : "مثال: دبلة سادة"; onAccepted: stockPanel.add() }
+                            TextInputField { id: stockDescription; objectName: "stockDescription"; Layout.fillWidth: true; placeholderText: text.length > 0 ? "" : (stockPanel.rafayea ? "النوع (إجباري): قفل، دلاية..." : "مثال: دبلة سادة"); onAccepted: stockPanel.add() }
                             PrimaryButton { objectName: "stockAdd"; Layout.preferredWidth: 90; text: "إضافة"; onClicked: stockPanel.add() }
                         }
                         Label { id: stockError; objectName: "stockError"; Layout.fillWidth: true; visible: text.length > 0; color: theme.statusWarning; font.family: "Cairo"; font.pixelSize: 11; horizontalAlignment: Text.AlignRight }

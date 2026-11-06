@@ -46,6 +46,7 @@ class Store:
             "503": inv("503", "26092004", [ln("7", "SELL_INVENTORY", item="203", barcode="B203")]),
             "504": inv("504", "26092005", [ln("8", "SELL_OLD_GOLD", weight="10.000")]),
             "505": inv("505", "26092006", [ln("9", "SELL_INVENTORY", item="205", barcode="B205")]),
+            "507": inv("507", "26092008", [ln("11", "SELL_RAFAYEA", weight="3.200")]),
             "506": inv("506", "26092007", [ln("10", "SELL_INVENTORY", item="206", barcode="B206")], customer=None),
         }
         self.payments = [  # invoice_payments (original legs)
@@ -101,6 +102,7 @@ class Store:
                         {"review_id": "83", "return_line_id": "8021", "status": "RESOLVED", "code": "RETURN_TO_STOCK"}]
         self.cases = [{"case_id": "70", "invoice_line_id": "4", "status": "OPEN"},
                       {"case_id": "71", "lifecycle_line_id": "9004", "status": "OPEN"}]
+        self.clasp = []                                              # (karat id, grams, invoice line id) given back by a reversed rafayea sale
         self.old_gold = [(1, D("100.000"), "OPENING_BALANCE")]      # (karat id, signed grams, code)
         self.bank_accounts = {7: {"id": 7, "name": "بنك مصر", "account_type": "BANK", "is_active": 1},
                               8: {"id": 8, "name": "فودافون", "account_type": "MOBILE_WALLET", "is_active": 1}}
@@ -307,6 +309,9 @@ class Repo:
     def add_inventory_movement(self, *, item, movement_code, from_status, to_status, **kw):
         self.store.inv_movements.append((item["inventory_item_id"], movement_code, from_status, to_status))
 
+    def add_clasp_reversal(self, *, karat_id, grams, line_id, **kw):
+        self.store.clasp.append((karat_id, grams, line_id))
+
     def add_old_gold(self, *, karat_id, weight_delta, movement_code, **kw):
         self._maybe_fail("old_gold")
         self.store.old_gold.append((karat_id, weight_delta, movement_code))
@@ -416,6 +421,11 @@ class InvoiceReversalTests(CorrectionTestCase):
         self.assertEqual(self.store.payments[2]["amount"], D("30000.00"))
         self.assertEqual(self.store.invoices["501"]["events"][-1]["event_type"], "REVERSED")
         self.assertEqual(self.store.corrections[0]["reason"], REASON)                      # persisted exactly
+
+    def test_a_rafayea_sale_gives_its_grams_back_to_the_clasp_stock_and_touches_nothing_else(self):
+        self.service.reverse("INVOICE", "507", REASON)
+        self.assertEqual(self.store.clasp, [(1, D("3.200"), "11")])
+        self.assertEqual((self.store.inv_movements, len(self.store.old_gold)), ([], 1))        # no piece, no Scrap
 
     def test_mixed_invoice_reverses_both_sides_exactly(self):
         stock_before = self.store.old_gold_balance()

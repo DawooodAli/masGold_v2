@@ -42,7 +42,7 @@ REPORT_TITLES = {"sales": "المبيعات والمرتجعات", "stock": "ا�
 KIND_TEXT = {"SALE": "بيع", "MIXED": "بيع مع شراء كسر", "OLD_GOLD_PURCHASE": "شراء كسر", "RETURN": "مرتجع", "EXCHANGE": "استبدال"}
 STATUS_TEXT = {"IN_STOCK": "متاح", "SOLD": "مباع", "SCRAPPED": "كسر", "REMOVED": "مُخرج", "RETURNED_PENDING": "مرتجع بانتظار الفحص", "CONVERTED_TO_OLD_GOLD": "حُوّل إلى كسر"}
 CLASS_TEXT = {"NEW_STOCK": "جديد", "OLD_STOCK": "قديم"}
-LINE_TEXT = {"SELL_INVENTORY": "بيع قطعة", "SELL_OLD_GOLD": "بيع من الكسر", "BUY_OLD_GOLD": "شراء كسر", "SELL_MANUAL": "بيع يدوي"}
+LINE_TEXT = {"SELL_INVENTORY": "بيع قطعة", "SELL_OLD_GOLD": "بيع من الكسر", "SELL_RAFAYEA": "بيع رفايع", "BUY_OLD_GOLD": "شراء كسر", "SELL_MANUAL": "بيع يدوي"}
 REF_TEXT = {"INVOICE": "فاتورة", "RETURN": "مرتجع", "EXCHANGE": "استبدال", "CUSTOMER_ACCOUNT_SETTLEMENT": "تحصيل / تسوية حساب", "CUSTOMER_DEPOSIT": "عربون",
             "CUSTOMER_DEPOSIT_REFUND": "رد عربون", "FULL_REVERSAL": "عكس", "SETTLEMENT_CORRECTION": "تصحيح تسوية", "DEAD_CASH_WRITE_OFF": "شطب رصيد",
             "DEAD_CASH_REVERSAL": "عكس شطب", "UNKNOWN": "غير محدد"}
@@ -1157,7 +1157,7 @@ class ReportService:
         return {"meaning": [], "tables": tables, "totals": cards, "options": options}
 
     # ------------------------------------------------------------------ 3b. employee KPI (owner request): sold grams, average making and scrap bought per employee and karat
-    SELL_LINES = ("SELL_INVENTORY", "SELL_OLD_GOLD", "SELL_UNIDENTIFIED")
+    SELL_LINES = ("SELL_INVENTORY", "SELL_OLD_GOLD", "SELL_UNIDENTIFIED", "SELL_RAFAYEA")
 
     def _employees(self, repo, gate, filters, start, end):
         """Per employee (the invoice's salesperson) and per KARAT (never added across karats): grams sold, the average making per gram (making total / weight over the lines whose making is

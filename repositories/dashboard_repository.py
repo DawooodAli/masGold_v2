@@ -9,7 +9,7 @@ from mysql.connector import ProgrammingError
 
 from repositories.base_repository import BaseRepository
 
-SALE_LINE_TYPES = ("SELL_INVENTORY", "SELL_UNIDENTIFIED", "SELL_OLD_GOLD")
+SALE_LINE_TYPES = ("SELL_INVENTORY", "SELL_UNIDENTIFIED", "SELL_OLD_GOLD", "SELL_RAFAYEA")
 _TODAY = "i.finalized_at >= CURDATE() AND i.finalized_at < CURDATE() + INTERVAL 1 DAY"
 
 
@@ -42,7 +42,7 @@ class DashboardRepository(BaseRepository):
             JOIN invoices i ON i.id = l.invoice_id
             JOIN karats k ON k.id = l.karat_id
             WHERE i.invoice_status = 'FINALIZED' AND {_TODAY}
-              AND l.line_type IN ('SELL_INVENTORY', 'SELL_UNIDENTIFIED', 'SELL_OLD_GOLD')
+              AND l.line_type IN ('SELL_INVENTORY', 'SELL_UNIDENTIFIED', 'SELL_OLD_GOLD', 'SELL_RAFAYEA')
             GROUP BY k.karat_value
             ORDER BY k.karat_value
             """)
@@ -59,7 +59,7 @@ class DashboardRepository(BaseRepository):
             JOIN invoices i ON i.id = l.invoice_id
             JOIN karats k ON k.id = l.karat_id
             WHERE i.invoice_status = 'FINALIZED' AND i.finalized_at >= {first} AND i.finalized_at < {end}
-              AND l.line_type IN ('SELL_INVENTORY', 'SELL_UNIDENTIFIED', 'SELL_OLD_GOLD')
+              AND l.line_type IN ('SELL_INVENTORY', 'SELL_UNIDENTIFIED', 'SELL_OLD_GOLD', 'SELL_RAFAYEA')
               AND NOT EXISTS (SELECT 1 FROM transaction_corrections c WHERE c.source_type = 'INVOICE' AND c.source_id = i.id AND c.correction_type = 'FULL_REVERSAL')
             GROUP BY k.karat_value
             ORDER BY k.karat_value
@@ -114,7 +114,7 @@ class DashboardRepository(BaseRepository):
             LEFT JOIN inventory_items ii ON ii.id = l.inventory_item_id
             LEFT JOIN item_types it ON it.id = ii.item_type_id
             WHERE i.invoice_status = 'FINALIZED' AND {_TODAY}
-              AND l.line_type IN ('SELL_INVENTORY', 'SELL_UNIDENTIFIED', 'SELL_OLD_GOLD')
+              AND l.line_type IN ('SELL_INVENTORY', 'SELL_UNIDENTIFIED', 'SELL_OLD_GOLD', 'SELL_RAFAYEA')
               AND NOT EXISTS (SELECT 1 FROM transaction_corrections c WHERE c.source_type = 'INVOICE' AND c.source_id = i.id AND c.correction_type = 'FULL_REVERSAL')
             GROUP BY grp
             """)

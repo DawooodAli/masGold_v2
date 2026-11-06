@@ -124,6 +124,7 @@ class SaleLineInput:
 
 UNIDENTIFIED = "UNIDENTIFIED"            # F5 إدخال يدوي
 OLD_GOLD_STOCK = "OLD_GOLD_STOCK"        # F7 بيع من الكسر
+RAFAYEA = "RAFAYEA"                      # بيع رفايع (loose parts without a barcode, weight only, from the clasp stock 098 / 099)
 # F5 = the exact inventory piece could not be identified (a piece found through F3 is a normal sale).
 REASONS = {"NO_BARCODE": "لم يُنشأ لها باركود", "BARCODE_LOST": "الباركود مفقود أو تالف",
            "NOT_FOUND": "لم أجد القطعة في البحث", "OTHER": "سبب آخر"}
@@ -392,7 +393,7 @@ class InvoiceService:
         """Validate F5 / F7 lines and resolve their item type / factory names."""
         resolved = []
         for line in draft.described_sale_lines:
-            if line.kind not in (UNIDENTIFIED, OLD_GOLD_STOCK):
+            if line.kind not in (UNIDENTIFIED, OLD_GOLD_STOCK, RAFAYEA):
                 raise InvoiceError("LINE_KIND_INVALID", "نوع البند غير صحيح.")
             if isinstance(line.karat_id, bool) or not str(line.karat_id).isdigit():
                 raise InvoiceError("KARAT_REQUIRED", "اختر العيار.")
@@ -415,6 +416,9 @@ class InvoiceService:
                     raise InvoiceError("REASON_REQUIRED", "اختر سبب البيع اليدوي.")
                 if line.reason_code == "OTHER" and not (line.notes or "").strip():
                     raise InvoiceError("REASON_NOTES_REQUIRED", "اكتب السبب في الملاحظات عند اختيار «سبب آخر».")
+            elif line.kind == RAFAYEA:
+                if not description:
+                    raise InvoiceError("DESCRIPTION_REQUIRED", "اكتب نوع الرفايع (قفل، دلاية...).")
             elif not name:
                 raise InvoiceError("DESCRIPTION_REQUIRED", "اكتب وصف القطعة المباعة من الكسر.")
             resolved.append({"input": line, "item_name": name, "item_type_id": line.item_type_id,
@@ -921,6 +925,19 @@ class InvoiceService:
         return methods, accounts, cash, problems
 
     @staticmethod
+    def _clasp_requested(described):
+        """Rafayea grams requested per karat id."""
+        requested = {}
+        for line in described:
+            if line["input"].kind == RAFAYEA:
+                requested[line["karat_id"]] = requested.get(line["karat_id"], Decimal("0.000")) + Decimal(str(line["input"].weight_grams).strip())
+        return requested
+
+    @staticmethod
+    def _clasp_message(karat, available, grams):
+        return f"رصيد الرفايع عيار {karat} {available:,.3f} جرام فقط، لا يكفي لبيع {grams:,.3f} جرام. أضف الوزن من «رصيد الرفايع» أولًا."
+
+    @staticmethod
     def _old_gold_shortages(described, balances):
         """F7 grams requested per karat vs the COUNTED balance before this invoice."""
         requested = {}
@@ -1087,6 +1104,7 @@ class InvoiceService:
                 calculated = self._calculate(draft, items, price_set, described=described, limits=limits)
                 payment_problems = self._payment_accounts(invoices, calculated.payments)[3]
                 stock_rows = invoices.old_gold_balances() if described else []
+                clasp_balances = {karat_id: invoices.clasp_balance(karat_id) for karat_id in self._clasp_requested(described)}
                 balances = {int(r["karat_id"]): Decimal(str(r["balance_grams"])) for r in stock_rows}
                 held = {int(r["karat_id"]): Decimal(str(r.get("held_grams") or 0)) for r in stock_rows}
                 category_ranges = invoices.category_ranges(
@@ -1106,6 +1124,11 @@ class InvoiceService:
             karat = next((p.karat for p in price_set.prices.values() if p.karat_id == karat_id), karat_id)
             problems.append(InvoiceError("OLD_GOLD_STOCK_INSUFFICIENT",
                                          shortage_message(karat, grams, available, held.get(karat_id))))
+        for karat_id, grams in self._clasp_requested(described).items():
+            available = clasp_balances.get(karat_id, Decimal("0.000"))
+            if grams > available:
+                karat = next((p.karat for p in price_set.prices.values() if p.karat_id == karat_id), karat_id)
+                problems.append(InvoiceError("CLASP_STOCK_INSUFFICIENT", self._clasp_message(karat, available, grams)))
         categories = [i.get("category_id") for i in items] + [d["category_id"] for d in described]
         # Making review only on a valid derived price (re-run on every financial change).
         groups = (self._making_groups(sales, categories, category_ranges, self._small_range(limits))
@@ -1289,6 +1312,12 @@ class InvoiceService:
             balances = {karat_id: invoices.lock_old_gold_balance(karat_id)
                         for karat_id in sorted({d["karat_id"] for d in described
                                                 if d["input"].kind == OLD_GOLD_STOCK})}
+            clasp_requested = self._clasp_requested(described)
+            for karat_id in sorted(clasp_requested):                                 # the lock every rafayea consumer takes, ascending karat order
+                available = invoices.clasp_balance(karat_id, lock=True)
+                if clasp_requested[karat_id] > available:
+                    karat = next((p.karat for p in price_set.prices.values() if p.karat_id == karat_id), karat_id)
+                    raise InvoiceError("CLASP_STOCK_INSUFFICIENT", self._clasp_message(karat, available, clasp_requested[karat_id]))
             shortages = self._old_gold_shortages(described, balances)
             if shortages:
                 karat_id, available, grams = shortages[0]
@@ -1372,12 +1401,15 @@ class InvoiceService:
                         notes=resolved["item_name"])
                 line_id = invoices.insert_described_sale_line(
                     invoice_id=invoice_id, line_number=line_number,
-                    line_type="SELL_OLD_GOLD" if entry.kind == OLD_GOLD_STOCK else "SELL_UNIDENTIFIED",
+                    line_type={OLD_GOLD_STOCK: "SELL_OLD_GOLD", RAFAYEA: "SELL_RAFAYEA"}.get(entry.kind, "SELL_UNIDENTIFIED"),
                     karat_id=resolved["karat_id"], weight_grams=line.weight_grams, item_name=resolved["item_name"],
                     factory_name=resolved["factory_name"], size=resolved["size"],
                     gold_price_per_gram=line.gold_price_per_gram, making_total=line.making_total,
                     gross_total=line.gold_value, line_total=line.line_total, old_gold_movement_id=movement_id,
                     notes=resolved["notes"])
+                if entry.kind == RAFAYEA:
+                    invoices.add_clasp_sale_out(karat_id=resolved["karat_id"], weight_grams=line.weight_grams, invoice_line_id=line_id, invoice_number=number,
+                                                note=resolved["item_name"], created_by_user_id=actor.user_id)
                 if entry.kind == UNIDENTIFIED:
                     case_ids.append(invoices.open_unidentified_sale_case(
                         invoice_id=invoice_id, invoice_number=number, invoice_line_id=line_id,

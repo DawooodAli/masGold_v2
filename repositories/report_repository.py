@@ -162,7 +162,7 @@ class ReportRepository(BaseRepository):
             FROM invoice_lines il
             JOIN invoices iv ON iv.id = il.invoice_id
             JOIN karats k ON k.id = il.karat_id
-            WHERE il.line_type IN ('SELL_INVENTORY', 'SELL_UNIDENTIFIED', 'SELL_OLD_GOLD') AND iv.invoice_status = 'FINALIZED'
+            WHERE il.line_type IN ('SELL_INVENTORY', 'SELL_UNIDENTIFIED', 'SELL_OLD_GOLD', 'SELL_RAFAYEA') AND iv.invoice_status = 'FINALIZED'
               AND iv.invoice_date >= %s AND iv.invoice_date < %s
               AND NOT EXISTS (SELECT 1 FROM transaction_corrections c WHERE c.source_type = 'INVOICE' AND c.source_id = iv.id AND c.correction_type = 'FULL_REVERSAL')
             GROUP BY k.karat_value
@@ -191,7 +191,7 @@ class ReportRepository(BaseRepository):
             JOIN karats k ON k.id = il.karat_id
             LEFT JOIN employees e ON e.id = iv.employee_id
             LEFT JOIN transaction_corrections c ON c.source_type = 'INVOICE' AND c.source_id = iv.id AND c.correction_type = 'FULL_REVERSAL'
-            WHERE il.line_type IN ('SELL_INVENTORY', 'SELL_OLD_GOLD', 'SELL_UNIDENTIFIED', 'BUY_OLD_GOLD') AND iv.invoice_status = 'FINALIZED'
+            WHERE il.line_type IN ('SELL_INVENTORY', 'SELL_OLD_GOLD', 'SELL_UNIDENTIFIED', 'SELL_RAFAYEA', 'BUY_OLD_GOLD') AND iv.invoice_status = 'FINALIZED'
               AND iv.invoice_date >= %s AND iv.invoice_date < %s
             ORDER BY iv.invoice_date, iv.id, il.id
             """, (start, end_exclusive))
@@ -252,7 +252,7 @@ class ReportRepository(BaseRepository):
             """
             SELECT DATE(iv.invoice_date) AS day, COUNT(DISTINCT iv.id) AS bills, COUNT(DISTINCT iv.id) AS bills_with_weight, COALESCE(SUM(il.weight_grams), 0) AS grams
             FROM invoice_lines il JOIN invoices iv ON iv.id = il.invoice_id
-            WHERE il.line_type IN ('SELL_INVENTORY', 'SELL_OLD_GOLD', 'SELL_UNIDENTIFIED') AND iv.invoice_status = 'FINALIZED' AND iv.invoice_date >= %s
+            WHERE il.line_type IN ('SELL_INVENTORY', 'SELL_OLD_GOLD', 'SELL_UNIDENTIFIED', 'SELL_RAFAYEA') AND iv.invoice_status = 'FINALIZED' AND iv.invoice_date >= %s
               AND NOT EXISTS (SELECT 1 FROM transaction_corrections c WHERE c.source_type = 'INVOICE' AND c.source_id = iv.id AND c.correction_type = 'FULL_REVERSAL')
             GROUP BY DATE(iv.invoice_date) ORDER BY day
             """, (since,))

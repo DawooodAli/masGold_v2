@@ -748,6 +748,26 @@ class InvoicePageTests(unittest.TestCase):
         self.assertEqual((movement["code"], movement["signed_weight"]), ("INVOICE_SALE_OUT", D("-3.200")))
         self.assertEqual(self.store.lines[0][0], "SELL_OLD_GOLD")
 
+    def test_rafayea_sale_with_real_clicks_takes_the_grams_from_the_clasp_stock(self):
+        self.select_salesperson()
+        self.click("openRafayea")
+        self.wait_until(lambda: self.item("stockSalePanel").property("visible"))
+        self.assertFalse(self.item("stockType").property("visible"))                  # weight only: no type / factory / size
+        self.click("stockKarat_21")
+        self.type_into("stockWeight", "3.2")
+        self.click("stockAdd")                                                        # the kind is mandatory
+        self.wait_until(lambda: "نوع الرفايع" in self.text("stockError"))
+        self.type_into("stockDescription", "قفل")
+        self.click("stockAdd")
+        self.wait_until(lambda: self.vm.saleCount == 1)
+        self.assertEqual(self.vm.saleLinesModel.rows()[0]["tag"], "رفايع")
+        self.receive("20500")
+        self.settle()
+        self.finalize()
+        self.assertEqual(self.store.lines[0][0], "SELL_RAFAYEA")
+        self.assertEqual([(m["karat_id"], m["weight_grams"]) for m in self.store.clasp], [(1, D("3.200"))])
+        self.assertEqual(self.store.old_gold, [])
+
     def test_old_gold_sale_above_the_counted_balance_is_not_blocked(self):
         # Owner 2026-11-03: Scrap may go negative through an F7 sale, so no shortage problem is shown.
         self.select_salesperson()

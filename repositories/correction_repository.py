@@ -317,6 +317,13 @@ class CorrectionRepository(BaseRepository):
             raise RuntimeError(f"inventory movement type {movement_code} is missing")
         return str(movement_id)
 
+    def add_clasp_reversal(self, *, karat_id, grams, line_id, correction_id, code, reason, created_by_user_id):
+        """The grams of a reversed rafayea sale go back into the clasp stock (SALE_REVERSAL, one per invoice line, keyed so it can never post twice)."""
+        self._execute(
+            "INSERT INTO clasp_stock_movements (karat_id, movement_code, delta_grams, reason, reference_type, reference_id, request_key, created_by_user_id, created_at) "
+            "VALUES (%s, 'SALE_REVERSAL', %s, %s, 'TRANSACTION_CORRECTION', %s, %s, %s, NOW())",
+            (int(karat_id), Decimal(str(grams)), (reason or code)[:500], _id(correction_id), f"SALE-REV-{int(correction_id)}-{int(line_id)}", created_by_user_id))
+
     def add_old_gold(self, *, karat_id, weight_delta, movement_code, correction_id, code, notes, created_by_user_id,
                      employee_id, customer_id=None, inventory_item_id=None):
         movement_id, _ = self._execute(

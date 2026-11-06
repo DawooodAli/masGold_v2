@@ -122,6 +122,7 @@ class _Plan:
     account: dict = field(default_factory=dict)          # customer id → signed delta
     inventory: list = field(default_factory=list)        # (item id, from, to, movement code)
     old_gold: list = field(default_factory=list)         # (karat id, karat, signed grams, movement code)
+    clasp: list = field(default_factory=list)            # (karat id, karat, grams, invoice line id) rafayea grams a reversed invoice gives back (099)
     reviews: list = field(default_factory=list)          # open inspection review ids to dismiss
     holds: list = field(default_factory=list)            # (hold id, karat id, karat, grams, item id, OUT code)
     cases: list = field(default_factory=list)            # open reconciliation case ids to cancel
@@ -882,6 +883,8 @@ class CorrectionService:
                     plan.inventory.append((str(line["inventory_item_id"]), "SOLD", "IN_STOCK", "REVERSAL_SALE_RESTOCK"))
             elif line["line_type"] == "SELL_OLD_GOLD":
                 plan.old_gold.append((int(line["karat_id"]), line["karat_value"], weight, "REVERSAL_OLD_GOLD_SALE_IN"))
+            elif line["line_type"] == "SELL_RAFAYEA":
+                plan.clasp.append((int(line["karat_id"]), line["karat_value"], weight, str(line["line_id"])))
             elif line["line_type"] == "BUY_OLD_GOLD":
                 plan.old_gold.append((int(line["karat_id"]), line["karat_value"], -weight, "REVERSAL_OLD_GOLD_PURCHASE_OUT"))
             elif line["line_type"] == "SELL_UNIDENTIFIED":
@@ -1124,6 +1127,7 @@ class CorrectionService:
             "marketer": [{"ledger": k, "party_id": p, "document_id": d, "settlement_id": s, "movement": m, "delta": str(delta)}
                          for k, p, d, _, s, m, _, delta in plan.marketer],
             "inventory": [{"inventory_item_id": i, "from": f, "to": t} for i, f, t, _ in plan.inventory],
+            "clasp": [{"karat": k, "grams": str(g)} for _, k, g, _ in plan.clasp],
             "old_gold": [{"karat": k, "grams": str(g)} for _, k, g, _ in plan.old_gold]
                         + [{"karat": k, "grams": str(-g)} for _, _, k, g, _, _ in plan.holds],
             "reviews": len(plan.reviews), "cases": len(plan.cases),
@@ -1282,6 +1286,9 @@ class CorrectionService:
                                                    correction_id=correction_id, code=code, reason=f"{text} — {reason}",
                                                    performed_by_user_id=actor.user_id,
                                                    performed_by_employee_id=actor.employee_id)
+            for karat_id, karat, grams, line_id in plan.clasp:
+                corrections.add_clasp_reversal(karat_id=karat_id, grams=grams, line_id=line_id, correction_id=correction_id, code=code,
+                                               reason=f"{text} — {reason}", created_by_user_id=actor.user_id)
             for karat_id, _, grams, movement_code in plan.old_gold:
                 corrections.add_old_gold(karat_id=karat_id, weight_delta=grams, movement_code=movement_code,
                                          correction_id=correction_id, code=code, notes=text,

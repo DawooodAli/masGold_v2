@@ -358,7 +358,7 @@ class CashViewTests(FinancialTestCase):
     def test_every_read_model_label_key_has_an_arabic_name(self):
         sql = inspect.getsource(RealRepository._resolved)
         block = sql[sql.index("END AS source_type"):sql.index("END AS label_key")]
-        keys = set(re.findall(r"'([A-Z_]+)'", block)) - {"FULL_REVERSAL", "ACCOUNT_TRANSFER", "BUY_OLD_GOLD", "SELL_INVENTORY", "SELL_UNIDENTIFIED", "SELL_OLD_GOLD"}      # the last four are invoice line types inside the MIXED subquery
+        keys = set(re.findall(r"'([A-Z_]+)'", block)) - {"FULL_REVERSAL", "ACCOUNT_TRANSFER", "BUY_OLD_GOLD", "SELL_INVENTORY", "SELL_UNIDENTIFIED", "SELL_OLD_GOLD", "SELL_RAFAYEA"}      # the last four are invoice line types inside the MIXED subquery
         keys |= {"MANUAL_DEPOSIT", "MANUAL_WITHDRAWAL", "EXPENSE", "SALARY", "RENT", "REVENUE", "REPAIR"}
         self.assertLessEqual(keys, set(CASH_LABELS))
         for text in CASH_LABELS.values():

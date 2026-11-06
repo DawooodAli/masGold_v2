@@ -7,7 +7,7 @@ import unittest
 
 from services.authentication_service import AuthenticationError, AuthenticationResult, GENERIC_ERROR
 from services.invoice_service import (
-    _APPROVER_PROOF, OLD_GOLD_STOCK, UNIDENTIFIED, DescribedSaleInput, InvoiceDraft, InvoiceError,
+    _APPROVER_PROOF, OLD_GOLD_STOCK, RAFAYEA, UNIDENTIFIED, DescribedSaleInput, InvoiceDraft, InvoiceError,
     NewCustomerInput, PaymentInput, SaleLineInput, SettlementApprover,
 )
 from services.invoice_calculator import InvoiceCalculationError, InvoiceCalculator as Calc
@@ -32,6 +32,35 @@ def from_stock(**kwargs):
     values = dict(kind=OLD_GOLD_STOCK, karat_id=1, weight_grams="3.200", item_type_id=4, description="دبلة سادة")
     values.update(kwargs)
     return DescribedSaleInput(**values)
+
+
+def rafayea(**kwargs):
+    values = dict(kind=RAFAYEA, karat_id=1, weight_grams="3.200", description="قفل")
+    values.update(kwargs)
+    return DescribedSaleInput(**values)
+
+
+class RafayeaSaleTests(InvoiceServiceTestCase):
+    def test_a_rafayea_sale_posts_a_line_and_takes_the_grams_from_the_clasp_stock_only(self):
+        draft = InvoiceDraft(5, "12", (), (), (cash("20500"),), described_sale_lines=(rafayea(),))
+        self.finalize(draft)
+        kind, line = self.store.lines[0]
+        self.assertEqual((kind, line["item_name"], line["old_gold_movement_id"]), ("SELL_RAFAYEA", "قفل", None))
+        self.assertEqual([(m["karat_id"], m["weight_grams"], m["note"]) for m in self.store.clasp], [(1, D("3.200"), "قفل")])
+        self.assertEqual((self.store.old_gold, self.store.cases), ([], []))      # not Scrap, not an inventory review
+        self.assertIn(("CLASP", 1), self.store.locked_karats)
+
+    def test_more_than_the_clasp_stock_is_refused_in_preview_and_on_finalize(self):
+        draft = InvoiceDraft(5, "12", (), (), (cash("90000"),), described_sale_lines=(rafayea(weight_grams="10.001"),))
+        self.assertIn("CLASP_STOCK_INSUFFICIENT", [p["code"] for p in self.service.preview(draft)["blocking_problems"]])
+        self.assertRefused("CLASP_STOCK_INSUFFICIENT", draft)
+        self.assertEqual(self.store.clasp, [])
+        ok = InvoiceDraft(5, "12", (), (), (cash("62000"),), described_sale_lines=(rafayea(weight_grams="10.000"),))
+        self.assertNotIn("CLASP_STOCK_INSUFFICIENT", [p["code"] for p in self.service.preview(ok)["blocking_problems"]])
+
+    def test_the_kind_is_mandatory(self):
+        draft = InvoiceDraft(5, "12", (), (), (cash("20500"),), described_sale_lines=(rafayea(description=" "),))
+        self.assertRefused("DESCRIPTION_REQUIRED", draft)
 
 
 class DerivedSaleTests(InvoiceServiceTestCase):
