@@ -58,6 +58,16 @@ class Extras:
         except ApiError:
             pass
         try:
+            flow = self._api.report(token, "cashflow", {"from": today, "to": today})
+            by_flow = {t["label"]: t for t in flow["totals"]}
+            for label, tone in (("مصروفات مسجلة", "payable"), ("إيرادات مسجلة", "receivable")):
+                if label in by_flow:
+                    cards.append({"label": label.replace("مسجلة", "اليوم"), "value": by_flow[label]["value"], "note": "", "tone": tone})
+        except ApiError:
+            pass
+        except Exception:
+            logger.exception("today: cashflow cards failed")
+        try:
             accounts = FinancialAccountService(session).accounts(_expected_actor=actor)["accounts"]
             for ledger, label in (("CASH", "رصيد الخزنة"), ("BANK", "رصيد البنوك والمحافظ")):
                 rows = [a for a in accounts if a["ledger"] == ledger and a["is_active"]]
