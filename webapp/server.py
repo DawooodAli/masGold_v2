@@ -25,6 +25,7 @@ COOKIE = "mgsid"
 NO_PARAMS = frozenset({"today", "reviews", "transfers_overview", "attention", "tiles", "bankflow", "cashflow", "currency", "stocktake_status"})
 ROUTES = {"/api/today": "today", "/api/statement": "statement", "/api/piece": "piece", "/api/reviews": "reviews", "/api/transfers": "transfers_overview", "/api/attention": "attention", "/api/tiles": "tiles", "/api/bankflow": "bankflow", "/api/cashflow": "cashflow", "/api/currency": "currency", "/api/activity": "activity", "/api/stocktake_status": "stocktake_status"}
 MAX_BODY = 4096
+MARKET_BODY = 16384                                                     # the market forms (melt, purchases) carry several lines
 CSP = ("default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; "
        "connect-src 'self'; frame-src https://s.tradingview.com https://www.tradingview.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 logger = logging.getLogger("webapp")
@@ -93,6 +94,9 @@ def make_handler(api):
                 elif url.path == "/api/invoice":
                     params = {k: v[0] for k, v in parse_qs(url.query, keep_blank_values=True).items()}
                     self._json(200, api.invoice(self._token(), params))
+                elif url.path == "/api/market_entries":
+                    params = {k: v[0] for k, v in parse_qs(url.query, keep_blank_values=True).items()}
+                    self._json(200, api.market.entries(self._token(), params))
                 elif url.path == "/api/market":
                     self._json(200, api.market.overview(self._token()))
                 elif url.path in ROUTES:
@@ -126,12 +130,13 @@ def make_handler(api):
                 length = int(self.headers.get("Content-Length") or 0)
             except ValueError:
                 length = 0
-            raw = self.rfile.read(length) if 0 < length <= MAX_BODY else b""          # the body is read BEFORE any refusal, so the client never sees a reset connection
+            limit = MARKET_BODY if url.path == "/api/market_op" else MAX_BODY
+            raw = self.rfile.read(length) if 0 < length <= limit else b""          # the body is read BEFORE any refusal, so the client never sees a reset connection
             if url.path not in ("/api/login", "/api/logout", "/api/deadcash/writeoff", "/api/transfer", "/api/legacy_balance", "/api/review_done", "/api/settle", "/api/stocktake_scan", "/api/market_op") or not self._same_origin_post():
                 self._json(403, {"error": "مرفوض."})
                 return
             try:
-                if length > MAX_BODY:
+                if length > limit:
                     raise ApiError(413, "الطلب كبير.")
                 body = json.loads(raw or b"{}") if length else {}
                 if not isinstance(body, dict):

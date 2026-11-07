@@ -1285,14 +1285,17 @@ function liveGoldChart() {
 window.addEventListener("resize", () => state.redraws.forEach((draw) => draw()));
 boot();
 
-// ---------------------------------------------------------------- عهدة السوق والموردين (owner request 2026-11-07): one overview and seven whitelisted writes, each with the CURRENT password
-const MARKET_OPS = [
-  ["trip_create", "عهدة جديدة"], ["trip_return", "رجوع عهدة"], ["trip_pay_supplier", "دفع مصنعيات من العهدة"], ["trip_expense", "مصروف من العهدة"], ["trip_close", "إغلاق عهدة"],
-  ["sup_pay_cash", "دفع مصنعيات من الخزنة"], ["sup_gold_settle", "تسوية ذهب لمورد من الكسر"]];
-
+// ---------------------------------------------------------------- عهدة السوق والموردين (owner request 2026-11-07): the forms are DRAWN from the specs the server sends (`ops`), every write needs the CURRENT password
 async function loadMarketKeep(s) {
   try { s.data = await call("/api/market"); } catch (e) { if (e.status === 401) { showLogin("انتهت الجلسة، سجّل الدخول من جديد."); return; } }
   render();
+}
+
+function marketOptions(s, name, f, tripFilter) {
+  let rows = ((s.data.options || {})[name] || []);
+  if (name === "entries") rows = (s.entries && s.entries[f.trip_id]) || [];
+  if (tripFilter && f.trip_id) rows = rows.filter((r) => !r.trip || r.trip === f.trip_id);
+  return rows;
 }
 
 function renderMarket(s) {
@@ -1301,63 +1304,66 @@ function renderMarket(s) {
   if (s.error) body.append(el("div", { class: "msg err", text: s.error }));
   const d = s.data;
   if (!d) return body;
-  const card = (label, value, tone, note) => el("div", { class: "card " + (tone || "") }, el("div", { class: "label", text: label }), el("div", { class: "value", text: value }), note ? el("div", { class: "note", text: note }) : null);
+  const card = (label, value, tone) => el("div", { class: "card " + (tone || "") }, el("div", { class: "label", text: label }), el("div", { class: "value", text: value }));
   body.append(el("div", { class: "cards" }, [d.safe ? card("الخزنة الرئيسية", d.safe.text + " ج", "") : null].concat(d.scrap.map((r) => card("كسر عيار " + r.karat + " المتاح", r.text + " جرام", "gold"))).filter(Boolean)));
   if (s.message) body.append(el("div", { class: "msg ok", text: s.message }));
-  const mk = s.mk || (s.mk = { op: "trip_create", f: {}, key: newKey() });
+  const mk = s.mk || (s.mk = { op: "", f: {}, rows: [{}], key: newKey() });
+  const spec = d.ops.find((o) => o.key === mk.op);
   const f = mk.f;
   body.append(el("div", { class: "section", text: "عملية جديدة" }));
-  body.append(el("div", { class: "group", style: "margin-bottom:10px" }, MARKET_OPS.map(([k, t]) => el("button", { class: "chip" + (mk.op === k ? " on" : ""), text: t, onclick: () => { mk.op = k; mk.f = {}; mk.key = newKey(); s.error = ""; s.message = ""; render(); } }))));
-  const text = (key, label, hint) => field(label, el("input", { type: "text", inputmode: hint || "decimal", value: f[key] || "", oninput: (e) => { f[key] = e.target.value; sync(); } }));
-  const pick = (key, label, rows, empty) => field(label, el("select", { onchange: (e) => { f[key] = e.target.value; if (key === "trip_id") { f.gold = {}; render(); } sync(); } },
-    el("option", { value: "", text: empty }), rows.map(([v, t]) => el("option", { value: v, text: t, selected: f[key] === v }))));
-  const trips = d.trips.map((t) => [t.id, t.code + " • نقدية " + t.cashText + " ج" + (t.notes ? " • " + t.notes : "")]);
-  const suppliers = d.suppliers.map((x) => [x.id, x.name + " • مصنعيات " + x.makingSide]);
-  const goldBox = (lines, label) => { f.gold = f.gold || {}; return el("div", { class: "filters" }, lines.map((g) => field(label(g), el("input", { type: "text", inputmode: "decimal", value: f.gold[g.key] || "", oninput: (e) => { f.gold[g.key] = e.target.value; sync(); } })))); };
-  const trip = d.trips.find((t) => t.id === f.trip_id);
-  const fields = [];
-  if (mk.op === "trip_create") {
-    fields.push(el("div", { class: "filters" }, text("cash", "نقدية من الخزنة (ج)"), text("notes", "ملاحظة", "text")));
-    fields.push(goldBox(d.scrap.map((r) => ({ key: r.karatId, karat: r.karat, available: r.text })), (g) => "كسر عيار " + g.karat + " (المتاح " + g.available + ")"));
-  } else if (mk.op === "trip_return") {
-    fields.push(el("div", { class: "filters" }, pick("trip_id", "العهدة", trips, "اختر العهدة"), text("cash", "نقدية راجعة للخزنة (ج)"), text("notes", "ملاحظة", "text")));
-    if (trip) fields.push(goldBox(trip.gold.map((g) => ({ key: g.karatId + "|" + g.designation, karat: g.karat, designation: g.designation, available: g.text })),
-      (g) => "عيار " + g.karat + (g.designation === "UNCLASSIFIED" ? "" : " (" + g.designation + ")") + " — الباقي " + g.available));
-  } else if (mk.op === "trip_pay_supplier") {
-    fields.push(el("div", { class: "filters" }, pick("trip_id", "العهدة", trips, "اختر العهدة"), pick("supplier_id", "المورد", suppliers, "اختر المورد"), text("amount", "المبلغ (ج)"), text("notes", "ملاحظة", "text")));
-  } else if (mk.op === "trip_expense") {
-    fields.push(el("div", { class: "filters" }, pick("trip_id", "العهدة", trips, "اختر العهدة"), text("amount", "المبلغ (ج)"), text("description", "بيان المصروف (إجباري)", "text")));
-  } else if (mk.op === "trip_close") {
-    fields.push(el("div", { class: "filters" }, pick("trip_id", "العهدة", d.trips.map((t) => [t.id, t.code + (t.settled ? " • مسوّاة" : " • لسه فيها رصيد")]), "اختر العهدة")));
-  } else if (mk.op === "sup_pay_cash") {
-    fields.push(el("div", { class: "filters" }, pick("supplier_id", "المورد", suppliers, "اختر المورد"), text("amount", "المبلغ (ج)"), text("notes", "ملاحظة", "text")));
-  } else {
-    fields.push(el("div", { class: "filters" }, pick("supplier_id", "المورد", d.suppliers.map((x) => [x.id, x.name + " • ذهب " + (x.gold || "غير محدد") + (x.karat ? " عيار " + x.karat : "")]), "اختر المورد"),
-      pick("karat_id", "عيار الكسر المُسلَّم", d.scrap.map((r) => [r.karatId, "عيار " + r.karat + " (المتاح " + r.text + ")"]), "اختر العيار"), text("weight", "الوزن (جرام)"), text("notes", "ملاحظة", "text")));
+  const groups = [...new Set(d.ops.map((o) => o.group))];
+  groups.forEach((g) => body.append(el("div", { class: "group", style: "margin-bottom:6px" }, el("span", { class: "name", text: g }),
+    d.ops.filter((o) => o.group === g).map((o) => el("button", { class: "chip" + (mk.op === o.key ? " on" : ""), text: o.title,
+      onclick: () => { mk.op = o.key; mk.f = {}; mk.rows = [{}]; mk.key = newKey(); s.error = ""; s.message = ""; render(); } })))));
+  if (spec) {
+    const sync = () => { go.disabled = !(confirm.checked && password.value); };
+    const control = (fl, store, onChange) => {
+      if (fl.type === "select") {
+        const rows = marketOptions(s, fl.options, f, fl.tripFilter);
+        return el("select", { onchange: (e) => { store[fl.k] = e.target.value; if (onChange) onChange(); sync(); } }, el("option", { value: "", text: fl.required ? "اختر" : "—" }),
+          rows.map((r) => el("option", { value: r.v, text: r.t, selected: store[fl.k] === r.v })));
+      }
+      if (fl.type === "check") return el("input", { type: "checkbox", checked: store[fl.k] === "1", onchange: (e) => { store[fl.k] = e.target.checked ? "1" : ""; } });
+      return el("input", { type: "text", inputmode: ["money", "grams"].includes(fl.type) ? "decimal" : "text", placeholder: fl.type === "date" ? "2026-11-07" : "", value: store[fl.k] || "",
+        oninput: (e) => { store[fl.k] = e.target.value; sync(); } });
+    };
+    const onTrip = () => {
+      if (spec.fields.some((x) => x.options === "entries") && f.trip_id) {
+        s.entries = s.entries || {};
+        call("/api/market_entries?trip=" + encodeURIComponent(f.trip_id)).then((r) => { s.entries[f.trip_id] = r.entries; render(); }).catch(() => {});
+      }
+      render();
+    };
+    const box = el("div", { class: "filters" });
+    spec.fields.forEach((fl) => {
+      if (fl.type === "lines") {
+        box.append(el("div", { class: "section", text: fl.label }));
+        mk.rows.forEach((row, i) => box.append(el("div", { class: "filters" }, fl.cols.map((c) => field(c.label, control(c, row))),
+          mk.rows.length > 1 ? el("button", { class: "btn small", text: "حذف السطر", onclick: () => { mk.rows.splice(i, 1); render(); } }) : null)));
+        box.append(el("button", { class: "btn small", text: "+ سطر", onclick: () => { mk.rows.push({}); render(); } }));
+      } else box.append(field(fl.label + (fl.required ? "" : " (اختياري)"), control(fl, f, fl.k === "trip_id" ? onTrip : (fl.tripFilter ? null : null))));
+    });
+    const password = el("input", { type: "password", autocomplete: "current-password", placeholder: "كلمة مرورك الحالية", oninput: () => sync() });
+    const confirm = el("input", { type: "checkbox", onchange: () => sync() });
+    const go = el("button", { class: "btn primary", text: "تنفيذ: " + spec.title, disabled: true });
+    body.append(box, el("div", { class: "filters" }, field("كلمة المرور", password)), el("label", { class: "confirm" }, confirm, " أؤكد العملية وراجعت الأرقام"), go,
+      el("div", { class: "note-box", text: "عملية حقيقية بتتسجل باسمك في نفس سجلات الكمبيوتر، وأي خطأ ترفضه الخدمة برسالة." }));
+    go.addEventListener("click", async () => {
+      const pw = password.value; password.value = "";
+      go.disabled = true; s.error = ""; s.message = "";
+      try {
+        const r = await call("/api/market_op", { method: "POST", body: JSON.stringify({ op: mk.op, v: f, lines: mk.rows, password: pw, confirmed: true, request_key: mk.key }) });
+        s.message = "تمت العملية: " + spec.title + " " + (r.code || r.payment_code || r.trip_code || "") + (r.duplicate ? " (طلب مكرر لم يُنفَّذ مرة ثانية)" : "");
+        s.mk = null; state.special = s;
+        loadMarketKeep(s);
+        return;
+      } catch (e) {
+        if (e.status === 401) { showLogin("انتهت الجلسة، سجّل الدخول من جديد."); return; }
+        s.error = e.message;
+      }
+      render();
+    });
   }
-  const password = el("input", { type: "password", autocomplete: "current-password", placeholder: "كلمة مرورك الحالية", oninput: () => sync() });
-  const confirm = el("input", { type: "checkbox", onchange: () => sync() });
-  const go = el("button", { class: "btn primary", text: "تنفيذ", disabled: true });
-  function sync() { go.disabled = !(confirm.checked && password.value); }
-  body.append(...fields, el("div", { class: "filters" }, field("كلمة المرور", password)),
-    el("label", { class: "confirm" }, confirm, " أؤكد العملية وراجعت الأرقام"), go,
-    el("div", { class: "note-box", text: "العملية حقيقية وبتتسجل باسمك في نفس سجلات الكمبيوتر. السبك والتسخين والبيع والشراء وعكس أي عملية على الكمبيوتر فقط." }));
-  go.addEventListener("click", async () => {
-    const pw = password.value; password.value = "";
-    go.disabled = true; s.error = ""; s.message = "";
-    const gold = Object.entries(f.gold || {}).filter(([, w]) => String(w).trim() !== "").map(([k, w]) => { const [karat, designation] = k.split("|"); return { karat_id: karat, weight: w, designation: designation || "" }; });
-    try {
-      const r = await call("/api/market_op", { method: "POST", body: JSON.stringify({ op: mk.op, ...f, gold, password: pw, confirmed: true, request_key: mk.key }) });
-      s.message = "تمت العملية " + (r.code || r.payment_code || r.trip_code || "") + (r.duplicate ? " (طلب مكرر لم يُنفَّذ مرة ثانية)" : "");
-      s.mk = null; state.special = s;
-      loadMarketKeep(s);
-      return;
-    } catch (e) {
-      if (e.status === 401) { showLogin("انتهت الجلسة، سجّل الدخول من جديد."); return; }
-      s.error = e.message;
-    }
-    render();
-  });
   body.append(el("div", { class: "section", text: "العهد المفتوحة" }));
   body.append(d.trips.length ? el("div", { class: "tablewrap" }, el("table", {}, el("thead", {}, el("tr", {}, ["العهدة", "النقدية (ج)", "الذهب", "ملاحظة"].map((t) => el("th", { text: t })))),
     el("tbody", {}, d.trips.map((t) => el("tr", {}, [t.code, t.cashText,
