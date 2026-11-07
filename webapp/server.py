@@ -93,6 +93,8 @@ def make_handler(api):
                 elif url.path == "/api/invoice":
                     params = {k: v[0] for k, v in parse_qs(url.query, keep_blank_values=True).items()}
                     self._json(200, api.invoice(self._token(), params))
+                elif url.path == "/api/market":
+                    self._json(200, api.market.overview(self._token()))
                 elif url.path in ROUTES:
                     params = {k: v[0] for k, v in parse_qs(url.query, keep_blank_values=True).items()}
                     method = getattr(api.extras, ROUTES[url.path])
@@ -125,7 +127,7 @@ def make_handler(api):
             except ValueError:
                 length = 0
             raw = self.rfile.read(length) if 0 < length <= MAX_BODY else b""          # the body is read BEFORE any refusal, so the client never sees a reset connection
-            if url.path not in ("/api/login", "/api/logout", "/api/deadcash/writeoff", "/api/transfer", "/api/legacy_balance", "/api/review_done", "/api/settle", "/api/stocktake_scan") or not self._same_origin_post():
+            if url.path not in ("/api/login", "/api/logout", "/api/deadcash/writeoff", "/api/transfer", "/api/legacy_balance", "/api/review_done", "/api/settle", "/api/stocktake_scan", "/api/market_op") or not self._same_origin_post():
                 self._json(403, {"error": "مرفوض."})
                 return
             try:
@@ -149,6 +151,8 @@ def make_handler(api):
                     self._json(200, api.extras.stocktake_scan(self._token(), body))
                 elif url.path == "/api/transfer":
                     self._json(200, api.extras.transfer(self._token(), body))
+                elif url.path == "/api/market_op":
+                    self._json(200, api.market.op(self._token(), body))
                 else:
                     api.logout(self._token())
                     self._json(200, {"ok": True}, [self._cookie("", clear=True)])
