@@ -100,6 +100,8 @@ def make_handler(api):
                 elif url.path == "/api/market_entries":
                     params = {k: v[0] for k, v in parse_qs(url.query, keep_blank_values=True).items()}
                     self._json(200, api.market.entries(self._token(), params))
+                elif url.path == "/api/settings":
+                    self._json(200, api.market.settings_overview(self._token()))
                 elif url.path == "/api/market":
                     self._json(200, api.market.overview(self._token()))
                 elif url.path in ROUTES:

@@ -200,7 +200,7 @@ function render() {
     el("span", { class: "who", text: state.overview.user }), el("button", { class: "btn", text: "خروج", onclick: logout }));
   if (!module) { app.replaceChildren(...[top, renderAttention(), renderToday(), renderHome()].filter(Boolean)); return; }
   if (module.kind && module.kind !== "reports") {
-    const draw = { reviews: renderReviews, transfers: renderTransfers, calc: renderCalc, stocktake: renderStocktake, activity: renderActivity, bankflow: renderBankflow, cashflow: renderCashflow, currency: renderCurrency, market: renderMarket }[module.kind];
+    const draw = { reviews: renderReviews, transfers: renderTransfers, calc: renderCalc, stocktake: renderStocktake, activity: renderActivity, bankflow: renderBankflow, cashflow: renderCashflow, currency: renderCurrency, market: renderMarket, settings: renderMarket }[module.kind];
     const view = state.special ? draw(state.special) : el("div", { class: "loading", text: "جارٍ التحميل…" });
     app.replaceChildren(...[top, view, state.custInvoices ? renderCustomerInvoices(state.custInvoices) : null, state.invoice ? renderInvoice(state.invoice) : null].filter(Boolean));
     return;
@@ -898,7 +898,7 @@ async function loadSpecial(kind) {
   try {
     if (kind === "calc") { if (!state.today) await loadToday(); s.data = {}; }
     else if (kind === "stocktake") s.data = await call("/api/stocktake_status");
-    else s.data = await call(kind === "reviews" ? "/api/reviews" : kind === "activity" ? "/api/activity" : kind === "bankflow" ? "/api/bankflow" : kind === "cashflow" ? "/api/cashflow" : kind === "currency" ? "/api/currency" : kind === "market" ? "/api/market" : "/api/transfers");
+    else s.data = await call(kind === "reviews" ? "/api/reviews" : kind === "activity" ? "/api/activity" : kind === "bankflow" ? "/api/bankflow" : kind === "cashflow" ? "/api/cashflow" : kind === "currency" ? "/api/currency" : kind === "market" ? "/api/market" : kind === "settings" ? "/api/settings" : "/api/transfers");
   } catch (e) {
     if (e.status === 401) { showLogin("انتهت الجلسة، سجّل الدخول من جديد."); return; }
     s.error = e.message;
@@ -1287,7 +1287,7 @@ boot();
 
 // ---------------------------------------------------------------- عهدة السوق والموردين (owner request 2026-11-07): the forms are DRAWN from the specs the server sends (`ops`), every write needs the CURRENT password
 async function loadMarketKeep(s) {
-  try { s.data = await call("/api/market"); } catch (e) { if (e.status === 401) { showLogin("انتهت الجلسة، سجّل الدخول من جديد."); return; } }
+  try { s.data = await call(s.kind === "settings" ? "/api/settings" : "/api/market"); } catch (e) { if (e.status === 401) { showLogin("انتهت الجلسة، سجّل الدخول من جديد."); return; } }
   render();
 }
 
@@ -1306,7 +1306,7 @@ function renderMarket(s) {
   const d = s.data;
   if (!d) return body;
   const card = (label, value, tone) => el("div", { class: "card " + (tone || "") }, el("div", { class: "label", text: label }), el("div", { class: "value", text: value }));
-  body.append(el("div", { class: "cards" }, [d.safe ? card("الخزنة الرئيسية", d.safe.text + " ج", "") : null].concat(d.scrap.map((r) => card("كسر عيار " + r.karat + " المتاح", r.text + " جرام", "gold"))).filter(Boolean)));
+  if (d.scrap) body.append(el("div", { class: "cards" }, [d.safe ? card("الخزنة الرئيسية", d.safe.text + " ج", "") : null].concat(d.scrap.map((r) => card("كسر عيار " + r.karat + " المتاح", r.text + " جرام", "gold"))).filter(Boolean)));
   if (s.message) body.append(el("div", { class: "msg ok", text: s.message }));
   const mk = s.mk || (s.mk = { op: "", f: {}, rows: [{}], key: newKey() });
   const spec = d.ops.find((o) => o.key === mk.op);
@@ -1372,6 +1372,12 @@ function renderMarket(s) {
       render();
     });
   }
+  (d.tables || []).forEach((t) => {
+    body.append(el("div", { class: "section", text: t.title }));
+    body.append(t.rows.length ? el("div", { class: "tablewrap" }, el("table", {}, el("thead", {}, el("tr", {}, t.cols.map((h) => el("th", { text: h })))),
+      el("tbody", {}, t.rows.map((r) => el("tr", {}, r.map((c) => el("td", { text: c }))))))) : el("div", { class: "note-box", text: "لا يوجد." }));
+  });
+  if (!d.trips) return body;
   body.append(el("div", { class: "section", text: "العهد المفتوحة" }));
   body.append(d.trips.length ? el("div", { class: "tablewrap" }, el("table", {}, el("thead", {}, el("tr", {}, ["العهدة", "النقدية (ج)", "الذهب", "ملاحظة"].map((t) => el("th", { text: t })))),
     el("tbody", {}, d.trips.map((t) => el("tr", {}, [t.code, t.cashText,

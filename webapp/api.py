@@ -50,6 +50,7 @@ MODULES = (
     # cards without reports: the page draws them itself (`kind`), shown only to a user holding one of `needs`
     {"key": "transfers", "title": "التحويلات", "subtitle": "بين البنوك والمحافظ والحساب الخاص", "icon": "🔁", "kind": "transfers", "needs": ("FINANCIAL_ACCOUNT_OPERATE",)},
     {"key": "market", "title": "عهدة السوق والموردين", "subtitle": "إخراج ورجوع العهدة، دفع مصنعيات، تسوية ذهب الموردين", "icon": "🧭", "kind": "market", "needs": ("MARKET_TRIP_MANAGE",)},
+    {"key": "settings", "title": "الإعدادات", "subtitle": "تكلفة المصنعية، الحد الأدنى للمخزون، تصنيفات المصروفات، إعدادات النظام", "icon": "⚙️", "kind": "settings", "needs": ("SETTINGS_MANAGE",)},
     {"key": "reviews", "title": "مراجعات المدير", "subtitle": "ما ينتظر المراجعة", "icon": "🔔", "kind": "reviews", "needs": ("MANAGEMENT_REVIEW", "INVENTORY_RECONCILE")},
     {"key": "currency", "title": "أسعار العملات", "subtitle": "الدولار واليورو والريال وغيرها مقابل الجنيه", "icon": "💱", "kind": "currency", "needs": ("APP_LOGIN",)},
     {"key": "stocktake", "title": "جرد بالكاميرا", "subtitle": "امسح القطع بكاميرا الأيباد وتظهر في جرد الكمبيوتر", "icon": "📷", "kind": "stocktake", "needs": ("INVENTORY_VIEW",)},

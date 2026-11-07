@@ -4,7 +4,7 @@ from unittest import mock
 import unittest
 
 from tests.test_webapp import ApiError, OWNER, make_api
-from webapp.market import OPERATIONS
+from webapp.market import OPERATIONS, SETTINGS_OPS
 
 KEY = "11111111-1111-4111-8111-111111111111"
 CALLS = []
@@ -93,6 +93,30 @@ class FakeInventory:
         return {"item_types": [{"id": 4, "name": "خاتم"}]}
 
 
+class FakeSettingsService:
+    """One fake for the four settings services: reads return fixed rows, every write is recorded."""
+
+    def __init__(self, session):
+        pass
+
+    def costs(self, *, _expected_actor=None):
+        return [{"id": "1", "code": "A", "name": "ألف", "cost": D("300.00"), "range_min": D("100"), "range_max": D("200")}]
+
+    def overview(self, *, _expected_actor=None):
+        return {"types": [{"id": "4", "name": "خاتم"}], "karats": [{"id": "1", "value": 21}], "levels": [{"id": "9", "type": "خاتم", "karat": 21, "min_pieces": 5, "min_grams": None, "pieces": 2, "grams": D("10")}],
+                "settings": [{"key": "price_warning_percent", "value": "10", "type": "DECIMAL", "type_text": "عدد عشري", "description": "د", "public": False}]}
+
+    def categories(self, *, _expected_actor=None):
+        return [{"code": "RENT", "name": "إيجار", "direction": "OUT", "direction_text": "مصروف", "active": True, "system": True, "used": True}]
+
+    def __getattr__(self, name):
+        def run(*args, **kwargs):
+            kwargs.pop("_expected_actor", None)
+            CALLS.append((name,) + args + tuple(sorted(kwargs.items())))
+            return {"ok": True}
+        return run
+
+
 class FakeSuppliers:
     def __init__(self, session):
         pass
@@ -147,6 +171,8 @@ class MarketTests(unittest.TestCase):
                              ("services.supplier_payment_service.SupplierPaymentService", FakePayments),
                              ("services.supplier_gold_settlement_service.SupplierGoldSettlementService", FakeSettlements),
                              ("services.supplier_purchase_service.SupplierPurchaseService", FakePurchases), ("services.inventory_service.InventoryService", FakeInventory),
+                             ("services.category_cost_service.CategoryCostService", FakeSettingsService), ("services.stock_min_level_service.StockMinLevelService", FakeSettingsService),
+                             ("services.cash_category_service.CashCategoryService", FakeSettingsService), ("services.system_settings_service.SystemSettingsService", FakeSettingsService),
                              ("services.holding_settlement_service.HoldingSettlementService", FakeAny), ("services.marketer_custody_service.MarketerCustodyService", FakeAny), ("services.intermediary_holding_service.IntermediaryHoldingService", FakeAny)):
             patcher = mock.patch(target, fake)
             patcher.start()
@@ -170,7 +196,7 @@ class MarketTests(unittest.TestCase):
         self.assertEqual([s["name"] for s in data["suppliers"]], ["مورد أ"])                         # an intermediary-only party is not a supplier row
         self.assertEqual((data["suppliers"][0]["gold"], data["suppliers"][0]["makingSide"]), ("12.500 علينا للمورد", "300.00 لنا عند المورد"))
         self.assertEqual(data["options"]["lots"][0]["trip"], "7")
-        self.assertEqual({o["key"] for o in data["ops"]}, set(OPERATIONS))
+        self.assertEqual({o["key"] for o in data["ops"]}, set(OPERATIONS) - set(SETTINGS_OPS))             # the settings forms live on their own card
         known = set(data["options"]) | {"entries", "groups"}
         for op in data["ops"]:
             for field in op["fields"]:
@@ -280,6 +306,23 @@ class MarketTests(unittest.TestCase):
         self.assertEqual(CALLS, [])
         self.run_op("hold_return_lot", {"pool_id": "40", "intact": "1", "physical": "1"})
         self.assertEqual(CALLS[0][1:5], ("40", True, "tok", True))
+
+    def test_the_settings_card_lists_the_business_settings_and_changes_them_through_their_services(self):
+        data = self.market.settings_overview(self.token)
+        self.assertEqual({t["title"] for t in data["tables"]}, {"تكلفة المصنعية للحروف (ج/جرام)", "الحد الأدنى للمخزون", "تصنيفات المصروفات والإيرادات", "إعدادات النظام"})
+        self.assertEqual({o["key"] for o in data["ops"]}, set(SETTINGS_OPS))
+        self.assertEqual(data["options"]["sys_keys"][0]["v"], "price_warning_percent")
+        self.assertNotIn("market", [o["key"] for o in data["ops"]])
+        self.run_op("cat_cost_set", {"category_id": "1", "amount": "350"})
+        self.run_op("min_save", {"type_id": "4", "karat_id": "1", "min_pieces": "5"})
+        self.run_op("cashcat_add", {"name": "نقل", "direction": "OUT"})
+        self.run_op("cashcat_active", {"code": "RENT", "state": "INACTIVE"})
+        self.run_op("sys_set", {"key": "price_warning_percent", "value": "12"})
+        self.assertEqual([c[0] for c in CALLS], ["set_cost", "save", "add", "set_active", "set_value"])
+        self.assertEqual(CALLS[1][1:5], ("4", "1", "5", None))
+        self.assertEqual(CALLS[3][1:3], ("RENT", False))
+        self.assertEqual(CALLS[4][1:6], ("price_warning_percent", "12", "DECIMAL", "د", False))
+        self.assertIn(("password", "secret"), CALLS[4])                                                    # the service re-checks the user's own password itself
 
     def test_a_service_refusal_is_shown_and_a_permission_error_is_403(self):
         FakeTrips.fail = ValueError("العهدة مغلقة")

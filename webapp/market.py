@@ -78,7 +78,11 @@ class Ctx:
         self.trips, self.payments, self.settlements = MarketTripService(session), SupplierPaymentService(session), SupplierGoldSettlementService(session)
         self.marketers, self.holdings, self.suppliers = MarketerCustodyService(session), IntermediaryHoldingService(session), SupplierService(session)
         self.session, self.actor, self.key, self.v, self.lines = session, actor, key, v, lines
+        self.password = None                                   # set only for the operations that re-check it themselves (a system setting)
         self.date = v.get("date") or today
+
+    def setting(self, service, name, *args, **kwargs):
+        return getattr(service(self.session), name)(*args, _expected_actor=self.actor, **kwargs)
 
     def call(self, name, *args, **kwargs):
         return getattr(self.trips, name)(*args, _expected_actor=self.actor, **kwargs)
@@ -291,10 +295,56 @@ OPS = {
 }
 OPERATIONS = frozenset(OPS)
 
+# ---------------------------------------------------------------------------------------------- the settings the iPad may change (owner request 2026-11-07, «انقلي الإعدادات»)
+# Only the business settings: category making costs, minimum stock, cash categories and system settings. Users / roles / passwords, the gold price engine and its API key, backups, printing, the opening
+# balance, the iPad server itself and the local sign-in choice stay on the desktop (a credential or a hardware choice is not something to change from a tablet).
+def _cat_cost(): from services.category_cost_service import CategoryCostService; return CategoryCostService
+def _min_level(): from services.stock_min_level_service import StockMinLevelService; return StockMinLevelService
+def _cash_cat(): from services.cash_category_service import CashCategoryService; return CashCategoryService
+def _system(): from services.system_settings_service import SystemSettingsService; return SystemSettingsService
+
+
+def _set_system(c):
+    """A system setting keeps its stored type, description and visibility; only the value changes. The service also re-checks the user's own password (the manager-review check)."""
+    service = _system()(c.session)
+    current = next((s for s in service.overview(_expected_actor=c.actor)["settings"] if s["key"] == c.v["key"]), None)
+    if current is None:
+        raise ValueError("الإعداد غير موجود.")
+    return service.set_value(current["key"], c.v["value"], current["type"], current["description"], current["public"], password=c.password, _expected_actor=c.actor)
+
+
+SETTINGS_OPS = {
+    "cat_cost_set": ("تكلفة المصنعية", "تحديد تكلفة مصنعية حرف (ج/جرام)", [F("category_id", "الحرف", "select", "cost_categories"), F("amount", "التكلفة (ج/جرام)", "money")],
+                     lambda c: c.setting(_cat_cost(), "set_cost", c.v["category_id"], c.v["amount"])),
+    "cat_cost_clear": ("تكلفة المصنعية", "مسح تكلفة مصنعية حرف", [F("category_id", "الحرف", "select", "cost_categories")],
+                       lambda c: c.setting(_cat_cost(), "clear_cost", c.v["category_id"])),
+    "min_save": ("الحد الأدنى للمخزون", "تحديد حد أدنى لصنف وعيار", [F("type_id", "الصنف", "select", "item_types"), F("karat_id", "العيار", "select", "karats"),
+                                                                 F("min_pieces", "الحد بالقطع", "money", required=False), F("min_grams", "الحد بالجرام", "grams", required=False)],
+                 lambda c: c.setting(_min_level(), "save", c.v["type_id"], c.v["karat_id"], c.v.get("min_pieces") or None, c.v.get("min_grams") or None)),
+    "min_remove": ("الحد الأدنى للمخزون", "حذف حد أدنى", [F("level_id", "الحد", "select", "min_levels")],
+                   lambda c: c.setting(_min_level(), "remove", c.v["level_id"])),
+    "cashcat_add": ("تصنيفات المصروفات", "إضافة تصنيف", [F("name", "الاسم", "text"), F("direction", "الاتجاه", "select", "cash_directions")],
+                    lambda c: c.setting(_cash_cat(), "add", c.v["name"], c.v["direction"])),
+    "cashcat_rename": ("تصنيفات المصروفات", "تغيير اسم تصنيف", [F("code", "التصنيف", "select", "cash_cats"), F("name", "الاسم الجديد", "text")],
+                       lambda c: c.setting(_cash_cat(), "rename", c.v["code"], c.v["name"])),
+    "cashcat_active": ("تصنيفات المصروفات", "إيقاف أو تفعيل تصنيف", [F("code", "التصنيف", "select", "cash_cats"), F("state", "الحالة", "select", "active_states")],
+                       lambda c: c.setting(_cash_cat(), "set_active", c.v["code"], c.v["state"] == "ACTIVE")),
+    "cashcat_delete": ("تصنيفات المصروفات", "حذف تصنيف لم يُستخدم", [F("code", "التصنيف", "select", "cash_cats")],
+                       lambda c: c.setting(_cash_cat(), "delete", c.v["code"])),
+    "sys_set": ("إعدادات النظام", "تغيير قيمة إعداد", [F("key", "الإعداد", "select", "sys_keys"), F("value", "القيمة الجديدة", "text")], _set_system),
+}
+SETTINGS_PASSWORD = frozenset({"sys_set"})
+OPS.update(SETTINGS_OPS)
+OPERATIONS = frozenset(OPS)
+
 
 def spec(key):
     group, title, fields, _ = OPS[key]
     return {"key": key, "group": group, "title": title, "fields": fields}
+
+
+def _spec_list(settings):
+    return [spec(k) for k in OPS if (k in SETTINGS_OPS) == settings]
 
 
 class Market:
@@ -389,7 +439,7 @@ class Market:
             "roles": [{"v": "SUPPLIER", "t": "مورد"}, {"v": "MARKETER", "t": "مسوقجي"}, {"v": "BOTH", "t": "مورد ومسوقجي"}]}
         return {"safe": None if not safe else {"id": safe["id"], "name": safe["name"], "text": _money(safe["balance"])},
                 "scrap": [{"karat": r["karat_value"], "text": _grams(r["available"])} for r in context["shop_scrap"]],
-                "trips": trips, "hasMore": bool(page["has_more"]), "suppliers": suppliers, "invoices": invoices[:25], "options": options, "ops": [spec(k) for k in OPS]}
+                "trips": trips, "hasMore": bool(page["has_more"]), "suppliers": suppliers, "invoices": invoices[:25], "options": options, "ops": _spec_list(False)}
 
     @staticmethod
     def _pools(session, actor, parties):
@@ -417,6 +467,54 @@ class Market:
         rows = SupplierPurchaseService(session).list_invoices(_expected_actor=actor)[:60]
         return [{"id": r["id"], "code": r["code"], "supplier_name": r["supplier_name"], "date": str(r["invoice_date"]), "weight": _grams(r["supplier_weight"]), "making": _money(r["gross_making"]),
                  "status": r["status"], "reversed": bool(r["reversed"]), "pieces": r["piece_count"]} for r in rows]
+
+    def settings_overview(self, token):
+        """The settings card: the current values as tables, the picker options and the settings forms."""
+        from services.system_settings_service import SystemSettingsService
+        entry = self._api._entry(token)
+        session, actor = entry.session, entry.session.current_actor()
+        tables, options = [], {"active_states": [{"v": "ACTIVE", "t": "تفعيل"}, {"v": "INACTIVE", "t": "إيقاف"}],
+                               "cash_directions": [{"v": "IN", "t": "إيراد (داخل)"}, {"v": "OUT", "t": "مصروف (خارج)"}, {"v": "BOTH", "t": "الاتنين"}]}
+
+        def part(label, work):
+            try:
+                work()
+            except PermissionError:
+                pass
+            except Exception:
+                logger.exception("settings overview: %s failed", label)
+
+        def costs():
+            rows = _cat_cost()(session).costs(_expected_actor=actor)
+            options["cost_categories"] = [{"v": r["id"], "t": r["code"] + " • " + r["name"]} for r in rows]
+            tables.append({"title": "تكلفة المصنعية للحروف (ج/جرام)", "cols": ["الحرف", "التكلفة", "نطاق المصنعية"],
+                           "rows": [[r["code"] + " " + r["name"], "—" if r["cost"] is None else _money(r["cost"]), f"{r['range_min'] or '—'} – {r['range_max'] or '—'}"] for r in rows]})
+
+        def levels():
+            data = _min_level()(session).overview(_expected_actor=actor)
+            options["item_types"] = [{"v": t["id"], "t": t["name"]} for t in data["types"]]
+            options["karats"] = [{"v": k["id"], "t": "عيار " + str(k["value"])} for k in data["karats"]]
+            options["min_levels"] = [{"v": r["id"], "t": f"{r['type']} عيار {r['karat']}"} for r in data["levels"]]
+            tables.append({"title": "الحد الأدنى للمخزون", "cols": ["الصنف", "العيار", "الحد (قطع)", "الحد (جرام)", "في المخزون"],
+                           "rows": [[r["type"], str(r["karat"]), "—" if r["min_pieces"] is None else str(r["min_pieces"]), "—" if r["min_grams"] is None else _grams(r["min_grams"]),
+                                     f"{r['pieces']} قطعة / {_grams(r['grams'])} جرام"] for r in data["levels"]]})
+
+        def cats():
+            rows = _cash_cat()(session).categories(_expected_actor=actor)
+            options["cash_cats"] = [{"v": r["code"], "t": r["name"] + ("" if r["active"] else " (موقوف)")} for r in rows]
+            tables.append({"title": "تصنيفات المصروفات والإيرادات", "cols": ["الاسم", "الاتجاه", "الحالة", "استُخدم"],
+                           "rows": [[r["name"], r["direction_text"], "فعّال" if r["active"] else "موقوف", "نعم" if r["used"] else "لا"] for r in rows]})
+
+        def system():
+            data = SystemSettingsService(session).overview(_expected_actor=actor)
+            options["sys_keys"] = [{"v": s["key"], "t": s["key"] + " = " + str(s["value"])[:40]} for s in data["settings"]]
+            tables.append({"title": "إعدادات النظام", "cols": ["الإعداد", "القيمة", "النوع", "الوصف"],
+                           "rows": [[s["key"], str(s["value"])[:60], s["type_text"], s["description"][:80]] for s in data["settings"]]})
+
+        for label, work in (("costs", costs), ("levels", levels), ("cats", cats), ("system", system)):
+            part(label, work)
+        return {"ops": [o for o in _spec_list(True) if all(f["options"] in options or f["options"] is None or f["type"] != "select" for f in o["fields"])],
+                "options": options, "tables": tables}
 
     def groups(self, token, params):
         """The making groups of ONE supplier invoice, for the «تسوية وزن مجموعة» picker."""
@@ -490,6 +588,8 @@ class Market:
             except ValueError:
                 raise ApiError(400, "التاريخ غير صحيح (سنة-شهر-يوم).") from None
         ctx = Ctx(session, actor, today, _str(body.get("request_key")), values, lines)
+        if operation in SETTINGS_PASSWORD:
+            ctx.password = body.get("password") if isinstance(body.get("password"), str) else None
         try:
             result = OPS[operation][3](ctx)
         except ApiError:
