@@ -70,7 +70,9 @@ class Ctx:
         from services.supplier_payment_service import SupplierPaymentService
         from services.intermediary_holding_service import IntermediaryHoldingService
         from services.marketer_custody_service import MarketerCustodyService
+        from services.supplier_purchase_service import SupplierPurchaseService
         from services.supplier_service import SupplierService
+        self.purchases = SupplierPurchaseService(session)
         self.trips, self.payments, self.settlements = MarketTripService(session), SupplierPaymentService(session), SupplierGoldSettlementService(session)
         self.marketers, self.holdings, self.suppliers = MarketerCustodyService(session), IntermediaryHoldingService(session), SupplierService(session)
         self.session, self.actor, self.key, self.v, self.lines = session, actor, key, v, lines
@@ -82,6 +84,10 @@ class Ctx:
 
 def _gold(lines):
     return [{"karat_id": r.get("karat_id", ""), "weight": r.get("weight", ""), **({"designation": r["designation"]} if r.get("designation") else {})} for r in lines]
+
+
+def _groups(lines):
+    return [{"description": r.get("description", ""), "weight": r.get("weight", ""), "making_per_gram": r.get("making_per_gram", "")} for r in lines]
 
 
 def _doc(text):
@@ -191,6 +197,34 @@ OPS = {
                                                    F("role", "الدور", "select", "roles"), NOTES],
                    lambda c: c.suppliers.create_supplier(c.v["name"], c.v.get("phone") or None, c.v.get("notes") or None, c.v.get("karat_id") or None,
                                                          is_supplier=c.v["role"] in ("SUPPLIER", "BOTH"), is_intermediary=c.v["role"] in ("MARKETER", "BOTH"), _expected_actor=c.actor)),
+    "inv_create": ("فواتير الموردين", "فاتورة مورد جديدة (مسودة)", [F("supplier_id", "المورد", "select", "suppliers"), F("reference", "رقم فاتورة المورد", "text", required=False),
+                                                                  F("invoice_date", "تاريخ الفاتورة (سنة-شهر-يوم)", "date"),
+                                                                  GOLD_LINES("مجموعات المصنعية", [F("description", "الوصف", "text", required=False), F("weight", "وزن المورد (جرام)", "grams"),
+                                                                                                F("making_per_gram", "المصنعية (ج/جرام)", "money")]), NOTES],
+                   lambda c: c.purchases.create_draft(c.v["supplier_id"], None, c.v.get("reference", ""), c.v["invoice_date"], _groups(c.lines), c.v.get("notes", ""), c.key, _expected_actor=c.actor)),
+    "inv_update": ("فواتير الموردين", "تعديل مسودة فاتورة مورد", [F("invoice_id", "المسودة", "select", "draft_invoices"), F("supplier_id", "المورد", "select", "suppliers"),
+                                                              F("reference", "رقم فاتورة المورد", "text", required=False), F("invoice_date", "تاريخ الفاتورة (سنة-شهر-يوم)", "date"),
+                                                              GOLD_LINES("مجموعات المصنعية (تحل محل القديمة)", [F("description", "الوصف", "text", required=False), F("weight", "وزن المورد (جرام)", "grams"),
+                                                                                                             F("making_per_gram", "المصنعية (ج/جرام)", "money")]), NOTES],
+                   lambda c: c.purchases.update_draft(c.v["invoice_id"], c.v["supplier_id"], None, c.v.get("reference", ""), c.v["invoice_date"], _groups(c.lines), c.v.get("notes", ""), _expected_actor=c.actor)),
+    "inv_post": ("فواتير الموردين", "ترحيل فاتورة مورد", [F("invoice_id", "المسودة", "select", "draft_invoices")],
+                 lambda c: c.purchases.post_invoice(c.v["invoice_id"], c.key, _expected_actor=c.actor)),
+    "inv_cancel": ("فواتير الموردين", "إلغاء مسودة", [F("invoice_id", "المسودة", "select", "draft_invoices")],
+                   lambda c: c.purchases.cancel_draft(c.v["invoice_id"], _expected_actor=c.actor)),
+    "inv_intake": ("فواتير الموردين", "إدخال قطعة من مجموعة مورد", [F("group", "المجموعة", "select", "intake_groups"), F("item_type_id", "الصنف", "select", "item_types"), F("weight", "وزن القطعة (جرام)", "grams"),
+                                                                 F("barcode_mode", "الباركود", "select", "barcode_modes"), F("barcode", "الباركود (لو يدوي)", "text", required=False), F("size", "المقاس", "text", required=False), NOTES],
+                  lambda c: c.purchases.add_piece(c.v["group"].split(":")[0], c.v["group"].split(":")[1], c.v["item_type_id"], c.v["weight"], c.key, size=c.v.get("size") or None,
+                                                  barcode_mode=c.v["barcode_mode"], barcode=c.v.get("barcode") or None, notes=c.v.get("notes") or None, _expected_actor=c.actor)),
+    "inv_close_group": ("فواتير الموردين", "إخفاء مجموعة من قايمة الإدخال", [F("group", "المجموعة", "select", "intake_groups")],
+                        lambda c: c.purchases.close_group(c.v["group"].split(":")[1], _expected_actor=c.actor)),
+    "inv_adjust_group": ("فواتير الموردين", "تسوية وزن مجموعة في فاتورة مرحّلة", [F("invoice_id", "الفاتورة", "select", "posted_invoices"), F("group_id", "المجموعة", "select", "groups"),
+                                                                              F("direction", "الاتجاه", "select", "adjust_ways"), F("weight", "الوزن (جرام)", "grams"), F("reason", "السبب", "text")],
+                         lambda c: c.purchases.adjust_group(c.v["invoice_id"], c.v["group_id"], c.v["direction"], c.v["weight"], c.v["reason"], c.key, _expected_actor=c.actor)),
+    "inv_reverse": ("فواتير الموردين", "عكس فاتورة مورد مرحّلة", [F("invoice_id", "الفاتورة", "select", "posted_invoices"), F("reason", "سبب العكس", "text")],
+                    lambda c: c.purchases.reverse_invoice(c.v["invoice_id"], c.v["reason"], _expected_actor=c.actor)),
+    "sup_adjust_account": ("فواتير الموردين", "تسوية فروق حساب مورد (ذهب / مصنعيات)", [F("supplier_id", "المورد", "select", "suppliers"), F("kind", "الحساب", "select", "account_kinds"),
+                                                                                  F("direction", "الاتجاه", "select", "adjust_ways"), F("amount", "الوزن (جرام) أو المبلغ (ج)", "money"), F("reason", "السبب", "text")],
+                          lambda c: c.purchases.adjust_account(c.v["supplier_id"], c.v["kind"], c.v["direction"], c.v["amount"], c.v["reason"], c.key, _expected_actor=c.actor)),
     "mk_cash_handover": ("مسوقجي", "تسليم نقدية لمسوقجي (من الخزنة)", [F("party_id", "المسوقجي", "select", "intermediaries"), F("amount", "المبلغ (ج)", "money"), NOTES, DATE],
                          lambda c: c.marketers.cash_handover(c.v["party_id"], c.v["amount"], c.date, "", c.v.get("notes", ""), c.key, _expected_actor=c.actor)),
     "mk_cash_return": ("مسوقجي", "استلام نقدية راجعة من مسوقجي", [F("party_id", "المسوقجي", "select", "intermediaries"), F("amount", "المبلغ (ج)", "money"), NOTES, DATE],
@@ -277,8 +311,30 @@ class Market:
             pass
         except Exception:
             logger.exception("market overview: suppliers failed")
+        invoices, intake, item_types = [], [], []
+        try:
+            invoices = self._invoices(session, actor)
+        except Exception:
+            logger.exception("market overview: supplier invoices failed")
+        try:
+            from services.supplier_purchase_service import SupplierPurchaseService
+            intake = [{"v": g["invoice_id"] + ":" + g["group_id"], "t": f"{g['invoice_code']} • {g['supplier_name']} • مجموعة {g['group_no']} • الباقي {_grams(g['remaining'])} جرام"}
+                      for g in SupplierPurchaseService(session).open_groups(_expected_actor=actor)]
+        except Exception:
+            logger.exception("market overview: intake groups failed")
+        try:
+            from services.inventory_service import InventoryService
+            item_types = [{"v": str(r["id"]), "t": r["name"]} for r in InventoryService().get_stocktake_filters().get("item_types", [])]
+        except Exception:
+            logger.exception("market overview: item types failed")
         safe = context.get("safe")
         options = {
+            "draft_invoices": [{"v": i["id"], "t": f"{i['code']} • {i['supplier_name']} • {i['weight']} جرام"} for i in invoices if i["status"] == "DRAFT"],
+            "posted_invoices": [{"v": i["id"], "t": f"{i['code']} • {i['supplier_name']} • {i['weight']} جرام"} for i in invoices if i["status"] == "POSTED" and not i["reversed"]],
+            "intake_groups": intake, "item_types": item_types,
+            "barcode_modes": [{"v": "AUTO", "t": "تلقائي"}, {"v": "MANUAL", "t": "يدوي"}, {"v": "NONE", "t": "بدون باركود"}],
+            "adjust_ways": [{"v": "ADD", "t": "زيادة (علينا للمورد أكتر)"}, {"v": "DEDUCT", "t": "نقص (علينا للمورد أقل)"}],
+            "account_kinds": [{"v": "GOLD", "t": "ذهب (جرام بعيار المورد)"}, {"v": "MAKING", "t": "مصنعيات (ج)"}],
             "trips": [{"v": t["id"], "t": t["code"] + " • نقدية " + t["cashText"] + " ج" + (" • " + t["notes"] if t["notes"] else "")} for t in trips],
             "closed_trips": [{"v": r["id"], "t": r["code"]} for r in closed["rows"]],
             "suppliers": [{"v": s["id"], "t": s["name"] + " • مصنعيات " + s["makingSide"]} for s in suppliers],
@@ -292,7 +348,30 @@ class Market:
             "roles": [{"v": "SUPPLIER", "t": "مورد"}, {"v": "MARKETER", "t": "مسوقجي"}, {"v": "BOTH", "t": "مورد ومسوقجي"}]}
         return {"safe": None if not safe else {"id": safe["id"], "name": safe["name"], "text": _money(safe["balance"])},
                 "scrap": [{"karat": r["karat_value"], "text": _grams(r["available"])} for r in context["shop_scrap"]],
-                "trips": trips, "hasMore": bool(page["has_more"]), "suppliers": suppliers, "options": options, "ops": [spec(k) for k in OPS]}
+                "trips": trips, "hasMore": bool(page["has_more"]), "suppliers": suppliers, "invoices": invoices[:25], "options": options, "ops": [spec(k) for k in OPS]}
+
+    @staticmethod
+    def _invoices(session, actor):
+        """The 60 newest supplier invoices (drafts and posted), for the pickers and the table."""
+        from services.supplier_purchase_service import SupplierPurchaseService
+        rows = SupplierPurchaseService(session).list_invoices(_expected_actor=actor)[:60]
+        return [{"id": r["id"], "code": r["code"], "supplier_name": r["supplier_name"], "date": str(r["invoice_date"]), "weight": _grams(r["supplier_weight"]), "making": _money(r["gross_making"]),
+                 "status": r["status"], "reversed": bool(r["reversed"]), "pieces": r["piece_count"]} for r in rows]
+
+    def groups(self, token, params):
+        """The making groups of ONE supplier invoice, for the «تسوية وزن مجموعة» picker."""
+        from services.supplier_purchase_service import SupplierPurchaseService
+        entry = self._api._entry(token)
+        try:
+            detail = SupplierPurchaseService(entry.session).invoice_detail(_str(params.get("invoice")), _expected_actor=entry.session.current_actor())
+        except PermissionError as exc:
+            raise ApiError(403, str(exc)) from None
+        except ValueError as exc:
+            raise ApiError(400, str(exc)) from None
+        except Exception:
+            logger.exception("market groups failed")
+            raise ApiError(500, "تعذر تحميل مجموعات الفاتورة.") from None
+        return {"groups": [{"v": g["id"], "t": f"مجموعة {g['group_no']} • {_grams(g['effective_weight'])} جرام"} for g in detail["groups"]]}
 
     def entries(self, token, params):
         """The entries of ONE trip, for the «عكس حركة» picker (loaded when the trip is chosen)."""

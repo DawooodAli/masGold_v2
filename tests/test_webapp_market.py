@@ -56,6 +56,34 @@ class FakeAny:
         return run
 
 
+class FakePurchases:
+    def __init__(self, session):
+        pass
+
+    def list_invoices(self, supplier_id=None, status=None, *, _expected_actor=None):
+        base = {"supplier_name": "مورد أ", "invoice_date": "2026-11-01", "supplier_weight": D("100.000"), "gross_making": D("5000.00"), "piece_count": 0}
+        return [{**base, "id": "31", "code": "SI000031", "status": "DRAFT", "reversed": False}, {**base, "id": "30", "code": "SI000030", "status": "POSTED", "reversed": False},
+                {**base, "id": "29", "code": "SI000029", "status": "POSTED", "reversed": True}]
+
+    def open_groups(self, *, _expected_actor=None):
+        return [{"invoice_id": "30", "group_id": "300", "invoice_code": "SI000030", "supplier_name": "مورد أ", "group_no": 1, "remaining": D("60.000")}]
+
+    def invoice_detail(self, invoice_id, *, _expected_actor=None):
+        return {"groups": [{"id": "300", "group_no": 1, "effective_weight": D("100.000")}]}
+
+    def __getattr__(self, name):
+        def run(*args, **kwargs):
+            kwargs.pop("_expected_actor", None)
+            CALLS.append((name,) + args + tuple(sorted(kwargs.items())))
+            return {"code": "SI000031", "duplicate": False}
+        return run
+
+
+class FakeInventory:
+    def get_stocktake_filters(self):
+        return {"item_types": [{"id": 4, "name": "خاتم"}]}
+
+
 class FakeSuppliers:
     def __init__(self, session):
         pass
@@ -99,6 +127,7 @@ class MarketTests(unittest.TestCase):
         for target, fake in (("services.market_trip_service.MarketTripService", FakeTrips), ("services.supplier_service.SupplierService", FakeSuppliers),
                              ("services.supplier_payment_service.SupplierPaymentService", FakePayments),
                              ("services.supplier_gold_settlement_service.SupplierGoldSettlementService", FakeSettlements),
+                             ("services.supplier_purchase_service.SupplierPurchaseService", FakePurchases), ("services.inventory_service.InventoryService", FakeInventory),
                              ("services.marketer_custody_service.MarketerCustodyService", FakeAny), ("services.intermediary_holding_service.IntermediaryHoldingService", FakeAny)):
             patcher = mock.patch(target, fake)
             patcher.start()
@@ -123,7 +152,7 @@ class MarketTests(unittest.TestCase):
         self.assertEqual((data["suppliers"][0]["gold"], data["suppliers"][0]["makingSide"]), ("12.500 علينا للمورد", "300.00 لنا عند المورد"))
         self.assertEqual(data["options"]["lots"][0]["trip"], "7")
         self.assertEqual({o["key"] for o in data["ops"]}, set(OPERATIONS))
-        known = set(data["options"]) | {"entries"}
+        known = set(data["options"]) | {"entries", "groups"}
         for op in data["ops"]:
             for field in op["fields"]:
                 for f in (field["cols"] if field["type"] == "lines" else [field]):
@@ -181,6 +210,28 @@ class MarketTests(unittest.TestCase):
         self.assertTrue(any(c[0] == "create_supplier" and ("is_supplier", True) in c and ("is_intermediary", True) in c for c in CALLS))
         with self.assertRaises(ApiError):
             self.run_op("mk_reverse", {"doc": "MH", "reason": "x"})
+
+    def test_supplier_invoices_are_listed_and_every_invoice_operation_reaches_its_service(self):
+        data = self.market.overview(self.token)
+        self.assertEqual([o["v"] for o in data["options"]["draft_invoices"]], ["31"])
+        self.assertEqual([o["v"] for o in data["options"]["posted_invoices"]], ["30"])                 # a reversed invoice is not offered again
+        self.assertEqual(data["options"]["intake_groups"][0]["v"], "30:300")
+        self.assertEqual(data["options"]["item_types"], [{"v": "4", "t": "خاتم"}])
+        self.assertEqual(self.market.groups(self.token, {"invoice": "30"})["groups"][0]["v"], "300")
+        groups = [{"description": "دبل", "weight": "100", "making_per_gram": "50"}]
+        self.run_op("inv_create", {"supplier_id": "3", "reference": "A1", "invoice_date": "2026-11-01"}, groups)
+        self.run_op("inv_update", {"invoice_id": "31", "supplier_id": "3", "invoice_date": "2026-11-02"}, groups)
+        self.run_op("inv_post", {"invoice_id": "31"})
+        self.run_op("inv_cancel", {"invoice_id": "31"})
+        self.run_op("inv_intake", {"group": "30:300", "item_type_id": "4", "weight": "10.1", "barcode_mode": "AUTO"})
+        self.run_op("inv_close_group", {"group": "30:300"})
+        self.run_op("inv_adjust_group", {"invoice_id": "30", "group_id": "300", "direction": "ADD", "weight": "1", "reason": "ميزان"})
+        self.run_op("inv_reverse", {"invoice_id": "30", "reason": "خطأ"})
+        self.run_op("sup_adjust_account", {"supplier_id": "3", "kind": "MAKING", "direction": "DEDUCT", "amount": "50", "reason": "فرق"})
+        self.assertEqual([c[0] for c in CALLS], ["create_draft", "update_draft", "post_invoice", "cancel_draft", "add_piece", "close_group", "adjust_group", "reverse_invoice", "adjust_account"])
+        self.assertEqual(CALLS[0][1:3], ("3", None))
+        self.assertEqual(CALLS[4][1:3], ("30", "300"))                                                   # the combined picker value is split into invoice and group
+        self.assertEqual(CALLS[5][1], "300")
 
     def test_a_service_refusal_is_shown_and_a_permission_error_is_403(self):
         FakeTrips.fail = ValueError("العهدة مغلقة")

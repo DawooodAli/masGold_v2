@@ -94,6 +94,9 @@ def make_handler(api):
                 elif url.path == "/api/invoice":
                     params = {k: v[0] for k, v in parse_qs(url.query, keep_blank_values=True).items()}
                     self._json(200, api.invoice(self._token(), params))
+                elif url.path == "/api/market_groups":
+                    params = {k: v[0] for k, v in parse_qs(url.query, keep_blank_values=True).items()}
+                    self._json(200, api.market.groups(self._token(), params))
                 elif url.path == "/api/market_entries":
                     params = {k: v[0] for k, v in parse_qs(url.query, keep_blank_values=True).items()}
                     self._json(200, api.market.entries(self._token(), params))

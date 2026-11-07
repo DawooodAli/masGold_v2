@@ -1294,6 +1294,7 @@ async function loadMarketKeep(s) {
 function marketOptions(s, name, f, tripFilter) {
   let rows = ((s.data.options || {})[name] || []);
   if (name === "entries") rows = (s.entries && s.entries[f.trip_id]) || [];
+  if (name === "groups") rows = (s.groups && s.groups[f.invoice_id]) || [];
   if (tripFilter && f.trip_id) rows = rows.filter((r) => !r.trip || r.trip === f.trip_id);
   return rows;
 }
@@ -1334,6 +1335,13 @@ function renderMarket(s) {
       }
       render();
     };
+    const onInvoice = () => {
+      if (f.invoice_id) {
+        s.groups = s.groups || {};
+        call("/api/market_groups?invoice=" + encodeURIComponent(f.invoice_id)).then((r) => { s.groups[f.invoice_id] = r.groups; render(); }).catch(() => {});
+      }
+      render();
+    };
     const box = el("div", { class: "filters" });
     spec.fields.forEach((fl) => {
       if (fl.type === "lines") {
@@ -1341,7 +1349,7 @@ function renderMarket(s) {
         mk.rows.forEach((row, i) => box.append(el("div", { class: "filters" }, fl.cols.map((c) => field(c.label, control(c, row))),
           mk.rows.length > 1 ? el("button", { class: "btn small", text: "حذف السطر", onclick: () => { mk.rows.splice(i, 1); render(); } }) : null)));
         box.append(el("button", { class: "btn small", text: "+ سطر", onclick: () => { mk.rows.push({}); render(); } }));
-      } else box.append(field(fl.label + (fl.required ? "" : " (اختياري)"), control(fl, f, fl.k === "trip_id" ? onTrip : (fl.tripFilter ? null : null))));
+      } else box.append(field(fl.label + (fl.required ? "" : " (اختياري)"), control(fl, f, fl.k === "trip_id" ? onTrip : (fl.k === "invoice_id" ? onInvoice : null))));
     });
     const password = el("input", { type: "password", autocomplete: "current-password", placeholder: "كلمة مرورك الحالية", oninput: () => sync() });
     const confirm = el("input", { type: "checkbox", onchange: () => sync() });
@@ -1370,6 +1378,11 @@ function renderMarket(s) {
       t.gold.map((g) => "عيار " + g.karat + (g.designation === "UNCLASSIFIED" ? "" : " " + g.designation) + ": " + g.text).concat(t.bar ? ["سبيكة " + t.bar] : [], t.lots ? [t.lots + " شحنة"] : []).join(" • ") || "—",
       t.notes || ""].map((c) => el("td", { text: c }))))))) : el("div", { class: "note-box", text: "لا توجد عهدة مفتوحة." }));
   if (d.hasMore) body.append(el("div", { class: "note-box", text: "فيه عهد أكتر من المعروضة (أحدث 30)." }));
+  if (d.invoices && d.invoices.length) {
+    body.append(el("div", { class: "section", text: "آخر فواتير الموردين" }));
+    body.append(el("div", { class: "tablewrap" }, el("table", {}, el("thead", {}, el("tr", {}, ["الفاتورة", "المورد", "التاريخ", "الوزن", "المصنعيات (ج)", "الحالة", "قطع"].map((t) => el("th", { text: t })))),
+      el("tbody", {}, d.invoices.map((i) => el("tr", {}, [i.code, i.supplier_name, i.date, i.weight, i.making, i.reversed ? "معكوسة" : i.status === "DRAFT" ? "مسودة" : i.status === "POSTED" ? "مرحّلة" : "ملغاة", String(i.pieces)].map((c) => el("td", { text: c }))))))));
+  }
   body.append(el("div", { class: "section", text: "أرصدة الموردين" }));
   body.append(d.suppliers.length ? el("div", { class: "tablewrap" }, el("table", {}, el("thead", {}, el("tr", {}, ["المورد", "العيار", "الذهب (جرام)", "المصنعيات (ج)"].map((t) => el("th", { text: t })))),
     el("tbody", {}, d.suppliers.map((x) => el("tr", {}, [x.name, x.karat || "—", x.gold || "غير محدد", x.makingSide].map((c) => el("td", { text: c }))))))) : el("div", { class: "note-box", text: "لا يوجد موردون فعّالون." }));
