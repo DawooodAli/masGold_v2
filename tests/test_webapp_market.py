@@ -17,7 +17,7 @@ class FakeTrips:
         pass
 
     def context(self, *, _expected_actor=None):
-        return {"safe": {"id": "1", "name": "الخزنة", "active": True, "balance": D("50000.00")}, "banks": [{"id": "5", "name": "بنك"}], "buyers": [{"id": "8", "name": "تاجر", "active": True}],
+        return {"safe": {"id": "1", "name": "الخزنة", "active": True, "balance": D("50000.00")}, "banks": [{"id": "5", "name": "بنك"}], "intermediaries": [{"id": "8", "name": "مسوقجي", "active": True}], "buyers": [{"id": "8", "name": "تاجر", "active": True}],
                 "karats": [{"id": 1, "karat_value": 21, "name": "21"}, {"id": 2, "karat_value": 18, "name": "18"}],
                 "shop_scrap": [{"karat_id": 1, "karat_value": 21, "available": D("100.500"), "physical": D("100.500"), "held": D("0")}]}
 
@@ -47,6 +47,15 @@ class FakeAny:
 
     def __init__(self, session):
         pass
+
+    review = {"token": "tok", "display": ["SG000004 • تحتاج إلى عكس"], "requires_physical_declaration": False}
+
+    def party_holdings(self, party_id, *, _expected_actor=None):
+        return {"pools": [{"pool_id": "40", "document": "IH000001", "balance": D("40.000"), "return_review_events": ["SG000004 • تحتاج إلى عكس"]}],
+                "logo_pools": [{"pool_id": "50", "document": "IG000002", "karat_value": 21, "balance": D("8.000")}]}
+
+    def return_review(self, pool_id, *, _expected_actor=None):
+        return dict(FakeAny.review)
 
     def __getattr__(self, name):
         def run(*args, **kwargs):
@@ -88,6 +97,16 @@ class FakeSuppliers:
     def __init__(self, session):
         pass
 
+    def update_supplier(self, *args, **kwargs):
+        kwargs.pop('_expected_actor', None)
+        CALLS.append(('update_supplier',) + args + tuple(sorted(kwargs.items())))
+        return {'id': '3'}
+
+    def set_active(self, *args, **kwargs):
+        kwargs.pop('_expected_actor', None)
+        CALLS.append(('set_active',) + args)
+        return {'id': '3'}
+
     def create_supplier(self, *args, **kwargs):
         kwargs.pop("_expected_actor", None)
         CALLS.append(("create_supplier",) + args + tuple(sorted(kwargs.items())))
@@ -128,7 +147,7 @@ class MarketTests(unittest.TestCase):
                              ("services.supplier_payment_service.SupplierPaymentService", FakePayments),
                              ("services.supplier_gold_settlement_service.SupplierGoldSettlementService", FakeSettlements),
                              ("services.supplier_purchase_service.SupplierPurchaseService", FakePurchases), ("services.inventory_service.InventoryService", FakeInventory),
-                             ("services.marketer_custody_service.MarketerCustodyService", FakeAny), ("services.intermediary_holding_service.IntermediaryHoldingService", FakeAny)):
+                             ("services.holding_settlement_service.HoldingSettlementService", FakeAny), ("services.marketer_custody_service.MarketerCustodyService", FakeAny), ("services.intermediary_holding_service.IntermediaryHoldingService", FakeAny)):
             patcher = mock.patch(target, fake)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -171,7 +190,7 @@ class MarketTests(unittest.TestCase):
         with self.assertRaises(ApiError) as caught:
             self.market.op(self.token, self.body("trip_close", {"trip_id": "7"}, password="wrong"))
         self.assertEqual(caught.exception.status, 400)
-        for bad in (self.body("trip_close", {"trip_id": "7"}, confirmed=False), self.body("melt"), self.body("trip_close", {}), self.body("trip_create", {"cash": "5"})):
+        for bad in (self.body("trip_close", {"trip_id": "7"}, confirmed=False), self.body("melt"), self.body("trip_close", {}), self.body("trip_expense", {"trip_id": "7", "amount": "5"})):
             with self.assertRaises(ApiError):
                 self.market.op(self.token, bad)
         self.assertEqual(CALLS, [])
@@ -232,6 +251,35 @@ class MarketTests(unittest.TestCase):
         self.assertEqual(CALLS[0][1:3], ("3", None))
         self.assertEqual(CALLS[4][1:3], ("30", "300"))                                                   # the combined picker value is split into invoice and group
         self.assertEqual(CALLS[5][1], "300")
+
+    def test_marketer_holdings_returns_settlements_and_party_edits(self):
+        data = self.market.overview(self.token)
+        self.assertEqual([o["v"] for o in data["options"]["lot_pools"]], ["40"])
+        self.assertIn("SG000004", data["options"]["lot_pools"][0]["t"])                                  # the recorded events are shown beside the lot
+        self.assertEqual([o["v"] for o in data["options"]["logo_pools"]], ["50"])
+        self.run_op("hold_return_lot", {"pool_id": "40", "intact": "1"})
+        self.run_op("hold_return_logo", {"pool_id": "50", "weight": "3"})
+        self.run_op("hold_settle_lot", {"pool_id": "40", "supplier_id": "3", "weight": "5", "declaration": "GRAM_ENTITLEMENT"})
+        self.run_op("hold_settle_logo", {"pool_id": "50", "supplier_id": "3", "weight": "2"})
+        self.run_op("sup_update", {"supplier_id": "3", "name": "مورد", "role": "SUPPLIER"})
+        self.run_op("sup_active", {"supplier_id": "3", "state": "INACTIVE"})
+        self.run_op("trip_create", {"lot_id": "99"})
+        names = [c[0] for c in CALLS]
+        self.assertEqual(names, ["return_holding", "return_logo", "settle", "settle", "update_supplier", "set_active", "create_trip"])
+        self.assertEqual(CALLS[0][1:4], ("40", True, "tok"))                                              # the token comes from the service's own review
+        self.assertEqual(CALLS[2][1:3], ("LOT", "40"))
+        self.assertEqual(CALLS[3][1:3], ("LOGO", "50"))
+        self.assertEqual(CALLS[6][3], [{"lot_id": "99"}])
+
+    def test_a_lot_return_with_physical_events_needs_the_second_declaration(self):
+        FakeAny.review = {"token": "tok", "display": ["HR000001 / RP000001 • معكوس"], "requires_physical_declaration": True}
+        self.addCleanup(lambda: setattr(FakeAny, "review", {"token": "tok", "display": ["x"], "requires_physical_declaration": False}))
+        with self.assertRaises(ApiError) as caught:
+            self.run_op("hold_return_lot", {"pool_id": "40", "intact": "1"})
+        self.assertIn("HR000001", str(caught.exception))
+        self.assertEqual(CALLS, [])
+        self.run_op("hold_return_lot", {"pool_id": "40", "intact": "1", "physical": "1"})
+        self.assertEqual(CALLS[0][1:5], ("40", True, "tok", True))
 
     def test_a_service_refusal_is_shown_and_a_permission_error_is_403(self):
         FakeTrips.fail = ValueError("العهدة مغلقة")

@@ -55,7 +55,7 @@ def F(k, label, kind="text", options=None, required=True, hint=None, trip=False)
 TRIP = F("trip_id", "العهدة", "select", "trips")
 NOTES = F("notes", "ملاحظة", "text", required=False)
 DATE = F("date", "التاريخ (اتركه فارغًا لليوم)", "date", required=False)
-GOLD_LINES = lambda label, cols: {"k": "lines", "label": label, "type": "lines", "cols": cols, "required": True}
+GOLD_LINES = lambda label, cols, required=True: {"k": "lines", "label": label, "type": "lines", "cols": cols, "required": required}
 KARAT_W = [F("karat_id", "العيار", "select", "karats"), F("weight", "الوزن (جرام)", "grams")]
 KARAT_W_DES = [F("karat_id", "العيار", "select", "karats"), F("designation", "الوجهة", "select", "designations", required=False), F("weight", "الوزن (جرام)", "grams")]
 SOURCE_COLS = [F("source", "المصدر", "select", "sources"), F("karat_id", "العيار (للذهب واللوجو)", "select", "karats", required=False), F("weight", "الوزن (جرام)", "grams")]
@@ -72,7 +72,9 @@ class Ctx:
         from services.marketer_custody_service import MarketerCustodyService
         from services.supplier_purchase_service import SupplierPurchaseService
         from services.supplier_service import SupplierService
+        from services.holding_settlement_service import HoldingSettlementService
         self.purchases = SupplierPurchaseService(session)
+        self.holding_settlements = HoldingSettlementService(session)
         self.trips, self.payments, self.settlements = MarketTripService(session), SupplierPaymentService(session), SupplierGoldSettlementService(session)
         self.marketers, self.holdings, self.suppliers = MarketerCustodyService(session), IntermediaryHoldingService(session), SupplierService(session)
         self.session, self.actor, self.key, self.v, self.lines = session, actor, key, v, lines
@@ -88,6 +90,16 @@ def _gold(lines):
 
 def _groups(lines):
     return [{"description": r.get("description", ""), "weight": r.get("weight", ""), "making_per_gram": r.get("making_per_gram", "")} for r in lines]
+
+
+def _return_lot(c):
+    """Whole-bar return of a lot held by a marketer: the review (its token and event list) is derived by the SERVICE now; the owner's two confirmations are the checkboxes.
+    A pool whose history holds physical events needs the second declaration, exactly like the desktop."""
+    pool = c.v["pool_id"]
+    review = c.holdings.return_review(pool, _expected_actor=c.actor)
+    if review["requires_physical_declaration"] and c.v.get("physical") != "1":
+        raise ValueError("السبيكة عليها أحداث مادية مسجلة: " + " | ".join(review["display"]) + ". اقرأها ولو كلها اتسجلت بالغلط وما حصلتش فعلاً أكّد الإقرار الثاني.")
+    return c.holdings.return_holding(pool, c.v.get("intact") == "1", review["token"], c.v.get("physical") == "1", c.date, "", c.v.get("notes", ""), c.key, _expected_actor=c.actor)
 
 
 def _doc(text):
@@ -107,8 +119,9 @@ def _safe_id(c):
 
 # every operation: key -> (group, title, fields, run). `run(c)` returns the service's result dict.
 OPS = {
-    "trip_create": ("عهدة", "عهدة جديدة", [F("cash", "نقدية من الخزنة (ج)", "money", required=False), GOLD_LINES("كسر من المحل", KARAT_W), NOTES, DATE],
-                    lambda c: c.call("create_trip", c.v.get("cash") or "0", _gold(c.lines), [], c.date, c.v.get("notes", ""), c.key)),
+    "trip_create": ("عهدة", "عهدة جديدة", [F("cash", "نقدية من الخزنة (ج)", "money", required=False), GOLD_LINES("كسر من المحل", KARAT_W, False),
+                                           F("lot_id", "سبيكة جاهزة من المحل (اختياري)", "select", "shop_lots", required=False), NOTES, DATE],
+                    lambda c: c.call("create_trip", c.v.get("cash") or "0", _gold(c.lines), [{"lot_id": c.v["lot_id"]}] if c.v.get("lot_id") else [], c.date, c.v.get("notes", ""), c.key)),
     "trip_issue": ("عهدة", "إخراج عهدة إضافية على عهدة مفتوحة", [TRIP, F("cash", "نقدية من الخزنة (ج)", "money", required=False), GOLD_LINES("كسر من المحل", KARAT_W), NOTES, DATE],
                    lambda c: c.call("issue", c.v["trip_id"], c.v.get("cash") or "0", _gold(c.lines), c.date, c.v.get("notes", ""), c.key)),
     "trip_return": ("عهدة", "رجوع عهدة للمحل", [TRIP, F("cash", "نقدية راجعة للخزنة (ج)", "money", required=False), GOLD_LINES("ذهب راجع", KARAT_W_DES), NOTES, DATE],
@@ -225,6 +238,28 @@ OPS = {
     "sup_adjust_account": ("فواتير الموردين", "تسوية فروق حساب مورد (ذهب / مصنعيات)", [F("supplier_id", "المورد", "select", "suppliers"), F("kind", "الحساب", "select", "account_kinds"),
                                                                                   F("direction", "الاتجاه", "select", "adjust_ways"), F("amount", "الوزن (جرام) أو المبلغ (ج)", "money"), F("reason", "السبب", "text")],
                           lambda c: c.purchases.adjust_account(c.v["supplier_id"], c.v["kind"], c.v["direction"], c.v["amount"], c.v["reason"], c.key, _expected_actor=c.actor)),
+    "hold_return_lot": ("مسوقجي", "رجوع شحنة كاملة من المسوقجي للعهدة", [F("pool_id", "الشحنة عند المسوقجي", "select", "lot_pools"),
+                                                                       F("intact", "تم استلام نفس السبيكة كاملة دون تجزئة", "check"),
+                                                                       F("physical", "الأحداث المادية المعروضة اتسجلت بالغلط وما حصلتش والسبيكة سليمة", "check", required=False), NOTES, DATE],
+                        _return_lot),
+    "hold_return_logo": ("مسوقجي", "رجوع لوجو من المسوقجي للعهدة", [F("pool_id", "مصدر اللوجو", "select", "logo_pools"), F("weight", "الوزن (جرام)", "grams"), NOTES, DATE],
+                         lambda c: c.holdings.return_logo(c.v["pool_id"], c.v["weight"], c.date, "", c.v.get("notes", ""), c.key, _expected_actor=c.actor)),
+    "hold_settle_lot": ("مسوقجي", "تسوية ذهب مورد من شحنة عند المسوقجي", [F("pool_id", "الشحنة عند المسوقجي", "select", "lot_pools"), F("supplier_id", "المورد", "select", "suppliers"),
+                                                                     F("weight", "الوزن (جرام)", "grams"), F("declaration", "الحالة المادية", "select", "declarations"),
+                                                                     F("self_confirmed", "أؤكد إن المسوقجي والمورد نفس الطرف (لو كان كده)", "check", required=False), NOTES, DATE],
+                        lambda c: c.holding_settlements.settle("LOT", c.v["pool_id"], c.v["supplier_id"], c.v["weight"], c.v["declaration"], c.v.get("self_confirmed") == "1", c.date, "",
+                                                               c.v.get("notes", ""), c.key, _expected_actor=c.actor)),
+    "hold_settle_logo": ("مسوقجي", "تسوية ذهب مورد من لوجو عند المسوقجي", [F("pool_id", "مصدر اللوجو", "select", "logo_pools"), F("supplier_id", "المورد", "select", "suppliers"),
+                                                                       F("weight", "الوزن (جرام)", "grams"),
+                                                                       F("self_confirmed", "أؤكد إن المسوقجي والمورد نفس الطرف (لو كان كده)", "check", required=False), NOTES, DATE],
+                         lambda c: c.holding_settlements.settle("LOGO", c.v["pool_id"], c.v["supplier_id"], c.v["weight"], "", c.v.get("self_confirmed") == "1", c.date, "",
+                                                                c.v.get("notes", ""), c.key, _expected_actor=c.actor)),
+    "sup_update": ("موردين", "تعديل بيانات مورد أو مسوقجي", [F("supplier_id", "الطرف", "select", "all_parties"), F("name", "الاسم", "text"), F("phone", "الموبايل", "text", required=False),
+                                                         F("karat_id", "عيار حساب المورد", "select", "karats", required=False), F("role", "الدور", "select", "roles"), NOTES],
+                   lambda c: c.suppliers.update_supplier(c.v["supplier_id"], c.v["name"], c.v.get("phone") or None, c.v.get("notes") or None, c.v.get("karat_id") or None,
+                                                         is_supplier=c.v["role"] in ("SUPPLIER", "BOTH"), is_intermediary=c.v["role"] in ("MARKETER", "BOTH"), _expected_actor=c.actor)),
+    "sup_active": ("موردين", "إيقاف أو تفعيل مورد / مسوقجي", [F("supplier_id", "الطرف", "select", "all_parties"), F("state", "الحالة", "select", "active_states")],
+                   lambda c: c.suppliers.set_active(c.v["supplier_id"], c.v["state"] == "ACTIVE", _expected_actor=c.actor)),
     "mk_cash_handover": ("مسوقجي", "تسليم نقدية لمسوقجي (من الخزنة)", [F("party_id", "المسوقجي", "select", "intermediaries"), F("amount", "المبلغ (ج)", "money"), NOTES, DATE],
                          lambda c: c.marketers.cash_handover(c.v["party_id"], c.v["amount"], c.date, "", c.v.get("notes", ""), c.key, _expected_actor=c.actor)),
     "mk_cash_return": ("مسوقجي", "استلام نقدية راجعة من مسوقجي", [F("party_id", "المسوقجي", "select", "intermediaries"), F("amount", "المبلغ (ج)", "money"), NOTES, DATE],
@@ -327,8 +362,14 @@ class Market:
             item_types = [{"v": str(r["id"]), "t": r["name"]} for r in InventoryService().get_stocktake_filters().get("item_types", [])]
         except Exception:
             logger.exception("market overview: item types failed")
+        lot_pools, logo_pools = self._pools(session, actor, context.get("intermediaries", []))
         safe = context.get("safe")
         options = {
+            "lot_pools": lot_pools, "logo_pools": logo_pools,
+            "all_parties": [{"v": b["id"], "t": b["name"] + ("" if b["active"] else " (موقوف)")} for b in context.get("buyers", [])],
+            "declarations": [{"v": "WHOLE_ORIGINAL_BAR", "t": "نفس السبيكة كاملة دون تجزئة"}, {"v": "GRAM_ENTITLEMENT", "t": "استحقاق جرامات (الحالة المادية غير معروفة)"},
+                             {"v": "PHYSICALLY_DIVIDED", "t": "السبيكة اتقسمت فعلاً"}],
+            "active_states": [{"v": "ACTIVE", "t": "تفعيل"}, {"v": "INACTIVE", "t": "إيقاف"}],
             "draft_invoices": [{"v": i["id"], "t": f"{i['code']} • {i['supplier_name']} • {i['weight']} جرام"} for i in invoices if i["status"] == "DRAFT"],
             "posted_invoices": [{"v": i["id"], "t": f"{i['code']} • {i['supplier_name']} • {i['weight']} جرام"} for i in invoices if i["status"] == "POSTED" and not i["reversed"]],
             "intake_groups": intake, "item_types": item_types,
@@ -349,6 +390,25 @@ class Market:
         return {"safe": None if not safe else {"id": safe["id"], "name": safe["name"], "text": _money(safe["balance"])},
                 "scrap": [{"karat": r["karat_value"], "text": _grams(r["available"])} for r in context["shop_scrap"]],
                 "trips": trips, "hasMore": bool(page["has_more"]), "suppliers": suppliers, "invoices": invoices[:25], "options": options, "ops": [spec(k) for k in OPS]}
+
+    @staticmethod
+    def _pools(session, actor, parties):
+        """The shop gold still held by each marketer: whole assayed lots and LOGO pools, as picker rows (a lot row shows its recorded events)."""
+        from services.intermediary_holding_service import IntermediaryHoldingService
+        lots, logos = [], []
+        service = IntermediaryHoldingService(session)
+        for party in parties:
+            try:
+                data = service.party_holdings(party["id"], _expected_actor=actor)
+            except Exception:
+                logger.exception("market overview: holdings failed")
+                continue
+            for p in data["pools"]:
+                events = " | ".join(p.get("return_review_events") or [])
+                lots.append({"v": p["pool_id"], "t": f"{party['name']} • {p.get('document', '')} • {_grams(p['balance'])} جرام" + (f" • {events}" if events else "")})
+            for p in data["logo_pools"]:
+                logos.append({"v": p["pool_id"], "t": f"{party['name']} • {p['document']} • عيار {p['karat_value']} • {_grams(p['balance'])} جرام"})
+        return lots, logos
 
     @staticmethod
     def _invoices(session, actor):
@@ -404,7 +464,7 @@ class Market:
         for field in fields:
             if field["type"] == "lines":
                 lines = self._lines(body.get("lines"), field["cols"])
-                if not lines:
+                if not lines and field["required"]:
                     raise ApiError(400, "أضف سطرًا واحدًا على الأقل.")
                 continue
             text = _str(raw.get(field["k"]))
