@@ -1113,6 +1113,15 @@ class KpiTests(Case):
         self.assertEqual((rows["حسين"]["low_making"], rows["حسين"]["low_discount"], rows["حسين"]["status_text"]), (6, 1, "🔴 غلط"))
         self.assertEqual((rows["علي"]["low_making"], rows["علي"]["low_discount"], rows["علي"]["status_text"]), (0, 0, "🟢 ماشي كويس"))
 
+    def test_every_flagged_line_is_listed_with_its_invoice_so_nothing_has_to_be_searched_for(self):
+        result = self.service.run("kpi", self.PERIOD)
+        flagged = next(t for t in result["tables"] if t["key"] == "kpi_flagged")["rows"]
+        staff = {r["employee"]: r for r in result["tables"][1]["rows"]}
+        mine = [r for r in flagged if r["employee"] == "حسين"]
+        self.assertEqual(len(mine), staff["حسين"]["low_making"] + staff["حسين"]["low_discount"])
+        self.assertTrue(all(r["ref"]["type"] == "INVOICE" and r["detail"] for r in mine))
+        self.assertEqual([r for r in flagged if r["employee"] == "علي"], [])
+
     def test_it_needs_the_invoice_right(self):
         session = session_for(frozenset({"APP_LOGIN", "REPORTS_VIEW"}))
         limited = ReportService(session, transaction_factory=self.service._transaction, repository=FakeRepo, authorization=FakeAuthorization(session), today=lambda: TODAY)

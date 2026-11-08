@@ -242,6 +242,48 @@ def employee_rows(now, default_percent):
     return sorted(rows, key=lambda r: (order[r["status"]], r["employee"]))
 
 
+def flagged_lines(now, default_percent, limit=300):
+    """The LINES behind every «انتبه»: each sale line with a low making (under the piece letter's cost and / or under 80% of the other employees' average of the karat) and each scrap line whose
+    discount is under the default, newest first, with the invoice so the owner can open it. The same rules as employee_rows (one place decides what is flagged)."""
+    default = _d(default_percent)
+    sales = {}
+    for l in now:
+        if l["line_type"] in SELL_LINES:
+            s = sales.setdefault(int(l["karat_value"]), {})
+            e = s.setdefault(str(l.get("employee_id") or 0), [Decimal("0"), Decimal("0")])
+            if l.get("making_total") is not None and _d(l["weight_grams"]) >= ONE_GRAM:
+                e[0] += _d(l["making_total"])
+                e[1] += _d(l["weight_grams"])
+    rows = []
+    for l in now:
+        key = str(l.get("employee_id") or 0)
+        base = {"employee": l.get("employee") or "غير محدد", "invoice": l.get("invoice_number") or f"#{l['invoice_id']}", "date": l.get("invoice_date"), "karat": f"عيار {int(l['karat_value'])}",
+                "weight": _d(l["weight_grams"]), "ref": {"type": "INVOICE", "id": str(l["invoice_id"])}}
+        if l["line_type"] in SELL_LINES:
+            if l.get("making_total") is None or _d(l["weight_grams"]) < ONE_GRAM:
+                continue
+            karat = int(l["karat_value"])
+            others_making = sum((v[0] for k, v in sales[karat].items() if k != key), Decimal("0"))
+            others_grams = sum((v[1] for k, v in sales[karat].items() if k != key), Decimal("0"))
+            average = (others_making / others_grams) if others_grams >= MIN_OTHERS_GRAMS else None
+            mpg = _d(l["making_total"]) / _d(l["weight_grams"])
+            cost = l.get("category_cost") if l.get("category_cost") is not None else l.get("piece_cost")
+            reasons = making_flags(mpg, cost, average)
+            if reasons:
+                parts = []
+                if "BELOW_COST" in reasons:
+                    parts.append(f"أقل من تكلفة الحرف ({_d(cost):,.2f})")
+                if "BELOW_OTHERS" in reasons:
+                    parts.append(f"أقل من 80% من متوسط باقي الموظفين ({average * LOW_RATIO:,.2f})")
+                rows.append({**base, "kind": "مصنعية قليلة", "detail": f"المصنعية {mpg:,.2f} ج/جرام: " + " و".join(parts)})
+        elif l["line_type"] == BUY_LINE and not l.get("scrap_kind") and l.get("gross_total") is not None and l.get("discount_amount") is not None and _d(l["gross_total"]) > 0:
+            percent = _d(l["discount_amount"]) / _d(l["gross_total"]) * HUNDRED
+            if percent < default - DISCOUNT_TOLERANCE:
+                rows.append({**base, "kind": "خصم كسر قليل", "detail": f"الخصم {percent:.2f}% بدل الافتراضي {default:.2f}%"})
+    rows.sort(key=lambda r: (str(r["date"]), r["invoice"]), reverse=True)
+    return rows[:limit]
+
+
 def employee_status(lines, flagged):
     if lines < MIN_EMPLOYEE_LINES:
         return GRAY, "عدد البنود قليل: مفيش حكم على الموظف."

@@ -1306,6 +1306,11 @@ class ReportService:
                  total("مؤشرات صفراء", sum(1 for i in items if i["status"] == kpi_rules.YELLOW), "count", "", "summary"),
                  total("موظفون يحتاجون مراجعة", sum(1 for r in employees if r["status"] == kpi_rules.RED), "count", "", "summary")]
         tables = [table("kpi", "KPI — هل أنا ماشي صح؟", columns, rows), table("kpi_staff", "الموظفون", staff, employees)]
+        flagged = kpi_rules.flagged_lines(now, default)
+        if flagged:
+            # owner 2026-11-08: the lines behind every «انتبه», so nothing has to be searched for: open the invoice from the row
+            tables.append(table("kpi_flagged", "البنود اللي محتاجة انتباه", [col("employee", "الموظف"), col("invoice", "الفاتورة"), col("date", "التاريخ", "date"), col("kind", "السبب"), col("karat", "العيار"),
+                                                                           col("weight", "الوزن (جرام)", "grams"), col("detail", "التفصيل")], flagged))
         if flow_items:
             # owner 2026-11-08: show WHAT the recorded expenses / income of both periods are made of (the categorised treasury entries + market expenses), so a big figure can be traced.
             detail = [{"label": k + (" (إلزامي: خارج المؤشر)" if kpi_rules.is_mandatory_expense(k) else ""), "out_now": v["now"][0], "out_before": v["before"][0], "in_now": v["now"][1], "in_before": v["before"][1]}

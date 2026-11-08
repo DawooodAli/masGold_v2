@@ -214,7 +214,7 @@ class ReportRepository(BaseRepository):
         costs = self.has_table("item_category_costs")
         return self._fetch_all(
             f"""
-            SELECT iv.id AS invoice_id, iv.invoice_date, iv.employee_id, e.name AS employee, il.line_type, k.karat_value, il.weight_grams, il.making_total, il.gross_total, il.discount_amount,
+            SELECT iv.id AS invoice_id, iv.invoice_number, iv.invoice_date, iv.employee_id, e.name AS employee, il.line_type, k.karat_value, il.weight_grams, il.making_total, il.gross_total, il.discount_amount,
                    il.scrap_kind, ii.acquisition_making_per_gram AS piece_cost, {"icc.making_cost_per_gram" if costs else "NULL"} AS category_cost, c.id AS reversal_id
             FROM invoice_lines il
             JOIN invoices iv ON iv.id = il.invoice_id
