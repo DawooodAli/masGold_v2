@@ -144,3 +144,32 @@ class AdjustmentReversalTests(AccountAdjustCase):
         original, undo = rows[str(done["id"])], [r for k, r in rows.items() if k != str(done["id"])][0]
         self.assertEqual((original["adjustment_reversed"], original["adjustment_reverses"]), (True, False))
         self.assertEqual((undo["adjustment_reversed"], undo["adjustment_reverses"]), (False, True))
+
+
+class BarFeeRowTests(AccountAdjustCase):
+    def test_the_bar_fee_state_is_read_inside_the_transaction_and_marks_the_row(self):
+        """Regression: the reversed-fee read once ran after the transaction (and its connection) had closed, so the supplier page failed to load."""
+        from contextlib import contextmanager
+        from services.supplier_service import SupplierService
+        from tests.supplier_fakes import SupplierRepo
+        state = {"open": False}
+
+        @contextmanager
+        def tracked():
+            with self.db.transaction() as connection:
+                state["open"] = True
+                try:
+                    yield connection
+                finally:
+                    state["open"] = False
+
+        class Repo(SupplierRepo):
+            def reversed_market_entries(self, entry_ids):
+                assert state["open"], "read after the transaction closed"
+                return {70}
+        self.db.making.append({"id": 900, "supplier_id": int(self.supplier), "movement_type_id": 8, "amount_delta": D("-250.00"), "source_type": "BAR_FEE", "source_id": 70,
+                               "source_reference": "MT000005-4", "description": "أجر سبيكة", "occurred_at": self.db.making[-1]["occurred_at"] if self.db.making else None,
+                               "created_by_user_id": 7})
+        service = SupplierService(self.suppliers._session, transaction_factory=tracked, repository=Repo, authorization=self.suppliers._authorization)
+        rows = [r for r in service.supplier_detail(self.supplier)["making_ledger"] if r.get("movement_code") == "BAR_FEE"]
+        self.assertEqual([(r["bar_fee_entry_id"], r["bar_fee_reversed"]) for r in rows], [("70", True)])

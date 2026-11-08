@@ -144,6 +144,8 @@ class SupplierService:
             gold = repository.gold_ledger(supplier_id)
             making = repository.making_ledger(supplier_id)
             states = repository.adjustment_states(supplier_id) if hasattr(repository, "adjustment_states") else {}
+            fee_ids = [r["source_id"] for r in making if r.get("movement_code") == "BAR_FEE"]          # read INSIDE the transaction: the connection is closed after it
+            reversed_fees = repository.reversed_market_entries(fee_ids) if fee_ids and hasattr(repository, "reversed_market_entries") else set()
             holdings = self._holdings_view(connection, actor, supplier_id)
         detail = {"holdings": holdings, "supplier": {"id": str(supplier["id"]), "code": rules.supplier_code(supplier["id"]),
                              "name": supplier["name"], "phone": supplier["phone"] or "",
@@ -188,7 +190,6 @@ class SupplierService:
                                 for r in gold],
                 "making_ledger": [self._making_row(r) for r in making]}
         fee_rows = [r for r in detail["making_ledger"] if r.get("movement_code") == "BAR_FEE"]       # a bar fee deducted from the supplier (080): reversed through its custody entry
-        reversed_fees = repository.reversed_market_entries([r["source_id"] for r in fee_rows]) if fee_rows and hasattr(repository, "reversed_market_entries") else set()
         for row in fee_rows:
             row["bar_fee_entry_id"] = str(row["source_id"])
             row["bar_fee_reversed"] = int(row["source_id"]) in reversed_fees

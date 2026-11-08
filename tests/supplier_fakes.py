@@ -695,7 +695,7 @@ MAKING_TYPES = {1: ("PURCHASE_INVOICE", "Supplier Purchase Invoice Making"), 2: 
                 3: ("PAYMENT_REVERSAL", "Supplier Making Payment Reversal"),
                 4: ("PURCHASE_INVOICE_REVERSAL", "Supplier Purchase Invoice Making Reversal"),
                 5: ("RECEIPT", "Supplier Making Receipt"), 6: ("RECEIPT_REVERSAL", "Supplier Making Receipt Reversal"),
-                7: ("ACCOUNT_ADJUSTMENT", "Supplier Making Account Adjustment")}
+                7: ("ACCOUNT_ADJUSTMENT", "Supplier Making Account Adjustment"), 8: ("BAR_FEE", "أجر سبيكة")}
 GOLD_TYPES = {1: ("PURCHASE_INVOICE", "Supplier Purchase Invoice"), 2: ("PURCHASE_INVOICE_REVERSAL", "Supplier Purchase Invoice Reversal"),
               5: ("GROUP_ADJUSTMENT", "Supplier Group Adjustment"), 6: ("ACCOUNT_ADJUSTMENT", "Supplier Gold Account Adjustment")}
 MAKING_TYPE_ID = {code: type_id for type_id, (code, _) in MAKING_TYPES.items()}
