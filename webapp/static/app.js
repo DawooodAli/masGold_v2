@@ -976,10 +976,11 @@ function renderReviews(s) {
 }
 
 // ---------------------------------------------------------------- the camera as a stocktake scanner (owner request 2026-11-04): the codes go to the desktop's open الجرد بالباركود session
-const camera = { stream: null, reader: null, timer: null, seen: new Map(), audio: null, busy: false };
+const camera = { stream: null, reader: null, timer: null, seen: new Map(), audio: null, busy: false, running: false, step: 0, sounds: null };
 
 function stopCamera() {
-  if (camera.timer) { clearInterval(camera.timer); camera.timer = null; }
+  camera.running = false;
+  if (camera.timer) { clearInterval(camera.timer); clearTimeout(camera.timer); camera.timer = null; }
   camera.reader = null; camera.busy = false;
   if (camera.stream) { camera.stream.getTracks().forEach((t) => t.stop()); camera.stream = null; }
 }
@@ -995,15 +996,52 @@ function loadZxing() {
   });
 }
 
-// Sound (owner 2026-11-05): a good scan = two rising pleasant beeps, a wrong / already counted / unknown one = three low harsh warning buzzes.
-// Safari keeps the audio locked until a tap, so the context is created and resumed inside the «تشغيل الكاميرا» click (unlockAudio).
+// Sound (owner 2026-11-05, 2026-11-08): a good scan = two rising pleasant beeps, a wrong / already counted / unknown one = three low harsh LOUD warning buzzes.
+// The sounds are real <audio> elements built from generated WAV data: unlike the Web Audio API they are not muted by the iPhone silent switch and are not silenced when the camera
+// takes the audio session (the owner heard no error sound). Safari unlocks an element only from a tap, so they are primed inside the «تشغيل الكاميرا» click (unlockAudio).
+// Web Audio stays as the fallback when an element refuses to play.
+function makeWav(notes, seconds, rate) {
+  const total = Math.round(seconds * rate), data = new Int16Array(total);
+  for (const [freq, start, length, square, volume] of notes) {
+    const from = Math.round(start * rate), to = Math.min(total, Math.round((start + length) * rate));
+    for (let i = from; i < to; i++) {
+      const t = (i - from) / rate, phase = 2 * Math.PI * freq * t;
+      const wave = square ? (Math.sin(phase) >= 0 ? 1 : -1) : Math.sin(phase);
+      const edge = Math.min(1, (i - from) / (0.004 * rate), (to - i) / (0.012 * rate));      // a short fade in / out: no clicks
+      data[i] = Math.max(-32767, Math.min(32767, data[i] + wave * volume * edge * 32767));
+    }
+  }
+  const bytes = new Uint8Array(44 + data.length * 2), view = new DataView(bytes.buffer);
+  const text = (at, s) => { for (let i = 0; i < s.length; i++) bytes[at + i] = s.charCodeAt(i); };
+  text(0, "RIFF"); view.setUint32(4, 36 + data.length * 2, true); text(8, "WAVE"); text(12, "fmt "); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, rate, true); view.setUint32(28, rate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true); text(36, "data"); view.setUint32(40, data.length * 2, true);
+  for (let i = 0; i < data.length; i++) view.setInt16(44 + i * 2, data[i], true);
+  let binary = ""; for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return "data:audio/wav;base64," + btoa(binary);
+}
+
+function soundElements() {
+  if (!camera.sounds) {
+    const good = new Audio(makeWav([[988, 0, 0.1, false, 0.9], [1319, 0.11, 0.14, false, 0.9]], 0.3, 22050));
+    const bad = new Audio(makeWav([[220, 0, 0.2, true, 0.95], [196, 0.24, 0.2, true, 0.95], [165, 0.48, 0.34, true, 0.95]], 0.9, 22050));
+    for (const a of [good, bad]) { a.preload = "auto"; a.volume = 1; }
+    camera.sounds = { good, bad };
+  }
+  return camera.sounds;
+}
+
 function unlockAudio() {
   try {
     camera.audio = camera.audio || new (window.AudioContext || window.webkitAudioContext)();
     if (camera.audio.state !== "running") camera.audio.resume();
-    const osc = camera.audio.createOscillator(), gain = camera.audio.createGain();
-    gain.gain.value = 0.001; osc.connect(gain); gain.connect(camera.audio.destination);
-    osc.start(); osc.stop(camera.audio.currentTime + 0.05);
+  } catch (e) { /* no Web Audio */ }
+  try {
+    for (const a of Object.values(soundElements())) {
+      a.muted = true;
+      const played = a.play();
+      const done = () => { a.pause(); a.currentTime = 0; a.muted = false; };
+      if (played && played.then) played.then(done, done); else done();
+    }
   } catch (e) { /* no sound */ }
 }
 
@@ -1017,11 +1055,19 @@ function tone(freq, start, length, type, volume) {
 }
 
 function beep(ok) {
+  const webAudio = () => {
+    try {
+      if (camera.audio && camera.audio.state !== "running") camera.audio.resume();
+      if (ok) { tone(988, 0, 0.1, "sine", 0.9); tone(1319, 0.11, 0.14, "sine", 0.9); }
+      else { tone(220, 0, 0.2, "square", 0.8); tone(196, 0.24, 0.2, "square", 0.8); tone(165, 0.48, 0.34, "square", 0.8); }
+    } catch (e) { /* no sound */ }
+  };
   try {
-    unlockAudio();
-    if (ok) { tone(988, 0, 0.1, "sine", 0.5); tone(1319, 0.11, 0.14, "sine", 0.5); }
-    else { tone(220, 0, 0.18, "square", 0.45); tone(196, 0.22, 0.18, "square", 0.45); tone(165, 0.44, 0.3, "square", 0.45); }
-  } catch (e) { /* no sound */ }
+    const element = soundElements()[ok ? "good" : "bad"];
+    element.muted = false; element.currentTime = 0;
+    const played = element.play();
+    if (played && played.catch) played.catch(webAudio);
+  } catch (e) { webAudio(); }
   if (navigator.vibrate) navigator.vibrate(ok ? 60 : [150, 80, 150, 80, 150]);
 }
 
@@ -1060,18 +1106,39 @@ function renderStocktake(s) {
       return false;
     }
   }
-  // ONE label per picture (owner 2026-11-05): a single read of the whole frame, no parts, no turning of the picture, no TRY_HARDER - the fastest setting.
-  async function scanFrame(Z, reader, video, canvas, part) {
+  // ONE label per picture (owner 2026-11-05), read in ANY position (owner 2026-11-08): the browser's own BarcodeDetector when it has one (fast, any angle), otherwise ZXing over the
+  // upright picture most of the time and, in turn, turned 90 degrees and tilted 45 degrees either way. No TRY_HARDER: every picture is still a single quick pass.
+  const ORIENTATIONS = [0, 90, 0, 45, 0, -45];
+  const plausible = (text) => (/^[0-9A-Za-z\-._\/]{6,}$/.test(text) ? [text] : []);     // a texture (a floor, a fabric) can "read" as a barcode: only a plausible shop barcode counts
+  function drawTurned(video, canvas, part, angle) {
+    const w = video.videoWidth, h = video.videoHeight;
+    const scale = Math.min(1, 800 / Math.max(w, h)), sw = Math.round(w * scale), sh = Math.round(h * scale);
+    const side = angle === 0 ? 0 : Math.abs(angle) === 90 ? 0 : Math.ceil(Math.hypot(sw, sh));
+    if (angle === 0) { canvas.width = sw; canvas.height = sh; part.drawImage(video, 0, 0, sw, sh); return; }
+    if (Math.abs(angle) === 90) { canvas.width = sh; canvas.height = sw; part.translate(sh / 2, sw / 2); }
+    else { canvas.width = side; canvas.height = side; part.fillStyle = "#ffffff"; part.fillRect(0, 0, side, side); part.translate(side / 2, side / 2); }
+    part.rotate(angle * Math.PI / 180);
+    part.drawImage(video, -sw / 2, -sh / 2, sw, sh);
+  }
+  async function scanFrame(Z, reader, video, canvas, part, detector) {
     const w = video.videoWidth, h = video.videoHeight;
     if (!w || !h) return [];
-    const scale = Math.min(1, 800 / Math.max(w, h));
-    canvas.width = Math.round(w * scale); canvas.height = Math.round(h * scale);
-    part.drawImage(video, 0, 0, canvas.width, canvas.height);
+    if (detector) {
+      try { const found = await detector.detect(video); return found.flatMap((f) => plausible(f.rawValue || "")); } catch (e) { return []; }
+    }
+    camera.step = (camera.step + 1) % ORIENTATIONS.length;
+    drawTurned(video, canvas, part, ORIENTATIONS[camera.step]);
     try {
-      const text = reader.decode(new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(canvas)))).getText();
-      // a texture (a tiled floor, a fabric) can "read" as a barcode: only a plausible shop barcode counts, anything else is ignored silently
-      return /^[0-9A-Za-z\-._\/]{6,}$/.test(text) ? [text] : [];
+      return plausible(reader.decode(new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(canvas)))).getText());
     } catch (e) { return []; }                                        // nothing readable in this frame
+  }
+  async function nativeDetector() {
+    if (!("BarcodeDetector" in window)) return null;
+    try {
+      const wanted = ["code_128", "code_39", "qr_code", "ean_13", "ean_8", "upc_a", "itf", "codabar"], have = await window.BarcodeDetector.getSupportedFormats();
+      const formats = wanted.filter((f) => have.includes(f));
+      return formats.length ? new window.BarcodeDetector({ formats }) : null;
+    } catch (e) { return null; }
   }
   const start = el("button", { class: "btn primary", text: "تشغيل الكاميرا" });
   start.addEventListener("click", async () => {
@@ -1086,23 +1153,26 @@ function renderStocktake(s) {
       const reader = new Z.MultiFormatReader();
       reader.setHints(hints);
       camera.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+      try { await camera.stream.getVideoTracks()[0].applyConstraints({ advanced: [{ focusMode: "continuous" }] }); } catch (e) { /* the phone decides its focus */ }
       video.srcObject = camera.stream;
       await video.play();
       const canvas = document.createElement("canvas"), part = canvas.getContext("2d", { willReadFrequently: true });
-      camera.reader = reader;
-      camera.timer = setInterval(async () => {
-        if (camera.busy || !camera.reader) return;                        // never queue frames: a slow frame just skips the next tick
-        camera.busy = true;
+      const detector = await nativeDetector();
+      camera.reader = reader; camera.running = true; camera.step = 0;
+      // The next picture is read the moment the previous one is done (no fixed 150 ms pause), and the answer from the desktop is NOT waited for: it plays its sound when it arrives.
+      const feedback = async (code) => { const r = await send(code, true); if (r === true) beep(true); else if (r === false) beep(false); };
+      const tick = async () => {
+        if (!camera.running || !camera.reader) return;
         try {
           const t0 = performance.now();
-          const codes = await scanFrame(Z, reader, video, canvas, part);
+          const codes = await scanFrame(Z, reader, video, canvas, part, detector);
           timing.read = Math.round(performance.now() - t0); timing.frames++; if (timing.frames % 5 === 0 || codes.length) showPerf();
-          let good = 0, bad = 0;
-          for (const r of await Promise.all(codes.map((code) => send(code, true)))) { if (r === true) good++; else if (r === false) bad++; }
-          if (good + bad) { beep(bad === 0); }
-        } finally { camera.busy = false; }
-      }, 150);
-      note("الكاميرا شغالة: باركود واحد في كل مرة.", "");
+          for (const code of codes) feedback(code);
+        } catch (e) { /* one bad frame never stops the camera */ }
+        if (camera.running) camera.timer = setTimeout(tick, 0);
+      };
+      camera.timer = setTimeout(tick, 0);
+      note(detector ? "الكاميرا شغالة (قارئ الجهاز): الباركود بأي وضع." : "الكاميرا شغالة: الباركود بأي وضع (أفقي أو رأسي أو مائل).", "");
     } catch (e) {
       note(e && e.name === "NotAllowedError" ? "لم يُسمح باستخدام الكاميرا: اسمح بها من إعدادات سفاري." : (e && e.message) || "تعذر تشغيل الكاميرا.", "err");
     }
