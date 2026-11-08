@@ -49,8 +49,6 @@ MODULES = (
     {"key": "inventory", "title": "المخزون", "subtitle": "البحث عن قطعة بالباركود، والنواقص وجرد الأوزان", "icon": "💎", "reports": ("stock", "alerts", "stockweights")},
     # cards without reports: the page draws them itself (`kind`), shown only to a user holding one of `needs`
     {"key": "transfers", "title": "التحويلات", "subtitle": "بين البنوك والمحافظ والحساب الخاص", "icon": "🔁", "kind": "transfers", "needs": ("FINANCIAL_ACCOUNT_OPERATE",)},
-    {"key": "market", "title": "عهدة السوق والموردين", "subtitle": "إخراج ورجوع العهدة، دفع مصنعيات، تسوية ذهب الموردين", "icon": "🧭", "kind": "market", "needs": ("MARKET_TRIP_MANAGE",)},
-    {"key": "settings", "title": "الإعدادات", "subtitle": "تكلفة المصنعية، الحد الأدنى للمخزون، تصنيفات المصروفات، إعدادات النظام", "icon": "⚙️", "kind": "settings", "needs": ("SETTINGS_MANAGE",)},
     {"key": "reviews", "title": "مراجعات المدير", "subtitle": "ما ينتظر المراجعة", "icon": "🔔", "kind": "reviews", "needs": ("MANAGEMENT_REVIEW", "INVENTORY_RECONCILE")},
     {"key": "currency", "title": "أسعار العملات", "subtitle": "الدولار واليورو والريال وغيرها مقابل الجنيه", "icon": "💱", "kind": "currency", "needs": ("APP_LOGIN",)},
     {"key": "stocktake", "title": "جرد بالكاميرا", "subtitle": "امسح القطع بكاميرا الأيباد وتظهر في جرد الكمبيوتر", "icon": "📷", "kind": "stocktake", "needs": ("INVENTORY_VIEW",)},
@@ -66,8 +64,6 @@ class WebReports:
         self._session_factory, self._service_factory, self._today = session_factory, service_factory, today
         from webapp.extras import Extras
         self.extras = Extras(self)
-        from webapp.market import Market
-        self.market = Market(self)
         self._deadcash_factory = deadcash_factory or (lambda session: DeadCashService(session, authentication=self._authentication))
 
     # ---- session
