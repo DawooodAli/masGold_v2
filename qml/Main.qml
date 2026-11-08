@@ -3274,6 +3274,7 @@ ApplicationWindow {
                         correctionVM.openFinancialOperation(operationId)
                     }
                     onCustomerRequested: function(customerId) { root.openCustomerDetails(customerId) }
+                    onDayCloseRequested: dayCloseDialog.open()
                 }
 
 
@@ -9626,6 +9627,66 @@ ApplicationWindow {
                 Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.textMuted; font.pixelSize: 11
                 value: modelData.at + " • " + modelData.kind + " " + modelData.delta + " جرام عيار " + modelData.karat + " • " + modelData.reason + " • " + modelData.user
             }
+        }
+    }
+
+    // تسليم وإقفال اليوم: the end-of-day cash count (insert-only record, no money moves). Opened from the cash page; the service rechecks DAY_CLOSE.
+    SettingsDialog {
+        id: dayCloseDialog
+        objectName: "dayCloseDialog"
+        dialogTitle: "تسليم وإقفال اليوم"
+        readonly property var vm: typeof dayCloseVM !== "undefined" ? dayCloseVM : null
+        onOpened: { dcCounted.text = ""; dcReason.text = ""; dcNote.text = ""; if (vm) vm.refresh() }
+        Connections { target: dayCloseDialog.vm; ignoreUnknownSignals: true
+                      function onSaved() { dcCounted.text = ""; dcReason.text = ""; dcNote.text = "" } }
+        GoldPriceLabel {
+            Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.textMuted; font.pixelSize: 11
+            value: "عدّ الكاش اللي في الدرج واكتبه. البرنامج بيقارنه بالرصيد المتوقع، ولو فيه فرق لازم تكتب سببه. الإقفال تسجيل بس: مفيش فلوس بتتحرك."
+        }
+        GoldPriceLabel { objectName: "dcExpected"; Layout.fillWidth: true; color: theme.textPrimary; font.bold: true
+                         value: dayCloseDialog.vm ? "الكاش المتوقع (" + dayCloseDialog.vm.dateText + "): " + dayCloseDialog.vm.expectedText : "" }
+        Repeater {
+            model: dayCloseDialog.vm ? dayCloseDialog.vm.cashAccounts : []
+            delegate: GoldPriceLabel { required property var modelData; Layout.fillWidth: true; color: theme.textSecondary; value: "• " + modelData.name + ": " + modelData.text }
+        }
+        Repeater {
+            model: dayCloseDialog.vm ? dayCloseDialog.vm.bankAccounts : []
+            delegate: GoldPriceLabel { required property var modelData; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: 11; value: "بنك/محفظة — " + modelData.name + ": " + modelData.text }
+        }
+        GoldPriceLabel {
+            objectName: "dcDrafts"
+            Layout.fillWidth: true; wrapMode: Text.WordWrap; font.bold: true; color: theme.amber
+            visible: !!dayCloseDialog.vm && dayCloseDialog.vm.drafts > 0
+            value: dayCloseDialog.vm ? "تنبيه: فيه " + dayCloseDialog.vm.drafts + " فاتورة مسودة لسه مش مكتملة." : ""
+        }
+        RowLayout {
+            Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+            GoldPriceLabel { value: "الكاش المعدود"; color: theme.textSecondary; Layout.preferredWidth: 100 }
+            TextField { id: dcCounted; objectName: "dcCounted"; Layout.preferredWidth: 200; horizontalAlignment: TextInput.AlignRight; font.family: "Cairo"; placeholderText: "0.00" }
+            GoldPriceLabel { objectName: "dcDifference"; color: theme.textSecondary; value: dayCloseDialog.vm ? dayCloseDialog.vm.differenceText(dcCounted.text) : "" }
+            Item { Layout.fillWidth: true }
+        }
+        TextField { id: dcReason; objectName: "dcReason"; Layout.fillWidth: true; placeholderText: "سبب الفرق (إجباري لو فيه فرق)"
+                    horizontalAlignment: TextInput.AlignRight; font.family: "Cairo"; maximumLength: 500 }
+        TextField { id: dcNote; objectName: "dcNote"; Layout.fillWidth: true; placeholderText: "ملاحظات (اختياري)"
+                    horizontalAlignment: TextInput.AlignRight; font.family: "Cairo"; maximumLength: 500 }
+        GoldPriceButton {
+            objectName: "dcSave"
+            text: "إقفال اليوم"
+            visible: !!dayCloseDialog.vm && dayCloseDialog.vm.canClose
+            enabled: !!dayCloseDialog.vm && !dayCloseDialog.vm.busy && dcCounted.text.trim().length > 0
+            onClicked: dayCloseDialog.vm.close(dcCounted.text, dcReason.text, dcNote.text)
+        }
+        GoldPriceLabel {
+            objectName: "dcMessage"
+            Layout.fillWidth: true; wrapMode: Text.WordWrap; font.bold: true
+            visible: value.length > 0
+            value: dayCloseDialog.vm ? dayCloseDialog.vm.message : ""
+            color: dayCloseDialog.vm && dayCloseDialog.vm.messageIsError ? theme.red : theme.green
+        }
+        Repeater {
+            model: dayCloseDialog.vm ? dayCloseDialog.vm.recent : []
+            delegate: GoldPriceLabel { required property var modelData; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.textMuted; font.pixelSize: 11; value: modelData.text }
         }
     }
 

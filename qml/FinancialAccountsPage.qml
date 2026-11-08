@@ -13,6 +13,7 @@ Rectangle {
     signal invoiceRequested(string invoiceId)
     signal correctionRequested(string operationId)
     signal customerRequested(string customerId)
+    signal dayCloseRequested()
     color: theme.bgPrimary
     Theme { id: theme }
 
@@ -237,6 +238,9 @@ Rectangle {
                 Btn { objectName: "cashTransfer"; text: "⇄ تحويل بين الحسابات"
                       visible: !!page.vm && page.vm.canOperate
                       onClicked: transferDialog.begin() }
+                Btn { objectName: "cashDayClose"; text: "🔒 إقفال اليوم"
+                      visible: typeof dayCloseVM !== "undefined" && dayCloseVM.canClose
+                      onClicked: page.dayCloseRequested() }
                 Btn { objectName: "cashRefresh"; text: "تحديث"; enabled: !!page.vm && !page.vm.busy
                       onClicked: page.vm.refresh() }
             }
