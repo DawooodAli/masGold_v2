@@ -89,10 +89,8 @@ class StocktakeAdjustService:
             scrap_movement = None
             if sold:
                 # Owner 2026-11-08: a piece that left the shop (sold, typically on an old-program invoice) and comes back is put in stock again as the SAME piece with the SAME barcode.
-                # A piece sold on a CURRENT invoice must come back through Return / Exchange (they carry the money): refused here.
-                current = repository.current_sale_invoices(int(raw)) if hasattr(repository, "current_sale_invoices") else []
-                if current:
-                    raise StocktakeError("USE_RETURN", "القطعة مباعة بفاتورة حالية (" + "، ".join(str(n) for n in current) + "): ارجعها بمرتجع أو استبدال من الفاتورة علشان الحساب يتظبط.")
+                # Owner 2026-11-08: also for a piece sold on a CURRENT invoice - the customer's money was settled by the Scrap purchase invoice, so NO invoice and NO customer account is touched here.
+                pass
             elif piece["inventory_status"] != "REMOVED" or int(piece["write_offs"] or 0) < 1:
                 raise StocktakeError("NOT_REMOVED_BY_STOCKTAKE", "هذه القطعة لم تُشطب بجرد ولا مباعة بفاتورة قديمة، أو رجعت للمخزون بالفعل.")
             movement_type = repository.movement_type_id("RETURNED_ITEM_RESTOCKED" if sold else "RESTORED")

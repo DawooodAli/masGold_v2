@@ -380,6 +380,19 @@ class InventoryRepository(BaseRepository):
             (piece["inventory_item_id"],),
         )
         piece["sale"] = sale
+        # Every invoice that ever sold this piece (a piece that came back and is sold again keeps all of them), newest first.
+        piece["sales"] = self._fetch_all(
+            """
+            SELECT i.id AS invoice_id, i.invoice_number, COALESCE(i.finalized_at, i.invoice_date) AS invoice_date,
+                   s.customer_name_snapshot AS customer_name
+            FROM invoice_lines l
+            INNER JOIN invoices i ON i.id = l.invoice_id
+            LEFT JOIN invoice_customer_snapshots s ON s.invoice_id = i.id
+            WHERE l.inventory_item_id = %s AND l.line_type = 'SELL_INVENTORY'
+            ORDER BY i.id DESC
+            """,
+            (piece["inventory_item_id"],),
+        )
         return piece
 
     def get_active_employee_by_id(

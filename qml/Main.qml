@@ -2723,6 +2723,38 @@ ApplicationWindow {
                                         invoiceHistoryVM.openInvoice(inventoryVM.historyPiece.invoiceId)
                                     }
                                 }
+                                Label {
+                                    visible: (inventoryVM.historyPiece.invoices || []).length > 1
+                                    Layout.fillWidth: true
+                                    text: "فواتير أخرى سبق أن بيعت بها القطعة:"
+                                    color: theme.textSecondary
+                                    font.family: "Cairo"
+                                    horizontalAlignment: Text.AlignRight
+                                }
+                                Repeater {
+                                    model: (inventoryVM.historyPiece.invoices || []).slice(1)
+                                    delegate: RowLayout {
+                                        Layout.fillWidth: true
+                                        objectName: "inventoryHistoryOtherInvoice"
+                                        Button {
+                                            text: "فتح الفاتورة"
+                                            font.family: "Cairo"
+                                            onClicked: {
+                                                root.currentPage = 1
+                                                billingWorkspace.currentTab = 1
+                                                invoiceHistoryVM.openInvoice(modelData.invoiceId)
+                                            }
+                                        }
+                                        Label {
+                                            Layout.fillWidth: true
+                                            text: "الفاتورة: " + modelData.invoiceNumber + "  •  " + modelData.invoiceDate + "  •  العميل: " + modelData.customer
+                                            color: theme.textSecondary
+                                            font.family: "Cairo"
+                                            wrapMode: Text.WordWrap
+                                            horizontalAlignment: Text.AlignRight
+                                        }
+                                    }
+                                }
                             }
                         }
 

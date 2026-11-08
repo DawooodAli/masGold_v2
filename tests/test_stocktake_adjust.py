@@ -192,15 +192,14 @@ class ApprovalTests(unittest.TestCase):
             service.restore_piece("3", "x", "1")
         self.assertIn("المتاح 8.500", service.scrap_karats()[0]["text"])
 
-    def test_a_piece_sold_on_a_current_invoice_is_refused_and_sent_to_the_return(self):
+    def test_a_piece_sold_on_a_current_invoice_also_comes_back_without_touching_the_invoice(self):
         service = self.build()
         self.store.sold = {3}
         self.store.current_invoices = {3: ["INV000123"]}
-        with self.assertRaises(StocktakeError) as refused:
-            service.restore_piece("3", "x")
-        self.assertEqual(refused.exception.code, "USE_RETURN")
-        self.assertIn("INV000123", str(refused.exception))
-        self.assertEqual(self.store.sold, {3})
+        self.store.scrap = {1: (D("10.000"), D("0.000"))}
+        result = service.restore_piece("3", "x", "1")
+        self.assertTrue(result["restored"])
+        self.assertEqual(self.store.sold, set())
 
     def test_restoring_needs_the_stocktake_right(self):
         service = self.build(frozenset({"APP_LOGIN"}))

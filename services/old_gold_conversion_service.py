@@ -102,6 +102,36 @@ class OldGoldConversionService:
 
             return repository.get_old_gold_balances()
 
+    def _restock_sold_piece(self, session_actor, barcode_value, karat_id, consumed_weight, result_weight, notes):
+        """Owner 2026-11-08: a barcode that belongs to a SOLD piece (the customer sold it back and it went through the Scrap) puts THAT piece back in stock with the same barcode, taking its grams
+        from the Scrap karat chosen here. No invoice and no customer account is touched. Returns None when the barcode is not a sold piece (the normal conversion goes on)."""
+        with DatabaseTransaction() as transaction:
+            repository = OldGoldConversionRepository(transaction.connection)
+            piece = repository.piece_by_barcode(barcode_value)
+        if piece is None:
+            return None
+        if piece["inventory_status"] != "SOLD":
+            raise ValueError("هذا الباركود مستخدم من قبل لقطعة غير مباعة، ولا يمكن إعادة استخدامه.")
+        weight = Decimal(str(piece["weight_grams"])).quantize(Decimal("0.001"))
+        if int(piece["karat_id"]) != int(karat_id):
+            raise ValueError("الباركود ده لقطعة مباعة بعيار مختلف. اختار نفس عيار القطعة.")
+        if consumed_weight != weight or result_weight != weight:
+            raise ValueError(f"الباركود ده لقطعة مباعة وزنها {weight:,.3f} جرام. اكتب نفس الوزن في وزن القطعة ووزن الكسر المستهلك.")
+        from services.stocktake_adjust_service import StocktakeAdjustService, StocktakeError
+        try:
+            StocktakeAdjustService(self._session).restore_piece(
+                str(piece["id"]), (notes or "").strip() or "رجوع قطعة مباعة من الكسر بنفس الباركود", str(int(karat_id)))
+        except StocktakeError as exc:
+            raise ValueError(str(exc)) from exc
+        with DatabaseTransaction() as transaction:
+            repository = OldGoldConversionRepository(transaction.connection)
+            remaining = sum((Decimal(str(r.get("weight_delta_grams") or 0)) for r in repository.lock_old_gold_balance(karat_id)), Decimal("0.000")).quantize(Decimal("0.001"))
+        return {
+            "conversion_code": None, "restocked": True, "result_inventory_item_id": int(piece["id"]),
+            "consumed_weight_grams": weight, "result_weight_grams": weight, "weight_difference_grams": Decimal("0.000"),
+            "remaining_balance_grams": remaining,
+        }
+
     def convert_to_new_stock(
         self,
         *,
@@ -178,6 +208,11 @@ class OldGoldConversionService:
             raise ValueError(
                 "Notes are too long."
             )
+
+        if barcode_value:
+            restocked = self._restock_sold_piece(session_actor, barcode_value, karat_id, consumed_weight, result_weight, notes)
+            if restocked is not None:
+                return restocked
 
         try:
             with DatabaseTransaction() as transaction:

@@ -362,6 +362,17 @@ class OldGoldConversionRepository:
         finally:
             cursor.close()
 
+    def piece_by_barcode(self, barcode_value):
+        """The piece that carries (or ever carried) this barcode, locked; None when the value was never used."""
+        cursor = self.connection.cursor(dictionary=True)
+        try:
+            cursor.execute(
+                "SELECT ii.id, ii.inventory_status, ii.karat_id, ii.weight_grams FROM inventory_barcodes b "
+                "JOIN inventory_items ii ON ii.id = b.inventory_item_id WHERE b.barcode_value = %s LIMIT 1 FOR UPDATE", (str(barcode_value),))
+            return cursor.fetchone()
+        finally:
+            cursor.close()
+
     def allocate_automatic_barcode(self):
         """The next canonical NNYYMMDD barcode (the day's sequence row stays locked until the caller's transaction ends)."""
         from datetime import date

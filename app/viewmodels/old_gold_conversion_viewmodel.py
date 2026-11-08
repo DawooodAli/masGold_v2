@@ -231,8 +231,8 @@ class OldGoldConversionViewModel(QObject):
 
             self._set_action(
                 (
-                    "تم إنشاء القطعة الجديدة "
-                    f"#{result['result_inventory_item_id']} "
+                    ("رجعت القطعة المباعة للمخزون بنفس الباركود " if result.get("restocked") else "تم إنشاء القطعة الجديدة ")
+                    + f"#{result['result_inventory_item_id']} "
                     "وخصم "
                     f"{float(result['consumed_weight_grams']):.3f} جرام "
                     "من رصيد الكسر. "

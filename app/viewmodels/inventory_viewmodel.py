@@ -287,10 +287,14 @@ class InventoryViewModel(QObject):
         """An exact barcode / item number that is no longer current stock (e.g. SOLD): shown read only
         for traceability — never listed, counted, sold again or re-barcoded."""
         self._history_piece = {}
-        if not self._search_text or self._items:
+        if not self._search_text:
             return
         piece = self._service.find_piece(self._search_text) if hasattr(self._service, "find_piece") else None
-        if not piece or piece.get("inventory_status") == "IN_STOCK":
+        if not piece:
+            return
+        # A piece that is in stock again (it was sold and came back) still shows its old invoices; a piece in stock that never sold needs no card.
+        came_back = piece.get("inventory_status") == "IN_STOCK" and bool(piece.get("sales"))
+        if (self._items and not came_back) or (piece.get("inventory_status") == "IN_STOCK" and not came_back):
             return
         if self._karat_filter and int(piece.get("karat_id") or 0) != self._karat_filter:
             return
@@ -309,6 +313,9 @@ class InventoryViewModel(QObject):
             "invoiceNumber": sale.get("invoice_number") or "",
             "invoiceDate": self._qml_safe(sale.get("invoice_date")) or "",
             "customer": sale.get("customer_name") or "—",
+            "invoices": [{"invoiceId": str(s["invoice_id"]), "invoiceNumber": s.get("invoice_number") or "",
+                          "invoiceDate": self._qml_safe(s.get("invoice_date")) or "", "customer": s.get("customer_name") or "—"}
+                         for s in (piece.get("sales") or [])],
         }
 
 
