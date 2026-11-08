@@ -22,9 +22,13 @@ TextField {
         const shift = (event.modifiers & Qt.ShiftModifier) !== 0
         if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
             if (field.mixed) {
-                const scanned = field.codec.fromBurst(field.strokes)
-                if (scanned.length > 0)
-                    field.text = scanned
+                // A text that is already a valid barcode (the layout was English) is kept as typed:
+                // rebuilding it from scan codes once turned JG... into GG... (first stroke wrong).
+                if (field.codec.canonical(field.text).length === 0) {
+                    const scanned = field.codec.fromBurst(field.strokes)
+                    if (scanned.length > 0)
+                        field.text = scanned
+                }
             }
             field.strokes = []
             return                                   // not accepted: onAccepted runs as before
