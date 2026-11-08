@@ -1169,8 +1169,8 @@ class MarketTripService:
     # ------------------------------------------------------------------ bar fee received in cash (080)
     def bar_fee(self, trip_id, party_id, amount, fee_date, reference, notes, request_key, *, _expected_actor=None):
         """RECORD the cash fee (أجر السبيكة) a supplier / marketer pays the owner when a bar is handed to them. The cash enters the
-        custody cash (no Main Safe / bank movement); for a SUPPLIER party the fee is also deducted from its making account through a
-        negative BAR_FEE making movement (needs SUPPLIER_MAKING_PAY); a marketer-only party gets no making movement."""
+        custody cash (no Main Safe / bank movement). Owner 2026-11-08 (migration 101): the fee goes to the custody cash ONLY, for a supplier as for a marketer; it never touches the
+        supplier's making account. (Fees posted before 101 keep their stored deduction and their reversal restores it.)"""
         session_actor = self._actor(_expected_actor)
         if str(trip_id or "").strip() == "":
             raise TripError("TRIP_NOT_FOUND", "اختر العهدة.")
@@ -1233,24 +1233,14 @@ class MarketTripService:
             is_supplier = rules.has_supplier_role(party)
             if not is_supplier and not party.get("is_intermediary"):
                 raise TripError("PARTY_ROLE", "الطرف المختار ليس موردًا ولا مسوقجيًا.")
-            if is_supplier:
-                actor = self._authorization.require_permission_for_write(connection, session_actor, SUPPLIER_PAY_PERMISSION)
             now = repository.db_now()
             entry_no = repository.next_entry_no(trip_id)
             entry_id = repository.insert_entry(trip_id=trip_id, entry_no=entry_no, kind=ST_BAR_FEE, entry_date=dated, notes=notes,
                                                key=key, digest=digest, actor=actor, now=now)
             code = entry_code(trip_id, entry_no)
             label = f"{KIND_TEXT[ST_BAR_FEE]} {code} — {trip_code(trip_id)}: {value:,.2f} ج من {party['name']}"
-            making_id = None
-            if is_supplier:
-                making_type = suppliers.making_type_id(BAR_FEE_MOVEMENT)
-                if making_type is None:
-                    raise RuntimeError("supplier making movement type BAR_FEE is missing (migration 080)")
-                making_id = suppliers.insert_making_movement(supplier_id=party_id, type_id=making_type, amount_delta=-value,
-                                                             source_type=BAR_FEE_MOVEMENT, source_id=entry_id, reference=code,
-                                                             description=label, now=now, user_id=actor.user_id)
             repository.insert_bar_fee(entry_id=entry_id, party_id=party_id, party_kind="SUPPLIER" if is_supplier else "INTERMEDIARY",
-                                      amount=value, making_movement_id=making_id, reference=reference)
+                                      amount=value, making_movement_id=None, reference=reference)
             repository.audit(actor=actor, event_type="MARKET_TRIP_BAR_FEE", entity_id=entry_id, reference=code, description=label,
                              metadata={"trip_id": trip_id, "kind": ST_BAR_FEE, "party_id": party_id, "amount": str(value),
                                        "date": dated.isoformat(), "employee_id": actor.employee_id}, now=now)

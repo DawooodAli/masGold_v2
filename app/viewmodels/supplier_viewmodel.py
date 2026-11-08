@@ -1340,7 +1340,7 @@ class SupplierViewModel(QObject):
                 "detail": (((f"سُلِّم {grams(r['delivered_weight'])} جرام • {'رواسب' if r.get('lot_kind') == 'RESIDUE' else 'الناتج الرئيسي'} • {r.get('lot_origin')} • شحنة {r.get('lot_no')} • العيار الفعلي {r.get('lot_fineness')} بالألف" if r.get("lot_id") else f"سُلِّم {grams(r['delivered_weight'])} جرام عيار {r['delivered_karat']}")
                             + (f" ({GOLD_SOURCE_TEXT[r['custody_designation']]})" if r.get("custody_designation") in GOLD_SOURCE_TEXT else "")
                             + f" ← احتُسب {grams(abs(r['weight_delta']))} جرام عيار {r['karat_value']}"
-                            + (f" • من عهدة السوق {r['custody_reference']} (تُعكس من صفحة العهدة)" if r.get("custody_reference") else "")
+                            + (f" • من عهدة السوق {r['custody_reference']}" if r.get("custody_reference") else "")
                             + (f" • من رصيد المسوقجي {r['holding_party']}" + (f" (الوزن الأصلي {grams(r['lot_weight'])} جرام)" if r.get("lot_weight") is not None else "")
                                + (f" • {DECLARATION_TEXT[r['declaration']]}" if r.get("declaration") in DECLARATION_TEXT else "")
                                if r.get("holding_party") else ""))
@@ -1351,7 +1351,7 @@ class SupplierViewModel(QObject):
                           else f"عكس الفاتورة {r['reverses_invoice']}" if r.get("reverses_invoice")
                           else f"عكس التسوية {r['reverses_reference']}" if r.get("reverses_reference") else ""),
                 "settlementId": r.get("settlement_id") or "", "reversed": bool(r.get("reversed_by") or r.get("invoice_reversed_by")),
-                "canReverse": bool(r.get("settlement_id")) and not r.get("reversed_by") and not r.get("custody_reference")}
+                "canReverse": bool(r.get("settlement_id")) and not r.get("reversed_by")}
                            for r in self._detail["gold_ledger"]],
             "makingLedger": [making_row(r) for r in self._detail["making_ledger"]],
         }

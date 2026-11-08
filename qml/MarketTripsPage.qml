@@ -2335,7 +2335,7 @@ Item {
             spacing: 6
             Txt { Layout.fillWidth: true; text: "أجر السبيكة"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
             Txt { objectName: "barFeeRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                  text: "الأجر نقدية استلمتها من المورد أو المسوقجي: تدخل نقدية العهدة، وتُخصم من مصنعيات المورد. يمكنك بعدها رجوعها للخزنة أو دفع مصنعيات منها." }
+                  text: "الأجر نقدية استلمتها من المورد أو المسوقجي: تدخل نقدية العهدة فقط ولا تتحرك في أي حساب آخر (لا مصنعيات المورد ولا الخزنة). يمكنك بعدها رجوعها للخزنة أو دفع مصنعيات منها." }
             Txt { Layout.fillWidth: true; text: "المورد / المسوقجي *" }
             Combo { id: barFeeParty; objectName: "barFeePartyCombo"; Layout.fillWidth: true; model: barFeeDialog.partyChoices; textRole: "text" }
             Txt { Layout.fillWidth: true; text: "المبلغ (ج) *" }

@@ -323,11 +323,11 @@ class LedgerRowTests(SettlementVmCase):
         self.assertEqual((original["state"], original["reversed"], original["canReverse"]), ("معكوسة بالعملية RV000001", True, False))
         self.assertEqual((undo["state"], undo["reference"], undo["detail"], undo["canReverse"]), ("عكس التسوية SG000001", "RV000001", "", False))
 
-    def test_a_settlement_delivered_from_market_custody_names_its_logo_source_and_custody_entry_and_cannot_be_reversed_here(self):
-        """046: the reversal of a custody-sourced document belongs to its custody entry, so the supplier page offers no reverse action."""
+    def test_a_settlement_delivered_from_market_custody_names_its_logo_source_and_custody_entry_and_is_reversible_here(self):
+        """Owner 2026-11-08: a custody-sourced settlement is also reversed from the supplier page (the service routes it to its custody entry)."""
         (row,) = self.rows(gold_row(custody_reference="MT000001-2", custody_designation="LOGO"))
-        self.assertEqual(row["detail"], "سُلِّم 10.000 جرام عيار 21 (لوجو) ← احتُسب 11.667 جرام عيار 18 • من عهدة السوق MT000001-2 (تُعكس من صفحة العهدة)")
-        self.assertEqual((row["custodyReference"], row["canReverse"], row["reversed"], row["state"]), ("MT000001-2", False, False, ""))
+        self.assertEqual(row["detail"], "سُلِّم 10.000 جرام عيار 21 (لوجو) ← احتُسب 11.667 جرام عيار 18 • من عهدة السوق MT000001-2")
+        self.assertEqual((row["custodyReference"], row["canReverse"], row["reversed"], row["state"]), ("MT000001-2", True, False, ""))
 
     def test_the_reversed_state_of_a_custody_settlement_and_its_reversal_row_come_from_the_one_custody_correction(self):
         original, undo = self.rows(

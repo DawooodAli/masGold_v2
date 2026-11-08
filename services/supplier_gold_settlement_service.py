@@ -212,4 +212,15 @@ class SupplierGoldSettlementService:
         if self._corrections is None:
             from services.correction_service import CorrectionService
             self._corrections = CorrectionService(self._session)
+        # Owner 2026-11-08: a settlement delivered from market custody is also reversed HERE, on the supplier page. The canonical correction stays on the CUSTODY ENTRY (it restores the custody
+        # gold and the stored supplier credit together, with every custody rule and right), so this only finds that entry and reverses it; no second reversal path exists.
+        with self._transaction() as connection:
+            repository = self._repository(connection)
+            source = repository.source(settlement_id)
+            entry = None
+            if source is not None and source.get("source_kind", "SHOP_SCRAP") in (CUSTODY_SOURCE_KIND, "CUSTODY_LOT", "TRIP_BAR"):
+                entry = repository.custody_entry(settlement_id)
+        if entry is not None:
+            from repositories.market_trip_repository import SOURCE as ENTRY_SOURCE
+            return self._corrections.reverse(ENTRY_SOURCE, str(entry["entry_id"]), reason, _expected_actor=_expected_actor)
         return self._corrections.reverse(SOURCE, str(settlement_id), reason, _expected_actor=_expected_actor)
