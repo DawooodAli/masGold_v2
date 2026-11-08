@@ -10,5 +10,5 @@ a = Analysis([str(ROOT / "main.py")], pathex=[str(ROOT)], datas=datas, hiddenimp
              excludes=["tkinter", "unittest", "pytest", "IPython", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick", "PySide6.Qt3DCore", "PySide6.QtCharts",
                        "PySide6.QtDataVisualization", "PySide6.QtMultimedia", "PySide6.QtPdf", "PySide6.QtQuick3D"])
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="masGold", console=False, icon=None)
+exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="masGold", console=False, icon=str(ROOT / "tools" / "build" / "masgold.ico"))
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="masGold")
