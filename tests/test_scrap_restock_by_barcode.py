@@ -64,3 +64,12 @@ class KpiIncomeItemTests(unittest.TestCase):
         item = kpi_rules.income_item(D("500"), D("1000"))
         self.assertEqual((item["key"], item["value"]), ("income", "500.00 ج"))
         self.assertEqual(kpi_rules.income_item(None, None)["status"], kpi_rules.GRAY)
+
+
+class MandatoryExpenseTests(unittest.TestCase):
+    def test_salaries_and_invoice_differences_are_left_out(self):
+        from services import kpi_rules
+        self.assertTrue(kpi_rules.is_mandatory_expense("مرتبات"))
+        self.assertTrue(kpi_rules.is_mandatory_expense("فرق فواتير"))
+        self.assertFalse(kpi_rules.is_mandatory_expense("كهرباء ومياه"))
+        self.assertFalse(kpi_rules.is_mandatory_expense("مصروف السوق"))

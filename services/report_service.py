@@ -1283,7 +1283,11 @@ class ReportService:
                     flow_items.setdefault(r["label"], {"now": (ZERO2, ZERO2), "before": (ZERO2, ZERO2)})[side] = (_dec(r["out"]), _dec(r["in"]))
                 return values.get("مصروفات مسجلة"), values.get("إيرادات مسجلة")
             try:
-                (spent_now, income_now), (spent_before, income_before) = flow(start, end, "now"), flow(previous_start, start, "before")
+                flow(start, end, "now"), flow(previous_start, start, "before")
+                # compulsory items (salaries, invoice differences) are no indicator: they are left out of both periods, but stay listed in the detail table
+                kept = {k: v for k, v in flow_items.items() if not kpi_rules.is_mandatory_expense(k)}
+                spent_now, spent_before = (sum((v[side][0] for v in kept.values()), ZERO2) for side in ("now", "before"))
+                income_now, income_before = (sum((v[side][1] for v in kept.values()), ZERO2) for side in ("now", "before"))
             except (ReportError, PermissionError):
                 spent_now = spent_before = income_now = income_before = None
                 flow_items = {}
@@ -1295,14 +1299,14 @@ class ReportService:
         staff = [col("employee", "الموظف"), col("status_text", "الحالة"), col("lines", "بنود محسوبة"), col("low_making", "بنود مصنعية قليلة"), col("low_discount", "بنود خصم كسر قليل"), col("note", "الملاحظة")]
         meaning = ["كل مؤشر يقارن الفترة المختارة بالفترة السابقة لها بنفس الطول، وله حالة وجملة قرار. الحالات مؤشرات لانتباهك وليست إثباتًا.",
                    "مصنعية قليلة = أقل من تكلفة القطعة، أو أقل من 80% من متوسط باقي الموظفين لنفس العيار. خصم كسر قليل = أقل من الخصم الافتراضي. قطع أقل من جرام لا تدخل.",
-                   "ربح الذهب من لقطات الجرد (مكافئ عيار 21)؛ المصروفات المسجلة من حركة الخزنة. غير المتاح يظهر رماديًا ولا يتحول لصفر."]
+                   "ربح الذهب من لقطات الجرد (مكافئ عيار 21)؛ المصروفات المسجلة من حركة الخزنة بدون المرتبات وفروق الفواتير (إلزامية). غير المتاح يظهر رماديًا ولا يتحول لصفر."]
         cards = [total("مؤشرات حمراء", sum(1 for i in items if i["status"] == kpi_rules.RED), "count", "", "summary", tone="deadcash"),
                  total("مؤشرات صفراء", sum(1 for i in items if i["status"] == kpi_rules.YELLOW), "count", "", "summary"),
                  total("موظفون يحتاجون مراجعة", sum(1 for r in employees if r["status"] == kpi_rules.RED), "count", "", "summary")]
         tables = [table("kpi", "KPI — هل أنا ماشي صح؟", columns, rows), table("kpi_staff", "الموظفون", staff, employees)]
         if flow_items:
             # owner 2026-11-08: show WHAT the recorded expenses / income of both periods are made of (the categorised treasury entries + market expenses), so a big figure can be traced.
-            detail = [{"label": k, "out_now": v["now"][0], "out_before": v["before"][0], "in_now": v["now"][1], "in_before": v["before"][1]}
+            detail = [{"label": k + (" (إلزامي: خارج المؤشر)" if kpi_rules.is_mandatory_expense(k) else ""), "out_now": v["now"][0], "out_before": v["before"][0], "in_now": v["now"][1], "in_before": v["before"][1]}
                       for k, v in sorted(flow_items.items(), key=lambda kv: -(kv[1]["now"][0] + kv[1]["before"][0] + kv[1]["now"][1] + kv[1]["before"][1]))]
             tables.append(table("kpi_flow", "من إيه المصروفات والإيرادات المسجلة؟", [col("label", "البند"), col("out_now", "مصروف الفترة", "money"), col("out_before", "مصروف الفترة السابقة", "money"),
                                                                                    col("in_now", "إيراد الفترة", "money"), col("in_before", "إيراد الفترة السابقة", "money")], detail))

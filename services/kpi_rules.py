@@ -169,6 +169,13 @@ def expenses_item(now, before, profit_status):
     return {"key": "expenses", "title": "المصروفات المسجلة", "status": status, "value": f"{_d(now):,.2f} ج", "compare": (f"{_d(before):,.2f} ج" + (f" ({_pct_text(pct)})" if pct is not None else "")) if before is not None else "—", "advice": advice}
 
 
+def is_mandatory_expense(label):
+    """Owner 2026-11-08: salaries and invoice differences are compulsory, so they are not an indicator of how the shop is doing: the KPI leaves them out of the expenses comparison (they stay in the
+    cash-flow report and are listed apart in the KPI detail table)."""
+    text = str(label or "")
+    return "مرتب" in text or ("فرق" in text and ("فواتير" in text or "فاتورة" in text or "فاتوره" in text))
+
+
 def income_item(now, before):
     """The recorded income (the categorised «إيراد» entries of the treasury) against the previous period: higher is better, never red on its own (income is not a promise)."""
     if now is None:
