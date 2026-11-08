@@ -196,6 +196,33 @@ class ReportRepository(BaseRepository):
             ORDER BY iv.invoice_date, iv.id, il.id
             """, (start, end_exclusive))
 
+    def kpi_lines(self, start, end_exclusive):
+        """One row per sale / scrap-purchase line of a FINALIZED invoice dated in [start, end): the KPI report reads two equal periods in ONE statement. Adds the old-gold gross / discount, the
+        stored cost of the sold piece and the CURRENT cost of its category (migration 070, NULL below it), and the full-reversal correction of the invoice. Plain SELECT, no lock."""
+        costs = self.has_table("item_category_costs")
+        return self._fetch_all(
+            f"""
+            SELECT iv.id AS invoice_id, iv.invoice_date, iv.employee_id, e.name AS employee, il.line_type, k.karat_value, il.weight_grams, il.making_total, il.gross_total, il.discount_amount,
+                   il.scrap_kind, ii.acquisition_making_per_gram AS piece_cost, {"icc.making_cost_per_gram" if costs else "NULL"} AS category_cost, c.id AS reversal_id
+            FROM invoice_lines il
+            JOIN invoices iv ON iv.id = il.invoice_id
+            JOIN karats k ON k.id = il.karat_id
+            LEFT JOIN employees e ON e.id = iv.employee_id
+            LEFT JOIN inventory_items ii ON ii.id = il.inventory_item_id
+            {"LEFT JOIN item_category_costs icc ON icc.category_id = ii.category_id" if costs else ""}
+            LEFT JOIN transaction_corrections c ON c.source_type = 'INVOICE' AND c.source_id = iv.id AND c.correction_type = 'FULL_REVERSAL'
+            WHERE il.line_type IN ('SELL_INVENTORY', 'SELL_OLD_GOLD', 'SELL_UNIDENTIFIED', 'SELL_RAFAYEA', 'BUY_OLD_GOLD') AND iv.invoice_status = 'FINALIZED'
+              AND iv.invoice_date >= %s AND iv.invoice_date < %s
+            ORDER BY iv.invoice_date, iv.id, il.id
+            """, (start, end_exclusive))
+
+    def default_old_gold_discount(self):
+        """The default old-gold discount percent from the system settings (081), or None."""
+        if not self.has_table("system_settings"):
+            return None
+        row = self._fetch_one("SELECT setting_value FROM system_settings WHERE setting_key = 'default_old_gold_discount_pct'")
+        return row["setting_value"] if row else None
+
     def cash_categories(self):
         """The current names of the income / expense categories (migration 069), or None below 069."""
         return self._fetch_all("SELECT code, name FROM cash_categories ORDER BY sort_order, id") if self.has_table("cash_categories") else None

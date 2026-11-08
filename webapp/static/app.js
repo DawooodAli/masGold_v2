@@ -96,7 +96,7 @@ function backToList() {
 }
 
 const REPORT_ICONS = { goldflow: "📈", stock: "📦", alerts: "⚠️", stockweights: "⚖️", indicators: "💹", gold: "🏷️", scrapcost: "♻️", demand: "🗓️", profit: "💰", market: "🧭",
-  makingprofit: "🛠️", employees: "👷", suppliers: "🏭", treasury: "🏦", cashflow: "💸", sales: "🧾", customers: "👥", deadcash: "🚫" };
+  makingprofit: "🛠️", employees: "👷", suppliers: "🏭", treasury: "🏦", cashflow: "💸", sales: "🧾", customers: "👥", deadcash: "🚫", kpi: "🎯" };
 
 function renderReportCards(module) {
   const box = el("div", {});

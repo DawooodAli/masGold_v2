@@ -95,7 +95,7 @@ class ReportsPageTests(harness.InvoicePageTests):
         self.click("reportsBack")
         self.wait_until(lambda: self.root.property("currentPage") == 10, "back to the manager reviews")
         vm = self.open_reports()
-        self.assertEqual([r["key"] for r in vm.reports], ["sales", "stock", "alerts", "stockweights", "indicators", "gold", "employees", "makingprofit", "scrapcost", "demand", "customers", "deadcash", "suppliers", "treasury", "cashflow", "market"])
+        self.assertEqual([r["key"] for r in vm.reports], ["sales", "stock", "alerts", "stockweights", "indicators", "gold", "employees", "makingprofit", "scrapcost", "demand", "customers", "deadcash", "suppliers", "treasury", "cashflow", "market", "kpi"])
         self.assertEqual(self.warnings, [])
 
     def test_the_report_buttons_are_grouped_into_gold_cash_and_general_rows(self):

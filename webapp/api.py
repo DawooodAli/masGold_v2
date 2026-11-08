@@ -38,6 +38,7 @@ GROUPS = (("الذهب", ("goldflow", "stock", "alerts", "stockweights", "indica
 # To add a card: add a line here (and its icon / subtitle); the page draws one card per module the user may use.
 MODULES = (
     {"key": "reports", "title": "التقارير", "subtitle": "الذهب والمخزون والنقدية والمبيعات", "icon": "📊", "rest": True},
+    {"key": "kpi", "title": "KPI", "subtitle": "هل أنا ماشي صح؟ البيع والمصنعية والكسر والربح والمصاريف والموظفين", "icon": "🎯", "reports": ("kpi",)},
     {"key": "customers", "title": "العملاء", "subtitle": "من عليه فلوس ومن له، وكشف الحساب وشطب الرصيد", "icon": "👥", "reports": ("customers", "deadcash")},
     {"key": "treasury", "title": "الخزنة والمصروفات", "subtitle": "حركة الخزنة والبنوك والمصروفات والإيرادات", "icon": "🏦", "reports": ("treasury", "cashflow"), "period": "today"},
     {"key": "daily", "title": "البيع والشراء اليومي", "subtitle": "فواتير اليوم أو أي فترة تختارها، وفتح الفاتورة", "icon": "🧾", "reports": ("sales",), "period": "today"},

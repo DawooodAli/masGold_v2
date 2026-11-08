@@ -114,7 +114,7 @@ class ApiTests(unittest.TestCase):
     def test_the_home_page_has_one_card_per_module_the_user_may_use(self):
         api = make_api()
         modules = api.overview(api.login("admin", "secret"))["modules"]
-        self.assertEqual([m["key"] for m in modules], ["reports", "customers", "treasury", "daily", "suppliers", "goldprofit", "staff", "cashflow", "bankflow", "inventory", "reviews", "currency", "stocktake", "calc"])
+        self.assertEqual([m["key"] for m in modules], ["reports", "kpi", "customers", "treasury", "daily", "suppliers", "goldprofit", "staff", "cashflow", "bankflow", "inventory", "reviews", "currency", "stocktake", "calc"])
         by_key = {m["key"]: m for m in modules}
         reports, customers, treasury, daily, inventory, reviews = (by_key[k] for k in ("reports", "customers", "treasury", "daily", "inventory", "reviews"))
         self.assertEqual([r["key"] for g in inventory["groups"] for r in g["reports"]], ["stock", "alerts", "stockweights"])

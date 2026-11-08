@@ -119,6 +119,27 @@ class FakeRepo:
     def employees(self):
         return [{"id": 1, "name": "علي"}, {"id": 2, "name": "حسين"}]
 
+    def default_old_gold_discount(self):
+        return "1.50"
+
+    # ---- KPI: 20-day period (10-01 .. 10-20) and the 20 days before it (09-11 .. 09-30)
+    def kpi_lines(self, start, end_exclusive):
+        rows = []
+
+        def line(day, emp, name, kind, weight, making=None, gross=None, discount=None, cost="50.00", month=10):
+            rows.append({"invoice_id": len(rows) + 1, "invoice_date": datetime(2026, month, day, 12), "employee_id": emp, "employee": name, "line_type": kind, "karat_value": 21,
+                         "weight_grams": D(weight), "making_total": None if making is None else D(making), "gross_total": None if gross is None else D(gross),
+                         "discount_amount": None if discount is None else D(discount), "scrap_kind": None, "piece_cost": D(cost) if cost else None, "category_cost": None, "reversal_id": None})
+        for i in range(8):
+            line(15 + i % 10, 1, "علي", "SELL_INVENTORY", "5.000", "600.00", month=9)                       # previous period: 40 g at 120 per gram
+        for i in range(6):
+            line(2 + i, 1, "علي", "SELL_INVENTORY", "5.000", "500.00")                                      # 100 per gram, above the cost 50
+            line(2 + i, 2, "حسين", "SELL_INVENTORY", "5.000", "200.00")                                     # 40 per gram: under the cost AND under 80% of the other employee's average
+        for i in range(2):
+            line(8 + i, 1, "علي", "BUY_OLD_GOLD", "10.000", gross="1000.00", discount="15.00", cost=None)   # 1.5 percent
+        line(10, 2, "حسين", "BUY_OLD_GOLD", "10.000", gross="1000.00", discount="5.00", cost=None)          # 0.5 percent
+        return [r for r in rows if start <= r["invoice_date"] < end_exclusive]
+
     # ---- gold profit: the stocktaking sheets (opening balance 1 Oct, morning sheets, one on 1 Nov)
     sheets = None
 
@@ -850,7 +871,7 @@ class SafetyTests(Case):
             service.run("sales", {})
 
     def test_available_reports_follow_the_rights(self):
-        self.assertEqual([r["key"] for r in self.service.available_reports()], ["sales", "stock", "alerts", "stockweights", "indicators", "gold", "employees", "makingprofit", "scrapcost", "demand", "customers", "deadcash", "suppliers", "treasury", "cashflow", "market"])
+        self.assertEqual([r["key"] for r in self.service.available_reports()], ["sales", "stock", "alerts", "stockweights", "indicators", "gold", "employees", "makingprofit", "scrapcost", "demand", "customers", "deadcash", "suppliers", "treasury", "cashflow", "market", "kpi"])
         self.session = session_for({"APP_LOGIN", "REPORTS_VIEW", "CUSTOMERS_VIEW"})
         limited = ReportService(self.session, repository=FakeRepo, authorization=FakeAuthorization(self.session))
         self.assertEqual([r["key"] for r in limited.available_reports()], ["indicators", "customers", "deadcash"])
@@ -1068,6 +1089,35 @@ class GoldFlowTests(Case):
         self.assertNotIn("goldflow", [r["key"] for r in limited.available_reports()])
         with self.assertRaises(PermissionError):
             limited.run("goldflow", self.PERIOD)
+
+
+class KpiTests(Case):
+    PERIOD = {"from": "2026-10-01", "to": "2026-10-20"}
+
+    def items(self, result):
+        return {r["key"]: r for r in result["tables"][0]["rows"]}
+
+    def test_sales_making_and_scrap_discount_are_compared_with_the_previous_period_and_get_a_status(self):
+        result = self.service.run("kpi", self.PERIOD)
+        items = self.items(result)
+        self.assertEqual((items["sales"]["value"], items["sales"]["compare"]), ("60.000 جرام", "40.000 جرام (+50.0%)"))
+        self.assertEqual(items["sales"]["status"], "🟢 ماشي كويس")
+        self.assertEqual(items["making"]["value"], "70.00 ج")                                                       # (6 x 500 + 6 x 200) / 60 g
+        self.assertIn("-41.7%", items["making"]["compare"])
+        self.assertEqual(items["making"]["status"], "🔴 غلط")
+        self.assertEqual(items["scrap"]["value"], "1.17%")                                                          # (15 + 15 + 5) / 3000
+        self.assertEqual(items["scrap"]["status"], "🔴 غلط")
+
+    def test_an_employee_selling_low_making_and_taking_a_low_scrap_discount_is_red_the_other_is_green(self):
+        rows = {r["employee"]: r for r in self.service.run("kpi", self.PERIOD)["tables"][1]["rows"]}
+        self.assertEqual((rows["حسين"]["low_making"], rows["حسين"]["low_discount"], rows["حسين"]["status_text"]), (6, 1, "🔴 غلط"))
+        self.assertEqual((rows["علي"]["low_making"], rows["علي"]["low_discount"], rows["علي"]["status_text"]), (0, 0, "🟢 ماشي كويس"))
+
+    def test_it_needs_the_invoice_right(self):
+        session = session_for(frozenset({"APP_LOGIN", "REPORTS_VIEW"}))
+        limited = ReportService(session, transaction_factory=self.service._transaction, repository=FakeRepo, authorization=FakeAuthorization(session), today=lambda: TODAY)
+        with self.assertRaises(PermissionError):
+            limited.run("kpi", self.PERIOD)
 
 
 class EmployeeKpiTests(Case):

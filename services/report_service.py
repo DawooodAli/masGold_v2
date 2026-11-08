@@ -21,6 +21,7 @@ from repositories.invoice_return_repository import return_code
 from repositories.market_trip_repository import entry_code, trip_code
 from repositories.report_repository import ReportRepository
 from services import eq21_math
+from services import kpi_rules
 from services import position_snapshot_rules as snapshot_math
 from services import price_indicators as indicators_math
 from services import setting_rules
@@ -37,8 +38,8 @@ BASE_PERMISSION = "REPORTS_VIEW"
 REPORT_PERMISSIONS = {"sales": ("INVOICE_VIEW",), "stock": ("INVENTORY_VIEW",), "alerts": ("INVENTORY_VIEW",), "stockweights": ("INVENTORY_VIEW",), "indicators": (), "gold": (), "employees": ("INVOICE_VIEW",), "makingprofit": ("INVOICE_VIEW", "INVENTORY_VIEW"), "scrapcost": ("INVOICE_VIEW",), "demand": ("INVOICE_VIEW",), "customers": ("CUSTOMERS_VIEW",), "deadcash": ("CUSTOMERS_VIEW",),
                       "suppliers": ("SUPPLIER_VIEW",), "treasury": (), "cashflow": (), "market": ("MARKET_TRIP_MANAGE",),
                       "profit": ("MANAGEMENT_REVIEW", "MARKET_TRIP_MANAGE", "INTERMEDIARY_HOLDING_VIEW"),
-                      "goldflow": ("MANAGEMENT_REVIEW", "MARKET_TRIP_MANAGE", "INTERMEDIARY_HOLDING_VIEW")}                      # treasury: CASH_VIEW and / or BANK_VIEW per section
-REPORT_TITLES = {"sales": "المبيعات والمرتجعات", "stock": "المخزون المتاح", "alerts": "تنبيهات المخزون", "stockweights": "جرد الأوزان والمقاسات", "indicators": "مؤشرات الذهب", "gold": "حركة الأصناف", "employees": "أداء الموظفين", "makingprofit": "ربح المصنعية", "scrapcost": "تكلفة الكسر", "demand": "الموسمية والطلب", "customers": "العملاء", "deadcash": "الديون المعدومة (Dead Cash)", "suppliers": "الموردون", "treasury": "الخزنة والبنوك", "cashflow": "المصروفات والإيرادات", "market": "عهدة السوق والخسائر", "profit": "ربح الذهب (مكافئ 21)", "goldflow": "الذهب في المحل"}
+                      "goldflow": ("MANAGEMENT_REVIEW", "MARKET_TRIP_MANAGE", "INTERMEDIARY_HOLDING_VIEW"), "kpi": ("INVOICE_VIEW",)}                      # treasury: CASH_VIEW and / or BANK_VIEW per section
+REPORT_TITLES = {"sales": "المبيعات والمرتجعات", "stock": "المخزون المتاح", "alerts": "تنبيهات المخزون", "stockweights": "جرد الأوزان والمقاسات", "indicators": "مؤشرات الذهب", "gold": "حركة الأصناف", "employees": "أداء الموظفين", "makingprofit": "ربح المصنعية", "scrapcost": "تكلفة الكسر", "demand": "الموسمية والطلب", "customers": "العملاء", "deadcash": "الديون المعدومة (Dead Cash)", "suppliers": "الموردون", "treasury": "الخزنة والبنوك", "cashflow": "المصروفات والإيرادات", "market": "عهدة السوق والخسائر", "profit": "ربح الذهب (مكافئ 21)", "goldflow": "الذهب في المحل", "kpi": "KPI"}
 KIND_TEXT = {"SALE": "بيع", "MIXED": "بيع مع شراء كسر", "OLD_GOLD_PURCHASE": "شراء كسر", "RETURN": "مرتجع", "EXCHANGE": "استبدال"}
 STATUS_TEXT = {"IN_STOCK": "متاح", "SOLD": "مباع", "SCRAPPED": "كسر", "REMOVED": "مُخرج", "RETURNED_PENDING": "مرتجع بانتظار الفحص", "CONVERTED_TO_OLD_GOLD": "حُوّل إلى كسر"}
 CLASS_TEXT = {"NEW_STOCK": "جديد", "OLD_STOCK": "قديم"}
@@ -1228,6 +1229,54 @@ class ReportService:
                 if any(r["value"] for r in rows):
                     bars.append({"key": f"emp_{field}_{k}", "title": f"مقارنة الموظفين — عيار {k}: {what}", "karat": k, "kind": "grams", "rows": rows})
         return {"meaning": meaning, "tables": tables, "totals": cards, "options": options, "bars": bars}
+
+    # ------------------------------------------------------------------ KPI (owner request 2026-11-08): «am I on track?» with a status and a decision sentence per item
+    def _kpi(self, repo, gate, filters, start, end):
+        """Sales, making, scrap-buying discount, gold-profit speed, expenses and a verdict per employee, each against the PREVIOUS period of the same length. Statuses are indicators for the owner's
+        attention, not proof. Gold profit comes from the stored position snapshots (a period without two sheets is GRAY), expenses from the cash-flow report (GRAY without the cash / bank rights)."""
+        span = end - start
+        previous_start = start - span
+        lines = [{**dict(r), "invoice_date": _dateish(r["invoice_date"])} for r in repo.kpi_lines(previous_start, end)]
+        now, before = kpi_rules.split(lines, start, end, previous_start)
+        try:
+            default = Decimal(str(repo.default_old_gold_discount() or kpi_rules.DEFAULT_DISCOUNT))
+        except ArithmeticError:
+            default = kpi_rules.DEFAULT_DISCOUNT
+        below, known = kpi_rules.below_cost_counts(now)
+        profit_now = profit_before = None
+        if gate("MANAGEMENT_REVIEW") and gate("MARKET_TRIP_MANAGE") and gate("INTERMEDIARY_HOLDING_VIEW") and repo.has_table("position_snapshots"):
+            sheets = [{**dict(r), "taken_at": _dateish(r["taken_at"])} for r in repo.position_snapshots()]
+
+            def gold_profit(a, b):
+                opening, closing, problem = snapshot_math.choose(sheets, a, b)
+                return None if problem else snapshot_math.profit(opening, closing)["gold_total_eq21"]
+            profit_now, profit_before = gold_profit(start, end), gold_profit(previous_start, start)
+        profit = kpi_rules.profit_item(profit_now, profit_before)
+        spent_now = spent_before = None
+        if gate("CASH_VIEW") or gate("BANK_VIEW"):
+            def spent(a, b):
+                shown = {**filters, "from": a.date().isoformat(), "to": (b - timedelta(days=1)).date().isoformat()}
+                for item in self._cashflow(repo, gate, shown, a, b)["totals"]:
+                    if item["label"] == "مصروفات مسجلة":
+                        return _dec(item["value"])
+                return None
+            try:
+                spent_now, spent_before = spent(start, end), spent(previous_start, start)
+            except (ReportError, PermissionError):
+                spent_now = spent_before = None
+        items = [kpi_rules.sales_item(now, before), kpi_rules.making_item(now, before, below, known), kpi_rules.scrap_item(now, default), profit,
+                 kpi_rules.expenses_item(spent_now, spent_before, profit["status"])]
+        employees = kpi_rules.employee_rows(now, default)
+        columns = [col("status", "الحالة"), col("title", "المؤشر"), col("value", "الفترة"), col("compare", "الفترة السابقة"), col("advice", "القرار")]
+        rows = [{**i, "status": kpi_rules.STATUS_TEXT[i["status"]]} for i in items]
+        staff = [col("employee", "الموظف"), col("status_text", "الحالة"), col("lines", "بنود محسوبة"), col("low_making", "بنود مصنعية قليلة"), col("low_discount", "بنود خصم كسر قليل"), col("note", "الملاحظة")]
+        meaning = ["كل مؤشر يقارن الفترة المختارة بالفترة السابقة لها بنفس الطول، وله حالة وجملة قرار. الحالات مؤشرات لانتباهك وليست إثباتًا.",
+                   "مصنعية قليلة = أقل من تكلفة القطعة، أو أقل من 80% من متوسط باقي الموظفين لنفس العيار. خصم كسر قليل = أقل من الخصم الافتراضي. قطع أقل من جرام لا تدخل.",
+                   "ربح الذهب من لقطات الجرد (مكافئ عيار 21)؛ المصروفات المسجلة من حركة الخزنة. غير المتاح يظهر رماديًا ولا يتحول لصفر."]
+        cards = [total("مؤشرات حمراء", sum(1 for i in items if i["status"] == kpi_rules.RED), "count", "", "summary", tone="deadcash"),
+                 total("مؤشرات صفراء", sum(1 for i in items if i["status"] == kpi_rules.YELLOW), "count", "", "summary"),
+                 total("موظفون يحتاجون مراجعة", sum(1 for r in employees if r["status"] == kpi_rules.RED), "count", "", "summary")]
+        return {"meaning": meaning, "tables": [table("kpi", "KPI — هل أنا ماشي صح؟", columns, rows), table("kpi_staff", "الموظفون", staff, employees)], "totals": cards}
 
     # ------------------------------------------------------------------ 3c. making profit (owner request): the making charged on a sale against the making COST of the piece
     def _makingprofit(self, repo, gate, filters, start, end):   # LEGACY_MAKING_COST: owner decision 2026-10-31
