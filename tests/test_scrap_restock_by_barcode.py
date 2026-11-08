@@ -56,3 +56,11 @@ class RestockByBarcodeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class KpiIncomeItemTests(unittest.TestCase):
+    def test_income_item_compares_with_the_previous_period(self):
+        from services import kpi_rules
+        item = kpi_rules.income_item(D("500"), D("1000"))
+        self.assertEqual((item["key"], item["value"]), ("income", "500.00 ج"))
+        self.assertEqual(kpi_rules.income_item(None, None)["status"], kpi_rules.GRAY)

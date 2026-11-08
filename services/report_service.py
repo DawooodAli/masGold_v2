@@ -1272,20 +1272,23 @@ class ReportService:
                 return None if problem else snapshot_math.profit(opening, closing)["gold_total_eq21"]
             profit_now, profit_before = gold_profit(start, end), gold_profit(previous_start, start)
         profit = kpi_rules.profit_item(profit_now, profit_before)
-        spent_now = spent_before = None
+        spent_now = spent_before = income_now = income_before = None
+        flow_items = {}                                                                     # label -> {"now": (out, in), "before": (out, in)}: where the recorded figures come from
         if gate("CASH_VIEW") or gate("BANK_VIEW"):
-            def spent(a, b):
+            def flow(a, b, side):
                 shown = {**filters, "from": a.date().isoformat(), "to": (b - timedelta(days=1)).date().isoformat()}
-                for item in self._cashflow(repo, gate, shown, a, b)["totals"]:
-                    if item["label"] == "مصروفات مسجلة":
-                        return _dec(item["value"])
-                return None
+                result = self._cashflow(repo, gate, shown, a, b)
+                values = {item["label"]: _dec(item["value"]) for item in result["totals"]}
+                for r in (result["tables"][0]["rows"] if result["tables"] else []):
+                    flow_items.setdefault(r["label"], {"now": (ZERO2, ZERO2), "before": (ZERO2, ZERO2)})[side] = (_dec(r["out"]), _dec(r["in"]))
+                return values.get("مصروفات مسجلة"), values.get("إيرادات مسجلة")
             try:
-                spent_now, spent_before = spent(start, end), spent(previous_start, start)
+                (spent_now, income_now), (spent_before, income_before) = flow(start, end, "now"), flow(previous_start, start, "before")
             except (ReportError, PermissionError):
-                spent_now = spent_before = None
+                spent_now = spent_before = income_now = income_before = None
+                flow_items = {}
         items = [kpi_rules.sales_item(now, before), kpi_rules.making_item(now, before, below, known), kpi_rules.scrap_item(now, default), profit,
-                 kpi_rules.expenses_item(spent_now, spent_before, profit["status"])]
+                 kpi_rules.expenses_item(spent_now, spent_before, profit["status"]), kpi_rules.income_item(income_now, income_before)]
         employees = kpi_rules.employee_rows(now, default)
         columns = [col("status", "الحالة"), col("title", "المؤشر"), col("value", "الفترة"), col("compare", "الفترة السابقة"), col("advice", "القرار")]
         rows = [{**i, "status": kpi_rules.STATUS_TEXT[i["status"]]} for i in items]
@@ -1296,7 +1299,14 @@ class ReportService:
         cards = [total("مؤشرات حمراء", sum(1 for i in items if i["status"] == kpi_rules.RED), "count", "", "summary", tone="deadcash"),
                  total("مؤشرات صفراء", sum(1 for i in items if i["status"] == kpi_rules.YELLOW), "count", "", "summary"),
                  total("موظفون يحتاجون مراجعة", sum(1 for r in employees if r["status"] == kpi_rules.RED), "count", "", "summary")]
-        return {"meaning": meaning, "tables": [table("kpi", "KPI — هل أنا ماشي صح؟", columns, rows), table("kpi_staff", "الموظفون", staff, employees)], "totals": cards}
+        tables = [table("kpi", "KPI — هل أنا ماشي صح؟", columns, rows), table("kpi_staff", "الموظفون", staff, employees)]
+        if flow_items:
+            # owner 2026-11-08: show WHAT the recorded expenses / income of both periods are made of (the categorised treasury entries + market expenses), so a big figure can be traced.
+            detail = [{"label": k, "out_now": v["now"][0], "out_before": v["before"][0], "in_now": v["now"][1], "in_before": v["before"][1]}
+                      for k, v in sorted(flow_items.items(), key=lambda kv: -(kv[1]["now"][0] + kv[1]["before"][0] + kv[1]["now"][1] + kv[1]["before"][1]))]
+            tables.append(table("kpi_flow", "من إيه المصروفات والإيرادات المسجلة؟", [col("label", "البند"), col("out_now", "مصروف الفترة", "money"), col("out_before", "مصروف الفترة السابقة", "money"),
+                                                                                   col("in_now", "إيراد الفترة", "money"), col("in_before", "إيراد الفترة السابقة", "money")], detail))
+        return {"meaning": meaning, "tables": tables, "totals": cards}
 
     # ------------------------------------------------------------------ 3c. making profit (owner request): the making charged on a sale against the making COST of the piece
     def _makingprofit(self, repo, gate, filters, start, end):   # LEGACY_MAKING_COST: owner decision 2026-10-31

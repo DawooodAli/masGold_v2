@@ -169,6 +169,17 @@ def expenses_item(now, before, profit_status):
     return {"key": "expenses", "title": "المصروفات المسجلة", "status": status, "value": f"{_d(now):,.2f} ج", "compare": (f"{_d(before):,.2f} ج" + (f" ({_pct_text(pct)})" if pct is not None else "")) if before is not None else "—", "advice": advice}
 
 
+def income_item(now, before):
+    """The recorded income (the categorised «إيراد» entries of the treasury) against the previous period: higher is better, never red on its own (income is not a promise)."""
+    if now is None:
+        return {"key": "income", "title": "الإيرادات المسجلة", "status": GRAY, "value": "—", "compare": "—", "advice": "غير متاحة (صلاحية أو بيانات)."}
+    pct = change_pct(now, before)
+    status = higher_is_better(pct, (Decimal("20"), Decimal("1000")))
+    advice = {GREEN: "الإيرادات المسجلة ماشية كويس مقارنة بالفترة اللي قبلها.", YELLOW: "الإيرادات المسجلة أقل من الفترة اللي قبلها.", RED: "الإيرادات المسجلة نزلت كتير.",
+              GRAY: "مفيش إيرادات مسجلة في الفترة اللي قبلها للمقارنة (أو مفيش إيراد مسجل أصلًا: دي بنود «إيراد» اللي بتتسجل في حركة الخزنة)."}[status]
+    return {"key": "income", "title": "الإيرادات المسجلة", "status": status, "value": f"{_d(now):,.2f} ج", "compare": (f"{_d(before):,.2f} ج" + (f" ({_pct_text(pct)})" if pct is not None else "")) if before is not None else "—", "advice": advice}
+
+
 def making_flags(making_per_gram, cost_per_gram, others_average):
     """Why one sale line counts as a LOW making (both reasons may hold): under the piece's cost, and / or under 80% of the other employees' weighted average of the same karat."""
     reasons = []
