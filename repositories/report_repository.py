@@ -215,12 +215,13 @@ class ReportRepository(BaseRepository):
         return self._fetch_all(
             f"""
             SELECT iv.id AS invoice_id, iv.invoice_number, iv.invoice_date, iv.employee_id, e.name AS employee, il.line_type, k.karat_value, il.weight_grams, il.making_total, il.gross_total, il.discount_amount,
-                   il.scrap_kind, ii.acquisition_making_per_gram AS piece_cost, {"icc.making_cost_per_gram" if costs else "NULL"} AS category_cost, c.id AS reversal_id
+                   il.scrap_kind, it.name AS item_type, ii.acquisition_making_per_gram AS piece_cost, {"icc.making_cost_per_gram" if costs else "NULL"} AS category_cost, c.id AS reversal_id
             FROM invoice_lines il
             JOIN invoices iv ON iv.id = il.invoice_id
             JOIN karats k ON k.id = il.karat_id
             LEFT JOIN employees e ON e.id = iv.employee_id
             LEFT JOIN inventory_items ii ON ii.id = il.inventory_item_id
+            LEFT JOIN item_types it ON it.id = ii.item_type_id
             {"LEFT JOIN item_category_costs icc ON icc.category_id = ii.category_id" if costs else ""}
             LEFT JOIN transaction_corrections c ON c.source_type = 'INVOICE' AND c.source_id = iv.id AND c.correction_type = 'FULL_REVERSAL'
             WHERE il.line_type IN ('SELL_INVENTORY', 'SELL_OLD_GOLD', 'SELL_UNIDENTIFIED', 'SELL_RAFAYEA', 'BUY_OLD_GOLD') AND iv.invoice_status = 'FINALIZED'

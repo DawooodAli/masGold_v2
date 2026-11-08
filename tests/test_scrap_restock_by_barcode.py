@@ -73,3 +73,16 @@ class MandatoryExpenseTests(unittest.TestCase):
         self.assertTrue(kpi_rules.is_mandatory_expense("فرق فواتير"))
         self.assertFalse(kpi_rules.is_mandatory_expense("كهرباء ومياه"))
         self.assertFalse(kpi_rules.is_mandatory_expense("مصروف السوق"))
+
+
+class BullionSeparationTests(unittest.TestCase):
+    def test_bars_and_pounds_never_enter_the_making_indicators(self):
+        from services import kpi_rules
+        def line(item_type, making):
+            return {"invoice_id": 1, "employee_id": 1, "employee": "علي", "line_type": "SELL_INVENTORY", "karat_value": 21, "weight_grams": D("10.000"), "making_total": D(making),
+                    "item_type": item_type, "piece_cost": D("50"), "category_cost": None}
+        lines = [line("خاتم", "1000"), line("سبيكة", "10"), line("جنية", "10")]
+        self.assertEqual(len(kpi_rules.crafted(lines)), 1)
+        self.assertEqual(kpi_rules._making_per_gram(lines), D("34.00"))                       # mixed: dragged down
+        self.assertEqual(kpi_rules._making_per_gram(kpi_rules.crafted(lines)), D("100.00"))    # crafted pieces only
+        self.assertEqual(kpi_rules.flagged_lines(kpi_rules.crafted(lines), D("1.5")), [])

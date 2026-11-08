@@ -1264,7 +1264,7 @@ class ReportService:
             default = Decimal(str(repo.default_old_gold_discount() or kpi_rules.DEFAULT_DISCOUNT))
         except ArithmeticError:
             default = kpi_rules.DEFAULT_DISCOUNT
-        below, known = kpi_rules.below_cost_counts(now)
+        below, known = kpi_rules.below_cost_counts(kpi_rules.crafted(now))
         profit_now = profit_before = None
         if gate("MANAGEMENT_REVIEW") and gate("MARKET_TRIP_MANAGE") and gate("INTERMEDIARY_HOLDING_VIEW") and repo.has_table("position_snapshots"):
             sheets = [{**dict(r), "taken_at": _dateish(r["taken_at"])} for r in repo.position_snapshots()]
@@ -1293,20 +1293,20 @@ class ReportService:
             except (ReportError, PermissionError):
                 spent_now = spent_before = income_now = income_before = None
                 flow_items = {}
-        items = [kpi_rules.sales_item(now, before), kpi_rules.making_item(now, before, below, known), kpi_rules.scrap_item(now, default), profit,
+        items = [kpi_rules.sales_item(now, before), kpi_rules.making_item(kpi_rules.crafted(now), kpi_rules.crafted(before), below, known), kpi_rules.scrap_item(now, default), profit,
                  kpi_rules.expenses_item(spent_now, spent_before, profit["status"]), kpi_rules.income_item(income_now, income_before)]
-        employees = kpi_rules.employee_rows(now, default)
+        employees = kpi_rules.employee_rows(kpi_rules.crafted(now), default)
         columns = [col("status", "الحالة"), col("title", "المؤشر"), col("value", "الفترة"), col("compare", "الفترة السابقة"), col("advice", "القرار")]
         rows = [{**i, "status": kpi_rules.STATUS_TEXT[i["status"]]} for i in items]
         staff = [col("employee", "الموظف"), col("status_text", "الحالة"), col("lines", "بنود محسوبة"), col("low_making", "بنود مصنعية قليلة"), col("low_discount", "بنود خصم كسر قليل"), col("note", "الملاحظة")]
         meaning = ["كل مؤشر يقارن الفترة المختارة بالفترة السابقة لها بنفس الطول، وله حالة وجملة قرار. الحالات مؤشرات لانتباهك وليست إثباتًا.",
-                   "مصنعية قليلة = أقل من تكلفة القطعة، أو أقل من 80% من متوسط باقي الموظفين لنفس العيار. خصم كسر قليل = أقل من الخصم الافتراضي. قطع أقل من جرام لا تدخل.",
+                   "مصنعية قليلة = أقل من تكلفة القطعة، أو أقل من 80% من متوسط باقي الموظفين لنفس العيار. خصم كسر قليل = أقل من الخصم الافتراضي. قطع أقل من جرام لا تدخل. السبائك والجنيهات (صنف سبيكة / جنية) والمشتراة منها بسعر السوق مع زيادة خارج مؤشرات المصنعية والموظفين.",
                    "ربح الذهب من لقطات الجرد (مكافئ عيار 21)؛ المصروفات المسجلة من حركة الخزنة بدون المرتبات وفروق الفواتير (إلزامية). غير المتاح يظهر رماديًا ولا يتحول لصفر."]
         cards = [total("مؤشرات حمراء", sum(1 for i in items if i["status"] == kpi_rules.RED), "count", "", "summary", tone="deadcash"),
                  total("مؤشرات صفراء", sum(1 for i in items if i["status"] == kpi_rules.YELLOW), "count", "", "summary"),
                  total("موظفون يحتاجون مراجعة", sum(1 for r in employees if r["status"] == kpi_rules.RED), "count", "", "summary")]
         tables = [table("kpi", "KPI — هل أنا ماشي صح؟", columns, rows), table("kpi_staff", "الموظفون", staff, employees)]
-        flagged = kpi_rules.flagged_lines(now, default)
+        flagged = kpi_rules.flagged_lines(kpi_rules.crafted(now), default)
         if flagged:
             # owner 2026-11-08: the lines behind every «انتبه», so nothing has to be searched for: open the invoice from the row
             tables.append(table("kpi_flagged", "البنود اللي محتاجة انتباه", [col("employee", "الموظف"), col("invoice", "الفاتورة"), col("date", "التاريخ", "date"), col("kind", "السبب"), col("karat", "العيار"),

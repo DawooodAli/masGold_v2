@@ -10,6 +10,16 @@ STATUS_TEXT = {GREEN: "🟢 ماشي كويس", YELLOW: "🟡 انتبه", RED: 
 
 SELL_LINES = frozenset({"SELL_INVENTORY", "SELL_OLD_GOLD", "SELL_UNIDENTIFIED", "SELL_RAFAYEA"})
 BUY_LINE = "BUY_OLD_GOLD"
+BULLION_TYPES = frozenset({"سبيكة", "جنية", "جنيه"})          # the item types of bars and gold pounds (the same names the dashboard uses)
+
+
+def is_bullion(line):
+    return str(line.get("item_type") or "").strip() in BULLION_TYPES
+
+
+def crafted(lines):
+    """Owner 2026-11-08: bars and pounds are sold at almost no making and would drag the making averages and the employee verdicts down: the making indicators use the crafted pieces only."""
+    return [l for l in lines if not is_bullion(l)]
 ONE_GRAM = Decimal("1")                  # a piece under 1 g carries a making per piece: it never enters a per-gram figure (owner 2026-11-04)
 LOW_RATIO = Decimal("0.80")              # a line whose making per gram is under 80% of the other employees' weighted average is «low»
 MIN_OTHERS_GRAMS = Decimal("20")         # the other employees must have sold at least this many grams of the karat for the comparison to mean anything
