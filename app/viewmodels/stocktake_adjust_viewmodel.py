@@ -14,12 +14,14 @@ class StocktakeAdjustViewModel(QObject):
     changed = Signal()
     approved = Signal(str, int, str)             # code, written-off count, grams text
     restored = Signal(str)                       # a written-off piece went back to the stock
+    karatsChanged = Signal()                     # the Scrap karats of the restock dialog were loaded
 
     def __init__(self, session=None, service=None, parent=None):
         super().__init__(parent)
         self._session, self._service = session, service
         self._busy, self._message, self._is_error = False, "", False
         self._request, self._workers, self._key = 0, set(), ""
+        self._karats = []
 
     @Property(bool, notify=changed)
     def canAdjust(self):
@@ -56,10 +58,22 @@ class StocktakeAdjustViewModel(QObject):
         ids = [str(i) for i in piece_ids]
         self._start(lambda _expected_actor, key: self._service.write_off_pieces(ids, reason, note, bool(confirmed), key, _expected_actor=_expected_actor))
 
-    @Slot(str, str)
-    def restore(self, piece_id, reason):
-        """قطعة اتشطبت بالجرد ورجعت ظهرت: back to the stock with a reason (one attempt = one call; the service refuses a piece that is not removed by a stocktake)."""
-        self._start(lambda _expected_actor, key: self._service.restore_piece(piece_id, reason, _expected_actor=_expected_actor))
+    @Property("QVariantList", notify=karatsChanged)
+    def scrapKarats(self):
+        return self._karats
+
+    @Slot()
+    def loadScrapKarats(self):
+        """The karats (and their available Scrap grams) a returning sold piece can be taken from."""
+        self._start(lambda _expected_actor, key: {"karats": self._service.scrap_karats(_expected_actor=_expected_actor)})
+
+    @Slot(str, str, str)
+    def restore(self, piece_id, reason, scrap_karat_id=""):
+        """قطعة اتشطبت بالجرد ورجعت ظهرت، أو قطعة مباعة رجعت للمحل: back to the stock with a reason (one attempt = one call). A SOLD piece also needs the Scrap karat its grams leave."""
+        if str(scrap_karat_id or "").strip() == "":
+            self._start(lambda _expected_actor, key: self._service.restore_piece(piece_id, reason, _expected_actor=_expected_actor))
+        else:
+            self._start(lambda _expected_actor, key: self._service.restore_piece(piece_id, reason, scrap_karat_id, _expected_actor=_expected_actor))
 
     def _start(self, work):
         if self._service is None or self._session is None or self._busy:
@@ -90,6 +104,11 @@ class StocktakeAdjustViewModel(QObject):
         self._busy = False
         if error:
             self._message, self._is_error = error, True
+            self.changed.emit()
+            return
+        if "karats" in result:
+            self._karats = result["karats"]
+            self.karatsChanged.emit()
             self.changed.emit()
             return
         self._key = ""

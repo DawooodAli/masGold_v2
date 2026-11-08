@@ -427,8 +427,11 @@ class InventoryStockPageTests(harness.InvoicePageTests):
             def can_adjust(self):
                 return True
 
-            def restore_piece(self, piece_id, reason, *, _expected_actor=None):
-                restored.append((piece_id, reason))
+            def scrap_karats(self, *, _expected_actor=None):
+                return [{"id": "1", "karat": 18, "available": "5.000", "text": "عيار 18 — المتاح 5.000 جرام"}, {"id": "2", "karat": 21, "available": "8.500", "text": "عيار 21 — المتاح 8.500 جرام"}]
+
+            def restore_piece(self, piece_id, reason, scrap_karat_id=None, *, _expected_actor=None):
+                restored.append((piece_id, reason, scrap_karat_id))
                 return {"piece_id": piece_id, "restored": True}
         inventory = self.controller.operational_viewmodels["inventoryVM"]
         inventory._service = Service()
@@ -447,11 +450,13 @@ class InventoryStockPageTests(harness.InvoicePageTests):
         dialog = self.item("inventoryRestoreDialog")
         self.wait_until(lambda: dialog.property("opened"), "restore dialog")
         self.assertIn("بنفس الباركود (19260101)", " ".join(self.labels(dialog.property("contentItem"))))
+        self.wait_until(lambda: self.item("inventoryRestoreScrapKarat").property("currentIndex") == 1, "the piece's own karat (21) is preselected")
+        self.assert_inside_window(self.item("inventoryRestoreScrapKarat"))
         self.assertFalse(self.item("inventoryRestoreSave").property("enabled"))                   # the reason is mandatory
         self.type_into("inventoryRestoreReason", "العميل رجّعها")
         self.wait_until(lambda: self.item("inventoryRestoreSave").property("enabled"), "can save")
         self.click("inventoryRestoreSave")
-        self.wait_until(lambda: restored == [("9100", "العميل رجّعها")], "restore sent")
+        self.wait_until(lambda: restored == [("9100", "العميل رجّعها", "2")], "restore sent")
         self.wait_until(lambda: not dialog.property("visible"), "dialog closes")
         self.assertEqual(self.warnings, [])
 

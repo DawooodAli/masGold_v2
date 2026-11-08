@@ -13,6 +13,8 @@ from services.authorization_service import AuthorizationService
 from services.invoice_service import invoice_transaction
 
 PERMISSION = "STOCKTAKE_ADJUST"
+SCRAP_PERMISSION = "OLD_GOLD_MANAGE"        # a piece coming back from the Scrap also moves Scrap grams
+D = Decimal
 REASONS = {"SOLD_OUTSIDE": "اتباعت خارج السيستم", "MISSING": "مفقودة", "DATA_ERROR": "خطأ في تسجيل المخزون", "OTHER": "سبب آخر"}
 ZERO = Decimal("0.000")
 
@@ -50,7 +52,20 @@ class StocktakeAdjustService:
         actor = self._session.current_actor()
         return actor is not None and PERMISSION in actor.permissions
 
-    def restore_piece(self, piece_id, reason, *, _expected_actor=None):
+    def scrap_karats(self, *, _expected_actor=None):
+        """The karats the grams of a piece coming back from the Scrap can be taken from, with the AVAILABLE grams of each (held manager-review Scrap excluded)."""
+        session_actor = self._session.require_authenticated()
+        if _expected_actor is not None and not self._session.is_current(_expected_actor):
+            raise PermissionError("انتهت جلسة الدخول.")
+        if PERMISSION not in session_actor.permissions:
+            raise PermissionError("ليس لديك صلاحية إعادة القطع للمخزون.")
+        with self._transaction() as connection:
+            self._authorization.require_permission_read(connection, session_actor, PERMISSION)
+            rows = self._repository(connection).scrap_karats()
+        return [{"id": str(r["karat_id"]), "karat": int(r["karat_value"]), "available": str(D(str(r["physical_grams"])) - D(str(r["held_grams"]))),
+                 "text": f"عيار {r['karat_value']} — المتاح {D(str(r['physical_grams'])) - D(str(r['held_grams'])):,.3f} جرام"} for r in rows]
+
+    def restore_piece(self, piece_id, reason, scrap_karat_id=None, *, _expected_actor=None):
         """قطعة اتشطبت بالجرد ورجعت ظهرت، أو قطعة مباعة (فاتورة قديمة) رجعت للمحل: returns ONE piece an approved stocktake removed (REMOVED) - or a piece SOLD on an old-program invoice that came back, with the SAME barcode - to the stock, with a mandatory reason. The stored stocktake document is never rewritten; the
         piece gets a RESTORED movement and an audit row. A piece that was never removed by a stocktake, or is already back, is refused. Right STOCKTAKE_ADJUST, rechecked in the transaction."""
         session_actor = self._session.require_authenticated()
@@ -71,6 +86,7 @@ class StocktakeAdjustService:
             if piece is None:
                 raise StocktakeError("PIECE_NOT_FOUND", "القطعة غير موجودة.")
             sold = piece["inventory_status"] == "SOLD"
+            scrap_movement = None
             if sold:
                 # Owner 2026-11-08: a piece that left the shop (sold, typically on an old-program invoice) and comes back is put in stock again as the SAME piece with the SAME barcode.
                 # A piece sold on a CURRENT invoice must come back through Return / Exchange (they carry the money): refused here.
@@ -83,17 +99,37 @@ class StocktakeAdjustService:
             if movement_type is None:
                 raise StocktakeError("SCHEMA_OUTDATED", "نوع حركة الإرجاع غير موجود.")
             from_status = "SOLD" if sold else "REMOVED"
+            if sold:
+                # A piece the shop bought back goes through the Scrap first: its exact grams leave the Scrap of the karat the owner CHOOSES when the same piece goes back into the stock.
+                if str(scrap_karat_id or "").strip() == "":
+                    raise StocktakeError("SCRAP_KARAT_REQUIRED", "اختار كسر عيار كام هتخصم منه جرامات القطعة.")
+                self._authorization.require_permission_for_write(connection, session_actor, SCRAP_PERMISSION)
+                try:
+                    karat = repository.karat(int(str(scrap_karat_id).strip()))
+                except (TypeError, ValueError):
+                    karat = None
+                if karat is None or not karat["is_active"]:
+                    raise StocktakeError("KARAT_INVALID", "عيار الكسر غير موجود أو غير نشط.")
+                physical, held = repository.lock_scrap_ledger(int(karat["id"]))
+                available = physical - held
+                weight = D(str(piece["weight_grams"]))
+                if weight > available:
+                    raise StocktakeError("SCRAP_SHORTAGE", f"كسر عيار {karat['karat_value']} المتاح {available:,.3f} جرام فقط، لا يكفي لوزن القطعة {weight:,.3f} جرام.")
             if not repository.restore_piece(int(raw), actor.user_id, from_status):
                 raise StocktakeError("NOT_REMOVED_BY_STOCKTAKE", "هذه القطعة لم تُشطب بجرد ولا مباعة بفاتورة قديمة، أو رجعت للمخزون بالفعل.")
+            if sold:
+                scrap_movement = repository.insert_scrap_out_for_restock(item=piece, karat_id=int(karat["id"]), user_id=actor.user_id,
+                                                                         notes=f"رجوع القطعة #{int(raw)} للمخزون بنفس الباركود {piece.get('barcode_value') or '—'} — {text}")
             repository.insert_restore_movement(item=piece, movement_type_id=movement_type, user_id=actor.user_id, from_status=from_status,
                                                reason=(f"رجوع قطعة مباعة (فاتورة قديمة) للمخزون بنفس الباركود — {text}" if sold else f"إرجاع قطعة مشطوبة بالجرد — {text}"),
                                                reference_type="PIECE_RESTOCK" if sold else "STOCKTAKE_RESTORE")
             repository.audit_restore(user_id=actor.user_id, item_id=int(raw),
                                      description=(f"رجوع القطعة المباعة #{int(raw)} للمخزون بنفس الباركود" if sold else f"إرجاع القطعة #{int(raw)} للمخزون بعد شطبها بجرد"),
-                                     metadata={"reason": text, "barcode": piece.get("barcode_value"), "weight_grams": str(piece["weight_grams"]), "from_status": from_status})
+                                     metadata={"reason": text, "barcode": piece.get("barcode_value"), "weight_grams": str(piece["weight_grams"]), "from_status": from_status,
+                                               "scrap_karat_id": None if not sold else int(karat["id"]), "old_gold_movement_id": scrap_movement})
             if not self._session.is_current(session_actor):
                 raise PermissionError("انتهت جلسة الدخول.")
-        return {"piece_id": raw, "restored": True}
+        return {"piece_id": raw, "restored": True, "scrap_movement_id": scrap_movement}
 
     def approve(self, item_type_id, karat_id, scanned_ids, remaining_ids, reason_code, note, confirmed, request_key, *, factory_id=None, _expected_actor=None):
         """The whole counted scope: scanned + remaining must be exactly the pieces IN_STOCK of the scope."""

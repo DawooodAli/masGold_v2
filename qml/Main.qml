@@ -13542,14 +13542,25 @@ ApplicationWindow {
         closePolicy: Popup.CloseOnEscape
         background: Rectangle { color: theme.bgPrimary; radius: 10; border.color: theme.goldDark }
 
+        readonly property bool soldPiece: inventoryVM.historyPiece.statusCode === "SOLD"
+        function pickKarat() {
+            var list = stocktakeAdjustVM.scrapKarats || []
+            for (var i = 0; i < list.length; i++) {
+                if (String(list[i].karat) === String(inventoryVM.historyPiece.karat)) { restoreScrapKarat.currentIndex = i; return }
+            }
+            restoreScrapKarat.currentIndex = list.length > 0 ? 0 : -1
+        }
         function begin() {
             restoreReason.text = ""
             stocktakeAdjustVM.prepare()
+            restoreScrapKarat.currentIndex = -1
+            if (soldPiece) stocktakeAdjustVM.loadScrapKarats()
             open()
         }
         Connections {
             target: typeof stocktakeAdjustVM !== "undefined" ? stocktakeAdjustVM : null
             ignoreUnknownSignals: true
+            function onKaratsChanged() { inventoryRestoreDialog.pickKarat() }
             function onRestored(pieceId) {
                 inventoryRestoreDialog.close()
                 inventoryVM.refresh()
@@ -13568,8 +13579,19 @@ ApplicationWindow {
                 Layout.fillWidth: true; wrapMode: Text.Wrap; font.family: "Cairo"
                 color: theme.textPrimary; horizontalAlignment: Text.AlignRight
                 text: inventoryVM.historyPiece.statusCode === "SOLD"
-                      ? "القطعة اتباعت بفاتورة قديمة ورجعت للمحل. هترجع للمخزون نفس القطعة بنفس الباركود (" + (inventoryVM.historyPiece.barcode || "—") + ") ونفس البيانات، وبيتسجل ده بسببه. الفاتورة القديمة وحساب العميل ما بيتغيروش. لو القطعة مباعة بفاتورة حالية استخدم المرتجع بدل كده."
+                      ? "القطعة اتباعت بفاتورة قديمة ورجعت للمحل. هترجع للمخزون نفس القطعة بنفس الباركود (" + (inventoryVM.historyPiece.barcode || "—") + ") ونفس البيانات، وبيتسجل ده بسببه. الفاتورة القديمة وحساب العميل ما بيتغيروش. جرامات القطعة هتتخصم من الكسر اللي تختاره تحت (القطعة بتدخل الكسر الأول وبعدين بتتطلع منه). لو القطعة مباعة بفاتورة حالية استخدم المرتجع بدل كده."
                       : "القطعة اتشطبت بجرد وطلعت موجودة. هترجع للمخزون بنفس الباركود (" + (inventoryVM.historyPiece.barcode || "—") + ") ونفس البيانات، وبيتسجل ده بسببه."
+            }
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
+                visible: inventoryRestoreDialog.soldPiece
+                Label { text: "اخصم من الكسر"; color: theme.textPrimary; font.family: "Cairo"; Layout.preferredWidth: 90; horizontalAlignment: Text.AlignRight }
+                ComboBox {
+                    id: restoreScrapKarat; objectName: "inventoryRestoreScrapKarat"
+                    Layout.fillWidth: true; Layout.preferredHeight: 40
+                    model: stocktakeAdjustVM.scrapKarats; textRole: "text"; valueRole: "id"
+                    currentIndex: -1; displayText: currentIndex >= 0 ? currentText : "اختر كسر عيار كام"; font.family: "Cairo"
+                }
             }
             RowLayout {
                 Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
@@ -13593,8 +13615,8 @@ ApplicationWindow {
                 Button {
                     objectName: "inventoryRestoreSave"
                     text: "إعادة للمخزون"
-                    enabled: restoreReason.text.trim().length > 0 && !stocktakeAdjustVM.busy
-                    onClicked: stocktakeAdjustVM.restore(inventoryVM.historyPiece.pieceId, restoreReason.text)
+                    enabled: restoreReason.text.trim().length > 0 && !stocktakeAdjustVM.busy && (!inventoryRestoreDialog.soldPiece || restoreScrapKarat.currentIndex >= 0)
+                    onClicked: stocktakeAdjustVM.restore(inventoryVM.historyPiece.pieceId, restoreReason.text, inventoryRestoreDialog.soldPiece ? String(restoreScrapKarat.currentValue) : "")
                 }
                 Button { text: "إلغاء"; onClicked: inventoryRestoreDialog.close() }
                 Item { Layout.fillWidth: true }

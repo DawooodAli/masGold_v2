@@ -111,6 +111,37 @@ class StocktakeAdjustRepository(BaseRepository):
              int(item["id"]), user_id))
         return new_id
 
+    def scrap_karats(self):
+        """Every active karat with its COUNTED physical and held Scrap grams (the choices of the restock dialog)."""
+        return self._fetch_all(
+            """
+            SELECT k.id AS karat_id, k.karat_value, k.name AS karat_name, COALESCE(SUM(og.weight_delta_grams), 0) AS physical_grams,
+                   (SELECT COALESCE(SUM(h.weight_grams), 0) FROM old_gold_holds h WHERE h.karat_id = k.id AND h.hold_status = 'HELD') AS held_grams
+            FROM karats k LEFT JOIN old_gold_movements og ON og.karat_id = k.id AND og.weight_delta_grams IS NOT NULL AND og.balance_effect = 'COUNTED'
+            WHERE k.is_active = TRUE GROUP BY k.id, k.karat_value, k.name, k.sort_order ORDER BY k.sort_order, k.karat_value
+            """)
+
+    def karat(self, karat_id):
+        return self._fetch_one("SELECT id, karat_value, name, is_active FROM karats WHERE id = %s", (int(karat_id),))
+
+    def lock_scrap_ledger(self, karat_id):
+        """Locks the karat's COUNTED Scrap ledger and held rows (the lock every Scrap consumer takes) and returns (physical, held) grams."""
+        rows = self._fetch_all("SELECT weight_delta_grams FROM old_gold_movements WHERE karat_id = %s AND weight_delta_grams IS NOT NULL AND balance_effect = 'COUNTED' FOR UPDATE", (int(karat_id),))
+        held = self._fetch_all("SELECT weight_grams FROM old_gold_holds WHERE karat_id = %s AND hold_status = 'HELD' FOR UPDATE", (int(karat_id),))
+        from decimal import Decimal
+        return (sum((Decimal(str(r["weight_delta_grams"])) for r in rows), Decimal("0.000")), sum((Decimal(str(r["weight_grams"])) for r in held), Decimal("0.000")))
+
+    def insert_scrap_out_for_restock(self, *, item, karat_id, notes, user_id):
+        """COUNTED MANUFACTURE_OUT (negative): the grams of a piece bought back as Scrap leave the Scrap when the SAME piece goes back into the stock."""
+        new_id, count = self._execute(
+            "INSERT INTO old_gold_movements (movement_type_id, karat_id, weight_delta_grams, balance_effect, related_inventory_item_id, reference_type, reference_id, reference_code, notes, "
+            "created_by_user_id, performed_by_user_id, received_by_employee_id, movement_code) "
+            "SELECT t.id, %s, %s, 'COUNTED', %s, 'INVENTORY_ITEM', %s, %s, %s, %s, %s, NULL, 'MANUFACTURE_OUT' FROM old_gold_movement_types t WHERE t.code = 'MANUFACTURE_OUT' AND t.is_active = TRUE",
+            (int(karat_id), -item["weight_grams"], int(item["id"]), int(item["id"]), f"#{int(item['id'])}", notes, user_id, user_id))
+        if count != 1:
+            raise RuntimeError("old-gold movement type MANUFACTURE_OUT is missing")
+        return int(new_id)
+
     def current_sale_invoices(self, item_id):
         """The numbers of the CURRENT (not old-program, not fully reversed) finalized invoices that sold this piece. A piece sold on one of them comes back through Return / Exchange, never here."""
         rows = self._fetch_all(

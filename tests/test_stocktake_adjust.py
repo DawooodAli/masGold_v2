@@ -8,7 +8,7 @@ from tests import migration_sql as sql
 from tests.auth_fakes import FakeAuthorization
 from tests.market_trip_fakes import session_for
 
-MANAGER = frozenset({"APP_LOGIN", "STOCKTAKE_ADJUST"})
+MANAGER = frozenset({"APP_LOGIN", "STOCKTAKE_ADJUST", "OLD_GOLD_MANAGE"})
 
 
 class Store:
@@ -88,6 +88,20 @@ class Repo:
     def current_sale_invoices(self, item_id):
         return getattr(self.store, "current_invoices", {}).get(item_id, [])
 
+    # the Scrap a returning sold piece is taken from
+    def karat(self, karat_id):
+        return {1: {"id": 1, "karat_value": 18, "is_active": 1}, 2: {"id": 2, "karat_value": 21, "is_active": 1}, 3: {"id": 3, "karat_value": 24, "is_active": 0}}.get(int(karat_id))
+
+    def lock_scrap_ledger(self, karat_id):
+        return getattr(self.store, "scrap", {}).get(int(karat_id), (D("0.000"), D("0.000")))
+
+    def insert_scrap_out_for_restock(self, *, item, karat_id, notes, user_id):
+        self.store.__dict__.setdefault("scrap_out", []).append((karat_id, item["weight_grams"], notes))
+        return 55
+
+    def scrap_karats(self):
+        return [{"karat_id": 2, "karat_value": 21, "karat_name": "عيار 21", "physical_grams": D("10.000"), "held_grams": D("1.500")}]
+
     def insert_restore_movement(self, **kw):
         self.store.movements.append(dict(kw, restore=True))
 
@@ -142,15 +156,41 @@ class ApprovalTests(unittest.TestCase):
     def test_a_piece_sold_on_an_old_invoice_comes_back_as_the_same_piece_with_the_same_barcode(self):
         service = self.build()
         self.store.sold = {3}
-        result = service.restore_piece("3", "العميل رجّعها")
-        self.assertEqual((result["restored"], self.store.sold, self.store.restocked), (True, set(), [3]))
+        self.store.scrap = {1: (D("10.000"), D("0.000"))}                                       # 18K Scrap, the piece weighs 4.000
+        with self.assertRaises(StocktakeError) as no_karat:
+            service.restore_piece("3", "العميل رجّعها")                                          # the Scrap karat is mandatory
+        self.assertEqual(no_karat.exception.code, "SCRAP_KARAT_REQUIRED")
+        self.assertEqual(self.store.sold, {3})
+        result = service.restore_piece("3", "العميل رجّعها", "1")
+        self.assertEqual((result["restored"], self.store.sold, self.store.restocked, result["scrap_movement_id"]), (True, set(), [3], 55))
+        self.assertEqual(self.store.scrap_out[0][:2], (1, D("4.000")))                           # exactly the piece's grams leave the chosen Scrap karat
         movement = self.store.movements[-1]
         self.assertEqual((movement["from_status"], movement["reference_type"], movement["restore"]), ("SOLD", "PIECE_RESTOCK", True))
         self.assertIn("بنفس الباركود", movement["reason"])
         self.assertEqual((self.store.audits[-1]["metadata"]["barcode"], self.store.audits[-1]["metadata"]["from_status"]), ("B3", "SOLD"))
         with self.assertRaises(StocktakeError) as again:
-            service.restore_piece("3", "تاني")                                                  # it is in stock now
+            service.restore_piece("3", "تاني", "1")                                             # it is in stock now
         self.assertEqual(again.exception.code, "NOT_REMOVED_BY_STOCKTAKE")
+
+    def test_the_scrap_must_cover_the_piece_and_the_karat_must_be_active(self):
+        service = self.build()
+        self.store.sold = {3}
+        self.store.scrap = {1: (D("5.000"), D("1.500"))}                                        # available 3.500 < 4.000
+        with self.assertRaises(StocktakeError) as short:
+            service.restore_piece("3", "x", "1")
+        self.assertEqual(short.exception.code, "SCRAP_SHORTAGE")
+        with self.assertRaises(StocktakeError) as inactive:
+            service.restore_piece("3", "x", "3")
+        self.assertEqual(inactive.exception.code, "KARAT_INVALID")
+        self.assertEqual((self.store.sold, getattr(self.store, "scrap_out", [])), ({3}, []))
+
+    def test_returning_a_sold_piece_needs_the_scrap_right_too_and_the_karats_list_shows_the_available_grams(self):
+        service = self.build(frozenset({"APP_LOGIN", "STOCKTAKE_ADJUST"}))
+        self.store.sold = {3}
+        self.store.scrap = {1: (D("10.000"), D("0.000"))}
+        with self.assertRaises(PermissionError):
+            service.restore_piece("3", "x", "1")
+        self.assertIn("المتاح 8.500", service.scrap_karats()[0]["text"])
 
     def test_a_piece_sold_on_a_current_invoice_is_refused_and_sent_to_the_return(self):
         service = self.build()
