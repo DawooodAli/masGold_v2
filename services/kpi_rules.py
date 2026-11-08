@@ -14,7 +14,11 @@ BULLION_TYPES = frozenset({"سبيكة", "جنية", "جنيه"})          # the
 
 
 def is_bullion(line):
-    return str(line.get("item_type") or "").strip() in BULLION_TYPES
+    name = str(line.get("item_type") or "").strip()
+    if name in BULLION_TYPES:
+        return True
+    # tolerant: «جنيه ذهب», «نص جنيه», «سبيكه 10 جرام», «جنية» / «جنيه» / «سبيكة» / «سبيكه»
+    return any(word in name for word in ("سبيك", "جني", "جنى"))
 
 
 def crafted(lines):
