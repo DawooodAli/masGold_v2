@@ -1281,9 +1281,9 @@ class ReportService:
     # ------------------------------------------------------------------ 3c. making profit (owner request): the making charged on a sale against the making COST of the piece
     def _makingprofit(self, repo, gate, filters, start, end):   # LEGACY_MAKING_COST: owner decision 2026-10-31
         """For every identified piece SOLD in the period (SELL_INVENTORY lines of FINALIZED, not fully reversed invoices): the making charged on the line minus the making COST of the piece =
-        its profit or loss on the making. The cost is the piece's stored acquisition making per gram (the real one of a supplier intake, or the category cost frozen at stock entry); a piece
-        without one is ESTIMATED from the category's CURRENT cost and its margin is shown apart as an estimate; a piece with neither, or a sale line whose making is unknown (legacy), is counted
-        and left out of the margin, never turned into zero. Karats stay in separate tables (the cost is the same number for every karat). Sales activity only: returns are not netted."""
+        its profit or loss on the making. The cost is the CURRENT making cost of the piece's letter (owner 2026-11-08: a new cost applies to every piece, sold or in stock, old or new, because the
+        next piece costs that much to replace); only a piece whose letter has NO cost set falls back to its own stored acquisition making per gram, and a piece with neither is ESTIMATED with the
+        owner's default (shown apart as an estimate). A sale line whose making is unknown (legacy) is counted and left out of the margin, never turned into zero. Karats stay in separate tables (the cost is the same number for every karat). Sales activity only: returns are not netted."""
         karat = str(filters.get("karat") or "")
         if karat not in ("", "18", "21", "22", "24"):
             raise ReportError("FILTER_INVALID", "عيار غير صحيح.")
@@ -1313,10 +1313,10 @@ class ReportService:
                 s["left_out"] += 1                                                                          # legacy sale line: the making charged is unknown
                 continue
             sold = _dec(r["making_total"])
-            if r["piece_cost"] is not None:
-                per_gram, estimated = _dec(r["piece_cost"]), False
-            elif r["category_id"] and int(r["category_id"]) in current:
-                per_gram, estimated = current[int(r["category_id"])], True
+            if r["category_id"] and int(r["category_id"]) in current:
+                per_gram, estimated = current[int(r["category_id"])], False                                 # owner 2026-11-08: the letter's CURRENT cost applies to every piece, old or new
+            elif r["piece_cost"] is not None:
+                per_gram, estimated = _dec(r["piece_cost"]), False                                          # a letter without a set cost: the piece's own stored cost
             else:
                 per_gram, estimated = LEGACY_MAKING_COST, True                                              # old stock with no stored cost: the owner's default (300 EGP/g), shown as an estimate
             cost = (per_gram * weight).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -1342,8 +1342,8 @@ class ReportService:
             tables.append(table(f"making_{k}", f"ربح المصنعية — عيار {k}", columns, rows, karat=k))
         if not tables:
             tables.append(table("making", "ربح المصنعية", columns, []))
-        meaning = ["الفرق = مصنعية البيع − تكلفة المصنعية للقطعة (جرامات القطعة × تكلفة الجرام المحفوظة فيها). التكلفة الحقيقية لقطع الموردين، وتكلفة الحرف وقت إدخال القطعة لباقي القطع.",
-                   "القطعة بلا تكلفة محفوظة تُقدَّر بتكلفة حرفها الحالية ويظهر فرقها منفصلًا في «منه تقديري». قطعة بلا تكلفة أصلًا أو بيع مصنعيته مجهولة (قديم) تُعدّ في «قطع بدون حساب» ولا تدخل الفرق.",
+        meaning = ["الفرق = مصنعية البيع − تكلفة المصنعية (جرامات القطعة × تكلفة جرام حرفها الحالية). لما تغيّر تكلفة حرف، التغيير يسري على كل القطع القديمة والجديدة لأن القطعة البديلة هتكلّف بالسعر الجديد؛ فأرقام الفترات السابقة تتغير معه.",
+                   "الحرف اللي ملوش تكلفة مضبوطة تُحسب قطعه بتكلفتها المحفوظة، وقطعة بلا تكلفة أصلًا تُقدَّر بالرقم الافتراضي ويظهر فرقها منفصلًا في «منه تقديري». بيع مصنعيته مجهولة (قديم) يُعدّ في «قطع بدون حساب» ولا يدخل الفرق.",
                    "نشاط بيع فقط: المرتجعات لا تُخصم. القطع المباعة بدون هوية (F5 / F7) ليست في هذا التقرير."]
         if costs is None:
             meaning.append("جدول تكلفة الحروف غير موجود في مستوى قاعدة البيانات الحالي: طبّق التحديثات.")

@@ -1269,16 +1269,16 @@ class MakingProfitTests(Case):
     def test_margin_is_the_making_charged_minus_the_stored_or_estimated_cost_per_karat(self):
         result = self.service.run("makingprofit", self.PERIOD)
         a = self.rows(result, 21)["A"]
-        # pieces 3 (the legacy line counts as a piece), grams 18; sold 2000 + 1000; cost 100 x 10 + 150 x 5 = 1750; margin 1250 of which 250 is an estimate
-        self.assertEqual((a["pieces"], a["grams"], a["sold"], a["cost"], a["margin"], a["estimated"], a["left_out"]), (3, D("18.000"), D("3000.00"), D("1750.00"), D("1250.00"), D("250.00"), 1))
-        self.assertEqual(self.rows(result, 18)["B"]["margin"], D("-200.00"))                                    # 800 - 250 x 4 = a LOSS
+        # pieces 3 (the legacy line counts as a piece), grams 18; sold 2000 + 1000; the letter's CURRENT cost 150 applies to every piece (the stored 100 is ignored): 150 x 15 = 2250; margin 750
+        self.assertEqual((a["pieces"], a["grams"], a["sold"], a["cost"], a["margin"], a["estimated"], a["left_out"]), (3, D("18.000"), D("3000.00"), D("2250.00"), D("750.00"), D("0.00"), 1))
+        self.assertEqual(self.rows(result, 18)["B"]["margin"], D("0.00"))                                       # 800 - 200 x 4 (the stored 250 is ignored)
         letterless = self.rows(result, 21)["بدون حرف"]
         self.assertEqual((letterless["pieces"], letterless["sold"], letterless["margin"], letterless["left_out"]), (1, D("400.00"), D("-200.00"), 0))          # no stored cost anywhere: the default 300 EGP/g (2 g -> 600) applies, shown as an estimate
 
     def test_the_margin_is_also_charted_over_time_per_karat(self):
         bars = {b["key"]: b for b in self.service.run("makingprofit", self.PERIOD)["bars"]}
-        self.assertEqual([(r["label"], r["value"]) for r in bars["making_time_21"]["rows"]], [("2026-10-10", D("1050.00"))])      # 1250 (A) - 200 (no letter), the same day; a short period is daily
-        self.assertEqual([(r["label"], r["value"]) for r in bars["making_time_18"]["rows"]], [("2026-10-10", D("-200.00"))])      # a loss stays negative
+        self.assertEqual([(r["label"], r["value"]) for r in bars["making_time_21"]["rows"]], [("2026-10-10", D("550.00"))])       # 750 (A) - 200 (no letter), the same day; a short period is daily
+        self.assertNotIn("making_time_18", bars)                                                                                  # a zero margin draws no bar
         self.assertEqual(bars["making_time_21"]["karat"], 21)
         year = self.service.run("makingprofit", {"from": "2025-01-01", "to": "2026-10-31"})["bars"]
         self.assertEqual([r["label"] for r in next(b for b in year if b["key"] == "making_time_21")["rows"]], ["2026-10"])        # a long period is monthly
@@ -1286,8 +1286,8 @@ class MakingProfitTests(Case):
     def test_cards_and_the_reversed_invoice(self):
         result = self.service.run("makingprofit", self.PERIOD)
         values = self.totals(result)
-        self.assertEqual((values["الفرق على المصنعية"], values["مصنعية البيع المحسوبة"], values["قطع بدون حساب"], values["فواتير معكوسة غير محسوبة"]), (D("850.00"), D("4200.00"), 1, 1))
-        self.assertIn("منه تقديري 50.00", next(t["note"] for t in result["totals"] if t["label"] == "الفرق على المصنعية"))
+        self.assertEqual((values["الفرق على المصنعية"], values["مصنعية البيع المحسوبة"], values["قطع بدون حساب"], values["فواتير معكوسة غير محسوبة"]), (D("550.00"), D("4200.00"), 1, 1))
+        self.assertIn("منه تقديري -200.00", next(t["note"] for t in result["totals"] if t["label"] == "الفرق على المصنعية"))
         self.assertEqual([t["karat"] for t in result["tables"]], [21, 18])           # one table per karat, never mixed
 
     def test_filters_and_their_options(self):
@@ -1682,6 +1682,13 @@ class StaticSqlTests(unittest.TestCase):
         for match in re.finditer(r"    def (\w+)\(self[^)]*\):(.*?)(?=\n    def |\Z)", text, re.S):
             name, body = match.group(1), match.group(2)
             self.assertLessEqual(body.count("self._fetch_"), 3 if name in ("marketer_gold", "book_report_rows", "book_recon_documents") else 1, name)   # fixed statements per method (a capability probe + the read); never a loop
+
+
+class KpiCostPriorityTests(unittest.TestCase):
+    def test_the_letters_current_cost_beats_the_stored_piece_cost(self):
+        from services import kpi_rules
+        line = {"line_type": "SELL_INVENTORY", "making_total": D("320.00"), "weight_grams": D("1.000"), "piece_cost": D("300.00"), "category_cost": D("350.00")}
+        self.assertEqual(kpi_rules.below_cost_counts([line]), (1, 1))                      # 320/g is under the NEW letter cost 350 although it covers the old stored 300
 
 
 if __name__ == "__main__":

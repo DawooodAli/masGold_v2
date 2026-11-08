@@ -204,7 +204,7 @@ def employee_rows(now, default_percent):
             others_grams = sum((v[1] for k, v in sales[karat].items() if k != key), Decimal("0"))
             average = (others_making / others_grams) if others_grams >= MIN_OTHERS_GRAMS else None
             mpg = _d(l["making_total"]) / _d(l["weight_grams"])
-            cost = l.get("piece_cost") if l.get("piece_cost") is not None else l.get("category_cost")
+            cost = l.get("category_cost") if l.get("category_cost") is not None else l.get("piece_cost")       # the letter's CURRENT cost first (owner 2026-11-08)
             reasons = making_flags(mpg, cost, average)
             if reasons:
                 p["low_making"] += 1
@@ -241,7 +241,7 @@ def below_cost_counts(now):
     for l in now:
         if l["line_type"] not in SELL_LINES or l.get("making_total") is None or _d(l["weight_grams"]) < ONE_GRAM:
             continue
-        cost = l.get("piece_cost") if l.get("piece_cost") is not None else l.get("category_cost")
+        cost = l.get("category_cost") if l.get("category_cost") is not None else l.get("piece_cost")
         if cost is None:
             continue
         known += 1
