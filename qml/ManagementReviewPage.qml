@@ -17,6 +17,8 @@ Item {
     signal openingBalanceRequested()
     signal legacyVoidRequested()
     signal scrapAdjustRequested()
+    signal payrollRequested()
+    property bool payrollAvailable: false
     signal claspRequested()
     property bool claspAvailable: false
     signal inventoryRequested()
@@ -925,6 +927,13 @@ Item {
                 text: "🗑  إلغاء فاتورة قديمة"
                 accent: theme.red
                 onClicked: reviewPage.legacyVoidRequested()
+            }
+            ActionButton {
+                objectName: "reviewsOpenPayroll"
+                visible: reviewPage.payrollAvailable
+                text: "💵  المرتبات"
+                accent: theme.gold
+                onClicked: reviewPage.payrollRequested()
             }
             ActionButton {
                 objectName: "reviewsOpenScrapAdjust"

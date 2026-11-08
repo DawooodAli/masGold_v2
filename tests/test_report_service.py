@@ -1285,6 +1285,22 @@ class CashflowAdvanceTests(Case):
         self.assertEqual((values["مصروفات مسجلة"], values["إيرادات مسجلة"]), (D("0.00"), D("0.00")))
 
 
+class CashflowSalaryTests(Case):
+    def test_a_salary_is_a_line_of_its_own_and_never_a_recorded_expense(self):
+        base = {"transfer_group_id": None, "type_name": "x", "correction_source": None, "corrected_operation_type": None, "corrected_category": None, "reference_type": "FINANCIAL_OPERATION"}
+        rows = [dict(base, type_code="MANUAL_WITHDRAWAL", amount=D("-4000.00"), category="SALARY"),
+                dict(base, type_code="MANUAL_WITHDRAWAL", amount=D("-50.00"), category="UTILITIES")]
+
+        class Repo(FakeRepo):
+            def cashflow_movements(self, start, end, ledgers=("CASH", "BANK")):
+                return rows
+        service = ReportService(self.service._session, transaction_factory=self.service._transaction, repository=Repo, authorization=self.service._authorization, today=lambda: TODAY)
+        result = service.run("cashflow", {"from": "2026-10-01", "to": "2026-10-31"})
+        values = {t["label"]: t["value"] for t in result["totals"]}
+        self.assertEqual(values["مصروفات مسجلة"], D("50.00"))
+        self.assertTrue(any("المرتبات" in r["label"] for r in next(t for t in result["tables"] if t["key"] == "operating")["rows"]) is False)
+
+
 class MakingProfitTests(Case):
     PERIOD = {"from": "2026-10-01", "to": "2026-10-31"}
 

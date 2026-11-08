@@ -217,6 +217,9 @@ class ApplicationController(QObject):
         if self.operational_viewmodels.get("claspStockVM") is None:
             from app.viewmodels.clasp_stock_viewmodel import create_clasp_stock_viewmodel
             self.operational_viewmodels["claspStockVM"] = create_clasp_stock_viewmodel(self.session)
+        if self.operational_viewmodels.get("payrollVM") is None:
+            from app.viewmodels.payroll_viewmodel import create_payroll_viewmodel
+            self.operational_viewmodels["payrollVM"] = create_payroll_viewmodel(self.session)
         if self.operational_viewmodels.get("dayCloseVM") is None:
             from app.viewmodels.day_close_viewmodel import create_day_close_viewmodel
             self.operational_viewmodels["dayCloseVM"] = create_day_close_viewmodel(self.session)

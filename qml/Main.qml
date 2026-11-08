@@ -3360,6 +3360,8 @@ ApplicationWindow {
                     onLegacyVoidRequested: legacyVoidDialog.open()
                     scrapAdjustAvailable: typeof oldGoldAdjustVM !== "undefined" && oldGoldAdjustVM.canAdjust
                     onScrapAdjustRequested: scrapAdjustDialog.open()
+                    payrollAvailable: typeof payrollVM !== "undefined" && payrollVM.canManage
+                    onPayrollRequested: payrollDialog.open()
                     claspAvailable: typeof claspStockVM !== "undefined" && claspStockVM.canManage
                     onClaspRequested: claspStockDialog.open()
                     onReportsRequested: root.currentPage = 5
@@ -9719,6 +9721,173 @@ ApplicationWindow {
         Repeater {
             model: dayCloseDialog.vm ? dayCloseDialog.vm.recent : []
             delegate: GoldPriceLabel { required property var modelData; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.textMuted; font.pixelSize: 11; value: modelData.text }
+        }
+    }
+
+    // المرتبات: a section of its own under مراجعات المدير (owner 2026-11-08), not an expense. One form panel at the top (salary / bonus-penalty / pay / void), one card per employee below.
+    SettingsDialog {
+        id: payrollDialog
+        objectName: "payrollDialog"
+        dialogTitle: "المرتبات"
+        readonly property var vm: typeof payrollVM !== "undefined" ? payrollVM : null
+        property string mode: ""                      // "", "salary", "adjust", "pay", "void"
+        property var target: ({})                     // the employee row (or the adjustment) the open form is about
+        property string kind: "BONUS"
+        function openForm(newMode, row) {
+            target = row; mode = newMode; kind = "BONUS"
+            prAmount.text = newMode === "salary" ? (row.base || "") : ""
+            prDeduction.text = newMode === "pay" ? row.defaultDeduction : ""
+            prReason.text = ""; prNote.text = ""; prAccount.currentIndex = -1
+        }
+        onOpened: { mode = ""; if (vm) vm.refresh() }
+        Connections { target: payrollDialog.vm; ignoreUnknownSignals: true
+                      function onDone() { payrollDialog.mode = "" } }
+        RowLayout {
+            Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+            GoldPriceButton { objectName: "payrollNextMonth"; text: "◀"; enabled: !!payrollDialog.vm && !payrollDialog.vm.isCurrentMonth && !payrollDialog.vm.busy; onClicked: payrollDialog.vm.shiftMonth(1) }
+            GoldPriceLabel { objectName: "payrollMonth"; value: payrollDialog.vm ? "شهر " + payrollDialog.vm.month : ""; color: theme.gold; font.pixelSize: 16; font.bold: true }
+            GoldPriceButton { objectName: "payrollPrevMonth"; text: "▶"; enabled: !!payrollDialog.vm && !payrollDialog.vm.busy; onClicked: payrollDialog.vm.shiftMonth(-1) }
+            Item { Layout.fillWidth: true }
+        }
+        GoldPriceLabel {
+            Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.textMuted; font.pixelSize: 11
+            value: "الصافي = المرتب + الحوافز − الجزاءات − خصم السلف. الصرف بيسحب الصافي من الحساب اللي تختاره (بند «مرتبات» لوحده، مش مصروف)، وبيتسجل مرة واحدة في الشهر لكل موظف."
+        }
+        GoldPriceLabel {
+            objectName: "payrollTotals"; Layout.fillWidth: true; color: theme.textPrimary; font.bold: true; wrapMode: Text.WordWrap
+            value: payrollDialog.vm ? "اتصرف: " + payrollDialog.vm.paidTotalText + "   •   لسه مستحق (بعد الخصم المقترح): " + payrollDialog.vm.dueTotalText : ""
+        }
+        Rectangle {
+            objectName: "payrollForm"
+            Layout.fillWidth: true; visible: payrollDialog.mode !== ""
+            color: theme.bgSecondary; radius: 8; border.color: theme.gold; border.width: 1
+            implicitHeight: formColumn.implicitHeight + 24
+            ColumnLayout {
+                id: formColumn
+                anchors.fill: parent; anchors.margins: 12; spacing: 8
+                GoldPriceLabel {
+                    objectName: "payrollFormTitle"; Layout.fillWidth: true; color: theme.gold; font.bold: true; wrapMode: Text.WordWrap
+                    value: payrollDialog.mode === "salary" ? "المرتب الشهري — " + payrollDialog.target.name
+                         : payrollDialog.mode === "adjust" ? "حافز أو جزاء — " + payrollDialog.target.name
+                         : payrollDialog.mode === "pay" ? "صرف مرتب — " + payrollDialog.target.name
+                         : payrollDialog.mode === "void" ? "إلغاء: " + (payrollDialog.target.text || "") : ""
+                }
+                GoldPriceLabel {
+                    Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.textMuted; font.pixelSize: 11
+                    visible: payrollDialog.mode === "salary"
+                    value: "المرتب ده بيسري من الشهر المعروض وبعده لحد ما تغيّره. مرتب شهر اتصرف بيفضل زي ما اتصرف."
+                }
+                RowLayout {
+                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8; visible: payrollDialog.mode === "adjust"
+                    GoldPriceLabel { value: "النوع"; color: theme.textSecondary; Layout.preferredWidth: 80 }
+                    GoldPriceButton { objectName: "payrollKindBonus"; text: "حافز"; checkable: true; checked: payrollDialog.kind === "BONUS"; onClicked: payrollDialog.kind = "BONUS" }
+                    GoldPriceButton { objectName: "payrollKindPenalty"; text: "جزاء"; checkable: true; checked: payrollDialog.kind === "PENALTY"; onClicked: payrollDialog.kind = "PENALTY" }
+                    Item { Layout.fillWidth: true }
+                }
+                RowLayout {
+                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8; visible: payrollDialog.mode === "salary" || payrollDialog.mode === "adjust"
+                    GoldPriceLabel { value: payrollDialog.mode === "salary" ? "المرتب الشهري" : "المبلغ"; color: theme.textSecondary; Layout.preferredWidth: 100 }
+                    TextField { id: prAmount; objectName: "payrollAmount"; Layout.preferredWidth: 200; horizontalAlignment: TextInput.AlignRight; font.family: "Cairo"; placeholderText: "0.00" }
+                    Item { Layout.fillWidth: true }
+                }
+                RowLayout {
+                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8; visible: payrollDialog.mode === "pay"
+                    GoldPriceLabel { value: "الحساب"; color: theme.textSecondary; Layout.preferredWidth: 100 }
+                    ComboBox {
+                        id: prAccount; objectName: "payrollAccount"; Layout.preferredWidth: 380; Layout.preferredHeight: 38
+                        model: payrollDialog.vm ? payrollDialog.vm.accounts : []; textRole: "text"; valueRole: "key"
+                        currentIndex: -1; displayText: currentIndex >= 0 ? currentText : "اختر الحساب"; font.family: "Cairo"
+                    }
+                    Item { Layout.fillWidth: true }
+                }
+                GoldPriceLabel {
+                    Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.textSecondary; visible: payrollDialog.mode === "pay"
+                    value: payrollDialog.mode === "pay" ? "المرتب " + payrollDialog.target.baseText + " + حوافز " + payrollDialog.target.bonusText + " − جزاءات " + payrollDialog.target.penaltyText + " • سلف على الموظف " + payrollDialog.target.owedText : ""
+                }
+                RowLayout {
+                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8; visible: payrollDialog.mode === "pay"
+                    GoldPriceLabel { value: "خصم السلف"; color: theme.textSecondary; Layout.preferredWidth: 100 }
+                    TextField { id: prDeduction; objectName: "payrollDeduction"; Layout.preferredWidth: 160; horizontalAlignment: TextInput.AlignRight; font.family: "Cairo"; placeholderText: "0.00" }
+                    GoldPriceLabel { objectName: "payrollNetPreview"; color: theme.green; font.bold: true
+                                     value: payrollDialog.vm && payrollDialog.mode === "pay" ? payrollDialog.vm.previewNet(String(payrollDialog.target.id), prDeduction.text) : "" }
+                    Item { Layout.fillWidth: true }
+                }
+                TextField { id: prReason; objectName: "payrollReason"; Layout.fillWidth: true; visible: payrollDialog.mode === "adjust" || payrollDialog.mode === "void"
+                            placeholderText: payrollDialog.mode === "void" ? "سبب الإلغاء (إجباري)" : "السبب (إجباري)"; horizontalAlignment: TextInput.AlignRight; font.family: "Cairo"; maximumLength: 300 }
+                TextField { id: prNote; objectName: "payrollNote"; Layout.fillWidth: true; visible: payrollDialog.mode === "pay"
+                            placeholderText: "ملاحظة (اختياري)"; horizontalAlignment: TextInput.AlignRight; font.family: "Cairo"; maximumLength: 500 }
+                RowLayout {
+                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                    GoldPriceButton {
+                        objectName: "payrollSave"
+                        text: payrollDialog.mode === "pay" ? "صرف المرتب" : payrollDialog.mode === "void" ? "إلغاء" : "حفظ"
+                        enabled: !!payrollDialog.vm && !payrollDialog.vm.busy
+                                 && ((payrollDialog.mode === "salary" && prAmount.text.trim().length > 0)
+                                     || (payrollDialog.mode === "adjust" && Number(prAmount.text) > 0 && prReason.text.trim().length > 0)
+                                     || (payrollDialog.mode === "pay" && prAccount.currentIndex >= 0)
+                                     || (payrollDialog.mode === "void" && prReason.text.trim().length > 0))
+                        onClicked: {
+                            if (payrollDialog.mode === "salary") payrollDialog.vm.setSalary(String(payrollDialog.target.id), prAmount.text)
+                            else if (payrollDialog.mode === "adjust") payrollDialog.vm.addAdjustment(String(payrollDialog.target.id), payrollDialog.kind, prAmount.text, prReason.text)
+                            else if (payrollDialog.mode === "pay") payrollDialog.vm.pay(String(payrollDialog.target.id), String(prAccount.currentValue), prDeduction.text, prNote.text)
+                            else if (payrollDialog.mode === "void") payrollDialog.vm.voidAdjustment(String(payrollDialog.target.id), prReason.text)
+                        }
+                    }
+                    GoldPriceButton { objectName: "payrollCancel"; text: "رجوع"; onClicked: payrollDialog.mode = "" }
+                    Item { Layout.fillWidth: true }
+                }
+            }
+        }
+        GoldPriceLabel {
+            objectName: "payrollMessage"
+            Layout.fillWidth: true; wrapMode: Text.WordWrap; font.bold: true
+            visible: value.length > 0
+            value: payrollDialog.vm ? payrollDialog.vm.message : ""
+            color: payrollDialog.vm && payrollDialog.vm.messageIsError ? theme.red : theme.green
+        }
+        Repeater {
+            model: payrollDialog.vm ? payrollDialog.vm.employees : []
+            delegate: Rectangle {
+                required property var modelData
+                objectName: "payrollEmployee"
+                Layout.fillWidth: true
+                color: theme.bgSecondary; radius: 8; border.color: modelData.status === "PAID" ? theme.green : theme.border; border.width: 1
+                implicitHeight: cardColumn.implicitHeight + 20
+                ColumnLayout {
+                    id: cardColumn
+                    anchors.fill: parent; anchors.margins: 10; spacing: 6
+                    RowLayout {
+                        Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 10
+                        GoldPriceLabel { value: modelData.name; color: theme.textPrimary; font.bold: true; font.pixelSize: 15 }
+                        GoldPriceLabel { value: modelData.statusText; color: modelData.status === "PAID" ? theme.green : modelData.status === "NO_SALARY" ? theme.amber : theme.textSecondary }
+                        Item { Layout.fillWidth: true }
+                    }
+                    GoldPriceLabel {
+                        Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.textSecondary
+                        value: "المرتب " + modelData.baseText + "  •  حوافز " + modelData.bonusText + "  •  جزاءات " + modelData.penaltyText + "  •  سلف عليه " + modelData.owedText + "  •  الصافي المقترح " + modelData.netText
+                        visible: modelData.status !== "PAID"
+                    }
+                    GoldPriceLabel { Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.green; value: modelData.paidText; visible: modelData.status === "PAID" }
+                    RowLayout {
+                        Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                        GoldPriceButton { objectName: "payrollSetSalary"; text: "المرتب"; enabled: !payrollDialog.vm.busy; onClicked: payrollDialog.openForm("salary", modelData) }
+                        GoldPriceButton { objectName: "payrollAddAdjustment"; text: "حافز / جزاء"; visible: modelData.status !== "PAID"; enabled: !payrollDialog.vm.busy; onClicked: payrollDialog.openForm("adjust", modelData) }
+                        GoldPriceButton { objectName: "payrollPay"; text: "صرف"; visible: modelData.canPay; enabled: !payrollDialog.vm.busy; onClicked: payrollDialog.openForm("pay", modelData) }
+                        Item { Layout.fillWidth: true }
+                    }
+                }
+            }
+        }
+        GoldPriceLabel { Layout.fillWidth: true; color: theme.gold; font.bold: true; value: "حوافز وجزاءات الشهر"; visible: !!payrollDialog.vm && payrollDialog.vm.adjustments.length > 0 }
+        Repeater {
+            model: payrollDialog.vm ? payrollDialog.vm.adjustments : []
+            delegate: RowLayout {
+                required property var modelData
+                objectName: "payrollAdjustmentRow"
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 8
+                GoldPriceLabel { Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.textSecondary; font.pixelSize: 12; value: modelData.text }
+                GoldPriceButton { objectName: "payrollVoid"; text: "إلغاء"; visible: modelData.canVoid; enabled: !payrollDialog.vm.busy; onClicked: payrollDialog.openForm("void", modelData) }
+            }
         }
     }
 
