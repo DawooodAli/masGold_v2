@@ -477,4 +477,26 @@ class SupplierPaymentService:
         if self._corrections is None:
             from services.correction_service import CorrectionService
             self._corrections = CorrectionService(self._session)
+        # Owner 2026-11-08: a payment made with market-custody cash is also reversed from the supplier page; the canonical correction stays on its CUSTODY ENTRY (it restores the custody
+        # cash and the supplier's owed amount together), so this only finds that entry. A direct cash / bank payment keeps its own correction.
+        from repositories.market_trip_repository import SOURCE as ENTRY_SOURCE
+        with self._transaction() as connection:
+            payment = self._repository(connection).payment(payment_id)
+        entry_id = None if payment is None else payment.get("custody_entry_id")
+        if payment is not None and payment.get("payment_method") == "CUSTODY" and entry_id is not None:
+            return self._corrections.reverse(ENTRY_SOURCE, str(entry_id), reason, _expected_actor=_expected_actor)
         return self._corrections.reverse(SOURCE, str(payment_id), reason, _expected_actor=_expected_actor)
+
+    def reverse_bar_fee(self, entry_id, reason, *, _expected_actor=None):
+        """Reverse a bar fee «أجر السبيكة» (a custody entry) from the supplier page: the canonical correction of that ENTRY (the fee leaves the custody cash and a stored supplier deduction, if
+        the fee had one, is restored). Refused for any entry that is not a bar fee; every right and custody rule is rechecked by CorrectionService."""
+        authenticated_actor(self._session, REVERSE, "عكس أجر السبيكة للمالك فقط.", _expected_actor)
+        from repositories.market_trip_repository import MarketTripRepository, SOURCE as ENTRY_SOURCE
+        with self._transaction() as connection:
+            fee = MarketTripRepository(connection).entry_bar_fee(entry_id)
+        if fee is None:
+            raise rules.SupplierRuleError("BAR_FEE_NOT_FOUND", "أجر السبيكة غير موجود.")
+        if self._corrections is None:
+            from services.correction_service import CorrectionService
+            self._corrections = CorrectionService(self._session)
+        return self._corrections.reverse(ENTRY_SOURCE, str(entry_id), reason, _expected_actor=_expected_actor)

@@ -112,7 +112,7 @@ class SupplierPaymentRepository(SupplierRepository):
 
     # ------------------------------------------------------------------ reads
     _SELECT = """
-        SELECT p.*, s.name AS supplier_name, s.is_active AS supplier_active, te.trip_id AS custody_trip_id, te.entry_no AS custody_entry_no,
+        SELECT p.*, s.name AS supplier_name, s.is_active AS supplier_active, te.trip_id AS custody_trip_id, te.entry_no AS custody_entry_no, tl.entry_id AS custody_entry_id,
                ca.name AS cash_account_name, ba.name AS bank_account_name, ba.account_type AS bank_account_type,
                mp.name AS marketer_name,
                u.display_name AS actor_name,

@@ -257,6 +257,16 @@ class SupplierRepository(BaseRepository):
             ) x ORDER BY x.occurred_at DESC, x.id DESC LIMIT %s
             """, (_id(supplier_id), int(limit)))
 
+    def reversed_market_entries(self, entry_ids):
+        """The subset of custody entry ids that carry a FULL_REVERSAL correction (one plain read; empty input reads nothing)."""
+        ids = sorted({int(i) for i in entry_ids})
+        if not ids:
+            return set()
+        marks = ", ".join(["%s"] * len(ids))
+        rows = self._fetch_all(f"SELECT source_id FROM transaction_corrections WHERE source_type = 'MARKET_TRIP_ENTRY' AND correction_type = 'FULL_REVERSAL' AND source_id IN ({marks})",
+                               tuple(str(i) for i in ids))
+        return {int(r["source_id"]) for r in rows}
+
     _adjustment_reversal_schema = None
 
     def has_adjustment_reversal_schema(self):

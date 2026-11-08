@@ -68,7 +68,7 @@ Item {
             page.pvm.showSupplier(supplierId)
         }
         function onPaymentPosted(code) { payDialog.close() }
-        function onReversalDone(code) { reverseDialog.close() }
+        function onReversalDone(code) { reverseDialog.close(); reverseBarFeeDialog.close() }
         function onSettlementPosted(code) { goldSettleDialog.close() }
         function onSupplierGoldSettlementPosted(code) { goldSettleDialog.close() }
         function onSettlementReversed(code) { reverseSettlementDialog.close() }
@@ -1533,6 +1533,13 @@ Item {
                                                     onClicked: reverseDialog.openFor(modelData)
                                                 }
                                                 Btn {
+                                                    objectName: "reverseBarFeeButton"
+                                                    visible: !!page.vm && page.vm.canReversePayment && modelData.canReverseBarFee === true
+                                                    text: "عكس"
+                                                    accent: theme.red
+                                                    onClicked: reverseBarFeeDialog.openFor(modelData)
+                                                }
+                                                Btn {
                                                     objectName: "reverseMakingAdjustmentButton"
                                                     visible: !!page.pvm && page.pvm.canAdjustAccount && modelData.canReverseAdjustment === true
                                                     text: "عكس"
@@ -2229,6 +2236,49 @@ Item {
                       enabled: reverseAdjustmentReason.text.trim().length > 0 && !!page.pvm && !page.pvm.busy
                       onClicked: page.pvm.reverseAccountAdjustment(String(page.detail.id), reverseAdjustmentDialog.adjustmentId, reverseAdjustmentReason.text, reverseAdjustmentDialog.requestKey) }
                 Btn { objectName: "cancelReverseAdjustmentButton"; text: "إلغاء"; accent: theme.textSecondary; onClicked: reverseAdjustmentDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- reverse a bar fee «أجر السبيكة» from the supplier ledger (through its custody entry)
+    Popup {
+        id: reverseBarFeeDialog
+        objectName: "reverseBarFeeDialog"
+        property string entryId: ""
+        property string detailText: ""
+        function openFor(row) {
+            entryId = String(row.barFeeEntryId)
+            detailText = (row.movement || "") + " — " + (row.side || "") + " " + (row.amount || "") + " ج • " + (row.reference || "")
+            reverseBarFeeReason.text = ""
+            if (page.vm) page.vm.clearMessage()
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(460, page.width - 24)
+        modal: true
+        padding: 16
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 8
+            Txt { Layout.fillWidth: true; font.bold: true; color: theme.gold; text: "عكس أجر السبيكة — " + (page.detail.name || "") }
+            Txt { objectName: "reverseBarFeeDetail"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textSecondary; text: reverseBarFeeDialog.detailText }
+            Txt { Layout.fillWidth: true; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "الأجر هيخرج من نقدية العهدة (لازم تكون العهدة مفتوحة ونقدية الأجر لسه موجودة) ويرجع خصم المصنعيات لو كان مخصوم." }
+            Txt { Layout.fillWidth: true; text: "السبب *" }
+            TextField { id: reverseBarFeeReason; objectName: "reverseBarFeeReason"; Layout.fillWidth: true; placeholderText: "سبب العكس"; font.family: "Cairo"; horizontalAlignment: TextInput.AlignRight }
+            Txt { objectName: "reverseBarFeeError"; Layout.fillWidth: true; visible: text !== ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: !!page.vm ? page.vm.errorMessage : "" }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn { objectName: "confirmReverseBarFeeButton"; primary: true; text: "تأكيد العكس"
+                      enabled: reverseBarFeeReason.text.trim().length > 0 && !!page.vm && !page.vm.busy
+                      onClicked: page.vm.reverseBarFee(reverseBarFeeDialog.entryId, reverseBarFeeReason.text) }
+                Btn { objectName: "cancelReverseBarFeeButton"; text: "إلغاء"; accent: theme.textSecondary; onClicked: reverseBarFeeDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }

@@ -98,17 +98,19 @@ def making_row(r):
     elif r.get("reverses_invoice"):                                     # the exact opposite entry a reversal posted
         state = f"عكس الفاتورة {r['reverses_invoice']}"
     else:
-        state = r.get("adjustment_state", "")
+        state = "أجر معكوس" if r.get("bar_fee_reversed") else r.get("adjustment_state", "")
     return {"id": r["id"], "time": datetime_text(r["occurred_at"]), "movement": r["movement"],
             "adjustmentId": r.get("adjustment_id") or "",
             "canReverseAdjustment": bool(r.get("adjustment_id")) and not r.get("adjustment_reversed") and not r.get("adjustment_reverses"),
+            "barFeeEntryId": r.get("bar_fee_entry_id") or "",
+            "canReverseBarFee": bool(r.get("bar_fee_entry_id")) and not r.get("bar_fee_reversed"),
             "side": movement_side_text(r["amount_delta"]), "amount": money(abs(r["amount_delta"])),
             "balance": making_position_text(rules.direction(r["balance_after"]), r["balance_after"]),
             "reference": r["reference"], "sourceId": r["source_id"], "actor": r["actor"],
             "tone": TONES[rules.direction(r["amount_delta"])],
             "paymentId": r.get("payment_id") or "", "detail": detail, "state": state,
-            "reversed": bool(reversed_by or r.get("invoice_reversed_by") or r.get("adjustment_reversed")),
-            "canReverse": is_payment and not reversed_by and r.get("payment_method") != "CUSTODY"}
+            "reversed": bool(reversed_by or r.get("invoice_reversed_by") or r.get("adjustment_reversed") or r.get("bar_fee_reversed")),
+            "canReverse": is_payment and not reversed_by}
 
 
 _SG_REF = re.compile(r"\s*\((SG\d{6})\)")
@@ -518,6 +520,26 @@ class SupplierViewModel(QObject):
         self._message = f"تم عكس دفعة المصنعيات {result['source_reference']} ({result['code']})."
         self.refresh()
         self.reversalDone.emit(result["code"])
+        self.holdingChanged.emit()                                          # a payment made from market custody is reversed through its custody entry: the custody views reload
+
+    @Slot(str, str)
+    def reverseBarFee(self, entry_id, reason):
+        """Reverse a bar fee from the supplier ledger (through its custody entry; CorrectionService rechecks every right and rule)."""
+        if "barfeerev" in self._busy:
+            return
+        self._message = self._error = ""
+        service = self._payment_service()
+        self._start("barfeerev", lambda _expected_actor: service.reverse_bar_fee(entry_id, reason, _expected_actor=_expected_actor))
+        self.changed.emit()
+
+    def _on_barfeerev(self, result, error):
+        if error:
+            self._error = error
+            return
+        self._message = f"تم عكس أجر السبيكة ({result['code']}): خرج من نقدية العهدة."
+        self.refresh()
+        self.reversalDone.emit(result["code"])
+        self.holdingChanged.emit()
 
     # ------------------------------------------------------------ supplier gold source selection
     @Slot(str)
@@ -848,6 +870,7 @@ class SupplierViewModel(QObject):
         self._message = f"تم عكس تسوية الذهب {result['source_reference']} ({result['code']}): عاد الذهب المُسلَّم فعليًا إلى كسر المحل وعاد رصيد المورد."
         self.refresh()
         self.settlementReversed.emit(result["code"])
+        self.holdingChanged.emit()                                          # a custody-sourced settlement is reversed through its custody entry: the custody views reload
 
     # ------------------------------------------------------------ whole-lot holdings (048): the normal intact return
     @Slot(str, bool, str, bool, str, str, str, str)

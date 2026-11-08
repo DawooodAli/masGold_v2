@@ -187,6 +187,11 @@ class SupplierService:
                                  "reverses_invoice": (None if r.get("reversed_invoice_id") is None else rules.invoice_code(r["reversed_invoice_id"]))}
                                 for r in gold],
                 "making_ledger": [self._making_row(r) for r in making]}
+        fee_rows = [r for r in detail["making_ledger"] if r.get("movement_code") == "BAR_FEE"]       # a bar fee deducted from the supplier (080): reversed through its custody entry
+        reversed_fees = repository.reversed_market_entries([r["source_id"] for r in fee_rows]) if fee_rows and hasattr(repository, "reversed_market_entries") else set()
+        for row in fee_rows:
+            row["bar_fee_entry_id"] = str(row["source_id"])
+            row["bar_fee_reversed"] = int(row["source_id"]) in reversed_fees
         for row in detail["gold_ledger"] + detail["making_ledger"]:                       # 102: an account-adjustment row knows whether it is reversed / is itself a reversal
             if row.get("source_type") == "SUPPLIER_ACCOUNT_ADJUSTMENT":
                 state = states.get(int(row["source_id"]), {})

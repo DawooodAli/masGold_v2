@@ -2,7 +2,11 @@
 import unittest
 from contextlib import contextmanager
 
+from unittest import mock
+
 from services.supplier_gold_settlement_service import SupplierGoldSettlementService
+from services.supplier_payment_service import SupplierPaymentService
+from services.supplier_rules import SupplierRuleError
 from tests.auth_fakes import FakeAuthorization
 from tests.test_inventory_stock import session_for
 
@@ -54,6 +58,54 @@ class ReverseHereTests(unittest.TestCase):
         service, corrections = make("SHOP_SCRAP", None)
         service.reverse("12", "تصحيح")
         self.assertEqual(corrections.calls[0][0], "SUPPLIER_GOLD_SETTLEMENT")
+
+
+PAYER = frozenset({"APP_LOGIN", "SUPPLIER_MAKING_PAY_REVERSE", "TRANSACTION_CORRECT"})
+
+
+def payment_service(row):
+    class Repo:
+        def __init__(self, connection):
+            pass
+
+        def payment(self, payment_id):
+            return row
+
+    @contextmanager
+    def transaction():
+        yield object()
+    session = session_for(PAYER, 9)
+    corrections = Corrections()
+    return SupplierPaymentService(session, transaction_factory=transaction, repository=Repo, authorization=FakeAuthorization(session), corrections=corrections), corrections
+
+
+class PaymentAndBarFeeTests(unittest.TestCase):
+    def test_a_making_payment_from_custody_is_reversed_through_its_custody_entry(self):
+        service, corrections = payment_service({"id": 11, "payment_method": "CUSTODY", "custody_entry_id": 66})
+        service.reverse("11", "دفعة بالغلط")
+        self.assertEqual(corrections.calls, [("MARKET_TRIP_ENTRY", "66", "دفعة بالغلط")])
+
+    def test_a_direct_payment_keeps_its_own_correction(self):
+        service, corrections = payment_service({"id": 12, "payment_method": "CASH", "custody_entry_id": None})
+        service.reverse("12", "تصحيح")
+        self.assertEqual(corrections.calls[0][0], "SUPPLIER_MAKING_PAYMENT")
+
+    def test_a_bar_fee_is_reversed_through_its_custody_entry_and_nothing_else_is(self):
+        service, corrections = payment_service({})
+
+        class Trips:
+            def __init__(self, connection):
+                pass
+
+            def entry_bar_fee(self, entry_id):
+                return {"party_id": 1, "amount": 250} if str(entry_id) == "70" else None
+        with mock.patch("repositories.market_trip_repository.MarketTripRepository", Trips):
+            service.reverse_bar_fee("70", "أجر بالغلط")
+            self.assertEqual(corrections.calls, [("MARKET_TRIP_ENTRY", "70", "أجر بالغلط")])
+            with self.assertRaises(SupplierRuleError) as caught:
+                service.reverse_bar_fee("99", "x")
+            self.assertEqual(caught.exception.code, "BAR_FEE_NOT_FOUND")
+            self.assertEqual(len(corrections.calls), 1)
 
 
 if __name__ == "__main__":
