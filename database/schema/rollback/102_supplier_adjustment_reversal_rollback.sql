@@ -6,7 +6,6 @@ SET @masgold_sql = IF(EXISTS(SELECT 1 FROM information_schema.COLUMNS WHERE TABL
    AND (SELECT COUNT(*) FROM supplier_account_adjustments WHERE reverses_id IS NOT NULL) > 0,
  'SELECT * FROM ROLLBACK_102_REFUSED_adjustment_reversals_exist', 'DO 0');
 PREPARE masgold_stmt FROM @masgold_sql; EXECUTE masgold_stmt; DEALLOCATE PREPARE masgold_stmt;
-ALTER TABLE supplier_account_adjustments DROP CHECK chk_saa_reverses;
 ALTER TABLE supplier_account_adjustments DROP FOREIGN KEY fk_saa_reverses;
 ALTER TABLE supplier_account_adjustments DROP INDEX uq_saa_reverses;
 ALTER TABLE supplier_account_adjustments DROP COLUMN reverses_id;

@@ -14,9 +14,6 @@ PREPARE masgold_stmt FROM @masgold_sql; EXECUTE masgold_stmt; DEALLOCATE PREPARE
 SET @masgold_sql := IF(NOT EXISTS(SELECT 1 FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME='supplier_account_adjustments' AND CONSTRAINT_NAME='fk_saa_reverses'),
  "ALTER TABLE supplier_account_adjustments ADD CONSTRAINT fk_saa_reverses FOREIGN KEY (reverses_id) REFERENCES supplier_account_adjustments(id)", 'DO 0');
 PREPARE masgold_stmt FROM @masgold_sql; EXECUTE masgold_stmt; DEALLOCATE PREPARE masgold_stmt;
-SET @masgold_sql := IF(NOT EXISTS(SELECT 1 FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME='supplier_account_adjustments' AND CONSTRAINT_NAME='chk_saa_reverses'),
- "ALTER TABLE supplier_account_adjustments ADD CONSTRAINT chk_saa_reverses CHECK (reverses_id IS NULL OR reverses_id <> id)", 'DO 0');
-PREPARE masgold_stmt FROM @masgold_sql; EXECUTE masgold_stmt; DEALLOCATE PREPARE masgold_stmt;
 
 INSERT INTO schema_migrations(version,name) VALUES (102,'Supplier account adjustment reversal: reverses_id links an exact opposite adjustment to its original')
  ON DUPLICATE KEY UPDATE name=VALUES(name);
