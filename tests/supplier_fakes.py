@@ -170,6 +170,10 @@ class SupplierRepo:
                                                      if i["supplier_id"] == s["id"] and i["status"] == "POSTED")})
         return rows[:limit]
 
+    def adjustment_states(self, supplier_id):
+        return {a["id"]: {"reversed_by": next((b["id"] for b in self.db.account_adjustments if b.get("reverses_id") == a["id"]), None), "reverses": a.get("reverses_id")}
+                for a in self.db.account_adjustments if a["supplier_id"] == int(supplier_id)}
+
     def get_supplier(self, supplier_id, lock=False):
         row = self.db.suppliers.get(int(supplier_id))
         if row is None:
@@ -430,12 +434,27 @@ class PurchaseRepo(SupplierRepo):
     def account_adjustment_by_request(self, key):
         return next((dict(a) for a in self.db.account_adjustments if a["request_key"] == key), None)
 
-    def insert_account_adjustment(self, *, supplier_id, kind, karat_id, delta, reason, key, user_id, now):
+    def insert_account_adjustment(self, *, supplier_id, kind, karat_id, delta, reason, key, user_id, now, reverses_id=None):
         assert (kind == "GOLD") == (karat_id is not None) and delta != 0 and reason.strip()           # chk_saa_kind / chk_saa_delta / chk_saa_reason
+        if reverses_id is not None and any(a.get("reverses_id") == int(reverses_id) for a in self.db.account_adjustments):
+            raise _dup()                                                                                # uq_saa_reverses
         new_id = self.db.next("account_adjustment")
         self.db.account_adjustments.append({"id": new_id, "supplier_id": int(supplier_id), "kind": kind, "karat_id": karat_id, "delta": delta,
-                                            "reason": reason, "request_key": key, "created_by_user_id": user_id})
+                                            "reason": reason, "reverses_id": None if reverses_id is None else int(reverses_id), "request_key": key, "created_by_user_id": user_id})
         return new_id
+
+    def has_adjustment_reversal_schema(self):
+        return True
+
+    def account_adjustment(self, adjustment_id, lock=False):
+        return next((dict(a) for a in self.db.account_adjustments if a["id"] == int(adjustment_id)), None)
+
+    def adjustment_reversal_of(self, adjustment_id):
+        return next(({"id": a["id"]} for a in self.db.account_adjustments if a.get("reverses_id") == int(adjustment_id)), None)
+
+    def adjustment_states(self, supplier_id):
+        return {a["id"]: {"reversed_by": next((b["id"] for b in self.db.account_adjustments if b.get("reverses_id") == a["id"]), None), "reverses": a.get("reverses_id")}
+                for a in self.db.account_adjustments if a["supplier_id"] == int(supplier_id)}
 
     # ------------------------------------------------------------ ledgers (insert only)
     def gold_type_id(self, code):
@@ -677,7 +696,8 @@ MAKING_TYPES = {1: ("PURCHASE_INVOICE", "Supplier Purchase Invoice Making"), 2: 
                 4: ("PURCHASE_INVOICE_REVERSAL", "Supplier Purchase Invoice Making Reversal"),
                 5: ("RECEIPT", "Supplier Making Receipt"), 6: ("RECEIPT_REVERSAL", "Supplier Making Receipt Reversal"),
                 7: ("ACCOUNT_ADJUSTMENT", "Supplier Making Account Adjustment")}
-GOLD_TYPES = {1: ("PURCHASE_INVOICE", "Supplier Purchase Invoice"), 2: ("PURCHASE_INVOICE_REVERSAL", "Supplier Purchase Invoice Reversal")}
+GOLD_TYPES = {1: ("PURCHASE_INVOICE", "Supplier Purchase Invoice"), 2: ("PURCHASE_INVOICE_REVERSAL", "Supplier Purchase Invoice Reversal"),
+              5: ("GROUP_ADJUSTMENT", "Supplier Group Adjustment"), 6: ("ACCOUNT_ADJUSTMENT", "Supplier Gold Account Adjustment")}
 MAKING_TYPE_ID = {code: type_id for type_id, (code, _) in MAKING_TYPES.items()}
 
 

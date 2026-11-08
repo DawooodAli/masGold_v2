@@ -87,3 +87,60 @@ class AccountAdjustTests(AccountAdjustCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AdjustmentReversalTests(AccountAdjustCase):
+    """Owner 2026-11-08 (migration 102): an account adjustment is reversed by the exact opposite row that names it."""
+
+    def reverse(self, adjustment, reason="تسوية بالغلط", key=None, service=None):
+        self.k += 1
+        return (service or self.owner).reverse_account_adjustment(adjustment, reason, key or base.key(self.k))
+
+    def test_a_gold_adjustment_is_reversed_by_its_exact_opposite_and_the_original_stays(self):
+        gold = self.gold()
+        done = self.post("GOLD", "DEDUCT", "1.5")
+        self.assertEqual(self.gold(), gold - D("1.500"))
+        undone = self.reverse(done["id"])
+        self.assertEqual((self.gold(), undone["delta"], undone["reverses"]), (gold, D("1.500"), str(done["id"])))
+        self.assertEqual(len(self.db.account_adjustments), 2)
+        original = next(a for a in self.db.account_adjustments if a["id"] == int(done["id"]))
+        self.assertEqual((original["delta"], original.get("reverses_id")), (D("-1.500"), None))
+        self.assertEqual(self.db.gold[-1]["source_id"], int(undone["id"]))
+
+    def test_a_making_adjustment_is_reversed_too_and_nothing_else_moves(self):
+        making, cash = self.making(), len(self.db.cash_moves)
+        done = self.post("MAKING", "ADD", "250.50")
+        self.reverse(done["id"])
+        self.assertEqual((self.making(), len(self.db.cash_moves)), (making, cash))
+
+    def test_it_cannot_be_reversed_twice_and_a_reversal_is_never_reversed(self):
+        done = self.post("GOLD", "ADD", "2")
+        undone = self.reverse(done["id"])
+        with self.assertRaises(SupplierRuleError) as twice:
+            self.reverse(done["id"])
+        self.assertEqual(twice.exception.code, "ALREADY_REVERSED")
+        with self.assertRaises(SupplierRuleError) as again:
+            self.reverse(undone["id"])
+        self.assertEqual(again.exception.code, "ADJUSTMENT_IS_REVERSAL")
+
+    def test_a_reason_and_the_owner_right_are_required_and_a_retry_replays(self):
+        done = self.post("GOLD", "ADD", "2")
+        with self.assertRaises(SupplierRuleError):
+            self.reverse(done["id"], reason="  ")
+        manager = self.with_rights(list(OWNER_RIGHTS))
+        with self.assertRaises(PermissionError):
+            self.reverse(done["id"], service=manager)
+        key = base.key(777)
+        first = self.reverse(done["id"], key=key)
+        again = self.reverse(done["id"], key=key)
+        self.assertEqual((again["duplicate"], again["id"]), (True, first["id"]))
+        self.assertEqual(len(self.db.account_adjustments), 2)
+
+    def test_the_ledger_rows_know_their_state(self):
+        done = self.post("GOLD", "ADD", "2")
+        self.reverse(done["id"])
+        detail = self.suppliers.supplier_detail(self.supplier)
+        rows = {r["source_id"]: r for r in detail["gold_ledger"] if r["source_type"] == "SUPPLIER_ACCOUNT_ADJUSTMENT"}
+        original, undo = rows[str(done["id"])], [r for k, r in rows.items() if k != str(done["id"])][0]
+        self.assertEqual((original["adjustment_reversed"], original["adjustment_reverses"]), (True, False))
+        self.assertEqual((undo["adjustment_reversed"], undo["adjustment_reverses"]), (False, True))

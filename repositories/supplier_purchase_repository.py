@@ -198,11 +198,26 @@ class SupplierPurchaseRepository(SupplierRepository):
     def account_adjustment_by_request(self, key):
         return self._fetch_one("SELECT * FROM supplier_account_adjustments WHERE request_key = %s", (key,))
 
-    def insert_account_adjustment(self, *, supplier_id, kind, karat_id, delta, reason, key, user_id, now):
-        new_id, _ = self._execute(
-            "INSERT INTO supplier_account_adjustments (supplier_id, kind, karat_id, delta, reason, request_key, created_by_user_id, created_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)", (_id(supplier_id), kind, karat_id, delta, reason, key, user_id, now))
+    def insert_account_adjustment(self, *, supplier_id, kind, karat_id, delta, reason, key, user_id, now, reverses_id=None):
+        if reverses_id is None:                                         # the ordinary row: unchanged SQL, so a database below 102 keeps working
+            new_id, _ = self._execute(
+                "INSERT INTO supplier_account_adjustments (supplier_id, kind, karat_id, delta, reason, request_key, created_by_user_id, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)", (_id(supplier_id), kind, karat_id, delta, reason, key, user_id, now))
+        else:
+            new_id, _ = self._execute(
+                "INSERT INTO supplier_account_adjustments (supplier_id, kind, karat_id, delta, reason, reverses_id, request_key, created_by_user_id, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)", (_id(supplier_id), kind, karat_id, delta, reason, int(reverses_id), key, user_id, now))
         return int(new_id)
+
+    def account_adjustment(self, adjustment_id, lock=False):
+        """One adjustment row (locked when reversing). `reverses_id` exists from migration 102."""
+        return self._fetch_one("SELECT * FROM supplier_account_adjustments WHERE id = %s" + (" FOR UPDATE" if lock else ""), (_id(adjustment_id),))
+
+    def adjustment_reversal_of(self, adjustment_id):
+        """The reversal row of an adjustment, if it already has one (None below 102)."""
+        if not self.has_adjustment_reversal_schema():
+            return None
+        return self._fetch_one("SELECT id FROM supplier_account_adjustments WHERE reverses_id = %s", (_id(adjustment_id),))
 
     # ------------------------------------------------------------------ ledgers (insert only)
     def gold_type_id(self, code):

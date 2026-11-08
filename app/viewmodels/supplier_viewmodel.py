@@ -98,14 +98,16 @@ def making_row(r):
     elif r.get("reverses_invoice"):                                     # the exact opposite entry a reversal posted
         state = f"عكس الفاتورة {r['reverses_invoice']}"
     else:
-        state = ""
+        state = r.get("adjustment_state", "")
     return {"id": r["id"], "time": datetime_text(r["occurred_at"]), "movement": r["movement"],
+            "adjustmentId": r.get("adjustment_id") or "",
+            "canReverseAdjustment": bool(r.get("adjustment_id")) and not r.get("adjustment_reversed") and not r.get("adjustment_reverses"),
             "side": movement_side_text(r["amount_delta"]), "amount": money(abs(r["amount_delta"])),
             "balance": making_position_text(rules.direction(r["balance_after"]), r["balance_after"]),
             "reference": r["reference"], "sourceId": r["source_id"], "actor": r["actor"],
             "tone": TONES[rules.direction(r["amount_delta"])],
             "paymentId": r.get("payment_id") or "", "detail": detail, "state": state,
-            "reversed": bool(reversed_by or r.get("invoice_reversed_by")),
+            "reversed": bool(reversed_by or r.get("invoice_reversed_by") or r.get("adjustment_reversed")),
             "canReverse": is_payment and not reversed_by and r.get("payment_method") != "CUSTODY"}
 
 
@@ -1349,8 +1351,10 @@ class SupplierViewModel(QObject):
                 "state": (f"معكوسة بالعملية {r['reversed_by']}" if r.get("reversed_by")
                           else f"معكوسة بالعملية {r['invoice_reversed_by']}" if r.get("invoice_reversed_by")
                           else f"عكس الفاتورة {r['reverses_invoice']}" if r.get("reverses_invoice")
-                          else f"عكس التسوية {r['reverses_reference']}" if r.get("reverses_reference") else ""),
-                "settlementId": r.get("settlement_id") or "", "reversed": bool(r.get("reversed_by") or r.get("invoice_reversed_by")),
+                          else f"عكس التسوية {r['reverses_reference']}" if r.get("reverses_reference") else r.get("adjustment_state", "")),
+                "adjustmentId": r.get("adjustment_id") or "",
+                "canReverseAdjustment": bool(r.get("adjustment_id")) and not r.get("adjustment_reversed") and not r.get("adjustment_reverses"),
+                "settlementId": r.get("settlement_id") or "", "reversed": bool(r.get("reversed_by") or r.get("invoice_reversed_by") or r.get("adjustment_reversed")),
                 "canReverse": bool(r.get("settlement_id")) and not r.get("reversed_by")}
                            for r in self._detail["gold_ledger"]],
             "makingLedger": [making_row(r) for r in self._detail["making_ledger"]],

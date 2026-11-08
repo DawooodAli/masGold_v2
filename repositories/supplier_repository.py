@@ -257,6 +257,25 @@ class SupplierRepository(BaseRepository):
             ) x ORDER BY x.occurred_at DESC, x.id DESC LIMIT %s
             """, (_id(supplier_id), int(limit)))
 
+    _adjustment_reversal_schema = None
+
+    def has_adjustment_reversal_schema(self):
+        """True once migration 102 added supplier_account_adjustments.reverses_id (probed once per repository)."""
+        if self._adjustment_reversal_schema is None:
+            row = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() "
+                                  "AND TABLE_NAME = 'supplier_account_adjustments' AND COLUMN_NAME = 'reverses_id'")
+            self._adjustment_reversal_schema = bool(row and int(row["n"]))
+        return self._adjustment_reversal_schema
+
+    def adjustment_states(self, supplier_id):
+        """{adjustment id: {"reversed_by": id or None, "reverses": id or None}} for the supplier's account adjustments; empty below 102 (a plain read, one statement)."""
+        if not self.has_adjustment_reversal_schema():
+            return {}
+        rows = self._fetch_all("SELECT a.id, a.reverses_id, r.id AS reversed_by FROM supplier_account_adjustments a "
+                               "LEFT JOIN supplier_account_adjustments r ON r.reverses_id = a.id WHERE a.supplier_id = %s", (_id(supplier_id),))
+        return {int(r["id"]): {"reversed_by": None if r["reversed_by"] is None else int(r["reversed_by"]),
+                               "reverses": None if r["reverses_id"] is None else int(r["reverses_id"])} for r in rows}
+
     def audit(self, *, actor, event_type, entity_id, reference, description, metadata, now, entity_type="SUPPLIER"):
         self._execute(
             "INSERT INTO audit_log (user_id, event_type, entity_type, entity_id, entity_reference, description, "

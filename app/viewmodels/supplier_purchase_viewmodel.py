@@ -392,6 +392,14 @@ class SupplierPurchaseViewModel(QObject):
             return {"id": str(supplier_id), "account_adjusted": True, "delta": str(done["delta"])}
         self._write("تمت تسوية الفروق.", call)
 
+    @Slot(str, str, str, str)
+    def reverseAccountAdjustment(self, supplier_id, adjustment_id, reason, request_key):
+        """«عكس تسوية فروق»: the exact opposite of one stored adjustment; the service re-checks the owner right, the reason and that it is not reversed yet."""
+        def call(service, expected):
+            done = service.reverse_account_adjustment(adjustment_id, reason, request_key, _expected_actor=expected)
+            return {"id": str(supplier_id), "account_adjusted": True, "delta": str(done["delta"])}
+        self._write("تم عكس التسوية.", call)
+
     @Slot(str, str, int, str, str, int, str, str, str, str)
     def addPiece(self, invoice_id, group_id, item_type_id, weight, request_key, factory_id, size,
                  barcode_mode, barcode, notes):

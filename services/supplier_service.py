@@ -143,8 +143,9 @@ class SupplierService:
             neutral = repository.history_is_neutral(supplier_id)
             gold = repository.gold_ledger(supplier_id)
             making = repository.making_ledger(supplier_id)
+            states = repository.adjustment_states(supplier_id) if hasattr(repository, "adjustment_states") else {}
             holdings = self._holdings_view(connection, actor, supplier_id)
-        return {"holdings": holdings, "supplier": {"id": str(supplier["id"]), "code": rules.supplier_code(supplier["id"]),
+        detail = {"holdings": holdings, "supplier": {"id": str(supplier["id"]), "code": rules.supplier_code(supplier["id"]),
                              "name": supplier["name"], "phone": supplier["phone"] or "",
                              "notes": supplier["notes"] or "", "is_active": bool(supplier["is_active"]),
                              "karat_id": supplier["karat_id"],
@@ -186,6 +187,14 @@ class SupplierService:
                                  "reverses_invoice": (None if r.get("reversed_invoice_id") is None else rules.invoice_code(r["reversed_invoice_id"]))}
                                 for r in gold],
                 "making_ledger": [self._making_row(r) for r in making]}
+        for row in detail["gold_ledger"] + detail["making_ledger"]:                       # 102: an account-adjustment row knows whether it is reversed / is itself a reversal
+            if row.get("source_type") == "SUPPLIER_ACCOUNT_ADJUSTMENT":
+                state = states.get(int(row["source_id"]), {})
+                row["adjustment_id"] = str(row["source_id"])
+                row["adjustment_reversed"] = state.get("reversed_by") is not None
+                row["adjustment_reverses"] = state.get("reverses") is not None
+                row["adjustment_state"] = "معكوسة بتسوية عكس" if row["adjustment_reversed"] else "عكس تسوية سابقة" if row["adjustment_reverses"] else ""
+        return detail
 
     def _holdings_view(self, connection, actor, supplier_id):
         """«ذهب المحل لدى المسوقجي»: shop-owned whole lots at this party, for an actor with INTERMEDIARY_HOLDING_VIEW (re-checked against the

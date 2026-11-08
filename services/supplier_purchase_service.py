@@ -636,6 +636,59 @@ class SupplierPurchaseService:
                 raise PermissionError("انتهت جلسة الدخول.")
             return {"id": str(adjustment_id), "duplicate": False, "kind": kind, "delta": delta}
 
+    def reverse_account_adjustment(self, adjustment_id, reason, request_key, *, _expected_actor=None):
+        """«عكس تسوية فروق» (owner 2026-11-08, migration 102): post the EXACT opposite of one stored account adjustment as one more immutable adjustment row that names it. OWNER only
+        (rechecked in the transaction); a mandatory reason; an adjustment already reversed, or itself a reversal, is refused; idempotent on the request key. The original row is never touched."""
+        session_actor = authenticated_actor(self._session, ACCOUNT_ADJUST, "عكس تسوية فروق حساب المورد للمالك فقط.", _expected_actor)
+        adjustment_number = _id(adjustment_id, "ADJUSTMENT_NOT_FOUND", "التسوية غير موجودة.")
+        key = _key(request_key)
+        reason = clean_text(reason, REASON_MAX, "السبب", required=True)
+        with self._transaction() as connection:
+            actor = self._write_verified(connection, session_actor, ACCOUNT_ADJUST)
+            repository = self._repository(connection)
+            if not repository.has_account_adjustment_schema() or not repository.has_adjustment_reversal_schema():
+                raise rules.SupplierRuleError("SCHEMA_OUTDATED", "قاعدة البيانات تحتاج تحديث 102 قبل عكس التسوية.")
+            prior = repository.account_adjustment_by_request(key)
+            if prior is not None:
+                if prior.get("reverses_id") is None or int(prior["reverses_id"]) != adjustment_number or int(prior["created_by_user_id"]) != int(actor.user_id):
+                    raise rules.SupplierRuleError("REQUEST_CONFLICT", "طلب العكس مستخدم لعملية مختلفة.")
+                return {"id": str(prior["id"]), "duplicate": True, "kind": prior["kind"], "delta": Decimal(str(prior["delta"])), "reverses": str(adjustment_number)}
+            original = repository.account_adjustment(adjustment_number)
+            if original is None:
+                raise rules.SupplierRuleError("ADJUSTMENT_NOT_FOUND", "التسوية غير موجودة.")
+            supplier = repository.get_supplier(int(original["supplier_id"]), lock=True)               # lock order: supplier -> adjustment (a concurrent reversal waits here)
+            original = repository.account_adjustment(adjustment_number, lock=True)
+            if original.get("reverses_id") is not None:
+                raise rules.SupplierRuleError("ADJUSTMENT_IS_REVERSAL", "هذه حركة عكس نفسها: لا تُعكس مرة أخرى. سجّل تسوية جديدة إن لزم.")
+            if repository.adjustment_reversal_of(adjustment_number) is not None:
+                raise rules.SupplierRuleError("ALREADY_REVERSED", "هذه التسوية معكوسة بالفعل.")
+            kind, delta = original["kind"], -Decimal(str(original["delta"]))
+            karat_id = None if original["karat_id"] is None else int(original["karat_id"])
+            now = repository.db_now()
+            code = rules.supplier_code(supplier["id"])
+            new_id = repository.insert_account_adjustment(supplier_id=supplier["id"], kind=kind, karat_id=karat_id, delta=delta, reason=reason, key=key,
+                                                          user_id=actor.user_id, now=now, reverses_id=adjustment_number)
+            label = ("عكس تسوية فروق ذهب" if kind == "GOLD" else "عكس تسوية فروق مصنعيات") + f" — {reason}"
+            if kind == "GOLD":
+                type_id = repository.gold_type_id(ACCOUNT_ADJUSTMENT_MOVEMENT)
+                if type_id is None:
+                    raise RuntimeError("supplier gold movement type ACCOUNT_ADJUSTMENT is missing (migration 096)")
+                karat_value = supplier["karat_value"]
+                repository.insert_gold_movement(
+                    supplier_id=supplier["id"], type_id=type_id, karat_id=karat_id, weight_delta=delta, eq21_delta=rules.equivalent_21(delta, karat_value),
+                    source_type=ACCOUNT_ADJUSTMENT_SOURCE, source_id=new_id, reference=code, description=label, now=now, user_id=actor.user_id)
+            else:
+                type_id = repository.making_type_id(ACCOUNT_ADJUSTMENT_MOVEMENT)
+                if type_id is None:
+                    raise RuntimeError("supplier making movement type ACCOUNT_ADJUSTMENT is missing (migration 096)")
+                repository.insert_making_movement(supplier_id=supplier["id"], type_id=type_id, amount_delta=delta, source_type=ACCOUNT_ADJUSTMENT_SOURCE,
+                                                  source_id=new_id, reference=code, description=label, now=now, user_id=actor.user_id)
+            repository.audit(actor=actor, event_type="SUPPLIER_ACCOUNT_ADJUSTMENT_REVERSED", entity_id=int(supplier["id"]), reference=code, description=label,
+                             metadata={"kind": kind, "delta": str(delta), "reason": reason, "adjustment_id": new_id, "reverses": adjustment_number}, now=now)
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+            return {"id": str(new_id), "duplicate": False, "kind": kind, "delta": delta, "reverses": str(adjustment_number)}
+
     # ------------------------------------------------------------------ full reversal of a posted invoice (052)
     def _correction_service(self):
         if self._corrections is None:

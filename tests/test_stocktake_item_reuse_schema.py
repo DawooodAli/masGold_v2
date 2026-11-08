@@ -19,7 +19,7 @@ class StocktakeItemReuseSchemaTests(unittest.TestCase):
 
     def test_the_chain_replays_and_094_requires_093(self):
         self.assertEqual(self.model.problems, [])
-        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 101)
+        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 102)
         self.assertIn("MIGRATION_094_REFUSED_missing_093", self.forward)
         self.assertRegex(self.forward, r"INSERT INTO schema_migrations\(version,name\) VALUES \(94,")
         self.assertLessEqual(len(re.search(r"VALUES \(94,'([^']*)'", self.forward).group(1)), 150)

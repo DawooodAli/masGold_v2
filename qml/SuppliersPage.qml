@@ -82,7 +82,7 @@ Item {
         function onDraftSaved(invoiceId) { newInvoiceDialog.close() }
         function onInvoiceReversed(invoiceId) { reverseInvoiceDialog.close(); if (page.vm) page.vm.refresh() }
         function onInvoiceAdjusted(invoiceId) { adjustGroupDialog.close(); if (page.vm) page.vm.refresh() }
-        function onAccountAdjusted(supplierId) { accountAdjustDialog.close(); if (page.vm) page.vm.refresh() }
+        function onAccountAdjusted(supplierId) { accountAdjustDialog.close(); reverseAdjustmentDialog.close(); if (page.vm) page.vm.refresh() }
     }
 
     Rectangle { anchors.fill: parent; color: theme.bgPrimary }
@@ -983,6 +983,13 @@ Item {
                                                     accent: theme.red
                                                     onClicked: reverseSettlementDialog.openFor(modelData)
                                                 }
+                                                Btn {
+                                                    objectName: "reverseGoldAdjustmentButton"
+                                                    visible: !!page.pvm && page.pvm.canAdjustAccount && modelData.canReverseAdjustment === true
+                                                    text: "عكس"
+                                                    accent: theme.red
+                                                    onClicked: reverseAdjustmentDialog.openFor(modelData)
+                                                }
                                             }
                                         }
                                         Txt { anchors.centerIn: parent; visible: goldList.count === 0; text: "لا توجد حركات ذهب"
@@ -1524,6 +1531,13 @@ Item {
                                                     text: "عكس"
                                                     accent: theme.red
                                                     onClicked: reverseDialog.openFor(modelData)
+                                                }
+                                                Btn {
+                                                    objectName: "reverseMakingAdjustmentButton"
+                                                    visible: !!page.pvm && page.pvm.canAdjustAccount && modelData.canReverseAdjustment === true
+                                                    text: "عكس"
+                                                    accent: theme.red
+                                                    onClicked: reverseAdjustmentDialog.openFor(modelData)
                                                 }
                                             }
                                         }
@@ -2167,6 +2181,54 @@ Item {
                       onClicked: page.pvm.adjustAccount(String(page.detail.id), accountAdjustDialog.kind, accountAdjustDialog.direction,
                                                         accountAdjustAmount.text, accountAdjustReason.text, accountAdjustDialog.requestKey) }
                 Btn { objectName: "cancelAccountAdjustButton"; text: "إلغاء"; accent: theme.textSecondary; onClicked: accountAdjustDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- reverse one account adjustment (owner only, 102): the exact opposite, with a reason
+    Popup {
+        id: reverseAdjustmentDialog
+        objectName: "reverseAdjustmentDialog"
+        property string adjustmentId: ""
+        property string detailText: ""
+        property string requestKey: ""
+        function openFor(row) {
+            adjustmentId = String(row.adjustmentId)
+            detailText = (row.movement || "") + " — " + (row.side || "") + " " + (row.weight !== undefined ? row.weight + " جرام" : (row.amount || "") + " ج")
+            reverseAdjustmentReason.text = ""
+            requestKey = page.pvm ? page.pvm.newRequestKey() : ""
+            if (page.pvm) page.pvm.clearMessage()
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(460, page.width - 24)
+        modal: true
+        padding: 16
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        contentItem: ColumnLayout {
+            spacing: 8
+            Txt { Layout.fillWidth: true; font.bold: true; color: theme.gold; text: "عكس تسوية فروق — " + (page.detail.name || "") }
+            Txt { objectName: "reverseAdjustmentDetail"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textSecondary
+                  text: reverseAdjustmentDialog.detailText }
+            Txt { Layout.fillWidth: true; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "هتتسجل حركة عكس معاكسة تمامًا للتسوية، والتسوية الأصلية تفضل ظاهرة في السجل." }
+            Txt { Layout.fillWidth: true; text: "السبب *" }
+            TextField { id: reverseAdjustmentReason; objectName: "reverseAdjustmentReason"; Layout.fillWidth: true; placeholderText: "سبب العكس"
+                        font.family: "Cairo"; horizontalAlignment: TextInput.AlignRight }
+            Txt { objectName: "reverseAdjustmentError"; Layout.fillWidth: true; visible: text !== ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: !!page.pvm ? page.pvm.errorMessage : "" }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn { objectName: "confirmReverseAdjustmentButton"; primary: true
+                      text: !!page.pvm && page.pvm.busy ? "جارٍ الحفظ…" : "تأكيد العكس"
+                      enabled: reverseAdjustmentReason.text.trim().length > 0 && !!page.pvm && !page.pvm.busy
+                      onClicked: page.pvm.reverseAccountAdjustment(String(page.detail.id), reverseAdjustmentDialog.adjustmentId, reverseAdjustmentReason.text, reverseAdjustmentDialog.requestKey) }
+                Btn { objectName: "cancelReverseAdjustmentButton"; text: "إلغاء"; accent: theme.textSecondary; onClicked: reverseAdjustmentDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }
