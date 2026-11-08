@@ -2705,7 +2705,7 @@ ApplicationWindow {
                                 Button {
                                     objectName: "inventoryHistoryRestore"
                                     Layout.alignment: Qt.AlignRight
-                                    visible: inventoryVM.historyPiece.statusCode === "REMOVED"
+                                    visible: (inventoryVM.historyPiece.statusCode === "REMOVED" || inventoryVM.historyPiece.statusCode === "SOLD")
                                              && typeof stocktakeAdjustVM !== "undefined" && stocktakeAdjustVM.canAdjust
                                     text: "إعادة القطعة للمخزون"
                                     font.family: "Cairo"
@@ -13567,7 +13567,9 @@ ApplicationWindow {
             Label {
                 Layout.fillWidth: true; wrapMode: Text.Wrap; font.family: "Cairo"
                 color: theme.textPrimary; horizontalAlignment: Text.AlignRight
-                text: "القطعة اتشطبت بجرد وطلعت موجودة. هترجع للمخزون بنفس الباركود (" + (inventoryVM.historyPiece.barcode || "—") + ") ونفس البيانات، وبيتسجل ده بسببه."
+                text: inventoryVM.historyPiece.statusCode === "SOLD"
+                      ? "القطعة اتباعت بفاتورة قديمة ورجعت للمحل. هترجع للمخزون نفس القطعة بنفس الباركود (" + (inventoryVM.historyPiece.barcode || "—") + ") ونفس البيانات، وبيتسجل ده بسببه. الفاتورة القديمة وحساب العميل ما بيتغيروش. لو القطعة مباعة بفاتورة حالية استخدم المرتجع بدل كده."
+                      : "القطعة اتشطبت بجرد وطلعت موجودة. هترجع للمخزون بنفس الباركود (" + (inventoryVM.historyPiece.barcode || "—") + ") ونفس البيانات، وبيتسجل ده بسببه."
             }
             RowLayout {
                 Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
@@ -13575,7 +13577,7 @@ ApplicationWindow {
                 TextField {
                     id: restoreReason; objectName: "inventoryRestoreReason"
                     Layout.fillWidth: true; Layout.preferredHeight: 40
-                    placeholderText: "مثلاً: لقيتها موجودة"
+                    placeholderText: inventoryVM.historyPiece.statusCode === "SOLD" ? "مثلاً: العميل رجّعها" : "مثلاً: لقيتها موجودة"
                     font.family: "Cairo"; color: theme.textPrimary; horizontalAlignment: TextInput.AlignRight; maximumLength: 300
                     background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.border }
                 }

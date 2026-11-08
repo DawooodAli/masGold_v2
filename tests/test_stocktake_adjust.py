@@ -68,16 +68,25 @@ class Repo:
     def lock_removed_piece(self, item_id):
         if item_id not in self.store.pieces:
             return None
-        status = "REMOVED" if item_id in self.store.removed else "IN_STOCK"
+        status = "REMOVED" if item_id in self.store.removed else "SOLD" if item_id in getattr(self.store, "sold", set()) else "IN_STOCK"
         return {"id": item_id, "inventory_status": status, "stock_classification": "NEW_STOCK", "weight_grams": D(self.store.pieces[item_id][1]),
                 "write_offs": 1 if item_id in self.store.removed or item_id in getattr(self.store, "restored", []) else 0, "barcode_value": f"B{item_id}"}
 
-    def restore_piece(self, item_id, user_id):
+    def restore_piece(self, item_id, user_id, from_status="REMOVED"):
+        if from_status == "SOLD":
+            if item_id not in getattr(self.store, "sold", set()):
+                return False
+            self.store.sold.remove(item_id)
+            self.store.__dict__.setdefault("restocked", []).append(item_id)
+            return True
         if item_id not in self.store.removed:
             return False
         self.store.removed.remove(item_id)
         self.store.__dict__.setdefault("restored", []).append(item_id)
         return True
+
+    def current_sale_invoices(self, item_id):
+        return getattr(self.store, "current_invoices", {}).get(item_id, [])
 
     def insert_restore_movement(self, **kw):
         self.store.movements.append(dict(kw, restore=True))
@@ -129,6 +138,29 @@ class ApprovalTests(unittest.TestCase):
         self.assertEqual(never.exception.code, "NOT_REMOVED_BY_STOCKTAKE")
         with self.assertRaises(StocktakeError):
             service.restore_piece("99", "x")
+
+    def test_a_piece_sold_on_an_old_invoice_comes_back_as_the_same_piece_with_the_same_barcode(self):
+        service = self.build()
+        self.store.sold = {3}
+        result = service.restore_piece("3", "العميل رجّعها")
+        self.assertEqual((result["restored"], self.store.sold, self.store.restocked), (True, set(), [3]))
+        movement = self.store.movements[-1]
+        self.assertEqual((movement["from_status"], movement["reference_type"], movement["restore"]), ("SOLD", "PIECE_RESTOCK", True))
+        self.assertIn("بنفس الباركود", movement["reason"])
+        self.assertEqual((self.store.audits[-1]["metadata"]["barcode"], self.store.audits[-1]["metadata"]["from_status"]), ("B3", "SOLD"))
+        with self.assertRaises(StocktakeError) as again:
+            service.restore_piece("3", "تاني")                                                  # it is in stock now
+        self.assertEqual(again.exception.code, "NOT_REMOVED_BY_STOCKTAKE")
+
+    def test_a_piece_sold_on_a_current_invoice_is_refused_and_sent_to_the_return(self):
+        service = self.build()
+        self.store.sold = {3}
+        self.store.current_invoices = {3: ["INV000123"]}
+        with self.assertRaises(StocktakeError) as refused:
+            service.restore_piece("3", "x")
+        self.assertEqual(refused.exception.code, "USE_RETURN")
+        self.assertIn("INV000123", str(refused.exception))
+        self.assertEqual(self.store.sold, {3})
 
     def test_restoring_needs_the_stocktake_right(self):
         service = self.build(frozenset({"APP_LOGIN"}))

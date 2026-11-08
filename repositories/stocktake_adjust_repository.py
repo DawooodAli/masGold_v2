@@ -97,17 +97,28 @@ class StocktakeAdjustRepository(BaseRepository):
             "(SELECT b.barcode_value FROM inventory_barcodes b WHERE b.inventory_item_id = ii.id AND b.barcode_status = 'ACTIVE' LIMIT 1) AS barcode_value "
             "FROM inventory_items ii WHERE ii.id = %s FOR UPDATE", (int(item_id),))
 
-    def restore_piece(self, item_id, user_id):
-        _, count = self._execute("UPDATE inventory_items SET inventory_status = 'IN_STOCK', updated_by_user_id = %s, updated_at = NOW() WHERE id = %s AND inventory_status = 'REMOVED'", (user_id, int(item_id)))
+    def restore_piece(self, item_id, user_id, from_status="REMOVED"):
+        _, count = self._execute("UPDATE inventory_items SET inventory_status = 'IN_STOCK', updated_by_user_id = %s, updated_at = NOW() WHERE id = %s AND inventory_status = %s",
+                                 (user_id, int(item_id), from_status))
         return count == 1
 
-    def insert_restore_movement(self, *, item, movement_type_id, reason, user_id):
+    def insert_restore_movement(self, *, item, movement_type_id, reason, user_id, from_status="REMOVED", reference_type="STOCKTAKE_RESTORE"):
         new_id, _ = self._execute(
             "INSERT INTO inventory_movements (inventory_item_id, movement_type_id, from_stock_classification, to_stock_classification, from_inventory_status, to_inventory_status, "
             "from_weight_grams, to_weight_grams, reason, reference_type, reference_id, occurred_at, performed_by_user_id, performed_by_employee_id) "
-            "VALUES (%s, %s, %s, %s, 'REMOVED', 'IN_STOCK', %s, %s, %s, 'STOCKTAKE_RESTORE', %s, NOW(), %s, NULL)",
-            (int(item["id"]), movement_type_id, item["stock_classification"], item["stock_classification"], item["weight_grams"], item["weight_grams"], reason, int(item["id"]), user_id))
+            "VALUES (%s, %s, %s, %s, %s, 'IN_STOCK', %s, %s, %s, %s, %s, NOW(), %s, NULL)",
+            (int(item["id"]), movement_type_id, item["stock_classification"], item["stock_classification"], from_status, item["weight_grams"], item["weight_grams"], reason, reference_type,
+             int(item["id"]), user_id))
         return new_id
+
+    def current_sale_invoices(self, item_id):
+        """The numbers of the CURRENT (not old-program, not fully reversed) finalized invoices that sold this piece. A piece sold on one of them comes back through Return / Exchange, never here."""
+        rows = self._fetch_all(
+            "SELECT DISTINCT i.invoice_number FROM invoice_lines l JOIN invoices i ON i.id = l.invoice_id "
+            "LEFT JOIN transaction_corrections c ON c.source_type = 'INVOICE' AND c.source_id = i.id AND c.correction_type = 'FULL_REVERSAL' "
+            "WHERE l.inventory_item_id = %s AND l.line_type = 'SELL_INVENTORY' AND i.invoice_status = 'FINALIZED' AND i.record_origin <> 'LEGACY' AND c.id IS NULL "
+            "ORDER BY i.invoice_number", (int(item_id),))
+        return [r["invoice_number"] for r in rows]
 
     def audit_restore(self, *, user_id, item_id, description, metadata):
         self._execute("INSERT INTO audit_log (user_id, event_type, entity_type, entity_id, entity_reference, description, metadata_json, occurred_at) VALUES (%s, 'STOCKTAKE_PIECE_RESTORED', 'INVENTORY_ITEM', %s, %s, %s, %s, NOW())",

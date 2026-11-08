@@ -51,7 +51,7 @@ class StocktakeAdjustService:
         return actor is not None and PERMISSION in actor.permissions
 
     def restore_piece(self, piece_id, reason, *, _expected_actor=None):
-        """قطعة اتشطبت بالجرد ورجعت ظهرت: returns ONE piece an approved stocktake removed (status REMOVED) to the stock, with a mandatory reason. The stored stocktake document is never rewritten; the
+        """قطعة اتشطبت بالجرد ورجعت ظهرت، أو قطعة مباعة (فاتورة قديمة) رجعت للمحل: returns ONE piece an approved stocktake removed (REMOVED) - or a piece SOLD on an old-program invoice that came back, with the SAME barcode - to the stock, with a mandatory reason. The stored stocktake document is never rewritten; the
         piece gets a RESTORED movement and an audit row. A piece that was never removed by a stocktake, or is already back, is refused. Right STOCKTAKE_ADJUST, rechecked in the transaction."""
         session_actor = self._session.require_authenticated()
         if _expected_actor is not None and not self._session.is_current(_expected_actor):
@@ -70,16 +70,27 @@ class StocktakeAdjustService:
             piece = repository.lock_removed_piece(int(raw))
             if piece is None:
                 raise StocktakeError("PIECE_NOT_FOUND", "القطعة غير موجودة.")
-            if piece["inventory_status"] != "REMOVED" or int(piece["write_offs"] or 0) < 1:
-                raise StocktakeError("NOT_REMOVED_BY_STOCKTAKE", "هذه القطعة لم تُشطب بجرد، أو رجعت للمخزون بالفعل.")
-            movement_type = repository.movement_type_id("RESTORED")
+            sold = piece["inventory_status"] == "SOLD"
+            if sold:
+                # Owner 2026-11-08: a piece that left the shop (sold, typically on an old-program invoice) and comes back is put in stock again as the SAME piece with the SAME barcode.
+                # A piece sold on a CURRENT invoice must come back through Return / Exchange (they carry the money): refused here.
+                current = repository.current_sale_invoices(int(raw)) if hasattr(repository, "current_sale_invoices") else []
+                if current:
+                    raise StocktakeError("USE_RETURN", "القطعة مباعة بفاتورة حالية (" + "، ".join(str(n) for n in current) + "): ارجعها بمرتجع أو استبدال من الفاتورة علشان الحساب يتظبط.")
+            elif piece["inventory_status"] != "REMOVED" or int(piece["write_offs"] or 0) < 1:
+                raise StocktakeError("NOT_REMOVED_BY_STOCKTAKE", "هذه القطعة لم تُشطب بجرد ولا مباعة بفاتورة قديمة، أو رجعت للمخزون بالفعل.")
+            movement_type = repository.movement_type_id("RETURNED_ITEM_RESTOCKED" if sold else "RESTORED")
             if movement_type is None:
                 raise StocktakeError("SCHEMA_OUTDATED", "نوع حركة الإرجاع غير موجود.")
-            if not repository.restore_piece(int(raw), actor.user_id):
-                raise StocktakeError("NOT_REMOVED_BY_STOCKTAKE", "هذه القطعة لم تُشطب بجرد، أو رجعت للمخزون بالفعل.")
-            repository.insert_restore_movement(item=piece, movement_type_id=movement_type, reason=f"إرجاع قطعة مشطوبة بالجرد — {text}", user_id=actor.user_id)
-            repository.audit_restore(user_id=actor.user_id, item_id=int(raw), description=f"إرجاع القطعة #{int(raw)} للمخزون بعد شطبها بجرد",
-                                     metadata={"reason": text, "barcode": piece.get("barcode_value"), "weight_grams": str(piece["weight_grams"])})
+            from_status = "SOLD" if sold else "REMOVED"
+            if not repository.restore_piece(int(raw), actor.user_id, from_status):
+                raise StocktakeError("NOT_REMOVED_BY_STOCKTAKE", "هذه القطعة لم تُشطب بجرد ولا مباعة بفاتورة قديمة، أو رجعت للمخزون بالفعل.")
+            repository.insert_restore_movement(item=piece, movement_type_id=movement_type, user_id=actor.user_id, from_status=from_status,
+                                               reason=(f"رجوع قطعة مباعة (فاتورة قديمة) للمخزون بنفس الباركود — {text}" if sold else f"إرجاع قطعة مشطوبة بالجرد — {text}"),
+                                               reference_type="PIECE_RESTOCK" if sold else "STOCKTAKE_RESTORE")
+            repository.audit_restore(user_id=actor.user_id, item_id=int(raw),
+                                     description=(f"رجوع القطعة المباعة #{int(raw)} للمخزون بنفس الباركود" if sold else f"إرجاع القطعة #{int(raw)} للمخزون بعد شطبها بجرد"),
+                                     metadata={"reason": text, "barcode": piece.get("barcode_value"), "weight_grams": str(piece["weight_grams"]), "from_status": from_status})
             if not self._session.is_current(session_actor):
                 raise PermissionError("انتهت جلسة الدخول.")
         return {"piece_id": raw, "restored": True}
