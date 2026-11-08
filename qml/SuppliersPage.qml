@@ -2138,12 +2138,16 @@ Item {
                 Layout.fillWidth: true
                 layoutDirection: Qt.RightToLeft
                 spacing: 8
-                Btn { objectName: "accountAdjustAddButton"; text: "إضافة"; primary: accountAdjustDialog.direction === "ADD"
+                Btn { objectName: "accountAdjustAddButton"; text: "علينا"; primary: accountAdjustDialog.direction === "ADD"
                       onClicked: accountAdjustDialog.direction = "ADD" }
-                Btn { objectName: "accountAdjustDeductButton"; text: "تنزيل"; primary: accountAdjustDialog.direction === "DEDUCT"
+                Btn { objectName: "accountAdjustDeductButton"; text: "لنا"; primary: accountAdjustDialog.direction === "DEDUCT"
                       onClicked: accountAdjustDialog.direction = "DEDUCT" }
                 Item { Layout.fillWidth: true }
             }
+            Txt { objectName: "accountAdjustHint"; Layout.fillWidth: true; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: accountAdjustDialog.direction === "ADD"
+                        ? "علينا: تُضاف لرصيد المورد (اللي علينا له يزيد، أو اللي لنا عنده يقل)."
+                        : "لنا: تُخصم من رصيد المورد (اللي لنا عنده يزيد، أو اللي علينا له يقل)." }
             Txt { Layout.fillWidth: true; text: accountAdjustDialog.kind === "GOLD" ? "الوزن (جرام) *" : "المبلغ (ج) *" }
             TextField { id: accountAdjustAmount; objectName: "accountAdjustAmountField"; Layout.fillWidth: true
                         placeholderText: accountAdjustDialog.kind === "GOLD" ? "0.000" : "0.00"
