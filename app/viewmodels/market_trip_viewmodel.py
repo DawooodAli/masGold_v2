@@ -376,11 +376,11 @@ class MarketTripViewModel(QObject):
             self._write("cashsettle", "تم تسجيل المصروف من العهدة", lambda s, a: s.record_custody_expense(
                 trip_id, amount, text, entry_date, "", notes, request_key, _expected_actor=a), False)
 
-    @Slot(str, str, str, str, str, str, str)
-    def recordBarFee(self, trip_id, party_id, amount, entry_date, reference, notes, request_key):
-        """Record the cash fee a supplier / marketer paid for a bar: it enters the custody cash (a supplier's making account is reduced by it). Only ids and typed text are sent."""
+    @Slot(str, str, str, str, str, str)
+    def recordBarFee(self, trip_id, amount, entry_date, reference, notes, request_key):
+        """Record the cash fee received for a bar: it enters the custody cash ONLY (no party, no supplier account, no Main Safe). Only ids and typed text are sent."""
         self._write("barfee", "تم تسجيل أجر السبيكة", lambda s, a: s.bar_fee(
-            trip_id, party_id, amount, entry_date, reference, notes, request_key, _expected_actor=a), False)
+            trip_id, "", amount, entry_date, reference, notes, request_key, _expected_actor=a), False)
 
     @Slot(str, str, str, str)
     def classifyAsLogo(self, trip_id, entry_date, notes, request_key):

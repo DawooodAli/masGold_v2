@@ -2297,24 +2297,16 @@ Item {
         }
     }
 
-    // ---------------------------------------------------------------- bar fee: cash a supplier / marketer paid for a delivered bar
+    // ---------------------------------------------------------------- bar fee: cash received for a bar (custody cash only)
     Popup {
         id: barFeeDialog
         objectName: "tripBarFeeDialog"
         property string tripId: ""
         property string requestKey: ""
-        readonly property var partyChoices: {
-            var seen = {}, out = [{ id: "", text: "اختر المورد / المسوقجي" }]
-            var all = (page.ctx.suppliers || []).concat(page.ctx.holdParties || [])
-            for (var i = 0; i < all.length; i++) { if (!seen[all[i].id]) { seen[all[i].id] = true; out.push(all[i]) } }
-            return out
-        }
-        readonly property string partyId: partyChoices[barFeeParty.currentIndex] ? partyChoices[barFeeParty.currentIndex].id : ""
         function openFor(trip) {
             if (!page.vm) return
             tripId = trip
             requestKey = page.vm.newRequestKey()
-            barFeeParty.currentIndex = 0
             barFeeAmount.text = ""
             barFeeReference.text = ""
             barFeeDate.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
@@ -2326,7 +2318,7 @@ Item {
         parent: Overlay.overlay
         anchors.centerIn: parent
         width: Math.min(520, page.width - 24)
-        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 520, 520)
+        height: Math.min(Overlay.overlay ? Overlay.overlay.height - 24 : 440, 440)
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
@@ -2335,9 +2327,7 @@ Item {
             spacing: 6
             Txt { Layout.fillWidth: true; text: "أجر السبيكة"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
             Txt { objectName: "barFeeRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                  text: "الأجر نقدية استلمتها من المورد أو المسوقجي: تدخل نقدية العهدة فقط ولا تتحرك في أي حساب آخر (لا مصنعيات المورد ولا الخزنة). يمكنك بعدها رجوعها للخزنة أو دفع مصنعيات منها." }
-            Txt { Layout.fillWidth: true; text: "المورد / المسوقجي *" }
-            Combo { id: barFeeParty; objectName: "barFeePartyCombo"; Layout.fillWidth: true; model: barFeeDialog.partyChoices; textRole: "text" }
+                  text: "الأجر نقدية استلمتها عن سبيكة: تدخل نقدية العهدة فقط ولا تتحرك في أي حساب آخر (لا موردين ولا مسوقجي ولا الخزنة). يمكنك بعدها رجوعها للخزنة أو دفع مصنعيات منها." }
             Txt { Layout.fillWidth: true; text: "المبلغ (ج) *" }
             Field { id: barFeeAmount; objectName: "barFeeAmountField"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
             Txt { Layout.fillWidth: true; text: "المرجع" }
@@ -2357,8 +2347,8 @@ Item {
                     objectName: "confirmBarFeeButton"
                     text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "تسجيل"
                     primary: true
-                    enabled: barFeeDialog.partyId !== "" && barFeeAmount.text.trim().length > 0 && barFeeDate.text.trim().length > 0 && !!page.vm && !page.vm.writing
-                    onClicked: page.vm.recordBarFee(barFeeDialog.tripId, barFeeDialog.partyId, barFeeAmount.text, barFeeDate.text,
+                    enabled: barFeeAmount.text.trim().length > 0 && barFeeDate.text.trim().length > 0 && !!page.vm && !page.vm.writing
+                    onClicked: page.vm.recordBarFee(barFeeDialog.tripId, barFeeAmount.text, barFeeDate.text,
                                                     barFeeReference.text, barFeeNotes.text, barFeeDialog.requestKey)
                 }
                 Btn { objectName: "cancelBarFeeButton"; text: "إلغاء"; accent: theme.textSecondary

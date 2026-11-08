@@ -570,7 +570,7 @@ class MarketTripRepository(BaseRepository):
 
     def insert_bar_fee(self, *, entry_id, party_id, party_kind, amount, making_movement_id, reference):
         self._execute("INSERT INTO market_trip_bar_fees (entry_id, party_id, party_kind, amount, making_movement_id, reference) VALUES (%s, %s, %s, %s, %s, %s)",
-                      (_id(entry_id), int(party_id), party_kind, amount, making_movement_id, reference))
+                      (_id(entry_id), None if party_id is None else int(party_id), party_kind, amount, making_movement_id, reference))
 
     def entry_bar_fee(self, entry_id):
         """The fee a ST_BAR_FEE entry recorded (None for any other entry or a database before 080)."""
@@ -578,7 +578,7 @@ class MarketTripRepository(BaseRepository):
             return None
         return self._fetch_one(
             "SELECT f.entry_id, f.party_id, f.party_kind, f.amount, f.making_movement_id, f.reference, s.name AS party_name "
-            "FROM market_trip_bar_fees f JOIN suppliers s ON s.id = f.party_id WHERE f.entry_id = %s", (_id(entry_id),))
+            "FROM market_trip_bar_fees f LEFT JOIN suppliers s ON s.id = f.party_id WHERE f.entry_id = %s", (_id(entry_id),))
 
     # ------------------------------------------------------------------ supplier payments from custody (043)
     def suppliers(self):

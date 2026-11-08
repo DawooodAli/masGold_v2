@@ -1168,19 +1168,21 @@ class MarketTripService:
 
     # ------------------------------------------------------------------ bar fee received in cash (080)
     def bar_fee(self, trip_id, party_id, amount, fee_date, reference, notes, request_key, *, _expected_actor=None):
-        """RECORD the cash fee (أجر السبيكة) a supplier / marketer pays the owner when a bar is handed to them. The cash enters the
+        """RECORD the cash fee (أجر السبيكة) received when a bar is handed over. The cash enters the
         custody cash (no Main Safe / bank movement). Owner 2026-11-08 (migration 101): the fee goes to the custody cash ONLY, for a supplier as for a marketer; it never touches the
         supplier's making account. (Fees posted before 101 keep their stored deduction and their reversal restores it.)"""
         session_actor = self._actor(_expected_actor)
         if str(trip_id or "").strip() == "":
             raise TripError("TRIP_NOT_FOUND", "اختر العهدة.")
         trip_number = _trip_id(trip_id)
-        try:
-            party_number = int(str(party_id).strip())
-        except (TypeError, ValueError):
-            raise TripError("SUPPLIER_NOT_FOUND", "اختر المورد أو المسوقجي.") from None
-        if party_number <= 0:
-            raise TripError("SUPPLIER_NOT_FOUND", "اختر المورد أو المسوقجي.")
+        party_number = None                                                   # owner 2026-11-08 (migration 103): the fee belongs to the custody; a party is optional
+        if str(party_id or "").strip() != "":
+            try:
+                party_number = int(str(party_id).strip())
+            except (TypeError, ValueError):
+                raise TripError("SUPPLIER_NOT_FOUND", "المورد أو المسوقجي غير صحيح.") from None
+            if party_number <= 0:
+                raise TripError("SUPPLIER_NOT_FOUND", "المورد أو المسوقجي غير صحيح.")
         value = parse_cash(amount)
         if value == 0:
             raise TripError("AMOUNT_REQUIRED", "أدخل أجر السبيكة بقيمة موجبة.")
@@ -1211,7 +1213,7 @@ class MarketTripService:
         fee = repository.entry_bar_fee(entry["id"]) or {}
         return {"entry_id": str(entry["id"]), "trip_id": str(entry["trip_id"]), "trip_code": trip_code(entry["trip_id"]),
                 "code": entry_code(entry["trip_id"], entry["entry_no"]), "kind": ST_BAR_FEE, "created": False, "duplicate": True,
-                "party_id": str(fee.get("party_id", "")), "amount": str(fee.get("amount", ""))}
+                "party_id": "" if fee.get("party_id") is None else str(fee["party_id"]), "amount": str(fee.get("amount", ""))}
 
     def _post_bar_fee(self, session_actor, trip_id, party_id, value, dated, reference, notes, key, digest):
         with self._transaction() as connection:
@@ -1227,19 +1229,21 @@ class MarketTripService:
                 return replay
             if trip["status"] != OPEN:
                 raise TripError("TRIP_CLOSED", "العهدة مغلقة: أعد فتحها أولاً لتسجيل أجر السبيكة.")
-            party = suppliers.get_supplier(party_id, lock=True)
-            if party is None:
-                raise TripError("SUPPLIER_NOT_FOUND", "المورد أو المسوقجي غير موجود.")
-            is_supplier = rules.has_supplier_role(party)
-            if not is_supplier and not party.get("is_intermediary"):
-                raise TripError("PARTY_ROLE", "الطرف المختار ليس موردًا ولا مسوقجيًا.")
+            party, is_supplier = None, False
+            if party_id is not None:
+                party = suppliers.get_supplier(party_id, lock=True)
+                if party is None:
+                    raise TripError("SUPPLIER_NOT_FOUND", "المورد أو المسوقجي غير موجود.")
+                is_supplier = rules.has_supplier_role(party)
+                if not is_supplier and not party.get("is_intermediary"):
+                    raise TripError("PARTY_ROLE", "الطرف المختار ليس موردًا ولا مسوقجيًا.")
             now = repository.db_now()
             entry_no = repository.next_entry_no(trip_id)
             entry_id = repository.insert_entry(trip_id=trip_id, entry_no=entry_no, kind=ST_BAR_FEE, entry_date=dated, notes=notes,
                                                key=key, digest=digest, actor=actor, now=now)
             code = entry_code(trip_id, entry_no)
-            label = f"{KIND_TEXT[ST_BAR_FEE]} {code} — {trip_code(trip_id)}: {value:,.2f} ج من {party['name']}"
-            repository.insert_bar_fee(entry_id=entry_id, party_id=party_id, party_kind="SUPPLIER" if is_supplier else "INTERMEDIARY",
+            label = f"{KIND_TEXT[ST_BAR_FEE]} {code} — {trip_code(trip_id)}: {value:,.2f} ج" + ("" if party is None else f" من {party['name']}")
+            repository.insert_bar_fee(entry_id=entry_id, party_id=party_id, party_kind=None if party is None else ("SUPPLIER" if is_supplier else "INTERMEDIARY"),
                                       amount=value, making_movement_id=None, reference=reference)
             repository.audit(actor=actor, event_type="MARKET_TRIP_BAR_FEE", entity_id=entry_id, reference=code, description=label,
                              metadata={"trip_id": trip_id, "kind": ST_BAR_FEE, "party_id": party_id, "amount": str(value),
@@ -1247,7 +1251,7 @@ class MarketTripService:
             if not self._session.is_current(session_actor):
                 raise PermissionError("انتهت جلسة الدخول.")
         return {"entry_id": str(entry_id), "trip_id": str(trip_id), "trip_code": trip_code(trip_id), "code": code, "kind": ST_BAR_FEE,
-                "created": False, "duplicate": False, "party_id": str(party_id), "amount": str(value)}
+                "created": False, "duplicate": False, "party_id": "" if party_id is None else str(party_id), "amount": str(value)}
 
     # ------------------------------------------------------------------ supplier GOLD settlement from custody (046)
     def settle_supplier_gold(self, trip_id, supplier_id, karat_id, designation, weight, settlement_date, reference, notes, request_key,

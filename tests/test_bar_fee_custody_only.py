@@ -79,6 +79,13 @@ class BarFeeTests(unittest.TestCase):
         fee = next(v for k, v in Trips.log if k == "fee")
         self.assertEqual((fee["party_kind"], fee["making_movement_id"]), ("SUPPLIER", None))
 
+    def test_a_fee_without_any_party_is_custody_cash_only(self):
+        result = self.service.bar_fee("5", "", "90", date(2026, 11, 8), "", "", "55555555-5555-4555-8555-000000000003")
+        self.assertEqual((result["amount"], result["party_id"]), ("90.00", ""))
+        self.assertEqual(Suppliers.calls, [])
+        fee = next(v for k, v in Trips.log if k == "fee")
+        self.assertEqual((fee["party_id"], fee["party_kind"], fee["making_movement_id"]), (None, None, None))
+
     def test_it_needs_no_supplier_payment_right(self):
         self.assertNotIn("SUPPLIER_MAKING_PAY", OWNER)
         self.service.bar_fee("5", "11", "10", date(2026, 11, 8), "", "", "55555555-5555-4555-8555-000000000002")
