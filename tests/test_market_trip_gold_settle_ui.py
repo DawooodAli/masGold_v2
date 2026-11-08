@@ -491,6 +491,26 @@ class DistributionPageTests(GoldSettlePageTests):
         self.assertEqual(self.warnings, [])
 
 
+    def test_the_custody_expense_has_its_own_button_that_opens_the_expense_form(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.melted_trip()
+        self.tvm._service.issue(self.tvm.selectedTripId, "10000", [], TODAY, "", self.tvm.newRequestKey())
+        self.tvm.refresh()
+        self.wait_until(lambda: self.tvm.detail.get("cashSettleAvailable"), "cash available")
+        self.reveal(self.item("custodyExpenseButton"))
+        self.assertEqual(self.item("custodyExpenseButton").property("text"), "مصروف من العهدة")
+        self.click("custodyExpenseButton")
+        self.wait_until(lambda: self.item("tripCashSettleDialog").property("opened"), "the expense form")
+        QTest.qWait(120)
+        self.assertEqual(self.item("tripCashSettleDialog").property("kind"), "EXPENSE")
+        self.type_in("cashSettleAmountField", "300")
+        self.type_in("cashSettleTextField", "بنزين")
+        QTest.qWait(100)
+        self.click("confirmCashSettleButton")
+        self.wait_until(lambda: len(self.db.settle_cash) == 1, "expense posted")
+        self.assertEqual(self.warnings, [])
+
     def test_the_older_actions_are_hidden_by_default_and_the_new_workflow_stays_visible(self):
         self.root.setWidth(1080)
         self.root.setHeight(680)

@@ -1196,6 +1196,31 @@ class CashflowTests(Case):
         self.assertEqual([(r["label"], r["value"]) for r in bars["cashflow_net_time"]["rows"]], [("2026-10-10", D("900.00"))])      # the same entries over time: one day here (a short period is daily)
         self.assertEqual([b["key"] for b in result["bars"]][:3], ["cashflow_in_time", "cashflow_out_time", "cashflow_net_time"])
 
+    def test_expenses_paid_from_the_market_custody_appear_as_one_item_and_a_reversed_one_does_not(self):
+        class Repo(FakeRepo):
+            def market_expenses(self, start, end):
+                return [{"entry_id": 1, "trip_id": 7, "entry_no": 3, "doc_date": date(2026, 10, 12), "amount": D("250.00"), "description": "بنزين وأكل", "reference": None, "reversal_id": None},
+                        {"entry_id": 2, "trip_id": 7, "entry_no": 4, "doc_date": date(2026, 10, 13), "amount": D("90.00"), "description": "اتلغى", "reference": None, "reversal_id": 9}]
+        service = ReportService(self.service._session, transaction_factory=self.service._transaction, repository=Repo, authorization=self.service._authorization, today=lambda: TODAY)
+        result = service.run("cashflow", self.PERIOD)
+        rows = self.rows(result, "operating")
+        self.assertEqual(rows["مصروف السوق"]["out"], D("250.00"))
+        self.assertEqual(self.totals(result)["مصروفات مسجلة"], D("850.00"))                                    # 600 electricity + 250 market; the reversed 90 is not counted
+        detail = next(t for t in result["tables"] if t["key"] == "market_expenses")["rows"]
+        self.assertEqual([(r["date"], r["description"], r["amount"]) for r in detail], [("2026-10-12", "بنزين وأكل", D("250.00"))])
+        self.assertIn(("2026-10-12", D("250.00")), [(r["label"], r["value"]) for b in result["bars"] if b["key"] == "cashflow_out_time" for r in b["rows"]])
+
+    def test_without_the_market_right_the_report_says_the_market_expenses_are_left_out(self):
+        class Repo(FakeRepo):
+            def market_expenses(self, start, end):
+                raise AssertionError("must not be read without the right")
+        rights = frozenset({"APP_LOGIN", "REPORTS_VIEW", "CASH_VIEW", "BANK_VIEW"})
+        session = session_for(rights)
+        limited = ReportService(session, transaction_factory=self.service._transaction, repository=Repo, authorization=FakeAuthorization(session), today=lambda: TODAY)
+        result = limited.run("cashflow", self.PERIOD)
+        self.assertNotIn("مصروف السوق", self.rows(result, "operating"))
+        self.assertIn("مصروف السوق", next(t["note"] for t in result["totals"] if t["label"] == "مصروفات مسجلة"))
+
     def test_cash_from_or_to_a_customer_is_neither_income_nor_expense(self):
         base = {"transfer_group_id": None, "type_name": "x", "corrected_category": None, "correction_source": None, "corrected_operation_type": None, "reference_type": "FINANCIAL_OPERATION"}
         rows = [dict(base, type_code="WITHDRAWAL", amount=D("-300.00"), category="CUST_OUT"), dict(base, type_code="DEPOSIT", amount=D("200.00"), category="CUST_IN"),

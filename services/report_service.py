@@ -369,11 +369,31 @@ class ReportService:
                 row["in"] += amount
             else:
                 row["out"] += -amount
+        market_rows, market_note = [], ""
+        reader = getattr(repo, "market_expenses", None)
+        if reader:
+            if gate("MARKET_TRIP_MANAGE"):
+                # owner 2026-11-08: an expense paid from the market custody posts no cash / bank movement (the cash stays in custody), so it is read from its own document. A reversed one is not counted.
+                label = "مصروف السوق"
+                for r in reader(start, end):
+                    if r["reversal_id"]:
+                        continue
+                    amount = _dec(r["amount"])
+                    item = recorded.setdefault(label, {"in": ZERO2, "out": ZERO2})
+                    item["out"] += amount
+                    recorded_out += amount
+                    slot = by_time.setdefault(_dateish(r["doc_date"]).strftime("%Y-%m-%d" if daily else "%Y-%m"), {"in": ZERO2, "out": ZERO2})
+                    slot["out"] += amount
+                    market_rows.append({"date": _dateish(r["doc_date"]).strftime("%Y-%m-%d"), "trip": f"رحلة {r['trip_id']} • حركة {r['entry_no']}", "description": r["description"] or "", "amount": amount})
+            else:
+                market_note = " • لا تشمل: مصروف السوق"
         cols = [col("label", "البند"), col("in", "داخل", "money"), col("out", "خارج", "money"), col("net", "الصافي", "money")]
 
         def rows_of(bucket):
             return [{"label": k, "in": v["in"], "out": v["out"], "net": v["in"] - v["out"]} for k, v in sorted(bucket.items(), key=lambda kv: (-(kv[1]["in"] + kv[1]["out"]), kv[0]))]
         tables = [table("operating", "الإيرادات والمصروفات حسب البند", cols, rows_of(recorded))]
+        if market_rows:
+            tables.append(table("market_expenses", "تفصيل مصروف السوق", [col("date", "التاريخ"), col("trip", "الرحلة"), col("description", "البيان"), col("amount", "المبلغ", "money")], market_rows))
         reader = getattr(repo, "sales_invoices", None)
         if reader and gate("INVOICE_VIEW"):
             # owner 2026-11-05: an invoice that moved no (or only part of its) money still shows with its FULL total: the part left on the customer's account is the «خارج»
@@ -398,7 +418,7 @@ class ReportService:
         missing = [name for right, name in (("CASH_VIEW", "النقدية"), ("BANK_VIEW", "البنوك والمحافظ")) if not gate(right)]
         for name in missing:
             tables.append(self._unavailable("missing_" + name, name, "ليست لديك صلاحية عرض هذا القسم: الأرقام لا تشملها."))
-        note = (" • لا تشمل: " + "، ".join(missing)) if missing else ""
+        note = ((" • لا تشمل: " + "، ".join(missing)) if missing else "") + market_note
         bars = [{"key": "expenses", "title": "المصروفات حسب البند", "tone": "payable",
                  "rows": sorted(({"label": k, "value": v["out"] - v["in"]} for k, v in recorded.items() if v["out"] - v["in"] > 0), key=lambda r: (-r["value"], r["label"]))},
                 {"key": "income", "title": "الإيرادات حسب البند", "tone": "receivable",
@@ -410,11 +430,11 @@ class ReportService:
                     {"key": "cashflow_out_time", "title": f"المصروفات المسجلة حسب {unit}", "tone": "payable", "rows": [{"label": k, "value": v["out"]} for k, v in timeline if v["out"]]},
                     {"key": "cashflow_net_time", "title": f"الصافي (إيرادات − مصروفات) حسب {unit}", "rows": [{"label": k, "value": v["in"] - v["out"]} for k, v in timeline if v["in"] != v["out"]]}] + bars
             bars = [b for b in bars if b["rows"]]
-        totals = [total("مصروفات مسجلة", recorded_out, "money", "إيجار، مرتبات، كهرباء، نقل، صيانة، ضيافة، سلف... من حركة الخزنة" + note, "recorded", tone="payable"),
+        totals = [total("مصروفات مسجلة", recorded_out, "money", "إيجار، مرتبات، كهرباء، نقل، صيانة، ضيافة... من حركة الخزنة + مصروف السوق" + note, "recorded", tone="payable"),
                   total("إيرادات مسجلة", recorded_in, "money", "إيرادات مسجلة يدويًا من حركة الخزنة" + note, "recorded", tone="receivable"),
                   total("الصافي", recorded_in - recorded_out, "money", "الإيرادات − المصروفات المسجلة", "recorded")]
         meaning = ["بنود المصروفات والإيرادات المسجّلة من «حركة نقدية جديدة» في حركة النقدية فقط. الإلغاء والتصحيح يُحسبان على نفس بند الأصل فيُخصمان منه.",
-                   "المبيعات ودفعات العملاء وتحويلات الحسابات وعهدة السوق ليست من هذه البنود ولا تظهر هنا. والنقدية الداخلة من عميل أو الخارجة لعميل لا تُحسب إيرادًا ولا مصروفًا."]
+                   "مصروفات السوق (المدفوعة من عهدة السوق) تظهر هنا بند «مصروف السوق» رغم أنها لا تمس الخزنة. المبيعات ودفعات العملاء وتحويلات الحسابات وبقية عهدة السوق ليست من هذه البنود ولا تظهر هنا. والنقدية الداخلة من عميل أو الخارجة لعميل لا تُحسب إيرادًا ولا مصروفًا."]
         return {"meaning": meaning, "tables": tables, "totals": totals, "bars": bars}
 
     # ------------------------------------------------------------------ 8. gold profit (owner definition): the gold at the end of the period minus the gold at its start, in 21K equivalent

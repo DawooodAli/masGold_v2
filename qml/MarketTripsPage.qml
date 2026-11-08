@@ -608,6 +608,9 @@ Item {
                         Btn { objectName: "custodyCashSettleButton"; text: "تسوية نقدية العهدة"; visible: !!page.detail.open
                               enabled: !!page.detail.cashSettleAvailable && !!page.vm && !page.vm.writing
                               onClicked: cashSettleDialog.openFor(page.detail.id) }
+                        Btn { objectName: "custodyExpenseButton"; text: "مصروف من العهدة"; visible: !!page.detail.open
+                              enabled: !!page.detail.cashSettleAvailable && !!page.vm && !page.vm.writing
+                              onClicked: cashSettleDialog.openFor(page.detail.id) }
                         Btn { objectName: "custodyPayButton"; text: "دفع مصنعيات من العهدة"; visible: !!page.detail.open
                               enabled: !!page.detail.payAvailable && !!page.vm && !page.vm.writing
                               onClicked: payDialog.openFor(page.detail.id) }

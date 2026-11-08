@@ -31,6 +31,18 @@ class ReportRepository(BaseRepository):
             WHERE m.melt_date >= %s AND m.melt_date < %s ORDER BY m.melt_date, e.id
             """, (start, end_exclusive))
 
+    def market_expenses(self, start, end_exclusive):
+        """The expenses paid from a market custody (ST_EXPENSE documents, migration 064) by their entry date, with the full-reversal correction of the entry (if any). They post NO cash / bank
+        movement (the cash stays in custody until it is returned), which is why the cash-flow report reads them from here. Empty below 064."""
+        if not self.has_table("market_trip_settle_cash"):
+            return []
+        return self._fetch_all(
+            f"""
+            SELECT e.id AS entry_id, e.trip_id, e.entry_no, e.entry_date AS doc_date, s.amount, s.description, s.reference, c.id AS reversal_id
+            FROM market_trip_settle_cash s JOIN market_trip_entries e ON e.id = s.entry_id {self._TRIP_REVERSAL}
+            WHERE s.entry_kind = 'ST_EXPENSE' AND e.entry_date >= %s AND e.entry_date < %s ORDER BY e.entry_date, e.id
+            """, (start, end_exclusive))
+
     def trip_settle_lines(self, start, end_exclusive):
         """The lines of the market returns and losses (ST_RET_MKT / ST_LOSS) by the entry date."""
         return self._fetch_all(
