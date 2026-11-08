@@ -4,8 +4,11 @@ The expected pieces of the chosen scope are loaded ONCE (the same current-stock 
 بيان المخزون). Each scan is resolved against an in-memory barcode index: a match moves exactly one
 piece from المتبقي to تم الجرد and both totals change incrementally (exact Decimal). Nothing in the
 database changes — no status, weight, barcode or movement. Closing / reset / a new scope discards it."""
+import json
+import os
 from concurrent.futures import Future
 from decimal import Decimal
+from pathlib import Path
 
 from PySide6.QtCore import QObject, Property, QSettings, Signal, Slot
 
@@ -27,8 +30,9 @@ class StocktakeViewModel(QObject):
     webScanRequested = Signal(object)         # (code, Future) from an iPad camera, handled on the GUI thread
     webScanned = Signal(str)                  # the result of a scan that came from the iPad (the page flashes like a local scan)
 
-    def __init__(self, service=None, parent=None):
+    def __init__(self, service=None, parent=None, session_path=None):
         super().__init__(parent)
+        self._session_path = Path(session_path) if session_path else None      # None = the default file, used only in the real application
         self._service = service or InventoryService()
         self._item_types, self._karats = [], []
         self._item_type_id, self._karat_id, self._factory_id = 0, 0, 0
@@ -123,6 +127,57 @@ class StocktakeViewModel(QObject):
             self._set_message("بدأت دفعة جديدة.", "ok")
             self.changed.emit()
 
+    # ------------------------------------------------------------ the count survives closing the program (owner 2026-11-08)
+    def _file(self):
+        if self._session_path is not None:
+            return self._session_path
+        if not self._real_window():
+            return None
+        return Path(os.environ.get("LOCALAPPDATA") or str(Path.home())) / "masGold v2" / "stocktake_session.json"
+
+    def _persist(self):
+        """Save scope + scanned ids (small JSON, this computer only). Never raises: a failed save must not stop counting."""
+        path = self._file()
+        if path is None:
+            return
+        try:
+            if not self._scanned:
+                path.unlink(missing_ok=True)
+                return
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = {"itemType": self._item_type_id, "karat": self._karat_id, "factory": self._factory_id, "scanned": list(self._scanned)}
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data), encoding="utf-8")
+            os.replace(tmp, path)
+        except Exception:
+            pass
+
+    def _restore(self):
+        """Re-apply a saved count on the CURRENT stock: pieces sold / removed meanwhile are dropped (said so), new pieces simply appear in المتبقي. True when something was restored."""
+        path = self._file()
+        if path is None or not path.exists():
+            return False
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            saved = [str(i) for i in data["scanned"]]
+            self._item_type_id, self._karat_id, self._factory_id = int(data["itemType"]), int(data["karat"]), int(data["factory"])
+        except Exception:
+            return False
+        self._load_source()
+        kept = [i for i in reversed(saved) if i in self._rows]           # saved newest first -> replay oldest first
+        for item_id in kept:
+            self._remaining.remove(item_id)
+            self._scanned.insert(0, item_id)
+            self._remaining_weight -= self._rows[item_id]["weight_grams"]
+            self._scanned_weight += self._rows[item_id]["weight_grams"]
+        self._archived = len(self._scanned) if self._batch_size > 0 else 0
+        dropped = len(saved) - len(kept)
+        self._persist()
+        if kept:
+            self._set_message(f"تم استرجاع الجرد المحفوظ: {len(kept)} قطعة" + (f" (وتم استبعاد {dropped} لم تعد في المخزون)" if dropped else ""), "ok")
+        self.changed.emit()
+        return bool(kept)
+
     # ------------------------------------------------------------ session
     def _load_source(self):
         try:
@@ -141,6 +196,7 @@ class StocktakeViewModel(QObject):
         self._scanned_weight = ZERO
         self._loaded = True
         self._set_message("", "")
+        self._persist()                                      # a fresh session replaces any saved count
         self.changed.emit()
 
     @Slot()
@@ -150,20 +206,28 @@ class StocktakeViewModel(QObject):
         if self._loaded and self._scanned:
             self.changed.emit()
             return
+        if not self._loaded:
+            if not self._item_types and not self._karats:
+                self._load_filters()
+            if self._restore():
+                return
         self.start()
 
     @Slot()
     def start(self):
         """Opening the screen begins a fresh session (filters loaded once, then the source set)."""
         if not self._item_types and not self._karats:
-            try:
-                filters = self._service.get_stocktake_filters()
-                self._item_types = [{"id": str(r["id"]), "name": r["name"]} for r in filters["item_types"]]
-                self._karats = [{"id": str(r["id"]), "name": f"عيار {r['karat_value']}"} for r in filters["karats"]]
-                self._factories = [{"id": str(r["id"]), "name": r["name"]} for r in filters.get("factories", [])]
-            except Exception as exc:
-                self._error = "تعذر تحميل الجرد: " + str(exc)
+            self._load_filters()
         self._load_source()
+
+    def _load_filters(self):
+        try:
+            filters = self._service.get_stocktake_filters()
+            self._item_types = [{"id": str(r["id"]), "name": r["name"]} for r in filters["item_types"]]
+            self._karats = [{"id": str(r["id"]), "name": f"عيار {r['karat_value']}"} for r in filters["karats"]]
+            self._factories = [{"id": str(r["id"]), "name": r["name"]} for r in filters.get("factories", [])]
+        except Exception as exc:
+            self._error = "تعذر تحميل الجرد: " + str(exc)
 
     @Slot(int, int, bool, result=bool)
     def applyFilters(self, item_type_id, karat_id, confirmed):
@@ -211,6 +275,7 @@ class StocktakeViewModel(QObject):
         self._remaining_weight -= weight
         self._scanned_weight += weight
         full = self._batch_size > 0 and self._in_batch() >= self._batch_size
+        self._persist()
         self._set_message(f"✓ {barcode} — اكتملت الدفعة {self._batches_finished()}، المسح التالي يبدأ دفعة جديدة" if full else "✓ " + barcode, "ok")
         self.changed.emit()
         return "OK"
