@@ -201,46 +201,63 @@ def income_item(now, before):
     return {"key": "income", "title": "الإيرادات المسجلة", "status": status, "value": f"{_d(now):,.2f} ج", "compare": (f"{_d(before):,.2f} ج" + (f" ({_pct_text(pct)})" if pct is not None else "")) if before is not None else "—", "advice": advice}
 
 
-def making_flags(making_per_gram, cost_per_gram, others_average):
-    """Why one sale line counts as a LOW making (both reasons may hold): under the piece's cost, and / or under 80% of the other employees' weighted average of the same karat."""
+def making_flags(margin_per_gram, others_average_margin):
+    """Why one sale line counts as a LOW profit (owner 2026-11-09: the comparison is on the profit per gram = making per gram - the letter's cost, NOT on the raw making, because a letter with
+    a high cost needs a higher making than a cheap one): below zero (under the letter's cost), and / or under 80% of the other employees' weighted average profit per gram of the same karat."""
     reasons = []
-    if cost_per_gram is not None and making_per_gram < _d(cost_per_gram):
+    if margin_per_gram < 0:
         reasons.append("BELOW_COST")
-    if others_average is not None and making_per_gram < _d(others_average) * LOW_RATIO:
+    if others_average_margin is not None and margin_per_gram < _d(others_average_margin) * LOW_RATIO:
         reasons.append("BELOW_OTHERS")
     return reasons
+
+
+def line_cost(l):
+    return l.get("category_cost") if l.get("category_cost") is not None else l.get("piece_cost")       # the letter's CURRENT cost first (owner 2026-11-08)
+
+
+def margin_sales(now):
+    """{karat: {employee: [profit, grams]}} over the sale lines of 1 g or more with a known making AND a known cost (profit = making - cost x grams)."""
+    sales = {}
+    for l in now:
+        if l["line_type"] in SELL_LINES and l.get("making_total") is not None and _d(l["weight_grams"]) >= ONE_GRAM and line_cost(l) is not None:
+            e = sales.setdefault(int(l["karat_value"]), {}).setdefault(str(l.get("employee_id") or 0), [Decimal("0"), Decimal("0")])
+            e[0] += _d(l["making_total"]) - _d(line_cost(l)) * _d(l["weight_grams"])
+            e[1] += _d(l["weight_grams"])
+    return sales
+
+
+def judge_sale(l, sales):
+    """(profit per gram, cost, others' average profit per gram, reasons) of one sale line, or None when the line has no known making or cost (it cannot be judged, never guessed)."""
+    if l.get("making_total") is None or _d(l["weight_grams"]) < ONE_GRAM or line_cost(l) is None:
+        return None
+    key = str(l.get("employee_id") or 0)
+    karat = sales.get(int(l["karat_value"]), {})
+    others_profit = sum((v[0] for k, v in karat.items() if k != key), Decimal("0"))
+    others_grams = sum((v[1] for k, v in karat.items() if k != key), Decimal("0"))
+    average = (others_profit / others_grams) if others_grams >= MIN_OTHERS_GRAMS else None
+    cost = _d(line_cost(l))
+    margin = _d(l["making_total"]) / _d(l["weight_grams"]) - cost
+    return margin, cost, average, making_flags(margin, average)
 
 
 def employee_rows(now, default_percent):
     """One verdict per employee over the lines of THIS period. Counted lines: sale lines of 1 g or more with a known making, ordinary scrap lines, and the employee's invoices."""
     default = _d(default_percent)
-    sales = {}
-    for l in now:
-        if l["line_type"] in SELL_LINES:
-            s = sales.setdefault(int(l["karat_value"]), {})
-            e = s.setdefault(str(l.get("employee_id") or 0), [Decimal("0"), Decimal("0")])
-            if l.get("making_total") is not None and _d(l["weight_grams"]) >= ONE_GRAM:
-                e[0] += _d(l["making_total"])
-                e[1] += _d(l["weight_grams"])
+    sales = margin_sales(now)
     people = {}
     for l in now:
         key = str(l.get("employee_id") or 0)
         p = people.setdefault(key, {"name": l.get("employee") or "غير محدد", "lines": 0, "low_making": 0, "low_discount": 0, "invoices": set(), "reasons": set()})
         p["invoices"].add(int(l["invoice_id"]))
         if l["line_type"] in SELL_LINES:
-            if l.get("making_total") is None or _d(l["weight_grams"]) < ONE_GRAM:
+            judged = judge_sale(l, sales)
+            if judged is None:
                 continue
             p["lines"] += 1
-            karat = int(l["karat_value"])
-            others_making = sum((v[0] for k, v in sales[karat].items() if k != key), Decimal("0"))
-            others_grams = sum((v[1] for k, v in sales[karat].items() if k != key), Decimal("0"))
-            average = (others_making / others_grams) if others_grams >= MIN_OTHERS_GRAMS else None
-            mpg = _d(l["making_total"]) / _d(l["weight_grams"])
-            cost = l.get("category_cost") if l.get("category_cost") is not None else l.get("piece_cost")       # the letter's CURRENT cost first (owner 2026-11-08)
-            reasons = making_flags(mpg, cost, average)
-            if reasons:
+            if judged[3]:
                 p["low_making"] += 1
-                p["reasons"].update(reasons)
+                p["reasons"].update(judged[3])
         elif l["line_type"] == BUY_LINE and not l.get("scrap_kind") and l.get("gross_total") is not None and l.get("discount_amount") is not None and _d(l["gross_total"]) > 0:
             p["lines"] += 1
             percent = _d(l["discount_amount"]) / _d(l["gross_total"]) * HUNDRED
@@ -260,36 +277,22 @@ def flagged_lines(now, default_percent, limit=300):
     """The LINES behind every «انتبه»: each sale line with a low making (under the piece letter's cost and / or under 80% of the other employees' average of the karat) and each scrap line whose
     discount is under the default, newest first, with the invoice so the owner can open it. The same rules as employee_rows (one place decides what is flagged)."""
     default = _d(default_percent)
-    sales = {}
-    for l in now:
-        if l["line_type"] in SELL_LINES:
-            s = sales.setdefault(int(l["karat_value"]), {})
-            e = s.setdefault(str(l.get("employee_id") or 0), [Decimal("0"), Decimal("0")])
-            if l.get("making_total") is not None and _d(l["weight_grams"]) >= ONE_GRAM:
-                e[0] += _d(l["making_total"])
-                e[1] += _d(l["weight_grams"])
+    sales = margin_sales(now)
     rows = []
     for l in now:
         key = str(l.get("employee_id") or 0)
         base = {"employee": l.get("employee") or "غير محدد", "invoice": l.get("invoice_number") or f"#{l['invoice_id']}", "date": l.get("invoice_date"), "karat": f"عيار {int(l['karat_value'])}",
                 "weight": _d(l["weight_grams"]), "ref": {"type": "INVOICE", "id": str(l["invoice_id"])}}
         if l["line_type"] in SELL_LINES:
-            if l.get("making_total") is None or _d(l["weight_grams"]) < ONE_GRAM:
-                continue
-            karat = int(l["karat_value"])
-            others_making = sum((v[0] for k, v in sales[karat].items() if k != key), Decimal("0"))
-            others_grams = sum((v[1] for k, v in sales[karat].items() if k != key), Decimal("0"))
-            average = (others_making / others_grams) if others_grams >= MIN_OTHERS_GRAMS else None
-            mpg = _d(l["making_total"]) / _d(l["weight_grams"])
-            cost = l.get("category_cost") if l.get("category_cost") is not None else l.get("piece_cost")
-            reasons = making_flags(mpg, cost, average)
-            if reasons:
+            judged = judge_sale(l, sales)
+            if judged is not None and judged[3]:
+                margin, cost, average, reasons = judged
                 parts = []
                 if "BELOW_COST" in reasons:
-                    parts.append(f"أقل من تكلفة الحرف ({_d(cost):,.2f})")
+                    parts.append(f"المصنعية أقل من تكلفة الحرف ({cost:,.2f})")
                 if "BELOW_OTHERS" in reasons:
-                    parts.append(f"أقل من 80% من متوسط باقي الموظفين ({average * LOW_RATIO:,.2f})")
-                rows.append({**base, "kind": "مصنعية قليلة", "detail": f"المصنعية {mpg:,.2f} ج/جرام: " + " و".join(parts)})
+                    parts.append(f"أقل من 80% من متوسط ربح باقي الموظفين ({average * LOW_RATIO:,.2f})")
+                rows.append({**base, "kind": "ربح مصنعية قليل", "detail": f"الربح {margin:,.2f} ج/جرام (المصنعية − تكلفة الحرف): " + " و".join(parts)})
         elif l["line_type"] == BUY_LINE and not l.get("scrap_kind") and l.get("gross_total") is not None and l.get("discount_amount") is not None and _d(l["gross_total"]) > 0:
             percent = _d(l["discount_amount"]) / _d(l["gross_total"]) * HUNDRED
             if percent < default - DISCOUNT_TOLERANCE:
