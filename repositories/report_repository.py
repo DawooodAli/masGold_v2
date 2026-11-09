@@ -215,7 +215,7 @@ class ReportRepository(BaseRepository):
         return self._fetch_all(
             f"""
             SELECT iv.id AS invoice_id, iv.invoice_number, iv.invoice_date, iv.employee_id, e.name AS employee, il.line_type, k.karat_value, il.weight_grams, il.making_total, il.gross_total, il.discount_amount,
-                   il.scrap_kind, COALESCE(it.name, il.item_name_snapshot) AS item_type, ii.acquisition_making_per_gram AS piece_cost, {"COALESCE(icc.making_cost_per_gram, zc.making_cost_per_gram)" if costs else "NULL"} AS category_cost, c.id AS reversal_id
+                   il.scrap_kind, COALESCE(it.name, il.item_name_snapshot) AS item_type, ii.acquisition_making_per_gram AS piece_cost, {"COALESCE(icc.making_cost_per_gram, wc.making_cost_per_gram, zc.making_cost_per_gram)" if costs else "NULL"} AS category_cost, c.id AS reversal_id
             FROM invoice_lines il
             JOIN invoices iv ON iv.id = il.invoice_id
             JOIN karats k ON k.id = il.karat_id
@@ -223,7 +223,7 @@ class ReportRepository(BaseRepository):
             LEFT JOIN inventory_items ii ON ii.id = il.inventory_item_id
             LEFT JOIN item_types it ON it.id = ii.item_type_id
             {"LEFT JOIN item_category_costs icc ON icc.category_id = ii.category_id" if costs else ""}
-            {"LEFT JOIN item_categories zcat ON zcat.code = 'Z' AND il.line_type = 'SELL_OLD_GOLD' LEFT JOIN item_category_costs zc ON zc.category_id = zcat.id" if costs else ""}
+            {"LEFT JOIN item_categories wcat ON wcat.code = 'W' AND il.line_type = 'SELL_OLD_GOLD' LEFT JOIN item_category_costs wc ON wc.category_id = wcat.id LEFT JOIN item_categories zcat ON zcat.code = 'Z' AND il.line_type = 'SELL_OLD_GOLD' LEFT JOIN item_category_costs zc ON zc.category_id = zcat.id" if costs else ""}
             LEFT JOIN transaction_corrections c ON c.source_type = 'INVOICE' AND c.source_id = iv.id AND c.correction_type = 'FULL_REVERSAL'
             WHERE il.line_type IN ('SELL_INVENTORY', 'SELL_OLD_GOLD', 'SELL_UNIDENTIFIED', 'SELL_RAFAYEA', 'BUY_OLD_GOLD') AND iv.invoice_status = 'FINALIZED'
               AND iv.invoice_date >= %s AND iv.invoice_date < %s
