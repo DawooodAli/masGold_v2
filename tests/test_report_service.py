@@ -1110,6 +1110,13 @@ class KpiTests(Case):
         self.assertEqual(items["scrap"]["value"], "1.17%")                                                          # (15 + 15 + 5) / 3000
         self.assertEqual(items["scrap"]["status"], "🔴 غلط")
 
+    def test_a_whole_calendar_month_is_compared_with_the_month_before_it_not_with_the_seven_day_average(self):
+        result = self.service.run("kpi", {"from": "2026-10-01", "to": "2026-10-31"})
+        self.assertEqual(result["tables"][0]["columns"][3]["title"], "الشهر السابق")
+        sales = next(r for r in result["tables"][0]["rows"] if r["title"] == "مبيعات الذهب (جرام)")
+        self.assertEqual(sales["value"], "60.000 جرام")
+        self.assertTrue(sales["compare"].startswith("14.000 جرام"))                                           # the real September total, not scaled
+
     def test_an_employee_selling_low_making_and_taking_a_low_scrap_discount_is_red_the_other_is_green(self):
         rows = {r["employee"]: r for r in self.service.run("kpi", self.PERIOD)["tables"][1]["rows"]}
         self.assertEqual((rows["حسين"]["low_making"], rows["حسين"]["low_discount"], rows["حسين"]["status_text"]), (6, 1, "🔴 غلط"))

@@ -1259,8 +1259,14 @@ class ReportService:
         """Sales, making, scrap-buying discount, gold-profit speed, expenses and a verdict per employee, each against the PREVIOUS period of the same length. Statuses are indicators for the owner's
         attention, not proof. Gold profit comes from the stored position snapshots (a period without two sheets is GRAY), expenses from the cash-flow report (GRAY without the cash / bank rights)."""
         span = end - start
-        previous_start = start - timedelta(days=BASELINE_DAYS)                                 # owner 2026-11-09: the baseline is the AVERAGE of the 7 days before the period,
-        scale = Decimal(str(span.total_seconds())) / Decimal(str(timedelta(days=BASELINE_DAYS).total_seconds()))      # scaled to the length of the period (a one-day period is compared with 1/7 of the week)
+        whole_month = start.day == 1 and end.day == 1 and span >= timedelta(days=28)
+        if whole_month:                                                                        # owner 2026-11-09: a whole calendar month is compared with the month before it
+            previous_start = (start - timedelta(days=1)).replace(day=1)
+            scale, baseline_label = Decimal("1"), "الشهر السابق"
+        else:                                                                                  # any other period: the AVERAGE of the 7 days before it, scaled to its length
+            previous_start = start - timedelta(days=BASELINE_DAYS)                             # (a one-day period is compared with 1/7 of the week)
+            scale = Decimal(str(span.total_seconds())) / Decimal(str(timedelta(days=BASELINE_DAYS).total_seconds()))
+            baseline_label = "متوسط آخر 7 أيام"
         lines = [{**dict(r), "invoice_date": _dateish(r["invoice_date"])} for r in repo.kpi_lines(previous_start, end)]
         now, before = kpi_rules.split(lines, start, end, previous_start)
         try:
@@ -1303,7 +1309,7 @@ class ReportService:
         items = [kpi_rules.sales_item(now, before, scale), kpi_rules.making_item(kpi_rules.crafted(now), kpi_rules.crafted(before), below, known), kpi_rules.scrap_item(now, default), profit,
                  kpi_rules.expenses_item(spent_now, spent_before, profit["status"]), kpi_rules.income_item(income_now, income_before)]
         employees = kpi_rules.employee_rows(now, default)
-        columns = [col("status", "الحالة"), col("title", "المؤشر"), col("value", "الفترة"), col("compare", "متوسط آخر 7 أيام"), col("advice", "القرار")]
+        columns = [col("status", "الحالة"), col("title", "المؤشر"), col("value", "الفترة"), col("compare", baseline_label), col("advice", "القرار")]
         rows = [{**i, "status": kpi_rules.STATUS_TEXT[i["status"]]} for i in items]
         staff = [col("employee", "الموظف"), col("status_text", "الحالة"), col("lines", "بنود محسوبة"), col("low_making", "بنود مصنعية قليلة"), col("low_discount", "بنود خصم كسر قليل"), col("note", "الملاحظة")]
         meaning = ["كل مؤشر يقارن الفترة المختارة بالفترة السابقة لها بنفس الطول، وله حالة وجملة قرار. الحالات مؤشرات لانتباهك وليست إثباتًا.",
