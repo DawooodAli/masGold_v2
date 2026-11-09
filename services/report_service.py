@@ -1295,7 +1295,7 @@ class ReportService:
                 flow_items = {}
         items = [kpi_rules.sales_item(now, before), kpi_rules.making_item(kpi_rules.crafted(now), kpi_rules.crafted(before), below, known), kpi_rules.scrap_item(now, default), profit,
                  kpi_rules.expenses_item(spent_now, spent_before, profit["status"]), kpi_rules.income_item(income_now, income_before)]
-        employees = kpi_rules.employee_rows(kpi_rules.crafted(now), default)
+        employees = kpi_rules.employee_rows(now, default)
         columns = [col("status", "الحالة"), col("title", "المؤشر"), col("value", "الفترة"), col("compare", "الفترة السابقة"), col("advice", "القرار")]
         rows = [{**i, "status": kpi_rules.STATUS_TEXT[i["status"]]} for i in items]
         staff = [col("employee", "الموظف"), col("status_text", "الحالة"), col("lines", "بنود محسوبة"), col("low_making", "بنود مصنعية قليلة"), col("low_discount", "بنود خصم كسر قليل"), col("note", "الملاحظة")]
@@ -1306,7 +1306,7 @@ class ReportService:
                  total("مؤشرات صفراء", sum(1 for i in items if i["status"] == kpi_rules.YELLOW), "count", "", "summary"),
                  total("موظفون يحتاجون مراجعة", sum(1 for r in employees if r["status"] == kpi_rules.RED), "count", "", "summary")]
         tables = [table("kpi", "KPI — هل أنا ماشي صح؟", columns, rows), table("kpi_staff", "الموظفون", staff, employees)]
-        flagged = kpi_rules.flagged_lines(kpi_rules.crafted(now), default)
+        flagged = kpi_rules.flagged_lines(now, default)
         if flagged:
             # owner 2026-11-08: the lines behind every «انتبه», so nothing has to be searched for: open the invoice from the row
             tables.append(table("kpi_flagged", "البنود اللي محتاجة انتباه", [col("employee", "الموظف"), col("invoice", "الفاتورة"), col("date", "التاريخ", "date"), col("kind", "السبب"), col("karat", "العيار"),

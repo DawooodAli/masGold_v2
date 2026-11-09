@@ -127,6 +127,8 @@ class FakeRepo:
         rows = []
 
         def line(day, emp, name, kind, weight, making=None, gross=None, discount=None, cost="50.00", month=10):
+            if gross is None and kind.startswith("SELL"):
+                gross = D(weight) * 6000                                                                    # the gold value of a sale line (the profit percent is taken on it)
             rows.append({"invoice_id": len(rows) + 1, "invoice_date": datetime(2026, month, day, 12), "employee_id": emp, "employee": name, "line_type": kind, "karat_value": 21,
                          "weight_grams": D(weight), "making_total": None if making is None else D(making), "gross_total": None if gross is None else D(gross),
                          "discount_amount": None if discount is None else D(discount), "scrap_kind": None, "piece_cost": D(cost) if cost else None, "category_cost": None, "reversal_id": None})
