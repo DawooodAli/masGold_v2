@@ -153,6 +153,8 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(service.ensure_daily(), {"taken": False, "reason": "NO_OPENING"})
         self.post_ledgers(service)
         service.set_opening({"21": "5000"}, "0")
+        self.assertEqual(service.ensure_daily(), {"taken": False, "reason": "TOO_EARLY"})              # before 11:00 nothing is taken
+        self.store.now = datetime(2026, 10, 22, 11, 0, 0)
         first = service.ensure_daily()
         self.assertTrue(first["taken"])
         self.assertEqual(service.ensure_daily(), {"taken": False, "reason": "ALREADY_TAKEN"})
@@ -161,7 +163,7 @@ class ServiceTests(unittest.TestCase):
         row = self.store.rows[1]
         self.assertEqual((row["gold_shop_eq21"], row["gold_suppliers_eq21"], row["gold_total_eq21"], row["cash_egp"], row["bank_egp"]),
                          (D("1000.000"), D("-30.000"), D("1040.000"), D("1000.00"), D("500.00")))        # 1000 + 50 + 20 - 30 supplier
-        self.store.now = datetime(2026, 10, 23, 8, 0, 0)
+        self.store.now = datetime(2026, 10, 23, 11, 0, 0)
         self.assertTrue(service.ensure_daily()["taken"])                                                 # the next day gets its own sheet
 
     def test_the_gold_position_cash_bank_and_suppliers_are_read_on_one_connection(self):

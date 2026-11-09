@@ -4,6 +4,7 @@ OWNER only: the three gold-position rights (a partial gold figure would mislead)
 `GoldPositionService.position()` (the reviewed consolidated read); the supplier gold, cash and bank are plain ledger sums read in the writing transaction. A DAILY snapshot is taken at most once per
 calendar day (the first time an authorised user opens the application) and only after the initial balance exists; a MANUAL one can be taken any time. Snapshots are insert-only."""
 from contextlib import contextmanager
+from datetime import time as dt_time
 from decimal import Decimal, InvalidOperation
 
 from repositories.position_snapshot_repository import PositionSnapshotRepository
@@ -17,6 +18,8 @@ LEDGER_PERMISSIONS = ("CASH_ADJUST", "BANK_MANAGE")                  # the right
 KARATS = (21, 18, 24)
 AUDITED = (*rules.PARTS, "gold_total_eq21", "cash_egp", "bank_egp")
 
+
+DAILY_SHEET_TIME = dt_time(11, 0)
 
 class SnapshotError(ValueError):
     def __init__(self, code, message):
@@ -197,7 +200,7 @@ class PositionSnapshotService:
         return {"taken": True, **self._view({**values, "id": snapshot_id})}
 
     def ensure_daily(self, *, _expected_actor=None):
-        """The first authorised opening of the application each day takes the day's sheet; 'not applicable' (no right, no initial balance, already taken) is an answer, never an error."""
+        """The day's sheet is taken at 11:00 (or at the first authorised opening after 11:00); 'not applicable' (no right, no initial balance, already taken) is an answer, never an error."""
         session_actor = self._actor(_expected_actor)
         if not self.can_snapshot():
             return {"taken": False, "reason": "NOT_AUTHORISED"}
@@ -205,6 +208,9 @@ class PositionSnapshotService:
             repository = self._repository(connection)
             if repository.opening() is None:
                 return {"taken": False, "reason": "NO_OPENING"}
-            if repository.latest_on_date(repository.now().date()) is not None:
+            now = repository.now()
+            if now.time() < DAILY_SHEET_TIME:                       # the day's sheet is the 11:00 one (owner 2026-11-09); opening the program earlier takes nothing
+                return {"taken": False, "reason": "TOO_EARLY"}
+            if repository.latest_on_date(now.date()) is not None:
                 return {"taken": False, "reason": "ALREADY_TAKEN"}
         return self.take("DAILY", _expected_actor=session_actor)

@@ -241,6 +241,7 @@ class ApplicationController(QObject):
             self.operational_viewmodels["cashCategoryVM"] = (self._category_factory or create_cash_category_viewmodel)(self.session)
         if QGuiApplication.platformName() not in ("offscreen", "minimal"):
             viewmodel.ensureDaily()
+            viewmodel.startDailySchedule()
 
     @Slot()
     def _open_operational(self):

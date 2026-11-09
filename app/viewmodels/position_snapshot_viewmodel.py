@@ -1,11 +1,14 @@
 """Settings → الرصيد الافتتاحي: the owner's initial gold / cash balance (entered ONCE) and the stocktaking sheets behind the gold profit report.
 
 The view model never decides a right or a number: the service rechecks the owner rights inside its transaction, validates the figures and takes the sheet. The daily sheet is requested once
-when an authorised user opens the application (`ensureDaily`); a manual sheet is a button. Every call runs off the GUI thread and its answer is ignored when the session changed meanwhile."""
-from PySide6.QtCore import Property, QObject, Signal, Slot
+at 11:00 every day while the application runs, or when an authorised user opens it after 11:00 (`ensureDaily`); a manual sheet is a button. Every call runs off the GUI thread and its answer is ignored when the session changed meanwhile."""
+from datetime import datetime, timedelta
+
+from PySide6.QtCore import Property, QObject, QTimer, Signal, Slot
 
 from app.formatting import whole
 from app.workers.invoice_worker import InvoiceWorker
+from services.position_snapshot_service import DAILY_SHEET_TIME
 
 
 def _grams(value):
@@ -22,7 +25,7 @@ class PositionSnapshotViewModel(QObject):
         self._opening, self._loaded, self._busy = None, False, False
         self._ledgers_posted, self._accounts, self._posted = False, [], {}
         self._message, self._is_error = "", False
-        self._request, self._workers = 0, set()
+        self._request, self._workers, self._timer = 0, set(), None
 
     # ------------------------------------------------------------------ state for the Settings card
     @Property(bool, notify=changed)
@@ -114,6 +117,31 @@ class PositionSnapshotViewModel(QObject):
         """The first authorised opening of the application each day; silent when not applicable."""
         self._run("daily", lambda _expected_actor: self._service.ensure_daily(_expected_actor=_expected_actor), self._daily_done, silent=True)
 
+    @Slot()
+    def startDailySchedule(self):
+        """Real application only: wake at 11:00 each day and take the day's sheet (the service refuses an earlier clock and a second sheet)."""
+        if self._timer is None:
+            self._timer = QTimer(self)
+            self._timer.setSingleShot(True)
+            self._timer.timeout.connect(self._daily_fire)
+        self._schedule()
+
+    def _schedule(self, retry_seconds=0):
+        if self._timer is None:
+            return
+        if retry_seconds:
+            self._timer.start(retry_seconds * 1000)
+            return
+        now = datetime.now()
+        target = datetime.combine(now.date(), DAILY_SHEET_TIME) + timedelta(seconds=5)
+        if now >= target:
+            target += timedelta(days=1)
+        self._timer.start(max(1000, int((target - now).total_seconds() * 1000)))
+
+    def _daily_fire(self):
+        self.ensureDaily()
+        self._schedule()
+
     # ------------------------------------------------------------------ plumbing
     def _run(self, operation, call, done, silent=False):
         if self._service is None or self._session is None:
@@ -167,6 +195,8 @@ class PositionSnapshotViewModel(QObject):
     def _daily_done(self, result):
         if result.get("taken"):
             self.snapshotTaken.emit()
+        elif result.get("reason") == "TOO_EARLY":           # the database clock is slightly behind this computer's: ask again in a minute
+            self._schedule(60)
 
     def shutdown(self):
         for worker in list(self._workers):
