@@ -132,8 +132,8 @@ class FakeRepo:
             rows.append({"invoice_id": len(rows) + 1, "invoice_date": datetime(2026, month, day, 12), "employee_id": emp, "employee": name, "line_type": kind, "karat_value": 21,
                          "weight_grams": D(weight), "making_total": None if making is None else D(making), "gross_total": None if gross is None else D(gross),
                          "discount_amount": None if discount is None else D(discount), "scrap_kind": None, "piece_cost": D(cost) if cost else None, "category_cost": None, "reversal_id": None})
-        for i in range(8):
-            line(15 + i % 10, 1, "علي", "SELL_INVENTORY", "5.000", "600.00", month=9)                       # previous period: 40 g at 120 per gram
+        for i in range(2):
+            line(25 + i, 1, "علي", "SELL_INVENTORY", "7.000", "840.00", month=9)                            # the 7 days before: 14 g at 120 per gram = 40 g averaged to the 20-day period
         for i in range(6):
             line(2 + i, 1, "علي", "SELL_INVENTORY", "5.000", "500.00")                                      # 100 per gram, above the cost 50
             line(2 + i, 2, "حسين", "SELL_INVENTORY", "5.000", "200.00")                                     # 40 per gram: under the cost AND under 80% of the other employee's average

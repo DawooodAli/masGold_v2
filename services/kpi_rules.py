@@ -107,8 +107,9 @@ def _pct_text(value):
     return f"{value:+,.1f}%"
 
 
-def sales_item(now, before):
-    a, b = sold_grams(now), sold_grams(before)
+def sales_item(now, before, scale=Decimal("1")):
+    """`before` holds the baseline lines (the 7 days before); `scale` turns their total into the average for a period of the length of this one."""
+    a, b = sold_grams(now), sold_grams(before) * _d(scale)
     pct = change_pct(a, b)
     status = higher_is_better(pct, SALES_DROP)
     advice = {GREEN: "المبيعات ماشية كويس مقارنة بالفترة اللي قبلها.", YELLOW: "المبيعات أقل من الفترة اللي قبلها: راجع الأصناف والعروض.", RED: "المبيعات نزلت كتير: شوف إيه اللي اتغير (سعر، مخزون ناقص، موسم).",

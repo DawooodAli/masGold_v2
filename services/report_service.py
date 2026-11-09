@@ -185,6 +185,8 @@ def total(label, value, kind, note="", group="", karat=None, tone=None):
     return {"label": label, "value": value, "kind": kind, "note": note, "group": group, "karat": karat, "tone": tone}
 
 
+BASELINE_DAYS = 7          # the KPI baseline: the 7 days before the period (owner 2026-11-09)
+
 class ReportService:
     def __init__(self, session, *, transaction_factory=read_transaction, repository=ReportRepository, authorization=None, today=None):
         self._session = session
@@ -1257,7 +1259,8 @@ class ReportService:
         """Sales, making, scrap-buying discount, gold-profit speed, expenses and a verdict per employee, each against the PREVIOUS period of the same length. Statuses are indicators for the owner's
         attention, not proof. Gold profit comes from the stored position snapshots (a period without two sheets is GRAY), expenses from the cash-flow report (GRAY without the cash / bank rights)."""
         span = end - start
-        previous_start = start - span
+        previous_start = start - timedelta(days=BASELINE_DAYS)                                 # owner 2026-11-09: the baseline is the AVERAGE of the 7 days before the period,
+        scale = Decimal(str(span.total_seconds())) / Decimal(str(timedelta(days=BASELINE_DAYS).total_seconds()))      # scaled to the length of the period (a one-day period is compared with 1/7 of the week)
         lines = [{**dict(r), "invoice_date": _dateish(r["invoice_date"])} for r in repo.kpi_lines(previous_start, end)]
         now, before = kpi_rules.split(lines, start, end, previous_start)
         try:
@@ -1273,6 +1276,8 @@ class ReportService:
                 opening, closing, problem = snapshot_math.choose(sheets, a, b)
                 return None if problem else snapshot_math.profit(opening, closing)["gold_total_eq21"]
             profit_now, profit_before = gold_profit(start, end), gold_profit(previous_start, start)
+            if profit_before is not None:
+                profit_before = Decimal(str(profit_before)) * scale
         profit = kpi_rules.profit_item(profit_now, profit_before)
         spent_now = spent_before = income_now = income_before = None
         flow_items = {}                                                                     # label -> {"now": (out, in), "before": (out, in)}: where the recorded figures come from
@@ -1287,16 +1292,18 @@ class ReportService:
             try:
                 flow(start, end, "now"), flow(previous_start, start, "before")
                 # compulsory items (salaries, invoice differences) are no indicator: they are left out of both periods, but stay listed in the detail table
+                for v in flow_items.values():
+                    v["before"] = (v["before"][0] * scale, v["before"][1] * scale)               # the 7-day total becomes the average for a period of this length
                 kept = {k: v for k, v in flow_items.items() if not kpi_rules.is_mandatory_expense(k)}
                 spent_now, spent_before = (sum((v[side][0] for v in kept.values()), ZERO2) for side in ("now", "before"))
                 income_now, income_before = (sum((v[side][1] for v in kept.values()), ZERO2) for side in ("now", "before"))
             except (ReportError, PermissionError):
                 spent_now = spent_before = income_now = income_before = None
                 flow_items = {}
-        items = [kpi_rules.sales_item(now, before), kpi_rules.making_item(kpi_rules.crafted(now), kpi_rules.crafted(before), below, known), kpi_rules.scrap_item(now, default), profit,
+        items = [kpi_rules.sales_item(now, before, scale), kpi_rules.making_item(kpi_rules.crafted(now), kpi_rules.crafted(before), below, known), kpi_rules.scrap_item(now, default), profit,
                  kpi_rules.expenses_item(spent_now, spent_before, profit["status"]), kpi_rules.income_item(income_now, income_before)]
         employees = kpi_rules.employee_rows(now, default)
-        columns = [col("status", "الحالة"), col("title", "المؤشر"), col("value", "الفترة"), col("compare", "الفترة السابقة"), col("advice", "القرار")]
+        columns = [col("status", "الحالة"), col("title", "المؤشر"), col("value", "الفترة"), col("compare", "متوسط آخر 7 أيام"), col("advice", "القرار")]
         rows = [{**i, "status": kpi_rules.STATUS_TEXT[i["status"]]} for i in items]
         staff = [col("employee", "الموظف"), col("status_text", "الحالة"), col("lines", "بنود محسوبة"), col("low_making", "بنود مصنعية قليلة"), col("low_discount", "بنود خصم كسر قليل"), col("note", "الملاحظة")]
         meaning = ["كل مؤشر يقارن الفترة المختارة بالفترة السابقة لها بنفس الطول، وله حالة وجملة قرار. الحالات مؤشرات لانتباهك وليست إثباتًا.",
