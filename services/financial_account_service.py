@@ -432,6 +432,14 @@ class FinancialAccountService:
                                                   datetime.combine(period[1] + timedelta(days=1), time.min), label, CASH_ROWS):
                         if r.get("label_key") not in ("TRANSFER_IN", "TRANSFER_OUT"):      # the safe's own table already shows those
                             external.append({**r, "account_name": "محفظة" if account.get("account_type") == "MOBILE_WALLET" else "انستا", "external": True})       # the owner reads انستا (any bank) or محفظة, never the account name
+            hidden = repository.private_operation_ids() if hasattr(repository, "private_operation_ids") else set()
+            def private_row(r):                                    # the owner's private transfers (and their reversals) are seen only in the manager reviews
+                if r.get("label_key") in ("PRIVATE_OUT", "PRIVATE_IN") or r.get("operation_category") in ("PRIVATE_OUT", "PRIVATE_IN"):
+                    return True
+                return (r.get("label_key") == "REVERSAL" and r.get("corrected_source_type") == "FINANCIAL_OPERATION"
+                        and r.get("corrected_source_id") is not None and int(r["corrected_source_id"]) in hidden)
+            rows = [r for r in rows if not private_row(r)]
+            external = [r for r in external if not private_row(r)]
             try:
                 debts = repository.invoice_account_debits([k for k in (doc_key(r) for r in rows + external) if k])
             except Exception:                                      # display only: never break the screen

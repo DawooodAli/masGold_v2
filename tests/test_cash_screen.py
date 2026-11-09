@@ -334,6 +334,17 @@ class CashViewTests(FinancialTestCase):
         self.assertEqual((view["in"]["total"], view["in"]["bank_total"], view["out"]["total"], view["out"]["bank_total"]),
                          ("25000.00", "0.00", "700.00", "300.00"))                                  # the internal transfer row is not listed
 
+    def test_the_owners_private_transfers_never_appear_on_the_cash_screen(self):
+        self.store.cash_rows = [cash_row(5, "25000", "SALE", ("25000", 1))]
+        self.store.bank_rows = [cash_row(9, "-21980", "PRIVATE_OUT", ("-21980", 1), operation_id=149),
+                                cash_row(8, "21980", "PRIVATE_IN", ("21980", 1), operation_id=150),
+                                cash_row(7, "-300", "REPAIR", ("-300", 1))]
+        for n, account in enumerate(self.store.bank_accounts.values()):
+            account["is_active"] = n == 0
+        view = self.fin.cash_view()
+        self.assertEqual([r["id"] for r in view["out"]["rows"]], ["B7"])
+        self.assertEqual((view["in"]["bank_total"], view["out"]["bank_total"]), ("0.00", "300.00"))
+
     def test_default_period_is_today_and_filter_is_validated(self):
         view = self.fin.cash_view()
         today = self.store.now.date()

@@ -440,6 +440,13 @@ class FinancialAccountRepository(BaseRepository):
             (direction, amount, int(operation_id), note, actor.user_id, now))
         return str(entry_id)
 
+    def private_operation_ids(self):
+        """Display only: the financial operations that are private-account transfers (empty below 090). The cash screen never shows them (owner 2026-11-10)."""
+        try:
+            return {int(r["operation_id"]) for r in self._fetch_all("SELECT operation_id FROM private_account_entries")}
+        except Exception:
+            return set()
+
     def private_entries(self):
         """Every private-account entry, oldest first, with the bank / wallet account and whether its operation was reversed (None below 090)."""
         return self._advance_guard(
