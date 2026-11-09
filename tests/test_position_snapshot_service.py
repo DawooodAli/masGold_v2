@@ -60,6 +60,12 @@ class FakeRepo:
     def cash_and_bank(self):
         return D("1000.00"), D("500.00")
 
+    def ledgers_skipped(self):
+        return any(a["event_type"] == "POSITION_OPENING_LEDGERS" and a.get("metadata", {}).get("skipped") for a in self.store.audits)
+
+    def current_totals(self):
+        return [{"karat_value": 21, "grams": D("27.740")}, {"karat_value": 18, "grams": D("10.150")}], D("46540.00"), D("0.00")
+
     def insert(self, values):
         row = {**values, "id": len(self.store.rows) + 1}
         self.store.rows.append(row)
@@ -165,6 +171,14 @@ class ServiceTests(unittest.TestCase):
                          (D("1000.000"), D("-30.000"), D("1040.000"), D("1000.00"), D("500.00")))        # 1000 + 50 + 20 - 30 supplier
         self.store.now = datetime(2026, 10, 23, 11, 0, 0)
         self.assertTrue(service.ensure_daily()["taken"])                                                 # the next day gets its own sheet
+
+    def test_a_skipped_stage_one_takes_the_balances_as_they_stand_now(self):
+        service = self.build()
+        self.store.audits.append({"event_type": "POSITION_OPENING_LEDGERS", "metadata": {"skipped": True}})
+        service.set_opening({"21": "100"}, "0")
+        row = self.store.rows[0]
+        self.assertEqual((row["cash_egp"], row["bank_egp"]), (D("46540.00"), D("0.00")))
+        self.assertEqual(row["gold_shop_eq21"], D("100") + D("27.740") + D("10.150") * 18 / 21)
 
     def test_the_gold_position_cash_bank_and_suppliers_are_read_on_one_connection(self):
         service = self.build()

@@ -32,6 +32,18 @@ class PositionSnapshotRepository(BaseRepository):
         """Stage 1 (scrap, cash and bank openings) was done: its marker audit row exists."""
         return self._fetch_one("SELECT id FROM audit_log WHERE event_type = 'POSITION_OPENING_LEDGERS' ORDER BY id LIMIT 1") is not None
 
+    def ledgers_skipped(self):
+        """Stage 1 was recorded as SKIPPED (owner 2026-11-09): the balances already in the ledgers ARE the starting balances, no opening movement exists."""
+        row = self._fetch_one("SELECT JSON_EXTRACT(metadata_json, '$.skipped') AS skipped FROM audit_log WHERE event_type = 'POSITION_OPENING_LEDGERS' ORDER BY id LIMIT 1")
+        return row is not None and str(row["skipped"]).lower() == "true"
+
+    def current_totals(self):
+        """The counted scrap per karat, the cash and the bank / wallet balances as they stand now (the starting balances when stage 1 was skipped)."""
+        scrap = self._fetch_all("SELECT k.karat_value, COALESCE(SUM(m.weight_delta_grams), 0) AS grams FROM old_gold_movements m JOIN karats k ON k.id = m.karat_id "
+                                "WHERE m.balance_effect = 'COUNTED' GROUP BY k.karat_value")
+        cash, bank = self.cash_and_bank()
+        return scrap, cash, bank
+
     def accounts_for_opening(self, lock=False):
         """The main safe and every active bank / wallet account, each with how many movements it already has (an opening is allowed only on an account with none)."""
         suffix = " FOR UPDATE" if lock else ""

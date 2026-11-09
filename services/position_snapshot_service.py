@@ -94,7 +94,7 @@ class PositionSnapshotService:
             row = repository.opening()
             posted = repository.ledgers_posted()
             accounts = [{"id": str(a["id"]), "ledger": a["ledger"], "name": a["name"], "type": a["account_type"], "free": int(a["movements"]) == 0} for a in repository.accounts_for_opening()]
-            totals = repository.opening_totals() if posted else None
+            totals = (repository.current_totals() if repository.ledgers_skipped() else repository.opening_totals()) if posted else None
         scrap, cash, bank = totals if totals else ([], Decimal(0), Decimal(0))
         return {"opening": None if row is None else self._view(row), "ledgers_posted": posted, "accounts": accounts,
                 "posted": {"scrap": {int(r["karat_value"]): Decimal(str(r["grams"])) for r in scrap}, "cash": Decimal(str(cash)), "bank": Decimal(str(bank))}}
@@ -164,7 +164,7 @@ class PositionSnapshotService:
                 raise SnapshotError("ALREADY_INITIALIZED", "الرصيد الافتتاحي مسجل بالفعل ولا يتغير.")
             if not repository.ledgers_posted():
                 raise SnapshotError("LEDGERS_FIRST", "سجّل الكسر والكاش والبنوك أولًا.")
-            scrap, cash, bank = repository.opening_totals()
+            scrap, cash, bank = repository.current_totals() if repository.ledgers_skipped() else repository.opening_totals()
             gold_new = rules.eq21({karat: grams for karat, grams in weights.items()})
             gold_scrap = rules.eq21({int(r["karat_value"]): Decimal(str(r["grams"])) for r in scrap})
             now = repository.now()
