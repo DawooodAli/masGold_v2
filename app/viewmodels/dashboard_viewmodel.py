@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
 
+from services.price_alert import PriceAlertSettings, evaluate
 from app.formatting import grams, ltr, money, number, rate
 from app.workers.invoice_worker import InvoiceWorker
 
@@ -19,6 +20,7 @@ class DashboardViewModel(QObject):
         self._session, self._service, self._clock = session, service, clock
         self._workers, self._request, self._shutdown = set(), 0, False
         self._data, self._error, self._busy = {}, "", False
+        self._alerts = None
         # A gentle safety refresh; the real triggers are opening the page and a finalized invoice.
         self._timer = QTimer(self)
         self._timer.setInterval(refresh_ms)
@@ -208,6 +210,54 @@ class DashboardViewModel(QObject):
         return {"offered": "currency_rates" in self._data and bool(data.get("enabled", False)), "available": bool(data.get("available")),
                 "rows": [{"code": r["code"], "name": r["name"], "price": rate(r["price"])} for r in data.get("rows", [])],
                 "updated": data.get("updated", ""), "error": data.get("error", "")}
+
+    # ------------------------------------------------------------ quick insights (owner 2026-11-10): week comparison, scrap vs sales, 52-week range
+    @Property("QVariantMap", notify=changed)
+    def insights(self):
+        week, rng = self._data.get("week_compare"), self._data.get("year_range")
+        change = week.get("change") if week else None
+        return {"hasWeek": bool(week), "weekToday": money(week["today"]) if week else "", "weekBefore": money(week["before"]) if week else "",
+                "weekChange": "" if change is None else ("▲ " if Decimal(change) > 0 else "▼ " if Decimal(change) < 0 else "") + f"{abs(Decimal(change))}%",
+                "weekUp": change is not None and Decimal(change) > 0,
+                "scrap": [{"karat": r["karat"], "bought": grams(r["bought"]), "sold": grams(r["sold"])} for r in self._data.get("scrap_vs_sold", [])],
+                "hasRange": bool(rng), "rangeLow": rate(rng["low"]) if rng else "", "rangeHigh": rate(rng["high"]) if rng else "", "rangeNow": rate(rng["now"]) if rng else "",
+                "rangePosition": rng["position"] if rng else 0, "rangeDays": rng["days"] if rng else 0}
+
+    # ------------------------------------------------------------ price alert (a look of this computer)
+    def _alert_settings(self):
+        if self._alerts is None:
+            self._alerts = PriceAlertSettings()
+        return self._alerts
+
+    @Property("QVariantMap", notify=changed)
+    def priceAlert(self):
+        settings = self._alert_settings()
+        low, high = settings.buy_below(), settings.sell_above()
+        latest = self._data.get("latest_price") or {}
+        lines = evaluate(low, high, latest.get("buy"), latest.get("sell"))
+        return {"buyBelow": "" if low is None else str(low), "sellAbove": "" if high is None else str(high), "lines": lines, "triggered": bool(lines)}
+
+    @Slot(str, str, result=str)
+    def savePriceAlert(self, buy_below, sell_above):
+        try:
+            self._alert_settings().save(buy_below, sell_above)
+        except ValueError as exc:
+            return str(exc)
+        self.changed.emit()
+        return ""
+
+    # ------------------------------------------------------------ a reminder text for an overdue customer (copied to the clipboard, never sent)
+    @Slot(int, result=str)
+    def copyReminder(self, index):
+        rows = (self._data.get("overdue") or {}).get("rows", [])
+        if index < 0 or index >= len(rows):
+            return ""
+        row = rows[index]
+        text = (f"السلام عليكم أستاذ/ة {row['customer']}،\nنذكّر حضرتك بوجود مستحقات مفتوحة على حسابك لدى مجوهرات ماس بمبلغ {money(row['amount'])}"
+                f" (منذ {row['age']} يوم).\nبرجاء التكرم بالتسوية في أقرب وقت. شكراً لتعاملكم.")
+        from PySide6.QtGui import QGuiApplication
+        QGuiApplication.clipboard().setText(text)
+        return text
 
     @Property("QVariantMap", notify=changed)
     def goldNews(self):

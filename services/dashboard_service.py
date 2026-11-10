@@ -199,6 +199,34 @@ class DashboardService:
         end = end.date() if hasattr(end, "date") else end
         return [{"day": (end - timedelta(days=n)).isoformat(), "total": str(by_day.get(end - timedelta(days=n), Decimal("0")).quantize(MONEY))} for n in range(SALES_DAYS - 1, -1, -1)]
 
+    @staticmethod
+    def week_compare(days):
+        """Today's sales against the same weekday last week (the 14-day series: today is last, a week ago is eighth from the end). change is a percentage, None when last week was zero."""
+        if len(days or []) < 8:
+            return None
+        now, before = Decimal(str(days[-1]["total"])), Decimal(str(days[-8]["total"]))
+        change = ((now - before) * 100 / before).quantize(Decimal("1"), rounding=ROUND_HALF_UP) if before else None
+        return {"today": str(now.quantize(MONEY)), "before": str(before.quantize(MONEY)), "change": None if change is None else str(change), "day": days[-8]["day"]}
+
+    @staticmethod
+    def year_range(series, days=365):
+        """The lowest / highest SHOP_BUY of karat 21 over the last `days` stored days and where the latest price sits between them (0 = the low, 100 = the high). None below two days."""
+        rows = list(series or [])[-days:]
+        if len(rows) < 2:
+            return None
+        buys = [b for _, b, _ in rows]
+        low, high, now = min(buys), max(buys), buys[-1]
+        position = ((now - low) * 100 / (high - low)).quantize(Decimal("1"), rounding=ROUND_HALF_UP) if high > low else Decimal(50)
+        return {"low": str(low), "high": str(high), "now": str(now), "position": int(position), "days": len(rows)}
+
+    @staticmethod
+    def scrap_vs_sold(scrap_rows, sold_rows):
+        """Per karat (never summed across karats): the grams of scrap bought today and the grams sold today. A karat with neither is left out."""
+        bought = {int(r["karat_value"]): Decimal(str(r["grams"])) for r in scrap_rows or []}
+        sold = {int(r["karat_value"]): Decimal(str(r["grams"])) for r in sold_rows or []}
+        return [{"karat": k, "bought": str(bought.get(k, Decimal(0)).quantize(GRAMS)), "sold": str(sold.get(k, Decimal(0)).quantize(GRAMS))}
+                for k in sorted(set(bought) | set(sold), key=lambda k: (k not in DASHBOARD_KARATS, DASHBOARD_KARATS.index(k) if k in DASHBOARD_KARATS else k))]
+
     def today(self, *, _expected_actor=None):
         actor = self._actor(_expected_actor)
 
@@ -258,6 +286,8 @@ class DashboardService:
             """The 30-day moving average of the shop BUY price ending at that day (None without enough stored days)."""
             found = indicators_math.moving_average(merged[:index + 1], 1, 30)
             return str(found[0]) if found else None
+        snapshot["year_range"] = self.year_range(merged)
+        snapshot["latest_price"] = {"buy": str(merged[-1][1]), "sell": str(merged[-1][2])} if merged else None
         snapshot["price_series"] = [{"day": d.isoformat(), "buy": str(b), "sell": str(s), "ma": average30(first_shown + i)}
                                     for i, (d, b, s) in enumerate(merged[first_shown:])]
         if self._currency_rates is not None:                          # after the database read: a slow network never holds a transaction
@@ -287,4 +317,6 @@ class DashboardService:
                 month=self.month_summary(raw["month"], raw["prev_year"]), month_day=int((raw.get("month_info") or {}).get("day") or 0),
                 top_types=self.top_types(raw.get("top_types")), making_averages=self.making_averages(raw.get("making_groups")), scrap_today=self.scrap_today(raw.get("scrap"), raw.get("scrap_prices")),
                 sales_days=self.sales_days(raw.get("sales_days"), raw.get("sales_today")))
+            snapshot["week_compare"] = self.week_compare(snapshot["sales_days"])
+            snapshot["scrap_vs_sold"] = self.scrap_vs_sold(raw.get("scrap"), raw.get("sold"))
         return snapshot

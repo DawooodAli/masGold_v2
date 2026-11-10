@@ -444,7 +444,18 @@ Item {
                             Layout.fillWidth: true
                             spacing: 0
                             Line { label: modelData.name; value: modelData.amount; strong: true; valueColor: theme.red }
-                            Txt { Layout.fillWidth: true; value: modelData.age; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                layoutDirection: Qt.RightToLeft
+                                spacing: 8
+                                Txt { Layout.fillWidth: true; value: modelData.age; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
+                                Button {
+                                    objectName: "overdueCopy_" + index
+                                    text: "نسخ رسالة تذكير"
+                                    font.family: theme.fontFamily
+                                    onClicked: if (dashboard.vm) dashboard.vm.copyReminder(index)
+                                }
+                            }
                         }
                     }
                     Empty { objectName: "overdueEmpty"; value: "لا توجد ديون متأخرة ✓"
@@ -534,6 +545,81 @@ Item {
                     Txt { objectName: "spreadChartNote"; Layout.fillWidth: true; visible: !!dashboard.vm && dashboard.vm.priceChart.available; color: theme.textMuted
                           font.pixelSize: theme.fontCaption + dashboard.boost
                           value: dashboard.vm && dashboard.vm.priceChart.available ? "أقل فرق / أكبر فرق: " + (Math.min.apply(null, dashboard.vm.priceChart.sell.map(function(v, i) { return v - dashboard.vm.priceChart.buy[i] }))).toFixed(0) + " / " + (Math.max.apply(null, dashboard.vm.priceChart.sell.map(function(v, i) { return v - dashboard.vm.priceChart.buy[i] }))).toFixed(0) + " ج" : "" }
+                }
+
+                // --- مؤشرات سريعة (owner 2026-11-10): النهارده مقابل نفس اليوم الأسبوع اللي فات، الكسر مقابل المبيع بالعيار، ومدى سعر عيار 21 في آخر سنة
+                Card {
+                    objectName: "insightsCard"
+                    title: "مؤشرات سريعة"
+                    accent: theme.gold
+                    Txt { Layout.fillWidth: true; value: "النهارده مقابل نفس اليوم الأسبوع اللي فات"; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost; visible: !!dashboard.vm && dashboard.vm.insights.hasWeek }
+                    Line { objectName: "insightWeekToday"; visible: !!dashboard.vm && dashboard.vm.insights.hasWeek; label: "مبيعات النهارده"; value: dashboard.vm ? dashboard.vm.insights.weekToday : ""; strong: true }
+                    Line { objectName: "insightWeekBefore"; visible: !!dashboard.vm && dashboard.vm.insights.hasWeek; label: "نفس اليوم الأسبوع اللي فات"; value: dashboard.vm ? dashboard.vm.insights.weekBefore : "" }
+                    Line { objectName: "insightWeekChange"; visible: !!dashboard.vm && dashboard.vm.insights.hasWeek && dashboard.vm.insights.weekChange.length > 0; label: "التغيّر"
+                           value: dashboard.vm ? dashboard.vm.insights.weekChange : ""; valueColor: dashboard.vm && dashboard.vm.insights.weekUp ? theme.priceBuy : theme.priceSell }
+                    Txt { Layout.fillWidth: true; value: "الكسر المشترى مقابل المبيع النهارده (بالجرام، كل عيار لوحده)"; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost
+                          visible: !!dashboard.vm && dashboard.vm.insights.scrap.length > 0 }
+                    Repeater {
+                        model: dashboard.vm ? dashboard.vm.insights.scrap : []
+                        delegate: Line { required property var modelData
+                                         objectName: "insightScrap_" + modelData.karat
+                                         label: "عيار " + modelData.karat; value: "اشتريت " + modelData.bought + " • بعت " + modelData.sold; strong: true }
+                    }
+                    Txt { Layout.fillWidth: true; value: "سعر شراء المحل لعيار 21 في آخر " + (dashboard.vm ? dashboard.vm.insights.rangeDays : 0) + " يوم"; color: theme.textMuted
+                          font.pixelSize: theme.fontCaption + dashboard.boost; visible: !!dashboard.vm && dashboard.vm.insights.hasRange }
+                    Line { objectName: "insightRangeLow"; visible: !!dashboard.vm && dashboard.vm.insights.hasRange; label: "أقل / أعلى"
+                           value: dashboard.vm ? dashboard.vm.insights.rangeLow + " / " + dashboard.vm.insights.rangeHigh : "" }
+                    Line { objectName: "insightRangeNow"; visible: !!dashboard.vm && dashboard.vm.insights.hasRange; label: "الآن"
+                           value: dashboard.vm ? dashboard.vm.insights.rangeNow + "  (" + dashboard.vm.insights.rangePosition + "% من المدى)" : ""; strong: true }
+                    Rectangle {
+                        visible: !!dashboard.vm && dashboard.vm.insights.hasRange
+                        Layout.fillWidth: true; Layout.preferredHeight: 8; radius: 4; color: theme.border
+                        Rectangle { width: parent.width * (dashboard.vm ? dashboard.vm.insights.rangePosition : 0) / 100; height: parent.height; radius: 4; color: theme.priceBuy; anchors.right: parent.right }
+                    }
+                    Empty { objectName: "insightsEmpty"; value: "لا توجد بيانات كافية بعد"
+                            visible: !!dashboard.vm && !dashboard.vm.insights.hasWeek && !dashboard.vm.insights.hasRange && dashboard.vm.insights.scrap.length === 0 }
+                }
+
+                // --- تنبيه السعر (إعداد خاص بهذا الجهاز): حد أدنى لشراء المحل وحد أعلى لبيع المحل، عيار 21
+                Card {
+                    id: alertCard
+                    objectName: "priceAlertCard"
+                    title: "تنبيه السعر • عيار 21"
+                    accent: !!dashboard.vm && dashboard.vm.priceAlert.triggered ? theme.red : theme.priceBuy
+                    property string message: ""
+                    Repeater {
+                        model: dashboard.vm ? dashboard.vm.priceAlert.lines : []
+                        delegate: Txt { required property var modelData
+                                        objectName: "priceAlertLine"
+                                        Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; font.bold: true
+                                        value: "🔔 " + modelData.text; color: modelData.kind === "buy" ? theme.priceBuy : theme.priceSell }
+                    }
+                    Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                          visible: !!dashboard.vm && !dashboard.vm.priceAlert.triggered
+                          value: "لا يوجد تنبيه الآن. اكتب حدًا للشراء وحدًا للبيع (اترك الخانة فارغة لإلغائه)." }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        Txt { value: "شراء المحل ≤" }
+                        TextField { id: alertBuy; objectName: "priceAlertBuy"; Layout.fillWidth: true; horizontalAlignment: Text.AlignRight; font.family: theme.fontFamily
+                                    placeholderText: "مثال 6000"; text: dashboard.vm ? dashboard.vm.priceAlert.buyBelow : ""; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        Txt { value: "بيع المحل ≥" }
+                        TextField { id: alertSell; objectName: "priceAlertSell"; Layout.fillWidth: true; horizontalAlignment: Text.AlignRight; font.family: theme.fontFamily
+                                    placeholderText: "مثال 6400"; text: dashboard.vm ? dashboard.vm.priceAlert.sellAbove : ""; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+                    }
+                    Button {
+                        objectName: "priceAlertSave"
+                        text: "حفظ التنبيه"
+                        font.family: theme.fontFamily
+                        onClicked: alertCard.message = dashboard.vm ? dashboard.vm.savePriceAlert(alertBuy.text, alertSell.text) : ""
+                    }
+                    Txt { objectName: "priceAlertMessage"; Layout.fillWidth: true; visible: alertCard.message.length > 0; value: alertCard.message; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                 }
 
                 // --- أخبار بتأثر على الذهب (Investing.com بالعربي، RSS مجاني؛ الضغط على الخبر يفتحه في المتصفح)
