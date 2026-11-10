@@ -193,6 +193,10 @@ Item {
                     }
                     Txt { objectName: "priceChartEmpty"; Layout.fillWidth: true; visible: !dashboard.vm || !dashboard.vm.priceChart.available
                           value: "لا توجد أسعار مخزنة كافية للرسم"; color: theme.textMuted }
+                    Txt { objectName: "priceChartReading"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; font.bold: true
+                          visible: !!dashboard.vm && dashboard.vm.priceChart.available && dashboard.vm.priceHint.available
+                          color: dashboard.vm && dashboard.vm.priceHint.tone === "buy" ? theme.priceBuy : dashboard.vm && dashboard.vm.priceHint.tone === "sell" ? theme.priceSell : theme.textSecondary
+                          value: dashboard.vm ? "قراءة: " + dashboard.vm.priceHint.action + " — " + dashboard.vm.priceHint.versus : "" }
                     Line { visible: !!dashboard.vm && dashboard.vm.priceChart.available; label: "أدنى / أعلى"
                            value: dashboard.vm ? dashboard.vm.priceChart.lowText + " / " + dashboard.vm.priceChart.highText : "" }
                     Txt { visible: !!dashboard.vm && dashboard.vm.priceChart.available; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost
@@ -206,6 +210,10 @@ Item {
                     title: "الشارت المباشر للذهب (XAUUSD)"
                     accent: theme.gold
                     GoldWebChart { Layout.fillWidth: true; Layout.preferredHeight: 340 }
+                    Txt { Layout.fillWidth: true; value: "الإشارة الفنية للذهب (من «بيع قوي» إلى «شراء قوي»)"; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
+                    GoldWebChart { objectName: "goldTechnicalGauge"; technical: true; Layout.fillWidth: true; Layout.preferredHeight: 300 }
+                    Txt { objectName: "chartGuide"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost
+                          value: "إزاي أقرأ الشارت قبل ما أقرر: (1) عدّاد التحليل الفني ملخص مؤشرات تلقائي من «بيع قوي» إلى «شراء قوي»؛ يوم واحد للقصير وأسبوع/شهر للأبعد، واتفاق الاتنين أقوى من واحد. (2) لو الذهب قريب من أعلى مدى في الشارت فده وقت مناسب للبيع والتسعير بحذر وإيقاف شراء الكسر بسعر عالي؛ لو قريب من أدنى مدى فهو فرصة لشراء الكسر والمخزون. (3) الدولار/الجنيه لو بيطلع فسعر الذهب محليًا بيطلع حتى لو الأونصة ثابتة. (4) ده إرشاد مش توصية مالية: قرر مع المخزون والسيولة وسعر المحل الفعلي." }
                 }
 
                 // --- سعر الذهب (the engine's own formatted values)

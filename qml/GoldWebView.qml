@@ -7,8 +7,16 @@ Item {
     property string symbol: "OANDA:XAUUSD"
     property string compare: ""            // an optional second symbol drawn on its own price scale
     property bool news: false              // the free TradingView news timeline for the symbol instead of a chart
+    property bool technical: false         // the free TradingView technical-analysis gauge (sell ... buy) of the symbol
     property bool calendar: false          // the free TradingView economic calendar (US / euro area / Egypt, medium and high importance)
     function build() {
+        if (view.technical) {
+            var tc = {interval: "1D", width: "100%", isTransparent: false, height: "100%", symbol: view.symbol, showIntervalTabs: true, displayMode: "single", locale: "ar_AE", colorTheme: "dark"}
+            return "<html><body style='margin:0;background:#0f1115'><div class='tradingview-widget-container' style='height:100vh;width:100%'>"
+                + "<div class='tradingview-widget-container__widget' style='height:100%;width:100%'></div>"
+                + "<script type='text/javascript' src='https://s3.tradingview.com/external-embedding/embed-widget-technical-analysis.js' async>"
+                + JSON.stringify(tc) + "</script></div></body></html>"
+        }
         if (view.calendar) {
             var ec = {colorTheme: "dark", isTransparent: false, width: "100%", height: "100%", locale: "ar_AE", importanceFilter: "0,1", countryFilter: "us,eu,eg"}
             return "<html><body style='margin:0;background:#0f1115'><div class='tradingview-widget-container' style='height:100vh;width:100%'>"
@@ -38,6 +46,7 @@ Item {
         Component.onCompleted: loadHtml(view.build(), "https://www.tradingview.com")
     }
     onSymbolChanged: if (web.url !== undefined) web.loadHtml(view.build(), "https://www.tradingview.com")
+    onTechnicalChanged: web.loadHtml(view.build(), "https://www.tradingview.com")
     onNewsChanged: web.loadHtml(view.build(), "https://www.tradingview.com")
     onCalendarChanged: web.loadHtml(view.build(), "https://www.tradingview.com")
     onCompareChanged: if (web.url !== undefined) web.loadHtml(view.build(), "https://www.tradingview.com")

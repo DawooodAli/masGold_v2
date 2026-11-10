@@ -925,10 +925,11 @@ function renderCurrency(s) {
 }
 
 // الأسواق والأخبار (owner 2026-11-10, iPad only): TradingView charts and the economic calendar in iframes (the CSP already allows s.tradingview.com) + the Arabic news list of the server
+const MARKET_GUIDE = "إزاي أقرأ الشارت قبل ما أقرر: (1) عدّاد التحليل الفني ملخص مؤشرات تلقائي من «بيع قوي» إلى «شراء قوي»؛ يوم واحد للقصير وأسبوع/شهر للأبعد، واتفاق الاتنين أقوى من واحد. (2) لو الذهب قريب من أعلى مدى في الشارت فده وقت مناسب للبيع والتسعير بحذر وإيقاف شراء الكسر بسعر عالي؛ لو قريب من أدنى مدى فهو فرصة لشراء الكسر والمخزون. (3) الدولار/الجنيه لو بيطلع فسعر الذهب محليًا بيطلع حتى لو الأونصة ثابتة. (4) ده إرشاد مش توصية مالية: قرر مع المخزون والسيولة وسعر المحل الفعلي.";
 const MARKET_TABS = [
   { key: "usd", title: "الدولار / الجنيه", chart: "FX_IDC:USDEGP" },
   { key: "eur", title: "اليورو / الجنيه", chart: "FX_IDC:EUREGP" },
-  { key: "g21", title: "جرام 21 بالجنيه", chart: "OANDA:XAUUSD*FX_IDC:USDEGP*21/24/31.1035" },
+  { key: "g21", title: "جرام 21 بالجنيه", chart: "OANDA:XAUUSD*FX_IDC:USDEGP*21/24/31.1035", tech: "OANDA:XAUUSD", techNote: "العدّاد للأونصة بالدولار (الاتجاه نفسه)" },
   { key: "xau", title: "الذهب XAUUSD", chart: "OANDA:XAUUSD" },
   { key: "cal", title: "التقويم الاقتصادي" },
   { key: "news", title: "أخبار الذهب" },
@@ -944,6 +945,10 @@ function renderMarkets(s) {
     s.frames[tab] = s.frames[tab] || el("iframe", { class: "livechart", loading: "lazy", sandbox: "allow-scripts allow-same-origin allow-popups", title: current.title,
       src: "https://s.tradingview.com/widgetembed/?symbol=" + encodeURIComponent(current.chart) + "&interval=D&theme=dark&style=1&locale=ar&toolbarbg=0E1116&hidesidetoolbar=1&withdateranges=1" });
     body.append(s.frames[tab]);
+    const tech = { interval: "1D", width: "100%", isTransparent: false, height: "100%", symbol: current.tech || current.chart, showIntervalTabs: true, displayMode: "single", locale: "ar_AE", colorTheme: "dark" };
+    s.frames["t" + tab] = s.frames["t" + tab] || el("iframe", { class: "livechart gauge", loading: "lazy", sandbox: "allow-scripts allow-same-origin allow-popups", title: "التحليل الفني",
+      src: "https://s.tradingview.com/embed-widget/technical-analysis/?locale=ar_AE#" + encodeURIComponent(JSON.stringify(tech)) });
+    body.append(el("div", { class: "section", text: "الإشارة الفنية" + (current.techNote ? " — " + current.techNote : "") }), s.frames["t" + tab], el("div", { class: "note-box", text: MARKET_GUIDE }));
   } else if (tab === "cal") {
     const conf = { colorTheme: "dark", isTransparent: false, width: "100%", height: "100%", locale: "ar_AE", importanceFilter: "0,1", countryFilter: "us,eu,eg" };
     s.frames.cal = s.frames.cal || el("iframe", { class: "livechart", loading: "lazy", sandbox: "allow-scripts allow-same-origin allow-popups", title: current.title,
@@ -1434,7 +1439,13 @@ function liveGoldChart() {
     state.liveFrame = el("iframe", { class: "livechart", loading: "lazy", sandbox: "allow-scripts allow-same-origin allow-popups", title: "الشارت المباشر للذهب",
       src: "https://s.tradingview.com/widgetembed/?symbol=OANDA%3AXAUUSD&interval=60&theme=dark&style=1&locale=ar&toolbarbg=0E1116&hidesidetoolbar=1&withdateranges=1" });
   }
-  return el("div", {}, el("div", { class: "section", text: "الشارت المباشر للذهب (XAUUSD)" }), state.liveFrame);
+  if (!state.liveGauge) {
+    const tech = { interval: "1D", width: "100%", isTransparent: false, height: "100%", symbol: "OANDA:XAUUSD", showIntervalTabs: true, displayMode: "single", locale: "ar_AE", colorTheme: "dark" };
+    state.liveGauge = el("iframe", { class: "livechart gauge", loading: "lazy", sandbox: "allow-scripts allow-same-origin allow-popups", title: "التحليل الفني للذهب",
+      src: "https://s.tradingview.com/embed-widget/technical-analysis/?locale=ar_AE#" + encodeURIComponent(JSON.stringify(tech)) });
+  }
+  return el("div", {}, el("div", { class: "section", text: "الشارت المباشر للذهب (XAUUSD)" }), state.liveFrame,
+    el("div", { class: "section", text: "الإشارة الفنية للذهب" }), state.liveGauge, el("div", { class: "note-box", text: MARKET_GUIDE }));
 }
 
 window.addEventListener("resize", () => state.redraws.forEach((draw) => draw()));
