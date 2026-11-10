@@ -497,6 +497,86 @@ Item {
                     }
                 }
 
+
+                // --- فرق شراء/بيع المحل آخر 30 يومًا (من الأسعار المخزنة، بيوضح لو الهامش بيضيق)
+                Card {
+                    objectName: "spreadChartCard"
+                    title: "فرق شراء/بيع عيار 21 — آخر 30 يومًا"
+                    accent: theme.priceSell
+                    Canvas {
+                        objectName: "dashboardSpreadCanvas"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 150
+                        readonly property var chart: dashboard.vm ? dashboard.vm.priceChart : ({})
+                        onChartChanged: requestPaint()
+                        onWidthChanged: requestPaint()
+                        onPaint: {
+                            var ctx = getContext("2d"); ctx.reset()
+                            var c = chart; if (!c || !c.available) return
+                            var n = c.buy.length, sp = [], lo = 1e18, hi = -1e18
+                            for (var i = 0; i < n; i++) { var d = c.sell[i] - c.buy[i]; sp.push(d); lo = Math.min(lo, d); hi = Math.max(hi, d) }
+                            var span = Math.max(1e-9, hi - lo)
+                            ctx.strokeStyle = "" + theme.priceSell; ctx.lineWidth = 2; ctx.beginPath()
+                            for (var j = 0; j < n; j++) {
+                                var x = width - 4 - (width - 8) * (n - 1 - j) / Math.max(1, n - 1), y = height - 6 - (height - 12) * (sp[j] - lo) / span
+                                if (j === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
+                            }
+                            ctx.stroke()
+                        }
+                    }
+                    Txt { objectName: "spreadChartEmpty"; Layout.fillWidth: true; visible: !dashboard.vm || !dashboard.vm.priceChart.available
+                          value: "لا توجد أسعار مخزنة كافية للرسم"; color: theme.textMuted }
+                    Txt { objectName: "spreadChartNote"; Layout.fillWidth: true; visible: !!dashboard.vm && dashboard.vm.priceChart.available; color: theme.textMuted
+                          font.pixelSize: theme.fontCaption + dashboard.boost
+                          value: dashboard.vm && dashboard.vm.priceChart.available ? "أقل فرق / أكبر فرق: " + (Math.min.apply(null, dashboard.vm.priceChart.sell.map(function(v, i) { return v - dashboard.vm.priceChart.buy[i] }))).toFixed(0) + " / " + (Math.max.apply(null, dashboard.vm.priceChart.sell.map(function(v, i) { return v - dashboard.vm.priceChart.buy[i] }))).toFixed(0) + " ج" : "" }
+                }
+
+                // --- شارتات السوق (owner 2026-11-10): الدولار والجنيه، اليورو والجنيه، الذهب بالجنيه (جرام 21 = أونصة × دولار/جنيه × 21/24 ÷ 31.1035)، الذهب مع الدولار. TradingView داخل البرنامج.
+                Card {
+                    id: marketChartsCard
+                    objectName: "marketChartsCard"
+                    Layout.columnSpan: dashboard.wide ? 3 : 2
+                    title: "شارتات السوق"
+                    accent: theme.gold
+                    property int tab: 0
+                    readonly property var tabs: [
+                        {label: "الدولار / الجنيه", symbol: "FX_IDC:USDEGP", compare: ""},
+                        {label: "اليورو / الجنيه", symbol: "FX_IDC:EUREGP", compare: ""},
+                        {label: "جرام 21 بالجنيه", symbol: "OANDA:XAUUSD*FX_IDC:USDEGP*21/24/31.1035", compare: ""},
+                        {label: "الذهب مع الدولار", symbol: "OANDA:XAUUSD", compare: "FX_IDC:USDEGP"}]
+                    RowLayout {
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        Repeater {
+                            model: marketChartsCard.tabs
+                            delegate: Button {
+                                objectName: "marketChartTab" + index
+                                text: modelData.label
+                                checkable: true
+                                checked: marketChartsCard.tab === index
+                                font.family: theme.fontFamily
+                                onClicked: marketChartsCard.tab = index
+                            }
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
+                    GoldWebChart {
+                        objectName: "marketWebChart"
+                        Layout.fillWidth: true; Layout.preferredHeight: 380
+                        symbol: marketChartsCard.tabs[marketChartsCard.tab].symbol
+                        compare: marketChartsCard.tabs[marketChartsCard.tab].compare
+                    }
+                }
+
+                // --- أخبار الذهب (TradingView Timeline، مجاني، عناوين XAUUSD بالإنجليزي)
+                Card {
+                    objectName: "goldNewsCard"
+                    Layout.columnSpan: dashboard.wide ? 2 : 2
+                    title: "أخبار بتأثر على الذهب"
+                    accent: theme.gold
+                    GoldWebChart { objectName: "goldNewsView"; news: true; Layout.fillWidth: true; Layout.preferredHeight: 380 }
+                }
             }
 
 

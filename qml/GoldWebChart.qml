@@ -7,6 +7,9 @@ Item {
     id: chart
     objectName: "goldWebChart"
     implicitHeight: 340
+    property string symbol: "OANDA:XAUUSD"
+    property string compare: ""
+    property bool news: false
     readonly property bool enabled: typeof webChartEnabled !== "undefined" && webChartEnabled
     readonly property bool embedded: loader.status === Loader.Ready
 
@@ -17,6 +20,7 @@ Item {
         anchors.fill: parent
         active: chart.enabled
         source: "GoldWebView.qml"
+        onLoaded: { item.symbol = Qt.binding(function() { return chart.symbol }); item.compare = Qt.binding(function() { return chart.compare }); item.news = chart.news }
     }
     ColumnLayout {
         anchors.centerIn: parent
@@ -28,7 +32,7 @@ Item {
             objectName: "goldWebChartOpen"
             Layout.alignment: Qt.AlignHCenter
             text: "فتح الشارت في المتصفح"
-            onClicked: Qt.openUrlExternally("https://www.tradingview.com/chart/?symbol=OANDA%3AXAUUSD")
+            onClicked: Qt.openUrlExternally("https://www.tradingview.com/chart/?symbol=" + encodeURIComponent(chart.symbol))
         }
     }
 }
