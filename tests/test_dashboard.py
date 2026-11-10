@@ -436,8 +436,8 @@ class DashboardPageTests(page_harness.InvoicePageTests):
                 self.assertGreaterEqual(left, -1, f"{name} clipped left at {width}x{height}")
                 self.assertLessEqual(left + item.property("width"), page.property("width") + 1,
                                      f"{name} overflows at {width}x{height}")
-            # The key figures of the first card row are on screen without scrolling.
-            for name in ("invoiceCount", "dashboardPriceSell"):
+            # The first card row is the two charts (owner 2026-11-10): both are on screen without scrolling.
+            for name in ("priceChartCard", "liveGoldChartCard"):
                 self.assert_inside_window(self.item(name))
             if target:
                 Path(target).mkdir(parents=True, exist_ok=True)

@@ -152,6 +152,60 @@ Item {
                 columnSpacing: 14
                 rowSpacing: 10
 
+                // --- سعر عيار 21 آخر 30 يومًا (the stored daily prices; shop BUY green, shop SELL amber) + a link to a live external chart
+                Card {
+                    id: priceChartCard
+                    objectName: "priceChartCard"
+                    title: "سعر عيار 21 — آخر 30 يومًا"
+                    accent: theme.priceBuy
+                    Canvas {
+                        id: priceLine
+                        objectName: "dashboardPriceCanvas"
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 150
+                        readonly property var chart: dashboard.vm ? dashboard.vm.priceChart : ({})
+                        onChartChanged: requestPaint()
+                        onWidthChanged: requestPaint()
+                        onPaint: {
+                            var ctx = getContext("2d"); ctx.reset()
+                            var c = chart; if (!c || !c.available) return
+                            var span = Math.max(1e-9, c.high - c.low), n = c.buy.length
+                            function xs(i) { return width - 4 - (width - 8) * (n - 1 - i) / (n - 1) }
+                            function ys(v) { return height - 6 - (height - 12) * (v - c.low) / span }
+                            var lines = [[c.sell, "" + theme.priceSell], [c.buy, "" + theme.priceBuy]]
+                            for (var k = 0; k < lines.length; k++) {
+                                ctx.strokeStyle = lines[k][1]; ctx.lineWidth = 2; ctx.beginPath()
+                                for (var i = 0; i < n; i++) { if (i === 0) ctx.moveTo(xs(i), ys(lines[k][0][i])); else ctx.lineTo(xs(i), ys(lines[k][0][i])) }
+                                ctx.stroke()
+                            }
+                            // 30-day moving average of the shop BUY price (dashed, muted); days without enough history are a gap
+                            ctx.strokeStyle = "" + theme.textPrimary; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]); ctx.beginPath()
+                            var pen = false
+                            for (var j = 0; j < n; j++) {
+                                var m = c.ma ? c.ma[j] : null
+                                if (m === null || m === undefined) { pen = false; continue }
+                                if (!pen) { ctx.moveTo(xs(j), ys(m)); pen = true } else ctx.lineTo(xs(j), ys(m))
+                            }
+                            ctx.stroke()
+                        }
+                    }
+                    Txt { objectName: "priceChartEmpty"; Layout.fillWidth: true; visible: !dashboard.vm || !dashboard.vm.priceChart.available
+                          value: "لا توجد أسعار مخزنة كافية للرسم"; color: theme.textMuted }
+                    Line { visible: !!dashboard.vm && dashboard.vm.priceChart.available; label: "أدنى / أعلى"
+                           value: dashboard.vm ? dashboard.vm.priceChart.lowText + " / " + dashboard.vm.priceChart.highText : "" }
+                    Txt { visible: !!dashboard.vm && dashboard.vm.priceChart.available; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost
+                          value: "أخضر: شراء المحل • ذهبي: بيع المحل • منقّط: المتوسط المتحرك 30 يوم (شراء)" }
+                }
+
+                // --- الشارت المباشر للذهب (TradingView XAUUSD داخل البرنامج؛ رابط بديل لو المتصفح المضمّن غير متاح)
+                Card {
+                    objectName: "liveGoldChartCard"
+                    Layout.columnSpan: dashboard.wide ? 2 : 1
+                    title: "الشارت المباشر للذهب (XAUUSD)"
+                    accent: theme.gold
+                    GoldWebChart { Layout.fillWidth: true; Layout.preferredHeight: 340 }
+                }
+
                 // --- سعر الذهب (the engine's own formatted values)
                 Card {
                     objectName: "priceCard"
@@ -443,58 +497,6 @@ Item {
                     }
                 }
 
-                // --- سعر عيار 21 آخر 30 يومًا (the stored daily prices; shop BUY green, shop SELL amber) + a link to a live external chart
-                Card {
-                    id: priceChartCard
-                    objectName: "priceChartCard"
-                    title: "سعر عيار 21 — آخر 30 يومًا"
-                    accent: theme.priceBuy
-                    Canvas {
-                        id: priceLine
-                        objectName: "dashboardPriceCanvas"
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 150
-                        readonly property var chart: dashboard.vm ? dashboard.vm.priceChart : ({})
-                        onChartChanged: requestPaint()
-                        onWidthChanged: requestPaint()
-                        onPaint: {
-                            var ctx = getContext("2d"); ctx.reset()
-                            var c = chart; if (!c || !c.available) return
-                            var span = Math.max(1e-9, c.high - c.low), n = c.buy.length
-                            function xs(i) { return width - 4 - (width - 8) * (n - 1 - i) / (n - 1) }
-                            function ys(v) { return height - 6 - (height - 12) * (v - c.low) / span }
-                            var lines = [[c.sell, "" + theme.priceSell], [c.buy, "" + theme.priceBuy]]
-                            for (var k = 0; k < lines.length; k++) {
-                                ctx.strokeStyle = lines[k][1]; ctx.lineWidth = 2; ctx.beginPath()
-                                for (var i = 0; i < n; i++) { if (i === 0) ctx.moveTo(xs(i), ys(lines[k][0][i])); else ctx.lineTo(xs(i), ys(lines[k][0][i])) }
-                                ctx.stroke()
-                            }
-                            // 30-day moving average of the shop BUY price (dashed, muted); days without enough history are a gap
-                            ctx.strokeStyle = "" + theme.textPrimary; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]); ctx.beginPath()
-                            var pen = false
-                            for (var j = 0; j < n; j++) {
-                                var m = c.ma ? c.ma[j] : null
-                                if (m === null || m === undefined) { pen = false; continue }
-                                if (!pen) { ctx.moveTo(xs(j), ys(m)); pen = true } else ctx.lineTo(xs(j), ys(m))
-                            }
-                            ctx.stroke()
-                        }
-                    }
-                    Txt { objectName: "priceChartEmpty"; Layout.fillWidth: true; visible: !dashboard.vm || !dashboard.vm.priceChart.available
-                          value: "لا توجد أسعار مخزنة كافية للرسم"; color: theme.textMuted }
-                    Line { visible: !!dashboard.vm && dashboard.vm.priceChart.available; label: "أدنى / أعلى"
-                           value: dashboard.vm ? dashboard.vm.priceChart.lowText + " / " + dashboard.vm.priceChart.highText : "" }
-                    Txt { visible: !!dashboard.vm && dashboard.vm.priceChart.available; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost
-                          value: "أخضر: شراء المحل • ذهبي: بيع المحل • منقّط: المتوسط المتحرك 30 يوم (شراء)" }
-                }
-
-                // --- الشارت المباشر للذهب (TradingView XAUUSD داخل البرنامج؛ رابط بديل لو المتصفح المضمّن غير متاح)
-                Card {
-                    objectName: "liveGoldChartCard"
-                    title: "الشارت المباشر للذهب (XAUUSD)"
-                    accent: theme.gold
-                    GoldWebChart { Layout.fillWidth: true; Layout.preferredHeight: 340 }
-                }
             }
 
 
