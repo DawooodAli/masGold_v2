@@ -536,44 +536,6 @@ Item {
                           value: dashboard.vm && dashboard.vm.priceChart.available ? "أقل فرق / أكبر فرق: " + (Math.min.apply(null, dashboard.vm.priceChart.sell.map(function(v, i) { return v - dashboard.vm.priceChart.buy[i] }))).toFixed(0) + " / " + (Math.max.apply(null, dashboard.vm.priceChart.sell.map(function(v, i) { return v - dashboard.vm.priceChart.buy[i] }))).toFixed(0) + " ج" : "" }
                 }
 
-                // --- شارتات السوق (owner 2026-11-10): الدولار والجنيه، اليورو والجنيه، الذهب بالجنيه (جرام 21 = أونصة × دولار/جنيه × 21/24 ÷ 31.1035)، الذهب مع الدولار. TradingView داخل البرنامج.
-                Card {
-                    id: marketChartsCard
-                    objectName: "marketChartsCard"
-                    Layout.columnSpan: dashboard.wide ? 3 : 2
-                    title: "شارتات السوق"
-                    accent: theme.gold
-                    property int tab: 0
-                    readonly property var tabs: [
-                        {label: "الدولار / الجنيه", symbol: "FX_IDC:USDEGP", compare: ""},
-                        {label: "اليورو / الجنيه", symbol: "FX_IDC:EUREGP", compare: ""},
-                        {label: "جرام 21 بالجنيه", symbol: "OANDA:XAUUSD*FX_IDC:USDEGP*21/24/31.1035", compare: ""},
-                        {label: "الذهب مع الدولار", symbol: "OANDA:XAUUSD", compare: "FX_IDC:USDEGP"}]
-                    RowLayout {
-                        Layout.fillWidth: true
-                        layoutDirection: Qt.RightToLeft
-                        spacing: 8
-                        Repeater {
-                            model: marketChartsCard.tabs
-                            delegate: Button {
-                                objectName: "marketChartTab" + index
-                                text: modelData.label
-                                checkable: true
-                                checked: marketChartsCard.tab === index
-                                font.family: theme.fontFamily
-                                onClicked: marketChartsCard.tab = index
-                            }
-                        }
-                        Item { Layout.fillWidth: true }
-                    }
-                    GoldWebChart {
-                        objectName: "marketWebChart"
-                        Layout.fillWidth: true; Layout.preferredHeight: 380
-                        symbol: marketChartsCard.tabs[marketChartsCard.tab].symbol
-                        compare: marketChartsCard.tabs[marketChartsCard.tab].compare
-                    }
-                }
-
                 // --- أخبار بتأثر على الذهب (Investing.com بالعربي، RSS مجاني؛ الضغط على الخبر يفتحه في المتصفح)
                 Card {
                     objectName: "goldNewsCard"
@@ -601,14 +563,6 @@ Item {
                           value: "Investing.com • آخر تحديث " + (dashboard.vm ? dashboard.vm.goldNews.updated : "") }
                 }
 
-                // --- التقويم الاقتصادي (TradingView Events، مجاني: أمريكا ومنطقة اليورو ومصر)
-                Card {
-                    objectName: "economicCalendarCard"
-                    Layout.columnSpan: 1
-                    title: "التقويم الاقتصادي"
-                    accent: theme.priceBuy
-                    GoldWebChart { objectName: "economicCalendarView"; calendar: true; Layout.fillWidth: true; Layout.preferredHeight: 380 }
-                }
             }
 
 

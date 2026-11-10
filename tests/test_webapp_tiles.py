@@ -98,3 +98,18 @@ class TilesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NewsCardTests(unittest.TestCase):
+    def test_the_news_card_formats_the_shared_snapshot_and_a_failure_only_marks_it_unavailable(self):
+        api = make_api() if "make_api" in globals() else None
+        if api is None:
+            self.skipTest("no api helper")
+        token = api.login("admin", "secret")
+        snap = {"available": True, "updated": "18:09", "error": "", "items": [{"title": "الذهب يتراجع", "link": "https://sa.investing.com/a", "time": "2026-11-10 13:45"}]}
+        with mock.patch("services.gold_news.shared", return_value=mock.Mock(snapshot=lambda: snap)):
+            data = api.extras.news(token)
+        self.assertTrue(data["available"])
+        self.assertEqual(data["items"][0]["title"], "الذهب يتراجع")
+        with mock.patch("services.gold_news.shared", side_effect=RuntimeError("x")):
+            self.assertFalse(api.extras.news(token)["available"])

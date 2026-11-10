@@ -22,8 +22,8 @@ FILES = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", 
          "/zxing.min.js": ("zxing.min.js", "text/javascript; charset=utf-8")}
 COOKIE = "mgsid"
 # read-only extras: path -> method of `webapp.extras.Extras` (reviews and transfers_overview take no parameters)
-NO_PARAMS = frozenset({"today", "reviews", "transfers_overview", "attention", "tiles", "bankflow", "cashflow", "currency", "stocktake_status"})
-ROUTES = {"/api/today": "today", "/api/statement": "statement", "/api/piece": "piece", "/api/reviews": "reviews", "/api/transfers": "transfers_overview", "/api/attention": "attention", "/api/tiles": "tiles", "/api/bankflow": "bankflow", "/api/cashflow": "cashflow", "/api/currency": "currency", "/api/activity": "activity", "/api/stocktake_status": "stocktake_status"}
+NO_PARAMS = frozenset({"today", "reviews", "transfers_overview", "attention", "tiles", "bankflow", "cashflow", "currency", "news", "stocktake_status"})
+ROUTES = {"/api/today": "today", "/api/statement": "statement", "/api/piece": "piece", "/api/reviews": "reviews", "/api/transfers": "transfers_overview", "/api/attention": "attention", "/api/tiles": "tiles", "/api/bankflow": "bankflow", "/api/cashflow": "cashflow", "/api/currency": "currency", "/api/news": "news", "/api/activity": "activity", "/api/stocktake_status": "stocktake_status"}
 MAX_BODY = 4096
 CSP = ("default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; "
        "connect-src 'self'; frame-src https://s.tradingview.com https://www.tradingview.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")

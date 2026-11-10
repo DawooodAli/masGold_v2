@@ -200,7 +200,7 @@ function render() {
     el("span", { class: "who", text: state.overview.user }), el("button", { class: "btn", text: "خروج", onclick: logout }));
   if (!module) { app.replaceChildren(...[top, renderAttention(), renderToday(), renderHome()].filter(Boolean)); return; }
   if (module.kind && module.kind !== "reports") {
-    const draw = { reviews: renderReviews, transfers: renderTransfers, calc: renderCalc, stocktake: renderStocktake, activity: renderActivity, bankflow: renderBankflow, cashflow: renderCashflow, currency: renderCurrency, market: renderMarket, settings: renderMarket }[module.kind];
+    const draw = { reviews: renderReviews, transfers: renderTransfers, calc: renderCalc, stocktake: renderStocktake, activity: renderActivity, bankflow: renderBankflow, cashflow: renderCashflow, currency: renderCurrency, markets: renderMarkets, market: renderMarket, settings: renderMarket }[module.kind];
     const view = state.special ? draw(state.special) : el("div", { class: "loading", text: "جارٍ التحميل…" });
     app.replaceChildren(...[top, view, state.custInvoices ? renderCustomerInvoices(state.custInvoices) : null, state.invoice ? renderInvoice(state.invoice) : null].filter(Boolean));
     return;
@@ -898,7 +898,7 @@ async function loadSpecial(kind) {
   try {
     if (kind === "calc") { if (!state.today) await loadToday(); s.data = {}; }
     else if (kind === "stocktake") s.data = await call("/api/stocktake_status");
-    else s.data = await call(kind === "reviews" ? "/api/reviews" : kind === "activity" ? "/api/activity" : kind === "bankflow" ? "/api/bankflow" : kind === "cashflow" ? "/api/cashflow" : kind === "currency" ? "/api/currency" : kind === "market" ? "/api/market" : kind === "settings" ? "/api/settings" : "/api/transfers");
+    else s.data = await call(kind === "reviews" ? "/api/reviews" : kind === "activity" ? "/api/activity" : kind === "bankflow" ? "/api/bankflow" : kind === "cashflow" ? "/api/cashflow" : kind === "currency" ? "/api/currency" : kind === "markets" ? "/api/news" : kind === "market" ? "/api/market" : kind === "settings" ? "/api/settings" : "/api/transfers");
   } catch (e) {
     if (e.status === 401) { showLogin("انتهت الجلسة، سجّل الدخول من جديد."); return; }
     s.error = e.message;
@@ -919,6 +919,45 @@ function renderCurrency(s) {
       body.append(el("div", { class: "cards" }, d.rows.map((r) => el("div", { class: "card gold" }, el("div", { class: "label", text: r.name + " (" + r.code + ")" }), el("div", { class: "value", text: r.price + " ج" }),
         el("div", { class: "note", text: "الجنيه المصري مقابل وحدة واحدة" })))));
       body.append(el("div", { class: "note-box", text: "آخر تحديث " + d.updated + (d.error ? " • " + d.error : "") + ". سعر السوق للعرض فقط، وليس سعر بنك." }));
+    }
+  }
+  return body;
+}
+
+// الأسواق والأخبار (owner 2026-11-10, iPad only): TradingView charts and the economic calendar in iframes (the CSP already allows s.tradingview.com) + the Arabic news list of the server
+const MARKET_TABS = [
+  { key: "usd", title: "الدولار / الجنيه", chart: "FX_IDC:USDEGP" },
+  { key: "eur", title: "اليورو / الجنيه", chart: "FX_IDC:EUREGP" },
+  { key: "g21", title: "جرام 21 بالجنيه", chart: "OANDA:XAUUSD*FX_IDC:USDEGP*21/24/31.1035" },
+  { key: "xau", title: "الذهب XAUUSD", chart: "OANDA:XAUUSD" },
+  { key: "cal", title: "التقويم الاقتصادي" },
+  { key: "news", title: "أخبار الذهب" },
+];
+function renderMarkets(s) {
+  const tab = (s.form = s.form || { tab: "usd" }).tab;
+  const body = el("div", {});
+  body.append(el("div", { class: "group", style: "margin-bottom:10px" }, MARKET_TABS.map((t) =>
+    el("button", { class: "chip" + (t.key === tab ? " on" : ""), text: t.title, onclick: () => { s.form.tab = t.key; render(); } }))));
+  const current = MARKET_TABS.find((t) => t.key === tab);
+  s.frames = s.frames || {};
+  if (current.chart) {
+    s.frames[tab] = s.frames[tab] || el("iframe", { class: "livechart", loading: "lazy", sandbox: "allow-scripts allow-same-origin allow-popups", title: current.title,
+      src: "https://s.tradingview.com/widgetembed/?symbol=" + encodeURIComponent(current.chart) + "&interval=D&theme=dark&style=1&locale=ar&toolbarbg=0E1116&hidesidetoolbar=1&withdateranges=1" });
+    body.append(s.frames[tab]);
+  } else if (tab === "cal") {
+    const conf = { colorTheme: "dark", isTransparent: false, width: "100%", height: "100%", locale: "ar_AE", importanceFilter: "0,1", countryFilter: "us,eu,eg" };
+    s.frames.cal = s.frames.cal || el("iframe", { class: "livechart", loading: "lazy", sandbox: "allow-scripts allow-same-origin allow-popups", title: current.title,
+      src: "https://s.tradingview.com/embed-widget/events/?locale=ar_AE#" + encodeURIComponent(JSON.stringify(conf)) });
+    body.append(s.frames.cal, el("div", { class: "note-box", text: "أسماء الأحداث بالإنجليزية (لا توجد نسخة عربية مجانية). أمريكا ومنطقة اليورو ومصر، المتوسطة والعالية الأهمية." }));
+  } else {
+    if (s.loading) body.append(el("div", { class: "loading", text: "جارٍ التحميل…" }));
+    if (s.error) body.append(el("div", { class: "msg err", text: s.error }));
+    const d = s.data;
+    if (d && !d.available) body.append(el("div", { class: "msg warn", text: d.error || "الأخبار غير متاحة الآن." }));
+    if (d && d.available) {
+      body.append(el("div", { class: "cards" }, d.items.map((i) => el("a", { class: "card gold", href: i.link, target: "_blank", rel: "noopener noreferrer", style: "text-decoration:none;color:inherit" },
+        el("div", { class: "label", text: i.title }), el("div", { class: "note", text: i.time })))));
+      body.append(el("div", { class: "note-box", text: "Investing.com • آخر تحديث " + d.updated }));
     }
   }
   return body;

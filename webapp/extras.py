@@ -249,6 +249,19 @@ class Extras:
         return {"enabled": bool(data.get("enabled")), "available": bool(data.get("available")), "updated": str(data.get("updated") or ""), "error": str(data.get("error") or ""),
                 "rows": [{"code": str(r["code"]), "name": str(r["name"]), "price": f"{Decimal(r['price']):,.2f}"} for r in data.get("rows") or []]}
 
+    # ------------------------------------------------------------------ Arabic market news (the program's shared cached Investing.com RSS read), display only
+    def news(self, token):
+        """{available, items: [{title, link, time}], updated, error}: the same cached snapshot as the desktop home page; a source failure only changes `error`."""
+        self._api._entry(token)
+        try:
+            from services import gold_news
+            data = gold_news.shared().snapshot()
+        except Exception:
+            logger.exception("news failed")
+            return {"available": False, "items": [], "updated": "", "error": "تعذر قراءة الأخبار."}
+        return {"available": bool(data.get("available")), "updated": str(data.get("updated") or ""), "error": str(data.get("error") or ""),
+                "items": [{"title": str(i["title"]), "link": str(i["link"]), "time": str(i["time"])} for i in data.get("items") or []]}
+
     # ------------------------------------------------------------------ a customer's statement (كشف الحساب), read only
     def statement(self, token, params):
         entry = self._api._entry(token)
