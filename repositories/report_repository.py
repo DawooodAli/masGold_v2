@@ -31,6 +31,12 @@ class ReportRepository(BaseRepository):
             WHERE m.melt_date >= %s AND m.melt_date < %s ORDER BY m.melt_date, e.id
             """, (start, end_exclusive))
 
+    def income_category_names(self):
+        """The names of the ACTIVE treasury categories that take money IN (direction IN or BOTH): the income items of «حركة نقدية جديدة». Empty / None below 069."""
+        if not self.has_table("cash_categories"):
+            return None
+        return [r["name"] for r in self._fetch_all("SELECT name FROM cash_categories WHERE is_active = TRUE AND direction IN ('IN', 'BOTH')")]
+
     def market_expenses(self, start, end_exclusive):
         """The expenses paid from a market custody (ST_EXPENSE documents, migration 064) by their entry date, with the full-reversal correction of the entry (if any). They post NO cash / bank
         movement (the cash stays in custody until it is returned), which is why the cash-flow report reads them from here. Empty below 064."""

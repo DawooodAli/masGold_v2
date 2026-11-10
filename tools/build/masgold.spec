@@ -4,10 +4,10 @@ from pathlib import Path
 
 ROOT = Path(SPECPATH).resolve().parent.parent
 datas = [(str(ROOT / "qml"), "qml"), (str(ROOT / "webapp" / "static"), "webapp/static")]
-hidden = ["argon2", "keyring.backends.Windows", "win32timezone", "win32print", "win32api", "win32ui", "win32con"]
+hidden = ["PySide6.QtWebEngineQuick", "PySide6.QtWebEngineCore", "argon2", "keyring.backends.Windows", "win32timezone", "win32print", "win32api", "win32ui", "win32con"]
 
 a = Analysis([str(ROOT / "main.py")], pathex=[str(ROOT)], datas=datas, hiddenimports=hidden,
-             excludes=["tkinter", "unittest", "pytest", "IPython", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick", "PySide6.Qt3DCore", "PySide6.QtCharts",
+             excludes=["tkinter", "unittest", "pytest", "IPython", "PySide6.QtWebEngineWidgets", "PySide6.Qt3DCore", "PySide6.QtCharts",
                        "PySide6.QtDataVisualization", "PySide6.QtMultimedia", "PySide6.QtPdf", "PySide6.QtQuick3D"])
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="masGold", console=False, icon=str(ROOT / "tools" / "build" / "masgold.ico"))

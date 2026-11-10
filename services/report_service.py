@@ -439,7 +439,8 @@ class ReportService:
                   total("الصافي", recorded_in - recorded_out, "money", "الإيرادات − المصروفات المسجلة", "recorded")]
         meaning = ["بنود المصروفات والإيرادات المسجّلة من «حركة نقدية جديدة» في حركة النقدية فقط. الإلغاء والتصحيح يُحسبان على نفس بند الأصل فيُخصمان منه.",
                    "مصروفات السوق (المدفوعة من عهدة السوق) تظهر هنا بند «مصروف السوق» رغم أنها لا تمس الخزنة. المبيعات ودفعات العملاء وتحويلات الحسابات وبقية عهدة السوق ليست من هذه البنود ولا تظهر هنا. والنقدية الداخلة من عميل أو الخارجة لعميل لا تُحسب إيرادًا ولا مصروفًا."]
-        return {"meaning": meaning, "tables": tables, "totals": totals, "bars": bars}
+        income_names = getattr(repo, "income_category_names", None)
+        return {"meaning": meaning, "tables": tables, "totals": totals, "bars": bars, "income_labels": income_names() if income_names else None}
 
     # ------------------------------------------------------------------ 8. gold profit (owner definition): the gold at the end of the period minus the gold at its start, in 21K equivalent
     def _profit(self, repo, gate, filters, start, end):
@@ -1287,10 +1288,14 @@ class ReportService:
         profit = kpi_rules.profit_item(profit_now, profit_before)
         spent_now = spent_before = income_now = income_before = None
         flow_items = {}                                                                     # label -> {"now": (out, in), "before": (out, in)}: where the recorded figures come from
+        income_labels = None                                                                # owner 2026-11-10: income = ONLY the items of the active income categories of «حركة نقدية جديدة»
         if gate("CASH_VIEW") or gate("BANK_VIEW"):
             def flow(a, b, side):
                 shown = {**filters, "from": a.date().isoformat(), "to": (b - timedelta(days=1)).date().isoformat()}
+                nonlocal income_labels
                 result = self._cashflow(repo, gate, shown, a, b)
+                if result.get("income_labels") is not None:
+                    income_labels = set(result["income_labels"])
                 values = {item["label"]: _dec(item["value"]) for item in result["totals"]}
                 for r in (result["tables"][0]["rows"] if result["tables"] else []):
                     flow_items.setdefault(r["label"], {"now": (ZERO2, ZERO2), "before": (ZERO2, ZERO2)})[side] = (_dec(r["out"]), _dec(r["in"]))
@@ -1302,7 +1307,8 @@ class ReportService:
                     v["before"] = (v["before"][0] * scale, v["before"][1] * scale)               # the 7-day total becomes the average for a period of this length
                 kept = {k: v for k, v in flow_items.items() if not kpi_rules.is_mandatory_expense(k)}
                 spent_now, spent_before = (sum((v[side][0] for v in kept.values()), ZERO2) for side in ("now", "before"))
-                income_now, income_before = (sum((v[side][1] for v in kept.values()), ZERO2) for side in ("now", "before"))
+                earning = {k: v for k, v in kept.items() if income_labels is None or k in income_labels}
+                income_now, income_before = (sum((v[side][1] for v in earning.values()), ZERO2) for side in ("now", "before"))
             except (ReportError, PermissionError):
                 spent_now = spent_before = income_now = income_before = None
                 flow_items = {}
