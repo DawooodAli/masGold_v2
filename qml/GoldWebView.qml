@@ -7,7 +7,15 @@ Item {
     property string symbol: "OANDA:XAUUSD"
     property string compare: ""            // an optional second symbol drawn on its own price scale
     property bool news: false              // the free TradingView news timeline for the symbol instead of a chart
+    property bool calendar: false          // the free TradingView economic calendar (US / euro area / Egypt, medium and high importance)
     function build() {
+        if (view.calendar) {
+            var ec = {colorTheme: "dark", isTransparent: false, width: "100%", height: "100%", locale: "ar_AE", importanceFilter: "0,1", countryFilter: "us,eu,eg"}
+            return "<html><body style='margin:0;background:#0f1115'><div class='tradingview-widget-container' style='height:100vh;width:100%'>"
+                + "<div class='tradingview-widget-container__widget' style='height:100%;width:100%'></div>"
+                + "<script type='text/javascript' src='https://s3.tradingview.com/external-embedding/embed-widget-events.js' async>"
+                + JSON.stringify(ec) + "</script></div></body></html>"
+        }
         if (view.news) {
             var nc = {feedMode: "symbol", symbol: view.symbol, colorTheme: "dark", isTransparent: false, displayMode: "regular", width: "100%", height: "100%", locale: "ar_AE"}
             return "<html><body style='margin:0;background:#0f1115'><div class='tradingview-widget-container' style='height:100vh;width:100%'>"

@@ -10,6 +10,7 @@ Item {
     property string symbol: "OANDA:XAUUSD"
     property string compare: ""
     property bool news: false
+    property bool calendar: false
     readonly property bool enabled: typeof webChartEnabled !== "undefined" && webChartEnabled
     readonly property bool embedded: loader.status === Loader.Ready
 
@@ -20,7 +21,7 @@ Item {
         anchors.fill: parent
         active: chart.enabled
         source: "GoldWebView.qml"
-        onLoaded: { item.symbol = Qt.binding(function() { return chart.symbol }); item.compare = Qt.binding(function() { return chart.compare }); item.news = chart.news }
+        onLoaded: { item.symbol = Qt.binding(function() { return chart.symbol }); item.compare = Qt.binding(function() { return chart.compare }); item.news = chart.news; item.calendar = chart.calendar }
     }
     ColumnLayout {
         anchors.centerIn: parent

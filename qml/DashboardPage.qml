@@ -572,10 +572,19 @@ Item {
                 // --- أخبار الذهب (TradingView Timeline، مجاني، عناوين XAUUSD بالإنجليزي)
                 Card {
                     objectName: "goldNewsCard"
-                    Layout.columnSpan: dashboard.wide ? 2 : 2
+                    Layout.columnSpan: 1
                     title: "أخبار بتأثر على الذهب"
                     accent: theme.gold
                     GoldWebChart { objectName: "goldNewsView"; news: true; Layout.fillWidth: true; Layout.preferredHeight: 380 }
+                }
+
+                // --- التقويم الاقتصادي (TradingView Events، مجاني: أمريكا ومنطقة اليورو ومصر)
+                Card {
+                    objectName: "economicCalendarCard"
+                    Layout.columnSpan: 1
+                    title: "التقويم الاقتصادي"
+                    accent: theme.priceBuy
+                    GoldWebChart { objectName: "economicCalendarView"; calendar: true; Layout.fillWidth: true; Layout.preferredHeight: 380 }
                 }
             }
 
