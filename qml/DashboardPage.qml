@@ -210,10 +210,6 @@ Item {
                     title: "الشارت المباشر للذهب (XAUUSD)"
                     accent: theme.gold
                     GoldWebChart { Layout.fillWidth: true; Layout.preferredHeight: 340 }
-                    Txt { Layout.fillWidth: true; value: "الإشارة الفنية للذهب (من «بيع قوي» إلى «شراء قوي»)"; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
-                    GoldWebChart { objectName: "goldTechnicalGauge"; technical: true; Layout.fillWidth: true; Layout.preferredHeight: 300 }
-                    Txt { objectName: "chartGuide"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost
-                          value: "إزاي أقرأ الشارت قبل ما أقرر: (1) عدّاد التحليل الفني ملخص مؤشرات تلقائي من «بيع قوي» إلى «شراء قوي»؛ يوم واحد للقصير وأسبوع/شهر للأبعد، واتفاق الاتنين أقوى من واحد. (2) لو الذهب قريب من أعلى مدى في الشارت فده وقت مناسب للبيع والتسعير بحذر وإيقاف شراء الكسر بسعر عالي؛ لو قريب من أدنى مدى فهو فرصة لشراء الكسر والمخزون. (3) الدولار/الجنيه لو بيطلع فسعر الذهب محليًا بيطلع حتى لو الأونصة ثابتة. (4) ده إرشاد مش توصية مالية: قرر مع المخزون والسيولة وسعر المحل الفعلي." }
                 }
 
                 // --- سعر الذهب (the engine's own formatted values)
@@ -628,6 +624,18 @@ Item {
                         onClicked: alertCard.message = dashboard.vm ? dashboard.vm.savePriceAlert(alertBuy.text, alertSell.text) : ""
                     }
                     Txt { objectName: "priceAlertMessage"; Layout.fillWidth: true; visible: alertCard.message.length > 0; value: alertCard.message; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                }
+
+                // --- الإشارة الفنية وإزاي أقرأ الشارت (owner 2026-11-10): عدّاد التحليل الفني للذهب + دليل قراءة بسيط
+                Card {
+                    objectName: "chartGuideCard"
+                    Layout.columnSpan: 1
+                    title: "الإشارة الفنية للذهب • إزاي أقرأ الشارت"
+                    accent: theme.priceSell
+                    Txt { Layout.fillWidth: true; value: "الإشارة الفنية للذهب (من «بيع قوي» إلى «شراء قوي»)"; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
+                    GoldWebChart { objectName: "goldTechnicalGauge"; technical: true; Layout.fillWidth: true; Layout.preferredHeight: 300 }
+                    Txt { objectName: "chartGuide"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost
+                          value: "إزاي أقرأ الشارت قبل ما أقرر: (1) عدّاد التحليل الفني ملخص مؤشرات تلقائي من «بيع قوي» إلى «شراء قوي»؛ يوم واحد للقصير وأسبوع/شهر للأبعد، واتفاق الاتنين أقوى من واحد. (2) لو الذهب قريب من أعلى مدى في الشارت فده وقت مناسب للبيع والتسعير بحذر وإيقاف شراء الكسر بسعر عالي؛ لو قريب من أدنى مدى فهو فرصة لشراء الكسر والمخزون. (3) الدولار/الجنيه لو بيطلع فسعر الذهب محليًا بيطلع حتى لو الأونصة ثابتة. (4) ده إرشاد مش توصية مالية: قرر مع المخزون والسيولة وسعر المحل الفعلي." }
                 }
 
                 // --- أخبار بتأثر على الذهب (Investing.com بالعربي، RSS مجاني؛ الضغط على الخبر يفتحه في المتصفح)
