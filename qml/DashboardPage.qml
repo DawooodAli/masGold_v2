@@ -569,13 +569,31 @@ Item {
                     }
                 }
 
-                // --- أخبار الذهب (TradingView Timeline، مجاني، عناوين XAUUSD بالإنجليزي)
+                // --- أخبار بتأثر على الذهب (Investing.com بالعربي، RSS مجاني؛ الضغط على الخبر يفتحه في المتصفح)
                 Card {
                     objectName: "goldNewsCard"
                     Layout.columnSpan: 1
                     title: "أخبار بتأثر على الذهب"
                     accent: theme.gold
-                    GoldWebChart { objectName: "goldNewsView"; news: true; Layout.fillWidth: true; Layout.preferredHeight: 380 }
+                    Repeater {
+                        model: dashboard.vm ? dashboard.vm.goldNews.items : []
+                        delegate: Item {
+                            required property var modelData
+                            objectName: "goldNewsItem"
+                            Layout.fillWidth: true
+                            implicitHeight: headline.implicitHeight + stamp.implicitHeight + 8
+                            Txt { id: headline; anchors.left: parent.left; anchors.right: parent.right; value: modelData.title; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                                  color: theme.textPrimary; font.pixelSize: theme.fontBody + dashboard.boost }
+                            Txt { id: stamp; anchors.left: parent.left; anchors.right: parent.right; anchors.top: headline.bottom; value: modelData.time; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
+                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: Qt.openUrlExternally(modelData.link) }
+                        }
+                    }
+                    Txt { objectName: "goldNewsEmpty"; Layout.fillWidth: true; color: theme.textMuted; wrapMode: Text.WordWrap
+                          visible: !!dashboard.vm && !dashboard.vm.goldNews.available
+                          value: dashboard.vm && dashboard.vm.goldNews.error.length > 0 ? dashboard.vm.goldNews.error : "جاري تحميل الأخبار..." }
+                    Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost
+                          visible: !!dashboard.vm && dashboard.vm.goldNews.available
+                          value: "Investing.com • آخر تحديث " + (dashboard.vm ? dashboard.vm.goldNews.updated : "") }
                 }
 
                 // --- التقويم الاقتصادي (TradingView Events، مجاني: أمريكا ومنطقة اليورو ومصر)

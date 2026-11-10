@@ -47,7 +47,7 @@ class _Discard(Exception):
 
 class DashboardService:
     def __init__(self, session, *, transaction_factory=invoice_transaction, repository=DashboardRepository,
-                 balance_repository=FinancialBalanceRepository, report_repository=ReportRepository, authorization=None, currency_rates=None):
+                 balance_repository=FinancialBalanceRepository, report_repository=ReportRepository, authorization=None, currency_rates=None, gold_news=None):
         from services.authorization_service import AuthorizationService
         self._authorization = authorization or AuthorizationService(session)
         self._session = session
@@ -55,6 +55,7 @@ class DashboardService:
         self._repository = repository
         self._balances = balance_repository
         self._reports = report_repository
+        self._gold_news = gold_news                                 # a callable returning the cached Arabic news answer (None: no news card)
         self._currency_rates = currency_rates                       # a callable returning the cached GoldTimo rates answer (None: the card is not offered)
 
     def _actor(self, expected_actor):
@@ -261,6 +262,8 @@ class DashboardService:
                                     for i, (d, b, s) in enumerate(merged[first_shown:])]
         if self._currency_rates is not None:                          # after the database read: a slow network never holds a transaction
             snapshot["currency_rates"] = self._currency_rates()
+        if self._gold_news is not None:
+            snapshot["gold_news"] = self._gold_news()
         snapshot["can_see_balances"] = bool(raw.get("can_see_balances"))
         if snapshot["can_see_balances"]:
             snapshot["customer_balances"] = self.balances(raw.get("customer_balances"))

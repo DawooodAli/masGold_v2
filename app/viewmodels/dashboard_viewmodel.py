@@ -27,8 +27,9 @@ class DashboardViewModel(QObject):
     def _service_instance(self):
         if self._service is None:
             from services.dashboard_service import DashboardService
-            from services import currency_rates
-            self._service = DashboardService(self._session, currency_rates=lambda: currency_rates.shared().snapshot())
+            from services import currency_rates, gold_news
+            self._service = DashboardService(self._session, currency_rates=lambda: currency_rates.shared().snapshot(),
+                                        gold_news=lambda: gold_news.shared().snapshot())
         return self._service
 
     @Slot()
@@ -207,6 +208,11 @@ class DashboardViewModel(QObject):
         return {"offered": "currency_rates" in self._data and bool(data.get("enabled", False)), "available": bool(data.get("available")),
                 "rows": [{"code": r["code"], "name": r["name"], "price": rate(r["price"])} for r in data.get("rows", [])],
                 "updated": data.get("updated", ""), "error": data.get("error", "")}
+
+    @Property("QVariantMap", notify=changed)
+    def goldNews(self):
+        data = self._data.get("gold_news") or {}
+        return {"available": bool(data.get("available")), "items": list(data.get("items", [])), "updated": data.get("updated", ""), "error": data.get("error", "")}
 
     # ------------------------------------------------------------ dead stock (inventory permission)
     @Property("QVariantMap", notify=changed)
