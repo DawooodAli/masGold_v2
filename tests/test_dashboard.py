@@ -411,10 +411,19 @@ class DashboardPageTests(page_harness.InvoicePageTests):
             self.dashboard.snapshot = snapshot
         self.controller.operational_viewmodels["dashboardVM"].refresh()
         self.root.setProperty("currentPage", 0)
+        if getattr(self, "show_retired", True):                                         # the five retired cards are hidden by default (owner 2026-11-10); the old tests look at them
+            self.item("dashboardPage").setProperty("showRetired", True)
         vm = self.controller.operational_viewmodels["dashboardVM"]
         self.wait_until(lambda: vm.ready and not vm.busy, "dashboard not loaded")
         QTest.qWait(80)
         return vm
+
+    def test_five_older_cards_are_hidden_by_default(self):
+        self.show_retired = False
+        self.open_dashboard(self.busy_snapshot())
+        for name in ("priceCard", "priceHintCard", "oldGoldCard", "soldWeightCard", "scrapTodayCard"):
+            self.assertFalse(self.item(name).property("visible"), name)
+        self.assertTrue(self.item("todayCard").property("visible"))
 
     def busy_snapshot(self):
         service, _ = make_service(busy_state(), CUSTOMERS)

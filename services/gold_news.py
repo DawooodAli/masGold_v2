@@ -8,7 +8,8 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 FEEDS = ("https://sa.investing.com/rss/news_11.rss", "https://sa.investing.com/rss/news_95.rss")
-MAX_ITEMS = 14
+MAX_ITEMS = 6
+SIMILAR = 0.5                                      # two headlines sharing at least this share of their words are the same story
 CACHE_SECONDS, FAILURE_RETRY_SECONDS = 600, 300
 MAX_BYTES = 600_000
 GOLD_WORDS = ("الذهب", "ذهب", "الفيدرالي", "الفائدة", "التضخم", "الدولار")        # the headlines that move gold first
@@ -31,15 +32,25 @@ def parse(xml_bytes):
 
 def merge(lists):
     """Deduplicated by title, newest first, gold-related first inside the cap."""
-    seen, items = set(), []
-    for items_of_one in lists:
-        for item in items_of_one:
-            if item["title"] not in seen:
-                seen.add(item["title"])
-                items.append(item)
-    items.sort(key=lambda i: i["time"], reverse=True)
-    items.sort(key=lambda i: 0 if "ذهب" in i["title"] or "الذهب" in i["title"] else 1)
+    pool = [item for one in lists for item in one]
+    pool.sort(key=lambda i: i["time"], reverse=True)
+    pool.sort(key=lambda i: 0 if "ذهب" in i["title"] else 1)
+    items, kept = [], []
+    for item in pool:
+        words = _words(item["title"])
+        if any(_same_story(words, other) for other in kept):
+            continue
+        kept.append(words)
+        items.append(item)
     return items[:MAX_ITEMS]
+
+
+def _words(title):
+    return {w for w in title.replace("عاجل:", " ").replace(":", " ").replace("..", " ").split() if len(w) > 2}
+
+
+def _same_story(a, b):
+    return bool(a and b) and len(a & b) / min(len(a), len(b)) >= SIMILAR
 
 
 def _fetch(url):

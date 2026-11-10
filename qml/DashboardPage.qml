@@ -15,6 +15,8 @@ Item {
     readonly property var vm: typeof dashboardVM !== "undefined" ? dashboardVM : null
     readonly property var price: typeof goldPriceVM !== "undefined" ? goldPriceVM : null
     readonly property bool sales: !!vm && vm.canSeeSales
+    // Owner 2026-11-10: five older cards are hidden by default (gold price, price indicator, scrap balance, sold weight, scrap buying price). One switch brings them back; their data and tests are untouched.
+    property bool showRetired: false
     readonly property bool wide: width >= 1000
     readonly property int boost: 1                  // owner review (2026-10-22): the dashboard reads from a distance, every themed size is two points bigger
 
@@ -209,6 +211,7 @@ Item {
                 // --- سعر الذهب (the engine's own formatted values)
                 Card {
                     objectName: "priceCard"
+                    visible: dashboard.showRetired
                     title: "سعر الذهب • عيار 21"
                     accent: theme.priceSell
                     // Readable from across the shop: the two 21K numbers dominate the card; the labels,
@@ -268,6 +271,7 @@ Item {
                 // --- مؤشر سعر عيار 21 (every logged-in user): the shop's own stored prices, the same formulas and wording as the indicators report
                 Card {
                     objectName: "priceHintCard"
+                    visible: dashboard.showRetired
                     title: "مؤشر سعر عيار 21"
                     accent: theme.gold
                     Line { objectName: "priceHintAverage"; label: "متوسط 30 يوم (شراء)"
@@ -321,7 +325,7 @@ Item {
                 // --- مبيعات اليوم بالوزن (billing permission)
                 Card {
                     objectName: "soldWeightCard"
-                    visible: dashboard.sales
+                    visible: dashboard.showRetired && dashboard.sales
                     title: "مبيعات اليوم بالوزن"
                     Repeater {
                         model: dashboard.vm ? dashboard.vm.soldByKarat : []
@@ -343,6 +347,7 @@ Item {
                 // --- الكسر (every logged-in user, same ledger as the top strip + today's flow)
                 Card {
                     objectName: "oldGoldCard"
+                    visible: dashboard.showRetired
                     title: "الكسر (رصيد + حركة اليوم)"
                     accent: theme.balanceKarat21
                     Repeater {
@@ -449,7 +454,7 @@ Item {
                 // --- سعر شراء الكسر اليوم (billing permission): the average paid per gram today against the latest stored SHOP_BUY of that karat
                 Card {
                     objectName: "scrapTodayCard"
-                    visible: dashboard.sales
+                    visible: dashboard.showRetired && dashboard.sales
                     title: "سعر شراء الكسر اليوم"
                     accent: theme.priceBuy
                     Repeater {
