@@ -249,6 +249,58 @@ class Extras:
         return {"enabled": bool(data.get("enabled")), "available": bool(data.get("available")), "updated": str(data.get("updated") or ""), "error": str(data.get("error") or ""),
                 "rows": [{"code": str(r["code"]), "name": str(r["name"]), "price": f"{Decimal(r['price']):,.2f}"} for r in data.get("rows") or []]}
 
+    # ------------------------------------------------------------------ إقفال اليوم (day close): the expected cash, every balance and the unfinished invoices; saving only records the count (no money moves)
+    def dayclose(self, token):
+        entry = self._api._entry(token)
+        actor = entry.session.current_actor()
+        if "DAY_CLOSE" not in actor.permissions:
+            raise ApiError(403, "ليس لديك صلاحية إقفال اليوم.")
+        from services.day_close_service import DayCloseError, DayCloseService
+        try:
+            data = DayCloseService(entry.session).overview(_expected_actor=actor)
+        except DayCloseError as exc:
+            raise ApiError(409, str(exc)) from None
+        except PermissionError as exc:
+            raise ApiError(403, str(exc)) from None
+        except Exception:
+            logger.exception("day close overview failed")
+            raise ApiError(500, "تعذرت قراءة بيانات الإقفال.") from None
+        fmt = lambda v: f"{Decimal(str(v)):,.2f}"
+        return {"date": data["date"], "expected": data["expected"], "expectedText": fmt(data["expected"]),
+                "cash": [{"name": a["name"], "balance": fmt(a["balance"])} for a in data["cash"]],
+                "bank": [{"name": a["name"], "balance": fmt(a["balance"])} for a in data["bank"]],
+                "drafts": len(data["drafts"]) if isinstance(data["drafts"], (list, tuple)) else int(data["drafts"] or 0),
+                "recent": [{"date": r["date"], "expected": fmt(r["expected"]), "counted": fmt(r["counted"]), "difference": fmt(r["difference"]), "reason": r["reason"], "user": r["user"]}
+                           for r in data["recent"][:5]]}
+
+    def dayclose_save(self, token, body):
+        """Record the day close from the iPad: the current password is re-verified, the right is rechecked by the service in its transaction, the difference is derived there (a reason is required when it is not zero)."""
+        entry = self._api._entry(token)
+        actor = entry.session.current_actor()
+        password = body.get("password")
+        if "DAY_CLOSE" not in actor.permissions:
+            raise ApiError(403, "ليس لديك صلاحية إقفال اليوم.")
+        try:
+            self._api._authentication.verify_user_password(int(actor.user_id), password if isinstance(password, str) else "")
+        except AuthenticationError:
+            raise ApiError(400, "كلمة المرور غير صحيحة أو انتظر قليلاً ثم أعد المحاولة.") from None
+        finally:
+            password = None
+        from services.day_close_service import DayCloseError, DayCloseService
+        text = lambda name: str(body.get(name) if body.get(name) is not None else "")
+        try:
+            result = DayCloseService(entry.session).close(text("counted"), text("reason"), text("note"), text("request_key"), _expected_actor=actor)
+        except DayCloseError as exc:
+            raise ApiError(409 if getattr(exc, "code", "") == "REQUEST_CONFLICT" else 400, str(exc)) from None
+        except PermissionError as exc:
+            raise ApiError(403, str(exc)) from None
+        except ValueError as exc:
+            raise ApiError(400, str(exc) or "بيانات غير صحيحة.") from None
+        except Exception:
+            logger.exception("day close failed")
+            raise ApiError(500, "تعذر حفظ الإقفال؛ راجع الإقفالات السابقة ثم أعد المحاولة.") from None
+        return {"difference": f"{Decimal(result['difference']):,.2f}", "replayed": bool(result["replayed"])}
+
     # ------------------------------------------------------------------ Arabic market news (the program's shared cached Investing.com RSS read), display only
     def news(self, token):
         """{available, items: [{title, link, time}], updated, error}: the same cached snapshot as the desktop home page; a source failure only changes `error`."""

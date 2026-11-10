@@ -200,7 +200,7 @@ function render() {
     el("span", { class: "who", text: state.overview.user }), el("button", { class: "btn", text: "خروج", onclick: logout }));
   if (!module) { app.replaceChildren(...[top, renderAttention(), renderToday(), renderHome()].filter(Boolean)); return; }
   if (module.kind && module.kind !== "reports") {
-    const draw = { reviews: renderReviews, transfers: renderTransfers, calc: renderCalc, stocktake: renderStocktake, activity: renderActivity, bankflow: renderBankflow, cashflow: renderCashflow, currency: renderCurrency, markets: renderMarkets, market: renderMarket, settings: renderMarket }[module.kind];
+    const draw = { reviews: renderReviews, transfers: renderTransfers, calc: renderCalc, stocktake: renderStocktake, activity: renderActivity, bankflow: renderBankflow, cashflow: renderCashflow, currency: renderCurrency, markets: renderMarkets, dayclose: renderDayclose, market: renderMarket, settings: renderMarket }[module.kind];
     const view = state.special ? draw(state.special) : el("div", { class: "loading", text: "جارٍ التحميل…" });
     app.replaceChildren(...[top, view, state.custInvoices ? renderCustomerInvoices(state.custInvoices) : null, state.invoice ? renderInvoice(state.invoice) : null].filter(Boolean));
     return;
@@ -898,7 +898,7 @@ async function loadSpecial(kind) {
   try {
     if (kind === "calc") { if (!state.today) await loadToday(); s.data = {}; }
     else if (kind === "stocktake") s.data = await call("/api/stocktake_status");
-    else s.data = await call(kind === "reviews" ? "/api/reviews" : kind === "activity" ? "/api/activity" : kind === "bankflow" ? "/api/bankflow" : kind === "cashflow" ? "/api/cashflow" : kind === "currency" ? "/api/currency" : kind === "markets" ? "/api/news" : kind === "market" ? "/api/market" : kind === "settings" ? "/api/settings" : "/api/transfers");
+    else s.data = await call(kind === "reviews" ? "/api/reviews" : kind === "activity" ? "/api/activity" : kind === "bankflow" ? "/api/bankflow" : kind === "cashflow" ? "/api/cashflow" : kind === "currency" ? "/api/currency" : kind === "markets" ? "/api/news" : kind === "dayclose" ? "/api/dayclose" : kind === "market" ? "/api/market" : kind === "settings" ? "/api/settings" : "/api/transfers");
   } catch (e) {
     if (e.status === 401) { showLogin("انتهت الجلسة، سجّل الدخول من جديد."); return; }
     s.error = e.message;
@@ -960,6 +960,52 @@ function renderMarkets(s) {
       body.append(el("div", { class: "note-box", text: "Investing.com • آخر تحديث " + d.updated }));
     }
   }
+  return body;
+}
+
+// إقفال اليوم (iPad): the program derives the expected cash; the employee types the counted cash, a reason when there is a difference, and confirms with the current password. Nothing moves money.
+function renderDayclose(s) {
+  const body = el("div", {});
+  if (s.loading) body.append(el("div", { class: "loading", text: "جارٍ التحميل…" }));
+  if (s.error) body.append(el("div", { class: "msg err", text: s.error }));
+  const d = s.data;
+  if (!d) return body;
+  const f = s.form || (s.form = { counted: "", reason: "", note: "", key: newKey() });
+  if (s.message) body.append(el("div", { class: "msg ok", text: s.message }));
+  body.append(el("div", { class: "cards" },
+    el("div", { class: "card gold" }, el("div", { class: "label", text: "الكاش المتوقع في الخزنة (" + d.date + ")" }), el("div", { class: "value", text: d.expectedText + " ج" })),
+    ...d.cash.map((a) => el("div", { class: "card" }, el("div", { class: "label", text: a.name }), el("div", { class: "value", text: a.balance + " ج" }))),
+    ...d.bank.map((a) => el("div", { class: "card" }, el("div", { class: "label", text: a.name + " (بنك/محفظة)" }), el("div", { class: "value", text: a.balance + " ج" })))));
+  if (d.drafts) body.append(el("div", { class: "msg warn", text: "فيه " + d.drafts + " فاتورة غير مكتملة (مسودة)." }));
+  const counted = el("input", { type: "text", inputmode: "decimal", value: f.counted, oninput: (e) => { f.counted = e.target.value; sync(); } });
+  const reason = el("input", { type: "text", value: f.reason, oninput: (e) => { f.reason = e.target.value; } });
+  const note = el("input", { type: "text", value: f.note, oninput: (e) => { f.note = e.target.value; } });
+  const password = el("input", { type: "password", autocomplete: "current-password", placeholder: "كلمة مرورك الحالية" });
+  const confirm = el("input", { type: "checkbox" });
+  const go = el("button", { class: "btn primary", text: "حفظ الإقفال", disabled: true });
+  function sync() { go.disabled = !(confirm.checked && password.value && f.counted.trim()); }
+  [confirm, password].forEach((n) => { n.addEventListener("input", sync); n.addEventListener("change", sync); });
+  go.addEventListener("click", async () => {
+    const pw = password.value; password.value = "";
+    go.disabled = true; s.error = ""; s.message = "";
+    try {
+      const r = await call("/api/dayclose_save", { method: "POST", body: JSON.stringify({ counted: f.counted, reason: f.reason, note: f.note, password: pw, request_key: f.key }) });
+      s.form = null;
+      s.data = await call("/api/dayclose");
+      s.message = "تم حفظ الإقفال. الفرق: " + r.difference + " ج";
+    } catch (e) {
+      if (e.status === 401) { showLogin("انتهت الجلسة، سجّل الدخول من جديد."); return; }
+      s.error = e.message;
+    }
+    render();
+  });
+  body.append(el("div", { class: "searchbox" }, el("div", { class: "section", text: "عدّ الكاش وسجّل الإقفال" }),
+    el("div", { class: "filters" }, field("الكاش المعدود (ج)", counted), field("سبب الفرق (لو فيه فرق)", reason), field("ملاحظة", note), field("كلمة المرور", password)),
+    el("label", { class: "confirm" }, confirm, " أؤكد أني عدّيت الكاش بنفسي"), go,
+    el("div", { class: "note-box", text: "الإقفال يسجّل العد والفرق باسمك ولا يحرّك أي فلوس. الفرق يتحسب في البرنامج مش بيتكتب." })));
+  if (d.recent.length) body.append(el("div", { class: "section", text: "آخر الإقفالات" }),
+    el("div", { class: "cards" }, d.recent.map((r) => el("div", { class: "card" }, el("div", { class: "label", text: r.date + " • " + r.user }),
+      el("div", { class: "value", text: "الفرق " + r.difference + " ج" }), el("div", { class: "note", text: "متوقع " + r.expected + " • معدود " + r.counted + (r.reason ? " • " + r.reason : "") })))));
   return body;
 }
 

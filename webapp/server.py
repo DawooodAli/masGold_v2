@@ -22,8 +22,8 @@ FILES = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", 
          "/zxing.min.js": ("zxing.min.js", "text/javascript; charset=utf-8")}
 COOKIE = "mgsid"
 # read-only extras: path -> method of `webapp.extras.Extras` (reviews and transfers_overview take no parameters)
-NO_PARAMS = frozenset({"today", "reviews", "transfers_overview", "attention", "tiles", "bankflow", "cashflow", "currency", "news", "stocktake_status"})
-ROUTES = {"/api/today": "today", "/api/statement": "statement", "/api/piece": "piece", "/api/reviews": "reviews", "/api/transfers": "transfers_overview", "/api/attention": "attention", "/api/tiles": "tiles", "/api/bankflow": "bankflow", "/api/cashflow": "cashflow", "/api/currency": "currency", "/api/news": "news", "/api/activity": "activity", "/api/stocktake_status": "stocktake_status"}
+NO_PARAMS = frozenset({"today", "reviews", "transfers_overview", "attention", "tiles", "bankflow", "cashflow", "currency", "news", "dayclose", "stocktake_status"})
+ROUTES = {"/api/today": "today", "/api/statement": "statement", "/api/piece": "piece", "/api/reviews": "reviews", "/api/transfers": "transfers_overview", "/api/attention": "attention", "/api/tiles": "tiles", "/api/bankflow": "bankflow", "/api/cashflow": "cashflow", "/api/currency": "currency", "/api/news": "news", "/api/dayclose": "dayclose", "/api/activity": "activity", "/api/stocktake_status": "stocktake_status"}
 MAX_BODY = 4096
 CSP = ("default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; "
        "connect-src 'self'; frame-src https://s.tradingview.com https://www.tradingview.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
@@ -126,7 +126,7 @@ def make_handler(api):
                 length = 0
             limit = MAX_BODY
             raw = self.rfile.read(length) if 0 < length <= limit else b""          # the body is read BEFORE any refusal, so the client never sees a reset connection
-            if url.path not in ("/api/login", "/api/logout", "/api/deadcash/writeoff", "/api/transfer", "/api/legacy_balance", "/api/review_done", "/api/settle", "/api/stocktake_scan") or not self._same_origin_post():
+            if url.path not in ("/api/login", "/api/logout", "/api/deadcash/writeoff", "/api/transfer", "/api/legacy_balance", "/api/review_done", "/api/settle", "/api/dayclose_save", "/api/stocktake_scan") or not self._same_origin_post():
                 self._json(403, {"error": "مرفوض."})
                 return
             try:
@@ -144,6 +144,8 @@ def make_handler(api):
                     self._json(200, api.extras.legacy_balance(self._token(), body))
                 elif url.path == "/api/settle":
                     self._json(200, api.extras.settle(self._token(), body))
+                elif url.path == "/api/dayclose_save":
+                    self._json(200, api.extras.dayclose_save(self._token(), body))
                 elif url.path == "/api/review_done":
                     self._json(200, api.extras.review_done(self._token(), body))
                 elif url.path == "/api/stocktake_scan":

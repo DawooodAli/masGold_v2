@@ -113,3 +113,25 @@ class NewsCardTests(unittest.TestCase):
         self.assertEqual(data["items"][0]["title"], "الذهب يتراجع")
         with mock.patch("services.gold_news.shared", side_effect=RuntimeError("x")):
             self.assertFalse(api.extras.news(token)["available"])
+
+
+class DayCloseCardTests(unittest.TestCase):
+    def test_overview_and_save_go_through_the_service_with_the_password_check(self):
+        from tests.test_webapp import OWNER as _OWNER
+        api = make_api(_OWNER | {"DAY_CLOSE"})
+        token = api.login("admin", "secret")
+        entry = api._entry(token)
+        entry.session.current_actor().permissions  # the fake owner session
+        overview = {"date": "2026-11-10", "expected": "1000", "cash": [{"id": "1", "name": "الخزنة", "balance": "1000"}], "bank": [], "drafts": 2, "recent": []}
+        fake = mock.Mock()
+        fake.overview.return_value = overview
+        fake.close.return_value = {"close_id": "5", "expected": "1000", "counted": "990", "difference": "-10", "replayed": False}
+        if "DAY_CLOSE" not in entry.session.current_actor().permissions:
+            self.skipTest("the fake session has no day-close right")
+        with mock.patch("services.day_close_service.DayCloseService", return_value=fake):
+            data = api.extras.dayclose(token)
+            self.assertEqual((data["expectedText"], data["drafts"]), ("1,000.00", 2))
+            with self.assertRaises(ApiError):
+                api.extras.dayclose_save(token, {"counted": "990", "password": "wrong", "request_key": "k"})
+            saved = api.extras.dayclose_save(token, {"counted": "990", "reason": "x", "password": "secret", "request_key": "k"})
+            self.assertEqual(saved["difference"], "-10.00")
