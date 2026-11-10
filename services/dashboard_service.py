@@ -47,7 +47,7 @@ class _Discard(Exception):
 
 class DashboardService:
     def __init__(self, session, *, transaction_factory=invoice_transaction, repository=DashboardRepository,
-                 balance_repository=FinancialBalanceRepository, report_repository=ReportRepository, authorization=None, currency_rates=None, gold_news=None):
+                 balance_repository=FinancialBalanceRepository, report_repository=ReportRepository, authorization=None, currency_rates=None, gold_news=None, fx_history=None):
         from services.authorization_service import AuthorizationService
         self._authorization = authorization or AuthorizationService(session)
         self._session = session
@@ -55,6 +55,7 @@ class DashboardService:
         self._repository = repository
         self._balances = balance_repository
         self._reports = report_repository
+        self._fx_history = fx_history                               # a callable returning {"USD": [(date, price)], "EUR": [...]} recorded by this computer (None: no dollar / euro reading)
         self._gold_news = gold_news                                 # a callable returning the cached Arabic news answer (None: no news card)
         self._currency_rates = currency_rates                       # a callable returning the cached GoldTimo rates answer (None: the card is not offered)
 
@@ -209,7 +210,7 @@ class DashboardService:
         return {"today": str(now.quantize(MONEY)), "before": str(before.quantize(MONEY)), "change": None if change is None else str(change), "day": days[-8]["day"]}
 
     @staticmethod
-    def year_range(series, days=365):
+    def year_range(series, days=90):
         """The lowest / highest SHOP_BUY of karat 21 over the last `days` stored days and where the latest price sits between them (0 = the low, 100 = the high). None below two days."""
         rows = list(series or [])[-days:]
         if len(rows) < 2:
@@ -287,6 +288,11 @@ class DashboardService:
             found = indicators_math.moving_average(merged[:index + 1], 1, 30)
             return str(found[0]) if found else None
         snapshot["year_range"] = self.year_range(merged)
+        from services import market_reading
+        scrap21 = next((balance[k] for k in balance if k == 21), None)
+        history = self._fx_history() if self._fx_history is not None else {}
+        snapshot["readings"] = {"gold": market_reading.gold_reading([(d, b) for d, b, _ in merged], scrap21),
+                                "usd": market_reading.fx_reading("الدولار", history.get("USD")), "eur": market_reading.fx_reading("اليورو", history.get("EUR"))}
         snapshot["latest_price"] = {"buy": str(merged[-1][1]), "sell": str(merged[-1][2])} if merged else None
         snapshot["price_series"] = [{"day": d.isoformat(), "buy": str(b), "sell": str(s), "ma": average30(first_shown + i)}
                                     for i, (d, b, s) in enumerate(merged[first_shown:])]

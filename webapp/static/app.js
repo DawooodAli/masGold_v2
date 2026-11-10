@@ -897,6 +897,7 @@ async function loadSpecial(kind) {
   render();
   try {
     if (kind === "calc") { if (!state.today) await loadToday(); s.data = {}; }
+    else if (kind === "markets") { s.data = await call("/api/news"); try { s.readings = await call("/api/readings"); } catch (e) { s.readings = null; } }
     else if (kind === "stocktake") s.data = await call("/api/stocktake_status");
     else s.data = await call(kind === "reviews" ? "/api/reviews" : kind === "activity" ? "/api/activity" : kind === "bankflow" ? "/api/bankflow" : kind === "cashflow" ? "/api/cashflow" : kind === "currency" ? "/api/currency" : kind === "markets" ? "/api/news" : kind === "dayclose" ? "/api/dayclose" : kind === "market" ? "/api/market" : kind === "settings" ? "/api/settings" : "/api/transfers");
   } catch (e) {
@@ -945,6 +946,8 @@ function renderMarkets(s) {
     s.frames[tab] = s.frames[tab] || el("iframe", { class: "livechart", loading: "lazy", sandbox: "allow-scripts allow-same-origin allow-popups", title: current.title,
       src: "https://s.tradingview.com/widgetembed/?symbol=" + encodeURIComponent(current.chart) + "&interval=D&theme=dark&style=1&locale=ar&toolbarbg=0E1116&hidesidetoolbar=1&withdateranges=1" });
     body.append(s.frames[tab]);
+    const rd = s.readings && { usd: s.readings.usd, eur: s.readings.eur, g21: s.readings.gold, xau: s.readings.gold }[tab];
+    if (rd && rd.text) body.append(el("div", { class: "note-box", text: "قراءة: " + rd.text }));
     const tech = { interval: "1D", width: "100%", isTransparent: false, height: "100%", symbol: current.tech || current.chart, showIntervalTabs: true, displayMode: "single", locale: "ar_AE", colorTheme: "dark" };
     s.frames["t" + tab] = s.frames["t" + tab] || el("iframe", { class: "livechart gauge", loading: "lazy", sandbox: "allow-scripts allow-same-origin allow-popups", title: "التحليل الفني",
       src: "https://s.tradingview.com/embed-widget/technical-analysis/?locale=ar_AE#" + encodeURIComponent(JSON.stringify(tech)) });

@@ -72,7 +72,8 @@ class FxSettings:
 
 class CurrencyRatesService:
     """The cached read the home page uses and the settings test. `provider_factory()` builds a GoldTimoProvider (the keys are read then, never stored here)."""
-    def __init__(self, settings=None, provider_factory=None, monotonic=None):
+    def __init__(self, settings=None, provider_factory=None, monotonic=None, history=None):
+        self._history = history                          # an FxHistory (the shared service passes one); None in tests: nothing is written
         self._settings = settings or FxSettings()
         self._factory = provider_factory or _default_provider
         self._monotonic = monotonic or time.monotonic
@@ -92,6 +93,8 @@ class CurrencyRatesService:
         try:
             self._cache, self._failed = self._factory().fetch_rates(), False
             self._error = ""
+            if self._history is not None:
+                self._history.record(build_rows(self._cache["rates"], ("USD", "EUR")))
         except Exception as exc:                      # the provider raises its own coded errors; the card must never break the home page
             self._failed, self._error = True, _reason(exc)
 
@@ -123,7 +126,8 @@ def shared():
     """The ONE service of this program (the home page and the settings test share its cache)."""
     global _SHARED
     if _SHARED is None:
-        _SHARED = CurrencyRatesService()
+        from services import fx_history
+        _SHARED = CurrencyRatesService(history=fx_history.shared())
     return _SHARED
 
 

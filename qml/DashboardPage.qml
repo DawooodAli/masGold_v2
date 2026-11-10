@@ -580,6 +580,15 @@ Item {
                         Layout.fillWidth: true; Layout.preferredHeight: 8; radius: 4; color: theme.border
                         Rectangle { width: parent.width * (dashboard.vm ? dashboard.vm.insights.rangePosition : 0) / 100; height: parent.height; radius: 4; color: theme.priceBuy; anchors.right: parent.right }
                     }
+                    Txt { Layout.fillWidth: true; value: "قراءة الأسعار (من أسعارك المخزنة)"; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost
+                          visible: !!dashboard.vm && dashboard.vm.readings.offered }
+                    Txt { objectName: "readingGold"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; visible: !!dashboard.vm && dashboard.vm.readings.offered
+                          color: dashboard.vm && dashboard.vm.readings.gold.tone === "buy" ? theme.priceBuy : dashboard.vm && dashboard.vm.readings.gold.tone === "sell" ? theme.priceSell : theme.textSecondary
+                          value: dashboard.vm ? dashboard.vm.readings.gold.text : "" }
+                    Txt { objectName: "readingUsd"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; visible: !!dashboard.vm && dashboard.vm.readings.offered
+                          value: dashboard.vm ? dashboard.vm.readings.usd.text : "" }
+                    Txt { objectName: "readingEur"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; visible: !!dashboard.vm && dashboard.vm.readings.offered
+                          value: dashboard.vm ? dashboard.vm.readings.eur.text : "" }
                     Empty { objectName: "insightsEmpty"; value: "لا توجد بيانات كافية بعد"
                             visible: !!dashboard.vm && !dashboard.vm.insights.hasWeek && !dashboard.vm.insights.hasRange && dashboard.vm.insights.scrap.length === 0 }
                 }

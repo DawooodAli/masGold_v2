@@ -29,9 +29,10 @@ class DashboardViewModel(QObject):
     def _service_instance(self):
         if self._service is None:
             from services.dashboard_service import DashboardService
-            from services import currency_rates, gold_news
+            from services import currency_rates, fx_history, gold_news
             self._service = DashboardService(self._session, currency_rates=lambda: currency_rates.shared().snapshot(),
-                                        gold_news=lambda: gold_news.shared().snapshot())
+                                        gold_news=lambda: gold_news.shared().snapshot(),
+                                        fx_history=lambda: {c: fx_history.shared().series(c) for c in fx_history.CODES})
         return self._service
 
     @Slot()
@@ -222,6 +223,13 @@ class DashboardViewModel(QObject):
                 "scrap": [{"karat": r["karat"], "bought": grams(r["bought"]), "sold": grams(r["sold"])} for r in self._data.get("scrap_vs_sold", [])],
                 "hasRange": bool(rng), "rangeLow": rate(rng["low"]) if rng else "", "rangeHigh": rate(rng["high"]) if rng else "", "rangeNow": rate(rng["now"]) if rng else "",
                 "rangePosition": rng["position"] if rng else 0, "rangeDays": rng["days"] if rng else 0}
+
+    @Property("QVariantMap", notify=changed)
+    def readings(self):
+        """Plain-language readings of the gold / dollar / euro charts (owner 2026-11-10), made by services/market_reading.py from the shop's own stored prices."""
+        data = self._data.get("readings") or {}
+        pick = lambda key: data.get(key) or {"available": False, "text": "", "tone": "muted"}
+        return {"gold": pick("gold"), "usd": pick("usd"), "eur": pick("eur"), "offered": bool(data)}
 
     # ------------------------------------------------------------ price alert (a look of this computer)
     def _alert_settings(self):

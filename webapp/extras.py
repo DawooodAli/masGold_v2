@@ -249,6 +249,21 @@ class Extras:
         return {"enabled": bool(data.get("enabled")), "available": bool(data.get("available")), "updated": str(data.get("updated") or ""), "error": str(data.get("error") or ""),
                 "rows": [{"code": str(r["code"]), "name": str(r["name"]), "price": f"{Decimal(r['price']):,.2f}"} for r in data.get("rows") or []]}
 
+    # ------------------------------------------------------------------ readings of the gold / dollar / euro charts (the same text as the desktop home page), read only
+    def readings(self, token):
+        entry = self._api._entry(token)
+        actor = entry.session.current_actor()
+        try:
+            from services import fx_history
+            from services.dashboard_service import DashboardService
+            snapshot = DashboardService(entry.session, fx_history=lambda: {c: fx_history.shared().series(c) for c in fx_history.CODES}).today(_expected_actor=actor)
+        except PermissionError as exc:
+            raise ApiError(403, str(exc)) from None
+        except Exception:
+            logger.exception("readings failed")
+            return {"gold": {"available": False, "text": "تعذرت قراءة الأسعار الآن.", "tone": "muted"}, "usd": {"available": False, "text": ""}, "eur": {"available": False, "text": ""}}
+        return snapshot.get("readings") or {}
+
     # ------------------------------------------------------------------ إقفال اليوم (day close): the expected cash, every balance and the unfinished invoices; saving only records the count (no money moves)
     def dayclose(self, token):
         entry = self._api._entry(token)
