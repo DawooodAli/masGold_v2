@@ -38,5 +38,7 @@ Item {
         Component.onCompleted: loadHtml(view.build(), "https://www.tradingview.com")
     }
     onSymbolChanged: if (web.url !== undefined) web.loadHtml(view.build(), "https://www.tradingview.com")
+    onNewsChanged: web.loadHtml(view.build(), "https://www.tradingview.com")
+    onCalendarChanged: web.loadHtml(view.build(), "https://www.tradingview.com")
     onCompareChanged: if (web.url !== undefined) web.loadHtml(view.build(), "https://www.tradingview.com")
 }
