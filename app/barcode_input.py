@@ -13,7 +13,9 @@ Canonical barcode characters: A–Z, a–z, 0–9 and "-" (the characters stored
 use, plus the scanner separators "." "/" "_" which Code128 labels may carry). Anything else is
 refused — never "corrected" into a different, possibly valid, barcode.
 """
+import os
 import re
+import time
 
 from PySide6.QtCore import QObject, Slot
 
@@ -73,8 +75,34 @@ def burst_barcode(strokes, *, max_gap_ms=35, min_length=4):
     return "" if not all(chars) else "".join(chars)
 
 
+DEBUG_ENV = "MASGOLD_BARCODE_DEBUG"
+
+
+def debug_log_path():
+    from pathlib import Path
+    return Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "masGold v2" / "barcode_debug.log"
+
+
 class BarcodeInput(QObject):
     """Exposed to QML as `barcodeInput`."""
+
+    @Slot(result=bool)
+    def debugOn(self):
+        return os.environ.get(DEBUG_ENV) == "1"
+
+    @Slot(str, int, int, str, int, str)
+    def debug(self, phase, scan_code, key, text, modifiers, mapped):
+        """Diagnostics only (MASGOLD_BARCODE_DEBUG=1): one line per key press of a barcode field, so a wrong scan under a given keyboard layout can be analysed from what the
+        scanner really sent. Barcodes are not secrets; nothing else is written."""
+        if os.environ.get(DEBUG_ENV) != "1":
+            return
+        try:
+            path = debug_log_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(f"{time.strftime('%H:%M:%S')} {phase} scan=0x{scan_code:X} key=0x{key:X} text={text!r} mods={modifiers} mapped={mapped!r}\n")
+        except OSError:
+            pass
 
     @Slot(int, bool, result=str)
     def charFor(self, scan_code, shift):

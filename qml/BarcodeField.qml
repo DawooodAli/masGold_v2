@@ -20,7 +20,11 @@ TextField {
         if (!field.codec || (event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)))
             return
         const shift = (event.modifiers & Qt.ShiftModifier) !== 0
+        if (field.codec.debugOn())
+            field.codec.debug("key", event.nativeScanCode, event.key, event.text, event.modifiers, field.codec.charFor(event.nativeScanCode, shift))
         if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            if (field.codec.debugOn())
+                field.codec.debug("enter", event.nativeScanCode, event.key, field.text, event.modifiers, field.codec.canonical(field.text))
             if (field.mixed) {
                 // A text that is already a valid barcode (the layout was English) is kept as typed:
                 // rebuilding it from scan codes once turned JG... into GG... (first stroke wrong).
