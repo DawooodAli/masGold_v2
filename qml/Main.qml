@@ -785,7 +785,7 @@ ApplicationWindow {
 
                     Rectangle {
                         objectName: "goldPriceArea"
-                        Layout.preferredWidth: root.width < 1200 ? 250 : root.width < 1400 ? 290 : 340
+                        Layout.preferredWidth: root.width < 1200 ? 270 : root.width < 1400 ? 320 : 380
                         Layout.minimumWidth: Layout.preferredWidth
                         Layout.preferredHeight: 54
 
@@ -814,18 +814,18 @@ ApplicationWindow {
                                 spacing: 10
                                 // Label small, price strong: عيار 21 • شراء 6,209 • بيع 6,234 (no provider name).
                                 GoldPriceLabel { value: "عيار 21"; color: theme.gold; font.bold: true
-                                                 font.pixelSize: root.width < 1200 ? 12 : 13; wrapMode: Text.NoWrap }
-                                GoldPriceLabel { value: "شراء"; color: theme.priceBuy; font.pixelSize: 11; wrapMode: Text.NoWrap }
+                                                 font.pixelSize: root.width < 1200 ? 14 : 15; wrapMode: Text.NoWrap }
+                                GoldPriceLabel { value: "شراء"; color: theme.priceBuy; font.pixelSize: 12; wrapMode: Text.NoWrap }
                                 GoldPriceLabel {
                                     objectName: "goldTopBuy"
                                     value: goldPriceVM.headlineBuy; color: theme.priceBuy
-                                    font.bold: true; font.pixelSize: root.width < 1200 ? 15 : 17; wrapMode: Text.NoWrap
+                                    font.bold: true; font.pixelSize: root.width < 1200 ? 18 : 21; wrapMode: Text.NoWrap
                                 }
-                                GoldPriceLabel { value: "بيع"; color: theme.priceSell; font.pixelSize: 11; wrapMode: Text.NoWrap }
+                                GoldPriceLabel { value: "بيع"; color: theme.priceSell; font.pixelSize: 12; wrapMode: Text.NoWrap }
                                 GoldPriceLabel {
                                     objectName: "goldTopSell"
                                     value: goldPriceVM.headlineSell; color: theme.priceSell
-                                    font.bold: true; font.pixelSize: root.width < 1200 ? 15 : 17; wrapMode: Text.NoWrap
+                                    font.bold: true; font.pixelSize: root.width < 1200 ? 18 : 21; wrapMode: Text.NoWrap
                                 }
                                 Item { Layout.fillWidth: true }
                             }
