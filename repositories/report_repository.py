@@ -221,7 +221,7 @@ class ReportRepository(BaseRepository):
         return self._fetch_all(
             f"""
             SELECT iv.id AS invoice_id, iv.invoice_number, iv.invoice_date, iv.employee_id, e.name AS employee, il.line_type, k.karat_value, il.weight_grams, il.making_total, il.gross_total, il.discount_amount,
-                   il.scrap_kind, COALESCE(it.name, il.item_name_snapshot) AS item_type, ii.acquisition_making_per_gram AS piece_cost, {"COALESCE(CASE WHEN (COALESCE(it.name, il.item_name_snapshot) LIKE '%سبيك%' OR COALESCE(it.name, il.item_name_snapshot) LIKE '%جني%') THEN zc.making_cost_per_gram END, icc.making_cost_per_gram, wc.making_cost_per_gram, CASE WHEN il.line_type = 'SELL_OLD_GOLD' THEN zc.making_cost_per_gram END)" if costs else "NULL"} AS category_cost, c.id AS reversal_id
+                   il.scrap_kind, COALESCE(it.name, il.item_name_snapshot) AS item_type, ii.acquisition_making_per_gram AS piece_cost, CASE WHEN ii.acquisition_source = 'SUPPLIER_PURCHASE' THEN ii.acquisition_making_per_gram END AS real_cost, {"COALESCE(CASE WHEN (COALESCE(it.name, il.item_name_snapshot) LIKE '%سبيك%' OR COALESCE(it.name, il.item_name_snapshot) LIKE '%جني%') THEN zc.making_cost_per_gram END, icc.making_cost_per_gram, wc.making_cost_per_gram, CASE WHEN il.line_type = 'SELL_OLD_GOLD' THEN zc.making_cost_per_gram END)" if costs else "NULL"} AS category_cost, c.id AS reversal_id
             FROM invoice_lines il
             JOIN invoices iv ON iv.id = il.invoice_id
             JOIN karats k ON k.id = il.karat_id
@@ -255,6 +255,7 @@ class ReportRepository(BaseRepository):
             SELECT iv.id AS invoice_id, iv.invoice_date AS doc_date, k.karat_value, il.weight_grams, il.making_total, ii.id AS item_id, il.line_type,
                    CASE WHEN il.line_type = 'SELL_OLD_GOLD' THEN w.id ELSE ii.category_id END AS category_id,
                    CASE WHEN il.line_type = 'SELL_OLD_GOLD' THEN COALESCE(w.code, 'W') ELSE c.code END AS category_code,
+                   CASE WHEN ii.acquisition_source = 'SUPPLIER_PURCHASE' THEN ii.acquisition_making_per_gram END AS real_cost,
                    ii.acquisition_making_per_gram AS piece_cost, rc.id AS reversal_id
             FROM invoice_lines il
             JOIN invoices iv ON iv.id = il.invoice_id

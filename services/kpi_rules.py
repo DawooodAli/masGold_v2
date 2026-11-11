@@ -240,6 +240,8 @@ def making_flags(margin_pct, others_average_pct):
 def line_cost(l):
     if l.get("line_type") == "SELL_OLD_GOLD":
         return Decimal("0")                      # owner 2026-11-11: scrap sold by weight costs no making (as in the making-profit report)
+    if l.get("real_cost") is not None:
+        return l["real_cost"]                    # owner 2026-11-11: a piece bought from a supplier keeps its REAL purchase making; the letter's cost is for the rest
     return l.get("category_cost") if l.get("category_cost") is not None else l.get("piece_cost")       # the letter's CURRENT cost first (owner 2026-11-08)
 
 

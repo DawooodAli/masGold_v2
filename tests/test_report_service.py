@@ -1343,6 +1343,15 @@ class MakingProfitTests(Case):
             w = self.rows(self.service.run("makingprofit", self.PERIOD), 21)["W"]
         self.assertEqual((w["sold"], w["cost"], w["margin"], w["estimated"]), (D("500.00"), D("0.00"), D("500.00"), D("0.00")))
 
+    def test_a_supplier_piece_uses_its_real_purchase_making(self):
+        from datetime import date
+        from unittest import mock
+        row = {"invoice_id": 901, "doc_date": date(2026, 10, 12), "karat_value": 21, "weight_grams": D("10"), "making_total": D("3000"), "item_id": 5, "line_type": "SELL_INVENTORY",
+               "category_id": 1, "category_code": "A", "piece_cost": D("240"), "real_cost": D("240"), "reversal_id": None}
+        with mock.patch.object(FakeRepo, "making_profit_lines", lambda self, a, b: [row]):
+            a = self.rows(self.service.run("makingprofit", self.PERIOD), 21)["A"]
+        self.assertEqual((a["cost"], a["margin"]), (D("2400.00"), D("600.00")))                # 240 x 10, never the letter's 150
+
     def test_the_margin_is_also_charted_over_time_per_karat(self):
         bars = {b["key"]: b for b in self.service.run("makingprofit", self.PERIOD)["bars"]}
         self.assertEqual([(r["label"], r["value"]) for r in bars["making_time_21"]["rows"]], [("2026-10-10", D("550.00"))])       # 750 (A) - 200 (no letter), the same day; a short period is daily

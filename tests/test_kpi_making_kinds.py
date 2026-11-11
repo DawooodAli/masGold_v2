@@ -20,6 +20,9 @@ class MakingKindsTests(unittest.TestCase):
         self.assertEqual(kpi_rules.line_cost({"line_type": "SELL_OLD_GOLD", "category_cost": D("150")}), D("0"))
         self.assertEqual(kpi_rules.line_cost({"line_type": "SELL_INVENTORY", "category_cost": D("150")}), D("150"))
 
+    def test_a_supplier_piece_keeps_its_real_cost(self):
+        self.assertEqual(kpi_rules.line_cost({"line_type": "SELL_INVENTORY", "real_cost": D("240"), "category_cost": D("200")}), D("240"))
+
 
 if __name__ == "__main__":
     unittest.main()
