@@ -309,29 +309,16 @@ class NewCustomerTests(InvoiceServiceTestCase):
 
 
 class MakingReviewTests(InvoiceServiceTestCase):
-    def test_average_outside_the_category_range_opens_a_review_only(self):
+    def test_the_sale_range_no_longer_opens_a_review(self):
+        # owner 2026-11-12: the sale-making range is gone; only the manager-approval limit and a sale below the gold value are judged
         self.store.items["100"].update(category_id=1)
         self.store.categories[1].update(sale_making_min_per_gram=D("200.00"), sale_making_max_per_gram=D("600.00"))
-        draft = InvoiceDraft(5, "12", (scanned(),), (), (cash("66500"),))  # 101.52/g
-        self.assertTrue(self.service.preview(draft)["making_review_required"])
-        result = self.finalize(draft)
-        self.assertEqual((result["sale_total"], result["settlement_status"]), ("66500.00", "SETTLED"))
-        review = self.store.reviews[0]
-        self.assertEqual(review["review_type"], "MAKING_PRICE")
-        self.assertEqual(review["details"]["groups"][0]["category_code"], "A")
-
-    def test_mixed_categories_flag_only_the_bad_group(self):
-        self.store.items["100"].update(category_id=1)
-        self.store.items["101"].update(category_id=2)
-        self.store.categories[1].update(sale_making_min_per_gram=D("200.00"))
-        self.store.categories[2] = {"id": 2, "code": "B", "name": "B", "sale_making_min_per_gram": D("50.00"),
-                                    "sale_making_max_per_gram": None}
-        draft = InvoiceDraft(5, "12", (scanned("100"), scanned("101")), (), (cash("85000"),))
-        self.finalize(draft)                                             # 127.41/g overall
-        groups = self.store.reviews[0]["details"]["groups"]
-        self.assertEqual([(g["category_code"], g["status"]) for g in groups],
-                         [("A", "OUT_OF_RANGE"), ("B", "WITHIN_RANGE")])
-        self.assertEqual(len(self.store.reviews), 1)
+        draft = InvoiceDraft(5, "12", (scanned(),), (), (cash("66500"),))  # 101.52/g, under the old minimum
+        preview = self.service.preview(draft)
+        self.assertFalse(preview["making_review_required"])
+        self.assertEqual(preview["making_groups"][0]["status"], "WITHIN_RANGE")
+        self.finalize(draft)
+        self.assertEqual(self.store.reviews, [])
 
     def test_within_range_or_unconfigured_opens_nothing(self):
         draft = InvoiceDraft(5, "12", (scanned(),), (), (cash("66500"),))
@@ -668,18 +655,12 @@ class CommercialModelTests(InvoiceServiceTestCase):
     # ---- making review re-runs on the derived price
     def test_making_review_follows_the_money(self):
         self.store.items["100"].update(category_id=1)
-        self.store.categories[1].update(sale_making_min_per_gram=D("150.00"))
-        within = self.service.preview(InvoiceDraft(5, "12", (scanned(),), (), (pay("67011"),)))
-        below = self.service.preview(InvoiceDraft(5, "12", (scanned(),), (), (pay("67003"),)))
-        self.assertEqual((within["making_review_status"], below["making_review_status"]),
-                         ("WITHIN_RANGE", "OUT_OF_RANGE"))
-        self.store.categories[1].update(sale_making_min_per_gram=None)
-        self.assertEqual(self.service.preview(InvoiceDraft(5, "12", (scanned(),), (), (pay("67011"),)))
-                         ["making_review_status"], "NOT_CONFIGURED")
+        self.store.categories[1].update(sale_making_min_per_gram=D("150.00"))       # ignored since 2026-11-12
+        for money in ("67011", "67003"):
+            self.assertEqual(self.service.preview(InvoiceDraft(5, "12", (scanned(),), (), (pay(money),)))["making_review_status"], "WITHIN_RANGE")
         self.store.items["100"].update(category_id=None)
         preview = self.service.preview(InvoiceDraft(5, "12", (scanned(),), (), (pay("67011"),)))
-        self.assertEqual(preview["making_groups"][0]["status"], "NOT_CONFIGURED")
-
+        self.assertEqual(preview["making_groups"][0]["status"], "WITHIN_RANGE")
 
 if __name__ == "__main__":
     unittest.main()

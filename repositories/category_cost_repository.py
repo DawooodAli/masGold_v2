@@ -12,13 +12,20 @@ class CategoryCostRepository(BaseRepository):
         """Every active category with its purchase-making range (a hint when typing the cost) and its current cost (NULL = not set)."""
         return self._fetch_all(
             """
-            SELECT c.id, c.code, c.name, c.purchase_making_min_per_gram AS range_min, c.purchase_making_max_per_gram AS range_max, c.is_active, cc.making_cost_per_gram AS cost
+            SELECT c.id, c.code, c.name, c.purchase_making_min_per_gram AS range_min, c.purchase_making_max_per_gram AS range_max, c.manager_approval_below_per_gram AS approval, c.is_active, cc.making_cost_per_gram AS cost
             FROM item_categories c LEFT JOIN item_category_costs cc ON cc.category_id = c.id
             WHERE c.is_active = TRUE ORDER BY c.sort_order, c.code
             """)
 
     def category(self, category_id, lock=False):
         return self._fetch_one("SELECT id, code, name FROM item_categories WHERE id = %s AND is_active = TRUE" + (" FOR UPDATE" if lock else ""), (category_id,))
+
+    def approval(self, category_id):
+        row = self._fetch_one("SELECT manager_approval_below_per_gram AS approval FROM item_categories WHERE id = %s", (category_id,))
+        return None if row is None else row["approval"]
+
+    def set_approval(self, category_id, amount):
+        self._execute("UPDATE item_categories SET manager_approval_below_per_gram = %s WHERE id = %s", (amount, category_id))
 
     def cost(self, category_id):
         row = self._fetch_one("SELECT making_cost_per_gram AS cost FROM item_category_costs WHERE category_id = %s", (category_id,))

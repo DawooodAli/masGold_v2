@@ -764,8 +764,7 @@ class InvoiceService:
         result = []
         for category_id, (making, weight) in sorted(groups.items(), key=lambda g: (g[0] is None, g[0] or 0)):
             row = category_ranges.get(category_id) if category_id is not None else None
-            low = None if row is None else row.get("sale_making_min_per_gram")
-            high = None if row is None else row.get("sale_making_max_per_gram")
+            low = high = None                      # owner 2026-11-12: the sale-making range is gone; only the manager-approval limit (and selling below the gold value) is judged
             approval_below = None if row is None else row.get("manager_approval_below_per_gram")
             average = (making / weight).quantize(Decimal("0.01")) if weight > 0 else Decimal("0.00")
             # Strictly BELOW the category threshold needs a manager (250 passes, 249.99 does not).
@@ -774,11 +773,6 @@ class InvoiceService:
                               and average < Decimal(str(approval_below)))
             if below_gold:
                 status = OUT_OF_RANGE              # sold below the gold value: saved, never blocked, always reviewed by the manager (owner 2026-11-03)
-            elif low is None and high is None:
-                status = NOT_CONFIGURED
-            elif (low is not None and average < Decimal(str(low))) or (
-                    high is not None and average > Decimal(str(high))):
-                status = OUT_OF_RANGE
             else:
                 status = WITHIN_RANGE
             result.append({"category_id": category_id, "category_code": None if row is None else row.get("code"),

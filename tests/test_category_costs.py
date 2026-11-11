@@ -41,6 +41,12 @@ class CostRepo:
     def clear_cost(self, category_id):
         self.store.costs.pop(int(category_id), None)
 
+    def approval(self, category_id):
+        return self.store.categories[int(category_id)].get("approval")
+
+    def set_approval(self, category_id, amount):
+        self.store.categories[int(category_id)]["approval"] = amount
+
     def audit(self, **kwargs):
         self.store.audits.append((kwargs["event_type"], kwargs["metadata"]))
 
@@ -68,6 +74,17 @@ class ServiceTests(unittest.TestCase):
         service.clear_cost(1)
         self.assertNotIn(1, self.store.costs)
         self.assertEqual(self.store.audits[-1][0], "CATEGORY_MAKING_COST_CLEARED")
+
+    def test_the_manager_approval_limit_is_set_here_and_blank_removes_it(self):
+        service = self.build()
+        self.assertEqual(service.set_approval(1, "350")["approval"], D("350.00"))
+        self.assertEqual(self.store.categories[1]["approval"], D("350.00"))
+        self.assertEqual(self.store.audits[-1], ("CATEGORY_MANAGER_APPROVAL_SET", {"before": None, "after": "350.00"}))
+        self.assertEqual({c["code"]: c["approval"] for c in service.costs()}["A"], D("350.00"))
+        self.assertIsNone(service.set_approval(1, "")["approval"])
+        self.assertIsNone(self.store.categories[1]["approval"])
+        with self.assertRaises(CostError):
+            service.set_approval(1, "-5")
 
     def test_invalid_amounts_unknown_categories_and_missing_rights_are_refused(self):
         service = self.build()

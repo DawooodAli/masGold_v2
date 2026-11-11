@@ -68,7 +68,7 @@ def gold_reading(points, scrap21_grams=None, today=None):
         return {"available": False, "tone": "muted", "text": f"عيار 21: بيانات غير كافية (تحتاج {MIN_DAYS} أيام أسعار مخزنة على الأقل)."}
     lines = _lines("شراء المحل عيار 21", s)
     scrap = Decimal(str(scrap21_grams)) if scrap21_grams is not None else None
-    held = f" وعندك {scrap.quantize(Decimal('0.001')):,} جم كسر عيار 21" if scrap is not None and scrap > 0 else ""
+    held = f" وعندك {scrap.quantize(Decimal('0.001')):,} جرام كسر عيار 21" if scrap is not None and scrap > 0 else ""
     if s["position"] >= HIGH_THIRD:
         tone = "sell"
         lines.append(f"السعر في الثلث الأعلى من المدى{held}: وقت مناسب للبيع والتسعير بحذر، وفكّر في تسييل جزء من الكسر بدل الاحتفاظ به، وتجنّب الشراء من السوق بسعر عالٍ.")

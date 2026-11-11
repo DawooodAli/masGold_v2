@@ -658,12 +658,12 @@ class ExchangeService:
             row = ranges.get(piece.category_id) if piece.category_id is not None else None
             if not row or piece.making_per_gram is None:           # not typed yet: a blocking problem already
                 continue
-            low, high = row.get("sale_making_min_per_gram"), row.get("sale_making_max_per_gram")
-            if low is None or high is None:
+            limit = row.get("manager_approval_below_per_gram")          # owner 2026-11-12: judged by the manager-approval limit only (the sale range is gone)
+            if limit is None:
                 continue
-            if not Decimal(str(low)) <= piece.making_per_gram <= Decimal(str(high)):
+            if piece.making_per_gram < Decimal(str(limit)):
                 out.append({"inventory_item_id": piece.inventory_item_id, "category": row.get("name"),
-                            "making_per_gram": piece.making_per_gram, "min": low, "max": high,
+                            "making_per_gram": piece.making_per_gram, "min": limit, "max": None,
                             "status": OUT_OF_RANGE})
         return out
 

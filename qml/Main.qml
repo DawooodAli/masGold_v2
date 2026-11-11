@@ -5804,7 +5804,7 @@ ApplicationWindow {
         content: [
             GoldPriceLabel {
                 Layout.fillWidth: true; wrapMode: Text.WordWrap
-                value: "التكلفة الفعلية لمصنعية الجرام لكل حرف (رقم واحد لكل الأعيار). لما تغيّر الرقم يسري على كل القطع في «ربح المصنعية» (القديمة والجديدة)، لأن القطعة البديلة هتكلّف بالسعر الجديد."
+                value: "التكلفة الفعلية لمصنعية الجرام لكل حرف (رقم واحد لكل الأعيار)، وحد موافقة المدير: بيع بمصنعية جرام أقل منه يحتاج موافقة المدير (فاضي = بدون حد). لما تغيّر الرقم يسري على كل القطع في «ربح المصنعية» (القديمة والجديدة)، لأن القطعة البديلة هتكلّف بالسعر الجديد."
                 color: theme.textMuted; font.pixelSize: 11
             },
             Repeater {
@@ -5820,11 +5820,17 @@ ApplicationWindow {
                         text: modelData.cost; placeholderText: "غير محدد"
                     }
                     GoldPriceLabel { Layout.preferredWidth: 60; value: "ج/جرام"; color: theme.textSecondary }
-                    GoldPriceLabel { Layout.fillWidth: true; value: modelData.range; color: theme.textMuted; font.pixelSize: 11 }
+                    GoldPriceLabel { Layout.preferredWidth: 110; value: "موافقة المدير أقل من"; color: theme.amber; font.pixelSize: 11 }
+                    GoldPriceInput {
+                        id: approvalField; objectName: "approvalField_" + modelData.code
+                        Layout.preferredWidth: 100; Layout.preferredHeight: 34
+                        text: modelData.approval; placeholderText: "بدون حد"
+                    }
+                    GoldPriceLabel { Layout.fillWidth: true; value: modelData.range; color: theme.textMuted; font.pixelSize: 11; elide: Text.ElideLeft }
                     GoldPriceButton {
                         objectName: "costSave_" + modelData.code; text: "حفظ"
-                        enabled: !costs.vm.busy && costField.text.trim().length > 0
-                        onClicked: costs.vm.setCost(modelData.id, costField.text)
+                        enabled: !costs.vm.busy && (costField.text.trim().length > 0 || approvalField.text.trim() !== modelData.approval)
+                        onClicked: costs.vm.save(modelData.id, costField.text, approvalField.text)
                     }
                     GoldPriceButton {
                         objectName: "costClear_" + modelData.code; text: "مسح"; visible: modelData.hasCost
@@ -7994,6 +8000,7 @@ ApplicationWindow {
 
                             Label {
                                 Layout.fillWidth: true
+                                visible: false                                      // owner 2026-11-12: the sale-making range is no longer used
 
                                 text:
                                     "مصنعية البيع: "
@@ -8032,6 +8039,7 @@ ApplicationWindow {
 
                             Label {
                                 Layout.fillWidth: true
+                                visible: false                                      // owner 2026-11-12: the manager-approval limit is set in «تكلفة المصنعية للحروف»
 
                                 text:
                                     modelData.manager_approval_below_per_gram
@@ -8486,9 +8494,10 @@ ApplicationWindow {
             }
 
 
-            // Sale title
+            // Sale title (hidden: the sale-making range is no longer used, owner 2026-11-12)
             Label {
                 Layout.fillWidth: true
+                visible: false
 
                 text: "مصنعية البيع — لكل جرام"
 
@@ -8504,6 +8513,7 @@ ApplicationWindow {
 
             RowLayout {
                 Layout.fillWidth: true
+                visible: false
 
                 spacing: 10
 
@@ -8589,6 +8599,7 @@ ApplicationWindow {
 
             Label {
                 Layout.fillWidth: true
+                visible: false
 
                 text:
                     "موافقة المدير مطلوبة عند البيع بأقل من"
@@ -8605,6 +8616,7 @@ ApplicationWindow {
 
             TextField {
                 id: categoryManagerThreshold
+                visible: false                                              // kept (hidden) so saving a range re-sends the stored limit unchanged
 
                 Layout.fillWidth: true
                 Layout.preferredHeight: 44

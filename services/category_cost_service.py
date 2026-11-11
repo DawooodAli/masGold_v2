@@ -34,6 +34,7 @@ def parse_cost(value):
 
 def view(row):
     return {"id": str(row["id"]), "code": row["code"], "name": row["name"], "cost": None if row["cost"] is None else Decimal(str(row["cost"])),
+            "approval": None if row.get("approval") is None else Decimal(str(row["approval"])),
             "range_min": None if row.get("range_min") is None else Decimal(str(row["range_min"])), "range_max": None if row.get("range_max") is None else Decimal(str(row["range_max"]))}
 
 
@@ -84,6 +85,23 @@ class CategoryCostService:
                              description=f"تكلفة مصنعية الحرف {category['code']}: {value:,.2f} ج/جرام", metadata={"before": None if before is None else str(before), "after": str(value)},
                              occurred_at=repository.now())
             return {"id": str(category["id"]), "cost": value}
+        return self._write(_expected_actor, work)
+
+    def set_approval(self, category_id, amount, *, _expected_actor=None):
+        """The manager-approval limit of a letter (owner 2026-11-12: set here, beside the cost): a sale whose making per gram is under it needs a manager. Blank = no limit."""
+        text = str(amount if amount is not None else "").strip()
+        value = parse_cost(text) if text else None
+
+        def work(repository, actor):
+            category = repository.category(int(category_id), lock=True)
+            if category is None:
+                raise CostError("NOT_FOUND", "التصنيف غير موجود أو غير نشط.")
+            before = repository.approval(category["id"])
+            repository.set_approval(category["id"], value)
+            repository.audit(user_id=actor.user_id, event_type="CATEGORY_MANAGER_APPROVAL_SET", category_id=category["id"], code=category["code"],
+                             description=f"حد موافقة المدير للحرف {category['code']}: " + (f"{value:,.2f} ج/جرام" if value is not None else "بدون حد"),
+                             metadata={"before": None if before is None else str(before), "after": None if value is None else str(value)}, occurred_at=repository.now())
+            return {"id": str(category["id"]), "approval": value}
         return self._write(_expected_actor, work)
 
     def clear_cost(self, category_id, *, _expected_actor=None):

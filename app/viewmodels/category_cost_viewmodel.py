@@ -53,6 +53,20 @@ class CategoryCostViewModel(QObject):
     def setCost(self, category_id, amount):
         self._run(lambda _expected_actor: self._service.set_cost(category_id, amount, _expected_actor=_expected_actor), self._saved, "تم حفظ التكلفة.")
 
+    @Slot(str, str, str)
+    def save(self, category_id, amount, approval):
+        """Saves the cost (when typed) and the manager-approval limit (when it changed) of one letter."""
+        row = next((r for r in self._rows if r["id"] == category_id), None)
+        cost_changed = amount.strip() and (row is None or amount.strip() != row["cost"])
+        approval_changed = row is None or approval.strip() != row["approval"]
+
+        def call(_expected_actor):
+            if cost_changed:
+                self._service.set_cost(category_id, amount, _expected_actor=_expected_actor)
+            if approval_changed:
+                self._service.set_approval(category_id, approval, _expected_actor=_expected_actor)
+        self._run(call, self._saved, "تم الحفظ.")
+
     @Slot(str)
     def clearCost(self, category_id):
         self._run(lambda _expected_actor: self._service.clear_cost(category_id, _expected_actor=_expected_actor), self._saved, "تم مسح التكلفة.")
@@ -89,7 +103,7 @@ class CategoryCostViewModel(QObject):
         self.changed.emit()
 
     def _listed(self, result):
-        self._rows = [{"id": r["id"], "code": r["code"], "name": r["name"], "cost": _text(r["cost"]), "hasCost": r["cost"] is not None,
+        self._rows = [{"id": r["id"], "code": r["code"], "name": r["name"], "cost": _text(r["cost"]), "hasCost": r["cost"] is not None, "approval": _text(r.get("approval")),
                        "range": "" if r["range_min"] is None and r["range_max"] is None else f"رينج الشراء {_text(r['range_min']) or '—'} إلى {_text(r['range_max']) or '—'}"}
                       for r in result]
         self._loaded = True

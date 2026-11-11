@@ -821,20 +821,17 @@ class InvoicePageTests(unittest.TestCase):
 
     # ------------------------------------------------------------ 14: making review
 
-    def test_making_outside_the_category_range_flags_review_only(self):
+    def test_the_old_sale_range_no_longer_flags_a_review(self):
+        # owner 2026-11-12: the sale-making range is gone (only the manager-approval limit and a sale below the gold value are judged)
         self.store.items["100"]["category_id"] = 1
         self.store.categories[1]["sale_making_min_per_gram"] = D("200.00")
         self.select_salesperson()
         self.scan("01260925")
         self.receive("66500")
         self.settle()
-        # Owner (2026-10-28): the notice flashes in the card's problems line; the prices-row
-        # flag stays in the tree with the same text but hidden.
-        self.wait_until(lambda: "السعر يحتاج مراجعة" in self.text("stripProblems"))
-        self.assertEqual(self.text("makingReviewFlag"), "السعر يحتاج مراجعة")
         self.finalize()
-        self.assertEqual(self.store.invoices[0]["sell_total"], D("66500.00"))   # the customer price is unchanged
-        self.assertEqual(self.store.reviews[0]["review_type"], "MAKING_PRICE")
+        self.assertEqual(self.store.invoices[0]["sell_total"], D("66500.00"))
+        self.assertEqual(self.store.reviews, [])
 
     # ------------------------------------------------------------ 16-19: settlement
 

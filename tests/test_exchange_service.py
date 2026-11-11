@@ -75,7 +75,7 @@ class Store:
             item("303", 2, "4.000"), item("304", 1, "9.000", "SOLD"), item("305", 3, "5.000"),
             item("306", 1, "3.429"))}
         self.categories = {1: {"id": 1, "code": "A", "name": "خواتم", "sale_making_min_per_gram": D("150"),
-                               "sale_making_max_per_gram": D("250")}}
+                               "sale_making_max_per_gram": D("250"), "manager_approval_below_per_gram": D("150")}}
         self.customers = {"12": {"customer_id": "12", "is_active": 1, "record_origin": "NATIVE"}}
         self.bank_accounts = {7: {"id": 7, "name": "حساب المحل", "account_type": "BANK", "is_active": 1}}
         self.lifecycle, self.lifecycle_lines, self.lifecycle_payments = [], [], []
@@ -713,11 +713,12 @@ class InventoryAndAccountingTests(ExchangeTestCase):
                                                                 payments=(cash("12465.00"),)))
 
     def test_making_out_of_range_opens_a_review_but_does_not_block(self):
-        d = draft(replacements=(("301", "300"),))
+        d = draft(replacements=(("301", "100"),))                                # under the manager limit 150 (the sale range is gone, 2026-11-12)
         preview = self.service.preview(d)
         self.assertTrue(preview["making_review_required"])
+        self.assertFalse(self.service.preview(draft(replacements=(("301", "300"),)))["making_review_required"])
         signed = preview["signed_amount"]
-        self.finalize(draft(replacements=(("301", "300"),), payments=(cash(signed),)))
+        self.finalize(draft(replacements=(("301", "100"),), payments=(cash(signed),)))
         (review,) = self.store.reviews
         self.assertEqual((review["review_type"], review["invoice_id"]), ("MAKING_PRICE", "500"))
 
@@ -866,8 +867,8 @@ class ReplacementSourceTests(ExchangeTestCase):
         self.assertEqual(self.store.cases[-1]["notes"], "القطعة بدون ملصق")
 
     def test_manual_making_outside_range_raises_the_same_making_review_as_billing(self):
-        # Category 1 (from item type 2) allows 150–250 ج/جرام; 300 → MAKING_PRICE review, never blocked.
-        preview, _ = self.run_exchange(manual(making="300"))
+        # Category 1 (from item type 2): manager limit 150 ج/جرام; 100 → MAKING_PRICE review, never blocked.
+        preview, _ = self.run_exchange(manual(making="100"))
         self.assertTrue(preview["making_review_required"])
         (review,) = self.store.reviews
         self.assertEqual((review["review_type"], review["invoice_id"]), ("MAKING_PRICE", "500"))
