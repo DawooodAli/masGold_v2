@@ -725,9 +725,9 @@ ApplicationWindow {
                         objectName: "balanceStrip"
                         layoutDirection: Qt.RightToLeft
                         spacing: root.width < 1200 ? 4 : 6
-                        readonly property int labelSize: root.width < 1200 ? 10 : 11
-                        readonly property int karatSize: root.width < 1200 ? 15 : root.width < 1400 ? 16 : 18
-                        readonly property int valueSize: root.width < 1200 ? 12 : root.width < 1400 ? 13 : 14
+                        readonly property int labelSize: root.width < 1200 ? 11 : 12
+                        readonly property int karatSize: root.width < 1200 ? 16 : root.width < 1400 ? 18 : 20
+                        readonly property int valueSize: root.width < 1200 ? 14 : root.width < 1400 ? 15 : 17
                         readonly property bool failed: balancesVM.errorMessage.length > 0
                         ToolTip.visible: failed && stripHover.hovered
                         ToolTip.text: "تعذر تحميل الأرصدة"
