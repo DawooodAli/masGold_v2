@@ -117,7 +117,30 @@ def sales_item(now, before, scale=Decimal("1")):
     return {"key": "sales", "title": "مبيعات الذهب (جرام)", "status": status, "value": f"{a:,.3f} جرام", "compare": f"{b:,.3f} جرام" + (f" ({_pct_text(pct)})" if pct is not None else ""), "advice": advice}
 
 
+def pieces(lines):
+    """Owner 2026-11-11: crafted pieces, scrap sold by weight (F7) and bars / pounds carry very different making: each kind is averaged on its own and only the crafted pieces drive the verdict."""
+    return [l for l in lines if not is_bullion(l) and l["line_type"] != "SELL_OLD_GOLD"]
+
+
+def scrap_sales(lines):
+    return [l for l in lines if l["line_type"] == "SELL_OLD_GOLD" and not is_bullion(l)]
+
+
+def bullion(lines):
+    return [l for l in lines if is_bullion(l)]
+
+
+def making_info_item(key, title, now, before):
+    """Average making per gram of one other kind of sale (scrap sold by weight, bars / pounds): information beside the crafted-pieces indicator, never a verdict (always gray)."""
+    a, b = _making_per_gram(now), _making_per_gram(before)
+    pct = change_pct(a, b)
+    return {"key": key, "title": title, "status": GRAY, "value": f"{a:,.2f} ج" if a is not None else "—",
+            "compare": (f"{b:,.2f} ج" + (f" ({_pct_text(pct)})" if pct is not None else "") if b is not None else "—"),
+            "advice": "للعلم فقط: مصنعيته مختلفة عن المشغولات فمحسوب لوحده." if a is not None else "مفيش بيع من النوع ده في الفترة."}
+
+
 def making_item(now, before, below_cost_lines, known_lines):
+    now, before = pieces(now), pieces(before)
     a, b = _making_per_gram(now), _making_per_gram(before)
     pct = change_pct(a, b)
     status = higher_is_better(pct, MAKING_DROP)
@@ -129,7 +152,7 @@ def making_item(now, before, below_cost_lines, known_lines):
     advice = {GREEN: "متوسط المصنعية مستقر أو أحسن.", YELLOW: "المصنعية أقل من اللي فات أو في قطع كتير بتتباع تحت تكلفتها: راجع التسعير.",
               RED: "المصنعية نزلت كتير: راجع الأسعار والخصومات والموظفين اللي بيبيعوا بمصنعية قليلة.", GRAY: "مفيش مصنعية معروفة في الفترة."}[status]
     extra = f" • تحت التكلفة: {below_cost_lines} من {known_lines} ({share}%)" if share is not None else ""
-    return {"key": "making", "title": "متوسط المصنعية للجرام (من جرام فأكثر)", "status": status, "value": f"{a:,.2f} ج" if a is not None else "—",
+    return {"key": "making", "title": "متوسط مصنعية المشغولات للجرام (من جرام فأكثر)", "status": status, "value": f"{a:,.2f} ج" if a is not None else "—",
             "compare": (f"{b:,.2f} ج" + (f" ({_pct_text(pct)})" if pct is not None else "") if b is not None else "—") + extra, "advice": advice}
 
 

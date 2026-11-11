@@ -1274,7 +1274,7 @@ class ReportService:
             default = Decimal(str(repo.default_old_gold_discount() or kpi_rules.DEFAULT_DISCOUNT))
         except ArithmeticError:
             default = kpi_rules.DEFAULT_DISCOUNT
-        below, known = kpi_rules.below_cost_counts(kpi_rules.crafted(now))
+        below, known = kpi_rules.below_cost_counts(kpi_rules.pieces(now))
         profit_now = profit_before = None
         if gate("MANAGEMENT_REVIEW") and gate("MARKET_TRIP_MANAGE") and gate("INTERMEDIARY_HOLDING_VIEW") and repo.has_table("position_snapshots"):
             sheets = [{**dict(r), "taken_at": _dateish(r["taken_at"])} for r in repo.position_snapshots()]
@@ -1312,7 +1312,10 @@ class ReportService:
             except (ReportError, PermissionError):
                 spent_now = spent_before = income_now = income_before = None
                 flow_items = {}
-        items = [kpi_rules.sales_item(now, before, scale), kpi_rules.making_item(kpi_rules.crafted(now), kpi_rules.crafted(before), below, known), kpi_rules.scrap_item(now, default), profit,
+        items = [kpi_rules.sales_item(now, before, scale), kpi_rules.making_item(now, before, below, known),
+                 kpi_rules.making_info_item("making_scrap", "متوسط مصنعية بيع الكسر للجرام", kpi_rules.scrap_sales(now), kpi_rules.scrap_sales(before)),
+                 kpi_rules.making_info_item("making_bullion", "متوسط مصنعية السبائك والجنيهات للجرام", kpi_rules.bullion(now), kpi_rules.bullion(before)),
+                 kpi_rules.scrap_item(now, default), profit,
                  kpi_rules.expenses_item(spent_now, spent_before, profit["status"]), kpi_rules.income_item(income_now, income_before)]
         employees = kpi_rules.employee_rows(now, default)
         columns = [col("status", "الحالة"), col("title", "المؤشر"), col("value", "الفترة"), col("compare", baseline_label), col("advice", "القرار")]
