@@ -890,6 +890,22 @@ class InvoicePageTests(unittest.TestCase):
         self.assertEqual([p["amount"] for p in self.store.payments], [D("60000.00")])
         self.assertEqual(self.store.ledger[0]["amount_delta"], D("7010.00"))
 
+    def test_mixed_invoice_the_customer_can_be_chosen_to_pay_the_difference(self):
+        """Owner 2026-11-11: the scrap is worth more than the new piece's gold (baseline OUT) but the customer pays the difference, so the sale price and the making are right."""
+        self.select_salesperson()
+        self.scan("01260925")
+        self.add_old_gold("21", "20")
+        self.settle()
+        self.wait_until(lambda: self.text("paymentDirectionLabel") == "المدفوع للعميل")
+        self.click(self.item("directionIn"))
+        self.settle()
+        self.wait_until(lambda: self.text("paymentDirectionLabel") == "المستلم من العميل")
+        self.receive("5000")
+        self.settle()
+        self.assertEqual(self.text("summaryDueLabel"), "المستلم من العميل")
+        self.finalize()
+        self.assertEqual([(p["direction"], p["amount"]) for p in self.store.payments], [("IN", D("5000.00"))])
+
     # ------------------------------------------------------------ 20: cancel / failure
 
     # ------------------------------------------------------------ real money, direction, account (real clicks)
@@ -900,7 +916,8 @@ class InvoicePageTests(unittest.TestCase):
         self.add_old_gold("21", "20")                  # 124,140 − 1.5% = O 122,277.90 > gold 65,436 → OUT
         self.settle()
         self.wait_until(lambda: self.text("paymentDirectionLabel") == "المدفوع للعميل")
-        self.assertFalse(self.item("directionOut").property("visible"))          # the direction is automatic
+        self.assertTrue(self.item("directionOut").property("visible"))           # mixed invoice (owner 2026-11-11): the employee may choose who pays
+        self.assertTrue(self.item("directionIn").property("visible"))
         self.receive("55000")
         self.settle()
         self.wait_until(lambda: self.text("summaryEffectiveSale") == "67,280 ج")

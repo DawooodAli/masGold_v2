@@ -427,10 +427,19 @@ class InvoiceViewModelTests(unittest.TestCase):
                                               money_received="0.00", money_paid="55000.00")
         self.vm.addOldGold(1, "20")
         self.preview_now()
-        self.assertFalse(self.vm.directionChoosable)                           # the direction is automatic
+        self.assertTrue(self.vm.directionChoosable)                            # a mixed invoice: the employee may choose who pays
         self.assertEqual((self.vm.paymentDirection, self.vm.paymentLabel), ("OUT", "المدفوع للعميل"))
         self.assertEqual((self.vm.summary["dueLabel"], self.vm.summary["dueAmount"]), ("المدفوع للعميل", "55,000 ج"))
-        self.assertIsNone(self.vm._draft().payment_direction)                  # never sent: the service decides
+        self.assertIsNone(self.vm._draft().payment_direction)                  # not chosen: the service decides (baseline)
+        self.vm.setPaymentDirection("IN")                                      # the owner's case: the customer pays the difference
+        self.assertEqual(self.vm._draft().payment_direction, "IN")
+        self.vm.setPaymentDirection("OUT")
+        self.assertEqual(self.vm._draft().payment_direction, "OUT")
+
+    def test_the_direction_cannot_be_chosen_without_a_mixed_invoice(self):
+        self.sale_ready()                                                      # sale only
+        self.vm.setPaymentDirection("OUT")
+        self.assertIsNone(self.vm._draft().payment_direction)
 
     def test_f8_fills_only_a_real_full_amount(self):
         self.sale_ready()

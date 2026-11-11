@@ -1015,8 +1015,12 @@ class InvoiceViewModel(QObject):
 
     @Slot(str)
     def setPaymentDirection(self, direction):
-        """No-op: who pays whom is decided automatically by the service, never chosen by the employee."""
-        return
+        """Mixed invoice only (sold pieces + customer scrap): the employee may choose who pays the difference (owner 2026-11-11: when the scrap
+        is worth more than the gold of the new piece the baseline says «المدفوع للعميل», but the sale price - hence the making - is only right when the
+        customer pays). Every other invoice keeps its automatic direction and ignores the call."""
+        if direction in ("IN", "OUT") and self.directionChoosable and direction != self._direction_choice:
+            self._direction_choice = direction
+            self._touched()
 
     def _money_direction(self):
         if self.directionChoosable and self._direction_choice:
@@ -1789,8 +1793,9 @@ class InvoiceViewModel(QObject):
 
     @Property(bool, notify=changed)
     def directionChoosable(self):
-        """The direction is always automatic now (the service decides: sold gold value against old gold); the employee never picks it."""
-        return False
+        """True only for a mixed invoice (sold pieces + customer scrap): the default is the service's baseline (sold gold value against old gold)
+        and the employee may choose «المستلم من العميل» / «المدفوع للعميل». Sale only and old gold only are always automatic."""
+        return bool((self._sales or self._described) and self._olds)
 
     @Property(str, notify=changed)
     def paymentDirection(self):
