@@ -665,7 +665,7 @@ ApplicationWindow {
             Rectangle {
                 objectName: "topBar"
                 Layout.fillWidth: true
-                Layout.preferredHeight: 68
+                Layout.preferredHeight: 86
 
                 color: theme.bgSecondary
 
@@ -785,9 +785,9 @@ ApplicationWindow {
 
                     Rectangle {
                         objectName: "goldPriceArea"
-                        Layout.preferredWidth: root.width < 1200 ? 270 : root.width < 1400 ? 320 : 380
+                        Layout.preferredWidth: root.width < 1200 ? 290 : root.width < 1400 ? 340 : 410
                         Layout.minimumWidth: Layout.preferredWidth
-                        Layout.preferredHeight: 54
+                        Layout.preferredHeight: 72
 
                         radius: theme.radiusSmall
 
@@ -814,18 +814,18 @@ ApplicationWindow {
                                 spacing: 10
                                 // Label small, price strong: عيار 21 • شراء 6,209 • بيع 6,234 (no provider name).
                                 GoldPriceLabel { value: "عيار 21"; color: theme.gold; font.bold: true
-                                                 font.pixelSize: root.width < 1200 ? 14 : 15; wrapMode: Text.NoWrap }
-                                GoldPriceLabel { value: "شراء"; color: theme.priceBuy; font.pixelSize: 12; wrapMode: Text.NoWrap }
+                                                 font.pixelSize: root.width < 1200 ? 15 : 17; wrapMode: Text.NoWrap }
+                                GoldPriceLabel { value: "شراء"; color: theme.priceBuy; font.pixelSize: 14; wrapMode: Text.NoWrap }
                                 GoldPriceLabel {
                                     objectName: "goldTopBuy"
                                     value: goldPriceVM.headlineBuy; color: theme.priceBuy
-                                    font.bold: true; font.pixelSize: root.width < 1200 ? 18 : 21; wrapMode: Text.NoWrap
+                                    font.bold: true; font.pixelSize: root.width < 1200 ? 20 : 25; wrapMode: Text.NoWrap
                                 }
-                                GoldPriceLabel { value: "بيع"; color: theme.priceSell; font.pixelSize: 12; wrapMode: Text.NoWrap }
+                                GoldPriceLabel { value: "بيع"; color: theme.priceSell; font.pixelSize: 14; wrapMode: Text.NoWrap }
                                 GoldPriceLabel {
                                     objectName: "goldTopSell"
                                     value: goldPriceVM.headlineSell; color: theme.priceSell
-                                    font.bold: true; font.pixelSize: root.width < 1200 ? 18 : 21; wrapMode: Text.NoWrap
+                                    font.bold: true; font.pixelSize: root.width < 1200 ? 20 : 25; wrapMode: Text.NoWrap
                                 }
                                 Item { Layout.fillWidth: true }
                             }
@@ -852,7 +852,7 @@ ApplicationWindow {
                                         readonly property bool current: modelData.code === "MANUAL" ? goldPriceVM.mode === "MANUAL" : goldPriceVM.mode !== "MANUAL"
                                         objectName: "goldTopMode_" + modelData.code
                                         Layout.preferredWidth: 46
-                                        Layout.preferredHeight: 20
+                                        Layout.preferredHeight: 24
                                         radius: 4
                                         color: current ? theme.gold : "transparent"
                                         border.color: current ? theme.gold : theme.border
