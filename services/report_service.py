@@ -1376,7 +1376,9 @@ class ReportService:
                 s["left_out"] += 1                                                                          # legacy sale line: the making charged is unknown
                 continue
             sold = _dec(r["making_total"])
-            if r["category_id"] and int(r["category_id"]) in current:
+            if r.get("line_type") == "SELL_OLD_GOLD":
+                per_gram, estimated = ZERO2, False                                                          # owner 2026-11-11: scrap sold by weight costs no making; its whole making is profit
+            elif r["category_id"] and int(r["category_id"]) in current:
                 per_gram, estimated = current[int(r["category_id"])], False                                 # owner 2026-11-08: the letter's CURRENT cost applies to every piece, old or new
             elif r["piece_cost"] is not None:
                 per_gram, estimated = _dec(r["piece_cost"]), False                                          # a letter without a set cost: the piece's own stored cost
@@ -1407,7 +1409,7 @@ class ReportService:
             tables.append(table("making", "ربح المصنعية", columns, []))
         meaning = ["الفرق = مصنعية البيع − تكلفة المصنعية (جرامات القطعة × تكلفة جرام حرفها الحالية). لما تغيّر تكلفة حرف، التغيير يسري على كل القطع القديمة والجديدة لأن القطعة البديلة هتكلّف بالسعر الجديد؛ فأرقام الفترات السابقة تتغير معه.",
                    "الحرف اللي ملوش تكلفة مضبوطة تُحسب قطعه بتكلفتها المحفوظة، وقطعة بلا تكلفة أصلًا تُقدَّر بالرقم الافتراضي ويظهر فرقها منفصلًا في «منه تقديري». بيع مصنعيته مجهولة (قديم) يُعدّ في «قطع بدون حساب» ولا يدخل الفرق.",
-                   "نشاط بيع فقط: المرتجعات لا تُخصم. القطع المباعة بدون هوية (F5 / F7) ليست في هذا التقرير."]
+                   "نشاط بيع فقط: المرتجعات لا تُخصم. بيع الكسر بالوزن (F7) في صف «W» بتكلفة صفر: ربحه = جراماته × متوسط مصنعية الجرام اللي اتباع بيها (يعني مصنعية البيع كلها). البيع اليدوي بدون هوية (F5) ليس في هذا التقرير."]
         if costs is None:
             meaning.append("جدول تكلفة الحروف غير موجود في مستوى قاعدة البيانات الحالي: طبّق التحديثات.")
         cards = [total("الفرق على المصنعية", tot_margin, "money", "مصنعية البيع − تكلفتها للقطع المحسوبة" + (f" • منه تقديري {tot_estimated:,.2f}" if tot_estimated else ""), "margin",

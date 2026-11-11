@@ -252,15 +252,19 @@ class ReportRepository(BaseRepository):
         the invoice (if any). making_total is NULL where the sale making is unknown. Plain SELECT: the service groups per karat and category."""
         return self._fetch_all(
             """
-            SELECT iv.id AS invoice_id, iv.invoice_date AS doc_date, k.karat_value, il.weight_grams, il.making_total, ii.id AS item_id, ii.category_id, c.code AS category_code,
+            SELECT iv.id AS invoice_id, iv.invoice_date AS doc_date, k.karat_value, il.weight_grams, il.making_total, ii.id AS item_id, il.line_type,
+                   CASE WHEN il.line_type = 'SELL_OLD_GOLD' THEN w.id ELSE ii.category_id END AS category_id,
+                   CASE WHEN il.line_type = 'SELL_OLD_GOLD' THEN COALESCE(w.code, 'W') ELSE c.code END AS category_code,
                    ii.acquisition_making_per_gram AS piece_cost, rc.id AS reversal_id
             FROM invoice_lines il
             JOIN invoices iv ON iv.id = il.invoice_id
-            JOIN inventory_items ii ON ii.id = il.inventory_item_id
+            LEFT JOIN inventory_items ii ON ii.id = il.inventory_item_id
             JOIN karats k ON k.id = il.karat_id
             LEFT JOIN item_categories c ON c.id = ii.category_id
+            LEFT JOIN item_categories w ON w.code = 'W'
             LEFT JOIN transaction_corrections rc ON rc.source_type = 'INVOICE' AND rc.source_id = iv.id AND rc.correction_type = 'FULL_REVERSAL'
-            WHERE il.line_type = 'SELL_INVENTORY' AND iv.invoice_status = 'FINALIZED' AND iv.invoice_date >= %s AND iv.invoice_date < %s
+            WHERE ((il.line_type = 'SELL_INVENTORY' AND ii.id IS NOT NULL) OR il.line_type = 'SELL_OLD_GOLD')
+              AND iv.invoice_status = 'FINALIZED' AND iv.invoice_date >= %s AND iv.invoice_date < %s
             ORDER BY iv.invoice_date, iv.id, il.id
             """, (start, end_exclusive))
 

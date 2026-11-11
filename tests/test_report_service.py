@@ -1334,6 +1334,15 @@ class MakingProfitTests(Case):
         letterless = self.rows(result, 21)["بدون حرف"]
         self.assertEqual((letterless["pieces"], letterless["sold"], letterless["margin"], letterless["left_out"]), (1, D("400.00"), D("-200.00"), 0))          # no stored cost anywhere: the default 300 EGP/g (2 g -> 600) applies, shown as an estimate
 
+    def test_scrap_sold_by_weight_is_letter_w_at_zero_cost(self):
+        from datetime import date
+        from unittest import mock
+        row = {"invoice_id": 900, "doc_date": date(2026, 10, 12), "karat_value": 21, "weight_grams": D("10"), "making_total": D("500"), "item_id": None, "line_type": "SELL_OLD_GOLD",
+               "category_id": None, "category_code": "W", "piece_cost": None, "reversal_id": None}
+        with mock.patch.object(FakeRepo, "making_profit_lines", lambda self, a, b: [row]):
+            w = self.rows(self.service.run("makingprofit", self.PERIOD), 21)["W"]
+        self.assertEqual((w["sold"], w["cost"], w["margin"], w["estimated"]), (D("500.00"), D("0.00"), D("500.00"), D("0.00")))
+
     def test_the_margin_is_also_charted_over_time_per_karat(self):
         bars = {b["key"]: b for b in self.service.run("makingprofit", self.PERIOD)["bars"]}
         self.assertEqual([(r["label"], r["value"]) for r in bars["making_time_21"]["rows"]], [("2026-10-10", D("550.00"))])       # 750 (A) - 200 (no letter), the same day; a short period is daily
