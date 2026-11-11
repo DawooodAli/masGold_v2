@@ -238,11 +238,13 @@ def making_flags(margin_pct, others_average_pct):
 
 
 def line_cost(l):
+    if l.get("line_type") == "SELL_OLD_GOLD":
+        return Decimal("0")                      # owner 2026-11-11: scrap sold by weight costs no making (as in the making-profit report)
     return l.get("category_cost") if l.get("category_cost") is not None else l.get("piece_cost")       # the letter's CURRENT cost first (owner 2026-11-08)
 
 
 def _group(l):
-    return (int(l["karat_value"]), is_bullion(l))
+    return (int(l["karat_value"]), is_bullion(l), l.get("line_type") == "SELL_OLD_GOLD")      # scrap sales are compared only with other scrap sales
 
 
 def _judgeable(l):

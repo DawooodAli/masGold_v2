@@ -16,6 +16,10 @@ class MakingKindsTests(unittest.TestCase):
         self.assertEqual(kpi_rules.making_info_item("b", "t", kpi_rules.bullion(lines), [])["value"], "20.00 ج")
         self.assertEqual(kpi_rules.making_info_item("b", "t", [], [])["status"], kpi_rules.GRAY)
 
+    def test_scrap_sale_costs_nothing_in_the_kpi(self):
+        self.assertEqual(kpi_rules.line_cost({"line_type": "SELL_OLD_GOLD", "category_cost": D("150")}), D("0"))
+        self.assertEqual(kpi_rules.line_cost({"line_type": "SELL_INVENTORY", "category_cost": D("150")}), D("150"))
+
 
 if __name__ == "__main__":
     unittest.main()
