@@ -1068,6 +1068,8 @@ Item {
             visible: reviewsVM.canOpen && !reviewsVM.history.isOpen
             clip: true
             contentWidth: availableWidth
+            // Never scrolls sideways: without this the default horizontal bar lies over the bottom 16 px of the list and takes its clicks.
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
             ColumnLayout {
                 width: parent.width

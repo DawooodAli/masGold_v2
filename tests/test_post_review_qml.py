@@ -175,6 +175,19 @@ class ManagerReviewPageTests(harness.InvoicePageTests):
         self.wait_until(lambda: [c for c in calls if c[0] == "scrap"], "scrap")
         self.assertEqual(self.requested, [])                                           # no button navigates to the invoice
 
+    def test_no_invisible_horizontal_scroll_bar_swallows_clicks_at_the_bottom_of_the_list(self):
+        # The list never scrolls sideways (its content is exactly the view's width), but the ScrollView's default horizontal bar lay over the
+        # bottom 16 px of the visible list and took the presses meant for a button there (the «سحب من الكسر» of a case card at 1080x680).
+        self.open_reviews()
+        scroll = self.visual_item("reviewScroll")
+        for width, height in harness.SIZES:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(120)
+            bars = [c for c in scroll.childItems() if "ScrollBar" in c.metaObject().className()
+                    and c.property("orientation") == Qt.Orientation.Horizontal]
+            self.assertTrue(all(not bar.property("visible") for bar in bars), f"a horizontal scroll bar is live at {width}x{height}")
+
     def test_private_transfer_form_hides_the_main_safe_and_moves_money_with_real_clicks(self):
         import dataclasses
         self.open_reviews()
