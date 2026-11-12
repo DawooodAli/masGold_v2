@@ -8331,11 +8331,14 @@ ApplicationWindow {
 
         ScrollView {
             id: categoryFormScroll
+            objectName: "categoryFormScroll"
             Layout.fillWidth: true
             Layout.fillHeight: true
             Layout.preferredHeight: categoryFormFields.implicitHeight
             contentWidth: availableWidth
             clip: true
+            // Never scrolls sideways: without this the default horizontal bar lies over the bottom 16 px of the form and takes its clicks.
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
         ColumnLayout {
             id: categoryFormFields

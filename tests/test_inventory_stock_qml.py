@@ -610,6 +610,7 @@ class InventoryStockPageTests(harness.InvoicePageTests):
                 for code in ("ALL", "NEW_STOCK", "OLD_STOCK"):
                     self.assert_inside_window(self.item("stockBalanceFilter_" + code))
                 self.assert_inside_window(self.item("stockBalanceBack"))
+                self.assert_no_live_horizontal_bar(self.item("stockBalanceScroll"))
                 panels = [self.visible_item(f"stockBalanceKarat_{k[0]}") for k in (K21, K18, K24)]
                 self.assertTrue(all(panels))
                 for panel in panels:

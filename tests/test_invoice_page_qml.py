@@ -432,6 +432,14 @@ class InvoicePageTests(unittest.TestCase):
             click_diagnostics.report(self)
         return outcome
 
+    def assert_no_live_horizontal_bar(self, scroll):
+        """A ScrollView that never scrolls sideways must not keep its default horizontal bar: invisible to the eye, it lies over the bottom 16 px of the
+        visible content and takes the clicks meant for a control there."""
+        bars = [c for c in scroll.childItems() if "ScrollBar" in c.metaObject().className()
+                and c.property("orientation") == Qt.Orientation.Horizontal]
+        self.assertTrue(all(not bar.property("visible") for bar in bars),
+                        f"a horizontal scroll bar is live on {scroll.objectName()} at {self.root.width()}x{self.root.height()}")
+
     def assert_inside_window(self, item):
         self.reveal(item)
         point = item.mapToScene(QPointF(0, 0))

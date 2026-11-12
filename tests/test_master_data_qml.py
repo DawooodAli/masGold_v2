@@ -186,6 +186,7 @@ class MasterDataPageTests(harness.InvoicePageTests):
                 self.assertTrue(dialog.property("creating"))
                 for name in ("newCategoryCode", "newCategoryName", "saveCategoryButton"):
                     self.assert_inside_window(self.item(name))
+                self.assert_no_live_horizontal_bar(self.item("categoryFormScroll"))
                 self.assertIsNone(self.visible_item("deleteCategoryButton"))          # nothing to delete yet
                 code = f"N{width}"
                 self.click("newCategoryCode")

@@ -104,10 +104,13 @@ Item {
         // ------------------------------------------------ karat panels (wrap / stack when narrow)
         ScrollView {
             id: scroller
+            objectName: "stockBalanceScroll"
             Layout.fillWidth: true
             Layout.fillHeight: true
             contentWidth: availableWidth
             clip: true
+            // Never scrolls sideways: without this the default horizontal bar lies over the bottom 16 px of the panels and takes their clicks.
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
             Flow {
                 id: panels
