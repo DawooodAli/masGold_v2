@@ -853,18 +853,23 @@ class InvoiceRepository(BaseRepository):
         return [_stringify_ids(row) for row in rows]
 
     def search_invoice_history(self, *, text="", date_from=None, date_to_exclusive=None, invoice_type=None,
-                               settlement_status=None, customer_id=None, limit=51, offset=0):
+                               settlement_status=None, customer_id=None, item_type=None, karat=None, limit=51, offset=0):
         """سجل الفواتير: ONE summary query per page, newest first (invoice_date is the finalize time of
         a native invoice and is indexed). `text`: invoice-number or phone prefix, or customer name
-        (Arabic-folded, from the invoice's own snapshot). Real money is the stored payments only."""
+        (Arabic-folded, from the invoice's own snapshot). Real money is the stored payments only.
+        `item_type` / `karat` (owner 2026-11-12): the invoice has ONE saved line of that type (its stored name, Arabic-folded so
+        «سبيكه» is «سبيكة») and of that karat; both given = the same line."""
         from utils.search_normalization import mysql_search_expression, normalize_search_text
         text = (text or "").strip()
         folded = normalize_search_text(text)
+        item_type = normalize_search_text(item_type or "") or None
+        karat = int(karat) if karat else None
 
         def escaped(value, contains=False):
             value = value.replace("!", "!!").replace("%", "!%").replace("_", "!_")
             return ("%" + value + "%") if contains else (value + "%")
         name_sql, name_params = mysql_search_expression("s.customer_name_snapshot")
+        type_sql, type_params = mysql_search_expression("fl.item_name_snapshot")
         # The invoice KIND from its saved lines (never the stored invoice_type), in the same one query:
         # two EXISTS probes on invoice_lines(invoice_id) per row of the bounded page — no N+1.
         kind_sql = _HISTORY_KIND_SQL
@@ -892,6 +897,9 @@ class InvoiceRepository(BaseRepository):
               AND (%s IS NULL OR i.invoice_date < %s)
               AND (%s IS NULL OR {kind_sql} = %s)
               AND (%s IS NULL OR i.settlement_status = %s)
+              AND (%s OR EXISTS (SELECT 1 FROM invoice_lines fl JOIN karats fk ON fk.id = fl.karat_id
+                                 WHERE fl.invoice_id = i.id AND (%s IS NULL OR fk.karat_value = %s)
+                                   AND (%s IS NULL OR {type_sql} = %s)))
             ORDER BY i.invoice_date DESC, i.id DESC
             LIMIT %s OFFSET %s
             """,
@@ -899,8 +907,16 @@ class InvoiceRepository(BaseRepository):
              not text, escaped(text), escaped(text), escaped(text),
              bool(folded), *name_params, escaped(folded, contains=True),
              date_from, date_from, date_to_exclusive, date_to_exclusive,
-             kind, kind, settlement_status, settlement_status, int(limit), int(offset)))
+             kind, kind, settlement_status, settlement_status,
+             item_type is None and karat is None, karat, karat, item_type, *type_params, item_type,
+             int(limit), int(offset)))
         return [_stringify_ids(row) for row in rows]
+
+    def history_filter_options(self):
+        """The choices of the type / karat filters of سجل الفواتير: the active item types (their order) and the active karats."""
+        types = self._fetch_all("SELECT name FROM item_types WHERE is_active = 1 ORDER BY sort_order, id")
+        karats = self._fetch_all("SELECT karat_value FROM karats WHERE is_active = 1 ORDER BY karat_value")
+        return {"types": [r["name"] for r in types], "karats": [int(r["karat_value"]) for r in karats]}
 
     def get_invoice_id_by_number(self, invoice_number):
         """Exact match on the unique invoice number (the printed invoice barcode): no LIKE scan."""

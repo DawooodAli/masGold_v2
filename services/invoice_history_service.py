@@ -129,9 +129,23 @@ class InvoiceHistoryService:
 
     # ------------------------------------------------------------ search (one summary query per page)
     def search(self, *, text="", date_from=None, date_to=None, invoice_type=None, settlement_status=None, page=1,
-               customer_id=None, _expected_actor=None):
-        """One page, newest first. date_to is inclusive; returns {items, page, has_more}."""
+               customer_id=None, item_type=None, karat=None, _expected_actor=None):
+        """One page, newest first. date_to is inclusive; returns {items, page, has_more}. `item_type` / `karat`: only the invoices
+        that have a saved line of that type and karat (the whole invoice is listed)."""
         actor = self._actor(_expected_actor)
+        item_type = (item_type or "").strip() or None
+        if item_type is not None and len(item_type) > 150:
+            raise ValueError("الصنف غير صحيح.")
+        if karat in (None, "", 0, "0"):
+            karat = None
+        else:
+            try:
+                karat = int(karat)
+            except (TypeError, ValueError):
+                raise ValueError("العيار غير صحيح.") from None
+            if not 1 <= karat <= 24:
+                raise ValueError("العيار غير صحيح.")
+        line_filter = {k: v for k, v in (("item_type", item_type), ("karat", karat)) if v is not None}
         customer_filter = {}
         if customer_id is not None:
             from services.customer_service import CustomerService
@@ -150,10 +164,15 @@ class InvoiceHistoryService:
             text=text, date_from=date_from,
             date_to_exclusive=None if date_to is None else date_to + timedelta(days=1),
             invoice_type=invoice_type, settlement_status=settlement_status,
-            limit=self._page_size + 1, offset=(page - 1) * self._page_size, **customer_filter))
+            limit=self._page_size + 1, offset=(page - 1) * self._page_size, **customer_filter, **line_filter))
         items = [self._summary(row) for row in rows[:self._page_size]]
         self._attach_exchanges(actor, items)
         return {"items": items, "page": page, "has_more": len(rows) > self._page_size}
+
+    def filter_options(self, *, _expected_actor=None):
+        """{types: [...], karats: [...]} for the type / karat filters of the list (active master data)."""
+        actor = self._actor(_expected_actor)
+        return self._read(actor, lambda invoices: invoices.history_filter_options())
 
     def _attach_exchanges(self, actor, items):
         """Invoices with an effective exchange carry its date and difference for the list (display only; one extra read per page)."""

@@ -183,6 +183,33 @@ class InvoiceHistoryPageTests(page_harness.InvoicePageTests):
         self.assertEqual(calls, [])
         self.assertEqual(self.warnings, [])
 
+    def test_type_and_karat_filters_by_real_clicks_at_every_size_and_clear_resets_them(self):
+        vm = self.open_history()
+        self.wait_until(lambda: len(vm.itemTypeChoices) > 1 and len(vm.karatChoices) > 1, "choices not loaded")
+        for width, height in ((1440, 900), (1280, 800), (1080, 680)):
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(250)
+            for name in ("historyItemType", "historyKarat", "historyClear"):
+                self.assert_inside_window(self.item(name))
+            dabla = next(i for i, c in enumerate(vm.itemTypeChoices) if c["code"] == "دبلة")
+            k18 = next(i for i, c in enumerate(vm.karatChoices) if c["code"] == "18")
+            self.choose("historyItemType", dabla)
+            self.choose("historyKarat", k18)
+            self.wait_until(lambda: any(c[1].get("item_type") == "دبلة" and c[1].get("karat") == 18
+                                        for c in self.history.calls if c[0] == "search"), f"no filtered search at {width}")
+            self.wait_until(lambda: not vm.busy)
+            QTest.qWait(80)
+            # The choice stays shown after the search came back (the list is not rebuilt by every search).
+            self.assertEqual(self.item("historyItemType").property("currentText"), "دبلة")
+            self.assertEqual(self.item("historyKarat").property("currentText"), "عيار 18")
+            self.shot(f"filters-{width}x{height}")
+            self.click("historyClear")
+            self.wait_until(lambda: vm.itemTypeFilter == "" and vm.karatFilter == "", f"clear did not reset at {width}")
+            self.assertEqual(self.item("historyItemType").property("currentText"), "كل الأصناف")
+            self.assertEqual(self.item("historyKarat").property("currentText"), "كل العيارات")
+        self.assertEqual(self.warnings, [])
+
     def test_history_keyboard_enter_opens_the_selected_invoice(self):
         vm = self.open_history()
         self.click("historyRow_0")
@@ -223,7 +250,7 @@ class InvoiceHistoryPageTests(page_harness.InvoicePageTests):
         QTest.keyClick(self.root, Qt.Key_Return)
         self.wait_until(lambda: vm.detail and vm.detail.get("number") == "26092701", "typed number did not open")
         self.assertEqual(self.vm.saleCount, sales_before)               # never an inventory / Billing lookup
-        self.assertFalse([c for c in self.history.calls if c[0] not in ("search", "exact", "detail")])
+        self.assertFalse([c for c in self.history.calls if c[0] not in ("search", "exact", "detail", "options")])
         self.assertEqual(self.warnings, [])
 
     def test_history_exact_invoice_number_field_opens_the_invoice_whatever_the_range(self):

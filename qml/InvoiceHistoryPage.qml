@@ -214,6 +214,7 @@ Item {
             Btn { objectName: "historyApplyDates"; text: "✔ تطبيق"
                   onClicked: { historyPage.vm.setDateRange(fromField.value, toField.value); historyPage.syncDates() } }
             Choice {
+                id: typeChoice
                 objectName: "historyType"
                 width: 118
                 model: [{ code: "ALL", text: "كل العمليات" }, { code: "SELL", text: "بيع" },
@@ -221,14 +222,32 @@ Item {
                 onActivated: historyPage.vm.setTypeFilter(currentValue)
             }
             Choice {
+                id: statusChoice
                 objectName: "historyStatus"
                 width: 124
                 model: [{ code: "ALL", text: "كل الحالات" }, { code: "SETTLED", text: "مسددة" },
                         { code: "PARTIAL", text: "مسددة جزئياً" }, { code: "UNSETTLED", text: "غير مسددة" }]
                 onActivated: historyPage.vm.setStatusFilter(currentValue)
             }
+            // الصنف / العيار: only the invoices that have a line of that type and karat (the whole invoice is listed).
+            Choice {
+                id: itemTypeChoice
+                objectName: "historyItemType"
+                width: 124
+                model: historyPage.vm ? historyPage.vm.itemTypeChoices : []
+                onActivated: historyPage.vm.setItemTypeFilter(currentValue)
+            }
+            Choice {
+                id: karatChoice
+                objectName: "historyKarat"
+                width: 112
+                model: historyPage.vm ? historyPage.vm.karatChoices : []
+                onActivated: historyPage.vm.setKaratFilter(currentValue)
+            }
             Btn { objectName: "historyClear"; text: "✖ مسح"
-                  onClicked: { searchField.text = ""; historyPage.vm.clearFilters(); historyPage.syncDates() } }
+                  onClicked: { searchField.text = ""; historyPage.vm.clearFilters(); historyPage.syncDates()
+                               typeChoice.currentIndex = 0; statusChoice.currentIndex = 0
+                               itemTypeChoice.currentIndex = 0; karatChoice.currentIndex = 0 } }
             Txt { objectName: "historyRangeText"; height: historyPage.ctlH; value: historyPage.vm ? historyPage.vm.rangeText : ""
                   color: historyPage.vm && historyPage.vm.todayActive ? theme.gold : theme.textSecondary; font.bold: true }
         }

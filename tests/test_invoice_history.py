@@ -114,6 +114,9 @@ class FakeRepo:
         self.state["calls"].append(("exact", invoice_number))
         return next((k for k, v in self.state["invoices"].items() if v["invoice_number"] == invoice_number), None)
 
+    def history_filter_options(self):
+        return {"types": ["خاتم", "دبلة", "سبيكة"], "karats": [18, 21, 22, 24]}
+
 
 class FakePrint:
     def __init__(self, printed=True):
@@ -188,6 +191,21 @@ class HistorySearchTests(unittest.TestCase):
         service, _, _ = make(permissions=frozenset({"APP_LOGIN"}))
         with self.assertRaises(PermissionError):
             service.search()
+        with self.assertRaises(PermissionError):
+            service.filter_options()
+
+    def test_the_type_and_karat_filters_reach_the_repository_only_when_chosen(self):
+        service, state, _ = make()
+        service.search(item_type=" دبلة ", karat="18")
+        service.search(item_type="", karat=0)
+        chosen, plain = state["calls"][0][1], state["calls"][1][1]
+        self.assertEqual((chosen["item_type"], chosen["karat"]), ("دبلة", 18))
+        self.assertNotIn("item_type", plain)
+        self.assertNotIn("karat", plain)
+        for bad in ("abc", 30):
+            with self.assertRaises(ValueError):
+                service.search(karat=bad)
+        self.assertEqual(service.filter_options(), {"types": ["خاتم", "دبلة", "سبيكة"], "karats": [18, 21, 22, 24]})
 
 
 class HistoryDetailTests(unittest.TestCase):
@@ -290,7 +308,7 @@ class HistoryReprintAndImmutabilityTests(unittest.TestCase):
     def test_history_has_no_mutation_path(self):
         public = {name for name, _ in inspect.getmembers(InvoiceHistoryService, inspect.isfunction)
                   if not name.startswith("_")}
-        self.assertEqual(public, {"search", "detail", "reprint", "find_by_number"})     # all read-only
+        self.assertEqual(public, {"search", "detail", "reprint", "find_by_number", "filter_options"})     # all read-only
         self.assertFalse([name for name in dir(FakeRepo) if name.startswith(("update", "insert", "delete", "set"))])
 
 
@@ -316,6 +334,10 @@ class StaticHistory:
     def find_by_number(self, number, **kwargs):
         self.calls.append(("exact", number))
         return self.real.find_by_number(number)
+
+    def filter_options(self, **kwargs):
+        self.calls.append(("options", None))
+        return self.real.filter_options()
 
 
 class HistoryViewModelTests(unittest.TestCase):
@@ -514,6 +536,28 @@ class HistoryDefaultAndFilterTests(HistoryViewModelTests):
         self.wait(lambda: len(self.searches()) >= 5)
         self.assertEqual({s["page"] for s in self.searches()}, {1})
 
+    def test_type_and_karat_choices_load_once_and_filter_the_search(self):
+        self.vm.activate()
+        self.wait(lambda: len(self.vm.itemTypeChoices) > 1 and len(self.vm.karatChoices) > 1)
+        self.assertEqual(self.vm.itemTypeChoices[0], {"code": "", "text": "كل الأصناف"})
+        self.assertIn({"code": "دبلة", "text": "دبلة"}, self.vm.itemTypeChoices)
+        self.assertIn({"code": "18", "text": "عيار 18"}, self.vm.karatChoices)
+        self.vm.setItemTypeFilter("دبلة")
+        self.vm.setKaratFilter("18")
+        self.wait(lambda: any(s.get("item_type") == "دبلة" and s.get("karat") == 18 for s in self.searches()))
+        self.assertTrue(self.vm.filtered)
+        self.vm.setItemTypeFilter("غير موجود")                          # never a name the list does not offer
+        self.wait(lambda: self.vm.itemTypeFilter == "" and not self.vm.busy)
+        QTest.qWait(60)                                                 # searches run on worker threads
+        before = len(self.searches())
+        self.vm.clearFilters()
+        self.wait(lambda: not self.vm.busy and len(self.searches()) > before)
+        self.assertEqual(self.vm.karatFilter, "")
+        self.assertTrue(all("karat" not in s and "item_type" not in s for s in self.searches()[before:]))
+        self.vm.activate()                                              # a second entry does not read the choices again
+        QTest.qWait(60)
+        self.assertEqual(len([c for c in self.service.calls if c[0] == "options"]), 1)
+
     def test_exact_invoice_number_opens_outside_the_active_range(self):
         self.vm.setDateRange("2026-01-01", "2026-01-02")                # a range that excludes the invoice
         self.vm.submitSearch("26092701")
@@ -688,6 +732,21 @@ class HistoryListQueryTests(unittest.TestCase):
         self.assertIn("line_type = 'BUY_OLD_GOLD'", sql)
         self.assertNotIn("i.invoice_type = %s", sql)
         self.assertIn("MIXED", params)
+
+    def test_the_type_and_karat_filter_is_one_exists_on_the_same_saved_line(self):
+        from repositories.invoice_repository import InvoiceRepository
+        connection = self.Connection()
+        InvoiceRepository(connection).search_invoice_history(item_type="سبيكة", karat=24, limit=51)
+        InvoiceRepository(connection).search_invoice_history(limit=51)
+        (sql, params), (_, plain) = connection.log
+        self.assertIn("EXISTS (SELECT 1 FROM invoice_lines fl JOIN karats fk ON fk.id = fl.karat_id", sql)
+        self.assertIn("fk.karat_value = %s", sql)
+        def has(seq, part):
+            return any(tuple(seq[i:i + len(part)]) == part for i in range(len(seq) - len(part) + 1))
+        # (switch "no line filter", karat, karat, folded type): «سبيكة» is searched as «سبيكه» so the spelling never matters.
+        self.assertTrue(has(params, (False, 24, 24, "سبيكه")), params)
+        self.assertEqual(params[-3:], ("سبيكه", 51, 0))
+        self.assertTrue(has(plain, (True, None, None, None)), plain)     # no filter: the EXISTS is switched off
 
     def test_exact_lookup_is_a_direct_equality_query(self):
         from repositories.invoice_repository import InvoiceRepository

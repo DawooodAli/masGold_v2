@@ -59,6 +59,7 @@ def list_line(line):
 
 class InvoiceHistoryViewModel(QObject):
     changed = Signal()
+    optionsChanged = Signal()
 
     def __init__(self, session, service=None, parent=None, debounce_ms=300, clock=datetime.now):
         super().__init__(parent)
@@ -68,6 +69,9 @@ class InvoiceHistoryViewModel(QObject):
         self._text, self._date_from, self._date_to = "", None, None
         self._explicit_range = False
         self._type, self._status = "ALL", "ALL"
+        # الصنف / العيار (owner 2026-11-12): "" = every type / karat; the choices are read once from the database.
+        self._item_type, self._karat = "", ""
+        self._type_choices, self._karat_choices = [], []
         self._results, self._page, self._has_more, self._loaded = [], 1, False, False
         self._detail, self._error, self._detail_error = {}, "", ""
         self._detail_id = None
@@ -130,7 +134,22 @@ class InvoiceHistoryViewModel(QObject):
             today = self._clock().date()
             self._date_from = self._date_to = today
             self._explicit_range = False
+        if not self._type_choices:
+            self._load_options()
         self.refresh()
+
+    def _load_options(self):
+        service = self._service_instance()
+        if not hasattr(service, "filter_options"):
+            return
+        self._start("options", lambda _expected_actor: service.filter_options(_expected_actor=_expected_actor))
+
+    def _on_options(self, result, error):
+        if error or not result:                      # the filters simply offer "all" until the next entry
+            return
+        self._type_choices = [str(name) for name in result.get("types") or []]
+        self._karat_choices = [str(value) for value in result.get("karats") or []]
+        self.optionsChanged.emit()
 
     @Slot()
     def refresh(self):
@@ -259,11 +278,24 @@ class InvoiceHistoryViewModel(QObject):
         self._status = code if code in STATUS_FILTERS else "ALL"
         self._run_search(1)
 
+    @Slot(str)
+    def setItemTypeFilter(self, name):
+        name = (name or "").strip()
+        self._item_type = name if name in self._type_choices else ""
+        self._run_search(1)
+
+    @Slot(str)
+    def setKaratFilter(self, value):
+        value = (value or "").strip()
+        self._karat = value if value in self._karat_choices else ""
+        self._run_search(1)
+
     @Slot()
     def clearFilters(self):
         """Back to the default view: today, every type and status (never "all history")."""
         today = self._clock().date()
         self._text, self._date_from, self._date_to, self._type, self._status = "", today, today, "ALL", "ALL"
+        self._item_type, self._karat = "", ""
         self._explicit_range = False
         self._run_search(1)
 
@@ -331,6 +363,10 @@ class InvoiceHistoryViewModel(QObject):
         date_from, date_to = self._search_dates()
         filters = {"text": self._text, "date_from": date_from, "date_to": date_to,
                    "invoice_type": TYPE_FILTERS[self._type], "settlement_status": STATUS_FILTERS[self._status]}
+        if self._item_type:
+            filters["item_type"] = self._item_type
+        if self._karat:
+            filters["karat"] = int(self._karat)
         self._error = ""
         self._start("search", lambda _expected_actor: service.search(page=page, _expected_actor=_expected_actor,
                                                                      **filters))
@@ -535,6 +571,23 @@ class InvoiceHistoryViewModel(QObject):
         return self._status
 
     @Property(str, notify=changed)
+    def itemTypeFilter(self):
+        return self._item_type
+
+    @Property(str, notify=changed)
+    def karatFilter(self):
+        return self._karat
+
+    # Their own signal: a ComboBox model rebuilt on every `changed` would jump back to «كل …» after each search.
+    @Property("QVariantList", notify=optionsChanged)
+    def itemTypeChoices(self):
+        return [{"code": "", "text": "كل الأصناف"}] + [{"code": name, "text": name} for name in self._type_choices]
+
+    @Property("QVariantList", notify=optionsChanged)
+    def karatChoices(self):
+        return [{"code": "", "text": "كل العيارات"}] + [{"code": value, "text": f"عيار {value}"} for value in self._karat_choices]
+
+    @Property(str, notify=changed)
     def dateFrom(self):
         return "" if self._date_from is None else self._date_from.isoformat()
 
@@ -546,7 +599,7 @@ class InvoiceHistoryViewModel(QObject):
     def filtered(self):
         """Anything beyond the default view (today, every type and status)."""
         dates = (self._date_from or self._date_to) and not self.todayActive
-        return bool(self._text or dates or self._type != "ALL" or self._status != "ALL")
+        return bool(self._text or dates or self._type != "ALL" or self._status != "ALL" or self._item_type or self._karat)
 
     @Property(str, notify=changed)
     def emptyText(self):
