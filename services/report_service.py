@@ -21,6 +21,7 @@ from repositories.invoice_return_repository import return_code
 from repositories.market_trip_repository import entry_code, trip_code
 from repositories.report_repository import ReportRepository
 from services import eq21_math
+from services import invoice_amount_rules
 from services import kpi_rules
 from services import position_snapshot_rules as snapshot_math
 from services import price_indicators as indicators_math
@@ -483,11 +484,11 @@ class ReportService:
     # ------------------------------------------------------------------ 8b. gold in the shop over time (owner request 2026-11-03): does the gold of the shop grow or shrink?
     def _goldflow(self, repo, gate, filters, start, end):
         """One line over time of ALL the gold the shop has: the stocktaking sheets' gold (stock, Scrap, bars, custody, intermediaries, net suppliers; 21K-equivalent grams) PLUS the money in the shop
-        (cash + bank) converted to 21K grams at that day's SHOP_BUY 21K price. The answer the owner wants: is the gold increasing or not. Sheets come from the stored position snapshots (the first sheet
+        (cash + bank) converted to 21K grams at that day's SHOP_SELL 21K price (owner 2026-11-12: money buys gold at the selling price). The answer the owner wants: is the gold increasing or not. Sheets come from the stored position snapshots (the first sheet
         of each day); the price of a day is the stored price of that day, otherwise the latest earlier one, otherwise the earliest later one. A day without any stored price shows no money-as-gold figure,
         never a zero."""
         meaning = ["الذهب في المحل = ذهب لقطات الجرد (مخزون + كسر + سبائك + عهدة السوق + ذهب المسوقجية + صافي الموردين) بجرام مكافئ عيار 21، زائد الفلوس الموجودة (كاش + بنوك) محوّلة لذهب.",
-                   "تحويل الفلوس لذهب = (الكاش + البنوك) ÷ سعر شراء المحل لعيار 21 في نفس اليوم؛ فتغير سعر الذهب وحده يغيّر جزء الفلوس، لذلك الذهب الفعلي يظهر في خط مستقل.",
+                   "تحويل الفلوس لذهب = (الكاش + البنوك) ÷ سعر بيع المحل لعيار 21 في نفس اليوم؛ فتغير سعر الذهب وحده يغيّر جزء الفلوس، لذلك الذهب الفعلي يظهر في خط مستقل.",
                    "كل نقطة هي أول جرد في اليوم (الجرد يُحفظ أول فتح للبرنامج كل يوم)؛ لا يُعاد حساب تاريخ قديم."]
         if not repo.has_table("position_snapshots"):
             return {"meaning": meaning, "tables": [self._unavailable("goldflow", "الذهب في المحل", "جدول لقطات الرصيد غير موجود في مستوى قاعدة البيانات الحالي: طبّق التحديثات.")], "totals": [], "lines": []}
@@ -506,11 +507,11 @@ class ReportService:
             return value.date() if isinstance(value, datetime) else value
         if repo.has_table("gold_price_history_legacy"):
             for r in repo.gold_price_history_legacy():
-                if int(r["karat_value"]) == 21 and r["buy"] is not None:
-                    prices[as_date(r["day"])] = _dec(r["buy"])
+                if int(r["karat_value"]) == 21 and r["sell"] is not None:
+                    prices[as_date(r["day"])] = _dec(r["sell"])
         for r in repo.gold_price_daily():
-            if int(r["karat_value"]) == 21 and r["buy"] is not None:
-                prices[as_date(r["day"])] = _dec(r["buy"])
+            if int(r["karat_value"]) == 21 and r["sell"] is not None:
+                prices[as_date(r["day"])] = _dec(r["sell"])
         known = sorted(prices)
 
         def price_of(day):
@@ -543,7 +544,7 @@ class ReportService:
             cards.append(total("الذهب في المحل الآن (ذهب + فلوس)", f"{last['total']:,.3f} جرام", "text", f"آخر جرد {last['day']:%Y-%m-%d}", "goldflow"))
         cards.append(total("الذهب الفعلي: " + verdict(gold_change).replace("الذهب ", ""), grams_text(gold_change), "text", f"مخزون + كسر + سبائك + عهدة + مسوقجية + موردين: من {first['gold']:,.3f} إلى {last['gold']:,.3f} جرام", "goldflow", tone="receivable" if gold_change >= 0 else "payable"))
         if both:
-            cards.append(total("الفلوس بالذهب — التغير", grams_text(money_change), "text", f"كاش + بنوك بسعر شراء عيار 21 كل يوم: من {first['money_gold']:,.3f} إلى {last['money_gold']:,.3f} جرام (يتأثر بسعر الذهب)", "goldflow"))
+            cards.append(total("الفلوس بالذهب — التغير", grams_text(money_change), "text", f"كاش + بنوك بسعر بيع عيار 21 كل يوم: من {first['money_gold']:,.3f} إلى {last['money_gold']:,.3f} جرام (يتأثر بسعر الذهب)", "goldflow"))
         labels = [f"{p['day']:%m-%d}" for p in points]
         series = [{"name": "الذهب الفعلي", "tone": "gold", "values": [p["gold"] for p in points]}]
         if all(p["total"] is not None for p in points):
@@ -553,7 +554,7 @@ class ReportService:
             rows.append({"day": p["day"], "gold": p["gold"], "money": p["money"], "price": p["price"], "money_gold": p["money_gold"], "total": p["total"],
                          "change": None if previous is None or p["total"] is None or previous["total"] is None else p["total"] - previous["total"]})
             previous = p
-        cols = [col("day", "اليوم", "date"), col("gold", "الذهب الفعلي (جرام 21)", "eq21"), col("money", "الفلوس (كاش + بنوك)", "money"), col("price", "سعر شراء 21", "rate"),
+        cols = [col("day", "اليوم", "date"), col("gold", "الذهب الفعلي (جرام 21)", "eq21"), col("money", "الفلوس (كاش + بنوك)", "money"), col("price", "سعر بيع 21", "rate"),
                 col("money_gold", "الفلوس بالذهب (جرام 21)", "eq21"), col("total", "الإجمالي (جرام 21)", "eq21"), col("change", "تغير الإجمالي عن اليوم السابق", "eq21")]
         return {"meaning": meaning, "tables": [table("goldflow", "الذهب في المحل يوميًا", cols, rows)], "totals": cards,
                 "lines": [{"key": "goldflow", "title": "الذهب في المحل (جرام مكافئ عيار 21)", "labels": labels, "series": series}]}
@@ -636,6 +637,7 @@ class ReportService:
             raise ReportError("FILTER_INVALID", "فلتر غير صحيح.")
         raw, folded = _text_filter(filters)
         docs = []
+        changes = invoice_amount_rules.read(repo)[0]                # owner 2026-11-12: an invoice counts at the amount of its LATEST settlement correction
         for r in repo.sales_invoices(start, end):
             kind = r["kind"]
             legacy = r["origin"] == "LEGACY"
@@ -654,6 +656,15 @@ class ReportService:
                          "in": None if legacy and payments == 0 else _dec(r["money_in"]), "out": None if legacy and payments == 0 else _dec(r["money_out"]),
                          "account": None if legacy and ledger == 0 else _dec(r["account_delta"]),
                          "voided": r["status"] == "VOIDED", "reversal_id": r["reversal_id"], "reversal_at": r["reversal_at"], "source": None})
+            change = changes.get(str(r["id"]))
+            if change and not legacy:
+                d, side = docs[-1], "sales" if change["direction"] == "IN" else "oldgold"
+                d[side] += change["delta"]                           # the amount moved by the FCs (the money is on the side the invoice settles)
+                if change["direction"] == "IN":
+                    d["in"] += change["money"]                       # what the FCs posted: real money in (signed) and the customer-account part
+                else:
+                    d["out"] -= change["money"]
+                d["account"] += change["account"]
         for r in repo.sales_returns(start, end):
             docs.append({"doc": "RETURN", "kind": "RETURN", "id": str(r["id"]), "number": return_code(r["id"]), "date": _dateish(r["doc_date"]), "customer": r["customer_name"] or "", "legacy": False,
                          "sales": ZERO2, "oldgold": ZERO2, "returns": _dec(r["total_amount"]), "exchange": ZERO2, "in": ZERO2, "out": _dec(r["money_paid"]),
@@ -722,6 +733,7 @@ class ReportService:
                    "قيمة البيع غير المحصَّل: البيع الآجل أو على الحساب أو المقابل بكسر؛ المحصَّل مأخوذ من دفعات المستند الفعلية كما في سجل الفواتير.",
                    "المرتجع: قيمته كما سُجّلت في مستند المرتجع، وأثره على الحساب يظهر بإشارة حساب العميل (سالب = للعميل).",
                    "المستند المعكوس يظهر برقم العكس وتاريخه ولا يدخل إجماليات الفعّال.",
+                   "الفاتورة التي صُحّح مبلغها (تصحيح طريقة التسوية بمبلغ أكثر أو أقل) تُحسب بآخر مبلغ مصحَّح، والفرق على مصنعية البيع أو قيمة شراء الكسر.",
                    "«غير معلوم»: فاتورة قديمة لم يثبت مصدرها هذا التقسيم أو لا دليل على دفعها؛ يُعرض غير معلوم ولا يُحسب صفرًا، والإجمالي المتأثر موسوم «جزئي»."]
         sold_t, back_t, unit = {}, {}, time_slot(start, start, end)[1]
         for d in eff:                                                                       # the effective documents over TIME, by their own effective date
@@ -1199,7 +1211,7 @@ class ReportService:
         if wanted:
             filters["employee_name"] = next((o["text"] for o in options["employee"] if o["value"] == wanted), wanted)
         stats, names, reversed_invoices, people = {}, {}, set(), set()
-        for r in repo.employee_lines(start, end):
+        for r in invoice_amount_rules.corrected(repo.employee_lines(start, end), invoice_amount_rules.read(repo)[1]):
             if r["reversal_id"]:
                 reversed_invoices.add(int(r["invoice_id"]))
                 continue
@@ -1268,7 +1280,8 @@ class ReportService:
             previous_start = start - timedelta(days=BASELINE_DAYS)                             # (a one-day period is compared with 1/7 of the week)
             scale = Decimal(str(span.total_seconds())) / Decimal(str(timedelta(days=BASELINE_DAYS).total_seconds()))
             baseline_label = "متوسط آخر 7 أيام"
-        lines = [{**dict(r), "invoice_date": _dateish(r["invoice_date"])} for r in repo.kpi_lines(previous_start, end)]
+        lines = [{**dict(r), "invoice_date": _dateish(r["invoice_date"])}
+                 for r in invoice_amount_rules.corrected(repo.kpi_lines(previous_start, end), invoice_amount_rules.read(repo)[1])]
         now, before = kpi_rules.split(lines, start, end, previous_start)
         try:
             default = Decimal(str(repo.default_old_gold_discount() or kpi_rules.DEFAULT_DISCOUNT))
@@ -1360,7 +1373,7 @@ class ReportService:
             filters["category_name"] = next((o["text"] for o in options["category"] if o["value"] == wanted), wanted)
         stats, reversed_invoices, by_time = {}, set(), {}
         daily = (end - start).days <= 35                                                                    # the margin over TIME: a day each for a short period, else a month each
-        for r in repo.making_profit_lines(start, end):
+        for r in invoice_amount_rules.corrected(repo.making_profit_lines(start, end), invoice_amount_rules.read(repo)[1]):
             if r["reversal_id"]:
                 reversed_invoices.add(int(r["invoice_id"]))
                 continue
@@ -1411,7 +1424,8 @@ class ReportService:
             tables.append(table("making", "ربح المصنعية", columns, []))
         meaning = ["الفرق = مصنعية البيع − تكلفة المصنعية. القطعة اللي اتشرت من مورد تُحسب بمصنعية شرائها الفعلية، والقطعة المصنوعة من الكسر تكلفتها صفر؛ غيرها = جراماتها × تكلفة جرام حرفها الحالية. لما تغيّر تكلفة حرف، التغيير يسري على كل القطع القديمة والجديدة لأن القطعة البديلة هتكلّف بالسعر الجديد؛ فأرقام الفترات السابقة تتغير معه.",
                    "الحرف اللي ملوش تكلفة مضبوطة تُحسب قطعه بتكلفتها المحفوظة، وقطعة بلا تكلفة أصلًا تُقدَّر بالرقم الافتراضي ويظهر فرقها منفصلًا في «منه تقديري». بيع مصنعيته مجهولة (قديم) يُعدّ في «قطع بدون حساب» ولا يدخل الفرق.",
-                   "نشاط بيع فقط: المرتجعات لا تُخصم. بيع الكسر بالوزن (F7) في صف «W» بتكلفة صفر: ربحه = جراماته × متوسط مصنعية الجرام اللي اتباع بيها (يعني مصنعية البيع كلها). البيع اليدوي بدون هوية (F5) ليس في هذا التقرير."]
+                   "نشاط بيع فقط: المرتجعات لا تُخصم. بيع الكسر بالوزن (F7) في صف «W» بتكلفة صفر: ربحه = جراماته × متوسط مصنعية الجرام اللي اتباع بيها (يعني مصنعية البيع كلها). البيع اليدوي بدون هوية (F5) ليس في هذا التقرير.",
+                   "الفاتورة التي صُحّح مبلغها تُحسب بآخر مبلغ مصحَّح: الفرق يتوزّع على مصنعية سطور بيعها بالوزن."]
         if costs is None:
             meaning.append("جدول تكلفة الحروف غير موجود في مستوى قاعدة البيانات الحالي: طبّق التحديثات.")
         cards = [total("الفرق على المصنعية", tot_margin, "money", "مصنعية البيع − تكلفتها للقطع المحسوبة" + (f" • منه تقديري {tot_estimated:,.2f}" if tot_estimated else ""), "margin",
@@ -1443,7 +1457,7 @@ class ReportService:
         if group not in ("week", "month", "year"):
             raise ReportError("FILTER_INVALID", "تجميع غير صحيح.")
         period, cumulative, reversed_invoices, in_period, coins = {}, {}, set(), [], {}
-        for r in repo.scrap_cost_lines(end):
+        for r in invoice_amount_rules.corrected(repo.scrap_cost_lines(end), invoice_amount_rules.read(repo)[1]):
             if r["reversal_id"]:
                 if _dateish(r["doc_date"]) >= start:
                     reversed_invoices.add(int(r["invoice_id"]))

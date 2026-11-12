@@ -24,7 +24,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from repositories.dashboard_repository import DashboardRepository
 from repositories.financial_balance_repository import FinancialBalanceRepository
 from repositories.report_repository import ReportRepository
-from services import price_indicators as indicators_math, setting_rules
+from services import invoice_amount_rules, price_indicators as indicators_math, setting_rules
 from services.invoice_service import invoice_transaction
 from services.report_service import DEAD_STOCK_DAYS, ReportService
 
@@ -201,6 +201,56 @@ class DashboardService:
         return [{"day": (end - timedelta(days=n)).isoformat(), "total": str(by_day.get(end - timedelta(days=n), Decimal("0")).quantize(MONEY))} for n in range(SALES_DAYS - 1, -1, -1)]
 
     @staticmethod
+    def corrected_figures(raw, changes, lines, shares, today):
+        """Owner 2026-11-12: an invoice whose settlement correction changed its amount counts at its LATEST corrected amount (services/invoice_amount_rules.py). Returns a copy of the
+        raw sales figures with the delta / line shares added where each query counted the invoice: today's sale / purchase totals, today's making groups, the daily sales bars, today's
+        scrap paid per karat and the month's top types. Nothing is read here; an invoice outside a figure's window changes nothing in it."""
+        if not shares:
+            return raw
+        from datetime import date as _date
+        day = lambda v: v.date() if hasattr(v, "date") else v
+        today = day(today) if today is not None else _date.today()
+        month_first = today.replace(day=1)
+        head = {}
+        for l in lines:
+            head.setdefault(str(l["invoice_id"]), l)
+        raw = dict(raw)
+        invoices = dict(raw.get("invoices") or {})
+        days = {day(r["day"]): dict(r) for r in raw.get("sales_days") or []}
+        for invoice_id, change in changes.items():
+            h = head.get(invoice_id)
+            if not change["delta"] or h is None or h["invoice_status"] != "FINALIZED" or h["finalized_at"] is None:
+                continue
+            when = day(h["finalized_at"])
+            if when == today and invoices:
+                field = "sell_total" if change["direction"] == "IN" else "buy_total"
+                invoices[field] = Decimal(str(invoices.get(field) or 0)) + change["delta"]
+            if change["direction"] == "IN" and not h["reversed"] and when in days:
+                days[when]["total"] = Decimal(str(days[when]["total"])) + change["delta"]
+        groups = {r["grp"]: dict(r) for r in raw.get("making_groups") or []}
+        scrap = {int(r["karat_value"]): dict(r) for r in raw.get("scrap") or []}
+        types = {(r["item_type"] or "بدون صنف"): dict(r) for r in raw.get("top_types") or []}
+        for l in lines:
+            share = shares.get(str(l["line_id"]))
+            if not share or l["invoice_status"] != "FINALIZED" or l["reversed"] or l["finalized_at"] is None:
+                continue
+            when = day(l["finalized_at"])
+            if l["line_type"] == "BUY_OLD_GOLD":
+                k = int(l["karat_value"]) if l["karat_value"] is not None else None
+                if when == today and k in scrap:
+                    scrap[k]["paid"] = Decimal(str(scrap[k]["paid"])) + share
+                continue
+            grp = "SCRAP" if l["line_type"] == "SELL_OLD_GOLD" else "BULLION" if l["item_type"] in ("سبيكة", "جنية", "جنيه") else "PIECES"
+            if when == today and grp in groups and l["making_total"] is not None:
+                groups[grp]["making"] = Decimal(str(groups[grp]["making"])) + share
+            name = l["item_type"] or "بدون صنف"
+            if l["line_type"] == "SELL_INVENTORY" and month_first <= when <= today and name in types:
+                types[name]["value"] = Decimal(str(types[name]["value"])) + share
+        raw.update(invoices=invoices, sales_days=list(days.values()), making_groups=list(groups.values()), scrap=list(scrap.values()),
+                   top_types=sorted(types.values(), key=lambda r: (-Decimal(str(r["value"])), -Decimal(str(r["grams"])))))
+        return raw
+
+    @staticmethod
     def week_compare(days):
         """Today's sales against the same weekday last week (the 14-day series: today is last, a week ago is eighth from the end). change is a percentage, None when last week was zero."""
         if len(days or []) < 8:
@@ -244,6 +294,8 @@ class DashboardService:
                               invoices=dashboard.today_invoices(), sold=dashboard.today_sold_by_karat(),
                               month=dashboard.month_sold_by_karat(), prev_year=dashboard.month_sold_by_karat(previous=True),
                               month_info=dashboard.month_start(), top_types=dashboard.month_top_types(), sales_days=dashboard.sales_by_day(SALES_DAYS), sales_today=dashboard.db_today())
+                changes, lines, shares = invoice_amount_rules.read_full(dashboard)
+                result.update(self.corrected_figures(result, changes, lines, shares, result["sales_today"]))
             if STOCK_PERMISSIONS & set(verified.permissions):                  # the minimum-stock shortages follow the CURRENT inventory grants
                 result["below_min"] = dashboard.below_min_levels()
                 result["dead_days"] = int(setting_rules.report_thresholds(dashboard)["dead_stock_days"])

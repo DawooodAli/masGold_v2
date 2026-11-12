@@ -4,6 +4,7 @@ The numbers are not computed here: every method returns the stored rows (with a 
 service does the Decimal arithmetic, the grouping and the paging over the WHOLE filtered result, so a total never depends on the displayed page. A table that does not exist
 at the database's schema level is reported through `has_table` (the service shows «غير متاح» instead of an empty result)."""
 from repositories.base_repository import BaseRepository
+from repositories.invoice_amount_reads import InvoiceAmountReads
 from repositories.invoice_repository import _HISTORY_KIND_SQL
 
 _REVERSAL = ("LEFT JOIN transaction_corrections c ON c.source_type = %s AND c.source_id = {alias}.id AND c.correction_type = 'FULL_REVERSAL'")
@@ -13,7 +14,7 @@ def _marks(values):
     return ", ".join(["%s"] * len(values))
 
 
-class ReportRepository(BaseRepository):
+class ReportRepository(InvoiceAmountReads, BaseRepository):
     def has_table(self, name):
         row = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s", (name,))
         return bool(row and int(row["n"]))
@@ -203,7 +204,7 @@ class ReportRepository(BaseRepository):
         service groups per employee and karat. making_total is NULL where the making is unknown (never turned into zero)."""
         return self._fetch_all(
             """
-            SELECT iv.id AS invoice_id, iv.employee_id, e.name AS employee, il.line_type, k.karat_value, il.weight_grams, il.making_total, il.line_total, c.id AS reversal_id
+            SELECT iv.id AS invoice_id, il.id AS line_id, iv.employee_id, e.name AS employee, il.line_type, k.karat_value, il.weight_grams, il.making_total, il.line_total, c.id AS reversal_id
             FROM invoice_lines il
             JOIN invoices iv ON iv.id = il.invoice_id
             JOIN karats k ON k.id = il.karat_id
@@ -220,7 +221,7 @@ class ReportRepository(BaseRepository):
         costs = self.has_table("item_category_costs")
         return self._fetch_all(
             f"""
-            SELECT iv.id AS invoice_id, iv.invoice_number, iv.invoice_date, iv.employee_id, e.name AS employee, il.line_type, k.karat_value, il.weight_grams, il.making_total, il.gross_total, il.discount_amount,
+            SELECT iv.id AS invoice_id, il.id AS line_id, iv.invoice_number, iv.invoice_date, iv.employee_id, e.name AS employee, il.line_type, k.karat_value, il.weight_grams, il.making_total, il.gross_total, il.discount_amount,
                    il.scrap_kind, COALESCE(it.name, il.item_name_snapshot) AS item_type, ii.acquisition_making_per_gram AS piece_cost, CASE WHEN ii.acquisition_source = 'OLD_GOLD_MANUFACTURE' THEN 0 WHEN ii.acquisition_source = 'SUPPLIER_PURCHASE' THEN ii.acquisition_making_per_gram END AS real_cost, {"COALESCE(CASE WHEN (COALESCE(it.name, il.item_name_snapshot) LIKE '%سبيك%' OR COALESCE(it.name, il.item_name_snapshot) LIKE '%جني%') THEN zc.making_cost_per_gram END, icc.making_cost_per_gram, wc.making_cost_per_gram, CASE WHEN il.line_type = 'SELL_OLD_GOLD' THEN zc.making_cost_per_gram END)" if costs else "NULL"} AS category_cost, c.id AS reversal_id
             FROM invoice_lines il
             JOIN invoices iv ON iv.id = il.invoice_id
@@ -252,7 +253,7 @@ class ReportRepository(BaseRepository):
         the invoice (if any). making_total is NULL where the sale making is unknown. Plain SELECT: the service groups per karat and category."""
         return self._fetch_all(
             """
-            SELECT iv.id AS invoice_id, iv.invoice_date AS doc_date, k.karat_value, il.weight_grams, il.making_total, ii.id AS item_id, il.line_type,
+            SELECT iv.id AS invoice_id, il.id AS line_id, iv.invoice_date AS doc_date, k.karat_value, il.weight_grams, il.making_total, ii.id AS item_id, il.line_type,
                    CASE WHEN il.line_type = 'SELL_OLD_GOLD' THEN w.id ELSE ii.category_id END AS category_id,
                    CASE WHEN il.line_type = 'SELL_OLD_GOLD' THEN COALESCE(w.code, 'W') ELSE c.code END AS category_code,
                    CASE WHEN ii.acquisition_source = 'OLD_GOLD_MANUFACTURE' THEN 0 WHEN ii.acquisition_source = 'SUPPLIER_PURCHASE' THEN ii.acquisition_making_per_gram END AS real_cost,
@@ -283,7 +284,7 @@ class ReportRepository(BaseRepository):
         line_total is the value paid for the line (before the invoice's final EGP-5 rounding). Plain SELECT: the service splits the period from the cumulative figures."""
         return self._fetch_all(
             """
-            SELECT iv.id AS invoice_id, iv.invoice_date AS doc_date, k.karat_value, il.weight_grams, il.line_total, il.scrap_kind, rc.id AS reversal_id
+            SELECT iv.id AS invoice_id, il.id AS line_id, il.line_type, iv.invoice_date AS doc_date, k.karat_value, il.weight_grams, il.line_total, il.scrap_kind, rc.id AS reversal_id
             FROM invoice_lines il
             JOIN invoices iv ON iv.id = il.invoice_id
             JOIN karats k ON k.id = il.karat_id

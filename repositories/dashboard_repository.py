@@ -8,12 +8,13 @@ as the MainWindow strip does (REFERENCE_ONLY history excluded).
 from mysql.connector import ProgrammingError
 
 from repositories.base_repository import BaseRepository
+from repositories.invoice_amount_reads import InvoiceAmountReads
 
 SALE_LINE_TYPES = ("SELL_INVENTORY", "SELL_UNIDENTIFIED", "SELL_OLD_GOLD", "SELL_RAFAYEA")
 _TODAY = "i.finalized_at >= CURDATE() AND i.finalized_at < CURDATE() + INTERVAL 1 DAY"
 
 
-class DashboardRepository(BaseRepository):
+class DashboardRepository(InvoiceAmountReads, BaseRepository):
     def today_invoices(self):
         """Invoice count and commercial totals of today's finalized invoices, plus the manual
         (unidentified) sale lines among them."""

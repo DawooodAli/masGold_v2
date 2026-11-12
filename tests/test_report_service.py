@@ -1058,11 +1058,12 @@ class GoldFlowTests(Case):
         super().setUp()
         FakeRepo.sheets = None
 
-    def test_the_line_shows_the_shop_gold_and_the_money_converted_at_the_buy_price_of_21(self):
+    def test_the_line_shows_the_shop_gold_and_the_money_converted_at_the_sell_price_of_21(self):
         result = self.service.run("goldflow", self.PERIOD)
         group = result["lines"][0]
         self.assertEqual(group["labels"], ["10-01", "10-15"])                          # the first sheet of each day inside the period
-        price = D("6390")                                                              # no stored price after 12 March: the latest earlier one stands for the day
+        price = D("6440")                                                              # owner 2026-11-12: the SELL price; no stored price after 12 March: the latest earlier one stands for the day
+        self.assertEqual(result["tables"][0]["rows"][0]["price"], price)
         first_money, last_money = (D(230000) / price).quantize(D("0.001")), (D(240000) / price).quantize(D("0.001"))
         series = {s["name"]: s["values"] for s in group["series"]}
         self.assertEqual(series["الذهب الفعلي"], [D("4900.000"), D("4960.000")])
