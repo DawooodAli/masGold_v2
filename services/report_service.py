@@ -444,17 +444,55 @@ class ReportService:
         return {"meaning": meaning, "tables": tables, "totals": totals, "bars": bars, "income_labels": income_names() if income_names else None}
 
     # ------------------------------------------------------------------ 8. gold profit (owner definition): the gold at the end of the period minus the gold at its start, in 21K equivalent
+    @staticmethod
+    def _sell21_prices(repo):
+        """price_of(day): the stored SHOP_SELL price of 21K of that day, otherwise the latest earlier one, otherwise the earliest later one; None when no price is stored at all
+        (owner 2026-11-12: the shop's money buys gold at the selling price). Shared by «الذهب في المحل», «ربح الذهب» and the KPI so they never disagree."""
+        prices = {}
+
+        def as_date(value):
+            value = _dateish(value)
+            return value.date() if isinstance(value, datetime) else value
+        if repo.has_table("gold_price_history_legacy"):
+            for r in repo.gold_price_history_legacy():
+                if int(r["karat_value"]) == 21 and r["sell"] is not None:
+                    prices[as_date(r["day"])] = _dec(r["sell"])
+        for r in repo.gold_price_daily():
+            if int(r["karat_value"]) == 21 and r["sell"] is not None:
+                prices[as_date(r["day"])] = _dec(r["sell"])
+        known = sorted(prices)
+
+        def price_of(day):
+            if day in prices:
+                return prices[day]
+            before = [d for d in known if d < day]
+            after = [d for d in known if d > day]
+            return prices[before[-1]] if before else prices[after[0]] if after else None
+        return price_of
+
+    @staticmethod
+    def _with_money(sheet, price_of):
+        """One stocktaking sheet with its money as gold: {money (cash + bank), price (SHOP_SELL 21 of the sheet's day), money_gold (money / price, 21K grams, 0.001 HALF_UP),
+        total (the sheet's gold, already net of the suppliers, + money_gold)}. Without a stored price money_gold and total are None, never a zero."""
+        taken = _dateish(sheet["taken_at"])
+        day = taken.date() if isinstance(taken, datetime) else taken
+        money = _dec(sheet["cash_egp"]) + _dec(sheet["bank_egp"])
+        price = price_of(day)
+        as_gold = None if price is None or price <= 0 else (money / price).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+        return {"money": money, "price": price, "money_gold": as_gold, "total": None if as_gold is None else _dec(sheet["gold_total_eq21"]) + as_gold}
+
     def _profit(self, repo, gate, filters, start, end):
-        """The owner's definition: profit = the gold the shop holds at the END of the period minus what it held at its START, in 21K-equivalent grams. The gold is the consolidated position (stock,
-        Scrap, bars, market custody, marketer and intermediary holdings) plus the NET supplier gold (what the suppliers hold for the shop counts as shop gold, what the shop owes is subtracted).
-        The two figures come from stored stocktaking sheets (position snapshots), never from a recomputed history. Cash and bank are shown beside it, NOT inside the profit."""
+        """The owner's definition (2026-11-12, replacing the gold-only figure): profit = how much the shop's gold GREW over the period, in 21K-equivalent grams, where the shop's gold is the
+        consolidated position (stock, Scrap, bars, market custody, marketer and intermediary holdings) plus the NET supplier gold (what the suppliers hold for the shop counts, what the shop
+        owes is subtracted) PLUS its money (cash + bank) converted to gold at that day's SHOP_SELL 21K price: gold sold for cash or bought with cash is then no profit or loss by itself.
+        The two figures come from stored stocktaking sheets (position snapshots), never from a recomputed history; the gold-only change stays shown apart."""
         if not repo.has_table("position_snapshots"):
             return {"meaning": [], "tables": [self._unavailable("missing", "بيانات غير متاحة", "جدول لقطات الرصيد غير موجود في مستوى قاعدة البيانات الحالي: طبّق التحديثات.")], "totals": []}
         sheets = [{**dict(r), "taken_at": _dateish(r["taken_at"])} for r in repo.position_snapshots()]
         opening, closing, problem = snapshot_math.choose(sheets, start, end)
-        meaning = ["ربح الذهب = ذهب آخر الفترة − ذهب أول الفترة، بجرام مكافئ عيار 21: مخزون جديد + كسر + سبائك + عهدة السوق + ذهب المسوقجي + ذهب الموردين (لنا موجب وعلينا سالب).",
-                   "الأرقام من لقطات الرصيد (جرد يُحفظ أول فتح للبرنامج كل يوم)، وليست إعادة حساب لتاريخ قديم. الكاش والبنوك للمعلومية فقط ولا تدخل في الربح.",
-                   "الربح هنا يشمل أي تغيير في الذهب (شراء بكاش أو سحب أو إيداع)، فراجعه مع حركة الكاش."]
+        meaning = ["ربح الذهب = (ذهب آخر الفترة + فلوس آخر الفترة بالذهب) − (ذهب أول الفترة + فلوسها بالذهب)، بجرام مكافئ عيار 21. الذهب: مخزون + كسر + سبائك + عهدة السوق + ذهب المسوقجية + ذهب الموردين (لنا موجب وعلينا سالب).",
+                   "الفلوس بالذهب = (الكاش + البنوك) ÷ سعر بيع المحل لعيار 21 في يوم الجرد؛ فبيع ذهب بكاش أو شراء ذهب بكاش لا يظهر ربحًا أو خسارة لوحده.",
+                   "الأرقام من لقطات الرصيد (جرد يُحفظ أول فتح للبرنامج كل يوم)، وليست إعادة حساب لتاريخ قديم. تغير الذهب الفعلي بدون الفلوس ظاهر لوحده للمعلومية."]
         notes = {"NO_SNAPSHOT": "لا توجد لقطات رصيد: سجّل الرصيد الافتتاحي من الإعدادات.", "NO_CLOSING": "لا توجد لقطة تغطي نهاية هذه الفترة.",
                  "SAME_SNAPSHOT": "يوجد جرد واحد فقط لهذه الفترة، فلا يمكن قياس الفرق: اختر فترة أطول أو خذ لقطة جديدة."}
         if problem:
@@ -467,14 +505,25 @@ class ReportService:
         early = " • تنبيه: الفترة تبدأ قبل أول جرد فاستُخدم أول جرد كمرجع" if opening["before_first"] else ""
         grams_text = lambda v: f"{v:+,.3f} جرام" if v else "0.000 جرام"
         money_text = lambda v: f"{v:+,.2f} ج" if v else "0.00 ج"
-        totals = [total("ربح الذهب (مكافئ 21)", grams_text(diff["gold_total_eq21"]), "text", f"من جرد {day(opening)} إلى جرد {day(closing)}{early}", "profit", tone="receivable" if diff["gold_total_eq21"] >= 0 else "payable"),
-                  total("ذهب أول الفترة", f"{_dec(opening['gold_total_eq21']):,.3f} جرام", "text", f"جرد {day(opening)}", "ends"),
-                  total("ذهب آخر الفترة", f"{_dec(closing['gold_total_eq21']):,.3f} جرام", "text", f"جرد {day(closing)}", "ends"),
-                  total("الكاش (الخزنة) — التغير", money_text(diff["cash_egp"]), "text", f"أول {_dec(opening['cash_egp']):,.2f} → آخر {_dec(closing['cash_egp']):,.2f} ج (للمعلومية)", "cash"),
-                  total("البنوك والمحافظ — التغير", money_text(diff["bank_egp"]), "text", f"أول {_dec(opening['bank_egp']):,.2f} → آخر {_dec(closing['bank_egp']):,.2f} ج (للمعلومية)", "cash")]
+        price_of = self._sell21_prices(repo)
+        first, last = self._with_money(opening, price_of), self._with_money(closing, price_of)
+        if first["total"] is not None and last["total"] is not None:
+            change = last["total"] - first["total"]
+            headline = [total("ربح الذهب (مكافئ 21)", grams_text(change), "text", f"ذهب + فلوس بالذهب: من جرد {day(opening)} إلى جرد {day(closing)}{early}", "profit", tone="receivable" if change >= 0 else "payable"),
+                        total("أول الفترة (ذهب + فلوس بالذهب)", f"{first['total']:,.3f} جرام", "text", f"جرد {day(opening)} • سعر بيع 21 {first['price']:,.0f}", "ends"),
+                        total("آخر الفترة (ذهب + فلوس بالذهب)", f"{last['total']:,.3f} جرام", "text", f"جرد {day(closing)} • سعر بيع 21 {last['price']:,.0f}", "ends")]
+        else:
+            headline = [total("ربح الذهب (مكافئ 21)", "غير متاح", "text", "لا يوجد سعر بيع عيار 21 مخزن لتحويل الفلوس لذهب.", "profit", tone="deadcash")]
+        totals = headline + [
+            total("الذهب الفعلي بدون الفلوس — التغير", grams_text(diff["gold_total_eq21"]), "text", f"من {_dec(opening['gold_total_eq21']):,.3f} إلى {_dec(closing['gold_total_eq21']):,.3f} جرام (للمعلومية)", "ends"),
+            total("الكاش (الخزنة) — التغير", money_text(diff["cash_egp"]), "text", f"أول {_dec(opening['cash_egp']):,.2f} → آخر {_dec(closing['cash_egp']):,.2f} ج", "cash"),
+            total("البنوك والمحافظ — التغير", money_text(diff["bank_egp"]), "text", f"أول {_dec(opening['bank_egp']):,.2f} → آخر {_dec(closing['bank_egp']):,.2f} ج", "cash")]
         labels = (("gold_shop_eq21", "مخزون وكسر وسبائك المحل"), ("gold_custody_eq21", "عهدة السوق"), ("gold_intermediary_eq21", "ذهب المسوقجية"),
-                  ("gold_suppliers_eq21", "ذهب الموردين (صافي)"), ("gold_total_eq21", "الإجمالي"))
+                  ("gold_suppliers_eq21", "ذهب الموردين (صافي)"), ("gold_total_eq21", "الذهب الفعلي"))
         rows = [{"part": label, "opening": _dec(opening[key]), "closing": _dec(closing[key]), "change": diff[key]} for key, label in labels]
+        if first["money_gold"] is not None and last["money_gold"] is not None:
+            rows += [{"part": "الفلوس بالذهب (كاش + بنوك ÷ سعر بيع 21)", "opening": first["money_gold"], "closing": last["money_gold"], "change": last["money_gold"] - first["money_gold"]},
+                     {"part": "الإجمالي (ذهب + فلوس بالذهب)", "opening": first["total"], "closing": last["total"], "change": last["total"] - first["total"]}]
         unknown = _dec(closing.get("unknown_grams") or 0)
         if unknown:
             rows.append({"part": "جرامات بعيار غير معلوم (خارج الإجمالي)", "opening": _dec(opening.get("unknown_grams") or 0), "closing": unknown, "change": unknown - _dec(opening.get("unknown_grams") or 0)})
@@ -500,34 +549,8 @@ class ReportService:
         earlier = [d for d in sorted(by_day) if d < start.date()]
         if earlier:
             days.insert(0, earlier[-1])                                                     # the sheet that stands for the start of the period
-        prices = {}
-
-        def as_date(value):
-            value = _dateish(value)
-            return value.date() if isinstance(value, datetime) else value
-        if repo.has_table("gold_price_history_legacy"):
-            for r in repo.gold_price_history_legacy():
-                if int(r["karat_value"]) == 21 and r["sell"] is not None:
-                    prices[as_date(r["day"])] = _dec(r["sell"])
-        for r in repo.gold_price_daily():
-            if int(r["karat_value"]) == 21 and r["sell"] is not None:
-                prices[as_date(r["day"])] = _dec(r["sell"])
-        known = sorted(prices)
-
-        def price_of(day):
-            if day in prices:
-                return prices[day]
-            before = [d for d in known if d < day]
-            after = [d for d in known if d > day]
-            return prices[before[-1]] if before else prices[after[0]] if after else None
-        points = []
-        for day in days:
-            sheet = by_day[day]
-            gold = _dec(sheet["gold_total_eq21"])
-            money = _dec(sheet["cash_egp"]) + _dec(sheet["bank_egp"])
-            price = price_of(day)
-            as_gold = None if price is None or price <= 0 else (money / price).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
-            points.append({"day": day, "gold": gold, "money": money, "price": price, "money_gold": as_gold, "total": None if as_gold is None else gold + as_gold})
+        price_of = self._sell21_prices(repo)
+        points = [{"day": day, "gold": _dec(by_day[day]["gold_total_eq21"]), **self._with_money(by_day[day], price_of)} for day in days]
         if len(points) < 2:
             note = "لا توجد لقطات جرد كافية: سجّل الرصيد الافتتاحي من مراجعات المدير، وسيُحفظ جرد جديد كل يوم." if not points else "يوجد جرد واحد فقط في هذه الفترة، فلا يمكن رسم حركة: اختر فترة أطول."
             return {"meaning": meaning, "tables": [self._unavailable("goldflow", "الذهب في المحل", note)], "totals": [total("الذهب في المحل", "غير متاح", "text", note, "goldflow", tone="deadcash")], "lines": []}
@@ -1291,10 +1314,15 @@ class ReportService:
         profit_now = profit_before = None
         if gate("MANAGEMENT_REVIEW") and gate("MARKET_TRIP_MANAGE") and gate("INTERMEDIARY_HOLDING_VIEW") and repo.has_table("position_snapshots"):
             sheets = [{**dict(r), "taken_at": _dateish(r["taken_at"])} for r in repo.position_snapshots()]
+            price_of = self._sell21_prices(repo)
 
             def gold_profit(a, b):
+                """Owner 2026-11-12: how much gold + money-as-gold grew (the same figure as «ربح الذهب» and «الذهب في المحل»); None without two sheets or a price."""
                 opening, closing, problem = snapshot_math.choose(sheets, a, b)
-                return None if problem else snapshot_math.profit(opening, closing)["gold_total_eq21"]
+                if problem:
+                    return None
+                first, last = self._with_money(opening, price_of), self._with_money(closing, price_of)
+                return None if first["total"] is None or last["total"] is None else last["total"] - first["total"]
             profit_now, profit_before = gold_profit(start, end), gold_profit(previous_start, start)
             if profit_before is not None:
                 profit_before = Decimal(str(profit_before)) * scale
@@ -1336,7 +1364,7 @@ class ReportService:
         staff = [col("employee", "الموظف"), col("status_text", "الحالة"), col("lines", "بنود محسوبة"), col("low_making", "بنود مصنعية قليلة"), col("low_discount", "بنود خصم كسر قليل"), col("note", "الملاحظة")]
         meaning = ["كل مؤشر يقارن الفترة المختارة بالفترة السابقة لها بنفس الطول، وله حالة وجملة قرار. الحالات مؤشرات لانتباهك وليست إثباتًا.",
                    "مصنعية قليلة = أقل من تكلفة القطعة، أو أقل من 80% من متوسط باقي الموظفين لنفس العيار. خصم كسر قليل = أقل من الخصم الافتراضي. قطع أقل من جرام لا تدخل. السبائك والجنيهات (صنف سبيكة / جنية) والمشتراة منها بسعر السوق مع زيادة خارج مؤشرات المصنعية والموظفين.",
-                   "ربح الذهب من لقطات الجرد (مكافئ عيار 21)؛ المصروفات المسجلة من حركة الخزنة بدون المرتبات وفروق الفواتير (إلزامية). غير المتاح يظهر رماديًا ولا يتحول لصفر."]
+                   "ربح الذهب = زيادة (ذهب لقطات الجرد بعد الموردين + الكاش والبنوك محوّلة لذهب بسعر بيع 21) بجرام مكافئ عيار 21؛ المصروفات المسجلة من حركة الخزنة بدون المرتبات وفروق الفواتير (إلزامية). غير المتاح يظهر رماديًا ولا يتحول لصفر."]
         cards = [total("مؤشرات حمراء", sum(1 for i in items if i["status"] == kpi_rules.RED), "count", "", "summary", tone="deadcash"),
                  total("مؤشرات صفراء", sum(1 for i in items if i["status"] == kpi_rules.YELLOW), "count", "", "summary"),
                  total("موظفون يحتاجون مراجعة", sum(1 for r in employees if r["status"] == kpi_rules.RED), "count", "", "summary")]

@@ -173,12 +173,13 @@ def scrap_item(now, default_percent):
 
 
 def profit_item(now, before):
-    """Gold profit (21K-equivalent grams) of this period against the previous one: GRAY without two comparable snapshot pairs."""
+    """Gold profit (21K-equivalent grams: gold net of suppliers + cash and bank converted to gold, owner 2026-11-12) of this period against the previous one: GRAY without two comparable
+    snapshot pairs or a price."""
     if now is None:
-        return {"key": "profit", "title": "ربح الذهب (مكافئ 21)", "status": GRAY, "value": "—", "compare": "—", "advice": "محتاج لقطات جرد كفاية: سجّل الرصيد الافتتاحي وافتح البرنامج كل يوم."}
+        return {"key": "profit", "title": "ربح الذهب (مكافئ 21)", "status": GRAY, "value": "—", "compare": "—", "advice": "محتاج لقطات جرد كفاية وسعر بيع 21 مخزن: سجّل الرصيد الافتتاحي وافتح البرنامج كل يوم."}
     now = _d(now)
     if now < 0:
-        status, advice = RED, "الذهب في المحل نقص في الفترة دي: راجع الشراء بكاش والسحب والمصاريف."
+        status, advice = RED, "الذهب مع الفلوس محوّلة لذهب نقص في الفترة دي: راجع المصاريف والسحب والخسية."
     elif before is None:
         status, advice = GRAY, "مفيش فترة سابقة للمقارنة."
     else:

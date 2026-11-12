@@ -1021,16 +1021,39 @@ class ProfitTests(Case):
         super().setUp()
         FakeRepo.sheets = None
 
-    def test_profit_is_the_closing_gold_minus_the_opening_gold_with_cash_apart(self):
+    def test_profit_is_how_much_the_gold_plus_the_money_as_gold_grew(self):
+        # Owner 2026-11-12: gold (net of suppliers) + cash and bank converted to gold at the 21K SELL price of the sheet's day (6,440 here: the latest stored price).
         result = self.service.run("profit", self.PERIOD)
         values = self.totals(result)
-        # opening 5000 - 100 = 4900; closing 5250 - 60 = 5190 -> +290 (the supplier debt fell by 40, the shop gold rose by 250)
-        self.assertEqual(values["ربح الذهب (مكافئ 21)"], "+290.000 جرام")
-        self.assertEqual((values["ذهب أول الفترة"], values["ذهب آخر الفترة"]), ("4,900.000 جرام", "5,190.000 جرام"))
-        self.assertEqual(values["الكاش (الخزنة) — التغير"], "-10,000.00 ج")                       # 190000 - 200000, shown but not part of the profit
+        # gold: opening 5000 - 100 = 4900, closing 5250 - 60 = 5190 (+290); money: 230,000 / 6,440 = 35.714 g -> 225,000 / 6,440 = 34.938 g (-0.776)
+        self.assertEqual(values["ربح الذهب (مكافئ 21)"], "+289.224 جرام")
+        self.assertEqual((values["أول الفترة (ذهب + فلوس بالذهب)"], values["آخر الفترة (ذهب + فلوس بالذهب)"]), ("4,935.714 جرام", "5,224.938 جرام"))
+        self.assertEqual(values["الذهب الفعلي بدون الفلوس — التغير"], "+290.000 جرام")              # still shown apart
+        self.assertEqual(values["الكاش (الخزنة) — التغير"], "-10,000.00 ج")
         self.assertEqual(values["البنوك والمحافظ — التغير"], "+5,000.00 ج")
         parts = {r["part"]: r["change"] for r in result["tables"][0]["rows"]}
-        self.assertEqual((parts["مخزون وكسر وسبائك المحل"], parts["ذهب الموردين (صافي)"], parts["الإجمالي"]), (D("250.000"), D("40.000"), D("290.000")))
+        self.assertEqual((parts["مخزون وكسر وسبائك المحل"], parts["ذهب الموردين (صافي)"], parts["الذهب الفعلي"]), (D("250.000"), D("40.000"), D("290.000")))
+        self.assertEqual((parts["الفلوس بالذهب (كاش + بنوك ÷ سعر بيع 21)"], parts["الإجمالي (ذهب + فلوس بالذهب)"]), (D("-0.776"), D("289.224")))
+
+    def test_gold_sold_for_cash_is_no_profit_and_no_loss(self):
+        # 10 g of 21K leave the shop and exactly their price at the sell price comes in as cash: the gold falls, the profit stays zero.
+        base = FakeRepo.position_snapshots(FakeRepo())
+        FakeRepo.sheets = [base[0], dict(base[2], gold_total_eq21=D("4890.000"), cash_egp=D("200000") + D("64400"), bank_egp=D("30000"))]
+        values = self.totals(self.service.run("profit", self.PERIOD))
+        self.assertEqual(values["ربح الذهب (مكافئ 21)"], "0.000 جرام")
+        self.assertEqual(values["الذهب الفعلي بدون الفلوس — التغير"], "-10.000 جرام")
+
+    def test_without_any_stored_price_the_profit_is_unavailable_never_the_gold_alone(self):
+        class NoPrices(FakeRepo):
+            def gold_price_daily(self):
+                return []
+
+            def gold_price_history_legacy(self):
+                return []
+        self.service._repository = NoPrices
+        values = self.totals(self.service.run("profit", self.PERIOD))
+        self.assertEqual(values["ربح الذهب (مكافئ 21)"], "غير متاح")
+        self.assertEqual(values["الذهب الفعلي بدون الفلوس — التغير"], "+290.000 جرام")
 
     def test_a_loss_reads_as_negative_and_a_single_sheet_is_never_a_zero_profit(self):
         FakeRepo.sheets = FakeRepo.position_snapshots(FakeRepo())[:1]
@@ -1137,6 +1160,31 @@ class KpiTests(Case):
         limited = ReportService(session, transaction_factory=self.service._transaction, repository=FakeRepo, authorization=FakeAuthorization(session), today=lambda: TODAY)
         with self.assertRaises(PermissionError):
             limited.run("kpi", self.PERIOD)
+
+
+class KpiGoldProfitTests(Case):
+    """Owner 2026-11-12: the KPI's gold profit is the growth of gold + money-as-gold (the same figure as «ربح الذهب»), not the gold alone."""
+    permissions = ALL | {"MANAGEMENT_REVIEW"}
+
+    def setUp(self):
+        super().setUp()
+        FakeRepo.sheets = None
+
+    def profit(self, period):
+        return next(r for r in self.service.run("kpi", period)["tables"][0]["rows"] if r["key"] == "profit")
+
+    def test_the_kpi_gold_profit_counts_the_money_as_gold_like_the_profit_report(self):
+        item = self.profit({"from": "2026-10-01", "to": "2026-10-31"})
+        self.assertEqual(item["value"], "+289.224 جرام")
+        self.assertEqual(item["value"], self.totals(self.service.run("profit", {"from": "2026-10-01", "to": "2026-10-31"}))["ربح الذهب (مكافئ 21)"])
+
+    def test_gold_that_left_for_cash_is_not_a_red_loss(self):
+        # The case the owner saw: the gold fell by 10 g while the same value came in as cash -> no loss, not red.
+        base = FakeRepo.position_snapshots(FakeRepo())
+        FakeRepo.sheets = [base[0], dict(base[2], gold_total_eq21=D("4890.000"), cash_egp=D("264400"), bank_egp=D("30000"))]
+        item = self.profit({"from": "2026-10-01", "to": "2026-10-31"})
+        self.assertEqual(item["value"], "+0.000 جرام")
+        self.assertNotEqual(item["status"], "🔴 غلط")
 
 
 class EmployeeKpiTests(Case):
