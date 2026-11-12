@@ -3,7 +3,7 @@
 from pathlib import Path
 
 ROOT = Path(SPECPATH).resolve().parent.parent
-datas = [(str(ROOT / "qml"), "qml"), (str(ROOT / "webapp" / "static"), "webapp/static")]
+datas = [(str(ROOT / "qml"), "qml"), (str(ROOT / "webapp" / "static"), "webapp/static"), (str(ROOT / "resources"), "resources")]
 hidden = ["PySide6.QtWebEngineQuick", "PySide6.QtWebEngineCore", "argon2", "keyring.backends.Windows", "win32timezone", "win32print", "win32api", "win32ui", "win32con"]
 
 a = Analysis([str(ROOT / "main.py")], pathex=[str(ROOT)], datas=datas, hiddenimports=hidden,

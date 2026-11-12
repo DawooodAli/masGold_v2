@@ -1066,6 +1066,56 @@ class HeaderSeparatorTests(unittest.TestCase):
         self.assertAlmostEqual(bottom, 113.12, delta=0.05)
 
 
+class SharePdfTests(unittest.TestCase):
+    """The invoice as a PDF on the shop's letterhead, to send to the customer on WhatsApp (owner 2026-11-13)."""
+
+    def test_the_pdf_is_written_on_the_letterhead_and_nothing_is_printed_or_saved(self):
+        import tempfile
+        from PySide6.QtGui import QGuiApplication
+        QGuiApplication.instance() or QGuiApplication([])
+        jobs = []
+        service, state = make_service(invoices={"42": mixed_row()}, print_document=lambda ops: (jobs.append(ops), (True, "ok", None))[1])
+        with tempfile.TemporaryDirectory() as folder:
+            path, number, problem = service.share_pdf("42", folder=folder)
+            self.assertEqual(problem, "")
+            self.assertTrue(path.endswith(".pdf") and os.path.getsize(path) > 50_000)   # the letterhead picture is inside
+            with open(path, "rb") as handle:
+                self.assertTrue(handle.read(5).startswith(b"%PDF"))
+            plain = os.path.getsize(path)
+            service.share_pdf("42", sale_total=True, folder=folder)
+            self.assertEqual(len(os.listdir(folder)), 2)                                 # the full-total paper is a separate file
+        self.assertEqual(jobs, [])                                                       # nothing went to a printer
+        self.assertNotIn("events", state)                                                # nothing written to the database
+        self.assertGreater(plain, 0)
+
+    def test_the_letterhead_picture_is_opaque_a4_a5_landscape(self):
+        """A picture with an alpha channel turned black inside the PDF: the asset must be flattened onto white."""
+        from PySide6.QtGui import QGuiApplication, QImage
+        QGuiApplication.instance() or QGuiApplication([])
+        from services.invoice_print_service import PAPER_IMAGE
+        picture = QImage(PAPER_IMAGE)
+        self.assertFalse(picture.isNull())
+        self.assertFalse(picture.hasAlphaChannel())
+        self.assertAlmostEqual(picture.width() / picture.height(), 210 / 148, places=2)
+
+    def test_a_save_only_old_gold_invoice_has_no_pdf(self):
+        from tests.test_invoice_print_service import invoice_row as row
+        service, _ = make_service(invoices={"7": row(lines=[{"line_type": "BUY_OLD_GOLD", "item_name_snapshot": "كسر",
+                                                            "weight_grams": Decimal("5"), "karat_value": 21, "quantity": 1}])})
+        path, _, problem = service.share_pdf("7", folder=os.getcwd())
+        self.assertIsNone(path)
+        self.assertTrue(problem)
+
+
+class WhatsappNumberTests(unittest.TestCase):
+    def test_egyptian_numbers_become_international(self):
+        from app.viewmodels.invoice_history_viewmodel import whatsapp_number
+        for raw in ("01012345678", "+20 101 234 5678", "0020 10-1234-5678", "201012345678"):
+            self.assertEqual(whatsapp_number(raw), "201012345678", raw)
+        for raw in ("", None, "123", "0212345678", "05012345678"):
+            self.assertEqual(whatsapp_number(raw), "", raw)
+
+
 if __name__ == "__main__":
     unittest.main()
 

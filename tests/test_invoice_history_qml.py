@@ -183,6 +183,29 @@ class InvoiceHistoryPageTests(page_harness.InvoicePageTests):
         self.assertEqual(calls, [])
         self.assertEqual(self.warnings, [])
 
+    def test_whatsapp_button_hands_the_pdf_over_by_a_real_click_at_every_size(self):
+        from unittest.mock import patch
+        vm = self.open_history()
+        QTest.mouseDClick(self.root, Qt.LeftButton, Qt.NoModifier,
+                          self.visual_item("historyRow_0").mapToScene(QPointF(40, 12)).toPoint())
+        self.wait_until(lambda: vm.detail, "detail not opened")
+        handed = []
+        with patch("app.viewmodels.invoice_history_viewmodel.hand_over_to_whatsapp",
+                   lambda path, mobile: (handed.append((path, mobile)), "تم")[1]):
+            for width, height in ((1440, 900), (1280, 800), (1080, 680)):
+                self.root.setWidth(width)
+                self.root.setHeight(height)
+                QTest.qWait(250)
+                for name in ("historyShareWhatsapp", "historyShareWhatsappSaleTotal", "historyBack"):
+                    self.assert_inside_window(self.item(name))
+                before = len(handed)
+                self.click(self.item("historyShareWhatsapp"))
+                self.wait_until(lambda: len(handed) == before + 1 and not vm.reprintBusy, f"no pdf at {width}")
+                self.assertEqual(vm.reprintMessage, "تم")
+        self.assertEqual({path for path, _ in handed}, {"C:/pdf/invoice.pdf"})
+        self.assertEqual(self.history.printer.calls, [])                # nothing was sent to the printer
+        self.assertEqual(self.warnings, [])
+
     def test_a_mixed_invoice_prints_at_its_full_sale_total_by_a_real_click_at_every_size(self):
         from datetime import datetime
         from decimal import Decimal

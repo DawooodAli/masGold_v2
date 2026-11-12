@@ -596,6 +596,17 @@ Item {
                   visible: !!detailRoot.d.canReprintSaleTotal
                   enabled: !!historyPage.vm && !historyPage.vm.reprintBusy
                   onClicked: historyPage.vm.reprintSaleTotal() }
+            // The invoice as a PDF on the shop's letterhead, handed to WhatsApp (the employee pastes it and presses Enter).
+            Btn { objectName: "historyShareWhatsapp"
+                  text: "إرسال واتساب"
+                  visible: !!detailRoot.d.canReprint
+                  enabled: !!historyPage.vm && !historyPage.vm.reprintBusy
+                  onClicked: historyPage.vm.sharePdf() }
+            Btn { objectName: "historyShareWhatsappSaleTotal"
+                  text: "واتساب بإجمالي البيع"
+                  visible: !!detailRoot.d.canReprintSaleTotal
+                  enabled: !!historyPage.vm && !historyPage.vm.reprintBusy
+                  onClicked: historyPage.vm.sharePdfSaleTotal() }
             // Esc escape hatch, parked at the far LEFT edge of the bar (last item in an RTL row)
             // so it never mixes with the lifecycle actions, and gold-outlined to stay readable.
             Item { Layout.preferredWidth: 18 }

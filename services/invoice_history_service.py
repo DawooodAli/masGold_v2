@@ -565,6 +565,17 @@ class InvoiceHistoryService:
                   if e["event_type"] in ("PRINTED", "REPRINTED") and cls._details(e).get("print_mode") == "SALE_TOTAL"]
         return sorted(prints, key=lambda p: p["occurred_at"], reverse=True)
 
+    # ------------------------------------------------------------ PDF for the customer (read-only)
+    def share_pdf(self, invoice_id, *, sale_total=False, _expected_actor=None):
+        """The finalized invoice as a PDF on the shop's letterhead, to send to the customer. Reads only, same right as a reprint."""
+        actor = self._actor(_expected_actor, REPRINT_PERMISSION)
+        self._read(actor, lambda invoices: None, REPRINT_PERMISSION)
+        service = self._print_service
+        if service is None:
+            from services.invoice_print_service import InvoicePrintService
+            service = self._print_service = InvoicePrintService(self._session)
+        return service.share_pdf(invoice_id, sale_total=sale_total, _expected_actor=_expected_actor)
+
     # ------------------------------------------------------------ reprint (read-only)
     def reprint(self, invoice_id, *, sale_total=False, _expected_actor=None):
         """The ORIGINAL finalized invoice through the frozen print service: no number, no payment,

@@ -375,10 +375,37 @@ class InvoicePrintService:
             raise PrintError("LAYOUT", problem)
         return write_pdf(ops, path)
 
+    def share_pdf(self, invoice_id, *, sale_total=False, folder=None, _expected_actor=None):
+        """The invoice as a PDF on the shop's paper (the preprinted letterhead as background) to send to the customer.
+        Reads only; nothing is printed or saved in the database. Returns (path, invoice_number, problem)."""
+        self._actor(_expected_actor)
+        invoice = self._invoice_data(invoice_id)
+        if is_old_gold_purchase_only(invoice.get("lines")):
+            return None, invoice["invoice_number"], NOT_PRINTABLE_TEXT
+        paper = invoice
+        if sale_total:
+            try:
+                paper = sale_total_view(invoice)
+            except PrintError as exc:
+                return None, invoice["invoice_number"], str(exc)
+        ops, problem = self.compose(paper)
+        if ops is None:
+            return None, invoice["invoice_number"], problem
+        folder = folder or os.path.join(os.path.expanduser("~"), "Documents", "فواتير masGold")
+        os.makedirs(folder, exist_ok=True)
+        safe = "".join(ch for ch in str(invoice["invoice_number"]) if ch.isalnum() or ch in "-_") or "invoice"
+        path = os.path.join(folder, f"فاتورة {safe}{'-اجمالي-البيع' if sale_total else ''}.pdf")
+        return write_pdf(ops, path, background=PAPER_IMAGE), invoice["invoice_number"], ""
 
-def write_pdf(ops, path=None):
-    from PySide6.QtCore import QMarginsF
-    from PySide6.QtGui import QPageLayout, QPageSize, QPainter
+
+PAPER_IMAGE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "resources", "invoice_paper.png")
+
+
+def write_pdf(ops, path=None, background=None):
+    """`background`: the picture of the blank preprinted paper (A5 landscape) drawn behind the overlay - for a PDF the customer
+    receives. Printing on the real paper never uses it."""
+    from PySide6.QtCore import QMarginsF, QRectF
+    from PySide6.QtGui import QImage, QPageLayout, QPageSize, QPainter
     from PySide6.QtPrintSupport import QPrinter
 
     path = path or os.path.join(tempfile.gettempdir(), f"invoice_{datetime.now():%Y%m%d_%H%M%S_%f}.pdf")
@@ -390,6 +417,11 @@ def write_pdf(ops, path=None):
                                       QPageLayout.Millimeter))
     painter = QPainter(printer)
     try:
+        if background:
+            picture = QImage(background)
+            if not picture.isNull():
+                painter.setRenderHint(QPainter.SmoothPixmapTransform)
+                painter.drawImage(QRectF(0, 0, painter.device().width(), painter.device().height()), picture)
         bill_overlay.paint(painter, ops, printer.resolution() / 25.4)
     finally:
         painter.end()

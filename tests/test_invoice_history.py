@@ -331,7 +331,7 @@ class HistoryReprintAndImmutabilityTests(unittest.TestCase):
     def test_history_has_no_mutation_path(self):
         public = {name for name, _ in inspect.getmembers(InvoiceHistoryService, inspect.isfunction)
                   if not name.startswith("_")}
-        self.assertEqual(public, {"search", "detail", "reprint", "find_by_number", "filter_options"})     # all read-only
+        self.assertEqual(public, {"search", "detail", "reprint", "share_pdf", "find_by_number", "filter_options"})     # all read-only
         self.assertFalse([name for name in dir(FakeRepo) if name.startswith(("update", "insert", "delete", "set"))])
 
 
@@ -353,6 +353,10 @@ class StaticHistory:
     def reprint(self, invoice_id, sale_total=False, **kwargs):
         self.calls.append(("reprint", invoice_id) if not sale_total else ("reprint_sale_total", invoice_id))
         return self.real.reprint(invoice_id, sale_total=sale_total)
+
+    def share_pdf(self, invoice_id, sale_total=False, **kwargs):
+        self.calls.append(("share_pdf_sale_total" if sale_total else "share_pdf", invoice_id))
+        return "C:/pdf/invoice.pdf", "26092701", ""
 
     def find_by_number(self, number, **kwargs):
         self.calls.append(("exact", number))

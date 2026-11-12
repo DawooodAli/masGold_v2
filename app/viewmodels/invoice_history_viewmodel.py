@@ -33,6 +33,34 @@ TYPE_FILTERS = {"ALL": None, "SELL": "SELL", "BUY": "BUY", "MIXED": "MIXED"}
 STATUS_FILTERS = {"ALL": None, "SETTLED": "SETTLED", "PARTIAL": "PARTIAL", "UNSETTLED": "UNSETTLED"}
 
 
+def whatsapp_number(mobile):
+    """Egyptian mobile (01xxxxxxxxx, +20..., 0020...) as the international digits WhatsApp wants, or "" when it is not one."""
+    digits = "".join(ch for ch in str(mobile or "") if ch.isdigit())
+    if digits.startswith("00"):
+        digits = digits[2:]
+    if len(digits) == 11 and digits.startswith("01"):
+        digits = "20" + digits[1:]
+    return digits if len(digits) == 12 and digits.startswith("201") else ""
+
+
+def hand_over_to_whatsapp(path, mobile):
+    """Copy the PDF file to the clipboard (the employee pastes it with Ctrl+V) and open WhatsApp on the customer's chat. Returns the message."""
+    from PySide6.QtCore import QMimeData, QUrl
+    from PySide6.QtGui import QDesktopServices, QGuiApplication
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(path)])
+    clipboard = QGuiApplication.clipboard()
+    if clipboard is not None:
+        clipboard.setMimeData(mime)
+    number = whatsapp_number(mobile)
+    opened = QDesktopServices.openUrl(QUrl(f"whatsapp://send?phone={number}" if number else "whatsapp://"))
+    if not opened:
+        opened = QDesktopServices.openUrl(QUrl(f"https://wa.me/{number}" if number else "https://web.whatsapp.com/"))
+    where = f"محادثة العميل ({number})" if number else "واتساب (رقم العميل غير مسجل أو غير صحيح، اختر المحادثة بنفسك)"
+    return (f"تم حفظ الملف في {path} ونسخه. {('افتح ' + where) if opened else 'افتح واتساب'} واضغط Ctrl+V ثم Enter "
+            "للإرسال.")
+
+
 def known_money(value):
     return UNAVAILABLE if value is None else money(value)
 
@@ -76,6 +104,7 @@ class InvoiceHistoryViewModel(QObject):
         self._detail, self._error, self._detail_error = {}, "", ""
         self._detail_id = None
         self._reprint, self._reprint_sale_total = {}, False
+        self._share_mobile = None
         self._sellers, self._seller_service, self._seller_message, self._seller_ok = [], None, "", False
         self._piece_service, self._piece_message, self._piece_ok = None, "", False
         self._lookup_message = ""
@@ -547,6 +576,35 @@ class InvoiceHistoryViewModel(QObject):
         self._reprint, self._reprint_sale_total = {}, True
         self._start("reprint", lambda _expected_actor: service.reprint(invoice_id, sale_total=True,
                                                                        _expected_actor=_expected_actor))
+
+    @Slot()
+    def sharePdf(self):
+        self._share(False)
+
+    @Slot()
+    def sharePdfSaleTotal(self):
+        self._share(True)
+
+    def _share(self, sale_total):
+        """«إرسال واتساب»: the invoice as a PDF on the shop's letterhead, copied so the employee pastes it into the customer's WhatsApp chat."""
+        if (not self._detail or not self._detail.get("can_reprint") or "share" in self._busy
+                or (sale_total and self._kind(self._detail) != "MIXED")):
+            return
+        service, invoice_id = self._service_instance(), self._detail["invoice_id"]
+        self._share_mobile = (self._detail.get("customer") or {}).get("mobile")
+        self._reprint = {}
+        self._start("share", lambda _expected_actor: service.share_pdf(invoice_id, sale_total=sale_total,
+                                                                      _expected_actor=_expected_actor))
+
+    def _on_share(self, result, error):
+        if error:
+            self._reprint = {"printed": False, "message": f"تعذر تجهيز ملف الفاتورة. {error}"}
+            return
+        path, _number, problem = result
+        if not path:
+            self._reprint = {"printed": False, "message": problem}
+            return
+        self._reprint = {"printed": True, "message": hand_over_to_whatsapp(path, self._share_mobile)}
 
     def _on_reprint(self, result, error):
         sale_total, self._reprint_sale_total = self._reprint_sale_total, False
@@ -1126,11 +1184,13 @@ class InvoiceHistoryViewModel(QObject):
     # ------------------------------------------------------------ reprint properties
     @Property(bool, notify=changed)
     def reprintBusy(self):
-        return "reprint" in self._busy
+        return "reprint" in self._busy or "share" in self._busy
 
     @Property(str, notify=changed)
     def reprintMessage(self):
         """While the job is being handed over: the in-progress text; afterwards the result."""
+        if "share" in self._busy:
+            return "جاري تجهيز ملف الفاتورة..."
         if "reprint" in self._busy:
             return PRINT_BUSY_TEXT
         return self._reprint.get("message", "")
