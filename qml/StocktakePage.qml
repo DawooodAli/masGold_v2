@@ -28,6 +28,8 @@ Item {
         approveDialog.open()
     }
     readonly property bool wide: width >= 900            // one-row controls
+    // 700-900 px (the 1080-px window): two rows of four instead of four rows of two, so the two lists keep their room on a 680-px screen.
+    readonly property bool medium: !wide && width >= 700
     readonly property bool sideBySide: width >= 700      // المتبقي | تم الجرد next to each other
 
     Theme { id: theme }
@@ -234,7 +236,7 @@ Item {
                 anchors.fill: parent
                 anchors.margins: 10
                 layoutDirection: Qt.RightToLeft
-                columns: page.wide ? 6 : 2
+                columns: page.wide ? 6 : page.medium ? 4 : 2
                 columnSpacing: 8
                 rowSpacing: 8
 
@@ -243,7 +245,7 @@ Item {
                     objectName: "stocktakeScanField"
                     Layout.fillWidth: true
                     Layout.preferredHeight: 44
-                    Layout.columnSpan: page.wide ? 1 : 2
+                    Layout.columnSpan: page.wide || page.medium ? 1 : 2
                     placeholderText: "امسح الباركود هنا..."
                     font.family: theme.fontFamily
                     horizontalAlignment: TextInput.AlignRight
@@ -283,6 +285,7 @@ Item {
                     onActivated: page.requestFilters()
                 }
                 Button {
+                    id: claspButton
                     objectName: "stocktakeClasp"
                     visible: page.claspAvailable
                     text: "🧷  رصيد الرفايع"
@@ -305,6 +308,7 @@ Item {
                     }
                 }
                 Button {
+                    id: approveButton
                     objectName: "stocktakeApprove"
                     visible: !!page.adjustVM && page.adjustVM.canAdjust
                     enabled: !!page.vm && page.vm.scannedCount > 0 && page.vm.remainingCount > 0 && page.vm.withoutBarcodeCount === 0
@@ -315,7 +319,8 @@ Item {
                 Txt {
                     objectName: "stocktakeMessage"
                     Layout.fillWidth: true
-                    Layout.columnSpan: page.wide ? 1 : 2
+                    // medium: the rest of the second row after reset and the (optional) clasp / approve buttons
+                    Layout.columnSpan: page.wide ? 1 : page.medium ? Math.max(1, 3 - (claspButton.visible ? 1 : 0) - (approveButton.visible ? 1 : 0)) : 2
                     text: page.vm ? page.vm.message : ""
                     color: !page.vm ? theme.textMuted
                            : page.vm.messageKind === "ok" ? theme.green
