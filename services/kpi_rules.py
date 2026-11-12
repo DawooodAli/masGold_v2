@@ -159,20 +159,30 @@ def making_item(now, before, below_cost_lines, known_lines):
             "compare": (f"{b:,.2f} ج" + (f" ({_pct_text(pct)})" if pct is not None else "") if b is not None else "—") + extra, "advice": advice}
 
 
-def scrap_item(now, default_percent):
+MIN_DISCOUNT_RED = Decimal("1.25")       # owner 2026-11-13: under 1.25% is red, 1.25 - 1.5% yellow, 1.5% and above green
+
+
+def scrap_gross(lines):
+    """Gross value of the ordinary scrap lines the discount percent is measured on (the same lines as discount_percent)."""
+    return sum((_d(l["gross_total"]) for l in lines if l["line_type"] == BUY_LINE and not l.get("scrap_kind") and l.get("gross_total") is not None and l.get("discount_amount") is not None), Decimal("0"))
+
+
+def scrap_item(now, default_percent=None):
+    """Owner 2026-11-13: the old-gold discount actually given against a FIXED 1.5% (green from 1.5, yellow from 1.25, red below), with what the shortfall cost in pounds."""
     given = discount_percent(now)
-    default = _d(default_percent)
     if given is None:
         status = GRAY
-    elif given >= default - DISCOUNT_TOLERANCE:
+    elif given >= MIN_DISCOUNT_PCT:
         status = GREEN
-    elif given >= default - Decimal("0.25"):
+    elif given >= MIN_DISCOUNT_RED:
         status = YELLOW
     else:
         status = RED
-    advice = {GREEN: "خصم شراء الكسر في المعتاد.", YELLOW: "خصم الكسر الفعلي أقل شوية من الافتراضي: بتدفع للعملاء أكتر من اللازم.",
-              RED: "خصم الكسر الفعلي أقل بكتير من الافتراضي: بتشتري الكسر بسعر أغلى من المفروض.", GRAY: "مفيش شراء كسر عادي في الفترة."}[status]
-    return {"key": "scrap", "title": "خصم شراء الكسر الفعلي", "status": status, "value": f"{given}%" if given is not None else "—", "compare": f"الافتراضي {default}%", "advice": advice}
+    lost = ((MIN_DISCOUNT_PCT - given) / HUNDRED * scrap_gross(now)).quantize(Q2, rounding=ROUND_HALF_UP) if given is not None and given < MIN_DISCOUNT_PCT else None
+    advice = {GREEN: "خصم شراء الكسر في المعتاد.", YELLOW: "خصم الكسر الفعلي أقل شوية من 1.5%: بتدفع للعملاء أكتر من اللازم.",
+              RED: "خصم الكسر الفعلي أقل بكتير من 1.5%: بتشتري الكسر بسعر أغلى من المفروض.", GRAY: "مفيش شراء كسر عادي في الفترة."}[status]
+    compare = f"الحد {MIN_DISCOUNT_PCT}%" + (f" • الفرق بالجنيه: {lost:,.0f} ج" if lost is not None else "")
+    return {"key": "scrap", "title": "خصم شراء الكسر الفعلي", "status": status, "value": f"{given}%" if given is not None else "—", "compare": compare, "advice": advice}
 
 
 def profit_item(now, before):
@@ -214,8 +224,13 @@ def expenses_item(now, before, profit_status):
 def is_mandatory_expense(label):
     """Owner 2026-11-08: salaries and invoice differences are compulsory, so they are not an indicator of how the shop is doing: the KPI leaves them out of the expenses comparison (they stay in the
     cash-flow report and are listed apart in the KPI detail table)."""
+    return "مرتب" in str(label or "") or is_invoice_difference(label)
+
+
+def is_invoice_difference(label):
+    """The treasury category of invoice differences («فرق فواتير» / «فرق فاتورة»): its money out is the shop's give-away on invoices, judged by the invoice-difference KPI."""
     text = str(label or "")
-    return "مرتب" in text or ("فرق" in text and ("فواتير" in text or "فاتورة" in text or "فاتوره" in text))
+    return "فرق" in text and ("فواتير" in text or "فاتورة" in text or "فاتوره" in text)
 
 
 def income_item(now, before):
@@ -232,6 +247,11 @@ def income_item(now, before):
 def below_minimum(percent, minimum):
     """The percent is judged as displayed (two decimals, half up): 1.995 shows 2.00 and is not low."""
     return _d(percent).quantize(CENT, rounding=ROUND_HALF_UP) < minimum
+
+
+def is_crafted_sale(l):
+    """Owner 2026-11-13 (after the production check): bars / pounds and scrap sold by weight earn about 1% by nature, so the fixed 2% rule judges CRAFTED pieces only (the 2026-11-08 decision)."""
+    return l.get("line_type") in SELL_LINES and not is_bullion(l) and l.get("line_type") != "SELL_OLD_GOLD"
 
 
 def making_flags(margin_pct, others_average_pct=None):
@@ -293,6 +313,8 @@ def employee_rows(now, default_percent):
         p = people.setdefault(key, {"name": l.get("employee") or "غير محدد", "lines": 0, "low_making": 0, "low_discount": 0, "invoices": set(), "reasons": set()})
         p["invoices"].add(int(l["invoice_id"]))
         if l["line_type"] in SELL_LINES:
+            if not is_crafted_sale(l):
+                continue
             judged = judge_sale(l, sales)
             if judged is None:
                 continue
@@ -324,7 +346,7 @@ def flagged_lines(now, default_percent, limit=300):
         base = {"employee": l.get("employee") or "غير محدد", "invoice": l.get("invoice_number") or f"#{l['invoice_id']}", "date": l.get("invoice_date"), "karat": f"عيار {int(l['karat_value'])}",
                 "weight": _d(l["weight_grams"]), "ref": {"type": "INVOICE", "id": str(l["invoice_id"])}}
         if l["line_type"] in SELL_LINES:
-            judged = judge_sale(l, sales)
+            judged = judge_sale(l, sales) if is_crafted_sale(l) else None
             if judged is not None and judged[3]:
                 margin = judged[0]
                 rows.append({**base, "kind": "ربح مصنعية قليل", "detail": f"نسبة الربح {margin:,.2f}% من قيمة الذهب (المصنعية − تكلفة الحرف): أقل من {MIN_PROFIT_PCT:.0f}%"})
@@ -360,3 +382,119 @@ def below_cost_counts(now):
         if _d(l["making_total"]) / _d(l["weight_grams"]) < _d(cost):
             below += 1
     return below, known
+
+
+# ---------------------------------------------------------------- owner 2026-11-13: the items to catch early (dead stock, invoice differences, an employee's making, market loss, sold-out fast sellers)
+DEAD_SHARE_LIMITS = (Decimal("15"), Decimal("30"))     # % of the shop's gold: green below 15, yellow up to 30, red above
+DIFF_SHARE_LIMITS = (Decimal("5"), Decimal("15"))      # % of the net making
+MAKING21_RATIOS = (Decimal("0.90"), Decimal("0.80"))   # an employee's making per gram against the others': green from 90%, yellow from 80%, red below
+MARKET_LOSS_LIMITS = (Decimal("0.5"), Decimal("1"))    # % of the gold sent to the market (last 90 days)
+STOCKOUT_LIMITS = (0, 3)                               # sold-out fast sellers: none = green, 1 - 3 yellow, 4 or more red
+MIN_KARAT_GRAMS = Decimal("20")                        # grams of the karat an employee must have sold before he is compared
+MARKET_WINDOW_DAYS = 90
+
+
+def _by_share(pct, limits):
+    return GREEN if pct < limits[0] else YELLOW if pct <= limits[1] else RED
+
+
+def _item(key, title, status, value, compare, advice):
+    return {"key": key, "title": title, "status": status, "value": value, "compare": compare, "advice": advice}
+
+
+def dead_stock_item(dead_eq21, shop_eq21, pieces):
+    """Gold idle for the dead-stock days as a share of the shop's gold (the latest stocktake sheet's shop gold, 21K-equivalent)."""
+    title = "ذهب راكد (قطع واقفة من غير بيع)"
+    if dead_eq21 is None:
+        return _item("dead_stock", title, GRAY, "—", "—", "غير متاح (صلاحية المخزون).")
+    dead = _d(dead_eq21)
+    if shop_eq21 is None or _d(shop_eq21) <= 0:
+        return _item("dead_stock", title, GRAY, f"{dead:,.0f} جرام (مكافئ 21)", f"{pieces} قطعة", "محتاج لقطة جرد لحساب النسبة من ذهب المحل.")
+    pct = (dead / _d(shop_eq21) * HUNDRED).quantize(Q1, rounding=ROUND_HALF_UP)
+    status = _by_share(pct, DEAD_SHARE_LIMITS)
+    advice = {GREEN: "الراكد قليل.", YELLOW: "الراكد بيكبر: ابدأ عروض على أقدم الأصناف وارجع جزء للمصانع.",
+              RED: "جزء كبير من ذهب المحل واقف: اعمل عرض على الأقدم، رجّع للمصنع، أو حوّله لكسر وأعد تصنيعه. القطع بالباركود تحت."}[status]
+    return _item("dead_stock", title, status, f"{pct}% من ذهب المحل", f"{dead:,.0f} جرام (مكافئ 21) • {pieces} قطعة من {_d(shop_eq21):,.0f} جرام", advice)
+
+
+def invoice_diff_item(diff_now, diff_before, net_making_value):
+    """The treasury category «فرق فواتير» as a share of the net making of the crafted pieces sold in the period."""
+    title = "فروق الفواتير (من حركة الخزنة)"
+    if diff_now is None:
+        return _item("invoice_diff", title, GRAY, "—", "—", "غير متاحة (صلاحية الخزنة).")
+    now = _d(diff_now)
+    before = f"{_d(diff_before):,.2f} ج" if diff_before is not None else "—"
+    if net_making_value is None or _d(net_making_value) <= 0:
+        return _item("invoice_diff", title, GRAY, f"{now:,.2f} ج", before, "مفيش صافي مصنعية معروف في الفترة للمقارنة.")
+    pct = (now / _d(net_making_value) * HUNDRED).quantize(Q1, rounding=ROUND_HALF_UP)
+    status = _by_share(pct, DIFF_SHARE_LIMITS)
+    advice = {GREEN: "فروق الفواتير صغيرة.", YELLOW: "فروق الفواتير بتاكل جزء من المصنعية: راجع بند «فرق فواتير» في حركة الخزنة.",
+              RED: "فروق الفواتير كبيرة بالنسبة للمصنعية: لو هي خصم، حطه في الفاتورة من الأول عشان يتراقب."}[status]
+    return _item("invoice_diff", title, status, f"{now:,.2f} ج ({pct}% من صافي المصنعية)", f"متوسط آخر 7 أيام {before}", advice)
+
+
+def net_making(lines):
+    """Making charged minus the piece's cost over the crafted sale lines with a known making and cost (bars, pounds and scrap sold by weight left out: their cost basis differs). None without any."""
+    total, seen = Decimal("0"), False
+    for l in pieces(lines):
+        if l["line_type"] in SELL_LINES and l.get("making_total") is not None and line_cost(l) is not None:
+            total += _d(l["making_total"]) - _d(line_cost(l)) * _d(l["weight_grams"])
+            seen = True
+    return total if seen else None
+
+
+def making21_rows(lines, karat=21):
+    """One row per employee who sold at least MIN_KARAT_GRAMS of crafted pieces of the karat: his making per gram, the other employees' weighted average and his share of it."""
+    per = {}
+    for l in pieces(lines):
+        if l["line_type"] in SELL_LINES and int(l["karat_value"]) == karat and l.get("making_total") is not None and _d(l["weight_grams"]) >= ONE_GRAM:
+            e = per.setdefault(str(l.get("employee_id") or 0), {"name": l.get("employee") or "غير محدد", "making": Decimal("0"), "grams": Decimal("0")})
+            e["making"] += _d(l["making_total"])
+            e["grams"] += _d(l["weight_grams"])
+    all_making, all_grams = sum((e["making"] for e in per.values()), Decimal("0")), sum((e["grams"] for e in per.values()), Decimal("0"))
+    rows = []
+    for e in per.values():
+        others_grams = all_grams - e["grams"]
+        if e["grams"] < MIN_KARAT_GRAMS or others_grams < MIN_OTHERS_GRAMS:
+            continue
+        mine, others = e["making"] / e["grams"], (all_making - e["making"]) / others_grams
+        ratio = mine / others if others > 0 else None
+        status = GRAY if ratio is None else GREEN if ratio >= MAKING21_RATIOS[0] else YELLOW if ratio >= MAKING21_RATIOS[1] else RED
+        rows.append({"employee": e["name"], "grams": e["grams"], "per_gram": mine.quantize(Q2, rounding=ROUND_HALF_UP), "others": others.quantize(Q2, rounding=ROUND_HALF_UP),
+                     "share": (ratio * HUNDRED).quantize(Q1, rounding=ROUND_HALF_UP) if ratio is not None else None, "status": status, "status_text": STATUS_TEXT[status]})
+    order = {RED: 0, YELLOW: 1, GREEN: 2, GRAY: 3}
+    return sorted(rows, key=lambda r: (order[r["status"]], r["share"] if r["share"] is not None else Decimal("999")))
+
+
+def making21_item(rows, karat=21):
+    title = f"مصنعية الموظف عيار {karat} (مقابل باقي الموظفين)"
+    if not rows:
+        return _item("making21", title, GRAY, "—", "—", f"مفيش موظف باع {MIN_KARAT_GRAMS} جرام فأكثر من عيار {karat} للمقارنة.")
+    worst = rows[0]
+    advice = {GREEN: "مصنعية الموظفين متقاربة.", YELLOW: "في موظف مصنعيته أقل من باقي الموظفين: راجع فواتيره.", RED: "في موظف بيبيع بمصنعية أقل بكتير من باقي الموظفين: كلمه وراجع فواتيره.",
+              GRAY: "مفيش مقارنة ممكنة."}[worst["status"]]
+    return _item("making21", title, worst["status"], f"{worst['employee']}: {worst['per_gram']:,.0f} ج للجرام" + (f" ({worst['share']}% من الباقي)" if worst["share"] is not None else ""),
+                 f"متوسط باقي الموظفين {worst['others']:,.0f} ج للجرام", advice)
+
+
+def market_loss_item(loss_period, loss_window, issued_window):
+    """Melt loss + crucible + market loss (21K-equivalent grams): the period's figure beside the share of the gold sent to the market over the last MARKET_WINDOW_DAYS days (trips are rare, a week is too short)."""
+    title = "خسية السوق وفاقد السبك"
+    if loss_period is None or loss_window is None:
+        return _item("market_loss", title, GRAY, "—", "—", "غير متاحة (صلاحية العهدة).")
+    value = f"{_d(loss_period):,.3f} جرام (مكافئ 21)"
+    if not issued_window or _d(issued_window) <= 0:
+        return _item("market_loss", title, GRAY, value, f"مفيش ذهب خرج للسوق في آخر {MARKET_WINDOW_DAYS} يوم", "مفيش خروج للسوق للمقارنة.")
+    pct = (_d(loss_window) / _d(issued_window) * HUNDRED).quantize(Q2, rounding=ROUND_HALF_UP)
+    status = _by_share(pct, MARKET_LOSS_LIMITS)
+    advice = {GREEN: "الفقد في السوق في المعتاد.", YELLOW: "الفقد في السوق زاد: راجع الخرجات الأخيرة.", RED: "الفقد في السوق كبير: راجع كل خرجة وسبب الخسية."}[status]
+    return _item("market_loss", title, status, value, f"{pct}% من الذهب اللي خرج للسوق في آخر {MARKET_WINDOW_DAYS} يوم", advice)
+
+
+def stockout_item(count):
+    title = "أصناف بتتباع وخلصت"
+    if count is None:
+        return _item("stockout", title, GRAY, "—", "—", "غير متاحة (صلاحية المخزون أو الفواتير).")
+    status = GREEN if count <= STOCKOUT_LIMITS[0] else YELLOW if count <= STOCKOUT_LIMITS[1] else RED
+    advice = {GREEN: "مفيش صنف سريع البيع خلص.", YELLOW: "في أصناف بتتباع خلصت: فكّر تعوضها.", RED: "أصناف كتير سريعة البيع خلصت: كل بيعة ضايعة خسارة، عوّضها."}[status]
+    return _item("stockout", title, status, f"{count} صنف", "من أصناف بيعت 3 مرات فأكثر في آخر 90 يوم", advice)

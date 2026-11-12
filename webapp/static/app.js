@@ -164,7 +164,8 @@ async function logout() {
 }
 
 function selectReport(key, initial) {
-  state.report = key; state.filters = { ...(initial || {}) }; state.result = null; state.page = 1; state.error = ""; state.chart = null; state.writeoff = null;
+  state.report = key; state.filters = { ...(initial || {}) };
+  if (key === "kpi" && !state.filters.from) { const t = state.overview.today; state.filters.from = isoDay(t, -6); state.filters.to = t; }   // owner 2026-11-13: the KPI opens on the last 7 days, not on a day that may have no sales yet state.result = null; state.page = 1; state.error = ""; state.chart = null; state.writeoff = null;
   load();
 }
 
@@ -192,7 +193,7 @@ function render() {
   if (!state.overview) return;
   state.redraws = [];                                                    // the charts of the previous render are gone
   const module = currentModule();
-  if (!module || module.kind !== "stocktake") stopCamera();              // leaving the card releases the camera
+  if (!camera.once && (!module || module.kind !== "stocktake")) stopCamera();   // leaving the card releases the camera (not the one-scan camera of the piece lookup)
   const grid = isGrid(module), inReport = !!state.report;
   const back = !module || state.overview.modules.length < 2 ? null
     : grid && inReport ? el("button", { class: "btn", text: "← " + module.title, onclick: backToList }) : el("button", { class: "btn", text: "← الرئيسية", onclick: goHome });
@@ -874,6 +875,7 @@ function renderPieceSearch() {
   input.addEventListener("keydown", (e) => { if (e.key === "Enter" && p.text.trim()) searchPiece(); });
   const box = el("div", { class: "searchbox" }, el("div", { class: "filters" }, field("بحث عن قطعة", input),
     el("button", { class: "btn primary", text: "بحث", disabled: p.loading, onclick: () => { if (p.text.trim()) searchPiece(); } }),
+    el("button", { class: "btn", text: "📷 مسح بالكاميرا", disabled: p.loading, onclick: () => scanOnce((code) => { p.text = code; searchPiece(); }, (message) => { p.error = message; render(); }) }),
     p.data ? el("button", { class: "btn", text: "مسح", onclick: () => { state.ps = null; render(); } }) : null));
   if (p.loading) box.append(el("div", { class: "loading", text: "جارٍ البحث…" }));
   if (p.error) box.append(el("div", { class: "msg err", text: p.error }));
@@ -881,8 +883,12 @@ function renderPieceSearch() {
     if (!p.data.found) box.append(el("div", { class: "msg warn", text: "لا توجد قطعة بهذا الباركود أو الرقم." }));
     else {
       const x = p.data.piece;
+      if (x.dead) box.append(el("div", { class: "msg err", text: "🔴 قطعة راكدة: واقفة في المخزون من غير ما تتباع. " + x.ageText }));
       box.append(el("div", { class: "kvgrid" }, kv("رقم القطعة", x.number, true), kv("الباركود", x.barcode), kv("الصنف", x.itemType), kv("العيار", x.karat), kv("الوزن", x.weight), kv("المصنع", x.factory),
-        kv("الفئة", x.category), kv("المقاس", x.size), kv("الحالة", x.status, true), x.invoiceNumber ? kv("بيعت في فاتورة", x.invoiceNumber) : null, x.customer ? kv("العميل", x.customer) : null,
+        kv("الفئة", x.category), kv("المقاس", x.size), kv("الحالة", x.status, true),
+        x.ageText && !x.dead ? kv("مدة المخزون", x.ageText, true) : null, x.daysInStock ? kv("عدد الأيام", x.daysInStock + " يوم") : null, x.source ? kv("المصدر", x.source) : null,
+        x.statusCode === "IN_STOCK" ? kv("اتباعت قبل كده؟", x.neverSold ? "لا" : "نعم") : null,
+        x.invoiceNumber ? kv("بيعت في فاتورة", x.invoiceNumber) : null, x.customer ? kv("العميل", x.customer) : null,
         x.invoiceDate ? kv("تاريخ البيع", x.invoiceDate) : null));
       if (x.invoiceId) box.append(el("button", { class: "btn small", text: "فتح الفاتورة", onclick: () => openInvoice(x.invoiceId) }));
     }
@@ -1164,6 +1170,81 @@ function beep(ok) {
   if (navigator.vibrate) navigator.vibrate(ok ? 60 : [150, 80, 150, 80, 150]);
 }
 
+// ONE label per picture (owner 2026-11-05), read in ANY position (owner 2026-11-08): the browser's own BarcodeDetector when it has one (fast, any angle), otherwise ZXing over the
+// upright picture most of the time and, in turn, turned 90 degrees and tilted 45 degrees either way. No TRY_HARDER: every picture is still a single quick pass.
+const ORIENTATIONS = [0, 90, 0, 45, 0, -45];
+const plausible = (text) => (/^[0-9A-Za-z\-._\/]{6,}$/.test(text) ? [text] : []);     // a texture (a floor, a fabric) can "read" as a barcode: only a plausible shop barcode counts
+function drawTurned(video, canvas, part, angle) {
+  const w = video.videoWidth, h = video.videoHeight;
+  const scale = Math.min(1, 800 / Math.max(w, h)), sw = Math.round(w * scale), sh = Math.round(h * scale);
+  const side = angle === 0 ? 0 : Math.abs(angle) === 90 ? 0 : Math.ceil(Math.hypot(sw, sh));
+  if (angle === 0) { canvas.width = sw; canvas.height = sh; part.drawImage(video, 0, 0, sw, sh); return; }
+  if (Math.abs(angle) === 90) { canvas.width = sh; canvas.height = sw; part.translate(sh / 2, sw / 2); }
+  else { canvas.width = side; canvas.height = side; part.fillStyle = "#ffffff"; part.fillRect(0, 0, side, side); part.translate(side / 2, side / 2); }
+  part.rotate(angle * Math.PI / 180);
+  part.drawImage(video, -sw / 2, -sh / 2, sw, sh);
+}
+async function scanFrame(Z, reader, video, canvas, part, detector) {
+  const w = video.videoWidth, h = video.videoHeight;
+  if (!w || !h) return [];
+  if (detector) {
+    try { const found = await detector.detect(video); return found.flatMap((f) => plausible(f.rawValue || "")); } catch (e) { return []; }
+  }
+  camera.step = (camera.step + 1) % ORIENTATIONS.length;
+  drawTurned(video, canvas, part, ORIENTATIONS[camera.step]);
+  try {
+    return plausible(reader.decode(new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(canvas)))).getText());
+  } catch (e) { return []; }                                        // nothing readable in this frame
+}
+async function nativeDetector() {
+  if (!("BarcodeDetector" in window)) return null;
+  try {
+    const wanted = ["code_128", "code_39", "qr_code", "ean_13", "ean_8", "upc_a", "itf", "codabar"], have = await window.BarcodeDetector.getSupportedFormats();
+    const formats = wanted.filter((f) => have.includes(f));
+    return formats.length ? new window.BarcodeDetector({ formats }) : null;
+  } catch (e) { return null; }
+}
+
+// The piece lookup scanner (owner 2026-11-13): a camera over the page, the FIRST plausible code closes it and runs the search, so scanning a label shows the piece (how long it has been in stock, ...).
+async function scanOnce(onCode, onProblem) {
+  if (!window.isSecureContext) { onProblem("الكاميرا تحتاج رابط HTTPS: فعّل «HTTPS» من إعدادات البرنامج على الكمبيوتر."); return; }
+  const video = el("video", { playsinline: true, muted: true, autoplay: true, class: "scanvideo" });
+  video.muted = true;
+  const status = el("div", { class: "msg", text: "وجّه الكاميرا على الباركود…" });
+  const overlay = el("div", { class: "scanoverlay" });
+  const close = () => { camera.once = false; stopCamera(); overlay.remove(); };
+  overlay.append(el("div", { class: "scanbox" }, status, video, el("button", { class: "btn", text: "إغلاق", onclick: close })));
+  document.body.append(overlay);
+  unlockAudio();                                                         // inside the tap: Safari allows sound from now on
+  try {
+    await loadZxing();
+    stopCamera();
+    camera.once = true;
+    const Z = window.ZXing;
+    const reader = new Z.MultiFormatReader();
+    reader.setHints(new Map([[Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.CODE_128, Z.BarcodeFormat.CODE_39, Z.BarcodeFormat.QR_CODE]]]));
+    camera.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+    try { await camera.stream.getVideoTracks()[0].applyConstraints({ advanced: [{ focusMode: "continuous" }] }); } catch (e) { /* the phone decides its focus */ }
+    video.srcObject = camera.stream;
+    await video.play();
+    const canvas = document.createElement("canvas"), part = canvas.getContext("2d", { willReadFrequently: true });
+    const detector = await nativeDetector();
+    camera.reader = reader; camera.running = true; camera.step = 0;
+    const tick = async () => {
+      if (!camera.running || !camera.reader) return;
+      try {
+        const codes = await scanFrame(Z, reader, video, canvas, part, detector);
+        if (codes.length) { close(); beep(true); onCode(codes[0]); return; }
+      } catch (e) { /* one bad frame never stops the camera */ }
+      if (camera.running) camera.timer = setTimeout(tick, 0);
+    };
+    camera.timer = setTimeout(tick, 0);
+  } catch (e) {
+    close();
+    onProblem(e && e.name === "NotAllowedError" ? "لم يُسمح باستخدام الكاميرا: اسمح بها من إعدادات سفاري." : (e && e.message) || "تعذر تشغيل الكاميرا.");
+  }
+}
+
 function renderStocktake(s) {
   if (s.view) return s.view;
   const status = el("div", { class: "msg" });
@@ -1198,40 +1279,6 @@ function renderStocktake(s) {
       note(e.message, "err");
       return false;
     }
-  }
-  // ONE label per picture (owner 2026-11-05), read in ANY position (owner 2026-11-08): the browser's own BarcodeDetector when it has one (fast, any angle), otherwise ZXing over the
-  // upright picture most of the time and, in turn, turned 90 degrees and tilted 45 degrees either way. No TRY_HARDER: every picture is still a single quick pass.
-  const ORIENTATIONS = [0, 90, 0, 45, 0, -45];
-  const plausible = (text) => (/^[0-9A-Za-z\-._\/]{6,}$/.test(text) ? [text] : []);     // a texture (a floor, a fabric) can "read" as a barcode: only a plausible shop barcode counts
-  function drawTurned(video, canvas, part, angle) {
-    const w = video.videoWidth, h = video.videoHeight;
-    const scale = Math.min(1, 800 / Math.max(w, h)), sw = Math.round(w * scale), sh = Math.round(h * scale);
-    const side = angle === 0 ? 0 : Math.abs(angle) === 90 ? 0 : Math.ceil(Math.hypot(sw, sh));
-    if (angle === 0) { canvas.width = sw; canvas.height = sh; part.drawImage(video, 0, 0, sw, sh); return; }
-    if (Math.abs(angle) === 90) { canvas.width = sh; canvas.height = sw; part.translate(sh / 2, sw / 2); }
-    else { canvas.width = side; canvas.height = side; part.fillStyle = "#ffffff"; part.fillRect(0, 0, side, side); part.translate(side / 2, side / 2); }
-    part.rotate(angle * Math.PI / 180);
-    part.drawImage(video, -sw / 2, -sh / 2, sw, sh);
-  }
-  async function scanFrame(Z, reader, video, canvas, part, detector) {
-    const w = video.videoWidth, h = video.videoHeight;
-    if (!w || !h) return [];
-    if (detector) {
-      try { const found = await detector.detect(video); return found.flatMap((f) => plausible(f.rawValue || "")); } catch (e) { return []; }
-    }
-    camera.step = (camera.step + 1) % ORIENTATIONS.length;
-    drawTurned(video, canvas, part, ORIENTATIONS[camera.step]);
-    try {
-      return plausible(reader.decode(new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(canvas)))).getText());
-    } catch (e) { return []; }                                        // nothing readable in this frame
-  }
-  async function nativeDetector() {
-    if (!("BarcodeDetector" in window)) return null;
-    try {
-      const wanted = ["code_128", "code_39", "qr_code", "ean_13", "ean_8", "upc_a", "itf", "codabar"], have = await window.BarcodeDetector.getSupportedFormats();
-      const formats = wanted.filter((f) => have.includes(f));
-      return formats.length ? new window.BarcodeDetector({ formats }) : null;
-    } catch (e) { return null; }
   }
   const start = el("button", { class: "btn primary", text: "تشغيل الكاميرا" });
   start.addEventListener("click", async () => {

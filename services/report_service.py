@@ -843,13 +843,13 @@ class ReportService:
         today = self._today()
         cutoff = today - timedelta(days=dead_stock_days)
         all_stock = list(repo.stock_items(("IN_STOCK",)))
-        stock = [r for r in all_stock if (not karat or str(r["karat_value"]) == karat) and _matches(folded, raw, r["item_type"], r["category"], r["factory"])]
+        stock = [r for r in all_stock if (not karat or str(r["karat_value"]) == karat) and _matches(folded, raw, r["item_type"], r["category"], r["factory"], r.get("barcode"))]
         tables, cards = [], []
         dead = {}
         for r in stock:
-            acquired = _dateish(r["acquired_at"])
-            if r["invoice_id"] is not None or acquired is None or acquired.date() > cutoff:
+            if not self._is_dead(r, cutoff):
                 continue
+            acquired = _dateish(r["acquired_at"])
             g = dead.setdefault((int(r["karat_value"]), r["item_type"] or NO_TYPE, r["factory"] or "بدون مصنع"), {"count": 0, "weight": ZERO3, "oldest": 0})
             g["count"] += 1
             g["weight"] += _dec(r["weight_grams"])
@@ -868,33 +868,13 @@ class ReportService:
             cards.append(total(f"راكد عيار {k}", f"{per_karat[k]['weight']:,.3f} جرام", "text", f"{per_karat[k]['count']} قطعة • أقدمها {per_karat[k]['oldest']} يوم", "dead", karat=k))
         if not per_karat:
             tables.append(table("dead", f"قطع راكدة (أكثر من {dead_stock_days} يوم)", dead_cols, []))
+        # owner 2026-11-13: the dead PIECES themselves (barcode, type, karat, weight, age), so they can be found on the shelf; search by barcode / type / factory narrows it, the CSV has every row
+        tables.append(table("dead_pieces", f"القطع الراكدة بالباركود (أكثر من {dead_stock_days} يوم)", self._DEAD_PIECE_COLUMNS, self._dead_piece_rows(stock, cutoff, today), paged=True))
         # ---- items about to run out
         sold_weights = []
         if gate("INVOICE_VIEW"):
-            since = datetime.combine(today - timedelta(days=velocity_days), time.min)
-            recent_from = today - timedelta(days=RECENT_DAYS)
-            sold90, sold30 = {}, {}
-            for r in repo.gold_sold_pieces(since, datetime.combine(today + timedelta(days=1), time.min)):
-                if r["reversal_id"] or (karat and str(r["karat_value"]) != karat) or not _matches(folded, raw, r["item_type"], r["category"], r["factory"]):
-                    continue
-                key = (int(r["karat_value"]), r["item_type"] or NO_TYPE, r["factory"] or "بدون مصنع", str(r.get("size") or "").strip())
-                sold90[key] = sold90.get(key, 0) + 1
-                recent = _dateish(r["doc_date"]).date() >= recent_from
-                if recent:
-                    sold30[key] = sold30.get(key, 0) + 1
-                sold_weights.append((int(r["karat_value"]), r["item_type"] or NO_TYPE, _dec(r["weight_grams"]), recent))
-            in_stock = {}
-            for r in stock:
-                key = (int(r["karat_value"]), r["item_type"] or NO_TYPE, r["factory"] or "بدون مصنع", str(r["size"] or "").strip())
-                in_stock[key] = in_stock.get(key, 0) + 1
-            low = {}
-            for key, n90 in sold90.items():
-                have = in_stock.get(key, 0)
-                if n90 < min_sales:
-                    continue
-                cover = Decimal(have) * velocity_days / Decimal(n90)
-                if have == 0 or cover < low_cover_days:
-                    low[key] = {"sold30": sold30.get(key, 0), "sold90": n90, "stock": have, "cover": cover}
+            low, sold_weights = self._low_stock(repo, stock, today, limits, lambda r: (not karat or str(r["karat_value"]) == karat)
+                                                and _matches(folded, raw, r["item_type"], r["category"], r["factory"]))
             low_cols = [col("type", "الصنف"), col("factory", "المصنع"), col("size", "المقاس"), col("sold30", "مباع آخر 30 يوم", "count"), col("sold90", f"مباع آخر {velocity_days} يوم", "count"),
                         col("stock", "المتاح", "count"), col("cover", "يكفي (يوم)")]
             low_karats = sorted({k for k, *_ in low}, reverse=True)
@@ -961,6 +941,60 @@ class ReportService:
         meaning = [f"راكد = قطعة متاحة منذ {dead_stock_days} يومًا أو أكثر ولم تظهر في أي فاتورة. قارب النفاد = صنف بيع {min_sales} مرات فأكثر في آخر {velocity_days} يومًا والمتاح منه يكفي أقل من {low_cover_days} يومًا بمعدل البيع.",
                    "جداول الأوزان لكل عيار وكل صنف: شرائح وزنها جرام واحد (الحد الأدنى داخل الشريحة والأعلى خارجها) معلومات للمقارنة ولا تنبّه ولا تقرّر. التقرير تنبيه وليس قرارًا: لا يقترح سعرًا ولا يغيّر شيئًا. الأعيار منفصلة دائمًا."]
         return {"meaning": meaning, "tables": tables, "totals": cards}
+
+    # ---- shared by the inventory alerts and the KPI (owner 2026-11-13): ONE rule for a dead piece and for a fast seller about to run out
+    @staticmethod
+    def _is_dead(r, cutoff):
+        """IN_STOCK piece acquired on or before `cutoff` that was never on a non-draft invoice (a piece that came back from a sale is not dead)."""
+        acquired = _dateish(r["acquired_at"])
+        return r["invoice_id"] is None and acquired is not None and acquired.date() <= cutoff
+
+    _DEAD_PIECE_COLUMNS = [col("barcode", "الباركود"), col("type", "الصنف"), col("karat", "العيار"), col("weight", "الوزن (جرام)", "grams"), col("factory", "المصنع"), col("category", "الفئة"),
+                           col("size", "المقاس"), col("days", "في المخزون من (يوم)", "count"), col("since", "منذ", "date")]
+
+    def _dead_piece_rows(self, stock, cutoff, today):
+        """One row per dead piece: type, factory, then heavier first, so the pieces of a shelf sit together. `eq21` is the 21K-equivalent weight (for the KPI share, not shown)."""
+        rows = []
+        for r in stock:
+            if not self._is_dead(r, cutoff):
+                continue
+            acquired = _dateish(r["acquired_at"]).date()
+            weight = _dec(r["weight_grams"])
+            rows.append({"barcode": r.get("barcode") or "بدون باركود", "type": r["item_type"] or NO_TYPE, "karat": f"عيار {int(r['karat_value'])}", "weight": weight, "factory": r["factory"] or "بدون مصنع",
+                         "category": r["category"] or "—", "size": str(r.get("size") or "").strip() or "—", "days": (today - acquired).days, "since": acquired,
+                         "eq21": weight * int(r["karat_value"]) / 21})
+        rows.sort(key=lambda x: (x["type"], x["factory"], -x["weight"], x["barcode"]))
+        return rows
+
+    def _low_stock(self, repo, stock, today, limits, accept):
+        """(low, sold_weights): every (karat, type, factory, size) sold at least `min_sales_for_velocity` times in the last `velocity_days` whose stock covers fewer than `low_cover_days` (or is gone), and the
+        sold pieces' weights; `accept(row)` narrows the sold pieces (the alerts' karat / text filters). Needs the caller to have checked the invoice right."""
+        velocity_days, low_cover_days, min_sales = limits["velocity_days"], limits["low_cover_days"], limits["min_sales_for_velocity"]
+        since = datetime.combine(today - timedelta(days=velocity_days), time.min)
+        recent_from = today - timedelta(days=RECENT_DAYS)
+        sold90, sold30, sold_weights = {}, {}, []
+        for r in repo.gold_sold_pieces(since, datetime.combine(today + timedelta(days=1), time.min)):
+            if r["reversal_id"] or not accept(r):
+                continue
+            key = (int(r["karat_value"]), r["item_type"] or NO_TYPE, r["factory"] or "بدون مصنع", str(r.get("size") or "").strip())
+            sold90[key] = sold90.get(key, 0) + 1
+            recent = _dateish(r["doc_date"]).date() >= recent_from
+            if recent:
+                sold30[key] = sold30.get(key, 0) + 1
+            sold_weights.append((int(r["karat_value"]), r["item_type"] or NO_TYPE, _dec(r["weight_grams"]), recent))
+        in_stock = {}
+        for r in stock:
+            key = (int(r["karat_value"]), r["item_type"] or NO_TYPE, r["factory"] or "بدون مصنع", str(r["size"] or "").strip())
+            in_stock[key] = in_stock.get(key, 0) + 1
+        low = {}
+        for key, n90 in sold90.items():
+            have = in_stock.get(key, 0)
+            if n90 < min_sales:
+                continue
+            cover = Decimal(have) * velocity_days / Decimal(n90)
+            if have == 0 or cover < low_cover_days:
+                low[key] = {"sold30": sold30.get(key, 0), "sold90": n90, "stock": have, "cover": cover}
+        return low, sold_weights
 
     # ------------------------------------------------------------------ 2d. automatic stocktake by weight (and size) - owner request 2026-10-30
     def _stockweights(self, repo, gate, filters, start, end):
@@ -1312,8 +1346,11 @@ class ReportService:
             default = kpi_rules.DEFAULT_DISCOUNT
         below, known = kpi_rules.below_cost_counts(kpi_rules.pieces(now))
         profit_now = profit_before = None
+        shop_gold_eq21 = None                                                                  # the shop's gold of the latest stocktake sheet (the dead-stock share is measured on it)
         if gate("MANAGEMENT_REVIEW") and gate("MARKET_TRIP_MANAGE") and gate("INTERMEDIARY_HOLDING_VIEW") and repo.has_table("position_snapshots"):
             sheets = [{**dict(r), "taken_at": _dateish(r["taken_at"])} for r in repo.position_snapshots()]
+            if sheets:
+                shop_gold_eq21 = _dec(max(sheets, key=lambda sh: sh["taken_at"])["gold_shop_eq21"])
             price_of = self._sell21_prices(repo)
 
             def gold_profit(a, b):
@@ -1328,6 +1365,7 @@ class ReportService:
                 profit_before = Decimal(str(profit_before)) * scale
         profit = kpi_rules.profit_item(profit_now, profit_before)
         spent_now = spent_before = income_now = income_before = None
+        flows_ok = False
         flow_items = {}                                                                     # label -> {"now": (out, in), "before": (out, in)}: where the recorded figures come from
         income_labels = None                                                                # owner 2026-11-10: income = ONLY the items of the active income categories of «حركة نقدية جديدة»
         if gate("CASH_VIEW") or gate("BANK_VIEW"):
@@ -1350,6 +1388,7 @@ class ReportService:
                 spent_now, spent_before = (sum((v[side][0] for v in kept.values()), ZERO2) for side in ("now", "before"))
                 earning = {k: v for k, v in kept.items() if income_labels is None or k in income_labels}
                 income_now, income_before = (sum((v[side][1] for v in earning.values()), ZERO2) for side in ("now", "before"))
+                flows_ok = True
             except (ReportError, PermissionError):
                 spent_now = spent_before = income_now = income_before = None
                 flow_items = {}
@@ -1358,12 +1397,15 @@ class ReportService:
                  kpi_rules.making_info_item("making_bullion", "متوسط مصنعية السبائك والجنيهات للجرام", kpi_rules.bullion(now), kpi_rules.bullion(before)),
                  kpi_rules.scrap_item(now, default), profit,
                  kpi_rules.expenses_item(spent_now, spent_before, profit["status"]), kpi_rules.income_item(income_now, income_before)]
+        extra_items, extra_tables = self._kpi_extras(repo, gate, start, end, now, flow_items if flows_ok else None, shop_gold_eq21)
+        items += extra_items                                                                   # owner 2026-11-13: the items to catch early
         employees = kpi_rules.employee_rows(now, default)
         columns = [col("status", "الحالة"), col("title", "المؤشر"), col("value", "الفترة"), col("compare", baseline_label), col("advice", "القرار")]
         rows = [{**i, "status": kpi_rules.STATUS_TEXT[i["status"]]} for i in items]
         staff = [col("employee", "الموظف"), col("status_text", "الحالة"), col("lines", "بنود محسوبة"), col("low_making", "بنود مصنعية قليلة"), col("low_discount", "بنود خصم كسر قليل"), col("note", "الملاحظة")]
         meaning = ["كل مؤشر يقارن الفترة المختارة بالفترة السابقة لها بنفس الطول، وله حالة وجملة قرار. الحالات مؤشرات لانتباهك وليست إثباتًا.",
                    "مصنعية قليلة = ربح البند أقل من 2% من قيمة ذهبه (المصنعية − تكلفة الحرف). خصم كسر قليل = أقل من 1.5%. قطع أقل من جرام لا تدخل. السبائك والجنيهات (صنف سبيكة / جنية) والمشتراة منها بسعر السوق مع زيادة خارج مؤشرات المصنعية والموظفين.",
+                   "المؤشرات الستة الأخيرة للالتقاط المبكر: ذهب راكد (نسبته من ذهب المحل، وتحته القطع بالباركود)، فروق الفواتير (بند الخزنة «فرق فواتير» كنسبة من صافي مصنعية المشغولات)، مصنعية الموظف عيار 21 مقابل باقي الموظفين، خسية السوق وفاقد السبك (نسبتها من الذهب الخارج للسوق في آخر 90 يوم)، وأصناف بتتباع وخلصت.",
                    "ربح الذهب = زيادة (ذهب لقطات الجرد بعد الموردين + الكاش والبنوك محوّلة لذهب بسعر بيع 21) بجرام مكافئ عيار 21؛ المصروفات المسجلة من حركة الخزنة بدون المرتبات وفروق الفواتير (إلزامية). غير المتاح يظهر رماديًا ولا يتحول لصفر."]
         cards = [total("مؤشرات حمراء", sum(1 for i in items if i["status"] == kpi_rules.RED), "count", "", "summary", tone="deadcash"),
                  total("مؤشرات صفراء", sum(1 for i in items if i["status"] == kpi_rules.YELLOW), "count", "", "summary"),
@@ -1380,7 +1422,73 @@ class ReportService:
                       for k, v in sorted(flow_items.items(), key=lambda kv: -(kv[1]["now"][0] + kv[1]["before"][0] + kv[1]["now"][1] + kv[1]["before"][1]))]
             tables.append(table("kpi_flow", "من إيه المصروفات والإيرادات المسجلة؟", [col("label", "البند"), col("out_now", "مصروف الفترة", "money"), col("out_before", "مصروف الفترة السابقة", "money"),
                                                                                    col("in_now", "إيراد الفترة", "money"), col("in_before", "إيراد الفترة السابقة", "money")], detail))
+        tables.extend(extra_tables)
         return {"meaning": meaning, "tables": tables, "totals": cards}
+
+    def _kpi_extras(self, repo, gate, start, end, now, flow_items, shop_gold_eq21):
+        """Owner 2026-11-13, the items to catch early: dead stock (with its pieces by barcode), invoice differences, an employee's 21K making, market loss and sold-out fast sellers. Each one is GRAY
+        (never a zero) when its right or its data is missing. Read only, on the caller's transaction."""
+        items, tables = [], []
+        today = self._today()
+        limits = setting_rules.report_thresholds(repo)
+        dead_eq21 = dead_count = sold_out = None
+        if gate("INVENTORY_VIEW"):
+            stock = list(repo.stock_items(("IN_STOCK",)))
+            dead_rows = self._dead_piece_rows(stock, today - timedelta(days=limits["dead_stock_days"]), today)
+            dead_eq21, dead_count = sum((r["eq21"] for r in dead_rows), ZERO3), len(dead_rows)
+            tables.append(table("kpi_dead", f"القطع الراكدة بالباركود (أكثر من {limits['dead_stock_days']} يوم)", self._DEAD_PIECE_COLUMNS, dead_rows, paged=True,
+                                note="مرتبة بالصنف ثم المصنع ثم الأثقل: تلاقيها على الرف بسهولة. التفاصيل الكاملة وفلتر العيار والبحث بالباركود في «تنبيهات المخزون»."))
+            if gate("INVOICE_VIEW"):
+                low, _ = self._low_stock(repo, stock, today, limits, lambda r: True)
+                gone = sorted(((k, v) for k, v in low.items() if v["stock"] == 0), key=lambda kv: (-kv[1]["sold90"], kv[0][1]))
+                sold_out = len(gone)
+                tables.append(table("kpi_stockout", "أصناف بتتباع وخلصت", [col("type", "الصنف"), col("karat", "العيار"), col("factory", "المصنع"), col("size", "المقاس"), col("sold30", "مباع آخر 30 يوم", "count"),
+                                                                           col("sold90", f"مباع آخر {limits['velocity_days']} يوم", "count")],
+                                    [{"type": t, "karat": f"عيار {k}", "factory": f, "size": sz or "—", "sold30": v["sold30"], "sold90": v["sold90"]} for (k, t, f, sz), v in gone]))
+        items.append(kpi_rules.dead_stock_item(dead_eq21, shop_gold_eq21, dead_count))
+        diff_now = diff_before = None
+        if flow_items is not None:
+            matching = [v for label, v in flow_items.items() if kpi_rules.is_invoice_difference(label)]
+            diff_now = sum((v["now"][0] for v in matching), ZERO2)
+            diff_before = sum((v["before"][0] for v in matching), ZERO2)
+        items.append(kpi_rules.invoice_diff_item(diff_now, diff_before, kpi_rules.net_making(now)))
+        rows21 = kpi_rules.making21_rows(now)
+        items.append(kpi_rules.making21_item(rows21))
+        if rows21:
+            tables.append(table("kpi_making21", "مصنعية عيار 21 حسب الموظف", [col("employee", "الموظف"), col("grams", "جرامات البيع", "grams"), col("per_gram", "مصنعيته للجرام", "money"),
+                                                                              col("others", "متوسط باقي الموظفين", "money"), col("share", "نسبته من الباقي (%)"), col("status_text", "الحالة")], rows21))
+        loss_period = loss_window = issued = None
+        if gate("MARKET_TRIP_MANAGE"):
+            until = (end - timedelta(days=1)).date() + timedelta(days=1)
+            window = until - timedelta(days=kpi_rules.MARKET_WINDOW_DAYS)
+            loss_period, loss_window = self._market_loss_eq21(repo, start.date(), until), self._market_loss_eq21(repo, window, until)
+            issued = self._issued_eq21(repo, window, until)
+        items.append(kpi_rules.market_loss_item(loss_period, loss_window, issued))
+        items.append(kpi_rules.stockout_item(sold_out))
+        return items, tables
+
+    @staticmethod
+    def _market_loss_eq21(repo, first, until):
+        """Melt loss + crucible loss + market loss in 21K-equivalent grams over [first, until): the SAME rule as the market report (_market), reversed documents not counted. None when a table is missing."""
+        if not (repo.has_table("market_trip_settle_melts") and repo.has_table("market_trip_settle_lines")):
+            return None
+        grams = ZERO3
+        for m in repo.trip_melts(first, until):
+            if not m["reversal_id"]:
+                grams += _dec(m["weight_loss_eq21"]) + _dec(m["fineness_loss_eq21"])
+        for l in repo.trip_settle_lines(first, until):
+            if l["entry_kind"] != "ST_LOSS" or l["reversal_id"]:
+                continue
+            weight = _dec(l["weight_grams"])
+            grams += weight if l["source"] == "BAR" else eq21_math.post(eq21_math.analytical(weight, eq21_math.MASTER_KARAT, int(l["karat_value"])))
+        return grams
+
+    @staticmethod
+    def _issued_eq21(repo, first, until):
+        """The gold sent to the market (ISSUE legs that were not reversed) in 21K-equivalent grams over [first, until); None when the table is missing."""
+        if not repo.has_table("market_trip_entry_gold"):
+            return None
+        return sum((_dec(g["weight_grams"]) * int(g["karat_value"]) / 21 for g in repo.trip_gold_legs(first, until) if g["entry_kind"] == "ISSUE" and not g["reversal_id"]), ZERO3)
 
     # ------------------------------------------------------------------ 3c. making profit (owner request): the making charged on a sale against the making COST of the piece
     def _makingprofit(self, repo, gate, filters, start, end):   # LEGACY_MAKING_COST: owner decision 2026-10-31
@@ -1994,15 +2102,23 @@ class ReportService:
                 continue
             if mode == "stock" and str(r.get("size") or "").strip() != size:
                 continue
-            if mode == "dead":
-                acquired = _dateish(r["acquired_at"])
-                if r["invoice_id"] is not None or acquired is None or acquired.date() > cutoff:
-                    continue
+            if mode == "dead" and not self._is_dead(r, cutoff):
+                continue
             pieces.append({"barcode": r.get("barcode") or "", "weight": _dec(r["weight_grams"]), "size": str(r.get("size") or "").strip(),
                            "category": r.get("category") or "", "factory": r.get("factory") or ""})
         pieces.sort(key=lambda p: (-p["weight"], p["barcode"]))
         return {"type": label, "karat": karat_value, "band": ("قطع راكدة" if mode == "dead" else "المتاح") + " — " + factory, "pieces": pieces,
                 "weight": sum((p["weight"] for p in pieces), ZERO3)}
+
+    def dead_stock_days(self, *, _expected_actor=None):
+        """The effective «dead stock» age in days (System Settings, default 180) for the piece lookup; needs the inventory right, re-read inside the transaction."""
+        actor = self._session.require_authenticated()
+        if _expected_actor is not None and not self._session.is_current(_expected_actor):
+            raise PermissionError("انتهت جلسة الدخول.")
+        with self._transaction() as connection:
+            if not _Gate(self._authorization, connection, actor)("INVENTORY_VIEW"):
+                raise PermissionError("ليس لديك صلاحية عرض المخزون.")
+            return int(setting_rules.report_thresholds(self._repository(connection))["dead_stock_days"])
 
     @staticmethod
     def _weight_filter(value, label):

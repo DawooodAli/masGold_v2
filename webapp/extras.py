@@ -6,10 +6,11 @@ The old (paper ledger) balance of a customer is the third write: it puts a balan
 Transfers move real money between BANK / wallet accounts and to / from the owner's private account through the existing `FinancialAccountService.transfer` / `private_transfer`: the user's CURRENT
 password is re-verified first (the shared `AuthenticationService`, its failure cooldown), FINANCIAL_ACCOUNT_OPERATE (and PRIVATE_ACCOUNT_MANAGE for the private account) is rechecked by the service in its
 transaction, only active bank / wallet accounts that the service itself listed are accepted (never the main safe), and the client request key makes a retry idempotent."""
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 import logging
 from pathlib import Path
+import time
 import shutil
 import tempfile
 
@@ -27,6 +28,7 @@ from services.gold_price_service import GoldPriceService
 from services.inventory_service import InventoryService
 from services.invoice_service import PaymentInput
 from services.management_review_service import InspectionError, ManagementReviewService
+from services.report_service import ReportService
 from webapp import stocktake_link
 from webapp.errors import ApiError
 
@@ -433,7 +435,34 @@ class Extras:
                 pass
             except Exception:
                 logger.exception("attention: %s failed", key)
+        kpi = self._kpi_counts(token)
+        if kpi is not None and (kpi[0] or kpi[1]):
+            items.append({"label": "KPI — آخر 7 أيام", "value": f"{kpi[0]} حمراء • {kpi[1]} صفراء", "module": "kpi", "tone": "payable" if kpi[0] else "gold"})
         return {"items": items, "reviews": reviews}
+
+    KPI_TTL_SECONDS = 300
+    _kpi_cache = {}
+
+    def _kpi_counts(self, token):
+        """(red, yellow) KPI items of the last 7 days (owner 2026-11-13: catch it early), cached for a few minutes because the page polls every minute and the KPI report reads a lot. None when the user may not see it."""
+        cached = self._kpi_cache.get(token)
+        now = time.monotonic()
+        if cached and now - cached[0] < self.KPI_TTL_SECONDS:
+            return cached[1]
+        today = date.today()
+        try:
+            built = self._api.report(token, "kpi", {"from": (today - timedelta(days=6)).isoformat(), "to": today.isoformat()})
+            counts = {t["label"]: str(t["value"]).strip() for t in built["totals"]}
+            result = (int(counts.get("مؤشرات حمراء", "0") or 0), int(counts.get("مؤشرات صفراء", "0") or 0))
+        except ApiError:
+            result = None
+        except Exception:
+            logger.exception("attention: kpi failed")
+            return None
+        for stale in [k for k, v in self._kpi_cache.items() if now - v[0] >= self.KPI_TTL_SECONDS * 4]:
+            self._kpi_cache.pop(stale, None)
+        self._kpi_cache[token] = (now, result)
+        return result
 
     # ------------------------------------------------------------------ the recent activity (audit_log), owner only, read only
     def activity(self, token, params):
@@ -467,12 +496,54 @@ class Extras:
             return {"found": False, "piece": None}
         sale = found.get("sale") or {}
         weight = Decimal(str(found.get("weight_grams") or 0)).quantize(Decimal("0.001"))
+        age = self._piece_age(entry.session, found, sale)
         return {"found": True, "piece": {
+            **age,
             "number": f"#{found['inventory_item_id']}", "barcode": found.get("barcode_value") or "—", "itemType": found.get("item_type_name") or "—", "karat": str(found.get("karat_value") or ""),
             "weight": f"{weight:,.3f} جرام", "factory": found.get("factory_name") or found.get("factory_code") or "—", "category": found.get("category_code") or "—", "size": found.get("size") or "—",
             "status": STATUS_TEXT.get(found.get("inventory_status"), found.get("inventory_status") or ""), "statusCode": found.get("inventory_status") or "",
             "invoiceId": str(sale["invoice_id"]) if sale.get("invoice_id") is not None else "", "invoiceNumber": sale.get("invoice_number") or "",
             "invoiceDate": str(sale.get("invoice_date") or ""), "customer": sale.get("customer_name") or ""}}
+
+    SOURCE_TEXT = {"MARKET_PURCHASE": "شراء من السوق", "OLD_GOLD_MANUFACTURE": "تصنيع من الكسر", "OLD_STOCK_CONVERSION": "تحويل مخزون قديم", "LEGACY_MIGRATION": "من البرنامج القديم",
+                   "MANUAL_ENTRY": "إدخال يدوي", "SUPPLIER_PURCHASE": "توريد مورد"}
+
+    def _piece_age(self, session, found, sale):
+        """Owner 2026-11-13 (scan a barcode, see how long it has been in stock): the date it entered stock, the days in stock (until today, or until its sale when it was sold), where it came from and, for a piece
+        in stock that never sold, whether it is DEAD (older than the dead-stock days). Read only; a missing date is left empty, never guessed."""
+        today = date.today()
+
+        def as_date(value):
+            if isinstance(value, datetime):
+                return value.date()
+            if isinstance(value, date):
+                return value
+            try:
+                return date.fromisoformat(str(value)[:10])
+            except ValueError:
+                return None
+        start = as_date(found.get("acquired_at"))
+        out = {"acquiredAt": "", "daysInStock": "", "ageText": "", "source": self.SOURCE_TEXT.get(found.get("acquisition_source"), found.get("acquisition_source") or ""), "dead": False, "neverSold": not found.get("sales")}
+        if start is None:
+            return out
+        status = found.get("inventory_status")
+        sold = as_date(sale.get("invoice_date"))
+        if status == "IN_STOCK":
+            days = (today - start).days
+            out["ageText"] = f"في المخزون من {days} يوم (منذ {start.isoformat()})"
+            try:
+                limit = ReportService(session).dead_stock_days(_expected_actor=session.current_actor())
+            except Exception:
+                limit = 180
+            out["dead"] = out["neverSold"] and days >= limit
+        elif sold is not None:
+            days = max(0, (sold - start).days)
+            out["ageText"] = f"كانت في المخزون {days} يوم قبل البيع (منذ {start.isoformat()})"
+        else:
+            days = (today - start).days
+            out["ageText"] = f"دخلت المخزون منذ {start.isoformat()} ({days} يوم)"
+        out["acquiredAt"], out["daysInStock"] = start.isoformat(), str(days)
+        return out
 
     # ------------------------------------------------------------------ the iPad camera as a stocktake scanner (owner request 2026-11-04): no database write, the desktop session counts it
     def stocktake_status(self, token):

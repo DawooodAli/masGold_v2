@@ -76,7 +76,7 @@ def month_period(today):
     return today.replace(day=1).isoformat(), today.isoformat()
 
 
-WEEK_REPORTS = {"scrapcost"}                                                  # owner request 2026-10-31: these reports default to the last 7 days
+WEEK_REPORTS = {"scrapcost", "kpi"}                                           # owner request 2026-10-31 (KPI: 2026-11-13): these reports default to the last 7 days
 
 
 def default_period(report, today):

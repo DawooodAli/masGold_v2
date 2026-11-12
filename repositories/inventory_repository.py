@@ -345,7 +345,7 @@ class InventoryRepository(BaseRepository):
         item_id = int(number) if number.isdigit() and len(number) <= 18 else None
         piece = self._fetch_one(
             """
-            SELECT ii.id AS inventory_item_id, ii.inventory_status, ii.weight_grams, ii.size,
+            SELECT ii.id AS inventory_item_id, ii.inventory_status, ii.weight_grams, ii.size, ii.acquired_at, ii.acquisition_source,
                    ii.stock_classification, ii.karat_id, ii.item_type_id,
                    it.name AS item_type_name, k.karat_value, f.code AS factory_code, f.name AS factory_name,
                    c.code AS category_code,
