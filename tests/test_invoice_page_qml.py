@@ -403,6 +403,20 @@ class InvoicePageTests(unittest.TestCase):
             flick.setProperty("contentY", float(max(0.0, min(pos.y() - 8, limit))))
             QTest.qWait(40)
 
+    @staticmethod
+    def settle_layout(item):
+        """Finish the pending layout of every container from the item up to the window before it is measured or clicked. A control that has
+        just become visible keeps its own default size and position until its layout is polished at the next frame; on a busy machine two
+        position samples 20 ms apart can both come before that frame, so a click landed on the NEIGHBOUR the new control still overlapped
+        (the cashback field appearing beside the scrap weight: the typed 40 went into the weight). Polishing is what the next frame does anyway."""
+        node = item
+        while node is not None:
+            try:
+                node.ensurePolished()
+                node = node.parentItem()
+            except RuntimeError:                         # a container being torn down (a closing dialog): nothing left to lay out
+                return
+
     def click(self, item, button=Qt.LeftButton):
         if isinstance(item, str):
             item = self.item(item)
@@ -411,6 +425,7 @@ class InvoicePageTests(unittest.TestCase):
         self.reveal(item)
         previous = None
         for _ in range(25):                                  # a row that just appeared may still be laid out (a Flow re-lays out one frame later)
+            self.settle_layout(item)
             point = item.mapToScene(QPointF(item.width() / 2, item.height() / 2)).toPoint()
             if 0 <= point.x() <= self.root.width() and 0 <= point.y() <= self.root.height() and point == previous:
                 break
@@ -1169,6 +1184,7 @@ class InvoicePageTests(unittest.TestCase):
             self.assertEqual(box.property("text"), "اطبع إجمالي البيع كامل (بدون خصم الكسر)")
             for name in ("printSaleTotal", "confirmSaveAndPrint", "confirmFinalize", "confirmBack"):
                 self.assert_inside_window(self.item(name))
+                self.assertFalse(self.item(name).property("contentItem").property("truncated"), f"{name} text cut at {width}x{height}")
             self.click(box)
             self.wait_until(lambda: box.property("checked"), "the box did not tick")
             self.snapshot(f"sale-total-{width}x{height}")

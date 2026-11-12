@@ -2916,7 +2916,7 @@ Item {
                 id: confirmButton
                 objectName: invoiceVM.printable ? "confirmSaveAndPrint" : "confirmFinalize"
                 text: invoiceVM.printable ? "حفظ وطباعة (Enter)" : "حفظ (Enter)"
-                Layout.preferredWidth: 150
+                Layout.preferredWidth: Math.max(150, implicitWidth)       // never «حفظ وطباعة (Ent…»: the bold label needs more than 150 px
                 enabled: confirmDialog.acknowledged
                 function act() {
                     if (!invoiceVM.printable) { confirmDialog.confirm(false); return }
