@@ -28,7 +28,10 @@ ONE_GRAM = Decimal("1")                  # a piece under 1 g carries a making pe
 LOW_RATIO = Decimal("0.80")              # a line whose making per gram is under 80% of the other employees' weighted average is «low»
 MIN_OTHERS_GRAMS = Decimal("20")         # the other employees must have sold at least this many grams of the karat for the comparison to mean anything
 DEFAULT_DISCOUNT = Decimal("1.50")       # the default old-gold discount percent when the setting cannot be read
-DISCOUNT_TOLERANCE = Decimal("0.05")     # percentage points under the default that are still «as expected»
+DISCOUNT_TOLERANCE = Decimal("0.05")     # percentage points under the default that are still «as expected» (the period-average scrap item only)
+MIN_PROFIT_PCT = Decimal("2")            # owner 2026-11-13: a sale line whose profit is under 2% of its gold value needs attention
+MIN_DISCOUNT_PCT = Decimal("1.5")        # owner 2026-11-13: a scrap line whose discount is under 1.5% needs attention
+CENT = Decimal("0.01")
 MIN_EMPLOYEE_LINES = 5                   # fewer sale / purchase lines than this: no verdict about a person
 SALES_DROP = (Decimal("5"), Decimal("20"))        # % fall against the previous period: yellow from 5, red from 20
 MAKING_DROP = (Decimal("5"), Decimal("15"))
@@ -226,16 +229,15 @@ def income_item(now, before):
     return {"key": "income", "title": "الإيرادات المسجلة", "status": status, "value": f"{_d(now):,.2f} ج", "compare": (f"{_d(before):,.2f} ج" + (f" ({_pct_text(pct)})" if pct is not None else "")) if before is not None else "—", "advice": advice}
 
 
-def making_flags(margin_pct, others_average_pct):
-    """Why one sale line counts as a LOW profit (owner 2026-11-09: judged by the profit PERCENT = (making - the letter's cost x grams) / the gold value of the line, so a heavy piece, a costly letter,
-    a karat or a bar / pound are comparable): below zero (under the letter's cost), and / or under 80% of the other employees' weighted average profit percent of the same karat and the same group
-    (bars and pounds against bars and pounds, crafted pieces against crafted pieces)."""
-    reasons = []
-    if margin_pct < 0:
-        reasons.append("BELOW_COST")
-    if others_average_pct is not None and margin_pct < _d(others_average_pct) * LOW_RATIO:
-        reasons.append("BELOW_OTHERS")
-    return reasons
+def below_minimum(percent, minimum):
+    """The percent is judged as displayed (two decimals, half up): 1.995 shows 2.00 and is not low."""
+    return _d(percent).quantize(CENT, rounding=ROUND_HALF_UP) < minimum
+
+
+def making_flags(margin_pct, others_average_pct=None):
+    """Why one sale line counts as a LOW profit (owner 2026-11-13: ONE fixed rule, profit under 2%). The profit PERCENT = (making - the letter's cost x grams) / the gold value of the line,
+    so a heavy piece, a costly letter, a karat or a bar / pound are comparable. `others_average_pct` is kept for the callers' signature and no longer decides anything."""
+    return ["BELOW_MIN_PROFIT"] if below_minimum(margin_pct, MIN_PROFIT_PCT) else []
 
 
 def line_cost(l):
@@ -284,7 +286,6 @@ def judge_sale(l, sales):
 
 def employee_rows(now, default_percent):
     """One verdict per employee over the lines of THIS period. Counted lines: sale lines of 1 g or more with a known making, ordinary scrap lines, and the employee's invoices."""
-    default = _d(default_percent)
     sales = margin_sales(now)
     people = {}
     for l in now:
@@ -302,7 +303,7 @@ def employee_rows(now, default_percent):
         elif l["line_type"] == BUY_LINE and not l.get("scrap_kind") and l.get("gross_total") is not None and l.get("discount_amount") is not None and _d(l["gross_total"]) > 0:
             p["lines"] += 1
             percent = _d(l["discount_amount"]) / _d(l["gross_total"]) * HUNDRED
-            if percent < default - DISCOUNT_TOLERANCE:
+            if below_minimum(percent, MIN_DISCOUNT_PCT):
                 p["low_discount"] += 1
                 p["reasons"].add("LOW_DISCOUNT")
     rows = []
@@ -315,9 +316,7 @@ def employee_rows(now, default_percent):
 
 
 def flagged_lines(now, default_percent, limit=300):
-    """The LINES behind every «انتبه»: each sale line with a low making (under the piece letter's cost and / or under 80% of the other employees' average of the karat) and each scrap line whose
-    discount is under the default, newest first, with the invoice so the owner can open it. The same rules as employee_rows (one place decides what is flagged)."""
-    default = _d(default_percent)
+    """The LINES behind every «انتبه» (owner 2026-11-13, fixed rules): each sale line whose profit is under 2% of its gold value and each scrap line whose discount is under 1.5%, newest first, with the invoice so the owner can open it. The same rules as employee_rows (one place decides what is flagged)."""
     sales = margin_sales(now)
     rows = []
     for l in now:
@@ -327,17 +326,12 @@ def flagged_lines(now, default_percent, limit=300):
         if l["line_type"] in SELL_LINES:
             judged = judge_sale(l, sales)
             if judged is not None and judged[3]:
-                margin, cost, average, reasons = judged
-                parts = []
-                if "BELOW_COST" in reasons:
-                    parts.append(f"المصنعية أقل من تكلفة الحرف ({cost:,.2f})")
-                if "BELOW_OTHERS" in reasons:
-                    parts.append(f"أقل من 80% من متوسط نسبة ربح باقي الموظفين ({average * LOW_RATIO:,.2f}%)")
-                rows.append({**base, "kind": "ربح مصنعية قليل", "detail": f"نسبة الربح {margin:,.2f}% من قيمة الذهب (المصنعية − تكلفة الحرف): " + " و".join(parts)})
+                margin = judged[0]
+                rows.append({**base, "kind": "ربح مصنعية قليل", "detail": f"نسبة الربح {margin:,.2f}% من قيمة الذهب (المصنعية − تكلفة الحرف): أقل من {MIN_PROFIT_PCT:.0f}%"})
         elif l["line_type"] == BUY_LINE and not l.get("scrap_kind") and l.get("gross_total") is not None and l.get("discount_amount") is not None and _d(l["gross_total"]) > 0:
             percent = _d(l["discount_amount"]) / _d(l["gross_total"]) * HUNDRED
-            if percent < default - DISCOUNT_TOLERANCE:
-                rows.append({**base, "kind": "خصم كسر قليل", "detail": f"الخصم {percent:.2f}% بدل الافتراضي {default:.2f}%"})
+            if below_minimum(percent, MIN_DISCOUNT_PCT):
+                rows.append({**base, "kind": "خصم كسر قليل", "detail": f"الخصم {percent:.2f}% أقل من {MIN_DISCOUNT_PCT:.2f}%"})
     rows.sort(key=lambda r: (str(r["date"]), r["invoice"]), reverse=True)
     return rows[:limit]
 

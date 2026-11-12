@@ -135,8 +135,8 @@ class FakeRepo:
         for i in range(2):
             line(25 + i, 1, "علي", "SELL_INVENTORY", "7.000", "840.00", month=9)                            # the 7 days before: 14 g at 120 per gram = 40 g averaged to the 20-day period
         for i in range(6):
-            line(2 + i, 1, "علي", "SELL_INVENTORY", "5.000", "500.00")                                      # 100 per gram, above the cost 50
-            line(2 + i, 2, "حسين", "SELL_INVENTORY", "5.000", "200.00")                                     # 40 per gram: under the cost AND under 80% of the other employee's average
+            line(2 + i, 1, "علي", "SELL_INVENTORY", "5.000", "500.00", gross="10000.00")                    # 100 per gram, above the cost 50: profit 250 on a gold value of 10,000 = 2.5% (not under 2%)
+            line(2 + i, 2, "حسين", "SELL_INVENTORY", "5.000", "200.00")                                     # 40 per gram: under the cost, so a NEGATIVE profit percent (under the fixed 2%)
         for i in range(2):
             line(8 + i, 1, "علي", "BUY_OLD_GOLD", "10.000", gross="1000.00", discount="15.00", cost=None)   # 1.5 percent
         line(10, 2, "حسين", "BUY_OLD_GOLD", "10.000", gross="1000.00", discount="5.00", cost=None)          # 0.5 percent
@@ -1160,6 +1160,24 @@ class KpiTests(Case):
         limited = ReportService(session, transaction_factory=self.service._transaction, repository=FakeRepo, authorization=FakeAuthorization(session), today=lambda: TODAY)
         with self.assertRaises(PermissionError):
             limited.run("kpi", self.PERIOD)
+
+
+class KpiAttentionThresholdTests(unittest.TestCase):
+    """Owner 2026-11-13: «انتبه» = a sale whose profit is under 2% of its gold value, a scrap purchase whose discount is under 1.5%. Nothing else."""
+
+    def test_the_two_fixed_limits_are_judged_as_displayed(self):
+        from services import kpi_rules
+        self.assertEqual(kpi_rules.making_flags(D("1.99")), ["BELOW_MIN_PROFIT"])
+        self.assertEqual(kpi_rules.making_flags(D("-3")), ["BELOW_MIN_PROFIT"])
+        self.assertEqual(kpi_rules.making_flags(D("1.995")), [])          # shows 2.00
+        self.assertEqual(kpi_rules.making_flags(D("2.00")), [])
+        self.assertTrue(kpi_rules.below_minimum(D("1.49"), kpi_rules.MIN_DISCOUNT_PCT))
+        self.assertFalse(kpi_rules.below_minimum(D("1.499"), kpi_rules.MIN_DISCOUNT_PCT))   # shows 1.50
+        self.assertFalse(kpi_rules.below_minimum(D("1.5"), kpi_rules.MIN_DISCOUNT_PCT))
+
+    def test_an_average_of_other_employees_no_longer_flags_a_line(self):
+        from services import kpi_rules
+        self.assertEqual(kpi_rules.making_flags(D("2.5"), D("10")), [])
 
 
 class KpiGoldProfitTests(Case):
