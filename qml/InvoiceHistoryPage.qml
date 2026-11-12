@@ -590,6 +590,12 @@ Item {
                   visible: !!detailRoot.d.canReprint
                   enabled: !!historyPage.vm && !historyPage.vm.reprintBusy
                   onClicked: historyPage.vm.reprint() }
+            // A sale with the customer's old gold, printed at its full sale total (only when the customer asks).
+            Btn { objectName: "historyReprintSaleTotal"
+                  text: "طباعة بإجمالي البيع"
+                  visible: !!detailRoot.d.canReprintSaleTotal
+                  enabled: !!historyPage.vm && !historyPage.vm.reprintBusy
+                  onClicked: historyPage.vm.reprintSaleTotal() }
             // Esc escape hatch, parked at the far LEFT edge of the bar (last item in an RTL row)
             // so it never mixes with the lifecycle actions, and gold-outlined to stay readable.
             Item { Layout.preferredWidth: 18 }
@@ -888,6 +894,11 @@ Item {
                         Figure { objectName: "historyFinalizedAt"; label: "تاريخ ووقت الحفظ"; value: detailScroll.d.finalizedAt || "" }
                         Figure { objectName: "historyOperation"; label: "العملية"
                                  value: (detailScroll.d.typeText || "") + " • " + (detailScroll.d.settlementText || "") }
+                        // A paper printed at the full sale total (the customer asked): which amount, when and by whom.
+                        Figure { objectName: "historySaleTotalPrint"; label: "طُبعت بإجمالي البيع"
+                                 visible: (detailScroll.d.saleTotalPrintValue || "").length > 0
+                                 value: detailScroll.d.saleTotalPrintValue || ""; note: detailScroll.d.saleTotalPrintNote || ""
+                                 valueColor: theme.amber }
                     }
                 }
 

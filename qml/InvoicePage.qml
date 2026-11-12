@@ -203,6 +203,7 @@ Item {
         }
         staleCheck.checked = false
         deadCashCheck.checked = false
+        saleTotalCheck.checked = false             // only when the customer asks, never remembered
         confirmDialog.open()
     }
     function removeRow(list, row) {
@@ -2779,7 +2780,8 @@ Item {
             if (!acknowledged || !invoiceVM.canFinalize)
                 return
             close()
-            invoiceVM.finalizeInvoice(staleCheck.checked, deadCashCheck.checked, !!wantPrint)
+            invoiceVM.finalizeInvoice(staleCheck.checked, deadCashCheck.checked, !!wantPrint,
+                                      !!wantPrint && invoiceVM.mixed && saleTotalCheck.checked)
         }
         title: "حفظ الفاتورة"
         modal: true
@@ -2882,6 +2884,16 @@ Item {
                     font.pixelSize: 11
                     onClicked: { confirmDialog.close(); invoiceVM.openPrintingSettings() }
                 }
+            }
+            // A sale with the customer's old gold: the paper may show the FULL sale total (the customer asked); the saved invoice is the same.
+            CheckBox {
+                id: saleTotalCheck
+                objectName: "printSaleTotal"
+                Layout.fillWidth: true
+                visible: invoiceVM.mixed && invoiceVM.printable
+                text: "اطبع إجمالي البيع كامل (بدون خصم الكسر)"
+                font.family: "Cairo"
+                LayoutMirroring.enabled: true
             }
             CheckBox {
                 id: deadCashCheck

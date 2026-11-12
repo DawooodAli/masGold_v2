@@ -86,6 +86,10 @@ class FakeInvoiceRepo:
         row = self.state["invoices"].get(str(invoice_id))
         return row["payment_accounts"] if row else []
 
+    def insert_event(self, **event):
+        self.state.setdefault("events", []).append(event)
+        return str(len(self.state["events"]))
+
 
 def make_service(invoices=None, permissions=PERMISSIONS, print_document=None, calibration=None, **kwargs):
     session = AppSession()
@@ -488,6 +492,83 @@ class PrintServiceTests(unittest.TestCase):
         self.assertNotIn("3,000", page.replace("23,000", ""))                   # the sample's deferred amount
         self.assertNotIn("على العميل", page)
 
+
+
+def mixed_row(**overrides):
+    """26111105 as saved: a 69,282.23 sale with 28,082.23 of the customer's old gold, 41,200 cash."""
+    row = invoice_row(invoice_type="MIXED", sell_total=D("69282.23"), buy_total=D("28082.23"), net_amount=D("41200.00"),
+                      lines=[sale_line(item_name_snapshot="غويشة", line_total=D("69282.23")),
+                             dict(old_gold_line(), line_total=D("28082.23"))],
+                      payments=[{"payment_id": "1", "payment_method_code": "PHYSICAL_CASH", "payment_method_name": "نقدي",
+                                 "direction": "IN", "amount": D("41200.00")}])
+    row.update(overrides)
+    return row
+
+
+class SaleTotalPaperTests(unittest.TestCase):
+    """Owner 2026-11-12: a sale with the customer's old gold may be printed at its FULL sale total when the customer asks."""
+
+    def service(self, row=None, printed=True):
+        jobs = []
+        service, state = make_service(invoices={"42": row or mixed_row()},
+                                      print_document=lambda ops: (jobs.append(joined(ops)), (printed, "ok", None))[1])
+        return service, state, jobs
+
+    def test_the_paper_shows_the_full_sale_total_rounded_to_five_and_no_payment_line(self):
+        service, state, jobs = self.service()
+        self.assertTrue(service.print_invoice("42").printed)                 # the ordinary paper: after the old gold
+        self.assertTrue(service.print_invoice("42", sale_total=True).printed)
+        normal, full = jobs
+        self.assertIn("41,200", normal)
+        self.assertIn("69,280", full)                                        # 69,282.23 rounded once to 5, as on the screen
+        self.assertNotIn("41,200", full)
+        self.assertNotIn("المستلم", full)
+        self.assertNotIn("نقدي", full)
+        self.assertIn("غويشة", full)
+        self.assertEqual(state["invoices"]["42"]["net_amount"], D("41200.00"))  # the saved invoice is the same
+
+    def test_each_full_total_paper_is_noted_in_the_invoice_history(self):
+        service, state, _ = self.service()
+        service.print_invoice("42")                                          # the ordinary paper writes nothing
+        self.assertNotIn("events", state)
+        service.print_invoice("42", sale_total=True)
+        service.print_invoice("42", sale_total=True, reprint=True)
+        self.assertEqual([(e["event_type"], e["details"], e["notes"], e["performed_by_user_id"]) for e in state["events"]],
+                         [(kind, {"print_mode": "SALE_TOTAL", "printed_total": "69280.00"}, "طباعة بإجمالي البيع", 1)
+                          for kind in ("PRINTED", "REPRINTED")])
+
+    def test_a_failed_print_notes_nothing(self):
+        service, state, _ = self.service(printed=False)
+        self.assertFalse(service.print_invoice("42", sale_total=True).printed)
+        self.assertNotIn("events", state)
+
+    def test_only_a_sale_with_old_gold_can_be_printed_this_way(self):
+        service, state, jobs = self.service(row=invoice_row())
+        outcome = service.print_invoice("42", sale_total=True)
+        self.assertEqual((outcome.printed, outcome.message), (False, "الطباعة بإجمالي البيع لفواتير البيع مع الكسر فقط."))
+        self.assertEqual((jobs, state.get("events")), ([], None))
+
+    def test_the_shop_paying_the_customer_still_prints_the_sale_only(self):
+        service, _, jobs = self.service(row=mixed_row(
+            sell_total=D("10789.72"), buy_total=D("15589.72"), net_amount=D("4800.00"), net_direction="SHOP_PAYS_CUSTOMER",
+            payments=[{"payment_id": "1", "payment_method_code": "PHYSICAL_CASH", "payment_method_name": "نقدي",
+                       "direction": "OUT", "amount": D("4800.00")}]))
+        service.print_invoice("42", sale_total=True)
+        self.assertIn("10,790", jobs[0])
+        self.assertNotIn("المدفوع للعميل", jobs[0])
+        self.assertNotIn("4,800", jobs[0])
+
+    def test_a_legacy_header_without_the_sale_total_uses_its_sale_lines_or_is_refused(self):
+        from services.invoice_print_service import sale_total_view
+        legacy = mixed_row(sell_total=None)
+        self.assertEqual(sale_total_view(legacy)["net_amount"], D("69280.00"))
+        unknown = mixed_row(sell_total=None, lines=[sale_line(line_total=None), old_gold_line()])
+        with self.assertRaises(PrintError):
+            sale_total_view(unknown)
+
+    def test_an_effective_exchange_difference_is_part_of_the_sale_total(self):
+        from services.invoice_print_service import sale_total_view
+        self.assertEqual(sale_total_view(mixed_row(exchange_delta=D("5000")))["net_amount"], D("74280.00"))
 
 
 class InFlightGuardTests(unittest.TestCase):

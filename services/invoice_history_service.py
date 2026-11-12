@@ -311,6 +311,8 @@ class InvoiceHistoryService:
                                  "provider_timestamp": p.get("provider_timestamp")}
                                 for p in invoice.get("price_snapshots", [])],
             "timeline": self._timeline(invoice.get("events", [])),
+            # Papers printed at the full sale total (owner 2026-11-12), newest first: who, when, which amount.
+            "sale_total_prints": self._sale_total_prints(invoice.get("events", [])),
             # Exchanges of this invoice, shown inside the same detail (no second, repeating page).
             "exchanges": invoice.get("exchanges", []),
             "notes": invoice.get("notes") or "",
@@ -555,8 +557,16 @@ class InvoiceHistoryService:
                                            amount=amount, linked_record_id=linked))
         return timeline
 
+    @classmethod
+    def _sale_total_prints(cls, events):
+        prints = [{"occurred_at": e["occurred_at"], "actor": e.get("performed_by_name") or "",
+                   "total": _decimal(cls._details(e).get("printed_total"))}
+                  for e in events or []
+                  if e["event_type"] in ("PRINTED", "REPRINTED") and cls._details(e).get("print_mode") == "SALE_TOTAL"]
+        return sorted(prints, key=lambda p: p["occurred_at"], reverse=True)
+
     # ------------------------------------------------------------ reprint (read-only)
-    def reprint(self, invoice_id, *, _expected_actor=None):
+    def reprint(self, invoice_id, *, sale_total=False, _expected_actor=None):
         """The ORIGINAL finalized invoice through the frozen print service: no number, no payment,
         no ledger, no inventory, no timestamp change — a printer failure changes nothing either."""
         actor = self._actor(_expected_actor, REPRINT_PERMISSION)
@@ -565,4 +575,6 @@ class InvoiceHistoryService:
         if service is None:
             from services.invoice_print_service import InvoicePrintService
             service = self._print_service = InvoicePrintService(self._session)
+        if sale_total:                       # a MIXED invoice at its full sale total, only when the customer asks (owner 2026-11-12)
+            return service.print_invoice(invoice_id, sale_total=True, reprint=True, _expected_actor=_expected_actor)
         return service.print_invoice(invoice_id, _expected_actor=_expected_actor)

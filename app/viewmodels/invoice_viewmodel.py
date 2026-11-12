@@ -189,6 +189,7 @@ class InvoiceViewModel(QObject):
         self._print_service = print_service
         # Printing is a separate step after finalize: it never affects whether the invoice was saved.
         self._pending_print, self._print_result, self._last_invoice_id = False, {}, ""
+        self._print_sale_total = False
         self._workers = set()
         self._request = 0
         self._latest = {}
@@ -1407,9 +1408,12 @@ class InvoiceViewModel(QObject):
 
     @Slot(bool, bool)
     @Slot(bool, bool, bool)
-    def finalizeInvoice(self, stale_acknowledged, dead_cash_confirmed, print_after=False):
+    @Slot(bool, bool, bool, bool)
+    def finalizeInvoice(self, stale_acknowledged, dead_cash_confirmed, print_after=False, sale_total=False):
         """Save happens first, always. Printing (when requested) is a separate step that runs
-        only after the invoice is actually finalized, and a printer failure never touches it."""
+        only after the invoice is actually finalized, and a printer failure never touches it.
+        `sale_total`: a sale with the customer's old gold is printed at its full sale total (owner 2026-11-12, only when the
+        customer asks); the saved invoice is the same either way."""
         if not self.canFinalize:
             return
         draft, token = self._draft(), self._preview["price_token"]
@@ -1417,6 +1421,7 @@ class InvoiceViewModel(QObject):
         self._error = ""
         # Old gold only is save-only: a print request is dropped here whatever the caller asked for.
         self._pending_print, self._print_result = bool(print_after) and self.printable, {}
+        self._print_sale_total = self._pending_print and bool(sale_total) and self.mixed
         self._start("finalize", lambda _expected_actor: service.finalize(
             draft, token, stale_acknowledged=bool(stale_acknowledged),
             dead_cash_confirmed=bool(dead_cash_confirmed), _expected_actor=_expected_actor))
@@ -1470,6 +1475,10 @@ class InvoiceViewModel(QObject):
             return
         service = self._print_service_instance()
         self._print_result = {}
+        if self._print_sale_total:                     # the retry prints the same paper as the first attempt
+            self._start("print", lambda _expected_actor: service.print_invoice(
+                invoice_id, sale_total=True, _expected_actor=_expected_actor))
+            return
         self._start("print", lambda _expected_actor: service.print_invoice(
             invoice_id, _expected_actor=_expected_actor))
 
@@ -1730,6 +1739,11 @@ class InvoiceViewModel(QObject):
     @Property(int, notify=changed)
     def oldGoldCount(self):
         return len(self._olds)
+
+    @Property(bool, notify=changed)
+    def mixed(self):
+        """A sale with the customer's old gold: only then can the paper show the full sale total («اطبع إجمالي البيع كامل»)."""
+        return bool(self._sales or self._described) and bool(self._olds)
 
     @Property(int, notify=changed)
     def discountedOldGoldCount(self):

@@ -183,6 +183,44 @@ class InvoiceHistoryPageTests(page_harness.InvoicePageTests):
         self.assertEqual(calls, [])
         self.assertEqual(self.warnings, [])
 
+    def test_a_mixed_invoice_prints_at_its_full_sale_total_by_a_real_click_at_every_size(self):
+        from datetime import datetime
+        from decimal import Decimal
+        vm = self.open_history()
+        QTest.mouseDClick(self.root, Qt.LeftButton, Qt.NoModifier,
+                          self.visual_item("historyRow_0").mapToScene(QPointF(40, 12)).toPoint())
+        self.wait_until(lambda: vm.detail, "detail not opened")
+        for width, height in ((1440, 900), (1280, 800), (1080, 680)):
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(250)
+            button = self.item("historyReprintSaleTotal")
+            self.assertTrue(button.property("visible"))                         # the fixture sells pieces and buys old gold
+            self.assertEqual(button.property("text"), "طباعة بإجمالي البيع")
+            for name in ("historyReprintSaleTotal", "historyReprint", "historyBack"):
+                self.assert_inside_window(self.item(name))
+            before = len(self.history.printer.calls)
+            self.click(button)
+            self.wait_until(lambda: len(self.history.printer.calls) == before + 1 and not vm.reprintBusy, f"no paper at {width}")
+            self.assertEqual(self.history.printer.modes[-1], {"sale_total": True, "reprint": True})
+            self.wait_until(lambda: vm.reprintMessage == "تم إرسال الفاتورة للطابعة.")
+        # The latest full-total paper is shown in the summary strip (amount, when, who); the detail reload after the paper finishes first.
+        self.wait_until(lambda: not vm.detailBusy, "detail reload never finished")
+        vm._detail = dict(vm._detail, sale_total_prints=[
+            {"occurred_at": datetime(2026, 11, 12, 14, 3), "actor": "admin", "total": Decimal("69280.00")}])
+        vm.changed.emit()
+        QTest.qWait(150)
+        figure = self.visual_item("historySaleTotalPrint")
+        self.assertIsNotNone(figure)
+        self.assertTrue(figure.property("visible"))
+        flick = self.item("historyDetailScroll").property("contentItem")      # the strip is the last element: scrolled to, as the employee does
+        flick.setProperty("contentY", float(max(0.0, flick.property("contentHeight") - flick.height())))
+        QTest.qWait(120)
+        self.assert_inside_window(figure)
+        self.shot("sale-total-1080x680")
+        self.assertEqual(self.store.invoices, [])                               # nothing saved anywhere
+        self.assertEqual(self.warnings, [])
+
     def test_type_and_karat_filters_by_real_clicks_at_every_size_and_clear_resets_them(self):
         vm = self.open_history()
         self.wait_until(lambda: len(vm.itemTypeChoices) > 1 and len(vm.karatChoices) > 1, "choices not loaded")

@@ -86,9 +86,10 @@ class UiPrinter:
     def bill_printer_ready(self):
         return self.ready
 
-    def print_invoice(self, invoice_id, *, _expected_actor=None):
+    def print_invoice(self, invoice_id, *, _expected_actor=None, **mode):
         from services.invoice_print_service import PrintOutcome
         self.calls.append(invoice_id)
+        self.modes = getattr(self, "modes", []) + [mode]
         if self.gate is not None:
             self.gate.wait(10)
         printed, message = self.outcome
@@ -1136,6 +1137,40 @@ class InvoicePageTests(unittest.TestCase):
         self.wait_until(lambda: not dialog.property("visible"))
         self.assertEqual((self.store.invoices, self.printer.calls), ([], []))
         self.assertEqual(self.vm.saleCount, 1)                                 # the draft is still there
+
+    def test_a_sale_with_old_gold_can_be_printed_at_its_full_sale_total_by_a_real_click(self):
+        # Owner 2026-11-12: the box is offered only for a sale with the customer's old gold, unticked every time.
+        dialog = self.open_confirmation()
+        self.assertFalse(self.item("printSaleTotal").property("visible"))       # a sale only: nothing to choose
+        self.click("confirmBack")
+        self.wait_until(lambda: not dialog.property("visible"))
+        self.add_old_gold("21", "5")
+        self.receive("36440")
+        self.settle()
+        self.wait_until(lambda: self.vm.mixed and self.vm.canFinalize, f"blocked: {self.vm.blockingProblems}")
+        for width, height in ((1440, 900), (1280, 800), (1080, 680)):
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(150)
+            QTest.keyClick(self.root, Qt.Key_F9)
+            self.wait_until(lambda: dialog.property("opened"), f"confirmation not opened at {width}")
+            QTest.qWait(250)
+            box = self.item("printSaleTotal")
+            self.assertTrue(box.property("visible"))
+            self.assertFalse(box.property("checked"))                            # never remembered
+            self.assertEqual(box.property("text"), "اطبع إجمالي البيع كامل (بدون خصم الكسر)")
+            for name in ("printSaleTotal", "confirmSaveAndPrint", "confirmFinalize", "confirmBack"):
+                self.assert_inside_window(self.item(name))
+            self.click(box)
+            self.wait_until(lambda: box.property("checked"), "the box did not tick")
+            self.snapshot(f"sale-total-{width}x{height}")
+            if (width, height) != (1080, 680):
+                self.click("confirmBack")
+                self.wait_until(lambda: not dialog.property("visible"))
+        self.click("confirmSaveAndPrint")
+        self.wait_until(lambda: self.vm.hasSuccess and self.vm.printSucceeded, f"not printed: {self.vm.errorMessage!r}")
+        self.assertEqual(len(self.store.invoices), 1)
+        self.assertEqual(self.printer.modes, [{"sale_total": True}])
 
     def test_save_only_finalizes_without_a_print_job(self):
         self.open_confirmation()

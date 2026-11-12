@@ -75,7 +75,7 @@ class InvoiceHistoryViewModel(QObject):
         self._results, self._page, self._has_more, self._loaded = [], 1, False, False
         self._detail, self._error, self._detail_error = {}, "", ""
         self._detail_id = None
-        self._reprint = {}
+        self._reprint, self._reprint_sale_total = {}, False
         self._sellers, self._seller_service, self._seller_message, self._seller_ok = [], None, "", False
         self._piece_service, self._piece_message, self._piece_ok = None, "", False
         self._lookup_message = ""
@@ -534,14 +534,30 @@ class InvoiceHistoryViewModel(QObject):
         if not self._detail or not self._detail.get("can_reprint") or "reprint" in self._busy:
             return
         service, invoice_id = self._service_instance(), self._detail["invoice_id"]
-        self._reprint = {}
+        self._reprint, self._reprint_sale_total = {}, False
         self._start("reprint", lambda _expected_actor: service.reprint(invoice_id, _expected_actor=_expected_actor))
 
+    @Slot()
+    def reprintSaleTotal(self):
+        """«طباعة بإجمالي البيع»: a MIXED invoice printed at its full sale total, the old gold not deducted (owner 2026-11-12)."""
+        if (not self._detail or not self._detail.get("can_reprint") or self._kind(self._detail) != "MIXED"
+                or "reprint" in self._busy):
+            return
+        service, invoice_id = self._service_instance(), self._detail["invoice_id"]
+        self._reprint, self._reprint_sale_total = {}, True
+        self._start("reprint", lambda _expected_actor: service.reprint(invoice_id, sale_total=True,
+                                                                       _expected_actor=_expected_actor))
+
     def _on_reprint(self, result, error):
+        sale_total, self._reprint_sale_total = self._reprint_sale_total, False
         if error:
             self._reprint = {"printed": False, "message": f"{PRINT_FAILED_TEXT} {error}"}
         elif result.printed:
             self._reprint = {"printed": True, "message": PRINT_SENT_TEXT}
+            invoice_id = self._detail.get("invoice_id") if self._detail else None
+            if sale_total and invoice_id:                         # the detail now shows the new full-sale-total paper
+                service = self._service_instance()
+                self._start("detail", lambda _expected_actor: service.detail(invoice_id, _expected_actor=_expected_actor))
         else:
             self._reprint = {"printed": False, "message": f"{PRINT_FAILED_TEXT} {result.message}".strip()}
 
@@ -683,6 +699,9 @@ class InvoiceHistoryViewModel(QObject):
             "oldGoldTotal": known_money(d.get("buy_total")) if d["old_gold_lines"] else "",
             "notes": d.get("notes") or "",
             "canReprint": bool(d.get("can_reprint")),
+            # A sale with the customer's old gold may also be printed at its full sale total (only when the customer asks).
+            "canReprintSaleTotal": bool(d.get("can_reprint")) and self._kind(d) == "MIXED",
+            **self._sale_total_print_text(d.get("sale_total_prints") or []),
             "canExchange": bool(d.get("can_exchange")),
             "canReturn": bool(d.get("can_return")),
             "canCorrect": bool(d.get("can_correct")),
@@ -785,6 +804,18 @@ class InvoiceHistoryViewModel(QObject):
             rows.append({"item": line.get("item_name") or "من الكسر", "barcode": line.get("barcode") or "",
                          "original": original, "returned": returned, "remaining": remaining})
         return rows
+
+    @staticmethod
+    def _sale_total_print_text(prints):
+        """The latest paper printed at the full sale total: its amount, and «2026-11-12 14:03 • admin • مرتين» under it."""
+        if not prints:
+            return {"saleTotalPrintValue": "", "saleTotalPrintNote": ""}
+        last = prints[0]
+        note = [datetime_text(last["occurred_at"])] + ([last["actor"]] if last.get("actor") else [])
+        if len(prints) > 1:
+            note.append("مرتين" if len(prints) == 2 else f"{len(prints)} مرات")
+        return {"saleTotalPrintValue": money(last["total"]) if last.get("total") is not None else "—",
+                "saleTotalPrintNote": " • ".join(note)}
 
     @staticmethod
     def _kind(d):

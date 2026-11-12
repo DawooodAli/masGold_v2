@@ -123,8 +123,9 @@ class FakePrint:
         self.calls, self.printed = [], printed
         self.gate = None                       # a threading.Event: the job stays "in flight" until it is set
 
-    def print_invoice(self, invoice_id, *, _expected_actor=None):
+    def print_invoice(self, invoice_id, *, _expected_actor=None, **mode):
         self.calls.append(invoice_id)
+        self.modes = getattr(self, "modes", []) + [mode]
         if self.gate is not None:
             self.gate.wait(10)
         return type("Outcome", (), {"printed": self.printed,
@@ -297,7 +298,29 @@ class HistoryReprintAndImmutabilityTests(unittest.TestCase):
         service, _, printer = make(permissions=frozenset({"APP_LOGIN", "INVOICE_VIEW"}))
         with self.assertRaises(PermissionError):
             service.reprint("21")
+        with self.assertRaises(PermissionError):
+            service.reprint("21", sale_total=True)
         self.assertEqual(printer.calls, [])
+
+    def test_the_full_sale_total_paper_goes_through_the_same_print_service_as_a_reprint(self):
+        service, _, printer = make()
+        service.reprint("21")
+        service.reprint("21", sale_total=True)
+        self.assertEqual(printer.calls, ["21", "21"])
+        self.assertEqual(printer.modes, [{}, {"sale_total": True, "reprint": True}])
+
+    def test_the_detail_lists_the_full_sale_total_papers_newest_first(self):
+        service, state, _ = make()
+        events = state["invoices"]["21"]["events"]
+        for event_id, when, kind, total in (("303", datetime(2026, 9, 27, 22, 0), "PRINTED", "89000.00"),
+                                            ("304", datetime(2026, 9, 28, 10, 5), "REPRINTED", "89000.00")):
+            events.append({"event_id": event_id, "event_type": kind, "occurred_at": when, "performed_by_name": "المدير",
+                           "related_invoice_id": None, "notes": "طباعة بإجمالي البيع",
+                           "details_json": json.dumps({"print_mode": "SALE_TOTAL", "printed_total": total})})
+        events.append({"event_id": "305", "event_type": "REPRINTED", "occurred_at": datetime(2026, 9, 29, 9, 0),
+                       "performed_by_name": "المدير", "related_invoice_id": None, "details_json": None})   # an ordinary paper
+        prints = service.detail("21")["sale_total_prints"]
+        self.assertEqual([(p["occurred_at"].day, p["total"]) for p in prints], [(28, D("89000.00")), (27, D("89000.00"))])
 
     def test_a_printer_failure_changes_nothing(self):
         service, state, _ = make(printed=False)
@@ -327,9 +350,9 @@ class StaticHistory:
         self.calls.append(("detail", invoice_id))
         return self.real.detail(invoice_id)
 
-    def reprint(self, invoice_id, **kwargs):
-        self.calls.append(("reprint", invoice_id))
-        return self.real.reprint(invoice_id)
+    def reprint(self, invoice_id, sale_total=False, **kwargs):
+        self.calls.append(("reprint", invoice_id) if not sale_total else ("reprint_sale_total", invoice_id))
+        return self.real.reprint(invoice_id, sale_total=sale_total)
 
     def find_by_number(self, number, **kwargs):
         self.calls.append(("exact", number))
@@ -430,6 +453,41 @@ class HistoryViewModelTests(unittest.TestCase):
         self.wait(lambda: self.vm.reprintFailed)
         self.assertEqual(self.vm.reprintMessage, "تعذر إرسال الفاتورة للطابعة. الطابعة غير متصلة.")
         self.assertEqual([c for c in self.service.calls if c[0] == "reprint"], [("reprint", "21"), ("reprint", "21")])
+
+
+class HistorySaleTotalPaperTests(HistoryViewModelTests):
+    """«طباعة بإجمالي البيع» (owner 2026-11-12): a sale with the customer's old gold printed at its full sale total."""
+
+    def test_a_mixed_invoice_offers_it_and_a_printed_paper_reloads_the_detail(self):
+        self.vm.openInvoice("21")
+        self.wait(lambda: self.vm.detail)
+        self.assertTrue(self.vm.detail["canReprintSaleTotal"])               # the fixture sells pieces and buys old gold
+        self.assertEqual((self.vm.detail["saleTotalPrintValue"], self.vm.detail["saleTotalPrintNote"]), ("", ""))
+        details_before = len([c for c in self.service.calls if c[0] == "detail"])
+        self.vm.reprintSaleTotal()
+        self.wait(lambda: self.vm.reprintMessage == "تم إرسال الفاتورة للطابعة.")
+        self.wait(lambda: len([c for c in self.service.calls if c[0] == "detail"]) > details_before)
+        self.assertIn(("reprint_sale_total", "21"), self.service.calls)
+        self.assertEqual(self.service.printer.modes[-1], {"sale_total": True, "reprint": True})
+        self.assertFalse(self.vm.reprintFailed)
+
+    def test_a_sale_only_invoice_does_not_offer_it(self):
+        self.vm.openInvoice("21")
+        self.wait(lambda: self.vm.detail)
+        self.vm._detail = dict(self.vm._detail, transaction_kind="SALE")
+        self.assertFalse(self.vm.detail["canReprintSaleTotal"])
+        self.vm.reprintSaleTotal()
+        QTest.qWait(60)
+        self.assertNotIn(("reprint_sale_total", "21"), self.service.calls)
+
+    def test_the_last_full_total_paper_is_shown_with_when_who_and_how_many(self):
+        self.vm.openInvoice("21")
+        self.wait(lambda: self.vm.detail)
+        prints = [{"occurred_at": datetime(2026, 11, 12, 14, 3), "actor": "admin", "total": D("69280.00")},
+                  {"occurred_at": datetime(2026, 11, 11, 15, 7), "actor": "admin", "total": D("69280.00")}]
+        self.vm._detail = dict(self.vm._detail, sale_total_prints=prints)
+        self.assertEqual(self.vm.detail["saleTotalPrintValue"], "69,280 ج")
+        self.assertEqual(self.vm.detail["saleTotalPrintNote"], "⁦2026-11-12 14:03⁩ • admin • مرتين")
 
 
 class HistoryReprintInFlightTests(HistoryViewModelTests):

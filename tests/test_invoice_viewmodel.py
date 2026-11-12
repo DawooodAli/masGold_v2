@@ -128,9 +128,10 @@ class Printer:
         self.calls = []
         self.outcome = ("901", True, "تم إرسال الفاتورة للطابعة.")
 
-    def print_invoice(self, invoice_id, *, _expected_actor=None):
+    def print_invoice(self, invoice_id, *, _expected_actor=None, **mode):
         from services.invoice_print_service import PrintOutcome
         self.calls.append(invoice_id)
+        self.modes = getattr(self, "modes", []) + [mode]
         number, printed, message = self.outcome
         return PrintOutcome(invoice_number=number, printed=printed, message=message)
 
@@ -319,6 +320,29 @@ class InvoiceViewModelTests(unittest.TestCase):
         self.preview_now()
         self.vm.finalizeInvoice(False, False, True)
         self.assertEqual(self.printer.calls, ["901"])
+
+    def test_a_mixed_invoice_can_be_printed_at_its_full_sale_total_and_the_retry_keeps_it(self):
+        self.printer.outcome = ("901", False, "لا يوجد ورق.")
+        self.sale_ready()
+        self.assertFalse(self.vm.mixed)                               # a sale only: nothing to choose
+        self.vm.addOldGold(1, "5")
+        self.assertTrue(self.vm.mixed)
+        self.preview_now()
+        self.vm.finalizeInvoice(False, False, True, True)
+        self.assertEqual(self.printer.modes, [{"sale_total": True}])
+        self.printer.outcome = ("901", True, "تم إرسال الفاتورة للطابعة.")
+        self.vm.retryPrint()                                          # the same paper again
+        self.assertEqual(self.printer.modes, [{"sale_total": True}, {"sale_total": True}])
+
+    def test_the_full_sale_total_choice_is_ignored_for_a_sale_only_and_for_save_only(self):
+        self.sale_ready()
+        self.vm.finalizeInvoice(False, False, True, True)              # not mixed: the ordinary paper
+        self.assertEqual(self.printer.modes, [{}])
+        self.sale_ready()
+        self.vm.addOldGold(1, "5")
+        self.preview_now()
+        self.vm.finalizeInvoice(False, False, False, True)             # save only: nothing is printed
+        self.assertEqual(self.printer.modes, [{}])
 
     def test_print_failure_leaves_the_invoice_finalized(self):
         self.printer.outcome = ("901", False, "الطابعة غير متصلة.")

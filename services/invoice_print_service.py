@@ -14,8 +14,10 @@ One print path for everything: Settings → طباعة فاتورة تجريبي
 through `_print_ops()` with the same Bill printer (Settings → الطباعة) and the same layout; only
 the data differs (a built-in sample vs the persisted invoice).
 
-Printing is idempotent: it never writes to any table, never allocates a payment or a movement,
-and never changes inventory, old gold or the customer ledger.
+Printing is idempotent: it never allocates a payment or a movement and never changes the invoice,
+inventory, old gold or the customer ledger. Its ONE write is the history note of a paper printed at the
+full sale total (owner 2026-11-12, only when the customer asks): an insert-only invoice_events row, after
+the paper was sent, that can never undo or change the print.
 
 Printer failures (not configured, offline, the driver refusing A5 landscape, a layout that would
 cross the preprinted footer) are reported back as an unsuccessful PrintOutcome; they never raise,
@@ -24,13 +26,14 @@ so a failure can never be mistaken for a reason to undo the already-finalized in
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+import logging
 import os
 import tempfile
 import threading
 
 from services import bill_overlay
 from services.bill_overlay import MAX_SALE_ITEMS_TEXT, PAPER_HEIGHT_MM, PAPER_WIDTH_MM, LayoutError
-from services.invoice_service import invoice_transaction
+from services.invoice_service import invoice_transaction, round_to_egp5
 from repositories.invoice_repository import InvoiceRepository
 
 PAGE_TOLERANCE_MM = 1.0
@@ -74,6 +77,36 @@ def is_old_gold_purchase_only(lines):
     is save-only by the owner's rule — it has no customer invoice to print or reprint."""
     kinds = {line.get("line_type") for line in lines or []}
     return "BUY_OLD_GOLD" in kinds and not kinds - {"BUY_OLD_GOLD"}
+
+
+SALE_TOTAL_NOTE = "طباعة بإجمالي البيع"
+SALE_TOTAL_MIXED_ONLY_TEXT = "الطباعة بإجمالي البيع لفواتير البيع مع الكسر فقط."
+SALE_TOTAL_UNKNOWN_TEXT = "إجمالي البيع غير معروف لهذه الفاتورة، اطبعها بالطريقة العادية."
+
+
+def is_mixed(lines):
+    """A sale with the customer's old gold in the same invoice (from the SAVED lines)."""
+    kinds = {line.get("line_type") for line in lines or []}
+    return "BUY_OLD_GOLD" in kinds and bool(kinds & set(bill_overlay.SALE_LINE_TYPES))
+
+
+def sale_total_view(invoice):
+    """The paper of a MIXED invoice at its full sale value (owner 2026-11-12, only when the customer asks): the customer's old gold
+    is not deducted, so «إجمالي الفاتورة» is the sale total (rounded once to 5 ج, as on the screen) and no payment line is printed,
+    exactly like a sale invoice. Only the printed figures change; the saved invoice is the same."""
+    lines = invoice.get("lines") or []
+    if not is_mixed(lines):
+        raise PrintError("NOT_MIXED", SALE_TOTAL_MIXED_ONLY_TEXT)
+    sale_lines = [line for line in lines if line["line_type"] in bill_overlay.SALE_LINE_TYPES]
+    total = invoice.get("sell_total")
+    if total is None:                                            # a legacy header without it: the saved sale lines, when all known
+        if any(line.get("line_total") is None for line in sale_lines):
+            raise PrintError("SALE_TOTAL_UNKNOWN", SALE_TOTAL_UNKNOWN_TEXT)
+        total = sum((Decimal(str(line["line_total"])) for line in sale_lines), Decimal("0"))
+    total = round_to_egp5(Decimal(str(total)) + Decimal(str(invoice.get("exchange_delta") or 0)))
+    if total <= 0:
+        raise PrintError("SALE_TOTAL_UNKNOWN", SALE_TOTAL_UNKNOWN_TEXT)
+    return dict(invoice, lines=sale_lines, net_amount=total, net_direction="CUSTOMER_PAYS_SHOP", payments=[], payment_accounts=[])
 
 
 def configure_bill_printer(printer, name):
@@ -165,9 +198,10 @@ class InvoicePrintService:
                 for r in x["replacements"]:
                     lines.append({"line_type": "SELL_INVENTORY", "item_name_snapshot": r["name"], "factory_snapshot": None, "weight_grams": r["weight"],
                                   "karat_value": r["karat"], "quantity": 1, "notes": "", "inventory_item_id": r["item_id"]})
-            result = dict(invoice, lines=lines)
+            delta = sum((Decimal(str(x["signed_amount"])) for x in exchanges), Decimal("0"))
+            result = dict(invoice, lines=lines, exchange_delta=delta)          # the full-sale-total paper adds it too
             if invoice.get("net_direction") not in ("SETTLED", "SHOP_PAYS_CUSTOMER"):
-                total = Decimal(str(invoice["net_amount"])) + sum((Decimal(str(x["signed_amount"])) for x in exchanges), Decimal("0"))
+                total = Decimal(str(invoice["net_amount"])) + delta
                 if total > 0:
                     result["net_amount"] = total
             return result
@@ -212,9 +246,10 @@ class InvoicePrintService:
 
     # ------------------------------------------------------------ printing
 
-    def print_invoice(self, invoice_id, *, _expected_actor=None):
-        """Save MUST already have happened: this only reads and prints."""
-        self._actor(_expected_actor)
+    def print_invoice(self, invoice_id, *, sale_total=False, reprint=False, _expected_actor=None):
+        """Save MUST already have happened: this only reads and prints. `sale_total`: a MIXED invoice printed at its full sale total
+        (`sale_total_view`); that paper is noted in the invoice history (PRINTED, or REPRINTED from سجل الفواتير)."""
+        actor = self._actor(_expected_actor)
         key = str(invoice_id)
         with _IN_FLIGHT_LOCK:
             if key in _IN_FLIGHT:                    # the same invoice is already being sent: no second job
@@ -226,12 +261,31 @@ class InvoicePrintService:
                 # Nothing is composed, sent or generated for a save-only transaction.
                 return PrintOutcome(invoice_number=invoice["invoice_number"], printed=False,
                                     message=NOT_PRINTABLE_TEXT)
-            printed, message, pdf_path = self._print_ops(invoice)
+            paper = invoice
+            if sale_total:
+                try:
+                    paper = sale_total_view(invoice)
+                except PrintError as exc:
+                    return PrintOutcome(invoice_number=invoice["invoice_number"], printed=False, message=str(exc))
+            printed, message, pdf_path = self._print_ops(paper)
+            if printed and sale_total:
+                self._note_sale_total_print(actor, invoice_id, paper["net_amount"], reprint)
             return PrintOutcome(invoice_number=invoice["invoice_number"], printed=printed, message=message,
                                 pdf_path=pdf_path)
         finally:
             with _IN_FLIGHT_LOCK:
                 _IN_FLIGHT.discard(key)
+
+    def _note_sale_total_print(self, actor, invoice_id, total, reprint):
+        """The history note of a full-sale-total paper (who, when, which amount). The paper is already out: a failure here is
+        swallowed and never reported as a print failure."""
+        try:
+            with self._transaction() as connection:
+                self._repository(connection).insert_event(
+                    invoice_id=invoice_id, event_type="REPRINTED" if reprint else "PRINTED", performed_by_user_id=actor.user_id,
+                    notes=SALE_TOTAL_NOTE, details={"print_mode": "SALE_TOTAL", "printed_total": str(total)})
+        except Exception as exc:                                     # pragma: no cover - defensive
+            logging.getLogger(__name__).warning("sale-total print note not written for invoice %s: %s", invoice_id, exc)
 
     def _print_ops(self, invoice):
         ops, problem = self.compose(invoice)
