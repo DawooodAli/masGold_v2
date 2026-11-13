@@ -376,6 +376,9 @@ class Op:
     gray: int = 0                  # 0 = black text; lines: the grid shade
     spans: tuple = ()              # ((text, size_pt, bold, gray), ...) laid out right-to-left on one line
     min_pt: float = 0.0            # text only: step down to this size before eliding (never taller rows)
+    grow: float = 0.0              # text only (max_lines > 1): extra width to the LEFT the text may use when it does not fit its cell
+    max_lines: int = 1             # text only: > 1 = a long customer name may wrap onto a second line instead of being cut with "..."
+    wrap_pt: float = 0.0           # the size (all runs) of a wrapped name
 
 
 def money_box_height(overlay):
@@ -385,6 +388,10 @@ def money_box_height(overlay):
         return 2 * PROTO_MONEY_LINE_H + 2 * PROTO_MONEY_PAD_Y_TWO_LINES
     return PROTO_MONEY_H_ONE_LINE
 
+
+# A customer name must never be printed cut with "..." (owner 2026-11-13: the third name was missing). It grows into the free space beside the barcode, steps down, and finally wraps onto a
+# second line at this size (prototype points, scaled by the calibration like every size).
+NAME_WRAP_PT_PROTOTYPE, NAME_WRAP_PT_VARIANT_C = 9.0, 9.5
 
 STYLE_PROTOTYPE, STYLE_VARIANT_C = "prototype", "variant_c"
 BILL_STYLES = (STYLE_PROTOTYPE, STYLE_VARIANT_C)
@@ -415,8 +422,9 @@ def compose(overlay, calibration=None, style=STYLE_PROTOTYPE, typography=None):
 
     # Header (row 1: name • barcode • date, row 2: place • number • time) — bold 10 pt, centred.
     cells = PROTO_HEADER_CELLS
-    text("header", cells["right"][0], PROTO_HEADER_ROW1[0], cells["right"][1], PROTO_HEADER_ROW1[1],
-         f"الاسم : {overlay.customer_name}", HEADER_PT, True)
+    ops.append(Op("text", c.x(cells["right"][0]), c.y(PROTO_HEADER_ROW1[0]), c.length(cells["right"][1] - cells["right"][0]), c.length(PROTO_HEADER_ROW1[1] - PROTO_HEADER_ROW1[0]),
+                  f"الاسم : {overlay.customer_name}", c.pt(HEADER_PT), True, "center", "header", min_pt=c.pt(NAME_WRAP_PT_PROTOTYPE),
+                  grow=c.length(cells["right"][0] - C_NAME_CELL[0]), max_lines=2, wrap_pt=c.pt(NAME_WRAP_PT_PROTOTYPE)))
     text("header", cells["right"][0], PROTO_HEADER_ROW2[0], cells["right"][1], PROTO_HEADER_ROW2[1],
          f"العنوان: {overlay.place}", HEADER_PT, True)
     labelled("header", cells["left"][0], PROTO_HEADER_ROW1[0], cells["left"][1], PROTO_HEADER_ROW1[1],
@@ -542,11 +550,11 @@ def _compose_variant_c(overlay, c, t=None):
     ops = []
     extra = overlay.extra or {}
 
-    def spans(region, x0, y0, x1, y1, parts, align="center", min_pt=0.0):
+    def spans(region, x0, y0, x1, y1, parts, align="center", min_pt=0.0, max_lines=1, wrap_pt=0.0):
         scaled = tuple((txt, c.pt(pt), bold, gray) for txt, pt, bold, gray in parts if txt)
         ops.append(Op("text", c.x(x0), c.y(y0), c.length(x1 - x0), c.length(y1 - y0),
                       "".join(p[0] for p in scaled), max(p[1] for p in scaled), False, align, region, spans=scaled,
-                      min_pt=c.pt(min_pt) if min_pt else 0.0))
+                      min_pt=c.pt(min_pt) if min_pt else 0.0, max_lines=max_lines, wrap_pt=c.pt(wrap_pt) if wrap_pt else 0.0))
 
     def text(region, x0, y0, x1, y1, value, size, bold=False, gray=0, align="center", min_pt=0.0):
         ops.append(Op("text", c.x(x0), c.y(y0), c.length(x1 - x0), c.length(y1 - y0), value, c.pt(size), bold,
@@ -558,7 +566,8 @@ def _compose_variant_c(overlay, c, t=None):
 
     cells, row1, row2 = PROTO_HEADER_CELLS, PROTO_HEADER_ROW1, PROTO_HEADER_ROW2
     spans("header", C_NAME_CELL[0], row1[0], C_NAME_CELL[1], row1[1],
-          [(LABEL_NAME, t.label, True, C_LABEL_GRAY), (COLON, t.label, True, C_LABEL_GRAY), (overlay.customer_name, t.name, True, 0)], min_pt=t.name_min)
+          [(LABEL_NAME, t.label, True, C_LABEL_GRAY), (COLON, t.label, True, C_LABEL_GRAY), (overlay.customer_name, t.name, True, 0)], min_pt=t.name_min,
+          max_lines=2, wrap_pt=NAME_WRAP_PT_VARIANT_C)
     spans("header", C_NAME_CELL[0], row2[0], C_NAME_CELL[1], row2[1],
           [(LABEL_PLACE, t.label, True, C_LABEL_GRAY), (COLON, t.label, True, C_LABEL_GRAY), (overlay.place or "—", t.address, False, 0)],
           min_pt=t.label)
@@ -688,10 +697,81 @@ def paint(painter, ops, dots_per_mm):
         font.setBold(bold)
         return font
 
+    def fit_long_text(op, rect):
+        """A customer name that does not fit its cell (owner 2026-11-13: never cut with "..."): 1) use the free space to the LEFT (`op.grow`), right-aligned; 2) step the size down to `op.min_pt`;
+        3) wrap onto a second line at `op.wrap_pt` (the label stays on the first line); only a single word wider than the whole width is ever elided. Returns False when the text fits as it is
+        (the ordinary drawing then runs, so a short name prints exactly as before)."""
+        runs = list(op.spans) if op.spans else [(op.text, op.size_pt, op.bold, op.gray)]
+        largest = max(size for _, size, _, _ in runs)
+        option = QTextOption(Qt.AlignRight | Qt.AlignVCenter)
+        option.setTextDirection(Qt.RightToLeft)
+        option.setWrapMode(QTextOption.NoWrap)
+
+        def measure(parts):
+            items = []
+            for value, size, bold, gray in parts:
+                font = font_for(size, bold)
+                items.append((value, font, gray, QFontMetricsF(font, painter.device()).horizontalAdvance(value)))
+            return items
+
+        def width_of(items):
+            return sum(item[3] for item in items)
+
+        def draw_line(items, area):
+            x = area.right()
+            for value, font, gray, width in items:
+                width = min(width, max(0.0, x - area.left()))
+                if width <= 0:
+                    break
+                painter.setFont(font)
+                painter.setPen(shade(gray))
+                painter.drawText(QRectF(x - width, area.top(), width, area.height()), QFontMetricsF(font, painter.device()).elidedText(value, Qt.ElideRight, width + 0.5), option)
+                x -= width
+
+        if width_of(measure(runs)) <= rect.width():
+            return False
+        wide = QRectF(rect.left() - op.grow, rect.top(), rect.width() + op.grow, rect.height())
+        floor_ratio = min(1.0, (op.min_pt or largest) / largest)
+        ratio = 1.0
+        while True:                                                         # one line, a little smaller each step, never below the floor
+            items = measure([(v, sz * ratio, b, g) for v, sz, b, g in runs])
+            if width_of(items) <= wide.width():
+                draw_line(items, wide)
+                return True
+            if ratio <= floor_ratio + 1e-9:
+                break
+            ratio = max(floor_ratio, ratio - 0.04)
+        # two lines: everything before the last run stays on the first line, the last run (the name) is split by words
+        line_size = op.wrap_pt or (op.min_pt or largest)
+        flat = [(v, line_size, b, g) for v, _, b, g in runs]
+        head, (tail, tail_size, tail_bold, tail_gray) = flat[:-1], flat[-1]
+        words = tail.split()
+        if not words or op.max_lines < 2:
+            draw_line(measure(flat), wide)
+            return True
+        cut = 1
+        for k in range(len(words), 0, -1):
+            if width_of(measure(head + [(" ".join(words[:k]), tail_size, tail_bold, tail_gray)])) <= wide.width():
+                cut = k
+                break
+        first = measure(head + [(" ".join(words[:cut]), tail_size, tail_bold, tail_gray)])
+        rest = " ".join(words[cut:])
+        if not rest:
+            draw_line(first, wide)
+            return True
+        second = measure([(rest, tail_size, tail_bold, tail_gray)])
+        line_h = QFontMetricsF(first[0][1], painter.device()).height()
+        top = rect.center().y() - 0.75 * line_h                             # two lines around the one-line position, a little lower so the first line stays clear of the paper's top edge
+        draw_line(first, QRectF(wide.left(), top, wide.width(), line_h))
+        draw_line(second, QRectF(wide.left(), top + line_h, wide.width(), line_h))
+        return True
+
     painter.save()
     painter.setRenderHint(painter.RenderHint.Antialiasing, False)
     for op in ops:
         rect = QRectF(op.x * dots_per_mm, op.y * dots_per_mm, op.w * dots_per_mm, op.h * dots_per_mm)
+        if op.kind == "text" and op.max_lines > 1 and fit_long_text(op, rect):
+            continue
         if op.kind == "bar":
             painter.fillRect(rect, black)
         elif op.kind in ("line", "box"):

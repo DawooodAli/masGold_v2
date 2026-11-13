@@ -561,10 +561,6 @@ Item {
             BusyIndicator { objectName: "historyReprintSpinner"
                   visible: !!historyPage.vm && historyPage.vm.reprintBusy; running: visible
                   Layout.preferredWidth: 22; Layout.preferredHeight: 22 }
-            Txt { objectName: "historyReprintMessage"; value: historyPage.vm ? historyPage.vm.reprintMessage : ""
-                  visible: value.length > 0
-                  color: !historyPage.vm ? theme.green : historyPage.vm.reprintBusy ? theme.gold
-                         : historyPage.vm.reprintFailed ? theme.red : theme.green }
             // Lifecycle actions: استبدال (its own permission; the service re-checks every rule).
             Btn { objectName: "historyExchange"
                   text: "استبدال"
@@ -615,6 +611,20 @@ Item {
                   onClicked: historyPage.vm.closeDetail() }
         }
 
+        // The print / WhatsApp answer has its OWN wrapped line under the buttons (owner 2026-11-13): inside the button row its long text (file path + the paste instructions) pushed the
+        // buttons off the screen and widened the page, so after ONE send the send button was no longer reachable.
+        Item { id: reprintNote
+               anchors.top: detailBar.bottom; anchors.left: parent.left; anchors.right: parent.right
+               anchors.leftMargin: 12; anchors.rightMargin: 12
+               height: reprintNoteText.visible ? reprintNoteText.implicitHeight + 4 : 0
+               Txt { id: reprintNoteText; objectName: "historyReprintMessage"
+                     anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+                     value: historyPage.vm ? historyPage.vm.reprintMessage : ""
+                     visible: value.length > 0
+                     wrapMode: Text.WordWrap; elide: Text.ElideNone
+                     color: !historyPage.vm ? theme.green : historyPage.vm.reprintBusy ? theme.gold
+                            : historyPage.vm.reprintFailed ? theme.red : theme.green } }
+
         Txt { objectName: "historyDetailState"; anchors.centerIn: parent
               visible: !!historyPage.vm && (historyPage.vm.detailBusy || historyPage.vm.detailError.length > 0)
               value: !historyPage.vm ? "" : historyPage.vm.detailBusy ? "جاري التحميل..."
@@ -625,7 +635,7 @@ Item {
         ScrollView {
             id: detailScroll
             objectName: "historyDetailScroll"
-            anchors.top: detailBar.bottom; anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+            anchors.top: reprintNote.bottom; anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
             anchors.margins: 12
             clip: true
             contentWidth: availableWidth

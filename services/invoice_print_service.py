@@ -231,12 +231,12 @@ class InvoicePrintService:
         self._actor(_expected_actor)
         return bill_overlay.build_overlay(self._invoice_data(invoice_id))
 
-    def compose(self, invoice):
-        """(ops, error): the physical overlay, validated against the preprinted boundaries."""
+    def compose(self, invoice, style=None):
+        """(ops, error): the physical overlay, validated against the preprinted boundaries. `style` None = this workstation's choice (Settings > الطباعة)."""
         try:
             overlay = bill_overlay.build_overlay(invoice)
             calibration = self.calibration()
-            ops = bill_overlay.compose(overlay, calibration, self.style())
+            ops = bill_overlay.compose(overlay, calibration, style or self.style())
             bill_overlay.validate(ops, calibration)
             return ops, ""
         except LayoutError as exc:
@@ -388,7 +388,8 @@ class InvoicePrintService:
                 paper = sale_total_view(invoice)
             except PrintError as exc:
                 return None, invoice["invoice_number"], str(exc)
-        ops, problem = self.compose(paper)
+        # owner 2026-11-13: the file the CUSTOMER receives is always in the old program's look, whatever style this workstation prints its paper with (Settings > الطباعة).
+        ops, problem = self.compose(paper, style=bill_overlay.STYLE_PROTOTYPE)
         if ops is None:
             return None, invoice["invoice_number"], problem
         folder = folder or os.path.join(os.path.expanduser("~"), "Documents", "فواتير masGold")

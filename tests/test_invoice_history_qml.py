@@ -190,18 +190,26 @@ class InvoiceHistoryPageTests(page_harness.InvoicePageTests):
                           self.visual_item("historyRow_0").mapToScene(QPointF(40, 12)).toPoint())
         self.wait_until(lambda: vm.detail, "detail not opened")
         handed = []
+        # the REAL answer is long (the saved path and the paste instructions): it must never push the buttons off the screen (owner 2026-11-13: the send button was gone after the first send)
+        long_answer = (r"تم حفظ الملف في C:\Users\masjewelery\Documents\فواتير masGold\فاتورة 26111307.pdf ونسخه. افتح واتساب (رقم العميل غير مسجل أو غير صحيح، اختر المحادثة بنفسك) "
+                       "واضغط Ctrl+V ثم Enter للإرسال.")
         with patch("app.viewmodels.invoice_history_viewmodel.hand_over_to_whatsapp",
-                   lambda path, mobile: (handed.append((path, mobile)), "تم")[1]):
+                   lambda path, mobile: (handed.append((path, mobile)), long_answer)[1]):
             for width, height in ((1440, 900), (1280, 800), (1080, 680)):
                 self.root.setWidth(width)
                 self.root.setHeight(height)
                 QTest.qWait(250)
                 for name in ("historyShareWhatsapp", "historyShareWhatsappSaleTotal", "historyBack"):
                     self.assert_inside_window(self.item(name))
-                before = len(handed)
-                self.click(self.item("historyShareWhatsapp"))
-                self.wait_until(lambda: len(handed) == before + 1 and not vm.reprintBusy, f"no pdf at {width}")
-                self.assertEqual(vm.reprintMessage, "تم")
+                for attempt in (1, 2, 3):                                       # the same invoice can be sent again and again
+                    before = len(handed)
+                    self.click(self.item("historyShareWhatsapp"))
+                    self.wait_until(lambda: len(handed) == before + 1 and not vm.reprintBusy, f"no pdf at {width}, send {attempt}")
+                    self.assertEqual(vm.reprintMessage, long_answer)
+                    QTest.qWait(120)
+                    for name in ("historyShareWhatsapp", "historyShareWhatsappSaleTotal", "historyReprint", "historyBack", "historyReprintMessage"):
+                        self.assert_inside_window(self.item(name))              # still reachable with the long answer on screen
+                    self.assertLessEqual(self.item("historyReprintMessage").property("height"), 4 * 24)
         self.assertEqual({path for path, _ in handed}, {"C:/pdf/invoice.pdf"})
         self.assertEqual(self.history.printer.calls, [])                # nothing was sent to the printer
         self.assertEqual(self.warnings, [])

@@ -411,6 +411,79 @@ class PrinterSetupTests(unittest.TestCase):
             painter.end()
 
 
+class LongCustomerNameTests(unittest.TestCase):
+    """Owner 2026-11-13: the third name of a customer was printed cut ("فاطمه محمد عبدالت..") on the bill and on the PDF. A name now grows into the free space beside the barcode, steps down,
+    and wraps onto a second line: nothing is ever cut with "..." (both styles)."""
+    LONG = "فاطمه محمد عبدالتواب سليمان إبراهيم الشرقاوي"
+    SHORT = "علي محمد"
+
+    def drawn(self, style, name, dpi=2480 / 210.0):
+        from PySide6.QtGui import QGuiApplication, QImage, QPainter
+        QGuiApplication.instance() or QGuiApplication([])
+        bill_overlay.ensure_fonts()
+        ops = compose(bill_overlay.build_overlay(invoice_row(customer_name_snapshot=name)), BillCalibration(), style)
+        image = QImage(2480, 1748, QImage.Format_RGB32)
+        painter = QPainter(image)
+        pieces, original = [], QPainter.drawText
+
+        def record(self_, rect, text, *rest):
+            pieces.append((text, rect.left() / dpi, rect.right() / dpi, rect.top() / dpi, rect.bottom() / dpi))
+            return original(self_, rect, text, *rest)
+        with patch.object(QPainter, "drawText", record):
+            bill_overlay.paint(painter, ops, dpi)
+        painter.end()
+        return ops, pieces
+
+    def name_pieces(self, pieces):
+        """Everything painted in the name rows of the header (x from the barcode's right edge to the logo, y above the address row), right to left."""
+        return [p for p in pieces if p[2] > 118.0 and p[3] < 14.0]               # the address row starts at 14.1 mm (physical)
+
+    def test_a_long_name_is_never_cut_in_either_style_and_keeps_every_word(self):
+        for style in (bill_overlay.STYLE_PROTOTYPE, bill_overlay.STYLE_VARIANT_C):
+            with self.subTest(style):
+                _, pieces = self.drawn(style, self.LONG)
+                text = " ".join(p[0] for p in self.name_pieces(pieces))
+                self.assertNotIn("…", text)
+                self.assertNotIn("..", text)
+                for word in self.LONG.split():
+                    self.assertIn(word, text, word)
+
+    def test_a_long_name_stays_between_the_barcode_and_the_logo_and_clear_of_the_address(self):
+        for style in (bill_overlay.STYLE_PROTOTYPE, bill_overlay.STYLE_VARIANT_C):
+            with self.subTest(style):
+                _, pieces = self.drawn(style, self.LONG)
+                c = BillCalibration()
+                for text, left, right, top, bottom in self.name_pieces(pieces):
+                    self.assertGreaterEqual(left, c.x(bill_overlay.C_NAME_CELL[0]) - 0.5, text)     # not into the barcode (which ends near 115 mm prototype)
+                    self.assertLessEqual(right, c.x(bill_overlay.C_NAME_CELL[1]) + 0.5, text)       # not into the right logo
+                    self.assertLess(bottom, c.y(bill_overlay.PROTO_HEADER_ROW2[0]), text)           # clear of the address row
+                    self.assertGreaterEqual(top, 4.0, text)                                         # and of the paper's top edge
+
+    def test_a_very_long_name_wraps_onto_a_second_line(self):
+        very_long = "عبد الرحمن محمد عبد العزيز الشرقاوي أبو الخير شلبي"
+        for style in (bill_overlay.STYLE_PROTOTYPE, bill_overlay.STYLE_VARIANT_C):
+            with self.subTest(style):
+                _, pieces = self.drawn(style, very_long)
+                rows = {round(p[3], 1) for p in self.name_pieces(pieces)}
+                self.assertEqual(len(rows), 2, rows)                                                # exactly two lines
+                self.assertNotIn("…", " ".join(p[0] for p in self.name_pieces(pieces)))
+
+    def test_a_short_name_prints_exactly_as_before_in_its_own_cell(self):
+        _, pieces = self.drawn(bill_overlay.STYLE_PROTOTYPE, self.SHORT)
+        mine = [p for p in self.name_pieces(pieces) if "الاسم" in p[0]]
+        self.assertEqual([p[0] for p in mine], ["الاسم : علي محمد"])                                  # one piece, the label and the name together
+        c = BillCalibration()
+        self.assertAlmostEqual(mine[0][1], c.x(bill_overlay.PROTO_HEADER_CELLS["right"][0]), delta=0.2)  # the original cell, not the widened one
+        self.assertAlmostEqual(mine[0][2], c.x(bill_overlay.PROTO_HEADER_CELLS["right"][1]), delta=0.2)
+
+    def test_the_ops_are_unchanged_geometry_for_validation(self):
+        """The widening happens only while painting: the ops (and so validate() against the gold lines) keep the cell the old bill used."""
+        ops, _ = self.drawn(bill_overlay.STYLE_PROTOTYPE, self.LONG)
+        name = next(o for o in ops if o.text.startswith("الاسم"))
+        self.assertAlmostEqual(name.w, BillCalibration().length(bill_overlay.PROTO_HEADER_CELLS["right"][1] - bill_overlay.PROTO_HEADER_CELLS["right"][0]), places=2)
+        self.assertTrue(bill_overlay.validate(ops, BillCalibration()))
+
+
 class PrintServiceTests(unittest.TestCase):
     def test_printing_never_touches_the_database_for_writes(self):
         jobs = []
@@ -1044,7 +1117,8 @@ class HeaderSeparatorTests(unittest.TestCase):
         with patch.object(QPainter, "drawText", record):
             bill_overlay.paint(painter, ops, 2480 / 210.0)
         painter.end()
-        for start in (0, 3):
+        total_at = next(i for i, d in enumerate(drawn) if d[0] == "إجمالي الفاتورة")      # the long name may take a fourth piece (its second line), so find the total's group
+        for start in (0, total_at):
             (label, l0, r0), (colon, l1, r1), (value, l2, r2) = drawn[start:start + 3]
             self.assertEqual(colon, self.COLON)
             self.assertGreaterEqual(l0 + 0.01, r1)                  # colon wholly left of the label
@@ -1087,6 +1161,21 @@ class SharePdfTests(unittest.TestCase):
         self.assertEqual(jobs, [])                                                       # nothing went to a printer
         self.assertNotIn("events", state)                                                # nothing written to the database
         self.assertGreater(plain, 0)
+
+    def test_the_pdf_is_always_in_the_old_programs_look_whatever_the_workstation_prints_with(self):
+        """Owner 2026-11-13: what the customer receives uses the old look; the printed paper still follows Settings > الطباعة."""
+        import tempfile
+        from unittest.mock import patch
+        from PySide6.QtGui import QGuiApplication
+        QGuiApplication.instance() or QGuiApplication([])
+        seen = []
+        real = bill_overlay.compose
+        service, _ = make_service(invoices={"42": mixed_row()}, style=bill_overlay.STYLE_VARIANT_C)
+        with patch.object(bill_overlay, "compose", lambda overlay, calibration=None, style=bill_overlay.STYLE_PROTOTYPE, typography=None: (seen.append(style), real(overlay, calibration, style, typography))[1]):
+            with tempfile.TemporaryDirectory() as folder:
+                self.assertEqual(service.share_pdf("42", folder=folder)[2], "")
+            service.compose(service._invoice_data("42"))                                  # the paper keeps the workstation's choice
+        self.assertEqual(seen, [bill_overlay.STYLE_PROTOTYPE, bill_overlay.STYLE_VARIANT_C])
 
     def test_the_letterhead_picture_is_opaque_a4_a5_landscape(self):
         """A picture with an alpha channel turned black inside the PDF: the asset must be flattened onto white."""
