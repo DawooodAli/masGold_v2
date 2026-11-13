@@ -312,6 +312,7 @@ class ReportService:
         """Every cash / bank movement of the period, named by what posted it, netted per name (a reversal / correction lands on the SAME name as its original, so it nets). Money that only
         changes place (transfers between accounts, market custody issue / return / bank deposit, the marketer's cash) is shown apart and is neither income nor expense. Opening balances
         are not movements of the period. «مصروفات مسجلة» and «إيرادات مسجلة» are the categorised manual entries of the treasury (إيجار، مرتبات، كهرباء...)."""
+        from services.cash_category_service import is_retired as is_retired_category
         from services.financial_account_service import CASH_LABELS as FIXED_LABELS
         reader = getattr(repo, "cash_categories", None)
         named = reader() if reader else None
@@ -348,6 +349,8 @@ class ReportService:
                 bucket, label = internal, "المرتبات (بند مستقل في مراجعات المدير)"            # owner 2026-11-08: salaries are paid from the payroll section, not an expense
             elif source == "FINANCIAL_OPERATION" and category in ("STAFF_ADVANCE", "CUSTOMER_CUSTODY", "ADVANCE_REPAY", "BORROWED_CASH", "BORROW_REPAY"):
                 bucket, label = internal, "سلف وعهد مؤقتة (تعود للمحل)" if category in ("STAFF_ADVANCE", "CUSTOMER_CUSTODY", "ADVANCE_REPAY") else "سلف مستلفة (تُسدد لأصحابها)"                  # money lent and taken back: neither income nor expense
+            elif source == "FINANCIAL_OPERATION" and is_retired_category(CASH_LABELS.get(category or "")):
+                bucket, label = internal, "فرق فواتير (بند مؤقت قديم)"                  # owner 2026-11-13: a temporary workaround, no longer an expense (the cash really moved: it stays in the account ledgers)
             elif source == "FINANCIAL_OPERATION" and "عميل" in CASH_LABELS.get(category or "", ""):
                 bucket, label = internal, "نقدية العملاء (ليست إيرادًا ولا مصروفًا)"                  # owner 2026-10-30: cash that comes from / goes to a customer is not income or expense
             elif source == "FINANCIAL_OPERATION":
@@ -1405,8 +1408,8 @@ class ReportService:
         staff = [col("employee", "الموظف"), col("status_text", "الحالة"), col("lines", "بنود محسوبة"), col("low_making", "بنود مصنعية قليلة"), col("low_discount", "بنود خصم كسر قليل"), col("note", "الملاحظة")]
         meaning = ["كل مؤشر يقارن الفترة المختارة بالفترة السابقة لها بنفس الطول، وله حالة وجملة قرار. الحالات مؤشرات لانتباهك وليست إثباتًا.",
                    "مصنعية قليلة = ربح البند أقل من 2% من قيمة ذهبه (المصنعية − تكلفة الحرف). خصم كسر قليل = أقل من 1.5%. قطع أقل من جرام لا تدخل. السبائك والجنيهات (صنف سبيكة / جنية) والمشتراة منها بسعر السوق مع زيادة خارج مؤشرات المصنعية والموظفين.",
-                   "المؤشرات الستة الأخيرة للالتقاط المبكر: ذهب راكد (نسبته من ذهب المحل، وتحته القطع بالباركود)، فروق الفواتير (بند الخزنة «فرق فواتير» كنسبة من صافي مصنعية المشغولات)، مصنعية الموظف عيار 21 مقابل باقي الموظفين، خسية السوق وفاقد السبك (نسبتها من الذهب الخارج للسوق في آخر 90 يوم)، وأصناف بتتباع وخلصت.",
-                   "ربح الذهب = زيادة (ذهب لقطات الجرد بعد الموردين + الكاش والبنوك محوّلة لذهب بسعر بيع 21) بجرام مكافئ عيار 21؛ المصروفات المسجلة من حركة الخزنة بدون المرتبات وفروق الفواتير (إلزامية). غير المتاح يظهر رماديًا ولا يتحول لصفر."]
+                   "مؤشرات الالتقاط المبكر: ذهب راكد (نسبته من ذهب المحل، وتحته القطع بالباركود)، مصنعية الموظف عيار 21 مقابل باقي الموظفين، خسية السوق وفاقد السبك (نسبتها من الذهب الخارج للسوق في آخر 90 يوم)، وأصناف بتتباع وخلصت.",
+                   "ربح الذهب = زيادة (ذهب لقطات الجرد بعد الموردين + الكاش والبنوك محوّلة لذهب بسعر بيع 21) بجرام مكافئ عيار 21؛ المصروفات المسجلة من حركة الخزنة بدون المرتبات (إلزامية). غير المتاح يظهر رماديًا ولا يتحول لصفر."]
         cards = [total("مؤشرات حمراء", sum(1 for i in items if i["status"] == kpi_rules.RED), "count", "", "summary", tone="deadcash"),
                  total("مؤشرات صفراء", sum(1 for i in items if i["status"] == kpi_rules.YELLOW), "count", "", "summary"),
                  total("موظفون يحتاجون مراجعة", sum(1 for r in employees if r["status"] == kpi_rules.RED), "count", "", "summary")]
@@ -1446,12 +1449,6 @@ class ReportService:
                                                                            col("sold90", f"مباع آخر {limits['velocity_days']} يوم", "count")],
                                     [{"type": t, "karat": f"عيار {k}", "factory": f, "size": sz or "—", "sold30": v["sold30"], "sold90": v["sold90"]} for (k, t, f, sz), v in gone]))
         items.append(kpi_rules.dead_stock_item(dead_eq21, shop_gold_eq21, dead_count))
-        diff_now = diff_before = None
-        if flow_items is not None:
-            matching = [v for label, v in flow_items.items() if kpi_rules.is_invoice_difference(label)]
-            diff_now = sum((v["now"][0] for v in matching), ZERO2)
-            diff_before = sum((v["before"][0] for v in matching), ZERO2)
-        items.append(kpi_rules.invoice_diff_item(diff_now, diff_before, kpi_rules.net_making(now)))
         rows21 = kpi_rules.making21_rows(now)
         items.append(kpi_rules.making21_item(rows21))
         if rows21:

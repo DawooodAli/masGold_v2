@@ -4,7 +4,7 @@ from decimal import Decimal as D
 import unittest
 from uuid import uuid4
 
-from services.cash_category_service import SEED, CashCategoryService, CategoryError
+from services.cash_category_service import SEED, CashCategoryService, CategoryError, is_retired
 from services.correction_service import CorrectionError
 from tests.auth_fakes import FakeAuthorization
 from tests.market_trip_fakes import session_for
@@ -111,6 +111,23 @@ class ManagementTests(unittest.TestCase):
         with self.assertRaises(CategoryError):
             service.delete("TRANSPORT")
 
+    def test_the_retired_invoice_difference_category_is_not_listed_in_settings_and_its_name_cannot_be_reused(self):
+        service = self.build()
+        self.store.rows.append({"id": 99, "code": "C40FD86ECA166", "name": "فرق فواتير", "direction": "OUT", "is_active": 1, "is_system": 0})
+        self.store.used["C40FD86ECA166"] = 12                                       # it has history (a used category cannot be deleted), so it is hidden instead
+        self.assertNotIn("C40FD86ECA166", [c["code"] for c in service.categories()])
+        self.assertEqual(len(service.categories()), len(SEED))
+        for name in ("فرق فواتير", "  فرق   فاتورة ", "فرق فاتوره"):
+            self.assertTrue(is_retired(name), name)
+            with self.assertRaises(CategoryError) as raised:
+                service.add(name, "OUT")
+            self.assertEqual(raised.exception.code, "NAME_RETIRED")
+        with self.assertRaises(CategoryError) as raised:
+            service.rename("RENT", "فرق فواتير")
+        self.assertEqual(raised.exception.code, "NAME_RETIRED")
+        self.assertFalse(is_retired("فرق الذهب"))
+        self.assertEqual(self.store.rows[-1]["name"], "فرق فواتير")                  # nothing was rewritten
+
     def test_only_the_settings_right_may_manage_or_see_the_list(self):
         service = self.build(frozenset({"APP_LOGIN"}))
         for call in (service.categories, lambda: service.add("x", "OUT"), lambda: service.delete("EXPENSE"), lambda: service.set_active("EXPENSE", False)):
@@ -147,6 +164,19 @@ class TreasuryUsesTheTableTests(FinancialTestCase):
                 self.move(direction, kind)
             self.assertEqual(raised.exception.code, "TYPE_INVALID", (direction, kind))
         self.assertEqual(self.store.tables(), before)
+
+    def test_the_retired_invoice_difference_category_is_not_offered_or_accepted_but_keeps_its_name_in_the_history(self):
+        from tests.test_cash_screen import cash_row
+        self.store.categories.append({"code": "C40FD86ECA166", "name": "فرق فواتير", "direction": "OUT", "is_active": 1})
+        self.store.cash_rows = [cash_row(2, "-2420", "C40FD86ECA166", ("-2420", 1), operation_id=9)]
+        view = self.fin.cash_view()
+        self.assertNotIn("C40FD86ECA166", [t["code"] for t in view["types"]])
+        before = self.store.tables()
+        with self.assertRaises(CorrectionError) as raised:
+            self.move("OUT", "C40FD86ECA166")
+        self.assertEqual(raised.exception.code, "TYPE_INVALID")
+        self.assertEqual(self.store.tables(), before)
+        self.assertEqual([r["label"] for r in view["out"]["rows"]], ["فرق فواتير"])         # the old operation still reads by its name
 
     def test_a_renamed_category_shows_its_current_name_on_old_and_new_rows(self):
         from tests.test_cash_screen import cash_row

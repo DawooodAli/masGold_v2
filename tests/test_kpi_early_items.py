@@ -129,12 +129,13 @@ class DeadPiecesAndKpiTests(base.Case):
         table = next(t for t in result["tables"] if t["key"] == "dead_pieces")
         self.assertEqual([r["barcode"] for r in table["rows"]], ["OLD2"])
 
-    def test_the_kpi_lists_the_dead_pieces_and_carries_the_five_early_items(self):
+    def test_the_kpi_lists_the_dead_pieces_and_carries_the_early_items(self):
         base.FakeRepo.tables = {**base.FakeRepo.tables, "position_snapshots": True}
         result = self.service_with_old_stock().run("kpi", {"from": "2026-10-14", "to": "2026-10-20"})
         items = {r["key"]: r for r in result["tables"][0]["rows"]}
-        for key in ("dead_stock", "invoice_diff", "making21", "market_loss", "stockout"):
+        for key in ("dead_stock", "making21", "market_loss", "stockout"):
             self.assertIn(key, items)
+        self.assertNotIn("invoice_diff", items)                                                 # owner 2026-11-13: the temporary «فرق فواتير» category is retired, so is its indicator
         dead = items["dead_stock"]
         self.assertIn("21 جرام (مكافئ 21) • 3 قطعة", dead["compare"])                          # 10 + 5 g of 21K + 7 g of 18K (= 6 g of 21K): three dead pieces, 21 g equivalent
         table = next(t for t in result["tables"] if t["key"] == "kpi_dead")

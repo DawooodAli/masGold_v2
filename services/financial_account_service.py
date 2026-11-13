@@ -59,7 +59,7 @@ CASH_TYPE_TEXT = {"BANK_DEPOSIT": "إيداع بنك", "BANK_WITHDRAWAL": "سح�
 
 def category_table(rows):
     """{code: {name, directions, active}} from the cash_categories rows; None (a database below 069) falls back to the fixed list of the code before the feature."""
-    from services.cash_category_service import SEED
+    from services.cash_category_service import SEED, is_retired
     if rows is None:
         rows = [{"code": c, "name": n, "direction": d, "is_active": 1} for c, n, d in SEED]
         rows += [{"code": "CUSTOMER_CUSTODY", "name": "عهدة مؤقتة لعميل", "direction": "OUT", "is_active": 1},       # 074
@@ -70,7 +70,8 @@ def category_table(rows):
                  {"code": "CUSTOMER_CASH_OUT", "name": "نقدية خارجة لعميل", "direction": "OUT", "is_active": 1},
                  {"code": "PRIVATE_OUT", "name": "تحويل إلى الحساب الخاص", "direction": "OUT", "is_active": 1},               # 090
                  {"code": "PRIVATE_IN", "name": "تحويل من الحساب الخاص", "direction": "IN", "is_active": 1}]
-    return {r["code"]: {"name": r["name"], "directions": ("IN", "OUT") if r["direction"] == "BOTH" else (r["direction"],), "active": bool(r["is_active"])} for r in rows}
+    return {r["code"]: {"name": r["name"], "directions": ("IN", "OUT") if r["direction"] == "BOTH" else (r["direction"],),
+                      "active": bool(r["is_active"]) and not is_retired(r["name"])} for r in rows}                     # a retired category (فرق فواتير) keeps its name for the history but takes no new operation
 
 
 class _Discard(Exception):

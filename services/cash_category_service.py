@@ -21,6 +21,16 @@ SEED = (("EXPENSE", "مصروفات", "OUT"), ("SALARY", "مرتبات", "OUT"),
         ("MAINTENANCE", "صيانة", "OUT"), ("HOSPITALITY", "بوفيه وضيافة", "OUT"), ("STAFF_ADVANCE", "سلف موظفين", "OUT"), ("REVENUE", "إيراد", "IN"), ("REPAIR", "مرمة", "BOTH"))
 
 
+# Owner 2026-11-13: the owner's category «فرق فواتير» was a TEMPORARY workaround until the program could record a settlement that differs from the invoice (Settlement Correction does it now). It is RETIRED:
+# not listed in Settings, not offered (and refused) for a new operation, and never an expense in the reports. Its history is untouched: the operations that used it keep their name and their cash
+# movements (a used category cannot be deleted, and no ledger row is rewritten). Matched by name because the owner's categories have generated codes that differ between databases.
+RETIRED_NAMES = frozenset({"فرق فواتير", "فرق فاتورة", "فرق فاتوره"})
+
+
+def is_retired(name):
+    return " ".join(str(name or "").split()) in RETIRED_NAMES
+
+
 class CategoryError(ValueError):
     def __init__(self, code, message):
         super().__init__(message)
@@ -33,6 +43,8 @@ def clean_name(value):
         raise CategoryError("NAME_REQUIRED", "اكتب اسم التصنيف.")
     if len(name) > NAME_MAX:
         raise CategoryError("NAME_LONG", f"اسم التصنيف حتى {NAME_MAX} حرفًا.")
+    if is_retired(name):
+        raise CategoryError("NAME_RETIRED", "هذا الاسم لبند قديم متوقف: اختر اسمًا آخر.")
     return name
 
 
@@ -66,7 +78,7 @@ class CashCategoryService:
         with self._transaction() as connection:
             self._authorization.require_permission_read(connection, actor, MANAGE)
             repository = self._repository(connection)
-            return [view(r, repository.usage(r["code"])) for r in repository.categories()]
+            return [view(r, repository.usage(r["code"])) for r in repository.categories() if not is_retired(r["name"])]
 
     def _write(self, expected_actor, work):
         session_actor = self._actor(expected_actor)

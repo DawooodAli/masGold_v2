@@ -1386,6 +1386,29 @@ class CashflowSalaryTests(Case):
         self.assertTrue(any("المرتبات" in r["label"] for r in next(t for t in result["tables"] if t["key"] == "operating")["rows"]) is False)
 
 
+class CashflowRetiredCategoryTests(Case):
+    def test_the_retired_invoice_difference_category_is_no_longer_an_expense_but_its_reversal_follows_it(self):
+        base = {"transfer_group_id": None, "type_name": "x", "correction_source": None, "corrected_operation_type": None, "corrected_category": None, "reference_type": "FINANCIAL_OPERATION"}
+        rows = [dict(base, type_code="MANUAL_WITHDRAWAL", amount=D("-2420.00"), category="C40FD86ECA166"),
+                dict(base, type_code="MANUAL_WITHDRAWAL", amount=D("-900.00"), category="C40FD86ECA166"),
+                dict(base, type_code="CORRECTION", amount=D("900.00"), category=None, reference_type="TRANSACTION_CORRECTION", correction_source="FINANCIAL_OPERATION", corrected_category="C40FD86ECA166"),
+                dict(base, type_code="MANUAL_WITHDRAWAL", amount=D("-50.00"), category="UTILITIES")]
+
+        class Repo(FakeRepo):
+            def cashflow_movements(self, start, end, ledgers=("CASH", "BANK")):
+                return rows
+
+            def cash_categories(self):
+                return [{"code": "C40FD86ECA166", "name": "فرق فواتير", "direction": "OUT", "is_active": 1}]
+        service = ReportService(self.service._session, transaction_factory=self.service._transaction, repository=Repo, authorization=self.service._authorization, today=lambda: TODAY)
+        result = service.run("cashflow", {"from": "2026-10-01", "to": "2026-10-31"})
+        operating = next(t for t in result["tables"] if t["key"] == "operating")["rows"]
+        self.assertEqual([r["label"] for r in operating], ["كهرباء ومياه"])                  # not in the expense table
+        values = {t["label"]: t["value"] for t in result["totals"]}
+        self.assertEqual((values["مصروفات مسجلة"], values["إيرادات مسجلة"]), (D("50.00"), D("0.00")))
+        self.assertFalse(any("فرق فواتير" in b_row["label"] for b in result["bars"] for b_row in b["rows"]))
+
+
 class MakingProfitTests(Case):
     PERIOD = {"from": "2026-10-01", "to": "2026-10-31"}
 
