@@ -2105,7 +2105,7 @@ class InvoiceViewModel(QObject):
                     if self._preview.get("making_can_confirm")
                     else "⚠ متوسط المصنعية أقل من حد موافقة المدير — يلزم موافقة المدير قبل الحفظ.")
         if self._making_confirmed:
-            return "✓ تم اعتماد المصنعية — تُسجل في مراجعات المدير."
+            return "✓ تم اعتماد المصنعية — تُسجل في الإدارة."
         return ""
 
     @Property(bool, notify=changed)

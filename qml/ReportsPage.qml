@@ -392,7 +392,7 @@ Item {
                 layoutDirection: Qt.RightToLeft
                 Txt { text: "📊 التقارير"; color: theme.gold; font.bold: true; font.pixelSize: 20 }
                 Item { Layout.fillWidth: true }
-                Btn { objectName: "reportsBack"; text: "←  مراجعات المدير"; onClicked: page.backRequested() }
+                Btn { objectName: "reportsBack"; text: "←  الإدارة"; onClicked: page.backRequested() }
             }
             Txt { Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
                   text: "للعرض فقط — الأرقام من دفاتر البرنامج وكل إجمالي يشمل كامل نتائج الفلتر وليس الصفحة المعروضة فقط." }

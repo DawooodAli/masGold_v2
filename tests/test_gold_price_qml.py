@@ -542,6 +542,9 @@ class GoldPricePanelTests(QtPriceTestCase):
                         and not self.controller.gold_prices.busy)
         self.root = self.controller.operational_engine.rootObjects()[0]
         self.warnings = []
+        gate = self.controller.operational_viewmodels["managerGateVM"]           # the settings sit behind the manager lock (owner 2026-11-13): these tests open it
+        gate._unlocked = True
+        gate.changed.emit()
         self.controller.operational_engine.warnings.connect(
             lambda errors: self.warnings.extend(e.toString() for e in errors))
         self.dialog = self.root.findChild(QObject, "goldPriceDialog")

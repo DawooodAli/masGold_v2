@@ -1,4 +1,4 @@
-"""قفل مراجعات المدير والتقارير: the service (the user's own password, persistent cooldown) and the real screen (locked on entry, wrong password refused, right password opens, locks again after leaving)."""
+"""قفل الإدارة (المراجعات والتقارير والموردون وعهدة السوق): the service (the user's own password, persistent cooldown) and the real screen (locked on entry, wrong password refused, right password opens, locks again after leaving)."""
 from PySide6.QtCore import QObject
 import unittest
 
@@ -125,6 +125,8 @@ class GateScreenTests(harness.InvoicePageTests):
         calls = []
         self.gate._service = type("S", (), {"change_password": lambda s, current, new, confirm, **k: calls.append((current, new, confirm)) or {"changed": True},
                                             "verify": lambda s, *a, **k: True})()
+        self.gate._unlocked = True                                                                  # the settings sit behind the manager lock (owner 2026-11-13)
+        self.gate.changed.emit()
         self.root.setProperty("currentPage", 6)
         self.root.findChild(QObject, "settingsPage").setProperty("openSection", "password")
         self.wait_until(lambda: self.visual_item("settingsPassword") is not None, "the card exists")
@@ -152,11 +154,82 @@ class GateScreenTests(harness.InvoicePageTests):
         self.wait_until(lambda: self.root.property("currentPage") == 2, "the inventory opened from the reviews")
         self.assertFalse(self.item("managerGate").property("visible"))
 
+    def test_the_suppliers_and_the_market_custody_sit_behind_the_same_lock_inside_the_area(self):
+        for page in (14, 15, 6, 7, 8, 9, 13):                                                       # الموردون • عهدة السوق • الإعدادات وصفحاتها (owner 2026-11-13: sections of الإدارة)
+            self.gate.lock()
+            self.root.setProperty("currentPage", page)
+            self.wait_until(lambda: self.item("managerGate").property("visible"), f"page {page} is locked")
+            self.assertFalse(self.item("pageStack").property("visible"))
+            self.assertTrue(self.item("reviewsNavButton").property("selected"))                     # the sidebar keeps the area highlighted
+        self.assertIn("الإدارة", self.text("reviewsNavButton"))
+        self.assertNotIn("مراجعات المدير", self.text("reviewsNavButton"))
+
+    def test_the_printer_choice_opened_from_billing_needs_no_lock_and_goes_back_to_the_invoice(self):
+        self.gate.lock()
+        self.root.setProperty("currentPage", 1)
+        QTest.qWait(150)
+        self.vm.printingSettingsRequested.emit()                                                     # «إعدادات الطباعة» of the save-and-print dialog (owner 2026-11-13: no lock for it)
+        self.wait_until(lambda: self.root.property("currentPage") == 6, "the settings page opened")
+        QTest.qWait(250)
+        self.assertFalse(self.item("managerGate").property("visible"))
+        self.assertTrue(self.item("pageStack").property("visible"))
+        self.wait_until(lambda: self.visual_item("billPrinterCombo") is not None, "the printer choice is shown")
+        self.assertFalse(self.item("settingsCategories").property("visible"))                 # the other cards stay hidden: only the printing section
+        self.assertFalse(self.gate.unlocked)                                                         # nothing was unlocked
+        self.click("settingsSectionBack")
+        self.wait_until(lambda: self.root.property("currentPage") == 1, "back in the invoice")
+        self.assertFalse(self.item("managerGate").property("visible"))
+        # the settings page itself is still locked for anybody who did not come from billing
+        self.root.setProperty("currentPage", 6)
+        self.wait_until(lambda: self.item("managerGate").property("visible"), "the settings are locked again")
+        self.root.findChild(QObject, "settingsPage").setProperty("openSection", "printing")         # a stale section name alone opens nothing
+        QTest.qWait(150)
+        self.assertTrue(self.item("managerGate").property("visible"))
+
+    def test_the_settings_open_from_the_area_and_go_back_with_real_clicks_and_have_no_sidebar_button(self):
+        self.gate._unlocked = True
+        self.gate.changed.emit()
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.root.setProperty("currentPage", 10)
+        QTest.qWait(250)
+        self.click("reviewsOpenSettings")
+        self.wait_until(lambda: self.root.property("currentPage") == 6, "the settings opened from the area")
+        self.assertTrue(self.item("reviewsNavButton").property("selected"))                         # the sidebar keeps الإدارة highlighted
+        self.click("settingsBack")
+        self.wait_until(lambda: self.root.property("currentPage") == 10, "back in the area")
+        for child in self.root.findChildren(object):
+            if str(child.property("text") or "").strip().endswith("الإعدادات") and child.property("visible") and child.metaObject().className().startswith("NavButton"):
+                self.fail("the settings are no longer in the sidebar")
+
+    def test_every_section_button_of_the_area_stays_on_screen_at_the_three_sizes(self):
+        self.gate._unlocked = True
+        self.gate.changed.emit()
+        names = ("reviewsOpenInventory", "reviewsOpenLegacyVoid", "reviewsOpenPayroll", "reviewsOpenScrapAdjust", "reviewsOpenClasp", "reviewsOpenOpening",
+                 "reviewsOpenSettings", "reviewsOpenSuppliers", "reviewsOpenMarketTrips", "reviewsOpenReports")
+        for width, height in ((1440, 900), (1280, 800), (1080, 680)):
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            self.root.setProperty("currentPage", 10)
+            QTest.qWait(250)
+            page = self.root.findChild(QObject, "managementReviewPage")
+            for flag in ("legacyVoidAvailable", "scrapAdjustAvailable", "reportsAvailable", "openingAvailable", "payrollAvailable", "claspAvailable", "suppliersAvailable", "marketTripsAvailable"):
+                page.setProperty(flag, True)                                                        # the owner sees every section: the worst case
+            QTest.qWait(250)
+            for name in names:
+                item = self.item(name)
+                left = item.mapToScene(item.boundingRect().topLeft()).x()
+                self.assertTrue(item.property("visible"), name)
+                self.assertGreaterEqual(left, 0, f"{name} at {width}x{height}")
+                self.assertLessEqual(left + item.width(), page.width(), f"{name} runs off the page at {width}x{height}")
+
     def test_the_sidebar_has_no_inventory_button_and_the_treasury_sits_under_the_invoices(self):
         from pathlib import Path
         source = (Path(__file__).resolve().parents[1] / "qml" / "Main.qml").read_text(encoding="utf-8")
-        order = [source.index(f'objectName: "{name}"') for name in ("invoicesNavButton", "cashNavButton", "customersNavButton", "suppliersNavButton", "reviewsNavButton")]
-        self.assertEqual(order, sorted(order))                                                      # الفواتير • الخزنة • العملاء • الموردون • ... • مراجعات المدير (the treasury button is shown only to who may see the cash)
+        order = [source.index(f'objectName: "{name}"') for name in ("invoicesNavButton", "cashNavButton", "customersNavButton", "reviewsNavButton")]
+        self.assertEqual(order, sorted(order))                                                      # الفواتير • الخزنة • العملاء • الإدارة (the treasury button is shown only to who may see the cash)
+        self.assertNotIn('objectName: "suppliersNavButton"', source)                                # owner 2026-11-13: the suppliers and the market custody moved into الإدارة
+        self.assertNotIn('objectName: "marketTripsNavButton"', source)
         self.assertLess(self.item("invoicesNavButton").mapToScene(self.item("invoicesNavButton").boundingRect().topLeft()).y(), self.item("customersNavButton").mapToScene(self.item("customersNavButton").boundingRect().topLeft()).y())
         for child in self.root.findChildren(object):
             if str(child.property("text") or "").strip().endswith("المخزون") and child.property("visible") and child.metaObject().className().startswith("NavButton"):

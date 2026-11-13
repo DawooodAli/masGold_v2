@@ -110,7 +110,7 @@ class ManagerGateViewModel(QObject):
             return
         self._change_busy = False
         self._change_error = bool(error)
-        self._change_message = error or "تم تغيير كلمة المرور. استخدم الجديدة في الدخول ومراجعات المدير."
+        self._change_message = error or "تم تغيير كلمة المرور. استخدم الجديدة في الدخول والإدارة."
         self.changed.emit()
 
     @Slot()

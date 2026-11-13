@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// مراجعات المدير: one place for every review type (inventory, pricing, settlement, discount)
+// الإدارة (formerly مراجعات المدير): the management area. One place for every review type (inventory, pricing, settlement, discount)
 // and the manager's real financial accounts. Reviews are read-only in this stage; account
 // setup (new account, activation, one opening balance) is manager-only and audited.
 Item {
@@ -14,6 +14,12 @@ Item {
     signal invoiceRequested(string invoiceId)
     signal customerRequested(string customerId)
     signal reportsRequested()
+    signal suppliersRequested()
+    signal marketTripsRequested()
+    signal settingsRequested()
+    property bool settingsAvailable: true                      // the settings page shows each card by its own right
+    property bool suppliersAvailable: false
+    property bool marketTripsAvailable: false
     signal openingBalanceRequested()
     signal legacyVoidRequested()
     signal scrapAdjustRequested()
@@ -236,6 +242,7 @@ Item {
         font.pixelSize: 12
         font.bold: true
         Layout.preferredHeight: 28
+        implicitHeight: 28                  // a Flow ignores Layout.preferredHeight
         topInset: 0
         bottomInset: 0
         leftPadding: 12
@@ -904,17 +911,22 @@ Item {
         anchors.margins: 12
         spacing: 10
 
-        RowLayout {
+        // The title and the section buttons wrap onto a second line instead of running off the screen (the area has nine of them since 2026-11-13).
+        Flow {
             Layout.fillWidth: true
+            Layout.preferredWidth: 1            // a Flow's implicit width is its unwrapped row: let it wrap instead
             layoutDirection: Qt.RightToLeft
+            spacing: 8
             Label {
                 text: reviewPage.pageTitle
+                height: 28
+                verticalAlignment: Text.AlignVCenter
+                rightPadding: 6
                 color: theme.gold
                 font.family: "Cairo"
                 font.pixelSize: 18
                 font.bold: true
             }
-            Item { Layout.fillWidth: true }
             ActionButton {
                 objectName: "reviewsOpenInventory"
                 text: "📦  المخزون"
@@ -955,6 +967,27 @@ Item {
                 text: "⚖  الرصيد الافتتاحي وجرد الذهب"
                 accent: theme.gold
                 onClicked: reviewPage.openingBalanceRequested()
+            }
+            ActionButton {
+                objectName: "reviewsOpenSettings"
+                visible: reviewPage.settingsAvailable
+                text: "⚙️  الإعدادات"
+                accent: theme.gold
+                onClicked: reviewPage.settingsRequested()
+            }
+            ActionButton {
+                objectName: "reviewsOpenSuppliers"
+                visible: reviewPage.suppliersAvailable
+                text: "🤝  الموردون"
+                accent: theme.gold
+                onClicked: reviewPage.suppliersRequested()
+            }
+            ActionButton {
+                objectName: "reviewsOpenMarketTrips"
+                visible: reviewPage.marketTripsAvailable
+                text: "🧭  عهدة السوق"
+                accent: theme.gold
+                onClicked: reviewPage.marketTripsRequested()
             }
             ActionButton {
                 objectName: "reviewsOpenReports"

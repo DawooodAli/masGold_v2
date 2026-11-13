@@ -180,14 +180,37 @@ class SupplierPageTests(harness.InvoicePageTests):
         self.click(name)
         self.type_text(text)
 
-    def test_the_page_and_its_nav_button_follow_the_view_right(self):
+    def test_the_page_and_its_button_in_the_management_area_follow_the_view_right(self):
+        self.root.setProperty("currentPage", 10)                                  # owner 2026-11-13: the suppliers are a section of الإدارة, not a sidebar button
+        QTest.qWait(150)
         self.assertIsNone(self.visible_item("suppliersNavButton"))
+        self.assertIsNone(self.visible_item("reviewsOpenSuppliers"))
         self.rights("SUPPLIER_VIEW")
-        self.assertIsNotNone(self.visible_item("suppliersNavButton"))
+        self.assertIsNotNone(self.visible_item("reviewsOpenSuppliers"))
         self.assertIsNone(self.visible_item("newSupplierButton"))                 # no SUPPLIER_MANAGE
         self.assertIsNone(self.visible_item("newInvoiceButton"))
         self.open_suppliers()
         self.assertIsNotNone(self.visible_item("suppliersPage"))
+        self.assertEqual(self.warnings, [])
+
+    def test_the_suppliers_open_from_the_management_area_and_go_back_with_real_clicks(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.rights("SUPPLIER_VIEW")
+        self.root.setProperty("currentPage", 10)
+        QTest.qWait(250)
+        self.click("reviewsOpenSuppliers")
+        self.wait_until(lambda: self.root.property("currentPage") == 14, "the suppliers opened from the area")
+        self.assertEqual(self.text("suppliersBack"), "←  الإدارة")
+        self.click("suppliersBack")
+        self.wait_until(lambda: self.root.property("currentPage") == 10, "back in the area")
+        # opened from the Settings card the same button goes back to the Settings
+        self.root.setProperty("currentPage", 14)
+        self.root.findChild(QObject, "suppliersPage").setProperty("manageMode", True)
+        QTest.qWait(150)
+        self.assertEqual(self.text("suppliersBack"), "←  الإعدادات")
+        self.click("suppliersBack")
+        self.wait_until(lambda: self.root.property("currentPage") == 6, "back in the settings")
         self.assertEqual(self.warnings, [])
 
     def test_the_whole_workflow_with_real_clicks_at_1080(self):
@@ -196,7 +219,6 @@ class SupplierPageTests(harness.InvoicePageTests):
         self.rights(*ALL)
         self.open_suppliers()
         # ---- supplier
-        self.click("suppliersNavButton")
         self.click("newSupplierButton")
         self.type_in("supplierNameField", "supplier-A")
         self.assertFalse(self.item("saveSupplierButton").property("enabled"))        # the karat is required: nothing defaults

@@ -12,6 +12,7 @@ Item {
     objectName: "suppliersPage"
     signal tradeRequested(string kind, string supplierId)                 // a gold purchase from / sale to this supplier: the custody page opens the dialog on the open custody
     signal tripRequested(string tripId)                                    // the marketer statement opens the market-trip custody page on the source trip
+    signal backRequested()                                                 // owner 2026-11-13: the page is a section of الإدارة (or of Settings when opened from its card)
     property string pageTitle: ""
 
     readonly property var vm: typeof supplierVM !== "undefined" ? supplierVM : null
@@ -415,6 +416,7 @@ Item {
                 primary: true
                 onClicked: supplierDialog.openFor(null)
             }
+            Btn { objectName: "suppliersBack"; text: page.manageMode ? "←  الإعدادات" : "←  الإدارة"; onClicked: page.backRequested() }
         }
 
         RowLayout {

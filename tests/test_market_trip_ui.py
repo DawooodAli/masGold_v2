@@ -194,14 +194,30 @@ class MarketTripPageTests(harness.InvoicePageTests):
         return found
 
     # ------------------------------------------------------------ tests
-    def test_only_the_owner_sees_the_navigation_and_the_page(self):
+    def test_only_the_owner_sees_the_button_in_the_management_area_and_the_page(self):
+        self.root.setProperty("currentPage", 10)                                  # owner 2026-11-13: the custody is a section of الإدارة, not a sidebar button
+        QTest.qWait(150)
         self.assertIsNone(self.visible_item("marketTripsNavButton"))
+        self.assertIsNone(self.visible_item("reviewsOpenMarketTrips"))
         self.owner()
-        self.assertIsNotNone(self.visible_item("marketTripsNavButton"))
+        self.assertIsNotNone(self.visible_item("reviewsOpenMarketTrips"))
         self.grant(revoke=("MARKET_TRIP_MANAGE",))
         self.tvm.changed.emit()
         QTest.qWait(80)
-        self.assertIsNone(self.visible_item("marketTripsNavButton"))
+        self.assertIsNone(self.visible_item("reviewsOpenMarketTrips"))
+        self.assertEqual(self.warnings, [])
+
+    def test_the_custody_opens_from_the_management_area_and_goes_back_with_real_clicks(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.owner()
+        self.root.setProperty("currentPage", 10)
+        QTest.qWait(250)
+        self.click("reviewsOpenMarketTrips")
+        self.wait_until(lambda: self.root.property("currentPage") == 15, "the custody opened from the area")
+        self.wait_idle()
+        self.click("marketTripsBack")
+        self.wait_until(lambda: self.root.property("currentPage") == 10, "back in the area")
         self.assertEqual(self.warnings, [])
 
     def test_the_whole_flow_with_real_clicks_at_1080(self):

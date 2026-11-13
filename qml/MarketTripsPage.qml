@@ -9,6 +9,7 @@ Item {
     id: page
     objectName: "marketTripsPage"
     property string pageTitle: ""
+    signal backRequested()                                                       // owner 2026-11-13: the page is a section of الإدارة
 
     readonly property var vm: typeof marketTripVM !== "undefined" ? marketTripVM : null
     readonly property var detail: vm ? vm.detail : ({})
@@ -307,7 +308,13 @@ Item {
                 anchors.fill: parent
                 anchors.margins: 10
                 spacing: 8
-                Txt { Layout.fillWidth: true; text: "عهدة السوق"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
+                RowLayout {
+                    Layout.fillWidth: true
+                    layoutDirection: Qt.RightToLeft
+                    spacing: 6
+                    Txt { Layout.fillWidth: true; text: "عهدة السوق"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
+                    Btn { objectName: "marketTripsBack"; text: "←  الإدارة"; onClicked: page.backRequested() }
+                }
                 Btn {
                     objectName: "newTripButton"
                     Layout.fillWidth: true

@@ -749,7 +749,7 @@ class InvoicePageTests(unittest.TestCase):
         self.assertEqual(self.store.inventory_movements, [])
         reviews = self.controller.operational_viewmodels["reviewsVM"]
         self.wait_until(lambda: reviews.totalCount == 1)
-        self.assertIn("مراجعات المدير  •  1", self.text("reviewsNavButton"))
+        self.assertIn("الإدارة  •  1", self.text("reviewsNavButton"))
 
     # ------------------------------------------------------------ 7-8: sale from old-gold stock
 

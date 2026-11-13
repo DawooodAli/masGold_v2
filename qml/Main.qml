@@ -60,6 +60,10 @@ ApplicationWindow {
     palette.highlightedText:
         theme.bgPrimary
     property int currentPage: 0
+    // الإدارة (owner 2026-11-13): the management area = the reviews page (10), the reports (5), the inventory pages (2, 11, 12), the suppliers (14), the market custody (15) and the
+    // settings pages (6 settings, 7 factories, 8 item types, 9 categories, 13 users). Everything here sits behind the manager lock and keeps the sidebar button «الإدارة» selected.
+    readonly property bool inAdminArea: currentPage === 10 || currentPage === 5 || currentPage === 2 || currentPage === 11 || currentPage === 12 || currentPage === 14 || currentPage === 15
+                                        || currentPage === 6 || currentPage === 7 || currentPage === 8 || currentPage === 9 || currentPage === 13
     function openCustomerDetails(customerId) {
         if (!customerVM.openCustomerDetails(customerId)) {
             customerNavigationDialog.message = customerVM.actionMessage || "تعذر فتح بيانات العميل."
@@ -3181,11 +3185,12 @@ ApplicationWindow {
             // PAGES
             // =================================================
 
-            // قفل مراجعات المدير والتقارير: the signed-in user's own password; locks again 60 seconds after leaving.
+            // قفل الإدارة (المراجعات والتقارير والموردون وعهدة السوق والإعدادات): the signed-in user's own password; locks again 60 seconds after leaving.
             Rectangle {
                 id: managerGate
                 objectName: "managerGate"
-                readonly property bool gated: root.currentPage === 10 || root.currentPage === 5 || root.currentPage === 2 || root.currentPage === 11 || root.currentPage === 12
+                // Owner 2026-11-13: the printer choice is NOT behind the lock when the cashier is sent there from «حفظ وطباعة» without a bill printer (settingsPageItem.fromBilling): only that one section is shown.
+                readonly property bool gated: root.inAdminArea && !(root.currentPage === 6 && settingsPageItem.fromBilling && settingsPageItem.openSection === "printing")
                 readonly property bool open: typeof managerGateVM === "undefined" || managerGateVM.unlocked
                 visible: gated && !open
                 Layout.fillWidth: true
@@ -3204,7 +3209,7 @@ ApplicationWindow {
                         anchors.fill: parent
                         anchors.margins: 18
                         spacing: 10
-                        GoldPriceLabel { Layout.fillWidth: true; value: "🔒  مراجعات المدير والتقارير"; color: theme.gold; font.pixelSize: 18; font.bold: true }
+                        GoldPriceLabel { Layout.fillWidth: true; value: "🔒  الإدارة"; color: theme.gold; font.pixelSize: 18; font.bold: true }
                         GoldPriceLabel { Layout.fillWidth: true; wrapMode: Text.WordWrap; value: "اكتب كلمة مرور حسابك للدخول."; color: theme.textMuted }
                         TextField {
                             id: gatePassword
@@ -3329,6 +3334,7 @@ ApplicationWindow {
 
 
                 SettingsPage {
+                    id: settingsPageItem
                     pageTitle: "⚙️ الإعدادات"
                 }
 
@@ -3352,7 +3358,12 @@ ApplicationWindow {
 
                 // index 10: one review area for every management review type
                 ManagementReviewPage {
-                    pageTitle: "مراجعات المدير"
+                    pageTitle: "الإدارة"
+                    suppliersAvailable: typeof supplierVM !== "undefined" && supplierVM.canView
+                    onSettingsRequested: root.currentPage = 6
+                    onSuppliersRequested: root.currentPage = 14
+                    marketTripsAvailable: typeof marketTripVM !== "undefined" && marketTripVM.canManage
+                    onMarketTripsRequested: root.currentPage = 15
                     reportsAvailable: reportsPage.canView
                     openingAvailable: typeof positionSnapshotVM !== "undefined" && positionSnapshotVM.canManage
                     onInventoryRequested: root.currentPage = 2
@@ -3398,6 +3409,7 @@ ApplicationWindow {
                     id: suppliersPageItem
                     objectName: "suppliersPage"
                     pageTitle: "🤝 الموردون"
+                    onBackRequested: root.currentPage = suppliersPageItem.manageMode ? 6 : 10     // from the Settings card back to Settings, otherwise to the area
                     onTripRequested: function(tripId) {
                         root.currentPage = 15
                         if (typeof marketTripVM !== "undefined") marketTripVM.selectTrip(tripId)
@@ -3413,6 +3425,7 @@ ApplicationWindow {
                     id: marketTripsPageItem
                     objectName: "marketTripsPage"
                     pageTitle: "🧭 عهدة السوق"
+                    onBackRequested: root.currentPage = 10
                 }
 
             }
@@ -3511,50 +3524,6 @@ ApplicationWindow {
                 }
 
 
-                NavButton {
-                    objectName: "suppliersNavButton"
-                    // الموردون: shown to users who may view suppliers (the services re-check every right).
-                    visible: typeof supplierVM !== "undefined" && supplierVM.canView
-                    text: "🤝  الموردون"
-                    selected: root.currentPage === 14
-
-                    onClicked:
-                        root.currentPage = 14
-                }
-
-
-                NavButton {
-                    objectName: "marketTripsNavButton"
-                    // عهدة السوق: owner only (the service re-checks the right in every transaction).
-                    visible: typeof marketTripVM !== "undefined" && marketTripVM.canManage
-                    text: "🧭  عهدة السوق"
-                    selected: root.currentPage === 15
-
-                    onClicked:
-                        root.currentPage = 15
-                }
-
-
-                // مراجعات المدير • N — visible to everyone; amber while reviews are open.
-                NavButton {
-                    objectName: "reviewsNavButton"
-                    text: "🔔  مراجعات المدير" + (typeof reviewsVM !== "undefined" && reviewsVM.totalCount > 0
-                                                  ? "  •  " + reviewsVM.totalCount : "")
-                    selected: root.currentPage === 10 || root.currentPage === 5 || root.currentPage === 2 || root.currentPage === 11 || root.currentPage === 12
-                    onClicked: root.currentPage = 10
-                    Rectangle {
-                        anchors.left: parent.left
-                        anchors.leftMargin: 8
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 8
-                        height: 8
-                        radius: 4
-                        visible: typeof reviewsVM !== "undefined" && reviewsVM.totalCount > 0
-                        color: theme.amber
-                    }
-                }
-
-
                 Item {
                     Layout.fillHeight: true
                 }
@@ -3570,17 +3539,24 @@ ApplicationWindow {
                 }
 
 
+                // الإدارة • N — at the bottom, where the settings button used to be (owner 2026-11-13); visible to everyone, amber while reviews are open.
+                // The reviews, the reports, the inventory pages, the suppliers, the market custody and the settings are sections inside it, behind the manager lock.
                 NavButton {
-                    text: "⚙️  الإعدادات"
-
-                    selected:
-                        root.currentPage === 6
-                        || root.currentPage === 7
-                        || root.currentPage === 8
-                        || root.currentPage === 9
-                        || root.currentPage === 13
-                    onClicked:
-                        root.currentPage = 6
+                    objectName: "reviewsNavButton"
+                    text: "🔔  الإدارة" + (typeof reviewsVM !== "undefined" && reviewsVM.totalCount > 0
+                                           ? "  •  " + reviewsVM.totalCount : "")
+                    selected: root.inAdminArea
+                    onClicked: root.currentPage = 10
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.leftMargin: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 8
+                        height: 8
+                        radius: 4
+                        visible: typeof reviewsVM !== "undefined" && reviewsVM.totalCount > 0
+                        color: theme.amber
+                    }
                 }
 
 
@@ -5530,17 +5506,17 @@ ApplicationWindow {
     }
 
     // Settings → الرصيد الافتتاحي: the owner's initial gold / cash balance, entered ONCE (the gold profit report starts from it), plus a manual stocktaking sheet.
-    // Settings → كلمة المرور: the signed-in user's own login password, which is also the مراجعات المدير lock password.
+    // Settings → كلمة المرور: the signed-in user's own login password, which is also the الإدارة lock password.
     component PasswordSettings: SettingsSectionCard {
         id: passwordCard
         objectName: "settingsPassword"
-        sectionTitle: "كلمة مرور الدخول ومراجعات المدير"
+        sectionTitle: "كلمة مرور الدخول والإدارة"
         accentColor: theme.gold
         readonly property var vm: typeof managerGateVM !== "undefined" ? managerGateVM : null
         content: [
             GoldPriceLabel {
                 Layout.fillWidth: true; wrapMode: Text.WordWrap
-                value: "هذه هي كلمة مرور دخولك نفسها، وهي التي تفتح مراجعات المدير والتقارير. اكتب الحالية ثم الجديدة مرتين (٦ أحرف على الأقل)."
+                value: "هذه هي كلمة مرور دخولك نفسها، وهي التي تفتح الإدارة (المراجعات والتقارير والموردون وعهدة السوق والإعدادات). اكتب الحالية ثم الجديدة مرتين (٦ أحرف على الأقل)."
                 color: theme.textMuted; font.pixelSize: 11
             },
             GridLayout {
@@ -5633,7 +5609,7 @@ ApplicationWindow {
                     }
                 }
                 GoldPriceLabel { visible: bankRepeater.count === 0; Layout.fillWidth: true; wrapMode: Text.WordWrap; color: theme.amber; font.pixelSize: 11
-                                 value: "لا توجد حسابات بنوك أو محافظ بعد: أضفها من «الحسابات المالية» في مراجعات المدير لو عايز تسجّل لها رصيد (مثل فودافون كاش)." }
+                                 value: "لا توجد حسابات بنوك أو محافظ بعد: أضفها من «الحسابات المالية» في الإدارة لو عايز تسجّل لها رصيد (مثل فودافون كاش)." }
                 CheckBox {
                     id: ledgersConfirm; objectName: "openingLedgersConfirm"
                     text: "أؤكد أن أرصدة الكسر والكاش والبنوك صحيحة وأنها لا تتغير بعد التسجيل"
@@ -6369,11 +6345,21 @@ ApplicationWindow {
         // Owner request 2026-10-31: every settings area is a CARD; opening a card shows only its settings, with the unified «رجوع Esc» button.
         // "" = the cards; "gold" / "printing" / "password" / "categories" = that area.
         property string openSection: ""
-        Shortcut { sequence: "Esc"; enabled: settingsPageRoot.visible && settingsPageRoot.openSection !== ""; onActivated: settingsPageRoot.openSection = "" }
+        // true while the page was opened by Billing's «إعدادات الطباعة» (a cashier without a bill printer): the printing section is then reachable without the manager lock, and leaving it goes back to the invoice.
+        property bool fromBilling: false
+        function leaveSection() {
+            var backToBilling = fromBilling && openSection === "printing"
+            if (backToBilling) root.currentPage = 1                  // first, so the lock never flashes in between
+            fromBilling = false
+            openSection = ""
+        }
+        Shortcut { sequence: "Esc"; enabled: settingsPageRoot.visible && settingsPageRoot.openSection !== ""; onActivated: settingsPageRoot.leaveSection() }
         Rectangle { anchors.fill: parent; color: theme.bgPrimary }
         onVisibleChanged: {
-            if (!visible)
+            if (!visible) {
+                fromBilling = false                                   // leaving the page ends the no-lock visit
                 return
+            }
             if (typeof userAdminVM !== "undefined" && userAdminVM.canManage) userAdminVM.refresh()
             if (typeof systemSettingsVM !== "undefined" && systemSettingsVM.canManage) systemSettingsVM.refresh()
             if (typeof cashCategoryVM !== "undefined" && cashCategoryVM.canManage) cashCategoryVM.refresh()
@@ -6388,7 +6374,7 @@ ApplicationWindow {
         Connections {
             target: typeof invoiceVM !== "undefined" ? invoiceVM : null
             ignoreUnknownSignals: true
-            function onPrintingSettingsRequested() { settingsPageRoot.openSection = "printing"; printingScroll.restart() }
+            function onPrintingSettingsRequested() { settingsPageRoot.openSection = "printing"; settingsPageRoot.fromBilling = true; printingScroll.restart() }
         }
         Timer {
             id: settingsResultScroll
@@ -6428,11 +6414,15 @@ ApplicationWindow {
                         Layout.fillWidth: true; color: theme.gold; font.pixelSize: 19; font.bold: true
                         value: ({"gold": "مصدر أسعار الذهب", "printing": "الطباعة", "password": "كلمة المرور", "categories": "تصنيفات المصروفات والإيرادات", "theme": "المظهر", "webreports": "تقارير الأيباد"})[settingsPageRoot.openSection] || ""
                     }
-                    GoldPriceButton { objectName: "settingsSectionBack"; text: "رجوع  ⁦Esc⁩"; onClicked: settingsPageRoot.openSection = "" }
+                    GoldPriceButton { objectName: "settingsSectionBack"; text: "رجوع  ⁦Esc⁩"; onClicked: settingsPageRoot.leaveSection() }
                 }
-                GoldPriceLabel {
-                    Layout.fillWidth: true; value: "الإعدادات والبيانات الأساسية"; visible: settingsPageRoot.openSection === ""
-                    color: theme.gold; font.pixelSize: 19; font.bold: true
+                RowLayout {
+                    Layout.fillWidth: true; visible: settingsPageRoot.openSection === ""; layoutDirection: Qt.RightToLeft; spacing: 10
+                    GoldPriceLabel {
+                        Layout.fillWidth: true; value: "الإعدادات والبيانات الأساسية"
+                        color: theme.gold; font.pixelSize: 19; font.bold: true
+                    }
+                    GoldPriceButton { objectName: "settingsBack"; text: "←  الإدارة"; onClicked: root.currentPage = 10 }
                 }
                 GoldPriceLabel { Layout.fillWidth: true; visible: settingsPageRoot.openSection === ""; value: "إدارة بيانات المحل ومصدر أسعار الذهب"; color: theme.textMuted }
                 GridLayout {
@@ -13711,7 +13701,7 @@ ApplicationWindow {
             Label {
                 Layout.fillWidth: true; wrapMode: Text.Wrap; font.family: "Cairo"; font.pixelSize: 11
                 color: theme.textMuted; horizontalAlignment: Text.AlignRight
-                text: "الباركود لا يتغير. لو الليبل مطبوع ببيانات قديمة أعد طباعته. لو القطعة جاية من الكسر وصحّحت وزنها، صحّح رصيد الكسر من مراجعات المدير."
+                text: "الباركود لا يتغير. لو الليبل مطبوع ببيانات قديمة أعد طباعته. لو القطعة جاية من الكسر وصحّحت وزنها، صحّح رصيد الكسر من الإدارة."
             }
             Label {
                 Layout.fillWidth: true; wrapMode: Text.Wrap; font.family: "Cairo"
