@@ -11,6 +11,7 @@ BILL_KEY, LABEL_KEY = "printing/bill_printer", "printing/label_printer"
 # Physical calibration of the preprinted A5 bill (mm). Missing keys = the built-in provisional
 # values in services/bill_overlay.BillCalibration. Only the Bill printer; never the Label printer.
 BILL_STYLE_KEY = "printing/bill_style"        # "variant_c" (default) or "prototype"
+LABEL_STYLE_KEY = "printing/label_style"      # "v2" (default: the new label sheet) or "legacy" (the old ZPL layout)
 BILL_CALIBRATION_KEYS = {"upper_gold_y_mm": "printing/bill_upper_gold_y_mm",
                          "lower_gold_y_mm": "printing/bill_lower_gold_y_mm",
                          "offset_x_mm": "printing/bill_offset_x_mm",
@@ -72,3 +73,9 @@ class PrinterSettings:
 
     def set_bill_style(self, style):
         self._set(BILL_STYLE_KEY, style)
+
+    def label_style(self):
+        return self._get(LABEL_STYLE_KEY)
+
+    def set_label_style(self, style):
+        self._set(LABEL_STYLE_KEY, style)

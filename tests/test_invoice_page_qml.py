@@ -1339,6 +1339,14 @@ class InvoicePageTests(unittest.TestCase):
         self.choose("labelPrinterCombo", 1)
         self.wait_until(lambda: printing.labelPrinter["name"] == "ZDesigner GK420t")
         self.assertEqual(printing.billPrinter["name"], "Brother HL-L2360D series")
+        # the label's look (owner 2026-11-13): the new sheet is the default; the old layout is one click away and back
+        self.scroll_settings_to("labelStyleCombo")
+        self.assertEqual(printing.labelStyle, "v2")
+        self.choose("labelStyleCombo", 1)
+        self.wait_until(lambda: printing.labelStyle == "legacy")
+        self.choose("labelStyleCombo", 0)
+        self.wait_until(lambda: printing.labelStyle == "v2")
+        self.assertEqual(printing.billStyle, "variant_c")                      # the bill's look is a separate choice
         self.click("testBillPrint")
         # The bill test print runs on a background thread (the UI never freezes): wait for its one job.
         self.wait_until(lambda: len(self.printing_jobs) == 1 and not printing.billTestBusy, "bill test print not done")
@@ -1352,6 +1360,8 @@ class InvoicePageTests(unittest.TestCase):
             QTest.qWait(150)
             self.scroll_settings_to("settingsPrinting")
             self.assertIsNotNone(self.visual_item("settingsPrinting"))
+            self.scroll_settings_to("labelStyleCombo")
+            self.assert_inside_window(self.item("labelStyleCombo"))            # the label style choice is reachable at every size
             self.snapshot(f"settings-printing-{width}x{height}")
 
     def test_f7_description_is_the_last_field_before_add(self):

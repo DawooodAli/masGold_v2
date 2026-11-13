@@ -5450,6 +5450,23 @@ ApplicationWindow {
                 }
                 Item { Layout.fillWidth: true }
             },
+            RowLayout {
+                Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 10
+                visible: printerChoice.kind === "label"
+                GoldPriceLabel { value: "شكل اللاصق"; color: theme.textSecondary }
+                ComboBox {
+                    id: labelStyleCombo
+                    objectName: printerChoice.kind === "label" ? "labelStyleCombo" : "labelStyleComboOfBillCard"      // the card is shared by both printers: only the label card's combo is the real one
+                    Layout.preferredWidth: 300
+                    font.family: "Cairo"
+                    textRole: "text"
+                    valueRole: "code"
+                    model: [{ "code": "v2", "text": "الجديد (Code 128 • مجوهرات ماس)" }, { "code": "legacy", "text": "القديم" }]
+                    currentIndex: printerChoice.vm && printerChoice.vm.labelStyle === "legacy" ? 1 : 0
+                    onActivated: function(index) { printerChoice.vm.setLabelStyle(model[index].code) }
+                }
+                Item { Layout.fillWidth: true }
+            },
             GoldPriceLabel {
                 Layout.fillWidth: true
                 value: "الورق: " + (printerChoice.vm ? (printerChoice.kind === "bill" ? printerChoice.vm.billFormat

@@ -178,8 +178,25 @@ class PrinterSettingsTests(unittest.TestCase):
         self.assertEqual([name for name, _ in self.label_jobs], ["ZDesigner GK420t"])
         zpl = self.label_jobs[0][1][0]
         self.assertIn("^PW641^LL0310", zpl)                                    # the prototype label format
-        self.assertIn("TEST0001", zpl)
+        self.assertIn("^GFA", zpl)                                             # the new sheet is one graphic (the number is inside the Code 128 bars)
         self.assertEqual(self.bill_jobs, [])
+
+    def test_the_label_style_is_a_local_choice_and_the_old_layout_prints_the_old_zpl(self):
+        vm, settings = self.vm()
+        self.assertEqual(vm.labelStyle, "v2")                                  # the new sheet is the default
+        vm.setLabelStyle("legacy")
+        self.assertEqual((vm.labelStyle, vm.messageIsError), ("legacy", False))
+        self.assertEqual(self.vm()[0].labelStyle, "legacy")                    # persists after a restart
+        vm.setLabelPrinter("ZDesigner GK420t")
+        vm.testLabelPrint()
+        old = self.label_jobs[-1][1][0]
+        self.assertIn("TEST0001", old)                                         # the old layout writes the number as text
+        self.assertIn("^B3N", old)
+        vm.setLabelStyle("nonsense")
+        self.assertEqual((vm.labelStyle, vm.messageIsError), ("legacy", True))  # refused, unchanged
+        vm.setLabelStyle("v2")
+        self.assertEqual(vm.labelStyle, "v2")
+        self.assertEqual(settings.bill_style(), "")                            # the bill's look is untouched
 
     def test_missing_label_printer_never_affects_the_bill_printer(self):
         vm, settings = self.vm()

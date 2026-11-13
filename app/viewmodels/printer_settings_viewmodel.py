@@ -105,6 +105,23 @@ class PrinterSettingsViewModel(QObject):
         self._settings.set_bill_style(style)
         self._say("شكل الفاتورة: " + ("مثل البرنامج القديم" if style == "prototype" else "الشكل الحالي"), False)
 
+    # ------------------------------------------------------------ the look of the printed barcode label (this workstation only)
+    @Property(str, notify=changed)
+    def labelStyle(self):
+        from services.barcode_print_service import DEFAULT_LABEL_STYLE, LABEL_STYLES
+        value = self._settings.label_style()
+        return value if value in LABEL_STYLES else DEFAULT_LABEL_STYLE
+
+    @Slot(str)
+    def setLabelStyle(self, style):
+        """«شكل اللاصق»: the new sheet (Code 128, «مجوهرات ماس» in Cairo) or the old layout. Only the drawing changes; the printer, the paper and the printer settings are the same."""
+        from services.barcode_print_service import LABEL_STYLES
+        if style not in LABEL_STYLES:
+            self._say("اختر شكلاً من القائمة.", True)
+            return
+        self._settings.set_label_style(style)
+        self._say("شكل اللاصق: " + ("الجديد" if style == "v2" else "القديم"), False)
+
     @Slot(str)
     def setBillPrinter(self, name):
         """Only a printer Windows reports right now can be chosen; the Label printer is untouched."""

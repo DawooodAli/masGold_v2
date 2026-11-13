@@ -9,6 +9,11 @@ from repositories.barcode_repository import BarcodeRepository
 
 DEFAULT_BARCODE_PRINTER_NAME = "ZDesigner GK420t"
 
+# The look of the printed label (this workstation's choice, Settings > الطباعة): the new sheet drawn by services/label_renderer.py (Code 128, «مجوهرات ماس» in Cairo) or the old ZPL layout, kept as is.
+LABEL_STYLE_NEW, LABEL_STYLE_LEGACY = "v2", "legacy"
+LABEL_STYLES = (LABEL_STYLE_NEW, LABEL_STYLE_LEGACY)
+DEFAULT_LABEL_STYLE = LABEL_STYLE_NEW
+
 
 NO_BARCODE_REFUSAL = "لا يمكن طباعة لاصقة لقطعة بدون باركود؛ استبعد القطع بدون باركود من التحديد."
 
@@ -51,12 +56,23 @@ class PrototypeZplPrinter:
         printer_name=None,
         settings=None,
         send_raw=None,
+        style=None,
     ):
         # The Label printer: an explicit name, else this workstation's Settings → الطباعة choice
         # (read at print time), else the prototype's printer name. Never the Bill printer.
         self._printer_override = printer_name
         self._settings = settings
         self._send_raw_override = send_raw
+        self._style_override = style
+
+    @property
+    def label_style(self):
+        """The label's look: an explicit style (tests), else this workstation's choice, else the new sheet."""
+        if self._style_override is not None:
+            return self._style_override
+        from config.printer_settings import PrinterSettings
+        value = (self._settings or PrinterSettings()).label_style()
+        return value if value in LABEL_STYLES else DEFAULT_LABEL_STYLE
 
     @property
     def printer_name(self):
@@ -143,6 +159,32 @@ class PrototypeZplPrinter:
         }
 
     def build_zpl_label(
+        self,
+        left_item,
+        right_item=None,
+    ):
+        if self.label_style == LABEL_STYLE_LEGACY:
+            return self._build_zpl_label_legacy(left_item, right_item)
+        return self._build_zpl_label_new(left_item, right_item)
+
+    def _build_zpl_label_new(self, left_item, right_item=None):
+        """The new sheet: the same printer settings as before, the content as ONE graphic (services/label_renderer.py: Code 128 with 1-dot bars, margins, «مجوهرات ماس» in Cairo)."""
+        from services.label_renderer import LabelError, label_graphic
+        left = self._print_fields(left_item)
+        right = self._print_fields(right_item) if right_item else None
+        try:
+            graphic = label_graphic(left, right)
+        except LabelError as exc:
+            raise ValueError(str(exc)) from exc
+        return (
+            f"^XA~TA000~JSN^LT0^MNW^MTT^PON^PMN^LH0,0^JMA^PR5,5~SD24^JUS^LRN^CI0^XZ"
+            f"^CI28^XA^MD15^XZ"
+            f"^XA^MMT^PW641^LL0310^LS0"
+            f"{graphic}"
+            f"^PQ1,0,1,Y^XZ"
+        )
+
+    def _build_zpl_label_legacy(
         self,
         left_item,
         right_item=None,
