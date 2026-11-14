@@ -52,6 +52,27 @@ class PrivateAccountTests(FinancialTestCase):
         view = self.owner.private_account()
         self.assertEqual((view["balance"], view["entries"][0]["voided"]), ("0.00", True))
 
+    def custody_entry(self, entry_id, amount, trip_id=12, entry_no=3):
+        self.store.__dict__.setdefault("private_entries_list", []).append(
+            {"id": f"c{entry_id}", "direction": "TO_PRIVATE", "amount": D(amount), "operation_id": None, "trip_entry_id": str(entry_id), "trip_id": trip_id, "entry_no": entry_no,
+             "note": "من العهدة", "created_at": None})
+
+    def test_cash_taken_from_a_market_custody_counts_and_is_listed_with_its_custody_entry(self):
+        """Migration 105: an entry may come from a custody cash transfer (no bank / wallet operation): it is listed under the custody entry's code and counts in the balance."""
+        self.owner.private_transfer("BANK:7", "TO", "1000", "", str(uuid4()))
+        self.custody_entry(40, "750.00")
+        view = self.owner.private_account()
+        self.assertEqual((view["balance"], view["total_in"], view["total_out"]), ("1750.00", "1750.00", "0.00"))
+        newest = view["entries"][0]
+        self.assertEqual((newest["operation"], newest["account"], newest["voided"], newest["fromCustody"]), ("MT000012-3", "نقدية عهدة السوق", False, True))
+        self.assertEqual((view["entries"][1]["account"], view["entries"][1]["fromCustody"]), ("الأهلي", False))     # the bank transfer reads as before
+
+    def test_reversing_the_custody_entry_voids_its_private_entry_but_keeps_it_listed(self):
+        self.custody_entry(41, "300.00")
+        self.store.corrections.append({"correction_type": "FULL_REVERSAL", "source_type": "MARKET_TRIP_ENTRY", "source_id": "41", "chain_sequence": None})
+        view = self.owner.private_account()
+        self.assertEqual((view["balance"], view["entries"][0]["voided"]), ("0.00", True))
+
     def test_only_the_owner_right_opens_or_uses_the_private_account(self):
         manager = self.fin_service(OWNER)                                          # operates accounts but lacks PRIVATE_ACCOUNT_MANAGE
         before = self.store.tables()

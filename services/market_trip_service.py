@@ -72,6 +72,8 @@ ST_MELT = "ST_MELT"                                # 060: the melt recorded AFTE
 ST_BAR_SUP, BAR_SOURCE_KIND = "ST_BAR_SUP", "TRIP_BAR"      # 061: the melted bar (21K-equivalent grams) delivered to a supplier (settlement step 2b)
 ST_RET_MKT, ST_LOSS, ST_ADJUST = "ST_RET_MKT", "ST_LOSS", "ST_ADJUST"      # 065: remainder returned to the shop / lost, issue-weight correction
 ST_EXPENSE, ST_CASH_BANK, ST_CASH_OFF = "ST_EXPENSE", "ST_CASH_BANK", "ST_CASH_OFF"      # 064: the custody cash settled after the trip
+ST_CASH_PRIV = "ST_CASH_PRIV"                                                                # 105: the custody cash taken straight into the owner's private account
+PRIVATE_PERMISSION = "PRIVATE_ACCOUNT_MANAGE"                                                # OWNER only, rechecked in the transaction
 ST_BAR_FEE = "ST_BAR_FEE"                      # 080: the cash fee a supplier / marketer pays when a bar is handed over
 ST_LOGO = "ST_LOGO"                                # 062: the unmelted remainder classified as LOGO (the owner rule: what was not melted is logo)
 ST_BAR_MKT = "ST_BAR_MKT"                          # 062: the melted bar handed to a marketer: his 21K entitlement gains the grams (settlement step 2c)
@@ -99,7 +101,7 @@ ZERO_MONEY, ZERO_WEIGHT = Decimal("0.00"), Decimal("0.000")
 KIND_TEXT = {ISSUE: "إخراج عهدة", RETURN: "رجوع من العهدة", MELT: "سبك", LOT_RETURN: "رجوع ناتج السبك", LOT_ISSUE: "إخراج سبكة من المحل",
              HEAT: "حمّية اللوجو", SUPPLIER_PAY: "دفع مصنعيات من العهدة", GOLD_SETTLE: "تسوية ذهب من العهدة", LOT_SETTLE: "تسوية سبكة من العهدة",
              GOLD_SALE: "بيع ذهب من العهدة", GOLD_BUY: "شراء ذهب نقدي",
-             "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي", "LOGO_HOLD": "تسليم لوجو لمسوقجي", "HOLD_BACK": "رجوع لوجو من مسوقجي", "ST_MELT": "تسجيل سبك (بعد الرجوع)", "ST_BAR_SUP": "تسليم سبيكة لمورد (بعد الرجوع)", "ST_BAR_MKT": "تسليم سبيكة لمسوقجي (بعد الرجوع)", "ST_LOGO": "اعتبار المتبقي لوجو", "ST_EXPENSE": "مصروف من العهدة", "ST_CASH_BANK": "إيداع باقي النقدية في حساب", "ST_CASH_OFF": "إعدام باقي النقدية", "ST_RET_MKT": "مرتجع سوق للمحل", "ST_LOSS": "خسية", "ST_ADJUST": "تصحيح وزن الإخراج", "ST_BAR_FEE": "أجر سبيكة"}
+             "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي", "LOGO_HOLD": "تسليم لوجو لمسوقجي", "HOLD_BACK": "رجوع لوجو من مسوقجي", "ST_MELT": "تسجيل سبك (بعد الرجوع)", "ST_BAR_SUP": "تسليم سبيكة لمورد (بعد الرجوع)", "ST_BAR_MKT": "تسليم سبيكة لمسوقجي (بعد الرجوع)", "ST_LOGO": "اعتبار المتبقي لوجو", "ST_EXPENSE": "مصروف من العهدة", "ST_CASH_BANK": "إيداع باقي النقدية في حساب", "ST_CASH_OFF": "إعدام باقي النقدية", "ST_CASH_PRIV": "تحويل نقدية العهدة إلى الحساب الخاص", "ST_RET_MKT": "مرتجع سوق للمحل", "ST_LOSS": "خسية", "ST_ADJUST": "تصحيح وزن الإخراج", "ST_BAR_FEE": "أجر سبيكة"}
 DESIGNATION_TEXT = {MELT_DESIGNATION: "للسبك", LOGO_DESIGNATION: "لوجو", UNCLASSIFIED: "بدون وجهة"}
 _DESIGNATION_INPUT = {"MELT": MELT_DESIGNATION, "للسبك": MELT_DESIGNATION, "LOGO": LOGO_DESIGNATION, "لوجو": LOGO_DESIGNATION,
                       "UNCLASSIFIED": UNCLASSIFIED, "غير مصنف": UNCLASSIFIED}
@@ -2360,13 +2362,19 @@ class MarketTripService:
         """Write off remaining custody cash (إعدام): the amount leaves the custody cash; a reason is mandatory; no other movement."""
         return self._settle_cash(ST_CASH_OFF, trip_id, amount, reason, None, entry_date, "", notes, request_key, _expected_actor)
 
+    def transfer_custody_cash_to_private(self, trip_id, amount, entry_date, notes, request_key, *, _expected_actor=None):
+        """Take remaining custody cash straight into the OWNER's private account (تحويل نقدية العهدة إلى الحساب الخاص, owner 2026-11-14): the amount leaves the custody cash and ONE
+        private-account entry (TO_PRIVATE) is tied to the entry; no cash, bank or Main Safe movement exists (the custody cash is in no ledger account). Rights: MARKET_TRIP_MANAGE and
+        PRIVATE_ACCOUNT_MANAGE (OWNER only), both rechecked in the transaction. Needs migration 105."""
+        return self._settle_cash(ST_CASH_PRIV, trip_id, amount, "", None, entry_date, "", notes, request_key, _expected_actor)
+
     def _settle_cash(self, kind, trip_id, amount, description, bank_account_id, entry_date, reference, notes, request_key, expected_actor):
         session_actor = self._actor(expected_actor)
         if str(trip_id or "").strip() == "":
             raise TripError("TRIP_NOT_FOUND", "اختر العهدة.")
         trip_number = _trip_id(trip_id)
         total = self._settle_amount(amount)
-        text = _text(description, SETTLE_TEXT_MAX, "البيان" if kind == ST_EXPENSE else "السبب", required=kind != ST_CASH_BANK)
+        text = _text(description, SETTLE_TEXT_MAX, "البيان" if kind == ST_EXPENSE else "السبب", required=kind in (ST_EXPENSE, ST_CASH_OFF))
         account_number = None
         if kind == ST_CASH_BANK:
             try:
@@ -2409,6 +2417,8 @@ class MarketTripService:
     def _post_settle_cash(self, session_actor, kind, trip_id, total, text, account_id, on_date, reference, notes, key, digest):
         with self._transaction() as connection:
             actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
+            if kind == ST_CASH_PRIV:                                            # the owner's own account: its right is rechecked here as well
+                actor = self._authorization.require_permission_for_write(connection, session_actor, PRIVATE_PERMISSION)
             repository = self._repository(connection)
             trip = repository.trip(trip_id, lock=True)                          # lock order: trip -> bank account
             if trip is None:
@@ -2418,6 +2428,8 @@ class MarketTripService:
                 return replay
             if trip["status"] != OPEN:
                 raise TripError("TRIP_CLOSED", "العهدة مغلقة: أعد فتحها أولاً.")
+            if kind == ST_CASH_PRIV and not repository.has_private_trip_schema():
+                raise TripError("SCHEMA_OUTDATED", "قاعدة البيانات تحتاج تحديث 105 قبل التحويل إلى الحساب الخاص.")
             outstanding = custody_rules.cash_rows_outstanding(repository.custody_cash(trip_id, current=True))
             if total > outstanding:
                 raise TripError("CASH_EXCEEDS_CUSTODY", f"المتبقي في نقدية العهدة {outstanding:,.2f} ج فقط: لا يمكن تسوية {total:,.2f} ج.")
@@ -2435,7 +2447,9 @@ class MarketTripService:
                 movement_id = repository.post_bank_in(account_id=account_id, entry_id=entry_id, code=code, amount=total,
                                                       description=f"{KIND_TEXT[kind]} {code} — {trip_code(trip_id)}", actor=actor, now=now)
             repository.insert_settle_cash(entry_id=entry_id, kind=kind, amount=total, description=text, reference=reference, bank_account_id=account_id, bank_movement_id=movement_id)
-            label = f"{KIND_TEXT[kind]} {code} — {trip_code(trip_id)}: {total:,.2f} ج" + (f" ← {bank['name']}" if bank else f" • {text}")
+            if kind == ST_CASH_PRIV:                                            # the private-account entry of the SAME amount, in the same transaction
+                repository.insert_private_trip_entry(entry_id=entry_id, amount=total, note=notes or text, actor=actor, now=now)
+            label = f"{KIND_TEXT[kind]} {code} — {trip_code(trip_id)}: {total:,.2f} ج" + (f" ← {bank['name']}" if bank else f" • {text}" if text else "")
             repository.audit(actor=actor, event_type="MARKET_TRIP_" + kind, entity_id=entry_id, reference=code, description=label,
                              metadata={"trip_id": trip_id, "kind": kind, "amount": str(total), "description": text, "bank_account_id": account_id,
                                        "date": on_date.isoformat(), "employee_id": actor.employee_id}, now=now)

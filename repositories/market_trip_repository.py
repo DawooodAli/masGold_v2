@@ -912,7 +912,7 @@ class MarketTripRepository(BaseRepository):
             row["bar_supplier"] = self.entry_bar_supplier(row["id"]) if row["entry_kind"] == "ST_BAR_SUP" else None
             row["bar_marketer"] = self.entry_marketer_leg(row["id"]) if row["entry_kind"] == "ST_BAR_MKT" else None
             row["settle_logo"] = self.entry_settle_logo(row["id"]) if row["entry_kind"] == "ST_LOGO" else []
-            row["settle_cash"] = self.entry_settle_cash(row["id"]) if row["entry_kind"] in ("ST_EXPENSE", "ST_CASH_BANK", "ST_CASH_OFF") else None
+            row["settle_cash"] = self.entry_settle_cash(row["id"]) if row["entry_kind"] in ("ST_EXPENSE", "ST_CASH_BANK", "ST_CASH_OFF", "ST_CASH_PRIV") else None
             row["settle_lines"] = self.entry_settle_lines(row["id"]) if row["entry_kind"] in ("ST_RET_MKT", "ST_LOSS") else []
             row["settle_adjust"] = self.entry_settle_adjust(row["id"]) if row["entry_kind"] == "ST_ADJUST" else None
             row["bar_fee"] = self.entry_bar_fee(row["id"]) if row["entry_kind"] == "ST_BAR_FEE" else None
@@ -970,6 +970,20 @@ class MarketTripRepository(BaseRepository):
             row = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'market_trip_settle_cash'")
             self._cash_settle = bool(row and int(row["n"]))
         return self._cash_settle
+
+    def has_private_trip_schema(self):
+        """True when migration 105 is present (a private-account entry may come from a custody entry). Asked once per repository object."""
+        if not hasattr(self, "_private_trip"):
+            row = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'private_account_entries' AND COLUMN_NAME = 'trip_entry_id'")
+            self._private_trip = bool(row and int(row["n"]))
+        return self._private_trip
+
+    def insert_private_trip_entry(self, *, entry_id, amount, note, actor, now):
+        """The owner's private-account entry of a custody cash transfer (ST_CASH_PRIV, migration 105): TO_PRIVATE, tied to the custody entry, no bank / wallet operation."""
+        private_id, _ = self._execute(
+            "INSERT INTO private_account_entries (direction, amount, operation_id, trip_entry_id, trip_entry_kind, note, created_by_user_id, created_at) "
+            "VALUES ('TO_PRIVATE', %s, NULL, %s, 'ST_CASH_PRIV', %s, %s, %s)", (amount, _id(entry_id), note or None, actor.user_id, now))
+        return int(private_id)
 
     def active_bank_accounts(self):
         return self._fetch_all("SELECT id, name, account_type, bank_name, account_label FROM bank_accounts WHERE is_active = TRUE ORDER BY account_type, name, id")

@@ -56,6 +56,7 @@ SMP = "SUPPLIER_MAKING_PAYMENT"       # supplier making payment (036): full reve
 SMP_REVERSE_PERMISSION = "SUPPLIER_MAKING_PAY_REVERSE"
 MTE = "MARKET_TRIP_ENTRY"             # market-trip custody issue / return (037): full reversal only, OWNER only
 MTE_PERMISSION = "MARKET_TRIP_MANAGE"
+PRIVATE_PERMISSION = "PRIVATE_ACCOUNT_MANAGE"      # 105: reversing a custody cash transfer to the owner's private account
 SGS = "SUPPLIER_GOLD_SETTLEMENT"      # direct supplier gold settlement from shop Scrap (045): full reversal only, OWNER only
 SGS_REVERSE_PERMISSION = "SUPPLIER_GOLD_SETTLE_REVERSE"
 HOLDING_REVERSE_PERMISSION = "INTERMEDIARY_HOLDING_REVERSE"
@@ -92,6 +93,11 @@ def correction_source_text(source_type, direction=None, *, definite=True):
         return "عملية مالية"
     label = SOURCE_TEXT.get(source_type, "العملية")
     return label if definite else label.removeprefix("ال")
+
+
+def direction_text(direction):
+    """The money direction in words (never a sign): IN = المستلم من العميل, OUT = المدفوع للعميل."""
+    return "المستلم من العميل" if direction == "IN" else "المدفوع للعميل"
 
 
 class CorrectionError(ValueError):
@@ -549,6 +555,10 @@ class CorrectionService:
                 else:
                     plan.making.append((str(movement["supplier_id"]), -Decimal(str(movement["amount_delta"])), REVERSAL_MOVEMENT))
                 plan.extra_permissions.append(SMP_REVERSE_PERMISSION)
+            if source["entry_kind"] == "ST_CASH_PRIV":
+                # 105. The transfer posted no cash / bank movement: the entry stops counting, so the stored cash is back in custody, and the private-account entry tied to it is read as
+                # voided (derived from this correction, never rewritten). The owner's private-account right is needed on top, rechecked in the transaction.
+                plan.extra_permissions.append(PRIVATE_PERMISSION)
             if source["entry_kind"] == "ST_BAR_FEE":
                 # 080. The fee stops counting in custody cash and the stored supplier deduction is restored; blocked when the fee cash was used.
                 fee = trips.entry_bar_fee(source_id)
@@ -1432,6 +1442,9 @@ class CorrectionService:
             original, direction = source["payments"], "OUT"
         if any(p["direction"] != direction for p in original):
             raise CorrectionError("MIXED_DIRECTION", "تسوية هذه العملية بها اتجاهان؛ لا يدعمها هذا الإصدار.")
+        original_direction = direction
+        if chain and chain[-1].get("money_direction") in ("IN", "OUT"):
+            direction = chain[-1]["money_direction"]       # owner 2026-11-14: a mixed invoice's correction may have turned the money around (the customer paid instead of being paid)
         customer_id = (source or invoice).get("customer_id")
         chain_ids = [c["correction_id"] for c in chain]
         account_signed = sum((Decimal(str(v)) for v in
@@ -1453,10 +1466,13 @@ class CorrectionService:
         if total <= 0:
             raise CorrectionError("NO_SETTLEMENT", "لا توجد تسوية مالية لتصحيحها.")
         state = {"source_type": source_type, "source_id": str(source_id), "invoice": invoice, "reference": reference, "direction": direction, "sign": sign,
+                 "original_direction": original_direction, "can_flip": source_type == "INVOICE" and invoice.get("invoice_type") == "MIXED",
                  "customer_id": customer_id, "legs": money_legs, "account": account, "account_signed": account_signed,
                  "total": total, "chain": chain, "chain_ids": chain_ids}
         if source_type == "INVOICE" and combine:
             state = self._combined_state(connection, state, lock)
+            if state.get("parts"):
+                state["can_flip"] = False                  # an invoice settled together with an Exchange keeps the direction of the money
         return state
 
     def _combined_state(self, connection, state, lock):
@@ -1517,8 +1533,8 @@ class CorrectionService:
     @staticmethod
     def _settlement_view(state, accounts):
         names = {str(a["id"]): a["name"] for a in accounts}
-        return {"reference": state["reference"], "direction": state["direction"],
-                "direction_text": "المستلم من العميل" if state["direction"] == "IN" else "المدفوع للعميل",
+        return {"reference": state["reference"], "direction": state["direction"], "can_flip": bool(state.get("can_flip")),
+                "direction_text": direction_text(state["direction"]),
                 "total": str(state["total"]), "account": str(state["account"]), "combined_note": state.get("combined_note", ""),
                 "has_customer": state.get("source_type") != CS and state["customer_id"] not in (None, ""), "next_sequence": len(state["chain"]) + 1,
                 "legs": [{"method_code": l["method_code"], "method_text": METHOD_TEXT.get(l["method_code"], l["method_code"]),
@@ -1526,9 +1542,25 @@ class CorrectionService:
                           "account_name": names.get(str(l.get("bank_account_id")), ""), "amount": str(l["amount"])}
                          for l in state["legs"]]}
 
-    def _proposal(self, invoices, state, legs, account_amount, lock):
+    @staticmethod
+    def _new_direction(state, direction):
+        """The direction the corrected settlement moves the money in: the recorded one unless the manager turned it around (a MIXED invoice only: the customer
+        actually paid instead of being paid, or the other way round). Returns (direction, problem or None)."""
+        if direction in (None, "", state["direction"]):
+            return state["direction"], None
+        if direction not in ("IN", "OUT"):
+            return state["direction"], CorrectionError("DIRECTION_INVALID", "اتجاه الفلوس غير صحيح.")
+        if not state.get("can_flip"):
+            return state["direction"], CorrectionError("DIRECTION_NOT_ALLOWED", "تغيير اتجاه الفلوس متاح للفاتورة المختلطة (بيع + شراء كسر) فقط.")
+        return direction, None
+
+    def _proposal(self, invoices, state, legs, account_amount, lock, direction=None):
         """Validated new allocation: [(PaymentInput, amount)], account, per-account money map, problems."""
         problems, parsed, zero_legs = [], [], 0
+        new_direction, direction_problem = self._new_direction(state, direction)
+        new_sign = 1 if new_direction == "IN" else -1
+        if direction_problem is not None:
+            problems.append(direction_problem)
         for leg in legs:
             try:
                 amount = _money_value(leg.amount, "PAYMENT_INVALID", "اكتب المبلغ بالأرقام.")
@@ -1538,7 +1570,7 @@ class CorrectionService:
             if amount == 0:
                 zero_legs += 1                     # owner 2026-10-30: a leg left at 0 means «nothing paid by this method» (the rest goes to the customer's account); it is dropped, not an error
                 continue
-            parsed.append((PaymentInput(leg.method_code, str(amount), state["direction"], None,
+            parsed.append((PaymentInput(leg.method_code, str(amount), new_direction, None,
                                         leg.bank_account_id or None), amount))
         account = ZERO
         if account_amount not in (None, ""):
@@ -1567,21 +1599,21 @@ class CorrectionService:
         if not problems:
             for index, (payment, amount) in enumerate(parsed):
                 key = ("BANK", int(accounts[index]["id"])) if index in accounts else ("CASH", int(cash["id"]))
-                new_money[key] = new_money.get(key, ZERO) + amount * state["sign"]
+                new_money[key] = new_money.get(key, ZERO) + amount * new_sign
             new_legs = [{"method_code": p.method_code, "bank_account_id": p.bank_account_id, "amount": a}
                         for p, a in parsed]
-            if self._normalized(new_legs, account) == self._normalized(state["legs"], state["account"]):
+            if new_direction == state["direction"] and self._normalized(new_legs, account) == self._normalized(state["legs"], state["account"]):
                 problems.append(CorrectionError("NO_EFFECT_CORRECTION", "التسوية الجديدة مطابقة للحالية؛ لا يوجد تصحيح."))
         return parsed, account, new_money, problems
 
-    def preview_settlement(self, source_type, source_id, legs, account_amount=None, *, _expected_actor=None):
+    def preview_settlement(self, source_type, source_id, legs, account_amount=None, *, direction=None, _expected_actor=None):
         self._actor(_expected_actor)
         source_type = self._source_type(source_type)
 
         def read(connection):
             invoices, corrections = self._invoices(connection), self._corrections(connection)
             state = self._settlement_state(connection, source_type, source_id, lock=False)
-            _, account, new_money, problems = self._proposal(invoices, state, legs, account_amount, lock=False)
+            _, account, new_money, problems = self._proposal(invoices, state, legs, account_amount, lock=False, direction=direction)
             current = self._current_money(corrections, state)
             return state, account, new_money, current, problems, invoices.active_bank_accounts()
         state, account, new_money, current, problems, accounts = self._read(read)
@@ -1594,32 +1626,34 @@ class CorrectionService:
                 if delta:
                     deltas.append({"account": "النقدية" if key[0] == "CASH" else names.get(key, str(key[1])),
                                    "delta": str(delta)})
-        account_delta = state["sign"] * account - state["account_signed"]
-        return {**view, "new_account": str(account), "money_deltas": deltas, "account_delta": str(account_delta),
+        new_direction, _ = self._new_direction(state, direction)
+        account_delta = (1 if new_direction == "IN" else -1) * account - state["account_signed"]
+        return {**view, "new_direction": new_direction, "new_direction_text": direction_text(new_direction), "new_account": str(account),
+                "money_deltas": deltas, "account_delta": str(account_delta),
                 "problems": [{"code": p.code, "message": str(p)} for p in problems]}
 
     def correct_settlement(self, source_type, source_id, legs, account_amount, reason, *, expected_sequence=None,
-                           _expected_actor=None):
+                           direction=None, _expected_actor=None):
         session_actor = self._actor(_expected_actor)
         source_type, reason = self._source_type(source_type), _reason(reason)
         with self._transaction() as connection:
             actor = self._authorization.require_permission(connection, session_actor, CORRECT_PERMISSION)
             state = self._settlement_state(connection, source_type, source_id, lock=True)
             if state.get("parts"):
-                result = self._post_combined(connection, actor, state, legs, account_amount, reason, expected_sequence)
+                result = self._post_combined(connection, actor, state, legs, account_amount, reason, expected_sequence, direction)
             else:
-                result = self._post_settlement(connection, actor, state, legs, account_amount, reason, expected_sequence)
+                result = self._post_settlement(connection, actor, state, legs, account_amount, reason, expected_sequence, direction)
             if not self._session.is_current(session_actor):
                 raise PermissionError("انتهت جلسة الدخول.")
         return result
 
-    def _post_combined(self, connection, actor, state, legs, account_amount, reason, expected_sequence):
+    def _post_combined(self, connection, actor, state, legs, account_amount, reason, expected_sequence, direction=None):
         """ONE new distribution of the combined settlement, posted as an ordinary settlement correction on each part that changes: every Exchange keeps as much of
         its current legs as the new distribution allows and the invoice takes the rest, so nothing is invented and each part keeps its own chain."""
         invoices = self._invoices(connection)
         if expected_sequence is not None and int(expected_sequence) != len(state["chain"]) + 1:
             raise CorrectionError("STALE_CORRECTION", "تم تصحيح هذه التسوية للتو من جهاز آخر؛ أعد التحميل.")
-        parsed, account, new_money, problems = self._proposal(invoices, state, legs, account_amount, lock=True)
+        parsed, account, new_money, problems = self._proposal(invoices, state, legs, account_amount, lock=True, direction=direction)
         if account:
             customer = invoices.lock_customer(state["customer_id"])
             if customer is None or not customer["is_active"] or customer["record_origin"] == "LEGACY_PLACEHOLDER":
@@ -1657,14 +1691,15 @@ class CorrectionService:
             raise CorrectionError("NO_EFFECT_CORRECTION", "التسوية الجديدة مطابقة للحالية؛ لا يوجد تصحيح.")
         return result
 
-    def _post_settlement(self, connection, actor, state, legs, account_amount, reason, expected_sequence):
+    def _post_settlement(self, connection, actor, state, legs, account_amount, reason, expected_sequence, direction=None):
         source_type, source_id = state["source_type"], state["source_id"]
         corrections, invoices, customers = (self._corrections(connection), self._invoices(connection),
                                             self._customers(connection))
         sequence = len(state["chain"]) + 1
         if expected_sequence is not None and int(expected_sequence) != sequence:
             raise CorrectionError("STALE_CORRECTION", "تم تصحيح هذه التسوية للتو من جهاز آخر؛ أعد التحميل.")
-        parsed, account, new_money, problems = self._proposal(invoices, state, legs, account_amount, lock=True)
+        parsed, account, new_money, problems = self._proposal(invoices, state, legs, account_amount, lock=True, direction=direction)
+        new_direction, _ = self._new_direction(state, direction)
         if account:
             customer = invoices.lock_customer(state["customer_id"])
             if customer is None or not customer["is_active"] or customer["record_origin"] == "LEGACY_PLACEHOLDER":
@@ -1674,16 +1709,18 @@ class CorrectionService:
         current = self._current_money(corrections, state)
         deltas = {key: new_money.get(key, ZERO) - Decimal(str(current.get(key, ZERO)))
                   for key in set(current) | set(new_money)}
-        account_delta = state["sign"] * account - state["account_signed"]
+        account_delta = (1 if new_direction == "IN" else -1) * account - state["account_signed"]
         now = corrections.db_now()
-        before = {"legs": [dict(l, amount=str(l["amount"])) for l in state["legs"]], "account": str(state["account"])}
+        # `direction` is stored on both sides (2026-11-14): the FIRST correction's `before.direction` is the direction the invoice was posted in, which the reports need to
+        # turn a flipped settlement into the amount the invoice really changed by (services/invoice_amount_rules.py). A row without it was never flipped.
+        before = {"legs": [dict(l, amount=str(l["amount"])) for l in state["legs"]], "account": str(state["account"]), "direction": state["direction"]}
         after = {"legs": [{"method_code": p.method_code, "bank_account_id": p.bank_account_id, "amount": str(a)}
-                          for p, a in parsed], "account": str(account)}
+                          for p, a in parsed], "account": str(account), "direction": new_direction}
         correction_id = corrections.insert_correction(
             correction_type=SETTLEMENT, source_type=source_type, source_id=source_id,
             source_reference=state["reference"], invoice_id=state["invoice"]["invoice_id"], chain_sequence=sequence,
             previous_correction_id=state["chain"][-1]["correction_id"] if state["chain"] else None,
-            money_direction=state["direction"], settled_total=sum((a for _, a in parsed), ZERO) + account,
+            money_direction=new_direction, settled_total=sum((a for _, a in parsed), ZERO) + account,
             reason=reason, before=before,
             after=after, effects={"money": {f"{k[0]}:{k[1]}": str(v) for k, v in deltas.items() if v},
                                   "account": str(account_delta)},

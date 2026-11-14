@@ -10,10 +10,12 @@ from services.dashboard_service import DashboardService
 from tests.test_report_service import Case, FakeRepo
 
 
-def fc(invoice, seq, settled, before_legs, before_account="0", direction="IN", money="0", account="0"):
+def fc(invoice, seq, settled, before_legs, before_account="0", direction="IN", money="0", account="0", before_direction=None):
+    before = {"legs": [{"method_code": "CASH", "amount": a} for a in before_legs], "account": before_account}
+    if before_direction:
+        before["direction"] = before_direction                  # stored since 2026-11-14 (a row without it was never turned around)
     return {"invoice_id": invoice, "chain_sequence": seq, "money_direction": direction, "settled_total": D(settled),
-            "before_json": json.dumps({"legs": [{"method_code": "CASH", "amount": a} for a in before_legs], "account": before_account}),
-            "money_posted": D(money), "account_posted": D(account)}
+            "before_json": json.dumps(before), "money_posted": D(money), "account_posted": D(account)}
 
 
 class RuleTests(unittest.TestCase):
@@ -55,6 +57,26 @@ class RuleTests(unittest.TestCase):
 
     def test_a_repository_without_the_reads_changes_nothing(self):
         self.assertEqual(rules.read(object()), ({}, {}))
+
+    def test_money_turned_around_changes_the_invoice_by_the_sum_of_both_amounts(self):
+        """Invoice 26111411: the shop was recorded as paying the customer 350 (OUT), the customer in fact paid 300 (IN): the two sit on opposite sides of zero, so the
+        invoice moved by 650 towards the shop, on the sale side (the latest direction)."""
+        out_to_in = rules.invoice_changes([fc(5114, 1, "300", ["350"], direction="IN", before_direction="OUT", money="650")])["5114"]
+        self.assertEqual((out_to_in["direction"], out_to_in["delta"], out_to_in["money"]), ("IN", D("650"), D("650")))
+        lines = [{"line_id": 1, "invoice_id": 5114, "line_type": "SELL_INVENTORY", "weight_grams": D("0.83")},
+                 {"line_id": 2, "invoice_id": 5114, "line_type": "BUY_OLD_GOLD", "weight_grams": D("0.85")}]
+        self.assertEqual(rules.line_shares({"5114": out_to_in}, lines), {"1": D("650")})            # the making of the sale line absorbs it, the scrap line takes nothing
+        # the other way round: the customer was recorded as paying 1000, the shop in fact paid him 200 -> the shop paid 1200 more, on the scrap side
+        in_to_out = rules.invoice_changes([fc(6, 1, "200", ["1000"], direction="OUT", before_direction="IN")])["6"]
+        self.assertEqual((in_to_out["direction"], in_to_out["delta"]), ("OUT", D("1200")))
+        self.assertEqual(rules.line_shares({"6": in_to_out}, [dict(lines[1], invoice_id=6)]), {"2": D("1200")})
+
+    def test_turned_around_and_back_is_an_ordinary_amount_change_and_an_old_row_is_unchanged(self):
+        back = rules.invoice_changes([fc(7, 1, "300", ["350"], direction="IN", before_direction="OUT"),
+                                      fc(7, 2, "340", ["300"], direction="OUT", before_direction="IN")])["7"]
+        self.assertEqual((back["direction"], back["delta"]), ("OUT", D("-10")))                  # paid 340 instead of 350, the direction is the original again
+        old_row = rules.invoice_changes([fc(8, 1, "9850", ["10000"], direction="IN")])["8"]        # no `direction` stored in `before`: never turned around
+        self.assertEqual(old_row["delta"], D("-150"))
 
 
 class CorrectedRepo(FakeRepo):

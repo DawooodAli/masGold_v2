@@ -21,7 +21,7 @@ from tests.auth_fakes import FakeAuthorization
 
 OWNER = frozenset({"APP_LOGIN", "MARKET_TRIP_MANAGE", "TRANSACTION_CORRECT", "SUPPLIER_MAKING_PAY", "SUPPLIER_MAKING_PAY_REVERSE",
                    "SUPPLIER_GOLD_SETTLE", "SUPPLIER_GOLD_SETTLE_REVERSE",
-                   "INTERMEDIARY_HOLDING_VIEW", "INTERMEDIARY_HOLDING_MANAGE", "INTERMEDIARY_HOLDING_REVERSE"})
+                   "INTERMEDIARY_HOLDING_VIEW", "INTERMEDIARY_HOLDING_MANAGE", "INTERMEDIARY_HOLDING_REVERSE", "PRIVATE_ACCOUNT_MANAGE"})
 OWNER_NO_CORRECT = frozenset({"APP_LOGIN", "MARKET_TRIP_MANAGE"})
 MANAGER = frozenset({"APP_LOGIN", "TRANSACTION_CORRECT", "SUPPLIER_MAKING_PAY"})
 
@@ -58,6 +58,7 @@ class Db:
         self.melts, self.melt_inputs, self.lots, self.lot_moves = {}, [], {}, []          # 039
         self.settle_melts, self.settle_melt_inputs, self.settle_moves = {}, [], []        # 060: settlement step 2a
         self.settle_cash = {}                                                              # 064: entry id -> the custody cash settlement document
+        self.private_entries = []                                                          # 105: the owner's private-account entries tied to a custody entry
         self.settle_lines, self.settle_adjusts = [], {}                                    # 065: return / loss lines and issue-weight corrections
         self.bank_accounts = {1: {"id": 1, "name": "بنك مصر", "is_active": 1, "account_type": "BANK"},
                               2: {"id": 2, "name": "محفظة موقوفة", "is_active": 0, "account_type": "WALLET"}}
@@ -234,7 +235,7 @@ class TripRepo:
     def insert_entry(self, *, trip_id, entry_no, kind, entry_date, notes, key, digest, actor, now):
         self._fail("entry")
         marketer_key_guard(self.db, key)
-        assert kind in ("ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT", "SUPPLIER_PAY", "GOLD_SETTLE", "LOT_SETTLE", "LOT_HOLD", "HOLD_RETURN", "LOGO_HOLD", "HOLD_BACK", "GOLD_SALE", "GOLD_BUY", "BK_ISSUE", "BK_BUY", "BK_SELL", "BK_RETURN", "BK_RECON", "BK_ISS_STK", "BK_DLV_SUP", "BK_DLV_MKT", "BK_RECEIVE", "BK_GAIN", "ST_MELT", "ST_BAR_SUP", "ST_BAR_MKT", "ST_LOGO", "ST_EXPENSE", "ST_CASH_BANK", "ST_CASH_OFF", "ST_RET_MKT", "ST_LOSS", "ST_ADJUST")      # chk_mte_kind (059: BK_GAIN; 060: ST_MELT; 061: ST_BAR_SUP)
+        assert kind in ("ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT", "SUPPLIER_PAY", "GOLD_SETTLE", "LOT_SETTLE", "LOT_HOLD", "HOLD_RETURN", "LOGO_HOLD", "HOLD_BACK", "GOLD_SALE", "GOLD_BUY", "BK_ISSUE", "BK_BUY", "BK_SELL", "BK_RETURN", "BK_RECON", "BK_ISS_STK", "BK_DLV_SUP", "BK_DLV_MKT", "BK_RECEIVE", "BK_GAIN", "ST_MELT", "ST_BAR_SUP", "ST_BAR_MKT", "ST_LOGO", "ST_EXPENSE", "ST_CASH_BANK", "ST_CASH_OFF", "ST_RET_MKT", "ST_LOSS", "ST_ADJUST", "ST_CASH_PRIV")      # chk_mte_kind (059: BK_GAIN; 060: ST_MELT; 061: ST_BAR_SUP; 105: ST_CASH_PRIV)
         mode = "LEGACY"
         if any(e["request_key"] == key for e in self.db.entries.values()):
             raise _dup("uq_mte_request")
@@ -550,6 +551,8 @@ class TripRepo:
         assert self.db.entries[int(entry_id)]["entry_kind"] == kind                                          # fk_mtsc_entry (entry, kind)
         if kind in ("ST_EXPENSE", "ST_CASH_OFF"):                                                             # chk_mtsc_shape
             assert description and description.strip() and bank_account_id is None and bank_movement_id is None
+        elif kind == "ST_CASH_PRIV":                                                                          # 105: no bank, the description is optional
+            assert bank_account_id is None and bank_movement_id is None
         else:
             assert kind == "ST_CASH_BANK" and bank_account_id is not None and bank_movement_id is not None
             assert int(bank_account_id) in self.db.bank_accounts                                              # fk_mtsc_bank
@@ -557,6 +560,18 @@ class TripRepo:
             raise _dup("PRIMARY")
         self.db.settle_cash[int(entry_id)] = {"entry_id": int(entry_id), "entry_kind": kind, "amount": amount, "description": description or None,
                                               "reference": reference or None, "bank_account_id": bank_account_id, "bank_movement_id": bank_movement_id}
+
+    def has_private_trip_schema(self):
+        return True
+
+    def insert_private_trip_entry(self, *, entry_id, amount, note, actor, now):
+        self._fail("private_entry")
+        assert amount > 0                                                                                     # chk_private_entry_amount
+        assert self.db.entries[int(entry_id)]["entry_kind"] == "ST_CASH_PRIV"                                # fk_private_entry_trip_entry (entry, kind)
+        assert int(entry_id) not in {e["trip_entry_id"] for e in self.db.private_entries}                    # uq_private_entry_trip_entry
+        self.db.private_entries.append({"id": len(self.db.private_entries) + 1, "direction": "TO_PRIVATE", "amount": amount, "operation_id": None,
+                                        "trip_entry_id": int(entry_id), "note": note})
+        return len(self.db.private_entries)
 
     def entry_settle_cash(self, entry_id):
         row = self.db.settle_cash.get(int(entry_id))

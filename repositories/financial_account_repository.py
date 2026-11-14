@@ -443,12 +443,26 @@ class FinancialAccountRepository(BaseRepository):
     def private_operation_ids(self):
         """Display only: the financial operations that are private-account transfers (empty below 090). The cash screen never shows them (owner 2026-11-10)."""
         try:
-            return {int(r["operation_id"]) for r in self._fetch_all("SELECT operation_id FROM private_account_entries")}
+            return {int(r["operation_id"]) for r in self._fetch_all("SELECT operation_id FROM private_account_entries WHERE operation_id IS NOT NULL")}
         except Exception:
             return set()
 
     def private_entries(self):
-        """Every private-account entry, oldest first, with the bank / wallet account and whether its operation was reversed (None below 090)."""
+        """Every private-account entry, oldest first, with the bank / wallet account and whether its operation was reversed (None below 090). From migration 105 an entry may come from
+        a market-custody cash transfer instead (`trip_entry_id`, no bank operation): it is voided when its custody entry has a full reversal, and it carries the custody entry's code parts."""
+        if self._private_has_trip_source():
+            return self._advance_guard(
+                """
+                SELECT e.id, e.direction, e.amount, e.operation_id, e.trip_entry_id, t.trip_id, t.entry_no, e.note, e.created_at, b.name AS account_name,
+                       (SELECT COUNT(*) FROM transaction_corrections k WHERE k.correction_type = 'FULL_REVERSAL'
+                          AND ((e.operation_id IS NOT NULL AND k.source_type = 'FINANCIAL_OPERATION' AND k.source_id = e.operation_id)
+                            OR (e.trip_entry_id IS NOT NULL AND k.source_type = 'MARKET_TRIP_ENTRY' AND k.source_id = e.trip_entry_id))) AS voided
+                FROM private_account_entries e
+                LEFT JOIN financial_operations o ON o.id = e.operation_id
+                LEFT JOIN market_trip_entries t ON t.id = e.trip_entry_id
+                LEFT JOIN bank_accounts b ON b.id = COALESCE(o.from_bank_account_id, o.to_bank_account_id)
+                ORDER BY e.id
+                """)
         return self._advance_guard(
             """
             SELECT e.id, e.direction, e.amount, e.operation_id, e.note, e.created_at, b.name AS account_name,
@@ -459,6 +473,16 @@ class FinancialAccountRepository(BaseRepository):
             LEFT JOIN bank_accounts b ON b.id = COALESCE(o.from_bank_account_id, o.to_bank_account_id)
             ORDER BY e.id
             """)
+
+    def _private_has_trip_source(self):
+        """True when migration 105 is present (the private-account entries may come from a custody entry). Asked once per repository object."""
+        if not hasattr(self, "_private_trip"):
+            try:
+                row = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'private_account_entries' AND COLUMN_NAME = 'trip_entry_id'")
+                self._private_trip = bool(row and int(row["n"]))
+            except Exception:
+                self._private_trip = False
+        return self._private_trip
 
     def insert_repayment(self, *, advance_id, amount, operation_id, actor, now):
         self._execute("INSERT INTO cash_advance_repayments (advance_id, amount, operation_id, created_by_user_id, created_at) VALUES (%s, %s, %s, %s, %s)",

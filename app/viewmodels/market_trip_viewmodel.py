@@ -24,7 +24,7 @@ GOLD_SETTLE_REVERSAL_NOTE = ("عكس تسوية الذهب يسجّل أن ال�
                              "لا يتحرك كسر المحل ولا النقدية؛ أرجع الذهب إلى المحل بـ«تسجيل رجوع» عند إرجاعه فعلًا.")
 PAYMENT_REVERSAL_NOTE = ("عكس دفع المصنعيات يسجّل أن المبلغ عاد فعلًا إلى عهدة السوق (بالمبلغ المخزّن في الدفعة) ويعيد مستحقات المورد بنفس المبلغ. "
                          "لا يُعاد المبلغ تلقائيًا إلى الخزنة الرئيسية: سجّل «تسجيل رجوع» من العهدة عند إرجاعه فعلًا.")
-KIND_TEXT = {"ST_MELT": "تسجيل سبك (بعد الرجوع)", "ST_BAR_SUP": "تسليم سبيكة لمورد (بعد الرجوع)", "ST_BAR_MKT": "تسليم سبيكة لمسوقجي (بعد الرجوع)", "ST_LOGO": "اعتبار المتبقي لوجو", "ST_EXPENSE": "مصروف من العهدة", "ST_RET_MKT": "مرتجع سوق للمحل", "ST_LOSS": "خسية", "ST_ADJUST": "تصحيح وزن الإخراج", "ST_BAR_FEE": "أجر سبيكة", "ST_CASH_BANK": "إيداع باقي النقدية في حساب", "ST_CASH_OFF": "إعدام باقي النقدية","ISSUE": "إخراج عهدة", "RETURN": "رجوع من العهدة", "MELT": "سبك", "LOT_RETURN": "رجوع ناتج السبك", "LOT_ISSUE": "إخراج سبكة من المحل",
+KIND_TEXT = {"ST_MELT": "تسجيل سبك (بعد الرجوع)", "ST_BAR_SUP": "تسليم سبيكة لمورد (بعد الرجوع)", "ST_BAR_MKT": "تسليم سبيكة لمسوقجي (بعد الرجوع)", "ST_LOGO": "اعتبار المتبقي لوجو", "ST_EXPENSE": "مصروف من العهدة", "ST_RET_MKT": "مرتجع سوق للمحل", "ST_LOSS": "خسية", "ST_ADJUST": "تصحيح وزن الإخراج", "ST_BAR_FEE": "أجر سبيكة", "ST_CASH_BANK": "إيداع باقي النقدية في حساب", "ST_CASH_OFF": "إعدام باقي النقدية", "ST_CASH_PRIV": "تحويل نقدية العهدة إلى الحساب الخاص","ISSUE": "إخراج عهدة", "RETURN": "رجوع من العهدة", "MELT": "سبك", "LOT_RETURN": "رجوع ناتج السبك", "LOT_ISSUE": "إخراج سبكة من المحل",
              "GOLD_BUY": "شراء ذهب نقدي", "GOLD_SALE": "بيع ذهب من العهدة", "HEAT": "حمّية اللوجو", "SUPPLIER_PAY": "دفع مصنعيات من العهدة", "GOLD_SETTLE": "تسوية ذهب من العهدة", "LOT_SETTLE": "تسوية سبكة من العهدة",
              "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي", "LOGO_HOLD": "تسليم لوجو لمسوقجي", "HOLD_BACK": "رجوع لوجو من مسوقجي"}
 HOLD_REVERSE_NOTE = ("عكس التسليم يعيد الشحنة الأصلية كاملة إلى هذه العهدة ويسجّل حركة تعويض بالوزن المخزّن في ذهب المحل لدى المسوقجي؛ "
@@ -365,8 +365,15 @@ class MarketTripViewModel(QObject):
 
     @Slot(str, str, str, str, str, str, str, str)
     def settleCash(self, trip_id, kind, amount, text, bank_account_id, entry_date, notes, request_key):
-        """Settle custody cash after the trip: EXPENSE (free-text), BANK (deposit into an account) or WRITEOFF (reason). Only ids and typed text are sent."""
-        if kind == "BANK":
+        """Settle custody cash after the trip: EXPENSE (free-text), BANK (deposit into an account), SAFE (straight back into the Main Safe: the ordinary cash-only
+        RETURN, owner 2026-11-14), PRIVATE (straight into the owner's private account, migration 105) or WRITEOFF (reason). Only ids and typed text are sent."""
+        if kind == "PRIVATE":
+            self._write("cashsettle", "تم تحويل المبلغ إلى الحساب الخاص", lambda s, a: s.transfer_custody_cash_to_private(
+                trip_id, amount, entry_date, notes, request_key, _expected_actor=a), False)
+        elif kind == "SAFE":
+            self._write("cashsettle", "تم تحويل المبلغ إلى الخزنة الرئيسية", lambda s, a: s.return_custody(
+                trip_id, amount, [], entry_date, notes, request_key, _expected_actor=a), True)
+        elif kind == "BANK":
             self._write("cashsettle", "تم إيداع باقي النقدية", lambda s, a: s.deposit_custody_cash(
                 trip_id, amount, bank_account_id, entry_date, text, notes, request_key, _expected_actor=a), False)
         elif kind == "WRITEOFF":
@@ -1041,8 +1048,9 @@ class MarketTripViewModel(QObject):
                          f"{grams(adjust['weight'])} جرام • {source} • {adjust['reason']}")
         cash_doc = e.get("settle_cash")
         if cash_doc:
-            parts.append(f"{money(cash_doc['amount'])}" + (f" ← {cash_doc['bank_account']}" if cash_doc["bank_account"] else f" • {cash_doc['description']}")
-                         + (f" • مرجع {cash_doc['reference']}" if cash_doc["reference"] else ""))
+            where = (f" ← {cash_doc['bank_account']}" if cash_doc["bank_account"] else " → الحساب الخاص" if e["kind"] == "ST_CASH_PRIV"
+                     else f" • {cash_doc['description']}")
+            parts.append(f"{money(cash_doc['amount'])}" + where + (f" • مرجع {cash_doc['reference']}" if cash_doc["reference"] else ""))
         if e.get("settle_logo"):
             parts.append("اعتُبر لوجو: " + " + ".join(f"عيار {g['karat_value']}: {grams(g['weight'])} جرام" for g in e["settle_logo"]))
         mkt = e.get("bar_marketer")

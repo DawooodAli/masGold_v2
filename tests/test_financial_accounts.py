@@ -187,7 +187,10 @@ class FinRepo:
         return str(len(entries))
 
     def private_entries(self):
-        return [{**e, "account_name": "الأهلي", "voided": 1 if self._reversed(e["operation_id"]) else 0}
+        def custody_reversed(entry_id):                                            # 105: an entry taken from custody cash is voided by a reversal of its custody entry
+            return any(c["source_type"] == "MARKET_TRIP_ENTRY" and c["source_id"] == str(entry_id) and c["correction_type"] == "FULL_REVERSAL" for c in self.store.corrections)
+        return [({**e, "account_name": None, "voided": 1 if custody_reversed(e["trip_entry_id"]) else 0} if e.get("trip_entry_id") is not None
+                 else {**e, "account_name": "الأهلي", "voided": 1 if self._reversed(e["operation_id"]) else 0})
                 for e in self.store.__dict__.get("private_entries_list", [])]
 
     def advance_reversal_blockers(self, operation_id):

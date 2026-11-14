@@ -21,9 +21,9 @@ D = Decimal
 T0 = datetime(2026, 9, 20, 10, 0, 0)
 
 
-def inv(invoice_id, number, lines, customer="12", direction="CUSTOMER_PAYS_SHOP", total="30000.00"):
+def inv(invoice_id, number, lines, customer="12", direction="CUSTOMER_PAYS_SHOP", total="30000.00", invoice_type="SELL"):
     return {"invoice_id": invoice_id, "invoice_number": number, "record_origin": "NATIVE",
-            "invoice_status": "FINALIZED", "invoice_type": "SELL", "net_direction": direction, "net_amount": D(total),
+            "invoice_status": "FINALIZED", "invoice_type": invoice_type, "net_direction": direction, "net_amount": D(total),
             "customer_id": customer, "customer_name_snapshot": "عميل", "finalized_at": T0, "invoice_date": T0,
             "lines": lines, "events": []}
 
@@ -48,24 +48,32 @@ class Store:
             "505": inv("505", "26092006", [ln("9", "SELL_INVENTORY", item="205", barcode="B205")]),
             "507": inv("507", "26092008", [ln("11", "SELL_RAFAYEA", weight="3.200")]),
             "506": inv("506", "26092007", [ln("10", "SELL_INVENTORY", item="206", barcode="B206")], customer=None),
+            # MIXED invoices where the shop pays the customer (sale 4,622.43 against scrap 4,972.43 -> 350): the money may be turned around by a settlement correction
+            "508": inv("508", "26111411", [ln("12", "SELL_INVENTORY", item="208", barcode="B208"), ln("13", "BUY_OLD_GOLD", weight="0.850")],
+                       direction="SHOP_PAYS_CUSTOMER", total="350.00", invoice_type="MIXED"),
+            "509": inv("509", "26111412", [ln("14", "SELL_INVENTORY", item="209", barcode="B209"), ln("15", "BUY_OLD_GOLD", weight="0.850")],
+                       direction="SHOP_PAYS_CUSTOMER", total="350.00", invoice_type="MIXED"),
         }
         self.payments = [  # invoice_payments (original legs)
             {"invoice_id": "500", "method_code": "PHYSICAL_CASH", "bank_account_id": None, "direction": "IN", "amount": D("20000.00")},
             {"invoice_id": "500", "method_code": "BANK_TRANSFER", "bank_account_id": 7, "direction": "IN", "amount": D("10000.00")},
             {"invoice_id": "501", "method_code": "PHYSICAL_CASH", "bank_account_id": None, "direction": "IN", "amount": D("30000.00")},
-            {"invoice_id": "506", "method_code": "PHYSICAL_CASH", "bank_account_id": None, "direction": "IN", "amount": D("30000.00")}]
+            {"invoice_id": "506", "method_code": "PHYSICAL_CASH", "bank_account_id": None, "direction": "IN", "amount": D("30000.00")},
+            {"invoice_id": "508", "method_code": "PHYSICAL_CASH", "bank_account_id": None, "direction": "OUT", "amount": D("350.00")},
+            {"invoice_id": "509", "method_code": "PHYSICAL_CASH", "bank_account_id": None, "direction": "OUT", "amount": D("250.00")}]
         # POSTED money / ledger rows: (ledger, account, signed delta, reference_type, reference_id)
         self.money = [("CASH", 1, D("20000.00"), "INVOICE", "500"), ("BANK", 7, D("10000.00"), "INVOICE", "500"),
                       ("CASH", 1, D("30000.00"), "INVOICE", "501"), ("CASH", 1, D("30000.00"), "INVOICE", "506"),
                       ("CASH", 1, D("5000.00"), "INVOICE_LIFECYCLE", "900"),
                       ("CASH", 1, D("-12000.00"), "INVOICE_RETURN", "800"),
-                      ("CASH", 1, D("-18000.00"), "INVOICE_RETURN", "801")]
+                      ("CASH", 1, D("-18000.00"), "INVOICE_RETURN", "801"),
+                      ("CASH", 1, D("-350.00"), "INVOICE", "508"), ("CASH", 1, D("-250.00"), "INVOICE", "509")]
         self.ledger = [("12", D("5000.00"), "INVOICE", "500"), ("12", D("1000.00"), "INVOICE_LIFECYCLE", "900"),
-                       ("12", D("-500.00"), "INVOICE_RETURN", "800")]
+                       ("12", D("-500.00"), "INVOICE_RETURN", "800"), ("12", D("-100.00"), "INVOICE", "509")]
         self.items = {i: {"inventory_item_id": i, "inventory_status": s, "weight_grams": D("10.000"),
                           "stock_classification": "NEW_STOCK"}
                       for i, s in (("200", "SOLD"), ("201", "SOLD"), ("202", "RETURNED_PENDING"), ("300", "SOLD"),
-                                   ("203", "RETURNED_PENDING"), ("205", "IN_STOCK"), ("206", "SOLD"))}
+                                   ("203", "RETURNED_PENDING"), ("205", "IN_STOCK"), ("206", "SOLD"), ("208", "SOLD"), ("209", "SOLD"))}
         self.exchanges = {
             "900": {"lifecycle_id": "900", "source_invoice_id": "502", "customer_id": "12", "signed_amount": D("6000.00"),
                     "lines": [{"line_id": "9001", "line_role": "RETURNED", "identification_method": None,
@@ -287,8 +295,8 @@ class Repo:
         correction_id = str(len(self.store.corrections) + 1)
         self.store.corrections.append({"correction_id": correction_id, "correction_type": kw["correction_type"],
                                        "source_type": kw["source_type"], "source_id": str(kw["source_id"]),
-                                       "chain_sequence": kw["chain_sequence"], "reason": kw["reason"],
-                                       "after_json": kw["after"], "invoice_id": kw["invoice_id"]})
+                                       "chain_sequence": kw["chain_sequence"], "reason": kw["reason"], "money_direction": kw["money_direction"],
+                                       "settled_total": kw["settled_total"], "before_json": kw["before"], "after_json": kw["after"], "invoice_id": kw["invoice_id"]})
         return correction_id
 
     def insert_leg(self, **kw):
@@ -625,6 +633,88 @@ class SettlementCorrectionTests(CorrectionTestCase):
         self.service.reverse("INVOICE", "501", REASON)
         self.assertEqual(self.store.balance("BANK", 7), D("0.00") + D("10000.00"))        # reversal used the effective route
         self.assertRefused("ALREADY_REVERSED", lambda: self.correct("INVOICE", "501", [("PHYSICAL_CASH", "30000.00")]))
+
+
+class DirectionTurnedAroundTests(CorrectionTestCase):
+    """Owner 2026-11-14 (invoice 26111411): a MIXED invoice was recorded as «المدفوع للعميل» 350 but the customer is the one who paid. The settlement correction may turn the
+    direction around: the old movement is reversed and the right one posted in the same transaction, the invoice itself is never touched."""
+    def correct(self, source_type, source_id, legs, account=None, reason="العميل هو اللي دفع", **kw):
+        return self.service.correct_settlement(source_type, source_id, [SettlementLeg(*l) for l in legs], account, reason, **kw)
+
+    def posted(self, ledger=None):
+        return sorted((m[0], m[1], m[2]) for m in self.store.money if m[3] == "TRANSACTION_CORRECTION" and ledger in (None, m[0]))
+
+    def test_the_settlement_view_offers_the_turn_only_for_a_mixed_invoice(self):
+        view = self.service.current_settlement("INVOICE", "508")
+        self.assertEqual((view["direction"], view["direction_text"], view["can_flip"]), ("OUT", "المدفوع للعميل", True))
+        self.assertFalse(self.service.current_settlement("INVOICE", "501")["can_flip"])         # a plain sale
+        self.assertFalse(self.service.current_settlement("RETURN", "800")["can_flip"])
+        self.assertFalse(self.service.current_settlement("EXCHANGE", "900")["can_flip"])
+
+    def test_the_customer_paid_instead_of_being_paid(self):
+        invoice = copy.deepcopy(self.store.invoices["508"])
+        cash_before = self.store.balance("CASH", 1)
+        result = self.correct("INVOICE", "508", [("PHYSICAL_CASH", "300")], direction="IN")
+        self.assertEqual(result["code"], "FC000001")
+        self.assertEqual(self.posted(), [("CASH", 1, D("650.00"))])                           # the 350 paid out comes back and the 300 received is added, in ONE movement
+        self.assertEqual(self.store.balance("CASH", 1) - cash_before, D("650.00"))
+        row = self.store.corrections[-1]
+        self.assertEqual((row["money_direction"], row["settled_total"]), ("IN", D("300")))
+        self.assertEqual((row["before_json"]["direction"], row["after_json"]["direction"]), ("OUT", "IN"))
+        self.assertEqual(self.store.invoices["508"]["lines"], invoice["lines"])               # the invoice is never rewritten
+        self.assertEqual(self.store.payments[-2]["direction"], "OUT")
+        event = self.store.invoices["508"]["events"][-1]["details_json"]
+        self.assertEqual((event["before"]["direction"], event["after"]["direction"]), ("OUT", "IN"))
+        state = self.service.current_settlement("INVOICE", "508")                              # the screen now shows the corrected settlement
+        self.assertEqual((state["direction"], state["direction_text"], state["total"], state["next_sequence"]), ("IN", "المستلم من العميل", "300.00", 2))
+        self.assertEqual([(l["method_code"], l["amount"]) for l in state["legs"]], [("PHYSICAL_CASH", "300")])
+
+    def test_a_second_correction_keeps_the_direction_and_can_turn_it_back(self):
+        self.correct("INVOICE", "508", [("PHYSICAL_CASH", "300")], direction="IN")
+        self.correct("INVOICE", "508", [("BANK_TRANSFER", "300", "7")], reason="التحويل كان بنكي", expected_sequence=2)          # no direction given: stays IN
+        self.assertEqual(self.store.corrections[-1]["money_direction"], "IN")
+        self.assertEqual(self.posted("BANK")[-1], ("BANK", 7, D("300.00")))
+        self.correct("INVOICE", "508", [("PHYSICAL_CASH", "350")], reason="رجعنا للأصل", expected_sequence=3, direction="OUT")
+        self.assertEqual(self.store.corrections[-1]["money_direction"], "OUT")
+        self.assertEqual(self.service.current_settlement("INVOICE", "508")["direction"], "OUT")
+
+        def net(ledger, account):
+            return sum((m[2] for m in self.store.money if (m[0], m[1]) == (ledger, account) and (m[3] == "TRANSACTION_CORRECTION" or (m[3], m[4]) == ("INVOICE", "508"))), D("0"))
+        self.assertEqual((net("CASH", 1), net("BANK", 7)), (D("-350.00"), D("0.00")))         # the invoice and its whole chain net to what the final settlement says
+
+    def test_the_customer_account_part_follows_the_new_direction(self):
+        """Invoice 509 owed the customer 100 on his account (ledger -100) next to 250 paid: turned around, the customer pays 200 and still owes 50."""
+        self.correct("INVOICE", "509", [("PHYSICAL_CASH", "200")], account="50", direction="IN")
+        self.assertEqual(self.posted(), [("CASH", 1, D("450.00"))])                          # 250 comes back, 200 is received
+        self.assertEqual(self.store.ledger[-1][:2], ("12", D("150.00")))                      # -100 -> +50: he no longer is owed, he owes
+        state = self.service.current_settlement("INVOICE", "509")
+        self.assertEqual((state["direction"], state["account"], state["total"]), ("IN", "50.00", "250.00"))
+
+    def test_the_preview_says_where_the_money_goes(self):
+        preview = self.service.preview_settlement("INVOICE", "508", [SettlementLeg("PHYSICAL_CASH", "300")], None, direction="IN")
+        self.assertEqual(preview["problems"], [])
+        self.assertEqual((preview["new_direction"], preview["new_direction_text"], preview["direction"]), ("IN", "المستلم من العميل", "OUT"))
+        self.assertEqual(preview["money_deltas"], [{"account": "النقدية", "delta": "650.00"}])
+        self.assertEqual(self.store.corrections, [])                                          # a preview writes nothing
+
+    def test_the_same_direction_and_the_same_legs_is_still_no_correction(self):
+        self.assertRefused("NO_EFFECT_CORRECTION", lambda: self.correct("INVOICE", "508", [("PHYSICAL_CASH", "350.00")], direction="OUT"))
+        self.assertRefused("NO_EFFECT_CORRECTION", lambda: self.correct("INVOICE", "508", [("PHYSICAL_CASH", "350.00")]))
+        self.correct("INVOICE", "508", [("PHYSICAL_CASH", "350.00")], direction="IN")           # the same amount the other way IS a correction
+
+    def test_only_a_mixed_invoice_may_turn_the_money_around(self):
+        for source, source_id, legs, other in (("INVOICE", "501", [("PHYSICAL_CASH", "30000.00")], "OUT"), ("RETURN", "800", [("PHYSICAL_CASH", "12000.00")], "IN"),
+                                               ("EXCHANGE", "900", [("PHYSICAL_CASH", "5000.00")], "OUT")):          # the opposite of each source's own direction
+            self.assertRefused("DIRECTION_NOT_ALLOWED", lambda: self.correct(source, source_id, legs, direction=other))
+        self.assertRefused("DIRECTION_INVALID", lambda: self.correct("INVOICE", "508", [("PHYSICAL_CASH", "300")], direction="SIDEWAYS"))
+        self.assertEqual(self.store.corrections, [])
+
+    def test_a_full_reversal_after_the_turn_nets_everything_to_zero(self):
+        cash_before = self.store.balance("CASH", 1)
+        self.correct("INVOICE", "508", [("PHYSICAL_CASH", "300")], direction="IN")
+        self.service.reverse("INVOICE", "508", REASON)
+        self.assertEqual(self.store.balance("CASH", 1), cash_before + D("350.00"))             # the original -350 and the whole chain are undone
+        self.assertRefused("ALREADY_REVERSED", lambda: self.correct("INVOICE", "508", [("PHYSICAL_CASH", "300")], direction="OUT"))
 
 
 class ComposedChainTests(CorrectionTestCase):

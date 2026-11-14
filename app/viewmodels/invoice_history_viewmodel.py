@@ -1029,6 +1029,11 @@ class InvoiceHistoryViewModel(QObject):
                 if account_before not in (None, "0.00") or account_after not in (None, "0.00"):
                     before += f" + حساب العميل {money(account_before or '0')}"
                     after += f" + حساب العميل {money(account_after or '0')}"
+                direction_before, direction_after = c["before"].get("direction"), c["after"].get("direction")
+                if direction_before in ("IN", "OUT") and direction_after in ("IN", "OUT") and direction_before != direction_after:
+                    # the money was turned around (2026-11-14): say which way each side moves, never a sign
+                    before = f"{RECEIVED_TEXT if direction_before == 'IN' else PAID_TEXT}: {before}"
+                    after = f"{RECEIVED_TEXT if direction_after == 'IN' else PAID_TEXT}: {after}"
                 detail = f"{source} {c['source_reference']}"
             posted = " • ".join(f"{'النقدية' if p['ledger'] == 'CASH' else p['account_name'] or 'حساب العميل'} "
                                 f"{whole(p['amount'], signed=True)}" for p in c["posted"])

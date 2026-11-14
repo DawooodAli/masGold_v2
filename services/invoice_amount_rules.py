@@ -32,7 +32,8 @@ def _json(value):
 
 def invoice_changes(rows):
     """rows: every SETTLEMENT_CORRECTION of source INVOICE (invoice_id, chain_sequence, money_direction, settled_total, before_json, money_posted, account_posted).
-    -> {invoice_id: {"direction": IN / OUT, "delta": latest settled - original, "money": signed money the FCs posted, "account": signed customer-account delta they posted}}"""
+    -> {invoice_id: {"direction": IN / OUT (the latest), "delta": latest settled - original (their sum when the money was turned around), "money": signed money the FCs posted,
+    "account": signed customer-account delta they posted}}"""
     chains = {}
     for r in rows or []:
         chains.setdefault(str(r["invoice_id"]), []).append(r)
@@ -42,7 +43,12 @@ def invoice_changes(rows):
         before = _json(chain[0].get("before_json"))
         original = sum((_d(l.get("amount")) for l in before.get("legs") or []), ZERO) + _d(before.get("account"))
         latest = chain[-1]
-        out[invoice_id] = {"direction": latest["money_direction"], "delta": _d(latest["settled_total"]) - original,
+        # A mixed invoice's correction may turn the money around (2026-11-14: the customer paid instead of being paid). The first correction's `before.direction` is the
+        # direction the invoice was posted in (a row without it was never turned around): when the latest direction differs the two amounts are on OPPOSITE sides of
+        # zero, so what the invoice changed by is their SUM (350 paid to the customer -> 300 paid by him = 650 more for the shop), and it belongs to the latest direction's side.
+        first = before.get("direction") or chain[0]["money_direction"]
+        delta = _d(latest["settled_total"]) + original if first != latest["money_direction"] else _d(latest["settled_total"]) - original
+        out[invoice_id] = {"direction": latest["money_direction"], "delta": delta,
                            "money": sum((_d(r.get("money_posted")) for r in chain), ZERO),
                            "account": sum((_d(r.get("account_posted")) for r in chain), ZERO)}
     return out

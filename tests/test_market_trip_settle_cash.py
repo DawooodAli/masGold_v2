@@ -2,8 +2,10 @@
 write-off (إعدام), and the gold bought in the market needs no melt / logo decision. Real services over the in-memory transactional database of tests/market_trip_fakes.py. NOT real-MySQL tests."""
 from decimal import Decimal as D
 import unittest
+from unittest.mock import patch
 
 from services.correction_service import CorrectionError
+from tests.market_trip_fakes import OWNER, TripRepo
 from tests.test_market_trip_settle_sale import SaleOfSettlementGoldCase
 from tests.test_market_trips import K18, K21, TODAY, key
 
@@ -116,6 +118,92 @@ class WriteOffTests(CashSettleCase):
         with self.assertRaises(CorrectionError) as refused:
             self.reverse(sale["id"])
         self.assertEqual(refused.exception.code, "DEPENDENT_CASH_USE_EXISTS")
+
+
+class PrivateTransferTests(CashSettleCase):
+    """Owner 2026-11-14 (migration 105): the remaining custody cash goes straight into the owner's PRIVATE account: it leaves the custody cash and ONE private-account entry is tied to the
+    entry; no cash, bank or Main Safe movement exists."""
+    def private(self, amount="5000", note="", request=None, trip=None):
+        self.n += 1
+        return self.service.transfer_custody_cash_to_private(self.trip if trip is None else trip, amount, TODAY, note, request or key(500 + self.n))
+
+    def test_the_cash_leaves_the_custody_and_one_private_entry_is_recorded(self):
+        safe, bank, moves = self.db.cash(), len(self.db.bank_moves), len(self.db.cash_moves)
+        done = self.private("5000", "سحب شخصي")
+        self.assertEqual((done["kind"], done["amount"], done["bank_account_id"], done["duplicate"]), ("ST_CASH_PRIV", "5000.00", None, False))
+        self.assertEqual(self.cash(), D("95000.00"))
+        self.assertEqual([(e["direction"], e["amount"], e["operation_id"], e["trip_entry_id"], e["note"]) for e in self.db.private_entries],
+                         [("TO_PRIVATE", D("5000.00"), None, int(done["entry_id"]), "سحب شخصي")])
+        self.assertEqual((self.db.cash(), len(self.db.bank_moves), len(self.db.cash_moves)), (safe, bank, moves))     # no Main Safe, no bank, no cash movement
+        self.assertEqual(self.db.settle_cash[int(done["entry_id"])]["description"], None)                       # no reason is asked
+
+    def test_the_whole_cash_can_go_and_the_trip_then_closes_at_zero_cash(self):
+        self.private("100000")
+        self.assertEqual(self.cash(), D("0.00"))
+        self.refused("CASH_EXCEEDS_CUSTODY", lambda: self.private("0.01"))
+
+    def test_refusals_leave_no_trace(self):
+        self.refused("CASH_EXCEEDS_CUSTODY", lambda: self.private("100000.01"))
+        self.refused("AMOUNT_INVALID", lambda: self.private("0"))
+        self.refused("AMOUNT_INVALID", lambda: self.private("1.005"))
+        self.refused("TRIP_NOT_FOUND", lambda: self.private("10", trip=""))
+        self.assertEqual(self.db.private_entries, [])
+
+    def test_the_owner_private_right_is_required_even_with_the_custody_right(self):
+        self.authorization.permissions = OWNER - {"PRIVATE_ACCOUNT_MANAGE"}                          # revoked in the database after the screen opened
+        before = self.state()
+        with self.assertRaises(PermissionError):
+            self.private("100")
+        self.assertEqual(self.state(), before)
+        self.assertEqual(self.db.private_entries, [])
+        self.authorization.permissions = OWNER
+
+    def test_a_database_below_105_is_refused_with_the_update_message(self):
+        with patch.object(TripRepo, "has_private_trip_schema", lambda self: False):
+            before = self.state()
+            self.refused("SCHEMA_OUTDATED", lambda: self.private("100"))
+            self.assertEqual(self.state(), before)
+            self.assertEqual(self.db.private_entries, [])
+
+    def test_exact_replay_posts_once_and_a_changed_payload_conflicts(self):
+        k = key(7001)
+        first = self.private("100", request=k)
+        again = self.private("100", request=k)
+        self.assertEqual((again["entry_id"], again["duplicate"]), (first["entry_id"], True))
+        self.assertEqual((self.cash(), len(self.db.private_entries)), (D("99900.00"), 1))
+        self.refused("REQUEST_CONFLICT", lambda: self.private("101", request=k))
+
+    def test_a_failure_in_any_step_rolls_everything_back(self):
+        for step in ("entry", "settle_cash", "private_entry"):
+            self.db.fail_at = step
+            before = self.state()
+            with self.assertRaises(RuntimeError):
+                self.private("10")
+            self.db.fail_at = None
+            self.assertEqual(self.state(), before, step)
+        self.assertEqual(self.db.private_entries, [])
+
+    def test_a_reversal_gives_the_cash_back_and_needs_the_private_right_too(self):
+        done = self.private("1000")
+        self.authorization.permissions = OWNER - {"PRIVATE_ACCOUNT_MANAGE"}
+        before = self.state()
+        with self.assertRaises(PermissionError):
+            self.reverse(done["entry_id"])
+        self.assertEqual(self.state(), before)
+        self.authorization.permissions = OWNER
+        self.reverse(done["entry_id"])
+        self.assertEqual(self.cash(), D("100000.00"))                                                  # back in custody
+        reversed_ids = {int(c["source_id"]) for c in self.db.corrections if c["correction_type"] == "FULL_REVERSAL"}
+        self.assertIn(int(done["entry_id"]), reversed_ids)                                             # the private entry is read as voided from this correction, never rewritten
+        self.assertEqual(len(self.db.private_entries), 1)
+
+    def test_a_closed_trip_is_refused(self):
+        self.write_off("100000", "إعدام")
+        self.bar_to("10", "33.520")
+        self.raw_to("10", K21, "10")
+        self.raw_to("11", K18, "5")
+        self.service.close(self.trip)
+        self.refused("TRIP_CLOSED", lambda: self.private("1"))
 
 
 class StateTests(CashSettleCase):

@@ -384,7 +384,7 @@ class DistributionPageTests(GoldSettlePageTests):
         self.wait_until(lambda: self.item("tripCashSettleDialog").property("opened"), "cash settlement dialog")
         QTest.qWait(120)
 
-    def test_the_custody_cash_is_settled_with_real_clicks_expense_bank_and_write_off(self):
+    def test_the_custody_cash_is_settled_with_real_clicks_expense_bank_safe_private_and_write_off(self):
         self.root.setWidth(1080)
         self.root.setHeight(680)
         self.melted_trip()
@@ -416,19 +416,57 @@ class DistributionPageTests(GoldSettlePageTests):
         self.closed("tripCashSettleDialog")
         self.wait_idle()
         self.assertEqual([(m["account_id"], m["amount_delta"]) for m in self.db.bank_moves], [(1, D("5000.00"))])
-        # 3) the write-off of the rest needs a reason
+        # 3) a direct transfer into the Main Safe (owner 2026-11-14): no reason and no account to choose, the ordinary cash-only RETURN
         self.open_cash_settle()
         self.pick("cashSettleKindCombo", 2)
-        self.type_in("cashSettleAmountField", "3500")
+        QTest.qWait(100)
+        self.assertEqual(self.item("tripCashSettleDialog").property("kind"), "SAFE")
+        self.assertIsNone(self.visible_item("cashSettleTextField"))                                # nothing to explain
+        self.assertIsNone(self.visible_item("cashSettleBankCombo"))                                # and no account to choose
+        self.assertFalse(self.item("confirmCashSettleButton").property("enabled"))                  # no amount yet
+        self.type_in("cashSettleAmountField", "1000")
+        QTest.qWait(100)
+        for name in ("cashSettleKindCombo", "cashSettleAmountField", "confirmCashSettleButton"):
+            self.assert_inside_window(self.item(name))
+        self.click("confirmCashSettleButton")
+        self.wait_until(lambda: any(e["entry_kind"] == "RETURN" for e in self.db.entries.values()), "transfer to the safe posted")
+        self.closed("tripCashSettleDialog")
+        self.wait_idle()
+        self.assertEqual(self.db.cash(), safe + D("1000.00"))                                      # the money is in the Main Safe now
+        self.assertEqual(len(self.db.settle_cash), 2)                                              # it is a return, not a settlement document (expense + bank deposit only)
+        # 4) a direct transfer into the owner's private account (owner 2026-11-14, migration 105): no reason and no account, no money moves in any ledger
+        self.open_cash_settle()
+        self.pick("cashSettleKindCombo", 3)
+        QTest.qWait(100)
+        self.assertEqual(self.item("tripCashSettleDialog").property("kind"), "PRIVATE")
+        self.assertIsNone(self.visible_item("cashSettleTextField"))
+        self.assertIsNone(self.visible_item("cashSettleBankCombo"))
+        self.assertFalse(self.item("confirmCashSettleButton").property("enabled"))                  # no amount yet
+        self.type_in("cashSettleAmountField", "500")
+        QTest.qWait(100)
+        for name in ("cashSettleKindCombo", "cashSettleAmountField", "confirmCashSettleButton"):
+            self.assert_inside_window(self.item(name))
+        banks, moves = len(self.db.bank_moves), len(self.db.cash_moves)
+        self.click("confirmCashSettleButton")
+        self.wait_until(lambda: len(self.db.private_entries) == 1, "transfer to the private account posted")
+        self.closed("tripCashSettleDialog")
+        self.wait_idle()
+        self.assertEqual((self.db.private_entries[0]["direction"], self.db.private_entries[0]["amount"]), ("TO_PRIVATE", D("500.00")))
+        self.assertEqual((self.db.cash(), len(self.db.bank_moves), len(self.db.cash_moves)), (safe + D("1000.00"), banks, moves))      # no ledger moved
+        self.assertEqual(len(self.db.settle_cash), 3)
+        # 5) the write-off of the rest needs a reason
+        self.open_cash_settle()
+        self.pick("cashSettleKindCombo", 4)
+        self.type_in("cashSettleAmountField", "2000")
         QTest.qWait(100)
         self.assertFalse(self.item("confirmCashSettleButton").property("enabled"))                  # no reason yet
         self.type_in("cashSettleTextField", "فرق عد")
         QTest.qWait(100)
         self.click("confirmCashSettleButton")
-        self.wait_until(lambda: len(self.db.settle_cash) == 3, "write-off posted")
+        self.wait_until(lambda: len(self.db.settle_cash) == 4, "write-off posted")
         self.closed("tripCashSettleDialog")
         self.wait_idle()
-        self.assertEqual(self.db.cash(), safe)                                                     # Main Safe never moved
+        self.assertEqual(self.db.cash(), safe + D("1000.00"))                                      # only the transfer moved the Main Safe
         self.wait_until(lambda: self.tvm.detail["cash"]["zero"], "custody cash settled to zero")
         self.assertEqual(self.warnings, [])
 

@@ -16,6 +16,7 @@ METHODS = [{"code": "PHYSICAL_CASH", "text": "نقدي"}, {"code": "MOBILE_WALLE
 ACCOUNT_TYPE = {"INSTAPAY": "BANK", "BANK_TRANSFER": "BANK", "MOBILE_WALLET": "MOBILE_WALLET"}
 STATUS_TEXT = {"IN_STOCK": "المخزون", "SOLD": "مباعة", "RETURNED_PENDING": "بانتظار الفحص"}
 REVERSAL, SETTLEMENT = "REVERSAL", "SETTLEMENT"
+DIRECTION_TEXT = {"IN": "المستلم من العميل", "OUT": "المدفوع للعميل"}
 
 
 def _decimal(text):
@@ -45,6 +46,7 @@ class CorrectionViewModel(QObject):
         self._open, self._targets, self._target = False, {}, None
         self._mode, self._reversal, self._settlement, self._settle_preview = "", {}, {}, {}
         self._legs, self._seq, self._account, self._reason = [], 0, "", ""
+        self._direction = ""               # the money direction the manager chose; "" = the recorded one (a MIXED invoice may turn it around)
         self._error, self._result, self._confirming = "", {}, False
         self._notice, self._reload = "", None
         self.legsChanged.emit()
@@ -162,7 +164,7 @@ class CorrectionViewModel(QObject):
             return
         self._target = targets[index]
         self._mode, self._reversal, self._settlement, self._settle_preview = "", {}, {}, {}
-        self._legs, self._account, self._error, self._confirming = [], "", "", False
+        self._legs, self._account, self._direction, self._error, self._confirming = [], "", "", "", False
         self.legsChanged.emit()
         self.changed.emit()
 
@@ -191,6 +193,7 @@ class CorrectionViewModel(QObject):
             self._settlement, self._error = {}, error
             return
         self._settlement, self._error = result, ""
+        self._direction = ""
         # Start from the current effective allocation; the manager changes what was wrong.
         self._legs = []
         for leg in result["legs"]:
@@ -255,6 +258,20 @@ class CorrectionViewModel(QObject):
         self._changed()
 
     @Slot(str)
+    def setDirection(self, direction):
+        """«المستلم من العميل» (IN) / «المدفوع للعميل» (OUT): offered for a MIXED invoice only (the service refuses it for anything else). Choosing the recorded
+        direction again means «no change»."""
+        s = self._settlement
+        if self._mode != SETTLEMENT or not s or self._result or not s.get("can_flip") or direction not in ("IN", "OUT"):
+            return
+        self._direction = "" if direction == s.get("direction") else direction
+        self._changed()
+
+    def _direction_kwargs(self):
+        """Only a turned-around direction is passed on (the plain correction call stays exactly as it was)."""
+        return {"direction": self._direction} if self._direction else {}
+
+    @Slot(str)
     def setReason(self, text):
         self._reason = text or ""
         self.changed.emit()
@@ -274,8 +291,9 @@ class CorrectionViewModel(QObject):
         if self._mode != SETTLEMENT or not self._target:
             return
         service, t, legs, account = self._service_instance(), self._target, self._settlement_legs(), self._account or None
+        extra = self._direction_kwargs()
         self._start("settle_preview", lambda _expected_actor: service.preview_settlement(
-            t["source_type"], t["source_id"], legs, account, _expected_actor=_expected_actor))
+            t["source_type"], t["source_id"], legs, account, _expected_actor=_expected_actor, **extra))
 
     def _on_settle_preview(self, result, error):
         self._settle_preview, self._error = ({}, error) if error else (result, "")
@@ -304,9 +322,10 @@ class CorrectionViewModel(QObject):
         else:
             legs, account = self._settlement_legs(), self._account or None
             sequence = self._settlement.get("next_sequence")
+            extra = self._direction_kwargs()
             self._start("execute", lambda _expected_actor: service.correct_settlement(
                 t["source_type"], t["source_id"], legs, account, reason, expected_sequence=sequence,
-                _expected_actor=_expected_actor))
+                _expected_actor=_expected_actor, **extra))
 
     def _on_execute(self, result, error):
         if error:
@@ -332,6 +351,7 @@ class CorrectionViewModel(QObject):
         fresh = next((t for t in result["targets"] if t["reference"] == reference), None)
         self._target = fresh or (result["targets"][0] if result["targets"] else None)
         self._legs, self._account, self._reason, self._confirming = [], "", "", False
+        self._direction = ""
         self._settlement, self._settle_preview, self._reversal = {}, {}, {}
         self.legsChanged.emit()
         if self._target is not None and self._target.get("settlement_allowed", True):
@@ -440,15 +460,26 @@ class CorrectionViewModel(QObject):
             current += f" + حساب العميل {money(s['account'])}"
         entered = sum((_decimal(l["amount"]) for l in self._legs), Decimal("0.00")) + _decimal(self._account)
         remaining = Decimal(s["total"]) - entered
-        return {"directionText": s["direction_text"], "total": money(s["total"]), "current": current, "combinedNote": s.get("combined_note", ""),
+        recorded = s.get("direction") or ""
+        can_flip, turned = bool(s.get("can_flip")), bool(self._direction) and self._direction != recorded
+        chosen = self._direction or recorded
+        chosen_text = DIRECTION_TEXT.get(chosen, s["direction_text"])
+        if can_flip:
+            current = f"{s['direction_text']}: {current}"          # which way the recorded money moved (only needed when it can be turned around)
+        if turned:
+            remaining_text = f"الاتجاه اتغيّر: الحركة المسجلة ({s['direction_text']}) هتتعكس ويتسجل {money(entered)} «{chosen_text}»"
+        else:
+            remaining_text = ("مطابق للمسجّل" if remaining == 0 else
+                              f"أقل من المسجّل بـ {money(remaining)} — يُخصم الفرق" if remaining > 0
+                              else f"أكثر من المسجّل بـ {money(-remaining)} — يُضاف الفرق")
+        return {"directionText": chosen_text, "recordedDirectionText": s["direction_text"], "canFlip": can_flip, "direction": chosen, "directionTurned": turned,
+                "total": money(s["total"]), "current": current, "combinedNote": s.get("combined_note", ""),
                 "hasCustomer": s["has_customer"],
                 # Owner 2026-10-30: the customer-account field is offered whenever the operation has a registered customer, so a sale paid in cash can be corrected to
                 # «paid 0 / on the customer's account» (the service re-checks the customer and the direction).
                 "hasAccount": bool(s["has_customer"]),
-                "remainingText": "مطابق للمسجّل" if remaining == 0 else
-                (f"أقل من المسجّل بـ {money(remaining)} — يُخصم الفرق" if remaining > 0
-                 else f"أكثر من المسجّل بـ {money(-remaining)} — يُضاف الفرق"),
-                "complete": remaining == 0,
+                "remainingText": remaining_text,
+                "complete": remaining == 0 or turned,
                 "deltas": [f"{d['account']}: {whole(d['delta'], signed=True)} ج" for d in p.get("money_deltas", [])]
                           + ([f"حساب العميل: {whole(p['account_delta'], signed=True)} ج"]
                              if p and Decimal(p.get("account_delta") or "0") else []),
@@ -497,4 +528,8 @@ class CorrectionViewModel(QObject):
             original = {"INVOICE": "الفاتورة الأصلية", "EXCHANGE": "الاستبدال الأصلي", "RETURN": "المرتجع الأصلي"}.get(
                 t.get("source_type"), "العملية الأصلية")
             return f"سيتم إنشاء حركة عكسية موثقة {prefix} {t.get('reference', '')} ولن يتم حذف {original}."
+        s = self._settlement
+        if self._direction and s and self._direction != s.get("direction"):
+            return (f"سيتم عكس الحركة المسجلة ({s['direction_text']}) وتسجيل التسوية الصحيحة ({DIRECTION_TEXT[self._direction]}) على الحسابات؛ "
+                    "الفاتورة الأصلية تفضل كما هي.")
         return "سيتم عكس الحركة من الحساب المسجل بالخطأ وتسجيلها على الحساب الصحيح."

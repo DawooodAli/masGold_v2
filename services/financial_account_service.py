@@ -941,10 +941,16 @@ class FinancialAccountService:
             if not voided:
                 balance += amount if to_private else -amount
                 total_in, total_out = (total_in + amount, total_out) if to_private else (total_in, total_out + amount)
+            from_custody = r.get("trip_entry_id") is not None                  # 105: taken straight from market-custody cash, no bank / wallet operation
+            if from_custody:
+                from repositories.market_trip_repository import entry_code
+                reference, account_name = entry_code(r["trip_id"], r["entry_no"]), "نقدية عهدة السوق"
+            else:
+                reference, account_name = operation_code(WITHDRAWAL if to_private else DEPOSIT, r["operation_id"]), r["account_name"] or ""
             entries.append({"id": str(r["id"]), "date": r["created_at"].strftime("%Y-%m-%d %H:%M") if r["created_at"] else "",
                             "direction": r["direction"], "text": "إلى الحساب الخاص" if to_private else "من الحساب الخاص",
-                            "account": r["account_name"] or "", "amount": str(amount), "note": r["note"] or "", "voided": voided,
-                            "balance": str(balance), "operation": operation_code(WITHDRAWAL if to_private else DEPOSIT, r["operation_id"])})
+                            "account": account_name, "amount": str(amount), "note": r["note"] or "", "voided": voided,
+                            "balance": str(balance), "operation": reference, "fromCustody": from_custody})
         entries.reverse()
         return {"available": True, "balance": str(balance), "total_in": str(total_in), "total_out": str(total_out), "entries": entries}
 

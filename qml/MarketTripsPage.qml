@@ -2371,9 +2371,10 @@ Item {
         objectName: "tripCashSettleDialog"
         property string tripId: ""
         property string requestKey: ""
-        readonly property var kindChoices: [{ kind: "EXPENSE", text: "مصروف (بيان حر)" }, { kind: "BANK", text: "إيداع في حساب بنك / محفظة" }, { kind: "WRITEOFF", text: "إعدام (بسبب)" }]
+        readonly property var kindChoices: [{ kind: "EXPENSE", text: "مصروف (بيان حر)" }, { kind: "BANK", text: "إيداع في حساب بنك / محفظة" }, { kind: "SAFE", text: "تحويل إلى الخزنة الرئيسية" }, { kind: "PRIVATE", text: "تحويل إلى الحساب الخاص" }, { kind: "WRITEOFF", text: "إعدام (بسبب)" }]
         readonly property var bankChoices: [{ id: "", text: "اختر الحساب" }].concat(page.ctx.banks || [])
         readonly property string kind: kindChoices[cashSettleKind.currentIndex].kind
+        readonly property bool needsText: kind === "EXPENSE" || kind === "WRITEOFF"                  // a free-text statement / a reason; a bank deposit, a transfer to the safe or to the private account asks for none
         readonly property string bankId: bankChoices[cashSettleBank.currentIndex] ? bankChoices[cashSettleBank.currentIndex].id : ""
         function openFor(trip) {
             if (!page.vm) return
@@ -2401,7 +2402,7 @@ Item {
             spacing: 6
             Txt { Layout.fillWidth: true; text: "تسوية نقدية العهدة"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
             Txt { objectName: "cashSettleRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
-                  text: "المبلغ يخرج من نقدية العهدة: مصروف ببيان حر، أو إيداع في حساب بنك أو محفظة، أو إعدام بسبب. لا يتحرك شيء في الخزنة الرئيسية. لرجوع النقدية للخزنة استخدم «رجوع من العهدة»." }
+                  text: "المبلغ يخرج من نقدية العهدة: مصروف ببيان حر، أو إيداع في حساب بنك أو محفظة، أو تحويل مباشر إلى الخزنة الرئيسية، أو تحويل مباشر إلى الحساب الخاص، أو إعدام بسبب. ما عدا التحويل للخزنة لا يتحرك شيء في الخزنة الرئيسية. التحويل للخزنة هو نفسه «رجوع من العهدة» للنقدية فقط، والتحويل للحساب الخاص يُسجَّل في الحساب الخاص بدون المرور على أي حساب بنك." }
             Txt { objectName: "cashSettleRemaining"; Layout.fillWidth: true; color: theme.amber; font.bold: true
                   text: "المتبقي في نقدية العهدة: " + (page.detail.cash ? page.detail.cash.outstanding : "") }
             Txt { Layout.fillWidth: true; text: "نوع التسوية *" }
@@ -2410,8 +2411,8 @@ Item {
             Field { id: cashSettleAmount; objectName: "cashSettleAmountField"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
             Txt { Layout.fillWidth: true; visible: cashSettleDialog.kind === "BANK"; text: "الحساب *" }
             Combo { id: cashSettleBank; objectName: "cashSettleBankCombo"; Layout.fillWidth: true; visible: cashSettleDialog.kind === "BANK"; model: cashSettleDialog.bankChoices; textRole: "text" }
-            Txt { Layout.fillWidth: true; visible: cashSettleDialog.kind !== "BANK"; text: cashSettleDialog.kind === "EXPENSE" ? "البيان *" : "السبب *" }
-            Field { id: cashSettleText; objectName: "cashSettleTextField"; Layout.fillWidth: true; visible: cashSettleDialog.kind !== "BANK" }
+            Txt { Layout.fillWidth: true; visible: cashSettleDialog.needsText; text: cashSettleDialog.kind === "EXPENSE" ? "البيان *" : "السبب *" }
+            Field { id: cashSettleText; objectName: "cashSettleTextField"; Layout.fillWidth: true; visible: cashSettleDialog.needsText }
             Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
             Field { id: cashSettleDate; objectName: "cashSettleDateField"; Layout.fillWidth: true }
             Txt { Layout.fillWidth: true; text: "ملاحظات" }
@@ -2428,7 +2429,7 @@ Item {
                     text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "تسجيل"
                     primary: true
                     enabled: cashSettleAmount.text.trim().length > 0 && cashSettleDate.text.trim().length > 0 && !!page.vm && !page.vm.writing
-                             && (cashSettleDialog.kind === "BANK" ? cashSettleDialog.bankId !== "" : cashSettleText.text.trim().length > 0)
+                             && (cashSettleDialog.kind === "BANK" ? cashSettleDialog.bankId !== "" : cashSettleDialog.needsText ? cashSettleText.text.trim().length > 0 : true)
                     onClicked: page.vm.settleCash(cashSettleDialog.tripId, cashSettleDialog.kind, cashSettleAmount.text, cashSettleText.text, cashSettleDialog.bankId,
                                                   cashSettleDate.text, cashSettleNotes.text, cashSettleDialog.requestKey)
                 }

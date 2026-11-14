@@ -239,8 +239,22 @@ Item {
                       font.bold: true }
                 Txt { Layout.fillWidth: true; visible: !!correctionPage.st.combinedNote; value: "بعد الاستبدال — " + (correctionPage.st.combinedNote || "")
                       color: theme.textMuted; wrapMode: Text.WordWrap }
-                Txt { Layout.fillWidth: true; value: "المسجل حالياً: " + (correctionPage.st.current || "")
+                Txt { objectName: "correctionCurrent"; Layout.fillWidth: true; value: "المسجل حالياً: " + (correctionPage.st.current || "")
                       wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                // Owner 2026-11-14: on a MIXED invoice the money may have moved the other way (the customer paid instead of being paid): the manager picks the real direction.
+                RowLayout {
+                    objectName: "correctionDirectionRow"
+                    Layout.fillWidth: true; Layout.topMargin: 6; layoutDirection: Qt.RightToLeft; spacing: 8
+                    visible: !!correctionPage.st.canFlip
+                    Txt { value: "اتجاه الفلوس الصحيح"; color: theme.textMuted; font.bold: true }
+                    Btn { objectName: "correctionDirectionIn"; text: "المستلم من العميل"
+                          selected: correctionPage.st.direction === "IN"; enabled: correctionPage.editable
+                          onClicked: correctionPage.vm.setDirection("IN") }
+                    Btn { objectName: "correctionDirectionOut"; text: "المدفوع للعميل"
+                          selected: correctionPage.st.direction === "OUT"; enabled: correctionPage.editable
+                          onClicked: correctionPage.vm.setDirection("OUT") }
+                    Item { Layout.fillWidth: true }
+                }
                 Txt { Layout.fillWidth: true; Layout.topMargin: 6; value: "التسوية الصحيحة"; color: theme.textMuted; font.bold: true }
                 Repeater {
                     model: correctionPage.vm ? correctionPage.vm.legs : []
