@@ -918,3 +918,14 @@ class HistoryExactLookupTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EverySaleLineTypeHasAKindTextTests(unittest.TestCase):
+    """Invoice 26111503 had a Rafayea sale line and the history detail showed no sale section: the view model's KIND_TEXT lacked its kind, so the whole list raised."""
+
+    def test_every_sale_line_type_the_service_can_return_has_a_display_text(self):
+        from app.viewmodels.invoice_history_viewmodel import KIND_TEXT
+        from services.invoice_history_service import SALE_LINE_TYPES, InvoiceHistoryService
+        for line_type in SALE_LINE_TYPES:
+            row = InvoiceHistoryService._sale_line({"line_id": 1, "line_type": line_type, "karat_value": 21, "weight_grams": "2"})
+            self.assertIn(row["kind"], KIND_TEXT, line_type)

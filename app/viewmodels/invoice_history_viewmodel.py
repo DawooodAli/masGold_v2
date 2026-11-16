@@ -19,7 +19,8 @@ KIND_TYPE_TEXT = {"SALE": "بيع", "OLD_GOLD_PURCHASE": "شراء كسر", "MIX
 SETTLEMENT_TEXT = {"SETTLED": "مسددة", "PARTIAL": "مسددة جزئياً", "UNSETTLED": "غير مسددة", "OVERPAID": "مدفوعة بزيادة"}
 STATUS_TEXT = {"FINALIZED": "نهائية", "VOIDED": "ملغاة"}
 DIRECTION_TEXT = {"CUSTOMER_PAYS_SHOP": "يدفع العميل", "SHOP_PAYS_CUSTOMER": "يدفع المحل", "SETTLED": "متعادلة"}
-KIND_TEXT = {"INVENTORY": "من المخزون", "MANUAL": "بيع يدوي (غير محدد في المخزون)", "OLD_GOLD_STOCK": "من رصيد الكسر"}
+KIND_TEXT = {"INVENTORY": "من المخزون", "MANUAL": "بيع يدوي (غير محدد في المخزون)", "OLD_GOLD_STOCK": "من رصيد الكسر",
+             "CLASP_STOCK": "من رصيد الرفايع"}
 IDENTIFIED_TEXT = {"SCAN": "بالباركود", "SEARCH": "بالبحث"}
 EVENT_TEXT = {"CREATED": "تم إنشاء الفاتورة", "FINALIZED": "تم حفظ الفاتورة نهائياً", "PRINTED": "طباعة",
               "REPRINTED": "إعادة طباعة", "PAYMENT_ADDED": "إضافة دفعة", "PAYMENT_CORRECTED": "تصحيح دفعة",
