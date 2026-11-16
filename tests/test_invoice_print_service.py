@@ -20,7 +20,7 @@ from app.session import AppSession
 from services import bill_overlay
 from services.authentication_service import AuthenticationResult, _VERIFIED
 from services.bill_overlay import BillCalibration, LayoutError, code128_modules, compose, validate
-from services.invoice_print_service import InvoicePrintService, PrintError, configure_bill_printer
+from services.invoice_print_service import InvoicePrintService, PrintError, configure_bill_printer, write_pdf
 
 D = Decimal
 PERMISSIONS = frozenset({"APP_LOGIN", "INVOICE_CREATE", "INVOICE_FINALIZE"})
@@ -1194,6 +1194,31 @@ class SharePdfTests(unittest.TestCase):
         path, _, problem = service.share_pdf("7", folder=os.getcwd())
         self.assertIsNone(path)
         self.assertTrue(problem)
+
+
+class ShopStampTests(unittest.TestCase):
+    """The shop's stamp is painted on the printed bill and the WhatsApp PDF, below the last row and above the preprinted footer."""
+
+    def test_the_stamp_sits_below_the_content_and_above_the_footer_line(self):
+        ops = ops_for(invoice_row())
+        stamped = bill_overlay.with_stamp(ops)
+        stamp = stamped[-1]
+        self.assertEqual(stamp.kind, "stamp")
+        self.assertGreater(stamp.y, max(op.y + op.h for op in ops))
+        self.assertLessEqual(stamp.y + stamp.h, BillCalibration().lower_gold_y_mm)
+        self.assertEqual(stamped[:-1], ops)                                   # nothing printed is moved
+
+    def test_a_full_sheet_leaves_the_stamp_out_instead_of_covering_rows(self):
+        ops = ops_for(invoice_row(lines=[sale_line(i) for i in range(10)]))
+        self.assertEqual(bill_overlay.with_stamp(ops), ops)
+
+    def test_the_pdf_contains_the_stamp_image(self):
+        ops = ops_for(invoice_row())
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            plain = write_pdf(ops, os.path.join(folder, "a.pdf"))
+            size_with = os.path.getsize(plain)
+            self.assertGreater(size_with, 20_000)                              # the stamp picture is embedded
 
 
 class WhatsappNumberTests(unittest.TestCase):

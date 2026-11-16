@@ -30,6 +30,7 @@ class InventoryViewModel(QObject):
 
         self._search_text = ""
         self._karat_filter, self._item_type_filter = 0, 0
+        self._scrap_only = False
         self._history_piece = {}
         self._error_message = ""
         self._action_message = ""
@@ -270,6 +271,15 @@ class InventoryViewModel(QObject):
     def itemTypeFilterId(self):
         return self._item_type_filter
 
+    @Property(bool, notify=dataChanged)
+    def scrapOnly(self):
+        return self._scrap_only
+
+    @Slot(bool)
+    def setScrapOnly(self, value):
+        self._scrap_only = bool(value)
+        self.refresh()
+
     @Slot(int, int)
     def setFilters(self, karat_id, item_type_id):
         self._karat_filter, self._item_type_filter = max(int(karat_id), 0), max(int(item_type_id), 0)
@@ -351,6 +361,7 @@ class InventoryViewModel(QObject):
                     search=self._search_text,
                     karat_id=self._karat_filter or None,
                     item_type_id=self._item_type_filter or None,
+                    scrap_only=self._scrap_only,
                 )
                 or []
             )

@@ -1179,7 +1179,7 @@ ApplicationWindow {
                             layoutDirection: Qt.RightToLeft
                             spacing: 7
 
-                            TextField {
+                            BarcodeField {
                                 id: billingBarcodeField
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 42
@@ -2478,9 +2478,20 @@ ApplicationWindow {
                                         inventoryPage.barcodeFilterMode = 0
                                         inventorySearchField.text = ""
                                         inventoryVM.clearSearch()
+                                        inventoryVM.setScrapOnly(false)
                                         inventoryVM.setFilters(0, 0)
                                         inventoryPage.clearSelection()
                                     }
+                                }
+
+
+                                Button {
+                                    objectName: "inventoryScrapOnly"
+                                    text: "♻ قطع من الكسر"
+                                    checkable: true
+                                    checked: inventoryVM.scrapOnly
+                                    font.family: "Cairo"
+                                    onClicked: inventoryVM.setScrapOnly(checked)
                                 }
 
 
@@ -11915,6 +11926,56 @@ ApplicationWindow {
             }
 
 
+                    // The last saved piece (the dialog stays open for the next one).
+                    Label {
+                        id: inventoryEntrySuccess
+                        objectName: "inventoryEntrySuccess"
+
+                        visible:
+                            text.length > 0
+
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 18; Layout.rightMargin: 18
+
+                        color: theme.green
+
+                        font.family: "Cairo"
+                        font.pixelSize: 12
+                        font.bold: true
+
+                        horizontalAlignment:
+                            Text.AlignRight
+
+                        wrapMode:
+                            Text.WordWrap
+                    }
+
+
+                    Label {
+                        id: inventoryEntryError
+                        objectName: "inventoryEntryError"
+
+                        visible:
+                            text.length > 0
+
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 18; Layout.rightMargin: 18
+
+                        color: theme.red
+
+                        font.family: "Cairo"
+                        font.pixelSize: 12
+                        font.bold: true
+
+                        horizontalAlignment:
+                            Text.AlignRight
+
+                        wrapMode:
+                            Text.WordWrap
+                    }
+
+
+
             ScrollView {
                 id: inventoryEntryScroll
                 objectName: "inventoryEntryScroll"
@@ -12097,7 +12158,7 @@ ApplicationWindow {
                                 layoutDirection: Qt.RightToLeft
                                 Button {
                                     objectName: "supplierGroupHide"
-                                    text: "إخفاء المجموعة (تمت طباعة الباركود)"
+                                    text: "إخفاء المجموعة (تمت الطباعة أو اخترتها بالغلط)"
                                     enabled: newInventoryItemDialog.currentGroup !== null && !newInventoryItemDialog.supplierIntake.busy
                                     font.family: "Cairo"
                                     onClicked: newInventoryItemDialog.supplierIntake.closeIntakeGroup(newInventoryItemDialog.currentGroup.groupId)
@@ -12806,53 +12867,6 @@ ApplicationWindow {
 
                         wrapMode:
                             TextEdit.Wrap
-                    }
-
-
-                    // The last saved piece (the dialog stays open for the next one).
-                    Label {
-                        id: inventoryEntrySuccess
-                        objectName: "inventoryEntrySuccess"
-
-                        visible:
-                            text.length > 0
-
-                        Layout.fillWidth: true
-
-                        color: theme.green
-
-                        font.family: "Cairo"
-                        font.pixelSize: 12
-                        font.bold: true
-
-                        horizontalAlignment:
-                            Text.AlignRight
-
-                        wrapMode:
-                            Text.WordWrap
-                    }
-
-
-                    Label {
-                        id: inventoryEntryError
-                        objectName: "inventoryEntryError"
-
-                        visible:
-                            text.length > 0
-
-                        Layout.fillWidth: true
-
-                        color: theme.red
-
-                        font.family: "Cairo"
-                        font.pixelSize: 12
-                        font.bold: true
-
-                        horizontalAlignment:
-                            Text.AlignRight
-
-                        wrapMode:
-                            Text.WordWrap
                     }
 
 
@@ -13954,7 +13968,7 @@ ApplicationWindow {
             RowLayout {
                 Layout.fillWidth: true; layoutDirection: Qt.RightToLeft
                 Label { text: "الباركود الجديد"; color: theme.textPrimary; font.family: "Cairo"; Layout.preferredWidth: 100; horizontalAlignment: Text.AlignRight }
-                TextField {
+                BarcodeField {
                     id: newBarcodeField; objectName: "inventoryNewBarcode"
                     Layout.fillWidth: true; Layout.preferredHeight: 40
                     font.family: "Cairo"; color: theme.textPrimary; horizontalAlignment: TextInput.AlignRight

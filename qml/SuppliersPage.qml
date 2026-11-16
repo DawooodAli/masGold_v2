@@ -156,6 +156,18 @@ Item {
         }
     }
 
+    component BarcodeEntry: BarcodeField {
+        font.family: "Cairo"
+        font.pixelSize: theme.fontBody
+        color: theme.textPrimary
+        placeholderTextColor: theme.textDisabled
+        horizontalAlignment: TextInput.AlignRight
+        selectByMouse: true
+        implicitHeight: 34
+        background: Rectangle { radius: 4; color: theme.bgPrimary
+                                border.color: parent.activeFocus ? theme.gold : theme.border }
+    }
+
     component Field: TextField {
         id: field
         font.family: "Cairo"
@@ -4132,7 +4144,7 @@ Item {
                         FieldBox {
                             visible: barcodeMode.currentIndex === 1
                             label: "قيمة الباركود"; required: true
-                            Field { id: manualBarcode; objectName: "pieceManualBarcode"; Layout.fillWidth: true
+                            BarcodeEntry { id: manualBarcode; objectName: "pieceManualBarcode"; Layout.fillWidth: true
                                     placeholderText: "قيمة الباركود" }
                         }
                         FieldBox {

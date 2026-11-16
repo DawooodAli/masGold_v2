@@ -141,6 +141,19 @@ Item {
         }
     }
 
+    component BarcodeEntry: BarcodeField {
+        mixed: true
+        implicitHeight: 30
+        font.family: theme.fontFamily
+        font.pixelSize: theme.fontBody
+        color: theme.textPrimary
+        placeholderTextColor: theme.textDisabled
+        horizontalAlignment: TextInput.AlignRight
+        selectByMouse: true
+        background: Rectangle { radius: 4; color: theme.bgPrimary
+                                border.color: parent.activeFocus ? theme.gold : theme.border }
+    }
+
     component Field: TextField {
         implicitHeight: 30
         font.family: theme.fontFamily
@@ -447,7 +460,7 @@ Item {
                                 Layout.fillWidth: true
                                 layoutDirection: Qt.RightToLeft
                                 spacing: 4
-                                Field { id: searchText; objectName: "exchangeSearchText"; width: 150
+                                BarcodeEntry { id: searchText; objectName: "exchangeSearchText"; width: 150
                                         placeholderText: activeFocus || text.length ? "" : "الصنف أو الباركود"
                                         onAccepted: searchGo.clicked() }
                                 Choice { id: searchKarat; objectName: "exchangeSearchKarat"; width: 118

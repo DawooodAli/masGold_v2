@@ -635,6 +635,27 @@ def _compose_variant_c(overlay, c, t=None):
     return ops
 
 
+STAMP_IMAGE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "resources", "stamp.png")
+STAMP_ASPECT = 720 / 590                       # width / height of resources/stamp.png
+STAMP_MAX_H_MM, STAMP_MIN_H_MM = 26.0, 12.0
+STAMP_CENTER_X_MM = 62.0                       # bottom-left, clear of the right-hand money box and of the preprinted footer text
+
+
+def with_stamp(ops, calibration=None):
+    """The ops plus the shop's stamp («لا يعتد بالفاتورة بدون ختم المحل»), added only when it is painted (print / PDF), never validated as bill data.
+    It sits just above the lower gold line, below the last printed row; it shrinks to the free height and is left out when less than STAMP_MIN_H_MM is free."""
+    c = calibration or BillCalibration()
+    if not ops or not os.path.exists(STAMP_IMAGE):
+        return list(ops)
+    free_top = max(op.y + op.h for op in ops) + 2.0
+    bottom = c.lower_gold_y_mm - 2.0
+    height = min(STAMP_MAX_H_MM, bottom - free_top)
+    if height < STAMP_MIN_H_MM:
+        return list(ops)
+    width = height * STAMP_ASPECT
+    return list(ops) + [Op("stamp", STAMP_CENTER_X_MM - width / 2, bottom - height, width, height)]
+
+
 class LayoutError(ValueError):
     pass
 
@@ -683,7 +704,7 @@ def ensure_fonts():
 def paint(painter, ops, dots_per_mm):
     """Replay the ops on any QPainter whose (0, 0) is the paper's top-left corner."""
     from PySide6.QtCore import QLineF, QRectF, Qt
-    from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPen, QTextOption
+    from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImage, QPen, QTextOption
 
     ensure_fonts()
     black = QColor(0, 0, 0)
@@ -772,7 +793,14 @@ def paint(painter, ops, dots_per_mm):
         rect = QRectF(op.x * dots_per_mm, op.y * dots_per_mm, op.w * dots_per_mm, op.h * dots_per_mm)
         if op.kind == "text" and op.max_lines > 1 and fit_long_text(op, rect):
             continue
-        if op.kind == "bar":
+        if op.kind == "stamp":
+            picture = QImage(STAMP_IMAGE)
+            if not picture.isNull():
+                painter.setRenderHint(painter.RenderHint.SmoothPixmapTransform, True)
+                painter.setOpacity(0.92)
+                painter.drawImage(rect, picture)
+                painter.setOpacity(1.0)
+        elif op.kind == "bar":
             painter.fillRect(rect, black)
         elif op.kind in ("line", "box"):
             pen = QPen(shade(op.gray if op.gray else GRID_GRAY))

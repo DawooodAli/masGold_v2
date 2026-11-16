@@ -19,6 +19,7 @@ class InventoryRepository(BaseRepository):
         limit: int = 500,
         karat_id: int | None = None,
         item_type_id: int | None = None,
+        scrap_only: bool = False,
     ) -> list[dict]:
 
         search = (search or "").strip()
@@ -31,6 +32,10 @@ class InventoryRepository(BaseRepository):
         if item_type_id is not None:
             extra += " AND ii.item_type_id = %s"
             extra_params.append(item_type_id)
+
+        if scrap_only:
+            # pieces made from the shop's own Scrap (converted by «قطعة محولة من الكسر»)
+            extra += " AND ii.acquisition_source = 'OLD_GOLD_MANUFACTURE'"
 
         return self._fetch_all(
             """

@@ -1,6 +1,7 @@
 from database.transaction import DatabaseTransaction
 from repositories.inventory_repository import InventoryRepository, STOCK_CLASSES
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from services import keyboard_layout
 from services.number_text import normalize_digits
 
 from mysql.connector import IntegrityError
@@ -156,6 +157,7 @@ class InventoryService:
         limit: int = 500,
         karat_id=None,
         item_type_id=None,
+        scrap_only=False,
     ) -> list[dict]:
 
         search = (search or "").strip()
@@ -178,12 +180,13 @@ class InventoryService:
                 transaction.connection
             )
 
-            return repository.get_stock_items(
-                search=search,
-                limit=limit,
-                karat_id=self._optional_id(karat_id),
-                item_type_id=self._optional_id(item_type_id),
-            )
+            args = dict(limit=limit, karat_id=self._optional_id(karat_id),
+                        item_type_id=self._optional_id(item_type_id), scrap_only=bool(scrap_only))
+            rows = repository.get_stock_items(search=search, **args)
+            if not rows and keyboard_layout.has_arabic(search):
+                # typed / scanned with the Arabic layout on: try the same keys as Latin letters
+                rows = repository.get_stock_items(search=keyboard_layout.to_latin_keys(search), **args)
+            return rows
 
     def find_piece(self, text) -> dict | None:
         """Exact identity lookup (any status) for traceability: a SOLD piece stays findable."""

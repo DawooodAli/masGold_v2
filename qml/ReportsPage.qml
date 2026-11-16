@@ -342,6 +342,18 @@ Item {
         }
     }
 
+    component BarcodeEntry: BarcodeField {
+        mixed: true
+        font.family: "Cairo"
+        font.pixelSize: theme.fontBody
+        color: theme.textPrimary
+        placeholderTextColor: theme.textDisabled
+        horizontalAlignment: TextInput.AlignRight
+        selectByMouse: true
+        implicitHeight: 32
+        background: Rectangle { radius: 4; color: theme.bgPrimary; border.color: parent.activeFocus ? theme.gold : theme.border }
+    }
+
     component Field: TextField {
         id: field
         font.family: "Cairo"
@@ -450,7 +462,7 @@ Item {
                     DateField { objectName: "reportFrom"; visible: reportsVM.periodUsed; value: reportsVM.filters.from || ""; onPicked: function (v) { reportsVM.setFilter("from", v) } }
                     Txt { text: "إلى"; height: 32; visible: reportsVM.periodUsed }
                     DateField { objectName: "reportTo"; visible: reportsVM.periodUsed; value: reportsVM.filters.to || ""; onPicked: function (v) { reportsVM.setFilter("to", v) } }
-                    Field { objectName: "reportText"; width: 190; placeholderText: "بحث (رقم، اسم، باركود…)"; text: reportsVM.filters.text || ""
+                    BarcodeEntry { objectName: "reportText"; width: 190; placeholderText: "بحث (رقم، اسم، باركود…)"; text: reportsVM.filters.text || ""
                             onTextEdited: reportsVM.setFilter("text", text); onAccepted: reportsVM.apply() }
                     Repeater {
                         model: reportsVM.filterSpecs

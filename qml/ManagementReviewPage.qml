@@ -738,7 +738,7 @@ Item {
                 visible: reviewsVM.canResolveInspections && caseCard.review.canSettle === true
                 layoutDirection: Qt.RightToLeft
                 spacing: 8
-                TextField {
+                BarcodeField {
                     id: caseBarcode
                     objectName: "caseBarcode_" + caseCard.rowIndex
                     Layout.preferredWidth: 190

@@ -97,7 +97,7 @@ class Z64Tests(unittest.TestCase):
         self.assertEqual((int(total), int(again), int(row_bytes)), (81 * 310, 81 * 310, 81))
         self.assertEqual("%04X" % L.crc16(data.encode("ascii")), crc)
         raw = zlib.decompress(base64.b64decode(data))
-        self.assertEqual(raw, Sheet().rows)                                   # what the printer unpacks is exactly what was drawn
+        self.assertEqual(raw, L.sheet_rows(L.render_sheet(fields(ITEM_LEFT), fields(ITEM_RIGHT)))[0])
         self.assertLess(len(zpl), 20_000)                                     # compressed: a few KB, not the 50 KB of the plain hex
 
     def test_the_old_layout_is_still_available_untouched(self):
@@ -115,7 +115,8 @@ class DrawingTests(unittest.TestCase):
             y = L.DATA_Y + L.BAR_TOP + L.BAR_H // 2
             self.assertEqual(sheet.runs(y, left, left + L.FACE_W), widths)
             first = next(x for x in range(left, left + L.FACE_W) if sheet.dot(x, y))
-            self.assertEqual(first, left + (L.FACE_W - sum(widths)) // 2)
+            face_w, face_x = (L.LEFT_DATA_W, left + L.LEFT_DATA_SHIFT) if left == L.LEFT_X else (L.RIGHT_DATA_W, left + L.RIGHT_DATA_SHIFT)
+            self.assertEqual(first, face_x + (face_w - sum(widths)) // 2)
             self.assertGreaterEqual(min(sheet.runs(y, left, left + L.FACE_W)), 1)
 
     def test_the_bars_have_the_approved_height(self):
@@ -150,7 +151,7 @@ class DrawingTests(unittest.TestCase):
             self.assertLessEqual(max(ys), y + h - 6, side)
 
     def test_the_mark_is_the_old_bitmap_unchanged(self):
-        """The AD mark is the 96 x 48 crop of the bitmap the old label has always printed (the old left and right bitmaps cropped to the same picture)."""
+        """The mark is the owner's ring + ماس logo, 1-bit."""
         mark = zlib.decompress(base64.b64decode(L.MARK_Z))
         self.assertEqual(len(mark), L.MARK_ROW_BYTES * L.MARK_H)
         self.assertGreater(sum(bin(b).count("1") for b in mark), 1500)

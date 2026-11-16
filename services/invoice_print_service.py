@@ -333,7 +333,7 @@ class InvoicePrintService:
         if not painter.begin(printer):
             return False, "تعذر بدء الطباعة على طابعة الفواتير.", None
         try:
-            bill_overlay.paint(painter, ops, printer.resolution() / 25.4)
+            bill_overlay.paint(painter, bill_overlay.with_stamp(ops, self.calibration()), printer.resolution() / 25.4)
         finally:
             painter.end()
         return True, PRINT_SENT_TEXT, None
@@ -423,7 +423,7 @@ def write_pdf(ops, path=None, background=None):
             if not picture.isNull():
                 painter.setRenderHint(QPainter.SmoothPixmapTransform)
                 painter.drawImage(QRectF(0, 0, painter.device().width(), painter.device().height()), picture)
-        bill_overlay.paint(painter, ops, printer.resolution() / 25.4)
+        bill_overlay.paint(painter, bill_overlay.with_stamp(ops), printer.resolution() / 25.4)
     finally:
         painter.end()
     return path

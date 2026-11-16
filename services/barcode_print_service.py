@@ -142,7 +142,7 @@ class PrototypeZplPrinter:
                 item.get("weight_grams")
             ),
             "size": self._safe_text(
-                item.get("size") or "0"
+                item.get("size") or ""
             ),
             "karat": self._safe_text(
                 item.get("karat_value")
