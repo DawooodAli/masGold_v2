@@ -109,6 +109,7 @@ class InvoiceHistoryViewModel(QObject):
         self._sellers, self._seller_service, self._seller_message, self._seller_ok = [], None, "", False
         self._piece_service, self._piece_message, self._piece_ok = None, "", False
         self._lookup_message = ""
+        self._seal_service, self._seal_message, self._seal_state = None, "", ""
         # Typing in the search box: one query after a short pause, never one per keystroke.
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
@@ -240,6 +241,10 @@ class InvoiceHistoryViewModel(QObject):
         the filters and the search box are never touched (this is not a search). Arabic / Persian digits
         are the same digits. Found → the existing detail opens; not found → a clear, non-destructive message."""
         from services.number_text import normalize_digits
+        import re as _re
+        scanned = _re.fullmatch(r"\s*MG1\.([0-9]{1,20})\.[0-9A-Za-z\-]+\s*", text or "")      # the seal QR printed on the bill: MG1.number.code
+        if scanned:
+            text = scanned.group(1)
         number = normalize_digits((text or "")).strip().replace(" ", "")
         self._lookup_message = ""
         if not number:
@@ -507,6 +512,50 @@ class InvoiceHistoryViewModel(QObject):
         if self._detail_id:
             self.openInvoice(self._detail_id)
         self._run_search(self._page)
+
+    # ------------------------------------------------------------ verify an invoice's seal code (owner 2026-11-16, anti-forgery)
+    def _seal_instance(self):
+        if self._seal_service is None:
+            from services.invoice_seal_service import InvoiceSealService
+            self._seal_service = InvoiceSealService(self._session)
+        return self._seal_service
+
+    @Slot(str, str)
+    def verifySeal(self, number, code):
+        if "seal" in self._busy:
+            return
+        service = self._seal_instance()
+        self._seal_message, self._seal_state = "", ""
+        self._start("seal", lambda _expected_actor: service.verify(number, code, _expected_actor=_expected_actor))
+
+    @Slot()
+    def clearSeal(self):
+        self._seal_message, self._seal_state = "", ""
+        self.changed.emit()
+
+    def _on_seal(self, result, error):
+        if error:
+            self._seal_message, self._seal_state = str(error), "ERROR"
+            return
+        self._seal_state, text = result["state"], result["message"]
+        info = result.get("invoice")
+        if info:
+            text += f" — فاتورة {info['number']} • {info['total']} ج {('(' + info['direction'] + ')') if info['direction'] else ''} • {info['date']}"
+            if info.get("reversed_by"):
+                text += f" — لكنها معكوسة ({info['reversed_by']})"
+        self._seal_message = text
+
+    @Property(str, notify=changed)
+    def sealMessage(self):
+        return self._seal_message
+
+    @Property(str, notify=changed)
+    def sealState(self):
+        return self._seal_state
+
+    @Property(bool, notify=changed)
+    def sealBusy(self):
+        return "seal" in self._busy
 
     @Property("QVariantList", notify=changed)
     def sellerChoices(self):

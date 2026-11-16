@@ -478,6 +478,20 @@ class Extras:
                           "text": r.get("description") or ""} for r in rows]}
 
 
+    # ------------------------------------------------------------------ the seal code of an invoice (owner 2026-11-16, anti-forgery), read only
+    def verify(self, token, params):
+        from services.invoice_seal_service import InvoiceSealService
+        entry = self._api._entry(token)
+        number = str(params.get("number") or "").strip()[:MAX_TEXT]
+        code = str(params.get("code") or "").strip()[:MAX_TEXT]
+        try:
+            return InvoiceSealService(entry.session).verify(number, code, _expected_actor=entry.session.current_actor())
+        except PermissionError as exc:
+            raise ApiError(403, str(exc) or "ليس لديك صلاحية التحقق من الفواتير.") from None
+        except Exception:
+            logger.exception("seal verification failed")
+            raise ApiError(500, "تعذر التحقق؛ أعد المحاولة.") from None
+
     # ------------------------------------------------------------------ a stock piece by barcode or item number (any status), read only
     def piece(self, token, params):
         entry = self._api._entry(token)

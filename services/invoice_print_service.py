@@ -32,6 +32,7 @@ import tempfile
 import threading
 
 from services import bill_overlay
+from services.invoice_seal_service import InvoiceSealService, facts_of
 from services.bill_overlay import MAX_SALE_ITEMS_TEXT, PAPER_HEIGHT_MM, PAPER_WIDTH_MM, LayoutError
 from services.invoice_service import invoice_transaction, round_to_egp5
 from repositories.invoice_repository import InvoiceRepository
@@ -137,12 +138,17 @@ def configure_bill_printer(printer, name):
     return True, "", printable
 
 
+_DEFAULT_SEAL = object()
+
+
 class InvoicePrintService:
     """Renders and prints a finalized invoice. Stateless beyond the session/DB access."""
 
     def __init__(self, session, *, transaction_factory=invoice_transaction, repository=InvoiceRepository,
-                 printer_name=None, print_document=None, settings=None, calibration=None, style=None):
+                 printer_name=None, print_document=None, settings=None, calibration=None, style=None, seal=_DEFAULT_SEAL):
         self._session = session
+        # The seal (anti-forgery code) is wired by default only on the real database; tests pass nothing (no seal) or a fake.
+        self._seal = InvoiceSealService(session) if seal is _DEFAULT_SEAL and transaction_factory is invoice_transaction else (None if seal is _DEFAULT_SEAL else seal)
         self._transaction = transaction_factory
         self._repository = repository
         # The Bill printer: an explicit name (tests), else this workstation's Settings → الطباعة
@@ -176,8 +182,11 @@ class InvoicePrintService:
             if invoice is None:
                 raise PrintError("INVOICE_NOT_FOUND", "الفاتورة غير موجودة.")
             invoice["payment_accounts"] = invoices.get_payment_accounts(invoice_id)
-            return self._after_exchanges(invoices, invoice_id, invoice)
-        return self._read(read)
+            seal_facts = facts_of(invoice)                      # the STORED header facts, before an exchange difference is added to the printed total
+            return self._after_exchanges(invoices, invoice_id, invoice), seal_facts
+        invoice, seal_facts = self._read(read)
+        invoice["seal"] = self._seal.seal(seal_facts) if self._seal is not None else None
+        return invoice
 
     @staticmethod
     def _after_exchanges(invoices, invoice_id, invoice):
@@ -237,7 +246,13 @@ class InvoicePrintService:
             overlay = bill_overlay.build_overlay(invoice)
             calibration = self.calibration()
             ops = bill_overlay.compose(overlay, calibration, style or self.style())
+            code = (invoice.get("seal") or {}).get("code", "")
+            ops = bill_overlay.with_seal_line(ops, code, calibration, f"MG1.{invoice['invoice_number']}.{code}" if code else "")
             bill_overlay.validate(ops, calibration)
+            ops = bill_overlay.SealedOps(ops)
+            ops.seal_code = code
+            ops.seal_payload = f"MG1.{invoice['invoice_number']}.{code}" if code else ""
+            ops.seller_name = invoice.get("employee_name") or ""
             return ops, ""
         except LayoutError as exc:
             return None, str(exc)
@@ -400,6 +415,11 @@ class InvoicePrintService:
 
 
 PAPER_IMAGE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "resources", "invoice_paper.png")
+LOGO_IMAGE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "resources", "logo_color.png")
+# The electronic invoice (PDF) replaces the old blue «ماس مجوهرات» mark at the top right of the paper picture with the shop's new logo (owner 2026-11-16).
+# Millimetres on the A5 landscape page: the old mark's box (cleared with white, above the gold line at ~24.9 mm) and the new logo's height.
+OLD_LOGO_BOX_MM = (176.0, 1.0, 201.0, 24.3)
+NEW_LOGO_HEIGHT_MM, NEW_LOGO_RIGHT_MM = 21.0, 199.5
 
 
 def write_pdf(ops, path=None, background=None):
@@ -423,10 +443,37 @@ def write_pdf(ops, path=None, background=None):
             if not picture.isNull():
                 painter.setRenderHint(QPainter.SmoothPixmapTransform)
                 painter.drawImage(QRectF(0, 0, painter.device().width(), painter.device().height()), picture)
-        bill_overlay.paint(painter, bill_overlay.with_stamp(ops), printer.resolution() / 25.4)
+                _replace_paper_logo(painter, printer.resolution() / 25.4)
+        stamped = bill_overlay.with_stamp(ops)
+        if background:                                           # the PDF only: a thin rounded frame around «number · check»
+            stamped += _number_badge(ops)
+        bill_overlay.paint(painter, stamped, printer.resolution() / 25.4)
     finally:
         painter.end()
     return path
+
+
+def _number_badge(ops):
+    """The rounded frame ops around the invoice-number text that carries the seal check characters (none when the bill has no seal)."""
+    from services.bill_overlay import Op
+    width = 34.0
+    return [Op("rbox", op.x + (op.w - width) / 2, op.y + 0.6, width, op.h - 1.2, region="header", width_pt=0.6, gray=90)
+            for op in ops if op.kind == "text" and op.region == "header" and " · " in op.text]
+
+
+def _replace_paper_logo(painter, dots_per_mm):
+    """On the PDF's paper picture only: white over the old mark, then the new logo (never used when printing on the real paper)."""
+    from PySide6.QtCore import QRectF
+    from PySide6.QtGui import QColor, QImage
+    logo = QImage(LOGO_IMAGE)
+    if logo.isNull():
+        return
+    left, top, right, bottom = OLD_LOGO_BOX_MM
+    painter.fillRect(QRectF(left * dots_per_mm, top * dots_per_mm, (right - left) * dots_per_mm, (bottom - top) * dots_per_mm), QColor("white"))
+    height = NEW_LOGO_HEIGHT_MM
+    width = height * logo.width() / logo.height()
+    box_mid = (top + bottom) / 2
+    painter.drawImage(QRectF((NEW_LOGO_RIGHT_MM - width) * dots_per_mm, (box_mid - height / 2) * dots_per_mm, width * dots_per_mm, height * dots_per_mm), logo)
 
 
 def render_preview_png(ops, path, *, dpi=150, stationery=None, stationery_corners=None):

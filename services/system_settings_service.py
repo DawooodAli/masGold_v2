@@ -40,10 +40,15 @@ class SettingsError(ValueError):
         self.code = code
 
 
+INTERNAL_PREFIX = "internal."          # program secrets (e.g. the invoice seal key): never listed, never edited from the screen
+
+
 def clean_key(value):
     key = str(value or "").strip()
     if not key:
         raise SettingsError("KEY_REQUIRED", "اكتب اسم الإعداد.")
+    if key.lower().startswith(INTERNAL_PREFIX):
+        raise SettingsError("KEY_RESERVED", "هذا الاسم محجوز للبرنامج.")
     if len(key) > KEY_MAX:
         raise SettingsError("KEY_LONG", f"اسم الإعداد حتى {KEY_MAX} حرفًا.")
     # The key is used as an identifier and in URLs and audit metadata: keep it simple and stable.
@@ -126,7 +131,7 @@ class SystemSettingsService:
         with self._transaction() as connection:
             self._authorization.require_permission_read(connection, actor, VIEW)
             repository = self._repository(connection)
-            return {"settings": [entry(r) for r in repository.get_all()],
+            return {"settings": [entry(r) for r in repository.get_all() if not str(r["setting_key"]).startswith(INTERNAL_PREFIX)],
                     "can_manage": self.can_manage()}
 
     def public_settings(self, *, _expected_actor=None):

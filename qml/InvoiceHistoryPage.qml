@@ -284,6 +284,40 @@ Item {
             Item { Layout.fillWidth: true; visible: !historyPage.vm || historyPage.vm.lookupMessage.length === 0 }
         }
 
+        // كود التحقق: the seal printed under the stamp. The number is the one typed above; the answer is exact (genuine / not).
+        RowLayout {
+            Layout.fillWidth: true
+            layoutDirection: Qt.RightToLeft
+            spacing: 6
+            Txt { value: "كود التحقق"; color: theme.textSecondary; Layout.alignment: Qt.AlignVCenter }
+            Field {
+                id: sealField
+                objectName: "historySealField"
+                Layout.preferredWidth: 170
+                horizontalAlignment: TextInput.AlignLeft
+                placeholderText: activeFocus || text.length ? "" : "مثال: K7M2-9QX4"
+                onTextEdited: if (historyPage.vm) historyPage.vm.clearSeal()
+                onAccepted: historyPage.vm.verifySeal(numberField.text, text)
+            }
+            Btn {
+                objectName: "historySealVerify"
+                text: "🛡 تحقق"
+                primary: true
+                enabled: !!historyPage.vm && !historyPage.vm.sealBusy && numberField.text.length > 0 && sealField.text.length > 0
+                onClicked: historyPage.vm.verifySeal(numberField.text, sealField.text)
+            }
+            Txt {
+                objectName: "historySealMessage"
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                visible: value.length > 0
+                value: historyPage.vm ? historyPage.vm.sealMessage : ""
+                color: historyPage.vm && historyPage.vm.sealState === "GENUINE" ? theme.green : theme.red
+                font.bold: true
+            }
+            Item { Layout.fillWidth: true; visible: !historyPage.vm || historyPage.vm.sealMessage.length === 0 }
+        }
+
         Txt { objectName: "historyError"; Layout.fillWidth: true; visible: value.length > 0
               value: historyPage.vm ? historyPage.vm.errorMessage : ""; color: theme.red }
 

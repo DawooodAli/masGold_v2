@@ -201,7 +201,7 @@ function render() {
     el("span", { class: "who", text: state.overview.user }), el("button", { class: "btn", text: "خروج", onclick: logout }));
   if (!module) { app.replaceChildren(...[top, renderAttention(), renderToday(), renderHome()].filter(Boolean)); return; }
   if (module.kind && module.kind !== "reports") {
-    const draw = { reviews: renderReviews, transfers: renderTransfers, calc: renderCalc, stocktake: renderStocktake, activity: renderActivity, bankflow: renderBankflow, cashflow: renderCashflow, currency: renderCurrency, markets: renderMarkets, dayclose: renderDayclose, market: renderMarket, settings: renderMarket }[module.kind];
+    const draw = { reviews: renderReviews, transfers: renderTransfers, calc: renderCalc, verify: renderVerify, stocktake: renderStocktake, activity: renderActivity, bankflow: renderBankflow, cashflow: renderCashflow, currency: renderCurrency, markets: renderMarkets, dayclose: renderDayclose, market: renderMarket, settings: renderMarket }[module.kind];
     const view = state.special ? draw(state.special) : el("div", { class: "loading", text: "جارٍ التحميل…" });
     app.replaceChildren(...[top, view, state.custInvoices ? renderCustomerInvoices(state.custInvoices) : null, state.invoice ? renderInvoice(state.invoice) : null].filter(Boolean));
     return;
@@ -902,7 +902,8 @@ async function loadSpecial(kind) {
   state.special = s;
   render();
   try {
-    if (kind === "calc") { if (!state.today) await loadToday(); s.data = {}; }
+    if (kind === "verify") s.data = {};
+    else if (kind === "calc") { if (!state.today) await loadToday(); s.data = {}; }
     else if (kind === "markets") { s.data = await call("/api/news"); try { s.readings = await call("/api/readings"); } catch (e) { s.readings = null; } }
     else if (kind === "stocktake") s.data = await call("/api/stocktake_status");
     else s.data = await call(kind === "reviews" ? "/api/reviews" : kind === "activity" ? "/api/activity" : kind === "bankflow" ? "/api/bankflow" : kind === "cashflow" ? "/api/cashflow" : kind === "currency" ? "/api/currency" : kind === "markets" ? "/api/news" : kind === "dayclose" ? "/api/dayclose" : kind === "market" ? "/api/market" : kind === "settings" ? "/api/settings" : "/api/transfers");
@@ -1361,6 +1362,37 @@ async function searchActivity(s) {
   }
   s.loading = false;
   render();
+}
+
+// تحقق من فاتورة (owner 2026-11-16): the invoice number + the seal code printed under the stamp; the server answers genuine / not, nothing is written
+function renderVerify(s) {
+  const f = s.form || (s.form = { number: "", code: "" });
+  const body = el("div", {});
+  const out = el("div", {});
+  const number = el("input", { type: "text", value: f.number, inputmode: "numeric", placeholder: "رقم الفاتورة", oninput: (e) => { f.number = e.target.value; } });
+  const code = el("input", { type: "text", value: f.code, placeholder: "مثال: K7M2-9QX4", autocapitalize: "characters", dir: "ltr", oninput: (e) => { f.code = e.target.value; } });
+  const run = async () => {
+    if (!f.number.trim() || !f.code.trim()) return;
+    out.replaceChildren(el("div", { class: "loading", text: "جارٍ التحقق…" }));
+    try {
+      const d = await call("/api/verify?number=" + encodeURIComponent(f.number.trim()) + "&code=" + encodeURIComponent(f.code.trim()));
+      const ok = d.state === "GENUINE";
+      const kids = [el("div", { class: ok ? "msg ok" : "msg err", text: (ok ? "✅ " : "❌ ") + d.message })];
+      if (d.invoice) {
+        kids.push(el("div", { class: "kvgrid" }, kv("رقم الفاتورة", d.invoice.number, true), kv("الإجمالي", d.invoice.total + " ج"), kv("الاتجاه", d.invoice.direction || "—"), kv("التاريخ", d.invoice.date)));
+        if (d.invoice.reversed_by) kids.push(el("div", { class: "msg warn", text: "⚠️ هذه الفاتورة معكوسة (" + d.invoice.reversed_by + ")." }));
+      }
+      out.replaceChildren(...kids);
+    } catch (e) {
+      if (e.status === 401) { showLogin("انتهت الجلسة، سجّل الدخول من جديد."); return; }
+      out.replaceChildren(el("div", { class: "msg err", text: e.message }));
+    }
+  };
+  code.addEventListener("keydown", (e) => { if (e.key === "Enter") run(); });
+  body.append(el("div", { class: "searchbox" }, el("div", { class: "filters" }, field("رقم الفاتورة", number), field("كود التحقق", code),
+    el("button", { class: "btn primary", text: "تحقق", onclick: run }),
+    el("button", { class: "btn", text: "📷 مسح الباركود", onclick: () => scanOnce((c) => { const q = c.split("."); if (q.length === 3 && q[0] === "MG1") { f.number = q[1]; f.code = q[2]; number.value = q[1]; code.value = q[2]; run(); } else { f.number = c; number.value = c; code.focus(); } }, (m) => { out.replaceChildren(el("div", { class: "msg err", text: m })); }) })), out));
+  return body;
 }
 
 function renderActivity(s) {

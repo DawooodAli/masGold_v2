@@ -112,7 +112,7 @@ class PrototypeLabelRunsTests(unittest.TestCase):
     def test_the_date_time_and_total_are_three_independent_runs_so_the_printer_cannot_move_the_colon(self):
         ops = ops_for(invoice_row())                                                           # the prototype style (the old program's look)
         by_text = {op.text: op for op in ops if op.kind == "text" and op.spans}
-        for label in ("التاريخ", "الوقت", "إجمالي الفاتورة"):
+        for label in ("التاريخ", "الوقت", "مبلغ الفاتورة داخل"):
             op = next(o for t, o in by_text.items() if t.startswith(label + " : "))
             self.assertEqual([part[0] for part in op.spans][:2], [label, " : "])               # the word, then a standalone colon, then the value
             self.assertEqual(len(op.spans), 3)
@@ -121,7 +121,7 @@ class PrototypeLabelRunsTests(unittest.TestCase):
 class OverlayContentTests(unittest.TestCase):
     def test_invoice_total_is_the_main_printed_amount_in_figures_and_words(self):
         page = joined(ops_for(invoice_row()))
-        self.assertIn("إجمالي الفاتورة : ⁦25,000⁩ جنيه", page)
+        self.assertIn("مبلغ الفاتورة داخل : ⁦25,000⁩ جنيه", page)
         self.assertIn("خمسة و عشرون ألف جنيها", page)          # num2words(25000, 'ar') + ' جنيها'
 
     def test_a_sale_prints_the_total_but_no_settlement_detail(self):
@@ -129,7 +129,7 @@ class OverlayContentTests(unittest.TestCase):
         self.assertNotIn("المستلم من العميل", page)                     # owner, 2026-10-05
         self.assertNotIn("نقدي", page)
         self.assertNotIn("21,800", page)
-        self.assertIn("إجمالي الفاتورة : ⁦25,000⁩ جنيه", page)
+        self.assertIn("مبلغ الفاتورة داخل : ⁦25,000⁩ جنيه", page)
 
     def test_customer_account_is_never_printed_incoming(self):
         page = joined(ops_for(invoice_row()))
@@ -143,7 +143,7 @@ class OverlayContentTests(unittest.TestCase):
         ops = ops_for(row)
         page = joined(ops)
         self.assertIn("المدفوع للعميل : ⁦21,800⁩ جنيه", page)
-        self.assertIn("إجمالي الفاتورة : ⁦25,000⁩ جنيه", page)
+        self.assertIn("مبلغ الفاتورة خارج : ⁦25,000⁩ جنيه", page)
         self.assertFalse(any(re.match(r"\s*للعميل", t) for t in texts(ops)))   # no bare للعميل line
         self.assertNotIn("3,200", page)
 
@@ -246,7 +246,7 @@ class OverlayContentTests(unittest.TestCase):
         lines = [op for op in ops if op.kind == "line"]
         horizontal = [op for op in lines if op.h == 0]
         vertical = [op for op in lines if op.w == 0]
-        self.assertEqual((len(horizontal), len(vertical)), (2 + 3, 8))
+        self.assertEqual((len(horizontal), len(vertical)), (2 + 3 + 2, 8 + 2))      # + the one-karat totals strip
         self.assertEqual(len([op for op in ops if op.kind == "box"]), 1)
 
 
@@ -561,7 +561,7 @@ class PrintServiceTests(unittest.TestCase):
         ops = jobs[0]
         self.assertEqual(len(bill_overlay.build_overlay(service.sample_invoice()).rows), 10)
         page = joined(ops)
-        self.assertIn("إجمالي الفاتورة", page)
+        self.assertIn("مبلغ الفاتورة", page)
         self.assertNotIn("3,000", page.replace("23,000", ""))                   # the sample's deferred amount
         self.assertNotIn("على العميل", page)
 
@@ -738,8 +738,8 @@ class MeasuredStationeryTests(unittest.TestCase):
             ops = compose(bill_overlay.build_overlay(invoice_row(lines=[sale_line(i) for i in range(10)])),
                           BillCalibration(), style)
             bottom = max(op.y + op.h for op in ops)
-            # prototype ≈ 11.1 mm; Variant C ≈ 8.55 mm (its money lines are taller for the 14.5 pt total)
-            self.assertGreaterEqual(125.0 - bottom, 8.0 if style == "variant_c" else 10.0, style)
+            # with the karat totals strip (owner 2026-11-16): prototype ≈ 8.2 mm, Variant C ≈ 8.0 mm or more
+            self.assertGreaterEqual(125.0 - bottom, 8.0, style)
             self.assertTrue(validate(ops, BillCalibration()))
 
     def test_everything_stays_inside_the_brother_printable_area(self):
@@ -780,7 +780,7 @@ class ReceivedFromCustomerNotPrintedTests(unittest.TestCase):
             for style, page in self.pages(invoice):
                 with self.subTest(case=label, style=style):
                     self.assertNotIn("المستلم من العميل", page)
-                    self.assertIn("إجمالي الفاتورة", page)
+                    self.assertIn("مبلغ الفاتورة", page)
                     self.assertIn(total, page)
 
     def test_no_sale_prints_any_method_amount_or_account_detail(self):
@@ -799,7 +799,7 @@ class ReceivedFromCustomerNotPrintedTests(unittest.TestCase):
             words = bill_overlay.money_in_words(D(str(invoice["net_amount"])))
             for style, page in self.pages(invoice):
                 with self.subTest(case=label, style=style):
-                    self.assertIn("إجمالي الفاتورة", page)
+                    self.assertIn("مبلغ الفاتورة", page)
                     self.assertIn(words, page)
 
     def test_the_sale_total_box_hugs_its_text_and_nothing_else_moves(self):
@@ -820,7 +820,7 @@ class ReceivedFromCustomerNotPrintedTests(unittest.TestCase):
                 table_bottom = max(op.y + op.h for op in table)
                 self.assertAlmostEqual(box.x, table_left)
                 self.assertAlmostEqual(box.w, cal.length(bill_overlay.PROTO_TABLE_W))
-                self.assertAlmostEqual(box.y, table_bottom + cal.length(bill_overlay.PROTO_MONEY_GAP), places=6)
+                self.assertAlmostEqual(box.y, table_bottom + cal.length(bill_overlay.KARAT_STRIP_GAP), places=6)      # under the karat totals strip
                 # the total and the words stay inside the box, vertically centred, nothing touches the border
                 texts_in_box = [op for op in ops if op.region == "money" and op.kind == "text"]
                 self.assertEqual(len(texts_in_box), 2)                         # no settlement line, no second row
@@ -890,7 +890,7 @@ class VariantCTests(unittest.TestCase):
 
     def test_total_amount_is_the_strongest_money_element(self):
         ops = self.c_ops(invoice_row())
-        total = next(o for o in ops if o.spans and o.spans[0][0].startswith("إجمالي الفاتورة"))
+        total = next(o for o in ops if o.spans and o.spans[0][0].startswith("مبلغ الفاتورة"))
         label, colon, amount = total.spans                                  # word, standalone colon, amount
         self.assertFalse(amount[2] or label[2])                           # owner: both regular; size carries it
         self.assertGreater(amount[1], label[1])
@@ -942,7 +942,7 @@ class VariantCTests(unittest.TestCase):
         grid = [o for o in ops if o.kind in ("line", "box")]
         self.assertTrue(all(o.gray == 100 and abs(o.width_pt - BillCalibration().pt(0.8)) < 1e-9 for o in grid))
         horizontal = [o for o in ops if o.kind == "line" and o.h == 0]
-        self.assertEqual(len(horizontal), 2 + 4)                          # no forced empty rows
+        self.assertEqual(len(horizontal), 2 + 4 + 2)                      # no forced empty rows (+ the two lines of the karat totals strip)
 
     def test_missing_brand_is_a_dash_and_long_notes_never_grow_the_row(self):
         row = invoice_row(lines=[sale_line(0, factory_snapshot=None,
@@ -1050,7 +1050,7 @@ class FinalWeightTests(unittest.TestCase):
         methods = next(o for o in ops if "InstaPay" in o.text and not o.spans)
         self.assertTrue(words.bold and methods.bold)
         self.assertEqual((words.size_pt, methods.size_pt), (pt(t.words), pt(t.methods)))
-        total = next(o for o in ops if o.spans and o.spans[0][0].startswith("إجمالي الفاتورة")).spans[2]
+        total = next(o for o in ops if o.spans and o.spans[0][0].startswith("مبلغ الفاتورة")).spans[2]
         self.assertGreater(total[1], max(words.size_pt, methods.size_pt))   # the total stays the strongest
 
 
@@ -1096,8 +1096,8 @@ class HeaderSeparatorTests(unittest.TestCase):
                                 ("23175.50", "23,175.50")):
             with self.subTest(amount):
                 ops = self.ops(net_amount=Decimal(amount))
-                total = next(o for o in ops if o.spans and o.spans[0][0] == "إجمالي الفاتورة")
-                self.assertEqual([p[0] for p in total.spans], ["إجمالي الفاتورة", self.COLON, "⁦" + printed + "⁩ ج"])
+                total = next(o for o in ops if o.spans and o.spans[0][0] == "مبلغ الفاتورة داخل")
+                self.assertEqual([p[0] for p in total.spans], ["مبلغ الفاتورة داخل", self.COLON, "⁦" + printed + "⁩ ج"])
                 self.assertEqual(total.align, "right")
 
     def test_runs_paint_right_to_left_in_order(self):
@@ -1106,7 +1106,7 @@ class HeaderSeparatorTests(unittest.TestCase):
         QGuiApplication.instance() or QGuiApplication([])
         bill_overlay.ensure_fonts()
         ops = [o for o in self.ops(customer_name_snapshot="عبد الرحمن محمد عبد العزيز الشرقاوي")
-               if o.spans and o.spans[0][0] in ("الاسم", "إجمالي الفاتورة")]
+               if o.spans and o.spans[0][0] in ("الاسم", "مبلغ الفاتورة داخل")]
         image = QImage(2480, 1748, QImage.Format_RGB32)
         painter = QPainter(image)
         drawn, original = [], QPainter.drawText
@@ -1117,7 +1117,7 @@ class HeaderSeparatorTests(unittest.TestCase):
         with patch.object(QPainter, "drawText", record):
             bill_overlay.paint(painter, ops, 2480 / 210.0)
         painter.end()
-        total_at = next(i for i, d in enumerate(drawn) if d[0] == "إجمالي الفاتورة")      # the long name may take a fourth piece (its second line), so find the total's group
+        total_at = next(i for i, d in enumerate(drawn) if d[0] == "مبلغ الفاتورة داخل")      # the long name may take a fourth piece (its second line), so find the total's group
         for start in (0, total_at):
             (label, l0, r0), (colon, l1, r1), (value, l2, r2) = drawn[start:start + 3]
             self.assertEqual(colon, self.COLON)
@@ -1134,10 +1134,10 @@ class HeaderSeparatorTests(unittest.TestCase):
         name = next(o for o in ops if o.spans and o.spans[0][0].startswith("الاسم"))
         self.assertGreater(name.min_pt, 0)                                      # long names still step down / elide
         bottom = max(o.y + o.h for o in ops)
-        self.assertLess(bottom, 116.45)                                         # still inside the same sheet
+        self.assertLess(bottom, 117.5)                                          # still inside the same sheet (with the karat totals strip)
         # The bottom total box of a SALE now hugs its text (one-line box, 11.29 proto mm instead of 14.3):
         # 10 rows end at 113.12 mm physical, about 2.8 mm higher than before. Owner-approved, 2026-10-05.
-        self.assertAlmostEqual(bottom, 113.12, delta=0.05)
+        self.assertAlmostEqual(bottom, 116.76, delta=0.05)                    # 113.12 + the 3.64 mm of the karat totals strip
 
 
 class SharePdfTests(unittest.TestCase):
@@ -1197,20 +1197,33 @@ class SharePdfTests(unittest.TestCase):
 
 
 class ShopStampTests(unittest.TestCase):
-    """The shop's stamp is painted on the printed bill and the WhatsApp PDF, below the last row and above the preprinted footer."""
+    """The stamp (and the seller's name beside it) always sits on the amount-in-words box, in its empty middle after the Arabic words, whatever the number of rows (owner 2026-11-16)."""
 
-    def test_the_stamp_sits_below_the_content_and_above_the_footer_line(self):
-        ops = ops_for(invoice_row())
-        stamped = bill_overlay.with_stamp(ops)
-        stamp = stamped[-1]
-        self.assertEqual(stamp.kind, "stamp")
-        self.assertGreater(stamp.y, max(op.y + op.h for op in ops))
-        self.assertLessEqual(stamp.y + stamp.h, BillCalibration().lower_gold_y_mm)
-        self.assertEqual(stamped[:-1], ops)                                   # nothing printed is moved
+    def test_a_short_table_hangs_the_stamp_from_the_amount_box_under_the_qty_column(self):
+        for count in (1, 3, 6):
+            ops = ops_for(invoice_row(lines=[sale_line(i) for i in range(count)]))
+            stamped = bill_overlay.with_stamp(ops)
+            stamp = stamped[-1]
+            words = min((op for op in ops if op.region == "money" and op.kind == "text"), key=lambda op: op.x)
+            box = next(op for op in ops if op.region == "money" and op.kind == "box")
+            self.assertEqual(stamp.kind, "stamp", count)
+            self.assertGreaterEqual(stamp.y, max(op.y + op.h for op in ops if op.region == "table"), count)   # never over a printed row
+            self.assertAlmostEqual(stamp.y, box.y + box.h - bill_overlay.STAMP_TOUCH_MM, delta=0.05, msg=count)  # hangs from the amount box's bottom line, the words stay clear
+            qty_centre = BillCalibration().x(bill_overlay.PROTO_TABLE_X + bill_overlay.PROTO_COLUMNS[0][3] + bill_overlay.PROTO_COLUMNS[1][3] / 2)
+            self.assertAlmostEqual(stamp.x + stamp.w / 2, qty_centre, delta=0.05, msg=count)                 # centred under the «العدد» column
+            self.assertLessEqual(stamp.y + stamp.h, BillCalibration().lower_gold_y_mm, count)
+            self.assertEqual(stamped[:len(ops)], list(ops))                   # nothing printed is moved
 
-    def test_a_full_sheet_leaves_the_stamp_out_instead_of_covering_rows(self):
-        ops = ops_for(invoice_row(lines=[sale_line(i) for i in range(10)]))
-        self.assertEqual(bill_overlay.with_stamp(ops), ops)
+    def test_a_full_sheet_puts_the_stamp_on_the_amount_words_box_after_the_words_and_below_the_last_row(self):
+        for style in (bill_overlay.STYLE_PROTOTYPE, bill_overlay.STYLE_VARIANT_C):
+            ops = compose(bill_overlay.build_overlay(invoice_row(lines=[sale_line(i) for i in range(10)])), BillCalibration(), style)
+            stamp = next(op for op in bill_overlay.with_stamp(ops) if op.kind == "stamp")
+            table_bottom = max(op.y + op.h for op in ops if op.region == "table")
+            words = min((op for op in ops if op.region == "money" and op.kind == "text"), key=lambda op: op.x)
+            self.assertGreaterEqual(stamp.y, table_bottom, style)               # never over a printed row
+            self.assertGreater(stamp.x, words.x + 17, style)                    # after the Arabic words, never over them
+            self.assertLessEqual(stamp.y + stamp.h, BillCalibration().lower_gold_y_mm, style)
+            self.assertGreaterEqual(stamp.h, bill_overlay.STAMP_PREFERRED_H_MM - 0.01, style)
 
     def test_the_pdf_contains_the_stamp_image(self):
         ops = ops_for(invoice_row())
@@ -1268,3 +1281,40 @@ class ReprintAfterExchangeTests(unittest.TestCase):
         with patch("repositories.invoice_lifecycle_repository.InvoiceLifecycleRepository", Boom):
             self.assertIs(InvoicePrintService._after_exchanges(self.Invoices(), "42", original), original)
         self.assertIs(InvoicePrintService._after_exchanges(object(), "42", original), original)
+
+
+class KaratTotalsStripTests(unittest.TestCase):
+    """The per-karat totals strip above the amount box (owner 2026-11-16): one cell per karat present, 21 then 18 then 24, the summed weights."""
+
+    def build(self, lines, style=bill_overlay.STYLE_PROTOTYPE):
+        overlay = bill_overlay.build_overlay(invoice_row(lines=lines))
+        return overlay, compose(overlay, BillCalibration(), style)
+
+    def test_the_totals_are_summed_per_karat_in_the_owners_order(self):
+        lines = [sale_line(0, karat_value=18, weight_grams=D("2.000")), sale_line(1, karat_value=24, weight_grams=D("1.250")),
+                 sale_line(2, karat_value=21, weight_grams=D("3.600")), sale_line(3, karat_value=21, weight_grams=D("4.000"))]
+        overlay, _ = self.build(lines)
+        self.assertEqual(overlay.extra["karat_totals"], (("21", "7.600"), ("18", "2.000"), ("24", "1.250")))
+        self.assertEqual(bill_overlay.karat_totals_cells(overlay),
+                         [("إجمالي عيار 21", "⁦" + "7.600" + "⁩ جرام"), ("إجمالي عيار 18", "⁦" + "2.000" + "⁩ جرام"), ("إجمالي عيار 24", "⁦" + "1.250" + "⁩ جرام")])
+
+    def test_the_strip_is_printed_between_the_table_and_the_box_in_both_styles(self):
+        for style in bill_overlay.BILL_STYLES:
+            lines = [sale_line(0, karat_value=18), sale_line(1, karat_value=21)]
+            overlay, ops = self.build(lines, style)
+            page = joined(ops)
+            self.assertIn("إجمالي عيار 21", page, style)
+            self.assertIn("إجمالي عيار 18", page, style)
+            self.assertNotIn("إجمالي عيار 24", page, style)                    # only the karats present
+            box = next(op for op in ops if op.kind == "box")
+            strip_texts = [op for op in ops if op.kind == "text" and "إجمالي عيار" in op.text]
+            self.assertEqual(len(strip_texts), 2, style)
+            self.assertLess(max(op.y + op.h for op in strip_texts), box.y, style)
+            body_bottom = max(op.y + op.h for op in ops if op.region == "table" and "إجمالي عيار" not in op.text and op.kind == "text")
+            self.assertGreater(min(op.y for op in strip_texts), body_bottom - 0.01, style)
+            self.assertTrue(validate(ops, BillCalibration()), style)
+
+    def test_an_overlay_without_sale_rows_has_no_strip(self):
+        overlay = bill_overlay.build_overlay(invoice_row(lines=[old_gold_line(0)]))
+        self.assertEqual(overlay.extra["karat_totals"], ())
+        self.assertEqual(bill_overlay.karat_totals_cells(overlay), [])

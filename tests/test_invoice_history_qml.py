@@ -358,6 +358,46 @@ class InvoiceHistoryPageTests(page_harness.InvoicePageTests):
         self.assertFalse(vm.detailOpen)
         self.assertEqual(self.warnings, [])
 
+    def test_history_seal_verification_answers_genuine_or_not_with_real_clicks(self):
+        vm = self.open_history()
+
+        class FakeSeal:
+            calls = []
+
+            def verify(self, number, code, *, _expected_actor=None):
+                FakeSeal.calls.append((number, code))
+                if code.upper() == "K7M2-9QX4":
+                    return {"state": "GENUINE", "message": "الكود صحيح", "invoice": {
+                        "number": number, "total": "2500.00", "direction": "مستلم من العميل", "date": "2026-11-15", "status": "FINALIZED", "reversed_by": None}}
+                return {"state": "MISMATCH", "message": "الكود غير مطابق", "invoice": None}
+        vm._seal_service = FakeSeal()
+        for width, height in ((1440, 900), (1280, 800), (1080, 680)):
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(200)
+            for name in ("historySealField", "historySealVerify"):
+                self.assert_inside_window(self.item(name))
+        button = self.item("historySealVerify")
+        self.assertFalse(button.property("enabled"))                          # nothing typed yet
+        self.click("historyNumberField")
+        self.type_text("26111503")
+        self.click("historySealField")
+        self.type_text("wrong")
+        self.click("historySealVerify")
+        self.wait_until(lambda: vm.sealMessage, "no answer")
+        self.assertIn("غير مطابق", self.item("historySealMessage").property("text"))
+        field = self.item("historySealField")
+        field.setProperty("text", "")
+        self.click(field)
+        self.type_text("k7m2-9qx4")
+        QTest.keyClick(self.root, Qt.Key_Return)
+        self.wait_until(lambda: vm.sealState == "GENUINE", "genuine not shown")
+        text = self.item("historySealMessage").property("text")
+        self.assertIn("الكود صحيح", text)
+        self.assertIn("2500.00", text)
+        self.assertEqual(FakeSeal.calls[-1], ("26111503", "k7m2-9qx4"))
+        self.assertEqual(self.warnings, [])
+
 
 def load_tests(loader, tests, pattern):
     suite = unittest.TestSuite()

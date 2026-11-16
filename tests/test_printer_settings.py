@@ -128,7 +128,7 @@ class PrinterSettingsTests(unittest.TestCase):
         vm.setLabelPrinter("ZDesigner GK420t")
         vm.testBillPrint()
         self.assertEqual([name for name, _ in self.bill_jobs], ["Brother HL-L2360D series"])
-        self.assertIn("إجمالي الفاتورة", self.bill_jobs[0][1])
+        self.assertIn("مبلغ الفاتورة", self.bill_jobs[0][1])
         self.assertEqual(self.label_jobs, [])                                  # the label printer is untouched
         self.assertFalse(vm.messageIsError)
 

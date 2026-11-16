@@ -135,6 +135,37 @@ class BillOverlay:
     extra: dict = field(default_factory=dict)
 
 
+def number_text(overlay):
+    """The printed invoice number with its seal check characters («26111503 · K7»); the barcode always carries the pure number."""
+    check = (overlay.extra or {}).get("seal_check")
+    return _ltr(f"{overlay.invoice_number} · {check}") if check else overlay.invoice_number
+
+
+KARAT_STRIP_GAP, KARAT_STRIP_H = 1.0, 4.4                  # prototype mm: the per-karat totals strip between the items table and the amount box (owner 2026-11-16)
+KARAT_STRIP_PT = 9.0
+KARAT_ORDER = ("21", "18", "24", "22")
+
+
+def karat_totals(rows):
+    """[(karat, total weight text)] of the printed sale rows, one entry per karat present: 21, 18, 24 and 22 first in that order, any other karat after them."""
+    sums = {}
+    for row in rows:
+        try:
+            weight = Decimal(str(row.weight))
+        except ArithmeticError:
+            continue
+        karat = str(row.karat or "").strip()
+        if karat:
+            sums[karat] = sums.get(karat, Decimal("0")) + weight
+    ordered = [k for k in KARAT_ORDER if k in sums] + sorted((k for k in sums if k not in KARAT_ORDER), key=lambda k: -Decimal(k) if k.replace(".", "", 1).isdigit() else 0)
+    return [(k, f"{sums[k]:.3f}") for k in ordered]
+
+
+def karat_totals_cells(overlay):
+    """[(label, value text)] cells of the totals strip: «إجمالي عيار 21» and «12.400 جم»; empty when the bill has no sale rows (or an overlay built without totals)."""
+    return [(f"إجمالي عيار {karat}", _ltr(total) + " جرام") for karat, total in (overlay.extra or {}).get("karat_totals", ())]
+
+
 METHOD_TEXT = {"PHYSICAL_CASH": "نقدي", "MOBILE_WALLET": "محفظة", "INSTAPAY": "InstaPay",
                "BANK_TRANSFER": "تحويل بنكي"}
 LINE_TYPE_TEXT = {"SELL_INVENTORY": "بيع", "SELL_UNIDENTIFIED": "بيع", "SELL_OLD_GOLD": "بيع من الكسر", "SELL_RAFAYEA": "بيع رفايع"}
@@ -198,7 +229,7 @@ def build_overlay(invoice):
     if invoice["net_direction"] == "SETTLED" or total == 0:
         total_label, total_words = "بدل ذهب بدون نقدية", "صفر جنيها فقط لاغير"
     else:
-        total_label = f"إجمالي الفاتورة : {_ltr(amount_text(total))} جنيه"
+        total_label = f"{total_title(invoice['net_direction'])} : {_ltr(amount_text(total))} جنيه"
         total_words = money_in_words(total)
 
     # Only money that physically moved (invoice_payments are real money only).
@@ -236,9 +267,11 @@ def build_overlay(invoice):
         payment_label=payment_label, payment_methods=payment_methods,
         # The same facts, unformatted, for the Variant C layout (never account data).
         extra={"settled": invoice["net_direction"] == "SETTLED" or total == 0,
-               "total": amount_text(total), "moved": amount_text(moved),
+               "total": amount_text(total), "total_title": total_title(invoice["net_direction"]), "moved": amount_text(moved),
                "payment_title": "المدفوع للعميل" if outgoing else "المستلم من العميل", "outgoing": outgoing,
-               "methods": tuple(structured), "second_line": bool(payment_label)})
+               "methods": tuple(structured), "second_line": bool(payment_label),
+               "seal_code": (invoice.get("seal") or {}).get("code", ""), "seal_check": (invoice.get("seal") or {}).get("check", ""),
+               "karat_totals": tuple(karat_totals(rows))})
 
 
 # ---------------------------------------------------------------- Arabic amount in words
@@ -432,7 +465,7 @@ def compose(overlay, calibration=None, style=STYLE_PROTOTYPE, typography=None):
     labelled("header", cells["left"][0], PROTO_HEADER_ROW2[0], cells["left"][1], PROTO_HEADER_ROW2[1],
              LABEL_TIME, _ltr(overlay.time_text), HEADER_PT, True)
     text("header", cells["middle"][0], PROTO_HEADER_ROW2[0], cells["middle"][1], PROTO_HEADER_ROW2[1],
-         overlay.invoice_number, HEADER_PT, True)
+         number_text(overlay), HEADER_PT, True)
     modules = code128_modules(overlay.invoice_number)
     bar_x = (cells["middle"][0] + cells["middle"][1]) / 2 - sum(modules) * PROTO_BAR_MODULE_MM / 2
     for index, width in enumerate(modules):
@@ -461,8 +494,21 @@ def compose(overlay, calibration=None, style=STYLE_PROTOTYPE, typography=None):
             y0 = top + PROTO_TABLE_HEADER_H + PROTO_TABLE_ROW_H * index
             text("table", x0, y0, x1, y0 + PROTO_TABLE_ROW_H, getattr(row, key), TABLE_BODY_PT)
 
+    # Per-karat totals strip between the items table and the amount box.
+    strip = karat_totals_cells(overlay)
+    if strip:
+        strip_top = bottom + KARAT_STRIP_GAP
+        strip_bottom = strip_top + KARAT_STRIP_H
+        edges = [right - (right - left) * i / len(strip) for i in range(len(strip) + 1)]      # cell 0 = the right-most one
+        for y in (strip_top, strip_bottom):
+            line("table", left, y, right, y)
+        for x in edges:
+            line("table", x, strip_top, x, strip_bottom)
+        for (label, value), x_right, x_left in zip(strip, edges, edges[1:]):
+            labelled("table", x_left, strip_top, x_right, strip_bottom, label, value, KARAT_STRIP_PT, True)
+        bottom = strip_bottom
     # Money box: [words (left, wide) | label (right)], one bordered box, text right-aligned.
-    box_top = bottom + PROTO_MONEY_GAP
+    box_top = bottom + (KARAT_STRIP_GAP if strip else PROTO_MONEY_GAP)
     box_h = money_box_height(overlay)
     ops.append(Op("box", c.x(left), c.y(box_top), c.length(PROTO_TABLE_W), c.length(box_h), region="money",
                   width_pt=c.pt(GRID_PT), gray=GRID_GRAY))
@@ -476,7 +522,7 @@ def compose(overlay, calibration=None, style=STYLE_PROTOTYPE, typography=None):
         text("money", split + PROTO_MONEY_PAD_X, y0, right - PROTO_MONEY_PAD_X, y1, overlay.total_label, MONEY_PT,
              align="right")
     else:
-        labelled("money", split + PROTO_MONEY_PAD_X, y0, right - PROTO_MONEY_PAD_X, y1, LABEL_TOTAL,
+        labelled("money", split + PROTO_MONEY_PAD_X, y0, right - PROTO_MONEY_PAD_X, y1, overlay.extra.get("total_title") or LABEL_TOTAL,
                  _ltr(overlay.extra.get("total", "")) + " جنيه", MONEY_PT, False, align="right")
     text("money", left + PROTO_MONEY_PAD_X, y0, split - PROTO_MONEY_PAD_X, y1, overlay.total_words, MONEY_PT,
          align="right")
@@ -501,7 +547,13 @@ C_LABEL_GRAY = 70
 # run, then the value (dates / times / amounts as left-to-right isolates). No colon is embedded in an
 # Arabic string, so bidi reordering can never move it. (Owner physical review 2026-10-02.)
 LABEL_NAME, LABEL_PLACE, LABEL_DATE, LABEL_TIME = "الاسم", "العنوان", "التاريخ", "الوقت"
-LABEL_TOTAL = "إجمالي الفاتورة"
+LABEL_TOTAL = "مبلغ الفاتورة"
+LABEL_TOTAL_OUT, LABEL_TOTAL_IN = "مبلغ الفاتورة خارج", "مبلغ الفاتورة داخل"
+
+
+def total_title(net_direction):
+    """The printed name of the invoice amount (owner 2026-11-16): «مبلغ الفاتورة خارج» when the shop pays the customer, «مبلغ الفاتورة داخل» when the customer pays the shop."""
+    return LABEL_TOTAL_OUT if net_direction == "SHOP_PAYS_CUSTOMER" else LABEL_TOTAL_IN
 COLON = " : "                        # non-breaking spaces: the gap is measured, never trimmed
 
 
@@ -575,7 +627,7 @@ def _compose_variant_c(overlay, c, t=None):
           [(LABEL_DATE, t.label, True, C_LABEL_GRAY), (COLON, t.label, True, C_LABEL_GRAY), (_ltr(overlay.date_text), t.date_time, True, 0)])
     spans("header", cells["left"][0], row2[0], cells["left"][1], row2[1],
           [(LABEL_TIME, t.label, True, C_LABEL_GRAY), (COLON, t.label, True, C_LABEL_GRAY), (_ltr(overlay.time_text), t.date_time, True, 0)])
-    text("header", cells["middle"][0], row2[0], cells["middle"][1], row2[1], overlay.invoice_number, t.number, True)
+    text("header", cells["middle"][0], row2[0], cells["middle"][1], row2[1], number_text(overlay), t.number, True)
     modules = code128_modules(overlay.invoice_number)
     bar_x = (cells["middle"][0] + cells["middle"][1]) / 2 - sum(modules) * PROTO_BAR_MODULE_MM / 2
     for index, width in enumerate(modules):
@@ -604,9 +656,22 @@ def _compose_variant_c(overlay, c, t=None):
             text("table", x0, y0, x1, y0 + row_h, _ltr(value) if key == "weight" else value, t.body,
                  min_pt=t.notes_min if key == "notes" else 0.0)
 
+    strip = karat_totals_cells(overlay)
+    if strip:
+        strip_top = bottom + KARAT_STRIP_GAP
+        strip_bottom = strip_top + KARAT_STRIP_H
+        edges = [right - (right - left) * i / len(strip) for i in range(len(strip) + 1)]
+        for y in (strip_top, strip_bottom):
+            line("table", left, y, right, y)
+        for x in edges:
+            line("table", x, strip_top, x, strip_bottom)
+        for (label, value), x_right, x_left in zip(strip, edges, edges[1:]):
+            spans("table", x_left, strip_top, x_right, strip_bottom,
+                  [(label, KARAT_STRIP_PT, True, 40), (COLON, KARAT_STRIP_PT, True, 40), (value, KARAT_STRIP_PT, True, 0)])
+        bottom = strip_bottom
     second = bool(extra.get("second_line")) and bool(extra.get("outgoing"))     # a SALE: one-line box
     line_h = t.money_line_h
-    box_top = bottom + PROTO_MONEY_GAP
+    box_top = bottom + (KARAT_STRIP_GAP if strip else PROTO_MONEY_GAP)
     pad_y = PROTO_MONEY_PAD_Y_TWO_LINES
     box_h = (2 * line_h + 2 * pad_y) if second else max(PROTO_MONEY_H_ONE_LINE, line_h + 2 * pad_y)
     ops.append(Op("box", c.x(left), c.y(box_top), c.length(PROTO_TABLE_W), c.length(box_h), region="money",
@@ -618,7 +683,7 @@ def _compose_variant_c(overlay, c, t=None):
         text("money", split + pad, y0, right - pad, y1, overlay.total_label, t.total_label, True, align="right")
     else:
         spans("money", split + pad, y0, right - pad, y1,
-              [(LABEL_TOTAL, t.total_label, False, 40), (COLON, t.total_label, False, 40),
+              [(extra.get("total_title") or LABEL_TOTAL, t.total_label, False, 40), (COLON, t.total_label, False, 40),
                (_ltr(extra.get("total", "")) + " ج", t.total, False, 0)], align="right", min_pt=t.paid)
     text("money", left + pad, y0, split - pad, y1, overlay.total_words, t.words, True, gray=45, align="right",
          min_pt=t.methods_min)
@@ -637,23 +702,140 @@ def _compose_variant_c(overlay, c, t=None):
 
 STAMP_IMAGE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "resources", "stamp.png")
 STAMP_ASPECT = 720 / 590                       # width / height of resources/stamp.png
-STAMP_MAX_H_MM, STAMP_MIN_H_MM = 26.0, 12.0
+STAMP_MAX_H_MM, STAMP_MIN_H_MM = 26.0, 9.0
+SEAL_LINE_H_MM, SEAL_LINE_GAP_MM, SEAL_PT = 3.2, 0.5, 7.0
+SEAL_CODE_LEFT_MM, SEAL_CODE_W_MM = 32.0, 24.0
+AFTER_WORDS_MM, SIGNATURE_ON_BOX_MAX_W_MM = 41.5, 20.0
+STAMP_TOUCH_MM, STAMP_BELOW_MIN_H_MM = 3.0, 14.0          # the stamp's top edge overlaps the amount box's bottom line by this much; below it needs at least this height
+STAMP_BELOW_WORDS_MM, STAMP_PREFERRED_H_MM = 2.5, 15.0   # the stamp starts just above the amount box's lower border so the Arabic words stay readable (lower only when the sheet is full)
+WORDS_CHAR_MM, WORDS_GAP_MM, PAIR_MIN_OFFSET_MM = 1.85, 4.0, 24.0   # the pair hugs the amount in words: estimated text width + a small gap
+BLOCK_LEFT_MM, QR_MAX_MM, QR_MIN_MM, STAMP_BAND_MIN_MM, STAMP_AFTER_WORDS_MM = 34.0, 14.0, 9.5, 16.0, 41.5
 STAMP_CENTER_X_MM = 62.0                       # bottom-left, clear of the right-hand money box and of the preprinted footer text
 
 
+SIGNATURES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "resources", "signatures")
+SIGNATURE_H_MM, SIGNATURE_MAX_W_MM = 10.0, 20.0
+SIGNATURE_W_MM = 20.0                          # the signature picture is always this wide (owner 2026-11-16)
+
+
+def _fold(name):
+    """A seller's name without the spelling variants (ي/ى, أ/إ/آ, ة/ه, diacritics, spaces) so «علي» and «على» are one."""
+    table = str.maketrans({"ى": "ي", "أ": "ا", "إ": "ا", "آ": "ا", "ة": "ه", "ـ": ""})
+    return "".join(ch for ch in str(name or "").translate(table) if ch.isalnum())
+
+
+def signature_path(seller_name):
+    """The seller's handwritten-name picture (resources/signatures/signatures.json maps the folded name to a PNG), or None."""
+    import json
+    try:
+        with open(os.path.join(SIGNATURES_DIR, "signatures.json"), encoding="utf-8") as handle:
+            index = {_fold(k): v for k, v in json.load(handle).items() if not k.startswith("_")}
+        file = index.get(_fold(seller_name))
+        path = os.path.join(SIGNATURES_DIR, file) if file else None
+        return path if path and os.path.exists(path) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _png_size(path):
+    import struct
+    with open(path, "rb") as handle:
+        header = handle.read(24)
+    return struct.unpack(">II", header[16:24])
+
+
+class SealedOps(list):
+    """The ops of one bill, carrying the invoice's seal code and seller name for with_stamp."""
+    seal_code = ""
+    seal_payload = ""
+    seller_name = ""
+
+
+QR_HEADER_MM, QR_HEADER_TOP_MM, NUMBER_SHIFT_MM = 12.0, 4.7, 3.0
+
+
+def with_seal_line(ops, seal_code, calibration=None, payload=""):
+    """The seal QR in place of the Code 128 barcode above the invoice number (owner 2026-11-16). The code text is no longer under the number (it is printed at the far left
+    above the lower gold line, see with_stamp), so the number text moves down NUMBER_SHIFT_MM into the freed space and the QR grows to QR_HEADER_MM. Added before validation, so
+    nothing can cross the gold line: without a number text carrying its check, a payload or a barcode the ops are returned unchanged (the barcode stays). The QR carries
+    «MG1.number.code»; the invoice-number field of سجل الفواتير understands that text, so a scan still opens the invoice."""
+    c = calibration or BillCalibration()
+    number = next((op for op in ops if op.kind == "text" and op.region == "header" and " · " in op.text), None)
+    bars = [op for op in ops if op.kind == "bar"]
+    if not seal_code or number is None or not payload or not bars:
+        return ops
+    moved = replace(number, y=number.y + NUMBER_SHIFT_MM)
+    if moved.y + moved.h > c.upper_gold_y_mm - 0.4:
+        return ops
+    left, right = min(op.x for op in bars), max(op.x + op.w for op in bars)
+    qr_top = max(QR_HEADER_TOP_MM, min(op.y for op in bars) - 1.3)
+    side = min(QR_HEADER_MM, moved.y - 0.4 - qr_top)
+    if side < 8.5:
+        return ops
+    merged = [moved if op is number else op for op in ops if op.kind != "bar"]
+    merged.append(Op("qr", (left + right) / 2 - side / 2, qr_top, side, side, payload, region="header"))
+    return type(ops)(merged) if isinstance(ops, SealedOps) else merged
+
+
 def with_stamp(ops, calibration=None):
-    """The ops plus the shop's stamp («لا يعتد بالفاتورة بدون ختم المحل»), added only when it is painted (print / PDF), never validated as bill data.
-    It sits just above the lower gold line, below the last printed row; it shrinks to the free height and is left out when less than STAMP_MIN_H_MM is free."""
+    """The ops plus the seal code, the seller's handwritten name and the shop's stamp, added only when painted (print / PDF), never validated as bill data (owner 2026-11-16).
+    The signature is always on the LEFT of the stamp. Whatever the number of rows (owner 2026-11-16) the pair sits on the amount-in-words box, in its empty middle right after the
+    Arabic words (signature, then the stamp) just under the last row, and the code stays at the far left above the gold line. Only when that box is missing or has no room do they
+    sit under the table at the left, just above the code. Nothing is pushed over a printed row or over the words."""
     c = calibration or BillCalibration()
     if not ops or not os.path.exists(STAMP_IMAGE):
         return list(ops)
-    free_top = max(op.y + op.h for op in ops) + 2.0
-    bottom = c.lower_gold_y_mm - 2.0
-    height = min(STAMP_MAX_H_MM, bottom - free_top)
-    if height < STAMP_MIN_H_MM:
-        return list(ops)
-    width = height * STAMP_ASPECT
-    return list(ops) + [Op("stamp", STAMP_CENTER_X_MM - width / 2, bottom - height, width, height)]
+    out = list(ops)
+    code = getattr(ops, "seal_code", "")
+    sign = signature_path(getattr(ops, "seller_name", ""))
+    sign_size = None
+    if sign:
+        pw, ph = _png_size(sign)
+        sign_size = (SIGNATURE_W_MM, SIGNATURE_W_MM * ph / pw)
+    base = c.lower_gold_y_mm - 1.0
+    free = base - (max(op.y + op.h for op in ops) + 0.8)
+    code_h = SEAL_LINE_H_MM + 0.6 if code else 0.0
+    if code:
+        out.append(Op("text", SEAL_CODE_LEFT_MM, base - SEAL_LINE_H_MM, SEAL_CODE_W_MM, SEAL_LINE_H_MM, _ltr(code), SEAL_PT, True, "center", "seal"))
+    box = next((op for op in ops if op.region == "money" and op.kind == "box"), None)
+    words = min((op for op in ops if op.region == "money" and op.kind == "text"), key=lambda op: op.x, default=None)
+    table = [op.y + op.h for op in ops if op.region == "table"]
+    on_box = box is not None and words is not None and bool(table)
+    sign_centre = None
+    if on_box and base - (box.y + box.h - STAMP_TOUCH_MM) >= STAMP_BELOW_MIN_H_MM:
+        # Room under the amount box: the stamp hangs from its bottom line, centred under the «العدد» column, the signature on its left (owner 2026-11-16).
+        top = box.y + box.h - STAMP_TOUCH_MM
+        height = min(STAMP_MAX_H_MM - 6.0, base - top)
+        stamp_w = height * STAMP_ASPECT
+        sign_w = (SIGNATURE_W_MM + 2.0) if sign_size else 0.0
+        qty_centre = c.x(PROTO_TABLE_X + PROTO_COLUMNS[0][3] + PROTO_COLUMNS[1][3] / 2)
+        left, row_bottom, sign_max_w = qty_centre - stamp_w / 2 - sign_w, top + height, SIGNATURE_ON_BOX_MAX_W_MM
+        sign_centre = top + height * 0.5                   # the signature at the stamp's middle height, clear of the code line at the bottom-left
+    elif on_box:
+        top = max(max(table) + 0.6, min(box.y + box.h - STAMP_BELOW_WORDS_MM, base - STAMP_PREFERRED_H_MM))
+        stamp_w = min(STAMP_MAX_H_MM - 6.0, base - top) * STAMP_ASPECT
+        pair_w = (SIGNATURE_W_MM + 2.0 if sign_size else 0.0) + stamp_w
+        stamp_at = len(str(words.text).replace("‎", "")) * WORDS_CHAR_MM + WORDS_GAP_MM       # where the stamp may start, measured from the words' left edge
+        left = words.x + max(PAIR_MIN_OFFSET_MM, min(AFTER_WORDS_MM, stamp_at - (pair_w - stamp_w)))
+        height = min(STAMP_MAX_H_MM - 6.0, base - top)
+        if height < STAMP_MIN_H_MM:
+            on_box = False
+        else:
+            row_bottom, sign_max_w = top + height, SIGNATURE_ON_BOX_MAX_W_MM
+    if not on_box:
+        if free - code_h < STAMP_BAND_MIN_MM:
+            return out
+        left, row_bottom, height, sign_max_w = BLOCK_LEFT_MM, base - code_h, min(STAMP_MAX_H_MM, free - code_h), SIGNATURE_MAX_W_MM
+    cursor = left
+    if sign_size:
+        sw, sh = sign_size
+        scale = min(1.0, height / sh)
+        sw, sh = sw * scale, sh * scale
+        sign_y = sign_centre - sh / 2 if sign_centre is not None else row_bottom - sh - (height - sh) * 0.15
+        out.append(Op("signature", cursor, sign_y, sw, sh, sign))
+        cursor += sw + 2.0
+    out.append(Op("stamp", cursor, row_bottom - height, height * STAMP_ASPECT, height))
+    return out
 
 
 class LayoutError(ValueError):
@@ -793,13 +975,38 @@ def paint(painter, ops, dots_per_mm):
         rect = QRectF(op.x * dots_per_mm, op.y * dots_per_mm, op.w * dots_per_mm, op.h * dots_per_mm)
         if op.kind == "text" and op.max_lines > 1 and fit_long_text(op, rect):
             continue
-        if op.kind == "stamp":
-            picture = QImage(STAMP_IMAGE)
+        if op.kind in ("stamp", "signature"):
+            picture = QImage(STAMP_IMAGE if op.kind == "stamp" else op.text)
             if not picture.isNull():
+                if op.kind == "stamp":                       # a white disc under the stamp: the table's lines and the watermark do not run through the print
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(QColor("white"))
+                    painter.setRenderHint(painter.RenderHint.Antialiasing, True)
+                    painter.drawEllipse(rect.adjusted(rect.width() * 0.02, rect.height() * 0.02, -rect.width() * 0.02, -rect.height() * 0.02))
+                    painter.setRenderHint(painter.RenderHint.Antialiasing, False)
                 painter.setRenderHint(painter.RenderHint.SmoothPixmapTransform, True)
-                painter.setOpacity(0.92)
                 painter.drawImage(rect, picture)
-                painter.setOpacity(1.0)
+        elif op.kind == "qr":                               # the seal QR: white quiet zone, then the dark modules on whole device dots (anti-aliasing is off)
+            from services import qr_code
+            grid = qr_code.matrix(op.text)
+            side = len(grid)
+            module = max(1, int(rect.width() // (side + 2)))
+            span = module * side
+            left, top = rect.left() + (rect.width() - span) / 2, rect.top() + (rect.height() - span) / 2
+            painter.fillRect(QRectF(left - module, top - module, span + 2 * module, span + 2 * module), QColor("white"))
+            for row, cells in enumerate(grid):
+                for column, value in enumerate(cells):
+                    if value:
+                        painter.fillRect(QRectF(left + column * module, top + row * module, module, module), black)
+        elif op.kind == "rbox":                              # a thin rounded frame (the invoice-number badge on the PDF)
+            pen = QPen(shade(op.gray if op.gray else GRID_GRAY))
+            pen.setWidthF(op.width_pt / 72.0 * 25.4 * dots_per_mm)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.setRenderHint(painter.RenderHint.Antialiasing, True)
+            radius = op.h * dots_per_mm / 2
+            painter.drawRoundedRect(rect, radius, radius)
+            painter.setRenderHint(painter.RenderHint.Antialiasing, False)
         elif op.kind == "bar":
             painter.fillRect(rect, black)
         elif op.kind in ("line", "box"):

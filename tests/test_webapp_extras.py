@@ -110,6 +110,21 @@ class ExtrasTests(unittest.TestCase):
             self.extras.statement("", {"customer": "17"})
         self.assertEqual(nobody.exception.status, 401)
 
+    # ---- the invoice seal (anti-forgery), read only
+    def test_the_seal_is_verified_through_the_service_with_the_session_user(self):
+        calls = []
+
+        class Seal:
+            def __init__(self, session=None):
+                calls.append(session)
+
+            def verify(self, number, code, *, _expected_actor=None):
+                return {"state": "GENUINE", "message": "ok", "invoice": None} if code == "K7M2-9QX4" else {"state": "MISMATCH", "message": "no", "invoice": None}
+        with mock.patch("services.invoice_seal_service.InvoiceSealService", Seal):
+            self.assertEqual(self.extras.verify(self.token, {"number": "26111503", "code": "K7M2-9QX4"})["state"], "GENUINE")
+            self.assertEqual(self.extras.verify(self.token, {"number": "26111503", "code": "bad"})["state"], "MISMATCH")
+        self.assertEqual(len(calls), 2)
+
     # ---- a piece
     def test_a_sold_piece_is_found_with_its_invoice_and_a_missing_one_is_not(self):
         class Inventory:

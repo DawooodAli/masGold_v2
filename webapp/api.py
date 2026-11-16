@@ -56,6 +56,7 @@ MODULES = (
     {"key": "dayclose", "title": "إقفال اليوم", "subtitle": "عدّ الكاش وقارنه بالمتوقع وسجّل الفرق", "icon": "🔒", "kind": "dayclose", "needs": ("DAY_CLOSE",)},
     {"key": "stocktake", "title": "جرد بالكاميرا", "subtitle": "امسح القطع بكاميرا الأيباد وتظهر في جرد الكمبيوتر", "icon": "📷", "kind": "stocktake", "needs": ("INVENTORY_VIEW",)},
     {"key": "calc", "title": "حاسبة الذهب", "subtitle": "وزن وعيار يطلع قيمة الشراء والبيع بالأسعار الحية", "icon": "🧮", "kind": "calc", "needs": ("APP_LOGIN",)},
+    {"key": "verify", "title": "تحقق من فاتورة", "subtitle": "رقم الفاتورة وكود التحقق المطبوع تحت الختم: أصلية أم لا", "icon": "🛡️", "kind": "verify", "needs": ("INVOICE_VIEW",)},
     {"key": "activity", "title": "سجل النشاط", "subtitle": "من فعل ماذا ومتى (للمالك)", "icon": "🕵️", "kind": "activity", "needs": ("USERS_MANAGE",)},
 )
 

@@ -1,0 +1,9 @@
+{
+  "_note": "one entry per seller: the seller's name (any spelling of ي/ى/أ/إ/ة is matched) -> the PNG file in this folder (transparent background). Printed small beside the shop stamp on the bill and the PDF.",
+  "علي": "ali.png",
+  "مصطفى": "mostafa.png",
+  "حسين": "hussein.png",
+  "محمد": "mohamed.png",
+  "محمود": "mahmoud.png",
+  "شلاطة": "atout.png"
+}
