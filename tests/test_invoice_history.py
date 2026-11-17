@@ -286,6 +286,67 @@ class HistoryDetailTests(unittest.TestCase):
             make()[0].detail("999")
 
 
+class SettlementCorrectedTotalTests(unittest.TestCase):
+    """Owner 2026-11-17: after a settlement correction (FC) the history shows the CORRECTED amount; the stored one is only the archive note."""
+    class Corrections:
+        chain = []
+        def __init__(self, connection):
+            pass
+        def invoice_settlement_chain(self, invoice_id):
+            return self.chain
+        def invoice_settlement_chains(self, ids):
+            return {str(i): self.chain for i in ids}
+        def bank_account_names(self, ids):
+            return {}
+        account_delta = D("0")
+        def settlement_account_delta(self, invoice_id):
+            return self.account_delta
+
+    class Repo(FakeRepo):
+        connection = object()
+
+    @staticmethod
+    def chain(settled, before, after):
+        leg = lambda amount: [{"method_code": "PHYSICAL_CASH", "bank_account_id": None, "amount": amount}]
+        return [{"correction_id": 1, "chain_sequence": 1, "money_direction": "IN", "settled_total": D(settled),
+                 "before_json": json.dumps({"legs": leg(before), "account": "0", "direction": "IN"}),
+                 "after_json": json.dumps({"legs": leg(after), "account": "0", "direction": "IN"})}]
+
+    def service(self, chain):
+        from unittest.mock import patch
+        self.Corrections.chain = chain
+        service, state, _ = make(rows=[summary_row("26092701", FINALIZED_AT, invoice_id="21")])
+        service._invoices = self.Repo
+        patcher = patch("repositories.correction_repository.CorrectionRepository", self.Corrections)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return service
+
+    def test_the_detail_total_and_the_money_follow_the_correction_and_keep_the_stored_total(self):
+        d = self.service(self.chain("88950", "89000", "88950")).detail("21")
+        self.assertEqual(d["invoice_total"], D("89950.00"))      # 90000.00 stored, minus the 50 the correction took
+        self.assertTrue(d["settlement_corrected"])
+        self.assertEqual(d["stored_total"], D("90000.00"))
+        self.assertEqual([(p["method_code"], p["method_name"], p["amount"]) for p in d["payments"]], [("PHYSICAL_CASH", "نقدي", D("88950"))])
+        self.assertEqual(d["money_received"], D("88950"))
+
+    def test_the_account_part_includes_what_the_correction_moved_on_the_customer_account(self):
+        self.Corrections.account_delta = D("-300.00")
+        self.addCleanup(setattr, self.Corrections, "account_delta", D("0"))
+        d = self.service(self.chain("88950", "89000", "88950")).detail("21")
+        self.assertEqual(d["account_signed"], D("700.00"))                 # the ledger's +1000.00 of this invoice, -300.00 by the correction
+
+    def test_an_uncorrected_invoice_is_unchanged(self):
+        d = self.service([]).detail("21")
+        self.assertEqual((d["invoice_total"], d["settlement_corrected"], d["stored_total"]), (D("90000.00"), False, None))
+
+    def test_the_list_row_shows_the_corrected_total_and_money(self):
+        item = self.service(self.chain("88950", "89000", "88950")).search()["items"][0]
+        self.assertTrue(item["settlement_corrected"])
+        self.assertEqual(item["invoice_total"], D("89950.00"))
+        self.assertEqual(item["money_moved"], D("88950"))
+
+
 class HistoryReprintAndImmutabilityTests(unittest.TestCase):
     def test_reprint_uses_the_frozen_print_service_with_the_original_invoice(self):
         service, state, printer = make()

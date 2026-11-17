@@ -1140,6 +1140,55 @@ class HeaderSeparatorTests(unittest.TestCase):
         self.assertAlmostEqual(bottom, 116.76, delta=0.05)                    # 113.12 + the 3.64 mm of the karat totals strip
 
 
+class CorrectedInvoiceReprintTests(unittest.TestCase):
+    """Owner 2026-11-17: a settlement-corrected invoice (FC) is reprinted at its LATEST settlement (invoice 26111713: 34,385 corrected to 34,350)."""
+    class FakeCorrections:
+        chain = []
+        def __init__(self, connection):
+            pass
+        def invoice_settlement_chain(self, invoice_id):
+            return self.chain
+        def bank_account_names(self, ids):
+            return {"7": "البنك الأهلي"}
+
+    @staticmethod
+    def corrected(after_legs, settled):
+        import json
+        return {"correction_id": 1, "chain_sequence": 1, "money_direction": "IN", "settled_total": Decimal(settled),
+                "before_json": json.dumps({"legs": [{"method_code": "PHYSICAL_CASH", "amount": "34385"}], "account": "0", "direction": "IN"}),
+                "after_json": json.dumps({"legs": after_legs, "account": "0", "direction": "IN"})}
+
+    def reprint_ops(self, chain):
+        invoice = invoice_row(net_amount=Decimal("34385.00"), net_direction="CUSTOMER_PAYS_SHOP", payments=[
+            {"payment_id": "1", "payment_method_code": "PHYSICAL_CASH", "payment_method_name": "نقدي", "direction": "IN", "amount": Decimal("34385.00")}])
+        invoice["record_origin"] = "NATIVE"
+        self.FakeCorrections.chain = chain
+        repo = type("R", (), {"connection": object()})()
+        with patch("repositories.correction_repository.CorrectionRepository", self.FakeCorrections):
+            fixed = InvoicePrintService._after_corrections(repo, 1, invoice)
+        return invoice, fixed, ops_for(fixed)
+
+    def test_the_total_and_the_single_payment_follow_the_latest_settlement(self):
+        invoice, fixed, ops = self.reprint_ops([self.corrected([{"method_code": "PHYSICAL_CASH", "bank_account_id": None, "amount": "34350"}], "34350")])
+        page = joined(ops)
+        self.assertIn("34,350", page)
+        self.assertNotIn("34,385", page)
+        self.assertEqual(invoice["net_amount"], Decimal("34385.00"))                      # the stored invoice dict is untouched
+        self.assertEqual(fixed["net_amount"], Decimal("34350.00"))
+
+    def test_a_split_correction_prints_its_own_legs_with_the_bank_account(self):
+        _, fixed, ops = self.reprint_ops([self.corrected([{"method_code": "PHYSICAL_CASH", "bank_account_id": None, "amount": "20000"},
+                                                          {"method_code": "INSTAPAY", "bank_account_id": 7, "amount": "14350"}], "34350")])
+        self.assertEqual([(p["payment_method_code"], p["amount"]) for p in fixed["payments"]], [("PHYSICAL_CASH", Decimal("20000")), ("INSTAPAY", Decimal("14350"))])
+        self.assertEqual(fixed["payment_accounts"], [{"payment_id": "fc1", "bank_account_name": "البنك الأهلي"}])
+
+    def test_an_invoice_without_corrections_or_a_failing_read_prints_as_stored(self):
+        invoice, fixed, _ = self.reprint_ops([])
+        self.assertIs(fixed, invoice)
+        with patch("repositories.correction_repository.CorrectionRepository", side_effect=RuntimeError("db down")):
+            self.assertIs(InvoicePrintService._after_corrections(type("R", (), {"connection": object()})(), 1, invoice), invoice)
+
+
 class SharePdfTests(unittest.TestCase):
     """The invoice as a PDF on the shop's letterhead, to send to the customer on WhatsApp (owner 2026-11-13)."""
 

@@ -56,6 +56,50 @@ class CorrectionRepository(BaseRepository):
             FROM transaction_corrections WHERE source_type = %s AND source_id = %s ORDER BY id
             """ + (" FOR SHARE" if current else ""), (source_type, _id(source_id)))]
 
+    def invoice_settlement_chain(self, invoice_id):
+        """The SETTLEMENT_CORRECTIONs of one invoice, oldest first (the reprint of a corrected invoice). Plain read."""
+        return [_ids(r) for r in self._fetch_all(
+            """
+            SELECT id AS correction_id, chain_sequence, money_direction, settled_total, before_json, after_json
+            FROM transaction_corrections
+            WHERE correction_type = 'SETTLEMENT_CORRECTION' AND source_type = 'INVOICE' AND source_id = %s ORDER BY chain_sequence
+            """, (_id(invoice_id),))]
+
+    def settlement_account_delta(self, invoice_id):
+        """What the invoice's SETTLEMENT_CORRECTIONs added to the customer's account (+ على العميل, - للعميل); 0 when none. Plain read."""
+        row = self._fetch_all(
+            """
+            SELECT COALESCE(SUM(ct.amount_delta), 0) AS total
+            FROM customer_transactions ct
+            JOIN transaction_corrections c ON c.id = ct.reference_id
+            JOIN customer_transaction_types tt ON tt.id = ct.transaction_type_id
+            WHERE ct.reference_type = 'TRANSACTION_CORRECTION' AND tt.code = 'SETTLEMENT_CORRECTION'
+              AND c.correction_type = 'SETTLEMENT_CORRECTION' AND c.source_type = 'INVOICE' AND c.source_id = %s
+            """, (_id(invoice_id),))
+        return row[0]["total"] if row and row[0]["total"] is not None else 0
+
+    def invoice_settlement_chains(self, invoice_ids):
+        """{invoice id: its SETTLEMENT_CORRECTIONs oldest first} for the invoices of one history page (one plain read)."""
+        ids = sorted({int(i) for i in invoice_ids or [] if i not in (None, "")})
+        if not ids:
+            return {}
+        rows = self._fetch_all(
+            "SELECT id AS correction_id, source_id, chain_sequence, money_direction, settled_total, before_json, after_json "
+            "FROM transaction_corrections WHERE correction_type = 'SETTLEMENT_CORRECTION' AND source_type = 'INVOICE' "
+            f"AND source_id IN ({', '.join(['%s'] * len(ids))}) ORDER BY source_id, chain_sequence", tuple(ids))
+        out = {}
+        for r in rows:
+            r = _ids(r)
+            out.setdefault(str(r["source_id"]), []).append(r)
+        return out
+
+    def bank_account_names(self, ids):
+        ids = sorted({int(i) for i in ids or [] if i not in (None, "")})
+        if not ids:
+            return {}
+        rows = self._fetch_all(f"SELECT id, name FROM bank_accounts WHERE id IN ({', '.join(['%s'] * len(ids))})", tuple(ids))
+        return {str(r["id"]): r["name"] for r in rows}
+
     def effective_legs(self, correction_id):
         return [_ids(r) for r in self._fetch_all(
             """

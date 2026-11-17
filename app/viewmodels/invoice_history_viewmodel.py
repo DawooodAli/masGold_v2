@@ -790,6 +790,8 @@ class InvoiceHistoryViewModel(QObject):
             "customerId": str(customer.get("customer_id") or ""),
             "customerMobile": customer.get("mobile") or "", "customerPlace": customer.get("place") or "",
             "invoiceTotal": known_money(self._current_total(d)),
+            # After a settlement correction the total above is the corrected one; the stored amount stays visible as an archive note.
+            "invoiceTotalNote": f"بعد تصحيح التسوية — الأصلي {known_money(d['stored_total'])}" if d.get("settlement_corrected") and d.get("stored_total") is not None else "",
             "directionText": DIRECTION_TEXT.get(d["net_direction"], ""),
             # Direction-aware title of the real money (also the payments card title); never "الدفع الفعلي".
             "movedLabel": moved_label,

@@ -54,6 +54,28 @@ def invoice_changes(rows):
     return out
 
 
+DIRECTION_OF = {"IN": "CUSTOMER_PAYS_SHOP", "OUT": "SHOP_PAYS_CUSTOMER"}
+
+
+def corrected_header(invoice, chain):
+    """Owner 2026-11-17: what a REPRINT of a settlement-corrected invoice shows. `chain` = the invoice's SETTLEMENT_CORRECTIONs (chain_sequence, money_direction, settled_total, before_json, after_json).
+    -> {"net_amount", "net_direction", "legs"} (legs = the latest correction's real money legs: method_code, bank_account_id, amount) or None when nothing changes.
+    Same direction as stored: the stored total + the change the corrections made (so rounding / cashback that already existed is not reinterpreted); a turned-around direction: the latest settled total.
+    The stored invoice is never touched; only the printed figures follow the latest settlement."""
+    if not chain:
+        return None
+    rows = [dict(r, invoice_id="x") for r in chain]
+    change = invoice_changes(rows)["x"]
+    latest = sorted(rows, key=lambda r: int(r["chain_sequence"]))[-1]
+    direction = DIRECTION_OF.get(change["direction"])
+    if direction is None:
+        return None
+    amount = _d(invoice.get("net_amount")) + change["delta"] if invoice.get("net_direction") == direction else _d(latest["settled_total"])
+    if amount <= 0:
+        return None
+    return {"net_amount": amount, "net_direction": direction, "legs": list(_json(latest.get("after_json")).get("legs") or [])}
+
+
 def line_shares(changes, lines):
     """lines: the lines of the changed invoices (line_id, invoice_id, line_type, weight_grams). -> {line_id: Decimal share of the delta}."""
     by_invoice = {}

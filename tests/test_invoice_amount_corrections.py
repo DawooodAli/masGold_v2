@@ -129,5 +129,33 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(raw["invoices"]["sell_total"], D("69200"))                       # the raw read is not changed in place
 
 
+class ReprintHeaderTests(unittest.TestCase):
+    """Owner 2026-11-17: the reprint of a settlement-corrected invoice shows the LATEST settlement (invoice 26111713: 34,385 corrected to 34,350)."""
+    @staticmethod
+    def chain(seq, settled, before_legs, after_legs, direction="IN", before_direction=None):
+        row = fc(1, seq, settled, before_legs, direction=direction, before_direction=before_direction)
+        row["after_json"] = json.dumps({"legs": [{"method_code": "CASH", "bank_account_id": None, "amount": a} for a in after_legs], "account": "0", "direction": direction})
+        return row
+
+    def test_the_corrected_total_and_the_latest_legs_replace_the_stored_ones(self):
+        header = rules.corrected_header({"net_amount": D("34385.00"), "net_direction": "CUSTOMER_PAYS_SHOP"}, [self.chain(1, "34350", ["34385"], ["34350"])])
+        self.assertEqual(header["net_amount"], D("34350.00"))
+        self.assertEqual(header["net_direction"], "CUSTOMER_PAYS_SHOP")
+        self.assertEqual([l["amount"] for l in header["legs"]], ["34350"])
+
+    def test_two_corrections_use_the_latest_and_the_total_of_their_change(self):
+        header = rules.corrected_header({"net_amount": D("1000"), "net_direction": "CUSTOMER_PAYS_SHOP"},
+                                        [self.chain(1, "990", ["1000"], ["990"]), self.chain(2, "985", ["990"], ["985"])])
+        self.assertEqual(header["net_amount"], D("985"))
+
+    def test_a_turned_around_direction_uses_the_latest_settled_total(self):
+        header = rules.corrected_header({"net_amount": D("350"), "net_direction": "SHOP_PAYS_CUSTOMER"}, [self.chain(1, "300", ["350"], ["300"], direction="IN", before_direction="OUT")])
+        self.assertEqual((header["net_amount"], header["net_direction"]), (D("300"), "CUSTOMER_PAYS_SHOP"))
+
+    def test_no_correction_or_a_zero_result_changes_nothing(self):
+        self.assertIsNone(rules.corrected_header({"net_amount": D("100"), "net_direction": "CUSTOMER_PAYS_SHOP"}, []))
+        self.assertIsNone(rules.corrected_header({"net_amount": D("100"), "net_direction": "CUSTOMER_PAYS_SHOP"}, [self.chain(1, "0", ["100"], [])]))
+
+
 if __name__ == "__main__":
     unittest.main()

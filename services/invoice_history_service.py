@@ -30,6 +30,7 @@ EXCHANGE_PERMISSION, EXCHANGED_EVENT = "INVOICE_EXCHANGE", "EXCHANGED"
 RETURN_PERMISSION, RETURNED_EVENT = "INVOICE_RETURN", "RETURNED"
 CORRECT_PERMISSION, CORRECTION_EVENTS = "TRANSACTION_CORRECT", ("REVERSED", "SETTLEMENT_CORRECTED")
 ZERO = Decimal("0.00")
+METHOD_NAMES = {"PHYSICAL_CASH": "نقدي", "CASH": "نقدي", "INSTAPAY": "InstaPay", "MOBILE_WALLET": "محفظة", "BANK_TRANSFER": "تحويل بنكي"}
 
 
 class _Discard(Exception):
@@ -166,6 +167,7 @@ class InvoiceHistoryService:
             invoice_type=invoice_type, settlement_status=settlement_status,
             limit=self._page_size + 1, offset=(page - 1) * self._page_size, **customer_filter, **line_filter))
         items = [self._summary(row) for row in rows[:self._page_size]]
+        self._attach_corrected_totals(actor, items)
         self._attach_exchanges(actor, items)
         return {"items": items, "page": page, "has_more": len(rows) > self._page_size}
 
@@ -173,6 +175,32 @@ class InvoiceHistoryService:
         """{types: [...], karats: [...]} for the type / karat filters of the list (active master data)."""
         actor = self._actor(_expected_actor)
         return self._read(actor, lambda invoices: invoices.history_filter_options())
+
+    def _attach_corrected_totals(self, actor, items):
+        """Owner 2026-11-17: a settlement-corrected invoice is listed with its CORRECTED total and moved money (display only; one extra read per page, never fails the list)."""
+        ids = [item["invoice_id"] for item in items if not item["is_legacy"]]
+        if not ids:
+            return
+        from repositories.correction_repository import CorrectionRepository
+        from services import invoice_amount_rules
+
+        def read(invoices):
+            return CorrectionRepository(invoices.connection).invoice_settlement_chains(ids)
+        try:
+            chains = self._read(actor, read)
+        except Exception:
+            return
+        for item in items:
+            try:
+                header = invoice_amount_rules.corrected_header(
+                    {"net_amount": item["invoice_total"], "net_direction": item["net_direction"]}, chains.get(str(item["invoice_id"])) or [])
+                if header is None:
+                    continue
+                item["invoice_total"], item["net_direction"] = header["net_amount"], header["net_direction"]
+                item["money_moved"] = sum((Decimal(str(leg.get("amount") or 0)) for leg in header["legs"]), ZERO)
+                item["settlement_corrected"] = True
+            except Exception:
+                continue
 
     def _attach_exchanges(self, actor, items):
         """Invoices with an effective exchange carry its date and difference for the list (display only; one extra read per page)."""
@@ -245,7 +273,9 @@ class InvoiceHistoryService:
             if invoice is None:
                 return None
             invoice["payment_accounts"] = invoices.get_payment_accounts(invoice_id)
+            invoice = self._after_corrections(invoices, invoice_id, invoice)
             invoice["account_entries"] = invoices.invoice_account_allocation(invoice_id, invoice.get("customer_id"))
+            invoice["account_correction"] = self._account_correction(invoices, invoice_id, invoice)
             invoice["exchanges"] = self._exchanges(invoices, invoice_id, invoice.get("events", []))
             from services.correction_rules import reversal_of
             for x in invoice["exchanges"]:            # display only: a reversed exchange no longer replaces anything
@@ -272,6 +302,7 @@ class InvoiceHistoryService:
         entries = invoice["account_entries"]
         account = sum((_decimal(e["amount_delta"]) for e in entries), ZERO) if entries else (
             _decimal(saved.get("L")) if saved.get("L") not in (None, "") else ZERO)
+        account += invoice.get("account_correction") or ZERO        # owner 2026-11-17: what the settlement corrections moved on the customer's account
 
         sale_lines = [self._sale_line(line) for line in invoice["lines"] if line["line_type"] in SALE_LINE_TYPES]
         if legacy and not saved:
@@ -297,6 +328,9 @@ class InvoiceHistoryService:
                          "code": invoice.get("customer_code_snapshot"), "name": invoice.get("customer_name_snapshot"),
                          "mobile": invoice.get("mobile_snapshot"), "place": invoice.get("place_snapshot")},
             "invoice_total": invoice["net_amount"], "net_direction": invoice["net_direction"],
+            # Owner 2026-11-17: after a settlement correction the invoice shows the CORRECTED amount; the stored one stays in the archive below.
+            "settlement_corrected": "stored_total" in invoice,
+            "stored_total": invoice.get("stored_total"),
             "sell_total": invoice.get("sell_total"), "buy_total": invoice.get("buy_total"),
             "sale_lines": sale_lines,
             "old_gold_lines": old_gold_lines,
@@ -340,6 +374,32 @@ class InvoiceHistoryService:
             # REQ-BILL-12: what happened AFTER the invoice; the snapshot above is never rewritten.
             "post_invoice": invoice.get("post_invoice"),
         }
+
+    @staticmethod
+    def _account_correction(invoices, invoice_id, invoice):
+        """The customer-account change the invoice's settlement corrections posted (0 for none, a legacy invoice or a failing read: display only)."""
+        connection = getattr(invoices, "connection", None)
+        if connection is None or invoice.get("record_origin") == "LEGACY" or invoice.get("customer_id") in (None, ""):
+            return ZERO
+        try:
+            from repositories.correction_repository import CorrectionRepository
+            return _decimal(CorrectionRepository(connection).settlement_account_delta(invoice_id)) or ZERO
+        except Exception:
+            return ZERO
+
+    @staticmethod
+    def _after_corrections(invoices, invoice_id, invoice):
+        """Owner 2026-11-17: the invoice shows its LATEST settlement (corrected total, direction and real money legs); the stored header total stays available as `stored_total`.
+        Display only: nothing is written and a failure keeps the stored content."""
+        from services.invoice_print_service import InvoicePrintService
+        changed = InvoicePrintService._after_corrections(invoices, invoice_id, invoice)
+        if changed is invoice:
+            return invoice
+        names = {p["payment_method_code"]: p.get("payment_method_name") for p in invoice.get("payments", [])}
+        for p in changed["payments"]:
+            p["payment_method_name"] = p.get("payment_method_name") or names.get(p["payment_method_code"]) or METHOD_NAMES.get(p["payment_method_code"], p["payment_method_code"])
+        changed["stored_total"], changed["stored_direction"] = invoice["net_amount"], invoice["net_direction"]
+        return changed
 
     @staticmethod
     def _post_invoice(invoices, invoice):

@@ -940,6 +940,7 @@ Item {
                         layoutDirection: Qt.RightToLeft
                         spacing: 28
                         Figure { objectName: "historyInvoiceTotal"; label: "إجمالي الفاتورة"; value: detailScroll.d.invoiceTotal || ""
+                                 note: detailScroll.d.invoiceTotalNote || ""
                                  valueColor: theme.priceSell; big: true }
                         // Direction from the saved payments (المستلم من العميل / المدفوع للعميل / لا يوجد دفع فعلي).
                         Figure { objectName: "historyMoved"; label: detailScroll.d.movedLabel || ""

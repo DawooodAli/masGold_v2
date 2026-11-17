@@ -182,11 +182,41 @@ class InvoicePrintService:
             if invoice is None:
                 raise PrintError("INVOICE_NOT_FOUND", "الفاتورة غير موجودة.")
             invoice["payment_accounts"] = invoices.get_payment_accounts(invoice_id)
-            seal_facts = facts_of(invoice)                      # the STORED header facts, before an exchange difference is added to the printed total
-            return self._after_exchanges(invoices, invoice_id, invoice), seal_facts
+            seal_facts = facts_of(invoice)                      # the STORED header facts, before a correction / an exchange difference changes the printed total
+            return self._after_exchanges(invoices, invoice_id, self._after_corrections(invoices, invoice_id, invoice)), seal_facts
         invoice, seal_facts = self._read(read)
         invoice["seal"] = self._seal.seal(seal_facts) if self._seal is not None else None
         return invoice
+
+    @staticmethod
+    def _after_corrections(invoices, invoice_id, invoice):
+        """Owner 2026-11-17: a settlement-corrected invoice (FC) prints its LATEST settlement: the corrected total and direction, and the real money legs of that correction in place of the
+        original payments. The stored invoice is never touched; any failure keeps the original content (the print never fails because of this)."""
+        connection = getattr(invoices, "connection", None)
+        if connection is None or invoice.get("record_origin") == "LEGACY":
+            return invoice
+        try:
+            from repositories.correction_repository import CorrectionRepository
+            from services import invoice_amount_rules
+            repo = CorrectionRepository(connection)
+            header = invoice_amount_rules.corrected_header(invoice, repo.invoice_settlement_chain(invoice_id))
+            if header is None:
+                return invoice
+            outgoing = header["net_direction"] == "SHOP_PAYS_CUSTOMER"
+            names = repo.bank_account_names([leg.get("bank_account_id") for leg in header["legs"]])
+            payments, accounts = [], []
+            for index, leg in enumerate(header["legs"]):
+                amount = Decimal(str(leg.get("amount") or 0))
+                if amount == 0:
+                    continue
+                pid = f"fc{index}"
+                payments.append({"payment_id": pid, "payment_method_code": leg.get("method_code"), "payment_method_name": leg.get("method_text") or "",
+                                 "direction": "OUT" if outgoing else "IN", "amount": amount})
+                if leg.get("bank_account_id") not in (None, "") and str(leg["bank_account_id"]) in names:
+                    accounts.append({"payment_id": pid, "bank_account_name": names[str(leg["bank_account_id"])]})
+            return dict(invoice, net_amount=header["net_amount"], net_direction=header["net_direction"], payments=payments, payment_accounts=accounts)
+        except Exception:
+            return invoice
 
     @staticmethod
     def _after_exchanges(invoices, invoice_id, invoice):
