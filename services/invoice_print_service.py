@@ -348,7 +348,7 @@ class InvoicePrintService:
         if not painter.begin(printer):
             return False, "تعذر بدء الطباعة على طابعة الفواتير.", None
         try:
-            bill_overlay.paint(painter, bill_overlay.with_stamp(ops, self.calibration()), printer.resolution() / 25.4)
+            bill_overlay.paint(painter, bill_overlay.with_stamp(ops, self.calibration(), stamp=False), printer.resolution() / 25.4)   # owner 2026-11-17: no shop stamp on the paper, only on the PDF
         finally:
             painter.end()
         return True, PRINT_SENT_TEXT, None

@@ -777,8 +777,9 @@ def with_seal_line(ops, seal_code, calibration=None, payload=""):
     return type(ops)(merged) if isinstance(ops, SealedOps) else merged
 
 
-def with_stamp(ops, calibration=None):
-    """The ops plus the seal code, the seller's handwritten name and the shop's stamp, added only when painted (print / PDF), never validated as bill data (owner 2026-11-16).
+def with_stamp(ops, calibration=None, stamp=True):
+    """The ops plus the seal code, the seller's handwritten name and the shop's stamp (`stamp=False`: owner 2026-11-17, the PRINTED paper carries no stamp, only the electronic PDF does; the
+    signature and the code keep the exact places they have with the stamp), added only when painted (print / PDF), never validated as bill data (owner 2026-11-16).
     The signature is always on the LEFT of the stamp. Whatever the number of rows (owner 2026-11-16) the pair sits on the amount-in-words box, in its empty middle right after the
     Arabic words (signature, then the stamp) just under the last row, and the code stays at the far left above the gold line. Only when that box is missing or has no room do they
     sit under the table at the left, just above the code. Nothing is pushed over a printed row or over the words."""
@@ -834,7 +835,8 @@ def with_stamp(ops, calibration=None):
         sign_y = sign_centre - sh / 2 if sign_centre is not None else row_bottom - sh - (height - sh) * 0.15
         out.append(Op("signature", cursor, sign_y, sw, sh, sign))
         cursor += sw + 2.0
-    out.append(Op("stamp", cursor, row_bottom - height, height * STAMP_ASPECT, height))
+    if stamp:
+        out.append(Op("stamp", cursor, row_bottom - height, height * STAMP_ASPECT, height))
     return out
 
 

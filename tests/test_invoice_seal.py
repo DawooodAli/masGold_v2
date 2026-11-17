@@ -153,6 +153,15 @@ class BillTests(unittest.TestCase):
         self.assertFalse([op for op in ops if " · " in getattr(op, "text", "")])
         self.assertEqual([op.kind for op in bill_overlay.with_stamp(ops)][-1], "stamp")
 
+    def test_the_paper_has_no_stamp_but_keeps_the_signature_and_code_in_the_same_places(self):
+        service, _ = T.make_service(invoices={"42": T.invoice_row(employee_name="على", lines=[T.sale_line(i) for i in range(3)])}, seal=FakeSeal())
+        ops, problem = service.compose(service._invoice_data("42"))
+        self.assertEqual(problem, "")
+        with_stamp, without = bill_overlay.with_stamp(ops), bill_overlay.with_stamp(ops, stamp=False)
+        self.assertEqual(len([op for op in with_stamp if op.kind == "stamp"]), 1)
+        self.assertFalse([op for op in without if op.kind == "stamp"], "owner 2026-11-17: no shop stamp on the printed paper")
+        self.assertEqual([op for op in with_stamp if op.kind != "stamp"], list(without))
+
     def test_the_code_alone_is_under_the_table_above_the_lower_gold_line_and_never_covered(self):
         def overlap(p, q):
             return p.x < q.x + q.w and q.x < p.x + p.w and p.y < q.y + q.h and q.y < p.y + p.h
