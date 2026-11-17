@@ -1395,7 +1395,7 @@ class ReportService:
             except (ReportError, PermissionError):
                 spent_now = spent_before = income_now = income_before = None
                 flow_items = {}
-        items = [kpi_rules.sales_item(now, before, scale), kpi_rules.making_item(now, before, below, known),
+        items = [kpi_rules.sales_item(now, before, scale), kpi_rules.profit_pct_item(now, before, max(span.days, 1)), kpi_rules.making_item(now, before, below, known),
                  kpi_rules.making_info_item("making_scrap", "متوسط مصنعية بيع الكسر للجرام", kpi_rules.scrap_sales(now), kpi_rules.scrap_sales(before)),
                  kpi_rules.making_info_item("making_bullion", "متوسط مصنعية السبائك والجنيهات للجرام", kpi_rules.bullion(now), kpi_rules.bullion(before)),
                  kpi_rules.scrap_item(now, default), profit,

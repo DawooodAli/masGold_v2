@@ -142,6 +142,45 @@ def making_info_item(key, title, now, before):
             "advice": "للعلم فقط: مصنعيته مختلفة عن المشغولات فمحسوب لوحده." if a is not None else "مفيش بيع من النوع ده في الفترة."}
 
 
+def profit_totals(lines):
+    """(profit, grams, gold value, counted lines, lines left out) over the CRAFTED PIECES sold in the period (owner 2026-11-17: bars / pounds and scrap sold by weight carry a different making, so they
+    are left out), every weight. Profit = making charged - the line's making cost; the gold value is the line's gross total. A line with an unknown making, cost or gold value is left out and counted
+    apart, never turned into zero."""
+    profit, grams, value, counted, left_out = Decimal("0"), Decimal("0"), Decimal("0"), 0, 0
+    for l in pieces(lines):
+        if l["line_type"] not in SELL_LINES:
+            continue
+        cost = line_cost(l)
+        if l.get("making_total") is None or cost is None or l.get("gross_total") is None or _d(l["gross_total"]) <= 0:
+            left_out += 1
+            continue
+        weight = _d(l["weight_grams"])
+        profit += _d(l["making_total"]) - _d(cost) * weight
+        grams += weight
+        value += _d(l["gross_total"])
+        counted += 1
+    return profit, grams, value, counted, left_out
+
+
+def profit_pct_item(now, before, days=1):
+    """Owner 2026-11-17: the average profit of the crafted pieces sold in the period (the week) as a PERCENT of their gold value, in total over all karats (the same percent the 2% rule of the sale
+    lines uses). Information for the owner (always gray, no verdict); the baseline is shown beside it with the change in percentage points. The total, the grams and the daily average are in the advice."""
+    profit, grams, value, counted, left_out = profit_totals(now)
+    b_profit, _, b_value, _, _ = profit_totals(before)
+    a = (profit / value * HUNDRED).quantize(Q2, rounding=ROUND_HALF_UP) if value else None
+    b = (b_profit / b_value * HUNDRED).quantize(Q2, rounding=ROUND_HALF_UP) if b_value else None
+    if a is None:
+        advice = "مفيش بيع مشغولات بمصنعية وتكلفة معروفة في الفترة."
+    else:
+        per_day = (profit / Decimal(max(int(days), 1))).quantize(Q2, rounding=ROUND_HALF_UP)
+        per_gram = (profit / grams).quantize(Q2, rounding=ROUND_HALF_UP)
+        advice = f"إجمالي الربح {profit:,.2f} ج على {grams:,.3f} جرام (قيمة ذهبها {value:,.2f} ج) • {per_gram:,.2f} ج للجرام • المتوسط اليومي {per_day:,.2f} ج"
+        if left_out:
+            advice += f" • {left_out} بند بدون مصنعية أو تكلفة معروفة مش محسوب"
+    compare = "—" if b is None else f"{b:,.2f}%" + (f" ({a - b:+,.2f} نقطة)" if a is not None else "")
+    return {"key": "profit_pct", "title": "نسبة ربح المشغولات (من قيمة الذهب)", "status": GRAY, "value": f"{a:,.2f}%" if a is not None else "—", "compare": compare, "advice": advice}
+
+
 def making_item(now, before, below_cost_lines, known_lines):
     now, before = pieces(now), pieces(before)
     a, b = _making_per_gram(now), _making_per_gram(before)
