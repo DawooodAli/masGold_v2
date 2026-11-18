@@ -117,10 +117,17 @@ function goHome() {
   render();
 }
 
+// Owner 2026-11-18: the cards are grouped (اليوم، الحسابات، الذهب والمخزون، التحليل، أدوات), in the order the server lists them.
 function renderHome() {
-  return el("div", {}, el("h2", { text: "الرئيسية", style: "margin-bottom:12px" }),
-    el("div", { class: "tiles" }, state.overview.modules.map((m) =>
-      renderTile(m))));
+  const groups = [];
+  for (const m of state.overview.modules) {
+    let g = groups.find((x) => x.name === (m.group || ""));
+    if (!g) { g = { name: m.group || "", modules: [] }; groups.push(g); }
+    g.modules.push(m);
+  }
+  return el("div", {}, groups.map((g) => el("section", { class: "homegroup" },
+    g.name ? el("div", { class: "section", text: g.name }) : null,
+    el("div", { class: "tiles" }, g.modules.map((m) => renderTile(m))))));
 }
 
 // A module card with its live figures (lines), an alert badge and a 7-day line, all from /api/tiles; without them it is the plain card.
@@ -407,12 +414,23 @@ function renderBars(group) {
 }
 
 // ---------------------------------------------------------------- line chart (a point per day: does the gold grow or shrink)
+// Owner 2026-11-18 (dataviz rules): 2px lines, a hairline grid with round tick values on the right (the reading side of an RTL page), a ~10% wash under the first series, one end dot with a
+// surface ring per series (never a dot on every point), a crosshair with a tooltip on hover / touch, and the legend above. Figures in the tooltip are the server's own numbers.
+function niceStep(range, count) {
+  const raw = range / Math.max(count, 1), mag = Math.pow(10, Math.floor(Math.log10(raw || 1))), unit = raw / mag;
+  return (unit <= 1 ? 1 : unit <= 2 ? 2 : unit <= 5 ? 5 : 10) * mag;
+}
 function renderLine(group) {
   const canvas = el("canvas", {});
+  const tip = el("div", { class: "charttip", hidden: true });
+  const wrap = el("div", { class: "chartwrap" }, canvas, tip);
   const box = el("div", {}, group.title ? el("div", { class: "section", text: group.title }) : null,
     el("div", { class: "chartbox" },
-      el("div", { class: "legend" }, group.series.map((s) => el("span", {}, el("i", { style: "background:" + toneColor(s.tone) }), s.name))), canvas));
-  const draw = () => {
+      el("div", { class: "legend" }, group.series.map((s) => el("span", {}, el("i", { style: "background:" + toneColor(s.tone) }), s.name))), wrap));
+  const SURFACE = "#151A21", GRID = "#232A33", MUTED = "#858D97";
+  const geo = {};
+  const fmt = (v) => Number(v).toLocaleString("en-US", { maximumFractionDigits: 2 });
+  const draw = (hover) => {
     const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
     if (!w) return;
     canvas.width = w * dpr; canvas.height = h * dpr;
@@ -424,33 +442,68 @@ function renderLine(group) {
     let low = group.low, high = group.high, pad = (high - low) * 0.1;
     if (pad <= 0) pad = Math.max(1, Math.abs(high) * 0.05);
     low -= pad; high += pad;
-    const left = 64, right = 10, top = 10, bottom = 24, cw = w - left - right, ch = h - top - bottom;
+    const step = niceStep(high - low, 4), first = Math.ceil(low / step) * step;
+    const left = 10, right = 58, top = 12, bottom = 24, cw = w - left - right, ch = h - top - bottom;
     const x = (i) => left + cw * i / (labels.length - 1), y = (v) => top + ch * (1 - (v - low) / (high - low));
-    ctx.font = "11px sans-serif"; ctx.lineWidth = 1;
-    for (let g = 0; g <= 4; g++) {
-      const gv = low + (high - low) * g / 4;
-      ctx.strokeStyle = "#303842"; ctx.beginPath(); ctx.moveTo(left, y(gv)); ctx.lineTo(left + cw, y(gv)); ctx.stroke();
-      ctx.fillStyle = "#858D97"; ctx.fillText(gv.toFixed(1), 4, y(gv) + 4);
+    Object.assign(geo, { left, cw, top, ch, w, h, x, y });
+    ctx.font = "11px Cairo, sans-serif"; ctx.lineWidth = 1; ctx.textAlign = "left";
+    for (let gv = first; gv <= high; gv += step) {
+      ctx.strokeStyle = GRID; ctx.beginPath(); ctx.moveTo(left, Math.round(y(gv)) + 0.5); ctx.lineTo(left + cw, Math.round(y(gv)) + 0.5); ctx.stroke();
+      ctx.fillStyle = MUTED; ctx.fillText(fmt(gv), left + cw + 8, y(gv) + 4);
     }
-    const step = Math.max(1, Math.ceil(labels.length / 10));
-    ctx.fillStyle = "#858D97";
-    for (let i = 0; i < labels.length; i += step) ctx.fillText(labels[i], x(i) - 12, h - 6);
-    for (const s of group.series) {
+    const every = Math.max(1, Math.ceil(labels.length / 8));
+    ctx.fillStyle = MUTED; ctx.textAlign = "center";
+    for (let i = 0; i < labels.length; i += every) ctx.fillText(labels[i], Math.min(Math.max(x(i), left + 14), left + cw - 14), h - 6);
+    group.series.forEach((s, index) => {
       const color = toneColor(s.tone);
+      const points = [];
+      s.values.forEach((v, k) => { if (v !== null) points.push([x(k), y(v)]); });
+      if (!points.length) return;
+      if (index === 0 && points.length > 1) {                                   // the wash under the first series only
+        ctx.beginPath(); ctx.moveTo(points[0][0], top + ch);
+        points.forEach((p) => ctx.lineTo(p[0], p[1]));
+        ctx.lineTo(points[points.length - 1][0], top + ch); ctx.closePath();
+        ctx.globalAlpha = 0.1; ctx.fillStyle = color; ctx.fill(); ctx.globalAlpha = 1;
+      }
       ctx.setLineDash(s.tone === "avg" ? [6, 4] : []);
-      ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.beginPath();
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = "round"; ctx.lineCap = "round"; ctx.beginPath();
       let started = false;
       s.values.forEach((v, k) => {
         if (v === null) { started = false; return; }
         if (!started) { ctx.moveTo(x(k), y(v)); started = true; } else ctx.lineTo(x(k), y(v));
       });
-      ctx.stroke(); ctx.fillStyle = color;
-      ctx.setLineDash([]);
-      if (labels.length <= 60) s.values.forEach((v, k) => { if (v !== null) { ctx.beginPath(); ctx.arc(x(k), y(v), 3, 0, 6.2832); ctx.fill(); } });
+      ctx.stroke(); ctx.setLineDash([]);
+      const last = points[points.length - 1];                                   // the end dot: r 4 with a 2px surface ring
+      ctx.beginPath(); ctx.arc(last[0], last[1], 6, 0, 6.2832); ctx.fillStyle = SURFACE; ctx.fill();
+      ctx.beginPath(); ctx.arc(last[0], last[1], 4, 0, 6.2832); ctx.fillStyle = color; ctx.fill();
+    });
+    if (hover !== undefined && hover !== null) {                                // crosshair on the hovered day
+      ctx.strokeStyle = MUTED; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(Math.round(x(hover)) + 0.5, top); ctx.lineTo(Math.round(x(hover)) + 0.5, top + ch); ctx.stroke();
+      group.series.forEach((s) => {
+        const v = s.values[hover];
+        if (v === null || v === undefined) return;
+        ctx.beginPath(); ctx.arc(x(hover), y(v), 6, 0, 6.2832); ctx.fillStyle = SURFACE; ctx.fill();
+        ctx.beginPath(); ctx.arc(x(hover), y(v), 4, 0, 6.2832); ctx.fillStyle = toneColor(s.tone); ctx.fill();
+      });
     }
   };
-  state.redraws.push(draw);
-  requestAnimationFrame(draw);
+  const move = (event) => {
+    if (!geo.x) return;
+    const rect = canvas.getBoundingClientRect(), px = event.clientX - rect.left;
+    const index = Math.max(0, Math.min(group.labels.length - 1, Math.round((px - geo.left) / geo.cw * (group.labels.length - 1))));
+    draw(index);
+    tip.replaceChildren(el("div", { class: "tt-title", text: group.labels[index] }),
+      ...group.series.filter((s) => s.values[index] !== null && s.values[index] !== undefined).map((s) =>
+        el("div", { class: "tt-row" }, el("i", { style: "background:" + toneColor(s.tone) }), el("span", { text: s.name }), el("b", { text: fmt(s.values[index]) }))));
+    tip.hidden = false;
+    const shown = Math.max(0, Math.min(geo.w - tip.offsetWidth, geo.x(index) - tip.offsetWidth / 2));
+    tip.style.setProperty("left", shown + "px");
+  };
+  canvas.addEventListener("pointermove", move);
+  canvas.addEventListener("pointerdown", move);
+  canvas.addEventListener("pointerleave", () => { tip.hidden = true; draw(); });
+  state.redraws.push(() => draw());
+  requestAnimationFrame(() => draw());
   return box;
 }
 
@@ -904,7 +957,11 @@ async function loadSpecial(kind) {
   try {
     if (kind === "verify") s.data = {};
     else if (kind === "calc") { if (!state.today) await loadToday(); s.data = {}; }
-    else if (kind === "markets") { s.data = await call("/api/news"); try { s.readings = await call("/api/readings"); } catch (e) { s.readings = null; } }
+    else if (kind === "markets") {
+      s.data = await call("/api/news");
+      try { s.readings = await call("/api/readings"); } catch (e) { s.readings = null; }
+      try { s.currency = await call("/api/currency"); } catch (e) { s.currency = null; }       // the currency rates are the first tab here (they were a card of their own)
+    }
     else if (kind === "stocktake") s.data = await call("/api/stocktake_status");
     else s.data = await call(kind === "reviews" ? "/api/reviews" : kind === "activity" ? "/api/activity" : kind === "bankflow" ? "/api/bankflow" : kind === "cashflow" ? "/api/cashflow" : kind === "currency" ? "/api/currency" : kind === "markets" ? "/api/news" : kind === "dayclose" ? "/api/dayclose" : kind === "market" ? "/api/market" : kind === "settings" ? "/api/settings" : "/api/transfers");
   } catch (e) {
@@ -935,6 +992,7 @@ function renderCurrency(s) {
 // الأسواق والأخبار (owner 2026-11-10, iPad only): TradingView charts and the economic calendar in iframes (the CSP already allows s.tradingview.com) + the Arabic news list of the server
 const MARKET_GUIDE = "إزاي أقرأ الشارت قبل ما أقرر: (1) عدّاد التحليل الفني ملخص مؤشرات تلقائي من «بيع قوي» إلى «شراء قوي»؛ يوم واحد للقصير وأسبوع/شهر للأبعد، واتفاق الاتنين أقوى من واحد. (2) لو الذهب قريب من أعلى مدى في الشارت فده وقت مناسب للبيع والتسعير بحذر وإيقاف شراء الكسر بسعر عالي؛ لو قريب من أدنى مدى فهو فرصة لشراء الكسر والمخزون. (3) الدولار/الجنيه لو بيطلع فسعر الذهب محليًا بيطلع حتى لو الأونصة ثابتة. (4) ده إرشاد مش توصية مالية: قرر مع المخزون والسيولة وسعر المحل الفعلي.";
 const MARKET_TABS = [
+  { key: "rates", title: "أسعار العملات" },
   { key: "usd", title: "الدولار / الجنيه", chart: "FX_IDC:USDEGP" },
   { key: "eur", title: "اليورو / الجنيه", chart: "FX_IDC:EUREGP" },
   { key: "g21", title: "جرام 21 بالجنيه", chart: "OANDA:XAUUSD*FX_IDC:USDEGP*21/24/31.1035", tech: "OANDA:XAUUSD", techNote: "العدّاد للأونصة بالدولار (الاتجاه نفسه)" },
@@ -943,7 +1001,7 @@ const MARKET_TABS = [
   { key: "news", title: "أخبار الذهب" },
 ];
 function renderMarkets(s) {
-  const tab = (s.form = s.form || { tab: "usd" }).tab;
+  const tab = (s.form = s.form || { tab: "rates" }).tab;
   const body = el("div", {});
   body.append(el("div", { class: "group", style: "margin-bottom:10px" }, MARKET_TABS.map((t) =>
     el("button", { class: "chip" + (t.key === tab ? " on" : ""), text: t.title, onclick: () => { s.form.tab = t.key; render(); } }))));
@@ -959,6 +1017,8 @@ function renderMarkets(s) {
     s.frames["t" + tab] = s.frames["t" + tab] || el("iframe", { class: "livechart gauge", loading: "lazy", sandbox: "allow-scripts allow-same-origin allow-popups", title: "التحليل الفني",
       src: "https://s.tradingview.com/embed-widget/technical-analysis/?locale=ar_AE#" + encodeURIComponent(JSON.stringify(tech)) });
     body.append(el("div", { class: "section", text: "الإشارة الفنية" + (current.techNote ? " — " + current.techNote : "") }), s.frames["t" + tab], el("div", { class: "note-box", text: MARKET_GUIDE }));
+  } else if (tab === "rates") {
+    body.append(s.currency ? renderCurrency({ loading: false, error: "", data: s.currency }) : el("div", { class: "msg warn", text: "أسعار العملات غير متاحة الآن." }));
   } else if (tab === "cal") {
     const conf = { colorTheme: "dark", isTransparent: false, width: "100%", height: "100%", locale: "ar_AE", importanceFilter: "0,1", countryFilter: "us,eu,eg" };
     s.frames.cal = s.frames.cal || el("iframe", { class: "livechart", loading: "lazy", sandbox: "allow-scripts allow-same-origin allow-popups", title: current.title,

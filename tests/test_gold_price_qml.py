@@ -516,8 +516,7 @@ class GoldPricePanelTests(QtPriceTestCase):
             with patch("app.viewmodels.master_data_viewmodel.MasterDataService", empty), \
                  patch("app.viewmodels.inventory_viewmodel.InventoryService", empty), \
                  patch("app.viewmodels.old_gold_conversion_viewmodel.OldGoldConversionService", empty), \
-                 patch("app.viewmodels.barcode_viewmodel.BarcodePrintService", empty), \
-                 patch("app.viewmodels.billing_viewmodel.BillingService", empty):
+                 patch("app.viewmodels.barcode_viewmodel.BarcodePrintService", empty):
                 return create_operational_viewmodels()
         self.controller = ApplicationController(self.app, authentication_service=self.auth,
                                                 operational_factory=factory,

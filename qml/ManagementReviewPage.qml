@@ -1233,7 +1233,7 @@ Item {
                 // Wallet / InstaPay / bank balances live here, never in the MainWindow strip.
                 Section {
                     objectName: "financialAccountsSection"
-                    visible: (reviewsVM.selectedCategory === "" || reviewsVM.selectedCategory === "ACCOUNTS")
+                    visible: reviewsVM.selectedCategory === "ACCOUNTS"                  // owner 2026-11-18: hidden inside its card; a click on the «الحسابات المالية» card shows it
                     title: "الحسابات المالية"
                     count: reviewsVM.financialAccounts.length
                     Repeater {

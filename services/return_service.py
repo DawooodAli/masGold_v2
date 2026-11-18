@@ -35,6 +35,7 @@ header → approval review → inventory items (ascending id) → customer → b
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from services.shared_helpers import query_rows
 import hashlib
 import json
 
@@ -485,14 +486,7 @@ class ReturnService:
         except _Discard as done:
             return done.args[0]
 
-    @staticmethod
-    def _query(connection, sql, params=()):
-        cursor = connection.cursor(dictionary=True)
-        try:
-            cursor.execute(sql, params)
-            return cursor.fetchall()
-        finally:
-            cursor.close()
+    _query = staticmethod(query_rows)
 
     def _clock(self, connection):
         row = self._query(connection, "SELECT NOW() AS local_now, UTC_TIMESTAMP() AS utc_now")[0]

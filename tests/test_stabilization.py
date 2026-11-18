@@ -310,23 +310,21 @@ class LegacyBillingV1Tests(unittest.TestCase):
         imports = {a.name for n in ast.walk(function) if isinstance(n, ast.ImportFrom) for a in n.names}
         self.assertNotIn("BillingViewModel", imports)
 
-    def test_no_live_python_path_imports_the_frozen_billing_service(self):
+    def test_no_live_python_path_imports_the_removed_billing_v1_modules(self):
         offenders = []
         for folder in ("app", "services", "repositories", "main.py"):
             paths = [ROOT / folder] if folder.endswith(".py") else (ROOT / folder).rglob("*.py")
             for path in paths:
-                if path.name in ("billing_viewmodel.py", "billing_service.py", "billing_repository.py"):
-                    continue                                              # the frozen files themselves
                 text = path.read_text(encoding="utf-8")
                 if re.search(r"(from|import)\s+(app\.viewmodels\.billing_viewmodel|services\.billing_service|"
                              r"repositories\.billing_repository)", text):
                     offenders.append(str(path.relative_to(ROOT)))
         self.assertEqual(offenders, [])
 
-    def test_the_frozen_source_is_kept_as_history(self):
+    def test_the_frozen_billing_v1_source_is_removed_and_only_its_tables_remain_as_history(self):
         for relative in ("app/viewmodels/billing_viewmodel.py", "services/billing_service.py",
                          "repositories/billing_repository.py"):
-            self.assertTrue((ROOT / relative).is_file(), relative)
+            self.assertFalse((ROOT / relative).exists(), relative)
 
 
 # ------------------------------------------------------------------------------------------------ R5 / R6
@@ -398,13 +396,13 @@ class RepositoryHygieneTests(unittest.TestCase):
         readme = (folder / "README.md").read_text(encoding="utf-8")
         self.assertIn("NOT a migration chain", readme)
         self.assertIn("Do **not** apply", readme)
-        self.assertEqual(len(list((ROOT / "database" / "schema").glob("0[0-9][0-9]_*.sql"))), 99)   # the one chain
+        self.assertEqual(len(list((ROOT / "database" / "schema").glob("[0-9][0-9][0-9]_*.sql"))), 105)   # the one chain
 
     def test_documentation_states_the_current_schema_and_rules(self):
         for name in ("AGENTS.md", "CLAUDE.md"):
             text = (ROOT / name).read_text(encoding="utf-8")
-            self.assertIn("001–079", text, name)
-            self.assertIn("next migration is `080`", text, name)
+            self.assertIn("001–105", text, name)
+            self.assertIn("next migration is `106`", text, name)
             self.assertNotIn("001–024", text, name)
             for rule in ("1.25%–5.00%", "حفظ فقط", "MASGOLD_DEV_AUTO_LOGIN", "USERS_MANAGE"):
                 self.assertIn(rule, text, f"{name}: {rule}")
@@ -419,9 +417,9 @@ class SchemaVersionExpectationTests(unittest.TestCase):
             text = (ROOT / "tests" / name).read_text(encoding="utf-8")
             self.assertNotRegex(text, r"==\s*30\b|\"masgold_v2\",\s*30\)|migration 25", name)
 
-    def test_the_repository_chain_ends_at_095(self):
-        chain = sorted(p.name for p in (ROOT / "database" / "schema").glob("0[0-9][0-9]_*.sql"))
-        self.assertEqual([int(n[:3]) for n in chain], list(range(1, 100)))
+    def test_the_repository_chain_ends_at_105(self):
+        chain = sorted(p.name for p in (ROOT / "database" / "schema").glob("[0-9][0-9][0-9]_*.sql"))
+        self.assertEqual([int(n[:3]) for n in chain], list(range(1, 106)))
 
 
 if __name__ == "__main__":

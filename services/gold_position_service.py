@@ -23,6 +23,7 @@ MANAGEMENT_REVIEW + MARKET_TRIP_MANAGE + INTERMEDIARY_HOLDING_VIEW: a partial to
 """
 from contextlib import contextmanager
 from decimal import ROUND_HALF_UP, Decimal, localcontext
+from services.shared_helpers import dec as _dec
 
 from repositories.inventory_repository import InventoryRepository
 from repositories.intermediary_holding_repository import IntermediaryHoldingRepository
@@ -61,10 +62,6 @@ def read_transaction():
             connection.rollback()
         finally:
             connection.close()
-
-
-def _dec(value):
-    return Decimal(str(value if value is not None else 0))
 
 
 def eq21_karat(grams, karat):

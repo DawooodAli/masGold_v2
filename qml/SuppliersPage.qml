@@ -338,7 +338,6 @@ Item {
                 Layout.fillWidth: true
                 layoutDirection: Qt.RightToLeft
                 spacing: 8
-                Rectangle { implicitWidth: 3; implicitHeight: 16; radius: 2; color: theme.gold }
                 Txt { text: section.title; color: theme.gold; font.bold: true; font.pixelSize: theme.fontBodyStrong }
                 Item { Layout.fillWidth: true }
                 Txt { visible: section.hint !== ""; text: section.hint; color: section.hintColor; font.bold: true }
@@ -1608,7 +1607,7 @@ Item {
         modal: true
         padding: 16
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 8
             Txt { Layout.fillWidth: true; text: supplierDialog.editId === "" ? "مورد جديد" : "تعديل بيانات المورد"
@@ -1751,7 +1750,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 6
             Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection
@@ -1957,7 +1956,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 6
             Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection
@@ -2160,7 +2159,7 @@ Item {
         modal: true
         padding: 16
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 8
             Txt { Layout.fillWidth: true; font.bold: true; color: theme.gold
@@ -2228,7 +2227,7 @@ Item {
         modal: true
         padding: 16
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 8
             Txt { Layout.fillWidth: true; font.bold: true; color: theme.gold; text: "عكس تسوية فروق — " + (page.detail.name || "") }
@@ -2274,7 +2273,7 @@ Item {
         modal: true
         padding: 16
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 8
             Txt { Layout.fillWidth: true; font.bold: true; color: theme.gold; text: "عكس أجر السبيكة — " + (page.detail.name || "") }
@@ -2325,7 +2324,7 @@ Item {
         modal: true
         padding: 16
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 8
             Txt { Layout.fillWidth: true; text: "تعديل وزن المجموعة " + adjustGroupDialog.groupNo; color: theme.gold; font.bold: true }
@@ -2523,7 +2522,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 6
             Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection
@@ -2751,7 +2750,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 6
             Txt { Layout.fillWidth: true; text: "إرجاع السبكة كاملة للعهدة"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
@@ -2838,7 +2837,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 6
             Txt { Layout.fillWidth: true; text: "إرجاع ذهب للعهدة"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
@@ -2931,7 +2930,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 6
             Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection
@@ -3546,7 +3545,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         ListModel { id: groupModel }
         contentItem: ColumnLayout {
             spacing: 6
@@ -3780,7 +3779,7 @@ Item {
         padding: 0
         closePolicy: Popup.CloseOnEscape
         onClosed: { intakeDialog.pieceProblem = ""; if (page.pvm) page.pvm.closeInvoice() }
-        background: Rectangle { color: theme.bgSecondary; radius: 8; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         Connections {
             target: page.pvm
             function onStockChanged() {

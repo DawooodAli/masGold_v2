@@ -1307,7 +1307,7 @@ Item {
         modal: true
         padding: 16
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         function begin() {
             sellerReason.text = ""
             if (historyPage.vm) historyPage.vm.loadSellers()
@@ -1355,7 +1355,7 @@ Item {
         padding: 16
         closePolicy: Popup.CloseOnEscape
         property var line: ({})
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         function begin(line) {
             pieceDialog.line = line
             pieceBarcode.text = ""; pieceReason.text = ""; pieceConfirm.checked = false

@@ -1,6 +1,6 @@
 """الرئيسية: today's activity, formatted in Python (QML only binds strings and lists)."""
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from PySide6.QtCore import QObject, Property, QTimer, Signal, Slot
 
@@ -107,7 +107,12 @@ class DashboardViewModel(QObject):
     def invoiceBreakdown(self):
         if not self.invoiceCount:
             return "لا توجد فواتير اليوم بعد"
-        return f"بيع {self._data.get('sale_invoice_count', 0)} • شراء كسر {self._data.get('buy_invoice_count', 0)}"
+        # A mixed invoice (sale + scrap purchase) is counted in BOTH the sale and the buy figures of the service, so the parts are split here to add up to the total:
+        # sale only + scrap only + mixed = invoices (owner 2026-11-18: "3 sale and 3 buy but 5 invoices?").
+        sale, buy, total = int(self._data.get("sale_invoice_count", 0)), int(self._data.get("buy_invoice_count", 0)), int(self.invoiceCount)
+        mixed = max(0, sale + buy - total)
+        text = f"بيع {sale - mixed} • شراء كسر {buy - mixed}"
+        return text + (f" • مختلطة {mixed}" if mixed else "")
 
     @Property(str, notify=changed)
     def sellTotalText(self):
@@ -142,19 +147,60 @@ class DashboardViewModel(QObject):
         rows = self._data.get("sales_days") or []
         top = max((Decimal(r["total"]) for r in rows), default=Decimal("0"))
         return [{"label": r["day"][8:10] + "/" + r["day"][5:7], "text": money(r["total"]) if Decimal(r["total"]) else "—",
-                 "ratio": float(Decimal(r["total"]) / top) if top else 0.0} for r in rows]
+                 "ratio": float(Decimal(r["total"]) / top) if top else 0.0, "best": bool(top) and Decimal(r["total"]) == top} for r in rows]
+
+    @Property("QVariantMap", notify=changed)
+    def scrapSoldChart(self):
+        """The scrap bought against the gold sold of the last 14 days (columns, two per day). The service sends 21K-EQUIVALENT grams per day; here each day gets its two column ratios
+        (the share of the tallest column, for drawing only), its day label and the formatted figures of the tooltip. The best column of the window carries a label."""
+        rows = self._data.get("scrap_sold_days") or []
+        bought, sold = [Decimal(r["bought"]) for r in rows], [Decimal(r["sold"]) for r in rows]
+        top = max(bought + sold, default=Decimal("0"))
+        best = next(((series, i) for i in range(len(rows)) for series, values in (("bought", bought), ("sold", sold)) if top and values[i] == top), None)
+        days = [{"label": r["day"][8:10] + "/" + r["day"][5:7],
+                 "boughtText": grams(bought[i]) + " جرام" if bought[i] else "—", "soldText": grams(sold[i]) + " جرام" if sold[i] else "—",
+                 "boughtRatio": float(bought[i] / top) if top else 0.0, "soldRatio": float(sold[i] / top) if top else 0.0,
+                 "boughtBest": best == ("bought", i), "soldBest": best == ("sold", i)} for i, r in enumerate(rows)]
+        return {"available": bool(top), "days": days, "boughtTotal": grams(sum(bought, Decimal("0"))) + " جرام", "soldTotal": grams(sum(sold, Decimal("0"))) + " جرام",
+                "caption": "بالجرام المكافئ لعيار 21: كل عيار يتحوّل إلى عيار 21 قبل الجمع"}
+
+    @Property("QVariantMap", notify=changed)
+    def balanceSplit(self):
+        """The stacked bar of the customers' balances: what customers owe the shop (على العميل) against what the shop owes them (للعميل), over every customer whose account is not settled.
+        Ready text for the two amounts and counts, and each side's share of the bar (drawing only; the percentages always add up to 100)."""
+        data = self._data.get("balance_totals") or {}
+        owed, credit = Decimal(data.get("owed") or "0"), Decimal(data.get("credit") or "0")
+        total = owed + credit
+        owed_percent = int((owed * 100 / total).quantize(Decimal("1"), rounding=ROUND_HALF_UP)) if total else 0
+        return {"available": bool(total), "owedText": money(owed), "creditText": money(credit),
+                "owedCount": f"{int(data.get('owed_count', 0))} عميل", "creditCount": f"{int(data.get('credit_count', 0))} عميل",
+                "owedRatio": float(owed / total) if total else 0.0, "creditRatio": float(credit / total) if total else 0.0,
+                "owedPercent": ltr(f"{owed_percent}%"), "creditPercent": ltr(f"{100 - owed_percent}%" if total else "0%")}
 
     @Property("QVariantMap", notify=changed)
     def priceChart(self):
         """The stored daily 21K shop BUY / SELL prices of the last days, as plain floats for drawing only (the figures shown as text come formatted)."""
         series = self._data.get("price_series") or []
         if len(series) < 2:
-            return {"available": False, "buy": [], "sell": [], "ma": [], "low": 0.0, "high": 0.0, "first": "", "last": "", "lowText": "", "highText": ""}
+            return {"available": False, "buy": [], "sell": [], "ma": [], "ma90": [], "low": 0.0, "high": 0.0, "first": "", "last": "", "lowText": "", "highText": "",
+                    "labels": [], "buyTexts": [], "sellTexts": [], "maTexts": [], "ma90Texts": [], "spreadTexts": [], "spread": [], "spreadMinText": "", "spreadMaxText": ""}
         buys, sells = [float(r["buy"]) for r in series], [float(r["sell"]) for r in series]
+        spreads = [Decimal(str(r["sell"])) - Decimal(str(r["buy"])) for r in series]          # exact; the floats below are for drawing only
         averages = [float(r["ma"]) if r.get("ma") is not None else None for r in series]      # None = not enough stored days yet (drawn as a gap)
-        low, high = min(buys + sells + [a for a in averages if a is not None]), max(buys + sells + [a for a in averages if a is not None])
-        return {"available": True, "buy": buys, "sell": sells, "ma": averages, "low": low, "high": high, "first": series[0]["day"], "last": series[-1]["day"],
-                "lowText": rate(str(low)), "highText": rate(str(high))}
+        long_averages = [float(r["ma90"]) if r.get("ma90") is not None else None for r in series]   # the 90-day average of the shop BUY price; None = a gap
+        drawn = buys + sells + [a for a in averages + long_averages if a is not None]               # the y range holds every drawn value
+        low, high = min(drawn), max(drawn)
+        return {"available": True, "buy": buys, "sell": sells, "ma": averages, "ma90": long_averages, "low": low, "high": high, "first": series[0]["day"], "last": series[-1]["day"],
+                "lowText": rate(str(low)), "highText": rate(str(high)),
+                # the tooltip of the chart (owner 2026-11-18): one day label (dd/mm) and the formatted figures of each day, never calculated in QML
+                "labels": [r["day"][8:10] + "/" + r["day"][5:7] for r in series],
+                "buyTexts": [rate(r["buy"]) for r in series], "sellTexts": [rate(r["sell"]) for r in series],
+                "maTexts": [rate(str(r["ma"])) if r.get("ma") is not None else "" for r in series],
+                "ma90Texts": [rate(str(r["ma90"])) if r.get("ma90") is not None else "" for r in series],
+                "spreadTexts": [rate(str(Decimal(r["sell"]) - Decimal(r["buy"]))) for r in series],
+                "spread": [float(s) for s in spreads],
+                "spreadMinText": str(int(min(spreads).quantize(Decimal("1"), rounding=ROUND_HALF_UP))),
+                "spreadMaxText": str(int(max(spreads).quantize(Decimal("1"), rounding=ROUND_HALF_UP)))}
 
     @Property("QVariantMap", notify=changed)
     def priceHint(self):
@@ -198,7 +244,11 @@ class DashboardViewModel(QObject):
         """Today's average making per gram: pieces, bullion and coins, scrap sales (label + text; «—» without a sale, «غير معلوم» when the making is unknown)."""
         data = self._data.get("making_averages") or {}
         rows = []
-        for key, label in (("PIECES", "متوسط مصنعية المشغولات"), ("BULLION", "متوسط مصنعية السبائك والجنيهات"), ("SCRAP", "متوسط مصنعية بيع الكسر")):
+        for key, label in (("PIECES", "متوسط مصنعية المشغولات"), ("BULLION", "متوسط مصنعية السبائك والجنيهات"), ("SCRAP", "متوسط شراء الكسر في المية")):
+            if key == "SCRAP":                                           # owner 2026-11-18: the third figure is the average scrap-PURCHASE discount in percent
+                pct = self._data.get("scrap_discount_pct")
+                rows.append({"key": key, "label": label, "text": "—" if pct is None else ltr(f"{pct}%")})
+                continue
             item = data.get(key) or {}
             text = "—" if not item.get("grams") or not Decimal(item["grams"]) else "غير معلوم" if item.get("unknown") else rate(item["average"]) + " / جرام"
             rows.append({"key": key, "label": label, "text": text})

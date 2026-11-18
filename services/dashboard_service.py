@@ -13,12 +13,15 @@ Every figure has one meaning (no mixing of commercial value, real money and cust
 - overdue debts: the customers' OPEN owed items (the oldest-first reading of the customer ledger, as in the customers report) older than OVERDUE_DAYS;
 - today's scrap price: the average price per gram paid for today's scrap purchases against the latest stored SHOP_BUY of that karat;
 - customer balances: the TRUE ledger-derived balance of customers active from the first day of
-  the current month (customers permission), settled accounts excluded.
+  the current month (customers permission), settled accounts excluded; balance_totals: what ALL
+  customers owe / are owed (the stacked bar);
+- scrap_sold_days: per day of the last 14, grams of scrap bought against grams sold, in 21K-equivalent grams.
 Money received / paid and bank / wallet balances are NOT on this page.
 
 Sales figures need a billing permission; old-gold weights are the same
 operational information the MainWindow strip already shows every logged-in user.
 """
+from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from repositories.dashboard_repository import DashboardRepository
@@ -33,6 +36,7 @@ SALES_PERMISSIONS = frozenset({"INVOICE_CREATE", "INVOICE_FINALIZE"})
 STOCK_PERMISSIONS = frozenset({"INVENTORY_VIEW", "INVENTORY_MANAGE"})
 OVERDUE_DAYS = 30
 SALES_DAYS = 14                                                                # the bar chart of the sales value, last N days
+MOVING_AVERAGE_LONG_DAYS = 90                                                  # the second (long) moving average of the 21K price chart
 PRICE_DAYS = 30                                                                # the 21K price line chart, last N stored days
 GRAMS, MONEY = Decimal("0.001"), Decimal("0.01")
 HINT_TEXT = {indicators_math.BUY_FAVOURABLE: "الشراء مناسب نسبيًا", indicators_math.SELL_FAVOURABLE: "البيع مناسب نسبيًا", indicators_math.NEUTRAL: "محايد",
@@ -180,6 +184,16 @@ class DashboardService:
         return out
 
     @staticmethod
+    def scrap_discount(row):
+        """The AVERAGE scrap-purchase discount of today in percent (the sum of the discounts / the sum of the gross values of today's scrap purchase lines, two decimals, ROUND_HALF_UP);
+        None when nothing was bought today (never turned into zero)."""
+        gross = Decimal(str((row or {}).get("gross") or 0))
+        if gross <= 0:
+            return None
+        discount = Decimal(str(row.get("discount") or 0))
+        return str((discount * 100 / gross).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+    @staticmethod
     def price_hint(series):
         """The dashboard's plain 21K price indicator (the same formulas and definitions as the price-indicators report): the 30-day average of the shop BUY price, the current
         price against it in percent and the 90-day hint. A figure that needs more history than stored is None / «بيانات غير كافية», never invented."""
@@ -201,6 +215,35 @@ class DashboardService:
         return [{"day": (end - timedelta(days=n)).isoformat(), "total": str(by_day.get(end - timedelta(days=n), Decimal("0")).quantize(MONEY))} for n in range(SALES_DAYS - 1, -1, -1)]
 
     @staticmethod
+    def scrap_sold_days(rows, today=None):
+        """The scrap-bought-against-gold-sold chart: one entry per day of the last SALES_DAYS days (oldest first, today last; a day without a line is zero) with the grams of scrap
+        BOUGHT from customers and the grams of gold SOLD. The two series are drawn on one axis, so each karat's grams are first converted to 21K-EQUIVALENT grams
+        (services/eq21_math.py, grams x karat / 21, exact) and summed as exact fractions; each figure is rounded ONCE to 0.001 g at the end. Karats are never added as raw grams."""
+        from datetime import date, timedelta
+        from fractions import Fraction
+        from services import eq21_math
+        day_of = lambda value: value.date() if hasattr(value, "date") else value
+        bought, sold = {}, {}
+        for r in rows or []:
+            when, karat = day_of(r["day"]), int(r["karat_value"])
+            for target, key in ((bought, "bought"), (sold, "sold")):
+                weight = Decimal(str(r[key] or 0))
+                if weight:
+                    target[when] = target.get(when, Fraction(0)) + eq21_math.analytical(weight, eq21_math.MASTER_KARAT, karat)
+        end = day_of(today) if today is not None else (max(set(bought) | set(sold)) if (bought or sold) else date.today())
+        return [{"day": (end - timedelta(days=n)).isoformat(),
+                 "bought": str(eq21_math.post(bought.get(end - timedelta(days=n), Fraction(0)))),
+                 "sold": str(eq21_math.post(sold.get(end - timedelta(days=n), Fraction(0))))} for n in range(SALES_DAYS - 1, -1, -1)]
+
+    @staticmethod
+    def balance_totals(row):
+        """What customers owe the shop (على العميل) and what the shop owes customers (للعميل), over every customer whose ledger balance is not settled:
+        {owed, credit (both positive money strings), owed_count, credit_count}. No row (nothing read) is all zero."""
+        row = row or {}
+        return {"owed": str(Decimal(str(row.get("owed") or 0)).quantize(MONEY)), "credit": str(Decimal(str(row.get("credit") or 0)).quantize(MONEY)),
+                "owed_count": int(row.get("owed_count") or 0), "credit_count": int(row.get("credit_count") or 0)}
+
+    @staticmethod
     def corrected_figures(raw, changes, lines, shares, today):
         """Owner 2026-11-12: an invoice whose settlement correction changed its amount counts at its LATEST corrected amount (services/invoice_amount_rules.py). Returns a copy of the
         raw sales figures with the delta / line shares added where each query counted the invoice: today's sale / purchase totals, today's making groups, the daily sales bars, today's
@@ -219,9 +262,9 @@ class DashboardService:
         days = {day(r["day"]): dict(r) for r in raw.get("sales_days") or []}
         for invoice_id, change in changes.items():
             h = head.get(invoice_id)
-            if not change["delta"] or h is None or h["invoice_status"] != "FINALIZED" or h["finalized_at"] is None:
+            if not change["delta"] or h is None or h["invoice_status"] != "FINALIZED" or h["invoice_date"] is None:
                 continue
-            when = day(h["finalized_at"])
+            when = day(h["invoice_date"])
             if when == today and invoices:
                 field = "sell_total" if change["direction"] == "IN" else "buy_total"
                 invoices[field] = Decimal(str(invoices.get(field) or 0)) + change["delta"]
@@ -232,9 +275,9 @@ class DashboardService:
         types = {(r["item_type"] or "بدون صنف"): dict(r) for r in raw.get("top_types") or []}
         for l in lines:
             share = shares.get(str(l["line_id"]))
-            if not share or l["invoice_status"] != "FINALIZED" or l["reversed"] or l["finalized_at"] is None:
+            if not share or l["invoice_status"] != "FINALIZED" or l["reversed"] or l["invoice_date"] is None:
                 continue
-            when = day(l["finalized_at"])
+            when = day(l["invoice_date"])
             if l["line_type"] == "BUY_OLD_GOLD":
                 k = int(l["karat_value"]) if l["karat_value"] is not None else None
                 if when == today and k in scrap:
@@ -290,10 +333,11 @@ class DashboardService:
             result = {"old_gold_balance": balances.old_gold_counted(), "old_gold_flow": dashboard.today_old_gold_flow(),
                       "price_daily": dashboard.price_daily_21(), "price_legacy": dashboard.price_history_legacy_21()}
             if sales:
-                result.update(making_groups=dashboard.today_making_groups(), scrap=dashboard.today_scrap_purchases(),scrap_prices=dashboard.latest_shop_buy_prices(),
+                result.update(making_groups=dashboard.today_making_groups(), scrap_discount=dashboard.today_scrap_discount(), scrap=dashboard.today_scrap_purchases(),scrap_prices=dashboard.latest_shop_buy_prices(),
                               invoices=dashboard.today_invoices(), sold=dashboard.today_sold_by_karat(),
                               month=dashboard.month_sold_by_karat(), prev_year=dashboard.month_sold_by_karat(previous=True),
-                              month_info=dashboard.month_start(), top_types=dashboard.month_top_types(), sales_days=dashboard.sales_by_day(SALES_DAYS), sales_today=dashboard.db_today())
+                              month_info=dashboard.month_start(), top_types=dashboard.month_top_types(), sales_days=dashboard.sales_by_day(SALES_DAYS), sales_today=dashboard.db_today(),
+                              scrap_sold=dashboard.scrap_sold_by_day(SALES_DAYS))
                 changes, lines, shares = invoice_amount_rules.read_full(dashboard)
                 result.update(self.corrected_figures(result, changes, lines, shares, result["sales_today"]))
             if STOCK_PERMISSIONS & set(verified.permissions):                  # the minimum-stock shortages follow the CURRENT inventory grants
@@ -304,6 +348,7 @@ class DashboardService:
             if "CUSTOMERS_VIEW" in set(verified.permissions):                 # the customer balances follow the CURRENT customers grants
                 result["can_see_balances"] = True
                 result["customer_balances"] = dashboard.customer_balances()
+                result["balance_totals"] = dashboard.customer_balance_totals()
                 result["debt_today"] = dashboard.db_today()
                 result["debt_ledger"] = self._reports(connection).customer_open_ledger()
             return sales, result
@@ -339,6 +384,15 @@ class DashboardService:
             """The 30-day moving average of the shop BUY price ending at that day (None without enough stored days)."""
             found = indicators_math.moving_average(merged[:index + 1], 1, 30)
             return str(found[0]) if found else None
+
+        def average90(index):
+            """The 90-day moving average of the shop BUY price ending at that day, over the stored series (the days before the shown ones included).
+            None unless the stored history reaches back 90 calendar days (that day included): a gap, never invented."""
+            ended = merged[index][0]
+            if merged[0][0] > ended - timedelta(days=MOVING_AVERAGE_LONG_DAYS - 1):
+                return None
+            found = indicators_math.moving_average(merged[:index + 1], 1, MOVING_AVERAGE_LONG_DAYS)
+            return str(found[0]) if found else None
         snapshot["year_range"] = self.year_range(merged)
         from services import market_reading
         scrap21 = next((balance[k] for k in balance if k == 21), None)
@@ -346,7 +400,7 @@ class DashboardService:
         snapshot["readings"] = {"gold": market_reading.gold_reading([(d, b) for d, b, _ in merged], scrap21),
                                 "usd": market_reading.fx_reading("الدولار", history.get("USD")), "eur": market_reading.fx_reading("اليورو", history.get("EUR"))}
         snapshot["latest_price"] = {"buy": str(merged[-1][1]), "sell": str(merged[-1][2])} if merged else None
-        snapshot["price_series"] = [{"day": d.isoformat(), "buy": str(b), "sell": str(s), "ma": average30(first_shown + i)}
+        snapshot["price_series"] = [{"day": d.isoformat(), "buy": str(b), "sell": str(s), "ma": average30(first_shown + i), "ma90": average90(first_shown + i)}
                                     for i, (d, b, s) in enumerate(merged[first_shown:])]
         if self._currency_rates is not None:                          # after the database read: a slow network never holds a transaction
             snapshot["currency_rates"] = self._currency_rates()
@@ -355,6 +409,7 @@ class DashboardService:
         snapshot["can_see_balances"] = bool(raw.get("can_see_balances"))
         if snapshot["can_see_balances"]:
             snapshot["customer_balances"] = self.balances(raw.get("customer_balances"))
+            snapshot["balance_totals"] = self.balance_totals(raw.get("balance_totals"))
             snapshot["overdue"] = self.overdue(raw.get("debt_ledger"), raw["debt_today"])
         if sales:
             invoices = raw["invoices"] or {}
@@ -373,8 +428,9 @@ class DashboardService:
                       for karat in sorted(sold, key=lambda k: (k not in DASHBOARD_KARATS,
                                                               DASHBOARD_KARATS.index(k) if k in DASHBOARD_KARATS else k))],
                 month=self.month_summary(raw["month"], raw["prev_year"]), month_day=int((raw.get("month_info") or {}).get("day") or 0),
-                top_types=self.top_types(raw.get("top_types")), making_averages=self.making_averages(raw.get("making_groups")), scrap_today=self.scrap_today(raw.get("scrap"), raw.get("scrap_prices")),
+                top_types=self.top_types(raw.get("top_types")), making_averages=self.making_averages(raw.get("making_groups")), scrap_discount_pct=self.scrap_discount(raw.get("scrap_discount")), scrap_today=self.scrap_today(raw.get("scrap"), raw.get("scrap_prices")),
                 sales_days=self.sales_days(raw.get("sales_days"), raw.get("sales_today")))
             snapshot["week_compare"] = self.week_compare(snapshot["sales_days"])
             snapshot["scrap_vs_sold"] = self.scrap_vs_sold(raw.get("scrap"), raw.get("sold"))
+            snapshot["scrap_sold_days"] = self.scrap_sold_days(raw.get("scrap_sold"), raw.get("sales_today"))
         return snapshot

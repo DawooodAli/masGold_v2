@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "ChartKit.js" as Chart
 import MasGold.Reports 1.0
 
 // التقارير الأساسية: المبيعات والمرتجعات، المخزون المتاح، حركة المخزون والذهب، العملاء، الموردون، الخزنة والبنوك.
@@ -48,6 +49,10 @@ Item {
     function cardValue(text) {
         return /[\u0600-\u06FF]/.test(String(text)) ? String(text) : ltr(text)
     }
+    // the heatmap ramp: ONE hue (the theme accent) from the surface to a strong tint, light -> dark by value; the ratio 0..1 comes from the service, only the colour mapping is done here
+    function heatColor(ratio) {
+        return Qt.tint(theme.bgSecondary, Qt.rgba(theme.gold.r, theme.gold.g, theme.gold.b, 0.12 + 0.72 * Math.max(0, Math.min(1, ratio))))
+    }
     // the totals grouped for the grid rows (a card keeps its global order for its object name)
     readonly property var totalGroups: {
         var out = [], index = {}
@@ -78,7 +83,7 @@ Item {
             target: reportsVM
             function onChanged() { if (!!reportsVM.demandChart.granularity && !demandChartDialog.opened) demandChartDialog.open(); demandCanvas.requestPaint() }
         }
-        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.gold; border.width: 2 }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 8
             Label { objectName: "reportDemandChartTitle"; Layout.fillWidth: true; font.bold: true; font.pixelSize: theme.fontSection; color: theme.gold; horizontalAlignment: Text.AlignRight
@@ -116,47 +121,59 @@ Item {
             Label { objectName: "reportDemandChartError"; Layout.fillWidth: true; visible: !!reportsVM.demandChart.error; color: theme.red; text: reportsVM.demandChart.error || ""; wrapMode: Text.WordWrap }
             Label { objectName: "reportDemandChartEmpty"; Layout.fillWidth: true; visible: !reportsVM.demandChart.loading && !reportsVM.demandChart.error && reportsVM.demandChart.hasData === false; color: theme.textMuted
                     text: "لا توجد بيانات مبيعات بأوزان معروفة لهذه السنة."; horizontalAlignment: Text.AlignRight }
-            Canvas {
-                id: demandCanvas
-                objectName: "reportDemandChartCanvas"
+            Item {
+                id: demandBox
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                readonly property var palette: ["#DDB961", "#70B0F1", "#5EC3CE", "#A5B2C3", "#77C599", "#E7AA5B"]
-                onPaint: {
-                    var ctx = getContext("2d")
-                    ctx.reset()
-                    var labels = reportsVM.demandChart.labels || []
-                    if (labels.length < 2) return
-                    var lines = reportsVM.demandChart.lines || []
-                    var left = 52, right = 8, top = 8, bottom = 22
-                    var w = width - left - right, h = height - top - bottom
-                    var high = reportsVM.demandChart.high || 0
-                    if (high <= 0) high = 1
-                    function x(i) { return left + w * i / (labels.length - 1) }
-                    function y(v) { return top + h * (1 - v / high) }
-                    ctx.strokeStyle = "#303842"; ctx.fillStyle = "#858D97"; ctx.font = "11px sans-serif"; ctx.lineWidth = 1
-                    for (var g = 0; g <= 4; ++g) {
-                        var gv = high * g / 4
-                        ctx.beginPath(); ctx.moveTo(left, y(gv)); ctx.lineTo(left + w, y(gv)); ctx.stroke()
-                        ctx.fillText(Math.round(gv).toString(), 4, y(gv) + 4)
-                    }
-                    var step = labels.length > 20 ? 4 : 1
-                    for (var i = 0; i < labels.length; i += step) ctx.fillText(labels[i], x(i) - 10, height - 6)
-                    function line(values, color, dash) {
-                        ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.setLineDash(dash)
-                        ctx.beginPath()
-                        var started = false
-                        for (var k = 0; k < values.length; ++k) {
-                            var v = values[k]
-                            if (v === null || v === undefined) { started = false; continue }
-                            if (!started) { ctx.moveTo(x(k), y(v)); started = true } else ctx.lineTo(x(k), y(v))
+                property int hover: -1
+                Canvas {
+                    id: demandCanvas
+                    objectName: "reportDemandChartCanvas"
+                    anchors.fill: parent
+                    readonly property var palette: ["#DDB961", "#70B0F1", "#5EC3CE", "#A5B2C3", "#77C599", "#E7AA5B"]
+                    property int hover: demandBox.hover
+                    property var geo: null
+                    onHoverChanged: requestPaint()
+                    onPaint: {
+                        var ctx = getContext("2d")
+                        ctx.reset()
+                        var labels = reportsVM.demandChart.labels || []
+                        if (labels.length < 2) return
+                        var lines = reportsVM.demandChart.lines || []
+                        var f = Chart.frame(ctx, width, height, 0, reportsVM.demandChart.high > 0 ? reportsVM.demandChart.high : 1, { count: labels.length, labels: labels, maxLabels: labels.length > 20 ? 12 : 12, zeroBase: true, grid: "" + theme.border, text: "" + theme.textMuted })
+                        geo = f
+                        var surface = "" + theme.bgSecondary
+                        if (lines.length > 0) Chart.wash(ctx, f, lines[0].values, palette[0])      // the newest year carries the wash
+                        for (var li = lines.length - 1; li >= 0; --li) Chart.line(ctx, f, lines[li].values, palette[li % palette.length], li === 0 ? [] : [6, 4])
+                        for (var ei = 0; ei < lines.length; ++ei) Chart.endDot(ctx, f, lines[ei].values, palette[ei % palette.length], surface)
+                        if (hover >= 0 && hover < labels.length) {
+                            Chart.crosshair(ctx, f, hover, "" + theme.textMuted)
+                            for (var hi = 0; hi < lines.length; ++hi) {
+                                var hv = lines[hi].values[hover]
+                                if (hv !== null && hv !== undefined) Chart.dot(ctx, f.x(hover), f.y(hv), palette[hi % palette.length], surface)
+                            }
                         }
-                        ctx.stroke()
-                        ctx.setLineDash([])
-                        ctx.fillStyle = color
-                        for (var j = 0; j < values.length; ++j) if (values[j] !== null && values[j] !== undefined) { ctx.beginPath(); ctx.arc(x(j), y(values[j]), 2.5, 0, 6.2832); ctx.fill() }
                     }
-                    for (var li = lines.length - 1; li >= 0; --li) line(lines[li].values, palette[li % palette.length], li === 0 ? [] : [6, 4])
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    onPositionChanged: function (m) { demandBox.hover = demandCanvas.geo ? Chart.indexAt(demandCanvas.geo, m.x, (reportsVM.demandChart.labels || []).length) : -1 }
+                    onExited: demandBox.hover = -1
+                }
+                ChartTip {
+                    shown: demandBox.hover >= 0 && (reportsVM.demandChart.labels || []).length > demandBox.hover
+                    anchorX: shown && demandCanvas.geo ? demandCanvas.geo.x(demandBox.hover) : 0
+                    title: shown ? reportsVM.demandChart.labels[demandBox.hover] : ""
+                    rows: {
+                        if (!shown) return []
+                        var out = [], lines = reportsVM.demandChart.lines || []
+                        for (var i = 0; i < lines.length; ++i) {
+                            var v = lines[i].values[demandBox.hover]
+                            if (v !== null && v !== undefined) out.push({ name: lines[i].year, value: Chart.fmt(v, 0) + " جرام", color: demandCanvas.palette[i % demandCanvas.palette.length] })
+                        }
+                        return out
+                    }
                 }
             }
             RowLayout {
@@ -185,7 +202,7 @@ Item {
             target: reportsVM
             function onChanged() { if (!!reportsVM.pieces.open && !piecesDialog.opened) piecesDialog.open() }
         }
-        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 8
             Label { objectName: "reportPiecesTitle"; Layout.fillWidth: true; text: reportsVM.pieces.title || ""; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; horizontalAlignment: Text.AlignRight }
@@ -235,7 +252,7 @@ Item {
             target: reportsVM
             function onChanged() { if (!!reportsVM.chart.type && !chartDialog.opened) chartDialog.open() }
         }
-        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 8
             Label { objectName: "reportChartTitle"; Layout.fillWidth: true; text: "المبيعات الشهرية — " + (reportsVM.chart.type || ""); color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; horizontalAlignment: Text.AlignRight }
@@ -557,7 +574,7 @@ Item {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 420
                 radius: theme.radiusCard; color: theme.panel
-                border.color: page.karatColor(21); border.width: 2
+                border.color: theme.cardBorder; border.width: 1
                 Connections {
                     target: reportsVM
                     function onChanged() {
@@ -589,44 +606,58 @@ Item {
                     }
                     Label { objectName: "reportPriceChartLoading"; Layout.fillWidth: true; visible: !!reportsVM.priceChart.loading; color: theme.textMuted; text: "جارٍ التحميل…"; horizontalAlignment: Text.AlignRight }
                     Label { objectName: "reportPriceChartError"; Layout.fillWidth: true; visible: !!reportsVM.priceChart.error; color: theme.red; text: reportsVM.priceChart.error || ""; wrapMode: Text.WordWrap }
-                    Canvas {
-                        id: priceCanvas
-                        objectName: "reportPriceChartCanvas"
+                    Item {
+                        id: priceBox
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        onPaint: {
-                            var ctx = getContext("2d")
-                            ctx.reset()
-                            var points = reportsVM.priceChart.points || []
-                            if (points.length < 2) return
-                            var left = 52, right = 8, top = 8, bottom = 20
-                            var w = width - left - right, h = height - top - bottom
-                            var low = reportsVM.priceChart.low, high = reportsVM.priceChart.high
-                            if (high <= low) high = low + 1
-                            function x(i) { return left + w * i / (points.length - 1) }
-                            function y(v) { return top + h * (1 - (v - low) / (high - low)) }
-                            ctx.strokeStyle = "#303842"; ctx.fillStyle = "#858D97"; ctx.font = "11px sans-serif"; ctx.lineWidth = 1
-                            for (var g = 0; g <= 4; ++g) {
-                                var gv = low + (high - low) * g / 4
-                                ctx.beginPath(); ctx.moveTo(left, y(gv)); ctx.lineTo(left + w, y(gv)); ctx.stroke()
-                                ctx.fillText(Math.round(gv).toString(), 4, y(gv) + 4)
-                            }
-                            ctx.fillText(points[0].date, left, height - 4)
-                            ctx.fillText(points[points.length - 1].date, left + w - 62, height - 4)
-                            function line(key, color, dash) {
-                                ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.setLineDash(dash)
-                                ctx.beginPath()
-                                var started = false
-                                for (var i = 0; i < points.length; ++i) {
-                                    var v = points[i][key]
-                                    if (v === null || v === undefined) continue
-                                    if (!started) { ctx.moveTo(x(i), y(v)); started = true } else ctx.lineTo(x(i), y(v))
+                        property int hover: -1
+                        Canvas {
+                            id: priceCanvas
+                            objectName: "reportPriceChartCanvas"
+                            anchors.fill: parent
+                            property int hover: priceBox.hover
+                            property var geo: null
+                            onHoverChanged: requestPaint()
+                            onPaint: {
+                                var ctx = getContext("2d")
+                                ctx.reset()
+                                var points = reportsVM.priceChart.points || []
+                                if (points.length < 2) return
+                                var labels = [], sells = [], buys = [], avgs = []
+                                for (var i = 0; i < points.length; ++i) { labels.push(points[i].date.slice(5).replace("-", "/")); sells.push(points[i].sell); buys.push(points[i].buy); avgs.push(points[i].average) }
+                                var f = Chart.frame(ctx, width, height, reportsVM.priceChart.low, reportsVM.priceChart.high > reportsVM.priceChart.low ? reportsVM.priceChart.high : reportsVM.priceChart.low + 1,
+                                                    { count: points.length, labels: labels, maxLabels: 8, grid: "" + theme.border, text: "" + theme.textMuted })
+                                geo = f
+                                var surface = "" + theme.bgSecondary, sell = "" + theme.priceSell, buy = "" + theme.priceBuy
+                                Chart.wash(ctx, f, buys, buy)
+                                Chart.line(ctx, f, avgs, "" + theme.textMuted, [6, 4])
+                                Chart.line(ctx, f, sells, sell)
+                                Chart.line(ctx, f, buys, buy)
+                                Chart.endDot(ctx, f, sells, sell, surface)
+                                Chart.endDot(ctx, f, buys, buy, surface)
+                                if (hover >= 0 && hover < points.length) {
+                                    Chart.crosshair(ctx, f, hover, "" + theme.textMuted)
+                                    Chart.dot(ctx, f.x(hover), f.y(sells[hover]), sell, surface)
+                                    Chart.dot(ctx, f.x(hover), f.y(buys[hover]), buy, surface)
                                 }
-                                ctx.stroke()
                             }
-                            line("sell", "#E2BC63", [])
-                            line("buy", "#73CBB0", [])
-                            line("average", "#858D97", [6, 4])
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            onPositionChanged: function (m) { priceBox.hover = priceCanvas.geo ? Chart.indexAt(priceCanvas.geo, m.x, (reportsVM.priceChart.points || []).length) : -1 }
+                            onExited: priceBox.hover = -1
+                        }
+                        ChartTip {
+                            shown: priceBox.hover >= 0 && (reportsVM.priceChart.points || []).length > priceBox.hover
+                            anchorX: shown && priceCanvas.geo ? priceCanvas.geo.x(priceBox.hover) : 0
+                            title: shown ? reportsVM.priceChart.points[priceBox.hover].date : ""
+                            rows: {
+                                if (!shown) return []
+                                var p = reportsVM.priceChart.points[priceBox.hover], out = [{ name: "بيع المحل", value: Chart.fmt(p.sell, 0) + " ج", color: "" + theme.priceSell }, { name: "شراء المحل", value: Chart.fmt(p.buy, 0) + " ج", color: "" + theme.priceBuy }]
+                                if (p.average !== null && p.average !== undefined) out.push({ name: "متوسط 30 يوم", value: Chart.fmt(p.average, 0) + " ج", color: "" + theme.textMuted })
+                                return out
+                            }
                         }
                     }
                     RowLayout {
@@ -672,46 +703,62 @@ Item {
                         }
                         Item { Layout.fillWidth: true }
                     }
-                    Canvas {
-                        id: lineCanvas
-                        objectName: "reportLineCanvas_" + lineGroup.modelData.key
+                    Item {
+                        id: lineBox
                         Layout.fillWidth: true
                         Layout.preferredHeight: 300
-                        onWidthChanged: requestPaint()
-                        Connections { target: reportsVM; function onChanged() { lineCanvas.requestPaint() } }
-                        onPaint: {
-                            var ctx = getContext("2d")
-                            ctx.reset()
-                            var labels = lineGroup.modelData.labels || []
-                            if (labels.length < 2) return
-                            var series = lineGroup.modelData.series || []
-                            var low = lineGroup.modelData.low, high = lineGroup.modelData.high
-                            var pad = (high - low) * 0.1; if (pad <= 0) pad = Math.max(1, Math.abs(high) * 0.05)
-                            low -= pad; high += pad
-                            var left = 64, right = 10, top = 10, bottom = 24
-                            var w = width - left - right, h = height - top - bottom
-                            function x(i) { return left + w * i / (labels.length - 1) }
-                            function y(v) { return top + h * (1 - (v - low) / (high - low)) }
-                            ctx.strokeStyle = "#303842"; ctx.fillStyle = "#858D97"; ctx.font = "11px sans-serif"; ctx.lineWidth = 1
-                            for (var g = 0; g <= 4; ++g) {
-                                var gv = low + (high - low) * g / 4
-                                ctx.beginPath(); ctx.moveTo(left, y(gv)); ctx.lineTo(left + w, y(gv)); ctx.stroke()
-                                ctx.fillText(gv.toFixed(1), 4, y(gv) + 4)
-                            }
-                            var step = Math.max(1, Math.ceil(labels.length / 12))
-                            for (var i = 0; i < labels.length; i += step) ctx.fillText(labels[i], x(i) - 12, height - 6)
-                            for (var si = 0; si < series.length; ++si) {
-                                var color = series[si].tone === "total" ? "#5EC3CE" : "#DDB961"
-                                var values = series[si].values
-                                ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath()
-                                var started = false
-                                for (var k = 0; k < values.length; ++k) {
-                                    if (values[k] === null || values[k] === undefined) { started = false; continue }
-                                    if (!started) { ctx.moveTo(x(k), y(values[k])); started = true } else ctx.lineTo(x(k), y(values[k]))
+                        property int hover: -1
+                        Canvas {
+                            id: lineCanvas
+                            objectName: "reportLineCanvas_" + lineGroup.modelData.key
+                            anchors.fill: parent
+                            property int hover: lineBox.hover
+                            property var geo: null
+                            onWidthChanged: requestPaint()
+                            onHoverChanged: requestPaint()
+                            Connections { target: reportsVM; function onChanged() { lineCanvas.requestPaint() } }
+                            onPaint: {
+                                var ctx = getContext("2d")
+                                ctx.reset()
+                                var labels = lineGroup.modelData.labels || []
+                                if (labels.length < 2) return
+                                var series = lineGroup.modelData.series || []
+                                var f = Chart.frame(ctx, width, height, lineGroup.modelData.low, lineGroup.modelData.high, { count: labels.length, labels: labels, maxLabels: 12, grid: "" + theme.border, text: "" + theme.textMuted })
+                                geo = f
+                                var surface = "" + theme.bgPrimary
+                                for (var si = 0; si < series.length; ++si) {
+                                    var color = series[si].tone === "total" ? "" + theme.priceBuy : "" + theme.gold
+                                    if (si === 0) Chart.wash(ctx, f, series[si].values, color)
+                                    Chart.line(ctx, f, series[si].values, color)
+                                    Chart.endDot(ctx, f, series[si].values, color, surface)
                                 }
-                                ctx.stroke()
-                                ctx.fillStyle = color
-                                for (var j = 0; j < values.length; ++j) if (values[j] !== null && values[j] !== undefined) { ctx.beginPath(); ctx.arc(x(j), y(values[j]), 2.5, 0, 6.2832); ctx.fill() }
+                                if (hover >= 0 && hover < labels.length) {
+                                    Chart.crosshair(ctx, f, hover, "" + theme.textMuted)
+                                    for (var hi = 0; hi < series.length; ++hi) {
+                                        var hv = series[hi].values[hover]
+                                        if (hv !== null && hv !== undefined) Chart.dot(ctx, f.x(hover), f.y(hv), series[hi].tone === "total" ? "" + theme.priceBuy : "" + theme.gold, surface)
+                                    }
+                                }
+                            }
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            onPositionChanged: function (m) { lineBox.hover = lineCanvas.geo ? Chart.indexAt(lineCanvas.geo, m.x, (lineGroup.modelData.labels || []).length) : -1 }
+                            onExited: lineBox.hover = -1
+                        }
+                        ChartTip {
+                            shown: lineBox.hover >= 0 && (lineGroup.modelData.labels || []).length > lineBox.hover
+                            anchorX: shown && lineCanvas.geo ? lineCanvas.geo.x(lineBox.hover) : 0
+                            title: shown ? lineGroup.modelData.labels[lineBox.hover] : ""
+                            rows: {
+                                if (!shown) return []
+                                var out = [], series = lineGroup.modelData.series || []
+                                for (var i = 0; i < series.length; ++i) {
+                                    var v = series[i].values[lineBox.hover]
+                                    if (v !== null && v !== undefined) out.push({ name: series[i].name, value: Chart.fmt(v, 3), color: series[i].tone === "total" ? "" + theme.priceBuy : "" + theme.gold })
+                                }
+                                return out
                             }
                         }
                     }
@@ -839,6 +886,114 @@ Item {
                         Txt { objectName: "reportPageLabel"; text: "صفحة " + tableBlock.modelData.page + " من " + Math.max(1, Math.ceil(tableBlock.modelData.rowCount / tableBlock.modelData.pageSize)) }
                         Btn { objectName: "reportPrevious"; text: "→ السابق"; enabled: tableBlock.modelData.page > 1 && !reportsVM.busy; onClicked: reportsVM.run(tableBlock.modelData.page - 1) }
                     }
+                }
+            }
+
+            // ---------------------------------------------------------------- weekday x month-part heatmap (demand report, after the weekday and month-part tables): mean daily grams per cell, drawn from the service's ready cells
+            Rectangle {
+                id: heatCard
+                objectName: "reportHeatmapCard"
+                readonly property var heat: reportsVM.result.heatmap || ({})
+                visible: reportsVM.report === "demand" && !!heat.title
+                Layout.fillWidth: true
+                implicitHeight: heatColumn.implicitHeight + 24
+                radius: theme.radiusCard; color: theme.panel
+                border.color: theme.cardBorder; border.width: 1
+                ColumnLayout {
+                    id: heatColumn
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                    anchors.margins: 12
+                    spacing: 6
+                    Txt { objectName: "reportHeatmapTitle"; Layout.fillWidth: true; text: heatCard.heat.title || ""; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
+                    Txt { objectName: "reportHeatmapUnavailable"; Layout.fillWidth: true; visible: heatCard.heat.available === false; color: theme.textMuted; text: heatCard.heat.note || "" }
+                    Item {
+                        id: heatWrap
+                        objectName: "reportHeatmapGrid"
+                        visible: heatCard.heat.available === true
+                        Layout.fillWidth: true
+                        Layout.maximumWidth: 820
+                        Layout.alignment: Qt.AlignRight
+                        implicitHeight: heatGrid.implicitHeight
+                        property var hovered: null
+                        GridLayout {
+                            id: heatGrid
+                            anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                            columns: 5
+                            columnSpacing: 3
+                            rowSpacing: 3
+                            layoutDirection: Qt.RightToLeft
+                            Item { Layout.preferredWidth: 64; Layout.preferredHeight: 22 }
+                            Repeater {
+                                model: heatCard.heat.parts || []
+                                delegate: Txt { required property string modelData; Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.preferredHeight: 22; text: modelData; color: theme.textMuted
+                                                font.pixelSize: theme.fontTableHeader; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.NoWrap; elide: Text.ElideRight }
+                            }
+                            Repeater {
+                                model: (heatCard.heat.rows || []).length * 5
+                                delegate: Item {
+                                    id: heatSlot
+                                    required property int index
+                                    readonly property int row: Math.floor(index / 5)
+                                    readonly property int col: index % 5 - 1
+                                    readonly property var cell: col < 0 ? null : (heatCard.heat.cells || [])[row * 4 + col]
+                                    Layout.fillWidth: col >= 0
+                                    Layout.preferredWidth: col < 0 ? 64 : 1
+                                    Layout.preferredHeight: 36
+                                    Txt { anchors.fill: parent; visible: heatSlot.col < 0; text: heatSlot.col < 0 ? heatCard.heat.rows[heatSlot.row].name : ""; font.pixelSize: theme.fontBodyStrong; color: theme.textSecondary }
+                                    Rectangle {
+                                        id: heatCell
+                                        objectName: heatSlot.col < 0 ? "" : "reportHeatCell_" + heatSlot.row + "_" + heatSlot.col
+                                        anchors.fill: parent
+                                        visible: heatSlot.col >= 0
+                                        radius: 4
+                                        color: heatSlot.cell && heatSlot.cell.enough ? page.heatColor(heatSlot.cell.ratio) : theme.bgTertiary
+                                        border.width: 1
+                                        border.color: heatWrap.hovered === heatCell ? theme.textSecondary : theme.cardBorder
+                                        Txt { objectName: heatSlot.col < 0 ? "" : "reportHeatCellText_" + heatSlot.row + "_" + heatSlot.col; anchors.fill: parent; anchors.margins: 2; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.NoWrap; elide: Text.ElideRight
+                                              text: heatSlot.cell ? (heatSlot.cell.enough ? page.ltr(heatSlot.cell.text) : heatSlot.cell.text) : ""
+                                              font.bold: !!heatSlot.cell && heatSlot.cell.enough
+                                              font.pixelSize: heatSlot.cell && heatSlot.cell.enough ? theme.fontBodyStrong : theme.fontCaption
+                                              color: !heatSlot.cell || !heatSlot.cell.enough ? theme.textMuted : heatSlot.cell.ratio >= 0.55 ? theme.bgPrimary : theme.textPrimary }
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            onEntered: heatWrap.hovered = heatCell
+                                            onExited: if (heatWrap.hovered === heatCell) heatWrap.hovered = null
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        ChartTip {
+                            objectName: "reportHeatmapTip"
+                            readonly property var picked: heatWrap.hovered ? heatCard.heat.cells[heatWrap.hovered.parent.row * 4 + heatWrap.hovered.parent.col] : null
+                            shown: !!picked
+                            anchorX: heatWrap.hovered ? heatWrap.hovered.mapToItem(heatWrap, heatWrap.hovered.width / 2, 0).x : 0
+                            y: heatWrap.hovered ? Math.min(heatWrap.height - height, heatWrap.hovered.mapToItem(heatWrap, 0, heatWrap.hovered.height + 2).y) : 4
+                            title: picked ? picked.weekday + " • " + picked.part : ""
+                            rows: !picked ? [] : picked.enough ? [{ name: "المتوسط اليومي", value: picked.meanText + " جرام", color: "" + theme.gold }, { name: "عدد الأيام", value: "" + picked.days, color: "" + theme.textMuted }]
+                                                                : [{ name: "بيانات غير كافية", value: picked.days + " أيام", color: "" + theme.textMuted }]
+                        }
+                    }
+                    RowLayout {
+                        visible: heatCard.heat.available === true
+                        Layout.fillWidth: true
+                        layoutDirection: Qt.RightToLeft
+                        spacing: 8
+                        Txt { text: "أقل"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+                        Rectangle {
+                            Layout.preferredWidth: 140; Layout.preferredHeight: 10
+                            radius: 3; border.width: 1; border.color: theme.cardBorder
+                            gradient: Gradient {
+                                orientation: Gradient.Horizontal
+                                GradientStop { position: 0.0; color: page.heatColor(1) }
+                                GradientStop { position: 1.0; color: page.heatColor(0) }
+                            }
+                        }
+                        Txt { text: "أعلى"; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
+                        Item { Layout.fillWidth: true }
+                    }
+                    Txt { objectName: "reportHeatmapNote"; Layout.fillWidth: true; visible: heatCard.heat.available === true; text: heatCard.heat.note || ""; color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
                 }
             }
         }

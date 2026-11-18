@@ -68,6 +68,54 @@ class PatternTests(unittest.TestCase):
         self.assertEqual(last, date(2026, 8, 19))
 
 
+class HeatmapTests(unittest.TestCase):
+    def cell(self, heat, row, col):
+        return next(c for c in heat["cells"] if (c["row"], c["col"]) == (row, col))
+
+    def test_the_grid_is_seven_weekdays_saturday_first_by_four_parts_of_the_month(self):
+        values, first, last = sp.daily_values(build(lambda d: 10), TODAY)
+        heat = sp.heatmap(values, first, last)
+        self.assertEqual([w["name"] for w in heat["weekdays"]], ["السبت", "الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة"])
+        self.assertEqual([p["label"] for p in heat["parts"]], ["من 1 إلى 7", "من 8 إلى 14", "من 15 إلى 21", "من 22 إلى آخر الشهر"])
+        self.assertEqual(len(heat["cells"]), 28)
+        self.assertEqual((self.cell(heat, 0, 0)["weekday"], self.cell(heat, 6, 3)["weekday"]), (5, 4))              # row 0 = Saturday (date.weekday() 5), row 6 = Friday (4)
+
+    def test_every_cell_is_the_mean_of_exactly_the_days_that_are_that_weekday_and_in_that_part(self):
+        values, first, last = sp.daily_values(build(lambda d: 40 if d.weekday() == 5 and d.day >= 22 else 10), TODAY)
+        heat = sp.heatmap(values, first, last)
+        for c in heat["cells"]:
+            low, high, _ = sp.MONTH_PARTS[c["col"]]
+            days = [d for d in values if d.weekday() == c["weekday"] and low <= d.day <= high]
+            self.assertEqual(c["days"], len(days))
+            self.assertEqual(c["mean"], D("40.000") if (c["weekday"], c["col"]) == (5, 3) else D("10.000"))
+        self.assertEqual(heat["max_mean"], D("40.000"))
+        self.assertEqual(self.cell(heat, 0, 3)["ratio"], D("1.0000"))                                              # the darkest cell
+        self.assertEqual(self.cell(heat, 3, 1)["ratio"], D("0.2500"))                                              # 10 / 40
+        self.assertTrue(all(isinstance(c["mean"], D) and isinstance(c["ratio"], D) for c in heat["cells"]))
+
+    def test_a_real_zero_day_stays_a_zero_but_a_cell_with_too_few_days_has_no_number_at_all(self):
+        closed = sp.daily_values(build(lambda d: 0 if d.weekday() == 4 else 10), TODAY)
+        heat = sp.heatmap(*closed)
+        friday = self.cell(heat, 6, 0)
+        self.assertEqual((friday["enough"], friday["mean"], friday["ratio"]), (True, D("0.000"), D("0.0000")))      # the shop was closed: a real zero measured over many days
+        short = sp.daily_values(build(lambda d: 10 if d < date(2025, 4, 1) else 0), TODAY)                           # February-March 2025 only: some cells have 1-2 days
+        thin = sp.heatmap(*short)
+        missing = [c for c in thin["cells"] if c["days"] < sp.MIN_HEATMAP_DAYS]
+        self.assertTrue(missing)
+        for c in thin["cells"]:
+            self.assertEqual(c["enough"], c["days"] >= sp.MIN_HEATMAP_DAYS)
+            if c["enough"]:
+                self.assertEqual(c["mean"], D("10.000"))
+            else:
+                self.assertEqual((c["mean"], c["ratio"]), (None, None))                                              # never a zero
+        self.assertEqual(thin["enough_cells"], 28 - len(missing))
+
+    def test_a_sparse_or_empty_history_gives_no_heatmap(self):
+        self.assertIsNone(sp.heatmap(None, None, None))
+        sparse, first, last = sp.daily_values(build(lambda d: 10 if d.day == 15 else 0), TODAY)
+        self.assertIsNone(sp.heatmap(sparse, first, last))
+
+
 class UpliftTests(unittest.TestCase):
     def test_uplift_compares_the_window_with_the_days_around_it_and_ignores_other_seasons(self):
         windows = {(w["key"], w["start"].year): w for y in (2025, 2026) for w in sp.season_windows(y)}

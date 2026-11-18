@@ -233,7 +233,7 @@ Rectangle {
         parent: Overlay.overlay; anchors.centerIn: parent; width: Math.min(Overlay.overlay.width-24,460)   // centred on the window, never on the (taller) embedded page
         modal: true; title: direction === "IN" ? "عربون" : "استرداد عربون"; font.family: "Cairo"
         closePolicy: page.vm && page.vm.busy ? Popup.NoAutoClose : Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgPrimary; radius: 8; border.color: theme.goldDark }
+        background: Rectangle { color: theme.bgPrimary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             Txt { objectName: "customerRefundBalance"
                 text: page.vm ? (depositDialog.direction === "OUT" ? page.vm.refundBalance : page.vm.balance) : ""
@@ -276,7 +276,7 @@ Rectangle {
         parent: Overlay.overlay; anchors.centerIn: parent; width: Math.min(Overlay.overlay.width-24,460)
         modal: true; title: "إضافة رصيد قديم"; font.family: "Cairo"
         closePolicy: page.vm && page.vm.busy ? Popup.NoAutoClose : Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgPrimary; radius: 8; border.color: theme.goldDark }
+        background: Rectangle { color: theme.bgPrimary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             Txt { text: "رصيد قديم من الدفاتر الورقية يُسجَّل على حساب العميل فقط، ولا يؤثر على الخزنة أو البنوك أو المحافظ."; color: theme.textSecondary }
             Txt { objectName: "customerLegacyCurrent"; text: page.vm ? "الرصيد الحالي: " + page.vm.balance : ""; color: theme.gold; font.bold: true }
@@ -306,7 +306,7 @@ Rectangle {
         parent: Overlay.overlay; anchors.centerIn: parent; width: Math.min(Overlay.overlay.width-24,760); height: Math.min(Overlay.overlay.height-24,500)
         modal: true; title: "تسوية الحساب"; font.family: "Cairo"
         closePolicy: page.vm && page.vm.busy ? Popup.NoAutoClose : Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgPrimary; radius: 8; border.color: theme.goldDark }
+        background: Rectangle { color: theme.bgPrimary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             Txt { text: page.vm ? page.vm.balance : ""; color: theme.gold; font.bold: true }
             Txt { text: page.vm ? page.vm.message : ""; visible: text.length>0 }

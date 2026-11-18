@@ -7,7 +7,8 @@ QtObject {
     // semantic colours below (shop buy / shop sell, karats, status, account direction) mean the same thing in every theme.
     readonly property string mode: typeof themeVM !== "undefined" ? themeVM.name : "gold"
     readonly property var palettes: ({
-        "gold":   { bg0: "#11151A", bg1: "#181D23", bg2: "#20262E", hover: "#222A33", line: "#303842", card: "#3B4552", a0: "#D0A64A", a1: "#E2BC63", a2: "#A98132" },
+        // "gold" = the official Luxury Enterprise Hybrid identity (owner 2026-11-18): background / surface / elevated / border / champagne gold as in the design brief.
+        "gold":   { bg0: "#101216", bg1: "#191D24", bg2: "#252B35", hover: "#2B323E", line: "#303640", card: "#3B4552", a0: "#C6A45C", a1: "#D9BE82", a2: "#9C8048", side: "#141820" },
         "blue":   { bg0: "#0E141D", bg1: "#141C28", bg2: "#1B2536", hover: "#1F2B3E", line: "#2B3A52", card: "#37486A", a0: "#6FA8F0", a1: "#8FBDF5", a2: "#4A7FC4" },
         "green":  { bg0: "#0F1612", bg1: "#151F19", bg2: "#1C2A22", hover: "#213229", line: "#2B3E33", card: "#375043", a0: "#58C28E", a1: "#7AD6A8", a2: "#3E9A6D" },
         "violet": { bg0: "#14111B", bg1: "#1B1725", bg2: "#241F31", hover: "#2A2338", line: "#3A3150", card: "#4A3F66", a0: "#B08CE8", a1: "#C7A8F2", a2: "#8A66C4" }
@@ -17,6 +18,7 @@ QtObject {
     readonly property color bgPrimary: pal.bg0
     readonly property color bgSecondary: pal.bg1
     readonly property color bgTertiary: pal.bg2
+    readonly property color bgSidebar: pal.side !== undefined ? pal.side : pal.bg1
 
     readonly property color panel: pal.bg1
     readonly property color panelHover: pal.hover
@@ -27,9 +29,9 @@ QtObject {
     readonly property color goldBright: pal.a1
     readonly property color goldDark: pal.a2
 
-    readonly property color textPrimary: "#F1F2F4"
+    readonly property color textPrimary: "#E7E9ED"
     readonly property color textSecondary: "#CDD1D6"
-    readonly property color textMuted: "#858D97"
+    readonly property color textMuted: "#9299A5"
     readonly property color textDisabled: "#5E6670"
 
     readonly property color green: "#77C599"

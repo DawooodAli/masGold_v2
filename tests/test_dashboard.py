@@ -5,16 +5,17 @@ and empty states. QML: the real Main.qml at 1440×900 / 1280×800 / 1080×680 (s
 MASGOLD_UI_REVIEW_DIR is set), permissions and refresh after a finalized invoice.
 """
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 import os
 from pathlib import Path
 import unittest
 
-from PySide6.QtCore import QPointF
+from PySide6.QtCore import QPoint, QPointF
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtTest import QTest
 
+from app.formatting import ltr
 from app.session import AppSession
 from app.viewmodels.dashboard_viewmodel import DashboardViewModel
 from services.authentication_service import AuthenticationResult, _VERIFIED
@@ -50,6 +51,14 @@ class FakeDashboardRepo:
     def sales_by_day(self, days=14):
         return []
 
+    def scrap_sold_by_day(self, days=14):
+        self.state["reads"].append("scrap_sold")
+        return self.state.get("scrap_sold", [])
+
+    def customer_balance_totals(self):
+        self.state["reads"].append("balance_totals")
+        return self.state.get("balance_totals")
+
     def month_start(self):
         self.state["reads"].append("month_start")
         return self.state["month_info"]
@@ -82,6 +91,10 @@ class FakeDashboardRepo:
     def today_making_groups(self):
         self.state["reads"].append("making")
         return self.state.get("making_groups", [])
+
+    def today_scrap_discount(self):
+        self.state["reads"].append("scrap_discount")
+        return self.state.get("scrap_discount", {"gross": 0, "discount": 0})
 
     def latest_shop_buy_prices(self):
         self.state["reads"].append("scrap_prices")
@@ -116,6 +129,13 @@ def price_series():
     """12 stored 21K days ending 2026-09-27, buy rising 6,000 → 6,275 (sell +25): the 30-day
     average of the buy price is 6,137.50 and the latest sits 2.24% above it."""
     return [{"day": datetime(2026, 9, 16 + i), "buy": D(6000 + 25 * i), "sell": D(6025 + 25 * i)} for i in range(12)]
+
+
+def long_price_state(rows):
+    """`rows` stored 21K days ending 2026-09-27, buy 5,000 + 10 per day (index 0 = the oldest day), sell +25: the 90-day average of the buy price ending at index j >= 89 is 5,000 + 10 * (j - 44.5)."""
+    state = empty_state()
+    state["price_daily"] = [{"day": datetime(2026, 9, 27) - timedelta(days=rows - 1 - i), "buy": D(5000 + 10 * i), "sell": D(5025 + 10 * i)} for i in range(rows)]
+    return state
 
 
 def empty_state():
@@ -153,6 +173,11 @@ def busy_state():
         {"customer_id": 9, "name": "منى علي", "customer_code": None, "is_active": 1, "occurred_at": datetime(2026, 9, 25), "amount_delta": D("700.00")},        # recent: not overdue
         {"customer_id": 11, "name": "عميل موقوف", "customer_code": None, "is_active": 0, "occurred_at": datetime(2026, 1, 1), "amount_delta": D("50.00")}]
     state["balance"][0]["balance_grams"] = D("128.520")
+    # today (2026-09-27): 21K 10 g + 18K 4 g bought, 21K 7.1 g + 18K 4.25 g sold; two days ago 2.1 g of 24K sold
+    state["scrap_sold"] = [{"day": date(2026, 9, 25), "karat_value": 24, "bought": D("0.000"), "sold": D("2.100")},
+                           {"day": date(2026, 9, 27), "karat_value": 18, "bought": D("4.000"), "sold": D("4.250")},
+                           {"day": date(2026, 9, 27), "karat_value": 21, "bought": D("10.000"), "sold": D("7.100")}]
+    state["balance_totals"] = {"owed": D("25000.00"), "owed_count": 1, "credit": D("3200.00"), "credit_count": 1}
     return state
 
 
@@ -208,7 +233,7 @@ class DashboardServiceTests(unittest.TestCase):
         state = busy_state()
         make_service(state)[0].today()
         self.assertEqual(sorted(state["reads"]), ["flow", "invoices", "making", "month", "month_prev", "month_start",
-                                                  "price_daily", "price_legacy", "scrap", "scrap_prices", "sold", "top_types"])
+                                                  "price_daily", "price_legacy", "scrap", "scrap_discount", "scrap_prices", "scrap_sold", "sold", "top_types"])
 
     def test_no_money_received_cash_or_bank_balances_on_the_dashboard(self):
         snapshot = make_service(busy_state())[0].today()
@@ -296,6 +321,14 @@ class DashboardNewCardsServiceTests(unittest.TestCase):
         overdue = make_service(state, CUSTOMERS)[0].today()["overdue"]
         self.assertEqual((overdue["total"], overdue["customers"], overdue["rows"]), ("0.00", 0, []))
 
+    def test_the_average_scrap_purchase_discount_is_a_weighted_percent_and_never_zero_without_a_purchase(self):
+        state = busy_state()
+        state["scrap_discount"] = {"gross": D("10000.00"), "discount": D("155.00")}                 # 1.55 % of the gross value
+        self.assertEqual(make_service(state, BILLING)[0].today()["scrap_discount_pct"], "1.55")
+        state["scrap_discount"] = {"gross": D("0"), "discount": D("0")}                               # nothing bought today
+        self.assertIsNone(make_service(state, BILLING)[0].today()["scrap_discount_pct"])
+        self.assertEqual(DashboardService.scrap_discount({"gross": D("3"), "discount": D("0.125")}), "4.17")   # ROUND_HALF_UP to two decimals
+
     def test_making_averages_are_weighted_per_group_and_never_invent_zero(self):
         state = busy_state()
         state["making_groups"] = [{"grp": "PIECES", "grams": D("10"), "known_grams": D("8"), "making": D("400")},
@@ -326,6 +359,48 @@ class DashboardNewCardsServiceTests(unittest.TestCase):
         self.assertNotIn(("dead", 180), state["reads"])
 
 
+class DashboardChartsServiceTests(unittest.TestCase):
+    """The scrap-bought-against-gold-sold chart and the customer balance bar (owner 2026-11-18)."""
+
+    def test_scrap_against_sold_is_one_entry_per_day_in_21k_equivalent_grams(self):
+        days = make_service(busy_state())[0].today()["scrap_sold_days"]
+        self.assertEqual(len(days), 14)
+        self.assertEqual((days[0]["day"], days[-1]["day"]), ("2026-09-14", "2026-09-27"))                  # oldest first, today last
+        # today: 10 + 4 x 18/21 = 13.428571... g bought, 7.1 + 4.25 x 18/21 = 10.742857... g sold: converted to 21K FIRST, rounded once to 0.001 g
+        self.assertEqual(days[-1], {"day": "2026-09-27", "bought": "13.429", "sold": "10.743"})
+        self.assertEqual(days[-3], {"day": "2026-09-25", "bought": "0.000", "sold": "2.400"})              # 2.1 g of 24K = 2.4 g of 21K
+        self.assertEqual(days[-2], {"day": "2026-09-26", "bought": "0.000", "sold": "0.000"})              # a day without a line is a zero, never absent
+
+    def test_scrap_against_sold_never_adds_raw_grams_across_karats(self):
+        rows = [{"day": date(2026, 9, 27), "karat_value": 18, "bought": D("14.000"), "sold": D("0")},
+                {"day": date(2026, 9, 27), "karat_value": 24, "bought": D("7.000"), "sold": D("0")}]
+        today = DashboardService.scrap_sold_days(rows, date(2026, 9, 27))[-1]
+        self.assertEqual(today["bought"], "20.000")                                                       # 14 x 18/21 + 7 x 24/21 = 12 + 8, not 21 raw grams
+        # one rounding per figure: three lines of 0.0004 g of 21K each stay one 0.0012 g exact sum (0.001), not three roundings to 0
+        tiny = [{"day": date(2026, 9, 27), "karat_value": 21, "bought": D("0.0004"), "sold": D("0")}] * 3
+        self.assertEqual(DashboardService.scrap_sold_days(tiny, date(2026, 9, 27))[-1]["bought"], "0.001")
+
+    def test_scrap_against_sold_needs_the_billing_permission_and_an_empty_window_is_all_zero(self):
+        state = busy_state()
+        plain = make_service(state, VIEW_ONLY)[0].today()
+        self.assertNotIn("scrap_sold_days", plain)
+        self.assertNotIn("scrap_sold", state["reads"])
+        empty = make_service(empty_state())[0].today()["scrap_sold_days"]
+        self.assertEqual((len(empty), {r["bought"] for r in empty}, {r["sold"] for r in empty}), (14, {"0.000"}, {"0.000"}))
+
+    def test_balance_totals_need_a_customers_grant(self):
+        state = busy_state()
+        granted = make_service(state, CUSTOMERS)[0].today()
+        self.assertEqual(granted["balance_totals"], {"owed": "25000.00", "credit": "3200.00", "owed_count": 1, "credit_count": 1})
+        self.assertIn("balance_totals", state["reads"])
+        state = busy_state()
+        plain = make_service(state, BILLING)[0].today()
+        self.assertNotIn("balance_totals", plain)
+        self.assertNotIn("balance_totals", state["reads"])
+        none = make_service({**empty_state(), "balance_totals": None}, CUSTOMERS)[0].today()["balance_totals"]
+        self.assertEqual(none, {"owed": "0.00", "credit": "0.00", "owed_count": 0, "credit_count": 0})
+
+
 class DashboardViewModelTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -347,7 +422,7 @@ class DashboardViewModelTests(unittest.TestCase):
 
     def test_formatting_of_a_busy_day(self):
         vm = self.vm(busy_state())
-        self.assertEqual((vm.invoiceCount, vm.invoiceBreakdown), (3, "بيع 2 • شراء كسر 2"))
+        self.assertEqual((vm.invoiceCount, vm.invoiceBreakdown), (3, "بيع 1 • شراء كسر 1 • مختلطة 1"))      # 2 sale + 2 scrap invoices overlap in one mixed invoice: 1 + 1 + 1 = 3
         self.assertEqual((vm.sellTotalText, vm.buyTotalText), ("48,250 ج", "31,035 ج"))
         self.assertEqual(vm.soldByKarat[0], {"karat": "21", "grams": "7.10", "pieces": "3 قطعة",
                                              "fromOldGold": "منها من الكسر 2.00"})
@@ -381,10 +456,80 @@ class DashboardViewModelTests(unittest.TestCase):
                                                {"name": "منى علي", "code": "", "balance": "3,200 ج",
                                                 "owes": False}])          # the settled customer disappears
 
+    def test_the_third_average_is_the_scrap_purchase_discount_in_percent(self):
+        state = busy_state()
+        state["scrap_discount"] = {"gross": D("10000.00"), "discount": D("150.00")}
+        rows = {r["key"]: r for r in self.vm(state).makingAverages}
+        self.assertEqual(rows["SCRAP"]["label"], "متوسط شراء الكسر في المية")
+        self.assertIn("1.50", rows["SCRAP"]["text"])
+        self.assertIn("%", rows["SCRAP"]["text"])
+        state["scrap_discount"] = {"gross": D("0"), "discount": D("0")}
+        self.assertEqual({r["key"]: r for r in self.vm(state).makingAverages}["SCRAP"]["text"], "—")
+
+    def test_scrap_against_sold_chart_rows_and_texts(self):
+        chart = self.vm(busy_state()).scrapSoldChart
+        self.assertTrue(chart["available"])
+        self.assertEqual(len(chart["days"]), 14)
+        today = chart["days"][-1]
+        self.assertEqual((today["label"], today["boughtText"], today["soldText"]), ("27/09", "13.43 جرام", "10.74 جرام"))
+        self.assertEqual((today["boughtRatio"], today["boughtBest"], today["soldBest"]), (1.0, True, False))   # the tallest column of the window carries the label
+        self.assertAlmostEqual(today["soldRatio"], 10.743 / 13.429, places=3)
+        self.assertEqual(chart["days"][0]["boughtText"], "—")
+        self.assertEqual((chart["boughtTotal"], chart["soldTotal"]), ("13.43 جرام", "13.14 جرام"))
+        self.assertIn("21", chart["caption"])
+        empty = self.vm(empty_state()).scrapSoldChart
+        self.assertEqual((empty["available"], len(empty["days"]), empty["days"][-1]["boughtRatio"]), (False, 14, 0.0))
+        self.assertEqual(self.vm(busy_state(), VIEW_ONLY).scrapSoldChart["days"], [])
+
+    def test_price_chart_carries_the_90_day_average_floats_texts_and_a_range_that_includes_it(self):
+        chart = self.vm(long_price_state(100)).priceChart                                # 30 shown days, the first 19 without a 90-day average
+        self.assertEqual((len(chart["ma90"]), len(chart["ma90Texts"])), (30, 30))
+        self.assertEqual(chart["ma90"][:19], [None] * 19)
+        self.assertEqual(chart["ma90Texts"][:19], [""] * 19)
+        self.assertEqual((chart["ma90"][19], chart["ma90Texts"][19]), (5445.0, "5,445 ج"))
+        self.assertEqual(chart["ma90Texts"][-1], "5,545 ج")
+        self.assertLessEqual(chart["low"], min(v for v in chart["ma90"] if v is not None))
+        self.assertGreaterEqual(chart["high"], max(chart["buy"] + chart["sell"]))
+        # the y range includes a 90-day value that lies outside the buy / sell values: in a falling market the long average sits above every drawn price
+        state = long_price_state(100)
+        state["price_daily"] = [{**r, "buy": D(20000 - 100 * i), "sell": D(20025 - 100 * i)} for i, r in enumerate(state["price_daily"])]
+        falling = self.vm(state).priceChart
+        long_values = [v for v in falling["ma90"] if v is not None]
+        self.assertEqual(falling["high"], max(long_values))
+        self.assertGreater(falling["high"], max(falling["buy"] + falling["sell"]))
+        empty = self.vm(empty_state()).priceChart
+        self.assertEqual((empty["available"], empty["ma90"], empty["ma90Texts"]), (False, [], []))
+
+    def test_balance_split_ready_text_and_shares(self):
+        split = self.vm(busy_state(), CUSTOMERS).balanceSplit
+        self.assertEqual((split["available"], split["owedText"], split["creditText"]), (True, "25,000 ج", "3,200 ج"))
+        self.assertEqual((split["owedCount"], split["creditCount"], split["owedPercent"], split["creditPercent"]), ("1 عميل", "1 عميل", ltr("89%"), ltr("11%")))
+        self.assertAlmostEqual(split["owedRatio"] + split["creditRatio"], 1.0, places=9)
+        self.assertAlmostEqual(split["owedRatio"], 25000 / 28200, places=6)
+        for state, permissions in ((empty_state(), CUSTOMERS), (busy_state(), BILLING)):
+            nothing = self.vm(state, permissions).balanceSplit
+            self.assertEqual((nothing["available"], nothing["owedRatio"], nothing["creditRatio"]), (False, 0.0, 0.0))
+
     def test_the_price_series_carries_a_30_day_moving_average_of_the_buy_price(self):
         series = make_service(busy_state())[0].today()["price_series"]
         self.assertEqual([r["ma"] for r in series[:9]], [None] * 9)                      # fewer than 10 stored days: no average yet, a gap
         self.assertEqual((series[9]["ma"], series[11]["ma"]), ("6112.50", "6137.50"))    # trailing average of the shop BUY price ending that day
+
+    def test_the_price_series_carries_a_90_day_moving_average_computed_over_the_stored_days_before_the_shown_ones(self):
+        series = make_service(long_price_state(130))[0].today()["price_series"]
+        self.assertEqual(len(series), 30)                                                # the 30 shown days; the 100 days before them feed the 90-day average
+        self.assertEqual((series[0]["ma90"], series[-1]["ma90"]), ("5555.00", "5845.00"))   # index 100: mean of buys 11..100; index 129: mean of buys 40..129 (hand-checked)
+        self.assertEqual(series[-1]["ma"], "6145.00")                                    # the 30-day average is untouched
+        self.assertTrue(all(isinstance(r["ma90"], str) for r in series))
+        self.assertIsInstance(series[0]["ma90"], str)                                    # exact Decimal text, no float in the service
+
+    def test_the_90_day_average_is_a_gap_while_fewer_than_90_days_are_stored_behind_a_day(self):
+        series = make_service(long_price_state(100))[0].today()["price_series"]          # shown = stored indices 70..99
+        self.assertEqual([r["ma90"] for r in series[:19]], [None] * 19)                 # indices 70..88: under 90 stored days behind them, never invented
+        self.assertEqual((series[19]["ma90"], series[-1]["ma90"]), ("5445.00", "5545.00"))   # index 89 is the first day with 90 stored days (mean of buys 0..89)
+        self.assertEqual(series[0]["ma"], "5555.00")                                     # the 30-day average already exists there
+        short = make_service(busy_state())[0].today()["price_series"]
+        self.assertEqual([r["ma90"] for r in short], [None] * len(short))                # the 12-day fixture has no 90-day average at all
 
     def test_price_hint_without_history_says_the_data_is_insufficient(self):
         self.assertEqual(self.vm(empty_state()).priceHint,
@@ -395,7 +540,7 @@ class DashboardViewModelTests(unittest.TestCase):
 
 def _only_dashboard_tests(loader, tests, pattern):
     suite = unittest.TestSuite()
-    for case in (DashboardServiceTests, DashboardViewModelTests, DashboardPageTests):
+    for case in (DashboardServiceTests, DashboardNewCardsServiceTests, DashboardChartsServiceTests, DashboardViewModelTests, DashboardPageTests):
         names = [n for n in loader.getTestCaseNames(case)
                  if case is not DashboardPageTests or n.startswith("test_dashboard")]
         suite.addTests(case(n) for n in names)
@@ -417,6 +562,29 @@ class DashboardPageTests(page_harness.InvoicePageTests):
         self.wait_until(lambda: vm.ready and not vm.busy, "dashboard not loaded")
         QTest.qWait(80)
         return vm
+
+    def test_dashboard_gold_movement_button_sits_between_customers_and_management_and_opens_the_two_gold_charts(self):
+        """Owner 2026-11-18: the live gold chart and the 21K price chart live on their own page, reached by «السعر العالمي» under العملاء and above الإدارة."""
+        self.open_dashboard(self.busy_snapshot())
+        for width, height in page_harness.SIZES:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(200)
+            with self.subTest(size=(width, height)):
+                ys = [self.item(n).mapToScene(QPointF(0, 0)).y() for n in ("customersNavButton", "goldMovementNavButton", "reviewsNavButton")]
+                self.assertEqual(ys, sorted(ys))
+                self.assertLess(ys[0], ys[1])
+                self.assertLess(ys[1], ys[2])
+                for name in ("goldMovementNavButton", "reviewsNavButton", "logoutButton", "topUserName"):
+                    self.assert_inside_window(self.item(name))
+        self.root.setProperty("currentPage", 0)
+        QTest.qWait(100)
+        self.click(self.item("goldMovementNavButton"))
+        QTest.qWait(250)
+        self.assertEqual(self.root.property("currentPage"), 16)
+        self.assertTrue(self.visible_item("priceChartCard") is not None and self.visible_item("liveGoldChartCard") is not None)
+        self.assertIsNone(self.visible_item("todayCard"))
+        self.assertEqual(self.warnings, [])
 
     def test_five_older_cards_are_hidden_by_default(self):
         self.show_retired = False
@@ -445,12 +613,55 @@ class DashboardPageTests(page_harness.InvoicePageTests):
                 self.assertGreaterEqual(left, -1, f"{name} clipped left at {width}x{height}")
                 self.assertLessEqual(left + item.property("width"), page.property("width") + 1,
                                      f"{name} overflows at {width}x{height}")
-            # The first card row is the two charts (owner 2026-11-10): both are on screen without scrolling.
+            # Owner 2026-11-18: today's figures are the first card, fully on screen. The two gold charts moved to «السعر العالمي» (page 16) and are not on the home page.
+            self.assert_inside_window(self.item("todayCard"))
+            self.assertFalse(self.item("priceChartCard").property("visible"))
+            self.assertFalse(self.item("liveGoldChartCard").property("visible"))
+            self.root.setProperty("currentPage", 16)
+            QTest.qWait(200)
+            gold_page = self.item("goldMovementPage")
             for name in ("priceChartCard", "liveGoldChartCard"):
-                self.assert_inside_window(self.item(name))
+                item = self.visible_item(name)
+                self.assertIsNotNone(item, f"{name} missing on the gold movement page at {width}x{height}")
+                left = item.mapToItem(gold_page, QPointF(0, 0)).x()
+                self.assertGreaterEqual(left, -1, f"{name} clipped left at {width}x{height}")
+                self.assertLessEqual(left + item.property("width"), gold_page.property("width") + 1, f"{name} overflows at {width}x{height}")
+            self.assertIsNone(self.visible_item("todayCard"))
+            self.root.setProperty("currentPage", 0)
+            QTest.qWait(100)
             if target:
                 Path(target).mkdir(parents=True, exist_ok=True)
                 self.root.grabWindow().save(str(Path(target) / f"dashboard-{width}x{height}.png"))
+        self.assertEqual(self.warnings, [])
+
+    def test_dashboard_price_chart_legend_names_the_90_day_average_and_nothing_is_clipped(self):
+        snapshot = self.busy_snapshot()
+        snapshot["price_series"] = make_service(long_price_state(130), CUSTOMERS)[0].today()["price_series"]
+        vm = self.open_dashboard(snapshot)
+        self.assertEqual(len(vm.priceChart["ma90"]), 30)
+        names = ("شراء المحل", "بيع المحل", "متوسط 30 يوم (شراء)", "متوسط 90 يوم (شراء)")
+        target = os.getenv("MASGOLD_UI_REVIEW_DIR")
+        for width, height in page_harness.SIZES:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            self.root.setProperty("currentPage", 16)                                       # the price chart lives on «السعر العالمي»
+            QTest.qWait(250)
+            card, legend, page = self.visible_item("priceChartCard"), self.visible_item("priceChartLegend"), self.item("goldMovementPage")
+            self.assertTrue(legend.property("visible"), f"legend hidden at {width}x{height}")
+            left = card.mapToItem(page, QPointF(0, 0)).x()
+            self.assertGreaterEqual(left, -1, f"card clipped left at {width}x{height}")
+            self.assertLessEqual(left + card.property("width"), page.property("width") + 1, f"card overflows at {width}x{height}")
+            for name in names:
+                entry = self.visible_item("priceChartLegend_" + name)
+                self.assertIsNotNone(entry, f"{name} hidden at {width}x{height}")
+                origin = entry.mapToItem(card, QPointF(0, 0))
+                self.assertGreaterEqual(origin.x(), -1, f"{name} clipped left at {width}x{height}")
+                self.assertLessEqual(origin.x() + entry.property("width"), card.property("width") + 1, f"{name} clipped right at {width}x{height}")
+                self.assertLessEqual(origin.y() + entry.property("height"), card.property("height") + 1, f"{name} clipped at the bottom at {width}x{height}")
+            self.assertGreaterEqual(legend.property("height"), self.visible_item("priceChartLegend_" + names[0]).property("height"))   # the Flow grows to hold a wrapped row
+            if target:
+                Path(target).mkdir(parents=True, exist_ok=True)
+                self.root.grabWindow().save(str(Path(target) / f"dashboard-ma90-{width}x{height}.png"))
         self.assertEqual(self.warnings, [])
 
     def test_dashboard_cards_of_a_row_have_the_same_height_and_the_new_cards_show_their_figures(self):
@@ -475,18 +686,22 @@ class DashboardPageTests(page_harness.InvoicePageTests):
                 self.assertGreaterEqual(left, -1, name)
                 self.assertLessEqual(left + item.property("width"), page.property("width") + 1, name)
             wide = bool(page.property("wide"))                                                               # three columns on a wide page, two on a narrow one
-            rows = ([("priceCard", "priceHintCard", "todayCard"), ("soldWeightCard", "oldGoldCard", "ratesCard")] if wide else
-                    [("priceCard", "priceHintCard"), ("todayCard", "soldWeightCard"), ("oldGoldCard", "ratesCard")])
-            for row in rows:
-                heights = {name: round(self.item(name).property("height")) for name in row}
-                self.assertEqual(len(set(heights.values())), 1, f"cards of one row differ in height at {width}x{height}: {heights}")
+            # Owner 2026-11-18: a card is as tall as its content; only the two charts of the first row are level with each other, and today's figures come first across the whole width.
+            self.root.setProperty("currentPage", 16)
+            QTest.qWait(200)
+            price_card, live_card = self.visible_item("priceChartCard"), self.visible_item("liveGoldChartCard")      # «السعر العالمي»: the two charts stand under each other (owner 2026-11-18)
+            self.assertLess(price_card.mapToScene(QPointF(0, 0)).y() + price_card.property("height") - 1, live_card.mapToScene(QPointF(0, 0)).y(), f"the charts are not stacked at {width}x{height}")
+            self.assertLess(abs(price_card.mapToScene(QPointF(0, 0)).x() - live_card.mapToScene(QPointF(0, 0)).x()), 1.5)
+            self.root.setProperty("currentPage", 0)
+            QTest.qWait(100)
+            today = self.item("todayCard")
+            self.assertGreaterEqual(today.property("width"), page.property("width") - 40)
             if wide:
                 # RTL grid: the first card is the rightmost (biggest x); each next card is further left.
-                row1 = {name: self.item(name).mapToItem(page, QPointF(0, 0)).x() for name in ("priceCard", "priceHintCard", "todayCard")}
+                row1 = {name: self.item(name).mapToItem(page, QPointF(0, 0)).x() for name in ("priceCard", "priceHintCard", "soldWeightCard")}
                 self.assertGreater(row1["priceCard"], row1["priceHintCard"], f"the gold price card is not the rightmost at {width}x{height}")        # the price on the physical right (owner review)
-                self.assertGreater(row1["priceHintCard"], row1["todayCard"])
-                row2 = {name: self.item(name).mapToItem(page, QPointF(0, 0)).x() for name in ("soldWeightCard", "oldGoldCard", "ratesCard")}
-                self.assertGreater(row2["soldWeightCard"], row2["oldGoldCard"])
+                self.assertGreater(row1["priceHintCard"], row1["soldWeightCard"])
+                row2 = {name: self.item(name).mapToItem(page, QPointF(0, 0)).x() for name in ("oldGoldCard", "ratesCard")}
                 self.assertGreater(row2["oldGoldCard"], row2["ratesCard"])
             self.assertGreaterEqual(self.item("invoiceCount").property("font").pixelSize(), 26)             # the key figure is bigger than before
         self.assertEqual(self.warnings, [])
@@ -505,8 +720,8 @@ class DashboardPageTests(page_harness.InvoicePageTests):
             QTest.qWait(250)
             self.assertEqual(self.item("balanceCash").property("text"), "1,234,570 ج")
             boxes = []
-            for name in ("balanceCash", "balanceKarat_21", "balanceKarat_18", "balanceKarat_22", "balanceKarat_24",
-                         "goldPriceArea", "connectionDot", "logoutButton"):
+            for name in ("balanceCash", "balanceKarat_21", "balanceKarat_18", "balanceKarat_24",
+                         "goldPriceArea", "connectionDot"):
                 item = self.item(name)
                 self.assertTrue(item.property("visible"), f"{name} hidden at {width}x{height}")
                 self.assert_inside_window(item)
@@ -514,9 +729,10 @@ class DashboardPageTests(page_harness.InvoicePageTests):
                     self.fail(f"{name} elided at {width}x{height}")
                 origin = item.mapToScene(QPointF(0, 0))
                 boxes.append((name, origin.x(), origin.x() + item.property("width")))
-            strip = [b for b in boxes if b[0].startswith("balance")]
-            price = next(b for b in boxes if b[0] == "goldPriceArea")
-            self.assertLessEqual(max(b[2] for b in strip), price[1] + 0.5, f"strip overlaps price at {width}")
+            self.assertFalse(self.item("balanceKarat_22").property("visible"), "the 22K box was removed from the sidebar")
+            cash_y = self.item("balanceBoxCash").mapToScene(QPointF(0, 0)).y()
+            price_y = self.item("goldPriceArea").mapToScene(QPointF(0, 0)).y()
+            self.assertGreater(price_y, cash_y + self.item("balanceBoxCash").property("height"), f"the price card is not under the balances at {width}")     # both live in the sidebar (owner 2026-11-18)
             if target:
                 Path(target).mkdir(parents=True, exist_ok=True)
                 self.root.grabWindow().copy(0, 0, width, 70).save(
@@ -542,7 +758,9 @@ class DashboardPageTests(page_harness.InvoicePageTests):
             self.assertGreater(buy.mapToItem(page, QPointF(0, 0)).x(), sell.mapToItem(page, QPointF(0, 0)).x())
             for label in (sell, buy):
                 self.assertGreaterEqual(label.property("font").pixelSize(), 30)       # a hero number
-                self.assert_inside_window(label)
+                left = label.mapToItem(page, QPointF(0, 0)).x()                       # (the card sits below today's figures since 2026-11-18, so only the horizontal fit is checked)
+                self.assertGreaterEqual(left, -1, f"price clipped left at {width}x{height}")
+                self.assertLessEqual(left + label.property("width"), page.property("width") + 1, f"price overflows at {width}x{height}")
                 self.assertLessEqual(label.property("contentWidth"), label.property("width") + 1)
             self.assertLess(self.item("dashboardPriceStatus").property("font").pixelSize(), 14)  # status stays small (the page text is two points bigger since the 2026-10-22 review)
             self.assertIn("6,232", self.item("goldTopSell").property("text"))           # label is separate
@@ -610,6 +828,126 @@ class DashboardPageTests(page_harness.InvoicePageTests):
         self.assertEqual(self.item("overdueEmpty").property("visible"), False)
         self.assertIsNotNone(self.item("scrapToday_0"))
         self.assertEqual(self.warnings, [])
+
+    def _inside(self, item, card, name, size):
+        left = item.mapToItem(card, QPointF(0, 0)).x()
+        top = item.mapToItem(card, QPointF(0, 0)).y()
+        self.assertGreaterEqual(left, -0.5, f"{name} clipped left at {size}")
+        self.assertLessEqual(left + item.property("width"), card.property("width") + 0.5, f"{name} overflows the card at {size}")
+        self.assertGreaterEqual(top, -0.5, f"{name} above the card at {size}")
+        self.assertLessEqual(top + item.property("height"), card.property("height") + 0.5, f"{name} below the card at {size}")
+
+    def test_dashboard_scrap_and_balance_charts_fit_every_size(self):
+        """The scrap-bought-against-gold-sold columns and the customer balance bar (owner 2026-11-18): drawn from the view model, inside their cards at every target size."""
+        self.open_dashboard(self.busy_snapshot())
+        target = os.getenv("MASGOLD_UI_REVIEW_DIR")
+        for width, height in page_harness.SIZES:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(250)
+            size = f"{width}x{height}"
+            page = self.item("dashboardPage")
+            for card_name in ("scrapSoldCard", "balanceSplitCard"):
+                card = self.item(card_name)
+                self.assertTrue(card.property("visible"), f"{card_name} hidden at {size}")
+                left = card.mapToItem(page, QPointF(0, 0)).x()
+                self.assertGreaterEqual(left, -1, f"{card_name} clipped left at {size}")
+                self.assertLessEqual(left + card.property("width"), page.property("width") + 1, f"{card_name} overflows at {size}")
+            scrap = self.item("scrapSoldCard")
+            self.assertFalse(self.item("scrapSoldEmpty").property("visible"))
+            for i in range(14):
+                self.assertIsNotNone(self.item(f"scrapSoldDay_{i}"), i)
+                for key in ("bought", "sold"):
+                    bar = self.item(f"scrapSold_{key}_{i}")
+                    self.assertLessEqual(bar.property("width"), 24, f"a column is wider than 24 px at {size}")
+                    self._inside(bar, scrap, f"scrapSold_{key}_{i}", size)
+            today_bought, today_sold = self.item("scrapSold_bought_13"), self.item("scrapSold_sold_13")
+            self.assertGreater(today_bought.property("height"), today_sold.property("height"))                 # 13.43 g against 10.74 g
+            self.assertEqual(self.item("scrapSold_bought_0").property("height"), 0)                             # a day without a line has no column
+            self.assertGreater(today_bought.mapToItem(scrap, QPointF(0, 0)).x(), today_sold.mapToItem(scrap, QPointF(0, 0)).x())   # the first series (scrap bought) on the right of the pair, as in the legend
+            for name in ("scrapSoldTotals", "scrapSoldCaption"):
+                label = self.item(name)
+                self._inside(label, scrap, name, size)
+            self.assertIn("13.43", self.item("scrapSoldTotals").property("value"))
+            self.assertIn("21", self.item("scrapSoldCaption").property("value"))
+            split = self.item("balanceSplitCard")
+            self.assertFalse(self.item("balanceSplitEmpty").property("visible"))
+            self.assertEqual((self.item("balanceSplit_owed").property("value"), self.item("balanceSplit_credit").property("value")), ("25,000 ج", "3,200 ج"))
+            owed, credit, bar = self.item("balanceSplitOwedSegment"), self.item("balanceSplitCreditSegment"), self.item("balanceSplitBar")
+            self.assertGreater(owed.property("width"), credit.property("width") * 5)                           # 89% against 11%
+            self.assertLessEqual(owed.property("width") + credit.property("width"), bar.property("width") + 0.5)
+            self.assertGreater(owed.mapToItem(split, QPointF(0, 0)).x(), credit.mapToItem(split, QPointF(0, 0)).x())     # على العميل on the physical right
+            for name in ("balanceSplitBar", "balanceSplit_owed", "balanceSplit_credit", "balanceSplitNote_owed", "balanceSplitNote_credit", "balanceSplitCaption"):
+                self._inside(self.item(name), split, name, size)
+                if name.startswith("balanceSplit_"):
+                    self.assertFalse(self.item(name).property("truncated"), f"{name} elided at {size}")
+            self.assertEqual(self._theme_color("accountReceivable"), owed.property("color").name())
+            self.assertEqual(self._theme_color("accountPayable"), credit.property("color").name())
+            if target:
+                Path(target).mkdir(parents=True, exist_ok=True)
+                self.item("scrapSoldCard").setProperty("visible", True)
+                self.root.grabWindow().save(str(Path(target) / f"dashboard-charts-{size}.png"))
+        self.assertEqual(self.warnings, [])
+
+    def test_dashboard_news_ticker_scrolls_along_the_bottom_and_the_news_card_is_gone(self):
+        snapshot = self.busy_snapshot()
+        snapshot["gold_news"] = {"available": True, "updated": "21:27", "error": "", "items": [
+            {"title": "الذهب ينهار لقاع الجلسة", "time": "2026-11-18 19:12", "link": "https://example.invalid/1"},
+            {"title": "UBS تجيب عن سؤال ارتفاع الذهب", "time": "2026-11-18 15:24", "link": "https://example.invalid/2"},
+            {"title": "بنك أوف أمريكا يصيب", "time": "2026-11-18 13:03", "link": "https://example.invalid/3"}]}
+        self.open_dashboard(snapshot)
+        for width, height in page_harness.SIZES:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(250)
+            ticker = self.item("newsTicker")
+            self.assertTrue(ticker.property("visible"), f"no ticker at {width}x{height}")
+            self.assert_inside_window(ticker)
+            window = self.root.property("height")
+            bottom = ticker.mapToScene(QPointF(0, ticker.property("height"))).y()
+            self.assertGreaterEqual(bottom, window - 90, "the ticker is not along the bottom of the window")           # the main window has its own chrome under the page
+        self.assertIsNone(self.visible_item("goldNewsCard"))                                                           # the news card was replaced by the ticker
+        strip = self.item("newsTickerStrip")
+        first = strip.property("x")
+        QTest.qWait(400)
+        self.assertGreater(strip.property("x"), first, "the ticker does not move")                                      # it slides to the right (the reading direction of Arabic)
+        self.assertEqual(self.warnings, [])
+
+    def test_dashboard_without_news_has_no_ticker(self):
+        self.open_dashboard(self.busy_snapshot())
+        self.assertFalse(self.item("newsTicker").property("visible"))
+
+    def test_dashboard_scrap_chart_tooltip_shows_both_series_of_the_hovered_day(self):
+        self.open_dashboard(self.busy_snapshot())
+        self.root.setWidth(1440)
+        self.root.setHeight(2600)                                                                           # the whole page is on screen, so the mouse can reach the chart
+        QTest.qWait(300)
+        tip = self.item("scrapSoldTip")
+        self.assertFalse(tip.property("visible"))
+        cell = self.item("scrapSoldDay_13")
+        centre = cell.mapToScene(QPointF(cell.property("width") / 2, cell.property("height") / 2)).toPoint()
+        QTest.mouseMove(self.root, centre)
+        QTest.mouseMove(self.root, centre + QPoint(1, 0))
+        self.wait_until(lambda: tip.property("visible"), "no tooltip on hover")
+        self.assertEqual(tip.property("title"), "27/09")
+        self.assertEqual([r["value"] for r in tip.property("rows").toVariant()], ["13.43 جرام", "10.74 جرام"])
+        QTest.mouseMove(self.root, QPoint(2, 2))
+        self.wait_until(lambda: not tip.property("visible"), "tooltip stayed after the mouse left")
+
+    def test_dashboard_scrap_and_balance_charts_say_so_when_there_is_no_data(self):
+        service, _ = make_service(empty_state(), CUSTOMERS)
+        self.open_dashboard(service.today())
+        for width, height in page_harness.SIZES:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(200)
+            size = f"{width}x{height}"
+            for name, card in (("scrapSoldEmpty", "scrapSoldCard"), ("balanceSplitEmpty", "balanceSplitCard")):
+                empty = self.item(name)
+                self.assertTrue(empty.property("visible"), f"{name} hidden at {size}")
+                self._inside(empty, self.item(card), name, size)
+            self.assertFalse(self.item("balanceSplitBar").property("visible"))
+        self.assertEqual(self.item("scrapSoldEmpty").property("value"), "لا يوجد شراء كسر أو بيع ذهب في آخر 14 يوم")
 
     def test_new_cards_follow_the_grants(self):
         service, _ = make_service(busy_state(), BILLING)

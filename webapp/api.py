@@ -37,27 +37,25 @@ GROUPS = (("الذهب", ("goldflow", "stock", "alerts", "stockweights", "indica
 # The cards of the home page. A module owns some reports (it is shown only when the user may open at least one of them); the module with `rest` owns every report no other module claims.
 # To add a card: add a line here (and its icon / subtitle); the page draws one card per module the user may use.
 MODULES = (
-    {"key": "reports", "title": "التقارير", "subtitle": "الذهب والمخزون والنقدية والمبيعات", "icon": "📊", "rest": True},
-    {"key": "kpi", "title": "KPI", "subtitle": "هل أنا ماشي صح؟ البيع والمصنعية والكسر والربح والمصاريف والموظفين", "icon": "🎯", "reports": ("kpi",)},
-    {"key": "customers", "title": "العملاء", "subtitle": "من عليه فلوس ومن له، وكشف الحساب وشطب الرصيد", "icon": "👥", "reports": ("customers", "deadcash")},
-    {"key": "treasury", "title": "الخزنة والمصروفات", "subtitle": "حركة الخزنة والبنوك والمصروفات والإيرادات", "icon": "🏦", "reports": ("treasury", "cashflow"), "period": "today"},
-    {"key": "daily", "title": "البيع والشراء اليومي", "subtitle": "فواتير اليوم أو أي فترة تختارها، وفتح الفاتورة", "icon": "🧾", "reports": ("sales",), "period": "today"},
-    {"key": "suppliers", "title": "الموردين", "subtitle": "أرصدة الذهب (بعيار كل مورد) والمصنعيات", "icon": "🏭", "reports": ("suppliers",)},
-    {"key": "goldprofit", "title": "ربح الذهب", "subtitle": "هل الذهب في المحل زاد أم نقص (للمالك)", "icon": "📈", "reports": ("profit", "goldflow")},
-    {"key": "staff", "title": "الموظفون والمصنعية", "subtitle": "أداء الموظفين وربح المصنعية وتكلفة الكسر", "icon": "🧑‍💼", "reports": ("employees", "makingprofit", "scrapcost")},
-    {"key": "cashflow", "title": "حركة الخزنة اليوم", "subtitle": "الداخل للخزنة والخارج منها على مدار اليوم", "icon": "💵", "kind": "cashflow", "needs": ("CASH_VIEW",)},
-    {"key": "bankflow", "title": "حركة البنوك اليوم", "subtitle": "الداخل للبنوك والمحافظ والخارج منها على مدار اليوم", "icon": "🏧", "kind": "bankflow", "needs": ("BANK_VIEW",)},
-    {"key": "inventory", "title": "المخزون", "subtitle": "البحث عن قطعة بالباركود، والنواقص وجرد الأوزان", "icon": "💎", "reports": ("stock", "alerts", "stockweights")},
-    # cards without reports: the page draws them itself (`kind`), shown only to a user holding one of `needs`
-    {"key": "transfers", "title": "التحويلات", "subtitle": "بين البنوك والمحافظ والحساب الخاص", "icon": "🔁", "kind": "transfers", "needs": ("FINANCIAL_ACCOUNT_OPERATE",)},
-    {"key": "reviews", "title": "مراجعات المدير", "subtitle": "ما ينتظر المراجعة", "icon": "🔔", "kind": "reviews", "needs": ("MANAGEMENT_REVIEW", "INVENTORY_RECONCILE")},
-    {"key": "currency", "title": "أسعار العملات", "subtitle": "الدولار واليورو والريال وغيرها مقابل الجنيه", "icon": "💱", "kind": "currency", "needs": ("APP_LOGIN",)},
-    {"key": "markets", "title": "الأسواق والأخبار", "subtitle": "الدولار واليورو والذهب بالجنيه، التقويم الاقتصادي وأخبار الذهب", "icon": "🌍", "kind": "markets", "needs": ("APP_LOGIN",)},
-    {"key": "dayclose", "title": "إقفال اليوم", "subtitle": "عدّ الكاش وقارنه بالمتوقع وسجّل الفرق", "icon": "🔒", "kind": "dayclose", "needs": ("DAY_CLOSE",)},
-    {"key": "stocktake", "title": "جرد بالكاميرا", "subtitle": "امسح القطع بكاميرا الأيباد وتظهر في جرد الكمبيوتر", "icon": "📷", "kind": "stocktake", "needs": ("INVENTORY_VIEW",)},
-    {"key": "calc", "title": "حاسبة الذهب", "subtitle": "وزن وعيار يطلع قيمة الشراء والبيع بالأسعار الحية", "icon": "🧮", "kind": "calc", "needs": ("APP_LOGIN",)},
-    {"key": "verify", "title": "تحقق من فاتورة", "subtitle": "رقم الفاتورة وكود التحقق المطبوع تحت الختم: أصلية أم لا", "icon": "🛡️", "kind": "verify", "needs": ("INVOICE_VIEW",)},
-    {"key": "activity", "title": "سجل النشاط", "subtitle": "من فعل ماذا ومتى (للمالك)", "icon": "🕵️", "kind": "activity", "needs": ("USERS_MANAGE",)},
+    # Owner 2026-11-18: the home page is grouped (`group`), and what was drawn twice is drawn once: the treasury and bank movements of today live in «الخزنة والمصروفات»
+    # (the treasury report of today), the currency rates are the first tab of «الأسواق والأخبار». The `cashflow` / `bankflow` / `currency` kinds are still served by their endpoints.
+    {"key": "daily", "group": "اليوم", "title": "البيع والشراء اليومي", "subtitle": "فواتير اليوم أو أي فترة تختارها، وفتح الفاتورة", "icon": "🧾", "reports": ("sales",), "period": "today"},
+    {"key": "treasury", "group": "اليوم", "title": "الخزنة والمصروفات", "subtitle": "حركة الخزنة والبنوك والمصروفات والإيرادات", "icon": "🏦", "reports": ("treasury", "cashflow"), "period": "today"},
+    {"key": "dayclose", "group": "اليوم", "title": "إقفال اليوم", "subtitle": "عدّ الكاش وقارنه بالمتوقع وسجّل الفرق", "icon": "🔒", "kind": "dayclose", "needs": ("DAY_CLOSE",)},
+    {"key": "reviews", "group": "اليوم", "title": "مراجعات المدير", "subtitle": "ما ينتظر المراجعة", "icon": "🔔", "kind": "reviews", "needs": ("MANAGEMENT_REVIEW", "INVENTORY_RECONCILE")},
+    {"key": "customers", "group": "الحسابات", "title": "العملاء", "subtitle": "من عليه فلوس ومن له، وكشف الحساب وشطب الرصيد", "icon": "👥", "reports": ("customers", "deadcash")},
+    {"key": "suppliers", "group": "الحسابات", "title": "الموردين", "subtitle": "أرصدة الذهب (بعيار كل مورد) والمصنعيات", "icon": "🏭", "reports": ("suppliers",)},
+    {"key": "transfers", "group": "الحسابات", "title": "التحويلات", "subtitle": "بين البنوك والمحافظ والحساب الخاص", "icon": "🔁", "kind": "transfers", "needs": ("FINANCIAL_ACCOUNT_OPERATE",)},
+    {"key": "inventory", "group": "الذهب والمخزون", "title": "المخزون", "subtitle": "البحث عن قطعة بالباركود، والنواقص وجرد الأوزان", "icon": "💎", "reports": ("stock", "alerts", "stockweights")},
+    {"key": "stocktake", "group": "الذهب والمخزون", "title": "جرد بالكاميرا", "subtitle": "امسح القطع بكاميرا الأيباد وتظهر في جرد الكمبيوتر", "icon": "📷", "kind": "stocktake", "needs": ("INVENTORY_VIEW",)},
+    {"key": "markets", "group": "الذهب والمخزون", "title": "الأسواق والأخبار", "subtitle": "أسعار العملات، الدولار واليورو والذهب بالجنيه، التقويم الاقتصادي وأخبار الذهب", "icon": "🌍", "kind": "markets", "needs": ("APP_LOGIN",)},
+    {"key": "calc", "group": "الذهب والمخزون", "title": "حاسبة الذهب", "subtitle": "وزن وعيار يطلع قيمة الشراء والبيع بالأسعار الحية", "icon": "🧮", "kind": "calc", "needs": ("APP_LOGIN",)},
+    {"key": "reports", "group": "التحليل", "title": "التقارير", "subtitle": "الذهب والمخزون والنقدية والمبيعات", "icon": "📊", "rest": True},
+    {"key": "kpi", "group": "التحليل", "title": "KPI", "subtitle": "هل أنا ماشي صح؟ البيع والمصنعية والكسر والربح والمصاريف والموظفين", "icon": "🎯", "reports": ("kpi",)},
+    {"key": "goldprofit", "group": "التحليل", "title": "ربح الذهب", "subtitle": "هل الذهب في المحل زاد أم نقص (للمالك)", "icon": "📈", "reports": ("profit", "goldflow")},
+    {"key": "staff", "group": "التحليل", "title": "الموظفون والمصنعية", "subtitle": "أداء الموظفين وربح المصنعية وتكلفة الكسر", "icon": "🧑‍💼", "reports": ("employees", "makingprofit", "scrapcost")},
+    {"key": "verify", "group": "أدوات", "title": "تحقق من فاتورة", "subtitle": "رقم الفاتورة وكود التحقق المطبوع تحت الختم: أصلية أم لا", "icon": "🛡️", "kind": "verify", "needs": ("INVOICE_VIEW",)},
+    {"key": "activity", "group": "أدوات", "title": "سجل النشاط", "subtitle": "من فعل ماذا ومتى (للمالك)", "icon": "🕵️", "kind": "activity", "needs": ("USERS_MANAGE",)},
 )
 
 
@@ -124,7 +122,7 @@ class WebReports:
         for module in MODULES:
             if module.get("kind"):
                 if set(module["needs"]) & set(permissions):
-                    out.append({"key": module["key"], "title": module["title"], "subtitle": module["subtitle"], "icon": module["icon"], "period": "", "kind": module["kind"], "count": 0, "groups": []})
+                    out.append({"key": module["key"], "title": module["title"], "subtitle": module["subtitle"], "icon": module["icon"], "group": module.get("group", ""), "period": "", "kind": module["kind"], "count": 0, "groups": []})
                 continue
             if module.get("rest"):
                 shown = [{"name": g["name"], "reports": [r for r in g["reports"] if r["key"] not in claimed]} for g in groups]
@@ -132,7 +130,7 @@ class WebReports:
                 shown = [{"name": "", "reports": [{"key": k, "title": available[k]} for k in module["reports"] if k in available]}]
             shown = [g for g in shown if g["reports"]]
             if shown:
-                out.append({"key": module["key"], "title": module["title"], "subtitle": module["subtitle"], "icon": module["icon"], "period": module.get("period", ""), "kind": "reports",
+                out.append({"key": module["key"], "title": module["title"], "subtitle": module["subtitle"], "icon": module["icon"], "group": module.get("group", ""), "period": module.get("period", ""), "kind": "reports",
                             "count": sum(len(g["reports"]) for g in shown), "groups": shown})
         return out
 

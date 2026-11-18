@@ -227,6 +227,8 @@ class ManagerReviewPageTests(harness.InvoicePageTests):
         QTest.qWait(300)
         self.assertEqual([a["name"] for a in vm.financialAccounts], ["الأهلي", "محفظة"])           # the main safe is not in this section
         self.assertEqual([c["count"] for c in vm.dashboardCards if c["code"] == "ACCOUNTS"], [2])
+        self.assertIsNone(self.visible_item("financialAccountsSection"))      # hidden until its card is clicked (owner 2026-11-18)
+        self.click("reviewCard_ACCOUNTS")
         for width, height in harness.SIZES:
             self.root.setWidth(width)
             self.root.setHeight(height)
@@ -298,6 +300,7 @@ class ManagerReviewPageTests(harness.InvoicePageTests):
 
     def test_account_card_opens_its_movement_history_with_sources(self):
         self.open_reviews()
+        self.click("reviewCard_ACCOUNTS")                                     # the accounts are hidden inside their card until it is clicked (owner 2026-11-18)
         self.click("accountOpenHistory_0")
         self.wait_until(lambda: self.visible_item("accountHistory") is not None
                         and self.visible_item("accountMovement_1") is not None, "history")

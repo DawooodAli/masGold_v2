@@ -7,17 +7,21 @@ year (the tabular Islamic calendar: within a day or two of the observed date, so
                    at least MIN_DENSITY of those days have a bill; a sparser history is treated as missing data and no pattern or uplift is produced
   weekday pattern  the mean grams of each weekday / the mean of all days; needs MIN_WEEKDAY_DAYS days of every weekday
   month pattern    the mean grams per day of days 1-7, 8-14, 15-21 and 22-end / the mean of all days; needs MIN_MONTH_PART_DAYS days of every part
+  heatmap          the mean grams of the days that are BOTH a given weekday AND in a given part of the month (7 x 4 cells, Saturday first); a cell with fewer than MIN_HEATMAP_DAYS days has no value (None), never a zero
   season uplift    for each year the mean daily grams of the season's window / the mean daily grams of the BASELINE (BASELINE_DAYS days before and after the window, leaving out every day that
                    belongs to any season window); a year whose window or baseline is not fully inside the usable days is skipped. The mean over the measured years is the typical uplift.
 Everything says how many days / years stand behind it; with two years of history a season has at most two observations, so the figures are an indication, not a promise."""
 import math
 from datetime import date, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 from statistics import mean
 
 MIN_WEEKDAY_DAYS = 8
 MIN_MONTH_PART_DAYS = 20
 BASELINE_DAYS = 35
 MIN_BASELINE_DAYS = 14
+MIN_HEATMAP_DAYS = 3                 # a weekday x month-part cell with fewer days than this is shown as 'not enough data' (never as a zero)
+HEATMAP_WEEK_ORDER = (5, 6, 0, 1, 2, 3, 4)      # the shop's week: Saturday first (date.weekday(): Monday = 0)
 MIN_DENSITY = 0.4                    # at least this share of the days of the range must have a bill, otherwise the zeros are missing data rather than quiet days
 WEEKDAYS = ("الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد")           # date.weekday(): Monday = 0
 MONTH_PARTS = ((1, 7, "من 1 إلى 7"), (8, 14, "من 8 إلى 14"), (15, 21, "من 15 إلى 21"), (22, 31, "من 22 إلى آخر الشهر"))
@@ -87,6 +91,30 @@ def month_pattern(values, first, last):
     if overall <= 0 or any(len(p) < MIN_MONTH_PART_DAYS for _, p in parts):
         return []
     return [{"label": label, "index": mean(p) / overall, "days": len(p)} for label, p in parts]
+
+
+def heatmap(values, first=None, last=None):
+    """The weekday x month-part heatmap of the mean daily grams: None when the history is sparse (see dense()), otherwise
+    {weekdays: [{weekday, name}] Saturday first, parts: [{label}], cells: [{row, col, weekday, name, label, days, mean, ratio, enough}], max_mean, enough_cells, min_days}.
+    `mean` is a Decimal (3 places) of the days that are that weekday AND in that part of the month; `ratio` = mean / the largest mean (0..1, 4 places) is the colour intensity.
+    A cell with fewer than MIN_HEATMAP_DAYS days is not enough: its mean and ratio are None (missing data is never turned into zero). Decimal only for the averages."""
+    if not dense(values):
+        return None
+    cells, enough = [], []
+    for row, weekday in enumerate(HEATMAP_WEEK_ORDER):
+        for col, (low, high, label) in enumerate(MONTH_PARTS):
+            grams = [Decimal(str(v)) for d, v in values.items() if d.weekday() == weekday and low <= d.day <= high]
+            ok = len(grams) >= MIN_HEATMAP_DAYS
+            avg = (sum(grams) / len(grams)).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP) if ok else None
+            cell = {"row": row, "col": col, "weekday": weekday, "name": WEEKDAYS[weekday], "label": label, "days": len(grams), "mean": avg, "ratio": None, "enough": ok}
+            cells.append(cell)
+            if ok:
+                enough.append(cell)
+    top = max((c["mean"] for c in enough), default=Decimal(0))
+    for c in enough:
+        c["ratio"] = (c["mean"] / top).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP) if top > 0 else Decimal(0)
+    return {"weekdays": [{"weekday": w, "name": WEEKDAYS[w]} for w in HEATMAP_WEEK_ORDER], "parts": [{"label": label} for _, _, label in MONTH_PARTS],
+            "cells": cells, "max_mean": top, "enough_cells": len(enough), "min_days": MIN_HEATMAP_DAYS}
 
 
 def season_uplifts(values, first, last, today):

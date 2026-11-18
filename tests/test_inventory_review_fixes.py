@@ -81,7 +81,7 @@ class HistoryLookupTests(unittest.TestCase):
                          ("26100203", "15", "علي عبدالرحمن"))
         vm.setFilters(2, 0)                                                     # another karat: no card
         self.assertFalse(vm.hasHistoryPiece)
-        self.assertEqual(calls[-1], {"search": "01261001", "karat_id": 2, "item_type_id": None})
+        self.assertEqual(calls[-1], {"search": "01261001", "karat_id": 2, "item_type_id": None, "scrap_only": False})
 
     def test_current_stock_pieces_never_show_a_history_card(self):
         vm, _ = self.vm(dict(self.SOLD, inventory_status="IN_STOCK"))

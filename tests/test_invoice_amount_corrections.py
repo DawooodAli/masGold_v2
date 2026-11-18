@@ -121,7 +121,7 @@ class DashboardTests(unittest.TestCase):
                "scrap": [], "top_types": []}
         changes = {"5075": {"direction": "IN", "delta": D("-50")}}
         lines = [{"line_id": 1, "invoice_id": 5075, "line_type": "SELL_UNIDENTIFIED", "weight_grams": D("10.54"), "making_total": D("5580.56"), "karat_value": 21,
-                  "item_type": None, "invoice_status": "FINALIZED", "finalized_at": datetime(2026, 11, 12, 12, 56), "reversed": 0}]
+                  "item_type": None, "invoice_status": "FINALIZED", "finalized_at": datetime(2026, 11, 12, 12, 56), "invoice_date": datetime(2026, 11, 12, 12, 56), "reversed": 0}]
         fixed = DashboardService.corrected_figures(raw, changes, lines, rules.line_shares(changes, lines), today)
         self.assertEqual(fixed["invoices"]["sell_total"], D("69150"))
         self.assertEqual(fixed["sales_days"][0]["total"], D("69150"))

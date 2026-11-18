@@ -73,10 +73,10 @@ class DeadStockTests(AlertsCase):
         self.assertNotIn("24.500", " ".join(v[0] for v in cards.values()))                                         # karats are never added
 
     def test_the_tables_are_tagged_with_their_karat_for_the_colors(self):
-        self.assertEqual({t["key"]: t["karat"] for t in self.run_alerts()["tables"] if t["key"].startswith("dead_")}, {"dead_21": 21, "dead_18": 18})
+        self.assertEqual({t["key"]: t["karat"] for t in self.run_alerts()["tables"] if t["key"].startswith("dead_") and t["key"] != "dead_pieces"}, {"dead_21": 21, "dead_18": 18})
 
     def test_filters(self):
-        self.assertEqual([t["key"] for t in self.run_alerts(karat="18")["tables"] if t["key"].startswith("dead_")], ["dead_18"])
+        self.assertEqual([t["key"] for t in self.run_alerts(karat="18")["tables"] if t["key"].startswith("dead_") and t["key"] != "dead_pieces"], ["dead_18"])
         self.assertEqual({r["type"] for r in self.table(self.run_alerts(text="خاتم"), "dead_21")["rows"]}, {"خاتم"})
         with self.assertRaises(ReportError):
             self.run_alerts(karat="19")

@@ -29,3 +29,6 @@ opencode.json
 # PyInstaller output (build_exe.bat)
 /dist/
 /build/
+
+# Playwright MCP scratch (console logs, screenshots)
+.playwright-mcp/

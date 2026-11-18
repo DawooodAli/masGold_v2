@@ -304,7 +304,7 @@ Rectangle {
         modal: true; font.family: "Cairo"
         closePolicy: page.vm && page.vm.saving ? Popup.NoAutoClose : Popup.CloseOnEscape
         onClosed: if (page.vm) page.vm.cancelMovement()
-        background: Rectangle { color: theme.bgPrimary; radius: theme.radiusMedium; border.color: theme.goldDark }
+        background: Rectangle { color: theme.bgPrimary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 8
             Txt { text: "حركة نقدية جديدة"; font.bold: true; font.pixelSize: theme.fontSection; color: theme.gold
@@ -372,7 +372,7 @@ Rectangle {
         function begin() { trAmount.text = ""; trNote.text = ""; trFrom.currentIndex = 0; trTo.currentIndex = accounts.length > 1 ? 1 : 0; page.vm.prepareTransfer(); open(); trAmount.forceActiveFocus() }
         anchors.centerIn: parent; width: Math.min(page.width - 24, 640); modal: true; font.family: "Cairo"
         closePolicy: page.vm && page.vm.transferBusy ? Popup.NoAutoClose : Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgPrimary; radius: theme.radiusMedium; border.color: theme.goldDark }
+        background: Rectangle { color: theme.bgPrimary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 10
             Txt { text: "تحويل بين الحسابات"; font.bold: true; font.pixelSize: theme.fontSection; color: theme.gold; Layout.fillWidth: true }
@@ -435,7 +435,7 @@ Rectangle {
         anchors.centerIn: parent; width: page.width - 24; height: page.height - 24
         modal: true; font.family: "Cairo"
         closePolicy: page.vm && page.vm.customerCashBusy ? Popup.NoAutoClose : Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgPrimary; radius: theme.radiusMedium; border.color: theme.goldDark }
+        background: Rectangle { color: theme.bgPrimary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 10
             RowLayout {
@@ -567,7 +567,7 @@ Rectangle {
         anchors.centerIn: parent; width: Math.min(page.width - 24, 460)
         modal: true; font.family: "Cairo"
         onClosed: if (page.vm) page.vm.closeOperation()
-        background: Rectangle { color: theme.bgPrimary; radius: theme.radiusMedium; border.color: theme.goldDark }
+        background: Rectangle { color: theme.bgPrimary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 5
             Txt { text: (detailDialog.d.typeText || "") + " " + (detailDialog.d.code || ""); font.bold: true

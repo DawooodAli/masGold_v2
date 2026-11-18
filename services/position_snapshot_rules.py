@@ -7,14 +7,11 @@ Supplier gold is SIGNED from the shop's point of view: the supplier ledger is po
 (gold the suppliers hold for the shop counts as shop gold, gold the shop owes is subtracted). Every part is quantized once (0.001 g, ROUND_HALF_UP) and the total is the exact sum of the
 quantized parts. A gram whose assay is unknown is never inferred: it is kept apart in `unknown_grams` and is not in the total."""
 from decimal import ROUND_HALF_UP, Decimal, localcontext
+from services.shared_helpers import dec as _dec
 
 STEP = Decimal("0.001")
 MONEY_STEP = Decimal("0.01")
 PARTS = ("gold_shop_eq21", "gold_custody_eq21", "gold_intermediary_eq21", "gold_book_eq21", "gold_suppliers_eq21")
-
-
-def _dec(value):
-    return Decimal(str(value if value is not None else 0))
 
 
 def _q(value):

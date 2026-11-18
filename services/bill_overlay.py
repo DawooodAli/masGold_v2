@@ -162,7 +162,7 @@ def karat_totals(rows):
 
 
 def karat_totals_cells(overlay):
-    """[(label, value text)] cells of the totals strip: «إجمالي عيار 21» and «12.400 جم»; empty when the bill has no sale rows (or an overlay built without totals)."""
+    """[(label, value text)] cells of the totals strip: «إجمالي عيار 21» and «12.400 جرام»; empty when the bill has no sale rows (or an overlay built without totals)."""
     return [(f"إجمالي عيار {karat}", _ltr(total) + " جرام") for karat, total in (overlay.extra or {}).get("karat_totals", ())]
 
 

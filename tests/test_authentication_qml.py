@@ -85,8 +85,7 @@ class AuthenticationQmlTests(unittest.TestCase):
             with patch('app.viewmodels.master_data_viewmodel.MasterDataService', EmptyService), \
                  patch('app.viewmodels.inventory_viewmodel.InventoryService', EmptyService), \
                  patch('app.viewmodels.old_gold_conversion_viewmodel.OldGoldConversionService', EmptyService), \
-                 patch('app.viewmodels.barcode_viewmodel.BarcodePrintService', EmptyService), \
-                 patch('app.viewmodels.billing_viewmodel.BillingService', EmptyService):
+                 patch('app.viewmodels.barcode_viewmodel.BarcodePrintService', EmptyService):
                 return create_operational_viewmodels()
         self.factory = factory
         self.controller = ApplicationController(self.app, authentication_service=self.fake,
@@ -156,7 +155,7 @@ class AuthenticationQmlTests(unittest.TestCase):
             operational.setProperty('width', width)
             operational.setProperty('height', height)
             QTest.qWait(40)
-        QMetaObject.invokeMethod(operational.findChild(QObject, 'logoutButton'), 'clicked')
+        QMetaObject.invokeMethod(operational.findChild(QObject, 'logoutButton'), 'clicked')       # the button sits under الإدارة in the sidebar (owner 2026-11-18)
         self.assertFalse(self.controller.session.authenticated)
         self.assertIsNone(self.controller.operational_engine)
         self.assertEqual(self.controller.operational_viewmodels, {})

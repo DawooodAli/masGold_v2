@@ -114,7 +114,9 @@ class ApiTests(unittest.TestCase):
     def test_the_home_page_has_one_card_per_module_the_user_may_use(self):
         api = make_api()
         modules = api.overview(api.login("admin", "secret"))["modules"]
-        self.assertEqual([m["key"] for m in modules], ["reports", "kpi", "customers", "treasury", "daily", "suppliers", "goldprofit", "staff", "cashflow", "bankflow", "inventory", "reviews", "currency", "markets", "stocktake", "calc", "verify"])
+        self.assertEqual([m["key"] for m in modules], ["daily", "treasury", "reviews", "customers", "suppliers", "inventory", "stocktake", "markets", "calc", "reports", "kpi", "goldprofit", "staff", "verify"])
+        self.assertEqual([m["group"] for m in modules][:4], ["اليوم"] * 3 + ["الحسابات"])                       # owner 2026-11-18: the home page is grouped; what was drawn twice (bank / cash flow, currency) is gone
+        self.assertFalse({"cashflow", "bankflow", "currency"} & {m["key"] for m in modules})
         by_key = {m["key"]: m for m in modules}
         reports, customers, treasury, daily, inventory, reviews = (by_key[k] for k in ("reports", "customers", "treasury", "daily", "inventory", "reviews"))
         self.assertEqual([r["key"] for g in inventory["groups"] for r in g["reports"]], ["stock", "alerts", "stockweights"])

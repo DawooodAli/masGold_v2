@@ -86,7 +86,7 @@ ApplicationWindow {
         modal: true
         title: "بيانات العميل"
         font.family: "Cairo"
-        background: Rectangle { color: theme.bgPrimary; radius: 8; border.color: theme.goldDark }
+        background: Rectangle { color: theme.bgPrimary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             CustomerLabel { objectName: "customerNavigationMessage"; Layout.fillWidth: true
                 value: customerNavigationDialog.message; color: theme.red }
@@ -662,1093 +662,10 @@ ApplicationWindow {
             spacing: 0
 
 
-            // =================================================
-            // TOP BAR
-            // =================================================
-
-            Rectangle {
-                objectName: "topBar"
-                Layout.fillWidth: true
-                Layout.preferredHeight: 86
-
-                color: theme.bgSecondary
-
-                border.color: theme.border
-                border.width: 1
-
-
-                RowLayout {
-                    anchors.fill: parent
-
-                    anchors.leftMargin: root.width < 1200 ? 10 : 16
-                    anchors.rightMargin: root.width < 1200 ? 10 : 16
-
-                    spacing: root.width < 1400 ? 6 : 10
-
-
-                    // Physical left: the user and logout. The header is compact below 1400 px (no page
-                    // title, tighter spacing / fonts, 300 px price card); below 1200 px "متصل" is the dot alone.
-                    Label {
-                        objectName: "topUserName"
-                        text: "\u200f" + appSession.displayName
-                        font.family: "Cairo"
-                        color: theme.textSecondary
-                        horizontalAlignment: Text.AlignLeft
-                        elide: Text.ElideLeft
-                        Layout.maximumWidth: 110
-                        Layout.minimumWidth: 36
-                    }
-                    Button {
-                        id: logoutButton
-                        objectName: "logoutButton"
-                        font.family: "Cairo"
-                        font.pixelSize: root.width < 1400 ? 12 : 13
-                        leftPadding: root.width < 1200 ? 6 : root.width < 1400 ? 8 : 12
-                        rightPadding: root.width < 1200 ? 6 : root.width < 1400 ? 8 : 12
-                        // Compact: the short word keeps the one-line balances and the price card whole.
-                        text: root.width < 1400 ? "خروج" : "تسجيل الخروج"
-                        contentItem: Label {
-                            text: "\u200f" + logoutButton.text
-                            font: logoutButton.font
-                            color: theme.textPrimary
-                            horizontalAlignment: Text.AlignRight
-                            verticalAlignment: Text.AlignVCenter
-                        }
-                        onClicked: authenticationVM.logout()
-                    }
-
-                    Item {
-                        Layout.fillWidth: true
-                    }
-
-                    // Centre: operational balances only — shop cash and COUNTED old gold 21 / 18 / 24, each in
-                    // its own compact box (the karat is the box's headline). Wallet / InstaPay / bank balances
-                    // are in مراجعات المدير. Below 1400 / 1200 px the boxes tighten; no value is ever hidden.
-                    RowLayout {
-                        id: balanceStrip
-                        objectName: "balanceStrip"
-                        layoutDirection: Qt.RightToLeft
-                        spacing: root.width < 1200 ? 4 : 6
-                        readonly property int labelSize: root.width < 1200 ? 11 : 12
-                        readonly property int karatSize: root.width < 1200 ? 16 : root.width < 1400 ? 18 : 20
-                        readonly property int valueSize: root.width < 1200 ? 14 : root.width < 1400 ? 15 : 17
-                        readonly property bool failed: balancesVM.errorMessage.length > 0
-                        ToolTip.visible: failed && stripHover.hovered
-                        ToolTip.text: "تعذر تحميل الأرصدة"
-                        HoverHandler { id: stripHover }
-
-                        BalanceBox {
-                            objectName: "balanceBoxCash"
-                            accent: theme.balanceCash
-                            caption: "النقدية"
-                            valueName: "balanceCash"
-                            value: balancesVM.cashText
-                            zero: balancesVM.cashZero
-                        }
-                        Repeater {
-                            model: balancesVM.oldGold
-                            BalanceBox {
-                                required property var modelData
-                                objectName: "balanceBox_" + modelData.karat
-                                // 21 turquoise • 18 blue • 22 amber • 24 violet; a zero balance is muted, never hidden.
-                                accent: theme.balanceKaratColor(modelData.karat)
-                                caption: "كسر"
-                                karat: modelData.karat
-                                valueName: "balanceKarat_" + modelData.karat
-                                value: modelData.text
-                                zero: modelData.zero
-                            }
-                        }
-                    }
-
-                    Item {
-                        Layout.fillWidth: true
-                    }
-
-                    Label {
-                        // The sidebar already marks the page; below 1400 px the space goes to the balances.
-                        visible: root.width >= 1400 && text.length > 0
-                        text:
-                            pageStack.currentItem
-                            ? pageStack.currentItem.pageTitle
-                            : ""
-
-                        color: theme.gold
-
-                        font.family: "Cairo"
-                        font.pixelSize: 20
-                        font.bold: true
-
-                        Layout.maximumWidth: 140
-                        Layout.minimumWidth: 0
-                        elide: Text.ElideLeft
-
-                        horizontalAlignment:
-                            Text.AlignRight
-                    }
-
-                    Rectangle {
-                        objectName: "goldPriceArea"
-                        Layout.preferredWidth: root.width < 1200 ? 290 : root.width < 1400 ? 340 : 410
-                        Layout.minimumWidth: Layout.preferredWidth
-                        Layout.preferredHeight: 72
-
-                        radius: theme.radiusSmall
-
-                        color: theme.bgTertiary
-
-                        border.color: theme.border
-                        border.width: 1
-
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: goldPriceDialog.open()
-                        }
-
-                        ColumnLayout {
-                            anchors.fill: parent
-                            anchors.margins: 6
-                            spacing: 0
-                            RowLayout {
-                                Layout.fillWidth: true
-                                objectName: "goldPriceHeadline"
-                                property string text: goldPriceVM.headline
-                                layoutDirection: Qt.RightToLeft
-                                spacing: 10
-                                // Label small, price strong: عيار 21 • شراء 6,209 • بيع 6,234 (no provider name).
-                                GoldPriceLabel { value: "عيار 21"; color: theme.gold; font.bold: true
-                                                 font.pixelSize: root.width < 1200 ? 15 : 17; wrapMode: Text.NoWrap }
-                                GoldPriceLabel { value: "شراء"; color: theme.priceBuy; font.pixelSize: 14; wrapMode: Text.NoWrap }
-                                GoldPriceLabel {
-                                    objectName: "goldTopBuy"
-                                    value: goldPriceVM.headlineBuy; color: theme.priceBuy
-                                    font.bold: true; font.pixelSize: root.width < 1200 ? 20 : 25; wrapMode: Text.NoWrap
-                                }
-                                GoldPriceLabel { value: "بيع"; color: theme.priceSell; font.pixelSize: 14; wrapMode: Text.NoWrap }
-                                GoldPriceLabel {
-                                    objectName: "goldTopSell"
-                                    value: goldPriceVM.headlineSell; color: theme.priceSell
-                                    font.bold: true; font.pixelSize: root.width < 1200 ? 20 : 25; wrapMode: Text.NoWrap
-                                }
-                                Item { Layout.fillWidth: true }
-                            }
-                            RowLayout {
-                                Layout.fillWidth: true
-                                layoutDirection: Qt.RightToLeft
-                                spacing: 6
-                                GoldPriceLabel {
-                                    objectName: "goldTopStatus"
-                                    Layout.fillWidth: true
-                                    value: goldPriceVM.simpleStatus
-                                    color: goldPriceVM.status === "ERROR" ? theme.priceError
-                                           : goldPriceVM.status === "STALE_ALLOWED" ? theme.priceWarning : theme.textMuted
-                                    font.pixelSize: 11
-                                    elide: Text.ElideLeft
-                                    wrapMode: Text.NoWrap
-                                }
-                                // Owner 2026-10-30: the mode choice sits next to the price in the main window. «يدوي» opens the price window on the manual form (the mode changes
-                                // only when a manual price is approved); «تلقائي» opens it on the usual confirmation. Shown for those who may manage prices.
-                                Repeater {
-                                    model: goldPriceVM.canManage ? [{ code: "AUTO", text: "تلقائي" }, { code: "MANUAL", text: "يدوي" }] : []
-                                    delegate: Rectangle {
-                                        required property var modelData
-                                        readonly property bool current: modelData.code === "MANUAL" ? goldPriceVM.mode === "MANUAL" : goldPriceVM.mode !== "MANUAL"
-                                        objectName: "goldTopMode_" + modelData.code
-                                        Layout.preferredWidth: 46
-                                        Layout.preferredHeight: 24
-                                        radius: 4
-                                        color: current ? theme.gold : "transparent"
-                                        border.color: current ? theme.gold : theme.border
-                                        GoldPriceLabel { anchors.centerIn: parent; value: parent.modelData.text; font.pixelSize: 11; wrapMode: Text.NoWrap
-                                                         color: parent.current ? theme.bgPrimary : theme.textPrimary }
-                                        MouseArea {
-                                            anchors.fill: parent
-                                            cursorShape: Qt.PointingHandCursor
-                                            onClicked: root.openGoldPriceFor(parent.modelData.code)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-
-                    Rectangle {
-                        objectName: "connectionDot"
-                        width: 9
-                        height: 9
-
-                        radius: 5
-
-                        color:
-                            masterDataVM.errorMessage.length > 0
-                            ? theme.red
-                            : theme.green
-                    }
-
-
-                    Label {
-                        objectName: "connectionStatus"
-                        // Below 1200 px the green dot alone says "متصل"; an error is always spelled out.
-                        visible: root.width >= 1200 || masterDataVM.errorMessage.length > 0
-                        Layout.minimumWidth: implicitWidth
-                        text:
-                            masterDataVM.errorMessage.length > 0
-                            ? "خطأ في الاتصال"
-                            : "متصل"
-
-                        color:
-                            masterDataVM.errorMessage.length > 0
-                            ? theme.red
-                            : theme.textMuted
-
-                        font.family: "Cairo"
-                        font.pixelSize: 12
-                    }
-                }
-            }
-
             // ========================================================
             // INVENTORY PAGE
             // ========================================================
 
-            // ========================================================
-    // BILLING PAGE
-    // Unified sale + old-gold purchase in one invoice.
-    // Inspired by the prototype's two-sided bill, rebuilt for v2 ledger rules.
-    // ========================================================
-
-    // FROZEN Billing V1, DEAD CODE: never instantiated, and its `billingVM` is no longer registered (see
-    // main.py) — instantiating this component would fail on the missing context property by design.
-    component BillingPage: Item {
-        id: billingPage
-
-        property string pageTitle: ""
-
-        function money(value) {
-            var number = Number(value || 0)
-            return number.toLocaleString(
-                Qt.locale("en_US"),
-                "f",
-                2
-            ) + " ج"
-        }
-
-        function weight(value) {
-            return Number(value || 0).toFixed(2)
-        }
-
-        function syncPrices() {
-            billingVM.updateBasePrices(
-                billingSellPrice21.text,
-                billingBuyPrice21.text
-            )
-        }
-
-        Rectangle {
-            anchors.fill: parent
-            color: theme.bgPrimary
-        }
-
-        ColumnLayout {
-            anchors.fill: parent
-            anchors.margins: 18
-            spacing: 10
-
-            // ----------------------------------------------------
-            // HEADER + CUSTOMER + EMPLOYEE + BASE PRICES
-            // ----------------------------------------------------
-
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.preferredHeight: 142
-
-                color: theme.bgSecondary
-                radius: theme.radiusSmall
-                border.color: theme.border
-                border.width: 1
-
-                ColumnLayout {
-                    anchors.fill: parent
-                    anchors.margins: 13
-                    spacing: 8
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        layoutDirection: Qt.RightToLeft
-                        spacing: 12
-
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 0
-
-                            Label {
-                                Layout.fillWidth: true
-                                text: "🧾 الفواتير"
-                                color: theme.gold
-                                font.family: "Cairo"
-                                font.pixelSize: 19
-                                font.bold: true
-                                horizontalAlignment: Text.AlignRight
-                            }
-
-                            Label {
-                                Layout.fillWidth: true
-                                text: "بيع بضاعة وشراء كسر من العميل داخل نفس الفاتورة"
-                                color: theme.textMuted
-                                font.family: "Cairo"
-                                font.pixelSize: 10
-                                horizontalAlignment: Text.AlignRight
-                            }
-                        }
-
-                        Label {
-                            text:
-                                billingVM.lastInvoiceCode.length > 0
-                                ? "آخر فاتورة: " + billingVM.lastInvoiceCode
-                                : "فاتورة جديدة"
-                            color: theme.textSecondary
-                            font.family: "Cairo"
-                            font.bold: true
-                        }
-                    }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        layoutDirection: Qt.RightToLeft
-                        spacing: 10
-
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 3
-
-                            Label {
-                                Layout.fillWidth: true
-                                text: "اسم العميل *"
-                                color: theme.textSecondary
-                                font.family: "Cairo"
-                                horizontalAlignment: Text.AlignRight
-                            }
-
-                            TextField {
-                                id: billingCustomerName
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 40
-                                placeholderText: "اسم العميل"
-                                color: theme.textPrimary
-                                placeholderTextColor: theme.textDisabled
-                                font.family: "Cairo"
-                                horizontalAlignment: TextInput.AlignRight
-                            }
-                        }
-
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 3
-
-                            Label {
-                                Layout.fillWidth: true
-                                text: "الموظف المسؤول *"
-                                color: theme.textSecondary
-                                font.family: "Cairo"
-                                horizontalAlignment: Text.AlignRight
-                            }
-
-                            ComboBox {
-                                id: billingEmployeeCombo
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 40
-                                model: masterDataVM.employees
-                                textRole: "name"
-                                valueRole: "id"
-                                currentIndex: -1
-                                displayText:
-                                    currentIndex >= 0
-                                    ? currentText
-                                    : "اختر الموظف"
-                            }
-                        }
-
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 3
-
-                            Label {
-                                Layout.fillWidth: true
-                                text: "سعر بيع 21 / جرام *"
-                                color: theme.green
-                                font.family: "Cairo"
-                                horizontalAlignment: Text.AlignRight
-                            }
-
-                            TextField {
-                                id: billingSellPrice21
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 40
-                                placeholderText: "مثال: 6500"
-                                color: theme.textPrimary
-                                placeholderTextColor: theme.textDisabled
-                                font.family: "Cairo"
-                                horizontalAlignment: TextInput.AlignRight
-                                inputMethodHints: Qt.ImhFormattedNumbersOnly
-                                onEditingFinished: billingPage.syncPrices()
-                            }
-                        }
-
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 3
-
-                            Label {
-                                Layout.fillWidth: true
-                                text: "سعر شراء 21 / جرام *"
-                                color: theme.amber
-                                font.family: "Cairo"
-                                horizontalAlignment: Text.AlignRight
-                            }
-
-                            TextField {
-                                id: billingBuyPrice21
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 40
-                                placeholderText: "مثال: 6400"
-                                color: theme.textPrimary
-                                placeholderTextColor: theme.textDisabled
-                                font.family: "Cairo"
-                                horizontalAlignment: TextInput.AlignRight
-                                inputMethodHints: Qt.ImhFormattedNumbersOnly
-                                onEditingFinished: billingPage.syncPrices()
-                            }
-                        }
-                    }
-                }
-            }
-
-            // ----------------------------------------------------
-            // TWO SIDES OF THE SAME BILL
-            // ----------------------------------------------------
-
-            RowLayout {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                layoutDirection: Qt.RightToLeft
-                spacing: 10
-
-                // =================================================
-                // SALE SIDE
-                // =================================================
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-
-                    color: theme.bgSecondary
-                    radius: theme.radiusSmall
-                    border.color: theme.border
-                    border.width: 1
-
-                    ColumnLayout {
-                        anchors.fill: parent
-                        anchors.margins: 12
-                        spacing: 8
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            layoutDirection: Qt.RightToLeft
-
-                            Label {
-                                Layout.fillWidth: true
-                                text: "بيع للعميل"
-                                color: theme.green
-                                font.family: "Cairo"
-                                font.pixelSize: 15
-                                font.bold: true
-                                horizontalAlignment: Text.AlignRight
-                            }
-
-                            Label {
-                                text: billingVM.saleCount + " قطعة"
-                                color: theme.textMuted
-                                font.family: "Cairo"
-                            }
-                        }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            layoutDirection: Qt.RightToLeft
-                            spacing: 7
-
-                            BarcodeField {
-                                id: billingBarcodeField
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 42
-                                placeholderText: "امسح أو اكتب الباركود"
-                                color: theme.textPrimary
-                                placeholderTextColor: theme.textDisabled
-                                font.family: "Cairo"
-                                horizontalAlignment: TextInput.AlignRight
-
-                                onAccepted: {
-                                    billingPage.syncPrices()
-                                    if (
-                                        billingVM.addSaleByBarcode(
-                                            text,
-                                            billingSellPrice21.text
-                                        )
-                                    ) {
-                                        text = ""
-                                    }
-                                }
-                            }
-
-                            Button {
-                                text: "＋ إضافة"
-                                font.family: "Cairo"
-                                onClicked: {
-                                    billingPage.syncPrices()
-                                    if (
-                                        billingVM.addSaleByBarcode(
-                                            billingBarcodeField.text,
-                                            billingSellPrice21.text
-                                        )
-                                    ) {
-                                        billingBarcodeField.text = ""
-                                        billingBarcodeField.forceActiveFocus()
-                                    }
-                                }
-                            }
-                        }
-
-                        Label {
-                            Layout.fillWidth: true
-                            text:
-                                "سعر 18 و24 يُحسب تلقائياً كنسبة من سعر 21، كما في منطق النموذج الأصلي."
-                            color: theme.textDisabled
-                            font.family: "Cairo"
-                            font.pixelSize: 9
-                            horizontalAlignment: Text.AlignRight
-                            wrapMode: Text.WordWrap
-                        }
-
-                        ListView {
-                            id: billingSaleList
-                            Layout.fillWidth: true
-                            Layout.fillHeight: true
-                            clip: true
-                            spacing: 6
-                            model: billingVM.saleLines
-
-                            delegate: Rectangle {
-                                required property var modelData
-                                required property int index
-
-                                width: billingSaleList.width
-                                height: 82
-                                color: theme.bgTertiary
-                                radius: 6
-                                border.color: theme.border
-                                border.width: 1
-
-                                RowLayout {
-                                    anchors.fill: parent
-                                    anchors.margins: 9
-                                    layoutDirection: Qt.RightToLeft
-                                    spacing: 8
-
-                                    ColumnLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 1
-
-                                        Label {
-                                            Layout.fillWidth: true
-                                            text:
-                                                (modelData.item_type_name || "قطعة")
-                                                + " — عيار "
-                                                + modelData.karat_value
-                                            color: theme.textPrimary
-                                            font.family: "Cairo"
-                                            font.bold: true
-                                            horizontalAlignment: Text.AlignRight
-                                        }
-
-                                        Label {
-                                            Layout.fillWidth: true
-                                            text:
-                                                "#" + modelData.inventory_item_id
-                                                + "  •  "
-                                                + billingPage.weight(modelData.weight_grams)
-                                                + "  •  "
-                                                + (modelData.barcode_value || "بدون باركود")
-                                            color: theme.textMuted
-                                            font.family: "Cairo"
-                                            font.pixelSize: 9
-                                            horizontalAlignment: Text.AlignRight
-                                        }
-
-                                        Label {
-                                            Layout.fillWidth: true
-                                            text:
-                                                "ذهب/جرام: "
-                                                + billingPage.money(modelData.gold_price_per_gram)
-                                                + "   •   الإجمالي: "
-                                                + billingPage.money(modelData.line_total)
-                                            color: theme.green
-                                            font.family: "Cairo"
-                                            font.pixelSize: 10
-                                            horizontalAlignment: Text.AlignRight
-                                        }
-                                    }
-
-                                    ColumnLayout {
-                                        Layout.preferredWidth: 118
-                                        spacing: 2
-
-                                        Label {
-                                            Layout.fillWidth: true
-                                            text: "مصنعية / جرام"
-                                            color: theme.textMuted
-                                            font.family: "Cairo"
-                                            font.pixelSize: 9
-                                            horizontalAlignment: Text.AlignRight
-                                        }
-
-                                        TextField {
-                                            Layout.fillWidth: true
-                                            Layout.preferredHeight: 34
-                                            text: Number(modelData.making_per_gram || 0).toFixed(2)
-                                            color: theme.textPrimary
-                                            font.family: "Cairo"
-                                            horizontalAlignment: TextInput.AlignRight
-                                            inputMethodHints: Qt.ImhFormattedNumbersOnly
-                                            onEditingFinished:
-                                                billingVM.setSaleMakingPerGram(
-                                                    index,
-                                                    text
-                                                )
-                                        }
-                                    }
-
-                                    Button {
-                                        text: "✕"
-                                        flat: true
-                                        font.family: "Cairo"
-                                        onClicked:
-                                            billingVM.removeSaleLine(index)
-                                    }
-                                }
-                            }
-                        }
-
-                        Label {
-                            visible: billingVM.saleCount === 0
-                            Layout.fillWidth: true
-                            text: "لا توجد قطع مباعة في الفاتورة حتى الآن."
-                            color: theme.textDisabled
-                            font.family: "Cairo"
-                            horizontalAlignment: Text.AlignHCenter
-                        }
-                    }
-                }
-
-                // =================================================
-                // OLD GOLD BUY SIDE
-                // =================================================
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-
-                    color: theme.bgSecondary
-                    radius: theme.radiusSmall
-                    border.color: theme.border
-                    border.width: 1
-
-                    ColumnLayout {
-                        anchors.fill: parent
-                        anchors.margins: 12
-                        spacing: 8
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            layoutDirection: Qt.RightToLeft
-
-                            Label {
-                                Layout.fillWidth: true
-                                text: "شراء كسر من العميل"
-                                color: theme.amber
-                                font.family: "Cairo"
-                                font.pixelSize: 15
-                                font.bold: true
-                                horizontalAlignment: Text.AlignRight
-                            }
-
-                            Label {
-                                text: billingVM.oldGoldCount + " حركة"
-                                color: theme.textMuted
-                                font.family: "Cairo"
-                            }
-                        }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            layoutDirection: Qt.RightToLeft
-                            spacing: 7
-
-                            ComboBox {
-                                id: billingOldGoldKarat
-                                Layout.preferredWidth: 130
-                                Layout.preferredHeight: 42
-                                model: masterDataVM.karats
-                                textRole: "name"
-                                valueRole: "id"
-                                currentIndex: -1
-                                displayText:
-                                    currentIndex >= 0
-                                    ? currentText
-                                    : "العيار"
-                            }
-
-                            TextField {
-                                id: billingOldGoldWeight
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 42
-                                placeholderText: "الوزن بالجرام"
-                                color: theme.textPrimary
-                                placeholderTextColor: theme.textDisabled
-                                font.family: "Cairo"
-                                horizontalAlignment: TextInput.AlignRight
-                                inputMethodHints: Qt.ImhFormattedNumbersOnly
-                            }
-
-                            Button {
-                                text: "＋ كسر"
-                                font.family: "Cairo"
-                                onClicked: {
-                                    billingPage.syncPrices()
-
-                                    var karatId =
-                                        billingOldGoldKarat.currentIndex >= 0
-                                        ? Number(billingOldGoldKarat.currentValue)
-                                        : 0
-
-                                    if (
-                                        billingVM.addOldGold(
-                                            karatId,
-                                            billingOldGoldWeight.text,
-                                            billingBuyPrice21.text,
-                                            billingOldGoldNotes.text
-                                        )
-                                    ) {
-                                        billingOldGoldWeight.text = ""
-                                        billingOldGoldNotes.text = ""
-                                        billingOldGoldWeight.forceActiveFocus()
-                                    }
-                                }
-                            }
-                        }
-
-                        TextField {
-                            id: billingOldGoldNotes
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 38
-                            placeholderText: "ملاحظات الكسر — اختياري"
-                            color: theme.textPrimary
-                            placeholderTextColor: theme.textDisabled
-                            font.family: "Cairo"
-                            horizontalAlignment: TextInput.AlignRight
-                        }
-
-                        Label {
-                            Layout.fillWidth: true
-                            text:
-                                "الكسر يُسجل بالجرامات فقط. لا باركود ولا مصنع ولا صنف."
-                            color: theme.textDisabled
-                            font.family: "Cairo"
-                            font.pixelSize: 9
-                            horizontalAlignment: Text.AlignRight
-                        }
-
-                        ListView {
-                            id: billingOldGoldList
-                            Layout.fillWidth: true
-                            Layout.fillHeight: true
-                            clip: true
-                            spacing: 6
-                            model: billingVM.oldGoldLines
-
-                            delegate: Rectangle {
-                                required property var modelData
-                                required property int index
-
-                                width: billingOldGoldList.width
-                                height: 74
-                                color: theme.bgTertiary
-                                radius: 6
-                                border.color: theme.border
-                                border.width: 1
-
-                                RowLayout {
-                                    anchors.fill: parent
-                                    anchors.margins: 9
-                                    layoutDirection: Qt.RightToLeft
-                                    spacing: 8
-
-                                    ColumnLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 1
-
-                                        Label {
-                                            Layout.fillWidth: true
-                                            text:
-                                                "كسر عيار "
-                                                + modelData.karat_value
-                                                + " — "
-                                                + billingPage.weight(modelData.weight_grams)
-                                            color: theme.textPrimary
-                                            font.family: "Cairo"
-                                            font.bold: true
-                                            horizontalAlignment: Text.AlignRight
-                                        }
-
-                                        Label {
-                                            Layout.fillWidth: true
-                                            text:
-                                                "شراء/جرام: "
-                                                + billingPage.money(modelData.buy_price_per_gram)
-                                                + "   •   القيمة: "
-                                                + billingPage.money(modelData.line_total)
-                                            color: theme.amber
-                                            font.family: "Cairo"
-                                            font.pixelSize: 10
-                                            horizontalAlignment: Text.AlignRight
-                                        }
-
-                                        Label {
-                                            visible:
-                                                String(modelData.notes || "").length > 0
-                                            Layout.fillWidth: true
-                                            text: modelData.notes || ""
-                                            color: theme.textMuted
-                                            font.family: "Cairo"
-                                            font.pixelSize: 9
-                                            horizontalAlignment: Text.AlignRight
-                                        }
-                                    }
-
-                                    Button {
-                                        text: "✕"
-                                        flat: true
-                                        font.family: "Cairo"
-                                        onClicked:
-                                            billingVM.removeOldGoldLine(index)
-                                    }
-                                }
-                            }
-                        }
-
-                        Label {
-                            visible: billingVM.oldGoldCount === 0
-                            Layout.fillWidth: true
-                            text: "لا يوجد كسر مشتَرَى في الفاتورة حتى الآن."
-                            color: theme.textDisabled
-                            font.family: "Cairo"
-                            horizontalAlignment: Text.AlignHCenter
-                        }
-                    }
-                }
-            }
-
-            // ----------------------------------------------------
-            // SETTLEMENT / NET
-            // ----------------------------------------------------
-
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.preferredHeight: 122
-
-                color: theme.bgSecondary
-                radius: theme.radiusSmall
-                border.color:
-                    billingVM.netDue > 0
-                    ? theme.green
-                    : billingVM.netDue < 0
-                      ? theme.amber
-                      : theme.border
-                border.width: 1
-
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.margins: 12
-                    layoutDirection: Qt.RightToLeft
-                    spacing: 14
-
-                    ColumnLayout {
-                        Layout.preferredWidth: 185
-                        spacing: 1
-                        Label {
-                            Layout.fillWidth: true
-                            text: "إجمالي البيع"
-                            color: theme.textMuted
-                            font.family: "Cairo"
-                            horizontalAlignment: Text.AlignRight
-                        }
-                        Label {
-                            Layout.fillWidth: true
-                            text: billingPage.money(billingVM.saleTotal)
-                            color: theme.green
-                            font.family: "Cairo"
-                            font.pixelSize: 18
-                            font.bold: true
-                            horizontalAlignment: Text.AlignRight
-                        }
-                    }
-
-                    ColumnLayout {
-                        Layout.preferredWidth: 185
-                        spacing: 1
-                        Label {
-                            Layout.fillWidth: true
-                            text: "إجمالي شراء الكسر"
-                            color: theme.textMuted
-                            font.family: "Cairo"
-                            horizontalAlignment: Text.AlignRight
-                        }
-                        Label {
-                            Layout.fillWidth: true
-                            text: billingPage.money(billingVM.oldGoldTotal)
-                            color: theme.amber
-                            font.family: "Cairo"
-                            font.pixelSize: 18
-                            font.bold: true
-                            horizontalAlignment: Text.AlignRight
-                        }
-                    }
-
-                    Rectangle {
-                        Layout.preferredWidth: 1
-                        Layout.fillHeight: true
-                        Layout.topMargin: 12
-                        Layout.bottomMargin: 12
-                        color: theme.border
-                    }
-
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 1
-
-                        Label {
-                            Layout.fillWidth: true
-                            text: "الصافي"
-                            color: theme.textMuted
-                            font.family: "Cairo"
-                            horizontalAlignment: Text.AlignRight
-                        }
-
-                        Label {
-                            Layout.fillWidth: true
-                            text:
-                                billingVM.netDue > 0
-                                ? "على العميل  " + billingPage.money(billingVM.netDue)
-                                : billingVM.netDue < 0
-                                  ? "لصالح العميل  " + billingPage.money(Math.abs(billingVM.netDue))
-                                  : "الحساب متعادل"
-                            color:
-                                billingVM.netDue > 0
-                                ? theme.green
-                                : billingVM.netDue < 0
-                                  ? theme.amber
-                                  : theme.gold
-                            font.family: "Cairo"
-                            font.pixelSize: 20
-                            font.bold: true
-                            horizontalAlignment: Text.AlignRight
-                        }
-
-                        TextField {
-                            id: billingInvoiceNotes
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 36
-                            placeholderText: "ملاحظات الفاتورة — اختياري"
-                            color: theme.textPrimary
-                            placeholderTextColor: theme.textDisabled
-                            font.family: "Cairo"
-                            horizontalAlignment: TextInput.AlignRight
-                        }
-                    }
-
-                    ColumnLayout {
-                        Layout.preferredWidth: 180
-                        spacing: 6
-
-                        Button {
-                            Layout.fillWidth: true
-                            text: "💾 حفظ الفاتورة"
-                            font.family: "Cairo"
-                            font.bold: true
-                            enabled:
-                                !billingVM.busy
-                                && masterDataVM.employees.length > 0
-
-                            onClicked: {
-                                billingPage.syncPrices()
-
-                                var employeeId =
-                                    billingEmployeeCombo.currentIndex >= 0
-                                    ? Number(billingEmployeeCombo.currentValue)
-                                    : 0
-
-                                var saved = billingVM.finalizeInvoice(
-                                    billingCustomerName.text,
-                                    employeeId,
-                                    billingSellPrice21.text,
-                                    billingBuyPrice21.text,
-                                    billingInvoiceNotes.text
-                                )
-
-                                if (saved) {
-                                    inventoryVM.refresh()
-                                    oldGoldConversionVM.refreshBalances()
-                                    billingBarcodeField.text = ""
-                                    billingOldGoldWeight.text = ""
-                                    billingOldGoldNotes.text = ""
-                                    billingInvoiceNotes.text = ""
-                                    billingCustomerName.text = ""
-                                    billingEmployeeCombo.currentIndex = -1
-                                }
-                            }
-                        }
-
-                        Button {
-                            Layout.fillWidth: true
-                            text: "مسح المسودة"
-                            font.family: "Cairo"
-                            onClicked: billingVM.clearDraft()
-                        }
-                    }
-                }
-            }
-
-            Label {
-                visible: billingVM.actionMessage.length > 0
-                Layout.fillWidth: true
-                text: billingVM.actionMessage
-                color:
-                    billingVM.actionSuccess
-                    ? theme.green
-                    : theme.red
-                font.family: "Cairo"
-                font.bold: true
-                horizontalAlignment: Text.AlignRight
-                wrapMode: Text.WordWrap
-            }
-        }
-
-        Component.onCompleted: {
-            masterDataVM.refresh()
-            billingVM.clearActionMessage()
-        }
-    }
 
 
     component InventoryPage: Item {
@@ -2242,7 +1159,7 @@ ApplicationWindow {
 
                     Rectangle {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 158
+                        Layout.preferredHeight: Math.max(158, bulkPrintColumn.implicitHeight + 18)     // grows when the filter row wraps (1080 px)
 
                         color: theme.bgSecondary
 
@@ -2257,6 +1174,7 @@ ApplicationWindow {
 
 
                         ColumnLayout {
+                            id: bulkPrintColumn
                             anchors.fill: parent
 
                             anchors.leftMargin: 12
@@ -2335,7 +1253,7 @@ ApplicationWindow {
                                 layoutDirection:
                                     Qt.RightToLeft
 
-                                spacing: 8
+                                spacing: 6
 
 
                                 Label {
@@ -2354,7 +1272,7 @@ ApplicationWindow {
                                 TextField {
                                     id: entryDateFilterField
 
-                                    Layout.preferredWidth: 145
+                                    Layout.preferredWidth: 120
                                     Layout.preferredHeight: 38
 
                                     text:
@@ -2422,7 +1340,7 @@ ApplicationWindow {
 
                                 ComboBox {
 
-                                    Layout.preferredWidth: 150
+                                    Layout.preferredWidth: 125
                                     Layout.preferredHeight: 38
 
                                     model: [
@@ -3285,9 +2203,7 @@ ApplicationWindow {
                     onNavigateTo: function(page) { root.currentPage = page }
                 }
 
-
-                // Billing V2 (canonical invoices). The frozen V1 BillingPage
-                // component above is kept unchanged but no longer shown.
+                // Billing V2 (canonical invoices); the frozen V1 page was removed on 2026-11-18.
                 // Billing: فاتورة جديدة + سجل الفواتير (read-only history) as two tabs of one workspace.
                 BillingWorkspace {
                     id: billingWorkspace
@@ -3439,6 +2355,13 @@ ApplicationWindow {
                     onBackRequested: root.currentPage = 10
                 }
 
+                // index 16: السعر العالمي — the live gold chart and the 21K price chart (moved off the home page, owner 2026-11-18).
+                DashboardPage {
+                    mode: "gold"
+                    pageTitle: "🌍 السعر العالمي"
+                    onNavigateTo: function(page) { root.currentPage = page }
+                }
+
             }
         }
 
@@ -3451,7 +2374,7 @@ ApplicationWindow {
             Layout.preferredWidth: 235
             Layout.fillHeight: true
 
-            color: theme.bgSecondary
+            color: theme.bgSidebar
 
             border.color: theme.border
             border.width: 1
@@ -3460,7 +2383,7 @@ ApplicationWindow {
             ColumnLayout {
                 anchors.fill: parent
                 anchors.margins: 14
-                spacing: 7
+                spacing: root.height < 720 ? 3 : 7
 
 
                 Label {
@@ -3481,6 +2404,7 @@ ApplicationWindow {
 
                 Label {
                     text: "ثقة الدهب فى مكانها "
+                    visible: root.height >= 720
 
                     color: theme.textMuted
 
@@ -3490,7 +2414,7 @@ ApplicationWindow {
                     horizontalAlignment: Text.AlignHCenter
 
                     Layout.fillWidth: true
-                    Layout.bottomMargin: 22
+                    Layout.bottomMargin: 12
                 }
 
 
@@ -3535,18 +2459,13 @@ ApplicationWindow {
                 }
 
 
-                Item {
-                    Layout.fillHeight: true
-                }
+                NavButton {
+                    objectName: "goldMovementNavButton"
+                    text: "🌍  السعر العالمي"
+                    selected: root.currentPage === 16
 
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 1
-
-                    color: theme.border
-
-                    Layout.bottomMargin: 5
+                    onClicked:
+                        root.currentPage = 16
                 }
 
 
@@ -3571,8 +2490,218 @@ ApplicationWindow {
                 }
 
 
+                Item {
+                    Layout.fillHeight: true
+                }
+
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 1
+
+                    color: theme.border
+
+                    Layout.bottomMargin: 5
+                }
+
+
+                // Operational balances (moved here from the top bar, owner 2026-11-18): shop cash and COUNTED old gold per karat, each in its own box.
+                // Wallet / InstaPay / bank balances are in الإدارة. A zero balance is muted, never hidden.
+                GridLayout {
+                    id: balanceStrip
+                    objectName: "balanceStrip"
+                    Layout.fillWidth: true
+                    Layout.topMargin: 8
+                    columns: 1                                              // the boxes stand under each other (owner 2026-11-18)
+                    layoutDirection: Qt.RightToLeft
+                    rowSpacing: 5
+                    columnSpacing: 6
+                    readonly property int labelSize: 12
+                    readonly property int karatSize: 18
+                    readonly property int valueSize: 15
+                    readonly property bool failed: balancesVM.errorMessage.length > 0
+                    ToolTip.visible: failed && stripHover.hovered
+                    ToolTip.text: "تعذر تحميل الأرصدة"
+                    HoverHandler { id: stripHover }
+
+                    BalanceBox {
+                        objectName: "balanceBoxCash"
+                        accent: theme.balanceCash
+                        caption: "النقدية"
+                        valueName: "balanceCash"
+                        value: balancesVM.cashText
+                        zero: balancesVM.cashZero
+                    }
+                    Repeater {
+                        model: balancesVM.oldGold
+                        BalanceBox {
+                            required property var modelData
+                            visible: String(modelData.karat) !== "22"          // the 22K box was removed from the sidebar (owner 2026-11-18)
+                            objectName: "balanceBox_" + modelData.karat
+                            // 21 turquoise - 18 blue - 22 amber - 24 violet; a zero balance is muted, never hidden.
+                            accent: theme.balanceKaratColor(modelData.karat)
+                            caption: "كسر"
+                            karat: modelData.karat
+                            valueName: "balanceKarat_" + modelData.karat
+                            value: modelData.text
+                            zero: modelData.zero
+                        }
+                    }
+                }
+
+
+                // Gold price card (moved here from the top bar, owner 2026-11-18): under the balances, stacked like them. Click opens the price window.
+                Rectangle {
+                    objectName: "goldPriceArea"
+                    Layout.fillWidth: true
+                    Layout.topMargin: 6
+                    Layout.preferredHeight: priceColumn.implicitHeight + 16
+                    radius: theme.radiusSmall
+                    color: theme.bgTertiary
+                    border.color: theme.border
+                    border.width: 1
+
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: goldPriceDialog.open()
+                    }
+
+                    ColumnLayout {
+                        id: priceColumn
+                        anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                        anchors.margins: 8
+                        spacing: 1
+                        RowLayout {
+                            Layout.fillWidth: true
+                            objectName: "goldPriceHeadline"
+                            property string text: goldPriceVM.headline
+                            layoutDirection: Qt.RightToLeft
+                            GoldPriceLabel { value: "سعر عيار 21"; color: theme.gold; font.bold: true; font.pixelSize: 14; wrapMode: Text.NoWrap }
+                            Item { Layout.fillWidth: true }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            layoutDirection: Qt.RightToLeft
+                            GoldPriceLabel { value: "بيع"; color: theme.priceSell; font.pixelSize: 13; wrapMode: Text.NoWrap }
+                            Item { Layout.fillWidth: true }
+                            GoldPriceLabel {
+                                objectName: "goldTopSell"
+                                value: goldPriceVM.headlineSell; color: theme.priceSell
+                                font.bold: true; font.pixelSize: 20; wrapMode: Text.NoWrap
+                            }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            layoutDirection: Qt.RightToLeft
+                            GoldPriceLabel { value: "شراء"; color: theme.priceBuy; font.pixelSize: 13; wrapMode: Text.NoWrap }
+                            Item { Layout.fillWidth: true }
+                            GoldPriceLabel {
+                                objectName: "goldTopBuy"
+                                value: goldPriceVM.headlineBuy; color: theme.priceBuy
+                                font.bold: true; font.pixelSize: 20; wrapMode: Text.NoWrap
+                            }
+                        }
+                        GoldPriceLabel {
+                            objectName: "goldTopStatus"
+                            Layout.fillWidth: true
+                            value: goldPriceVM.simpleStatus
+                            color: goldPriceVM.status === "ERROR" ? theme.priceError
+                                   : goldPriceVM.status === "STALE_ALLOWED" ? theme.priceWarning : theme.textMuted
+                            font.pixelSize: 11
+                            elide: Text.ElideLeft
+                            wrapMode: Text.NoWrap
+                        }
+                        // Owner 2026-10-30: the mode choice sits next to the price. «يدوي» opens the price window on the manual form (the mode changes only when a manual
+                        // price is approved); «تلقائي» opens it on the usual confirmation. Shown for those who may manage prices.
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.topMargin: 3
+                            layoutDirection: Qt.RightToLeft
+                            spacing: 6
+                            Repeater {
+                                model: goldPriceVM.canManage ? [{ code: "AUTO", text: "تلقائي" }, { code: "MANUAL", text: "يدوي" }] : []
+                                delegate: Rectangle {
+                                    required property var modelData
+                                    readonly property bool current: modelData.code === "MANUAL" ? goldPriceVM.mode === "MANUAL" : goldPriceVM.mode !== "MANUAL"
+                                    objectName: "goldTopMode_" + modelData.code
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 24
+                                    radius: 4
+                                    color: current ? theme.gold : "transparent"
+                                    border.color: current ? theme.gold : theme.border
+                                    GoldPriceLabel { anchors.centerIn: parent; value: parent.modelData.text; font.pixelSize: 11; wrapMode: Text.NoWrap
+                                                     color: parent.current ? theme.bgPrimary : theme.textPrimary }
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.openGoldPriceFor(parent.modelData.code)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // The signed-in user, the connection state and the logout button (owner 2026-11-18: moved here from the top bar, which was removed).
+                // One compact row: the green dot (red + the words «خطأ في الاتصال» when the connection fails), the user name, the logout button.
+                RowLayout {
+                    objectName: "sidebarAccountRow"
+                    Layout.fillWidth: true
+                    Layout.topMargin: 6
+                    layoutDirection: Qt.RightToLeft
+                    spacing: 6
+                    Rectangle {
+                        objectName: "connectionDot"
+                        Layout.preferredWidth: 9
+                        Layout.preferredHeight: 9
+                        radius: 5
+                        color: masterDataVM.errorMessage.length > 0 ? theme.red : theme.green
+                        ToolTip.visible: dotHover.hovered
+                        ToolTip.text: masterDataVM.errorMessage.length > 0 ? "خطأ في الاتصال" : "متصل"
+                        HoverHandler { id: dotHover }
+                    }
+                    Label {
+                        objectName: "connectionStatus"
+                        visible: masterDataVM.errorMessage.length > 0
+                        text: "خطأ في الاتصال"
+                        color: theme.red
+                        font.family: "Cairo"
+                        font.pixelSize: 12
+                    }
+                    Label {
+                        objectName: "topUserName"
+                        Layout.fillWidth: true
+                        text: "\u200f" + appSession.displayName
+                        font.family: "Cairo"
+                        font.pixelSize: 13
+                        color: theme.textSecondary
+                        horizontalAlignment: Text.AlignRight
+                        elide: Text.ElideLeft
+                    }
+                    Button {
+                        id: logoutButton
+                        objectName: "logoutButton"
+                        Layout.preferredHeight: 28
+                        font.family: "Cairo"
+                        font.pixelSize: 12
+                        leftPadding: 10
+                        rightPadding: 10
+                        text: "خروج"
+                        contentItem: Label {
+                            text: "\u200f" + logoutButton.text
+                            font: logoutButton.font
+                            color: theme.textPrimary
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        onClicked: authenticationVM.logout()
+                    }
+                }
+
                 Label {
                     text: "masGold v2"
+                    visible: root.height >= 720
 
                     color: theme.textDisabled
 
@@ -3603,43 +2732,40 @@ ApplicationWindow {
         property string valueName: ""
         property string value: ""
         property bool zero: false
-        Layout.preferredHeight: 46
-        Layout.preferredWidth: boxColumn.implicitWidth + (root.width < 1200 ? 14 : 20)
-        Layout.minimumWidth: Layout.preferredWidth
+        Layout.preferredHeight: root.height < 720 ? 32 : 36               // one line: «كسر 21» on the right, the figure on the left
+        Layout.fillWidth: true
+        Layout.preferredWidth: 1
+        Layout.minimumWidth: boxRow.implicitWidth + 16
         radius: theme.radiusSmall
         color: theme.bgTertiary
         border.color: balanceStrip.failed ? theme.red : theme.border
         border.width: 1
-        Column {
-            id: boxColumn
-            anchors.centerIn: parent
-            anchors.horizontalCenterOffset: -1
-            spacing: -3
-            Row {
-                anchors.horizontalCenter: parent.horizontalCenter
-                layoutDirection: Qt.RightToLeft
-                spacing: 4
-                Label {
-                    anchors.baseline: karatLabel.visible ? karatLabel.baseline : undefined
-                    text: box.caption
-                    color: theme.textMuted
-                    font.family: "Cairo"
-                    font.pixelSize: balanceStrip.labelSize
-                }
-                Label {
-                    id: karatLabel
-                    visible: box.karat.length > 0
-                    text: box.karat
-                    color: box.accent
-                    opacity: box.zero ? 0.6 : 1
-                    font.family: "Cairo"
-                    font.pixelSize: balanceStrip.karatSize
-                    font.bold: true
-                }
+        RowLayout {
+            id: boxRow
+            anchors.fill: parent
+            anchors.leftMargin: 10
+            anchors.rightMargin: 10
+            layoutDirection: Qt.RightToLeft
+            spacing: 4
+            Label {
+                text: box.caption
+                color: theme.textMuted
+                font.family: "Cairo"
+                font.pixelSize: balanceStrip.labelSize
             }
             Label {
+                id: karatLabel
+                visible: box.karat.length > 0
+                text: box.karat
+                color: box.accent
+                opacity: box.zero ? 0.6 : 1
+                font.family: "Cairo"
+                font.pixelSize: balanceStrip.karatSize
+                font.bold: true
+            }
+            Item { Layout.fillWidth: true }
+            Label {
                 objectName: box.valueName
-                anchors.horizontalCenter: parent.horizontalCenter
                 text: box.value
                 color: box.karat.length ? theme.textPrimary : box.accent        // cash: the gold figure
                 opacity: box.zero ? 0.45 : 1
@@ -3655,7 +2781,7 @@ ApplicationWindow {
         property bool selected: false
 
         Layout.fillWidth: true
-        Layout.preferredHeight: 44
+        Layout.preferredHeight: root.height < 720 ? 36 : 40
 
         flat: true
         hoverEnabled: true
@@ -13645,7 +12771,7 @@ ApplicationWindow {
         x: Math.round((root.width - width) / 2)
         y: Math.round((root.height - height) / 2)
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgPrimary; radius: 10; border.color: theme.goldDark }
+        background: Rectangle { color: theme.bgPrimary; radius: theme.radiusCard; border.color: theme.cardBorder }
 
         function begin() {
             correctTypeCombo.currentIndex = correctTypeCombo.indexOfValue(Number(root.selectedInventoryItem.item_type_id))
@@ -13777,7 +12903,7 @@ ApplicationWindow {
         x: Math.round((root.width - width) / 2)
         y: Math.round((root.height - height) / 2)
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgPrimary; radius: 10; border.color: theme.goldDark }
+        background: Rectangle { color: theme.bgPrimary; radius: theme.radiusCard; border.color: theme.cardBorder }
 
         readonly property bool soldPiece: inventoryVM.historyPiece.statusCode === "SOLD"
         function pickKarat() {
@@ -13875,7 +13001,7 @@ ApplicationWindow {
         x: Math.round((root.width - width) / 2)
         y: Math.round((root.height - height) / 2)
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgPrimary; radius: 10; border.color: theme.goldDark }
+        background: Rectangle { color: theme.bgPrimary; radius: theme.radiusCard; border.color: theme.cardBorder }
 
         function begin() {
             scrapReason.text = ""
@@ -13943,7 +13069,7 @@ ApplicationWindow {
         x: Math.round((root.width - width) / 2)
         y: Math.round((root.height - height) / 2)
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgPrimary; radius: 10; border.color: theme.goldDark }
+        background: Rectangle { color: theme.bgPrimary; radius: theme.radiusCard; border.color: theme.cardBorder }
 
         function begin() {
             newBarcodeField.text = ""
@@ -14022,7 +13148,7 @@ ApplicationWindow {
         x: Math.round((root.width - width) / 2)
         y: Math.round((root.height - height) / 2)
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgPrimary; radius: 10; border.color: theme.goldDark }
+        background: Rectangle { color: theme.bgPrimary; radius: theme.radiusCard; border.color: theme.cardBorder }
 
         function begin(selected) {
             ids = selected.slice()
@@ -14229,7 +13355,7 @@ ApplicationWindow {
 
             Rectangle {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 86
+                Layout.preferredHeight: 52
 
                 Layout.leftMargin: 16
                 Layout.rightMargin: 16

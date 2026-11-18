@@ -6,7 +6,7 @@ from datetime import date
 from decimal import Decimal as D
 import unittest
 
-from PySide6.QtCore import QMetaObject, QObject
+from PySide6.QtCore import QMetaObject, QObject, QPoint, QPointF
 from PySide6.QtTest import QTest
 
 from services.report_service import ReportService
@@ -285,6 +285,89 @@ class ReportsPageTests(harness.InvoicePageTests):
         self.assert_inside_window(self.item("reportDemandChartClose"))
         self.click("reportDemandChartClose")
         self.wait_until(lambda: not vm.demandChart, "chart closed")
+        self.assertEqual(self.warnings, [])
+
+    def shot(self, name):
+        import os
+        from pathlib import Path
+        target = os.getenv("MASGOLD_UI_REVIEW_DIR")
+        if target:
+            Path(target).mkdir(parents=True, exist_ok=True)
+            self.root.grabWindow().save(str(Path(target) / f"reports-{name}.png"))
+
+    def dense_demand_history(self):
+        """Eighteen months of a bill every day: Saturdays sell 30 g, every other day 10 g (the new system adds nothing), so the heatmap has every cell."""
+        from datetime import timedelta
+        from unittest import mock
+        rows = [{"day": d, "bills": 1, "bills_with_weight": 1, "grams": D("30") if d.weekday() == 5 else D("10")} for d in (date(2025, 2, 1) + timedelta(days=i) for i in range(576))]
+        for name, value in (("sales_history_legacy", lambda repo: rows), ("sales_new_daily", lambda repo, since: [])):
+            patcher = mock.patch.object(self.service._repository, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_the_demand_heatmap_says_not_enough_data_when_the_history_is_sparse(self):
+        vm = self.open_reports()
+        self.wait_report(vm)
+        vm.select("demand")
+        self.wait_until(lambda: not vm.busy and vm.result.get("report") == "demand", "demand loaded")
+        self.assertEqual([t["key"] for t in vm.result["tables"] if t["key"] == "heatmap"], [])                       # the table is only in the CSV
+        self.reveal(self.item("reportHeatmapCard"))
+        QTest.qWait(150)
+        note = self.visible_item("reportHeatmapUnavailable")
+        self.assertIsNotNone(note)
+        self.assertIn("بيانات غير كافية", str(note.property("text")))
+        self.assertIsNone(self.visible_item("reportHeatCell_0_0"))                                                     # no cell is drawn, nothing looks like a zero
+        self.assertEqual(self.warnings, [])
+
+    def test_the_demand_heatmap_fits_at_the_three_sizes_shows_every_value_and_has_a_hover_tooltip(self):
+        self.dense_demand_history()
+        vm = self.open_reports()
+        self.wait_report(vm)
+        vm.select("demand")
+        self.wait_until(lambda: not vm.busy and vm.result.get("report") == "demand", "demand loaded")
+        self.assertTrue(vm.result["heatmap"]["available"])
+        for width, height in ((1440, 900), (1280, 800), (1080, 680)):
+            with self.subTest(size=f"{width}x{height}"):
+                self.root.setWidth(width)
+                self.root.setHeight(height)
+                QTest.qWait(300)
+                card = self.item("reportHeatmapCard")
+                self.reveal(card)
+                QTest.qWait(150)
+                scroller = self.item("reportsScroller")
+                self.assertLessEqual(scroller.property("contentWidth"), scroller.property("width") + 1)               # the page never scrolls sideways
+                card_left = card.mapToScene(QPointF(0, 0)).x()
+                for row in range(7):
+                    for col in range(4):
+                        cell = self.visual_item(f"reportHeatCell_{row}_{col}")
+                        self.assertIsNotNone(cell, f"cell {row}_{col}")
+                        self.assertTrue(cell.property("visible"))
+                        left = cell.mapToScene(QPointF(0, 0)).x()
+                        self.assertGreaterEqual(left, card_left - 1)
+                        self.assertLessEqual(left + cell.width(), card_left + card.width() + 1)
+                        self.assertGreater(cell.width(), 50)                                                         # wide enough to read its value
+                        label = self.visual_item(f"reportHeatCellText_{row}_{col}")
+                        self.assertEqual(str(label.property("text")).replace("⁦", "").replace("⁩", ""), "30.0" if row == 0 else "10.0")      # Saturday first
+                        self.assertLessEqual(label.property("contentWidth"), label.property("width") + 1)           # the value is not clipped
+                for name in ("reportHeatmapTitle", "reportHeatmapNote"):
+                    self.assertTrue(self.visible_item(name).property("visible"))
+                # a real mouse hover on the darkest cell (Saturday, 22-end) opens the tooltip with weekday, part, mean and days
+                cell = self.visual_item("reportHeatCell_0_3")
+                self.reveal(cell)
+                QTest.qWait(100)
+                point = cell.mapToScene(QPointF(cell.width() / 2, cell.height() / 2)).toPoint()
+                QTest.mouseMove(self.root, point + QPoint(-3, 0))
+                QTest.mouseMove(self.root, point)
+                self.wait_until(lambda: self.visual_item("reportHeatmapTip").property("shown"), "heatmap tooltip")
+                tip = self.visual_item("reportHeatmapTip")
+                self.assertIn("السبت", tip.property("title"))
+                self.assertIn("من 22 إلى آخر الشهر", tip.property("title"))
+                self.assertEqual([r["name"] for r in tip.property("rows").toVariant()], ["المتوسط اليومي", "عدد الأيام"])
+                tip_left = tip.mapToScene(QPointF(0, 0)).x()
+                self.assertGreaterEqual(tip_left, -1)
+                self.assertLessEqual(tip_left + tip.width(), width + 1)
+                self.shot(f"heatmap-{width}x{height}")
+                QTest.mouseMove(self.root, QPoint(2, 2))
         self.assertEqual(self.warnings, [])
 
     def test_the_default_period_follows_the_calendar_until_the_employee_edits_a_date(self):

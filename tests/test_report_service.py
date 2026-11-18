@@ -1630,6 +1630,40 @@ class DemandTests(Case):
         self.assertIn("بعد", card["note"])
         self.assertTrue(any("التقويم الهجري الجدولي" in line for line in result["meaning"]))
 
+    def test_the_heatmap_says_not_enough_data_for_a_sparse_history_and_never_invents_numbers(self):
+        result = self.service.run("demand", {})
+        heat = result["heatmap"]
+        self.assertFalse(heat["available"])
+        self.assertIn("بيانات غير كافية", heat["note"])
+        self.assertEqual((heat["cells"], heat["rows"]), ([], []))                                       # no cell, so nothing that could be read as a zero
+        self.assertEqual(self.rows(result, "heatmap"), [])
+
+    def test_the_heatmap_gives_the_mean_grams_of_each_weekday_and_month_part_with_display_text_and_the_csv_rows(self):
+        from unittest import mock
+
+        def daily(self):
+            return [{"day": d, "bills": 1, "bills_with_weight": 1, "grams": D("30") if d.weekday() == 5 else D("10")} for d in (date(2025, 2, 1) + timedelta(days=i) for i in range(576))]    # 2025-02-01 .. 2026-08-29
+        with mock.patch.object(FakeRepo, "sales_history_legacy", daily), mock.patch.object(FakeRepo, "sales_new_daily", lambda self, since: []):
+            result = self.service.run("demand", {})
+            with tempfile.TemporaryDirectory() as folder:
+                csv_rows = list(csv.reader(Path(self.service.export_csv("demand", {}, folder)).read_text(encoding="utf-8-sig").splitlines()))
+        heat = result["heatmap"]
+        self.assertTrue(heat["available"])
+        self.assertEqual([r["name"] for r in heat["rows"]], ["السبت", "الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة"])          # Saturday first
+        self.assertEqual(heat["parts"], ["من 1 إلى 7", "من 8 إلى 14", "من 15 إلى 21", "من 22 إلى آخر الشهر"])
+        self.assertEqual(len(heat["cells"]), 28)
+        saturday, sunday = heat["cells"][0], heat["cells"][4]
+        self.assertEqual((saturday["mean"], saturday["ratio"], saturday["text"], saturday["days"]), (D("30.000"), D("1.0000"), "30.0", saturday["days"]))
+        self.assertEqual((sunday["mean"], sunday["ratio"], sunday["text"]), (D("10.000"), D("0.3333"), "10.0"))
+        self.assertIn("السبت • من 1 إلى 7 • المتوسط 30.0 جرام يوميًا • عدد الأيام", saturday["tip"])
+        self.assertTrue(all(isinstance(c["mean"], D) for c in heat["cells"] if c["enough"]))
+        # the CSV carries the heatmap as a table (it is hidden on screen, like the other detail tables)
+        k = next(i for i, r in enumerate(csv_rows) if r and r[0].startswith("خريطة الطلب"))
+        self.assertEqual(csv_rows[k + 1][:2], ["اليوم", "من 1 إلى 7"])
+        self.assertEqual(csv_rows[k + 2][:2], ["السبت", "30.0"])
+        keys = [x["key"] for x in result["tables"]]
+        self.assertEqual(keys[-3:], ["weekdays", "monthparts", "heatmap"])                                    # the existing tables are untouched; the heatmap is appended (hidden on screen by the view model)
+
     def test_the_line_chart_has_the_chosen_year_and_the_year_before_with_gaps_for_unfinished_periods(self):
         chart = self.service.demand_chart("M", "")
         self.assertEqual((chart["selected"], chart["available"], len(chart["labels"])), ([2026, 2025], [2025, 2026], 12))          # the default: the latest year with data and the one before it

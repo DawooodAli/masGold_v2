@@ -146,7 +146,7 @@ class InventoryStockPageTests(harness.InvoicePageTests):
         # filters reach the service and combine with the search
         self.page(INVENTORY)
         inventory.setFilters(1, 2)
-        self.assertEqual(calls[-1], {"search": "01261001", "karat_id": 1, "item_type_id": 2})
+        self.assertEqual(calls[-1], {"search": "01261001", "karat_id": 1, "item_type_id": 2, "scrap_only": False})
         for width, height in harness.SIZES:
             self.root.setWidth(width)
             self.root.setHeight(height)
@@ -192,7 +192,7 @@ class InventoryStockPageTests(harness.InvoicePageTests):
             QTest.qWait(80)
             self.assert_inside_window(self.item("inventoryResetFilters"))
         self.click("inventoryResetFilters")
-        self.wait_until(lambda: calls[-1] == {"search": "", "karat_id": None, "item_type_id": None} and not inventory.hasHistoryPiece, "reset")
+        self.wait_until(lambda: calls[-1] == {"search": "", "karat_id": None, "item_type_id": None, "scrap_only": False} and not inventory.hasHistoryPiece, "reset")
         self.assertEqual(self.item("inventoryKaratFilter").property("currentIndex"), 0)
         self.assertEqual(self.warnings, [])
 

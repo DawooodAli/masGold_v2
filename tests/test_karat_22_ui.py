@@ -15,6 +15,7 @@ K22 = 4
 P22 = (D("6501.9167"), D("6528.5000"))
 SIZES = ((1440, 900), (1280, 800), (1080, 680))
 BOXES = ("balanceBoxCash", "balanceBox_21", "balanceBox_18", "balanceBox_22", "balanceBox_24")
+SHOWN = ("balanceBoxCash", "balanceBox_21", "balanceBox_18", "balanceBox_24")      # 22K is not shown in the sidebar
 
 
 def strip_with_22k(self, **kwargs):
@@ -57,20 +58,20 @@ class Karat22BillingPageTests(harness.InvoicePageTests):
             self.root.setHeight(height)
             QTest.qWait(150)
             with self.subTest(size=(width, height)):
-                for name in BOXES + ("balanceKarat_22", "balanceStrip", "goldPriceArea", "topUserName", "logoutButton"):
+                for name in SHOWN + ("balanceStrip", "goldPriceArea", "topUserName"):
                     self.assert_inside_window(self.item(name))
-                for name in ("balanceCash", "balanceKarat_21", "balanceKarat_18", "balanceKarat_22", "balanceKarat_24"):
+                for name in ("balanceCash", "balanceKarat_21", "balanceKarat_18", "balanceKarat_24"):
                     item = self.item(name)
                     self.assertLessEqual(item.property("contentWidth"), item.width() + 1, f"{name} clipped")
-                centres = [self.item(n).mapToScene(QPointF(0, self.item(n).height() / 2)) for n in BOXES]
-                self.assertLess(max(c.y() for c in centres) - min(c.y() for c in centres), 1.5, "strip wrapped")
-                xs = [c.x() for c in centres]
-                self.assertEqual(xs, sorted(xs, reverse=True))                    # النقدية | 21 | 18 | 22 | 24, right to left
-                box = self.item("balanceBox_22")
+                # Owner 2026-11-18: the 22K box was removed from the sidebar (the 22K balance itself is still tracked); the others stand in one column,
+                # cash on top, then 21 / 18 / 24, and the Gold Price card sits under them.
+                self.assertFalse(self.item("balanceBox_22").property("visible"))
+                centres = [self.item(n).mapToScene(QPointF(self.item(n).width() / 2, self.item(n).height() / 2)) for n in SHOWN]
+                self.assertLess(max(c.x() for c in centres) - min(c.x() for c in centres), 1.5)
+                ys = [c.y() for c in centres]
+                self.assertEqual(ys, sorted(ys))
                 card = self.item("goldPriceArea")
-                self.assertLessEqual(self.item("balanceStrip").mapToScene(QPointF(0, 0)).x() + self.item("balanceStrip").width(),
-                                     card.mapToScene(QPointF(0, 0)).x() + 1, "strip runs into the price card")
-                self.assertGreater(box.width(), 40)
+                self.assertGreater(card.mapToScene(QPointF(0, 0)).y(), ys[-1])
                 self.snapshot(f"strip22-{width}x{height}")
 
     def test_a_22k_old_gold_purchase_by_real_clicks_posts_22k_grams_at_the_derived_buy_price(self):

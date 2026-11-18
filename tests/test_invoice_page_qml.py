@@ -180,16 +180,13 @@ class InvoicePageTests(unittest.TestCase):
         self.addCleanup(block.stop)
         self.store, self.prices, self.commits = Store(), Prices(), 0
         self.stock()
-        self.v1_calls = []
 
         def factory():
             empty = authentication_fixture.EmptyService
-            v1 = type("V1", (), {"__getattr__": lambda s, n: lambda *a, **k: self.v1_calls.append(n) or []})
             with patch("app.viewmodels.master_data_viewmodel.MasterDataService", empty), \
                     patch("app.viewmodels.inventory_viewmodel.InventoryService", empty), \
                     patch("app.viewmodels.old_gold_conversion_viewmodel.OldGoldConversionService", empty), \
-                    patch("app.viewmodels.barcode_viewmodel.BarcodePrintService", empty), \
-                    patch("app.viewmodels.billing_viewmodel.BillingService", v1):
+                    patch("app.viewmodels.barcode_viewmodel.BarcodePrintService", empty):
                 return create_operational_viewmodels()
 
         @contextmanager
@@ -1044,39 +1041,35 @@ class InvoicePageTests(unittest.TestCase):
             QTest.qWait(150)
             with self.subTest(size=(width, height)):
                 x = {name: self.item(name).mapToScene(QPointF(0, 0)).x()
-                     for name in ("topUserName", "logoutButton", "balanceStrip", "goldPriceArea")}
-                for name in ("topUserName", "logoutButton", "balanceStrip", "balanceCash", "balanceKarat_21",
+                     for name in ("topUserName", "balanceStrip", "goldPriceArea")}
+                for name in ("topUserName", "balanceStrip", "balanceCash", "balanceKarat_21",
                              "balanceKarat_18", "balanceKarat_24", "goldPriceArea", "connectionDot"):
                     self.assert_inside_window(self.item(name))
                     item = self.item(name)
                     if item.property("contentWidth") is not None:                    # never clipped
                         self.assertLessEqual(item.property("contentWidth"), item.width() + 1, f"{name} clipped")
-                # Physical left → right: user, logout, balances, Gold Price card.
-                self.assertLess(x["topUserName"], x["logoutButton"])
-                self.assertLess(x["logoutButton"], x["balanceStrip"])
-                self.assertLess(x["balanceStrip"], x["goldPriceArea"])
-                strip, card = self.item("balanceStrip"), self.item("goldPriceArea")
-                self.assertLessEqual(x["balanceStrip"] + strip.width(), x["goldPriceArea"])   # never under the card
-                self.assertGreaterEqual(card.width(), 250)
+                # Owner 2026-11-18: the logout button is gone; the balances and the Gold Price card moved into the sidebar (physical right), stacked under each other.
+                self.assert_inside_window(self.item("logoutButton"))
+                self.assertIsNone(self.visible_item("topBar"))                               # the top bar was removed to free the space
+                card = self.item("goldPriceArea")
+                strip = self.item("balanceStrip")
+                self.assertGreater(x["topUserName"], 0)                                      # the user name sits in the sidebar, under الإدارة
+                self.assertGreater(self.item("topUserName").mapToScene(QPointF(0, 0)).y(), card.mapToScene(QPointF(0, card.height())).y())
+                self.assertGreaterEqual(card.width(), 150)
                 for label in card.findChildren(QObject):                          # price card text never clipped
                     if label.property("contentWidth") is not None and label.property("visible"):
                         self.assertLessEqual(label.property("contentWidth"), label.property("width") + 1,
                                              f"price card text clipped: {label.property('text')}")
-                # ONE row of boxes: النقدية | 21 | 18 | 24, right to left, inside the top bar.
+                # ONE column of boxes: النقدية / 21 / 18 / 24 top to bottom, then the price card, all inside the sidebar.
                 names = ("balanceBoxCash", "balanceBox_21", "balanceBox_18", "balanceBox_24")
-                centres = [self.item(n).mapToScene(QPointF(0, self.item(n).height() / 2)) for n in names]
-                self.assertLess(max(c.y() for c in centres) - min(c.y() for c in centres), 1.5, "strip wrapped")
-                xs = [c.x() for c in centres]
-                self.assertEqual(xs, sorted(xs, reverse=True))
-                self.assertLessEqual(strip.height(), 48)
-                # Nothing is pushed past the top bar (under the sidebar): the price card and status stay whole.
-                bar = self.item("topBar")
-                bar_right = bar.mapToScene(QPointF(bar.width(), 0)).x()
-                status = self.item("connectionStatus") if width >= 1200 else self.item("connectionDot")
-                self.assertTrue(status.property("visible"))
-                self.assertLessEqual(status.mapToScene(QPointF(status.width(), 0)).x(),
-                                     bar_right - (10 if width < 1200 else 16) + 1, "header overflows its margin")
-                self.assertLessEqual(x["goldPriceArea"] + card.width(), status.mapToScene(QPointF(0, 0)).x())
+                centres = [self.item(n).mapToScene(QPointF(self.item(n).width() / 2, self.item(n).height() / 2)) for n in names]
+                self.assertLess(max(c.x() for c in centres) - min(c.x() for c in centres), 1.5, "boxes are not in one column")
+                ys = [c.y() for c in centres]
+                self.assertEqual(ys, sorted(ys))
+                self.assertLessEqual(strip.mapToScene(QPointF(0, strip.height())).y(), card.mapToScene(QPointF(0, 0)).y() + 1, "price card is not under the balances")
+                # The connection state and the logout button sit under the price card, inside the window.
+                self.assertTrue(self.item("connectionDot").property("visible"))
+                self.assertFalse(self.item("connectionStatus").property("visible"))                 # the dot alone says «متصل»; an error is spelled out
                 self.snapshot(f"header-{width}x{height}{suffix}")
 
     def test_all_methods_stay_visible_and_unavailable_ones_cannot_save(self):

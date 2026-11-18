@@ -86,7 +86,7 @@ def default_period(report, today):
     return month_period(today)
 
 
-HIDDEN_ON_SCREEN = {("sales", "documents"), ("stock", "items"), ("stock", "summary"), ("suppliers", "movements"), ("treasury", "movements"), ("market", "summary")}
+HIDDEN_ON_SCREEN = {("sales", "documents"), ("stock", "items"), ("stock", "summary"), ("suppliers", "movements"), ("treasury", "movements"), ("market", "summary"), ("demand", "heatmap")}
 NO_PERIOD = {"stock", "alerts", "stockweights", "indicators", "demand", "customers", "deadcash", "suppliers"}                      # reports of the CURRENT state: the period fields are not offered
 
 
@@ -120,6 +120,15 @@ def _lines(groups):
     return out
 
 
+def _heatmap(h):
+    """The weekday x month-part heatmap for the Canvas-free grid: strings for every shown figure, a float ratio only for the colour intensity (exact Decimal means stay in the service result / CSV)."""
+    if not h:
+        return {}
+    return {"available": bool(h["available"]), "title": h["title"], "unit": h["unit"], "note": h["note"], "maxText": h["max_text"], "minDays": h["min_days"], "rows": [{"row": r["row"], "name": r["name"]} for r in h["rows"]],
+            "parts": list(h["parts"]), "cells": [{"row": c["row"], "col": c["col"], "text": c["text"], "tip": c["tip"], "enough": bool(c["enough"]), "days": c["days"], "ratio": float(c["ratio"]) if c["ratio"] is not None else -1.0,
+                                                  "weekday": c["name"], "part": c["label"], "meanText": f"{c['mean']:,.1f}" if c["enough"] else ""} for c in h["cells"]]}
+
+
 def result_view(built, hidden=HIDDEN_ON_SCREEN):
     """The display form of one `ReportService` result: strings only, plus the open-source references and the paging state."""
     tables = []
@@ -137,7 +146,7 @@ def result_view(built, hidden=HIDDEN_ON_SCREEN):
                        "note": t.get("note", ""), "karat": int(t.get("karat") or 0)})
     return {"report": built["report"], "title": built["title"], "filters": built["filters"], "meaning": built["meaning"], "applied": built.get("applied", []), "tables": tables,
             "totals": [{"label": clean_label(x["label"]), "value": _cell(x["kind"], x["value"]) if x["kind"] != "text" else str(x["value"]), "note": x["note"], "group": x.get("group", ""), "karat": int(x.get("karat") or 0), "tone": x.get("tone") or ""}
-                       for x in built["totals"]], "options": built.get("options", {}), "error": "", "bars": _bars(built.get("bars")), "lines": _lines(built.get("lines"))}
+                       for x in built["totals"]], "options": built.get("options", {}), "error": "", "bars": _bars(built.get("bars")), "lines": _lines(built.get("lines")), "heatmap": _heatmap(built.get("heatmap"))}
 
 
 @QmlElement

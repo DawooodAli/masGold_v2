@@ -14,6 +14,7 @@ from contextlib import contextmanager
 import csv
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, ROUND_HALF_UP
+from services.shared_helpers import dec as _dec
 from pathlib import Path
 
 from repositories.invoice_lifecycle_repository import exchange_code
@@ -25,6 +26,7 @@ from services import invoice_amount_rules
 from services import kpi_rules
 from services import position_snapshot_rules as snapshot_math
 from services import price_indicators as indicators_math
+from services import report_labels
 from services import setting_rules
 from services.authorization_service import AuthorizationService
 from services.correction_rules import correction_code
@@ -100,10 +102,6 @@ class ReportError(ValueError):
     def __init__(self, code, message):
         super().__init__(message)
         self.code = code
-
-
-def _dec(value):
-    return Decimal(str(value if value is not None else 0))
 
 
 def _parse_day(value, label):
@@ -438,8 +436,8 @@ class ReportService:
                     {"key": "cashflow_out_time", "title": f"المصروفات المسجلة حسب {unit}", "tone": "payable", "rows": [{"label": k, "value": v["out"]} for k, v in timeline if v["out"]]},
                     {"key": "cashflow_net_time", "title": f"الصافي (إيرادات − مصروفات) حسب {unit}", "rows": [{"label": k, "value": v["in"] - v["out"]} for k, v in timeline if v["in"] != v["out"]]}] + bars
             bars = [b for b in bars if b["rows"]]
-        totals = [total("مصروفات مسجلة", recorded_out, "money", "إيجار، مرتبات، كهرباء، نقل، صيانة، ضيافة... من حركة الخزنة + مصروف السوق" + note, "recorded", tone="payable"),
-                  total("إيرادات مسجلة", recorded_in, "money", "إيرادات مسجلة يدويًا من حركة الخزنة" + note, "recorded", tone="receivable"),
+        totals = [total(report_labels.RECORDED_EXPENSE, recorded_out, "money", "إيجار، مرتبات، كهرباء، نقل، صيانة، ضيافة... من حركة الخزنة + مصروف السوق" + note, "recorded", tone="payable"),
+                  total(report_labels.RECORDED_INCOME, recorded_in, "money", "إيرادات مسجلة يدويًا من حركة الخزنة" + note, "recorded", tone="receivable"),
                   total("الصافي", recorded_in - recorded_out, "money", "الإيرادات − المصروفات المسجلة", "recorded")]
         meaning = ["بنود المصروفات والإيرادات المسجّلة من «حركة نقدية جديدة» في حركة النقدية فقط. الإلغاء والتصحيح يُحسبان على نفس بند الأصل فيُخصمان منه.",
                    "مصروفات السوق (المدفوعة من عهدة السوق) تظهر هنا بند «مصروف السوق» رغم أنها لا تمس الخزنة. المبيعات ودفعات العملاء وتحويلات الحسابات وبقية عهدة السوق ليست من هذه البنود ولا تظهر هنا. والنقدية الداخلة من عميل أو الخارجة لعميل لا تُحسب إيرادًا ولا مصروفًا."]
@@ -735,13 +733,13 @@ class ReportService:
                 col("out", "المدفوع للعميل", "money"), col("account", "أثره على حساب العميل", "money"), col("state", "الحالة")]
         sales_total, returns_total = known(eff, "sales"), known(eff, "returns")
         totals = [total("عدد المستندات الفعّالة", len(eff), "count")]
-        for label, key, note in (("قيمة البيع (فعّال)", "sales", "مجموع قيمة فواتير البيع والبيع مع شراء كسر، بغض النظر عن التحصيل"), ("قيمة شراء الكسر (فعّال)", "oldgold", ""),
-                                 ("قيمة المرتجع (فعّال)", "returns", ""), ("فرق الاستبدال الصافي (فعّال)", "exchange", "موجب: على العميل، سالب: للعميل — لا يُجمع مع البيع")):
+        for label, key, note in ((f"{report_labels.SALES_VALUE} (فعّال)", "sales", "مجموع قيمة فواتير البيع والبيع مع شراء كسر، بغض النظر عن التحصيل"), (f"{report_labels.OLD_GOLD_VALUE} (فعّال)", "oldgold", ""),
+                                 (f"{report_labels.RETURN_VALUE} (فعّال)", "returns", ""), ("فرق الاستبدال الصافي (فعّال)", "exchange", "موجب: على العميل، سالب: للعميل — لا يُجمع مع البيع")):
             missing = unknown(eff, key)
             totals.append(total(label + (" — جزئي" if missing else ""), known(eff, key), "money", (note + " • " if note else "") + (f"يستثني {missing} مستندًا قديمًا غير معلوم القيمة" if missing else "")))
         totals.append(total("فرق قيمة البيع والمرتجع" + (" — جزئي" if unknown(eff, "sales") else ""), sales_total - returns_total, "money",
                             "ليس ربحًا: لا تكلفة ولا هامش في هذه المرحلة" + (" • يستثني بيعًا قديمًا غير معلوم" if unknown(eff, "sales") else "")))
-        for label, key, note in (("المحصَّل (فعّال)", "in", "حركة نقدية/بنكية مرتبطة بالمستندات؛ لا تساوي بالضرورة قيمة البيع"), ("المدفوع للعملاء (فعّال)", "out", ""),
+        for label, key, note in ((f"{report_labels.COLLECTED} (فعّال)", "in", "حركة نقدية/بنكية مرتبطة بالمستندات؛ لا تساوي بالضرورة قيمة البيع"), ("المدفوع للعملاء (فعّال)", "out", ""),
                                  ("أثر المستندات على حسابات العملاء (فعّال)", "account", "موجب: زاد المستحق على العملاء")):
             missing = unknown(eff, key)
             totals.append(total(label + (" — جزئي" if missing else ""), known(eff, key), "money", (note + " • " if note else "") + (f"يستثني {missing} فاتورة قديمة بلا دليل" if missing else "")))
@@ -913,7 +911,7 @@ class ReportService:
                                   "short": " و ".join(x for x in (f"{short_p} قطعة" if short_p else "", f"{short_g:,.3f} جرام" if short_g else "") if x), "_k": k})
             below.sort(key=lambda r: (-r["_k"], r["type"]))
             tables.append(table("below_min", "تحت الحد الأدنى للمخزون", [col("type", "الصنف"), col("karat", "العيار"), col("have", "الموجود"), col("minimum", "الحد الأدنى"), col("short", "العجز")], below))
-            cards.append(total("تحت الحد الأدنى", len(below), "count", f"من {len(levels)} حدًّا حدّدته في الإعدادات", "minimum"))
+            cards.append(total(report_labels.BELOW_MIN, len(below), "count", f"من {len(levels)} حدًّا حدّدته في الإعدادات", "minimum"))
         # ---- the weights: stock and sales per ONE-GRAM weight band, per KARAT and per item TYPE (information for the owner to decide with; no alert)
         def band(weight):
             return min(int(weight), weight_band_top)
@@ -1381,7 +1379,7 @@ class ReportService:
                 values = {item["label"]: _dec(item["value"]) for item in result["totals"]}
                 for r in (result["tables"][0]["rows"] if result["tables"] else []):
                     flow_items.setdefault(r["label"], {"now": (ZERO2, ZERO2), "before": (ZERO2, ZERO2)})[side] = (_dec(r["out"]), _dec(r["in"]))
-                return values.get("مصروفات مسجلة"), values.get("إيرادات مسجلة")
+                return values.get(report_labels.RECORDED_EXPENSE), values.get(report_labels.RECORDED_INCOME)
             try:
                 flow(start, end, "now"), flow(previous_start, start, "before")
                 # compulsory items (salaries, invoice differences) are no indicator: they are left out of both periods, but stay listed in the detail table
@@ -1410,8 +1408,8 @@ class ReportService:
                    "مصنعية قليلة = ربح البند أقل من 2% من قيمة ذهبه (المصنعية − تكلفة الحرف). خصم كسر قليل = أقل من 1.5%. قطع أقل من جرام لا تدخل. السبائك والجنيهات (صنف سبيكة / جنية) والمشتراة منها بسعر السوق مع زيادة خارج مؤشرات المصنعية والموظفين.",
                    "مؤشرات الالتقاط المبكر: ذهب راكد (نسبته من ذهب المحل، وتحته القطع بالباركود)، مصنعية الموظف عيار 21 مقابل باقي الموظفين، خسية السوق وفاقد السبك (نسبتها من الذهب الخارج للسوق في آخر 90 يوم)، وأصناف بتتباع وخلصت.",
                    "ربح الذهب = زيادة (ذهب لقطات الجرد بعد الموردين + الكاش والبنوك محوّلة لذهب بسعر بيع 21) بجرام مكافئ عيار 21؛ المصروفات المسجلة من حركة الخزنة بدون المرتبات (إلزامية). غير المتاح يظهر رماديًا ولا يتحول لصفر."]
-        cards = [total("مؤشرات حمراء", sum(1 for i in items if i["status"] == kpi_rules.RED), "count", "", "summary", tone="deadcash"),
-                 total("مؤشرات صفراء", sum(1 for i in items if i["status"] == kpi_rules.YELLOW), "count", "", "summary"),
+        cards = [total(report_labels.KPI_RED, sum(1 for i in items if i["status"] == kpi_rules.RED), "count", "", "summary", tone="deadcash"),
+                 total(report_labels.KPI_YELLOW, sum(1 for i in items if i["status"] == kpi_rules.YELLOW), "count", "", "summary"),
                  total("موظفون يحتاجون مراجعة", sum(1 for r in employees if r["status"] == kpi_rules.RED), "count", "", "summary")]
         tables = [table("kpi", "KPI — هل أنا ماشي صح؟", columns, rows), table("kpi_staff", "الموظفون", staff, employees)]
         flagged = kpi_rules.flagged_lines(now, default)
@@ -1883,13 +1881,40 @@ class ReportService:
             tables[-2]["note"] = "التاريخ لا يكفي لنمط الأسبوع (يلزم " + str(season_math.MIN_WEEKDAY_DAYS) + " أيام على الأقل لكل يوم)."
         if not parts:
             tables[-1]["note"] = "التاريخ لا يكفي لنمط الشهر (يلزم " + str(season_math.MIN_MONTH_PART_DAYS) + " يومًا على الأقل لكل جزء)."
+        heat = season_math.heatmap(values, first_day, last_day)
+        heatmap = self._demand_heatmap(heat, season_math)
+        tables.append(table("heatmap", "خريطة الطلب: يوم الأسبوع × جزء الشهر (متوسط الجرامات اليومية، كل الأعيار معًا)", [col("name", "اليوم")] + [col(f"part{i}", label) for i, (_, _, label) in enumerate(season_math.MONTH_PARTS)],
+                            [{"name": r["name"], **{f"part{c['col']}": c["text"] for c in heatmap["cells"] if c["row"] == r["row"]}} for r in heatmap["rows"]] if heatmap["available"] else []))
         if upcoming is not None:
             measured = uplifts[upcoming["key"]]
             typical = f"الارتفاع المعتاد ×{measured['mean']:.2f} ({len(measured['years'])} سنة)" if measured["mean"] is not None else "لم يُقَس ارتفاعه بعد"
             cards.append(total("أقرب موسم", upcoming["name"], "text", ("جارٍ الآن" if upcoming["days_left"] == 0 else f"بعد {upcoming['days_left']} يوم") + f" • من {upcoming['start']:%Y-%m-%d} إلى {upcoming['end']:%Y-%m-%d} • {typical}", "demand"))
         meaning.append("مواسم الأعياد وعيد الأم تُحسب على أيام كل سنة الفعلية (التقويم الهجري الجدولي، قد يختلف يومًا أو يومين عن الرؤية، ونوافذها أسبوع أو أكثر): متوسط البيع اليومي داخل النافذة ÷ متوسط الأيام المحيطة بها (28 يومًا قبلها وبعدها دون أي نافذة موسم أخرى). "
                        "لكل موسم سنتان على الأكثر من التاريخ الحالي، فالأرقام مؤشر لا وعد. النمط الأسبوعي والشهري من الأيام التي فيها أوزان معروفة حتى أمس؛ اليوم الذي لا فواتير فيه صفر حقيقي.")
-        return {"meaning": meaning, "tables": tables, "totals": cards}
+        return {"meaning": meaning, "tables": tables, "totals": cards, "heatmap": heatmap}
+
+    @staticmethod
+    def _demand_heatmap(heat, season_math):
+        """The weekday x month-part heatmap of the demand report: the numeric cells of season_patterns.heatmap() (Decimal mean, ratio 0..1, days) plus the display strings the screen draws; QML calculates nothing.
+        A cell with too few days says «بيانات غير كافية» and has no number; a sparse history gives `available` False with the reason."""
+        title = "خريطة الطلب: يوم الأسبوع × جزء الشهر (متوسط الجرامات اليومية، كل الأعيار معًا)"
+        unit = "جرام يوميًا"
+        if heat is None or heat["enough_cells"] == 0:
+            return {"available": False, "title": title, "unit": unit, "min_days": season_math.MIN_HEATMAP_DAYS, "rows": [], "parts": [], "cells": [], "max_mean": Decimal(0), "max_text": "",
+                    "note": "التاريخ لا يكفي لخريطة الطلب: بيانات غير كافية (يلزم " + str(season_math.MIN_HEATMAP_DAYS) + " أيام على الأقل في كل خانة وسجل مبيعات متصل)."}
+        cells = []
+        for c in heat["cells"]:
+            if c["enough"]:
+                text = f"{c['mean']:,.1f}"
+                tip = f"{c['name']} • {c['label']} • المتوسط {c['mean']:,.1f} {unit} • عدد الأيام {c['days']}"
+            else:
+                text = "بيانات غير كافية"
+                tip = f"{c['name']} • {c['label']} • بيانات غير كافية (عدد الأيام {c['days']}، يلزم {heat['min_days']} على الأقل)"
+            cells.append({**c, "text": text, "tip": tip})
+        missing = heat["enough_cells"] < len(heat["cells"])
+        note = "اللون الأغمق = متوسط يومي أعلى؛ أعلى خانة " + f"{heat['max_mean']:,.1f}" + " " + unit + ". الخانة الفارغة لها أقل من " + str(heat["min_days"]) + " أيام فلا تُحسب (ليست صفرًا)." if missing else                "اللون الأغمق = متوسط يومي أعلى؛ أعلى خانة " + f"{heat['max_mean']:,.1f}" + " " + unit + "."
+        return {"available": True, "title": title, "unit": unit, "min_days": heat["min_days"], "rows": [{"row": i, "weekday": w["weekday"], "name": w["name"]} for i, w in enumerate(heat["weekdays"])],
+                "parts": [p["label"] for p in heat["parts"]], "cells": cells, "max_mean": heat["max_mean"], "max_text": f"{heat['max_mean']:,.1f}", "note": note}
 
     def _month_vs_last_year(self, repo, today):
         """The month so far against the SAME span of the same month LAST YEAR, per KARAT (never summed across karats): sold grams and lines, the previous grams and the change (the home-page card moved here, owner 2026-11-01)."""
@@ -2188,8 +2213,8 @@ class ReportService:
                              "credit": -amount if amount < 0 else None, "ref": {"type": "INVOICE", "id": str(r["reference_id"])} if invoice else {"type": "CUSTOMER", "id": str(cid)}})
         rows.sort(key=lambda x: (x["name"], x["date"]))
         cols = [col("name", "العميل"), col("document", "الفاتورة / المستند"), col("date", "التاريخ", "date"), col("owes", "عليه", "money"), col("credit", "له", "money")]
-        totals = [total("إجمالي اللي علينا (للعملاء)", payable, "money", "أرصدة العملاء الدائنة", "money", tone="payable"),
-                  total("إجمالي اللي عليهم (على العملاء)", receivable, "money", "أرصدة العملاء المدينة", "money", tone="receivable")]
+        totals = [total(f"{report_labels.CUSTOMERS_WE_OWE} (للعملاء)", payable, "money", "أرصدة العملاء الدائنة", "money", tone="payable"),
+                  total(f"{report_labels.CUSTOMERS_OWE_US} (على العملاء)", receivable, "money", "أرصدة العملاء المدينة", "money", tone="receivable")]
         meaning = ["الإشارة: «عليه» مستحق للمحل، «له» مستحق للعميل. المصدر دفتر حساب العميل نفسه الذي يقرأه كشف الحساب.",
                    "السطور هي بنود الحساب المفتوحة بمنطق الأقدم أولًا: كل تحصيل أو مرتجع أو عربون يُخصم من أقدم بند مفتوح لأن التحصيل لا يُربط بفاتورة بعينها. مجموع بنود العميل = رصيده الحالي.",
                    "الأرقام هي رصيد اليوم، ولا تتأثر بتاريخ الفترة."]
@@ -2380,7 +2405,7 @@ class ReportService:
         if gate("INVOICE_VIEW"):                                                                       # the month's sales and scrap purchases come from the invoices: left out without the right, never a zero
             documents = {t["label"]: t["value"] for t in self._sales(repo, gate, {"from": filters["from"], "to": filters["to"], "kind": "ALL", "state": "ALL"}, start, end)["totals"]}
             sales_value = next((v for k, v in documents.items() if k.startswith("قيمة البيع")), None)
-            buy_value = next((v for k, v in documents.items() if k.startswith("قيمة شراء الكسر")), None)
+            buy_value = next((v for k, v in documents.items() if k.startswith(report_labels.OLD_GOLD_VALUE)), None)
             if sales_value is not None:
                 totals.append(total("المبيعات", sales_value, "money", "قيمة فواتير البيع في الفترة (فعّالة)", "documents"))
             if buy_value is not None:

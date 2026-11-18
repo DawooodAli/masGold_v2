@@ -44,6 +44,7 @@ inventory items (ascending id) → customer → bank accounts.
 from dataclasses import dataclass, field
 from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from services.shared_helpers import query_rows
 from services.number_text import normalize_digits
 import json
 import re
@@ -422,14 +423,7 @@ class ExchangeService:
         except _Discard as done:
             return done.args[0]
 
-    @staticmethod
-    def _query(connection, sql, params=()):
-        cursor = connection.cursor(dictionary=True)
-        try:
-            cursor.execute(sql, params)
-            return cursor.fetchall()
-        finally:
-            cursor.close()
+    _query = staticmethod(query_rows)
 
     def _clock(self, connection):
         row = self._query(connection, "SELECT NOW() AS local_now, UTC_TIMESTAMP() AS utc_now")[0]

@@ -242,7 +242,6 @@ Item {
                 Layout.fillWidth: true
                 layoutDirection: Qt.RightToLeft
                 spacing: 8
-                Rectangle { implicitWidth: 3; implicitHeight: 16; radius: 2; color: section.accent }
                 Txt { text: section.title; color: section.accent; font.bold: true; font.pixelSize: theme.fontBodyStrong }
                 Item { Layout.fillWidth: true }
             }
@@ -942,7 +941,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         ListModel { id: goldModel }
         ListModel { id: createLotModel }
         contentItem: ColumnLayout {
@@ -1121,7 +1120,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 6
             Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; text: "دفع مصنعيات من العهدة" }
@@ -1224,7 +1223,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 6
             Txt { Layout.fillWidth: true; text: "تسوية سبكة من العهدة"; color: theme.gold; font.bold: true }
@@ -1315,7 +1314,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 6
             Txt { Layout.fillWidth: true; text: "تسليم ذهب لمسوقجي"; color: theme.gold; font.bold: true }
@@ -1406,7 +1405,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 6
             Txt { Layout.fillWidth: true; text: "تسليم لوجو لمسوقجي"; color: theme.gold; font.bold: true }
@@ -1502,7 +1501,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 6
             Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; text: "تسوية ذهب من العهدة" }
@@ -1694,7 +1693,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         ListModel { id: buyModel }
         contentItem: ColumnLayout {
             spacing: 6
@@ -1908,7 +1907,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 6
             Txt { Layout.fillWidth: true; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection; text: "بيع ذهب من العهدة" }
@@ -2060,7 +2059,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         ListModel { id: heatModel }
         contentItem: ColumnLayout {
             spacing: 6
@@ -2196,7 +2195,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 6
             Txt { Layout.fillWidth: true; text: "مرتجع سوق / خسية"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
@@ -2265,7 +2264,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 6
             Txt { Layout.fillWidth: true; text: "تصحيح وزن الإخراج"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
@@ -2329,7 +2328,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 6
             Txt { Layout.fillWidth: true; text: "أجر السبيكة"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
@@ -2397,7 +2396,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 6
             Txt { Layout.fillWidth: true; text: "تسوية نقدية العهدة"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
@@ -2463,7 +2462,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 6
             Txt { Layout.fillWidth: true; text: "اعتبار المتبقي لوجو"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
@@ -2527,7 +2526,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 6
             Txt { Layout.fillWidth: true; text: "تسليم سبيكة لمسوقجي"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
@@ -2633,7 +2632,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         ListModel { id: settleModel }
         contentItem: ColumnLayout {
             spacing: 6
@@ -2814,7 +2813,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         ListModel { id: inputModel }
         ListModel { id: residueModel }
         contentItem: ColumnLayout {
@@ -2996,7 +2995,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         ListModel { id: issuePickModel }
         contentItem: ColumnLayout {
             spacing: 6
@@ -3114,7 +3113,7 @@ Item {
         modal: true
         padding: 14
         closePolicy: Popup.CloseOnEscape
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         ListModel { id: lotPickModel }
         contentItem: ColumnLayout {
             spacing: 6

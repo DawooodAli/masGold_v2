@@ -7,8 +7,9 @@ Transfers move real money between BANK / wallet accounts and to / from the owner
 password is re-verified first (the shared `AuthenticationService`, its failure cooldown), FINANCIAL_ACCOUNT_OPERATE (and PRIVATE_ACCOUNT_MANAGE for the private account) is rechecked by the service in its
 transaction, only active bank / wallet accounts that the service itself listed are accepted (never the main safe), and the client request key makes a retry idempotent."""
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 import logging
+import re
 from pathlib import Path
 import time
 import shutil
@@ -28,17 +29,33 @@ from services.gold_price_service import GoldPriceService
 from services.inventory_service import InventoryService
 from services.invoice_service import PaymentInput
 from services.management_review_service import InspectionError, ManagementReviewService
+from services import report_labels
 from services.report_service import ReportService
 from webapp import stocktake_link
 from webapp.errors import ApiError
 
 logger = logging.getLogger("webapp")
 MAX_TEXT = 100
-SALES_CARDS = ("قيمة البيع", "قيمة شراء الكسر", "قيمة المرتجع", "المحصَّل")
+SALES_CARDS = (report_labels.SALES_VALUE, report_labels.OLD_GOLD_VALUE, report_labels.RETURN_VALUE, report_labels.COLLECTED)
 SCRAP_KARATS = (18, 21, 22, 24)
 SIMPLE_REVIEWS = ("MAKING_PRICE", "CASH_SETTLEMENT", "OLD_GOLD_DISCOUNT")                 # the reviews a manager closes with «تمت المراجعة»
 REVIEW_TITLES = (("MAKING_PRICE", "مراجعة سعر ومصنعية"), ("CASH_SETTLEMENT", "تسوية فرق نقدي"), ("OLD_GOLD_DISCOUNT", "خصم كسر"),
                  ("INVENTORY_MATCH", "قطع يدوية تحتاج مطابقة بالمخزون"), ("INSPECTION", "فحص بضاعة مرتجعة"), ("RETURN_APPROVAL", "موافقات مرتجع بعد 72 ساعة"))
+
+
+_MONEY_WITH_PIASTERS = re.compile(r"^(-?)([\d,]+)\.(\d+) ج$")
+
+
+def _whole_pounds(text):
+    """Home-card money is shown in whole pounds (no piasters): '1,234.56 ج' -> '1,235 ج'. A sub-pound residue (under one pound) returns None (the line is left out); anything that is not a plain EGP amount is returned unchanged. The reports keep their exact figures."""
+    match = _MONEY_WITH_PIASTERS.match(text.strip())
+    if not match:
+        return text
+    sign, whole, frac = match.groups()
+    exact = Decimal(whole.replace(",", "") + "." + frac)
+    if exact < 1:                                                                                  # under one pound is rounding dust, not a balance
+        return None
+    return f"{sign}{exact.quantize(Decimal('1'), rounding=ROUND_HALF_UP):,} ج"
 
 
 class Extras:
@@ -56,13 +73,13 @@ class Extras:
             by_label = {t["label"]: t for t in sales["totals"]}
             for label in SALES_CARDS:
                 if label in by_label:
-                    cards.append({"label": label + " اليوم", "value": by_label[label]["value"], "note": "", "tone": "receivable" if label == "قيمة البيع" else ""})
+                    cards.append({"label": label + " اليوم", "value": by_label[label]["value"], "note": "", "tone": "receivable" if label == report_labels.SALES_VALUE else ""})
         except ApiError:
             pass
         try:
             flow = self._api.report(token, "cashflow", {"from": today, "to": today})
             by_flow = {t["label"]: t for t in flow["totals"]}
-            for label, tone in (("مصروفات مسجلة", "payable"), ("إيرادات مسجلة", "receivable")):
+            for label, tone in ((report_labels.RECORDED_EXPENSE, "payable"), (report_labels.RECORDED_INCOME, "receivable")):
                 if label in by_flow:
                     cards.append({"label": label.replace("مسجلة", "اليوم"), "value": by_flow[label]["value"], "note": "", "tone": tone})
         except ApiError:
@@ -106,6 +123,13 @@ class Extras:
         return {"date": today, "cards": cards, "stockCards": stock_cards, "prices": prices, "priceStatus": status}
 
     # ------------------------------------------------------------------ live figures on the module cards of the home page (owner request 2026-11-04), read only
+    def _confirm_password(self, actor, password):
+        """The user's CURRENT password, re-verified through the ONE shared authentication service (so its failure cooldown spans every write); a refusal is a plain 400."""
+        try:
+            self._api._authentication.verify_user_password(int(actor.user_id), password if isinstance(password, str) else "")
+        except AuthenticationError:
+            raise ApiError(400, "كلمة المرور غير صحيحة أو انتظر قليلاً ثم أعد المحاولة.") from None
+
     def tiles(self, token):
         """{module key: {lines: [{label, value, tone}], badge, spark: [0..1 ratios of the last 7 days]}} built from the existing reports and services, every part inside its own try: a part the
         user may not see, or one that fails, is simply left out (never a zero). The card keeps working without any of it."""
@@ -135,7 +159,10 @@ class Extras:
 
         def line(row, label=None, tone=None):
             note = str(row.get("note") or "")
-            return {"label": label or row["label"], "value": str(row["value"]) + (" • " + note if note and len(note) < 18 else ""), "tone": tone if tone is not None else row.get("tone") or ""}
+            value = _whole_pounds(str(row["value"]))
+            if value is None:                                                                      # a sub-pound residue (rounding dust): not a figure worth a line
+                return None
+            return {"label": label or row["label"], "value": value + (" • " + note if note and len(note) < 18 else ""), "tone": tone if tone is not None else row.get("tone") or ""}
 
         def put(key, **parts):
             slot = out.setdefault(key, {"lines": [], "badge": "", "spark": []})
@@ -154,21 +181,21 @@ class Extras:
 
         # customers
         report = run("customers", {})
-        rows = pick(report, "إجمالي اللي عليهم", "إجمالي اللي علينا")
-        put("customers", lines=[line(r) for r in rows])
-        # daily sales and scrap purchases (today), with the week's line
-        report = run("sales", {"from": today.isoformat(), "to": today.isoformat()})
-        put("daily", lines=[line(r, tone="receivable" if r["label"].startswith("قيمة البيع") else "") for r in pick(report, "قيمة البيع", "قيمة شراء الكسر", "المحصَّل")])
+        rows = pick(report, report_labels.CUSTOMERS_OWE_US, report_labels.CUSTOMERS_WE_OWE)
+        put("customers", lines=[x for x in (line(r) for r in rows) if x])
+        # daily sales: only the week's line (owner 2026-11-18: today's sales, scrap purchases and collection are the home page's figures box, never repeated on the card)
         put("daily", spark=spark(run("sales", week), "sales_time"))
         # treasury and transfers
         try:
             accounts = [a for a in FinancialAccountService(session).accounts(_expected_actor=actor)["accounts"] if a["is_active"]]
         except Exception:
             accounts = []
-        for ledger, label in (("CASH", "رصيد الخزنة"), ("BANK", "رصيد البنوك والمحافظ")):
-            rows = [a for a in accounts if a["ledger"] == ledger]
-            if rows:
-                put("treasury", lines=[{"label": label, "value": _cell("money", sum((Decimal(a["balance"]) for a in rows), Decimal("0"))), "tone": ""}])
+        # the cash and bank balances are in the figures box of the home page: the treasury card shows what moved today instead
+        try:
+            flow = self.cashflow(token)
+            put("treasury", lines=[{"label": "الداخل للخزنة اليوم", "value": flow["totalIn"], "tone": "receivable"}, {"label": "الخارج من الخزنة اليوم", "value": flow["totalOut"], "tone": "payable"}])
+        except ApiError:
+            pass
         banks = [a for a in accounts if a["ledger"] == "BANK"][:4]
         put("transfers", lines=[{"label": a["name"], "value": _cell("money", Decimal(a["balance"])), "tone": ""} for a in banks])
         if accounts:
@@ -177,35 +204,20 @@ class Extras:
         report = run("stock", {})
         pieces = [t for t in (report or {}).get("totals", []) if str(t["label"]).startswith("عيار")][:3]
         put("inventory", lines=[{"label": t["label"], "value": str(t["value"]) + " • " + str(t.get("note") or ""), "tone": ""} for t in pieces])
-        report = run("alerts", {})
-        short = pick(report, "تحت الحد الأدنى")
-        if short and str(short[0]["value"]).strip() not in ("", "0", "٠"):
-            put("inventory", lines=[{"label": "تحت الحد الأدنى", "value": str(short[0]["value"]), "tone": "payable"}])
-        for name, method in (("bankflow", self.bankflow), ("cashflow", self.cashflow)):
-            try:
-                flow = method(token)
-                put(name, lines=[{"label": "الداخل اليوم", "value": flow["totalIn"], "tone": "receivable"}, {"label": "الخارج اليوم", "value": flow["totalOut"], "tone": "payable"}])
-            except ApiError:
-                pass
+        # (the stock shortage count is in «الأهم دلوقتي», not repeated here)
         fx = self.currency(token)
         if fx["enabled"] and fx["rows"]:
-            put("currency", lines=[{"label": r["name"], "value": r["price"] + " ج", "tone": ""} for r in fx["rows"][:3]])
-        # manager reviews: the open count as a badge
-        try:
-            data = ManagementReviewService(session).open_reviews(_expected_actor=actor)
-            count = sum(len(rows or []) for rows in data.values())
-            put("reviews", badge=str(count) if count else "", lines=[{"label": "بانتظار المراجعة", "value": str(count), "tone": "payable" if count else "receivable"}])
-        except Exception:
-            pass
+            put("markets", lines=[{"label": r["name"], "value": r["price"] + " ج", "tone": ""} for r in fx["rows"][:3]])
+        # (the open manager reviews are counted once, in «الأهم دلوقتي» at the top of the home page: no badge or line on the card)
         # suppliers
         report = run("suppliers", {})
-        put("suppliers", lines=[line(t) for t in (report or {}).get("totals", [])[:4]])
+        put("suppliers", lines=[x for x in (line(t) for t in (report or {}).get("totals", [])[:4]) if x])
         # gold profit of the month (owner)
         report = run("profit", month)
-        put("goldprofit", lines=[line(t) for t in (report or {}).get("totals", [])[:1]])
+        put("goldprofit", lines=[x for x in (line(t) for t in (report or {}).get("totals", [])[:1]) if x])
         # staff / making
         report = run("makingprofit", month)
-        put("staff", lines=[line(t) for t in (report or {}).get("totals", [])[:2]])
+        put("staff", lines=[x for x in (line(t) for t in (report or {}).get("totals", [])[:2]) if x])
         return {"tiles": out}
 
     # ------------------------------------------------------------------ money in / out of the bank and wallet accounts over TODAY (owner request 2026-11-04), read only
@@ -297,12 +309,8 @@ class Extras:
         password = body.get("password")
         if "DAY_CLOSE" not in actor.permissions:
             raise ApiError(403, "ليس لديك صلاحية إقفال اليوم.")
-        try:
-            self._api._authentication.verify_user_password(int(actor.user_id), password if isinstance(password, str) else "")
-        except AuthenticationError:
-            raise ApiError(400, "كلمة المرور غير صحيحة أو انتظر قليلاً ثم أعد المحاولة.") from None
-        finally:
-            password = None
+        self._confirm_password(actor, password)
+        password = None
         from services.day_close_service import DayCloseError, DayCloseService
         text = lambda name: str(body.get(name) if body.get(name) is not None else "")
         try:
@@ -375,12 +383,8 @@ class Extras:
         password = body.get("password")
         if "CUSTOMER_ACCOUNT_SETTLE" not in actor.permissions:
             raise ApiError(403, "ليس لديك صلاحية تسوية الحساب.")
-        try:
-            self._api._authentication.verify_user_password(int(actor.user_id), password if isinstance(password, str) else "")
-        except AuthenticationError:
-            raise ApiError(400, "كلمة المرور غير صحيحة أو انتظر قليلاً ثم أعد المحاولة.") from None
-        finally:
-            password = None
+        self._confirm_password(actor, password)
+        password = None
         service = CustomerAccountService(entry.session)
         try:
             current = service.statement(text("customer"), "", "", "", "", 1, _expected_actor=actor)
@@ -424,8 +428,8 @@ class Extras:
             pass
         except Exception:
             logger.exception("attention: reviews failed")
-        for key, label, module, tone, wanted in (("alerts", "تحت الحد الأدنى للمخزون", "inventory", "payable", "تحت الحد الأدنى"),
-                                                 ("customers", "ديون العملاء", "customers", "receivable", "إجمالي اللي عليهم")):
+        for key, label, module, tone, wanted in (("alerts", "تحت الحد الأدنى للمخزون", "inventory", "payable", report_labels.BELOW_MIN),
+                                                 ("customers", "ديون العملاء", "customers", "receivable", report_labels.CUSTOMERS_OWE_US)):
             try:
                 built = self._api.report(token, key, {})
                 total = next((t for t in built["totals"] if t["label"].startswith(wanted)), None)
@@ -453,7 +457,7 @@ class Extras:
         try:
             built = self._api.report(token, "kpi", {"from": (today - timedelta(days=6)).isoformat(), "to": today.isoformat()})
             counts = {t["label"]: str(t["value"]).strip() for t in built["totals"]}
-            result = (int(counts.get("مؤشرات حمراء", "0") or 0), int(counts.get("مؤشرات صفراء", "0") or 0))
+            result = (int(counts.get(report_labels.KPI_RED, "0") or 0), int(counts.get(report_labels.KPI_YELLOW, "0") or 0))
         except ApiError:
             result = None
         except Exception:
@@ -611,12 +615,8 @@ class Extras:
         password = body.get("password")
         if "MANAGEMENT_REVIEW" not in actor.permissions:
             raise ApiError(403, "تأكيد المراجعة للمدير فقط.")
-        try:
-            self._api._authentication.verify_user_password(int(actor.user_id), password if isinstance(password, str) else "")
-        except AuthenticationError:
-            raise ApiError(400, "كلمة المرور غير صحيحة أو انتظر قليلاً ثم أعد المحاولة.") from None
-        finally:
-            password = None
+        self._confirm_password(actor, password)
+        password = None
         try:
             ManagementReviewService(entry.session).mark_reviewed(str(body.get("review_id") or ""), _expected_actor=actor)
         except PermissionError as exc:
@@ -656,10 +656,7 @@ class Extras:
         password = body.get("password")
         if "CUSTOMER_BALANCE_ADJUST" not in actor.permissions:
             raise ApiError(403, "إضافة رصيد قديم للمالك فقط.")
-        try:
-            self._api._authentication.verify_user_password(int(actor.user_id), password if isinstance(password, str) else "")
-        except AuthenticationError:
-            raise ApiError(400, "كلمة المرور غير صحيحة أو انتظر قليلاً ثم أعد المحاولة.") from None
+        self._confirm_password(actor, password)
         try:
             result = CustomerAccountService(entry.session).add_legacy_balance(text("customer"), text("direction"), text("amount"), text("note"), text("old_date"), text("request_key"),
                                                                               _expected_actor=actor)
@@ -719,10 +716,7 @@ class Extras:
         chosen = [text("from"), text("to")] if kind == "BETWEEN" else [text("account")]
         if any(k not in allowed for k in chosen):
             raise ApiError(400, "اختر حسابات بنك أو محفظة فعّالة فقط.")
-        try:
-            self._api._authentication.verify_user_password(int(actor.user_id), password if isinstance(password, str) else "")
-        except AuthenticationError:
-            raise ApiError(400, "كلمة المرور غير صحيحة أو انتظر قليلاً ثم أعد المحاولة.") from None
+        self._confirm_password(actor, password)
         try:
             if kind == "BETWEEN":
                 result = service.transfer(text("from"), text("to"), text("amount"), text("note"), text("request_key"), _expected_actor=actor)

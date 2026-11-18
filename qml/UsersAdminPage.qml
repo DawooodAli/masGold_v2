@@ -148,7 +148,7 @@ Item {
         padding: 16
         closePolicy: Popup.CloseOnEscape
         onClosed: passwordInput.text = ""
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 10
             Txt { Layout.fillWidth: true; text: "تأكيد بكلمة مرورك"; color: theme.gold; font.bold: true
@@ -198,7 +198,7 @@ Item {
         padding: 16
         closePolicy: Popup.CloseOnEscape
         onClosed: { newPassword.text = ""; confirmPassword.text = ""; resetAdmin.text = "" }
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 8
             Txt { Layout.fillWidth: true; font.bold: true; color: theme.gold; font.pixelSize: theme.fontSection
@@ -250,7 +250,7 @@ Item {
         padding: 16
         closePolicy: Popup.CloseOnEscape
         onClosed: { createPassword.text = ""; createConfirm.text = ""; createAdmin.text = "" }
-        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.gold }
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
         contentItem: ColumnLayout {
             spacing: 8
             Txt { Layout.fillWidth: true; text: "مستخدم جديد"; font.bold: true; color: theme.gold

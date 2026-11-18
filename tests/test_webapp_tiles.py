@@ -54,16 +54,17 @@ class TilesTests(unittest.TestCase):
 
     def test_the_new_cards_are_offered(self):
         keys = {m["key"] for m in self.api.overview(self.token)["modules"]}
-        self.assertTrue({"bankflow", "currency", "suppliers", "goldprofit", "staff"} <= keys or {"bankflow", "currency"} <= keys)
+        self.assertTrue({"markets", "suppliers", "goldprofit", "staff"} <= keys or {"markets"} <= keys)
+        self.assertFalse({"bankflow", "cashflow", "currency"} & keys)                          # the treasury card of today covers the cash and bank movements; the rates are a tab of the markets card
         self.assertEqual(len({m["key"] for m in MODULES}), len(MODULES))                        # no duplicate card key
 
     def test_tiles_carry_live_figures_a_badge_and_never_break_when_a_report_fails(self):
         tiles = self.api.extras.tiles(self.token)["tiles"]
-        self.assertEqual([(l["label"], l["value"]) for l in tiles["currency"]["lines"]][0][0], "دولار أمريكي")
-        self.assertEqual(tiles["reviews"]["badge"], "3")
+        self.assertEqual([(l["label"], l["value"]) for l in tiles["markets"]["lines"]][0][0], "دولار أمريكي")
+        self.assertNotIn("reviews", tiles)                                                            # counted once, in «الأهم دلوقتي»
         self.assertEqual([l["label"] for l in tiles["transfers"]["lines"]], ["الأهلي", "محفظة"])           # active bank / wallet accounts only
-        self.assertEqual([l["label"] for l in tiles["treasury"]["lines"]], ["رصيد الخزنة", "رصيد البنوك والمحافظ"])
-        self.assertEqual([l["label"] for l in tiles["bankflow"]["lines"]], ["الداخل اليوم", "الخارج اليوم"])
+        self.assertEqual([l["label"] for l in tiles["treasury"]["lines"]], ["الداخل للخزنة اليوم", "الخارج من الخزنة اليوم"])   # the balances are on the figures box, not repeated
+        self.assertNotIn("lines", {k for k, v in tiles["daily"].items() if v})                         # today's sales are the figures box's: the card keeps only the week's line
 
     def test_the_bank_flow_card_sums_the_bank_rows_only_and_keeps_transfers_apart(self):
         flow = self.api.extras.bankflow(self.token)
@@ -77,7 +78,7 @@ class TilesTests(unittest.TestCase):
         flow = self.api.extras.cashflow(self.token)
         self.assertEqual([a["name"] for a in flow["accounts"]], ["الخزنة"])
         self.assertIn("10", flow["totalIn"])
-        self.assertEqual([l["label"] for l in self.api.extras.tiles(self.token)["tiles"]["cashflow"]["lines"]], ["الداخل اليوم", "الخارج اليوم"])
+        self.assertNotIn("cashflow", self.api.extras.tiles(self.token)["tiles"])
 
     def test_the_bank_flow_refuses_a_user_without_the_right(self):
         with mock.patch("services.report_service.ReportService.run", side_effect=PermissionError("لا")):
@@ -93,7 +94,7 @@ class TilesTests(unittest.TestCase):
         with mock.patch("services.currency_rates.shared", side_effect=RuntimeError("x")):
             data = self.api.extras.currency(self.token)
             self.assertFalse(data["available"])
-            self.assertNotIn("currency", self.api.extras.tiles(self.token)["tiles"])
+            self.assertNotIn("markets", self.api.extras.tiles(self.token)["tiles"])
 
 
 if __name__ == "__main__":
@@ -135,3 +136,17 @@ class DayCloseCardTests(unittest.TestCase):
                 api.extras.dayclose_save(token, {"counted": "990", "password": "wrong", "request_key": "k"})
             saved = api.extras.dayclose_save(token, {"counted": "990", "reason": "x", "password": "secret", "request_key": "k"})
             self.assertEqual(saved["difference"], "-10.00")
+
+
+class WholePoundsTests(unittest.TestCase):
+    """Home-card money has no piasters (owner 2026-11-18): whole pounds, and sub-pound dust is left out."""
+
+    def test_amounts_are_whole_pounds_and_dust_is_dropped(self):
+        from webapp.extras import _whole_pounds
+        self.assertEqual(_whole_pounds("1,234.56 ج"), "1,235 ج")
+        self.assertEqual(_whole_pounds("-2,000.50 ج"), "-2,001 ج")
+        self.assertEqual(_whole_pounds("141,460 ج"), "141,460 ج")
+        self.assertIsNone(_whole_pounds("0.51 ج"))
+        self.assertIsNone(_whole_pounds("0.16 ج"))
+        self.assertEqual(_whole_pounds("8.000 جرام"), "8.000 جرام")                    # grams are not money
+

@@ -1198,9 +1198,6 @@ class HistoryPresentationTests(unittest.TestCase):
         self.assertIn("ج/جرام", MAKING_REQUIRED_TEXT)                              # rate wording
         qml = (root / "qml" / "ExchangeWorkspace.qml").read_text(encoding="utf-8")
         self.assertIn('"مصنعية ج/جرام"', qml)
-        main = (root / "qml" / "Main.qml").read_text(encoding="utf-8")
-        for label in ("سعر بيع 21 / جرام", "سعر شراء 21 / جرام", '"ذهب/جرام: "', '"شراء/جرام: "', '" ج/جرام"'):
-            self.assertIn(label, main)
         self.assertEqual(grams(D("3.50")), "3.50")                                # labelled: still unitless
         self.assertEqual(money(D("24000")), "24,000 ج")                          # currency unchanged
 
