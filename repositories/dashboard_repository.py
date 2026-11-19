@@ -18,18 +18,20 @@ _TODAY = "i.invoice_date >= CURDATE() AND i.invoice_date < CURDATE() + INTERVAL 
 class DashboardRepository(InvoiceAmountReads, PriceSeriesReads, BaseRepository):
     def today_invoices(self):
         """Invoice count and commercial totals of today's finalized invoices, plus the manual
-        (unidentified) sale lines among them."""
+        (unidentified) sale lines among them. Owner 2026-11-19: a scrap-only invoice that was closed for less (or more) than its table value by a settlement adjustment counts at
+        what was actually settled: buy_total + the adjustment's signed amount (R = N - P is negative when the shop paid less: 11,460 table - 60 = 11,400 paid)."""
         return self._fetch_one(
             f"""
             SELECT COUNT(*) AS invoice_count,
                    COALESCE(SUM(i.sell_total), 0) AS sell_total,
-                   COALESCE(SUM(i.buy_total), 0) AS buy_total,
+                   COALESCE(SUM(i.buy_total + CASE WHEN i.sell_total = 0 AND i.buy_total > 0 THEN COALESCE(a.amount_signed, 0) ELSE 0 END), 0) AS buy_total,
                    COALESCE(SUM(CASE WHEN i.sell_total > 0 THEN 1 ELSE 0 END), 0) AS sale_invoice_count,
                    COALESCE(SUM(CASE WHEN i.buy_total > 0 THEN 1 ELSE 0 END), 0) AS buy_invoice_count,
                    (SELECT COUNT(*) FROM invoice_lines l JOIN invoices i ON i.id = l.invoice_id
                     WHERE i.invoice_status = 'FINALIZED' AND {_TODAY}
                       AND l.line_type = 'SELL_UNIDENTIFIED') AS unidentified_lines
             FROM invoices i
+            LEFT JOIN invoice_settlement_adjustments a ON a.invoice_id = i.id
             WHERE i.invoice_status = 'FINALIZED' AND {_TODAY}
             """)
 

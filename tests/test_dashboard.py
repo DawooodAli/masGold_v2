@@ -538,9 +538,31 @@ class DashboardViewModelTests(unittest.TestCase):
                           "action": "بيانات غير كافية", "tone": "muted"})
 
 
+class TodayScrapValueSqlTests(unittest.TestCase):
+    def test_a_scrap_only_invoice_counts_at_what_was_actually_settled(self):
+        """Owner 2026-11-19: the scrap purchase card showed the table value 11,460 while 11,400 was paid (a 60 settlement adjustment). The query adds the adjustment's signed amount
+        for scrap-only invoices (one adjustment row per invoice, so the join cannot duplicate a row)."""
+        from repositories.dashboard_repository import DashboardRepository
+        seen = []
+
+        class Cursor:
+            def execute(self, query, params=None): seen.append(query)
+            def fetchone(self): return {}
+            def fetchall(self): return []
+            def close(self): pass
+
+        class Connection:
+            def cursor(self, **kwargs): return Cursor()
+
+        DashboardRepository(Connection()).today_invoices()
+        sql = " ".join(seen[0].split())
+        self.assertIn("LEFT JOIN invoice_settlement_adjustments a ON a.invoice_id = i.id", sql)
+        self.assertIn("i.sell_total = 0 AND i.buy_total > 0 THEN COALESCE(a.amount_signed, 0)", sql)
+
+
 def _only_dashboard_tests(loader, tests, pattern):
     suite = unittest.TestSuite()
-    for case in (DashboardServiceTests, DashboardNewCardsServiceTests, DashboardChartsServiceTests, DashboardViewModelTests, DashboardPageTests):
+    for case in (DashboardServiceTests, DashboardNewCardsServiceTests, DashboardChartsServiceTests, DashboardViewModelTests, DashboardPageTests, TodayScrapValueSqlTests):
         names = [n for n in loader.getTestCaseNames(case)
                  if case is not DashboardPageTests or n.startswith("test_dashboard")]
         suite.addTests(case(n) for n in names)
