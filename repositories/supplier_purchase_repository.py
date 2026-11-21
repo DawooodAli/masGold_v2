@@ -12,6 +12,7 @@ PURCHASE_MOVEMENT = "PURCHASE_INVOICE"
 ADJUSTMENT_MOVEMENT = "GROUP_ADJUSTMENT"           # 092: gold added to / deducted from a making group of a posted invoice
 ADJUSTMENT_SOURCE = "SUPPLIER_INVOICE_ADJUSTMENT"
 ACCOUNT_ADJUSTMENT_MOVEMENT, ACCOUNT_ADJUSTMENT_SOURCE = "ACCOUNT_ADJUSTMENT", "SUPPLIER_ACCOUNT_ADJUSTMENT"      # 096: gold / making account differences
+RATE_ADJUSTMENT_MOVEMENT, RATE_ADJUSTMENT_SOURCE = "GROUP_RATE_ADJUSTMENT", "SUPPLIER_INVOICE_RATE_ADJUSTMENT"      # 106: making rate of a group of a posted invoice
 REVERSAL_MOVEMENT = "PURCHASE_INVOICE_REVERSAL"   # the movement type (both ledgers) of the exact opposite entry posted by a full reversal
 
 
@@ -185,6 +186,49 @@ class SupplierPurchaseRepository(SupplierRepository):
             "SELECT a.id, a.group_id, a.delta_grams, a.reason, a.created_at, u.username FROM supplier_invoice_group_adjustments a "
             "LEFT JOIN users u ON u.id = a.created_by_user_id WHERE a.invoice_id = %s ORDER BY a.id" + (" FOR SHARE" if lock else ""),
             (_id(invoice_id),))
+
+    # ------------------------------------------------------------------ group making-rate adjustments (106)
+    _rate_adjustment_schema = None
+
+    def has_rate_adjustment_schema(self):
+        if self._rate_adjustment_schema is None:
+            row = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() "
+                                  "AND TABLE_NAME = 'supplier_invoice_group_rate_adjustments'")
+            self._rate_adjustment_schema = bool(row and int(row["n"]))
+        return self._rate_adjustment_schema
+
+    def rate_adjustment_by_request(self, key):
+        return self._fetch_one("SELECT * FROM supplier_invoice_group_rate_adjustments WHERE request_key = %s", (key,))
+
+    def insert_rate_adjustment(self, *, invoice_id, group_id, old_rate, new_rate, delta, reason, key, user_id, now):
+        new_id, _ = self._execute(
+            "INSERT INTO supplier_invoice_group_rate_adjustments (invoice_id, group_id, old_rate, new_rate, delta_amount, reason, request_key, "
+            "created_by_user_id, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (_id(invoice_id), _id(group_id), old_rate, new_rate, delta, reason, key, user_id, now))
+        return int(new_id)
+
+    def rate_adjustments(self, invoice_id, lock=False):
+        """Every making-rate adjustment of the invoice, oldest first (empty before migration 106)."""
+        if not self.has_rate_adjustment_schema():
+            return []
+        return self._fetch_all(
+            "SELECT a.id, a.group_id, a.old_rate, a.new_rate, a.delta_amount, a.reason, a.created_at, u.username FROM supplier_invoice_group_rate_adjustments a "
+            "LEFT JOIN users u ON u.id = a.created_by_user_id WHERE a.invoice_id = %s ORDER BY a.id" + (" FOR SHARE" if lock else ""),
+            (_id(invoice_id),))
+
+    def latest_group_rates(self):
+        """{group_id: the newest adjusted rate} of every adjusted group (the entry list overlays it on the stored rate); empty before migration 106."""
+        if not self.has_rate_adjustment_schema():
+            return {}
+        rows = self._fetch_all(
+            "SELECT a.group_id, a.new_rate FROM supplier_invoice_group_rate_adjustments a WHERE a.id = "
+            "(SELECT MAX(b.id) FROM supplier_invoice_group_rate_adjustments b WHERE b.group_id = a.group_id)")
+        return {int(r["group_id"]): Decimal(str(r["new_rate"])) for r in rows}
+
+    def group_piece_count(self, group_id):
+        """The pieces linked to a group (any later status), read CURRENT under the group lock the caller holds."""
+        row = self._fetch_one("SELECT COUNT(*) AS n FROM supplier_invoice_pieces WHERE group_id = %s FOR SHARE", (_id(group_id),))
+        return int(row["n"])
 
     _account_adjustment_schema = None
 

@@ -48,6 +48,7 @@ class Db:
         self.closures = set()
         self.gold, self.making, self.links, self.audit_rows = [], [], [], []
         self.adjustments = []                     # 092: group gold adjustments
+        self.rate_adjustments = []                # 106: group making-rate adjustments
         self.account_adjustments = []             # 096: account differences
         self.karats = {1: {"id": 1, "karat_value": 21, "name": "21K", "is_active": 1},
                        2: {"id": 2, "karat_value": 18, "name": "18K", "is_active": 1},
@@ -70,7 +71,7 @@ class Db:
         self.item_types = {1: "خاتم", 2: "سلسلة"}
         self.item_type_defaults = {}              # item type id -> its default_category_id (never allowed to win over the group)
         self.sequences = {"supplier": 0, "invoice": 0, "group": 0, "gold": 0, "making": 0, "link": 0, "item": 100,
-                          "barcode": 0, "payment": 0, "adjustment": 0, "account_adjustment": 0, "cash_move": 0, "bank_move": 0, "correction": 0,
+                          "barcode": 0, "payment": 0, "adjustment": 0, "rate_adjustment": 0, "account_adjustment": 0, "cash_move": 0, "bank_move": 0, "correction": 0,
                           "marketer_document": 0, "marketer_cash_move": 0}
         self.fail_after_item = False             # raise after the inventory item is written (atomicity tests)
         self.transactions = 0
@@ -427,6 +428,32 @@ class PurchaseRepo(SupplierRepo):
     def adjustments(self, invoice_id, lock=False):
         return [dict(a) for a in self.db.adjustments if a["invoice_id"] == int(invoice_id)]
 
+    # ------------------------------------------------------------ group making-rate adjustments (106)
+    def has_rate_adjustment_schema(self):
+        return True
+
+    def rate_adjustment_by_request(self, key):
+        return next((dict(a) for a in self.db.rate_adjustments if a["request_key"] == key), None)
+
+    def insert_rate_adjustment(self, *, invoice_id, group_id, old_rate, new_rate, delta, reason, key, user_id, now):
+        assert new_rate != old_rate and delta != 0 and reason.strip() and new_rate >= 0                   # chk_sigra_rates / chk_sigra_delta / chk_sigra_reason
+        new_id = self.db.next("rate_adjustment")
+        self.db.rate_adjustments.append({"id": new_id, "invoice_id": int(invoice_id), "group_id": int(group_id), "old_rate": old_rate, "new_rate": new_rate,
+                                         "delta_amount": delta, "reason": reason, "request_key": key, "created_by_user_id": user_id, "created_at": now, "username": "u"})
+        return new_id
+
+    def rate_adjustments(self, invoice_id, lock=False):
+        return [dict(a) for a in self.db.rate_adjustments if a["invoice_id"] == int(invoice_id)]
+
+    def latest_group_rates(self):
+        latest = {}
+        for a in self.db.rate_adjustments:
+            latest[a["group_id"]] = a["new_rate"]
+        return latest
+
+    def group_piece_count(self, group_id):
+        return sum(1 for link in self.db.links if link["group_id"] == int(group_id))
+
     # ------------------------------------------------------------ account differences (096)
     def has_account_adjustment_schema(self):
         return True
@@ -461,7 +488,7 @@ class PurchaseRepo(SupplierRepo):
         return {"PURCHASE_INVOICE": 1, "PURCHASE_INVOICE_REVERSAL": 2, "GROUP_ADJUSTMENT": 5, "ACCOUNT_ADJUSTMENT": 6}.get(code)
 
     def making_type_id(self, code):
-        return {"PURCHASE_INVOICE": 1, "PURCHASE_INVOICE_REVERSAL": 4, "ACCOUNT_ADJUSTMENT": 7}.get(code)
+        return {"PURCHASE_INVOICE": 1, "PURCHASE_INVOICE_REVERSAL": 4, "ACCOUNT_ADJUSTMENT": 7, "GROUP_RATE_ADJUSTMENT": 9}.get(code)
 
     def insert_gold_movement(self, *, supplier_id, type_id, karat_id, weight_delta, eq21_delta, source_type,
                              source_id, reference, description, now, user_id):
@@ -695,7 +722,7 @@ MAKING_TYPES = {1: ("PURCHASE_INVOICE", "Supplier Purchase Invoice Making"), 2: 
                 3: ("PAYMENT_REVERSAL", "Supplier Making Payment Reversal"),
                 4: ("PURCHASE_INVOICE_REVERSAL", "Supplier Purchase Invoice Making Reversal"),
                 5: ("RECEIPT", "Supplier Making Receipt"), 6: ("RECEIPT_REVERSAL", "Supplier Making Receipt Reversal"),
-                7: ("ACCOUNT_ADJUSTMENT", "Supplier Making Account Adjustment"), 8: ("BAR_FEE", "أجر سبيكة")}
+                7: ("ACCOUNT_ADJUSTMENT", "Supplier Making Account Adjustment"), 8: ("BAR_FEE", "أجر سبيكة"), 9: ("GROUP_RATE_ADJUSTMENT", "Supplier Group Rate Adjustment")}
 GOLD_TYPES = {1: ("PURCHASE_INVOICE", "Supplier Purchase Invoice"), 2: ("PURCHASE_INVOICE_REVERSAL", "Supplier Purchase Invoice Reversal"),
               5: ("GROUP_ADJUSTMENT", "Supplier Group Adjustment"), 6: ("ACCOUNT_ADJUSTMENT", "Supplier Gold Account Adjustment")}
 MAKING_TYPE_ID = {code: type_id for type_id, (code, _) in MAKING_TYPES.items()}

@@ -25,7 +25,8 @@ from mysql.connector import IntegrityError
 
 from repositories.barcode_repository import BarcodeRepository
 from repositories.supplier_purchase_repository import (ACCOUNT_ADJUSTMENT_MOVEMENT, ACCOUNT_ADJUSTMENT_SOURCE, ADJUSTMENT_MOVEMENT,
-                                                       ADJUSTMENT_SOURCE, SupplierPurchaseRepository)
+                                                       ADJUSTMENT_SOURCE, RATE_ADJUSTMENT_MOVEMENT, RATE_ADJUSTMENT_SOURCE,
+                                                       SupplierPurchaseRepository)
 from services import supplier_rules as rules
 from services.authorization_service import AuthorizationService
 from services.correction_rules import correction_code
@@ -343,6 +344,8 @@ class SupplierPurchaseService:
             group = repository.lock_group(group_id)
             if group is None or int(group["invoice_id"]) != invoice_id:
                 raise rules.SupplierRuleError("GROUP_NOT_FOUND", "مجموعة الفاتورة غير موجودة.")
+            # 106: the rate in force is the newest making-rate adjustment of the group (read under the same locks as the adjustment itself), else the stored one.
+            group = {**group, "making_per_gram": rules.effective_rate(group, repository.rate_adjustments(invoice_id, lock=True))}
             # The category comes from the group's making rate (existing purchase-making ranges), resolved under the group lock
             # and before any write. No match, or several, refuses the piece with the exact reason: it is never guessed.
             category = rules.require_category(group["making_per_gram"], repository.purchase_categories())
@@ -396,8 +399,10 @@ class SupplierPurchaseService:
             repository = self._repository(connection)
             rows = repository.open_intake_groups()
             categories = repository.purchase_categories()
+            adjusted_rates = repository.latest_group_rates()          # 106: a group whose making rate was adjusted is entered at the new rate
         groups = []
         for row in rows:
+            row = {**row, "making_per_gram": adjusted_rates.get(int(row["group_id"]), row["making_per_gram"])}
             weight, actual = Decimal(str(row["supplier_weight_grams"])), Decimal(str(row["actual_weight"]))
             remaining = (weight - actual).quantize(rules.WEIGHT_STEP)
             if remaining <= rules.INTAKE_TOLERANCE:
@@ -465,15 +470,20 @@ class SupplierPurchaseService:
             reversal = repository.reversal(invoice_id)
             groups = repository.groups(invoice_id)
             adjustments = repository.adjustments(invoice_id)
+            rate_adjustments = repository.rate_adjustments(invoice_id)
             progress = {int(r["group_id"]): r for r in repository.group_progress(invoice_id)}
             pieces = repository.pieces(invoice_id)
             categories = repository.purchase_categories()        # a read: it belongs inside the transaction (the connection is closed after it)
         group_rows, total_actual, total_count = [], Decimal("0"), 0
-        adjusted = {}
+        adjusted, rate_delta = {}, {}
         for a in adjustments:
             adjusted[int(a["group_id"])] = adjusted.get(int(a["group_id"]), Decimal("0")) + Decimal(str(a["delta_grams"]))
+        for a in rate_adjustments:                                                         # 106: the making difference of each group (nothing stored is rewritten)
+            rate_delta[int(a["group_id"])] = rate_delta.get(int(a["group_id"]), Decimal("0")) + Decimal(str(a["delta_amount"]))
         for group in groups:
-            resolution = rules.resolve_category(group["making_per_gram"], categories)
+            now_rate = rules.effective_rate(group, rate_adjustments)
+            group_delta = rate_delta.get(int(group["id"]), Decimal("0"))
+            resolution = rules.resolve_category(now_rate, categories)
             stats = progress.get(int(group["id"]), {})
             actual = Decimal(str(stats.get("actual_weight") or 0))
             count = int(stats.get("piece_count") or 0)
@@ -484,14 +494,16 @@ class SupplierPurchaseService:
                 "supplier_weight": Decimal(str(group["supplier_weight_grams"])),
                 "adjustment": adjusted.get(int(group["id"]), Decimal("0")),
                 "effective_weight": Decimal(str(group["supplier_weight_grams"])) + adjusted.get(int(group["id"]), Decimal("0")),
-                "making_per_gram": Decimal(str(group["making_per_gram"])),
-                "making_total": Decimal(str(group["making_total"])), "piece_count": count,
+                "making_per_gram": now_rate, "original_making_per_gram": Decimal(str(group["making_per_gram"])),
+                "making_total": Decimal(str(group["making_total"])) + group_delta, "original_making_total": Decimal(str(group["making_total"])),
+                "rate_adjustment": group_delta, "rate_adjusted": now_rate != Decimal(str(group["making_per_gram"])) or group_delta != 0,
+                "piece_count": count,
                 # the category the group's making rate resolves to under the existing rules (nothing is stored)
                 "category_status": resolution["status"],
                 "category_id": None if resolution["category"] is None else int(resolution["category"]["id"]),
                 "category_code": "" if resolution["category"] is None else resolution["category"]["code"],
                 "category_name": "" if resolution["category"] is None else resolution["category"]["name"],
-                "category_problem": rules.category_problem(group["making_per_gram"], resolution),
+                "category_problem": rules.category_problem(now_rate, resolution),
                 # tolerance-inclusive allowance (separate from the reference remaining weight; may be negative)
                 "intake_limit": rules.intake_limit(group["supplier_weight_grams"]),
                 "intake_allowance": rules.intake_allowance(group["supplier_weight_grams"], actual),
@@ -502,6 +514,9 @@ class SupplierPurchaseService:
                 "reversed": reversal is not None,
                 "adjustments": [{"id": str(a["id"]), "group_id": str(a["group_id"]), "delta": Decimal(str(a["delta_grams"])),
                                  "reason": a["reason"], "at": a["created_at"], "by": a["username"] or ""} for a in adjustments],
+                "rate_adjustments": [{"id": str(a["id"]), "group_id": str(a["group_id"]), "old_rate": Decimal(str(a["old_rate"])),
+                                      "new_rate": Decimal(str(a["new_rate"])), "delta": Decimal(str(a["delta_amount"])),
+                                      "reason": a["reason"], "at": a["created_at"], "by": a["username"] or ""} for a in rate_adjustments],
                 "reversal_code": None if reversal is None else correction_code("FULL_REVERSAL", reversal["correction_id"]),
                 "reversal_reason": None if reversal is None else reversal["reason"],
                 "reversed_at": None if reversal is None else reversal["occurred_at"],
@@ -572,6 +587,67 @@ class SupplierPurchaseService:
             if not self._session.is_current(session_actor):
                 raise PermissionError("انتهت جلسة الدخول.")
             return {"id": str(adjustment_id), "duplicate": False, "delta": delta}
+
+    # ------------------------------------------------------------------ making-rate adjustment of a group of a posted invoice (106)
+    def adjust_group_rate(self, invoice_id, group_id, new_rate, reason, request_key, *, _expected_actor=None):
+        """The making rate (EGP / gram) of ONE group of a POSTED invoice was wrong: the owner enters the right rate. The difference (new - current rate) x the group's contractual
+        supplier weight is posted ONCE to the supplier making ledger (higher rate = the shop owes MORE). One immutable adjustment row + ONE making movement; the group, the invoice
+        header, the gold and the original movements are untouched. Refused once a piece of the group was entered (its category and acquisition making came from the old rate). A mistake
+        is fixed by another adjustment back to the right rate."""
+        session_actor = authenticated_actor(self._session, ADJUST, "لا توجد صلاحية لتعديل مصنعيات فواتير الموردين.", _expected_actor)
+        invoice_id = _id(invoice_id, "INVOICE_NOT_FOUND", "فاتورة المورد غير موجودة.")
+        group_id = _id(group_id, "GROUP_NOT_FOUND", "مجموعة الفاتورة غير موجودة.")
+        key = _key(request_key)
+        new_rate = rules.parse_rate(new_rate, "المصنعية الجديدة (ج/جرام)")
+        reason = clean_text(reason, REASON_MAX, "السبب", required=True)
+        with self._transaction() as connection:
+            actor = self._write_verified(connection, session_actor, ADJUST)
+            repository = self._repository(connection)
+            if not repository.has_rate_adjustment_schema():
+                raise rules.SupplierRuleError("SCHEMA_OUTDATED", "قاعدة البيانات تحتاج تحديث 106 قبل تعديل المصنعيات.")
+            prior = repository.rate_adjustment_by_request(key)
+            if prior is not None:
+                if (int(prior["invoice_id"]), int(prior["group_id"]), Decimal(str(prior["new_rate"])),
+                        int(prior["created_by_user_id"])) != (invoice_id, group_id, new_rate, int(actor.user_id)):
+                    raise rules.SupplierRuleError("REQUEST_CONFLICT", "طلب التعديل مستخدم لعملية مختلفة.")
+                return {"id": str(prior["id"]), "duplicate": True, "delta": Decimal(str(prior["delta_amount"])),
+                        "old_rate": Decimal(str(prior["old_rate"])), "new_rate": new_rate}
+            invoice = repository.get_invoice(invoice_id, lock=True)
+            if invoice is None:
+                raise rules.SupplierRuleError("INVOICE_NOT_FOUND", "فاتورة المورد غير موجودة.")
+            if invoice["status"] != rules.POSTED:
+                raise rules.SupplierRuleError("INVOICE_NOT_POSTED", "تُعدَّل مصنعية فاتورة مرحّلة فقط.")
+            if repository.reversal(invoice_id, lock=True) is not None:
+                raise rules.SupplierRuleError("INVOICE_REVERSED", "الفاتورة معكوسة ولا يمكن تعديلها.")
+            repository.get_supplier(invoice["supplier_id"], lock=True)
+            group = repository.lock_group(group_id)
+            if group is None or int(group["invoice_id"]) != invoice_id:
+                raise rules.SupplierRuleError("GROUP_NOT_FOUND", "مجموعة الفاتورة غير موجودة.")
+            if repository.group_piece_count(group_id) > 0:
+                raise rules.SupplierRuleError("GROUP_HAS_PIECES", "أُدخلت قطع من هذه المجموعة بمصنعيتها الحالية: لا يمكن تعديل مصنعية الجرام بعد الإدخال.")
+            current = rules.effective_rate(group, repository.rate_adjustments(invoice_id, lock=True))
+            if new_rate == current:
+                raise rules.SupplierRuleError("RATE_UNCHANGED", "المصنعية الجديدة تساوي المصنعية الحالية.")
+            delta = rules.rate_adjustment_delta(group["supplier_weight_grams"], current, new_rate)
+            if delta == 0:
+                raise rules.SupplierRuleError("RATE_DELTA_ZERO", "فرق المصنعية يُقرَّب إلى صفر: لا يوجد ما يُسجَّل.")
+            making_type = repository.making_type_id(RATE_ADJUSTMENT_MOVEMENT)
+            if making_type is None:
+                raise RuntimeError("supplier making movement type GROUP_RATE_ADJUSTMENT is missing (migration 106)")
+            now = repository.db_now()
+            adjustment_id = repository.insert_rate_adjustment(invoice_id=invoice_id, group_id=group_id, old_rate=current, new_rate=new_rate, delta=delta,
+                                                              reason=reason, key=key, user_id=actor.user_id, now=now)
+            code = rules.invoice_code(invoice_id)
+            label = f"تعديل مصنعية مجموعة {int(group['group_no'])} - فاتورة {code}"
+            repository.insert_making_movement(
+                supplier_id=invoice["supplier_id"], type_id=making_type, amount_delta=delta, source_type=RATE_ADJUSTMENT_SOURCE,
+                source_id=adjustment_id, reference=code, description=label, now=now, user_id=actor.user_id)
+            repository.audit(actor=actor, event_type="SUPPLIER_INVOICE_GROUP_RATE_ADJUSTED", entity_id=invoice_id,
+                             entity_type="SUPPLIER_INVOICE", reference=code, description=label,
+                             metadata={"group_id": group_id, "old_rate": str(current), "new_rate": str(new_rate), "delta": str(delta), "reason": reason}, now=now)
+            if not self._session.is_current(session_actor):
+                raise PermissionError("انتهت جلسة الدخول.")
+            return {"id": str(adjustment_id), "duplicate": False, "delta": delta, "old_rate": current, "new_rate": new_rate}
 
     # ------------------------------------------------------------------ account differences (096)
     def adjust_account(self, supplier_id, kind, direction, amount, reason, request_key, *, _expected_actor=None):

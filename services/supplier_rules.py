@@ -163,6 +163,21 @@ def group_making_total(weight, rate):
     return (Decimal(weight) * Decimal(rate)).quantize(MONEY_STEP, rounding=ROUND_HALF_UP)
 
 
+def rate_adjustment_delta(weight, old_rate, new_rate):
+    """The making difference of a rate change (106): (new rate - old rate) x the group's contractual supplier weight, rounded once to 0.01.
+    Positive = the shop owes the supplier MORE, negative = LESS. The weight is never the gold-adjusted weight: a gold adjustment leaves making unchanged."""
+    return ((Decimal(str(new_rate)) - Decimal(str(old_rate))) * Decimal(str(weight))).quantize(MONEY_STEP, rounding=ROUND_HALF_UP)
+
+
+def effective_rate(group, rate_adjustments):
+    """The group's making rate now: the NEWEST adjustment's new rate (`rate_adjustments` are the invoice's rows oldest first), else the original rate."""
+    rate = Decimal(str(group["making_per_gram"]))
+    for adjustment in rate_adjustments or ():
+        if int(adjustment["group_id"]) == int(group["id"]):
+            rate = Decimal(str(adjustment["new_rate"]))
+    return rate
+
+
 def equivalent_21(weight, karat_value):
     """Eq21 = physical weight x actual karat / 21 (6 decimals, no premature rounding). In the supplier ledger it is only
     an internal compatibility value stored beside the physical weight and karat: it drives no supplier-account amount or

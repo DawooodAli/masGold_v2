@@ -856,6 +856,12 @@ class CorrectionService:
         if net != 0:
             plan.blockers.append(("INVOICE_HAS_ADJUSTMENTS",
                                   f"على الفاتورة تعديلات أوزان صافيها {net:+.3f} جرام. اعكس أثرها بتعديل معاكس يجعل الصافي صفرًا ثم اعكس الفاتورة."))
+        rate_rows = repo.rate_adjustments(source_id, lock=lock)                     # 106: a group whose making rate differs from the original blocks the reversal (which negates the ORIGINAL making only)
+        if rate_rows:
+            changed = [g for g in repo.groups(source_id) if supplier_rules.effective_rate(g, rate_rows) != Decimal(str(g["making_per_gram"]))]
+            if changed:
+                plan.blockers.append(("INVOICE_HAS_RATE_ADJUSTMENTS",
+                                      f"على الفاتورة تعديل مصنعية في {len(changed)} مجموعة. أعد مصنعية الجرام إلى قيمتها الأصلية بتعديل معاكس ثم اعكس الفاتورة."))
         gold, making = repo.posted_gold_movement(source_id), repo.posted_making_movement(source_id)
         if gold is None:
             plan.blockers.append(("INVOICE_MOVEMENT_MISSING", "حركة الذهب الأصلية للفاتورة غير موجودة."))

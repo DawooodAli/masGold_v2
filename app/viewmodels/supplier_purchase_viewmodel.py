@@ -384,6 +384,14 @@ class SupplierPurchaseViewModel(QObject):
             return {"id": str(invoice_id), "adjusted": True, "delta": str(done["delta"])}
         self._write("تم تعديل وزن المجموعة.", call)
 
+    @Slot(str, str, str, str, str)
+    def adjustGroupRate(self, invoice_id, group_id, new_rate, reason, request_key):
+        """New making rate (EGP / gram) for ONE group of a posted invoice; the service re-checks the right, the invoice state, that no piece was entered yet and the reason in its transaction."""
+        def call(service, expected):
+            done = service.adjust_group_rate(invoice_id, group_id, new_rate, reason, request_key, _expected_actor=expected)
+            return {"id": str(invoice_id), "adjusted": True, "rate_adjusted": True, "delta": str(done["delta"])}      # "adjusted" closes the dialog and reloads, like the gold adjustment
+        self._write("تم تعديل مصنعية المجموعة.", call)
+
     @Slot(str, str, str, str, str, str)
     def adjustAccount(self, supplier_id, kind, direction, amount, reason, request_key):
         """«تسوية فروق الذهب / المصنعيات»: ADD / DEDUCT on the supplier account only; the service re-checks the owner right and every rule in its transaction."""
@@ -528,6 +536,10 @@ class SupplierPurchaseViewModel(QObject):
                         "adjustmentText": ("+" if g.get("adjustment", 0) > 0 else "") + grams(g.get("adjustment", 0)),
                         "effectiveText": grams(g.get("effective_weight", g["supplier_weight"])),
                         "makingText": money(g["making_total"]), "pieceCount": g["piece_count"],
+                        "rateAdjusted": bool(g.get("rate_adjusted")),                       # 106: the rate / making shown above are the CURRENT ones
+                        "originalRateText": rate(g.get("original_making_per_gram", g["making_per_gram"])) + " / جرام",
+                        "rateAdjustmentText": ("+" if g.get("rate_adjustment", 0) > 0 else "") + money(g.get("rate_adjustment", 0)),
+                        "rateValue": format(g["making_per_gram"], "f"),
                         **intake_fields(g), **allowance_fields(g), **category_fields(g)} for g in d["groups"]],
             "pieces": [{"id": p["id"], "itemId": p["inventory_item_id"], "groupNo": p["group_no"],
                         "weightText": grams(p["weight"]), "rateText": rate(p["making_per_gram"]),

@@ -82,7 +82,7 @@ Item {
         function onInvoicePosted(invoiceId) { newInvoiceDialog.close(); intakeDialog.openFor(invoiceId) }
         function onDraftSaved(invoiceId) { newInvoiceDialog.close() }
         function onInvoiceReversed(invoiceId) { reverseInvoiceDialog.close(); if (page.vm) page.vm.refresh() }
-        function onInvoiceAdjusted(invoiceId) { adjustGroupDialog.close(); if (page.vm) page.vm.refresh() }
+        function onInvoiceAdjusted(invoiceId) { adjustGroupDialog.close(); adjustRateDialog.close(); if (page.vm) page.vm.refresh() }
         function onAccountAdjusted(supplierId) { accountAdjustDialog.close(); reverseAdjustmentDialog.close(); if (page.vm) page.vm.refresh() }
     }
 
@@ -2363,6 +2363,66 @@ Item {
         }
     }
 
+    // ---------------------------------------------------------------- making-rate adjustment of one group of a posted invoice (106)
+    // The service computes the difference ((new - current rate) x the group's supplier weight) and posts it once to the supplier's making account; QML does no arithmetic.
+    Popup {
+        id: adjustRateDialog
+        objectName: "adjustRateDialog"
+        property string invoiceId: ""
+        property string groupId: ""
+        property string groupNo: ""
+        property string currentRate: ""
+        property string groupWeight: ""
+        property string requestKey: ""
+        function openFor(inv, group) {
+            invoiceId = inv.id
+            groupId = String(group.id)
+            groupNo = String(group.no)
+            currentRate = group.rateText
+            groupWeight = group.weightText
+            adjustRateField.text = ""
+            adjustRateReason.text = ""
+            requestKey = page.pvm ? page.pvm.newRequestKey() : ""
+            if (page.pvm) page.pvm.clearMessage()
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(460, page.width - 24)
+        modal: true
+        padding: 16
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
+        contentItem: ColumnLayout {
+            spacing: 8
+            Txt { Layout.fillWidth: true; text: "تعديل مصنعية المجموعة " + adjustRateDialog.groupNo; color: theme.gold; font.bold: true }
+            Txt { Layout.fillWidth: true; color: theme.textSecondary; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "اكتب مصنعية الجرام الصحيحة. الفرق × وزن المجموعة (" + page.ltr(adjustRateDialog.groupWeight) + " جرام) يُسجَّل مرة واحدة في حساب مصنعيات المورد: "
+                        + "مصنعية أعلى تزيد اللي علينا للمورد، وأقل تُنقصه. الذهب لا يتغير، ولا يمكن التعديل بعد إدخال قطع من المجموعة." }
+            Txt { Layout.fillWidth: true; text: "المصنعية الحالية: " + page.ltr(adjustRateDialog.currentRate); font.bold: true }
+            Txt { Layout.fillWidth: true; text: "مصنعية الجرام الجديدة (ج) *" }
+            TextField { id: adjustRateField; objectName: "groupRateField"; Layout.fillWidth: true; placeholderText: "0.00"
+                        font.family: "Cairo"; horizontalAlignment: TextInput.AlignRight; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+            Txt { Layout.fillWidth: true; text: "السبب *" }
+            TextField { id: adjustRateReason; objectName: "groupRateReasonField"; Layout.fillWidth: true; placeholderText: "سبب التعديل"
+                        font.family: "Cairo"; horizontalAlignment: TextInput.AlignRight }
+            Txt { objectName: "adjustRateError"; Layout.fillWidth: true; visible: text !== ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: !!page.pvm ? page.pvm.errorMessage : "" }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn { objectName: "confirmGroupRateButton"; primary: true
+                      text: !!page.pvm && page.pvm.busy ? "جارٍ الحفظ…" : "تأكيد التعديل"
+                      enabled: adjustRateField.text.trim().length > 0 && adjustRateReason.text.trim().length > 0 && !!page.pvm && !page.pvm.busy
+                      onClicked: page.pvm.adjustGroupRate(adjustRateDialog.invoiceId, adjustRateDialog.groupId, adjustRateField.text,
+                                                          adjustRateReason.text, adjustRateDialog.requestKey) }
+                Btn { objectName: "cancelGroupRateButton"; text: "إلغاء"; accent: theme.textSecondary; onClicked: adjustRateDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
     Popup {
         id: reverseInvoiceDialog
         objectName: "reverseInvoiceDialog"
@@ -4007,6 +4067,10 @@ Item {
                                               visible: intakeDialog.ready && intakeDialog.inv.posted === true && !!page.pvm && page.pvm.canAdjust
                                               text: "تعديل وزن المجموعة"; enabled: !page.pvm.busy
                                               onClicked: adjustGroupDialog.openFor(intakeDialog.inv, modelData) }
+                                        Btn { objectName: "adjustGroupRateButton"                                   // 106: only while no piece of the group was entered (the service refuses it otherwise)
+                                              visible: intakeDialog.ready && intakeDialog.inv.posted === true && !!page.pvm && page.pvm.canAdjust && modelData.pieceCount === 0
+                                              text: "تعديل المصنعية"; enabled: !page.pvm.busy
+                                              onClicked: adjustRateDialog.openFor(intakeDialog.inv, modelData) }
                                         Txt { visible: !groupCard.selected; text: "اضغط للاختيار"; color: theme.textMuted
                                               font.pixelSize: theme.fontTableHeader }
                                     }
@@ -4022,7 +4086,10 @@ Item {
                                         Pair { label: "وزن المورد (جرام)"; value: modelData.weightText; strong: true }
                                         Pair { visible: modelData.adjusted === true; label: "تعديل الوزن (جرام)"; value: modelData.adjustmentText; strong: true; valueColor: theme.amber }
                                         Pair { visible: modelData.adjusted === true; label: "الوزن بعد التعديل (جرام)"; value: modelData.effectiveText; strong: true }
-                                        Pair { label: "مصنعية الجرام"; value: page.ltr(modelData.rateText); strong: true }
+                                        Pair { label: "مصنعية الجرام"; value: page.ltr(modelData.rateText); strong: true
+                                               valueColor: modelData.rateAdjusted === true ? theme.amber : theme.textPrimary }
+                                        Pair { visible: modelData.rateAdjusted === true; label: "المصنعية الأصلية"; value: page.ltr(modelData.originalRateText) }
+                                        Pair { visible: modelData.rateAdjusted === true; label: "فرق المصنعية"; value: page.ltr(modelData.rateAdjustmentText); strong: true; valueColor: theme.amber }
                                         Pair { label: "إجمالي مصنعية المجموعة"; value: page.ltr(modelData.makingText); strong: true }
                                     }
                                     Flow {

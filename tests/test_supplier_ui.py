@@ -823,6 +823,52 @@ class SupplierPageTests(harness.InvoicePageTests):
         self.assertEqual(self.warnings, [])
 
 
+    def test_the_group_making_rate_is_adjusted_with_real_clicks_only_before_pieces_exist(self):
+        """Migration 106: «تعديل المصنعية» sits on a group with no pieces only; the new rate is posted once and the card shows the current rate, the original and the difference."""
+        self.rights(*ALL, "SUPPLIER_INVOICE_ADJUST")
+        self.open_suppliers()
+        _, invoice_id = self.posted_invoice(pieces=((0, "12.340"),))            # group 1 (40 g @ 120) has a piece, group 2 (60 g @ 100) has none
+        self.open_intake(invoice_id)
+        for width, height in ((1440, 900), (1080, 680)):
+            with self.subTest(size=(width, height)):
+                self.root.setWidth(width)
+                self.root.setHeight(height)
+                QTest.qWait(200)
+                buttons = self._visible_named("adjustGroupRateButton")
+                self.assertEqual(len(buttons), 1, "only the group without pieces offers the making adjustment")
+                self.assert_inside_window(buttons[0])
+        button = buttons[0]
+        self.click(button)
+        self.wait_until(lambda: self.item("adjustRateDialog").property("opened"), "rate dialog")
+        QTest.qWait(150)
+        for name in ("groupRateField", "groupRateReasonField", "confirmGroupRateButton", "cancelGroupRateButton"):
+            self.assert_inside_window(self.item(name))
+        self.assertFalse(self.item("confirmGroupRateButton").property("enabled"))        # nothing typed yet
+        self.type_into("groupRateField", "110")
+        self.type_into("groupRateReasonField", "مصنعية المورد غلط")
+        QTest.qWait(80)
+        self.click("confirmGroupRateButton")
+        self.wait_until(lambda: not self.item("adjustRateDialog").property("opened"), "the dialog closes after the adjustment")
+        self.wait_idle()
+        QTest.qWait(150)
+        self.assertEqual(self.pvm.errorMessage, "")
+        group = next(g for g in self.pvm.detail["groups"] if g["no"] == 2)
+        self.assertEqual((group["rateText"], group["makingText"], group["rateAdjusted"], group["originalRateText"]), ("110 ج / جرام", "6,600 ج", True, "100 ج / جرام"))
+        self.assertEqual(group["rateAdjustmentText"], "+600 ج")
+        self.assertEqual(len(self.db.rate_adjustments), 1)
+        self.assertEqual(self.db.making[-1]["amount_delta"], D("600.00"))
+        self.assertEqual(len(self._visible_named("adjustGroupRateButton")), 1)               # the adjusted group still has no piece, so it can be corrected again
+        self.assertEqual(self.warnings, [])
+
+    def _visible_named(self, name):
+        found, pending = [], [self.root.contentItem()]
+        while pending:
+            node = pending.pop()
+            pending.extend(self.child_items(node))
+            if node.objectName() == name and node.property("visible"):
+                found.append(node)
+        return found
+
     # ---------------------------------------------------------------- editing a saved draft (same form, same invoice)
     def seed_draft(self, supplier_id, reference="D-1"):
         rows = [{"weight": "40", "making_per_gram": "120", "description": "خواتم"},

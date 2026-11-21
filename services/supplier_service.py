@@ -246,7 +246,8 @@ class SupplierService:
         if method == "MARKETER" and r.get("self_payment_confirmed"):
             account = f"{account} (بتأكيد الطرف نفسه)"
         return {"id": str(r["id"]), "occurred_at": r["occurred_at"],
-                "movement": "تسوية فروق مصنعيات" if r.get("movement_code") == "ACCOUNT_ADJUSTMENT" else r["movement_name"],
+                "movement": ("تسوية فروق مصنعيات" if r.get("movement_code") == "ACCOUNT_ADJUSTMENT"
+                             else "تعديل مصنعية مجموعة" if r.get("movement_code") == "GROUP_RATE_ADJUSTMENT" else r["movement_name"]),
                 "movement_code": r.get("movement_code"),
                 "amount_delta": Decimal(str(r["amount_delta"])),
                 "balance_after": Decimal(str(r["balance_after"])),
