@@ -317,6 +317,7 @@ class InvoiceHistoryService:
             "making_total": _decimal(saved.get("making_total")) if manager else None,
             "making_status": saved.get("making_status"),
         }
+        self._apply_settlement_correction(economics, sale_lines, invoice)
         return {
             "invoice_id": invoice["invoice_id"], "invoice_number": invoice["invoice_number"],
             "invoice_type": invoice["invoice_type"], "invoice_status": invoice["invoice_status"],
@@ -400,6 +401,40 @@ class InvoiceHistoryService:
             p["payment_method_name"] = p.get("payment_method_name") or names.get(p["payment_method_code"]) or METHOD_NAMES.get(p["payment_method_code"], p["payment_method_code"])
         changed["stored_total"], changed["stored_direction"] = invoice["net_amount"], invoice["net_direction"]
         return changed
+
+    @staticmethod
+    def _apply_settlement_correction(economics, sale_lines, invoice):
+        """Owner 2026-11-21: after a settlement correction (FC) that changed a SALE invoice's amount the making follows it. The delta (corrected total - stored total) goes to the sale lines
+        by weight, as making (the gold value is fixed by grams and price), exactly as the home page and the reports do (services/invoice_amount_rules.py); the effective sale, the making
+        total and the AVERAGE making per gram are recomputed from the corrected lines (pieces of 1 g and more only, like the figure saved at finalization). Display only: nothing is
+        written. A money-out (scrap purchase) correction or a turned-around direction changes nothing here."""
+        if ("stored_total" not in invoice or not sale_lines or invoice.get("net_direction") != "CUSTOMER_PAYS_SHOP"
+                or invoice.get("stored_direction") != invoice.get("net_direction")):
+            return
+        try:
+            delta = _decimal(invoice.get("net_amount")) - _decimal(invoice.get("stored_total"))
+        except Exception:
+            return
+        if not delta:
+            return
+        from services import invoice_amount_rules, setting_rules
+        shares = invoice_amount_rules.line_shares(
+            {"x": {"direction": "IN", "delta": delta}},
+            [{"line_id": l["line_id"], "invoice_id": "x", "line_type": l["line_type"], "weight_grams": l["weight"]} for l in sale_lines])
+        for line in sale_lines:
+            share = shares.get(str(line["line_id"]), ZERO)
+            if line["making_total"] is not None:
+                line["making_total"] = line["making_total"] + share
+            if line["line_total"] is not None:
+                line["line_total"] = line["line_total"] + share
+        for key in ("effective_sale", "making_total"):
+            if economics.get(key) is not None:
+                economics[key] = economics[key] + delta
+        if economics.get("average_making") is not None:
+            regular = [l for l in sale_lines if not setting_rules.is_small_piece(l["weight"])]
+            weight = sum((l["weight"] for l in regular), ZERO)
+            if weight > 0 and all(l["making_total"] is not None for l in regular):
+                economics["average_making"] = (sum((l["making_total"] for l in regular), ZERO) / weight).quantize(Decimal("0.01"))
 
     @staticmethod
     def _post_invoice(invoices, invoice):

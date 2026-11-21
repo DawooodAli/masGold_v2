@@ -157,5 +157,52 @@ class ReprintHeaderTests(unittest.TestCase):
         self.assertIsNone(rules.corrected_header({"net_amount": D("100"), "net_direction": "CUSTOMER_PAYS_SHOP"}, [self.chain(1, "0", ["100"], [])]))
 
 
+class DetailAverageMakingTests(unittest.TestCase):
+    """Owner 2026-11-21: invoice 26112104 (46,700 -> 46,500 by a settlement correction) kept its old average making in the detail; it follows the corrected total now."""
+
+    @staticmethod
+    def lines():
+        def line(line_id, weight, price, making):
+            gold = (D(weight) * D(price)).quantize(D("0.01"))
+            return {"line_id": line_id, "line_type": "SELL_INVENTORY", "weight": D(weight), "making_total": D(making), "line_total": gold + D(making)}
+        return [line(1, "5.620", "5468", "2400.00"), line(2, "2.300", "5468", "995.00")]
+
+    @staticmethod
+    def invoice(net, stored, direction="CUSTOMER_PAYS_SHOP", stored_direction="CUSTOMER_PAYS_SHOP"):
+        return {"net_amount": D(net), "stored_total": D(stored), "net_direction": direction, "stored_direction": stored_direction}
+
+    def apply(self, invoice, lines=None):
+        from services.invoice_history_service import InvoiceHistoryService
+        lines = lines if lines is not None else self.lines()
+        economics = {"gold_value": D("43305.00"), "effective_sale": D("46700.00"), "making_total": D("3395.00"), "average_making": D("428.66")}
+        InvoiceHistoryService._apply_settlement_correction(economics, lines, invoice)
+        return economics, lines
+
+    def test_a_lower_corrected_total_lowers_the_making_and_the_average(self):
+        economics, lines = self.apply(self.invoice("46500", "46700"))
+        self.assertEqual((economics["effective_sale"], economics["making_total"]), (D("46500.00"), D("3195.00")))
+        self.assertEqual(economics["average_making"], (D("3195.00") / D("7.920")).quantize(D("0.01")))          # 403.41, was 428.66
+        self.assertEqual(sum((l["making_total"] for l in lines), D("0")), D("3195.00"))                           # the shares add up to the delta exactly
+
+    def test_a_higher_corrected_total_raises_the_average(self):
+        economics, _ = self.apply(self.invoice("46800", "46700"))
+        self.assertEqual(economics["making_total"], D("3495.00"))
+        self.assertGreater(economics["average_making"], D("428.66"))
+
+    def test_nothing_changes_without_a_correction_for_a_scrap_purchase_or_a_turned_around_direction(self):
+        for invoice in ({"net_amount": D("46700")}, self.invoice("46700", "46700"), self.invoice("300", "350", direction="SHOP_PAYS_CUSTOMER", stored_direction="SHOP_PAYS_CUSTOMER"),
+                        self.invoice("300", "350", stored_direction="SHOP_PAYS_CUSTOMER")):
+            economics, lines = self.apply(invoice)
+            self.assertEqual((economics["making_total"], economics["average_making"]), (D("3395.00"), D("428.66")))
+            self.assertEqual(sum((l["making_total"] for l in lines), D("0")), D("3395.00"))
+
+    def test_an_unknown_making_stays_unknown(self):
+        from services.invoice_history_service import InvoiceHistoryService
+        economics = {"effective_sale": None, "making_total": None, "average_making": None}
+        lines = [dict(l, making_total=None, line_total=None) for l in self.lines()]
+        InvoiceHistoryService._apply_settlement_correction(economics, lines, self.invoice("46500", "46700"))
+        self.assertEqual(economics, {"effective_sale": None, "making_total": None, "average_making": None})
+
+
 if __name__ == "__main__":
     unittest.main()
