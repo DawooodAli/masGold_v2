@@ -143,6 +143,11 @@ class CallSiteAuditTests(unittest.TestCase):
                   ("services/supplier_purchase_service.py", "_read_verified"),     # SUPPLIER_VIEW (invoices, intake)
                   ("services/supplier_purchase_service.py", "open_groups"),         # SUPPLIER_INTAKE: the groups offered by the inventory entry (a read)
                   ("services/financial_account_service.py", "private_account"),    # PRIVATE_ACCOUNT_MANAGE (owner): the private account report
+                  ("services/payroll_service.py", "overview"),                     # PAYROLL_MANAGE (the month's slips, a read)
+                  ("services/payroll_service.py", "pay"),                          # PAYROLL_MANAGE: the plain pre-read (amount, exact replay); the money write is re-authorised under the lock by FinancialAccountService
+                  ("services/supplier_gold_transfer_service.py", "sources"),       # SUPPLIER_GOLD_SETTLE (108: the suppliers that hold gold for the shop, a display catalogue)
+                  ("services/supplier_gold_transfer_service.py", "context"),       # SUPPLIER_GOLD_SETTLE (108: the chosen source's balance, re-read under locks when posting)
+                  ("services/stocktake_adjust_service.py", "scrap_karats"),        # STOCKTAKE_ADJUST: the Scrap karats offered when a sold piece is restocked (a read)
                   ("services/system_settings_service.py", "overview"),             # SYSTEM_SETTINGS_VIEW (the settings list, 081)
                   ("services/system_settings_service.py", "public_settings")}      # SYSTEM_SETTINGS_VIEW (the public settings of the interface, 081)
 

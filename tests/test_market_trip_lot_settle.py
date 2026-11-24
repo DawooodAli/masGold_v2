@@ -95,7 +95,7 @@ class LotSettleTests(GoldSettleCase):
     def test_melt_dependency_and_custody_only_reverse(self):
         trip,melt,lots=self.make_lots();done=self.deliver(trip,lots[0])
         self.refused("DEPENDENT_LOT_USE_EXISTS",lambda:self.service.reverse(melt["entry_id"],"تصحيح"),CorrectionError)
-        exc=self.refused("CUSTODY_SETTLEMENT_REVERSE_FROM_TRIP",lambda:self.direct.reverse(done["settlement_id"],"تصحيح"),CorrectionError)
+        exc=self.refused("CUSTODY_SETTLEMENT_REVERSE_FROM_TRIP",lambda:self.corrections.reverse("SUPPLIER_GOLD_SETTLEMENT",str(done["settlement_id"]),"تصحيح"),CorrectionError)       # the SG itself stays refused; the supplier page reverses the custody entry (owner 2026-11-08)
         self.assertIn(done["code"],str(exc))
         stored=copy.deepcopy(self.db.sup_gold[-1]);self.service.reverse(done["entry_id"],"تصحيح")
         self.assertEqual((self.db.sup_gold[-1]["weight_delta"],self.db.sup_gold[-1]["eq21"]),(-stored["weight_delta"],-stored["eq21"]))

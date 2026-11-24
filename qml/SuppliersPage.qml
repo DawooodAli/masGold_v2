@@ -73,6 +73,7 @@ Item {
         function onSettlementPosted(code) { goldSettleDialog.close() }
         function onSupplierGoldSettlementPosted(code) { goldSettleDialog.close() }
         function onSettlementReversed(code) { reverseSettlementDialog.close() }
+        function onTransferReversed(code) { reverseTransferDialog.close() }
         function onHoldingReturned(code) { holdingReturnDialog.close(); logoReturnDialog.close() }
         function onHoldingSettled(code) { holdingSettleDialog.close() }
         function onReceiptReversed(code) { reverseReceiptDialog.close() }
@@ -995,6 +996,13 @@ Item {
                                                     text: "عكس"
                                                     accent: theme.red
                                                     onClicked: reverseSettlementDialog.openFor(modelData)
+                                                }
+                                                Btn {
+                                                    objectName: "reverseTransferButton"
+                                                    visible: !!page.vm && page.vm.canReverseSettlement && modelData.canReverseTransfer === true
+                                                    text: "عكس"
+                                                    accent: theme.red
+                                                    onClicked: reverseTransferDialog.openFor(modelData)
                                                 }
                                                 Btn {
                                                     objectName: "reverseGoldAdjustmentButton"
@@ -2589,7 +2597,7 @@ Item {
                   text: "تسوية ذهب للمورد " + (page.detail.name || "") }
             Txt { objectName: "goldSettleRule"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontTableHeader
                   wrapMode: Text.WordWrap; elide: Text.ElideNone
-                  text: page.marketerEnabled ? "اختر الذهب من عهدة سوق مفتوحة أو من رصيد المسوقجي. لا تُسجَّل تسوية جديدة من كسر المحل؛ وكل رصيد وصلاحية يُعاد التحقق منهما عند التسجيل." : "اختر الذهب من عهدة سوق مفتوحة. التسوية تخصمه من ذهب العهدة، وكل رصيد وصلاحية يُعاد التحقق منهما عند التسجيل." }
+                  text: page.marketerEnabled ? "اختر الذهب من عهدة سوق مفتوحة أو من رصيد المسوقجي أو من حساب مورد لنا عنده ذهب. لا تُسجَّل تسوية جديدة من كسر المحل؛ وكل رصيد وصلاحية يُعاد التحقق منهما عند التسجيل." : "اختر الذهب من عهدة سوق مفتوحة أو من حساب مورد لنا عنده ذهب. التسوية من حساب مورد تنقص رصيده عندنا وتنقص ما علينا للمورد بنفس الوزن (بعد تحويل العيار)، وكل رصيد وصلاحية يُعاد التحقق منهما عند التسجيل." }
             Flickable {
                 objectName: "goldSettleFormScroll"
                 Layout.fillWidth: true
@@ -2621,7 +2629,7 @@ Item {
                     }
                     Txt { objectName: "goldSettleNoSources"; Layout.fillWidth: true
                           visible: !!page.vm && !page.vm.supplierGoldSourcesLoading && goldSettleDialog.sources.length === 0
-                          text: page.marketerEnabled ? "لا يوجد ذهب متاح حاليًا في عهدة مفتوحة أو لدى المسوقجي." : "لا يوجد ذهب متاح حاليًا في عهدة مفتوحة."; color: theme.textSecondary
+                          text: page.marketerEnabled ? "لا يوجد ذهب متاح حاليًا في عهدة مفتوحة أو لدى المسوقجي أو في حساب مورد." : "لا يوجد ذهب متاح حاليًا في عهدة مفتوحة أو في حساب مورد."; color: theme.textSecondary
                           wrapMode: Text.WordWrap; elide: Text.ElideNone }
                     Txt { objectName: "goldSettleSourcesLoading"; Layout.fillWidth: true
                           visible: !!page.vm && page.vm.supplierGoldSourcesLoading
@@ -3234,6 +3242,56 @@ Item {
         }
     }
 
+
+    // ---------------------------------------------------------------- reverse a supplier-to-supplier gold transfer (owner only, 108): the exact opposite, with a reason
+    Popup {
+        id: reverseTransferDialog
+        objectName: "reverseTransferDialog"
+        property string transferId: ""
+        property string detailText: ""
+        function openFor(row) {
+            transferId = String(row.transferId)
+            detailText = (row.movement || "") + " — " + (row.weight || "") + " جرام" + (row.reference ? " • " + row.reference : "")
+            reverseTransferReason.text = ""
+            if (page.vm) page.vm.clearMessage()
+            open()
+        }
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(480, page.width - 24)
+        modal: true
+        padding: 16
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: 6; border.color: theme.red }
+        contentItem: ColumnLayout {
+            spacing: 8
+            Txt { Layout.fillWidth: true; text: "عكس تسوية ذهب من حساب مورد"; color: theme.red; font.bold: true; font.pixelSize: theme.fontSection }
+            Txt { objectName: "reverseTransferDetail"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone; color: theme.textSecondary
+                  text: reverseTransferDialog.detailText }
+            Txt { Layout.fillWidth: true; color: theme.amber; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "يرجع الذهب لحساب المورد المصدر بنفس الوزن والعيار الأصليين، ويرجع رصيد المورد المستلم. التسوية الأصلية تفضل ظاهرة في السجل." }
+            Txt { Layout.fillWidth: true; text: "سبب العكس *" }
+            Field { id: reverseTransferReason; objectName: "reverseTransferReason"; Layout.fillWidth: true }
+            Txt { objectName: "reverseTransferError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
+                  text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn {
+                    objectName: "confirmReverseTransferButton"
+                    text: !!page.vm && page.vm.transferReversing ? "جارٍ العكس…" : "عكس التسوية"
+                    accent: theme.red
+                    primary: true
+                    enabled: reverseTransferReason.text.trim().length > 0 && !!page.vm && !page.vm.transferReversing
+                    onClicked: page.vm.reverseSupplierGoldTransfer(reverseTransferDialog.transferId, reverseTransferReason.text)
+                }
+                Btn { text: "إلغاء"; accent: theme.textSecondary; enabled: !!page.vm && !page.vm.transferReversing
+                      onClicked: reverseTransferDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
 
     // ---------------------------------------------------------------- marketer custody (055): one dialog for every action of the cycle
     // The cash is the shop's money held in trust and the gold is 21K only; nothing here touches the supplier ledger except the explicit settlement.

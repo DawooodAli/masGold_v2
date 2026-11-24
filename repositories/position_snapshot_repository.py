@@ -4,7 +4,7 @@ import json
 from repositories.base_repository import BaseRepository
 
 COLUMNS = ("snapshot_kind", "taken_at", "gold_shop_eq21", "gold_custody_eq21", "gold_intermediary_eq21", "gold_book_eq21", "gold_suppliers_eq21", "gold_total_eq21",
-           "unknown_grams", "cash_egp", "bank_egp", "created_by_user_id")
+           "unknown_grams", "cash_egp", "bank_egp", "owed_customers_egp", "owed_suppliers_egp", "owed_marketer_egp", "created_by_user_id")
 
 
 class PositionSnapshotRepository(BaseRepository):
@@ -26,6 +26,15 @@ class PositionSnapshotRepository(BaseRepository):
         cash = self._fetch_one("SELECT COALESCE(SUM(amount_delta), 0) AS total FROM cash_movements")["total"]
         bank = self._fetch_one("SELECT COALESCE(SUM(amount_delta), 0) AS total FROM bank_movements")["total"]
         return cash, bank
+
+    def debts(self):
+        """The money the shop OWES now (EGP, each part positive; migration 107): `customers` = the customers' credit (vw_customer_balances, negative balances = «للعميل»), `suppliers` = the NET supplier
+        making account (positive = the shop owes; a net credit of the suppliers is no debt, zero), `marketer` = the marketers' cash balances that are NEGATIVE (a positive custody cash is the shop's
+        own money). Plain ledger sums read in the snapshot's own transaction."""
+        customers = self._fetch_one("SELECT COALESCE(-SUM(CASE WHEN balance < 0 THEN balance END), 0) AS total FROM vw_customer_balances")["total"]
+        suppliers = self._fetch_one("SELECT COALESCE(SUM(amount_delta), 0) AS total FROM supplier_making_movements")["total"]
+        marketer = self._fetch_one("SELECT COALESCE(-SUM(party_balance), 0) AS total FROM (SELECT SUM(amount_delta) AS party_balance FROM marketer_cash_movements GROUP BY party_id HAVING SUM(amount_delta) < 0) t")["total"]
+        return {"customers": customers, "suppliers": max(suppliers, 0), "marketer": marketer}
 
     # ---- the two stages of the initial balance
     def ledgers_posted(self):

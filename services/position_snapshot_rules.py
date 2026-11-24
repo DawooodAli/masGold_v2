@@ -12,6 +12,7 @@ from services.shared_helpers import dec as _dec
 STEP = Decimal("0.001")
 MONEY_STEP = Decimal("0.01")
 PARTS = ("gold_shop_eq21", "gold_custody_eq21", "gold_intermediary_eq21", "gold_book_eq21", "gold_suppliers_eq21")
+DEBTS = ("owed_customers_egp", "owed_suppliers_egp", "owed_marketer_egp")                     # migration 107: the money the shop OWES (positive EGP); NULL on a sheet taken before it
 
 
 def _q(value):
@@ -30,13 +31,19 @@ def suppliers_eq21(rows):
     return _q(-owed)
 
 
-def build_snapshot(summary, supplier_rows, cash, bank):
-    """summary = GoldPositionService.position()["summary"]; returns the snapshot figures (parts, total, unknown grams, cash, bank)."""
+def debts_figures(debts):
+    """The money the shop owes, from the repository's {customers, suppliers, marketer} (EGP, each floored at zero, two decimals) as the three snapshot columns."""
+    debts = debts or {}
+    return {column: max(_money(debts.get(key) or 0), Decimal("0.00")) for column, key in zip(DEBTS, ("customers", "suppliers", "marketer"))}
+
+
+def build_snapshot(summary, supplier_rows, cash, bank, debts=None):
+    """summary = GoldPositionService.position()["summary"]; returns the snapshot figures (parts, total, unknown grams, cash, bank, the money owed)."""
     parts = {"gold_shop_eq21": _q(summary["shop_eq21"]), "gold_custody_eq21": _q(summary["custody_eq21"]),
              "gold_intermediary_eq21": _q(summary["intermediary_eq21"]), "gold_book_eq21": Decimal("0.000"),
              "gold_suppliers_eq21": suppliers_eq21(supplier_rows)}
     return {**parts, "gold_total_eq21": sum(parts.values(), Decimal(0)), "unknown_grams": _q(summary.get("unknown_grams") or 0),
-            "cash_egp": _money(cash), "bank_egp": _money(bank)}
+            "cash_egp": _money(cash), "bank_egp": _money(bank), **debts_figures(debts)}
 
 
 def eq21(grams_by_karat):
@@ -44,11 +51,11 @@ def eq21(grams_by_karat):
     return _q(sum((_dec(grams) * int(karat) / Decimal(21) for karat, grams in grams_by_karat.items()), Decimal(0)))
 
 
-def opening_snapshot(gold_shop_eq21, gold_suppliers_eq21, cash, bank):
+def opening_snapshot(gold_shop_eq21, gold_suppliers_eq21, cash, bank, debts=None):
     """The owner's initial balance: the gold of the shop and the NET supplier gold (signed: + the suppliers hold it for the shop, - the shop owes it), cash and bank. Other parts start at zero."""
     parts = {"gold_shop_eq21": _q(gold_shop_eq21), "gold_custody_eq21": Decimal("0.000"), "gold_intermediary_eq21": Decimal("0.000"), "gold_book_eq21": Decimal("0.000"),
              "gold_suppliers_eq21": _q(gold_suppliers_eq21)}
-    return {**parts, "gold_total_eq21": sum(parts.values(), Decimal(0)), "unknown_grams": Decimal("0.000"), "cash_egp": _money(cash), "bank_egp": _money(bank)}
+    return {**parts, "gold_total_eq21": sum(parts.values(), Decimal(0)), "unknown_grams": Decimal("0.000"), "cash_egp": _money(cash), "bank_egp": _money(bank), **debts_figures(debts)}
 
 
 def _reference(ordered, boundary):

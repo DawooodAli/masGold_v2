@@ -688,6 +688,18 @@ class MarketTripRepository(BaseRepository):
             "FROM market_trip_gold_settlements l JOIN suppliers s ON s.id = l.supplier_id JOIN karats k ON k.id = l.karat_id "
             "JOIN supplier_gold_settlements g ON g.id = l.settlement_id WHERE l.entry_id = %s", (_id(entry_id),))
 
+    def entry_supplier_transfer(self, entry_id):
+        """The supplier gold transfer (108 / 109) a SUP_XFER / SUP_XFER_REV marker entry records: its stored figures and the two supplier names (None for any other entry, or below 109)."""
+        if not hasattr(self, "_xfer_schema"):
+            row = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'supplier_gold_transfer_entries'")
+            self._xfer_schema = bool(row and int(row["n"]))
+        if not self._xfer_schema:
+            return None
+        return self._fetch_one(
+            "SELECT t.id AS transfer_id, t.reverses_id, t.from_karat_value, t.to_karat_value, t.from_weight_grams, t.to_weight_grams, f.name AS from_name, r.name AS to_name "
+            "FROM supplier_gold_transfer_entries l JOIN supplier_gold_transfers t ON t.id = l.transfer_id JOIN suppliers f ON f.id = t.from_supplier_id "
+            "JOIN suppliers r ON r.id = t.to_supplier_id WHERE l.entry_id = %s", (_id(entry_id),))
+
     def later_gold_settlements(self, trip_id, after_entry_no, karat_ids):
         """Effective (not reversed) GOLD_SETTLE entries of the trip numbered after `after_entry_no` that delivered gold of one of the karats.
         A reversal-guard decision under the trip lock: the nested reversal lookup is a CURRENT read (see `_not_reversed`)."""
@@ -916,6 +928,7 @@ class MarketTripRepository(BaseRepository):
             row["settle_lines"] = self.entry_settle_lines(row["id"]) if row["entry_kind"] in ("ST_RET_MKT", "ST_LOSS") else []
             row["settle_adjust"] = self.entry_settle_adjust(row["id"]) if row["entry_kind"] == "ST_ADJUST" else None
             row["bar_fee"] = self.entry_bar_fee(row["id"]) if row["entry_kind"] == "ST_BAR_FEE" else None
+            row["supplier_transfer"] = self.entry_supplier_transfer(row["id"]) if row["entry_kind"] in ("SUP_XFER", "SUP_XFER_REV") else None
             row["holding"] = self.entry_holding(row["id"])
             row["logo_holding"] = self.entry_logo_holding(row["id"])
             row["gold"] = self._fetch_all(

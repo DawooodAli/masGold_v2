@@ -242,7 +242,11 @@ GOLD_MOVEMENT_TEXT = {"PURCHASE_INVOICE": "فاتورة شراء",
                       "SETTLEMENT": "تسوية ذهب مورد",
                       "SETTLEMENT_REVERSAL": "عكس تسوية ذهب مورد",
                       "GROUP_ADJUSTMENT": "تعديل وزن مجموعة",
-                      "ACCOUNT_ADJUSTMENT": "تسوية فروق ذهب"}
+                      "ACCOUNT_ADJUSTMENT": "تسوية فروق ذهب",
+                      "ACCOUNT_TRANSFER_OUT": "سحب ذهب لتسوية مورد",
+                      "ACCOUNT_TRANSFER_IN": "تسوية ذهب من حساب مورد",
+                      "ACCOUNT_TRANSFER_OUT_REVERSAL": "عكس سحب ذهب لتسوية مورد",
+                      "ACCOUNT_TRANSFER_IN_REVERSAL": "عكس تسوية ذهب من حساب مورد"}
 
 
 def gold_movement_text(code, stored_name):

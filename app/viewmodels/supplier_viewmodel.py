@@ -159,6 +159,7 @@ class SupplierViewModel(QObject):
     settlementPosted = Signal(str)       # a gold settlement was posted (its SG code): the dialog can close and the Scrap views reload
     supplierGoldSettlementPosted = Signal(str)  # supplier-page custody / intermediary settlement completed
     custodySettlementPosted = Signal(str)        # a custody balance changed; the custody page reloads
+    transferReversed = Signal(str)       # a supplier-to-supplier gold transfer was reversed (its GT code): the dialog can close
     settlementReversed = Signal(str)     # a gold settlement was reversed (the RV code): the dialog can close and the Scrap views reload
     holdingReturned = Signal(str)        # a whole lot came back from the intermediary (its IH code): the dialog can close
     holdingChanged = Signal()            # custody entries changed by a holding return (after commit): the custody views reload
@@ -172,6 +173,7 @@ class SupplierViewModel(QObject):
         self._holding_receipts = None
         self._pay_context = {}
         self._settlements, self._set_context = None, {}
+        self._transfers = None                       # 108: supplier-to-supplier gold transfers
         self._market_trip_settlements = None
         self._gold_sources, self._gold_source_context = [], {}
         self._gold_sources_supplier_id = self._gold_source_context_supplier_id = ""
@@ -223,6 +225,12 @@ class SupplierViewModel(QObject):
             from services.supplier_gold_settlement_service import SupplierGoldSettlementService
             self._settlements = SupplierGoldSettlementService(self._session)
         return self._settlements
+
+    def _transfer_service(self):
+        if self._transfers is None:
+            from services.supplier_gold_transfer_service import SupplierGoldTransferService
+            self._transfers = SupplierGoldTransferService(self._session)
+        return self._transfers
 
     def _market_trip_settlement_service(self):
         if self._market_trip_settlements is None:
@@ -551,15 +559,17 @@ class SupplierViewModel(QObject):
         self._gold_source_context_supplier_id = ""
         self._error = self._message = ""
         self._start("goldsources", lambda _expected_actor: (
-            str(supplier_id), self._read_supplier_gold_sources(_expected_actor)))
+            str(supplier_id), self._read_supplier_gold_sources(_expected_actor, str(supplier_id))))
 
-    def _read_supplier_gold_sources(self, expected_actor):
+    def _read_supplier_gold_sources(self, expected_actor, supplier_id=None):
         permissions = set(expected_actor.permissions)
         rows = []
         if {"MARKET_TRIP_MANAGE", "SUPPLIER_GOLD_SETTLE"} <= permissions:
             rows.extend(self._market_trip_settlement_service().supplier_settlement_sources(_expected_actor=expected_actor))
         if {"INTERMEDIARY_HOLDING_MANAGE", "SUPPLIER_GOLD_SETTLE"} <= permissions:
             rows.extend(self._holding_settlement_service().settlement_sources(_expected_actor=expected_actor))
+        if "SUPPLIER_GOLD_SETTLE" in permissions:                                   # 108: the gold another supplier holds for the shop
+            rows.extend(self._transfer_service().sources(supplier_id, _expected_actor=expected_actor))
         return sorted(rows, key=lambda row: (row["source_type"], row["text"]))
 
     def _on_goldsources(self, result, error):
@@ -591,6 +601,9 @@ class SupplierViewModel(QObject):
         self._start("goldsourcecontext", lambda _expected_actor: self._read_supplier_gold_source(source, supplier_id, _expected_actor))
 
     def _read_supplier_gold_source(self, source, supplier_id, expected_actor):
+        if source["source_type"] == "SUPPLIER":                                    # 108: read the source supplier's balance again, now
+            held = self._transfer_service().context(source["supplier_id"], supplier_id, _expected_actor=expected_actor)
+            return {"source": source, "available": held["available"], "karat_value": held["karat_value"], "fineness": None, "supplier_id": supplier_id}
         if source["source_type"] == "HOLDING":
             holding = self._holding_settlement_service().context(source["pool_kind"], source["pool_id"],
                                                                   _expected_actor=expected_actor)
@@ -710,6 +723,9 @@ class SupplierViewModel(QObject):
                 return self._holding_settlement_service().settle(
                     source["pool_kind"], source["pool_id"], supplier_id, quantity, declaration, self_confirmed,
                     settlement_date, reference, notes, request_key, _expected_actor=_expected_actor)
+            if source["source_type"] == "SUPPLIER":
+                return self._transfer_service().transfer(source["supplier_id"], supplier_id, quantity, settlement_date, reference, notes, request_key,
+                                                         _expected_actor=_expected_actor)
             service = self._market_trip_settlement_service()
             kind = source["source_type"]
             if kind == "TRIP_BAR":
@@ -773,6 +789,9 @@ class SupplierViewModel(QObject):
                              f"{grams(Decimal(result['delivered_weight']))} جرام واحتُسب للمورد "
                              f"{grams(Decimal(result['credited_weight']))} جرام عيار {result['target_karat']}.")
             self.holdingChanged.emit()
+        elif source.get("source_type") == "SUPPLIER":
+            self._message = (f"تم تسجيل تسوية الذهب {code} من حساب المورد: سُحب {grams(Decimal(result['transferred_weight']))} جرام عيار {result['from_karat']} "
+                             f"واحتُسب للمورد {grams(Decimal(result['credited_weight']))} جرام عيار {result['to_karat']}.")
         elif source.get("source_type") == "CUSTODY_LOT":
             self._message = f"تم تسجيل تسوية السبكة {code} من عهدة السوق {result.get('code', '')}."
             self.custodySettlementPosted.emit(code)
@@ -783,6 +802,30 @@ class SupplierViewModel(QObject):
             self.custodySettlementPosted.emit(code)
         self.refresh()
         self.supplierGoldSettlementPosted.emit(code)
+
+    # ------------------------------------------------------------ reversal of a supplier-to-supplier gold transfer (108)
+    @Slot(str, str)
+    def reverseSupplierGoldTransfer(self, transfer_id, reason):
+        """«عكس تسوية ذهب من حساب مورد»: the owner-only reversal of ONE stored transfer; the service rechecks the right, the reason and that it is not reversed yet."""
+        if "transferrev" in self._busy:
+            return
+        self._message = self._error = ""
+        service = self._transfer_service()
+        request_key = str(uuid4())
+        self._start("transferrev", lambda _expected_actor: service.reverse(transfer_id, reason, request_key, _expected_actor=_expected_actor))
+        self.changed.emit()
+
+    def _on_transferrev(self, result, error):
+        if error:
+            self._error = error
+            return
+        self._message = f"تم عكس التسوية بين الموردين: رجع الذهب لحساب المورد المصدر ورجع رصيد المورد ({result['code']})."
+        self.refresh()
+        self.transferReversed.emit(result["code"])
+
+    @Property(bool, notify=changed)
+    def transferReversing(self):
+        return "transferrev" in self._busy
 
     # ------------------------------------------------------------ gold settlement (تسوية ذهب) and its reversal (045)
     @Slot(str)
@@ -1204,6 +1247,9 @@ class SupplierViewModel(QObject):
                     "poolKind": holding["pool_kind"], "poolId": holding["pool_id"]}
         source_text = source["text"]
         available = Decimal(str(context["available"]))
+        if source["source_type"] == "SUPPLIER":                                    # 108: the gold another supplier holds for the shop (no trip, lot or designation)
+            return {"key": source["key"], "type": "SUPPLIER", "sourceText": source_text, "availableText": f"{grams(available)} جرام", "available": str(available),
+                    "tripId": "", "karatId": str(source.get("karat_id", "")), "designation": "", "lotId": "", "isLot": False}
         if source["source_type"] == "CUSTODY_LOT":
             source_text += f" • العهدة {source['trip_code']}"
         return {"key": source["key"], "type": source["source_type"], "sourceText": source_text,
@@ -1374,10 +1420,12 @@ class SupplierViewModel(QObject):
                 "state": (f"معكوسة بالعملية {r['reversed_by']}" if r.get("reversed_by")
                           else f"معكوسة بالعملية {r['invoice_reversed_by']}" if r.get("invoice_reversed_by")
                           else f"عكس الفاتورة {r['reverses_invoice']}" if r.get("reverses_invoice")
-                          else f"عكس التسوية {r['reverses_reference']}" if r.get("reverses_reference") else r.get("adjustment_state", "")),
+                          else f"عكس التسوية {r['reverses_reference']}" if r.get("reverses_reference") else r.get("transfer_state") or r.get("adjustment_state", "")),
                 "adjustmentId": r.get("adjustment_id") or "",
                 "canReverseAdjustment": bool(r.get("adjustment_id")) and not r.get("adjustment_reversed") and not r.get("adjustment_reverses"),
-                "settlementId": r.get("settlement_id") or "", "reversed": bool(r.get("reversed_by") or r.get("invoice_reversed_by") or r.get("adjustment_reversed")),
+                "transferId": r.get("transfer_id") or "",
+                "canReverseTransfer": bool(r.get("transfer_id")) and not r.get("transfer_reversed") and not r.get("transfer_reverses"),
+                "settlementId": r.get("settlement_id") or "", "reversed": bool(r.get("reversed_by") or r.get("invoice_reversed_by") or r.get("adjustment_reversed") or r.get("transfer_reversed")),
                 "canReverse": bool(r.get("settlement_id")) and not r.get("reversed_by")}
                            for r in self._detail["gold_ledger"]],
             "makingLedger": [making_row(r) for r in self._detail["making_ledger"]],

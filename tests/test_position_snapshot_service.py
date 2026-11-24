@@ -60,6 +60,9 @@ class FakeRepo:
     def cash_and_bank(self):
         return D("1000.00"), D("500.00")
 
+    def debts(self):
+        return {"customers": D("1200.50"), "suppliers": D("300.00"), "marketer": D("0")}
+
     def ledgers_skipped(self):
         return any(a["event_type"] == "POSITION_OPENING_LEDGERS" and a.get("metadata", {}).get("skipped") for a in self.store.audits)
 
@@ -133,6 +136,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual((result["gold_new_eq21"], result["scrap_eq21"]), (D("5204.000"), D("154.286")))
         self.assertEqual((row["snapshot_kind"], row["gold_shop_eq21"], row["gold_suppliers_eq21"], row["gold_total_eq21"]), ("OPENING", D("5358.286"), D("-120.500"), D("5237.786")))
         self.assertEqual((row["cash_egp"], row["bank_egp"]), (D("200000.00"), D("31500.00")))
+        self.assertEqual((row["owed_customers_egp"], row["owed_suppliers_egp"], row["owed_marketer_egp"]), (D("1200.50"), D("300.00"), D("0.00")))
         self.assertEqual(self.store.audits[-1]["event_type"], "POSITION_OPENING_BALANCE")
         with self.assertRaises(SnapshotError) as raised:
             service.set_opening({"21": "1"}, "0")
@@ -169,6 +173,7 @@ class ServiceTests(unittest.TestCase):
         row = self.store.rows[1]
         self.assertEqual((row["gold_shop_eq21"], row["gold_suppliers_eq21"], row["gold_total_eq21"], row["cash_egp"], row["bank_egp"]),
                          (D("1000.000"), D("-30.000"), D("1040.000"), D("1000.00"), D("500.00")))        # 1000 + 50 + 20 - 30 supplier
+        self.assertEqual((row["owed_customers_egp"], row["owed_suppliers_egp"], row["owed_marketer_egp"]), (D("1200.50"), D("300.00"), D("0.00")))     # the money owed is recorded on every new sheet
         self.store.now = datetime(2026, 10, 23, 11, 0, 0)
         self.assertTrue(service.ensure_daily()["taken"])                                                 # the next day gets its own sheet
 

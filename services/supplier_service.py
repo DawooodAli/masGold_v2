@@ -144,6 +144,7 @@ class SupplierService:
             gold = repository.gold_ledger(supplier_id)
             making = repository.making_ledger(supplier_id)
             states = repository.adjustment_states(supplier_id) if hasattr(repository, "adjustment_states") else {}
+            transfer_states = repository.transfer_states(supplier_id) if hasattr(repository, "transfer_states") else {}
             fee_ids = [r["source_id"] for r in making if r.get("movement_code") == "BAR_FEE"]          # read INSIDE the transaction: the connection is closed after it
             reversed_fees = repository.reversed_market_entries(fee_ids) if fee_ids and hasattr(repository, "reversed_market_entries") else set()
             holdings = self._holdings_view(connection, actor, supplier_id)
@@ -193,6 +194,13 @@ class SupplierService:
         for row in fee_rows:
             row["bar_fee_entry_id"] = str(row["source_id"])
             row["bar_fee_reversed"] = int(row["source_id"]) in reversed_fees
+        for row in detail["gold_ledger"]:                                                  # 108: a supplier-to-supplier gold transfer row knows whether it is reversed / is itself a reversal
+            if row.get("source_type") == "SUPPLIER_GOLD_TRANSFER":
+                state = transfer_states.get(int(row["source_id"]), {})
+                row["transfer_id"] = str(row["source_id"])
+                row["transfer_reversed"] = state.get("reversed_by") is not None
+                row["transfer_reverses"] = state.get("reverses") is not None
+                row["transfer_state"] = "معكوس بتسوية عكس" if row["transfer_reversed"] else "عكس تسوية ذهب بين موردين" if row["transfer_reverses"] else ""
         for row in detail["gold_ledger"] + detail["making_ledger"]:                       # 102: an account-adjustment row knows whether it is reversed / is itself a reversal
             if row.get("source_type") == "SUPPLIER_ACCOUNT_ADJUSTMENT":
                 state = states.get(int(row["source_id"]), {})

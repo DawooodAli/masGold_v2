@@ -26,6 +26,13 @@ class SnapshotFigureTests(unittest.TestCase):
         self.assertEqual(snap["gold_total_eq21"], D("1000.000") + D("50.001") + D("20.000") + D("-30.000"))
         self.assertEqual((snap["cash_egp"], snap["bank_egp"], snap["unknown_grams"]), (D("1000.01"), D("250.00"), D("3.200")))
 
+    def test_the_money_owed_is_recorded_in_three_columns_floored_at_zero_and_not_inside_the_gold_total(self):
+        summary = {"shop_eq21": "1000", "custody_eq21": "0", "intermediary_eq21": "0", "book_eq21": "0", "unknown_grams": "0"}
+        snap = rules.build_snapshot(summary, [], "1000", "250", {"customers": "1200.505", "suppliers": "-40", "marketer": None})
+        self.assertEqual((snap["owed_customers_egp"], snap["owed_suppliers_egp"], snap["owed_marketer_egp"]), (D("1200.51"), D("0.00"), D("0.00")))   # a supplier credit is no debt
+        self.assertEqual(snap["gold_total_eq21"], D("1000.000"))
+        self.assertEqual(rules.opening_snapshot("5000", "0", "1", "1", {"customers": "5", "suppliers": "6", "marketer": "7"})["owed_marketer_egp"], D("7.00"))
+
     def test_the_opening_balance_keeps_other_parts_at_zero(self):
         snap = rules.opening_snapshot("5000", "-120.5", "200000", "0")
         self.assertEqual(snap["gold_total_eq21"], D("4879.500"))

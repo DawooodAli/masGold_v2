@@ -498,6 +498,9 @@ class CorrectionService:
             trips = MarketTripRepository(connection)
             if source["trip_status"] != "OPEN":
                 plan.blockers.append(("TRIP_CLOSED", "العهدة مغلقة: أعد فتحها أولاً قبل عكس أي حركة فيها."))
+            if source["entry_kind"] in ("SUP_XFER", "SUP_XFER_REV"):            # 109: a log marker of a supplier gold transfer: the transfer is reversed from the supplier page
+                plan.blockers.append(("SUPPLIER_TRANSFER_REVERSE_FROM_SUPPLIER",
+                                      "هذه حركة تسجيل لتسوية ذهب من حساب مورد (لا أثر لها على ذهب العهدة): اعكس التسوية نفسها من صفحة المورد (سجل الذهب)."))
             for leg in trips.entry_gold_legs(source_id):       # the exact stored Scrap movement is negated, never recomputed
                 reversed_delta = -Decimal(str(leg["weight_delta_grams"]))
                 code = "REVERSAL_TRIP_ISSUE_IN" if reversed_delta > 0 else "REVERSAL_TRIP_RETURN_OUT"        # 065: the label follows the stored sign (ST_ADJUST goes both ways)

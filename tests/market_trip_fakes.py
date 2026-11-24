@@ -235,7 +235,7 @@ class TripRepo:
     def insert_entry(self, *, trip_id, entry_no, kind, entry_date, notes, key, digest, actor, now):
         self._fail("entry")
         marketer_key_guard(self.db, key)
-        assert kind in ("ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT", "SUPPLIER_PAY", "GOLD_SETTLE", "LOT_SETTLE", "LOT_HOLD", "HOLD_RETURN", "LOGO_HOLD", "HOLD_BACK", "GOLD_SALE", "GOLD_BUY", "BK_ISSUE", "BK_BUY", "BK_SELL", "BK_RETURN", "BK_RECON", "BK_ISS_STK", "BK_DLV_SUP", "BK_DLV_MKT", "BK_RECEIVE", "BK_GAIN", "ST_MELT", "ST_BAR_SUP", "ST_BAR_MKT", "ST_LOGO", "ST_EXPENSE", "ST_CASH_BANK", "ST_CASH_OFF", "ST_RET_MKT", "ST_LOSS", "ST_ADJUST", "ST_CASH_PRIV")      # chk_mte_kind (059: BK_GAIN; 060: ST_MELT; 061: ST_BAR_SUP; 105: ST_CASH_PRIV)
+        assert kind in ("ISSUE", "RETURN", "MELT", "LOT_RETURN", "LOT_ISSUE", "HEAT", "SUPPLIER_PAY", "GOLD_SETTLE", "LOT_SETTLE", "LOT_HOLD", "HOLD_RETURN", "LOGO_HOLD", "HOLD_BACK", "GOLD_SALE", "GOLD_BUY", "BK_ISSUE", "BK_BUY", "BK_SELL", "BK_RETURN", "BK_RECON", "BK_ISS_STK", "BK_DLV_SUP", "BK_DLV_MKT", "BK_RECEIVE", "BK_GAIN", "ST_MELT", "ST_BAR_SUP", "ST_BAR_MKT", "ST_LOGO", "ST_EXPENSE", "ST_CASH_BANK", "ST_CASH_OFF", "ST_RET_MKT", "ST_LOSS", "ST_ADJUST", "ST_CASH_PRIV", "SUP_XFER", "SUP_XFER_REV")      # chk_mte_kind (059: BK_GAIN; 060: ST_MELT; 061: ST_BAR_SUP; 105: ST_CASH_PRIV; 109: SUP_XFER, SUP_XFER_REV)
         mode = "LEGACY"
         if any(e["request_key"] == key for e in self.db.entries.values()):
             raise _dup("uq_mte_request")

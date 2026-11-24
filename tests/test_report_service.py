@@ -149,7 +149,8 @@ class FakeRepo:
         def sheet(i, when, shop, suppliers, cash, bank):
             total_ = D(shop) + D(suppliers)
             return {"id": i, "snapshot_kind": "OPENING" if i == 1 else "DAILY", "taken_at": when, "gold_shop_eq21": D(shop), "gold_custody_eq21": D(0), "gold_intermediary_eq21": D(0),
-                    "gold_book_eq21": D(0), "gold_suppliers_eq21": D(suppliers), "gold_total_eq21": total_, "unknown_grams": D(0), "cash_egp": D(cash), "bank_egp": D(bank)}
+                    "gold_book_eq21": D(0), "gold_suppliers_eq21": D(suppliers), "gold_total_eq21": total_, "unknown_grams": D(0), "cash_egp": D(cash), "bank_egp": D(bank),
+                    "owed_customers_egp": D(0), "owed_suppliers_egp": D(0), "owed_marketer_egp": D(0)}          # migration 107 columns: nothing owed unless a test says so
         return FakeRepo.sheets if FakeRepo.sheets is not None else [
             sheet(1, datetime(2026, 10, 1, 9), "5000.000", "-100.000", "200000", "30000"), sheet(2, datetime(2026, 10, 15, 9), "5050.000", "-90.000", "210000", "30000"),
             sheet(3, datetime(2026, 11, 1, 9), "5250.000", "-60.000", "190000", "35000")]
@@ -1027,13 +1028,49 @@ class ProfitTests(Case):
         values = self.totals(result)
         # gold: opening 5000 - 100 = 4900, closing 5250 - 60 = 5190 (+290); money: 230,000 / 6,440 = 35.714 g -> 225,000 / 6,440 = 34.938 g (-0.776)
         self.assertEqual(values["ربح الذهب (مكافئ 21)"], "+289.224 جرام")
-        self.assertEqual((values["أول الفترة (ذهب + فلوس بالذهب)"], values["آخر الفترة (ذهب + فلوس بالذهب)"]), ("4,935.714 جرام", "5,224.938 جرام"))
+        self.assertEqual((values["أول الفترة (بعد خصم الفلوس اللي علينا)"], values["آخر الفترة (بعد خصم الفلوس اللي علينا)"]), ("4,935.714 جرام", "5,224.938 جرام"))   # nothing owed in these sheets
         self.assertEqual(values["الذهب الفعلي بدون الفلوس — التغير"], "+290.000 جرام")              # still shown apart
         self.assertEqual(values["الكاش (الخزنة) — التغير"], "-10,000.00 ج")
         self.assertEqual(values["البنوك والمحافظ — التغير"], "+5,000.00 ج")
         parts = {r["part"]: r["change"] for r in result["tables"][0]["rows"]}
         self.assertEqual((parts["مخزون وكسر وسبائك المحل"], parts["ذهب الموردين (صافي)"], parts["الذهب الفعلي"]), (D("250.000"), D("40.000"), D("290.000")))
-        self.assertEqual((parts["الفلوس بالذهب (كاش + بنوك ÷ سعر بيع 21)"], parts["الإجمالي (ذهب + فلوس بالذهب)"]), (D("-0.776"), D("289.224")))
+        self.assertEqual((parts["الفلوس بالذهب (كاش + بنوك ÷ سعر بيع 21)"], parts["الإجمالي (ذهب + فلوس بالذهب − الفلوس اللي علينا)"]), (D("-0.776"), D("289.224")))
+
+    def owed_sheets(self, opening_debts, closing_debts):
+        """The three fixture sheets; the opening and the closing one carry these debts (customers, suppliers, marketer) in EGP, None = taken before migration 107."""
+        base = FakeRepo.position_snapshots(FakeRepo())
+        keys = ("owed_customers_egp", "owed_suppliers_egp", "owed_marketer_egp")
+        return [dict(base[0], **dict(zip(keys, opening_debts))), base[1], dict(base[2], **dict(zip(keys, closing_debts)))]
+
+    def test_the_money_we_owe_is_taken_away_at_the_same_sell_price(self):
+        # price 6,440: opening owes 12,880 + 6,440 + 0 = 19,320 = 3.000 g; closing owes 25,760 + 0 + 6,440 = 32,200 = 5.000 g -> the profit falls by 2.000 g (289.224 -> 287.224)
+        FakeRepo.sheets = self.owed_sheets((D("12880"), D("6440"), D("0")), (D("25760"), D("0"), D("6440")))
+        result = self.service.run("profit", self.PERIOD)
+        values = self.totals(result)
+        self.assertEqual(values["ربح الذهب (مكافئ 21)"], "+287.224 جرام")
+        self.assertEqual((values["أول الفترة (بعد خصم الفلوس اللي علينا)"], values["آخر الفترة (بعد خصم الفلوس اللي علينا)"]), ("4,932.714 جرام", "5,219.938 جرام"))
+        self.assertEqual(values["الفلوس اللي علينا — التغير"], "+12,880.00 ج")
+        parts = {r["part"]: r for r in result["tables"][0]["rows"]}
+        owed = parts["الفلوس اللي علينا بالذهب (عملاء + موردين + مسوقجي ÷ سعر بيع 21)"]
+        self.assertEqual((owed["opening"], owed["closing"], owed["change"]), (D("-3.000"), D("-5.000"), D("-2.000")))
+        self.assertEqual(parts["الإجمالي (ذهب + فلوس بالذهب − الفلوس اللي علينا)"]["change"], D("287.224"))
+        self.assertEqual(values["الذهب الفعلي بدون الفلوس — التغير"], "+290.000 جرام")              # the gold alone is untouched
+
+    def test_paying_a_debt_with_cash_is_no_profit_and_no_loss(self):
+        # the shop pays a 6,440 customer credit in cash: cash -6,440 (-1.000 g), the debt -6,440 (+1.000 g) -> the profit does not move
+        base = self.owed_sheets((D("6440"), D("0"), D("0")), (D("0"), D("0"), D("0")))
+        FakeRepo.sheets = [base[0], dict(base[2], gold_total_eq21=base[0]["gold_total_eq21"], cash_egp=base[0]["cash_egp"] - D("6440"), bank_egp=base[0]["bank_egp"])]
+        self.assertEqual(self.totals(self.service.run("profit", self.PERIOD))["ربح الذهب (مكافئ 21)"], "0.000 جرام")
+
+    def test_a_sheet_taken_before_the_debts_were_recorded_makes_the_profit_unavailable_never_a_guess(self):
+        FakeRepo.sheets = self.owed_sheets((None, None, None), (D("25760"), D("0"), D("0")))
+        result = self.service.run("profit", self.PERIOD)
+        values = self.totals(result)
+        self.assertEqual(values["ربح الذهب (مكافئ 21)"], "غير متاح")
+        self.assertIn("الفلوس اللي علينا", next(t for t in result["totals"] if t["label"] == "ربح الذهب (مكافئ 21)")["note"])
+        self.assertEqual(values["التغير قبل خصم الفلوس اللي علينا (للمعلومية)"], "+289.224 جرام")   # shown apart and named as not a profit
+        rows = [r["part"] for r in result["tables"][0]["rows"]]
+        self.assertNotIn("الإجمالي (ذهب + فلوس بالذهب − الفلوس اللي علينا)", rows)
 
     def test_gold_sold_for_cash_is_no_profit_and_no_loss(self):
         # 10 g of 21K leave the shop and exactly their price at the sell price comes in as cash: the gold falls, the profit stays zero.
@@ -1195,6 +1232,14 @@ class KpiGoldProfitTests(Case):
         item = self.profit({"from": "2026-10-01", "to": "2026-10-31"})
         self.assertEqual(item["value"], "+289.224 جرام")
         self.assertEqual(item["value"], self.totals(self.service.run("profit", {"from": "2026-10-01", "to": "2026-10-31"}))["ربح الذهب (مكافئ 21)"])
+
+    def test_the_kpi_gold_profit_takes_away_the_money_we_owe_like_the_profit_report(self):
+        base = FakeRepo.position_snapshots(FakeRepo())
+        FakeRepo.sheets = [base[0], base[1], dict(base[2], owed_customers_egp=D("12880"))]          # 2.000 g owed at the end, nothing at the start
+        item = self.profit({"from": "2026-10-01", "to": "2026-10-31"})
+        self.assertEqual(item["value"], "+287.224 جرام")
+        FakeRepo.sheets = [dict(base[0], owed_customers_egp=None, owed_suppliers_egp=None, owed_marketer_egp=None), base[1], base[2]]
+        self.assertNotEqual(self.profit({"from": "2026-10-01", "to": "2026-10-31"})["value"], "+289.224 جرام")      # an old sheet is never read as "nothing owed"
 
     def test_gold_that_left_for_cash_is_not_a_red_loss(self):
         # The case the owner saw: the gold fell by 10 g while the same value came in as cash -> no loss, not red.

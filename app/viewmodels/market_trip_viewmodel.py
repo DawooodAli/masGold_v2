@@ -26,7 +26,8 @@ PAYMENT_REVERSAL_NOTE = ("عكس دفع المصنعيات يسجّل أن ال�
                          "لا يُعاد المبلغ تلقائيًا إلى الخزنة الرئيسية: سجّل «تسجيل رجوع» من العهدة عند إرجاعه فعلًا.")
 KIND_TEXT = {"ST_MELT": "تسجيل سبك (بعد الرجوع)", "ST_BAR_SUP": "تسليم سبيكة لمورد (بعد الرجوع)", "ST_BAR_MKT": "تسليم سبيكة لمسوقجي (بعد الرجوع)", "ST_LOGO": "اعتبار المتبقي لوجو", "ST_EXPENSE": "مصروف من العهدة", "ST_RET_MKT": "مرتجع سوق للمحل", "ST_LOSS": "خسية", "ST_ADJUST": "تصحيح وزن الإخراج", "ST_BAR_FEE": "أجر سبيكة", "ST_CASH_BANK": "إيداع باقي النقدية في حساب", "ST_CASH_OFF": "إعدام باقي النقدية", "ST_CASH_PRIV": "تحويل نقدية العهدة إلى الحساب الخاص","ISSUE": "إخراج عهدة", "RETURN": "رجوع من العهدة", "MELT": "سبك", "LOT_RETURN": "رجوع ناتج السبك", "LOT_ISSUE": "إخراج سبكة من المحل",
              "GOLD_BUY": "شراء ذهب نقدي", "GOLD_SALE": "بيع ذهب من العهدة", "HEAT": "حمّية اللوجو", "SUPPLIER_PAY": "دفع مصنعيات من العهدة", "GOLD_SETTLE": "تسوية ذهب من العهدة", "LOT_SETTLE": "تسوية سبكة من العهدة",
-             "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي", "LOGO_HOLD": "تسليم لوجو لمسوقجي", "HOLD_BACK": "رجوع لوجو من مسوقجي"}
+             "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي", "LOGO_HOLD": "تسليم لوجو لمسوقجي", "HOLD_BACK": "رجوع لوجو من مسوقجي",
+             "SUP_XFER": "تسوية ذهب من حساب مورد", "SUP_XFER_REV": "عكس تسوية ذهب من حساب مورد"}
 HOLD_REVERSE_NOTE = ("عكس التسليم يعيد الشحنة الأصلية كاملة إلى هذه العهدة ويسجّل حركة تعويض بالوزن المخزّن في ذهب المحل لدى المسوقجي؛ "
                      "تبقى حركة التسليم الأصلية في السجل. لا نقدية ولا كسر ولا مورد.")
 RETURN_REVERSE_NOTE = ("عكس الرجوع يُخرج الشحنة من هذه العهدة ويعيدها إلى ذهب المحل لدى المسوقجي بالوزن المخزّن بحركة تعويض؛ "
@@ -1074,6 +1075,13 @@ class MarketTripViewModel(QObject):
                       else f"عيار {sale['karat_value']} ({DESIGNATION_TEXT[sale['designation']]}): {grams(sale['weight'])} جرام")
             parts.append(f"{source} ← {sale['buyer_name']} • {money(Decimal(sale['total_price']))}"
                          + (" • السعر مُقرّ رغم بعده عن المرجع" if sale["price_warning_acknowledged"] else ""))
+        transfer = e.get("supplier_transfer")
+        if transfer:                                                          # 109: a log marker only; the custody balances never change (the gold stays with the suppliers' accounts)
+            weights = (f"{grams(transfer['transferred_weight'])} جرام عيار {transfer['from_karat']}", f"{grams(transfer['credited_weight'])} جرام عيار {transfer['to_karat']}")
+            parts.append((f"{transfer['code']} — عُكست التسوية: رجع {weights[0]} لحساب {transfer['from_name']} ورجع {weights[1]} على المورد {transfer['to_name']}"
+                          if transfer["is_reversal"] else
+                          f"{transfer['code']} — سُحب {weights[0]} من حساب {transfer['from_name']} ← احتُسب {weights[1]} للمورد {transfer['to_name']}")
+                         + " • لا أثر على ذهب العهدة")
         logo_holding = e.get("logo_holding")
         if logo_holding:
             parts.append(f"{logo_holding['code']} — {logo_holding['party_name']} • لوجو عيار {logo_holding['karat_value']}: {grams(logo_holding['weight'])} جرام")
@@ -1098,7 +1106,7 @@ class MarketTripViewModel(QObject):
                 "notes": e["notes"], "reversed": e["reversed"],
                 "state": f"معكوسة بالعملية {e['reversal_code']}" if e["reversed"] else "",
                 "reverseNote": HOLD_REVERSE_NOTE if e["kind"] == "LOT_HOLD" else RETURN_REVERSE_NOTE if e["kind"] == "HOLD_RETURN" else "عكس التسوية يعيد الشحنة الأصلية كاملة إلى نفس العهدة ويعيد رصيد المورد بالكمية المخزّنة؛ لا حركة بالمحل." if e["kind"] == "LOT_SETTLE" else PAYMENT_REVERSAL_NOTE if e["kind"] == "SUPPLIER_PAY" else GOLD_SETTLE_REVERSAL_NOTE if e["kind"] == "GOLD_SETTLE" else "",
-                "reason": e["reversal_reason"] or "", "canReverse": trip_open and not e["reversed"]}
+                "reason": e["reversal_reason"] or "", "canReverse": trip_open and not e["reversed"] and e["kind"] not in ("SUP_XFER", "SUP_XFER_REV")}
 
     @staticmethod
     def _heat(h):

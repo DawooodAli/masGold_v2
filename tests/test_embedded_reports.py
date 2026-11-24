@@ -41,6 +41,7 @@ class Harness:
             self.created.append(server)
             return server
         self.vm = embedded.EmbeddedReports(session_for(permissions), api_factory=lambda: object(), serve_factory=serve, info=lambda: info, port=8765, config=self.config)
+        self.vm._https_run = {"enable": lambda *a, **k: (False, ""), "url": lambda *a, **k: ""}      # hermetic: never ask this computer's real `tailscale serve status` (it may already proxy HTTPS)
 
     def wait_started(self):
         for _ in range(200):

@@ -286,6 +286,21 @@ class SupplierRepository(BaseRepository):
         return {int(r["id"]): {"reversed_by": None if r["reversed_by"] is None else int(r["reversed_by"]),
                                "reverses": None if r["reverses_id"] is None else int(r["reverses_id"])} for r in rows}
 
+    _transfers_schema = None
+
+    def transfer_states(self, supplier_id):
+        """{transfer id: {"reversed_by": id or None, "reverses": id or None}} for the supplier-to-supplier gold transfers (108) the supplier takes part in; empty below 108 (one statement)."""
+        if self._transfers_schema is None:
+            row = self._fetch_one("SELECT COUNT(*) AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'supplier_gold_transfers'")
+            self._transfers_schema = bool(row and int(row["n"]))
+        if not self._transfers_schema:
+            return {}
+        rows = self._fetch_all("SELECT t.id, t.reverses_id, x.id AS reversed_by FROM supplier_gold_transfers t "
+                               "LEFT JOIN supplier_gold_transfers x ON x.reverses_id = t.id WHERE t.from_supplier_id = %s OR t.to_supplier_id = %s",
+                               (_id(supplier_id), _id(supplier_id)))
+        return {int(r["id"]): {"reversed_by": None if r["reversed_by"] is None else int(r["reversed_by"]),
+                               "reverses": None if r["reverses_id"] is None else int(r["reverses_id"])} for r in rows}
+
     def audit(self, *, actor, event_type, entity_id, reference, description, metadata, now, entity_type="SUPPLIER"):
         self._execute(
             "INSERT INTO audit_log (user_id, event_type, entity_type, entity_id, entity_reference, description, "

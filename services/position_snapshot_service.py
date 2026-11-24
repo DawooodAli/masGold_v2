@@ -16,7 +16,7 @@ from services.invoice_service import invoice_transaction
 OPENING_PERMISSION = "SETTINGS_MANAGE"
 LEDGER_PERMISSIONS = ("CASH_ADJUST", "BANK_MANAGE")                  # the rights of an account's opening balance (the same as the treasury / account setup)
 KARATS = (21, 18, 24)
-AUDITED = (*rules.PARTS, "gold_total_eq21", "cash_egp", "bank_egp")
+AUDITED = (*rules.PARTS, "gold_total_eq21", "cash_egp", "bank_egp", *rules.DEBTS)
 
 
 DAILY_SHEET_TIME = dt_time(11, 0)
@@ -168,7 +168,7 @@ class PositionSnapshotService:
             gold_new = rules.eq21({karat: grams for karat, grams in weights.items()})
             gold_scrap = rules.eq21({int(r["karat_value"]): Decimal(str(r["grams"])) for r in scrap})
             now = repository.now()
-            values = {**rules.opening_snapshot(gold_new + gold_scrap, suppliers, cash, bank), "snapshot_kind": "OPENING", "taken_at": now, "created_by_user_id": actor.user_id}
+            values = {**rules.opening_snapshot(gold_new + gold_scrap, suppliers, cash, bank, repository.debts()), "snapshot_kind": "OPENING", "taken_at": now, "created_by_user_id": actor.user_id}
             snapshot_id = repository.insert(values)
             repository.audit(user_id=actor.user_id, event_type="POSITION_OPENING_BALANCE", entity_id=snapshot_id, description="تسجيل الرصيد الافتتاحي للذهب",
                              metadata={**{k: str(values[k]) for k in AUDITED}, "new_gold_grams": {str(k): str(v) for k, v in weights.items()}, "new_gold_eq21": str(gold_new), "scrap_eq21": str(gold_scrap)},
@@ -192,7 +192,7 @@ class PositionSnapshotService:
             now = repository.now()
             summary = self._position.position(_expected_actor=session_actor, connection=connection)["summary"]
             cash, bank = repository.cash_and_bank()
-            values = {**rules.build_snapshot(summary, repository.supplier_gold(), cash, bank), "snapshot_kind": kind, "taken_at": now, "created_by_user_id": actor.user_id}
+            values = {**rules.build_snapshot(summary, repository.supplier_gold(), cash, bank, repository.debts()), "snapshot_kind": kind, "taken_at": now, "created_by_user_id": actor.user_id}
             snapshot_id = repository.insert(values)
             if kind == "MANUAL":
                 repository.audit(user_id=actor.user_id, event_type="POSITION_SNAPSHOT", entity_id=snapshot_id, description="لقطة رصيد يدوية",

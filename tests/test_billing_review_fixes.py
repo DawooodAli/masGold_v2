@@ -29,7 +29,9 @@ class ThresholdBoundaryTests(unittest.TestCase):
                 group = self.group(average)
                 self.assertEqual(group["needs_approval"], needs)
                 self.assertEqual(group["status"], "WITHIN_RANGE")             # 220 is inside 200–400
-        self.assertEqual(self.group("190")["status"], "OUT_OF_RANGE")         # hard minimum: its own rule
+        low = self.group("190")                                               # owner 2026-11-12: the sale-making range is gone: 190 is only under the approval limit
+        self.assertEqual((low["status"], low["needs_approval"]), ("WITHIN_RANGE", True))
+        self.assertEqual(self.group("-5")["status"], "OUT_OF_RANGE")          # a sale below the gold value (negative making) is the only out-of-range case
 
     def test_no_threshold_configured_never_needs_approval(self):
         ranges = {1: dict(self.RANGES[1], manager_approval_below_per_gram=None)}

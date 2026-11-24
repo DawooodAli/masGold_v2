@@ -67,6 +67,12 @@ class HoldingSettlementStub:
         return []
 
 
+class NoTransferSources:
+    """108: the gold other suppliers hold for the shop is not under test here (tests/test_supplier_gold_transfer_ui.py)."""
+    def sources(self, to_supplier_id, _expected_actor=None):
+        return []
+
+
 class GoldSettlementPageTests(harness.InvoicePageTests):
     def setUp(self):
         super().setUp()
@@ -79,6 +85,7 @@ class GoldSettlementPageTests(harness.InvoicePageTests):
         self.trip_settlements = TripSettlementStub()
         self.svm._market_trip_settlements = self.trip_settlements
         self.svm._holding_settlements = HoldingSettlementStub()
+        self.svm._transfers = NoTransferSources()
         self.grant(*RIGHTS)
         self.svm.changed.emit()
 

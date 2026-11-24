@@ -101,6 +101,7 @@ ZERO_MONEY, ZERO_WEIGHT = Decimal("0.00"), Decimal("0.000")
 KIND_TEXT = {ISSUE: "إخراج عهدة", RETURN: "رجوع من العهدة", MELT: "سبك", LOT_RETURN: "رجوع ناتج السبك", LOT_ISSUE: "إخراج سبكة من المحل",
              HEAT: "حمّية اللوجو", SUPPLIER_PAY: "دفع مصنعيات من العهدة", GOLD_SETTLE: "تسوية ذهب من العهدة", LOT_SETTLE: "تسوية سبكة من العهدة",
              GOLD_SALE: "بيع ذهب من العهدة", GOLD_BUY: "شراء ذهب نقدي",
+             "SUP_XFER": "تسوية ذهب من حساب مورد", "SUP_XFER_REV": "عكس تسوية ذهب من حساب مورد",
              "LOT_HOLD": "تسليم ذهب لمسوقجي", "HOLD_RETURN": "رجوع سبكة من مسوقجي", "LOGO_HOLD": "تسليم لوجو لمسوقجي", "HOLD_BACK": "رجوع لوجو من مسوقجي", "ST_MELT": "تسجيل سبك (بعد الرجوع)", "ST_BAR_SUP": "تسليم سبيكة لمورد (بعد الرجوع)", "ST_BAR_MKT": "تسليم سبيكة لمسوقجي (بعد الرجوع)", "ST_LOGO": "اعتبار المتبقي لوجو", "ST_EXPENSE": "مصروف من العهدة", "ST_CASH_BANK": "إيداع باقي النقدية في حساب", "ST_CASH_OFF": "إعدام باقي النقدية", "ST_CASH_PRIV": "تحويل نقدية العهدة إلى الحساب الخاص", "ST_RET_MKT": "مرتجع سوق للمحل", "ST_LOSS": "خسية", "ST_ADJUST": "تصحيح وزن الإخراج", "ST_BAR_FEE": "أجر سبيكة"}
 DESIGNATION_TEXT = {MELT_DESIGNATION: "للسبك", LOGO_DESIGNATION: "لوجو", UNCLASSIFIED: "بدون وجهة"}
 _DESIGNATION_INPUT = {"MELT": MELT_DESIGNATION, "للسبك": MELT_DESIGNATION, "LOGO": LOGO_DESIGNATION, "لوجو": LOGO_DESIGNATION,
@@ -552,6 +553,11 @@ class MarketTripService:
                     "credited_weight": Decimal(str(e["gold_settlement"]["credited_weight_grams"])),
                     "analytical": Decimal(str(e["gold_settlement"]["credited_analytical_grams"])),
                     "rounding_difference": Decimal(str(e["gold_settlement"]["rounding_difference_grams"]))},
+                "supplier_transfer": None if not e.get("supplier_transfer") else {
+                    "code": "GT" + format(int(e["supplier_transfer"]["transfer_id"]), "06d"), "from_name": e["supplier_transfer"]["from_name"], "to_name": e["supplier_transfer"]["to_name"],
+                    "from_karat": int(e["supplier_transfer"]["from_karat_value"]), "to_karat": int(e["supplier_transfer"]["to_karat_value"]),
+                    "transferred_weight": Decimal(str(e["supplier_transfer"]["from_weight_grams"])), "credited_weight": Decimal(str(e["supplier_transfer"]["to_weight_grams"])),
+                    "is_reversal": e["supplier_transfer"].get("reverses_id") is not None},
                 "gold_sale": None if not e.get("gold_sale") else MarketTripService._gold_sale_result(e, e["gold_sale"], False),
                 "gold_buy": None if not e.get("gold_buy") else MarketTripService._gold_buy_result(e, e["gold_buy"], False),
                 "lot_settlement": None if not e.get("lot_settlement") else {

@@ -409,14 +409,17 @@ class ReversalTests(GoldSettleCase):
         self.assertEqual(self.state(), before)
         self.reverse(done)
 
-    def test_the_supplier_side_reversal_is_refused_with_guidance_naming_the_custody_entry(self):
+    def test_the_supplier_side_reversal_goes_through_the_custody_entry(self):
+        # Owner 2026-11-08: the canonical correction on the SG itself is still refused with guidance naming the custody entry, but the supplier page finds that entry and reverses IT.
         done = self.settle(weight="4")
         before = self.state()
         with self.assertRaises(CorrectionError) as context:
-            self.direct.reverse(done["settlement_id"], "من صفحة المورد")
+            self.corrections.reverse("SUPPLIER_GOLD_SETTLEMENT", str(done["settlement_id"]), "مباشرة")
         self.assertEqual(context.exception.code, "CUSTODY_SETTLEMENT_REVERSE_FROM_TRIP")
         self.assertIn(done["code"], str(context.exception))
         self.assertEqual(self.state(), before)
+        self.direct.reverse(done["settlement_id"], "من صفحة المورد")
+        self.refused("ALREADY_REVERSED", lambda: self.service.reverse(done["entry_id"], "x"), error=CorrectionError)         # the custody entry is the one that was reversed
 
 
 class DependencyTests(GoldSettleCase):

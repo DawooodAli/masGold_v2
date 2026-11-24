@@ -482,6 +482,19 @@ class ReportService:
         as_gold = None if price is None or price <= 0 else (money / price).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
         return {"money": money, "price": price, "money_gold": as_gold, "total": None if as_gold is None else _dec(sheet["gold_total_eq21"]) + as_gold}
 
+    @staticmethod
+    def _with_debts(sheet, price_of):
+        """`_with_money` PLUS the money the shop owes (owner 2026-11-24: «ربح الذهب» must take away the money we owe: customers' credit, the suppliers' making account, a marketer's negative cash).
+        Adds {debts (EGP), debts_gold (debts / the same SHOP_SELL 21K price, 0.001 HALF_UP), total = gold + money_gold - debts_gold}. A sheet taken before migration 107 recorded no debts (NULL): debts,
+        debts_gold and total are None - never a zero - so the profit that needs it is «غير متاح»; `gross_total` keeps the figure without the debts for information."""
+        base = ReportService._with_money(sheet, price_of)
+        columns = [sheet.get(key) for key in snapshot_math.DEBTS]
+        debts = None if any(v is None for v in columns) else sum((_dec(v) for v in columns), Decimal(0))
+        price = base["price"]
+        debts_gold = None if debts is None or price is None or price <= 0 else (debts / price).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+        total = None if base["total"] is None or debts_gold is None else base["total"] - debts_gold
+        return {**base, "debts": debts, "debts_gold": debts_gold, "gross_total": base["total"], "total": total}
+
     def _profit(self, repo, gate, filters, start, end):
         """The owner's definition (2026-11-12, replacing the gold-only figure): profit = how much the shop's gold GREW over the period, in 21K-equivalent grams, where the shop's gold is the
         consolidated position (stock, Scrap, bars, market custody, marketer and intermediary holdings) plus the NET supplier gold (what the suppliers hold for the shop counts, what the shop
@@ -491,8 +504,9 @@ class ReportService:
             return {"meaning": [], "tables": [self._unavailable("missing", "بيانات غير متاحة", "جدول لقطات الرصيد غير موجود في مستوى قاعدة البيانات الحالي: طبّق التحديثات.")], "totals": []}
         sheets = [{**dict(r), "taken_at": _dateish(r["taken_at"])} for r in repo.position_snapshots()]
         opening, closing, problem = snapshot_math.choose(sheets, start, end)
-        meaning = ["ربح الذهب = (ذهب آخر الفترة + فلوس آخر الفترة بالذهب) − (ذهب أول الفترة + فلوسها بالذهب)، بجرام مكافئ عيار 21. الذهب: مخزون + كسر + سبائك + عهدة السوق + ذهب المسوقجية + ذهب الموردين (لنا موجب وعلينا سالب).",
+        meaning = ["ربح الذهب = (ذهب آخر الفترة + فلوسها بالذهب − الفلوس اللي علينا بالذهب) − (ذهب أول الفترة + فلوسها بالذهب − الفلوس اللي علينا بالذهب)، بجرام مكافئ عيار 21. الذهب: مخزون + كسر + سبائك + عهدة السوق + ذهب المسوقجية + ذهب الموردين (لنا موجب وعلينا سالب).",
                    "الفلوس بالذهب = (الكاش + البنوك) ÷ سعر بيع المحل لعيار 21 في يوم الجرد؛ فبيع ذهب بكاش أو شراء ذهب بكاش لا يظهر ربحًا أو خسارة لوحده.",
+                   "الفلوس اللي علينا = رصيد العملاء «للعميل» + مصنعية الموردين المستحقة (صافي) + رصيد المسوقجي السالب؛ تُحوَّل لذهب بنفس سعر بيع 21 وتُخصم. تُسجَّل في كل جرد جديد؛ والجرد القديم (قبل تسجيلها) لا يُحسب له ربح بل «غير متاح».",
                    "الأرقام من لقطات الرصيد (جرد يُحفظ أول فتح للبرنامج كل يوم)، وليست إعادة حساب لتاريخ قديم. تغير الذهب الفعلي بدون الفلوس ظاهر لوحده للمعلومية."]
         notes = {"NO_SNAPSHOT": "لا توجد لقطات رصيد: سجّل الرصيد الافتتاحي من الإعدادات.", "NO_CLOSING": "لا توجد لقطة تغطي نهاية هذه الفترة.",
                  "SAME_SNAPSHOT": "يوجد جرد واحد فقط لهذه الفترة، فلا يمكن قياس الفرق: اختر فترة أطول أو خذ لقطة جديدة."}
@@ -507,12 +521,18 @@ class ReportService:
         grams_text = lambda v: f"{v:+,.3f} جرام" if v else "0.000 جرام"
         money_text = lambda v: f"{v:+,.2f} ج" if v else "0.00 ج"
         price_of = self._sell21_prices(repo)
-        first, last = self._with_money(opening, price_of), self._with_money(closing, price_of)
+        first, last = self._with_debts(opening, price_of), self._with_debts(closing, price_of)
         if first["total"] is not None and last["total"] is not None:
             change = last["total"] - first["total"]
-            headline = [total("ربح الذهب (مكافئ 21)", grams_text(change), "text", f"ذهب + فلوس بالذهب: من جرد {day(opening)} إلى جرد {day(closing)}{early}", "profit", tone="receivable" if change >= 0 else "payable"),
-                        total("أول الفترة (ذهب + فلوس بالذهب)", f"{first['total']:,.3f} جرام", "text", f"جرد {day(opening)} • سعر بيع 21 {first['price']:,.0f}", "ends"),
-                        total("آخر الفترة (ذهب + فلوس بالذهب)", f"{last['total']:,.3f} جرام", "text", f"جرد {day(closing)} • سعر بيع 21 {last['price']:,.0f}", "ends")]
+            headline = [total("ربح الذهب (مكافئ 21)", grams_text(change), "text", f"ذهب + فلوس بالذهب − الفلوس اللي علينا: من جرد {day(opening)} إلى جرد {day(closing)}{early}", "profit", tone="receivable" if change >= 0 else "payable"),
+                        total("أول الفترة (بعد خصم الفلوس اللي علينا)", f"{first['total']:,.3f} جرام", "text", f"جرد {day(opening)} • سعر بيع 21 {first['price']:,.0f}", "ends"),
+                        total("آخر الفترة (بعد خصم الفلوس اللي علينا)", f"{last['total']:,.3f} جرام", "text", f"جرد {day(closing)} • سعر بيع 21 {last['price']:,.0f}", "ends"),
+                        total("الفلوس اللي علينا — التغير", money_text(last["debts"] - first["debts"]), "text", f"أول {first['debts']:,.2f} → آخر {last['debts']:,.2f} ج (عملاء + موردين + مسوقجي)", "ends")]
+        elif first["gross_total"] is not None and last["gross_total"] is not None:
+            missing = " و".join(name for name, sheet in (("أول", first), ("آخر", last)) if sheet["total"] is None)
+            note = f"جرد {missing} الفترة سُجّل قبل تسجيل الفلوس اللي علينا فلا يمكن خصمها: اختر فترة تبدأ من جرد جديد."
+            headline = [total("ربح الذهب (مكافئ 21)", "غير متاح", "text", note, "profit", tone="deadcash"),
+                        total("التغير قبل خصم الفلوس اللي علينا (للمعلومية)", grams_text(last["gross_total"] - first["gross_total"]), "text", "ذهب + فلوس بالذهب بدون خصم أي ديون؛ ليس ربحًا", "ends")]
         else:
             headline = [total("ربح الذهب (مكافئ 21)", "غير متاح", "text", "لا يوجد سعر بيع عيار 21 مخزن لتحويل الفلوس لذهب.", "profit", tone="deadcash")]
         totals = headline + [
@@ -523,8 +543,10 @@ class ReportService:
                   ("gold_suppliers_eq21", "ذهب الموردين (صافي)"), ("gold_total_eq21", "الذهب الفعلي"))
         rows = [{"part": label, "opening": _dec(opening[key]), "closing": _dec(closing[key]), "change": diff[key]} for key, label in labels]
         if first["money_gold"] is not None and last["money_gold"] is not None:
-            rows += [{"part": "الفلوس بالذهب (كاش + بنوك ÷ سعر بيع 21)", "opening": first["money_gold"], "closing": last["money_gold"], "change": last["money_gold"] - first["money_gold"]},
-                     {"part": "الإجمالي (ذهب + فلوس بالذهب)", "opening": first["total"], "closing": last["total"], "change": last["total"] - first["total"]}]
+            rows.append({"part": "الفلوس بالذهب (كاش + بنوك ÷ سعر بيع 21)", "opening": first["money_gold"], "closing": last["money_gold"], "change": last["money_gold"] - first["money_gold"]})
+            if first["total"] is not None and last["total"] is not None:
+                rows += [{"part": "الفلوس اللي علينا بالذهب (عملاء + موردين + مسوقجي ÷ سعر بيع 21)", "opening": -first["debts_gold"], "closing": -last["debts_gold"], "change": first["debts_gold"] - last["debts_gold"]},
+                         {"part": "الإجمالي (ذهب + فلوس بالذهب − الفلوس اللي علينا)", "opening": first["total"], "closing": last["total"], "change": last["total"] - first["total"]}]
         unknown = _dec(closing.get("unknown_grams") or 0)
         if unknown:
             rows.append({"part": "جرامات بعيار غير معلوم (خارج الإجمالي)", "opening": _dec(opening.get("unknown_grams") or 0), "closing": unknown, "change": unknown - _dec(opening.get("unknown_grams") or 0)})
@@ -1359,7 +1381,7 @@ class ReportService:
                 opening, closing, problem = snapshot_math.choose(sheets, a, b)
                 if problem:
                     return None
-                first, last = self._with_money(opening, price_of), self._with_money(closing, price_of)
+                first, last = self._with_debts(opening, price_of), self._with_debts(closing, price_of)
                 return None if first["total"] is None or last["total"] is None else last["total"] - first["total"]
             profit_now, profit_before = gold_profit(start, end), gold_profit(previous_start, start)
             if profit_before is not None:

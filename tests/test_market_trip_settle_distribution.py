@@ -122,15 +122,20 @@ class BarReversalTests(DistributionCase):
             self.service.reverse(self.done["entry_id"], "خطأ")
         self.assertEqual(refused.exception.code, "DEPENDENT_SETTLEMENT_USE_EXISTS")
 
-    def test_the_supplier_side_reversal_is_refused_with_guidance(self):
+    def test_the_supplier_side_reversal_goes_through_the_custody_entry(self):
+        # Owner 2026-11-08: the canonical correction on the SG itself is still refused with guidance; the supplier page finds the custody entry and reverses IT.
         done = self.bar_to("10", "4")
         direct = SupplierGoldSettlementService(self.session, transaction_factory=self.db.transaction, repository=SettlementRepo, scrap=ScrapRepo,
                                                authorization=self.authorization, corrections=self.corrections)
         before = self.state()
         with self.assertRaises(CorrectionError) as refused:
-            direct.reverse(done["settlement_id"], "من صفحة المورد")
+            self.corrections.reverse("SUPPLIER_GOLD_SETTLEMENT", str(done["settlement_id"]), "مباشرة")
         self.assertEqual(refused.exception.code, "CUSTODY_SETTLEMENT_REVERSE_FROM_TRIP")
         self.assertEqual(self.state(), before)
+        direct.reverse(done["settlement_id"], "من صفحة المورد")
+        with self.assertRaises(CorrectionError) as again:
+            self.service.reverse(done["entry_id"], "x")
+        self.assertEqual(again.exception.code, "ALREADY_REVERSED")
 
 
 class RightsTests(DistributionCase):
