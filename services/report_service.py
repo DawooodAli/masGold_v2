@@ -529,10 +529,11 @@ class ReportService:
                         total("آخر الفترة (بعد خصم الفلوس اللي علينا)", f"{last['total']:,.3f} جرام", "text", f"جرد {day(closing)} • سعر بيع 21 {last['price']:,.0f}", "ends"),
                         total("الفلوس اللي علينا — التغير", money_text(last["debts"] - first["debts"]), "text", f"أول {first['debts']:,.2f} → آخر {last['debts']:,.2f} ج (عملاء + موردين + مسوقجي)", "ends")]
         elif first["gross_total"] is not None and last["gross_total"] is not None:
+            # owner 2026-11-25: the debts are recorded from the first sheet taken after migration 107; an older boundary sheet has none and is NOT estimated -> the period shows the change BEFORE the debts, named so
             missing = " و".join(name for name, sheet in (("أول", first), ("آخر", last)) if sheet["total"] is None)
-            note = f"جرد {missing} الفترة سُجّل قبل تسجيل الفلوس اللي علينا فلا يمكن خصمها: اختر فترة تبدأ من جرد جديد."
-            headline = [total("ربح الذهب (مكافئ 21)", "غير متاح", "text", note, "profit", tone="deadcash"),
-                        total("التغير قبل خصم الفلوس اللي علينا (للمعلومية)", grams_text(last["gross_total"] - first["gross_total"]), "text", "ذهب + فلوس بالذهب بدون خصم أي ديون؛ ليس ربحًا", "ends")]
+            change = last["gross_total"] - first["gross_total"]
+            note = f"قبل خصم الفلوس اللي علينا: جرد {missing} الفترة سُجّل قبل تسجيل الديون فلم تُخصم من أي طرف. الخصم يبدأ في الفترات التي تبدأ من أول جرد مسجّل فيه الديون. من جرد {day(opening)} إلى جرد {day(closing)}{early}"
+            headline = [total("ربح الذهب (مكافئ 21) — قبل خصم الفلوس اللي علينا", grams_text(change), "text", note, "profit", tone="receivable" if change >= 0 else "payable")]
         else:
             headline = [total("ربح الذهب (مكافئ 21)", "غير متاح", "text", "لا يوجد سعر بيع عيار 21 مخزن لتحويل الفلوس لذهب.", "profit", tone="deadcash")]
         totals = headline + [

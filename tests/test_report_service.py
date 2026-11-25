@@ -1062,13 +1062,15 @@ class ProfitTests(Case):
         FakeRepo.sheets = [base[0], dict(base[2], gold_total_eq21=base[0]["gold_total_eq21"], cash_egp=base[0]["cash_egp"] - D("6440"), bank_egp=base[0]["bank_egp"])]
         self.assertEqual(self.totals(self.service.run("profit", self.PERIOD))["ربح الذهب (مكافئ 21)"], "0.000 جرام")
 
-    def test_a_sheet_taken_before_the_debts_were_recorded_makes_the_profit_unavailable_never_a_guess(self):
+    def test_a_sheet_taken_before_the_debts_were_recorded_shows_the_change_before_the_debts_never_an_estimate(self):
+        # owner 2026-11-25: the debts count from the first sheet that recorded them; an older sheet is not estimated, the period shows the change BEFORE the debts and says so
         FakeRepo.sheets = self.owed_sheets((None, None, None), (D("25760"), D("0"), D("0")))
         result = self.service.run("profit", self.PERIOD)
         values = self.totals(result)
-        self.assertEqual(values["ربح الذهب (مكافئ 21)"], "غير متاح")
-        self.assertIn("الفلوس اللي علينا", next(t for t in result["totals"] if t["label"] == "ربح الذهب (مكافئ 21)")["note"])
-        self.assertEqual(values["التغير قبل خصم الفلوس اللي علينا (للمعلومية)"], "+289.224 جرام")   # shown apart and named as not a profit
+        label = "ربح الذهب (مكافئ 21) — قبل خصم الفلوس اللي علينا"
+        self.assertEqual(values[label], "+289.224 جرام")                                            # no debt is taken from either side
+        self.assertNotIn("ربح الذهب (مكافئ 21)", values)
+        self.assertIn("جرد أول الفترة سُجّل قبل تسجيل الديون", next(t for t in result["totals"] if t["label"] == label)["note"])
         rows = [r["part"] for r in result["tables"][0]["rows"]]
         self.assertNotIn("الإجمالي (ذهب + فلوس بالذهب − الفلوس اللي علينا)", rows)
 
